@@ -251,6 +251,21 @@ func newGenerateCmd() *cobra.Command {
 				}
 			}
 
+			// Rename output directory to match the derived CLI name if they differ.
+			// This prevents mismatches when the caller passes a directory name
+			// that doesn't match what the generator derives from the spec title
+			// (e.g., --output .../calcom-pp-cli but spec title "Cal.com" derives "cal-com-pp-cli").
+			derivedDir := naming.CLI(apiSpec.Name)
+			currentBase := filepath.Base(absOut)
+			if currentBase != derivedDir {
+				finalPath := filepath.Join(filepath.Dir(absOut), derivedDir)
+				if err := os.Rename(absOut, finalPath); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not rename output dir from %s to %s: %v\n", currentBase, derivedDir, err)
+				} else {
+					absOut = finalPath
+				}
+			}
+
 			fmt.Fprintf(os.Stderr, "Generated %s at %s\n", naming.CLI(apiSpec.Name), absOut)
 			if asJSON {
 				json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
