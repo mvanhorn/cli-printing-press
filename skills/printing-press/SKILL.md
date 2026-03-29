@@ -344,36 +344,111 @@ Present to the user via `AskUserQuestion`:
 
 ### If user approves sniff
 
-Run the sniff workflow:
+#### Step 1: Detect capture tool
 
-1. **Check agent-browser**: `command -v agent-browser`. If not found, display install instructions and fall back to existing spec or `--docs`.
+Check which browser automation tool is available, in preference order:
 
-2. **Browse and capture**:
+```bash
+# Prefer browser-use (autonomous agent, HAR includes response bodies)
+if command -v browser-use >/dev/null 2>&1 || uvx browser-use --version >/dev/null 2>&1; then
+  SNIFF_BACKEND="browser-use"
+# Fall back to agent-browser (precise control, Claude drives the loop)
+elif command -v agent-browser >/dev/null 2>&1; then
+  SNIFF_BACKEND="agent-browser"
+else
+  SNIFF_BACKEND="manual"
+fi
+```
+
+Report: "Using **<tool>** for traffic capture." If neither is found, ask the user for a manual HAR from browser DevTools and skip to step 4.
+
+#### Step 2a: browser-use capture (preferred)
+
+browser-use runs its own autonomous agent loop — it explores the site without Claude needing to drive each click. Its HAR captures response bodies natively, which websniff needs for schema inference.
+
+Construct a domain-aware exploration task from Phase 1 research findings:
+
+```
+Browse <target-url>. Your goal is to discover as many API endpoints as possible.
+
+Strategy:
+- Use the main search/filter features with realistic sample data (<domain_hints_from_research>)
+- Click through different sections and categories
+- Try pagination, sorting, and filter combinations
+- Interact with forms, dropdowns, and buttons
+- Avoid: navigation to external sites, login prompts, cookie banners
+
+Explore for up to 100 steps or until you have covered the main features.
+```
+
+Run:
+```bash
+browser-use run "<exploration_task>" --headless --har-path "$API_RUN_DIR/sniff-capture.har"
+```
+
+If `--har-path` is not a supported CLI flag, use a thin wrapper:
+```python
+import asyncio
+from browser_use import Agent, Browser, BrowserProfile
+profile = BrowserProfile(headless=True, record_har_path="$API_RUN_DIR/sniff-capture.har", record_har_content="embed")
+browser = Browser(profile=profile)
+agent = Agent(task="<exploration_task>", browser=browser, max_steps=100)
+asyncio.run(agent.run())
+```
+
+#### Step 2b: agent-browser capture (fallback)
+
+If browser-use is not available, use agent-browser with Claude driving the exploration. **Note:** agent-browser HAR does not include response bodies. Use the enriched capture workflow to get them.
+
+1. **Browse and capture**:
    ```bash
    agent-browser open <target-url> --headless
    agent-browser network har start
    ```
 
-3. **Explore the site** using the snapshot-reason-act loop:
+2. **Explore the site** using the snapshot-reason-act loop:
    - `agent-browser snapshot -i` to see the page
    - Identify interactive elements: search boxes, filters, buttons, dropdowns, pagination
    - Prioritize: search forms > filters > action buttons > dropdowns > pagination
    - Skip: navigation links, footer links, social media buttons, cookie/consent banners
-   - Fill forms with realistic sample data based on the domain (e.g., city names for travel, product names for e-commerce)
+   - Fill forms with realistic sample data based on the domain
    - `agent-browser wait --network-idle` after each interaction
    - Repeat for up to 5 rounds or until no new API endpoints appear for 2 consecutive rounds
 
-4. **Stop capture and analyze**:
+3. **Capture response bodies** (agent-browser HAR omits them):
+   ```bash
+   agent-browser network requests --type xhr,fetch --json
+   ```
+   For each API request (filter by JSON content-type, skip analytics domains):
+   ```bash
+   agent-browser network request <request-id> --json
+   ```
+   Combine HAR metadata + response bodies into an enriched capture JSON at `$API_RUN_DIR/sniff-capture.json`.
+
+4. **Stop HAR recording**:
    ```bash
    agent-browser network har stop "$API_RUN_DIR/sniff-capture.har"
-   printing-press sniff --har "$API_RUN_DIR/sniff-capture.har" --name <api> --output "$RESEARCH_DIR/<api>-sniff-spec.yaml"
    ```
 
-5. **Report findings**: "Sniff discovered N endpoints across M resources. [X new endpoints not in the original spec.]"
+#### Step 3: Analyze capture
 
-6. **Update spec source for Phase 2**:
-   - **Enrichment mode**: Phase 2 will use `--spec <original> --spec <sniff-spec> --name <api>` to merge both
-   - **Primary mode**: Phase 2 will use `--spec <sniff-spec>` directly
+Run websniff on the captured traffic:
+```bash
+printing-press sniff --har "$API_RUN_DIR/sniff-capture.har" --name <api> --output "$RESEARCH_DIR/<api>-sniff-spec.yaml"
+```
+
+If using agent-browser's enriched capture format instead:
+```bash
+printing-press sniff --har "$API_RUN_DIR/sniff-capture.json" --name <api> --output "$RESEARCH_DIR/<api>-sniff-spec.yaml"
+```
+
+#### Step 4: Report and update spec source
+
+Report: "Sniff discovered **N endpoints** across **M resources**. [X new endpoints not in the original spec.]"
+
+Update the spec source for Phase 2:
+- **Enrichment mode**: Phase 2 will use `--spec <original> --spec <sniff-spec> --name <api>` to merge both
+- **Primary mode**: Phase 2 will use `--spec <sniff-spec>` directly
 
 ### If user declines sniff
 
