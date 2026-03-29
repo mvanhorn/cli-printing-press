@@ -1,5 +1,8 @@
 version: 2
 
+gomod:
+  proxy: true
+
 builds:
   - main: ./cmd/printing-press
     binary: printing-press
