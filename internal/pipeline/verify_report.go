@@ -10,12 +10,12 @@ import (
 
 // VerificationReport holds the results of a Proof of Behavior verification run.
 type VerificationReport struct {
-	Dir      string              `json:"dir"`
-	SpecPath string              `json:"spec_path,omitempty"`
-	Paths    []PathProofResult   `json:"paths"`
-	Flags    []FlagProofResult   `json:"flags"`
+	Dir      string                `json:"dir"`
+	SpecPath string                `json:"spec_path,omitempty"`
+	Paths    []PathProofResult     `json:"paths"`
+	Flags    []FlagProofResult     `json:"flags"`
 	Pipeline []PipelineProofResult `json:"pipeline"`
-	Auth     AuthProofResult     `json:"auth"`
+	Auth     AuthProofResult       `json:"auth"`
 
 	HallucinatedPaths int  `json:"hallucinated_paths"`
 	DeadFlags         int  `json:"dead_flags"`

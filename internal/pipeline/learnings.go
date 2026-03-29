@@ -9,9 +9,9 @@ import (
 
 // PressLearning records what happened during a single pipeline run.
 type PressLearning struct {
-	APIName  string         `json:"api_name"`
-	Date     time.Time      `json:"date"`
-	SpecType string         `json:"spec_type"`
+	APIName  string          `json:"api_name"`
+	Date     time.Time       `json:"date"`
+	SpecType string          `json:"spec_type"`
 	Issues   []LearningIssue `json:"issues"`
 	Fixes    []LearningFix   `json:"fixes"`
 }

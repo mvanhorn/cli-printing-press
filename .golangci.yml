@@ -1,0 +1,68 @@
+version: "2"
+
+formatters:
+  enable:
+    - gofmt
+  exclusions:
+    paths:
+      - library
+      - dist
+
+linters:
+  enable:
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+        - (io.Writer).Write
+        - (*os).Close
+        - (*os.File).Close
+        - (io.Closer).Close
+        - os.Remove
+        - os.RemoveAll
+        - os.Setenv
+        - (*encoding/json.Encoder).Encode
+  exclusions:
+    paths:
+      - library
+      - dist
+    rules:
+      # Tolerate unchecked errors in test files for cleanup/setup helpers.
+      - path: '_test\.go'
+        linters:
+          - errcheck
+      # Pre-existing staticcheck issues — tracked for future cleanup.
+      - text: 'SA1019: strings\.Title'
+        linters:
+          - staticcheck
+      - text: 'S1039'
+        linters:
+          - staticcheck
+      - text: 'QF1012'
+        linters:
+          - staticcheck
+      - text: 'SA4009'
+        linters:
+          - staticcheck
+      # Pre-existing ineffectual assignments in parser — tracked for future cleanup.
+      - path: 'internal/openapi/parser\.go'
+        linters:
+          - ineffassign
+      # Pre-existing unused code — entire file is unused, tracked for future cleanup.
+      - path: 'internal/pipeline/spec_summary\.go'
+        linters:
+          - unused
+      - path: 'internal/pipeline/remediate\.go'
+        text: 'removeDeadFunctions'
+        linters:
+          - unused
+      - path: 'internal/openapi/parser\.go'
+        linters:
+          - unused
+          - staticcheck

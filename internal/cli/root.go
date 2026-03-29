@@ -25,7 +25,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var version = "0.1.0"
+var version = "0.4.0" // x-release-please-version
 
 func Execute() error {
 	rootCmd := &cobra.Command{

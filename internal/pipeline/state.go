@@ -304,7 +304,6 @@ func FindStateByWorkingDir(dir string) (*PipelineState, error) {
 func NewState(apiName, outputDir string) *PipelineState {
 	runID, err := newRunID(time.Now())
 	if err != nil {
-		outputDir = outputDir
 		runID = fmt.Sprintf("fallback-%d", time.Now().UnixNano())
 	}
 	return NewStateWithRun(apiName, outputDir, runID, WorkspaceScope())

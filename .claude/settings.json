@@ -1,5 +1,18 @@
 {
   "enabledPlugins": {
     "compound-engineering@every-marketplace": true
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(echo \"$CLAUDE_TOOL_INPUT\" | grep -o '\"[^\"]*\\.go\"' | head -1 | tr -d '\"'); if [ -n \"$FILE\" ] && [ -f \"$FILE\" ]; then gofmt -l \"$FILE\" 2>/dev/null | while read f; do echo \"gofmt: $f needs formatting. Run: gofmt -w $f\"; done; fi"
+          }
+        ]
+      }
+    ]
   }
 }

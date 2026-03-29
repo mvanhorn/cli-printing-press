@@ -37,9 +37,9 @@ type DomainSignals struct {
 
 // PaginationProfile describes the detected pagination patterns across the API.
 type PaginationProfile struct {
-	CursorParam     string `json:"cursor_param"`    // most common cursor param name (after, cursor, page_token, offset)
-	PageSizeParam   string `json:"page_size_param"`  // most common page size param (limit, per_page, page_size, first)
-	SinceParam      string `json:"since_param"`      // temporal filter param (since, updated_after, modified_since)
+	CursorParam     string `json:"cursor_param"`      // most common cursor param name (after, cursor, page_token, offset)
+	PageSizeParam   string `json:"page_size_param"`   // most common page size param (limit, per_page, page_size, first)
+	SinceParam      string `json:"since_param"`       // temporal filter param (since, updated_after, modified_since)
 	ItemsKey        string `json:"items_key"`         // response array key (data, results, items, or "" for root array)
 	DefaultPageSize int    `json:"default_page_size"` // detected or default 100
 }

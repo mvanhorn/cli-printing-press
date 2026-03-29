@@ -19,14 +19,14 @@ import (
 
 // ResearchResult holds the output of the research phase.
 type ResearchResult struct {
-	APIName             string              `json:"api_name"`
-	NoveltyScore        int                 `json:"novelty_score"` // 1-10
-	Alternatives        []Alternative       `json:"alternatives"`
-	Gaps                []string            `json:"gaps"`           // what alternatives miss
-	Patterns            []string            `json:"patterns"`       // what alternatives do well
-	Recommendation      string              `json:"recommendation"` // "proceed", "proceed-with-gaps", "skip"
-	ResearchedAt        time.Time           `json:"researched_at"`
-	CompetitorInsights  *CompetitorInsights `json:"competitor_insights,omitempty"`
+	APIName            string              `json:"api_name"`
+	NoveltyScore       int                 `json:"novelty_score"` // 1-10
+	Alternatives       []Alternative       `json:"alternatives"`
+	Gaps               []string            `json:"gaps"`           // what alternatives miss
+	Patterns           []string            `json:"patterns"`       // what alternatives do well
+	Recommendation     string              `json:"recommendation"` // "proceed", "proceed-with-gaps", "skip"
+	ResearchedAt       time.Time           `json:"researched_at"`
+	CompetitorInsights *CompetitorInsights `json:"competitor_insights,omitempty"`
 }
 
 // CompetitorAnalysis holds intelligence gathered from a single competitor repo.
@@ -407,8 +407,8 @@ type ghIssue struct {
 
 // ghPull models a GitHub pull request from the API.
 type ghPull struct {
-	Title    string `json:"title"`
-	HTMLURL  string `json:"html_url"`
+	Title    string  `json:"title"`
+	HTMLURL  string  `json:"html_url"`
 	MergedAt *string `json:"merged_at"`
 }
 

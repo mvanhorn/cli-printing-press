@@ -24,19 +24,19 @@ type WorkflowTemplateContext struct {
 }
 
 type EntityMapping struct {
-	TableName      string
-	HumanSingular  string
-	HumanPlural    string
+	TableName       string
+	HumanSingular   string
+	HumanPlural     string
 	IdentifierField string
-	TitleField     string
-	UpdatedAtField string
-	AssigneeField  string
-	PriorityField  string
-	DueDateField   string
-	TeamField      string
-	LabelField     string
-	EstimateField  string
-	StateField     string
+	TitleField      string
+	UpdatedAtField  string
+	AssigneeField   string
+	PriorityField   string
+	DueDateField    string
+	TeamField       string
+	LabelField      string
+	EstimateField   string
+	StateField      string
 }
 
 func MapEntities(s *spec.APISpec, domain profiler.DomainSignals) WorkflowTemplateContext {
