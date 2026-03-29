@@ -357,8 +357,10 @@ After cloning, install git hooks so lint errors are caught before they reach CI:
 
 ```bash
 go install github.com/evilmartians/lefthook@latest
-lefthook install
+~/go/bin/lefthook install
 ```
+
+> **Note:** If `lefthook` isn't found after `go install`, your `$GOPATH/bin` (`~/go/bin` by default) may not be in your `PATH`. Either use the full path as shown above, or add `export PATH="$HOME/go/bin:$PATH"` to your `~/.zshrc`.
 
 This adds a pre-push hook that runs `golangci-lint` on changed files. The same linter config (`.golangci.yml`) runs in CI — lefthook just catches failures locally first.
 
