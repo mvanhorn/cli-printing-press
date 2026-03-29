@@ -206,7 +206,42 @@ Before new research:
    - `$PRESS_MANUSCRIPTS/<api>/*/research/*`
    - `$REPO_ROOT/docs/plans/*<api>*` (legacy fallback)
 3. Reuse good prior work instead of redoing it.
-4. **API Key Gate** — Check whether this API requires authentication, then handle accordingly.
+4. **Library Check** — Check if a CLI for this API already exists in the library and present the user with context and options.
+
+   ```bash
+   CLI_DIR="$PRESS_LIBRARY/<api>-pp-cli"
+   if [ -d "$CLI_DIR" ]; then
+     # Read manifest if available
+     MANIFEST="$CLI_DIR/.printing-press.json"
+     if [ -f "$MANIFEST" ]; then
+       PRESS_VERSION=$(cat "$MANIFEST" | grep -o '"printing_press_version"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"printing_press_version"[[:space:]]*:[[:space:]]*"//;s/"//')
+       GENERATED_AT=$(cat "$MANIFEST" | grep -o '"generated_at"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"generated_at"[[:space:]]*:[[:space:]]*"//;s/"//')
+     fi
+     # Get directory modification time as fallback
+     CLI_MTIME=$(stat -f "%Sm" -t "%Y-%m-%d" "$CLI_DIR" 2>/dev/null || stat -c "%y" "$CLI_DIR" 2>/dev/null | cut -d' ' -f1)
+   fi
+   ```
+
+   If the directory exists, display context and present options using `AskUserQuestion`:
+
+   > Found existing `<cli-name>` in library (last modified `<date>`).
+
+   If `PRESS_VERSION` is available, append: `Built with printing-press v<version>.`
+
+   If prior research was also found (step 2), include the research summary alongside the library info.
+
+   Then ask:
+   1. **"Generate a fresh CLI"** — Re-runs the generator into the same directory (`--force`), overwrites generated code, then rebuilds transcendence features. Prior research is reused if recent. ~15-20 min.
+   2. **"Improve existing CLI"** — Keeps all current code, audits for quality gaps, implements top improvements. The generator is not re-run. ~10 min.
+   3. **"Review prior research first"** — Show the full research brief and absorb manifest before deciding.
+
+   If the user picks option 1, proceed to Phase 1 (research) and then Phase 2 (generate) as normal.
+   If the user picks option 2, switch to emboss mode (see Emboss Cycle above).
+   If the user picks option 3, display the prior research, then re-present options 1 and 2.
+
+   If no CLI exists in the library, skip this step and proceed normally.
+
+5. **API Key Gate** — Check whether this API requires authentication, then handle accordingly.
 
 **First, determine if the API needs auth.** Use these signals:
 - The spec has no `security` or `securityDefinitions` section → likely no auth needed
