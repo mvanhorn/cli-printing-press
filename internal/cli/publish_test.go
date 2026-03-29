@@ -306,6 +306,43 @@ func TestPublishPackageFailsWhenManuscriptsCopyFails(t *testing.T) {
 	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
 }
 
+func TestPublishPackageIncludesManuscripts(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	// Create manuscripts at the archived location where publish package looks
+	runID := "20260329-100000"
+	researchDir := filepath.Join(home, "manuscripts", "test", runID, "research")
+	proofsDir := filepath.Join(home, "manuscripts", "test", runID, "proofs")
+	require.NoError(t, os.MkdirAll(researchDir, 0o755))
+	require.NoError(t, os.MkdirAll(proofsDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "brief.md"), []byte("# Research Brief"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(proofsDir, "shipcheck.md"), []byte("# Shipcheck"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.True(t, result.ManuscriptsIncluded, "manuscripts should be included")
+	assert.Equal(t, runID, result.RunID, "run ID should match the most recent run")
+
+	// Verify manuscripts are in the staged package
+	stagedResearch := filepath.Join(result.StagedDir, ".manuscripts", runID, "research", "brief.md")
+	stagedProofs := filepath.Join(result.StagedDir, ".manuscripts", runID, "proofs", "shipcheck.md")
+
+	_, err = os.Stat(stagedResearch)
+	assert.NoError(t, err, "research brief should be in staged package")
+
+	_, err = os.Stat(stagedProofs)
+	assert.NoError(t, err, "shipcheck proofs should be in staged package")
+}
+
 func TestFindMostRecentRun(t *testing.T) {
 	dir := t.TempDir()
 
