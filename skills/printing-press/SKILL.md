@@ -210,11 +210,11 @@ Before new research:
 
 **First, determine if the API needs auth.** Use these signals:
 - The spec has no `security` or `securityDefinitions` section → likely no auth needed
-- The API is known to be public/unauthenticated (e.g., ESPN, weather APIs, public data APIs)
+- The API's endpoints are accessible without authentication (e.g., ESPN's undocumented endpoints, weather APIs, public data feeds) — note: "no auth required" does NOT mean the service has an official public API
 - No env var matching the API name exists AND no known token pattern applies
 - Community docs or npm/PyPI wrappers describe the API as "no auth required"
 
-**If the API does NOT require auth** (public/unauthenticated), skip the key gate entirely. Proceed silently — do not ask the user about API keys for a public API. Live smoke testing in Phase 5 will work without a key.
+**If no auth is required**, skip the key gate entirely. Proceed with: "No authentication required for `<API>` — skipping API key gate." Do NOT call it "a public API" unless the service officially publishes one. Many services (ESPN, etc.) have unauthenticated endpoints without having an official API. Live smoke testing in Phase 5 will work without a key.
 
 **If the API DOES require auth**, run the key gate:
 
