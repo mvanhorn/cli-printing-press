@@ -558,7 +558,7 @@ Every row = a feature we MUST build. No exceptions. If someone else has it, we h
 
 SDK wrapper methods should be treated as features to absorb — each public method/function is a feature the CLI should match.
 
-### Step 1.5c: Identify transcendence features
+### Step 1.5c: Identify compound use cases
 
 What compound use cases become possible ONLY when ALL absorbed features live in SQLite together?
 
@@ -571,23 +571,81 @@ What compound use cases become possible ONLY when ALL absorbed features live in 
 | 3 | Duplicate detection | similar "login bug" | Requires FTS5 across ALL issue text + comments |
 ```
 
-Minimum 5 transcendence features. These are the NOI commands.
+Minimum 5 compound use case features. These are the NOI commands.
+
+### Step 1.5c.5: Auto-Suggest Novel Features
+
+**This step runs automatically.** No user interaction. Synthesize ALL research gathered so far (Phase 1 brief + Phase 1.5a ecosystem search + Phase 1.5b absorb manifest) into evidence-backed feature recommendations.
+
+#### Gap Analysis
+
+Analyze these 5 categories using data already gathered — do NOT run new searches:
+
+1. **Domain-specific opportunities** — Based on the API Identity from Phase 1 brief. What intelligence does this domain uniquely enable?
+   - Sports APIs → trend analysis, player comparison, game alerts, fantasy projections
+   - Project management APIs → bottleneck detection, velocity trends, workload balance, stale issue radar
+   - Payments APIs → reconciliation, revenue trends, dispute tracking, churn prediction
+   - Communication APIs → response time analytics, channel health, thread summarization
+   - CRM APIs → pipeline velocity, deal scoring, contact engagement trends
+
+2. **User pain points** — From Phase 1 research: npm README "limitations" sections, GitHub issues on competitor repos, community docs mentioning workarounds, PyPI package descriptions mentioning what's missing
+
+3. **Competitor edges** — From the absorb manifest: what does the BEST competitor tool uniquely offer that nobody else has? Can we beat it with the SQLite layer?
+
+4. **Cross-entity queries** — What joins across synced tables produce insights no single API call can? (This overlaps with Step 1.5c but approaches it from the data model, not the use case)
+
+5. **Agent workflow gaps** — What would an AI agent using this CLI wish it could do in one command instead of multiple? (e.g., "show me everything about X" commands, bulk operations, pre-flight checks)
+
+#### Generate and Score Candidates
+
+Generate 3-5 novel feature ideas. For each, score on 4 dimensions:
+
+| Dimension | Points | Scoring |
+|-----------|--------|---------|
+| **Domain Fit** | 0-3 | 3=core to this API's power users, 2=useful but niche, 1=tangential, 0=wrong domain |
+| **User Pain** | 0-3 | 3=research surfaced explicit demand (community complaints, competitor gap), 2=implied need, 1=speculative, 0=no evidence |
+| **Build Feasibility** | 0-2 | 2=SQLite store + existing sync covers it, 1=needs minor data model additions, 0=requires new infrastructure |
+| **Research Backing** | 0-2 | 2=evidence from 2+ sources in Phase 1/1.5 research, 1=evidence from 1 source, 0=invented |
+
+**Normalize:** `score_10 = round(raw / 10 * 10)`. Include features scoring ≥ 5/10.
+
+#### Add to Transcendence Table
+
+Add each qualifying feature as a new row in the transcendence table:
+
+```markdown
+| # | Feature | Command | Why Only We Can Do This | Score | Evidence |
+|---|---------|---------|------------------------|-------|----------|
+| N | Player comparison | compare "LeBron" "Curry" | Requires local join across player stats + team + season data | 8/10 | ESPN community requests, espn_scraper lacks cross-player queries |
+```
+
+The "Evidence" column MUST cite specific findings from Phase 1 or Phase 1.5 research. No unsupported assertions.
 
 ### Step 1.5d: Write the manifest artifact
 
 Write to `$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`
 
+The manifest now includes both compound use cases (Step 1.5c) and auto-suggested features (Step 1.5c.5) in the transcendence table.
+
 ### Phase Gate 1.5
 
 **STOP.** Present the absorb manifest to the user via `AskUserQuestion`:
 
-"Found [N] features across [X] tools (MCPs, skills, CLIs, scripts). Our CLI will absorb all [N] and add [M] transcendence features. Total: [N+M] features. This is [Z]% more than the best existing tool."
+"Found [N] features across [X] tools (MCPs, skills, CLIs, scripts). Our CLI will absorb all [N] and add [M] transcendence features ([K] auto-suggested with scores). Total: [N+M] features. This is [Z]% more than the best existing tool."
 
 Options:
 1. **Approve — generate now** — Start CLI generation with the full manifest
-2. **Add features first** — You have specific features or ideas you want added to the manifest before building
+2. **Brainstorm more features** — Interactive dialogue to explore your own feature ideas before building
 3. **Review the research** — Show me the full brief and manifest before deciding
 4. **Trim scope** — The feature count is too ambitious, let's focus on a subset
+
+If user selects **"Brainstorm more features"**, run a lightweight feature brainstorm:
+
+1. "What workflows do you personally use `<API>` for that aren't covered in the manifest?"
+2. "What's annoying about existing tools for `<API>` that you wish someone would fix?"
+3. "If this CLI could do one magical thing, what would make you say 'I need this'?"
+
+Each answer that produces a concrete feature → add to the transcendence table. After the brainstorm, return to this gate with the updated manifest.
 
 WAIT for approval. Do NOT generate until approved.
 
