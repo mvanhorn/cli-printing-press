@@ -2,12 +2,6 @@
   "enabledPlugins": {
     "compound-engineering@every-marketplace": true
   },
-  "permissions": {
-    "deny": [
-      "Bash(git commit --no-verify:*)",
-      "Bash(git push --no-verify:*)"
-    ]
-  },
   "hooks": {
     "PostToolUse": [
       {

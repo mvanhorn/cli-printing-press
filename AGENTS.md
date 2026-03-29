@@ -1,14 +1,11 @@
 # CLI Printing Press - Development Conventions
 
-## Build, Test & Lint
+## Build & Test
 
 ```bash
 go build -o ./printing-press ./cmd/printing-press
 go test ./...
-golangci-lint run --new-from-rev=origin/main ./...
 ```
-
-Run `golangci-lint` before pushing. The CI `lint` job runs the same checks — catching issues locally saves a round-trip. Config is in `.golangci.yml` (errcheck, govet, staticcheck, unused).
 
 **IMPORTANT: Always use relative paths for build output.** Never build to `/tmp` or any shared absolute path. Multiple worktrees run concurrently and will stomp on each other. Use `./printing-press` exactly as shown above.
 

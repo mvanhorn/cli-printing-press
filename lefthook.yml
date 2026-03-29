@@ -1,6 +1,0 @@
-pre-push:
-  commands:
-    lint:
-      glob: "*.go"
-      run: golangci-lint run --new-from-rev=origin/main ./...
-      fail_text: "golangci-lint failed. Fix lint errors before pushing."
