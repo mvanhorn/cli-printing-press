@@ -288,9 +288,12 @@ git checkout -b feat/<cli-name>
 git checkout -B feat/<cli-name>
 ```
 
-### Copy staged package
+### Replace CLI package
+
+Remove any existing version of this CLI before copying. This prevents stale files from a previous generation persisting (e.g., deleted commands, renamed files). The glob also handles category changes — if the CLI moved from `productivity` to `developer-tools`, the old directory is cleaned up.
 
 ```bash
+rm -rf "$PUBLISH_REPO_DIR/library"/*/"<cli-name>"
 cp -r <staging-dir>/library/* "$PUBLISH_REPO_DIR/library/"
 ```
 
