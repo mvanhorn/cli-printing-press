@@ -142,7 +142,9 @@ func TestPublishWorkingCLIWritesManifest(t *testing.T) {
 		0o644,
 	))
 
-	// Create a PipelineState pointing to the working directory
+	// Create a PipelineState pointing to the working directory.
+	// SpecURL is a real URL, SpecPath is a different local path —
+	// both should appear in the manifest.
 	state := NewState("test-api", workingDir)
 	state.SpecURL = "https://example.com/spec.json"
 	state.SpecPath = "/tmp/test-spec.json"
@@ -179,6 +181,70 @@ func TestPublishWorkingCLIWritesManifest(t *testing.T) {
 	h := sha256.Sum256(specContent)
 	expectedChecksum := "sha256:" + hex.EncodeToString(h[:])
 	assert.Equal(t, expectedChecksum, got.SpecChecksum)
+}
+
+func TestPublishManifestNormalizesLocalPathInSpecURL(t *testing.T) {
+	home := setPressTestEnv(t)
+
+	workingDir := filepath.Join(home, "working", "local-spec-cli")
+	require.NoError(t, os.MkdirAll(workingDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workingDir, "main.go"),
+		[]byte("package main\nfunc main() {}"), 0o644))
+
+	// Simulate the fullrun --spec /path/to/spec.json behavior:
+	// SpecURL = local path, SpecPath = same local path
+	state := NewState("local-test", workingDir)
+	state.SpecURL = "/tmp/my-spec.yaml"
+	state.SpecPath = "/tmp/my-spec.yaml"
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(state.StatePath()), 0o755))
+	require.NoError(t, state.Save())
+
+	publishDir := filepath.Join(home, "library", "local-spec-pp-cli")
+	finalDir, err := PublishWorkingCLI(state, publishDir)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(finalDir, CLIManifestFilename))
+	require.NoError(t, err)
+
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+
+	// Local path should be in spec_path, NOT in spec_url
+	assert.Empty(t, got.SpecURL, "local file path should not appear in spec_url")
+	assert.Equal(t, "/tmp/my-spec.yaml", got.SpecPath)
+}
+
+func TestPublishManifestNormalizesURLDuplicatedInBothFields(t *testing.T) {
+	home := setPressTestEnv(t)
+
+	workingDir := filepath.Join(home, "working", "dup-url-cli")
+	require.NoError(t, os.MkdirAll(workingDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workingDir, "main.go"),
+		[]byte("package main\nfunc main() {}"), 0o644))
+
+	// Simulate the fullrun --spec https://... behavior:
+	// SpecURL = URL, SpecPath = same URL (duplicated)
+	state := NewState("dup-url", workingDir)
+	state.SpecURL = "https://example.com/spec.json"
+	state.SpecPath = "https://example.com/spec.json"
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(state.StatePath()), 0o755))
+	require.NoError(t, state.Save())
+
+	publishDir := filepath.Join(home, "library", "dup-url-pp-cli")
+	finalDir, err := PublishWorkingCLI(state, publishDir)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(finalDir, CLIManifestFilename))
+	require.NoError(t, err)
+
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+
+	// URL should be in spec_url only, not duplicated into spec_path
+	assert.Equal(t, "https://example.com/spec.json", got.SpecURL)
+	assert.Empty(t, got.SpecPath, "URL should not be duplicated in spec_path")
 }
 
 func TestPublishWorkingCLIManifestWithoutSpec(t *testing.T) {

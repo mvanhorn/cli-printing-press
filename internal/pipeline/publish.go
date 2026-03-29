@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/catalog"
@@ -160,24 +161,42 @@ func ArchiveRunArtifacts(state *PipelineState) (string, error) {
 }
 
 func writeCLIManifestForPublish(state *PipelineState, dir string) error {
+	// Normalize spec_url vs spec_path. The fullrun pipeline sets
+	// state.SpecURL to the raw --spec argument (URL or file path)
+	// and state.SpecPath = SpecURL for --spec runs. We need to put
+	// URLs in spec_url and file paths in spec_path, not both.
+	specURL, specPath := state.SpecURL, state.SpecPath
+	isURL := strings.HasPrefix(specURL, "http://") || strings.HasPrefix(specURL, "https://")
+	if !isURL && specURL != "" {
+		// Raw --spec argument was a file path, not a URL.
+		specPath = specURL
+		specURL = ""
+	}
+	if isURL {
+		// Don't duplicate a URL into spec_path.
+		if specPath == specURL {
+			specPath = ""
+		}
+	}
+
 	m := CLIManifest{
 		SchemaVersion:        1,
 		GeneratedAt:          time.Now().UTC(),
 		PrintingPressVersion: version.Version,
 		APIName:              state.APIName,
 		CLIName:              naming.CLI(state.APIName),
-		SpecURL:              state.SpecURL,
-		SpecPath:             state.SpecPath,
+		SpecURL:              specURL,
+		SpecPath:             specPath,
 		RunID:                state.RunID,
 	}
 
 	// Detect spec format and compute checksum from the spec file in the
 	// working directory. spec.json only exists when specFlag is --spec;
 	// for --docs runs it won't be present and these fields stay empty.
-	specPath := filepath.Join(state.EffectiveWorkingDir(), "spec.json")
-	if data, err := os.ReadFile(specPath); err == nil {
+	specFile := filepath.Join(state.EffectiveWorkingDir(), "spec.json")
+	if data, err := os.ReadFile(specFile); err == nil {
 		m.SpecFormat = detectSpecFormat(data)
-		checksum, err := specChecksum(specPath)
+		checksum, err := specChecksum(specFile)
 		if err == nil {
 			m.SpecChecksum = checksum
 		}
