@@ -24,6 +24,7 @@ Generate the best useful CLI for an API without burning an hour on phase theater
 /printing-press Notion
 /printing-press Discord codex
 /printing-press --spec ./openapi.yaml
+/printing-press --har ./capture.har --name MyAPI
 /printing-press emboss notion
 /printing-press emboss notion-pp-cli
 /printing-press emboss ~/printing-press/library/notion-pp-cli
@@ -194,6 +195,9 @@ These do not need to be 200+ lines. Keep them dense, evidence-backed, and direct
 Before new research:
 
 1. Resolve the spec source.
+   - If the user passed `--har <path>`, this is a HAR-first run. Run `printing-press sniff --har <path> --name <api> --output "$RESEARCH_DIR/<api>-sniff-spec.yaml"` to generate a spec from captured traffic. Use the generated spec as the primary spec source for the rest of the pipeline. Skip the sniff gate in Phase 1.7 (sniff already ran).
+   - If the user passed `--spec`, use it directly (existing behavior).
+   - Otherwise, proceed with normal discovery (catalog, KnownSpecs, apis-guru, web search).
 2. Check for prior research in:
    - `$PRESS_MANUSCRIPTS/<api>/*/research/*`
    - `$REPO_ROOT/docs/plans/*<api>*` (legacy fallback)
@@ -301,6 +305,81 @@ Suggested shape:
 3. ...
 ```
 
+## Phase 1.7: Sniff Gate (Optional)
+
+After Phase 1 research, evaluate whether sniffing the live site would improve the spec. Skip this gate entirely if the user already passed `--har` or `--spec` (spec source is already resolved).
+
+### When to offer sniff
+
+| Spec found? | Research shows gaps? | Auth required? | Action |
+|-------------|---------------------|----------------|--------|
+| Yes | Yes — docs or competitors show significantly more endpoints than the spec | No | **Offer sniff as enrichment** |
+| Yes | No — spec appears complete | Any | Skip silently |
+| No | N/A | No | **Offer sniff as primary discovery** |
+| No | N/A | Yes (login required) | Skip — fall back to `--docs` |
+
+**Gap detection heuristic:** If Phase 1 research found documentation, competitor tools, or community projects that reference significantly more endpoints or features than the resolved spec covers, that's a gap signal. Example: "The Zuplo OpenAPI spec has 42 endpoints, but the Public-ESPN-API docs describe 370+."
+
+### Sniff as enrichment (spec exists but has gaps)
+
+Present to the user via `AskUserQuestion`:
+
+> "Found a spec with **N endpoints**, but research shows the live API likely has more (competitors reference M+ features). Want me to sniff `<url>` to discover endpoints the spec missed?"
+>
+> Options:
+> 1. **Yes — sniff and merge** (browse the site, capture traffic, merge discovered endpoints with the existing spec)
+> 2. **No — use existing spec** (proceed with what we have)
+
+### Sniff as primary (no spec found)
+
+Present to the user via `AskUserQuestion`:
+
+> "No OpenAPI spec found for `<API>`. Want me to sniff `<likely-url>` to discover the API from live traffic?"
+>
+> Options:
+> 1. **Yes — sniff the live site** (browse `<url>` via agent-browser, capture API calls, generate a spec)
+> 2. **No — use docs instead** (attempt `--docs` generation from documentation pages)
+> 3. **No — I'll provide a spec or HAR** (user will supply input manually)
+
+### If user approves sniff
+
+Run the sniff workflow:
+
+1. **Check agent-browser**: `command -v agent-browser`. If not found, display install instructions and fall back to existing spec or `--docs`.
+
+2. **Browse and capture**:
+   ```bash
+   agent-browser open <target-url> --headless
+   agent-browser network har start
+   ```
+
+3. **Explore the site** using the snapshot-reason-act loop:
+   - `agent-browser snapshot -i` to see the page
+   - Identify interactive elements: search boxes, filters, buttons, dropdowns, pagination
+   - Prioritize: search forms > filters > action buttons > dropdowns > pagination
+   - Skip: navigation links, footer links, social media buttons, cookie/consent banners
+   - Fill forms with realistic sample data based on the domain (e.g., city names for travel, product names for e-commerce)
+   - `agent-browser wait --network-idle` after each interaction
+   - Repeat for up to 5 rounds or until no new API endpoints appear for 2 consecutive rounds
+
+4. **Stop capture and analyze**:
+   ```bash
+   agent-browser network har stop "$API_RUN_DIR/sniff-capture.har"
+   printing-press sniff --har "$API_RUN_DIR/sniff-capture.har" --name <api> --output "$RESEARCH_DIR/<api>-sniff-spec.yaml"
+   ```
+
+5. **Report findings**: "Sniff discovered N endpoints across M resources. [X new endpoints not in the original spec.]"
+
+6. **Update spec source for Phase 2**:
+   - **Enrichment mode**: Phase 2 will use `--spec <original> --spec <sniff-spec> --name <api>` to merge both
+   - **Primary mode**: Phase 2 will use `--spec <sniff-spec>` directly
+
+### If user declines sniff
+
+Proceed with whatever spec source exists. If no spec was found, fall back to `--docs` or ask the user to provide a spec/HAR manually.
+
+---
+
 ## Phase 1.5: Ecosystem Absorb Gate
 
 THIS IS A MANDATORY STOP GATE. Do not generate until this is complete and approved.
@@ -375,6 +454,26 @@ OpenAPI / internal YAML:
 ```bash
 printing-press generate \
   --spec <spec-path-or-url> \
+  --output "$PRESS_LIBRARY/<api>-pp-cli" \
+  --force --lenient --validate
+```
+
+Sniff-enriched (original spec + sniff-discovered spec):
+
+```bash
+printing-press generate \
+  --spec <original-spec-path-or-url> \
+  --spec "$RESEARCH_DIR/<api>-sniff-spec.yaml" \
+  --name <api> \
+  --output "$PRESS_LIBRARY/<api>-pp-cli" \
+  --force --lenient --validate
+```
+
+Sniff-only (no original spec, sniff was the primary source):
+
+```bash
+printing-press generate \
+  --spec "$RESEARCH_DIR/<api>-sniff-spec.yaml" \
   --output "$PRESS_LIBRARY/<api>-pp-cli" \
   --force --lenient --validate
 ```
