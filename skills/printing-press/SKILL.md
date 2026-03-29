@@ -326,6 +326,11 @@ After Phase 1 research, evaluate whether sniffing the live site would improve th
 
 **IMPORTANT:** When the decision matrix below says "Offer sniff", you MUST ask the user via `AskUserQuestion`. Do NOT silently decide to skip sniff because the docs look thorough — the user should make that call. The only case where you skip silently is "spec appears complete" (no gap detected).
 
+**Time budget:** The sniff gate should complete within 3 minutes of the user approving sniff. If browser automation tooling fails to produce results after 3 minutes of attempts, fall back immediately:
+- If a spec already exists (enrichment mode): "Sniff failed after 3 minutes — proceeding with existing spec."
+- If no spec exists (primary mode): "Sniff failed after 3 minutes — falling back to --docs generation."
+Do NOT spend time debugging tool integration issues. The sniff is optional enrichment, not a blocking requirement. If the first approach fails, fall back to the next option — do not retry the same broken approach.
+
 ### When to offer sniff
 
 | Spec found? | Research shows gaps? | Auth required? | Action |
@@ -366,24 +371,26 @@ Present to the user via `AskUserQuestion`:
 Check which browser automation tools are available:
 
 ```bash
-HAS_BROWSER_USE=false
-HAS_AGENT_BROWSER=false
+# Prefer browser-use (CLI-driven, Performance API collection)
 if command -v browser-use >/dev/null 2>&1 || uvx browser-use --version >/dev/null 2>&1; then
-  HAS_BROWSER_USE=true
+  SNIFF_BACKEND="browser-use"
+# Fall back to agent-browser (CLI-driven, Claude drives the loop)
+elif command -v agent-browser >/dev/null 2>&1; then
+  SNIFF_BACKEND="agent-browser"
+else
+  SNIFF_BACKEND="none"
 fi
-if command -v agent-browser >/dev/null 2>&1; then
-  HAS_AGENT_BROWSER=true
+
+# Check if browser-use can run in autonomous agent mode (optional, not required)
+BROWSER_USE_HAS_LLM=false
+if [ -n "$ANTHROPIC_API_KEY" ] || [ -n "$OPENAI_API_KEY" ] || [ -n "$BROWSER_USE_API_KEY" ]; then
+  BROWSER_USE_HAS_LLM=true
 fi
 ```
 
-**Report what was found AND what's missing.** Always tell the user the full picture:
+If a tool is found, report: "Using **<tool>** for traffic capture (CLI-driven mode — no LLM key needed)." and proceed to Step 2.
 
-- **Both installed**: "Found browser-use (preferred for autonomous exploration) and agent-browser. Using browser-use." → proceed to Step 2a.
-- **Only agent-browser**: "Found agent-browser but not browser-use. browser-use is preferred — it explores autonomously and captures response bodies in HAR. Want me to install it? (~2 min via `uv tool install browser-use`)" → offer to install browser-use, fall back to agent-browser if declined.
-- **Only browser-use**: "Found browser-use. Using it for traffic capture." → proceed to Step 2a.
-- **Neither**: proceed to Step 1b (install).
-
-**The goal is both tools installed.** browser-use is better for autonomous exploration (it drives itself). agent-browser is better for precise, Claude-directed interaction. Having both gives the best coverage. If one is missing, recommend installing it even if the other is available.
+**Important:** browser-use has two modes: autonomous Agent mode (requires an LLM API key like ANTHROPIC_API_KEY) and CLI mode (open/eval/scroll — no key needed). **Always use CLI mode for sniff.** It is more reliable, version-stable, and does not require the user to provide an additional API key. Do NOT attempt to use browser-use's Python `Agent` class — it requires an LLM key that may not be available.
 
 #### Step 1b: Install capture tool (if none found)
 
@@ -392,7 +399,7 @@ If neither tool is installed, offer to install via `AskUserQuestion`:
 > "No browser automation tool found. I need one to sniff the live site. Which would you like to install?"
 >
 > Options:
-> 1. **Install browser-use (Recommended)** — "Autonomous agent that explores sites on its own. HAR includes response bodies. Requires Python. ~2 min install."
+> 1. **Install browser-use (Recommended)** — "CLI-driven browser automation. Claude drives the browsing via open/eval/scroll commands. Requires Python. ~2 min install."
 > 2. **Install agent-browser** — "Lighter install (~30s). I'll drive the browsing. Requires Node.js."
 > 3. **Skip — I'll provide a HAR manually** — "Export a HAR yourself from browser DevTools and provide the path."
 
@@ -430,38 +437,72 @@ After install, re-run detection. If `agent-browser` is now available, set `SNIFF
 
 **If user picks manual HAR**, ask the user for a HAR file path and skip to Step 3.
 
-#### Step 2a: browser-use capture (preferred)
+#### Step 2a: browser-use CLI capture (preferred)
 
-browser-use runs its own autonomous agent loop — it explores the site without Claude needing to drive each click. Its HAR captures response bodies natively, which websniff needs for schema inference.
+Claude drives browser-use directly via CLI commands — no LLM key needed, no Python API versioning issues. Uses the browser's native Performance API to collect API endpoint URLs from each page.
 
-Construct a domain-aware exploration task from Phase 1 research findings:
+**IMPORTANT: Run the page collection loop in foreground, not background.** The loop takes ~60-90 seconds for 10-15 pages. Background execution has unreliable output capture for shell functions that call browser-use. Always run this inline.
 
-```
-Browse <target-url>. Your goal is to discover as many API endpoints as possible.
+**Step 2a.1: Build the page list**
 
-Strategy:
-- Use the main search/filter features with realistic sample data (<domain_hints_from_research>)
-- Click through different sections and categories
-- Try pagination, sorting, and filter combinations
-- Interact with forms, dropdowns, and buttons
-- Avoid: navigation to external sites, login prompts, cookie banners
+From Phase 1 research, identify 10-15 target pages that exercise different parts of the API. Include:
+- Homepage
+- Scoreboard/listing pages for each major resource (scores, standings, teams)
+- Detail pages (individual team, player, event)
+- Search results
+- Stats/leaders pages
+- News pages
 
-Explore for up to 100 steps or until you have covered the main features.
-```
+**Step 2a.2: Collect API URLs**
 
-Run:
+Open a headless browser session, then visit each page and collect API URLs using the Performance API:
+
 ```bash
-browser-use run "<exploration_task>" --headless --har-path "$API_RUN_DIR/sniff-capture.har"
+# Start collection
+SNIFF_URLS="$API_RUN_DIR/sniff-urls.txt"
+> "$SNIFF_URLS"
+
+# For EACH target page (run this loop in foreground — do NOT use run_in_background):
+browser-use open "<target-page-url>"
+sleep 4  # Wait for API calls to complete
+browser-use scroll down  # Trigger lazy-loaded content
+sleep 1
+
+# Collect API URLs via Performance API (browser-native, no injection needed)
+browser-use eval "var e=performance.getEntriesByType('resource');var u=[];for(var i=0;i<e.length;i++){var n=e[i].name;if(n.indexOf('<api-domain-1>')>-1||n.indexOf('<api-domain-2>')>-1)u.push(n);}u.join('|||');"
+
+# Parse the result and append to collection file
+# The eval output is "result: url1|||url2|||url3"
+# Split on ||| and append each URL to the file
 ```
 
-If `--har-path` is not a supported CLI flag, use a thin wrapper:
-```python
-import asyncio
-from browser_use import Agent, Browser, BrowserProfile
-profile = BrowserProfile(headless=True, record_har_path="$API_RUN_DIR/sniff-capture.har", record_har_content="embed")
-browser = Browser(profile=profile)
-agent = Agent(task="<exploration_task>", browser=browser, max_steps=100)
-asyncio.run(agent.run())
+Replace `<api-domain-1>`, `<api-domain-2>` etc. with the API domains discovered in Phase 1 research (e.g., `api.espn.com`, `sports.core.api`, `site.web.api`).
+
+**Why Performance API:** It is built into every browser, captures all resource loads (including those that fire before any JS interceptor could be injected), survives within a page lifecycle, and returns simple URL strings. Do NOT use `fetch`/`XMLHttpRequest` monkey-patching — it breaks on page navigation.
+
+**Step 2a.3: Deduplicate and normalize**
+
+After collecting from all pages:
+```bash
+# Strip query parameters and deduplicate to find unique API path patterns
+cat "$SNIFF_URLS" | sed 's/\?.*//' | sort -u > "$API_RUN_DIR/sniff-unique-paths.txt"
+```
+
+**Step 2a.4: Generate enriched capture**
+
+The Performance API gives us URLs but not response bodies. To feed `printing-press sniff`, we need to call each unique API endpoint and capture the response:
+
+```bash
+# For each unique API URL, fetch it and build a simple capture file
+# printing-press sniff accepts HAR or enriched capture JSON
+```
+
+Alternatively, if the URL count is small enough, the unique path patterns alone are sufficient to identify what the existing spec is missing — compare against the spec and report the gap without needing full HAR capture.
+
+**Step 2a.5: Close browser**
+
+```bash
+browser-use close
 ```
 
 #### Step 2b: agent-browser capture (fallback)
