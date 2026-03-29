@@ -197,14 +197,22 @@ If `$PUBLISH_REPO_DIR` does not exist:
 
 ### Subsequent publishes
 
-Read `$PUBLISH_CONFIG`, then freshen:
+Read `$PUBLISH_CONFIG`, then freshen. Use `git reset --hard` instead of `git pull` because this is a managed clone, not a user working tree — it should always match upstream exactly:
 
 ```bash
 cd "$PUBLISH_REPO_DIR"
 git fetch origin
 git checkout main
-git pull origin main
+git reset --hard origin/main
 ```
+
+Also verify the clone is healthy:
+
+```bash
+git rev-parse --is-inside-work-tree
+```
+
+If this fails, the clone is corrupt. Remove `$PUBLISH_REPO_DIR` and re-run first-time setup.
 
 ### Interrupted state recovery
 
@@ -236,10 +244,14 @@ If exists, ask via AskUserQuestion:
 - "Overwrite existing branch"
 - "Create timestamped variant (feat/<cli-name>-YYYYMMDD)"
 
-Create the branch:
+Create the branch (use `-B` to force-create when overwriting an existing branch):
 
 ```bash
+# New branch:
 git checkout -b feat/<cli-name>
+
+# Overwrite existing:
+git checkout -B feat/<cli-name>
 ```
 
 ### Copy staged package

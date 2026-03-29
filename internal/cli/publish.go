@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,10 +9,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/internal/pipeline"
 	"github.com/spf13/cobra"
+)
+
+const (
+	goCommandTimeout    = 2 * time.Minute
+	binaryCheckTimeout  = 15 * time.Second
 )
 
 func newPublishCmd() *cobra.Command {
@@ -288,11 +295,17 @@ func runValidation(dir string) ValidateResult {
 		result.Checks = append(result.Checks, CheckResult{Name: "--version", Passed: false, Error: "built binary not found"})
 		allPassed = false
 	} else {
-		helpCmd := exec.Command(binaryPath, "--help")
+		helpCtx, helpCancel := context.WithTimeout(context.Background(), binaryCheckTimeout)
+		defer helpCancel()
+		helpCmd := exec.CommandContext(helpCtx, binaryPath, "--help")
 		helpCmd.Dir = dir
 		helpOut, helpErr := helpCmd.CombinedOutput()
 		if helpErr != nil {
-			result.Checks = append(result.Checks, CheckResult{Name: "--help", Passed: false, Error: fmt.Sprintf("exit error: %v", helpErr)})
+			errMsg := fmt.Sprintf("exit error: %v", helpErr)
+			if helpCtx.Err() == context.DeadlineExceeded {
+				errMsg = fmt.Sprintf("timed out after %s", binaryCheckTimeout)
+			}
+			result.Checks = append(result.Checks, CheckResult{Name: "--help", Passed: false, Error: errMsg})
 			allPassed = false
 		} else {
 			result.Checks = append(result.Checks, CheckResult{Name: "--help", Passed: true})
@@ -300,10 +313,16 @@ func runValidation(dir string) ValidateResult {
 		}
 
 		// 6. --version check
-		versionCmd := exec.Command(binaryPath, "--version")
+		verCtx, verCancel := context.WithTimeout(context.Background(), binaryCheckTimeout)
+		defer verCancel()
+		versionCmd := exec.CommandContext(verCtx, binaryPath, "--version")
 		versionCmd.Dir = dir
 		if _, vErr := versionCmd.CombinedOutput(); vErr != nil {
-			result.Checks = append(result.Checks, CheckResult{Name: "--version", Passed: false, Error: fmt.Sprintf("exit error: %v", vErr)})
+			errMsg := fmt.Sprintf("exit error: %v", vErr)
+			if verCtx.Err() == context.DeadlineExceeded {
+				errMsg = fmt.Sprintf("timed out after %s", binaryCheckTimeout)
+			}
+			result.Checks = append(result.Checks, CheckResult{Name: "--version", Passed: false, Error: errMsg})
 			allPassed = false
 		} else {
 			result.Checks = append(result.Checks, CheckResult{Name: "--version", Passed: true})
@@ -333,12 +352,16 @@ func runValidation(dir string) ValidateResult {
 
 func runGoCheck(dir string, args ...string) CheckResult {
 	name := "go " + args[0]
-	cmd := exec.Command("go", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), goCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		errMsg := strings.TrimSpace(string(output))
-		if errMsg == "" {
+		if ctx.Err() == context.DeadlineExceeded {
+			errMsg = fmt.Sprintf("timed out after %s", goCommandTimeout)
+		} else if errMsg == "" {
 			errMsg = err.Error()
 		}
 		return CheckResult{Name: name, Passed: false, Error: errMsg}
@@ -358,8 +381,10 @@ func checkGoModTidy(dir string) CheckResult {
 		return CheckResult{Name: "go mod tidy", Passed: false, Error: "go.mod not found"}
 	}
 
-	// Run go mod tidy
-	cmd := exec.Command("go", "mod", "tidy")
+	// Run go mod tidy with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), goCommandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "mod", "tidy")
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -414,14 +439,18 @@ func findBuiltBinary(dir, cliName string) string {
 
 	// Fallback: try targeted build to produce the binary
 	outPath := filepath.Join(dir, cliName)
-	buildCmd := exec.Command("go", "build", "-o", outPath, "./cmd/"+cliName)
+	ctx, cancel := context.WithTimeout(context.Background(), goCommandTimeout)
+	defer cancel()
+	buildCmd := exec.CommandContext(ctx, "go", "build", "-o", outPath, "./cmd/"+cliName)
 	buildCmd.Dir = dir
 	if err := buildCmd.Run(); err == nil {
 		return outPath
 	}
 
 	// Last resort: try building from root
-	buildCmd2 := exec.Command("go", "build", "-o", outPath, ".")
+	ctx2, cancel2 := context.WithTimeout(context.Background(), goCommandTimeout)
+	defer cancel2()
+	buildCmd2 := exec.CommandContext(ctx2, "go", "build", "-o", outPath, ".")
 	buildCmd2.Dir = dir
 	if err := buildCmd2.Run(); err == nil {
 		return outPath
