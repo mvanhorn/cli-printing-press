@@ -23,14 +23,24 @@ import (
 //go:embed templates
 var templateFS embed.FS
 
+// ReadmeSource represents a credited ecosystem tool for the README.
+type ReadmeSource struct {
+	Name     string
+	URL      string
+	Language string
+	Stars    int
+}
+
 type Generator struct {
-	Spec       *spec.APISpec
-	OutputDir  string
-	VisionSet  VisionTemplateSet
-	FixtureSet *websniff.FixtureSet
-	profile    *profiler.APIProfile
-	funcs      template.FuncMap
-	templates  map[string]*template.Template
+	Spec           *spec.APISpec
+	OutputDir      string
+	VisionSet      VisionTemplateSet
+	FixtureSet     *websniff.FixtureSet
+	Sources        []ReadmeSource // Ecosystem tools to credit in README
+	DiscoveryPages []string       // Pages visited during sniff discovery
+	profile        *profiler.APIProfile
+	funcs          template.FuncMap
+	templates      map[string]*template.Template
 }
 
 func New(s *spec.APISpec, outputDir string) *Generator {
@@ -89,6 +99,21 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 	return g
 }
 
+// readmeTemplateData wraps APISpec with additional fields for README rendering.
+type readmeTemplateData struct {
+	*spec.APISpec
+	Sources        []ReadmeSource
+	DiscoveryPages []string
+}
+
+func (g *Generator) readmeData() *readmeTemplateData {
+	return &readmeTemplateData{
+		APISpec:        g.Spec,
+		Sources:        g.Sources,
+		DiscoveryPages: g.DiscoveryPages,
+	}
+}
+
 func (g *Generator) Generate() error {
 	dirs := []string{
 		filepath.Join("cmd", naming.CLI(g.Spec.Name)),
@@ -121,7 +146,11 @@ func (g *Generator) Generate() error {
 	}
 
 	for tmplName, outPath := range singleFiles {
-		if err := g.renderTemplate(tmplName, outPath, g.Spec); err != nil {
+		data := any(g.Spec)
+		if tmplName == "readme.md.tmpl" {
+			data = g.readmeData()
+		}
+		if err := g.renderTemplate(tmplName, outPath, data); err != nil {
 			return fmt.Errorf("rendering %s: %w", tmplName, err)
 		}
 	}

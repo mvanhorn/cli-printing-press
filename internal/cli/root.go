@@ -67,6 +67,7 @@ func newGenerateCmd() *cobra.Command {
 	var dryRun bool
 	var specSource string
 	var clientPattern string
+	var researchDir string
 
 	cmd := &cobra.Command{
 		Use:   "generate",
@@ -150,6 +151,7 @@ func newGenerateCmd() *cobra.Command {
 				}
 
 				gen := generator.New(parsed, absOut)
+				loadResearchSources(gen, researchDir)
 				if err := gen.Generate(); err != nil {
 					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
 				}
@@ -275,6 +277,7 @@ func newGenerateCmd() *cobra.Command {
 			}
 
 			gen := generator.New(apiSpec, absOut)
+			loadResearchSources(gen, researchDir)
 			if err := gen.Generate(); err != nil {
 				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
 			}
@@ -354,6 +357,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Parse spec and show what would be generated without writing files (remote specs are still fetched)")
 	cmd.Flags().StringVar(&specSource, "spec-source", "", "Spec provenance: official, community, sniffed, docs (affects generated client defaults like rate limiting)")
 	cmd.Flags().StringVar(&clientPattern, "client-pattern", "", "HTTP client pattern: rest (default), proxy-envelope (wraps requests in POST envelope)")
+	cmd.Flags().StringVar(&researchDir, "research-dir", "", "Pipeline directory containing research.json and discovery/ for README source credits")
 
 	return cmd
 }
@@ -635,4 +639,26 @@ func printDryRun(apiSpec *spec.APISpec, absOut string, specFiles []string) error
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(summary)
+}
+
+// loadResearchSources populates the generator's Sources and DiscoveryPages
+// from a pipeline research directory. Silently skips if researchDir is empty
+// or data is unavailable.
+func loadResearchSources(gen *generator.Generator, researchDir string) {
+	if researchDir == "" {
+		return
+	}
+	research, err := pipeline.LoadResearch(researchDir)
+	if err == nil {
+		for _, s := range pipeline.SourcesForREADME(research) {
+			gen.Sources = append(gen.Sources, generator.ReadmeSource{
+				Name:     s.Name,
+				URL:      s.URL,
+				Language: s.Language,
+				Stars:    s.Stars,
+			})
+		}
+	}
+	discoveryDir := filepath.Join(researchDir, "discovery")
+	gen.DiscoveryPages = pipeline.ParseDiscoveryPages(discoveryDir)
 }

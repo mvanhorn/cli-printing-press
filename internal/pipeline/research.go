@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -166,6 +167,70 @@ func LoadResearch(pipelineDir string) (*ResearchResult, error) {
 		return nil, err
 	}
 	return &r, nil
+}
+
+// ReadmeSource represents a credited ecosystem tool for the generated README.
+type ReadmeSource struct {
+	Name     string
+	URL      string
+	Language string
+	Stars    int
+}
+
+// ParseDiscoveryPages reads a sniff-report.md and extracts the URLs from
+// the "Pages Visited" section. Returns nil if the file doesn't exist or
+// contains no pages.
+func ParseDiscoveryPages(discoveryDir string) []string {
+	data, err := os.ReadFile(filepath.Join(discoveryDir, "sniff-report.md"))
+	if err != nil {
+		return nil
+	}
+	var pages []string
+	inSection := false
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "# ") {
+			if strings.Contains(strings.ToLower(trimmed), "pages visited") {
+				inSection = true
+				continue
+			}
+			if inSection {
+				break // hit next section
+			}
+		}
+		if inSection && strings.HasPrefix(trimmed, "- ") {
+			page := strings.TrimPrefix(trimmed, "- ")
+			if strings.HasPrefix(page, "http") {
+				pages = append(pages, page)
+			}
+		}
+	}
+	return pages
+}
+
+// SourcesForREADME filters and sorts research alternatives into README-ready
+// source credits. Alternatives with empty URLs are excluded. Results are sorted
+// by stars descending.
+func SourcesForREADME(r *ResearchResult) []ReadmeSource {
+	if r == nil {
+		return nil
+	}
+	var sources []ReadmeSource
+	for _, alt := range r.Alternatives {
+		if alt.URL == "" {
+			continue
+		}
+		sources = append(sources, ReadmeSource{
+			Name:     alt.Name,
+			URL:      alt.URL,
+			Language: alt.Language,
+			Stars:    alt.Stars,
+		})
+	}
+	sort.Slice(sources, func(i, j int) bool {
+		return sources[i].Stars > sources[j].Stars
+	})
+	return sources
 }
 
 func loadCatalogAlternatives(apiName string) []catalog.KnownAlt {

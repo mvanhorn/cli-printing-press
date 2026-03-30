@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -325,4 +326,73 @@ func TestFetchReadmeDecoding(t *testing.T) {
 	commands := parseCommandsFromReadme(readmeContent)
 	assert.Contains(t, commands, "list")
 	assert.Contains(t, commands, "create")
+}
+
+func TestSourcesForREADME(t *testing.T) {
+	t.Run("nil research returns nil", func(t *testing.T) {
+		assert.Nil(t, SourcesForREADME(nil))
+	})
+
+	t.Run("filters empty URLs and sorts by stars desc", func(t *testing.T) {
+		r := &ResearchResult{
+			Alternatives: []Alternative{
+				{Name: "low-stars", URL: "https://github.com/org/low", Language: "go", Stars: 10},
+				{Name: "no-url", URL: "", Language: "python", Stars: 999},
+				{Name: "high-stars", URL: "https://github.com/org/high", Language: "typescript", Stars: 5000},
+				{Name: "mid-stars", URL: "https://github.com/org/mid", Language: "rust", Stars: 200},
+			},
+		}
+		sources := SourcesForREADME(r)
+		require.Len(t, sources, 3)
+		assert.Equal(t, "high-stars", sources[0].Name)
+		assert.Equal(t, 5000, sources[0].Stars)
+		assert.Equal(t, "mid-stars", sources[1].Name)
+		assert.Equal(t, "low-stars", sources[2].Name)
+	})
+
+	t.Run("no alternatives returns nil", func(t *testing.T) {
+		r := &ResearchResult{Alternatives: nil}
+		assert.Nil(t, SourcesForREADME(r))
+	})
+}
+
+func TestParseDiscoveryPages(t *testing.T) {
+	t.Run("missing file returns nil", func(t *testing.T) {
+		assert.Nil(t, ParseDiscoveryPages(t.TempDir()))
+	})
+
+	t.Run("extracts URLs from pages visited section", func(t *testing.T) {
+		dir := t.TempDir()
+		content := `# Sniff Report
+
+## Pages Visited
+
+- https://example.com/app
+- https://example.com/dashboard
+- not-a-url
+
+## Endpoints Discovered
+
+- GET /api/v1/items
+`
+		require.NoError(t, os.WriteFile(dir+"/sniff-report.md", []byte(content), 0o644))
+		pages := ParseDiscoveryPages(dir)
+		require.Len(t, pages, 2)
+		assert.Equal(t, "https://example.com/app", pages[0])
+		assert.Equal(t, "https://example.com/dashboard", pages[1])
+	})
+
+	t.Run("empty pages section returns nil", func(t *testing.T) {
+		dir := t.TempDir()
+		content := `# Sniff Report
+
+## Pages Visited
+
+## Endpoints Discovered
+
+- GET /api/v1/items
+`
+		require.NoError(t, os.WriteFile(dir+"/sniff-report.md", []byte(content), 0o644))
+		assert.Nil(t, ParseDiscoveryPages(dir))
+	})
 }
