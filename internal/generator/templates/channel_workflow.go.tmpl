@@ -6,8 +6,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"{{modulePath}}/internal/store"
@@ -49,7 +47,7 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			c.NoCache = true
 
 			if dbPath == "" {
-				dbPath = defaultDBPath("{{.Name}}-pp-cli")
+				dbPath = defaultDBPath()
 			}
 			s, err := store.Open(dbPath)
 			if err != nil {
@@ -156,7 +154,7 @@ func newWorkflowStatusCmd(flags *rootFlags) *cobra.Command {
   {{.Name}}-pp-cli workflow status --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dbPath == "" {
-				dbPath = defaultDBPath("{{.Name}}-pp-cli")
+				dbPath = defaultDBPath()
 			}
 			s, err := store.Open(dbPath)
 			if err != nil {
@@ -195,9 +193,4 @@ func newWorkflowStatusCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path")
 
 	return cmd
-}
-
-func defaultDBPath(name string) string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", name, "store.db")
 }

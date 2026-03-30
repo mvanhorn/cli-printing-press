@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -94,6 +95,12 @@ func authErr(err error) error     { return &cliError{code: 4, err: err} }
 func apiErr(err error) error      { return &cliError{code: 5, err: err} }
 func configErr(err error) error   { return &cliError{code: 10, err: err} }
 func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
+
+// defaultDBPath returns the standard database path for the CLI.
+func defaultDBPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".local", "share", "{{.Name}}-pp-cli", "data.db")
+}
 
 // classifyAPIError maps API errors to structured exit codes with actionable hints.
 func classifyAPIError(err error) error {

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -62,8 +61,7 @@ Once synced, use the 'search' command for instant full-text search.`,
 			c.NoCache = true
 
 			if dbPath == "" {
-				home, _ := os.UserHomeDir()
-				dbPath = filepath.Join(home, ".local", "share", "{{.Name}}-pp-cli", "data.db")
+				dbPath = defaultDBPath()
 			}
 
 			db, err := store.Open(dbPath)

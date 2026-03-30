@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 
 	"{{modulePath}}/internal/store"
@@ -35,8 +34,7 @@ Data must be synced first with the sync command.`,
   {{.Name}}-pp-cli analytics --type messages --group-by channel_id --limit 10 --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dbPath == "" {
-				home, _ := os.UserHomeDir()
-				dbPath = filepath.Join(home, ".local", "share", "{{.Name}}-pp-cli", "data.db")
+				dbPath = defaultDBPath()
 			}
 
 			db, err := store.Open(dbPath)

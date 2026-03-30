@@ -201,7 +201,7 @@ func newMCPClient() (*client.Client, error) {
 {{- end}}
 }
 
-func dbPath() string {
+func defaultDBPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "{{.Name}}-pp-cli", "data.db")
 }
@@ -226,7 +226,7 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 		limit = int(v)
 	}
 
-	db, err := store.Open(dbPath())
+	db, err := store.Open(defaultDBPath())
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("opening database: %v", err)), nil
 	}
@@ -258,7 +258,7 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 		}
 	}
 
-	db, err := store.Open(dbPath())
+	db, err := store.Open(defaultDBPath())
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("opening database: %v", err)), nil
 	}
