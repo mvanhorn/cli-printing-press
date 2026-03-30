@@ -9,6 +9,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/internal/openapi"
+	"github.com/mvanhorn/cli-printing-press/internal/profiler"
 	"github.com/mvanhorn/cli-printing-press/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -705,4 +706,386 @@ func TestGeneratedOutput_UpsertBatchEntityMethods(t *testing.T) {
 		runGoCommand(t, outputDir, "mod", "tidy")
 		runGoCommand(t, outputDir, "build", "./...")
 	})
+}
+
+// --- buildSyncResources Tests ---
+
+func TestBuildSyncResources(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil profile returns nil", func(t *testing.T) {
+		t.Parallel()
+		g := &Generator{Spec: &spec.APISpec{}}
+		assert.Nil(t, g.buildSyncResources())
+	})
+
+	t.Run("empty SyncableResources returns nil", func(t *testing.T) {
+		t.Parallel()
+		g := &Generator{
+			Spec:    &spec.APISpec{},
+			profile: &profiler.APIProfile{SyncableResources: []string{}},
+		}
+		assert.Nil(t, g.buildSyncResources())
+	})
+
+	t.Run("resource not in spec gets fallback path", func(t *testing.T) {
+		t.Parallel()
+		g := &Generator{
+			Spec: &spec.APISpec{Resources: map[string]spec.Resource{}},
+			profile: &profiler.APIProfile{
+				SyncableResources: []string{"orphan"},
+			},
+		}
+		result := g.buildSyncResources()
+		require.Len(t, result, 1)
+		assert.Equal(t, "orphan", result[0].Name)
+		assert.Equal(t, "/orphan", result[0].Path)
+		assert.Equal(t, "", result[0].PaginationType)
+		assert.Equal(t, 100, result[0].DefaultLimit)
+	})
+
+	t.Run("resource with no GET+Pagination gets fallback", func(t *testing.T) {
+		t.Parallel()
+		g := &Generator{
+			Spec: &spec.APISpec{
+				Resources: map[string]spec.Resource{
+					"items": {
+						Endpoints: map[string]spec.Endpoint{
+							"create": {Method: "POST", Path: "/items"},
+							"list":   {Method: "GET", Path: "/items"}, // no Pagination
+						},
+					},
+				},
+			},
+			profile: &profiler.APIProfile{
+				SyncableResources: []string{"items"},
+			},
+		}
+		result := g.buildSyncResources()
+		require.Len(t, result, 1)
+		assert.Equal(t, "/items", result[0].Path) // fallback path
+		assert.Equal(t, "", result[0].PaginationType)
+	})
+
+	t.Run("offset pagination extracted correctly", func(t *testing.T) {
+		t.Parallel()
+		g := &Generator{
+			Spec: &spec.APISpec{
+				Resources: map[string]spec.Resource{
+					"collections": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method: "GET",
+								Path:   "/v1/api/networkentity",
+								Pagination: &spec.Pagination{
+									Type:       "offset",
+									LimitParam: "limit",
+									CursorParam: "offset",
+								},
+								ResponsePath: "data",
+							},
+						},
+					},
+				},
+			},
+			profile: &profiler.APIProfile{
+				SyncableResources: []string{"collections"},
+			},
+		}
+		result := g.buildSyncResources()
+		require.Len(t, result, 1)
+		assert.Equal(t, "collections", result[0].Name)
+		assert.Equal(t, "/v1/api/networkentity", result[0].Path)
+		assert.Equal(t, "offset", result[0].PaginationType)
+		assert.Equal(t, "limit", result[0].LimitParam)
+		assert.Equal(t, "offset", result[0].CursorParam)
+		assert.Equal(t, "data", result[0].ResponsePath)
+	})
+
+	t.Run("cursor pagination extracted correctly", func(t *testing.T) {
+		t.Parallel()
+		g := &Generator{
+			Spec: &spec.APISpec{
+				Resources: map[string]spec.Resource{
+					"issues": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method: "GET",
+								Path:   "/issues",
+								Pagination: &spec.Pagination{
+									Type:           "cursor",
+									LimitParam:     "per_page",
+									CursorParam:    "after",
+									NextCursorPath: "next_cursor",
+									HasMoreField:   "has_more",
+								},
+							},
+						},
+					},
+				},
+			},
+			profile: &profiler.APIProfile{
+				SyncableResources: []string{"issues"},
+			},
+		}
+		result := g.buildSyncResources()
+		require.Len(t, result, 1)
+		assert.Equal(t, "cursor", result[0].PaginationType)
+		assert.Equal(t, "per_page", result[0].LimitParam)
+		assert.Equal(t, "after", result[0].CursorParam)
+		assert.Equal(t, "next_cursor", result[0].NextCursorPath)
+		assert.Equal(t, "has_more", result[0].HasMoreField)
+	})
+
+	t.Run("prefers list endpoint by name", func(t *testing.T) {
+		t.Parallel()
+		g := &Generator{
+			Spec: &spec.APISpec{
+				Resources: map[string]spec.Resource{
+					"items": {
+						Endpoints: map[string]spec.Endpoint{
+							"archived": {
+								Method: "GET",
+								Path:   "/items/archived",
+								Pagination: &spec.Pagination{
+									Type:       "cursor",
+									CursorParam: "after",
+								},
+							},
+							"list": {
+								Method: "GET",
+								Path:   "/items",
+								Pagination: &spec.Pagination{
+									Type:        "offset",
+									CursorParam: "offset",
+								},
+							},
+						},
+					},
+				},
+			},
+			profile: &profiler.APIProfile{
+				SyncableResources: []string{"items"},
+			},
+		}
+		result := g.buildSyncResources()
+		require.Len(t, result, 1)
+		assert.Equal(t, "/items", result[0].Path)
+		assert.Equal(t, "offset", result[0].PaginationType)
+	})
+
+	t.Run("default limit from profiler", func(t *testing.T) {
+		t.Parallel()
+		g := &Generator{
+			Spec: &spec.APISpec{
+				Resources: map[string]spec.Resource{
+					"items": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {Method: "GET", Path: "/items", Pagination: &spec.Pagination{Type: "cursor"}},
+						},
+					},
+				},
+			},
+			profile: &profiler.APIProfile{
+				SyncableResources: []string{"items"},
+				Pagination: profiler.PaginationProfile{DefaultPageSize: 50},
+			},
+		}
+		result := g.buildSyncResources()
+		require.Len(t, result, 1)
+		assert.Equal(t, 50, result[0].DefaultLimit)
+	})
+
+	t.Run("multiple resources with mixed pagination", func(t *testing.T) {
+		t.Parallel()
+		g := &Generator{
+			Spec: &spec.APISpec{
+				Resources: map[string]spec.Resource{
+					"collections": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method: "GET", Path: "/collections",
+								Pagination: &spec.Pagination{Type: "offset", LimitParam: "limit", CursorParam: "offset"},
+								ResponsePath: "data",
+							},
+						},
+					},
+					"teams": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {Method: "GET", Path: "/teams", Pagination: &spec.Pagination{Type: "cursor", CursorParam: "after"}},
+						},
+					},
+				},
+			},
+			profile: &profiler.APIProfile{
+				SyncableResources: []string{"collections", "teams"},
+			},
+		}
+		result := g.buildSyncResources()
+		require.Len(t, result, 2)
+
+		// Find each by name (order matches SyncableResources)
+		assert.Equal(t, "offset", result[0].PaginationType)
+		assert.Equal(t, "data", result[0].ResponsePath)
+		assert.Equal(t, "cursor", result[1].PaginationType)
+		assert.Equal(t, "", result[1].ResponsePath)
+	})
+}
+
+// --- Pagination-Aware Sync Generation Tests ---
+
+// paginatedSyncSpec builds a spec with multiple pagination types to test sync template output.
+func paginatedSyncSpec() *spec.APISpec {
+	return &spec.APISpec{
+		Name:    "paginationtest",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"PAG_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/paginationtest-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"collections": {
+				Description: "Browse collections",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET", Path: "/v1/collections", Description: "List collections",
+						Params: highGravityParams(),
+						Pagination: &spec.Pagination{
+							Type: "offset", LimitParam: "limit", CursorParam: "offset",
+						},
+						ResponsePath: "data",
+					},
+					"get":    {Method: "GET", Path: "/collections/{id}", Description: "Get collection", Params: highGravityParams()},
+					"create": {Method: "POST", Path: "/collections", Description: "Create", Body: highGravityParams()},
+					"update": {Method: "PUT", Path: "/collections/{id}", Description: "Update", Body: highGravityParams()},
+					"delete": {Method: "DELETE", Path: "/collections/{id}", Description: "Delete"},
+				},
+			},
+			"teams": {
+				Description: "Browse teams",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET", Path: "/v1/teams", Description: "List teams",
+						Params: []spec.Param{{Name: "name", Type: "string"}, {Name: "description", Type: "string"}},
+						Pagination: &spec.Pagination{
+							Type: "cursor", LimitParam: "per_page", CursorParam: "after",
+							NextCursorPath: "next_cursor", HasMoreField: "has_more",
+						},
+					},
+				},
+			},
+			"categories": {
+				Description: "Browse categories",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET", Path: "/v1/categories", Description: "List categories",
+						Params: []spec.Param{{Name: "name", Type: "string"}},
+						// No Pagination — single-page endpoint
+					},
+				},
+			},
+		},
+	}
+}
+
+func TestGeneratedOutput_PaginationAwareSync(t *testing.T) {
+	t.Parallel()
+
+	t.Run("syncConfigs contains per-resource pagination metadata", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := paginatedSyncSpec()
+		outputDir := filepath.Join(t.TempDir(), "paginationtest-pp-cli")
+		gen := New(apiSpec, outputDir)
+		require.NoError(t, gen.Generate())
+
+		syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+		require.NoError(t, err)
+		content := string(syncGo)
+
+		// Verify syncConfigs map exists
+		assert.Contains(t, content, "syncConfigs")
+		assert.Contains(t, content, "syncResourceConfig")
+
+		// Verify offset-paginated resource
+		assert.Contains(t, content, `"collections"`)
+		assert.Contains(t, content, `paginationType: "offset"`)
+		assert.Contains(t, content, `path:           "/v1/collections"`)
+		assert.Contains(t, content, `responsePath:   "data"`)
+
+		// Verify cursor-paginated resource
+		assert.Contains(t, content, `"teams"`)
+		assert.Contains(t, content, `paginationType: "cursor"`)
+		assert.Contains(t, content, `cursorParam:    "after"`)
+		assert.Contains(t, content, `nextCursorPath: "next_cursor"`)
+		assert.Contains(t, content, `hasMoreField:   "has_more"`)
+	})
+
+	t.Run("generated sync compiles with populated syncConfigs", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := paginatedSyncSpec()
+		outputDir := filepath.Join(t.TempDir(), "paginationtest-pp-cli")
+		gen := New(apiSpec, outputDir)
+		require.NoError(t, gen.Generate())
+
+		runGoCommand(t, outputDir, "mod", "tidy")
+		runGoCommand(t, outputDir, "build", "./...")
+	})
+
+	t.Run("upsertBatchForResource dispatches to entity-specific methods", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := paginatedSyncSpec()
+		outputDir := filepath.Join(t.TempDir(), "paginationtest-pp-cli")
+		gen := New(apiSpec, outputDir)
+		require.NoError(t, gen.Generate())
+
+		syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+		require.NoError(t, err)
+		content := string(syncGo)
+
+		// Verify the batch dispatch function exists and routes to entity-specific methods
+		assert.Contains(t, content, "func upsertBatchForResource")
+		assert.Contains(t, content, "UpsertBatchCollections")
+	})
+}
+
+// --- defaultDBPath Consolidation Tests ---
+
+func TestGeneratedOutput_DefaultDBPathConsolidation(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := paginatedSyncSpec()
+	outputDir := filepath.Join(t.TempDir(), "dbpathtest-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	// helpers.go should have the single definition
+	helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	helpersContent := string(helpersGo)
+	assert.Contains(t, helpersContent, "func defaultDBPath()")
+	assert.Contains(t, helpersContent, `".local", "share"`)
+
+	// sync.go should call defaultDBPath(), not construct path inline
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+	assert.Contains(t, syncContent, "defaultDBPath()")
+	assert.NotContains(t, syncContent, `filepath.Join(home, ".local"`)
+
+	// channel_workflow.go should call defaultDBPath(), not construct path inline
+	workflowGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "channel_workflow.go"))
+	require.NoError(t, err)
+	workflowContent := string(workflowGo)
+	assert.Contains(t, workflowContent, "defaultDBPath()")
+	assert.NotContains(t, workflowContent, `filepath.Join(home, ".config"`)
+	// Help text should show the correct path
+	assert.Contains(t, workflowContent, ".local/share/")
+	assert.NotContains(t, workflowContent, "~/.config/")
+
+	// analytics.go should call defaultDBPath()
+	analyticsGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "analytics.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(analyticsGo), "defaultDBPath()")
 }
