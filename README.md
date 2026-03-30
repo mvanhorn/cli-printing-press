@@ -27,6 +27,20 @@ go install github.com/mvanhorn/cli-printing-press/cmd/printing-press@latest
 /reload-plugins
 ```
 
+## Why These CLIs Win
+
+Most generators wrap endpoints and stop. Printing Press generates CLIs that **understand the domain**.
+
+**Local-first data layer.** High-gravity resources get domain-specific SQLite tables (not JSON blobs), FTS5 full-text search indexes, and incremental sync with cursor tracking. `sync` pulls data down. `search` finds it in milliseconds. `sql` lets power users query directly. All offline, all local.
+
+**Compound commands no wrapper can do.** Once data lives in SQLite, commands like `stale`, `health`, `bottleneck`, and `reconcile` become possible — they join across resources and analyze history. A stateless API wrapper literally cannot do this.
+
+**Agent-native by default.** Auto-JSON when piped. `--compact` drops to high-gravity fields only (60-80% fewer tokens). Typed exit codes (`0`/`2`/`3`/`4`/`5`/`7`) let agents self-correct without parsing error text. `--dry-run` for safe exploration. Every flag exists because an AI agent will call it thousands of times a day.
+
+**Dual interface from one spec.** Every API gets a Cobra CLI (`<api>-pp-cli`) and an MCP server (`<api>-pp-mcp`). Same client, same store, same auth. Shell agents use the CLI. IDE agents use MCP. Zero code duplication.
+
+**Verified, not vibes.** Four mechanical checks — scorecard, dogfood, proof-of-behavior, live API smoke test — catch hallucinated paths, dead flags, auth mismatches, and broken data pipelines before you ship.
+
 ## Every Endpoint. Every Insight. One Command.
 
 Discord's API has 300+ endpoints. Most generators stop there - wrap every endpoint, ship it, done. But [discrawl](https://github.com/steipete/discrawl) - Peter Steinberger's Discord tool - ignores most of them. It ships 11 commands: `sync`, `search`, `sql`, `tail`, `mentions`, `members`. **583 stars.**
