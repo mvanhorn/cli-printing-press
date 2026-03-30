@@ -75,30 +75,33 @@ func GrepEndpoints(content, sourceName, sourceTier string) ([]DiscoveredEndpoint
 //
 //	this.get("/v1/users"), client.post("/users")
 func extractMethodCallEndpoints(line, sourceName, sourceTier string) []DiscoveredEndpoint {
-	methodMatches := httpMethodCall.FindAllStringSubmatch(line, -1)
-	if len(methodMatches) == 0 {
+	methodIndexes := httpMethodCall.FindAllStringSubmatchIndex(line, -1)
+	if len(methodIndexes) == 0 {
 		return nil
 	}
 
 	var endpoints []DiscoveredEndpoint
-	for _, methodMatch := range methodMatches {
-		method := strings.ToUpper(methodMatch[1])
+	for _, methodIdx := range methodIndexes {
+		// methodIdx[2]:methodIdx[3] is the capture group (method name).
+		method := strings.ToUpper(line[methodIdx[2]:methodIdx[3]])
 		if !validHTTPMethods[method] {
 			continue
 		}
 
-		// Find the URL path argument after the method call.
-		paths := urlPathLiteral.FindAllStringSubmatch(line, -1)
-		for _, pathMatch := range paths {
-			path := cleanPath(pathMatch[1])
-			if isValidAPIPath(path) {
-				endpoints = append(endpoints, DiscoveredEndpoint{
-					Method:     method,
-					Path:       path,
-					SourceTier: sourceTier,
-					SourceName: sourceName,
-				})
-			}
+		// Find the first URL path after this method call's opening paren.
+		remainder := line[methodIdx[1]:]
+		pathMatch := urlPathLiteral.FindStringSubmatch(remainder)
+		if pathMatch == nil {
+			continue
+		}
+		path := cleanPath(pathMatch[1])
+		if isValidAPIPath(path) {
+			endpoints = append(endpoints, DiscoveredEndpoint{
+				Method:     method,
+				Path:       path,
+				SourceTier: sourceTier,
+				SourceName: sourceName,
+			})
 		}
 	}
 	return endpoints

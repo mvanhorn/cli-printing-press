@@ -190,6 +190,27 @@ this.get("/v1/users");
 		}
 		assert.Equal(t, 1, count)
 	})
+
+	t.Run("multi-statement line avoids cartesian product", func(t *testing.T) {
+		t.Parallel()
+		content := `this.get("/v1/users"); this.post("/v2/projects");`
+
+		endpoints, _ := GrepEndpoints(content, "sdk", TierCommunitySDK)
+
+		// Should produce exactly 2 endpoints: GET /v1/users and POST /v2/projects.
+		// Must NOT produce cross-products like GET /v2/projects or POST /v1/users.
+		type ep struct{ method, path string }
+		found := make(map[ep]bool)
+		for _, e := range endpoints {
+			found[ep{e.Method, e.Path}] = true
+		}
+
+		assert.True(t, found[ep{"GET", "/v1/users"}], "expected GET /v1/users")
+		assert.True(t, found[ep{"POST", "/v2/projects"}], "expected POST /v2/projects")
+		assert.False(t, found[ep{"GET", "/v2/projects"}], "should NOT have GET /v2/projects (cartesian)")
+		assert.False(t, found[ep{"POST", "/v1/users"}], "should NOT have POST /v1/users (cartesian)")
+		assert.Len(t, endpoints, 2)
+	})
 }
 
 func TestIsValidAPIPath(t *testing.T) {
