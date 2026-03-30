@@ -7,9 +7,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/catalog"
+	catalogpkg "github.com/mvanhorn/cli-printing-press/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/internal/openapi"
+	"github.com/mvanhorn/cli-printing-press/internal/version"
 )
 
 // CLIManifestFilename is the name of the manifest file written to each
@@ -61,6 +66,69 @@ func specChecksum(path string) (string, error) {
 	}
 	h := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(h[:]), nil
+}
+
+// GenerateManifestParams holds the information available at generate time
+// for writing a CLI manifest. Unlike PublishWorkingCLI (which has full
+// PipelineState), the standalone generate command only knows the spec
+// sources and output directory.
+type GenerateManifestParams struct {
+	APIName  string
+	SpecSrcs []string // --spec args (URLs or file paths)
+	DocsURL  string   // --docs URL, if used
+	OutputDir string
+}
+
+// WriteManifestForGenerate writes a .printing-press.json manifest into the
+// generated CLI directory. This is the generate-command counterpart of
+// writeCLIManifestForPublish (which operates on PipelineState).
+func WriteManifestForGenerate(p GenerateManifestParams) error {
+	m := CLIManifest{
+		SchemaVersion:        1,
+		GeneratedAt:          time.Now().UTC(),
+		PrintingPressVersion: version.Version,
+		APIName:              p.APIName,
+		CLIName:              naming.CLI(p.APIName),
+	}
+
+	// Populate spec_url / spec_path from the first spec source.
+	if p.DocsURL != "" {
+		m.SpecURL = p.DocsURL
+		m.SpecFormat = "docs"
+	} else if len(p.SpecSrcs) > 0 {
+		src := p.SpecSrcs[0]
+		if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
+			m.SpecURL = src
+		} else {
+			m.SpecPath = src
+		}
+	}
+
+	// Detect format and checksum from any spec file cached in the output dir.
+	for _, name := range []string{"spec.json", "spec.yaml", "spec.yml"} {
+		specFile := filepath.Join(p.OutputDir, name)
+		data, err := os.ReadFile(specFile)
+		if err != nil {
+			continue
+		}
+		if m.SpecFormat == "" {
+			m.SpecFormat = detectSpecFormat(data)
+		}
+		cs, err := specChecksum(specFile)
+		if err == nil {
+			m.SpecChecksum = cs
+		}
+		break
+	}
+
+	// Look up catalog entry for category/description enrichment.
+	if entry, err := catalogpkg.LookupFS(catalog.FS, p.APIName); err == nil {
+		m.CatalogEntry = entry.Name
+		m.Category = entry.Category
+		m.Description = entry.Description
+	}
+
+	return WriteCLIManifest(p.OutputDir, m)
 }
 
 // detectSpecFormat examines the raw spec bytes and returns a format

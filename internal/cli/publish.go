@@ -90,7 +90,7 @@ func newPublishValidateCmd() *cobra.Command {
 					return encErr
 				}
 				if !result.Passed {
-					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("validation failed")}
+					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("validation failed"), Silent: true}
 				}
 				return nil
 			}

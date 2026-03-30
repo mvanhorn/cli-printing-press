@@ -11,9 +11,13 @@ const (
 )
 
 // ExitError wraps an error with a specific exit code.
+// When Silent is true, main should exit with the code but not print the
+// error message — used when structured output (--json) already contains
+// the failure details.
 type ExitError struct {
-	Code int
-	Err  error
+	Code   int
+	Err    error
+	Silent bool
 }
 
 func (e *ExitError) Error() string { return e.Err.Error() }

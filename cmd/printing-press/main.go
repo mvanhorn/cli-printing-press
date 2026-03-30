@@ -10,11 +10,14 @@ import (
 
 func main() {
 	if err := cli.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
 		var exitErr *cli.ExitError
 		if errors.As(err, &exitErr) {
+			if !exitErr.Silent {
+				fmt.Fprintln(os.Stderr, err.Error())
+			}
 			os.Exit(exitErr.Code)
 		}
+		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(cli.ExitUnknownError)
 	}
 }

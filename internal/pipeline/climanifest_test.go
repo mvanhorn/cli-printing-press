@@ -290,6 +290,98 @@ func TestPublishWorkingCLIManifestWithoutSpec(t *testing.T) {
 	assert.Empty(t, got.SpecFormat)
 }
 
+func TestWriteManifestForGenerateWithSpecURL(t *testing.T) {
+	dir := t.TempDir()
+
+	// Place an OpenAPI spec in the output dir so format/checksum are detected.
+	specContent := []byte(`{"openapi": "3.0.0", "info": {"title": "Test"}}`)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "spec.json"), specContent, 0o644))
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "test-api",
+		SpecSrcs:  []string{"https://example.com/openapi.json"},
+		OutputDir: dir,
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+
+	assert.Equal(t, 1, got.SchemaVersion)
+	assert.Equal(t, "test-api", got.APIName)
+	assert.Equal(t, "test-api-pp-cli", got.CLIName)
+	assert.Equal(t, version.Version, got.PrintingPressVersion)
+	assert.Equal(t, "https://example.com/openapi.json", got.SpecURL)
+	assert.Empty(t, got.SpecPath)
+	assert.Equal(t, "openapi3", got.SpecFormat)
+	assert.NotEmpty(t, got.SpecChecksum)
+	assert.False(t, got.GeneratedAt.IsZero())
+}
+
+func TestWriteManifestForGenerateWithLocalSpec(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "local-test",
+		SpecSrcs:  []string{"/tmp/my-spec.yaml"},
+		OutputDir: dir,
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+
+	assert.Empty(t, got.SpecURL, "local path should not appear in spec_url")
+	assert.Equal(t, "/tmp/my-spec.yaml", got.SpecPath)
+}
+
+func TestWriteManifestForGenerateWithDocsURL(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "docs-api",
+		DocsURL:   "https://docs.example.com/api",
+		OutputDir: dir,
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+
+	assert.Equal(t, "https://docs.example.com/api", got.SpecURL)
+	assert.Equal(t, "docs", got.SpecFormat)
+}
+
+func TestWriteManifestForGenerateNoSpec(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "bare-api",
+		OutputDir: dir,
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+
+	assert.Equal(t, "bare-api", got.APIName)
+	assert.Empty(t, got.SpecURL)
+	assert.Empty(t, got.SpecPath)
+	assert.Empty(t, got.SpecChecksum)
+}
+
 func TestDetectSpecFormat(t *testing.T) {
 	tests := []struct {
 		name     string

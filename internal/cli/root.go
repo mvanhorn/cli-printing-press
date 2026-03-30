@@ -177,6 +177,14 @@ func newGenerateCmd() *cobra.Command {
 					}
 				}
 
+				if err := pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
+					APIName:   parsed.Name,
+					DocsURL:   docsURL,
+					OutputDir: absOut,
+				}); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
+				}
+
 				fmt.Fprintf(os.Stderr, "Generated %s at %s (from docs)\n", naming.CLI(parsed.Name), absOut)
 				if asJSON {
 					if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
@@ -307,6 +315,14 @@ func newGenerateCmd() *cobra.Command {
 				} else {
 					absOut = finalPath
 				}
+			}
+
+			if err := pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
+				APIName:   apiSpec.Name,
+				SpecSrcs:  specFiles,
+				OutputDir: absOut,
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 			}
 
 			fmt.Fprintf(os.Stderr, "Generated %s at %s\n", naming.CLI(apiSpec.Name), absOut)
