@@ -4,6 +4,7 @@
 package client
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -355,6 +356,7 @@ func (c *Client) do(method, path string, params map[string]string, body any) (js
 		if err != nil {
 			return nil, 0, fmt.Errorf("reading response: %w", err)
 		}
+		respBody = sanitizeJSONResponse(respBody)
 
 		// Success
 		if resp.StatusCode < 400 {
@@ -533,6 +535,31 @@ func retryAfter(resp *http.Response) time.Duration {
 		}
 	}
 	return 5 * time.Second
+}
+
+// sanitizeJSONResponse strips known JSONP/XSSI prefixes and UTF-8 BOM from
+// response bodies so that downstream JSON parsing succeeds. For clean JSON
+// responses these checks are no-ops.
+func sanitizeJSONResponse(body []byte) []byte {
+	// UTF-8 BOM
+	body = bytes.TrimPrefix(body, []byte("\xEF\xBB\xBF"))
+
+	// JSONP/XSSI prefixes, ordered longest-first where prefixes overlap
+	prefixes := [][]byte{
+		[]byte(")]}'\n"),
+		[]byte(")]}'"),
+		[]byte("{}&&"),
+		[]byte("for(;;);"),
+		[]byte("while(1);"),
+	}
+	for _, p := range prefixes {
+		if bytes.HasPrefix(body, p) {
+			body = bytes.TrimPrefix(body, p)
+			body = bytes.TrimLeft(body, " \t\r\n")
+			break
+		}
+	}
+	return body
 }
 
 func truncateBody(b []byte) string {

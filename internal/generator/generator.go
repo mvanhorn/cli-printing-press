@@ -96,6 +96,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"currentYear":        func() string { return strconv.Itoa(time.Now().Year()) },
 		"modulePath":         func() string { return naming.CLI(s.Name) },
 		"kebab":              toKebab,
+		"envName":            func(s string) string { return strings.ToUpper(strings.ReplaceAll(s, "-", "_")) },
 	}
 	return g
 }
@@ -965,6 +966,12 @@ func buildPromotedCommands(s *spec.APISpec) []PromotedCommand {
 	var promoted []PromotedCommand
 	usedNames := make(map[string]bool)
 
+	// Collect resource group names so promoted commands don't collide with them
+	resourceGroupNames := make(map[string]bool)
+	for name := range s.Resources {
+		resourceGroupNames[toKebab(name)] = true
+	}
+
 	for name, resource := range s.Resources {
 		// Find the primary GET endpoint: prefer GET without positional params, else first GET
 		var bestName string
@@ -998,6 +1005,9 @@ func buildPromotedCommands(s *spec.APISpec) []PromotedCommand {
 
 		promotedName := toKebab(name)
 		if builtinCommands[promotedName] {
+			continue
+		}
+		if resourceGroupNames[promotedName] {
 			continue
 		}
 		if usedNames[promotedName] {

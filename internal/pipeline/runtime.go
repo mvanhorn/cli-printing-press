@@ -109,6 +109,11 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	// 5. Discover commands
 	commands := discoverCommands(cfg.Dir)
 
+	// 5.5. Infer positional args from --help output
+	for i := range commands {
+		inferPositionalArgs(binaryPath, &commands[i])
+	}
+
 	// 6. Classify and run each command
 	for i := range commands {
 		classifyCommandKind(&commands[i], spec)
@@ -278,6 +283,64 @@ type discoveredCommand struct {
 	Args []string
 }
 
+// inferPositionalArgs runs `<binary> <cmd> --help`, parses the Usage line for
+// positional arg placeholders like <region> or [price], and maps them to
+// synthetic values. On any failure, it falls back to no extra args.
+func inferPositionalArgs(binary string, cmd *discoveredCommand) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	helpCmd := exec.CommandContext(ctx, binary, cmd.Name, "--help")
+	out, err := helpCmd.CombinedOutput()
+	if err != nil {
+		return // fall back to no extra args
+	}
+
+	// Find the Usage line, e.g. "Usage:\n  cli-name pulse <region> [flags]"
+	usageRe := regexp.MustCompile(`(?m)^Usage:\s*\n\s+\S+\s+\S+(.*)$`)
+	m := usageRe.FindSubmatch(out)
+	if m == nil {
+		return
+	}
+	rest := string(m[1])
+
+	// Extract <arg> and [arg] placeholders (but not [flags] or [command])
+	placeholderRe := regexp.MustCompile(`[<\[]([a-zA-Z][\w-]*)[>\]]`)
+	matches := placeholderRe.FindAllStringSubmatch(rest, -1)
+	if len(matches) == 0 {
+		return
+	}
+
+	for _, match := range matches {
+		name := strings.ToLower(match[1])
+		// Skip cobra built-in placeholders
+		if name == "flags" || name == "command" {
+			continue
+		}
+		cmd.Args = append(cmd.Args, syntheticArgValue(name))
+	}
+}
+
+// syntheticArgValue maps a positional arg placeholder name to a synthetic test value.
+func syntheticArgValue(name string) string {
+	switch name {
+	case "region", "location", "city":
+		return "mock-city"
+	case "id", "property-id", "listing-id":
+		return "12345"
+	case "price", "amount":
+		return "500000"
+	case "zip", "zipcode":
+		return "94102"
+	case "url", "path":
+		return "/mock/path"
+	case "query", "search", "name":
+		return "mock-query"
+	default:
+		return "mock-value"
+	}
+}
+
 // classifyCommandKind determines if a command is read, write, local, or data-layer.
 func classifyCommandKind(cmd *discoveredCommand, spec *openAPISpec) {
 	name := cmd.Name
@@ -329,10 +392,18 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	// Get any required flags/args for this command
 	extraFlags := workflowTestFlags(cmd.Name)
 
+	// Build positional args + flags for test invocations
+	buildTestArgs := func(cmdName string, positionalArgs, flags []string, extra ...string) []string {
+		args := []string{cmdName}
+		args = append(args, positionalArgs...)
+		args = append(args, flags...)
+		args = append(args, extra...)
+		return args
+	}
+
 	// Test 2: --dry-run (skip for local/data-layer commands that don't make API calls)
 	if cmd.Kind != "local" && cmd.Kind != "data-layer" {
-		args := append([]string{cmd.Name}, extraFlags...)
-		args = append(args, "--dry-run")
+		args := buildTestArgs(cmd.Name, cmd.Args, extraFlags, "--dry-run")
 		err := runCLI(binary, args, env, 10*time.Second)
 		result.DryRun = err == nil
 	} else {
@@ -345,8 +416,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	} else if mode == "live" && cmd.Kind == "write" {
 		result.Execute = true // skip writes on live = pass (tested via dry-run)
 	} else {
-		args := append([]string{cmd.Name}, extraFlags...)
-		args = append(args, "--json")
+		args := buildTestArgs(cmd.Name, cmd.Args, extraFlags, "--json")
 		err := runCLI(binary, args, env, 15*time.Second)
 		result.Execute = err == nil
 	}

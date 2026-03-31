@@ -40,7 +40,7 @@ func Load(configPath string) (*Config, error) {
 	// Resolve config path
 	path := configPath
 	if path == "" {
-		path = os.Getenv("{{upper .Name}}_CONFIG")
+		path = os.Getenv("{{envName .Name}}_CONFIG")
 	}
 	if path == "" {
 		home, _ := os.UserHomeDir()
@@ -67,7 +67,7 @@ func Load(configPath string) (*Config, error) {
 {{- end}}
 
 	// Base URL override (used by printing-press verify to point at mock/test servers)
-	if v := os.Getenv("{{upper .Name}}_BASE_URL"); v != "" {
+	if v := os.Getenv("{{envName .Name}}_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
 
