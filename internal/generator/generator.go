@@ -99,6 +99,37 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 	return g
 }
 
+// HelperFlags controls which helper functions are emitted in helpers.go.
+type HelperFlags struct {
+	HasDelete bool // spec has DELETE endpoints → emit classifyDeleteError
+}
+
+// computeHelperFlags scans the spec's resources to determine which helpers are needed.
+func computeHelperFlags(s *spec.APISpec) HelperFlags {
+	var flags HelperFlags
+	for _, r := range s.Resources {
+		for _, e := range r.Endpoints {
+			if e.Method == "DELETE" {
+				flags.HasDelete = true
+			}
+		}
+		for _, sub := range r.SubResources {
+			for _, e := range sub.Endpoints {
+				if e.Method == "DELETE" {
+					flags.HasDelete = true
+				}
+			}
+		}
+	}
+	return flags
+}
+
+// helpersTemplateData wraps APISpec with flags controlling conditional helper emission.
+type helpersTemplateData struct {
+	*spec.APISpec
+	HelperFlags
+}
+
 // readmeTemplateData wraps APISpec with additional fields for README rendering.
 type readmeTemplateData struct {
 	*spec.APISpec
@@ -149,6 +180,11 @@ func (g *Generator) Generate() error {
 		data := any(g.Spec)
 		if tmplName == "readme.md.tmpl" {
 			data = g.readmeData()
+		} else if tmplName == "helpers.go.tmpl" {
+			data = &helpersTemplateData{
+				APISpec:     g.Spec,
+				HelperFlags: computeHelperFlags(g.Spec),
+			}
 		}
 		if err := g.renderTemplate(tmplName, outPath, data); err != nil {
 			return fmt.Errorf("rendering %s: %w", tmplName, err)

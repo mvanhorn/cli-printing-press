@@ -137,6 +137,7 @@ func classifyAPIError(err error) error {
 	}
 }
 
+{{- if .HasDelete}}
 // classifyDeleteError treats 404 as success for DELETE (already deleted = idempotent no-op).
 func classifyDeleteError(err error) error {
 	msg := err.Error()
@@ -146,6 +147,7 @@ func classifyDeleteError(err error) error {
 	}
 	return classifyAPIError(err)
 }
+{{- end}}
 
 func truncate(s string, max int) string {
 	if len(s) <= max {
@@ -155,15 +157,6 @@ func truncate(s string, max int) string {
 		return s[:max]
 	}
 	return s[:max-3] + "..."
-}
-
-func firstNonEmpty(items ...string) string {
-	for _, s := range items {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
 }
 
 func newTabWriter(w io.Writer) *tabwriter.Writer {
@@ -261,17 +254,6 @@ func paginatedGet(c interface {
 	}
 	result, _ := json.Marshal(allItems)
 	return json.RawMessage(result), nil
-}
-
-// selectFields is set from the --select flag; used by printOutputFiltered.
-var selectFieldsGlobal string
-
-// printOutputFiltered applies --select field filtering before rendering.
-func printOutputFiltered(w io.Writer, data json.RawMessage, asJSON bool, selectExpr string) error {
-	if selectExpr != "" {
-		data = filterFields(data, selectExpr)
-	}
-	return printOutput(w, data, asJSON)
 }
 
 // filterFields keeps only the specified comma-separated fields from JSON objects/arrays.

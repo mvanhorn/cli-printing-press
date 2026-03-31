@@ -457,3 +457,162 @@ func TestGeneratedOutput_GetCommandsLackEnvelope(t *testing.T) {
 	assert.NotContains(t, content, "envelope")
 	assert.NotContains(t, content, "statusCode")
 }
+
+// --- Unit 4: Conditional Helper Emission Tests ---
+
+func TestComputeHelperFlags(t *testing.T) {
+	t.Parallel()
+
+	t.Run("spec with DELETE endpoints sets HasDelete", func(t *testing.T) {
+		s := &spec.APISpec{
+			Name:    "test",
+			Version: "0.1.0",
+			BaseURL: "https://api.example.com",
+			Resources: map[string]spec.Resource{
+				"items": {
+					Endpoints: map[string]spec.Endpoint{
+						"list":   {Method: "GET", Path: "/items"},
+						"delete": {Method: "DELETE", Path: "/items/{id}"},
+					},
+				},
+			},
+		}
+		flags := computeHelperFlags(s)
+		assert.True(t, flags.HasDelete)
+	})
+
+	t.Run("spec without DELETE endpoints clears HasDelete", func(t *testing.T) {
+		s := &spec.APISpec{
+			Name:    "test",
+			Version: "0.1.0",
+			BaseURL: "https://api.example.com",
+			Resources: map[string]spec.Resource{
+				"items": {
+					Endpoints: map[string]spec.Endpoint{
+						"list":   {Method: "GET", Path: "/items"},
+						"create": {Method: "POST", Path: "/items"},
+					},
+				},
+			},
+		}
+		flags := computeHelperFlags(s)
+		assert.False(t, flags.HasDelete)
+	})
+
+	t.Run("DELETE in sub-resource sets HasDelete", func(t *testing.T) {
+		s := &spec.APISpec{
+			Name:    "test",
+			Version: "0.1.0",
+			BaseURL: "https://api.example.com",
+			Resources: map[string]spec.Resource{
+				"projects": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/projects"},
+					},
+					SubResources: map[string]spec.Resource{
+						"tasks": {
+							Endpoints: map[string]spec.Endpoint{
+								"delete": {Method: "DELETE", Path: "/projects/{id}/tasks/{task_id}"},
+							},
+						},
+					},
+				},
+			},
+		}
+		flags := computeHelperFlags(s)
+		assert.True(t, flags.HasDelete)
+	})
+}
+
+func TestGeneratedHelpers_ConditionalClassifyDeleteError(t *testing.T) {
+	t.Parallel()
+
+	baseSpec := func(endpoints map[string]spec.Endpoint) *spec.APISpec {
+		return &spec.APISpec{
+			Name:    "testhelpers",
+			Version: "0.1.0",
+			BaseURL: "https://api.example.com",
+			Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"TEST_API_KEY"}},
+			Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/testhelpers-pp-cli/config.toml"},
+			Resources: map[string]spec.Resource{
+				"items": {
+					Description: "Manage items",
+					Endpoints:   endpoints,
+				},
+			},
+		}
+	}
+
+	t.Run("no DELETE endpoints omits classifyDeleteError", func(t *testing.T) {
+		apiSpec := baseSpec(map[string]spec.Endpoint{
+			"list": {Method: "GET", Path: "/items", Description: "List items"},
+		})
+
+		outputDir := filepath.Join(t.TempDir(), "testhelpers-pp-cli")
+		gen := New(apiSpec, outputDir)
+		require.NoError(t, gen.Generate())
+
+		helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+		require.NoError(t, err)
+		content := string(helpersGo)
+		assert.NotContains(t, content, "classifyDeleteError")
+		// classifyAPIError should always be present
+		assert.Contains(t, content, "classifyAPIError")
+	})
+
+	t.Run("with DELETE endpoints includes classifyDeleteError", func(t *testing.T) {
+		apiSpec := baseSpec(map[string]spec.Endpoint{
+			"list":   {Method: "GET", Path: "/items", Description: "List items"},
+			"delete": {Method: "DELETE", Path: "/items/{id}", Description: "Delete item"},
+		})
+
+		outputDir := filepath.Join(t.TempDir(), "testhelpers-pp-cli")
+		gen := New(apiSpec, outputDir)
+		require.NoError(t, gen.Generate())
+
+		helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+		require.NoError(t, err)
+		content := string(helpersGo)
+		assert.Contains(t, content, "classifyDeleteError")
+		assert.Contains(t, content, "classifyAPIError")
+	})
+}
+
+func TestGeneratedHelpers_DeadCodeRemoved(t *testing.T) {
+	t.Parallel()
+
+	// Dead code should never appear regardless of spec contents
+	apiSpec := &spec.APISpec{
+		Name:    "deadcode",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"DEAD_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/deadcode-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list":   {Method: "GET", Path: "/items", Description: "List items"},
+					"delete": {Method: "DELETE", Path: "/items/{id}", Description: "Delete item"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "deadcode-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	content := string(helpersGo)
+
+	assert.NotContains(t, content, "firstNonEmpty", "firstNonEmpty is dead code and should not be emitted")
+	assert.NotContains(t, content, "printOutputFiltered", "printOutputFiltered is dead code and should not be emitted")
+	assert.NotContains(t, content, "selectFieldsGlobal", "selectFieldsGlobal is dead code and should not be emitted")
+
+	// Verify useful functions are still present
+	assert.Contains(t, content, "printOutputWithFlags")
+	assert.Contains(t, content, "filterFields")
+	assert.Contains(t, content, "classifyAPIError")
+}
