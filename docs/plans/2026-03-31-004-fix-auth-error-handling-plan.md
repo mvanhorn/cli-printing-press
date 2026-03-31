@@ -1,7 +1,7 @@
 ---
 title: "fix: Better auth error handling in generated CLIs"
 type: fix
-status: active
+status: completed
 date: 2026-03-31
 origin: docs/brainstorms/2026-03-31-auth-error-handling-requirements.md
 ---
