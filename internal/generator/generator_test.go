@@ -22,9 +22,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		specPath      string
 		expectedFiles int
 	}{
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 30},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 35},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 33},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 32},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 38},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 34},
 	}
 
 	for _, tt := range tests {
@@ -576,6 +576,274 @@ func TestGeneratedHelpers_ConditionalClassifyDeleteError(t *testing.T) {
 		assert.Contains(t, content, "classifyDeleteError")
 		assert.Contains(t, content, "classifyAPIError")
 	})
+}
+
+// --- Unit 3: Top-Level Command Promotion Tests ---
+
+func TestToKebab(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"ISteamUser", "steam-user"},
+		{"SteamUser", "steam-user"},
+		{"users", "users"},
+		{"IPlayerService", "player-service"},
+		{"camelCase", "camel-case"},
+		{"PascalCase", "pascal-case"},
+		{"APIKey", "api-key"},
+		{"simpleresource", "simpleresource"},
+		{"ABC", "abc"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, toKebab(tt.input))
+		})
+	}
+}
+
+func TestBuildPromotedCommands(t *testing.T) {
+	t.Parallel()
+
+	t.Run("resource with list endpoint gets promoted", func(t *testing.T) {
+		t.Parallel()
+		s := &spec.APISpec{
+			Name:    "test",
+			Version: "0.1.0",
+			BaseURL: "https://api.example.com",
+			Resources: map[string]spec.Resource{
+				"users": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/users", Description: "List users"},
+					},
+				},
+			},
+		}
+		promoted := buildPromotedCommands(s)
+		require.Len(t, promoted, 1)
+		assert.Equal(t, "users", promoted[0].PromotedName)
+		assert.Equal(t, "users", promoted[0].ResourceName)
+		assert.Equal(t, "list", promoted[0].EndpointName)
+	})
+
+	t.Run("ISteamUser resource becomes steam-user", func(t *testing.T) {
+		t.Parallel()
+		s := &spec.APISpec{
+			Name:    "test",
+			Version: "0.1.0",
+			BaseURL: "https://api.example.com",
+			Resources: map[string]spec.Resource{
+				"ISteamUser": {
+					Endpoints: map[string]spec.Endpoint{
+						"get_player_summaries": {Method: "GET", Path: "/ISteamUser/GetPlayerSummaries/v2", Description: "Get player summaries"},
+					},
+				},
+			},
+		}
+		promoted := buildPromotedCommands(s)
+		require.Len(t, promoted, 1)
+		assert.Equal(t, "steam-user", promoted[0].PromotedName)
+		assert.Equal(t, "ISteamUser", promoted[0].ResourceName)
+	})
+
+	t.Run("resource named version is skipped (collides with built-in)", func(t *testing.T) {
+		t.Parallel()
+		s := &spec.APISpec{
+			Name:    "test",
+			Version: "0.1.0",
+			BaseURL: "https://api.example.com",
+			Resources: map[string]spec.Resource{
+				"version": {
+					Endpoints: map[string]spec.Endpoint{
+						"get": {Method: "GET", Path: "/version", Description: "Get version"},
+					},
+				},
+			},
+		}
+		promoted := buildPromotedCommands(s)
+		assert.Empty(t, promoted)
+	})
+
+	t.Run("resource with no GET endpoints is skipped", func(t *testing.T) {
+		t.Parallel()
+		s := &spec.APISpec{
+			Name:    "test",
+			Version: "0.1.0",
+			BaseURL: "https://api.example.com",
+			Resources: map[string]spec.Resource{
+				"items": {
+					Endpoints: map[string]spec.Endpoint{
+						"create": {Method: "POST", Path: "/items", Description: "Create item"},
+						"delete": {Method: "DELETE", Path: "/items/{id}", Description: "Delete item"},
+					},
+				},
+			},
+		}
+		promoted := buildPromotedCommands(s)
+		assert.Empty(t, promoted)
+	})
+
+	t.Run("prefers GET without positional params", func(t *testing.T) {
+		t.Parallel()
+		s := &spec.APISpec{
+			Name:    "test",
+			Version: "0.1.0",
+			BaseURL: "https://api.example.com",
+			Resources: map[string]spec.Resource{
+				"items": {
+					Endpoints: map[string]spec.Endpoint{
+						"get": {Method: "GET", Path: "/items/{id}", Description: "Get item",
+							Params: []spec.Param{{Name: "id", Type: "string", Positional: true}}},
+						"list": {Method: "GET", Path: "/items", Description: "List items"},
+					},
+				},
+			},
+		}
+		promoted := buildPromotedCommands(s)
+		require.Len(t, promoted, 1)
+		assert.Equal(t, "list", promoted[0].EndpointName)
+		assert.Equal(t, "/items", promoted[0].Endpoint.Path)
+	})
+
+	t.Run("all built-in names are skipped", func(t *testing.T) {
+		t.Parallel()
+		resources := map[string]spec.Resource{}
+		for name := range builtinCommands {
+			resources[name] = spec.Resource{
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/" + name, Description: "List " + name},
+				},
+			}
+		}
+		s := &spec.APISpec{
+			Name:      "test",
+			Version:   "0.1.0",
+			BaseURL:   "https://api.example.com",
+			Resources: resources,
+		}
+		promoted := buildPromotedCommands(s)
+		assert.Empty(t, promoted)
+	})
+}
+
+func TestGeneratedOutput_PromotedCommandExists(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "promtest",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"PROM_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/promtest-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"users": {
+				Description: "Manage users",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/users", Description: "List all users"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "promtest-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	// Promoted command file should exist
+	promotedFile := filepath.Join(outputDir, "internal", "cli", "promoted_users.go")
+	assert.FileExists(t, promotedFile)
+
+	// Read it and verify key content
+	content, err := os.ReadFile(promotedFile)
+	require.NoError(t, err)
+	contentStr := string(content)
+	assert.Contains(t, contentStr, "newUsersPromotedCmd")
+	assert.Contains(t, contentStr, `Use:   "users"`)
+	assert.Contains(t, contentStr, `/users`)
+
+	// Root.go should register the promoted command
+	rootContent, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(rootContent), "newUsersPromotedCmd")
+}
+
+func TestGeneratedOutput_PromotedCommandCompiles(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "compiletest",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"CT_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/compiletest-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"ISteamUser": {
+				Description: "Steam user interface",
+				Endpoints: map[string]spec.Endpoint{
+					"get_player_summaries": {Method: "GET", Path: "/ISteamUser/GetPlayerSummaries/v2", Description: "Get player summaries",
+						Params: []spec.Param{{Name: "steamids", Type: "string", Description: "Comma-separated Steam IDs"}}},
+				},
+			},
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list":   {Method: "GET", Path: "/items", Description: "List items"},
+					"create": {Method: "POST", Path: "/items", Description: "Create item"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "compiletest-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	// Both promoted files should exist
+	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_steam-user.go"))
+	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_items.go"))
+
+	// Must compile
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGeneratedOutput_PromotedCommandNotForBuiltins(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "builtintest",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"BT_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/builtintest-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"version": {
+				Description: "Version info",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {Method: "GET", Path: "/version", Description: "Get version"},
+				},
+			},
+			"users": {
+				Description: "Manage users",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/users", Description: "List users"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "builtintest-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	// "version" should NOT have a promoted command (collides with built-in)
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_version.go"))
+	// "users" should have a promoted command
+	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_users.go"))
 }
 
 func TestGeneratedHelpers_DeadCodeRemoved(t *testing.T) {

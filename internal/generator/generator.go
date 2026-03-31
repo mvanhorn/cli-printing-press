@@ -95,6 +95,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"exampleLine":        g.exampleLine,
 		"currentYear":        func() string { return strconv.Itoa(time.Now().Year()) },
 		"modulePath":         func() string { return naming.CLI(s.Name) },
+		"kebab":              toKebab,
 	}
 	return g
 }
@@ -449,16 +450,40 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	// Generate promoted top-level commands (user-friendly aliases for nested API commands)
+	promotedCommands := buildPromotedCommands(g.Spec)
+	for _, pc := range promotedCommands {
+		promotedData := struct {
+			PromotedName string
+			ResourceName string
+			EndpointName string
+			Endpoint     spec.Endpoint
+			*spec.APISpec
+		}{
+			PromotedName: pc.PromotedName,
+			ResourceName: pc.ResourceName,
+			EndpointName: pc.EndpointName,
+			Endpoint:     pc.Endpoint,
+			APISpec:      g.Spec,
+		}
+		promotedPath := filepath.Join("internal", "cli", "promoted_"+pc.PromotedName+".go")
+		if err := g.renderTemplate("command_promoted.go.tmpl", promotedPath, promotedData); err != nil {
+			return fmt.Errorf("rendering promoted command %s: %w", pc.PromotedName, err)
+		}
+	}
+
 	rootData := struct {
 		*spec.APISpec
 		VisionSet            VisionTemplateSet
 		WorkflowConstructors []string
 		InsightConstructors  []string
+		PromotedCommands     []PromotedCommand
 	}{
 		APISpec:              g.Spec,
 		VisionSet:            g.VisionSet,
 		WorkflowConstructors: renderedWorkflowConstructors,
 		InsightConstructors:  renderedInsightConstructors,
+		PromotedCommands:     promotedCommands,
 	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
 		return fmt.Errorf("rendering root: %w", err)
@@ -881,6 +906,110 @@ func safeTypeName(name string) string {
 		result = "T" + result
 	}
 	return result
+}
+
+// toKebab converts PascalCase, camelCase, or mixed names to kebab-case.
+// It also strips a leading "I" if it looks like an interface prefix (e.g., ISteamUser → steam-user).
+func toKebab(s string) string {
+	// Strip leading "I" when followed by an uppercase letter (interface prefix convention)
+	if len(s) > 1 && s[0] == 'I' && unicode.IsUpper(rune(s[1])) {
+		s = s[1:]
+	}
+	var result strings.Builder
+	for i, r := range s {
+		if unicode.IsUpper(r) && i > 0 {
+			prev := rune(s[i-1])
+			// Insert hyphen before uppercase letter if preceded by lowercase,
+			// or if preceding char is uppercase AND next char is lowercase (e.g., "APIKey" → "api-key")
+			if unicode.IsLower(prev) || (unicode.IsUpper(prev) && i+1 < len(s) && unicode.IsLower(rune(s[i+1]))) {
+				result.WriteByte('-')
+			}
+		}
+		result.WriteRune(unicode.ToLower(r))
+	}
+	return result.String()
+}
+
+// PromotedCommand represents a top-level user-friendly command that wraps a nested API endpoint.
+type PromotedCommand struct {
+	PromotedName string
+	ResourceName string
+	Endpoint     spec.Endpoint
+	EndpointName string
+}
+
+// builtinCommands lists command names that must not be used for promoted commands
+// because they collide with the CLI's own built-in commands.
+var builtinCommands = map[string]bool{
+	"version":    true,
+	"help":       true,
+	"doctor":     true,
+	"auth":       true,
+	"sync":       true,
+	"search":     true,
+	"export":     true,
+	"import":     true,
+	"completion": true,
+	"workflow":   true,
+	"tail":       true,
+	"analytics":  true,
+}
+
+// buildPromotedCommands scans spec resources and returns promotable top-level commands.
+// For each resource, it finds the "primary" GET endpoint (no path params, or first GET)
+// and creates a promoted command with a cleaner name.
+func buildPromotedCommands(s *spec.APISpec) []PromotedCommand {
+	var promoted []PromotedCommand
+	usedNames := make(map[string]bool)
+
+	for name, resource := range s.Resources {
+		// Find the primary GET endpoint: prefer GET without positional params, else first GET
+		var bestName string
+		var bestEndpoint spec.Endpoint
+		found := false
+
+		for eName, ep := range resource.Endpoints {
+			if ep.Method != "GET" {
+				continue
+			}
+			hasPositional := false
+			for _, p := range ep.Params {
+				if p.Positional {
+					hasPositional = true
+					break
+				}
+			}
+			if !found || !hasPositional {
+				bestName = eName
+				bestEndpoint = ep
+				found = true
+				if !hasPositional {
+					break // Ideal: GET without path params (list endpoint)
+				}
+			}
+		}
+
+		if !found {
+			continue
+		}
+
+		promotedName := toKebab(name)
+		if builtinCommands[promotedName] {
+			continue
+		}
+		if usedNames[promotedName] {
+			continue
+		}
+		usedNames[promotedName] = true
+
+		promoted = append(promoted, PromotedCommand{
+			PromotedName: promotedName,
+			ResourceName: name,
+			Endpoint:     bestEndpoint,
+			EndpointName: bestName,
+		})
+	}
+	return promoted
 }
 
 func envVarPlaceholder(envVar string) string {

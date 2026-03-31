@@ -121,6 +121,9 @@ func Execute() error {
 {{- range .InsightConstructors}}
 	rootCmd.AddCommand(new{{.}}Cmd(&flags))
 {{- end}}
+{{- range .PromotedCommands}}
+	rootCmd.AddCommand(new{{camel .PromotedName}}PromotedCmd(&flags))
+{{- end}}
 	rootCmd.AddCommand(newVersionCliCmd())
 
 	err := rootCmd.Execute()
