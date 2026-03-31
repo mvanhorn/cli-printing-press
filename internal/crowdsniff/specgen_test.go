@@ -19,7 +19,7 @@ func TestBuildSpec(t *testing.T) {
 			{Method: "POST", Path: "/v1/users", SourceTier: TierCommunitySDK, SourceCount: 1},
 		}
 
-		apiSpec, err := BuildSpec("notion", "https://api.notion.com", endpoints)
+		apiSpec, err := BuildSpec("notion", "https://api.notion.com", endpoints, nil)
 		require.NoError(t, err)
 
 		assert.Equal(t, "notion", apiSpec.Name)
@@ -38,7 +38,7 @@ func TestBuildSpec(t *testing.T) {
 			{Method: "GET", Path: "/v1/users", SourceTier: TierOfficialSDK, SourceCount: 3},
 		}
 
-		apiSpec, err := BuildSpec("test", "https://api.example.com", endpoints)
+		apiSpec, err := BuildSpec("test", "https://api.example.com", endpoints, nil)
 		require.NoError(t, err)
 
 		for _, resource := range apiSpec.Resources {
@@ -56,7 +56,7 @@ func TestBuildSpec(t *testing.T) {
 			{Method: "GET", Path: "/v1/projects", SourceTier: TierCodeSearch, SourceCount: 1},
 		}
 
-		apiSpec, err := BuildSpec("test", "https://api.example.com", endpoints)
+		apiSpec, err := BuildSpec("test", "https://api.example.com", endpoints, nil)
 		require.NoError(t, err)
 
 		_, hasUsers := apiSpec.Resources["users"]
@@ -67,7 +67,7 @@ func TestBuildSpec(t *testing.T) {
 
 	t.Run("empty endpoints returns error", func(t *testing.T) {
 		t.Parallel()
-		_, err := BuildSpec("test", "https://api.example.com", nil)
+		_, err := BuildSpec("test", "https://api.example.com", nil, nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "no endpoints")
 	})
@@ -76,7 +76,7 @@ func TestBuildSpec(t *testing.T) {
 		t.Parallel()
 		_, err := BuildSpec("", "https://api.example.com", []AggregatedEndpoint{
 			{Method: "GET", Path: "/users", SourceTier: TierCodeSearch, SourceCount: 1},
-		})
+		}, nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "name is required")
 	})
@@ -85,7 +85,7 @@ func TestBuildSpec(t *testing.T) {
 		t.Parallel()
 		_, err := BuildSpec("test", "", []AggregatedEndpoint{
 			{Method: "GET", Path: "/users", SourceTier: TierCodeSearch, SourceCount: 1},
-		})
+		}, nil)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "base_url is required")
 	})
@@ -96,7 +96,7 @@ func TestBuildSpec(t *testing.T) {
 			{Method: "GET", Path: "/users", SourceTier: TierCodeSearch, SourceCount: 1},
 		}
 
-		apiSpec, err := BuildSpec("test", "https://api.example.com", endpoints)
+		apiSpec, err := BuildSpec("test", "https://api.example.com", endpoints, nil)
 		require.NoError(t, err)
 		assert.NoError(t, apiSpec.Validate())
 	})
@@ -145,6 +145,81 @@ func TestResolveBaseURL(t *testing.T) {
 	}
 }
 
+func TestDeriveResourceKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		path         string
+		wantResource string
+		wantName     string
+	}{
+		{
+			name:         "Steam-like path uses first segment as resource",
+			path:         "/ISteamUser/GetPlayerSummaries/v2",
+			wantResource: "ISteamUser",
+			wantName:     "GetPlayerSummaries",
+		},
+		{
+			name:         "REST nested path uses first segment only",
+			path:         "/v1/users/{id}/posts",
+			wantResource: "users",
+			wantName:     "posts",
+		},
+		{
+			name:         "simple path unchanged",
+			path:         "/v1/users",
+			wantResource: "users",
+			wantName:     "users",
+		},
+		{
+			name:         "only params returns empty",
+			path:         "/v1/{id}",
+			wantResource: "",
+			wantName:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resource, name := deriveResourceKey(tt.path)
+			assert.Equal(t, tt.wantResource, resource)
+			assert.Equal(t, tt.wantName, name)
+		})
+	}
+}
+
+func TestDeriveResourceKey_NoSlashes(t *testing.T) {
+	t.Parallel()
+
+	// Resource keys must never contain slashes — they are used as filenames
+	// and Cobra command Use fields.
+	paths := []string{
+		"/v1/users",
+		"/v1/users/{id}/posts",
+		"/v1/users/{id}/posts/{postId}/comments",
+		"/api/v2/organizations/{orgId}/members",
+		"/ISteamUser/GetPlayerSummaries/v2",
+	}
+
+	for _, p := range paths {
+		resource, _ := deriveResourceKey(p)
+		assert.NotContains(t, resource, "/", "resource key for %q must not contain slashes", p)
+	}
+}
+
+func TestDeriveResourceKey_SharedFirstSegment(t *testing.T) {
+	t.Parallel()
+
+	// Two paths sharing the same first significant segment must map to the
+	// same resource key so they end up in one file.
+	res1, _ := deriveResourceKey("/v1/users")
+	res2, _ := deriveResourceKey("/v1/users/{id}/posts")
+	assert.Equal(t, res1, res2, "paths sharing first segment should have same resource key")
+	assert.Equal(t, "users", res1)
+}
+
 func TestBuildSpec_ParamMapping(t *testing.T) {
 	t.Parallel()
 
@@ -164,7 +239,7 @@ func TestBuildSpec_ParamMapping(t *testing.T) {
 			},
 		}
 
-		apiSpec, err := BuildSpec("steam", "https://api.steampowered.com", endpoints)
+		apiSpec, err := BuildSpec("steam", "https://api.steampowered.com", endpoints, nil)
 		require.NoError(t, err)
 
 		// Find the endpoint in the spec.
@@ -210,7 +285,7 @@ func TestBuildSpec_ParamMapping(t *testing.T) {
 			},
 		}
 
-		apiSpec, err := BuildSpec("test", "https://api.example.com", endpoints)
+		apiSpec, err := BuildSpec("test", "https://api.example.com", endpoints, nil)
 		require.NoError(t, err)
 
 		var found *spec.Endpoint
@@ -251,7 +326,7 @@ func TestBuildSpec_ParamMapping(t *testing.T) {
 			},
 		}
 
-		apiSpec, err := BuildSpec("test", "https://api.example.com", endpoints)
+		apiSpec, err := BuildSpec("test", "https://api.example.com", endpoints, nil)
 		require.NoError(t, err)
 
 		for _, resource := range apiSpec.Resources {
@@ -285,7 +360,7 @@ func TestBuildSpec_ParamMapping(t *testing.T) {
 			},
 		}
 
-		apiSpec, err := BuildSpec("test", "https://api.example.com", endpoints)
+		apiSpec, err := BuildSpec("test", "https://api.example.com", endpoints, nil)
 		require.NoError(t, err)
 
 		for _, resource := range apiSpec.Resources {

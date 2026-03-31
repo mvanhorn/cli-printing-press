@@ -9,7 +9,9 @@ import (
 )
 
 // BuildSpec assembles a valid spec.APISpec from aggregated endpoints.
-func BuildSpec(name, baseURL string, endpoints []AggregatedEndpoint) (*spec.APISpec, error) {
+// If auth is non-nil and the spec would otherwise default to "none", the
+// detected auth is applied.
+func BuildSpec(name, baseURL string, endpoints []AggregatedEndpoint, auth *DiscoveredAuth) (*spec.APISpec, error) {
 	if len(endpoints) == 0 {
 		return nil, fmt.Errorf("no endpoints to build spec from")
 	}
@@ -74,12 +76,17 @@ func BuildSpec(name, baseURL string, endpoints []AggregatedEndpoint) (*spec.APIS
 		resources[resourceKey] = resource
 	}
 
+	authConfig := spec.AuthConfig{Type: "none"}
+	if auth != nil {
+		authConfig = buildAuthConfig(name, auth)
+	}
+
 	apiSpec := &spec.APISpec{
 		Name:        name,
 		Description: fmt.Sprintf("Discovered API spec for %s (crowd-sniff)", name),
 		Version:     "0.1.0",
 		BaseURL:     baseURL,
-		Auth:        spec.AuthConfig{Type: "none"},
+		Auth:        authConfig,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -116,10 +123,10 @@ func deriveResourceKey(path string) (string, string) {
 	if len(segments) == 0 {
 		return "", ""
 	}
-	if len(segments) > 3 {
-		segments = segments[:3]
-	}
-	return strings.Join(segments, "/"), segments[len(segments)-1]
+	// Use only the first significant segment as the resource key.
+	// This prevents slashes in resource names which break the generator's
+	// filepath.Join and Cobra Use field.
+	return segments[0], segments[len(segments)-1]
 }
 
 func significantSegments(path string) []string {
@@ -183,5 +190,53 @@ func uniqueEndpointName(endpoints map[string]spec.Endpoint, base string) string 
 		if _, exists := endpoints[name]; !exists {
 			return name
 		}
+	}
+}
+
+// buildAuthConfig converts a DiscoveredAuth into a spec.AuthConfig.
+// It also derives an env var name from the API name if no hint was detected.
+func buildAuthConfig(apiName string, auth *DiscoveredAuth) spec.AuthConfig {
+	cfg := spec.AuthConfig{
+		Type:   auth.Type,
+		Header: auth.Header,
+		In:     auth.In,
+		Format: auth.Format,
+	}
+
+	envVar := auth.EnvVarHint
+	if envVar == "" {
+		envVar = deriveEnvVar(apiName, auth.Type)
+	}
+	if envVar != "" {
+		cfg.EnvVars = []string{envVar}
+	}
+
+	return cfg
+}
+
+// deriveEnvVar generates an environment variable name from the API name and auth type.
+// Example: apiName="steam", authType="api_key" → "STEAM_API_KEY"
+func deriveEnvVar(apiName, authType string) string {
+	// Normalize: replace non-alphanumeric with underscore, uppercase.
+	var b strings.Builder
+	for _, r := range apiName {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	prefix := strings.ToUpper(b.String())
+	prefix = strings.Trim(prefix, "_")
+
+	switch authType {
+	case "bearer_token":
+		return prefix + "_TOKEN"
+	case "api_key":
+		return prefix + "_API_KEY"
+	case "basic":
+		return prefix + "_API_KEY"
+	default:
+		return prefix + "_API_KEY"
 	}
 }

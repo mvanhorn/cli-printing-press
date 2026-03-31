@@ -395,11 +395,10 @@ func deriveResourceKey(path string) (string, string) {
 		return "", ""
 	}
 
-	if len(segments) > 3 {
-		segments = segments[:3]
-	}
-
-	return strings.Join(segments, "/"), segments[len(segments)-1]
+	// Use only the first significant segment as the resource key.
+	// This prevents slashes in resource names which break the generator's
+	// filepath.Join and Cobra Use field.
+	return segments[0], segments[len(segments)-1]
 }
 
 func significantSegments(path string) []string {
