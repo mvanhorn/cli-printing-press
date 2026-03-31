@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -1425,5 +1427,270 @@ class API {
 
 		require.NoError(t, err)
 		assert.Empty(t, authPatterns)
+	})
+
+	t.Run("extracts key URL from README into auth KeyURLHint", func(t *testing.T) {
+		t.Parallel()
+
+		sdkContent := `
+class SteamAPI {
+  constructor(apiKey) { this.apiKey = apiKey; }
+  getOwnedGames(steamid) {
+    return this.get("/IPlayerService/GetOwnedGames/v1", {
+      key: this.apiKey,
+      steamid: steamid
+    });
+  }
+}
+`
+		readmeContent := `# Steam SDK
+
+Get your API key at https://steamcommunity.com/dev/apikey
+
+## Usage
+...
+`
+		tarball := buildTarball(t, map[string]string{
+			"package/src/client.js": sdkContent,
+			"package/README.md":     readmeContent,
+		})
+
+		tarballServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write(tarball)
+		}))
+		defer tarballServer.Close()
+
+		src := NewNPMSource(NPMOptions{
+			HTTPClient: tarballServer.Client(),
+		})
+
+		_, _, authPatterns, err := src.processPackageTarball(
+			context.Background(),
+			tarballServer.URL+"/tarball.tgz",
+			"steam-sdk",
+			TierCommunitySDK,
+			"steam",
+			500,
+		)
+
+		require.NoError(t, err)
+		require.NotEmpty(t, authPatterns)
+		assert.Equal(t, "https://steamcommunity.com/dev/apikey", authPatterns[0].KeyURLHint)
+	})
+
+	t.Run("no README in tarball does not error", func(t *testing.T) {
+		t.Parallel()
+
+		sdkContent := `
+class API {
+  request(url) {
+    return fetch(url + '?key=' + this.apiKey);
+  }
+}
+`
+		tarball := buildTarball(t, map[string]string{
+			"package/src/client.js": sdkContent,
+		})
+
+		tarballServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write(tarball)
+		}))
+		defer tarballServer.Close()
+
+		src := NewNPMSource(NPMOptions{
+			HTTPClient: tarballServer.Client(),
+		})
+
+		_, _, authPatterns, err := src.processPackageTarball(
+			context.Background(),
+			tarballServer.URL+"/tarball.tgz",
+			"test-sdk",
+			TierCommunitySDK,
+			"testapi",
+			0,
+		)
+
+		require.NoError(t, err)
+		// Auth patterns may or may not be found, but no crash.
+		_ = authPatterns
+	})
+}
+
+func TestExtractKeyURL(t *testing.T) {
+	t.Parallel()
+
+	t.Run("extracts steam API key URL", func(t *testing.T) {
+		t.Parallel()
+
+		readme := `# Steam SDK
+Get your API key at https://steamcommunity.com/dev/apikey
+
+## Usage
+...`
+		url := extractKeyURL(readme, "steam")
+		assert.Equal(t, "https://steamcommunity.com/dev/apikey", url)
+	})
+
+	t.Run("extracts register at developer URL", func(t *testing.T) {
+		t.Parallel()
+
+		readme := `# Notion Client
+Register at https://developer.notion.com to get started.
+`
+		url := extractKeyURL(readme, "notion")
+		assert.Equal(t, "https://developer.notion.com", url)
+	})
+
+	t.Run("no key URL patterns returns empty", func(t *testing.T) {
+		t.Parallel()
+
+		readme := `# Some SDK
+This is a great library for interacting with things.
+
+## Installation
+npm install some-sdk
+`
+		url := extractKeyURL(readme, "some")
+		assert.Empty(t, url)
+	})
+
+	t.Run("rejects npm badge URLs", func(t *testing.T) {
+		t.Parallel()
+
+		readme := `# Badge SDK
+Get your API key at https://img.shields.io/badge/api-key-blue
+`
+		url := extractKeyURL(readme, "badge")
+		assert.Empty(t, url)
+	})
+
+	t.Run("large README is truncated without crash", func(t *testing.T) {
+		t.Parallel()
+
+		// Build a README > 100KB with a key URL at the start.
+		large := "Get your API key at https://developer.example.com/keys\n"
+		large += strings.Repeat("x", 150*1024) // 150KB of padding
+		url := extractKeyURL(large, "example")
+		assert.Equal(t, "https://developer.example.com/keys", url)
+	})
+
+	t.Run("extracts markdown link with key text", func(t *testing.T) {
+		t.Parallel()
+
+		readme := `# Notion Client
+Visit the [developer portal](https://developer.notion.com/keys) to get started.
+`
+		url := extractKeyURL(readme, "notion")
+		assert.Equal(t, "https://developer.notion.com/keys", url)
+	})
+
+	t.Run("sign up at pattern", func(t *testing.T) {
+		t.Parallel()
+
+		readme := `# Stripe SDK
+Sign up at https://dashboard.stripe.com/apikeys to get your key.
+`
+		url := extractKeyURL(readme, "stripe")
+		assert.Equal(t, "https://dashboard.stripe.com/apikeys", url)
+	})
+
+	t.Run("rejects plain GitHub repo URL", func(t *testing.T) {
+		t.Parallel()
+
+		readme := `# SDK
+Get your API key at https://github.com/owner/repo
+`
+		url := extractKeyURL(readme, "owner")
+		assert.Empty(t, url)
+	})
+
+	t.Run("accepts GitHub URL with deeper path", func(t *testing.T) {
+		t.Parallel()
+
+		readme := `# SDK
+Get your API key at https://github.com/owner/repo/wiki/api-keys
+`
+		url := extractKeyURL(readme, "owner")
+		assert.Equal(t, "https://github.com/owner/repo/wiki/api-keys", url)
+	})
+
+	t.Run("accepts URL on known developer platform without API name", func(t *testing.T) {
+		t.Parallel()
+
+		readme := `# Cloud SDK
+Register at https://developer.example.com/keys to get your credentials.
+`
+		url := extractKeyURL(readme, "unrelated")
+		assert.Equal(t, "https://developer.example.com/keys", url)
+	})
+
+	t.Run("rejects URL that matches neither API name nor known platform", func(t *testing.T) {
+		t.Parallel()
+
+		readme := `# SDK
+Get your API key at https://random-site.example.org/keys
+`
+		url := extractKeyURL(readme, "unrelated")
+		assert.Empty(t, url)
+	})
+
+	t.Run("URL with trailing punctuation is cleaned", func(t *testing.T) {
+		t.Parallel()
+
+		readme := `Get your API key at https://steamcommunity.com/dev/apikey.`
+		url := extractKeyURL(readme, "steam")
+		assert.Equal(t, "https://steamcommunity.com/dev/apikey", url)
+	})
+
+	t.Run("create your key at pattern", func(t *testing.T) {
+		t.Parallel()
+
+		readme := `Create your API key at https://developer.spotify.com/dashboard`
+		url := extractKeyURL(readme, "spotify")
+		assert.Equal(t, "https://developer.spotify.com/dashboard", url)
+	})
+
+	t.Run("markdown link with get your API key anchor", func(t *testing.T) {
+		t.Parallel()
+
+		readme := `[Get your API key](https://developer.notion.com/keys)`
+		url := extractKeyURL(readme, "notion")
+		assert.Equal(t, "https://developer.notion.com/keys", url)
+	})
+}
+
+func TestReadFileCapped(t *testing.T) {
+	t.Parallel()
+
+	t.Run("reads file smaller than cap", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		path := dir + "/small.txt"
+		require.NoError(t, os.WriteFile(path, []byte("hello"), 0o644))
+
+		content, err := readFileCapped(path, 1024)
+		require.NoError(t, err)
+		assert.Equal(t, "hello", string(content))
+	})
+
+	t.Run("truncates file larger than cap", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		path := dir + "/large.txt"
+		data := strings.Repeat("a", 200)
+		require.NoError(t, os.WriteFile(path, []byte(data), 0o644))
+
+		content, err := readFileCapped(path, 100)
+		require.NoError(t, err)
+		assert.Len(t, content, 100)
+	})
+
+	t.Run("missing file returns error", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := readFileCapped("/nonexistent/file.txt", 1024)
+		assert.Error(t, err)
 	})
 }

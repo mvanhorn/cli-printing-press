@@ -25,6 +25,7 @@ const (
 	maxSearchResults        = 25
 	maxPackagesToProcess    = 10
 	maxBulkDownloadPackages = 128
+	maxReadmeSize           = 100 * 1024 // 100 KB
 )
 
 // NPMOptions configures the NPM source.
@@ -372,6 +373,19 @@ func (s *NPMSource) processPackageTarball(ctx context.Context, tarballURL, pkgNa
 	// Extract auth patterns from the combined source content.
 	authPatterns := GrepAuth(allContent.String(), tier, apiName)
 
+	// Read README.md from the package root for key URL hints.
+	// npm tarballs always have package/README.md.
+	readmePath := filepath.Join(tmpDir, "package", "README.md")
+	if readmeContent, readErr := readFileCapped(readmePath, maxReadmeSize); readErr == nil && len(readmeContent) > 0 {
+		if keyURL := extractKeyURL(string(readmeContent), apiName); keyURL != "" {
+			for i := range authPatterns {
+				if authPatterns[i].KeyURLHint == "" {
+					authPatterns[i].KeyURLHint = keyURL
+				}
+			}
+		}
+	}
+
 	return allEndpoints, allBaseURLs, authPatterns, nil
 }
 
@@ -607,4 +621,158 @@ func extractEnvVarHint(content string, apiName string) string {
 
 	// No API-name-relevant match — return empty to let deriveEnvVar() handle it.
 	return ""
+}
+
+// --- README key URL extraction ---
+
+var (
+	// keyURLPattern matches phrases that point to an API key registration page.
+	// Captures the HTTPS URL following the phrase.
+	// Uses [^")\s]+ for URL capture to avoid nested .* backtracking.
+	keyURLPattern = regexp.MustCompile(`(?i)(?:get\s+(?:your\s+)?(?:api\s+)?key\s+(?:at|from)|register\s+at|sign\s*up\s+at|get\s+(?:an?\s+)?api\s+key\s+(?:at|from)|create\s+(?:your\s+)?(?:api\s+)?key\s+at|developer\s+portal\s*:)\s*(https://[^")\s]+)`)
+
+	// markdownLinkKeyURLPattern matches markdown links with key-related anchor text.
+	// E.g., [Get your API key](https://example.com/keys)
+	markdownLinkKeyURLPattern = regexp.MustCompile(`(?i)\[(?:[^\]]*(?:api\s*key|register|sign\s*up|developer\s+portal|get\s+(?:your\s+)?key)[^\]]*)\]\((https://[^)]+)\)`)
+
+	// badgeURLDomains are domains used for npm badges — never useful as key URLs.
+	badgeURLDomains = []string{
+		"img.shields.io",
+		"badge.fury.io",
+		"badges.greenkeeper.io",
+		"david-dm.org",
+		"codecov.io",
+		"coveralls.io",
+		"travis-ci.org",
+		"circleci.com",
+		"github.com/workflows",
+	}
+
+	// knownDevPlatformPrefixes are domain prefixes for well-known developer platforms.
+	knownDevPlatformPrefixes = []string{
+		"developer.",
+		"console.cloud.google.com",
+		"console.aws.amazon.com",
+		"dash.cloudflare.com",
+		"portal.azure.com",
+		"app.posthog.com",
+	}
+)
+
+// extractKeyURL scans README content for patterns like "Get your API key at [url]"
+// and returns the first HTTPS URL that either contains the API name or is on a
+// known developer platform domain. Returns empty string if no suitable URL is found.
+func extractKeyURL(readmeContent string, apiName string) string {
+	apiNameLower := strings.ToLower(apiName)
+
+	var candidates []string
+
+	// Collect URLs from plain-text patterns.
+	for _, m := range keyURLPattern.FindAllStringSubmatch(readmeContent, -1) {
+		if len(m) > 1 {
+			candidates = append(candidates, strings.TrimRight(m[1], ".,;:"))
+		}
+	}
+
+	// Collect URLs from markdown link patterns.
+	for _, m := range markdownLinkKeyURLPattern.FindAllStringSubmatch(readmeContent, -1) {
+		if len(m) > 1 {
+			candidates = append(candidates, strings.TrimRight(m[1], ".,;:"))
+		}
+	}
+
+	for _, rawURL := range candidates {
+		if !strings.HasPrefix(rawURL, "https://") {
+			continue
+		}
+
+		parsed, err := url.Parse(rawURL)
+		if err != nil {
+			continue
+		}
+		host := strings.ToLower(parsed.Hostname())
+
+		// Reject badge URLs.
+		if isBadgeURL(host) {
+			continue
+		}
+
+		// Reject GitHub repo URLs that are just the package's own repo
+		// (github.com/<owner>/<repo> without /wiki, /blob, etc. pointing to docs).
+		if isPackageRepoURL(host, parsed.Path) {
+			continue
+		}
+
+		// Accept if the URL contains the API name (case-insensitive).
+		if apiNameLower != "" && strings.Contains(strings.ToLower(rawURL), apiNameLower) {
+			return rawURL
+		}
+
+		// Accept if on a known developer platform domain.
+		if isKnownDevPlatform(host) {
+			return rawURL
+		}
+	}
+
+	return ""
+}
+
+// isBadgeURL returns true if the host is a known npm badge domain.
+func isBadgeURL(host string) bool {
+	for _, badge := range badgeURLDomains {
+		if host == badge || strings.HasSuffix(host, "."+badge) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPackageRepoURL returns true if this looks like a plain GitHub repo URL
+// (github.com/<owner>/<repo>) without a deeper path that might point to
+// documentation or key pages.
+func isPackageRepoURL(host, path string) bool {
+	if host != "github.com" {
+		return false
+	}
+	// Strip trailing slash and count path segments.
+	trimmed := strings.Trim(path, "/")
+	if trimmed == "" {
+		return false
+	}
+	parts := strings.Split(trimmed, "/")
+	// github.com/<owner>/<repo> (2 segments) is just the repo root — reject.
+	// github.com/<owner>/<repo>/blob/... or /wiki/... may contain docs — allow.
+	return len(parts) <= 2
+}
+
+// isKnownDevPlatform returns true if the host matches a well-known developer platform.
+func isKnownDevPlatform(host string) bool {
+	for _, prefix := range knownDevPlatformPrefixes {
+		if strings.HasPrefix(host, prefix) || host == prefix {
+			return true
+		}
+	}
+	return false
+}
+
+// readFileCapped reads up to maxBytes from a file. Returns the content and any error.
+// If the file is larger than maxBytes, the content is truncated (no error).
+func readFileCapped(path string, maxBytes int) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	buf := make([]byte, maxBytes)
+	n, err := io.ReadFull(f, buf)
+	if err == io.ErrUnexpectedEOF || err == io.EOF {
+		// File was smaller than maxBytes — that's fine.
+		return buf[:n], nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	// File was exactly maxBytes or larger — return the capped content.
+	return buf[:n], nil
 }
