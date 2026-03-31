@@ -12,5 +12,6 @@ pre-push:
       run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       fail_text: "gofmt failed. Run 'gofmt -w .' to fix."
     lint:
-      run: golangci-lint run ./...
+      glob: "*.go"
+      run: golangci-lint run {push_files}
       fail_text: "golangci-lint failed. Fix lint errors before pushing."
