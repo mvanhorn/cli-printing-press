@@ -28,23 +28,25 @@ A pre-commit hook runs `gofmt -w` on staged Go files automatically. A pre-push h
 
 ## Glossary
 
-Key terms used throughout this repo. Several have overloaded meanings — the glossary disambiguates.
+Key terms used throughout this repo. Several have overloaded meanings — the glossary establishes canonical names to use in conversation and code comments.
 
-| Term | Meaning |
-|------|---------|
-| **printing press** / **the machine** | This repo's generator system — the Go binary, templates, skills, and catalog that together produce CLIs. |
-| **generated CLI** / **`<api>-pp-cli`** | A CLI produced by the printing press (e.g., `notion-pp-cli`). The `-pp-` infix distinguishes it from any official CLI the API vendor ships. When someone says "the CLI" without qualification, they almost always mean a generated CLI, not the printing-press binary itself. |
-| **printing-press binary** | The Go binary built from `cmd/printing-press/`. Commands: `generate`, `verify`, `emboss`, `scorecard`, `publish`, etc. When referring to this binary specifically, say "the printing-press binary" or "the generator binary" to avoid ambiguity. |
-| **emboss** | A second-pass improvement cycle for an already-generated CLI. Audits the baseline, re-researches, identifies top improvements, rebuilds, re-verifies, and reports the delta. Subcommand: `printing-press emboss <api>`. Still active — not deprecated. |
-| **polish** | Targeted fix-up of a generated CLI (distinct from emboss's full cycle). Skill: `/printing-press-polish`. |
-| **retro** / **retrospective** | Post-generation analysis of *the machine itself* — not the generated CLI. Identifies systemic improvements to templates, the Go binary, skill instructions, or catalog. Output goes to `docs/retros/` and `manuscripts/<api>/<run>/proofs/`. |
-| **scorecard** / **scoring** | Two-tier quality assessment of a generated CLI. Tier 1: infrastructure (12 dimensions, 60 pts). Tier 2: domain correctness (6 dimensions, 40 pts). Total /100 with letter grades. Subcommand: `printing-press scorecard`. |
+**When talking about work, use the canonical term** (bold in the table) so intent is unambiguous. If the user says something ambiguous — like "publish it" when it's unclear whether they mean the pipeline step or pushing to the public library repo — ask before acting. A quick clarifying question costs seconds; the wrong action costs a re-run.
+
+| Canonical term | Meaning |
+|----------------|---------|
+| **the printing press** / **the machine** | This repo's generator system — the Go binary, templates, skills, and catalog that together produce CLIs. |
+| **printed CLI** / **`<api>-pp-cli`** | A CLI produced by the printing press (e.g., `notion-pp-cli`). The `-pp-` infix avoids collisions with official vendor CLIs. When someone says "the CLI" without qualification, they almost always mean a printed CLI. Use "printed CLI" in your own responses to keep it clear. |
+| **the printing-press binary** | The Go binary built from `cmd/printing-press/`. Commands: `generate`, `verify`, `emboss`, `scorecard`, `publish`, etc. Always say "printing-press binary" or "generator binary" — never just "the CLI" — when referring to this. |
+| **emboss** | A second-pass improvement cycle for an already-printed CLI. Audits the baseline, re-researches, identifies top improvements, rebuilds, re-verifies, and reports the delta. Subcommand: `printing-press emboss <api>`. Still active — not deprecated. |
+| **polish** | Targeted fix-up of a printed CLI (distinct from emboss's full cycle). Skill: `/printing-press-polish`. The retro improves the machine; polish improves the printed CLI. |
+| **retro** / **retrospective** | Post-generation analysis of *the machine itself* — not the printed CLI. Identifies systemic improvements to templates, the Go binary, skill instructions, or catalog. Output goes to `docs/retros/` and `manuscripts/<api>/<run>/proofs/`. |
+| **scorecard** / **scoring** | Two-tier quality assessment of a printed CLI. Tier 1: infrastructure (12 dimensions, 60 pts). Tier 2: domain correctness (6 dimensions, 40 pts). Total /100 with letter grades. Subcommand: `printing-press scorecard`. |
 | **manuscript** | The full archive of a generation run — research briefs, spec analysis, verification proofs, discovery logs, and retro findings. Stored at `~/printing-press/manuscripts/<api-slug>/<run-id>/`. |
-| **library (local)** | `~/printing-press/library/<cli-name>/` — where generated CLIs land after a successful run. This is a local directory, not a git repo. |
-| **library (published)** | The GitHub repo [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) — the public catalog of finished CLIs organized by category. The `/printing-press-publish` skill pushes a local library CLI here. |
-| **publish (pipeline)** | The generator pipeline step that moves a working CLI into `~/printing-press/library/` and writes the `.printing-press.json` provenance manifest. |
-| **publish (to library repo)** | The skill-driven workflow (`/printing-press-publish`) that packages a local library CLI and creates a PR in the `printing-press-library` GitHub repo. |
-| **quality gates** | The 7 automated checks every generated CLI must pass: go mod tidy, go vet, go build, binary build, `--help`, version, doctor. |
+| **local library** | `~/printing-press/library/<cli-name>/` — where printed CLIs land after a successful run. This is a local directory, not a git repo. |
+| **public library repo** | The GitHub repo [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) — the public catalog of finished CLIs organized by category. The `/printing-press-publish` skill pushes a local library CLI here. |
+| **publish (pipeline)** | The generator pipeline step that moves a working CLI into the local library and writes the `.printing-press.json` provenance manifest. |
+| **publish (to public library repo)** | The skill-driven workflow (`/printing-press-publish`) that packages a local library CLI and creates a PR in the public library repo. |
+| **quality gates** | The 7 automated checks every printed CLI must pass: go mod tidy, go vet, go build, binary build, `--help`, version, doctor. |
 | **catalog** | The embedded YAML entries in `catalog/` that describe available APIs (name, spec URL, category, tier). Baked into the binary at build time via `catalog.FS`. |
 | **crowd sniff** / **sniff** | Discovery technique that scrapes npm, PyPI, and GitHub for unofficial API clients to learn undocumented endpoints, auth patterns, and rate limits. |
 
