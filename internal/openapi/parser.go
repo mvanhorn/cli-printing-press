@@ -241,7 +241,7 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 	auth := spec.AuthConfig{Type: "none"}
 	schemeName, scheme := selectSecurityScheme(doc)
 	if scheme == nil {
-		return auth
+		return inferQueryParamAuth(doc, name, auth)
 	}
 
 	auth.Scheme = schemeName
@@ -304,6 +304,80 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 	}
 
 	return auth
+}
+
+// commonAuthQueryParams are query parameter names that commonly carry API keys.
+var commonAuthQueryParams = map[string]bool{
+	"key":          true,
+	"api_key":      true,
+	"apikey":       true,
+	"access_token": true,
+	"token":        true,
+}
+
+// inferQueryParamAuth scans all operations for query parameters that look like
+// API keys. If more than 30% of operations carry one, we infer query-param auth.
+// This handles specs that omit securitySchemes but pass keys via query string.
+func inferQueryParamAuth(doc *openapi3.T, name string, fallback spec.AuthConfig) spec.AuthConfig {
+	if doc == nil || doc.Paths == nil {
+		return fallback
+	}
+
+	paramCounts := map[string]int{}
+	totalOps := 0
+
+	for _, pathKey := range doc.Paths.InMatchingOrder() {
+		pathItem := doc.Paths.Value(pathKey)
+		if pathItem == nil {
+			continue
+		}
+		for _, op := range pathItem.Operations() {
+			if op == nil {
+				continue
+			}
+			totalOps++
+			seen := false
+			// Check path-level parameters first, then operation-level.
+			for _, params := range []openapi3.Parameters{pathItem.Parameters, op.Parameters} {
+				for _, pRef := range params {
+					if pRef == nil || pRef.Value == nil {
+						continue
+					}
+					p := pRef.Value
+					if p.In == openapi3.ParameterInQuery && commonAuthQueryParams[strings.ToLower(p.Name)] && !seen {
+						paramCounts[p.Name]++
+						seen = true
+					}
+				}
+			}
+		}
+	}
+
+	if totalOps == 0 {
+		return fallback
+	}
+
+	// Find the most common auth-like param name.
+	var best string
+	var bestCount int
+	for pName, cnt := range paramCounts {
+		if cnt > bestCount {
+			best = pName
+			bestCount = cnt
+		}
+	}
+
+	if bestCount == 0 || float64(bestCount)/float64(totalOps) <= 0.3 {
+		return fallback
+	}
+
+	envPrefix := strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+	return spec.AuthConfig{
+		Type:    "api_key",
+		In:      "query",
+		Header:  best,
+		EnvVars: []string{envPrefix + "_API_KEY"},
+	}
 }
 
 func selectSecurityScheme(doc *openapi3.T) (string, *openapi3.SecurityScheme) {
