@@ -755,19 +755,36 @@ fi
 Present via `AskUserQuestion`:
 > "Chrome is running. I can attach to it and grab your session."
 >
-> 1. **Grab session from your Chrome** (Recommended) — "Connects to your running Chrome and saves its cookies. Takes ~10 seconds."
-> 2. **Log in within a new browser window** — "I'll open a visible browser. You log in, then I sniff. ~1 minute."
-> 3. **I'll export a HAR file** — "You browse the site in DevTools, export the HAR."
+> 1. **Grab session from your Chrome** (Recommended) — "Saves your cookies, then sniffs in a separate headless browser. Chrome stays untouched."
+> 2. **Sniff in your Chrome directly** — "Stays connected to your real Chrome. You'll see pages changing during the sniff (~60-90 seconds). Simplest approach — no daemon juggling."
+> 3. **Log in within a new browser window** — "I'll open a visible browser. You log in, then I sniff. ~1 minute."
+> 4. **I'll export a HAR file** — "You browse the site in DevTools, export the HAR."
 
-For option 1 (agent-browser auto-connect):
+For option 1 (save-then-restore):
+
+**IMPORTANT:** `--auto-connect`, `--state`, `--profile`, and `--headed` are daemon launch options in agent-browser. They only take effect when starting a new daemon. You MUST close the daemon between save and load.
+
 ```bash
+# Grab cookies from running Chrome
 agent-browser --auto-connect state save "$DISCOVERY_DIR/session-state.json" 2>&1
-```
-If this succeeds, use the state file for the sniff session:
-```bash
+
+# Close the auto-connect daemon so --state can start a fresh one
+agent-browser close 2>&1
+
+# Start a new headless daemon with the saved auth state
 agent-browser --state "$DISCOVERY_DIR/session-state.json" open <url>
 ```
 If auto-connect fails (no debug port), explain: "Chrome doesn't have remote debugging enabled. Quit Chrome and relaunch with `--remote-debugging-port=9222`, or pick option 2."
+
+For option 2 (stay in auto-connect mode):
+```bash
+# Stay connected to the user's real Chrome — all cookies are already present
+agent-browser --auto-connect open <url>
+agent-browser network har start
+# ... browse pages (user will see their Chrome tabs changing) ...
+agent-browser network har stop <path>
+# No close/restart needed — daemon stays connected to real Chrome
+```
 
 For option 1 with browser-use (if agent-browser not available):
 ```bash
@@ -811,7 +828,28 @@ Close the headed browser and restart headless with the saved state.
 
 **For HAR export (option 3):** Guide the user through DevTools > Network > Save all as HAR. Then use `--har` path.
 
-**After successful session transfer**, proceed to Steps 2a/2b capture flow with the authenticated session loaded. The session state file is stored at `$DISCOVERY_DIR/session-state.json`.
+**After any session transfer method**, verify cookies transferred before proceeding:
+
+```bash
+# Verify auth cookies are present for the target domain
+COOKIES=$(agent-browser cookies get --json 2>/dev/null)
+if echo "$COOKIES" | grep -q "<target-domain>"; then
+  echo "Session transfer verified — found <target-domain> cookies."
+else
+  echo "WARNING: No <target-domain> cookies found."
+fi
+```
+
+If no target-domain cookies are found, present via `AskUserQuestion`:
+
+> "Session transfer failed — no `<target-domain>` cookies found in the browser. The sniff would run unauthenticated."
+>
+> 1. **Try auto-connect mode instead** — "Stay connected to your real Chrome where you're already logged in"
+> 2. **Log in manually** — "I'll open a headed browser. You log in, then I sniff."
+> 3. **Continue without auth** — "Sniff only public endpoints"
+> 4. **Provide HAR manually** — "Export a HAR yourself from browser DevTools"
+
+If cookies are verified, proceed to Steps 2a/2b capture flow with the authenticated session loaded. The session state file is stored at `$DISCOVERY_DIR/session-state.json`.
 
 #### Step 2a: browser-use CLI capture (preferred)
 
@@ -893,7 +931,8 @@ If browser-use is not available, use agent-browser with Claude driving the explo
 
 1. **Browse and capture**:
    ```bash
-   agent-browser open <target-url> --headless
+   # agent-browser is headless by default; use --headed to show the browser window
+   agent-browser open <target-url>
    agent-browser network har start
    ```
 
