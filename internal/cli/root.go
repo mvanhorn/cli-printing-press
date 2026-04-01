@@ -50,6 +50,7 @@ func Execute() error {
 	rootCmd.AddCommand(newCatalogCmd())
 	rootCmd.AddCommand(newLibraryCmd())
 	rootCmd.AddCommand(newPublishCmd())
+	rootCmd.AddCommand(newPolishCmd())
 
 	return rootCmd.Execute()
 }
