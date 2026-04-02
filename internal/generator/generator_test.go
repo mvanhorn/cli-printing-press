@@ -1207,3 +1207,72 @@ func TestGeneratedHelpers_DeadCodeRemoved(t *testing.T) {
 	assert.Contains(t, content, "filterFields")
 	assert.Contains(t, content, "classifyAPIError")
 }
+
+// --- Unit 3: Stdin Guard Tests ---
+
+func TestGeneratedOutput_POSTWithRequiredBodyUsesRunEGuard(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "stdinguard",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"SG_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/stdinguard-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method:      "POST",
+						Path:        "/items",
+						Description: "Create an item",
+						Body: []spec.Param{
+							{Name: "name", Type: "string", Required: true, Description: "Item name"},
+							{Name: "description", Type: "string", Required: false, Description: "Item description"},
+						},
+					},
+					"list": {
+						Method:      "GET",
+						Path:        "/items",
+						Description: "List items",
+						Params: []spec.Param{
+							{Name: "status", Type: "string", Required: true, Description: "Filter by status"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "stdinguard-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	t.Run("POST command does not use MarkFlagRequired for body fields", func(t *testing.T) {
+		createGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items_create.go"))
+		require.NoError(t, err)
+		content := string(createGo)
+		assert.NotContains(t, content, "MarkFlagRequired", "POST body fields should not use MarkFlagRequired (stdin alternative exists)")
+	})
+
+	t.Run("POST command has RunE stdin guard", func(t *testing.T) {
+		createGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items_create.go"))
+		require.NoError(t, err)
+		content := string(createGo)
+		assert.Contains(t, content, "!stdinBody", "POST with required body should have a stdin guard in RunE")
+		assert.Contains(t, content, "provide required fields via flags or --stdin", "guard should mention --stdin")
+	})
+
+	t.Run("GET command still uses MarkFlagRequired for required params", func(t *testing.T) {
+		listGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items_list.go"))
+		require.NoError(t, err)
+		content := string(listGo)
+		assert.Contains(t, content, "MarkFlagRequired", "GET params should still use MarkFlagRequired")
+	})
+
+	t.Run("generated project compiles", func(t *testing.T) {
+		runGoCommand(t, outputDir, "mod", "tidy")
+		runGoCommand(t, outputDir, "build", "./...")
+	})
+}

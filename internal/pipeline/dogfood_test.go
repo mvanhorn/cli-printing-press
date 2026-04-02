@@ -325,6 +325,136 @@ func TestExtractFlagNames(t *testing.T) {
 	}
 }
 
+func TestDeadFunctions_TransitiveReachability(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "helpers.go"), `package cli
+
+func funcA() {
+	funcB()
+}
+
+func funcB() {
+	// only called by funcA
+}
+
+func funcC() {
+	// never called by anything
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "cmd.go"), `package cli
+
+func runCmd() {
+	funcA()
+}
+`)
+
+	result := checkDeadFunctions(dir)
+	assert.Equal(t, 3, result.Total)
+	assert.Equal(t, 1, result.Dead)
+	assert.Equal(t, []string{"funcC"}, result.Items)
+}
+
+func TestDeadFunctions_ChainOfThree(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "helpers.go"), `package cli
+
+func funcA() {
+	funcB()
+}
+
+func funcB() {
+	funcC()
+}
+
+func funcC() {
+	// end of chain
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "cmd.go"), `package cli
+
+func runCmd() {
+	funcA()
+}
+`)
+
+	result := checkDeadFunctions(dir)
+	assert.Equal(t, 3, result.Total)
+	assert.Equal(t, 0, result.Dead)
+	assert.Empty(t, result.Items)
+}
+
+func TestDeadFunctions_GenuinelyDead(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "helpers.go"), `package cli
+
+func funcD() {
+	// defined but never called
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "cmd.go"), `package cli
+
+func runCmd() {
+	// does not call funcD
+}
+`)
+
+	result := checkDeadFunctions(dir)
+	assert.Equal(t, 1, result.Total)
+	assert.Equal(t, 1, result.Dead)
+	assert.Equal(t, []string{"funcD"}, result.Items)
+}
+
+func TestDeadFlags_FrameworkFlags(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "root.go"), `package cli
+
+type rootFlags struct {
+	agent     bool
+	rateLimit int
+	noCache   bool
+	deadOnly  bool
+}
+
+func initFlags(flags *rootFlags) {
+	_ = &flags.agent
+	_ = &flags.rateLimit
+	_ = &flags.noCache
+	_ = &flags.deadOnly
+}
+
+func (f *rootFlags) newClient() {
+	client.New(cfg, f.rateLimit)
+}
+
+func execute(flags *rootFlags) {
+	if flags.agent {
+		enableAgent()
+	}
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "export.go"), `package cli
+
+func runExport(flags *rootFlags) {
+	if flags.noCache {
+		skipCache()
+	}
+}
+`)
+
+	result := checkDeadFlags(dir)
+	assert.Equal(t, 4, result.Total)
+	assert.Equal(t, 1, result.Dead)
+	assert.Equal(t, []string{"deadOnly"}, result.Items)
+}
+
 func writeTestFile(t *testing.T, path string, content string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))

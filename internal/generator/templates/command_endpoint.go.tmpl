@@ -60,6 +60,13 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- end}}
 
+{{- $isMutation := or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")}}
+{{- $hasReqBody := false}}{{range .Endpoint.Body}}{{if .Required}}{{$hasReqBody = true}}{{end}}{{end}}
+{{- if and $isMutation $hasReqBody}}
+			if !stdinBody {{range .Endpoint.Body}}{{if .Required}}&& body{{camel .Name}} == {{zeroVal .Type}} {{end}}{{end}}{
+				return fmt.Errorf("provide required fields via flags or --stdin")
+			}
+{{- end}}
 {{- if or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")}}
 {{- if .Endpoint.Pagination}}
 			data, err := paginatedGet(c, path, map[string]string{
@@ -242,7 +249,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- range .Endpoint.Body}}
 	cmd.Flags().{{cobraFlagFunc .Type}}(&body{{camel .Name}}, "{{flagName .Name}}", {{defaultVal .}}, "{{oneline .Description}}")
-{{- if .Required}}
+{{- if and .Required (not (or (eq $.Endpoint.Method "POST") (eq $.Endpoint.Method "PUT") (eq $.Endpoint.Method "PATCH")))}}
 	_ = cmd.MarkFlagRequired("{{flagName .Name}}")
 {{- end}}
 {{- end}}

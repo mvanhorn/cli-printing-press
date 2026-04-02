@@ -455,23 +455,100 @@ func checkDeadFunctions(dir string) DeadCodeResult {
 		otherSources = append(otherSources, string(content))
 	}
 
-	result := DeadCodeResult{Total: len(names)}
+	// Build external call set: functions called from non-helpers files.
+	// Also build intra-helpers call map for transitive reachability.
+	externalSources := make([]string, 0, len(otherSources))
+	for _, file := range files {
+		if filepath.Base(file) == "helpers.go" {
+			continue
+		}
+		content, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		externalSources = append(externalSources, string(content))
+	}
+
+	liveSet := make(map[string]bool)
 	for _, name := range sortedKeys(names) {
 		callRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\s*\(`)
-		used := false
-		for _, source := range otherSources {
+		for _, source := range externalSources {
 			if callRe.MatchString(source) {
-				used = true
+				liveSet[name] = true
 				break
 			}
 		}
-		if used {
+	}
+
+	// Build intra-helpers call map: for each helper function, which other
+	// helper functions does its body call?
+	helperBodies := extractFunctionBodies(string(data))
+	callsMap := make(map[string][]string)
+	for _, caller := range sortedKeys(names) {
+		body, ok := helperBodies[caller]
+		if !ok {
+			continue
+		}
+		for _, callee := range sortedKeys(names) {
+			if callee == caller {
+				continue
+			}
+			callRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(callee) + `\s*\(`)
+			if callRe.MatchString(body) {
+				callsMap[caller] = append(callsMap[caller], callee)
+			}
+		}
+	}
+
+	// Iterative expansion: mark transitively reachable helpers as live.
+	for i := 0; i < 50; i++ {
+		changed := false
+		for _, fn := range sortedKeys(names) {
+			if !liveSet[fn] {
+				continue
+			}
+			for _, callee := range callsMap[fn] {
+				if !liveSet[callee] {
+					liveSet[callee] = true
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+
+	result := DeadCodeResult{Total: len(names)}
+	for _, name := range sortedKeys(names) {
+		if liveSet[name] {
 			continue
 		}
 		result.Dead++
 		result.Items = append(result.Items, name)
 	}
 	return result
+}
+
+// extractFunctionBodies returns a map from function name to its body text
+// (everything between its func line and the next top-level func line).
+func extractFunctionBodies(source string) map[string]string {
+	bodies := make(map[string]string)
+	funcLineRe := regexp.MustCompile(`(?m)^func\s+([A-Za-z_]\w*)\s*\(`)
+	locs := funcLineRe.FindAllStringIndex(source, -1)
+	nameMatches := funcLineRe.FindAllStringSubmatch(source, -1)
+	for i, match := range nameMatches {
+		name := match[1]
+		start := locs[i][1] // end of func line match
+		var end int
+		if i+1 < len(locs) {
+			end = locs[i+1][0]
+		} else {
+			end = len(source)
+		}
+		bodies[name] = source[start:end]
+	}
+	return bodies
 }
 
 func checkPipelineIntegrity(dir string) PipelineResult {
