@@ -646,27 +646,21 @@ func printAutoTable(w io.Writer, items []map[string]any) error {
 		return nil
 	}
 
-	// Collect headers from first item, prioritize common fields
-	priority := []string{"id", "name", "username", "title", "status", "type", "email", "description"}
-	headerSet := map[string]struct{}{}
-	for k := range items[0] {
-		headerSet[k] = struct{}{}
-	}
-
-	var headers []string
-	for _, p := range priority {
-		if _, ok := headerSet[p]; ok {
-			headers = append(headers, p)
-			delete(headerSet, p)
+	// Count scalar vs complex fields to decide format
+	scalarCount := 0
+	for _, v := range items[0] {
+		switch v.(type) {
+		case string, float64, bool, nil:
+			scalarCount++
 		}
 	}
-	// Add remaining headers sorted
-	var rest []string
-	for k := range headerSet {
-		rest = append(rest, k)
+
+	// Use sectional/card layout for complex items (many fields or nested data)
+	if len(items[0]) > 8 || scalarCount < len(items[0])-2 {
+		return printAutoCards(w, items)
 	}
-	sort.Strings(rest)
-	headers = append(headers, rest...)
+
+	headers := prioritizeHeaders(items[0])
 
 	// Limit to 6 columns max for readability
 	if len(headers) > 6 {
@@ -678,24 +672,7 @@ func printAutoTable(w io.Writer, items []map[string]any) error {
 	for _, item := range items {
 		row := make([]string, len(headers))
 		for i, h := range headers {
-			v := item[h]
-			switch val := v.(type) {
-			case string:
-				row[i] = truncate(val, 40)
-			case float64:
-				if val == float64(int64(val)) {
-					row[i] = fmt.Sprintf("%d", int64(val))
-				} else {
-					row[i] = fmt.Sprintf("%g", val)
-				}
-			case bool:
-				row[i] = fmt.Sprintf("%t", val)
-			case nil:
-				row[i] = ""
-			default:
-				b, _ := json.Marshal(val)
-				row[i] = truncate(string(b), 40)
-			}
+			row[i] = formatCellValue(item[h])
 		}
 		rows = append(rows, row)
 	}
@@ -712,4 +689,162 @@ func printAutoTable(w io.Writer, items []map[string]any) error {
 		fmt.Fprintln(tw, strings.Join(row, "\t"))
 	}
 	return tw.Flush()
+}
+
+// prioritizeHeaders orders scalar fields by importance for table display.
+func prioritizeHeaders(item map[string]any) []string {
+	return prioritizeFields(item, false)
+}
+
+// prioritizeAllHeaders orders all fields (including arrays) by importance for card display.
+func prioritizeAllHeaders(item map[string]any) []string {
+	return prioritizeFields(item, true)
+}
+
+// prioritizeFields orders fields by importance: identity → temporal → status → other.
+// When includeComplex is true, arrays and objects are included (for card layout).
+func prioritizeFields(item map[string]any, includeComplex bool) []string {
+	// Priority tiers — fields matching earlier tiers appear first.
+	// Each entry is a substring matched case-insensitively against the field name.
+	tiers := [][]string{
+		// Tier 0: Identity
+		{"id", "name", "title", "code", "key", "slug"},
+		// Tier 1: Temporal
+		{"date", "time", "created", "updated", "when", "at"},
+		// Tier 2: Status & outcome
+		{"status", "state", "result", "verdict", "phase"},
+		// Tier 3: Value & summary
+		{"summary", "description", "price", "amount", "total", "cost", "value", "points", "score"},
+		// Tier 4: Categorization
+		{"type", "kind", "category", "method", "store", "email", "phone", "url"},
+	}
+
+	type scored struct {
+		name  string
+		tier  int
+		index int // preserve order within same tier
+	}
+
+	var all []scored
+	idx := 0
+	for k, v := range item {
+		// Skip complex fields in table mode — they don't fit in cells.
+		// In card mode, arrays are flattened (e.g. Summary: "1 Pizza, 1 Pagliaccio").
+		if !includeComplex {
+			switch v.(type) {
+			case []any, map[string]any:
+				continue
+			}
+		}
+
+		tier := len(tiers) // default: lowest priority
+		lower := strings.ToLower(k)
+		for t, patterns := range tiers {
+			for _, p := range patterns {
+				if strings.Contains(lower, p) {
+					if t < tier {
+						tier = t
+					}
+				}
+			}
+		}
+		// Demote booleans — they're rarely the most useful columns
+		if _, ok := v.(bool); ok && tier == len(tiers) {
+			tier = len(tiers) + 1
+		}
+		all = append(all, scored{name: k, tier: tier, index: idx})
+		idx++
+	}
+
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].tier != all[j].tier {
+			return all[i].tier < all[j].tier
+		}
+		return all[i].index < all[j].index
+	})
+
+	headers := make([]string, len(all))
+	for i, s := range all {
+		headers[i] = s.name
+	}
+	return headers
+}
+
+// printAutoCards renders items as labeled cards — one block per item.
+// Used for complex responses with many fields or nested data.
+func printAutoCards(w io.Writer, items []map[string]any) error {
+	headers := prioritizeAllHeaders(items[0])
+
+	// Find the longest header for alignment (from fields we'll actually show)
+	maxLen := 0
+	for _, h := range headers {
+		if len(h) > maxLen {
+			maxLen = len(h)
+		}
+	}
+
+	for i, item := range items {
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+
+		// Card header: use first priority field as the card title
+		titleVal := formatCellValue(item[headers[0]])
+		if len(headers) > 1 {
+			secondVal := formatCellValue(item[headers[1]])
+			if secondVal != "" {
+				fmt.Fprintf(w, "%s %s — %s\n", bold(strings.ToUpper(headers[0])), titleVal, secondVal)
+			} else {
+				fmt.Fprintf(w, "%s %s\n", bold(strings.ToUpper(headers[0])), titleVal)
+			}
+		} else {
+			fmt.Fprintf(w, "%s %s\n", bold(strings.ToUpper(headers[0])), titleVal)
+		}
+
+		// Remaining fields indented — skip empty, zero, and false values
+		shown := 0
+		for _, h := range headers[2:] {
+			v := formatCellValue(item[h])
+			if v == "" || v == "false" || v == "0" || v == "[]" || v == "null" {
+				continue
+			}
+			fmt.Fprintf(w, "  %-*s  %s\n", maxLen, h+":", v)
+			shown++
+			if shown >= 12 {
+				break // cap at 12 visible fields per card
+			}
+		}
+	}
+	return nil
+}
+
+func formatCellValue(v any) string {
+	switch val := v.(type) {
+	case string:
+		return truncate(val, 60)
+	case float64:
+		if val == float64(int64(val)) {
+			return fmt.Sprintf("%d", int64(val))
+		}
+		return fmt.Sprintf("%g", val)
+	case bool:
+		return fmt.Sprintf("%t", val)
+	case nil:
+		return ""
+	case []any:
+		// Flatten simple arrays into comma-separated string
+		parts := make([]string, 0, len(val))
+		for _, item := range val {
+			if s, ok := item.(string); ok {
+				parts = append(parts, s)
+			} else {
+				b, _ := json.Marshal(item)
+				parts = append(parts, string(b))
+			}
+		}
+		return truncate(strings.Join(parts, ", "), 60)
+	default:
+		b, _ := json.Marshal(val)
+		return truncate(string(b), 60)
+	}
 }
