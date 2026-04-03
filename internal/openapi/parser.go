@@ -1014,8 +1014,9 @@ func reclassifyPathParamModifiers(params []spec.Param) {
 		if len(p.Enum) > 0 {
 			p.Positional = false
 			p.PathParam = true
+			p.Required = false
 			if p.Default == nil {
-				p.Default = p.Enum[0] // default to first enum value
+				p.Default = p.Enum[0]
 			}
 			continue
 		}
@@ -1024,6 +1025,7 @@ func reclassifyPathParamModifiers(params []spec.Param) {
 		if p.Default != nil {
 			p.Positional = false
 			p.PathParam = true
+			p.Required = false
 			continue
 		}
 
@@ -1031,18 +1033,19 @@ func reclassifyPathParamModifiers(params []spec.Param) {
 		if def, ok := paginationDefaults[lowerName]; ok {
 			p.Positional = false
 			p.PathParam = true
+			p.Required = false
 			p.Default = def
 			continue
 		}
 
-		// 4. Date/time format → flag
+		// 4. Date/time format → flag (no default, but still optional)
 		if p.Format == "date" || p.Format == "date-time" ||
 			strings.Contains(lowerName, "date") ||
 			strings.Contains(lowerName, "year") ||
 			strings.Contains(lowerName, "month") {
 			p.Positional = false
 			p.PathParam = true
-			// No default — empty means "latest" or "all"
+			p.Required = false
 			continue
 		}
 	}
