@@ -975,7 +975,77 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 		}
 		params = append(params, param)
 	}
+
+	// Reclassify path params that are modifiers (not entity identifiers) as flags.
+	// This improves CLI UX: pagination/filter/date params become --flags with defaults
+	// instead of required positional args.
+	reclassifyPathParamModifiers(params)
+
 	return params
+}
+
+// reclassifyPathParamModifiers converts path params that are modifiers (pagination,
+// filters, dates) from positional args to flags with sensible defaults. This improves
+// CLI UX — users type `order-list --page 2` instead of `order-list 2 10`.
+//
+// Classification priority (first match wins):
+//  1. Has an enum → flag (user picks from a set)
+//  2. Has a spec-declared default → flag with that default
+//  3. Known pagination name → flag with sensible default
+//  4. Date/time format → flag (defaults to empty, meaning "latest" or "today")
+//  5. Anything left → stays positional (likely an entity identifier)
+func reclassifyPathParamModifiers(params []spec.Param) {
+	paginationDefaults := map[string]int{
+		"page": 1, "pagenumber": 1, "page_number": 1,
+		"pagesize": 10, "page_size": 10, "per_page": 10,
+		"perpage": 10, "limit": 10, "count": 10,
+		"maxresults": 10, "max_results": 10,
+		"offset": 0, "skip": 0,
+	}
+
+	for i := range params {
+		p := &params[i]
+		if !p.Positional {
+			continue // only reclassify path params
+		}
+		lowerName := strings.ToLower(p.Name)
+
+		// 1. Has an enum → flag
+		if len(p.Enum) > 0 {
+			p.Positional = false
+			p.PathParam = true
+			if p.Default == nil {
+				p.Default = p.Enum[0] // default to first enum value
+			}
+			continue
+		}
+
+		// 2. Has a spec-declared default → flag
+		if p.Default != nil {
+			p.Positional = false
+			p.PathParam = true
+			continue
+		}
+
+		// 3. Known pagination name → flag with default
+		if def, ok := paginationDefaults[lowerName]; ok {
+			p.Positional = false
+			p.PathParam = true
+			p.Default = def
+			continue
+		}
+
+		// 4. Date/time format → flag
+		if p.Format == "date" || p.Format == "date-time" ||
+			strings.Contains(lowerName, "date") ||
+			strings.Contains(lowerName, "year") ||
+			strings.Contains(lowerName, "month") {
+			p.Positional = false
+			p.PathParam = true
+			// No default — empty means "latest" or "all"
+			continue
+		}
+	}
 }
 
 func mergeParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []*openapi3.Parameter {

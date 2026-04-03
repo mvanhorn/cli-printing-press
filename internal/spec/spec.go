@@ -68,6 +68,7 @@ type Param struct {
 	Type        string   `yaml:"type" json:"type"`
 	Required    bool     `yaml:"required" json:"required"`
 	Positional  bool     `yaml:"positional" json:"positional"`
+	PathParam   bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
 	Default     any      `yaml:"default" json:"default"`
 	Description string   `yaml:"description" json:"description"`
 	Fields      []Param  `yaml:"fields" json:"fields"`                     // for nested objects

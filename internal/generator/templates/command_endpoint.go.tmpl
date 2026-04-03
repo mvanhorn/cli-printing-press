@@ -59,12 +59,17 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			path = replacePathParam(path, "{{.Name}}", args[{{$i}}])
 {{- end}}
 {{- end}}
+{{- range .Endpoint.Params}}
+{{- if and .PathParam (not .Positional)}}
+			path = replacePathParam(path, "{{.Name}}", fmt.Sprintf("%v", flag{{camel .Name}}))
+{{- end}}
+{{- end}}
 
 {{- if or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")}}
 {{- if .Endpoint.Pagination}}
 			data, err := paginatedGet(c, path, map[string]string{
 {{- range .Endpoint.Params}}
-{{- if not .Positional}}
+{{- if and (not .Positional) (not .PathParam)}}
 				"{{.Name}}": fmt.Sprintf("%v", flag{{camel .Name}}),
 {{- end}}
 {{- end}}
@@ -72,7 +77,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- else}}
 			params := map[string]string{}
 {{- range .Endpoint.Params}}
-{{- if not .Positional}}
+{{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel .Name}} != {{zeroValForParam .Name .Type}} {
 				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel .Name}})
 			}

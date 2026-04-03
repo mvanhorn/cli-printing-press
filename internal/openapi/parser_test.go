@@ -8,6 +8,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -265,6 +266,106 @@ func TestOperationIDToName(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestReclassifyPathParamModifiers(t *testing.T) {
+	tests := []struct {
+		name           string
+		params         []spec.Param
+		wantPositional []string // names that should stay positional
+		wantFlags      []string // names that should become flags
+	}{
+		{
+			name: "pagination params become flags",
+			params: []spec.Param{
+				{Name: "page", Type: "int", Positional: true},
+				{Name: "pageSize", Type: "int", Positional: true},
+			},
+			wantPositional: nil,
+			wantFlags:      []string{"page", "pageSize"},
+		},
+		{
+			name: "entity ID stays positional",
+			params: []spec.Param{
+				{Name: "storeId", Type: "int", Positional: true},
+			},
+			wantPositional: []string{"storeId"},
+			wantFlags:      nil,
+		},
+		{
+			name: "mixed: storeId positional, page/pageSize flags",
+			params: []spec.Param{
+				{Name: "storeId", Type: "int", Positional: true},
+				{Name: "page", Type: "int", Positional: true},
+				{Name: "pageSize", Type: "int", Positional: true},
+			},
+			wantPositional: []string{"storeId"},
+			wantFlags:      []string{"page", "pageSize"},
+		},
+		{
+			name: "enum param becomes flag",
+			params: []spec.Param{
+				{Name: "serviceType", Type: "string", Positional: true, Enum: []string{"PICK", "DEL"}},
+			},
+			wantPositional: nil,
+			wantFlags:      []string{"serviceType"},
+		},
+		{
+			name: "date param becomes flag",
+			params: []spec.Param{
+				{Name: "storeId", Type: "int", Positional: true},
+				{Name: "date", Type: "string", Positional: true, Format: "date"},
+			},
+			wantPositional: []string{"storeId"},
+			wantFlags:      []string{"date"},
+		},
+		{
+			name: "param with default becomes flag",
+			params: []spec.Param{
+				{Name: "version", Type: "string", Positional: true, Default: "v2"},
+			},
+			wantPositional: nil,
+			wantFlags:      []string{"version"},
+		},
+		{
+			name: "non-positional params unchanged",
+			params: []spec.Param{
+				{Name: "lang", Type: "string", Positional: false},
+			},
+			wantPositional: nil,
+			wantFlags:      nil, // already a flag, not reclassified
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reclassifyPathParamModifiers(tt.params)
+
+			var gotPositional, gotFlags []string
+			for _, p := range tt.params {
+				if p.Positional {
+					gotPositional = append(gotPositional, p.Name)
+				} else if p.PathParam {
+					gotFlags = append(gotFlags, p.Name)
+				}
+			}
+			assert.Equal(t, tt.wantPositional, gotPositional, "positional params")
+			assert.Equal(t, tt.wantFlags, gotFlags, "reclassified flag params")
+		})
+	}
+}
+
+func TestReclassifyPathParamDefaults(t *testing.T) {
+	params := []spec.Param{
+		{Name: "page", Type: "int", Positional: true},
+		{Name: "pageSize", Type: "int", Positional: true},
+		{Name: "serviceType", Type: "string", Positional: true, Enum: []string{"PICK", "DEL"}},
+	}
+	reclassifyPathParamModifiers(params)
+
+	assert.Equal(t, 1, params[0].Default, "page default should be 1")
+	assert.Equal(t, 10, params[1].Default, "pageSize default should be 10")
+	assert.Equal(t, "PICK", params[2].Default, "enum default should be first value")
 }
 
 func TestCleanSpecName(t *testing.T) {
