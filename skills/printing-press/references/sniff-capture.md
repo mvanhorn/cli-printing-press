@@ -349,9 +349,44 @@ When the user confirmed a logged-in session (AUTH_SESSION_AVAILABLE=true from Ph
    - Endpoints that appear in both public and auth visits → classify as **public**
    - Record the classification in the discovery report's Endpoints table (add an "Auth" column)
 
-5. **Trigger cookie auth validation.** If any auth-required endpoints were found, Step 2d (Cookie auth validation) MUST run to verify that cookie replay works. This is what propagates `Auth.Type=cookie` and `CookieDomain` into the spec.
+5. **Discover the auth header pattern.** Many SPAs don't send cookies directly — they read tokens from cookies/localStorage and construct an `Authorization` header. Install an XHR header interceptor and trigger a client-side navigation (click a link — do NOT use `browser-use open`) to capture the actual request headers:
 
-6. **If auth pages redirect to login.** The session may have expired between the time the user confirmed login and the sniff reaches this step. Report: "Auth pages redirected to login — session may have expired. Auth-only endpoints not discovered." Do NOT fail the sniff — the public endpoints are still valid. Proceed to Step 2a.2 with the public set only.
+   ```bash
+   # Install header interceptor
+   browser-use eval "window.__authHeaders={};
+   const _s=XMLHttpRequest.prototype.setRequestHeader;
+   XMLHttpRequest.prototype.setRequestHeader=function(k,v){
+     if(k.toLowerCase()==='authorization')window.__authHeaders[k]=v.substring(0,100);
+     _s.apply(this,arguments)};'OK'"
+
+   # Navigate via SPA click (preserves interceptor)
+   browser-use eval "document.querySelector('a[href*=account],a[href*=orders],a[href*=rewards]').click()"
+   sleep 3
+
+   # Collect captured auth headers
+   browser-use eval "JSON.stringify(window.__authHeaders)"
+   ```
+
+   **If an Authorization header is found:**
+   - Record the scheme (e.g., `Bearer`, `PagliacciAuth`, `Token`, custom)
+   - Record the token format and where it comes from:
+     ```bash
+     browser-use eval "document.cookie"  # check cookies
+     browser-use eval "JSON.stringify(Object.keys(localStorage).filter(k=>k.match(/token|auth|session/i)))"  # check localStorage
+     ```
+   - Use this header format in Step 2d validation (not cookie replay — construct the actual header)
+   - Record the auth scheme in the discovery report
+
+   **If no Authorization header found** but auth endpoints returned data (from step 4), the API likely uses cookie-based auth directly. Proceed to Step 2d with cookie replay.
+
+   **If the interceptor captured nothing** (page didn't fire API calls), try clicking a different link or scrolling the page. If still nothing after 2 attempts, proceed to Step 2d with cookie replay as a fallback.
+
+6. **Trigger auth validation.** If any auth-required endpoints were found, Step 2d (Cookie/token auth validation) MUST run. Use whichever auth method was discovered in step 5:
+   - If an Authorization header was found → replay with that header
+   - If no header found → try cookie replay
+   This is what propagates `Auth.Type` and auth config into the spec.
+
+7. **If auth pages redirect to login.** The session may have expired between the time the user confirmed login and the sniff reaches this step. Report: "Auth pages redirected to login — session may have expired. Auth-only endpoints not discovered." Do NOT fail the sniff — the public endpoints are still valid. Proceed to Step 2a.2 with the public set only.
 
 **SPA interaction rule:** On each page/state, take a snapshot first. Look for interactive elements (buttons, forms, dropdowns, tabs). Click through them. SPAs fire API calls on interaction, not on page load. If you load a page and see no XHR activity, that means you need to interact with the page, not that there is nothing to find.
 
@@ -442,6 +477,51 @@ After collecting URLs, check whether the site uses a GraphQL BFF pattern. This i
 4. **Feed into spec building.** When building the OpenAPI spec from discovered operations, each GraphQL operation becomes a spec path: `POST /graphql#OperationName`. The operation name goes in `operationId`. Variables become request body properties. This is compatible with the existing generator — it sees each operation as a distinct POST endpoint.
 
 **If NOT a GraphQL BFF:** Skip this step. The existing URL-based discovery flow handles REST APIs.
+
+**Step 2a.2.7: JS bundle endpoint extraction (supplementary)**
+
+SPA frameworks (Angular, React, Vue, Next.js) compile all API endpoint paths into their main JS bundle. Extracting these paths supplements the sniff with endpoints that no user flow visits (admin features, migration tools, rarely-used settings).
+
+**When to run:** After completing the interactive sniff (Steps 2a.1–2a.2.5). This is supplementary — the sniff is primary because it provides response shapes, auth patterns, and parameter types. Bundle extraction only gives endpoint paths.
+
+**Skip when:** The site is server-rendered HTML without JS bundles, or the sniff already discovered 20+ endpoints and the API surface appears complete.
+
+1. **Find the main bundle:**
+   ```bash
+   browser-use eval "Array.from(document.querySelectorAll('script[src]')).map(s=>s.src).filter(s=>s.includes(location.hostname)&&(s.includes('main')||s.includes('app'))).join('\\n')"
+   ```
+
+2. **Download and extract API paths:**
+   ```bash
+   curl -s "<bundle-url>" | python3 -c "
+   import sys, re
+   content = sys.stdin.read()
+   
+   # Find the API base URL config (common patterns)
+   base_match = re.search(r'(apiUrl|baseUrl|API_URL)[^\"]*\"(https?://[^\"]+)\"', content)
+   if base_match:
+       print(f'API base: {base_match.group(2)}')
+   
+   # Extract capitalized path segments (API routes)
+   paths = re.findall(r'\"(/[A-Z][a-zA-Z]+(?:/[A-Z]?[a-zA-Z]*)*)\"|\"(/[a-z]+/[a-zA-Z]+)\"', content)
+   unique = sorted(set(p[0] or p[1] for p in paths if p[0] or p[1]))
+   for p in unique:
+       print(f'  {p}')
+   
+   # Extract HTTP method calls
+   calls = re.findall(r'\.(get|post|put|delete|patch)\([^)]*\"(/[A-Za-z][A-Za-z0-9/\${}]+)', content)
+   for method, path in sorted(set(calls)):
+       print(f'  {method.upper()} {path}')
+   "
+   ```
+
+3. **Merge with sniff results.** Append bundle-discovered endpoints to `$SNIFF_URLS`. Mark their provenance:
+   ```bash
+   # Append bundle-only endpoints (not already in sniff-urls.txt)
+   # In the discovery report, mark these as "discovered: bundle"
+   ```
+
+4. **Record API config.** If the bundle reveals useful config (API version headers, auth token construction, rate limit hints), note them in the discovery report's Sniff Configuration section.
 
 **Step 2a.3: Deduplicate and normalize**
 
@@ -614,4 +694,6 @@ The report must contain these sections:
 
 7. **Rate Limiting Events** — Any 429 responses encountered, delays applied, and effective sniff rate achieved (e.g., "Sniffed 7 endpoints at ~1.5 req/s effective rate, one 429 at request #4").
 
-8. **Authentication Context** — Whether the sniff used an authenticated session. If yes: transfer method used (auto-connect / profile / headed login / HAR), which endpoints were only reachable with auth (e.g., "order history, saved addresses, rewards required login"), and confirmation that session state was excluded from manuscript archiving. If no: "No authenticated session used."
+8. **Authentication Context** — Whether the sniff used an authenticated session. If yes: transfer method used (auto-connect / profile / headed login / HAR), which endpoints were only reachable with auth (e.g., "order history, saved addresses, rewards required login"), the auth header scheme discovered (e.g., "Authorization: PagliacciAuth {customerId}|{authToken}", "Bearer token from localStorage"), and confirmation that session state was excluded from manuscript archiving. If no: "No authenticated session used."
+
+9. **Bundle Extraction** — If JS bundle extraction ran (Step 2a.2.7), list: the bundle URL analyzed, the API base URL discovered, endpoints found only in the bundle (not during interactive sniff), and any API config extracted (version headers, auth construction patterns). If bundle extraction did not run, omit this section.
