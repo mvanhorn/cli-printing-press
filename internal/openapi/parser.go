@@ -264,6 +264,32 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 			auth.Header = "Authorization"
 		}
 		auth.In = strings.TrimSpace(scheme.In)
+		// Detect composed cookie auth via x-auth-type extension
+		if xType, ok := scheme.Extensions["x-auth-type"]; ok {
+			if typeStr, ok := xType.(string); ok && typeStr == "composed" {
+				auth.Type = "composed"
+				if xFmt, ok := scheme.Extensions["x-auth-format"]; ok {
+					if fmtStr, ok := xFmt.(string); ok {
+						auth.Format = fmtStr
+					}
+				}
+				if xDomain, ok := scheme.Extensions["x-auth-cookie-domain"]; ok {
+					if domainStr, ok := xDomain.(string); ok {
+						auth.CookieDomain = domainStr
+					}
+				}
+				if xCookies, ok := scheme.Extensions["x-auth-cookies"]; ok {
+					if cookieList, ok := xCookies.([]interface{}); ok {
+						for _, c := range cookieList {
+							if s, ok := c.(string); ok {
+								auth.Cookies = append(auth.Cookies, s)
+							}
+						}
+					}
+				}
+				break
+			}
+		}
 		// Detect bot token pattern from scheme name (e.g. "BotToken")
 		if strings.Contains(strings.ToLower(schemeName), "bot") && strings.EqualFold(auth.Header, "Authorization") {
 			auth.Format = "Bot {bot_token}"
