@@ -357,7 +357,7 @@ func readProfileDisplayName(prefsPath string) string {
 	return prefs.Profile.Name
 }
 
-// countCookiesForDomain copies the Cookies DB to temp and counts matching rows.
+// countCookiesForDomain copies the Cookies DB (plus WAL/SHM) to temp and counts matching rows.
 // Uses sqlite3 when available; host_key is plaintext so no decryption is needed.
 func countCookiesForDomain(cookiesDB, domainPattern string) int {
 	tmpFile, err := os.CreateTemp("", "cookies-probe-*.db")
@@ -367,23 +367,16 @@ func countCookiesForDomain(cookiesDB, domainPattern string) int {
 	tmpPath := tmpFile.Name()
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
+	defer os.Remove(tmpPath + "-wal")
+	defer os.Remove(tmpPath + "-shm")
 
-	// Copy the database file to avoid Chrome's WAL lock
-	src, err := os.Open(cookiesDB)
-	if err != nil {
+	// Copy the database file plus WAL/SHM to avoid Chrome's WAL lock
+	// and to include uncommitted cookie writes that are still in the WAL.
+	if err := copyFileIfExists(cookiesDB, tmpPath); err != nil {
 		return 0
 	}
-	dst, err := os.Create(tmpPath)
-	if err != nil {
-		src.Close()
-		return 0
-	}
-	_, err = io.Copy(dst, src)
-	src.Close()
-	dst.Close()
-	if err != nil {
-		return 0
-	}
+	_ = copyFileIfExists(cookiesDB+"-wal", tmpPath+"-wal")
+	_ = copyFileIfExists(cookiesDB+"-shm", tmpPath+"-shm")
 
 	query := fmt.Sprintf("SELECT COUNT(*) FROM cookies WHERE host_key LIKE '%s'", domainPattern)
 	out, err := exec.Command("sqlite3", tmpPath, query).Output()
@@ -394,6 +387,25 @@ func countCookiesForDomain(cookiesDB, domainPattern string) int {
 	count := 0
 	fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &count)
 	return count
+}
+
+// copyFileIfExists copies src to dst. Returns nil if src does not exist.
+func copyFileIfExists(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
 }
 
 // resolveChromeProfile determines which Chrome profile to read cookies from.
@@ -527,9 +539,11 @@ func extractViaPycookiecheat(domain, profileDir string) (string, error) {
 
 	var script string
 	if cookiePath != "" {
+		// Use forward slashes so Python doesn't interpret backslashes as escapes on Windows
+		safePath := filepath.ToSlash(cookiePath)
 		script = fmt.Sprintf(
 			`import json; from pycookiecheat import chrome_cookies; print(json.dumps(chrome_cookies("https://%s", cookie_file="%s")))`,
-			cleanDomain, cookiePath,
+			cleanDomain, safePath,
 		)
 	} else {
 		script = fmt.Sprintf(
