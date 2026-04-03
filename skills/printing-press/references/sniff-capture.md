@@ -170,15 +170,14 @@ if pgrep -x "Google Chrome" >/dev/null 2>&1; then
 fi
 ```
 
-**When Chrome IS running**, prefer agent-browser (attaches to live browser without closing it):
+**When Chrome IS running**, use agent-browser to grab cookies, then ask the user to quit Chrome so browser-use can load the profile for capture:
 
 Present via `AskUserQuestion`:
-> "Chrome is running. I can attach to it and grab your session."
+> "Chrome is running. I'll grab your cookies, then need you to quit Chrome so I can sniff with full page access."
 >
-> 1. **Grab session from your Chrome** (Recommended) — "Saves your cookies, then sniffs in a separate headless browser. Chrome stays untouched."
-> 2. **Sniff in your Chrome directly** — "Stays connected to your real Chrome. You'll see pages changing during the sniff (~60-90 seconds). Simplest approach — no daemon juggling."
-> 3. **Log in within a new browser window** — "I'll open a visible browser. You log in, then I sniff. ~1 minute."
-> 4. **I'll export a HAR file** — "You browse the site in DevTools, export the HAR."
+> 1. **Grab session, then quit Chrome** (Recommended) — "I save your cookies via agent-browser, you quit Chrome, then I sniff with browser-use using your profile. Full DOM access."
+> 2. **Log in within a new browser window** — "I'll open a visible browser. You log in, then I sniff. ~1 minute."
+> 3. **I'll export a HAR file** — "You browse the site in DevTools, export the HAR."
 
 For option 1 (save-then-restore):
 
@@ -196,19 +195,10 @@ agent-browser --state "$DISCOVERY_DIR/session-state.json" open <url>
 ```
 If auto-connect fails (no debug port), explain: "Chrome doesn't have remote debugging enabled. Quit Chrome and relaunch with `--remote-debugging-port=9222`, or pick option 2."
 
-For option 2 (stay in auto-connect mode):
+For option 1 after cookies are saved and Chrome is quit:
 ```bash
-# Stay connected to the user's real Chrome — all cookies are already present
-agent-browser --auto-connect open <url>
-agent-browser network har start
-# ... browse pages (user will see their Chrome tabs changing) ...
-agent-browser network har stop <path>
-# No close/restart needed — daemon stays connected to real Chrome
-```
-
-For option 1 with browser-use (if agent-browser not available):
-```bash
-browser-use open <url> --connect
+# Start browser-use with the Chrome profile (has all saved cookies/logins)
+browser-use --profile "Default" open <url>
 ```
 
 **When Chrome is NOT running**, prefer browser-use (loads real Chrome profile with all cookies):
@@ -228,9 +218,16 @@ If browser-use is not available, fall back to agent-browser headed login.
 
 If Chrome profile lock error occurs (Chrome is actually running): "Chrome's profile is locked. Quit Chrome first, or switch to option 2."
 
-**When both tools are available**, recommend the situationally better one:
-- Chrome running: prefer agent-browser `--auto-connect`
-- Chrome not running: prefer browser-use `--profile "Default"`
+**Session transfer vs capture are separate concerns.** Use agent-browser for session transfer only (grabbing cookies from a running Chrome). Always use browser-use for the actual capture (Steps 2a.*) because it has full DOM access via eval, scroll, click, and snapshot. Agent-browser's auto-connect mode cannot access the DOM or run eval — it can navigate and record HAR but cannot interact with pages.
+
+Recommended flow when Chrome IS running:
+1. Use agent-browser `--auto-connect state save` to grab cookies
+2. Close agent-browser daemon
+3. Ask user to quit Chrome
+4. Start browser-use `--profile "Default"` for capture (loads the same cookies via the Chrome profile)
+
+When Chrome is NOT running:
+- Use browser-use `--profile "Default"` directly for both session and capture
 
 **For headed login (option 2 with either tool):**
 ```bash
