@@ -420,6 +420,47 @@ After completing the primary user flow capture (browser-use or agent-browser), c
 
 If the thin-results check triggers a re-sniff that discovers additional endpoints, merge the new captures with the originals before proceeding to Step 3.
 
+#### Step 2d: Cookie auth validation (authenticated sniff only)
+
+**Skip this step if:** The sniff was anonymous (no session transfer in Step 1d), or the API uses API key / Bearer token auth rather than cookie-based session auth.
+
+**Purpose:** Before promising `auth login --chrome` in the generated CLI, validate that browser cookies actually produce authenticated responses when replayed outside the browser context. Some APIs use CSRF tokens, SameSite cookie policies, or other mechanisms that prevent cookie-only replay.
+
+**Validation procedure:**
+
+1. **Select a test endpoint.** Pick one endpoint from the capture that returned HTTP 200 and appears to require authentication (e.g., a user-specific resource like `/api/me`, `/account`, or `/orders`).
+
+2. **Replay with cookies.** Using `curl` or the capture tool, replay the request with the captured cookies attached:
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}" \
+     -H "Cookie: <captured-cookie-string>" \
+     "https://<api-domain>/<test-endpoint>"
+   ```
+   Expected: HTTP 200 (or the same status as during capture).
+
+3. **Replay without cookies.** Replay the same request with no cookies:
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}" \
+     "https://<api-domain>/<test-endpoint>"
+   ```
+   Expected: HTTP 401, 403, or a redirect to a login page.
+
+4. **Evaluate results:**
+
+   | With cookies | Without cookies | Verdict |
+   |-------------|----------------|---------|
+   | 200 | 401/403/302 | **Pass** — cookie auth works. Set `Auth.Type = "cookie"` and `CookieDomain` in the spec. The generated CLI will include `auth login --chrome`. |
+   | 200 | 200 (same content) | **Not required** — cookies aren't needed for this endpoint. Check other endpoints; if none require auth, set `Auth.Type = "none"`. |
+   | 401/403 | 401/403 | **Fail** — cookies don't replay (likely CSRF, SameSite, or IP binding). Warn the user and do not offer browser auth. |
+   | Other | Any | **Inconclusive** — try a different test endpoint. If all attempts are inconclusive after 3 endpoints, treat as Fail. |
+
+5. **On Pass:** Proceed to Step 3. The sniff report (Step 5) should note: "Cookie auth validated — the generated CLI will support `auth login --chrome`."
+
+6. **On Fail:** Inform the user via the conversation:
+   > "Authenticated endpoints were discovered, but cookie replay failed (likely CSRF tokens or strict cookie policies). The generated CLI will include these endpoints but won't offer `auth login --chrome`. You'll need to manually provide auth tokens via environment variables."
+
+   Set `Auth.Type = "none"` in the capture's auth section. Include the authenticated endpoints in the spec (they're still valid endpoints), but the CLI won't have a browser auth path. Note the failure reason in the sniff report.
+
 #### Step 3: Analyze capture
 
 Run websniff on the captured traffic:

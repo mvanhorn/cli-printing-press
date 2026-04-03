@@ -66,6 +66,24 @@ Or set it via environment variable:
 export {{index .Auth.EnvVars 0}}="your-token-here"
 ```
 {{- end}}
+{{- else if eq .Auth.Type "cookie"}}
+
+### 2. Authenticate
+
+This CLI uses your browser session for authentication. Log in to {{.Auth.CookieDomain}} in Chrome, then:
+
+```bash
+{{.Name}}-pp-cli auth login --chrome
+```
+
+Requires a cookie extraction tool. Install one:
+
+```bash
+pip install pycookiecheat          # Python (recommended)
+brew install barnardb/cookies/cookies  # Homebrew
+```
+
+When your session expires, run `auth login --chrome` again.
 {{- end}}
 
 ### {{if and (ne .Auth.Type "") (ne .Auth.Type "none")}}3{{else}}2{{end}}. Verify Setup

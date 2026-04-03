@@ -9,6 +9,9 @@ import (
 {{- if .Auth.EnvVars}}
 	"os"
 {{- end}}
+{{- if eq .Auth.Type "cookie"}}
+	"os/exec"
+{{- end}}
 	"strings"
 	"time"
 
@@ -36,6 +39,34 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// Check auth
 {{- if or (eq .Auth.Type "") (eq .Auth.Type "none")}}
 			report["auth"] = "not required"
+{{- else if eq .Auth.Type "cookie"}}
+			if cfg != nil {
+				header := cfg.AuthHeader()
+				if header == "" {
+					report["auth"] = "not configured"
+					report["auth_hint"] = "{{.Name}}-pp-cli auth login --chrome"
+				} else {
+					report["auth"] = "configured (browser session)"
+					report["auth_source"] = cfg.AuthSource
+					report["auth_domain"] = "{{.Auth.CookieDomain}}"
+				}
+			}
+			// Check cookie tool availability
+			cookieToolFound := false
+			for _, check := range [][]string{
+				{"python3", "-c", "import pycookiecheat"},
+				{"cookies", "--help"},
+				{"cookie-scoop", "--help"},
+			} {
+				if err := exec.Command(check[0], check[1:]...).Run(); err == nil {
+					cookieToolFound = true
+					report["cookie_tool"] = check[0]
+					break
+				}
+			}
+			if !cookieToolFound {
+				report["cookie_tool"] = "not found (install: pip install pycookiecheat)"
+			}
 {{- else}}
 			if cfg != nil {
 				header := cfg.AuthHeader()

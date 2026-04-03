@@ -149,7 +149,8 @@ func TestAnalyzeCapture_UsesCapturedCookieAuth(t *testing.T) {
 	assert.Equal(t, "cookie", apiSpec.Auth.Type)
 	assert.Equal(t, "Cookie", apiSpec.Auth.Header)
 	assert.Equal(t, "cookie", apiSpec.Auth.In)
-	assert.Equal(t, "informational only; no template support", apiSpec.Auth.Format)
+	assert.Equal(t, "spotify.com", apiSpec.Auth.CookieDomain)
+	assert.Equal(t, []string{"SPOTIFY_COOKIES"}, apiSpec.Auth.EnvVars)
 }
 
 func TestDetectAuth_PrefersCapturedAuthOverHeaders(t *testing.T) {

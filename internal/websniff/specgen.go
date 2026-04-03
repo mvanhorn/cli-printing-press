@@ -317,18 +317,20 @@ func detectCapturedAuth(capture *AuthCapture, envPrefix string) spec.AuthConfig 
 			}
 		case "cookie":
 			return spec.AuthConfig{
-				Type:   "cookie",
-				Header: "Cookie",
-				In:     "cookie",
-				Format: "informational only; no template support",
+				Type:         "cookie",
+				Header:       "Cookie",
+				In:           "cookie",
+				CookieDomain: capture.BoundDomain,
+				EnvVars:      envVarsOrNil(envPrefix, "COOKIES"),
 			}
 		}
 	case captureType == "cookie" && len(capture.Cookies) > 0:
 		return spec.AuthConfig{
-			Type:   "cookie",
-			Header: "Cookie",
-			In:     "cookie",
-			Format: "informational only; no template support",
+			Type:         "cookie",
+			Header:       "Cookie",
+			In:           "cookie",
+			CookieDomain: capture.BoundDomain,
+			EnvVars:      envVarsOrNil(envPrefix, "COOKIES"),
 		}
 	}
 

@@ -339,11 +339,13 @@ func (g *Generator) Generate() error {
 	}
 
 	// Always render auth command - use full OAuth2 template when authorization URL is present,
-	// otherwise use simple token-management template
+	// browser cookie template for cookie-auth APIs, otherwise simple token-management template
 	authPath := filepath.Join("internal", "cli", "auth.go")
 	authTmpl := "auth_simple.go.tmpl"
 	if g.Spec.Auth.AuthorizationURL != "" {
 		authTmpl = "auth.go.tmpl"
+	} else if g.Spec.Auth.Type == "cookie" {
+		authTmpl = "auth_browser.go.tmpl"
 	}
 	if err := g.renderTemplate(authTmpl, authPath, g.Spec); err != nil {
 		return fmt.Errorf("rendering auth: %w", err)

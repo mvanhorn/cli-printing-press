@@ -1207,3 +1207,67 @@ func TestGeneratedHelpers_DeadCodeRemoved(t *testing.T) {
 	assert.Contains(t, content, "filterFields")
 	assert.Contains(t, content, "classifyAPIError")
 }
+
+func TestGenerate_CookieAuthUsesBrowserTemplate(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "cookieapp",
+		Version: "0.1.0",
+		BaseURL: "https://app.example.com",
+		Auth: spec.AuthConfig{
+			Type:         "cookie",
+			Header:       "Cookie",
+			In:           "cookie",
+			CookieDomain: ".example.com",
+			EnvVars:      []string{"COOKIEAPP_COOKIES"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/cookieapp-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/api/items", Description: "List items"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "cookieapp-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	authGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	content := string(authGo)
+
+	// Browser auth template indicators
+	assert.Contains(t, content, "--chrome")
+	assert.Contains(t, content, "detectCookieTool")
+	assert.Contains(t, content, "extractCookies")
+	assert.Contains(t, content, "cookieToolSupportsProfiles")
+	assert.Contains(t, content, "--url")
+	assert.Contains(t, content, "does not support --profile")
+	assert.Contains(t, content, ".example.com")
+	assert.Contains(t, content, "continuing without auto-detection")
+	// Should NOT contain simple token template indicators
+	assert.NotContains(t, content, "set-token")
+
+	// Config should have cookie branch in AuthHeader
+	configGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	configContent := string(configGo)
+	assert.Contains(t, configContent, `"browser"`)
+
+	// Doctor should reference browser auth
+	doctorGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	doctorContent := string(doctorGo)
+	assert.Contains(t, doctorContent, "auth login --chrome")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}

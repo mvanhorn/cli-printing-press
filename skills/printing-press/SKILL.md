@@ -575,13 +575,13 @@ After Phase 1 research completes, analyze findings to proactively assess what au
 If the user provides a key, set it in `AUTH_CONTEXT` so the API Key Gate (Phase 0.5) does not re-ask.
 
 **For browser session auth:** Present via `AskUserQuestion`:
-> "`<API>` has authenticated endpoints ([list features]). Are you logged in to `<site>` in your browser? The sniff will discover more endpoints if you are."
+> "`<API>` has authenticated endpoints ([list features]). Are you logged in to `<site>` in your browser? If so, the generated CLI will support `auth login --chrome` — you'll be able to authenticate just by being logged into the site in Chrome. No API key needed."
 >
-> 1. **Yes, I'm logged in** — I'll use your session during sniff
+> 1. **Yes, I'm logged in** — I'll use your session during sniff and enable browser auth in the CLI
 > 2. **No, but I can log in** — I'll help you log in before sniffing
 > 3. **No, skip authenticated endpoints** — sniff only public endpoints
 
-Set `AUTH_SESSION_AVAILABLE=true` if the user selects option 1 or 2. The Sniff Gate (Phase 1.7) will use this flag.
+Set `AUTH_SESSION_AVAILABLE=true` if the user selects option 1 or 2. The Sniff Gate (Phase 1.7) will use this flag. After traffic capture, Step 2d in [references/sniff-capture.md](references/sniff-capture.md) validates that cookie replay works before enabling browser auth in the generated CLI.
 
 **For dual auth:** Ask about both in sequence — API key first (simple env var check), then browser session.
 

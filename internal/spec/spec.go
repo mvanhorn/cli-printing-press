@@ -35,6 +35,7 @@ type AuthConfig struct {
 	AuthorizationURL string   `yaml:"authorization_url,omitempty" json:"authorization_url,omitempty"`
 	TokenURL         string   `yaml:"token_url,omitempty" json:"token_url,omitempty"`
 	Scopes           []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`
+	CookieDomain     string   `yaml:"cookie_domain,omitempty" json:"cookie_domain,omitempty"` // domain to read browser cookies from (e.g. ".notion.so")
 }
 
 type ConfigSpec struct {
