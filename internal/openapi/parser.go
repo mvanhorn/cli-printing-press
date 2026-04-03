@@ -1903,6 +1903,10 @@ func cleanSpecName(title string) string {
 
 	title = strings.ReplaceAll(title, "open api", " ")
 
+	// Strip apostrophes so brand names like "Domino's" become "dominos" not "domino-s"
+	title = strings.ReplaceAll(title, "'", "")
+	title = strings.ReplaceAll(title, "\u2019", "") // Unicode right single quotation mark
+
 	var normalized strings.Builder
 	lastSpace := true
 	for _, r := range title {

@@ -277,6 +277,14 @@ func TestCleanSpecName(t *testing.T) {
 		{title: "Stytch API", want: "stytch"},
 		{title: "GitHub REST API", want: "github"},
 		{title: "", want: "api"},
+		// Apostrophes in brand names should be stripped, not hyphenated
+		{title: "Domino's Pizza API", want: "dominos-pizza"},
+		{title: "McDonald's API", want: "mcdonalds"},
+		{title: "Lowe's Home Improvement", want: "lowes-home-improvement"},
+		// Unicode right single quotation mark
+		{title: "Domino\u2019s Pizza API", want: "dominos-pizza"},
+		// Multiple apostrophes
+		{title: "Rock'n'Roll API", want: "rocknroll"},
 	}
 
 	for _, tt := range tests {

@@ -306,6 +306,31 @@ Example for "Check today's scores" (ESPN):
 
 Each step triggers API calls that page loads alone would miss. After the primary flow, add 1-2 secondary flows from the research brief's other top workflows (e.g., "Check rewards," "Track an order").
 
+**Step 2a.1.5: Authenticated flow (when `AUTH_SESSION_AVAILABLE=true`)**
+
+When the user confirmed a logged-in session (AUTH_SESSION_AVAILABLE=true from Phase 1.6), add authenticated page visits AFTER the primary flow. The primary flow discovers the public API surface; the authenticated flow discovers what's behind the login wall.
+
+1. **Record the public endpoint set.** Before visiting auth pages, note which endpoints have been discovered so far. These are the "public set" — reachable without session cookies.
+
+2. **Visit account/profile pages.** Navigate to common authenticated URLs. Try these patterns in order, stopping at the first that loads a real page (not a redirect to login):
+   - `/account`, `/my-account`, `/profile`, `/settings`
+   - `/orders`, `/order-history`, `/my-orders`
+   - `/rewards`, `/loyalty`, `/my-deals-and-rewards`
+   - `/addresses`, `/saved-addresses`, `/payment-methods`
+
+   Also derive page URLs from the research brief's top workflows. If the brief mentions "order history" or "rewards" or "saved addresses," visit the corresponding pages even if they don't match the common patterns above.
+
+3. **Interact with auth pages.** Apply the SPA interaction rule below — click tabs, expand sections, trigger lazy loads. Auth pages often have sub-sections (e.g., "Recent Orders" tab, "Rewards History" tab) that fire separate API calls.
+
+4. **Classify endpoints.** After visiting auth pages, compare the new endpoints against the public set:
+   - Endpoints that appear ONLY during auth page visits → classify as **auth-required**
+   - Endpoints that appear in both public and auth visits → classify as **public**
+   - Record the classification in the discovery report's Endpoints table (add an "Auth" column)
+
+5. **Trigger cookie auth validation.** If any auth-required endpoints were found, Step 2d (Cookie auth validation) MUST run to verify that cookie replay works. This is what propagates `Auth.Type=cookie` and `CookieDomain` into the spec.
+
+6. **If auth pages redirect to login.** The session may have expired between the time the user confirmed login and the sniff reaches this step. Report: "Auth pages redirected to login — session may have expired. Auth-only endpoints not discovered." Do NOT fail the sniff — the public endpoints are still valid. Proceed to Step 2a.2 with the public set only.
+
 **SPA interaction rule:** On each page/state, take a snapshot first. Look for interactive elements (buttons, forms, dropdowns, tabs). Click through them. SPAs fire API calls on interaction, not on page load. If you load a page and see no XHR activity, that means you need to interact with the page, not that there is nothing to find.
 
 **Step 2a.2: Collect API URLs**
@@ -337,6 +362,52 @@ browser-use eval "var e=performance.getEntriesByType('resource');var u=[];for(va
 Replace `<api-domain-1>`, `<api-domain-2>` etc. with the API domains discovered in Phase 1 research (e.g., `api.espn.com`, `sports.core.api`, `site.web.api`).
 
 **Why Performance API:** It is built into every browser, captures all resource loads (including those that fire before any JS interceptor could be injected), survives within a page lifecycle, and returns simple URL strings. Do NOT use `fetch`/`XMLHttpRequest` monkey-patching — it breaks on page navigation.
+
+**Step 2a.2.5: GraphQL BFF detection**
+
+After collecting URLs, check whether the site uses a GraphQL BFF pattern. This is common in modern SPAs (Domino's, Notion, Shopify storefronts) where all API traffic goes through a single `/graphql` or `/api/graphql` endpoint.
+
+**Detection signal:** If >50% of captured XHR/fetch POST URLs resolve to the same path (e.g., `/api/web-bff/graphql`, `/graphql`, `/api/graphql`), classify as a GraphQL BFF.
+
+**If GraphQL BFF detected:**
+
+1. **Extract operation names from POST bodies.** The URL alone tells you nothing — all calls go to the same endpoint. The value is in the request bodies.
+
+   For agent-browser:
+   ```bash
+   # List all XHR requests
+   agent-browser network requests --type xhr --json
+   # For each POST to the GraphQL endpoint, get the full request including body:
+   agent-browser network request <request-id> --json
+   # Parse: look for operationName and query fields in the request body
+   ```
+
+   For browser-use: inject a fetch interceptor BEFORE browsing auth/interaction pages. This captures POST bodies that the Performance API misses:
+   ```bash
+   browser-use eval "window.__gqlOps=[];const _f=window.fetch;window.fetch=async function(){const r=await _f.apply(this,arguments);try{if(arguments[0]&&arguments[0].toString().includes('graphql')&&arguments[1]&&arguments[1].body){const b=JSON.parse(arguments[1].body);if(b.operationName)window.__gqlOps.push({op:b.operationName,vars:Object.keys(b.variables||{})})}}catch(e){}return r}"
+   ```
+   After browsing, collect:
+   ```bash
+   browser-use eval "JSON.stringify(window.__gqlOps)"
+   ```
+
+2. **Record operations.** For each unique `operationName`, record:
+   - Operation name (e.g., `GetStoreMenu`, `AddToCart`, `GetOrderHistory`)
+   - Type: query (read) or mutation (write) — infer from the `query` field prefix or from naming convention (`Get*` = query, `Add*`/`Create*`/`Update*`/`Delete*` = mutation)
+   - Variable keys (e.g., `storeId`, `productCode`) — these become CLI flags
+   - Domain group — group by prefix (e.g., `Store*`, `Menu*`, `Order*`, `Account*`)
+
+3. **Write to discovery report.** Replace (or supplement) the "Endpoints Discovered" table with a "GraphQL Operations" table:
+   ```
+   | Operation | Type | Variables | Domain |
+   |-----------|------|-----------|--------|
+   | GetStoreMenu | query | storeId, lang | Store |
+   | AddToCart | mutation | productCode, qty | Order |
+   ```
+
+4. **Feed into spec building.** When building the OpenAPI spec from discovered operations, each GraphQL operation becomes a spec path: `POST /graphql#OperationName`. The operation name goes in `operationId`. Variables become request body properties. This is compatible with the existing generator — it sees each operation as a distinct POST endpoint.
+
+**If NOT a GraphQL BFF:** Skip this step. The existing URL-based discovery flow handles REST APIs.
 
 **Step 2a.3: Deduplicate and normalize**
 
@@ -498,7 +569,7 @@ The report must contain these sections:
 
 3. **Sniff Configuration** — Backend used (browser-use, agent-browser, or manual HAR), pacing settings (initial delay, final effective rate), and proxy pattern detection result (proxy-envelope detected / not detected, with the proxy URL if applicable).
 
-4. **Endpoints Discovered** — A markdown table with columns: Method, Path, Status Code, Content-Type. One row per unique endpoint observed.
+4. **Endpoints Discovered** — A markdown table with columns: Method, Path, Status Code, Content-Type, Auth. One row per unique endpoint observed. The Auth column is "public" or "auth-required" (based on Step 2a.1.5 classification). If no authenticated flow was run, omit the Auth column.
 
 5. **Coverage Analysis** — What resource types were exercised (e.g., "collections, workspaces, teams, categories") and what was likely missed. Compare against the Phase 1 research brief to identify gaps (e.g., "Brief mentions 'flows' but no flow endpoints were discovered during sniff").
 

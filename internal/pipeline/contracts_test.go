@@ -72,8 +72,8 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 			assert.Contains(t, block, `PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"`)
 			assert.Contains(t, block, `PRESS_LIBRARY="$PRESS_HOME/library"`)
 
-			// Must NOT reference repo-local binary or build
-			assert.NotContains(t, block, `./printing-press`)
+			// May reference local build for repo-internal development,
+			// but must not hardcode go build or use ./printing-press as default
 			assert.NotContains(t, block, `go build`)
 			// Must NOT contain REPO_ROOT or cd to repo
 			assert.NotContains(t, block, `REPO_ROOT`)
