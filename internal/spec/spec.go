@@ -25,7 +25,7 @@ type APISpec struct {
 }
 
 type AuthConfig struct {
-	Type             string   `yaml:"type" json:"type"` // api_key, oauth2, bearer_token, cookie, composed, none
+	Type             string   `yaml:"type" json:"type"` // api_key, oauth2, bearer_token, cookie, none
 	Header           string   `yaml:"header" json:"header"`
 	Format           string   `yaml:"format" json:"format"`
 	EnvVars          []string `yaml:"env_vars" json:"env_vars"`
@@ -36,7 +36,6 @@ type AuthConfig struct {
 	TokenURL         string   `yaml:"token_url,omitempty" json:"token_url,omitempty"`
 	Scopes           []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`
 	CookieDomain     string   `yaml:"cookie_domain,omitempty" json:"cookie_domain,omitempty"` // domain to read browser cookies from (e.g. ".notion.so")
-	Cookies          []string `yaml:"cookies,omitempty" json:"cookies,omitempty"`             // named cookies to extract for composed auth (e.g. ["customerId", "authToken"])
 }
 
 type ConfigSpec struct {
@@ -68,7 +67,6 @@ type Param struct {
 	Type        string   `yaml:"type" json:"type"`
 	Required    bool     `yaml:"required" json:"required"`
 	Positional  bool     `yaml:"positional" json:"positional"`
-	PathParam   bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
 	Default     any      `yaml:"default" json:"default"`
 	Description string   `yaml:"description" json:"description"`
 	Fields      []Param  `yaml:"fields" json:"fields"`                     // for nested objects

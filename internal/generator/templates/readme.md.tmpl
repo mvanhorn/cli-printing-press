@@ -66,7 +66,7 @@ Or set it via environment variable:
 export {{index .Auth.EnvVars 0}}="your-token-here"
 ```
 {{- end}}
-{{- else if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+{{- else if eq .Auth.Type "cookie"}}
 
 ### 2. Authenticate
 

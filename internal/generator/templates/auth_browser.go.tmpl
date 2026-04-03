@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -126,80 +125,6 @@ profile by name when the installed backend supports it.`,
 				return authErr(fmt.Errorf("cookie tool returned no cookies for %s", domain))
 			}
 
-{{- if eq .Auth.Type "composed"}}
-			// Step 4: Compose auth header from named cookies
-			cookieMap := parseCookieString(cookies)
-			requiredCookies := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }
-
-			// Check if all required cookies were found on disk
-			allFound := true
-			for _, name := range requiredCookies {
-				if _, ok := cookieMap[name]; !ok {
-					allFound = false
-					break
-				}
-			}
-
-			// If required cookies are missing, they may be session cookies
-			// (in-memory only, not written to Chrome's cookie DB).
-			// Try reading them from a live Chrome session via browser tools.
-			if !allFound {
-				fmt.Fprintf(w, "Required cookies not in Chrome's cookie DB (likely session cookies).\n")
-				fmt.Fprintf(w, "Attempting to read from live Chrome session...\n")
-
-				loginURL := "https://" + strings.TrimPrefix(domain, ".")
-				liveCookies, liveErr := extractLiveCookies(domain)
-				if liveErr != nil {
-					fmt.Fprintf(w, "\n%s Could not read live session: %v\n", red("ERROR"), liveErr)
-					fmt.Fprintln(w, "")
-					fmt.Fprintln(w, "Make sure Chrome is running with "+loginURL+" open and you are logged in.")
-					fmt.Fprintln(w, "Then run this command again:")
-					fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --chrome\n")
-					fmt.Fprintln(w, "")
-					fmt.Fprintln(w, "If this keeps failing, install a browser tool:")
-					fmt.Fprintln(w, "  pip install browser-use        # or")
-					fmt.Fprintln(w, "  npm install -g agent-browser")
-					return authErr(fmt.Errorf("session cookies not accessible for %s", domain))
-				}
-
-				// Merge live cookies into the map
-				for k, v := range parseCookieString(liveCookies) {
-					cookieMap[k] = v
-				}
-
-				// Re-check
-				for _, name := range requiredCookies {
-					if _, ok := cookieMap[name]; !ok {
-						fmt.Fprintf(w, "\n%s Cookie %q not found in Chrome (disk or live session).\n", red("ERROR"), name)
-						fmt.Fprintln(w, "")
-						fmt.Fprintln(w, "Log in to your account:")
-						fmt.Fprintf(w, "\n  %s\n\n", loginURL)
-						fmt.Fprintln(w, "Then run this command again:")
-						fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --chrome\n")
-						return authErr(fmt.Errorf("cookie %q not found for %s", name, domain))
-					}
-				}
-				fmt.Fprintf(w, "%s Found session cookies via live Chrome.\n", green("OK"))
-			}
-
-			composed := "{{.Auth.Format}}"
-			for _, name := range requiredCookies {
-				composed = strings.ReplaceAll(composed, "{"+name+"}", cookieMap[name])
-			}
-
-			cfg, err := config.Load(flags.configPath)
-			if err != nil {
-				return configErr(err)
-			}
-
-			if err := cfg.SaveTokens("", "", composed, "", time.Time{}); err != nil {
-				return configErr(fmt.Errorf("saving auth: %w", err))
-			}
-
-			fmt.Fprintf(w, "%s Composed auth header from %d cookies for %s\n", green("OK"), len(requiredCookies), domain)
-			fmt.Fprintf(w, "Session saved to %s\n", cfg.Path)
-			return nil
-{{- else}}
 			// Step 4: Save to config
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
@@ -214,7 +139,6 @@ profile by name when the installed backend supports it.`,
 			fmt.Fprintf(w, "%s Found %d cookies for %s\n", green("OK"), count, domain)
 			fmt.Fprintf(w, "Session saved to %s\n", cfg.Path)
 			return nil
-{{- end}}
 		},
 	}
 
@@ -397,7 +321,7 @@ func readProfileDisplayName(prefsPath string) string {
 	return prefs.Profile.Name
 }
 
-// countCookiesForDomain copies the Cookies DB (plus WAL/SHM) to temp and counts matching rows.
+// countCookiesForDomain copies the Cookies DB to temp and counts matching rows.
 // Uses sqlite3 when available; host_key is plaintext so no decryption is needed.
 func countCookiesForDomain(cookiesDB, domainPattern string) int {
 	tmpFile, err := os.CreateTemp("", "cookies-probe-*.db")
@@ -407,16 +331,23 @@ func countCookiesForDomain(cookiesDB, domainPattern string) int {
 	tmpPath := tmpFile.Name()
 	tmpFile.Close()
 	defer os.Remove(tmpPath)
-	defer os.Remove(tmpPath + "-wal")
-	defer os.Remove(tmpPath + "-shm")
 
-	// Copy the database file plus WAL/SHM to avoid Chrome's WAL lock
-	// and to include uncommitted cookie writes that are still in the WAL.
-	if err := copyFileIfExists(cookiesDB, tmpPath); err != nil {
+	// Copy the database file to avoid Chrome's WAL lock
+	src, err := os.Open(cookiesDB)
+	if err != nil {
 		return 0
 	}
-	_ = copyFileIfExists(cookiesDB+"-wal", tmpPath+"-wal")
-	_ = copyFileIfExists(cookiesDB+"-shm", tmpPath+"-shm")
+	dst, err := os.Create(tmpPath)
+	if err != nil {
+		src.Close()
+		return 0
+	}
+	_, err = io.Copy(dst, src)
+	src.Close()
+	dst.Close()
+	if err != nil {
+		return 0
+	}
 
 	query := fmt.Sprintf("SELECT COUNT(*) FROM cookies WHERE host_key LIKE '%s'", domainPattern)
 	out, err := exec.Command("sqlite3", tmpPath, query).Output()
@@ -427,25 +358,6 @@ func countCookiesForDomain(cookiesDB, domainPattern string) int {
 	count := 0
 	fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &count)
 	return count
-}
-
-// copyFileIfExists copies src to dst. Returns nil if src does not exist.
-func copyFileIfExists(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
 }
 
 // resolveChromeProfile determines which Chrome profile to read cookies from.
@@ -579,11 +491,9 @@ func extractViaPycookiecheat(domain, profileDir string) (string, error) {
 
 	var script string
 	if cookiePath != "" {
-		// Use forward slashes so Python doesn't interpret backslashes as escapes on Windows
-		safePath := filepath.ToSlash(cookiePath)
 		script = fmt.Sprintf(
 			`import json; from pycookiecheat import chrome_cookies; print(json.dumps(chrome_cookies("https://%s", cookie_file="%s")))`,
-			cleanDomain, safePath,
+			cleanDomain, cookiePath,
 		)
 	} else {
 		script = fmt.Sprintf(
@@ -627,23 +537,6 @@ func extractViaCookiesCLI(domain string) (string, error) {
 	return result, nil
 }
 
-// parseCookieString splits a "name1=value1; name2=value2" string into a map.
-func parseCookieString(cookies string) map[string]string {
-	m := make(map[string]string)
-	for _, pair := range strings.Split(cookies, "; ") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		idx := strings.IndexByte(pair, '=')
-		if idx < 0 {
-			continue
-		}
-		m[pair[:idx]] = pair[idx+1:]
-	}
-	return m
-}
-
 func extractViaCookieScoop(domain, profileDir string) (string, error) {
 	cleanDomain := strings.TrimPrefix(domain, ".")
 	args := []string{"--url", "https://" + cleanDomain, "--header"}
@@ -662,135 +555,4 @@ func extractViaCookieScoop(domain, profileDir string) (string, error) {
 	result := strings.TrimSpace(out.String())
 	result = strings.TrimPrefix(result, "Cookie: ")
 	return result, nil
-}
-
-// --- Live browser cookie extraction (session cookies fallback) ---
-
-// extractLiveCookies reads document.cookie from a live Chrome session.
-// Tries: agent-browser → browser-use → raw CDP, in that order.
-func extractLiveCookies(domain string) (string, error) {
-	targetURL := "https://" + strings.TrimPrefix(domain, ".")
-
-	// 1. Try agent-browser --auto-connect
-	if _, err := exec.LookPath("agent-browser"); err == nil {
-		cookies, err := extractViaAgentBrowser(targetURL)
-		if err == nil && cookies != "" {
-			return cookies, nil
-		}
-	}
-
-	// 2. Try browser-use --connect
-	if _, err := exec.LookPath("browser-use"); err == nil {
-		cookies, err := extractViaBrowserUse(targetURL)
-		if err == nil && cookies != "" {
-			return cookies, nil
-		}
-	}
-
-	// 3. Try raw CDP on common debug ports
-	for _, port := range []string{"9222", "9229"} {
-		cookies, err := extractViaCDP(targetURL, port)
-		if err == nil && cookies != "" {
-			return cookies, nil
-		}
-	}
-
-	return "", fmt.Errorf("no live browser connection available (tried agent-browser, browser-use, CDP)")
-}
-
-func extractViaAgentBrowser(targetURL string) (string, error) {
-	// Open the target URL (attaches to running Chrome)
-	openCmd := exec.Command("agent-browser", "--auto-connect", "open", targetURL)
-	openCmd.Stderr = os.Stderr
-	if err := openCmd.Run(); err != nil {
-		return "", fmt.Errorf("agent-browser open: %w", err)
-	}
-
-	// Read document.cookie via eval
-	var out bytes.Buffer
-	evalCmd := exec.Command("agent-browser", "eval", "document.cookie")
-	evalCmd.Stdout = &out
-	evalCmd.Stderr = os.Stderr
-	if err := evalCmd.Run(); err != nil {
-		closeCmd := exec.Command("agent-browser", "close")
-		_ = closeCmd.Run()
-		return "", fmt.Errorf("agent-browser eval: %w", err)
-	}
-
-	// Close the daemon
-	closeCmd := exec.Command("agent-browser", "close")
-	_ = closeCmd.Run()
-
-	return strings.TrimSpace(out.String()), nil
-}
-
-func extractViaBrowserUse(targetURL string) (string, error) {
-	// Try connecting to running Chrome
-	openCmd := exec.Command("browser-use", "--connect", "open", targetURL)
-	openCmd.Stderr = os.Stderr
-	if err := openCmd.Run(); err != nil {
-		return "", fmt.Errorf("browser-use open: %w", err)
-	}
-
-	var out bytes.Buffer
-	evalCmd := exec.Command("browser-use", "eval", "document.cookie")
-	evalCmd.Stdout = &out
-	evalCmd.Stderr = os.Stderr
-	if err := evalCmd.Run(); err != nil {
-		closeCmd := exec.Command("browser-use", "close")
-		_ = closeCmd.Run()
-		return "", fmt.Errorf("browser-use eval: %w", err)
-	}
-
-	closeCmd := exec.Command("browser-use", "close")
-	_ = closeCmd.Run()
-
-	result := strings.TrimSpace(out.String())
-	// browser-use eval prefixes with "result: "
-	result = strings.TrimPrefix(result, "result: ")
-	return result, nil
-}
-
-func extractViaCDP(targetURL, port string) (string, error) {
-	// Discover available tabs via CDP JSON endpoint
-	listURL := fmt.Sprintf("http://localhost:%s/json", port)
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(listURL)
-	if err != nil {
-		return "", fmt.Errorf("CDP not available on port %s", port)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-
-	// Find a tab matching the target domain
-	domain := strings.TrimPrefix(strings.TrimPrefix(targetURL, "https://"), "http://")
-	var tabs []struct {
-		URL                  string `json:"url"`
-		WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
-	}
-	if err := json.Unmarshal(body, &tabs); err != nil {
-		return "", fmt.Errorf("parsing CDP tabs: %w", err)
-	}
-
-	var wsURL string
-	for _, tab := range tabs {
-		if strings.Contains(tab.URL, domain) {
-			wsURL = tab.WebSocketDebuggerURL
-			break
-		}
-	}
-	if wsURL == "" {
-		return "", fmt.Errorf("no Chrome tab found for %s", domain)
-	}
-
-	// wsURL found but we need a WebSocket client to evaluate JS.
-	// For now, report that the tab exists — a future version can add
-	// a lightweight WebSocket eval. The agent-browser and browser-use
-	// paths handle the common case.
-	_ = wsURL
-	return "", fmt.Errorf("CDP tab found for %s but WebSocket eval not yet implemented (install agent-browser or browser-use)", domain)
 }
