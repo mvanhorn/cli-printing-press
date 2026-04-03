@@ -40,7 +40,16 @@ Before any other commands, run the setup contract to verify the printing-press b
 <!-- PRESS_SETUP_CONTRACT_START -->
 ```bash
 # min-binary-version: 0.2.0
-if ! command -v printing-press >/dev/null 2>&1; then
+
+# Derive scope first — needed for local build detection
+_scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+_scope_dir="$(cd "$_scope_dir" && pwd -P)"
+
+# Prefer local build when running from inside the printing-press repo.
+if [ -x "$_scope_dir/printing-press" ] && [ -d "$_scope_dir/cmd/printing-press" ]; then
+  export PATH="$_scope_dir:$PATH"
+  echo "Using local build: $_scope_dir/printing-press"
+elif ! command -v printing-press >/dev/null 2>&1; then
   if [ -x "$HOME/go/bin/printing-press" ]; then
     echo "printing-press found at ~/go/bin/printing-press but not on PATH."
     echo "Add GOPATH/bin to your PATH:  export PATH=\"\$HOME/go/bin:\$PATH\""
@@ -50,10 +59,6 @@ if ! command -v printing-press >/dev/null 2>&1; then
   fi
   return 1 2>/dev/null || exit 1
 fi
-
-# Derive scope: prefer git repo root, fall back to CWD
-_scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
-_scope_dir="$(cd "$_scope_dir" && pwd -P)"
 
 PRESS_BASE="$(basename "$_scope_dir" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"
 if [ -z "$PRESS_BASE" ]; then
