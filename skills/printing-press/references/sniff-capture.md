@@ -3,6 +3,14 @@
 > **When to read:** This file is referenced by Phase 1.7 of the printing-press skill.
 > Read it when the user approves sniff (browser-use or agent-browser capture of live API traffic).
 
+### Cardinal Rules
+
+1. **ALWAYS use browser-use for capture.** Do NOT substitute curl probing, JS bundle grepping, or agent-browser auto-connect for a proper browser-use interactive sniff. Agent-browser is for session transfer only (grabbing cookies from a running Chrome). The capture — browsing pages, collecting URLs, intercepting requests — MUST use browser-use.
+
+2. **Do NOT skip auth discovery when the session expires.** *(Only applies when `AUTH_SESSION_AVAILABLE=true` — the user confirmed they're logged in.)* If a Chrome profile loads but the session has expired (login page visible instead of account page), offer headed login as a fallback. Never proceed without auth just because the profile session was stale. For anonymous sniffs (no auth context), this rule does not apply.
+
+3. **Use click-based SPA navigation after installing interceptors.** `browser-use open` triggers a full page reload which resets the JS context and destroys fetch/XHR interceptors. After installing interceptors, navigate by clicking links (`browser-use eval "document.querySelector('a[href*=account]').click()"` or `browser-use click`). Only use `browser-use open` for the first page load or when you need to re-install interceptors.
+
 ### If user approves sniff
 
 #### Sniff Pacing
@@ -261,10 +269,27 @@ If no target-domain cookies are found, present via `AskUserQuestion`:
 
 > "Session transfer failed — no `<target-domain>` cookies found in the browser. The sniff would run unauthenticated."
 >
-> 1. **Try auto-connect mode instead** — "Stay connected to your real Chrome where you're already logged in"
-> 2. **Log in manually** — "I'll open a headed browser. You log in, then I sniff."
-> 3. **Continue without auth** — "Sniff only public endpoints"
-> 4. **Provide HAR manually** — "Export a HAR yourself from browser DevTools"
+> 1. **Log in manually** — "I'll open a headed browser. You log in, then I sniff."
+> 2. **Continue without auth** — "Sniff only public endpoints"
+> 3. **Provide HAR manually** — "Export a HAR yourself from browser DevTools"
+
+**After loading a Chrome profile**, also verify the session is actually active on the target site. Cookies may exist but be expired:
+
+```bash
+# Navigate to the site and check for login indicators
+browser-use eval "var login=document.querySelector('a[href*=login],a[href*=signin],[class*=sign-in],[class*=login-btn]');
+var account=document.querySelector('a[href*=account],a[href*=profile],[class*=logged-in],[class*=user-menu]');
+login && !account ? 'SESSION_EXPIRED' : account ? 'SESSION_ACTIVE' : 'UNKNOWN'"
+```
+
+If the result is `SESSION_EXPIRED` (login link visible, no account link), the profile cookies have expired. Present via `AskUserQuestion`:
+
+> "Your browser session for `<site>` has expired (login page visible). I need a fresh login to discover authenticated endpoints."
+>
+> 1. **Open headed browser to log in** (Recommended) — "I'll open a visible browser. You log in, then I continue the sniff."
+> 2. **Continue without auth** — "Sniff only public endpoints"
+
+Do NOT silently proceed without auth when the session has expired. The authenticated surface is often the most valuable part of the API (order history, rewards, saved data).
 
 If cookies are verified, proceed to Steps 2a/2b capture flow with the authenticated session loaded. The session state file is stored at `$DISCOVERY_DIR/session-state.json`.
 
@@ -329,6 +354,18 @@ When the user confirmed a logged-in session (AUTH_SESSION_AVAILABLE=true from Ph
 6. **If auth pages redirect to login.** The session may have expired between the time the user confirmed login and the sniff reaches this step. Report: "Auth pages redirected to login — session may have expired. Auth-only endpoints not discovered." Do NOT fail the sniff — the public endpoints are still valid. Proceed to Step 2a.2 with the public set only.
 
 **SPA interaction rule:** On each page/state, take a snapshot first. Look for interactive elements (buttons, forms, dropdowns, tabs). Click through them. SPAs fire API calls on interaction, not on page load. If you load a page and see no XHR activity, that means you need to interact with the page, not that there is nothing to find.
+
+**SPA navigation rule:** After installing fetch/XHR interceptors, do NOT use `browser-use open` to navigate between pages — it triggers a full page reload which destroys the interceptors. Instead, navigate by clicking links:
+```bash
+# Good: SPA navigation preserves interceptors
+browser-use eval "document.querySelector('a[href*=\"/orders\"]').click()"
+# or
+browser-use click "Orders"
+
+# Bad: full reload destroys interceptors
+browser-use open "https://site.com/orders"
+```
+Only use `browser-use open` for the initial page load (before interceptors exist) or when you intentionally want to re-install interceptors on a fresh page.
 
 **Step 2a.2: Collect API URLs**
 
