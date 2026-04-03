@@ -137,6 +137,17 @@ func (c *Config) AuthHeader() string {
 	}
 	{{- end}}
 	return ""
+{{- else if eq .Auth.Type "composed"}}
+	if c.AccessToken != "" {
+		c.AuthSource = "chrome-composed"
+		return c.AccessToken
+	}
+	{{- if gt (len .Auth.EnvVars) 0}}
+	if c.{{envVarField (index .Auth.EnvVars 0)}} != "" {
+		return c.{{envVarField (index .Auth.EnvVars 0)}}
+	}
+	{{- end}}
+	return ""
 {{- else}}
 	return ""
 {{- end}}

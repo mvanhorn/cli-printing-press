@@ -9,7 +9,7 @@ import (
 {{- if .Auth.EnvVars}}
 	"os"
 {{- end}}
-{{- if eq .Auth.Type "cookie"}}
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
 	"os/exec"
 {{- end}}
 	"strings"
@@ -39,7 +39,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// Check auth
 {{- if or (eq .Auth.Type "") (eq .Auth.Type "none")}}
 			report["auth"] = "not required"
-{{- else if eq .Auth.Type "cookie"}}
+{{- else if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
 			if cfg != nil {
 				header := cfg.AuthHeader()
 				if header == "" {

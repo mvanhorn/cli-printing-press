@@ -344,7 +344,7 @@ func (g *Generator) Generate() error {
 	authTmpl := "auth_simple.go.tmpl"
 	if g.Spec.Auth.AuthorizationURL != "" {
 		authTmpl = "auth.go.tmpl"
-	} else if g.Spec.Auth.Type == "cookie" {
+	} else if g.Spec.Auth.Type == "cookie" || g.Spec.Auth.Type == "composed" {
 		authTmpl = "auth_browser.go.tmpl"
 	}
 	if err := g.renderTemplate(authTmpl, authPath, g.Spec); err != nil {

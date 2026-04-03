@@ -295,6 +295,59 @@ resources:
 		assert.Equal(t, "bearer_token", s.Auth.Type)
 	})
 
+	t.Run("composed auth with cookies and format", func(t *testing.T) {
+		t.Parallel()
+		input := `name: pagliacciapi
+base_url: https://pag-api.azurewebsites.net/api
+auth:
+  type: composed
+  header: Authorization
+  format: "PagliacciAuth {customerId}|{authToken}"
+  cookie_domain: pagliacci.com
+  cookies:
+    - customerId
+    - authToken
+resources:
+  store:
+    description: Manage stores
+    endpoints:
+      list:
+        method: GET
+        path: /Store
+        description: List stores
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		assert.Equal(t, "composed", s.Auth.Type)
+		assert.Equal(t, "Authorization", s.Auth.Header)
+		assert.Equal(t, "PagliacciAuth {customerId}|{authToken}", s.Auth.Format)
+		assert.Equal(t, "pagliacci.com", s.Auth.CookieDomain)
+		assert.Equal(t, []string{"customerId", "authToken"}, s.Auth.Cookies)
+	})
+
+	t.Run("cookie auth without cookies field is nil", func(t *testing.T) {
+		t.Parallel()
+		input := `name: notionapi
+base_url: https://api.notion.so
+auth:
+  type: cookie
+  header: Cookie
+  cookie_domain: ".notion.so"
+resources:
+  pages:
+    description: Manage pages
+    endpoints:
+      list:
+        method: GET
+        path: /pages
+        description: List pages
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		assert.Equal(t, "cookie", s.Auth.Type)
+		assert.Nil(t, s.Auth.Cookies)
+	})
+
 	t.Run("invalid YAML still returns error", func(t *testing.T) {
 		t.Parallel()
 		input := `{{{not valid yaml at all`

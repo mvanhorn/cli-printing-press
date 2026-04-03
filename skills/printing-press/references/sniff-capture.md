@@ -369,15 +369,36 @@ When the user confirmed a logged-in session (AUTH_SESSION_AVAILABLE=true from Ph
 
    **If an Authorization header is found:**
    - Record the scheme (e.g., `Bearer`, `PagliacciAuth`, `Token`, custom)
-   - Record the token format and where it comes from:
+   - **Trace values back to cookies.** Read `document.cookie` and match literal values from the captured header against cookie values:
      ```bash
-     browser-use eval "document.cookie"  # check cookies
-     browser-use eval "JSON.stringify(Object.keys(localStorage).filter(k=>k.match(/token|auth|session/i)))"  # check localStorage
+     browser-use eval "document.cookie"
      ```
-   - Use this header format in Step 2d validation (not cookie replay — construct the actual header)
+     For each cookie `name=value`, check if `value` appears as a substring in the Authorization header. When a match is found, record the cookie name and which part of the header it corresponds to.
+   - **Construct the format string.** Replace each literal cookie value in the header with `{cookieName}`:
+     - Example: header `PagliacciAuth 2432962|FD44DA6A-...`, cookies `customerId=2432962; authToken=FD44DA6A-...`
+     - Format string: `PagliacciAuth {customerId}|{authToken}`
+   - **Write composed auth into the spec.** When building the spec YAML, include:
+     ```yaml
+     auth:
+       type: composed
+       header: Authorization
+       format: "<format string with {cookieName} placeholders>"
+       cookie_domain: <site domain>
+       cookies:
+         - <cookie1Name>
+         - <cookie2Name>
+     ```
+     This tells the generator to emit `auth login --chrome` that reads those specific cookies and composes the header. The user never sees the format — the CLI handles it.
+   - Also check localStorage for token sources:
+     ```bash
+     browser-use eval "JSON.stringify(Object.keys(localStorage).filter(k=>k.match(/token|auth|session/i)))"
+     ```
+   - Use the composed header in Step 2d validation (not cookie replay — construct the actual header from extracted cookies)
    - Record the auth scheme in the discovery report
 
-   **If no Authorization header found** but auth endpoints returned data (from step 4), the API likely uses cookie-based auth directly. Proceed to Step 2d with cookie replay.
+   **If cookie matching fails** (header values don't match any cookie values — possibly URL-encoded or hashed), fall back to recording the auth scheme without composed config. The printed CLI will use generic token auth. Report: "Auth header discovered but could not trace values to cookies."
+
+   **If no Authorization header found** but auth endpoints returned data (from step 4), the API likely uses cookie-based auth directly. Write `auth.type: cookie` into the spec and proceed to Step 2d with cookie replay.
 
    **If the interceptor captured nothing** (page didn't fire API calls), try clicking a different link or scrolling the page. If still nothing after 2 attempts, proceed to Step 2d with cookie replay as a fallback.
 

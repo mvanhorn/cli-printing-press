@@ -1271,3 +1271,51 @@ func TestGenerate_CookieAuthUsesBrowserTemplate(t *testing.T) {
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
 }
+
+func TestGenerate_ComposedAuthUsesBrowserTemplate(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "pagliacci",
+		Version: "0.1.0",
+		BaseURL: "https://pag-api.azurewebsites.net/api",
+		Auth: spec.AuthConfig{
+			Type:         "composed",
+			Header:       "Authorization",
+			Format:       "PagliacciAuth {customerId}|{authToken}",
+			CookieDomain: "pagliacci.com",
+			Cookies:      []string{"customerId", "authToken"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/pagliacci-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"store": {
+				Description: "Manage stores",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/Store", Description: "List stores"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "pagliacci-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	authGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	content := string(authGo)
+
+	// Should use browser auth template (shared with cookie type)
+	assert.Contains(t, content, "--chrome")
+	assert.Contains(t, content, "detectCookieTool")
+	assert.Contains(t, content, "extractCookies")
+	assert.Contains(t, content, "pagliacci.com")
+	// Should NOT contain simple token template
+	assert.NotContains(t, content, "set-token")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}

@@ -125,6 +125,41 @@ profile by name when the installed backend supports it.`,
 				return authErr(fmt.Errorf("cookie tool returned no cookies for %s", domain))
 			}
 
+{{- if eq .Auth.Type "composed"}}
+			// Step 4: Compose auth header from named cookies
+			cookieMap := parseCookieString(cookies)
+			requiredCookies := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }
+			for _, name := range requiredCookies {
+				if _, ok := cookieMap[name]; !ok {
+					loginURL := "https://" + strings.TrimPrefix(domain, ".")
+					fmt.Fprintf(w, "%s Cookie %q not found in Chrome.\n", red("ERROR"), name)
+					fmt.Fprintln(w, "")
+					fmt.Fprintln(w, "Log in to your account:")
+					fmt.Fprintf(w, "\n  %s\n\n", loginURL)
+					fmt.Fprintln(w, "Then run this command again:")
+					fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --chrome\n")
+					return authErr(fmt.Errorf("cookie %q not found for %s", name, domain))
+				}
+			}
+
+			composed := "{{.Auth.Format}}"
+			for _, name := range requiredCookies {
+				composed = strings.ReplaceAll(composed, "{"+name+"}", cookieMap[name])
+			}
+
+			cfg, err := config.Load(flags.configPath)
+			if err != nil {
+				return configErr(err)
+			}
+
+			if err := cfg.SaveTokens("", "", composed, "", time.Time{}); err != nil {
+				return configErr(fmt.Errorf("saving auth: %w", err))
+			}
+
+			fmt.Fprintf(w, "%s Composed auth header from %d cookies for %s\n", green("OK"), len(requiredCookies), domain)
+			fmt.Fprintf(w, "Session saved to %s\n", cfg.Path)
+			return nil
+{{- else}}
 			// Step 4: Save to config
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
@@ -139,6 +174,7 @@ profile by name when the installed backend supports it.`,
 			fmt.Fprintf(w, "%s Found %d cookies for %s\n", green("OK"), count, domain)
 			fmt.Fprintf(w, "Session saved to %s\n", cfg.Path)
 			return nil
+{{- end}}
 		},
 	}
 
@@ -535,6 +571,23 @@ func extractViaCookiesCLI(domain string) (string, error) {
 	result := strings.TrimSpace(out.String())
 	result = strings.TrimPrefix(result, "Cookie: ")
 	return result, nil
+}
+
+// parseCookieString splits a "name1=value1; name2=value2" string into a map.
+func parseCookieString(cookies string) map[string]string {
+	m := make(map[string]string)
+	for _, pair := range strings.Split(cookies, "; ") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		idx := strings.IndexByte(pair, '=')
+		if idx < 0 {
+			continue
+		}
+		m[pair[:idx]] = pair[idx+1:]
+	}
+	return m
 }
 
 func extractViaCookieScoop(domain, profileDir string) (string, error) {
