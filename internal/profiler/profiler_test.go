@@ -49,13 +49,14 @@ func TestProfileMinimal(t *testing.T) {
 func TestProfileEnumExpansion(t *testing.T) {
 	// Simulates the postman-explore pattern: one list endpoint serves multiple
 	// entity types via an enum query param (entityType=collection|workspace|api|flow).
-	// The profiler should expand this into 4 separate sync resources.
+	// The profiler should expand this into separate sync resources.
+	// Uses distinct resource names to test enum expansion independently of naming.
 	s := &spec.APISpec{
 		Name: "postman-explore",
 		Resources: map[string]spec.Resource{
-			"api": {
+			"networkentity": {
 				Endpoints: map[string]spec.Endpoint{
-					"list-network-entities": {
+					"list": {
 						Method: "GET",
 						Path:   "/v1/api/networkentity",
 						Params: []spec.Param{
@@ -74,7 +75,11 @@ func TestProfileEnumExpansion(t *testing.T) {
 						},
 						Response: spec.ResponseDef{Type: "array"},
 					},
-					"list-teams": {
+				},
+			},
+			"team": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
 						Method: "GET",
 						Path:   "/v1/api/team",
 						Params: []spec.Param{
@@ -100,19 +105,20 @@ func TestProfileEnumExpansion(t *testing.T) {
 		syncPaths[sr.Name] = sr.Path
 	}
 
-	// 4 resources: 3 unique enum values (collection, workspace, flow) + "api" which
-	// collides between the enum value and the teams endpoint resource name. The enum
-	// expansion produces "api" from entityType=api, and the teams endpoint also gets
-	// resource name "api" from the parser (shared /v1/api/ prefix). Whichever is
-	// processed first wins. Resource naming fix (#13) will give teams its own name.
-	assert.GreaterOrEqual(t, len(profile.SyncableResources), 4)
+	// 5 resources: 4 from enum expansion + 1 from teams
+	assert.Len(t, profile.SyncableResources, 5)
 	assert.Contains(t, syncNames, "collection")
 	assert.Contains(t, syncNames, "workspace")
+	assert.Contains(t, syncNames, "api")
 	assert.Contains(t, syncNames, "flow")
+	assert.Contains(t, syncNames, "team")
 
-	// Expanded paths should include the enum value as a query param
+	// Expanded paths include the enum value as a query param
 	assert.Equal(t, "/v1/api/networkentity?entityType=collection", syncPaths["collection"])
 	assert.Equal(t, "/v1/api/networkentity?entityType=workspace", syncPaths["workspace"])
+	assert.Equal(t, "/v1/api/networkentity?entityType=api", syncPaths["api"])
+	// Teams endpoint keeps its own resource
+	assert.Equal(t, "/v1/api/team", syncPaths["team"])
 }
 
 func TestProfileEnumExpansion_NoExpansionForNonEnum(t *testing.T) {

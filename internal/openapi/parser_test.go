@@ -245,6 +245,8 @@ func TestPathSegmentsStripsGenericAPIPrefix(t *testing.T) {
 		{"strips rest prefix", "/rest/orders", "", "orders"},
 		{"keeps non-generic prefix", "/v1/billing/invoices", "", "billing"},
 		{"keeps api when no sub-segments", "/api", "", "api"},
+		{"keeps api when followed by path param", "/api/{id}", "", "api"},
+		{"keeps rest when followed by path param", "/rest/{job_id}/runs", "", "rest"},
 		{"strips version then api", "/v1/api/networkentity", "", "networkentity"},
 	}
 	for _, tt := range tests {

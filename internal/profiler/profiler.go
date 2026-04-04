@@ -154,9 +154,10 @@ func Profile(s *spec.APISpec) *APIProfile {
 						for _, val := range enumParam.Enum {
 							expandedName := strings.ToLower(val)
 							expandedPath := endpoint.Path + "?" + enumParam.Name + "=" + val
-							if _, ok := syncable[expandedName]; !ok {
-								syncable[expandedName] = expandedPath
-							}
+							// Enum-expanded paths are more specific than generic resource
+							// paths, so they always win on name collision. This ensures
+							// deterministic output regardless of Go map iteration order.
+							syncable[expandedName] = expandedPath
 						}
 					} else {
 						// Standard: pick the shortest path for determinism when
@@ -460,27 +461,18 @@ func isListEndpoint(name string, endpoint spec.Endpoint) bool {
 // that looks like an entity type selector. Heuristics:
 // 1. Param is required with 2+ enum values
 // 2. Param name contains "type", "kind", "entity", "resource", or "category"
-// 3. OR it's the only required enum param on the endpoint
-// Returns nil if no qualifying param is found.
+// Returns nil if no qualifying param is found. Does NOT fall back to arbitrary
+// enum params — filters like status=open|closed should not trigger expansion.
 func findEntityTypeEnum(endpoint spec.Endpoint) *spec.Param {
-	var candidates []*spec.Param
 	for i := range endpoint.Params {
 		p := &endpoint.Params[i]
-		if len(p.Enum) < 2 || p.PathParam {
+		if len(p.Enum) < 2 || p.PathParam || !p.Required {
 			continue
 		}
 		nameLower := strings.ToLower(p.Name)
-		isTypeParam := containsAny(nameLower, []string{"type", "kind", "entity", "resource", "category"})
-		if p.Required && isTypeParam {
-			return p // strong signal: required + type-like name
+		if containsAny(nameLower, []string{"type", "kind", "entity", "resource", "category"}) {
+			return p
 		}
-		if p.Required && len(p.Enum) >= 2 {
-			candidates = append(candidates, p)
-		}
-	}
-	// Fallback: if exactly one required enum param, use it
-	if len(candidates) == 1 {
-		return candidates[0]
 	}
 	return nil
 }

@@ -1708,10 +1708,12 @@ func pathSegmentsAfterBase(path, basePath string) []string {
 		segments = segments[1:]
 	}
 
-	// Strip generic API routing prefixes when followed by more segments.
-	// "api", "apis", "rest" as the first segment after version are routing
-	// infrastructure, not resource names. /v1/api/users → resource is "users".
-	if len(segments) >= 2 && isGenericAPIPrefix(segments[0]) {
+	// Strip generic API routing prefixes when followed by a concrete resource
+	// segment. "api", "apis", "rest" as the first segment after version are
+	// routing infrastructure, not resource names. /v1/api/users → "users".
+	// Do NOT strip when the next segment is a path param ({id}), because
+	// /api/{id} means "api" IS the resource.
+	if len(segments) >= 2 && isGenericAPIPrefix(segments[0]) && !isPathParamSegment(segments[1]) {
 		segments = segments[1:]
 	}
 
