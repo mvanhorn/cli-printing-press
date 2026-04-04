@@ -22,9 +22,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		specPath      string
 		expectedFiles int
 	}{
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 31},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 36},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 34},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 34},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 40},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 36},
 	}
 
 	for _, tt := range tests {
@@ -611,7 +611,7 @@ func TestToKebab(t *testing.T) {
 func TestBuildPromotedCommands(t *testing.T) {
 	t.Parallel()
 
-	t.Run("resource with list endpoint is NOT promoted (collides with resource group)", func(t *testing.T) {
+	t.Run("resource with list endpoint IS promoted (shortcut for resource group)", func(t *testing.T) {
 		t.Parallel()
 		s := &spec.APISpec{
 			Name:    "test",
@@ -626,10 +626,11 @@ func TestBuildPromotedCommands(t *testing.T) {
 			},
 		}
 		promoted := buildPromotedCommands(s)
-		assert.Empty(t, promoted, "promoted command should not be emitted when it collides with resource group name")
+		require.Len(t, promoted, 1)
+		assert.Equal(t, "users", promoted[0].PromotedName)
 	})
 
-	t.Run("ISteamUser resource is NOT promoted (collides with resource group)", func(t *testing.T) {
+	t.Run("ISteamUser resource IS promoted (shortcut for resource group)", func(t *testing.T) {
 		t.Parallel()
 		s := &spec.APISpec{
 			Name:    "test",
@@ -644,7 +645,8 @@ func TestBuildPromotedCommands(t *testing.T) {
 			},
 		}
 		promoted := buildPromotedCommands(s)
-		assert.Empty(t, promoted, "promoted command should not be emitted when it collides with resource group name")
+		require.Len(t, promoted, 1)
+		assert.Equal(t, "steam-user", promoted[0].PromotedName)
 	})
 
 	t.Run("resource named version is skipped (collides with built-in)", func(t *testing.T) {
@@ -684,7 +686,7 @@ func TestBuildPromotedCommands(t *testing.T) {
 		assert.Empty(t, promoted)
 	})
 
-	t.Run("prefers GET without positional params (collides with resource group)", func(t *testing.T) {
+	t.Run("prefers GET without positional params for promoted command", func(t *testing.T) {
 		t.Parallel()
 		s := &spec.APISpec{
 			Name:    "test",
@@ -701,7 +703,9 @@ func TestBuildPromotedCommands(t *testing.T) {
 			},
 		}
 		promoted := buildPromotedCommands(s)
-		assert.Empty(t, promoted, "promoted command collides with resource group name")
+		require.Len(t, promoted, 1)
+		assert.Equal(t, "items", promoted[0].PromotedName)
+		assert.Equal(t, "list", promoted[0].EndpointName, "should prefer the list endpoint (no positional params)")
 	})
 
 	t.Run("all built-in names are skipped", func(t *testing.T) {
@@ -748,12 +752,12 @@ func TestGeneratedOutput_PromotedCommandExists(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
 
-	// Promoted command file should NOT exist because "users" collides with the
-	// resource group command of the same name
+	// Promoted command file SHOULD exist — it provides a user-friendly shortcut.
+	// The resource group command is hidden from --help when promoted commands exist.
 	promotedFile := filepath.Join(outputDir, "internal", "cli", "promoted_users.go")
-	assert.NoFileExists(t, promotedFile)
+	assert.FileExists(t, promotedFile)
 
-	// The resource group command should still exist
+	// The resource group command should still exist (but hidden)
 	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "users.go"))
 }
 
@@ -788,9 +792,12 @@ func TestGeneratedOutput_PromotedCommandCompiles(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
 
-	// Promoted files should NOT exist because they collide with resource group names
-	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_i-steam-user.go"))
-	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_items.go"))
+	// Promoted files SHOULD exist — they provide user-friendly shortcuts for resource groups.
+	// When promoted commands exist, resource parents are hidden from --help.
+	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_steam-user.go"))
+	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_items.go"))
+	// API discovery command should also be generated
+	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "api_discovery.go"))
 
 	// Must compile
 	runGoCommand(t, outputDir, "mod", "tidy")
@@ -828,8 +835,8 @@ func TestGeneratedOutput_PromotedCommandNotForBuiltins(t *testing.T) {
 
 	// "version" should NOT have a promoted command (collides with built-in)
 	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_version.go"))
-	// "users" should NOT have a promoted command (collides with resource group)
-	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_users.go"))
+	// "users" SHOULD have a promoted command (shortcut for the resource group)
+	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_users.go"))
 }
 
 // --- Unit 3: Auth Error Handling Tests ---

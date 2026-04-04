@@ -11,6 +11,9 @@ func new{{camel .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "{{.ResourceName}}",
 		Short: "{{oneline .Resource.Description}}",
+{{- if .Hidden}}
+		Hidden: true,
+{{- end}}
 	}
 {{range $eName, $endpoint := .Resource.Endpoints}}
 	cmd.AddCommand(new{{camel $.FuncPrefix}}{{camel $eName}}Cmd(flags))

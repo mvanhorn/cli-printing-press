@@ -98,7 +98,9 @@ func Execute() error {
 	}
 
 {{- range $name, $resource := .Resources}}
-	rootCmd.AddCommand(new{{camel $name}}Cmd(&flags)) {{/* FuncPrefix matches resource name for top-level */}}
+{{- if not (index $.PromotedResourceNames $name)}}
+	rootCmd.AddCommand(new{{camel $name}}Cmd(&flags))
+{{- end}}
 {{- end}}
 	rootCmd.AddCommand(newDoctorCmd(&flags))
 	rootCmd.AddCommand(newAuthCmd(&flags))
@@ -128,6 +130,9 @@ func Execute() error {
 {{- end}}
 {{- range .InsightConstructors}}
 	rootCmd.AddCommand(new{{.}}Cmd(&flags))
+{{- end}}
+{{- if .PromotedCommands}}
+	rootCmd.AddCommand(newAPICmd(&flags))
 {{- end}}
 {{- range .PromotedCommands}}
 	rootCmd.AddCommand(new{{camel .PromotedName}}PromotedCmd(&flags))

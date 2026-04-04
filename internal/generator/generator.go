@@ -301,21 +301,28 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	// Compute promoted commands early — needed to determine Hidden flag on parent commands
+	promotedCommands := buildPromotedCommands(g.Spec)
+	hasPromoted := len(promotedCommands) > 0
+
 	// Generate per-resource parent files + per-endpoint command files
 	// This produces more files (one per endpoint) which improves Breadth scoring
 	for name, resource := range g.Spec.Resources {
 		// Parent file: wires subcommands together
+		// When promoted commands exist, hide resource parents from --help
 		parentData := struct {
 			ResourceName string
 			FuncPrefix   string
 			CommandPath  string
 			Resource     spec.Resource
+			Hidden       bool
 			*spec.APISpec
 		}{
 			ResourceName: name,
 			FuncPrefix:   name,
 			CommandPath:  name,
 			Resource:     resource,
+			Hidden:       hasPromoted,
 			APISpec:      g.Spec,
 		}
 		parentPath := filepath.Join("internal", "cli", name+".go")
@@ -355,12 +362,14 @@ func (g *Generator) Generate() error {
 				FuncPrefix   string
 				CommandPath  string
 				Resource     spec.Resource
+				Hidden       bool
 				*spec.APISpec
 			}{
 				ResourceName: subName,
 				FuncPrefix:   name + "-" + subName,
 				CommandPath:  name + " " + subName,
 				Resource:     subResource,
+				Hidden:       hasPromoted,
 				APISpec:      g.Spec,
 			}
 			subParentPath := filepath.Join("internal", "cli", name+"_"+subName+".go")
@@ -567,8 +576,15 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	// Generate api discovery command when promoted commands exist (lets users browse hidden interfaces)
+	if hasPromoted {
+		if err := g.renderTemplate("api_discovery.go.tmpl", filepath.Join("internal", "cli", "api_discovery.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering api discovery: %w", err)
+		}
+	}
+
 	// Generate promoted top-level commands (user-friendly aliases for nested API commands)
-	promotedCommands := buildPromotedCommands(g.Spec)
+	// promotedCommands was computed earlier (before resource rendering) for Hidden flag
 	for _, pc := range promotedCommands {
 		promotedData := struct {
 			PromotedName string
@@ -591,18 +607,27 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	// Build set of resource names that have promoted commands — root.go.tmpl
+	// skips registering these as separate root commands to avoid duplicate names.
+	promotedResourceNames := make(map[string]bool)
+	for _, pc := range promotedCommands {
+		promotedResourceNames[pc.ResourceName] = true
+	}
+
 	rootData := struct {
 		*spec.APISpec
-		VisionSet            VisionTemplateSet
-		WorkflowConstructors []string
-		InsightConstructors  []string
-		PromotedCommands     []PromotedCommand
+		VisionSet             VisionTemplateSet
+		WorkflowConstructors  []string
+		InsightConstructors   []string
+		PromotedCommands      []PromotedCommand
+		PromotedResourceNames map[string]bool
 	}{
-		APISpec:              g.Spec,
-		VisionSet:            g.VisionSet,
-		WorkflowConstructors: renderedWorkflowConstructors,
-		InsightConstructors:  renderedInsightConstructors,
-		PromotedCommands:     promotedCommands,
+		APISpec:               g.Spec,
+		VisionSet:             g.VisionSet,
+		WorkflowConstructors:  renderedWorkflowConstructors,
+		InsightConstructors:   renderedInsightConstructors,
+		PromotedCommands:      promotedCommands,
+		PromotedResourceNames: promotedResourceNames,
 	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
 		return fmt.Errorf("rendering root: %w", err)
@@ -1139,12 +1164,6 @@ func buildPromotedCommands(s *spec.APISpec) []PromotedCommand {
 	var promoted []PromotedCommand
 	usedNames := make(map[string]bool)
 
-	// Collect resource group names so promoted commands don't collide with them
-	resourceGroupNames := make(map[string]bool)
-	for name := range s.Resources {
-		resourceGroupNames[toKebab(name)] = true
-	}
-
 	for name, resource := range s.Resources {
 		// Find the primary GET endpoint: prefer GET without positional params, else first GET
 		var bestName string
@@ -1178,9 +1197,6 @@ func buildPromotedCommands(s *spec.APISpec) []PromotedCommand {
 
 		promotedName := toKebab(name)
 		if builtinCommands[promotedName] {
-			continue
-		}
-		if resourceGroupNames[promotedName] {
 			continue
 		}
 		if usedNames[promotedName] {
