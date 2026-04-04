@@ -1,7 +1,7 @@
 ---
 title: "feat: Detect and emit required API headers from OpenAPI specs"
 type: feat
-status: active
+status: completed
 date: 2026-04-04
 origin: docs/retros/2026-04-04-cal-com-retro.md (finding #5)
 ---
