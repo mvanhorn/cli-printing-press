@@ -464,33 +464,32 @@ func detectRequiredHeaders(doc *openapi3.T, auth spec.AuthConfig) []spec.Require
 				continue
 			}
 			totalOps++
-			seen := map[string]bool{}
-			for _, params := range []openapi3.Parameters{pathItem.Parameters, op.Parameters} {
-				for _, pRef := range params {
-					if pRef == nil || pRef.Value == nil {
-						continue
-					}
-					p := pRef.Value
-					lower := strings.ToLower(p.Name)
-					if p.In != openapi3.ParameterInHeader || !p.Required || excludeHeaders[lower] || seen[lower] {
-						continue
-					}
-					seen[lower] = true
-					h, ok := headers[lower]
-					if !ok {
-						h = &headerInfo{name: p.Name}
-						// Extract default value from schema
-						if p.Schema != nil && p.Schema.Value != nil {
-							if p.Schema.Value.Default != nil {
-								h.defaultValue = fmt.Sprintf("%v", p.Schema.Value.Default)
-							} else if len(p.Schema.Value.Enum) > 0 {
-								h.defaultValue = fmt.Sprintf("%v", p.Schema.Value.Enum[0])
-							}
-						}
-						headers[lower] = h
-					}
-					h.count++
+			// Use mergeParameters to respect operation-level overrides.
+			// If an operation redefines a path-level header (e.g., makes it
+			// optional or changes the default), the op-level wins.
+			merged := mergeParameters(pathItem, op)
+			for _, p := range merged {
+				if p == nil {
+					continue
 				}
+				lower := strings.ToLower(p.Name)
+				if p.In != openapi3.ParameterInHeader || !p.Required || excludeHeaders[lower] {
+					continue
+				}
+				h, ok := headers[lower]
+				if !ok {
+					h = &headerInfo{name: p.Name}
+					// Extract default value from schema
+					if p.Schema != nil && p.Schema.Value != nil {
+						if p.Schema.Value.Default != nil {
+							h.defaultValue = fmt.Sprintf("%v", p.Schema.Value.Default)
+						} else if len(p.Schema.Value.Enum) > 0 {
+							h.defaultValue = fmt.Sprintf("%v", p.Schema.Value.Enum[0])
+						}
+					}
+					headers[lower] = h
+				}
+				h.count++
 			}
 		}
 	}
@@ -502,7 +501,7 @@ func detectRequiredHeaders(doc *openapi3.T, auth spec.AuthConfig) []spec.Require
 	var result []spec.RequiredHeader
 	threshold := 0.8
 	for _, h := range headers {
-		if float64(h.count)/float64(totalOps) >= threshold {
+		if float64(h.count)/float64(totalOps) > threshold {
 			result = append(result, spec.RequiredHeader{
 				Name:  h.name,
 				Value: h.defaultValue,
