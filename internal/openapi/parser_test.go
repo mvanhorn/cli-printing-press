@@ -556,6 +556,17 @@ func TestInferDescriptionAuth(t *testing.T) {
 		assert.True(t, result.Inferred)
 	})
 
+	t.Run("Notion bearer token not falsely negated", func(t *testing.T) {
+		doc := &openapi3.T{
+			Info: &openapi3.Info{
+				Description: "Use your Notion bearer token to authenticate",
+			},
+		}
+		result := inferDescriptionAuth(doc, "notion", spec.AuthConfig{Type: "none"})
+		assert.Equal(t, "bearer_token", result.Type, "'Notion' contains 'no' but should not trigger negation")
+		assert.True(t, result.Inferred)
+	})
+
 	t.Run("nil doc returns fallback", func(t *testing.T) {
 		fb := spec.AuthConfig{Type: "none"}
 		assert.Equal(t, fb, inferDescriptionAuth(nil, "test", fb))

@@ -580,8 +580,9 @@ func inferDescriptionAuth(doc *openapi3.T, name string, fallback spec.AuthConfig
 	return fallback
 }
 
-// isNegated checks if any negation word appears within ~50 chars before the
-// keyword position, catching patterns like "does not require Bearer".
+// isNegated checks if any negation word appears as a whole word within ~50 chars
+// before the keyword position, catching "does not require Bearer" while avoiding
+// false negation on words like "Notion" that contain "no" as a substring.
 func isNegated(text string, keywordIdx int) bool {
 	start := keywordIdx - 50
 	if start < 0 {
@@ -589,7 +590,15 @@ func isNegated(text string, keywordIdx int) bool {
 	}
 	preceding := text[start:keywordIdx]
 	for _, neg := range negationWords {
-		if strings.Contains(preceding, neg) {
+		idx := strings.Index(preceding, neg)
+		if idx < 0 {
+			continue
+		}
+		// Check word boundaries: char before must be space/start, char after must be space/end
+		beforeOk := idx == 0 || preceding[idx-1] == ' ' || preceding[idx-1] == ',' || preceding[idx-1] == '.'
+		afterIdx := idx + len(neg)
+		afterOk := afterIdx >= len(preceding) || preceding[afterIdx] == ' ' || preceding[afterIdx] == ',' || preceding[afterIdx] == '.'
+		if beforeOk && afterOk {
 			return true
 		}
 	}

@@ -1056,14 +1056,16 @@ func evaluateAuthProtocol(dir string, spec *openAPISpecInfo) dimensionScore {
 	if len(spec.SecurityRequirements) == 0 {
 		// No securitySchemes in spec — check if auth was inferred from description.
 		// Inferred auth generates env var support in config.go without declaring
-		// securitySchemes. Detect it by checking for os.Getenv patterns.
-		if !strings.Contains(configContent, "os.Getenv(") {
+		// securitySchemes. Detect by checking for auth-specific env vars, not just
+		// any os.Getenv (BASE_URL is always present and doesn't indicate auth).
+		hasAuthEnvVar := strings.Contains(configContent, "_API_KEY") || strings.Contains(configContent, "_TOKEN\"")
+		if !hasAuthEnvVar {
 			return dimensionScore{} // genuinely no auth
 		}
 		// Auth was inferred — score based on what the CLI actually has
 		score := 0
-		if strings.Contains(configContent, "os.Getenv(") {
-			score += 4 // env var support present
+		if hasAuthEnvVar {
+			score += 4 // auth env var support present
 		}
 		if strings.Contains(clientContent, "Authorization") {
 			score += 3 // client sends auth header

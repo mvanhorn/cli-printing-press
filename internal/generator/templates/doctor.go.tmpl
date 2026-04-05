@@ -47,7 +47,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					report["auth"] = "inferred (not configured)"
 					report["auth_hint"] = "export {{index .Auth.EnvVars 0}}=<your-key>"
 				} else {
-					report["auth"] = "inferred (configured — verify this is correct)"
+					report["auth"] = "inferred (configured — verify header and env var are correct)"
 					report["auth_source"] = cfg.AuthSource
 				}
 			} else {
