@@ -28,7 +28,7 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
 ## Requirements Trace
 
 - R1. Per-endpoint `NoAuth` detection from OpenAPI specs (`security: []` override)
-- R2. MCP tool descriptions annotated with `[No auth]` prefix for public endpoints
+- R2. MCP tool descriptions annotate the **minority** auth side — only when a CLI has a mix of public and auth-required tools. If all tools share the same auth status, no annotations (the default speaks for itself).
 - R3. CLI manifest extended with MCP metadata (binary name, tool counts, readiness level)
 - R4. README template includes MCP server install section
 - R5. Publish pipeline generates `smithery.yaml` marketplace metadata
@@ -73,7 +73,11 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
 - **Post-parse sweep for no-auth specs, guarded by `!Auth.Inferred`:** When `Auth.Type == "none"` AND `!Auth.Inferred`, mark all endpoints `NoAuth = true`. The `Inferred` field is set to `true` by the parser when auth was guessed from description keywords (e.g., "Bearer" found in description text). In practice, the keyword-inference paths set a non-none type when they find a match, so `Type == "none" && Inferred == true` is unlikely. The `!Inferred` guard acts as a safety catch — verify during implementation whether this combination can actually occur and add a concrete test if so.
 - **MCP binary naming: `{name}-pp-mcp` with `-pp-` infix:** Consistent with the CLI's `{name}-pp-cli` collision avoidance rationale. If the infix was worth doing for CLIs, it's worth doing for MCPs — especially since MCP marketplaces are where vendor collisions are most likely. The generator currently produces `{name}-mcp` (no infix) and all 6 published CLIs use that convention. This plan renames to `{name}-pp-mcp` everywhere: generator template, naming function, published CLI directories, goreleaser configs, smithery listings, and registry entries. The rename is cheapest now — before any marketplace listings exist and before users have wired `claude mcp add` configs.
 - **`naming.MCP()` function:** Add to `internal/naming/naming.go` returning `name + "-pp-mcp"`. Update the generator at `generator.go:441` to use this function instead of the current inline `name + "-mcp"`. Centralizes the convention and applies the `-pp-` infix consistently.
-- **`oneline()` truncation and the auth annotation:** The `oneline()` template function truncates descriptions at 120 characters. Register a new template function `mcpDescription(desc string, noAuth bool)` that prepends `[No auth] ` when `noAuth` is true, then applies the same oneline cleanup and truncation. Prepending (not appending) ensures the auth signal is always visible regardless of description length — only the tail of the description truncates, not the auth annotation. An agent choosing between tools benefits more from seeing the auth signal than from the last few words of a long description.
+- **Minority-side annotation logic:** Only annotate when a CLI has a mix of public and auth-required tools. Annotate whichever side is the minority:
+  - All tools same auth status → no annotations (default speaks for itself)
+  - Mixed, public is minority → prepend `[No auth]` on public tools
+  - Mixed, auth-required is minority → append auth-type-specific suffix on auth-required tools: `(requires API key)`, `(requires auth)`, or `(requires browser login)`
+  The `mcpDescription` template function handles this: it takes the endpoint description, `NoAuth` flag, the spec-level auth type, and the total/public tool counts. It decides whether and how to annotate based on the minority logic, then applies oneline cleanup/truncation. Prepending/appending is chosen so the annotation is always visible after truncation.
 - **`GenerateManifestParams` needs the parsed spec:** `WriteManifestForGenerate()` currently takes only `APIName`, `SpecSrcs`, `DocsURL`, `OutputDir` — no access to the parsed `*spec.APISpec` for tool counting. Add a `Spec *spec.APISpec` field to `GenerateManifestParams` and thread it through both callers in `internal/cli/root.go` (lines 189 and 331). Both callers already have the parsed spec in scope (`parsed` and `apiSpec` respectively). For `writeCLIManifestForPublish()`, which operates on `PipelineState`, re-parse the spec from the output directory's `spec.json` — the file is always present at publish time.
 - **`AuthEnvVars` in manifest:** Add `AuthEnvVars []string` to `CLIManifest` alongside `AuthType`. Without this, the publish skill cannot populate `env_vars` in the registry.json `mcp` block — it would have to parse CLI source code. The manifest is the right place to carry this data from generation to publish.
 - **Informational scorecard reporting, not a new dimension:** Adding a scored MCP dimension would require tier constant changes, unscored handling for non-MCP CLIs, and broader calibration. Instead, the scorecard's summary output gets a one-line note: "MCP: 42 tools (15 public, 27 auth-required)". This satisfies the AGENTS.md rule (scorer reflects capability) without inflating scores.
@@ -93,7 +97,8 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
 - **Should MCP binaries use `-pp-` infix?** → Yes. `{name}-pp-mcp` everywhere — binary, marketplace listing, registry, naming function. Consistent with CLI's `{name}-pp-cli` collision avoidance. Cheapest to rename now before any marketplace listings exist. The 6 published CLIs get renamed in the same library repo PR as the auth annotations (Unit 9).
 - **How does the scorecard access NoAuth data?** → Read the `.printing-press.json` manifest which already has `MCPToolCount` and `MCPPublicToolCount` from Unit 4. Avoids calling the full parser from the scorecard.
 - **Where do env var names come from in the registry?** → Add `AuthEnvVars []string` to `CLIManifest`, populated from `spec.Auth.EnvVars` at generation time. Publish skill reads from manifest.
-- **How to handle `oneline()` truncation with auth annotation?** → New `mcpDescription()` template function that appends annotation before truncation, not after.
+- **How to handle `oneline()` truncation with auth annotation?** → `mcpDescription()` template function applies the minority-side annotation (prepend or append), then calls `oneline()` internally. Annotation is part of the truncation input.
+- **Should we annotate all public tools or all auth-required tools?** → Neither uniformly. Annotate the minority side only, and only when the CLI has a mix. If all tools share the same auth status, no annotations — the default speaks for itself. Auth-type-specific suffixes (`(requires API key)`, `(requires browser login)`) tell the agent what action is needed, not just that auth is needed.
 
 ### Deferred to Implementation
 
@@ -180,22 +185,32 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
 
 - [ ] **Unit 3: Annotate MCP tool descriptions with auth status**
 
-  **Goal:** MCP tool descriptions include `[No auth]` prefix for public endpoints, helping agents decide which tools to call without setup.
+  **Goal:** MCP tool descriptions annotate the minority auth side — helping agents identify which tools need setup without cluttering descriptions when the answer is uniform.
 
   **Requirements:** R2
 
-  **Dependencies:** Unit 1
+  **Dependencies:** Unit 1, Unit 2
 
   **Approach:**
-  The `oneline()` template function truncates descriptions at 120 characters. Instead of appending an annotation that could be lost to truncation:
+  The annotation logic depends on the mix of public vs auth-required tools across the whole CLI:
 
-  1. Register a new template function `mcpDescription(desc string, noAuth bool) string` in `generator.go`'s FuncMap. This function prepends `[No auth] ` when `noAuth` is true, *then* calls `oneline()` internally on the combined string. This reuses all of oneline's sanitization (newline collapse, double-quote-to-single-quote replacement, backslash removal, whitespace normalization, truncation at 120 chars). Prepending ensures the auth signal is always visible even on long descriptions.
-  2. Update the template to call: `mcplib.WithDescription("{{mcpDescription $endpoint.Description $endpoint.NoAuth}}")`
-  3. Apply the same change for both resource endpoints and sub-resource endpoints.
+  - **All tools same auth status** → no annotations. If everything needs an API key, the agent learns that from the first 401 hint or the `about` tool (Unit 3b). If everything is public, nothing to say.
+  - **Mixed, public is minority** → prepend `[No auth]` on public tools. Example: Pagliacci has 41 tools, 7 public → the 7 get `[No auth] Find store locations`.
+  - **Mixed, auth-required is minority** → append auth-type-specific suffix on auth-required tools:
+    - API key: `(requires API key)`
+    - OAuth/bearer: `(requires auth)`
+    - Cookie/composed: `(requires browser login)`
+
+  Register a template function `mcpDescription(desc string, noAuth bool, authType string, publicCount int, totalCount int) string` in `generator.go`'s FuncMap. The function:
+  1. Determines whether to annotate (mixed tools only) and which side is the minority
+  2. Prepends or appends the appropriate annotation
+  3. Calls `oneline()` internally on the combined string (reusing all sanitization + truncation)
+
+  The template passes spec-level data: `{{mcpDescription $endpoint.Description $endpoint.NoAuth .Auth.Type .MCPPublicCount .MCPTotalCount}}`. The generator pre-computes `MCPPublicCount` and `MCPTotalCount` and adds them to the template data struct.
 
   **Files:**
   - Modify: `internal/generator/templates/mcp_tools.go.tmpl`
-  - Modify: `internal/generator/generator.go` (register `mcpDescription` in FuncMap)
+  - Modify: `internal/generator/generator.go` (register `mcpDescription` in FuncMap, add counts to template data)
   - Modify: `internal/generator/generator_test.go`
 
   **Patterns to follow:**
@@ -205,12 +220,48 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
   **Pre-existing context:** `generator.go:439` creates `cmd/{name}-mcp/` and renders `main_mcp.go.tmpl` guarded by `VisionSet.MCP || true` (always runs). But `generator.go:579` renders `mcp_tools.go.tmpl` guarded by just `VisionSet.MCP`. The `mcpDescription` change only takes effect when `tools.go` is rendered. In practice, `VisionSet.MCP` is always true today (`|| true` override), but test scenarios should set the flag explicitly to be safe.
 
   **Test scenarios:**
-  - Happy path: Spec with `NoAuth: true` endpoint and `VisionSet.MCP = true` → generated `tools.go` contains `[No auth]` prefix in that tool's description
-  - Happy path: Spec with `NoAuth: false` endpoint → generated `tools.go` does NOT contain `[No auth]` for that tool
-  - Happy path: Mixed spec (some public, some auth) → annotation appears only on public tools
-  - Edge case: Spec with `Auth.Type == "none"` (all public) → all tool descriptions get the annotation
+  - Happy path: All-auth-required spec (api_key, 0 public) → no annotations on any tool
+  - Happy path: All-public spec (Auth.Type == "none") → no annotations on any tool
+  - Happy path: Mixed spec, public is minority (30 auth, 5 public) → public tools get `[No auth]` prefix, auth tools unannotated
+  - Happy path: Mixed spec, auth is minority (30 public, 5 auth, api_key) → auth tools get `(requires API key)` suffix, public tools unannotated
+  - Happy path: Mixed cookie auth (30 cookie, 5 public) → public tools get `[No auth]`, cookie tools unannotated (cookie is majority)
+  - Edge case: Exactly 50/50 split → annotate the auth-required side (when tied, mark what needs setup)
 
   **Verification:** `go test ./internal/generator/...` passes. Generated MCP tools file compiles.
+
+- [ ] **Unit 3b: Add `about` tool to every MCP server**
+
+  **Goal:** Every MCP server has a self-describing `about` tool that returns API identity, auth requirements, tool count, and transcendence features — so agents can ask "what can you do?" at runtime.
+
+  **Requirements:** R2, R3
+
+  **Dependencies:** Unit 1
+
+  **Files:**
+  - Modify: `internal/generator/templates/mcp_tools.go.tmpl`
+  - Modify: `internal/generator/generator.go` (pass novel features to MCP template data)
+
+  **Approach:**
+  Register an `about` tool in `RegisterTools()` that returns a JSON object:
+  - `api`: API name and description (from spec)
+  - `tool_count`: total tools registered
+  - `auth`: type, env var names, key URL, readiness level
+  - `unique_capabilities`: array of transcendence features from `NovelFeatures` (name, command, description) — only present when the CLI has novel features
+
+  The generator already passes `NovelFeatures` to the README template data. Pass the same list to the MCP template data struct. The `about` handler is a static response — no API calls, no config needed. It works even when auth isn't configured, which makes it the natural first tool an agent calls.
+
+  **Patterns to follow:**
+  - Existing vision tool registration pattern (sync, search, sql) in `mcp_tools.go.tmpl`
+  - `readmeData()` pattern for threading `NovelFeatures` through template data
+
+  **Test scenarios:**
+  - Happy path: CLI with novel features → `about` tool response includes `unique_capabilities` array
+  - Happy path: CLI without novel features → `about` tool response omits `unique_capabilities`
+  - Happy path: CLI with api_key auth → `about` response includes env var name and key URL
+  - Happy path: CLI with no auth → `about` response shows auth type "none"
+  - Edge case: `about` tool works even when auth is not configured (no API call needed)
+
+  **Verification:** `go test ./internal/generator/...` passes. Generated `about` tool compiles and returns valid JSON.
 
 - [ ] **Unit 4: Add MCP metadata to CLI manifest**
 
@@ -412,7 +463,7 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
 
 - [ ] **Unit 9: Annotate existing CLI MCP tool descriptions**
 
-  **Goal:** Each published CLI gets two changes: (1) MCP binary renamed from `{name}-mcp` to `{name}-pp-mcp` for collision avoidance, and (2) `[No auth]` prefix added to descriptions of public endpoints in `internal/mcp/tools.go`. Targeted source edits — no regeneration.
+  **Goal:** Each published CLI gets two changes: (1) MCP binary renamed from `{name}-mcp` to `{name}-pp-mcp` for collision avoidance, and (2) minority-side auth annotations added to tool descriptions in `internal/mcp/tools.go`. Targeted source edits — no regeneration.
 
   **Requirements:** R7
 
@@ -434,25 +485,29 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
   **Step 0 — Rename MCP binary:**
   For all 6 CLIs: rename `cmd/{name}-mcp/` to `cmd/{name}-pp-mcp/`, update the server name string in `main.go`, update `Makefile` and `.goreleaser.yaml` build targets. This is a mechanical find-and-replace per CLI.
 
-  **Step 1 — Classify endpoints by auth requirement:**
-  - **espn, postman-explore**: Auth type is `none` → ALL endpoints are public. Annotate all.
-  - **dub, linear**: Auth type is api_key → Skip. These APIs require auth for all operations. No annotations needed.
-  - **pagliacci-pizza**: Composed cookie auth. For each candidate public endpoint (store finder, menu, location search), make one actual HTTP request without credentials using `curl`. If 200 with meaningful data → public. If 401/403 → auth-required. Document results in the PR.
-  - **steam-web**: API key auth but Steam has many public endpoints. Same verification protocol: test each endpoint path with `curl` without the API key. Steam's public endpoints (app details, store search, community profiles) typically return data without auth. Document results.
+  **Step 1 — Classify endpoints and determine annotation strategy per CLI:**
+  - **espn, postman-explore**: Auth type is `none` → ALL endpoints are public. No annotations needed (uniform).
+  - **dub, linear**: Auth type is api_key → ALL endpoints require auth. No annotations needed (uniform).
+  - **pagliacci-pizza**: Composed cookie auth. For each candidate public endpoint (store finder, menu, location search), make one actual HTTP request without credentials using `curl`. If 200 with meaningful data → public. If 401/403 → auth-required. Document results in the PR. Public endpoints are the minority → prepend `[No auth]` on them.
+  - **steam-web**: API key auth but Steam has many public endpoints. Same verification protocol: test each endpoint path with `curl` without the API key. Count public vs auth-required. Annotate the minority side:
+    - If most tools are public → append `(requires API key)` on auth-required tools
+    - If most tools need auth → prepend `[No auth]` on public tools
 
   **Step 2 — Annotate `tools.go`:**
-  For confirmed public endpoints, prepend `[No auth] ` to the description string inside the `mcplib.WithDescription("...")` call. Be conservative — only annotate endpoints verified to work without auth. This matches the machine-generated format from Unit 3.
+  Apply the minority-side annotation to tool descriptions in `mcplib.WithDescription("...")` calls. Be conservative — only annotate endpoints verified via actual HTTP requests.
 
   **Step 3 — Verify:**
   After editing, run `gofmt -w` on each modified file, then `go build ./...` in each CLI directory.
 
   **Patterns to follow:**
-  - The exact string format: prepend `[No auth] ` after the opening `"` in `mcplib.WithDescription("...")` calls
+  - Minority is public → prepend `[No auth] ` after opening `"`
+  - Minority is auth-required → append ` (requires API key)` (or `(requires browser login)`) before closing `"`
 
   **Test scenarios:**
-  - Happy path: espn tools.go → all WithDescription calls prefixed with "[No auth] "
-  - Happy path: pagliacci tools.go → verified-public tools annotated, unverified/auth-required tools not
-  - Happy path: steam tools.go → verified-public tools annotated
+  - Happy path: espn tools.go → no annotations (all public, uniform)
+  - Happy path: dub tools.go → no annotations (all auth, uniform)
+  - Happy path: pagliacci tools.go → verified-public tools get `[No auth]`, auth tools unannotated
+  - Happy path: steam tools.go → minority side annotated based on actual count
   - Edge case: Annotations don't break Go compilation — verify with `go build ./...` in each CLI dir
 
   **Verification:** Each modified CLI compiles: `cd <cli-dir> && go build ./...`. Every annotated endpoint was verified with an actual unauthenticated HTTP request. Verification results documented in the PR body.
@@ -527,7 +582,25 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
 | Steam/Pagliacci public endpoint identification may be wrong | Verify every candidate with actual HTTP request without credentials. Only annotate confirmed-public endpoints. Document results in PR. |
 | MCP binary rename breaks existing users | No marketplace listings exist yet. The 6 published CLIs are source-only in the library repo — no users have `claude mcp add` configs pointing to the old names. Rename cost is zero. |
 | Specs that omit security but actually require auth (false public sweep) | Post-parse sweep guarded by `!Auth.Inferred`. Only marks all endpoints public when parser actively concluded no auth exists, not when detection failed. |
-| `oneline()` truncation drops auth annotation on long descriptions | New `mcpDescription()` template function prepends `[No auth]` before truncation. Only the tail of the description truncates, not the auth signal. |
+| `oneline()` truncation drops auth annotation on long descriptions | `mcpDescription()` applies annotation then calls `oneline()`. Prepended annotations (`[No auth]`) survive truncation; appended annotations (`(requires API key)`) could be cut on very long descriptions but auth-required is the less common case for this to matter. |
+
+## Future Considerations
+
+These are planned follow-ups that depend on this plan's output but are separate work:
+
+### Mega MCP: Library as a Single MCP Server
+
+The public library repo ships a single MCP server (`printing-press-library-pp-mcp`) that aggregates all published CLIs. One install gives agents access to every public endpoint across all APIs. Per-API env vars unlock auth-required tools incrementally. The server uses a generic HTTP handler (same pattern as the generated `makeAPIHandler`) reading from a compiled tool registry built from all specs at build time. Also includes catalog tools (`library_search`, `library_info`, `library_install`) that read `registry.json` to help agents discover and install individual CLIs.
+
+User journey: `brew install mvanhorn/tap/printing-press-library-pp-mcp` → `claude mcp add pp-library printing-press-library-pp-mcp` → immediately use all public tools across all APIs → `export STEAM_WEB_API_KEY=xxx` to unlock one API → graduate to standalone `steam-web-pp-mcp` if desired.
+
+**Depends on:** This plan's registry.json `mcp` block, manifest MCP fields, and per-endpoint `NoAuth` detection.
+
+### Library Reorganization: API-Slug Directories
+
+Rename published CLI directories from `{api}-pp-cli` to `{api-slug}` (e.g., `dub-pp-cli/` → `dub/`). The directory contains both CLI and MCP binaries, so naming it after the CLI is misleading. Impacts: go.mod module paths, publish collision detection, registry paths, `go install` paths, branch naming. Full problem description and migration strategy documented separately.
+
+**Depends on:** This plan (complete the MCP rename to `-pp-mcp` first, avoid conflicting migrations).
 
 ## Sources & References
 
