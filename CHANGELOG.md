@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.1.0](https://github.com/mvanhorn/cli-printing-press/compare/v1.0.0...v1.1.0) (2026-04-06)
+
+
+### Features
+
+* **cli:** flow transcendence features into generated READMEs with integrity validation ([#137](https://github.com/mvanhorn/cli-printing-press/issues/137)) ([96b9b42](https://github.com/mvanhorn/cli-printing-press/commit/96b9b42cfd31e579918b77737eb4c0ef0565eaad))
+* **cli:** per-endpoint header routing and auth inference from Authorization header params ([#136](https://github.com/mvanhorn/cli-printing-press/issues/136)) ([fb164ad](https://github.com/mvanhorn/cli-printing-press/commit/fb164adc55020060e96d933a8a07e8f06eb60396))
+* **cli:** rename What's New Here to Unique Features, move after Quick Start ([1b4b984](https://github.com/mvanhorn/cli-printing-press/commit/1b4b984478b20c7826f3b7943b8738b77cc38821))
+
+
+### Bug Fixes
+
+* **cli:** ensure Sync is always enabled when Store is true ([b5fddac](https://github.com/mvanhorn/cli-printing-press/commit/b5fddac0514ad6c378e82c1c20698b8b8b12d821))
+* **cli:** generate correct library install path in READMEs ([d962947](https://github.com/mvanhorn/cli-printing-press/commit/d9629475f39f8a7f9dfee9931544e02be6caa616))
+* **skills:** add Phase 3 Completion Gate to prevent skipping transcendence features ([3ea8601](https://github.com/mvanhorn/cli-printing-press/commit/3ea8601dddf479a1696a5e509c7080aeb52ba2b1))
+
 ## 1.0.0 (2026-04-05)
 
 
