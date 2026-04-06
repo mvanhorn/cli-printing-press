@@ -1070,9 +1070,9 @@ func oneline(s string) string {
 // mcpDescription builds an MCP tool description with optional minority-side
 // auth annotation. Only annotates when the CLI has a mix of public and
 // auth-required tools. The minority side gets annotated:
-//   - Public is minority → prepend "[No auth] "
+//   - Public is minority → append "(public)"
 //   - Auth-required is minority → append auth-type-specific suffix
-//   - All same status → no annotation
+//   - All same status or exact tie → no annotation
 func mcpDescription(desc string, noAuth bool, authType string, publicCount, totalCount int) string {
 	authCount := totalCount - publicCount
 	mixed := publicCount > 0 && authCount > 0
@@ -1080,7 +1080,7 @@ func mcpDescription(desc string, noAuth bool, authType string, publicCount, tota
 	if mixed {
 		if noAuth && publicCount < authCount {
 			// Public endpoints are the minority — mark them
-			desc = "[No auth] " + desc
+			desc = desc + " (public)"
 		} else if !noAuth && authCount < publicCount {
 			// Auth-required endpoints are the minority — mark them
 			switch authType {

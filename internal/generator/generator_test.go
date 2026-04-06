@@ -1551,10 +1551,10 @@ func TestMCPDescription(t *testing.T) {
 			want: "List items",
 		},
 		{
-			name: "public minority — prepend [No auth]",
+			name: "public minority — append (public)",
 			desc: "Find stores", noAuth: true, authType: "api_key",
 			publicCount: 3, totalCount: 10,
-			want: "[No auth] Find stores",
+			want: "Find stores (public)",
 		},
 		{
 			name: "public minority — auth endpoint not annotated",

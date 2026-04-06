@@ -79,7 +79,7 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
 - **`naming.MCP()` function:** Add to `internal/naming/naming.go` returning `name + "-pp-mcp"`. Update the generator at `generator.go:441` to use this function instead of the current inline `name + "-mcp"`. Centralizes the convention and applies the `-pp-` infix consistently.
 - **Minority-side annotation logic:** Only annotate when a CLI has a mix of public and auth-required tools. Annotate whichever side is the minority:
   - All tools same auth status → no annotations (default speaks for itself)
-  - Mixed, public is minority → prepend `[No auth]` on public tools
+  - Mixed, public is minority → append `(public)` on public tools
   - Mixed, auth-required is minority → append auth-type-specific suffix on auth-required tools: `(requires API key)`, `(requires auth)`, or `(requires browser login)`
   The `mcpDescription` template function handles this: it takes the endpoint description, `NoAuth` flag, the spec-level auth type, and the total/public tool counts. It decides whether and how to annotate based on the minority logic, then applies oneline cleanup/truncation. Prepending/appending is chosen so the annotation is always visible after truncation.
 - **`GenerateManifestParams` needs the parsed spec:** `WriteManifestForGenerate()` currently takes only `APIName`, `SpecSrcs`, `DocsURL`, `OutputDir` — no access to the parsed `*spec.APISpec` for tool counting. Add a `Spec *spec.APISpec` field to `GenerateManifestParams` and thread it through both callers in `internal/cli/root.go` (lines 189 and 331). Both callers already have the parsed spec in scope (`parsed` and `apiSpec` respectively). For `writeCLIManifestForPublish()`, which operates on `PipelineState`, re-parse the spec from the output directory's `spec.json` — the file is always present at publish time.
@@ -199,7 +199,7 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
   The annotation logic depends on the mix of public vs auth-required tools across the whole CLI:
 
   - **All tools same auth status** → no annotations. If everything needs an API key, the agent learns that from the first 401 hint or the `about` tool (Unit 3b). If everything is public, nothing to say.
-  - **Mixed, public is minority** → prepend `[No auth]` on public tools. Example: Pagliacci has 41 tools, 7 public → the 7 get `[No auth] Find store locations`.
+  - **Mixed, public is minority** → append `(public)` on public tools. Example: Pagliacci has 41 tools, 7 public → the 7 get `Find store locations (public)`.
   - **Mixed, auth-required is minority** → append auth-type-specific suffix on auth-required tools:
     - API key: `(requires API key)`
     - OAuth/bearer: `(requires auth)`
@@ -226,9 +226,9 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
   **Test scenarios:**
   - Happy path: All-auth-required spec (api_key, 0 public) → no annotations on any tool
   - Happy path: All-public spec (Auth.Type == "none") → no annotations on any tool
-  - Happy path: Mixed spec, public is minority (30 auth, 5 public) → public tools get `[No auth]` prefix, auth tools unannotated
+  - Happy path: Mixed spec, public is minority (30 auth, 5 public) → public tools get `(public)` suffix, auth tools unannotated
   - Happy path: Mixed spec, auth is minority (30 public, 5 auth, api_key) → auth tools get `(requires API key)` suffix, public tools unannotated
-  - Happy path: Mixed cookie auth (30 cookie, 5 public) → public tools get `[No auth]`, cookie tools unannotated (cookie is majority)
+  - Happy path: Mixed cookie auth (30 cookie, 5 public) → public tools get `(public)`, cookie tools unannotated (cookie is majority)
   - Edge case: Exactly 50/50 split → annotate the auth-required side (when tied, mark what needs setup)
 
   **Verification:** `go test ./internal/generator/...` passes. Generated MCP tools file compiles.
@@ -493,10 +493,10 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
   **Step 1 — Classify endpoints and determine annotation strategy per CLI:**
   - **espn, postman-explore**: Auth type is `none` → ALL endpoints are public. No annotations needed (uniform).
   - **dub, linear**: Auth type is api_key → ALL endpoints require auth. No annotations needed (uniform).
-  - **pagliacci-pizza**: Composed cookie auth. For each candidate public endpoint (store finder, menu, location search), make one actual HTTP request without credentials using `curl`. If 200 with meaningful data → public. If 401/403 → auth-required. Document results in the PR. Public endpoints are the minority → prepend `[No auth]` on them.
+  - **pagliacci-pizza**: Composed cookie auth. For each candidate public endpoint (store finder, menu, location search), make one actual HTTP request without credentials using `curl`. If 200 with meaningful data → public. If 401/403 → auth-required. Document results in the PR. Public endpoints are the minority → append `(public)` on them.
   - **steam-web**: API key auth but Steam has many public endpoints. Same verification protocol: test each endpoint path with `curl` without the API key. Count public vs auth-required. Annotate the minority side:
     - If most tools are public → append `(requires API key)` on auth-required tools
-    - If most tools need auth → prepend `[No auth]` on public tools
+    - If most tools need auth → append `(public)` on public tools
 
   **Step 2 — Annotate `tools.go`:**
   Apply the minority-side annotation to tool descriptions in `mcplib.WithDescription("...")` calls. Be conservative — only annotate endpoints verified via actual HTTP requests.
@@ -505,13 +505,13 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
   After editing, run `gofmt -w` on each modified file, then `go build ./...` in each CLI directory.
 
   **Patterns to follow:**
-  - Minority is public → prepend `[No auth] ` after opening `"`
+  - Minority is public → append ` (public)` before closing `"`
   - Minority is auth-required → append ` (requires API key)` (or `(requires browser login)`) before closing `"`
 
   **Test scenarios:**
   - Happy path: espn tools.go → no annotations (all public, uniform)
   - Happy path: dub tools.go → no annotations (all auth, uniform)
-  - Happy path: pagliacci tools.go → verified-public tools get `[No auth]`, auth tools unannotated
+  - Happy path: pagliacci tools.go → verified-public tools get `(public)` suffix, auth tools unannotated
   - Happy path: steam tools.go → minority side annotated based on actual count
   - Edge case: Annotations don't break Go compilation — verify with `go build ./...` in each CLI dir
 
@@ -587,7 +587,7 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
 | Steam/Pagliacci public endpoint identification may be wrong | Verify every candidate with actual HTTP request without credentials. Only annotate confirmed-public endpoints. Document results in PR. |
 | MCP binary rename breaks existing users | No marketplace listings exist yet. The 6 published CLIs are source-only in the library repo — no users have `claude mcp add` configs pointing to the old names. Rename cost is zero. |
 | Specs that omit security but actually require auth (false public sweep) | Post-parse sweep guarded by `!Auth.Inferred`. Only marks all endpoints public when parser actively concluded no auth exists, not when detection failed. |
-| `oneline()` truncation drops auth annotation on long descriptions | `mcpDescription()` applies annotation then calls `oneline()`. Prepended annotations (`[No auth]`) survive truncation; appended annotations (`(requires API key)`) could be cut on very long descriptions but auth-required is the less common case for this to matter. |
+| `oneline()` truncation drops auth annotation on long descriptions | `mcpDescription()` appends annotation then calls `oneline()`. Both `(public)` and `(requires API key)` are suffixes that could be cut on very long descriptions. In practice, most MCP tool descriptions are under 100 chars, leaving room for the suffix within the 120-char limit. |
 
 ## Contract with Follow-Up Plan: Printing Press Mega MCP
 
