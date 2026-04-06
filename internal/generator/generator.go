@@ -111,6 +111,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"envVarPlaceholder":  envVarPlaceholder,
 		"add":                func(a, b int) int { return a + b },
 		"oneline":            oneline,
+		"mcpDescription":     mcpDescription,
 		"flagName":           flagName,
 		"safeTypeName":       safeTypeName,
 		"hasNonScalarType": func(types map[string]spec.TypeDef) bool {
@@ -616,20 +617,27 @@ func (g *Generator) Generate() error {
 		}
 	}
 
-	// Render MCP tools registration (needs VisionSet + store data)
+	// Render MCP tools registration (needs VisionSet + store data + tool counts for annotations)
 	if g.VisionSet.MCP {
+		mcpTotal, mcpPublic := countMCPTools(g.Spec)
 		mcpData := struct {
 			*spec.APISpec
 			SyncableResources []profiler.SyncableResource
 			SearchableFields  map[string][]string
 			Tables            []TableDef
 			VisionSet         VisionTemplateSet
+			MCPTotalCount     int
+			MCPPublicCount    int
+			NovelFeatures     []NovelFeature
 		}{
 			APISpec:           g.Spec,
 			SyncableResources: g.profile.SyncableResources,
 			SearchableFields:  g.profile.SearchableFields,
 			Tables:            schema,
 			VisionSet:         g.VisionSet,
+			MCPTotalCount:     mcpTotal,
+			MCPPublicCount:    mcpPublic,
+			NovelFeatures:     g.NovelFeatures,
 		}
 		if err := g.renderTemplate("mcp_tools.go.tmpl", filepath.Join("internal", "mcp", "tools.go"), mcpData); err != nil {
 			return fmt.Errorf("rendering MCP tools: %w", err)
@@ -1057,6 +1065,59 @@ func oneline(s string) string {
 		}
 	}
 	return s
+}
+
+// countMCPTools counts total endpoints and public (NoAuth) endpoints.
+func countMCPTools(s *spec.APISpec) (total, public int) {
+	for _, r := range s.Resources {
+		for _, e := range r.Endpoints {
+			total++
+			if e.NoAuth {
+				public++
+			}
+		}
+		for _, sub := range r.SubResources {
+			for _, e := range sub.Endpoints {
+				total++
+				if e.NoAuth {
+					public++
+				}
+			}
+		}
+	}
+	return
+}
+
+// mcpDescription builds an MCP tool description with optional minority-side
+// auth annotation. Only annotates when the CLI has a mix of public and
+// auth-required tools. The minority side gets annotated:
+//   - Public is minority → prepend "[No auth] "
+//   - Auth-required is minority → append auth-type-specific suffix
+//   - All same status → no annotation
+func mcpDescription(desc string, noAuth bool, authType string, publicCount, totalCount int) string {
+	authCount := totalCount - publicCount
+	mixed := publicCount > 0 && authCount > 0
+
+	if mixed {
+		if noAuth && publicCount <= authCount {
+			// Public endpoints are the minority — mark them
+			desc = "[No auth] " + desc
+		} else if !noAuth && authCount < publicCount {
+			// Auth-required endpoints are the minority — mark them
+			switch authType {
+			case "api_key":
+				desc = desc + " (requires API key)"
+			case "cookie", "composed":
+				desc = desc + " (requires browser login)"
+			case "oauth2", "bearer_token":
+				desc = desc + " (requires auth)"
+			default:
+				desc = desc + " (requires auth)"
+			}
+		}
+	}
+
+	return oneline(desc)
 }
 
 func exampleValue(p spec.Param) string {

@@ -64,7 +64,7 @@ func RegisterTools(s *server.MCPServer) {
 {{- range $eName, $endpoint := $resource.Endpoints}}
 	s.AddTool(
 		mcplib.NewTool("{{snake $name}}_{{snake $eName}}",
-			mcplib.WithDescription("{{oneline $endpoint.Description}}"),
+			mcplib.WithDescription("{{mcpDescription $endpoint.Description $endpoint.NoAuth $.Auth.Type $.MCPPublicCount $.MCPTotalCount}}"),
 {{- range $endpoint.Params}}
 {{- if eq .Type "integer"}}
 			mcplib.WithNumber("{{.Name}}"{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description("{{oneline .Description}}")),
@@ -82,7 +82,7 @@ func RegisterTools(s *server.MCPServer) {
 {{- range $eName, $endpoint := $subResource.Endpoints}}
 	s.AddTool(
 		mcplib.NewTool("{{snake $name}}_{{snake $subName}}_{{snake $eName}}",
-			mcplib.WithDescription("{{oneline $endpoint.Description}}"),
+			mcplib.WithDescription("{{mcpDescription $endpoint.Description $endpoint.NoAuth $.Auth.Type $.MCPPublicCount $.MCPTotalCount}}"),
 {{- range $endpoint.Params}}
 {{- if eq .Type "integer"}}
 			mcplib.WithNumber("{{.Name}}"{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description("{{oneline .Description}}")),
@@ -134,6 +134,14 @@ func RegisterTools(s *server.MCPServer) {
 		handleSQL,
 	)
 {{- end}}
+
+	// About tool — self-describing metadata for this MCP server
+	s.AddTool(
+		mcplib.NewTool("about",
+			mcplib.WithDescription("Describe this MCP server's capabilities, auth requirements, and unique features"),
+		),
+		handleAbout,
+	)
 }
 
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
@@ -371,3 +379,32 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 	return mcplib.NewToolResultText(string(data)), nil
 }
 {{- end}}
+
+func handleAbout(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	about := map[string]any{
+		"api":              "{{.Name}}",
+		"description":      "{{oneline .Description}}",
+		"tool_count":       {{.MCPTotalCount}},
+		"public_tool_count": {{.MCPPublicCount}},
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+		"auth": map[string]any{
+			"type": "{{.Auth.Type}}",
+{{- if .Auth.EnvVars}}
+			"env_vars": []string{ {{- range .Auth.EnvVars}}"{{.}}", {{end}} },
+{{- end}}
+{{- if .Auth.KeyURL}}
+			"key_url": "{{.Auth.KeyURL}}",
+{{- end}}
+		},
+{{- end}}
+{{- if .NovelFeatures}}
+		"unique_capabilities": []map[string]string{
+{{- range .NovelFeatures}}
+			{"name": "{{.Name}}", "command": "{{.Command}}", "description": "{{oneline .Description}}"},
+{{- end}}
+		},
+{{- end}}
+	}
+	data, _ := json.MarshalIndent(about, "", "  ")
+	return mcplib.NewToolResultText(string(data)), nil
+}
