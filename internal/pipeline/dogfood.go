@@ -463,11 +463,15 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 		return result
 	}
 
-	clientSource := string(clientData)
+	// Also read config.go — Bearer/Bot prefix may be constructed there
+	// rather than in client.go (e.g., config.AuthHeader() returns "Bearer " + token).
+	configData, _ := os.ReadFile(filepath.Join(dir, "internal", "config", "config.go"))
+
+	combinedSource := string(clientData) + string(configData)
 	switch {
-	case strings.Contains(clientSource, `"Bot "`):
+	case strings.Contains(combinedSource, `"Bot "`):
 		result.GeneratedFmt = "Bot "
-	case strings.Contains(clientSource, `"Bearer "`):
+	case strings.Contains(combinedSource, `"Bearer "`):
 		result.GeneratedFmt = "Bearer "
 	default:
 		result.GeneratedFmt = "unknown"
