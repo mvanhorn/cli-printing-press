@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.2.0](https://github.com/mvanhorn/cli-printing-press/compare/v1.1.0...v1.2.0) (2026-04-08)
+
+
+### Features
+
+* **cli:** MCP readiness layer — per-endpoint auth awareness and metadata ([#145](https://github.com/mvanhorn/cli-printing-press/issues/145)) ([51afd77](https://github.com/mvanhorn/cli-printing-press/commit/51afd77877ca1d2e07f8eb56bc831ebf74d62a0c))
+* **cli:** mega MCP — generic HTTP proxy with activation model ([#147](https://github.com/mvanhorn/cli-printing-press/issues/147)) ([e041f50](https://github.com/mvanhorn/cli-printing-press/commit/e041f50e7b46f29875e7eee342a0e3081a3868dd))
+
+
+### Bug Fixes
+
+* **cli:** Dub retro — FTS batch indexing, retry cap, dogfood auth, root dedup, dead code ([#143](https://github.com/mvanhorn/cli-printing-press/issues/143)) ([349580a](https://github.com/mvanhorn/cli-printing-press/commit/349580afbfb388c6c3750f32c8403e599f180adb))
+* **cli:** sync version files to 1.1.0 and fix release-please config ([#146](https://github.com/mvanhorn/cli-printing-press/issues/146)) ([3393ada](https://github.com/mvanhorn/cli-printing-press/commit/3393ada0f39ec2b4918d034a632c6259ddc9c900))
+
 ## [1.1.0](https://github.com/mvanhorn/cli-printing-press/compare/v1.0.0...v1.1.0) (2026-04-06)
 
 
