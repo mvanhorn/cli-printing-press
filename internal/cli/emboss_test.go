@@ -19,6 +19,7 @@ func TestResolveEmbossTarget(t *testing.T) {
 	libraryDir := filepath.Join(home, "library")
 	require.NoError(t, os.MkdirAll(filepath.Join(libraryDir, "notion-pp-cli"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(libraryDir, "discord-pp-cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(libraryDir, "dub-2"), 0o755))
 
 	tests := []struct {
 		name    string
@@ -62,6 +63,12 @@ func TestResolveEmbossTarget(t *testing.T) {
 			flagDir: "",
 			args:    []string{"local-only"},
 			wantErr: `no CLI named "local-only" found`,
+		},
+		{
+			name:    "legacy rerun name resolves migrated slug-keyed dir",
+			flagDir: "",
+			args:    []string{"dub-pp-cli-2"},
+			want:    filepath.Join(libraryDir, "dub-2"),
 		},
 		{
 			name:    "no match",

@@ -152,7 +152,7 @@ Print as prose (in Victorian voice):
 > 3. I shall present what I found and what I invented — you will have a chance to add your own ideas or adjust the plan before I build
 > 4. I shall generate a Go CLI, build every feature from the plan, then verify quality through dogfood, runtime verification, and scoring
 >
-> **What you will have at the end:** A fully functional CLI at `~/printing-press/library/<api>-pp-cli` that you can use yourself, ship on your own, or apply to add to the printing-press library.
+> **What you will have at the end:** A fully functional CLI at `~/printing-press/library/<api>` that you can use yourself, ship on your own, or apply to add to the printing-press library.
 >
 > **Time:** 10-40 minutes depending on API complexity.
 >
@@ -294,17 +294,19 @@ Maintain a lightweight state file at `$STATE_FILE` so `/printing-press-score` ca
 }
 ```
 
-Active mutable work lives under `$PRESS_RUNSTATE/`. Published CLIs live under `$PRESS_LIBRARY/`. Archived research and verification evidence live under `$PRESS_MANUSCRIPTS/<cli-name>/<run-id>/` (keyed by CLI name, e.g., `steam-web-pp-cli`, not the API slug). Do not write mutable run artifacts into the repo checkout.
+Active mutable work lives under `$PRESS_RUNSTATE/`. Published CLIs live under `$PRESS_LIBRARY/<api-slug>/` (keyed by API slug, e.g., `steam-web`, not CLI name). Archived research and verification evidence live under `$PRESS_MANUSCRIPTS/<api-slug>/<run-id>/`. Do not write mutable run artifacts into the repo checkout.
 
-Examples of the current naming/layout to preserve:
-- `/printing-press emboss notion-pp-cli`
-- `discord-pp-cli/internal/store/store.go`
-- `linear-pp-cli stale --days 30 --team ENG`
-- `github.com/mvanhorn/discord-pp-cli`
+Examples of the current naming/layout:
+- `~/printing-press/library/notion/` — published CLI directory (keyed by API slug)
+- `notion-pp-cli` — the binary name inside the directory
+- `/printing-press emboss notion` — emboss accepts both slug and CLI name
+- `discord-pp-cli/internal/store/store.go` — internal source paths still use CLI name
+- `linear-pp-cli stale --days 30 --team ENG` — binary invocations use CLI name
+- `github.com/mvanhorn/discord-pp-cli` — Go module paths use CLI name
 
 ## Outputs
 
-Every run writes up to 5 concise artifacts under the current managed run and archives them to `$PRESS_MANUSCRIPTS/<cli-name>/<run-id>/`:
+Every run writes up to 5 concise artifacts under the current managed run and archives them to `$PRESS_MANUSCRIPTS/<api-slug>/<run-id>/`:
 
 1. `research/<stamp>-feat-<api>-pp-cli-brief.md`
 2. `research/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`
@@ -353,7 +355,7 @@ Before new research:
    - If the user passed `--spec`, use it directly (existing behavior).
    - Otherwise, proceed with normal discovery (catalog, KnownSpecs, apis-guru, web search).
 2. Check for prior research in:
-   - `$PRESS_MANUSCRIPTS/<cli-name>/*/research/*` (also check `$PRESS_MANUSCRIPTS/<api>/*/research/*` for backwards compatibility)
+   - `$PRESS_MANUSCRIPTS/<api-slug>/*/research/*`
    - `$REPO_ROOT/docs/plans/*<api>*` (legacy fallback)
 3. Reuse good prior work instead of redoing it.
 4. **Library Check** — Check if a CLI for this API already exists in the library or is actively being built, and present the user with context and options.
@@ -371,7 +373,7 @@ Before new research:
    Then check the library directory:
 
    ```bash
-   CLI_DIR="$PRESS_LIBRARY/<api>-pp-cli"
+   CLI_DIR="$PRESS_LIBRARY/<api>"
    HAS_LIBRARY=false
    HAS_GOMOD=false
    if [ -d "$CLI_DIR" ]; then
@@ -398,7 +400,7 @@ Before new research:
    | No | Yes | No | N/A | Warn: "Actively being built (phase: `<phase>`, `<age>` seconds ago). Wait, use a different name, or pick a different API." |
    | No | Yes | Yes | N/A | Offer reclaim: "Interrupted build detected (stale since `<age>`s ago). Reclaim and start fresh?" |
    | Yes | No | N/A | Yes | Existing "Found existing" flow (see below) |
-   | Yes | No | N/A | No | Debris: "Found `<cli-name>` directory in library but it appears incomplete (no go.mod). Clean up and start fresh?" If user approves, `rm -rf "$CLI_DIR"` and proceed normally. |
+   | Yes | No | N/A | No | Debris: "Found `<api>` directory in library but it appears incomplete (no go.mod). Clean up and start fresh?" If user approves, `rm -rf "$CLI_DIR"` and proceed normally. |
    | Yes | Yes | No | Any | Warn: "Actively being rebuilt (phase: `<phase>`, `<age>` seconds ago). Wait, use a different name, or pick a different API." |
    | Yes | Yes | Yes | Any | Offer reclaim: "Interrupted rebuild detected (stale since `<age>`s ago). Reclaim and start fresh?" |
 
@@ -408,7 +410,7 @@ Before new research:
 
    **If library exists with go.mod and no lock (completed CLI):** Display context and present options using `AskUserQuestion`:
 
-   > Found existing `<cli-name>` in library (last modified `<date>`).
+   > Found existing `<api>` in library (last modified `<date>`).
 
    If `PRESS_VERSION` is available, append: `Built with printing-press v<version>.`
 
@@ -420,7 +422,7 @@ Before new research:
    3. **"Review prior research first"** — Show the full research brief and absorb manifest before deciding.
 
    If the user picks option 1, proceed to Phase 1 (research) and then Phase 2 (generate) as normal.
-   If the user picks option 2, invoke `/printing-press-polish <cli-name>` to improve the existing CLI.
+   If the user picks option 2, invoke `/printing-press-polish <api>` to improve the existing CLI.
    If the user picks option 3, display the prior research, then re-present options 1 and 2.
 
    If no CLI exists in the library and no lock is active, skip this step and proceed normally.
@@ -1388,7 +1390,7 @@ Write a structured acceptance report. This report is **required** — Phase 5.6
 checks for it before promoting.
 
 ```
-Acceptance Report: <cli-name>
+Acceptance Report: <api>
   Level: Quick Check / Full Dogfood
   Tests: N/M passed
   Failures:
@@ -1480,7 +1482,7 @@ If the shipcheck verdict is `ship` or `ship-with-gaps`, promote the verified CLI
 printing-press lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"
 ```
 
-The `promote` command handles the full sequence: stages the working directory, atomically swaps it into `$PRESS_LIBRARY/<api>-pp-cli`, writes the `.printing-press.json` manifest, updates the `CurrentRunPointer`, and releases the lock — all in one step.
+The `promote` command handles the full sequence: stages the working directory, atomically swaps it into `$PRESS_LIBRARY/<api>` (slug-keyed), writes the `.printing-press.json` manifest, updates the `CurrentRunPointer`, and releases the lock — all in one step. The `--cli` flag accepts the CLI binary name; the Go code translates to the slug-keyed library path internally.
 
 If the shipcheck verdict is `hold`, the lock was already released in Phase 4. Do NOT promote. The working copy stays in `$CLI_WORK_DIR` and is not copied to the library.
 
@@ -1496,13 +1498,12 @@ future `/printing-press` runs on the same API. Publishing ships the CLI to the
 library repo. A run that isn't ready to publish still produces valuable research.
 
 ```bash
-# Archive under CLI name (e.g., steam-web-pp-cli), not API slug (e.g., steam).
-# The CLI name is unambiguous and matches what publish expects.
-CLI_NAME="$(basename "$PRESS_LIBRARY/<api>-pp-cli")"
-mkdir -p "$PRESS_MANUSCRIPTS/$CLI_NAME/$RUN_ID"
-cp -r "$RESEARCH_DIR" "$PRESS_MANUSCRIPTS/$CLI_NAME/$RUN_ID/research" 2>/dev/null || true
-cp -f "$API_RUN_DIR/research.json" "$PRESS_MANUSCRIPTS/$CLI_NAME/$RUN_ID/research.json" 2>/dev/null || true
-cp -r "$PROOFS_DIR" "$PRESS_MANUSCRIPTS/$CLI_NAME/$RUN_ID/proofs" 2>/dev/null || true
+# Archive under API slug (e.g., steam-web), matching the slug-keyed library layout.
+API_SLUG="<api>"
+mkdir -p "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID"
+cp -r "$RESEARCH_DIR" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/research" 2>/dev/null || true
+cp -f "$API_RUN_DIR/research.json" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/research.json" 2>/dev/null || true
+cp -r "$PROOFS_DIR" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs" 2>/dev/null || true
 
 # Archive discovery artifacts (sniff captures, URL lists, sniff report).
 # Remove session state before archiving — contains authentication cookies/tokens.
@@ -1515,7 +1516,7 @@ if [ -d "$DISCOVERY_DIR" ]; then
       jq 'del(.log.entries[].response.content.text)' "$har" > "${har}.stripped" 2>/dev/null && mv "${har}.stripped" "$har" || rm -f "${har}.stripped"
     fi
   done
-  cp -r "$DISCOVERY_DIR" "$PRESS_MANUSCRIPTS/$CLI_NAME/$RUN_ID/discovery" 2>/dev/null || true
+  cp -r "$DISCOVERY_DIR" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/discovery" 2>/dev/null || true
 fi
 ```
 
@@ -1537,10 +1538,10 @@ Skip this phase entirely if the final shipcheck verdict is `hold`. Only proceed 
 
 ### Check for existing PR
 
-Run a lightweight check for your own open publish PR. The `--author @me` filter avoids matching someone else's PR for the same CLI name.
+Run a lightweight check for your own open publish PR. The `--author @me` filter avoids matching someone else's PR for the same API slug.
 
 ```bash
-gh pr list --repo mvanhorn/printing-press-library --head "feat/<cli-name>" --state open --author @me --json number,url --jq '.[0]' 2>/dev/null
+gh pr list --repo mvanhorn/printing-press-library --head "feat/<api>" --state open --author @me --json number,url --jq '.[0]' 2>/dev/null
 ```
 
 If this fails (gh not authenticated, network error, etc.), continue without PR context — the publish skill will handle auth in its own Step 1.
@@ -1551,14 +1552,14 @@ Present via `AskUserQuestion`:
 
 **If an existing open PR was found:**
 
-> "<cli-name> passed shipcheck. There's an open publish PR (#N). Want to update it with this version?"
+> "<api> passed shipcheck. There's an open publish PR (#N). Want to update it with this version?"
 >
 > 1. **Yes — update PR #N** (re-validate, re-package, and push to the existing PR)
 > 2. **No — I'm done**
 
 **If no existing PR:**
 
-> "<cli-name> passed shipcheck ([score]/100, verify [pass-rate]%). What do you want to do?"
+> "<api> passed shipcheck ([score]/100, verify [pass-rate]%). What do you want to do?"
 >
 > 1. **Publish now** (validate, package, and open a PR)
 > 2. **Polish first** (run `/printing-press-polish` to fix verify failures, dead code, and README before publishing)
@@ -1569,11 +1570,11 @@ If the verdict was `ship-with-gaps`, prepend: "Note: shipcheck found minor gaps 
 
 ### If "Publish now"
 
-Invoke `/printing-press publish <cli-name>`. The publish skill handles everything from there.
+Invoke `/printing-press publish <api>`. The publish skill handles everything from there.
 
 ### If "Polish first"
 
-Invoke `/printing-press-polish <cli-name>`. The polish skill runs diagnostics, fixes issues, reports the delta, and offers its own publish at the end.
+Invoke `/printing-press-polish <api>`. The polish skill runs diagnostics, fixes issues, reports the delta, and offers its own publish at the end.
 
 ### If "Run retro"
 
@@ -1581,7 +1582,7 @@ Invoke `/printing-press-retro`. The retro skill analyzes the session for generat
 
 ### If "Done for now"
 
-End normally. The CLI is in `$PRESS_LIBRARY/<api>-pp-cli` and the user can run `/printing-press publish` or `/printing-press-polish` later.
+End normally. The CLI is in `$PRESS_LIBRARY/<api>` and the user can run `/printing-press publish` or `/printing-press-polish` later.
 
 ## Fast Guidance
 

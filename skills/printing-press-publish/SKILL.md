@@ -90,7 +90,7 @@ PUBLISH_CONFIG="$PRESS_HOME/.publish-config.json"
 }
 ```
 
-The `module_path_base` field sets the Go module path prefix for published CLIs. During packaging, the full module path is constructed as `<module_path_base>/<category>/<cli-name>`. If the user wants CLIs published to a different repo or path, they edit this field.
+The `module_path_base` field sets the Go module path prefix for published CLIs. During packaging, the full module path is constructed as `<module_path_base>/<category>/<api-slug>`. If the user wants CLIs published to a different repo or path, they edit this field.
 
 ## Step 1: Prerequisites
 
@@ -102,7 +102,7 @@ gh auth status
 
 If this fails, stop and tell the user: "GitHub CLI is not authenticated. Run `gh auth login` first."
 
-## Step 2: Resolve CLI Name
+## Step 2: Resolve API Slug
 
 Run:
 
@@ -110,17 +110,20 @@ Run:
 printing-press library list --json
 ```
 
-Parse the JSON output into a list of CLIs.
+Parse the JSON output into a list of CLIs. The library is now keyed by API slug (the directory name), not CLI name.
 
 **Name resolution order** (matches the score skill for consistency):
 
-1. **Exact match:** If the argument matches a `cli_name` exactly, use it
-2. **Suffix match:** If no exact match, try `<argument>-pp-cli`
-3. **Glob match:** If no suffix match, search for entries where `cli_name` contains the argument as a substring. Cap at 5 most-recent matches. If multiple matches, present them via AskUserQuestion and let the user pick
-4. **No match:** List all available CLIs and ask the user to pick or re-enter
-5. **No argument:** If invoked with no name, list all CLIs sorted by modification time and let the user pick
+1. **Exact match:** If the argument matches a directory name (API slug) exactly, use it
+2. **CLI name match:** If no exact match, try matching against `cli_name` fields, then derive the API slug from the manifest's `api_name` field
+3. **Suffix match:** If no match yet, try `<argument>-pp-cli` against `cli_name` fields
+4. **Glob match:** If no suffix match, search for entries where `cli_name` or `api_name` contains the argument as a substring. Cap at 5 most-recent matches. If multiple matches, present them via AskUserQuestion and let the user pick
+5. **No match:** List all available CLIs and ask the user to pick or re-enter
+6. **No argument:** If invoked with no name, list all CLIs sorted by modification time and let the user pick
 
-When presenting matches, show the CLI name and modification time in a human-friendly format (e.g., "2 hours ago", "3 days ago").
+Once resolved, read the manifest's `api_name` field to get the API slug. Use this slug for all downstream operations (branch names, registry entries, collision detection, path construction). The `cli_name` from the manifest is only used for binary-level operations.
+
+When presenting matches, show the API slug and modification time in a human-friendly format (e.g., "2 hours ago", "3 days ago").
 
 ## Step 3: Determine Category
 
@@ -154,7 +157,7 @@ printing-press publish validate --dir <cli-dir> --json
 Parse the JSON result. Display each check result to the user:
 
 ```
-Validating <cli-name>...
+Validating <api-slug>...
   manifest        PASS
   go mod tidy     PASS
   go vet          PASS
@@ -307,13 +310,13 @@ If reset, run `git checkout -- . && git clean -fd`.
 
 ## Step 6: Package
 
-Read `$PUBLISH_CONFIG` to get `module_path_base`. Construct the full module path:
+Read `$PUBLISH_CONFIG` to get `module_path_base`. Construct the full module path using the API slug (not the CLI name):
 
 ```
-MODULE_PATH="<module_path_base>/<category>/<cli-name>"
+MODULE_PATH="<module_path_base>/<category>/<api-slug>"
 ```
 
-For example: `github.com/mvanhorn/printing-press-library/library/productivity/notion-pp-cli`
+For example: `github.com/mvanhorn/printing-press-library/library/productivity/notion`
 
 Run `publish package` with `--dest` to write directly into the publish repo:
 
@@ -326,7 +329,7 @@ printing-press publish package \
   --json
 ```
 
-This removes any existing version of the CLI (handling category changes), copies the CLI source and `.manuscripts` directly into `$PUBLISH_REPO_DIR/library/<category>/<cli-name>/`, and rewrites the Go module path.
+This removes any existing version of the CLI (handling category changes), copies the CLI source and `.manuscripts` directly into `$PUBLISH_REPO_DIR/library/<category>/<api-slug>/`, and rewrites the Go module path.
 
 Parse the JSON result. Note the `staged_dir`, `module_path`, `manuscripts_included`, and `run_id`. The `module_path` field confirms the Go module path that was set in the packaged CLI's `go.mod` and import paths.
 
@@ -341,7 +344,7 @@ Run these checks in sequence:
 **1. Check merged CLIs in managed clone:**
 
 ```bash
-ls "$PUBLISH_REPO_DIR/library"/*/"<cli-name>" 2>/dev/null
+ls "$PUBLISH_REPO_DIR/library"/*/"<api-slug>" 2>/dev/null
 ```
 
 If found, record `MERGED_COLLISION=true` and note the category path.
@@ -349,7 +352,7 @@ If found, record `MERGED_COLLISION=true` and note the category path.
 **2. Check all open PRs (any author):**
 
 ```bash
-gh pr list --repo mvanhorn/printing-press-library --head "feat/<cli-name>" --state open --json number,title,url,author
+gh pr list --repo mvanhorn/printing-press-library --head "feat/<api-slug>" --state open --json number,title,url,author
 ```
 
 If the list is non-empty, record `PR_COLLISION=true`. For each PR, note the PR number, URL, and author login.
@@ -365,9 +368,9 @@ ACCESS=$(jq -r .access "$PUBLISH_CONFIG")
 GH_USER=$(jq -r .gh_user "$PUBLISH_CONFIG")
 
 if [ "$ACCESS" = "fork" ]; then
-  HEAD_REF="$GH_USER:feat/<cli-name>"
+  HEAD_REF="$GH_USER:feat/<api-slug>"
 else
-  HEAD_REF="feat/<cli-name>"
+  HEAD_REF="feat/<api-slug>"
 fi
 
 gh pr list --repo mvanhorn/printing-press-library --head "$HEAD_REF" --state open --author @me --json number,title,url
@@ -381,23 +384,23 @@ If found, record `OWN_PR=true`, store `EXISTING_PR_NUMBER` and `EXISTING_PR_URL`
 MERGED_PR=$(gh pr list --repo mvanhorn/printing-press-library --head "$HEAD_REF" --state merged --author @me --json number --jq '.[0].number' 2>/dev/null)
 ```
 
-If `MERGED_PR` is non-empty, the branch name was already used and merged. Set `BRANCH_MERGED=true` so Step 8 creates a new branch name (e.g., `feat/<cli-name>-YYYYMMDD`) instead of reusing the merged branch. Do NOT force-push onto a merged branch — `gh pr edit` would silently update a closed PR nobody is watching.
+If `MERGED_PR` is non-empty, the branch name was already used and merged. Set `BRANCH_MERGED=true` so Step 8 creates a new branch name (e.g., `feat/<api-slug>-YYYYMMDD`) instead of reusing the merged branch. Do NOT force-push onto a merged branch — `gh pr edit` would silently update a closed PR nobody is watching.
 
 ### No collision
 
 If no merged CLI exists and no open PRs match (other than your own), set `EXISTING_PR_NUMBER` from the own-PR check (or empty if none) and proceed to Step 8 normally.
 
 If an existing open PR of yours was found, inform the user:
-> "Found your open PR #N for `<cli-name>`. Will update it with the new version."
+> "Found your open PR #N for `<api-slug>`. Will update it with the new version."
 
 ### Collision detected — display info
 
 Show the user what was found:
 
 ```
-⚠️  Name collision detected for <cli-name>
+⚠️  Name collision detected for <api-slug>
 
-  Merged: <category>/<cli-name> exists in the library
+  Merged: <category>/<api-slug> exists in the library
   Open PR: #<number> by <author> — <url>
 ```
 
@@ -424,36 +427,43 @@ This is the existing update flow. Set `EXISTING_PR_NUMBER` from the detection st
 #### Replace path
 
 **For merged CLIs or your own PR:** Standard confirmation:
-> "This will replace the existing `<cli-name>`. Continue?"
+> "This will replace the existing `<api-slug>`. Continue?"
 
 **For another user's PR:** Stronger confirmation naming the other author:
-> "⚠️  This will replace `<author>`'s `<cli-name>` (PR #N). Are you sure?"
+> "⚠️  This will replace `<author>`'s `<api-slug>` (PR #N). Are you sure?"
 
 If confirmed:
-- The PR description must include: `⚠️ **Replaces existing \`<cli-name>\`** — <reason provided by user or "newer version">`
+- The PR description must include: `⚠️ **Replaces existing \`<api-slug>\`** — <reason provided by user or "newer version">`
 - Set `EXISTING_PR_NUMBER=""` (create a new PR, don't update theirs)
 - Proceed to Step 8 normally
 
 #### Alongside path (rename)
 
-**1. Extract API slug** from the manifest's `api_name` field (not from the CLI name):
+**1. Extract the original API slug** from the manifest's `api_name` field:
 
 ```bash
 # Read from .printing-press.json in the publish repo's staged CLI
-API_SLUG=$(cat "$PUBLISH_REPO_DIR/library/<category>/<cli-name>/.printing-press.json" | jq -r '.api_name')
+ORIGINAL_API_SLUG=$(cat "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press.json" | jq -r '.api_name')
 ```
 
-**2. Generate rename suggestions:**
+**2. Generate rename suggestions** using slug format. Derive the new CLI name from the chosen slug:
 
-- Numeric: `<api-slug>-2-pp-cli` (if that collides, try `-3`, `-4`, etc.)
-- Non-numeric: `<api-slug>-alt-pp-cli`
+- Numeric: `<api-slug>-2` (if that collides, try `-3`, `-4`, etc.)
+- Non-numeric: `<api-slug>-alt`
 - Custom: prompt the user for a qualifier word
 
+After the user chooses a slug, compute:
+
+```bash
+NEW_API_SLUG="<chosen-slug>"
+NEW_CLI_NAME="${NEW_API_SLUG}-pp-cli"
+```
+
 Present the format to the user:
-> "Rename format: `<api-slug>-<qualifier>-pp-cli`. Pick a qualifier:"
+> "Rename format: `<api-slug>-<qualifier>`. Pick a qualifier:"
 >
-> 1. `2` → `<api-slug>-2-pp-cli`
-> 2. `alt` → `<api-slug>-alt-pp-cli`
+> 1. `2` → `<api-slug>-2`
+> 2. `alt` → `<api-slug>-alt`
 > 3. Enter custom qualifier
 
 **3. Verify each suggestion is non-colliding** before presenting:
@@ -469,25 +479,25 @@ If a suggestion collides, skip it or increment the numeric suffix.
 
 **4. Rename the CLI in the publish repo:**
 
-Since Step 6 wrote the CLI directly into `$PUBLISH_REPO_DIR` via `--dest`, the rename operates on that directory:
+Since Step 6 wrote the CLI directly into `$PUBLISH_REPO_DIR` via `--dest`, the rename operates on that directory. Note: `--old-name`/`--new-name` still use CLI-name format (e.g., `dub-pp-cli`) because `RenameCLI` does content replacement — bare slugs would cause collateral damage. The `--dir` path uses the slug-keyed directory.
 
 ```bash
 printing-press publish rename \
-  --dir "$PUBLISH_REPO_DIR/library/<category>/<old-cli-name>" \
+  --dir "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" \
   --old-name <old-cli-name> \
-  --new-name <new-cli-name> \
-  --api-name "$API_SLUG" \
+  --new-name "$NEW_CLI_NAME" \
+  --api-name "$ORIGINAL_API_SLUG" \
   --json
 ```
 
-Parse the JSON result. Verify `"success": true`. Note the `new_dir` path.
+Parse the JSON result. Verify `"success": true`. Note that `new_dir` should now be `$PUBLISH_REPO_DIR/library/<category>/$NEW_API_SLUG`.
 
 **5. Update all downstream references for Step 8:**
 
-- Branch name: `feat/<new-cli-name>` (not the old name)
-- PR title: `feat(<api-slug>): add <new-cli-name>`
-- Commit message: `feat(<api-slug>): add <new-cli-name>`
-- Registry.json entry: `cli_name` → `<new-cli-name>`
+- Branch name: `feat/$NEW_API_SLUG` (not the old slug)
+- PR title: `feat($NEW_API_SLUG): add $NEW_API_SLUG`
+- Commit message: `feat($NEW_API_SLUG): add $NEW_API_SLUG`
+- Registry.json entry: `name` → `$NEW_API_SLUG`
 - Set `EXISTING_PR_NUMBER=""` (always a new PR for a renamed CLI)
 
 Proceed to Step 8 with the new name.
@@ -495,7 +505,7 @@ Proceed to Step 8 with the new name.
 #### Bail path
 
 Show links to what exists:
-- If merged: "Existing CLI at `library/<category>/<cli-name>/`"
+- If merged: "Existing CLI at `library/<category>/<api-slug>/`"
 - If open PR: "Open PR: <url>"
 
 Exit the publish flow. If Step 6 already wrote files into `$PUBLISH_REPO_DIR`, clean up with `git checkout -- . && git clean -fd` in the managed clone.
@@ -509,7 +519,7 @@ Exit the publish flow. If Step 6 already wrote files into `$PUBLISH_REPO_DIR`, c
 Always overwrite the branch — the intent is clearly to update:
 
 ```bash
-git checkout -B feat/<cli-name>
+git checkout -B feat/<api-slug>
 ```
 
 **If `EXISTING_PR_NUMBER` is empty and `BRANCH_MERGED` is true** (previous PR was merged):
@@ -517,7 +527,7 @@ git checkout -B feat/<cli-name>
 Auto-create a timestamped branch — do not reuse the merged branch name:
 
 ```bash
-git checkout -b feat/<cli-name>-$(date +%Y%m%d)
+git checkout -b feat/<api-slug>-$(date +%Y%m%d)
 ```
 
 **If `EXISTING_PR_NUMBER` is empty and `BRANCH_MERGED` is not set** (no open or merged PR):
@@ -526,37 +536,37 @@ Check for stale branches and competing PRs:
 
 ```bash
 # Check local and remote branches
-LOCAL_BRANCH=$(git branch --list "feat/<cli-name>" | head -1)
-REMOTE_BRANCH=$(git ls-remote --heads origin "feat/<cli-name>" 2>/dev/null | head -1)
+LOCAL_BRANCH=$(git branch --list "feat/<api-slug>" | head -1)
+REMOTE_BRANCH=$(git ls-remote --heads origin "feat/<api-slug>" 2>/dev/null | head -1)
 
 # If a remote branch exists, check who owns it
 if [ -n "$REMOTE_BRANCH" ]; then
   # Check for ANY open PR on this branch (not just ours)
-  OTHER_PR=$(gh pr list --repo mvanhorn/printing-press-library --head "feat/<cli-name>" --state open --json number,author --jq '.[0]' 2>/dev/null)
+  OTHER_PR=$(gh pr list --repo mvanhorn/printing-press-library --head "feat/<api-slug>" --state open --json number,author --jq '.[0]' 2>/dev/null)
 fi
 ```
 
 **If another user's open PR exists on this branch** (`OTHER_PR` is non-empty and author is not `@me`):
-> "Someone else has an open PR for `<cli-name>` (PR #N by @author). Creating a timestamped branch to avoid conflicts."
+> "Someone else has an open PR for `<api-slug>` (PR #N by @author). Creating a timestamped branch to avoid conflicts."
 
-Auto-create a timestamped branch: `feat/<cli-name>-YYYYMMDD`. Do NOT offer to overwrite — that would stomp their work.
+Auto-create a timestamped branch: `feat/<api-slug>-YYYYMMDD`. Do NOT offer to overwrite — that would stomp their work.
 
 **If the branch exists but no competing PR** (stale branch from a previously closed/merged PR):
 
 Ask via AskUserQuestion:
-> "Found a stale branch `feat/<cli-name>` (likely from a previous publish). Overwrite it?"
+> "Found a stale branch `feat/<api-slug>` (likely from a previous publish). Overwrite it?"
 
 - "Overwrite existing branch" — reuse the branch name
-- "Create timestamped variant (feat/<cli-name>-YYYYMMDD)"
+- "Create timestamped variant (feat/<api-slug>-YYYYMMDD)"
 
 **If no branch exists:** Create normally.
 
 ```bash
 # New branch:
-git checkout -b feat/<cli-name>
+git checkout -b feat/<api-slug>
 
 # Overwrite existing:
-git checkout -B feat/<cli-name>
+git checkout -B feat/<api-slug>
 ```
 
 ### Update registry.json
@@ -568,11 +578,11 @@ The registry file has this structure:
   "schema_version": 1,
   "entries": [
     {
-      "name": "<cli-name>",
+      "name": "<api-slug>",
       "category": "<category>",
       "api": "<api-display-name>",
       "description": "<from manifest or README>",
-      "path": "library/<category>/<cli-name>",
+      "path": "library/<category>/<api-slug>",
       "mcp": {
         "binary": "<name>-pp-mcp",
         "transport": "stdio",
@@ -583,7 +593,7 @@ The registry file has this structure:
         "mcp_ready": "<full|partial|cli-only>",
         "manifest_checksum": "<sha256:hex of tools-manifest.json>",
         "spec_format": "<openapi3|graphql|internal>",
-        "manifest_url": "library/<category>/<cli-name>/tools-manifest.json"
+        "manifest_url": "library/<category>/<api-slug>/tools-manifest.json"
       }
     }
   ]
@@ -613,7 +623,7 @@ Write back with `jq` or via the Write tool.
 ```bash
 cd "$PUBLISH_REPO_DIR"
 git add library/ registry.json
-git commit -m "feat(<api-name>): add <cli-name>"
+git commit -m "feat(<api-slug>): add <api-slug>"
 ```
 
 Push to origin (which is the fork for non-push users, or the upstream for push users):
@@ -621,26 +631,26 @@ Push to origin (which is the fork for non-push users, or the upstream for push u
 **If updating an existing PR** (`EXISTING_PR_NUMBER` is set):
 
 ```bash
-git push --force-with-lease -u origin feat/<cli-name>
+git push --force-with-lease -u origin feat/<api-slug>
 ```
 
 **If creating a new PR** and you chose "Overwrite existing branch" earlier:
 
 ```bash
-git push --force-with-lease -u origin feat/<cli-name>
+git push --force-with-lease -u origin feat/<api-slug>
 ```
 
 **Otherwise** (new branch, no conflicts):
 
 ```bash
-git push -u origin feat/<cli-name>
+git push -u origin feat/<api-slug>
 ```
 
 ### Create or update PR
 
 Read `access` and `gh_user` from `$PUBLISH_CONFIG`. These determine how `gh pr create` is called.
 
-**For fork-based PRs** (`access` is `fork`): use `--head <gh_user>:feat/<cli-name>` so GitHub creates a cross-repo PR from the fork to the upstream. Without `--head`, `gh pr create` would try to find the branch on the upstream repo (where the user can't push) and fail.
+**For fork-based PRs** (`access` is `fork`): use `--head <gh_user>:feat/<api-slug>` so GitHub creates a cross-repo PR from the fork to the upstream. Without `--head`, `gh pr create` would try to find the branch on the upstream repo (where the user can't push) and fail.
 
 **For push-access PRs** (`access` is `push`): no `--head` needed — the branch is on the same repo.
 
@@ -655,9 +665,9 @@ Build the PR description from:
 **PR description template:**
 
 ```markdown
-## <cli-name>
+## <api-slug>
 
-<If this is a Replace path, add: "⚠️ **Replaces existing `<cli-name>`** — <reason from user>">
+<If this is a Replace path, add: "⚠️ **Replaces existing `<api-slug>`** — <reason from user>">
 
 <description from manifest, or "No description available">
 
@@ -677,8 +687,8 @@ $ <cli-name> --help
 
 ### Manuscripts
 
-- [Research Brief](<link to library/<category>/<cli-name>/.manuscripts/<run-id>/research/>)
-- [Shipcheck Results](<link to library/<category>/<cli-name>/.manuscripts/<run-id>/proofs/>)
+- [Research Brief](<link to library/<category>/<api-slug>/.manuscripts/<run-id>/research/>)
+- [Shipcheck Results](<link to library/<category>/<api-slug>/.manuscripts/<run-id>/proofs/>)
 
 ### Validation Results
 
@@ -720,15 +730,15 @@ GH_USER=$(jq -r .gh_user "$PUBLISH_CONFIG")
 if [ "$ACCESS" = "fork" ]; then
   gh pr create \
     --repo mvanhorn/printing-press-library \
-    --head "$GH_USER:feat/<cli-name>" \
+    --head "$GH_USER:feat/<api-slug>" \
     --base main \
-    --title "feat(<api-name>): add <cli-name>" \
+    --title "feat(<api-slug>): add <api-slug>" \
     --body "<constructed PR body>"
 else
   gh pr create \
     --repo mvanhorn/printing-press-library \
     --base main \
-    --title "feat(<api-name>): add <cli-name>" \
+    --title "feat(<api-slug>): add <api-slug>" \
     --body "<constructed PR body>"
 fi
 ```
@@ -790,4 +800,4 @@ flagged (e.g., a test fixture with a fake key). Don't block silently.
 - **Rename fails:** Show the error from `publish rename --json`. Offer to retry with a different qualifier or bail. If the publish repo is in a partial state, reset with `git checkout -- . && git clean -fd` before retrying
 - **Branch conflict (no existing PR):** Ask user in Step 8 (overwrite or timestamp)
 - **Push fails:** For fork users, ensure they're pushing to their fork (origin), not upstream. Report the error, suggest checking `gh auth status` and `git remote -v`
-- **Cross-repo PR creation fails:** If `gh pr create --head user:branch` fails with "head not found", the branch wasn't pushed to the fork. Verify with `git ls-remote origin feat/<cli-name>`
+- **Cross-repo PR creation fails:** If `gh pr create --head user:branch` fails with "head not found", the branch wasn't pushed to the fork. Verify with `git ls-remote origin feat/<api-slug>`

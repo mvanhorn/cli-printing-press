@@ -7,14 +7,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
-
-	"github.com/mvanhorn/cli-printing-press/internal/naming"
 )
 
 // DefaultOutputDir returns the default output directory for a given API name.
 // All commands should use this when --output is not specified.
 func DefaultOutputDir(apiName string) string {
-	return filepath.Join(PublishedLibraryRoot(), naming.CLI(apiName))
+	return filepath.Join(PublishedLibraryRoot(), apiName)
 }
 
 // ClaimOutputDir atomically claims an output directory. If base already exists,

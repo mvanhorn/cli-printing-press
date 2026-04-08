@@ -185,7 +185,7 @@ When you add `codex`, Phase 3's code generation tasks are delegated to Codex CLI
 ```bash
 /printing-press emboss notion              # By API name
 /printing-press emboss notion-pp-cli       # By CLI name
-/printing-press emboss ~/printing-press/library/notion-pp-cli   # By full path
+/printing-press emboss ~/printing-press/library/notion          # By full path
 ```
 
 Already generated a CLI? Emboss runs a focused improvement cycle: audit baseline (verify + scorecard), re-research what's changed, identify top 5 improvements, build them, re-verify, report the delta. Offered at the end of every run - never triggered automatically.
@@ -210,7 +210,7 @@ Already generated a CLI? Emboss runs a focused improvement cycle: audit baseline
 
 **Command name normalization**: generated names like `retrieve-a` become `get`, `post` becomes `create`, `patch` becomes `update`. Clean names, not operationId garbage.
 
-**Provenance manifest**: every generated CLI includes a `.printing-press.json` with spec source, generation timestamp, press version, category, and run ID. Self-describing even in isolation.
+**Provenance manifest**: every generated CLI includes a `.printing-press.json` with spec source, generation timestamp, press version, category, and run ID. In that manifest, `api_name` is the canonical API identity and `cli_name` is the executable name; slug-keyed library directories are a separate concern. Self-describing even in isolation.
 
 **Source credits**: the generated README includes a "Sources & Inspiration" section crediting the ecosystem tools and competing projects studied during research.
 
@@ -325,7 +325,7 @@ Each run produces two binaries (`<api>-pp-cli` + `<api>-pp-mcp`), research docum
 By default, active and published output are separated:
 
 - Active managed runs work in `~/printing-press/.runstate/<scope>/runs/<run-id>/working/<api>-pp-cli`
-- Published CLIs go to `~/printing-press/library/<api>-pp-cli`
+- Published CLIs go to `~/printing-press/library/<api>`
 - Archived manuscripts go to `~/printing-press/manuscripts/<api>/<run-id>/`
 - Manuscripts are split into `research/`, `proofs/`, `discovery/`, and `pipeline/`
 

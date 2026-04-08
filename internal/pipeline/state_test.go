@@ -131,8 +131,11 @@ func TestDefaultOutputDir(t *testing.T) {
 		apiName  string
 		expected string
 	}{
-		{"simple", "stripe", filepath.Join(home, "library", "stripe-pp-cli")},
-		{"hyphenated", "my-api", filepath.Join(home, "library", "my-api-pp-cli")},
+		{"simple", "stripe", filepath.Join(home, "library", "stripe")},
+		{"hyphenated", "my-api", filepath.Join(home, "library", "my-api")},
+		{"slug dub", "dub", filepath.Join(home, "library", "dub")},
+		{"slug cal-com", "cal-com", filepath.Join(home, "library", "cal-com")},
+		{"slug steam-web", "steam-web", filepath.Join(home, "library", "steam-web")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

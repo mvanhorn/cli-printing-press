@@ -156,8 +156,8 @@ func TestLockStatus_NoLock(t *testing.T) {
 func TestLockStatus_NoLockWithLibraryCLI(t *testing.T) {
 	setupLockTest(t)
 
-	// Create library dir with go.mod.
-	libDir := filepath.Join(PublishedLibraryRoot(), "test-pp-cli")
+	// Create library dir with go.mod (slug-keyed directory).
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
 	require.NoError(t, os.MkdirAll(libDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(libDir, "go.mod"), []byte("module test"), 0o644))
 
@@ -169,8 +169,8 @@ func TestLockStatus_NoLockWithLibraryCLI(t *testing.T) {
 func TestLockStatus_NoLockLibraryDirNoGoMod(t *testing.T) {
 	setupLockTest(t)
 
-	// Create library dir without go.mod (debris).
-	libDir := filepath.Join(PublishedLibraryRoot(), "test-pp-cli")
+	// Create library dir without go.mod (debris), slug-keyed.
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
 	require.NoError(t, os.MkdirAll(libDir, 0o755))
 
 	status := LockStatus("test-pp-cli")
@@ -181,8 +181,8 @@ func TestLockStatus_NoLockLibraryDirNoGoMod(t *testing.T) {
 func TestLockStatus_NoLockLibraryDirWithManifest(t *testing.T) {
 	setupLockTest(t)
 
-	// Create library dir with manifest but no go.mod.
-	libDir := filepath.Join(PublishedLibraryRoot(), "test-pp-cli")
+	// Create library dir with manifest but no go.mod (slug-keyed).
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
 	require.NoError(t, os.MkdirAll(libDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(libDir, CLIManifestFilename), []byte("{}"), 0o644))
 
@@ -233,8 +233,8 @@ func TestPromoteWorkingCLI(t *testing.T) {
 	err = PromoteWorkingCLI("test-pp-cli", workDir, state)
 	require.NoError(t, err)
 
-	// Verify library dir exists with copied content.
-	libDir := filepath.Join(PublishedLibraryRoot(), "test-pp-cli")
+	// Verify library dir exists with copied content (slug-keyed).
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
 	_, err = os.Stat(filepath.Join(libDir, "go.mod"))
 	assert.NoError(t, err)
 	_, err = os.Stat(filepath.Join(libDir, "main.go"))
@@ -255,8 +255,8 @@ func TestPromoteWorkingCLI_ReplacesExistingLibrary(t *testing.T) {
 	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
 	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
 
-	// Create existing library dir with old content.
-	libDir := filepath.Join(PublishedLibraryRoot(), "test-pp-cli")
+	// Create existing library dir with old content (slug-keyed).
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
 	require.NoError(t, os.MkdirAll(libDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(libDir, "old-file.txt"), []byte("old"), 0o644))
 
@@ -305,8 +305,8 @@ func TestPromoteWorkingCLI_PreservesOldOnFailure(t *testing.T) {
 	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
 	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
 
-	// Create existing library dir with old content.
-	libDir := filepath.Join(PublishedLibraryRoot(), "test-pp-cli")
+	// Create existing library dir with old content (slug-keyed).
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
 	require.NoError(t, os.MkdirAll(libDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(libDir, "go.mod"), []byte("module old\n\ngo 1.21\n"), 0o644))
 
@@ -328,7 +328,7 @@ func TestPromoteWorkingCLI_RetryRestoresBackupBeforeFailure(t *testing.T) {
 	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
 	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
 
-	libDir := filepath.Join(PublishedLibraryRoot(), "test-pp-cli")
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
 	backupDir := libDir + ".old"
 	stagingDir := libDir + ".promoting"
 
@@ -384,7 +384,7 @@ func TestPromoteWorkingCLI_ReleasesLockWhenStateSaveFails(t *testing.T) {
 	assert.Contains(t, err.Error(), "cli promoted to")
 	assert.Contains(t, err.Error(), "state update failed")
 
-	libDir := filepath.Join(PublishedLibraryRoot(), "test-pp-cli")
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
 	_, err = os.Stat(filepath.Join(libDir, "go.mod"))
 	assert.NoError(t, err)
 	_, err = os.Stat(filepath.Join(libDir, "main.go"))

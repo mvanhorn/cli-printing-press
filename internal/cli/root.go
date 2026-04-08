@@ -20,7 +20,6 @@ import (
 	"github.com/mvanhorn/cli-printing-press/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/internal/llm"
 	"github.com/mvanhorn/cli-printing-press/internal/llmpolish"
-	"github.com/mvanhorn/cli-printing-press/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/internal/spec"
@@ -197,7 +196,7 @@ func newGenerateCmd() *cobra.Command {
 					fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 				}
 
-				fmt.Fprintf(os.Stderr, "Generated %s at %s (from docs)\n", naming.CLI(parsed.Name), absOut)
+				fmt.Fprintf(os.Stderr, "Generated %s at %s (from docs)\n", parsed.Name, absOut)
 				if asJSON {
 					if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
 						"name":       parsed.Name,
@@ -326,7 +325,7 @@ func newGenerateCmd() *cobra.Command {
 			// This prevents mismatches when the caller passes a directory name
 			// that doesn't match what the generator derives from the spec title
 			// (e.g., --output .../calcom-pp-cli but spec title "Cal.com" derives "cal-com-pp-cli").
-			derivedDir := naming.CLI(apiSpec.Name)
+			derivedDir := apiSpec.Name
 			currentBase := filepath.Base(absOut)
 			if currentBase != derivedDir {
 				finalPath := filepath.Join(filepath.Dir(absOut), derivedDir)
@@ -360,7 +359,7 @@ func newGenerateCmd() *cobra.Command {
 				}
 			}
 
-			fmt.Fprintf(os.Stderr, "Generated %s at %s\n", naming.CLI(apiSpec.Name), absOut)
+			fmt.Fprintf(os.Stderr, "Generated %s at %s\n", apiSpec.Name, absOut)
 			if asJSON {
 				if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
 					"name":       apiSpec.Name,
@@ -378,10 +377,10 @@ func newGenerateCmd() *cobra.Command {
 
 	cmd.Flags().StringSliceVar(&specFiles, "spec", nil, "Path or URL to API spec (can be repeated)")
 	cmd.Flags().StringVar(&cliName, "name", "", "CLI name (required when using multiple specs)")
-	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: ~/printing-press/library/<name>-pp-cli)")
+	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: ~/printing-press/library/<name>)")
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
-	cmd.Flags().BoolVar(&force, "force", false, "Overwrite the base output directory (e.g. ~/printing-press/library/notion-pp-cli) instead of auto-incrementing")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite the base output directory (e.g. ~/printing-press/library/notion) instead of auto-incrementing")
 	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
 	cmd.Flags().StringVar(&docsURL, "docs", "", "API documentation URL to generate spec from")
 	cmd.Flags().BoolVar(&polish, "polish", false, "Run LLM polish pass on generated CLI (requires claude or codex CLI)")

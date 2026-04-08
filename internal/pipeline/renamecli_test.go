@@ -155,8 +155,8 @@ func TestRenameCLI(t *testing.T) {
 		require.NoError(t, err)
 		assert.Greater(t, filesModified, 0, "should modify at least one file")
 
-		// Outer directory should be renamed
-		newDir := filepath.Join(root, newName)
+		// Outer directory should stay slug-keyed.
+		newDir := filepath.Join(root, naming.LibraryDirName(newName))
 		_, err = os.Stat(newDir)
 		assert.NoError(t, err, "new directory should exist")
 		_, err = os.Stat(cliDir)
@@ -237,7 +237,7 @@ func TestRenameCLI(t *testing.T) {
 		require.NoError(t, err)
 		assert.Greater(t, filesModified, 0)
 
-		newDir := filepath.Join(root, newName)
+		newDir := filepath.Join(root, naming.LibraryDirName(newName))
 		rootGo, err := os.ReadFile(filepath.Join(newDir, "internal", "cli", "root.go"))
 		require.NoError(t, err)
 		assert.Contains(t, string(rootGo), `Use:   "`+newName+`"`)
@@ -257,7 +257,7 @@ func TestRenameCLI(t *testing.T) {
 		_, err := RenameCLI(cliDir, oldName, newName, apiName)
 		require.NoError(t, err)
 
-		newDir := filepath.Join(root, newName)
+		newDir := filepath.Join(root, naming.LibraryDirName(newName))
 		briefPath := filepath.Join(newDir, ".manuscripts", "20260329-100000", "research", "brief.md")
 		brief, err := os.ReadFile(briefPath)
 		require.NoError(t, err)
@@ -279,7 +279,7 @@ func TestRenameCLI(t *testing.T) {
 		_, err := RenameCLI(cliDir, oldName, newName, apiName)
 		require.NoError(t, err)
 
-		newDir := filepath.Join(root, newName)
+		newDir := filepath.Join(root, naming.LibraryDirName(newName))
 		// root.go has "CLI for notion API" — the bare "notion" should survive
 		rootGo, err := os.ReadFile(filepath.Join(newDir, "internal", "cli", "root.go"))
 		require.NoError(t, err)
@@ -307,7 +307,7 @@ func main() {}
 		_, err := RenameCLI(cliDir, oldName, newName, apiName)
 		require.NoError(t, err)
 
-		newDir := filepath.Join(root, newName)
+		newDir := filepath.Join(root, naming.LibraryDirName(newName))
 		_, err = os.Stat(newDir)
 		assert.NoError(t, err, "directory should still be renamed")
 	})
@@ -352,6 +352,49 @@ func main() {}
 		assert.Contains(t, err.Error(), "does not match")
 	})
 
+	t.Run("works when dir base is slug but old-name is CLI name", func(t *testing.T) {
+		root := t.TempDir()
+		oldName := "dub-pp-cli"
+		newName := "dub-alt-pp-cli"
+		apiName := "dub"
+
+		// Directory is slug-keyed ("dub"), not CLI-name-keyed ("dub-pp-cli")
+		cliDir := filepath.Join(root, apiName)
+		require.NoError(t, os.MkdirAll(cliDir, 0o755))
+		writeTestCLITree(t, cliDir, oldName, apiName)
+
+		filesModified, err := RenameCLI(cliDir, oldName, newName, apiName)
+		require.NoError(t, err)
+		assert.Greater(t, filesModified, 0, "should modify at least one file")
+
+		// Outer directory should stay slug-keyed after rename.
+		newDir := filepath.Join(root, naming.LibraryDirName(newName))
+		_, err = os.Stat(newDir)
+		assert.NoError(t, err, "new directory should exist")
+		_, err = os.Stat(cliDir)
+		assert.ErrorIs(t, err, os.ErrNotExist, "old directory should not exist")
+
+		// cmd/ subdirectories should be renamed
+		_, err = os.Stat(filepath.Join(newDir, "cmd", newName))
+		assert.NoError(t, err, "new cmd directory should exist")
+		_, err = os.Stat(filepath.Join(newDir, "cmd", oldName))
+		assert.ErrorIs(t, err, os.ErrNotExist, "old cmd directory should not exist")
+
+		// File contents should have new name
+		rootGo, err := os.ReadFile(filepath.Join(newDir, "internal", "cli", "root.go"))
+		require.NoError(t, err)
+		assert.Contains(t, string(rootGo), `Use:   "`+newName+`"`)
+		assert.NotContains(t, string(rootGo), oldName)
+
+		// Manifest should have new cli_name, original api_name
+		mData, err := os.ReadFile(filepath.Join(newDir, CLIManifestFilename))
+		require.NoError(t, err)
+		var m CLIManifest
+		require.NoError(t, json.Unmarshal(mData, &m))
+		assert.Equal(t, newName, m.CLIName)
+		assert.Equal(t, apiName, m.APIName)
+	})
+
 	t.Run("skips non-target file extensions", func(t *testing.T) {
 		root := t.TempDir()
 		oldName := "test-pp-cli"
@@ -371,7 +414,7 @@ func main() {}
 		_, err := RenameCLI(cliDir, oldName, newName, "test")
 		require.NoError(t, err)
 
-		newDir := filepath.Join(root, newName)
+		newDir := filepath.Join(root, naming.LibraryDirName(newName))
 		// config.json should still contain the old name (not walked for replacement)
 		configData, err := os.ReadFile(filepath.Join(newDir, "config.json"))
 		require.NoError(t, err)

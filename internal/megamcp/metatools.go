@@ -165,21 +165,11 @@ func countPublicTools(m *ToolsManifest) int {
 // indicating the user could use a dedicated MCP server with full features.
 func checkUpgradeAvailable(slug string) bool {
 	libraryRoot := pipeline.PublishedLibraryRoot()
-
-	// Check both directory layouts:
-	// 1. ~/printing-press/library/{slug}-pp-cli/cmd/{slug}-pp-mcp/
-	// 2. ~/printing-press/library/{slug}/cmd/{slug}-pp-mcp/
 	mcpBinary := naming.MCP(slug)
 
-	paths := []string{
-		filepath.Join(libraryRoot, naming.CLI(slug), "cmd", mcpBinary),
-		filepath.Join(libraryRoot, slug, "cmd", mcpBinary),
-	}
-
-	for _, p := range paths {
-		if info, err := os.Stat(p); err == nil && info.IsDir() {
-			return true
-		}
+	p := filepath.Join(libraryRoot, slug, "cmd", mcpBinary)
+	if info, err := os.Stat(p); err == nil && info.IsDir() {
+		return true
 	}
 	return false
 }

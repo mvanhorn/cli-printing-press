@@ -26,26 +26,31 @@ const CLIManifestFilename = ".printing-press.json"
 // It is written to the root of each published CLI directory so the
 // folder is self-describing even in isolation.
 type CLIManifest struct {
-	SchemaVersion        int                    `json:"schema_version"`
-	GeneratedAt          time.Time              `json:"generated_at"`
-	PrintingPressVersion string                 `json:"printing_press_version"`
-	APIName              string                 `json:"api_name"`
-	CLIName              string                 `json:"cli_name"`
-	SpecURL              string                 `json:"spec_url,omitempty"`
-	SpecPath             string                 `json:"spec_path,omitempty"`
-	SpecFormat           string                 `json:"spec_format,omitempty"`
-	SpecChecksum         string                 `json:"spec_checksum,omitempty"`
-	RunID                string                 `json:"run_id,omitempty"`
-	CatalogEntry         string                 `json:"catalog_entry,omitempty"`
-	Category             string                 `json:"category,omitempty"`
-	Description          string                 `json:"description,omitempty"`
-	MCPBinary            string                 `json:"mcp_binary,omitempty"`
-	MCPToolCount         int                    `json:"mcp_tool_count,omitempty"`
-	MCPPublicToolCount   int                    `json:"mcp_public_tool_count,omitempty"`
-	MCPReady             string                 `json:"mcp_ready,omitempty"`
-	AuthType             string                 `json:"auth_type,omitempty"`
-	AuthEnvVars          []string               `json:"auth_env_vars,omitempty"`
-	NovelFeatures        []NovelFeatureManifest `json:"novel_features,omitempty"`
+	SchemaVersion        int       `json:"schema_version"`
+	GeneratedAt          time.Time `json:"generated_at"`
+	PrintingPressVersion string    `json:"printing_press_version"`
+	// APIName is the canonical API identity (for example "espn" or "notion").
+	// It is not the executable name, and for collision-renamed published copies
+	// it may differ from the package directory key.
+	APIName string `json:"api_name"`
+	// CLIName is the executable/binary name (for example "espn-pp-cli").
+	// It does not track the slug-keyed library directory.
+	CLIName            string                 `json:"cli_name"`
+	SpecURL            string                 `json:"spec_url,omitempty"`
+	SpecPath           string                 `json:"spec_path,omitempty"`
+	SpecFormat         string                 `json:"spec_format,omitempty"`
+	SpecChecksum       string                 `json:"spec_checksum,omitempty"`
+	RunID              string                 `json:"run_id,omitempty"`
+	CatalogEntry       string                 `json:"catalog_entry,omitempty"`
+	Category           string                 `json:"category,omitempty"`
+	Description        string                 `json:"description,omitempty"`
+	MCPBinary          string                 `json:"mcp_binary,omitempty"`
+	MCPToolCount       int                    `json:"mcp_tool_count,omitempty"`
+	MCPPublicToolCount int                    `json:"mcp_public_tool_count,omitempty"`
+	MCPReady           string                 `json:"mcp_ready,omitempty"`
+	AuthType           string                 `json:"auth_type,omitempty"`
+	AuthEnvVars        []string               `json:"auth_env_vars,omitempty"`
+	NovelFeatures      []NovelFeatureManifest `json:"novel_features,omitempty"`
 }
 
 // NovelFeatureManifest is a compact representation of a transcendence feature

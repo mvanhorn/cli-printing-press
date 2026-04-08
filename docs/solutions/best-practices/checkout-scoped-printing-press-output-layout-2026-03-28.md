@@ -63,7 +63,7 @@ Use a checkout-scoped runstate derived from the current git root for active work
         pipeline/
         discovery/      (optional — sniff/crowd-sniff captures, reports, URL lists)
   library/
-    <api>-pp-cli[-N]/
+    <api>[-N]/
   manuscripts/<api>/<run-id>/
     research/
     proofs/
@@ -85,9 +85,10 @@ PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"
 
 Keep the naming contract explicit:
 
-- Generated human CLI directory and command: `<api>-pp-cli`
+- Library directory: `<api>` (keyed by API slug, e.g., `notion`, `cal-com`)
+- Binary name: `<api>-pp-cli` (unchanged — the `-pp-cli` suffix is for binary names only)
 - Legacy compatibility: accept `<api>-cli` when discovering older projects
-- Claimed reruns: allow outer directories like `<api>-pp-cli-2`, but still resolve the actual command entrypoint from `cmd/<api>-pp-cli`
+- Claimed reruns: allow outer directories like `<api>-2`, but still resolve the actual command entrypoint from `cmd/<api>-pp-cli`
 
 The runtime verifier should discover the command directory independently of the outer project folder:
 
@@ -126,7 +127,7 @@ That removes the class of bugs where docs say one thing, skills do another, and 
 
 - Never hardcode `~/cli-printing-press` in skills, docs, or code paths. Always resolve `git rev-parse --show-toplevel` first.
 - When adding a new artifact-producing phase, decide first whether it belongs in runstate `research/`, `proofs/`, `pipeline/`, or `discovery/`, and whether it must also be archived at publish time. Do not default to repo `docs/plans/`.
-- If a feature writes a file tied to a generated CLI, test both canonical and claimed output dirs, for example `notion-pp-cli` and `notion-pp-cli-2`.
+- If a feature writes a file tied to a generated CLI, test both canonical and claimed output dirs, for example `notion` and `notion-2`.
 - Keep naming logic centralized in `internal/naming/` and path logic centralized in `internal/pipeline/paths.go`.
 - Add tests whenever code infers API names or command directories from filesystem paths.
 - Treat published library CLIs as immutable outputs. Workflows like `emboss` should copy them into a new runstate working dir instead of mutating them in place.

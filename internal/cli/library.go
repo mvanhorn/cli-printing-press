@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/internal/naming"
@@ -36,6 +37,7 @@ func newLibraryCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(newLibraryListCmd())
+	cmd.AddCommand(newLibraryMigrateCmd())
 
 	return cmd
 }
@@ -81,6 +83,110 @@ func newLibraryListCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
+}
+
+func newLibraryMigrateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "migrate",
+		Short: "Rename legacy -pp-cli library directories to slug-keyed names",
+		Long: `Scans ~/printing-press/library/ for directories using the old naming
+convention ({slug}-pp-cli) and renames them to the new slug-keyed format ({slug}).
+
+Examples:
+  dub-pp-cli/     → dub/
+  dub-pp-cli-2/   → dub-2/
+  cal-com-pp-cli/ → cal-com/
+
+Directories that already have the target name are skipped (idempotent).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			libRoot := pipeline.PublishedLibraryRoot()
+			renamed, skipped, err := migrateLibrary(libRoot)
+			if err != nil {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("migrating library: %w", err)}
+			}
+			for _, msg := range renamed {
+				fmt.Fprintln(cmd.OutOrStdout(), msg)
+			}
+			for _, msg := range skipped {
+				fmt.Fprintln(cmd.ErrOrStderr(), msg)
+			}
+			if len(renamed) == 0 {
+				fmt.Fprintln(cmd.ErrOrStderr(), "Nothing to migrate.")
+			} else {
+				fmt.Fprintf(cmd.ErrOrStderr(), "\nMigrated %d directories.\n", len(renamed))
+			}
+			return nil
+		},
+	}
+}
+
+// migrateLibraryDirName converts a legacy CLI directory name to its slug-keyed
+// equivalent by removing the "-pp-cli" infix. Unlike TrimCLISuffix, this
+// preserves numeric rerun suffixes: "dub-pp-cli-2" → "dub-2", not "dub".
+func migrateLibraryDirName(name string) string {
+	return naming.LibraryDirName(name)
+}
+
+// migrateLibrary scans libRoot for directories matching the old IsCLIDirName()
+// pattern and renames them to their slug-keyed equivalents. Returns lists of
+// renamed and skipped messages for display.
+func migrateLibrary(libRoot string) (renamed []string, skipped []string, err error) {
+	dirEntries, err := os.ReadDir(libRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, nil
+		}
+		return nil, nil, fmt.Errorf("reading library: %w", err)
+	}
+
+	absRoot, err := filepath.Abs(libRoot)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolving library root: %w", err)
+	}
+
+	for _, de := range dirEntries {
+		if !de.IsDir() {
+			continue
+		}
+		dirName := de.Name()
+
+		// Only migrate directories that match the old CLI naming convention
+		if !naming.IsCLIDirName(dirName) {
+			continue
+		}
+
+		slugName := migrateLibraryDirName(dirName)
+		if slugName == "" || slugName == dirName {
+			continue
+		}
+
+		targetPath := filepath.Join(libRoot, slugName)
+
+		// Layer 2 containment: verify derived target resolves under library root
+		absTarget, err := filepath.Abs(targetPath)
+		if err != nil {
+			skipped = append(skipped, fmt.Sprintf("skip %s: cannot resolve target path: %v", dirName, err))
+			continue
+		}
+		if !strings.HasPrefix(absTarget, absRoot+string(filepath.Separator)) {
+			skipped = append(skipped, fmt.Sprintf("skip %s: target %q escapes library root", dirName, slugName))
+			continue
+		}
+
+		// Skip if target already exists (idempotent)
+		if _, err := os.Stat(targetPath); err == nil {
+			skipped = append(skipped, fmt.Sprintf("skip %s: target %s already exists", dirName, slugName))
+			continue
+		}
+
+		srcPath := filepath.Join(libRoot, dirName)
+		if err := os.Rename(srcPath, targetPath); err != nil {
+			return renamed, skipped, fmt.Errorf("renaming %s to %s: %w", dirName, slugName, err)
+		}
+		renamed = append(renamed, fmt.Sprintf("renamed %s → %s", dirName, slugName))
+	}
+
+	return renamed, skipped, nil
 }
 
 func scanLibrary() ([]LibraryEntry, error) {
@@ -129,8 +235,8 @@ func scanLibrary() ([]LibraryEntry, error) {
 			}
 		}
 
-		// Only include directories that look like CLIs or have a manifest
-		if naming.IsCLIDirName(dirName) || entry.APIName != "" {
+		// Only include directories with a valid manifest or a valid library dir name
+		if entry.APIName != "" || naming.IsValidLibraryDirName(dirName) {
 			entries = append(entries, entry)
 		}
 	}

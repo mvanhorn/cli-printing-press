@@ -177,8 +177,8 @@ func TestLockPromote_Success(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
 	assert.Equal(t, true, result["promoted"])
 
-	// Verify library dir exists.
-	libDir := filepath.Join(pipeline.PublishedLibraryRoot(), "test-pp-cli")
+	// Verify library dir exists (slug-keyed).
+	libDir := filepath.Join(pipeline.PublishedLibraryRoot(), "test")
 	_, err := os.Stat(filepath.Join(libDir, "go.mod"))
 	assert.NoError(t, err)
 }

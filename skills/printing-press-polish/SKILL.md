@@ -30,7 +30,7 @@ checks locks, dispatches the agent, and offers to publish.
 ```bash
 /printing-press-polish redfin
 /printing-press-polish redfin-pp-cli
-/printing-press-polish ~/printing-press/library/redfin-pp-cli
+/printing-press-polish ~/printing-press/library/redfin
 ```
 
 ## When to run
@@ -53,14 +53,14 @@ PRESS_LIBRARY="$PRESS_HOME/library"
 ### Resolve CLI
 
 The argument can be:
-- A short name: `redfin` (searches for `redfin-pp-cli` in `$PRESS_LIBRARY`)
-- A full name: `redfin-pp-cli` (looks up `$PRESS_LIBRARY/redfin-pp-cli`)
-- A path: `~/printing-press/library/redfin-pp-cli` (used directly)
+- A short name: `redfin` (looks up `$PRESS_LIBRARY/redfin`)
+- A full name: `redfin-pp-cli` (strips suffix, looks up `$PRESS_LIBRARY/redfin`)
+- A path: `~/printing-press/library/redfin` (used directly)
 
 Resolution order:
 1. If the argument is an absolute or `~`-prefixed path and exists, use it
-2. Try `$PRESS_LIBRARY/<arg>` (exact match)
-3. Try `$PRESS_LIBRARY/<arg>-pp-cli` (append suffix)
+2. Try `$PRESS_LIBRARY/<arg>` (exact match — works for slug like `redfin`)
+3. If arg has `-pp-cli` suffix, strip it and try `$PRESS_LIBRARY/<slug>` (e.g., `redfin-pp-cli` → `redfin`)
 4. Fuzzy search: `ls $PRESS_LIBRARY/ | grep -i <arg>` for close matches
 
 If no match or multiple matches, present via `AskUserQuestion`. Show at most 4

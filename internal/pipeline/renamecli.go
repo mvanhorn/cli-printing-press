@@ -16,8 +16,8 @@ var renameExtensions = []string{".go", ".yaml", ".yml", ".md"}
 
 // RenameCLI renames all user-visible CLI name references in a staged CLI
 // directory. It handles:
-//   - Filesystem: outer directory rename (oldCLIName → newCLIName) and
-//     cmd/oldCLIName/ → cmd/newCLIName/
+//   - Filesystem: outer directory rename to the slug-keyed directory derived
+//     from newCLIName, and cmd/oldCLIName/ → cmd/newCLIName/
 //   - File content: replaces occurrences of oldCLIName with newCLIName in
 //     .go, .yaml, .yml, .md files and Makefiles (skips .manuscripts/)
 //   - Manifest: updates cli_name to newCLIName, preserves api_name as
@@ -40,7 +40,7 @@ func RenameCLI(dir, oldCLIName, newCLIName, originalAPIName string) (int, error)
 		return 0, fmt.Errorf("resolving directory: %w", err)
 	}
 	parent := filepath.Dir(absDir)
-	newDir := filepath.Join(parent, newCLIName)
+	newDir := filepath.Join(parent, naming.LibraryDirName(newCLIName))
 	absNew, err := filepath.Abs(newDir)
 	if err != nil {
 		return 0, fmt.Errorf("resolving new directory: %w", err)
@@ -50,8 +50,11 @@ func RenameCLI(dir, oldCLIName, newCLIName, originalAPIName string) (int, error)
 	}
 
 	// Verify old directory exists and base matches old name.
-	if filepath.Base(absDir) != oldCLIName {
-		return 0, fmt.Errorf("directory base %q does not match old CLI name %q", filepath.Base(absDir), oldCLIName)
+	// After slug-keyed directories, the dir base may be the slug (e.g., "dub")
+	// while oldCLIName is "dub-pp-cli". Accept either.
+	dirBase := filepath.Base(absDir)
+	if dirBase != oldCLIName && dirBase != naming.LibraryDirName(oldCLIName) {
+		return 0, fmt.Errorf("directory base %q does not match old CLI name %q", dirBase, oldCLIName)
 	}
 
 	filesModified := 0

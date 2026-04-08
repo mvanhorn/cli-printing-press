@@ -124,7 +124,7 @@ internal/generator/generator.go (New + Generate)
   renders 30+ .tmpl files to output dir
   |
   v
-Generated CLI project published at ~/printing-press/library/<name>-pp-cli/
+Generated CLI project published at ~/printing-press/library/<name>/
   cmd/<name>-pp-cli/main.go
   cmd/<name>-mcp/main.go
   internal/cli/   (per-resource commands)

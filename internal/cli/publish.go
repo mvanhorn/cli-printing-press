@@ -27,10 +27,10 @@ func newPublishCmd() *cobra.Command {
 		Use:   "publish",
 		Short: "Validate and package CLIs for publishing",
 		Example: `  # Validate a CLI before publishing
-  printing-press publish validate --dir ~/printing-press/library/notion-pp-cli --json
+  printing-press publish validate --dir ~/printing-press/library/notion --json
 
   # Package a CLI for publishing
-  printing-press publish package --dir ~/printing-press/library/notion-pp-cli --category productivity --target /tmp/staging --json`,
+  printing-press publish package --dir ~/printing-press/library/notion --category productivity --target /tmp/staging --json`,
 	}
 
 	cmd.AddCommand(newPublishValidateCmd())
@@ -88,8 +88,8 @@ func newPublishRenameCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rename",
 		Short: "Rename a staged CLI (for name collision resolution)",
-		Example: `  printing-press publish rename --dir /tmp/staging/library/ai/notion-pp-cli --old-name notion-pp-cli --new-name notion-alt-pp-cli --json
-  printing-press publish rename --dir /tmp/staging/library/ai/notion-pp-cli --old-name notion-pp-cli --new-name notion-2-pp-cli --api-name notion --json`,
+		Example: `  printing-press publish rename --dir /tmp/staging/library/ai/notion --old-name notion-pp-cli --new-name notion-alt-pp-cli --json
+  printing-press publish rename --dir /tmp/staging/library/ai/notion --old-name notion-pp-cli --new-name notion-2-pp-cli --api-name notion --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
@@ -116,7 +116,7 @@ func newPublishRenameCmd() *cobra.Command {
 					result.Error = err.Error()
 				} else {
 					result.Success = true
-					result.NewDir = filepath.Join(filepath.Dir(dir), newName)
+					result.NewDir = filepath.Join(filepath.Dir(dir), naming.LibraryDirName(newName))
 				}
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
@@ -132,7 +132,7 @@ func newPublishRenameCmd() *cobra.Command {
 			if err != nil {
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("rename failed: %w", err)}
 			}
-			newDir := filepath.Join(filepath.Dir(dir), newName)
+			newDir := filepath.Join(filepath.Dir(dir), naming.LibraryDirName(newName))
 			fmt.Fprintf(os.Stderr, "Renamed %s → %s (%d files modified)\n", oldName, newName, filesModified)
 			fmt.Fprintf(os.Stderr, "  New directory: %s\n", newDir)
 			return nil
@@ -155,8 +155,8 @@ func newPublishValidateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "validate",
 		Short: "Validate a CLI is ready for publishing",
-		Example: `  printing-press publish validate --dir ~/printing-press/library/notion-pp-cli
-  printing-press publish validate --dir ~/printing-press/library/notion-pp-cli --json`,
+		Example: `  printing-press publish validate --dir ~/printing-press/library/notion
+  printing-press publish validate --dir ~/printing-press/library/notion --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
@@ -221,10 +221,10 @@ func newPublishPackageCmd() *cobra.Command {
 		Use:   "package",
 		Short: "Package a CLI for publishing to the library repo",
 		Example: `  # Stage into a new directory (for inspection)
-  printing-press publish package --dir ~/printing-press/library/notion-pp-cli --category productivity --target /tmp/staging --json
+  printing-press publish package --dir ~/printing-press/library/notion --category productivity --target /tmp/staging --json
 
   # Write directly into the publish repo (replaces old CLI, includes manuscripts)
-  printing-press publish package --dir ~/printing-press/library/notion-pp-cli --category productivity --dest ~/printing-press/.publish-repo --json`,
+  printing-press publish package --dir ~/printing-press/library/notion --category productivity --dest ~/printing-press/.publish-repo --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
@@ -279,6 +279,15 @@ func newPublishPackageCmd() *cobra.Command {
 				cliName = filepath.Base(dir)
 			}
 
+			// Determine directory name: use API slug, not CLI name.
+			dirName := vResult.APIName
+			if dirName == "" {
+				dirName = naming.TrimCLISuffix(cliName)
+			}
+			if dirName == "" {
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("cannot determine API name for directory key")}
+			}
+
 			// Choose output mode: --dest writes directly, --target stages
 			var outCLIDir string
 			var rootDir string // root to clean up on failure
@@ -287,17 +296,17 @@ func newPublishPackageCmd() *cobra.Command {
 			var stashedDirs []stashedDir
 			if dest != "" {
 				rootDir = dest
-				outCLIDir = filepath.Join(dest, "library", category, cliName)
+				outCLIDir = filepath.Join(dest, "library", category, dirName)
 
 				// Move existing CLI dirs aside (don't delete yet — restore on failure)
 				var err error
-				stashedDirs, err = stashExistingCLI(dest, cliName)
+				stashedDirs, err = stashExistingCLI(dest, dirName)
 				if err != nil {
 					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stashing old CLI: %w", err)}
 				}
 			} else {
 				rootDir = target
-				outCLIDir = filepath.Join(target, "library", category, cliName)
+				outCLIDir = filepath.Join(target, "library", category, dirName)
 			}
 
 			// Verify the resolved path is actually under rootDir (defense in depth)

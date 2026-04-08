@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/internal/pipeline"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -433,8 +434,8 @@ func TestPublishPackageDestWritesDirectly(t *testing.T) {
 	assert.True(t, result.ManuscriptsIncluded, "manuscripts should be included")
 	assert.Equal(t, runID, result.RunID)
 
-	// Verify CLI is at dest/library/<category>/<cli-name>/
-	cliOut := filepath.Join(destDir, "library", "other", "test-pp-cli")
+	// Verify CLI is at dest/library/<category>/<api-slug>/
+	cliOut := filepath.Join(destDir, "library", "other", "test")
 	assert.Equal(t, cliOut, result.StagedDir)
 
 	_, err = os.Stat(filepath.Join(cliOut, "go.mod"))
@@ -451,9 +452,9 @@ func TestPublishPackageDestRemovesOldCLI(t *testing.T) {
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
 	writePublishableTestCLI(t, cliDir)
 
-	// Create a dest with an existing CLI in a different category
+	// Create a dest with an existing CLI in a different category (slug-keyed)
 	destDir := filepath.Join(t.TempDir(), "publish-repo")
-	oldCLIDir := filepath.Join(destDir, "library", "productivity", "test-pp-cli")
+	oldCLIDir := filepath.Join(destDir, "library", "productivity", "test")
 	require.NoError(t, os.MkdirAll(oldCLIDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(oldCLIDir, "old-file.go"), []byte("old"), 0o644))
 
@@ -472,8 +473,8 @@ func TestPublishPackageDestRemovesOldCLI(t *testing.T) {
 	_, err = os.Stat(oldCLIDir + ".old")
 	assert.ErrorIs(t, err, os.ErrNotExist, "stash dir should be cleaned up after success")
 
-	// New CLI should exist at new category
-	newCLIDir := filepath.Join(destDir, "library", "other", "test-pp-cli")
+	// New CLI should exist at new category (slug-keyed)
+	newCLIDir := filepath.Join(destDir, "library", "other", "test")
 	_, err = os.Stat(filepath.Join(newCLIDir, "go.mod"))
 	assert.NoError(t, err, "new CLI should exist at new category")
 }
@@ -491,9 +492,9 @@ func TestPublishPackageDestRestoresOldCLIOnFailure(t *testing.T) {
 	require.NoError(t, os.Chmod(manuscriptFile, 0))
 	defer func() { _ = os.Chmod(manuscriptFile, 0o600) }()
 
-	// Create dest with existing CLI in a different category
+	// Create dest with existing CLI in a different category (slug-keyed)
 	destDir := filepath.Join(t.TempDir(), "publish-repo")
-	oldCLIDir := filepath.Join(destDir, "library", "productivity", "test-pp-cli")
+	oldCLIDir := filepath.Join(destDir, "library", "productivity", "test")
 	require.NoError(t, os.MkdirAll(oldCLIDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(oldCLIDir, "old-file.go"), []byte("old"), 0o644))
 
@@ -511,8 +512,8 @@ func TestPublishPackageDestRestoresOldCLIOnFailure(t *testing.T) {
 	_, err = os.Stat(oldCLIDir + ".old")
 	assert.ErrorIs(t, err, os.ErrNotExist, "stash dir should not remain after restore")
 
-	// New CLI dir should be cleaned up
-	newCLIDir := filepath.Join(destDir, "library", "other", "test-pp-cli")
+	// New CLI dir should be cleaned up (slug-keyed)
+	newCLIDir := filepath.Join(destDir, "library", "other", "test")
 	_, err = os.Stat(newCLIDir)
 	assert.ErrorIs(t, err, os.ErrNotExist, "failed new CLI dir should be cleaned up")
 }
@@ -580,7 +581,7 @@ func main() {}
 	assert.True(t, result.Success)
 	assert.Equal(t, oldName, result.OldName)
 	assert.Equal(t, newName, result.NewName)
-	assert.Equal(t, filepath.Join(root, newName), result.NewDir)
+	assert.Equal(t, filepath.Join(root, naming.LibraryDirName(newName)), result.NewDir)
 	assert.Greater(t, result.FilesModified, 0)
 }
 
@@ -609,7 +610,7 @@ func TestPublishRenameAPINameFallback(t *testing.T) {
 	assert.True(t, result.Success)
 
 	// Verify manifest has correct api_name from fallback
-	newDir := filepath.Join(root, newName)
+	newDir := filepath.Join(root, naming.LibraryDirName(newName))
 	mData, err := os.ReadFile(filepath.Join(newDir, pipeline.CLIManifestFilename))
 	require.NoError(t, err)
 	var m pipeline.CLIManifest

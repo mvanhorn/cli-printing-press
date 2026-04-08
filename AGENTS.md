@@ -70,11 +70,11 @@ Key terms used throughout this repo. Several have overloaded meanings — the gl
 | **shipcheck** | The three-part verification block that gates publishing: dogfood + verify + scorecard, run together. All three must pass before a printed CLI ships. |
 | **scorecard** / **scoring** | Two-tier quality assessment. Tier 1: infrastructure (12 dimensions, 60 pts). Tier 2: domain correctness (6 dimensions, 40 pts). Total /100 with letter grades. Subcommand: `printing-press scorecard`. |
 | **doctor** | Self-diagnostic command shipped inside every printed CLI for end-users to run. Checks environment, auth config, and connectivity at the user's runtime. Unlike dogfood (which validates at generation time), doctor runs post-install. |
-| **local library** | `~/printing-press/library/<cli-name>/` — where printed CLIs land after a successful run. Local directory, not a git repo. |
+| **local library** | `~/printing-press/library/<api-slug>/` — where printed CLIs land after a successful run. Directory is keyed by API slug (e.g., `notion`), not CLI name. Local directory, not a git repo. |
 | **public library repo** | The GitHub repo [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) — public catalog of finished CLIs organized by category. `/printing-press-publish` pushes here. |
 | **publish (pipeline)** | The pipeline step that moves a working CLI into the local library and writes the `.printing-press.json` provenance manifest. |
 | **publish (to public library repo)** | The skill-driven workflow (`/printing-press-publish`) that packages a local library CLI and creates a PR in the public library repo. |
-| **provenance** / **`.printing-press.json`** | Manifest written to each published CLI's root. Contains generation metadata: spec URL, checksum, run ID, printing-press version, timestamp. Makes the directory self-describing. |
+| **provenance** / **`.printing-press.json`** | Manifest written to each published CLI's root. Contains generation metadata: spec URL, checksum, run ID, printing-press version, timestamp. `api_name` is the canonical API identity; `cli_name` is the executable name. Makes the directory self-describing. |
 | **catalog** | Embedded YAML entries in `catalog/` describing available APIs (name, spec URL, category, tier). Baked into the binary at build time via `catalog.FS`. |
 | **tier** | Catalog classification: `official` (vendor-maintained spec) or `community` (unofficial/reverse-engineered). Affects risk expectations. |
 | **runstate** | Mutable per-workspace state at `~/printing-press/.runstate/<scope>/`. Tracks current run and sync cursors. Distinct from manuscripts, which are immutable archives. |
@@ -147,13 +147,13 @@ Generated CLIs must pass 7 gates: go mod tidy, go vet, go build, binary build, -
 
 Generated artifacts live under the user's home directory, not in this repo.
 
-- `library/<cli-name>/` — Published CLIs (e.g., `notion-pp-cli`). Directory name matches the derived CLI name from `naming.CLI()`.
+- `library/<api-slug>/` — Published CLIs (e.g., `notion`). Directory is keyed by API slug, not CLI name. The binary inside is still `<api-slug>-pp-cli`.
 - `manuscripts/<api-slug>/` — Archived research and verification proofs, keyed by API slug (e.g., `notion`), not CLI name. One API can have multiple runs.
 - `.runstate/<scope>/` — Mutable per-workspace state (current run, sync cursors). Scoped by repo basename + hash.
 
-The API slug is derived by the generator from the spec title (`cleanSpecName`), not manually chosen. The CLI name is `<api-slug>-pp-cli`. Never hardcode an API slug when the generator can derive it — names with periods (cal.com, dub.co) normalize differently than you'd guess.
+The API slug is derived by the generator from the spec title (`cleanSpecName`), not manually chosen. The CLI binary name is `<api-slug>-pp-cli`. Never hardcode an API slug when the generator can derive it — names with periods (cal.com, dub.co) normalize differently than you'd guess.
 
-The `-pp-` infix exists to avoid colliding with official CLIs. `notion-pp-cli` can coexist with whatever `notion-cli` Notion ships themselves.
+The `-pp-` infix exists to avoid colliding with official CLIs. The binary `notion-pp-cli` can coexist with whatever `notion-cli` Notion ships themselves. The library directory is just `notion/` — the `-pp-cli` suffix only appears on binary names, not directory names.
 
 ## Internal Skills
 

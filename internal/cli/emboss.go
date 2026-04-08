@@ -74,7 +74,7 @@ The improvement steps (2-4) are driven by the /printing-press emboss skill.`,
   printing-press emboss notion
 
   # By path
-  printing-press emboss ~/printing-press/library/notion-pp-cli
+  printing-press emboss ~/printing-press/library/notion
   printing-press emboss ./discord-pp-cli
 
   # With --dir flag (backward compatible)
@@ -203,6 +203,15 @@ func resolveEmbossTarget(flagDir string, args []string) (string, error) {
 		// Try with -pp-cli suffix.
 		if !strings.HasSuffix(target, naming.CurrentCLISuffix) {
 			candidate = filepath.Join(libraryRoot, naming.CLI(target))
+			if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+				return candidate, nil
+			}
+		}
+
+		// Try deriving the slug-keyed directory from the CLI name (handles
+		// migrated rerun dirs like "dub-pp-cli-2" -> "dub-2").
+		if trimmed := naming.LibraryDirName(target); trimmed != target {
+			candidate = filepath.Join(libraryRoot, trimmed)
 			if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 				return candidate, nil
 			}

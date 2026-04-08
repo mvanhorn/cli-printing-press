@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/internal/naming"
 )
 
 const (
@@ -129,8 +131,9 @@ func UpdateLock(cliName, phase string) error {
 func LockStatus(cliName string) LockStatusResult {
 	result := LockStatusResult{}
 
-	// Check library for completed CLI.
-	libDir := filepath.Join(PublishedLibraryRoot(), cliName)
+	// Check library for completed CLI (slug-keyed directory).
+	slug := naming.TrimCLISuffix(cliName)
+	libDir := filepath.Join(PublishedLibraryRoot(), slug)
 	if info, err := os.Stat(libDir); err == nil && info.IsDir() {
 		goModPath := filepath.Join(libDir, "go.mod")
 		manifestPath := filepath.Join(libDir, CLIManifestFilename)
@@ -184,7 +187,8 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 		return fmt.Errorf("working directory is empty: %s", workingDir)
 	}
 
-	libraryDir := filepath.Join(PublishedLibraryRoot(), cliName)
+	slug := naming.TrimCLISuffix(cliName)
+	libraryDir := filepath.Join(PublishedLibraryRoot(), slug)
 	stagingDir := libraryDir + ".promoting"
 	backupDir := libraryDir + ".old"
 

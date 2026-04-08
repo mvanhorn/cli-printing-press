@@ -18,6 +18,23 @@ func TestTrimCLISuffix(t *testing.T) {
 	}
 }
 
+func TestLibraryDirName(t *testing.T) {
+	tests := map[string]string{
+		"notion-pp-cli":   "notion",
+		"notion-pp-cli-2": "notion-2",
+		"notion-2-pp-cli": "notion-2",
+		"legacy-cli":      "legacy",
+		"legacy-cli-4":    "legacy-4",
+		"plain":           "plain",
+	}
+
+	for input, want := range tests {
+		if got := LibraryDirName(input); got != want {
+			t.Fatalf("LibraryDirName(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestMCP(t *testing.T) {
 	tests := map[string]string{
 		"stripe":  "stripe-pp-mcp",
@@ -37,5 +54,53 @@ func TestIsCLIDirName(t *testing.T) {
 	}
 	if IsCLIDirName("stripe-pp-mcp") {
 		t.Fatal("mcp directories must not be treated as cli directories")
+	}
+}
+
+func TestIsValidLibraryDirName(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		// Slug-keyed names
+		{"dub", true},
+		{"cal-com", true},
+		{"dub-2", true},
+		{"steam-web", true},
+		{"a", true},
+		{"a1", true},
+		{"1password", true},
+
+		// Legacy CLI directory names
+		{"dub-pp-cli", true},
+		{"dub-pp-cli-2", true},
+		{"notion-pp-cli", true},
+		{"legacy-cli", true},
+
+		// Invalid names
+		{"", false},
+		{"../etc", false},
+		{".DS_Store", false},
+		{".hidden", false},
+		{"foo/bar", false},
+		{"-leading-hyphen", false},
+		{"UPPERCASE", false},
+		{"has space", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := IsValidLibraryDirName(tt.name)
+			if got != tt.want {
+				t.Errorf("IsValidLibraryDirName(%q) = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTrimCLISuffixBareSlug(t *testing.T) {
+	// Lock in that TrimCLISuffix returns bare slugs unchanged.
+	if got := TrimCLISuffix("dub"); got != "dub" {
+		t.Fatalf("TrimCLISuffix(%q) = %q, want %q", "dub", got, "dub")
 	}
 }
