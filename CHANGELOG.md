@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.2.1](https://github.com/mvanhorn/cli-printing-press/compare/v1.2.0...v1.2.1) (2026-04-09)
+
+
+### Bug Fixes
+
+* **cli:** deduplicate config env var tags and add operations shorthand ([#150](https://github.com/mvanhorn/cli-printing-press/issues/150)) ([816a9fd](https://github.com/mvanhorn/cli-printing-press/commit/816a9fd6a0b278b5b6f493083a1db14d62cc71d7))
+* **cli:** raise resource limit from 50 to 500 and add --max-resources flag ([#152](https://github.com/mvanhorn/cli-printing-press/issues/152)) ([b1128d0](https://github.com/mvanhorn/cli-printing-press/commit/b1128d0e07fd54a217a556233293a1daf2fd35a5))
+* **skills:** constrain artifact writes to managed directories ([178ae82](https://github.com/mvanhorn/cli-printing-press/commit/178ae829a8c77c1e5d6c65356f511c7520a69c6d))
+
 ## [1.2.0](https://github.com/mvanhorn/cli-printing-press/compare/v1.1.0...v1.2.0) (2026-04-08)
 
 
