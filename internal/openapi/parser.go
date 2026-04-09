@@ -22,7 +22,6 @@ var (
 	maxResources            = 500
 	maxEndpointsPerResource = 50
 	endpointLimitExplicit   = false // true when user set --max-endpoints-per-resource
-	resourceLimitExplicit   = false // true when user set --max-resources
 )
 
 // SetMaxResources overrides the default resource limit. When not called,
@@ -30,7 +29,6 @@ var (
 func SetMaxResources(n int) {
 	if n > 0 {
 		maxResources = n
-		resourceLimitExplicit = true
 	}
 }
 
