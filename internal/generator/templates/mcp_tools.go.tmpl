@@ -135,12 +135,13 @@ func RegisterTools(s *server.MCPServer) {
 	)
 {{- end}}
 
-	// About tool — self-describing metadata for this MCP server
+	// Context tool — front-loaded domain knowledge for agents.
+	// Call this first to understand the API taxonomy, query patterns, and capabilities.
 	s.AddTool(
-		mcplib.NewTool("about",
-			mcplib.WithDescription("Describe this MCP server's capabilities, auth requirements, and unique features"),
+		mcplib.NewTool("context",
+			mcplib.WithDescription("Get API domain context: resource taxonomy, auth requirements, query tips, and unique capabilities. Call this first."),
 		),
-		handleAbout,
+		handleContext,
 	)
 }
 
@@ -380,12 +381,12 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 }
 {{- end}}
 
-func handleAbout(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	about := map[string]any{
-		"api":              "{{.Name}}",
-		"description":      "{{oneline .Description}}",
-		"tool_count":       {{.MCPTotalCount}},
-		"public_tool_count": {{.MCPPublicCount}},
+func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	ctx := map[string]any{
+		"api":         "{{.DomainContext.APIName}}",
+		"description": "{{.DomainContext.Description}}",
+		"archetype":   "{{.DomainContext.Archetype}}",
+		"tool_count":  {{.MCPTotalCount}},
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 		"auth": map[string]any{
 			"type": "{{.Auth.Type}}",
@@ -397,14 +398,45 @@ func handleAbout(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolR
 {{- end}}
 		},
 {{- end}}
+		"resources": []map[string]any{
+{{- range .DomainContext.Resources}}
+			{
+				"name": "{{.Name}}",
+{{- if .Description}}
+				"description": "{{.Description}}",
+{{- end}}
+				"endpoints": []string{ {{- range .Endpoints}}"{{.}}", {{end}} },
+{{- if .Syncable}}
+				"syncable": true,
+{{- end}}
+{{- if .Searchable}}
+				"searchable": true,
+{{- end}}
+			},
+{{- end}}
+		},
+{{- if .DomainContext.QueryTips}}
+		"query_tips": []string{
+{{- range .DomainContext.QueryTips}}
+			"{{.}}",
+{{- end}}
+		},
+{{- end}}
 {{- if .NovelFeatures}}
 		"unique_capabilities": []map[string]string{
 {{- range .NovelFeatures}}
-			{"name": "{{.Name}}", "command": "{{.Command}}", "description": "{{oneline .Description}}"},
+			{"name": "{{.Name}}", "command": "{{.Command}}", "description": "{{oneline .Description}}", "rationale": "{{oneline .Rationale}}"},
+{{- end}}
+		},
+{{- end}}
+{{- if .DomainContext.Playbook}}
+		"playbook": []map[string]string{
+{{- range .DomainContext.Playbook}}
+			{"topic": "{{.Topic}}", "insight": "{{.Insight}}"},
 {{- end}}
 		},
 {{- end}}
 	}
-	data, _ := json.MarshalIndent(about, "", "  ")
+	data, _ := json.MarshalIndent(ctx, "", "  ")
 	return mcplib.NewToolResultText(string(data)), nil
 }

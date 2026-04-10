@@ -41,6 +41,32 @@ type NovelFeature struct {
 	Rationale   string
 }
 
+// DomainContext holds structured domain knowledge for MCP-connected agents.
+// Front-loaded at session start so agents understand the API without discovery.
+type DomainContext struct {
+	APIName     string            `json:"api_name"`
+	Description string            `json:"description"`
+	Archetype   string            `json:"archetype"`
+	Resources   []ResourceSummary `json:"resources"`
+	QueryTips   []string          `json:"query_tips,omitempty"`
+	Playbook    []PlaybookEntry   `json:"playbook,omitempty"`
+}
+
+// ResourceSummary describes an API resource and its capabilities for agents.
+type ResourceSummary struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Endpoints   []string `json:"endpoints"`
+	Syncable    bool     `json:"syncable,omitempty"`
+	Searchable  bool     `json:"searchable,omitempty"`
+}
+
+// PlaybookEntry is a domain-specific insight for agents.
+type PlaybookEntry struct {
+	Topic   string `json:"topic"`
+	Insight string `json:"insight"`
+}
+
 type Generator struct {
 	Spec           *spec.APISpec
 	OutputDir      string
@@ -268,6 +294,76 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		DiscoveryPages: g.DiscoveryPages,
 		NovelFeatures:  g.NovelFeatures,
 	}
+}
+
+// buildDomainContext constructs structured domain knowledge for MCP agents
+// from the spec and profiler output. This is front-loaded context that prevents
+// agents from wasting tokens discovering what the API is about.
+func (g *Generator) buildDomainContext() DomainContext {
+	ctx := DomainContext{
+		APIName:     g.Spec.Name,
+		Description: oneline(g.Spec.Description),
+		Archetype:   string(profiler.ArchetypeGeneric),
+	}
+
+	if g.profile != nil {
+		ctx.Archetype = string(g.profile.Domain.Archetype)
+
+		// Build resource summaries with syncable/searchable annotations
+		syncSet := make(map[string]bool)
+		for _, sr := range g.profile.SyncableResources {
+			syncSet[sr.Name] = true
+		}
+
+		for rName, r := range g.Spec.Resources {
+			rs := ResourceSummary{
+				Name:        rName,
+				Description: oneline(r.Description),
+				Syncable:    syncSet[rName],
+				Searchable:  len(g.profile.SearchableFields[rName]) > 0,
+			}
+			for eName := range r.Endpoints {
+				rs.Endpoints = append(rs.Endpoints, eName)
+			}
+			sort.Strings(rs.Endpoints)
+			ctx.Resources = append(ctx.Resources, rs)
+		}
+		sort.Slice(ctx.Resources, func(i, j int) bool {
+			return ctx.Resources[i].Name < ctx.Resources[j].Name
+		})
+
+		// Add query tips based on pagination profile
+		if g.profile.Pagination.CursorParam != "" {
+			ctx.QueryTips = append(ctx.QueryTips,
+				fmt.Sprintf("Pagination uses cursor-based paging. Pass %s parameter for subsequent pages.", g.profile.Pagination.CursorParam))
+		}
+		if g.profile.Pagination.PageSizeParam != "" {
+			ctx.QueryTips = append(ctx.QueryTips,
+				fmt.Sprintf("Control page size with the %s parameter (default %d).", g.profile.Pagination.PageSizeParam, g.profile.Pagination.DefaultPageSize))
+		}
+		if g.profile.Pagination.SinceParam != "" {
+			ctx.QueryTips = append(ctx.QueryTips,
+				fmt.Sprintf("Use %s for incremental fetches (filter by modification time).", g.profile.Pagination.SinceParam))
+		}
+	}
+
+	// Add playbook entries from novel features
+	for _, nf := range g.NovelFeatures {
+		ctx.Playbook = append(ctx.Playbook, PlaybookEntry{
+			Topic:   nf.Name,
+			Insight: nf.Rationale,
+		})
+	}
+
+	// Add data layer tips when store is available
+	if g.VisionSet.Store {
+		ctx.QueryTips = append(ctx.QueryTips,
+			"Use the sql tool for ad-hoc analysis on synced data. Run sync first to populate the local database.",
+			"Use the search tool for full-text search across all synced resources. Faster than iterating list endpoints.",
+			"Prefer sql/search over repeated API calls when the data is already synced.")
+	}
+
+	return ctx
 }
 
 func (g *Generator) Generate() error {
@@ -623,6 +719,7 @@ func (g *Generator) Generate() error {
 	// Render MCP tools registration (needs VisionSet + store data + tool counts for annotations)
 	if g.VisionSet.MCP {
 		mcpTotal, mcpPublic := g.Spec.CountMCPTools()
+		domainCtx := g.buildDomainContext()
 		mcpData := struct {
 			*spec.APISpec
 			SyncableResources []profiler.SyncableResource
@@ -632,6 +729,7 @@ func (g *Generator) Generate() error {
 			MCPTotalCount     int
 			MCPPublicCount    int
 			NovelFeatures     []NovelFeature
+			DomainContext     DomainContext
 		}{
 			APISpec:           g.Spec,
 			SyncableResources: g.profile.SyncableResources,
@@ -641,6 +739,7 @@ func (g *Generator) Generate() error {
 			MCPTotalCount:     mcpTotal,
 			MCPPublicCount:    mcpPublic,
 			NovelFeatures:     g.NovelFeatures,
+			DomainContext:     domainCtx,
 		}
 		if err := g.renderTemplate("mcp_tools.go.tmpl", filepath.Join("internal", "mcp", "tools.go"), mcpData); err != nil {
 			return fmt.Errorf("rendering MCP tools: %w", err)
