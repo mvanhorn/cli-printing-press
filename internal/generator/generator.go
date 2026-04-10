@@ -364,7 +364,47 @@ func (g *Generator) buildDomainContext() DomainContext {
 			"Prefer sql/search over repeated API calls when the data is already synced.")
 	}
 
+	// Add archetype-specific playbook entries — domain opinions that agents
+	// can't discover from the API spec alone (PostHog Rule 4: skills are human knowledge)
+	if g.profile != nil {
+		ctx.Playbook = append(ctx.Playbook, archetypePlaybook(g.profile.Domain.Archetype)...)
+	}
+
 	return ctx
+}
+
+// archetypePlaybook returns domain-specific insights based on API archetype.
+// These are opinionated tips that prevent common agent mistakes.
+func archetypePlaybook(arch profiler.DomainArchetype) []PlaybookEntry {
+	switch arch {
+	case profiler.ArchetypeProjectMgmt:
+		return []PlaybookEntry{
+			{Topic: "Finding stale work", Insight: "Use the stale command or sql query to find items not updated recently. More reliable than scanning list results manually."},
+			{Topic: "Load analysis", Insight: "When analyzing team workload, filter by assignee and status. Raw counts without status filtering are misleading."},
+			{Topic: "Bulk operations", Insight: "For bulk status changes, prefer update endpoints over delete+create. Most PM APIs track history on updates."},
+		}
+	case profiler.ArchetypeCommunication:
+		return []PlaybookEntry{
+			{Topic: "Message search", Insight: "Use the search tool on synced data rather than paginating through message history. Message APIs often have aggressive rate limits."},
+			{Topic: "Channel health", Insight: "When analyzing channel activity, use the channel-health command or sql aggregation on synced messages. Don't iterate individual messages via API."},
+		}
+	case profiler.ArchetypePayments:
+		return []PlaybookEntry{
+			{Topic: "Financial data", Insight: "Always use read-only operations for financial queries. Never use create/update tools for payment data without explicit user confirmation."},
+			{Topic: "Reconciliation", Insight: "For reconciliation tasks, sync first then use sql for cross-referencing. API pagination over financial records is slow and rate-limited."},
+		}
+	case profiler.ArchetypeCRM:
+		return []PlaybookEntry{
+			{Topic: "Contact lookup", Insight: "Use search for finding contacts by name/email. List endpoints return unsorted results and require pagination for large datasets."},
+			{Topic: "Activity tracking", Insight: "When checking deal activity, sync first and query locally. CRM APIs often throttle activity-log endpoints heavily."},
+		}
+	case profiler.ArchetypeDeveloperPlatform:
+		return []PlaybookEntry{
+			{Topic: "Resource discovery", Insight: "Use list commands to discover available resources before attempting operations. Developer platform APIs often have nested resource hierarchies."},
+		}
+	default:
+		return nil
+	}
 }
 
 func (g *Generator) Generate() error {
