@@ -141,6 +141,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"add":                    func(a, b int) int { return a + b },
 		"oneline":                oneline,
 		"mcpDescription":         mcpDescription,
+		"mcpDescriptionRich":     mcpDescriptionRich,
 		"flagName":               flagName,
 		"safeTypeName":           safeTypeName,
 		"hasNonScalarType": func(types map[string]spec.TypeDef) bool {
@@ -1239,6 +1240,50 @@ func mcpDescription(desc string, noAuth bool, authType string, publicCount, tota
 	}
 
 	return oneline(desc)
+}
+
+// mcpDescriptionRich builds an enriched MCP tool description that includes
+// the base description plus response shape hints and method context.
+// This gives agents enough information to choose the right tool without
+// trial-and-error. Total length is capped to prevent token bloat.
+func mcpDescriptionRich(desc string, noAuth bool, authType string, publicCount, totalCount int, method, respType, respItem string) string {
+	base := mcpDescription(desc, noAuth, authType, publicCount, totalCount)
+
+	var suffix string
+
+	// Add response shape hint
+	if respType == "array" && respItem != "" {
+		suffix = "Returns array of " + respItem + "."
+	} else if respType == "array" {
+		suffix = "Returns array."
+	} else if respType == "object" && respItem != "" {
+		suffix = "Returns " + respItem + "."
+	}
+
+	// Add method context for non-obvious cases
+	switch method {
+	case "DELETE":
+		if suffix != "" {
+			suffix += " Destructive."
+		} else {
+			suffix = "Destructive operation."
+		}
+	case "PATCH":
+		if suffix == "" {
+			suffix = "Partial update."
+		}
+	}
+
+	if suffix == "" {
+		return base
+	}
+
+	result := base + " " + suffix
+	// Cap at 200 chars to prevent token bloat (PostHog learned this the hard way)
+	if len(result) > 200 {
+		result = result[:197] + "..."
+	}
+	return result
 }
 
 func exampleValue(p spec.Param) string {

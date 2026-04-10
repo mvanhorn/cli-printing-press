@@ -64,7 +64,7 @@ func RegisterTools(s *server.MCPServer) {
 {{- range $eName, $endpoint := $resource.Endpoints}}
 	s.AddTool(
 		mcplib.NewTool("{{snake $name}}_{{snake $eName}}",
-			mcplib.WithDescription("{{mcpDescription $endpoint.Description $endpoint.NoAuth $.Auth.Type $.MCPPublicCount $.MCPTotalCount}}"),
+			mcplib.WithDescription("{{mcpDescriptionRich $endpoint.Description $endpoint.NoAuth $.Auth.Type $.MCPPublicCount $.MCPTotalCount $endpoint.Method $endpoint.Response.Type $endpoint.Response.Item}}"),
 {{- range $endpoint.Params}}
 {{- if eq .Type "integer"}}
 			mcplib.WithNumber("{{.Name}}"{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description("{{oneline .Description}}")),
@@ -82,7 +82,7 @@ func RegisterTools(s *server.MCPServer) {
 {{- range $eName, $endpoint := $subResource.Endpoints}}
 	s.AddTool(
 		mcplib.NewTool("{{snake $name}}_{{snake $subName}}_{{snake $eName}}",
-			mcplib.WithDescription("{{mcpDescription $endpoint.Description $endpoint.NoAuth $.Auth.Type $.MCPPublicCount $.MCPTotalCount}}"),
+			mcplib.WithDescription("{{mcpDescriptionRich $endpoint.Description $endpoint.NoAuth $.Auth.Type $.MCPPublicCount $.MCPTotalCount $endpoint.Method $endpoint.Response.Type $endpoint.Response.Item}}"),
 {{- range $endpoint.Params}}
 {{- if eq .Type "integer"}}
 			mcplib.WithNumber("{{.Name}}"{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description("{{oneline .Description}}")),
@@ -100,12 +100,12 @@ func RegisterTools(s *server.MCPServer) {
 {{- end}}
 
 {{- if .VisionSet.Sync}}
-	// Sync tool
+	// Sync tool — populates local database for offline search and sql queries
 	s.AddTool(
 		mcplib.NewTool("sync",
-			mcplib.WithDescription("Sync API data to local SQLite for offline search and analysis"),
-			mcplib.WithString("resources", mcplib.Description("Comma-separated resource types to sync")),
-			mcplib.WithString("since", mcplib.Description("Incremental sync since duration (7d, 24h, 1w)")),
+			mcplib.WithDescription("Sync API data to local SQLite database. Run this before using search or sql tools. Supports incremental sync."),
+			mcplib.WithString("resources", mcplib.Description("Comma-separated resource types to sync (omit for all)")),
+			mcplib.WithString("since", mcplib.Description("Incremental sync since duration (e.g. 7d, 24h, 1w)")),
 			mcplib.WithBoolean("full", mcplib.Description("Full resync ignoring checkpoints")),
 		),
 		handleSync,
@@ -113,11 +113,11 @@ func RegisterTools(s *server.MCPServer) {
 {{- end}}
 
 {{- if .VisionSet.Search}}
-	// Search tool
+	// Search tool — faster than iterating list endpoints for finding specific items
 	s.AddTool(
 		mcplib.NewTool("search",
-			mcplib.WithDescription("Full-text search across synced data"),
-			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query")),
+			mcplib.WithDescription("Full-text search across all synced data. Faster than paginating list endpoints. Requires sync first."),
+			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query (supports FTS5 syntax: AND, OR, NOT, quotes for phrases)")),
 			mcplib.WithNumber("limit", mcplib.Description("Max results (default 25)")),
 		),
 		handleSearch,
@@ -125,11 +125,11 @@ func RegisterTools(s *server.MCPServer) {
 {{- end}}
 
 {{- if .VisionSet.Store}}
-	// SQL tool
+	// SQL tool — ad-hoc analysis on synced data without API calls
 	s.AddTool(
 		mcplib.NewTool("sql",
-			mcplib.WithDescription("Run read-only SQL query against local database"),
-			mcplib.WithString("query", mcplib.Required(), mcplib.Description("SQL query (SELECT only)")),
+			mcplib.WithDescription("Run read-only SQL against local database. Use for ad-hoc analysis, aggregations, and joins across synced resources. Requires sync first."),
+			mcplib.WithString("query", mcplib.Required(), mcplib.Description("SQL query (SELECT only). Tables match resource names.")),
 		),
 		handleSQL,
 	)
