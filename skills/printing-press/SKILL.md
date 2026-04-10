@@ -593,6 +593,14 @@ Suggested shape:
 - Sync cursor:
 - FTS/search:
 
+## Codebase Intelligence
+- [DeepWiki findings if available, otherwise omit this section]
+- Source: DeepWiki analysis of {owner}/{repo}
+- Auth: [token type, header, env var pattern]
+- Data model: [primary entities and relationships]
+- Rate limiting: [limits and behavior]
+- Architecture: [key insight about internal design]
+
 ## User Vision
 - [USER_BRIEFING_CONTEXT if provided, otherwise omit this section]
 
@@ -963,6 +971,20 @@ If step 1.5a discovered MCP server repos with public source code on GitHub, read
 - No MCP repos were found in 1.5a
 - MCP repos are private or archived
 - The MCP is a monorepo where the relevant server is hard to locate within 3 minutes
+
+### Step 1.5a.6: DeepWiki Codebase Analysis (if GitHub repos found)
+
+If Phase 1 or Step 1.5a discovered GitHub repos for the API (SDK repos, server repos, MCP server repos), query DeepWiki for a semantic understanding of how the API works - architecture, auth flows, data models, error handling. This complements crowd-sniff (endpoints) and MCP source reading (auth headers) with "how things actually work" context.
+
+**Time budget:** 2 minutes max. If DeepWiki is slow or unavailable, skip silently.
+
+**Run in parallel** with Steps 1.5a through 1.5a.5 when possible. DeepWiki queries do not depend on MCP source reading results.
+
+Read and follow [references/deepwiki-research.md](references/deepwiki-research.md) for the query procedure: wiki structure fetch, targeted section extraction (auth, data model, architecture), and synthesis into the research brief and absorb manifest.
+
+**Skip this step when:**
+- No GitHub repos were discovered during Phase 1 or Step 1.5a
+- The API is trivially simple (1-2 endpoints, no auth)
 
 ### Step 1.5b: Catalog every feature into the absorb manifest
 

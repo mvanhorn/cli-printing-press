@@ -85,11 +85,12 @@ the persona work missed:
 
 4. **Agent workflow gaps** — What would an AI agent using this CLI wish it could do in one command instead of multiple?
 
-5. **Self-brainstorm** — Answer using research context:
-   - What workflows do power users do that aren't covered in the absorbed features?
-   - What are the most annoying limitations that a CLI with local data could fix?
-   - What single "killer feature" would make a power user install this over any alternative?
-   - (Only when `USER_BRIEFING_CONTEXT` is non-empty) What features directly serve the user's stated goals?
+5. **Self-brainstorm** — Answer these questions using the research context gathered so far. Do NOT ask the user — answer them yourself from the research brief, absorb manifest, and ecosystem findings:
+   - Based on the research brief's top workflows and user profiles, what workflows does the typical power user of this API do that aren't covered in the absorbed features?
+   - Based on competitor repo issues, community pain points, and ecosystem gaps found in Phase 1/1.5, what are the most annoying limitations that a CLI with SQLite could fix?
+   - Based on the NOI and domain archetype, what single "killer feature" would make a power user install this CLI over any alternative?
+   - (Only when `USER_BRIEFING_CONTEXT` is non-empty) Based on the user's stated vision, what features directly serve their stated goals that the absorbed features don't already cover?
+   - (Only when DeepWiki codebase analysis is available) Based on the codebase architecture DeepWiki revealed, what compound use cases become possible that the public API docs don't suggest? Look for internal data relationships, queue/worker patterns, or event systems that could power novel CLI features.
 
 #### Generate, Vet, and Score
 
@@ -102,7 +103,7 @@ the persona work missed:
 | **Domain Fit** | 0-3 | 3=core to this API's power users, 2=useful but niche, 1=tangential, 0=wrong domain |
 | **User Pain** | 0-3 | 3=research surfaced explicit demand (community complaints, competitor gap), 2=implied need, 1=speculative, 0=no evidence |
 | **Build Feasibility** | 0-2 | 2=API endpoint + local data covers it, 1=needs minor data model additions, 0=requires new infrastructure |
-| **Research Backing** | 0-2 | 2=evidence from 2+ sources in Phase 1/1.5 research, 1=evidence from 1 source, 0=invented |
+| **Research Backing** | 0-2 | 2=evidence from 2+ sources in Phase 1/1.5 research (web search, community issues, MCP source, DeepWiki analysis each count as 1 source), 1=evidence from 1 source, 0=invented |
 
 **Normalize:** `score_10 = round(raw / 10 * 10)`. Include features scoring >= 5/10.
 
