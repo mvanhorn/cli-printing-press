@@ -45,6 +45,7 @@ type SteinerScore struct {
 	README        int `json:"readme"`         // 0-10
 	Doctor        int `json:"doctor"`         // 0-10
 	AgentNative   int `json:"agent_native"`   // 0-10
+	MCPQuality    int `json:"mcp_quality"`    // 0-10
 	LocalCache    int `json:"local_cache"`    // 0-10
 	Breadth       int `json:"breadth"`        // 0-10: how many commands (penalizes empty CLIs)
 	Vision        int `json:"vision"`         // 0-10
@@ -86,6 +87,7 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 	sc.Steinberger.README = scoreREADME(outputDir)
 	sc.Steinberger.Doctor = scoreDoctor(outputDir)
 	sc.Steinberger.AgentNative = scoreAgentNative(outputDir)
+	sc.Steinberger.MCPQuality = scoreMCPQuality(outputDir)
 	sc.Steinberger.LocalCache = scoreLocalCache(outputDir)
 	sc.Steinberger.Breadth = scoreBreadth(outputDir)
 	sc.Steinberger.Vision = scoreVision(outputDir)
@@ -114,7 +116,7 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 	sc.Steinberger.TypeFidelity = scoreTypeFidelity(outputDir)
 	sc.Steinberger.DeadCode = scoreDeadCode(outputDir)
 
-	// Tier 1: Infrastructure (string-matching, 120 max)
+	// Tier 1: Infrastructure (string-matching, 130 max)
 	tier1Raw := sc.Steinberger.OutputModes +
 		sc.Steinberger.Auth +
 		sc.Steinberger.ErrorHandling +
@@ -122,6 +124,7 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 		sc.Steinberger.README +
 		sc.Steinberger.Doctor +
 		sc.Steinberger.AgentNative +
+		sc.Steinberger.MCPQuality +
 		sc.Steinberger.LocalCache +
 		sc.Steinberger.Breadth +
 		sc.Steinberger.Vision +
@@ -144,7 +147,7 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 		sc.Steinberger.DeadCode
 
 	// Weighted composite: Tier 1 = 50%, Tier 2 = 50% of final 100-point scale
-	tier1Normalized := (tier1Raw * 50) / 120 // scale 0-120 to 0-50
+	tier1Normalized := (tier1Raw * 50) / 130 // scale 0-130 to 0-50
 	tier2Max := 50
 	if sc.IsDimensionUnscored("path_validity") {
 		tier2Max -= 10
@@ -537,6 +540,66 @@ func scoreAgentNative(dir string) int {
 	if strings.Contains(storeContent, "ResolveByName") || strings.Contains(storeContent, "IsUUID") {
 		score++
 	}
+	if score > 10 {
+		score = 10
+	}
+	return score
+}
+
+func scoreMCPQuality(dir string) int {
+	mcpContent := readFileContent(filepath.Join(dir, "internal", "mcp", "tools.go"))
+	if mcpContent == "" {
+		return 0 // No MCP server generated
+	}
+
+	score := 0
+
+	// Presence: MCP tools.go exists and has RegisterTools
+	if strings.Contains(mcpContent, "RegisterTools") {
+		score += 2
+	}
+
+	// Context tool: has rich context/about tool with domain knowledge
+	if strings.Contains(mcpContent, `"context"`) || strings.Contains(mcpContent, "handleContext") {
+		score += 2
+	}
+
+	// High-level tools: sql, search, sync exposed to MCP (not just CLI)
+	highlevelCount := 0
+	if strings.Contains(mcpContent, `"sql"`) && strings.Contains(mcpContent, "handleSQL") {
+		highlevelCount++
+	}
+	if strings.Contains(mcpContent, `"search"`) && strings.Contains(mcpContent, "handleSearch") {
+		highlevelCount++
+	}
+	if strings.Contains(mcpContent, `"sync"`) && strings.Contains(mcpContent, "handleSync") {
+		highlevelCount++
+	}
+	if highlevelCount >= 2 {
+		score += 2
+	} else if highlevelCount >= 1 {
+		score++
+	}
+
+	// Description quality: response shape hints (Returns array, Returns object)
+	returnHints := strings.Count(mcpContent, "Returns array") + strings.Count(mcpContent, "Returns ")
+	if returnHints >= 3 {
+		score += 2
+	} else if returnHints >= 1 {
+		score++
+	}
+
+	// No empty descriptions
+	emptyDescs := strings.Count(mcpContent, `Description("")`)
+	if emptyDescs == 0 {
+		score++
+	}
+
+	// Description richness: tool descriptions reference other tools or provide usage guidance
+	if strings.Contains(mcpContent, "Requires sync") || strings.Contains(mcpContent, "Call this first") {
+		score++
+	}
+
 	if score > 10 {
 		score = 10
 	}
@@ -1769,6 +1832,7 @@ func buildGapReport(s SteinerScore, unscored []string) []string {
 		{"readme", s.README},
 		{"doctor", s.Doctor},
 		{"agent_native", s.AgentNative},
+		{"mcp_quality", s.MCPQuality},
 		{"local_cache", s.LocalCache},
 		{"breadth", s.Breadth},
 		{"vision", s.Vision},
@@ -1897,6 +1961,7 @@ func writeScorecardMD(sc *Scorecard, pipelineDir string) error {
 		{"README", "readme", s.README},
 		{"Doctor", "doctor", s.Doctor},
 		{"Agent Native", "agent_native", s.AgentNative},
+		{"MCP Quality", "mcp_quality", s.MCPQuality},
 		{"Local Cache", "local_cache", s.LocalCache},
 		{"Breadth", "breadth", s.Breadth},
 		{"Vision", "vision", s.Vision},
