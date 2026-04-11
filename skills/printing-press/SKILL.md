@@ -556,6 +556,8 @@ Suggested shape:
 
 **MANDATORY: Before proceeding to Phase 1.5 (Absorb Gate), you MUST evaluate Phase 1.6 (Pre-Sniff Auth Intelligence), Phase 1.7 (Sniff Gate), and Phase 1.8 (Crowd Sniff Gate) below.** If no spec source has been resolved yet (no `--spec`, no `--har`, no catalog spec URL), the sniff gate decision matrix MUST be evaluated. Do not skip to Phase 1.5.
 
+**Phase 1.5 will refuse to proceed without a `sniff-gate.json` marker file.** Phase 1.7 writes this file with one entry per source (one entry for single-source CLIs, one entry per named source for combo CLIs). Missing marker = HARD STOP back to Phase 1.7. See Phase 1.7 "Enforcement" below for the contract.
+
 ## Phase 1.6: Pre-Sniff Auth Intelligence
 
 After Phase 1 research completes, analyze findings to proactively assess what auth context the user could provide. This step uses research intelligence to ask the right question before sniffing starts, rather than waiting for the user to volunteer "I logged in."
@@ -602,27 +604,108 @@ Set `AUTH_SESSION_AVAILABLE=true` if the user selects option 1 or 2. The Sniff G
 
 ## Phase 1.7: Sniff Gate
 
-After Phase 1 research, evaluate whether sniffing the live site would improve the spec. Skip this gate entirely if the user already passed `--har` or `--spec` (spec source is already resolved). If `SNIFF_TARGET_URL` is set (user chose "The website itself" in Phase 0), skip the decision matrix and go directly to "If user approves sniff" — the user already approved, and `SNIFF_TARGET_URL` is the starting URL.
+After Phase 1 research, evaluate whether sniffing the live site would improve the spec. This phase MUST produce a decision marker file for every source named in the briefing before Phase 1.5 can proceed.
 
-**IMPORTANT:** When the decision matrix below says "Offer sniff", you MUST ask the user via `AskUserQuestion`. Do NOT silently decide to skip sniff because the docs look thorough — the user should make that call. The only case where you skip silently is "spec appears complete" (no gap detected).
+### Enforcement: the sniff-gate.json marker file
 
-**Time budget:** The sniff gate should complete within 3 minutes of the user approving sniff. If browser automation tooling fails to produce results after 3 minutes of attempts, fall back immediately:
+Phase 1.7 is a hard gate. Phase 1.5 reads a marker file and refuses to proceed without it. The model cannot skip this phase by reasoning around it.
+
+**Marker file location:** `$PRESS_RUNSTATE/runs/$RUN_ID/sniff-gate.json`
+
+**Marker file shape:**
+
+```json
+{
+  "run_id": "20260411-000903",
+  "sources": [
+    {
+      "source_name": "<exact name from briefing, e.g., kayak-direct>",
+      "decision": "approved | declined | skip-silent | pre-approved",
+      "reason": "<one-line justification>",
+      "asked_at": "2026-04-11T00:10:00Z"
+    }
+  ]
+}
+```
+
+**Decision values:**
+
+- `approved` — user selected a sniff option via `AskUserQuestion`. Proceed to "If user approves sniff".
+- `declined` — user explicitly declined sniff via `AskUserQuestion`. Proceed to "If user declines sniff".
+- `skip-silent` — gate was silently skipped per the decision matrix (spec complete, `--har` provided, `--spec` provided, or login required with `AUTH_SESSION_AVAILABLE=false`). The `reason` field names which.
+- `pre-approved` — user already chose "The website itself" in Phase 0, so `SNIFF_TARGET_URL` was set and the question was answered there.
+
+**Every path through Phase 1.7 MUST write a marker entry** — approve, decline, and every silent-skip case. There is no code path that proceeds to Phase 1.5 without writing the marker.
+
+**`asked_at` is mandatory.** It must reflect the actual time `AskUserQuestion` was invoked (or the time the silent-skip decision was made). Fabricated timestamps are a plan violation.
+
+### Banned skip reasons
+
+The following rationales are NOT valid reasons to skip the sniff gate. If any of these apply, you MUST still ask the user via `AskUserQuestion` and record their answer in the marker file:
+
+- **"The target is client-rendered and needs Playwright"** — browser capture tools (browser-use, agent-browser) exist specifically to handle client-rendered sites. Hard-to-sniff is not the same as impossible-to-sniff. Ask.
+- **"The 3-minute time budget looks tight"** — the time budget applies AFTER the user approves sniff, not before. You do not pre-judge whether a sniff will fit the budget. Ask. If the budget blows after the user approves, fall back per the Time Budget rules below.
+- **"We have a substitute data source from another API"** — substituting one source for another is the user's call, not yours. If the user named a specific site or feature (e.g., Kayak /direct), they chose it deliberately. Ask about that exact source. Offering a different data source is a separate conversation AFTER the gate, not a reason to skip it.
+- **"Installing browser-use or agent-browser is friction"** — the sniff capture reference already documents the install path. Tooling friction is not a valid skip reason. Ask.
+- **"The documentation looks thorough enough"** — the decision matrix already handles this case explicitly. If research found that competitors or community projects reference more endpoints than the spec covers, that IS a gap and you MUST ask.
+- **"The user said 'let's go' earlier and implicitly approved everything"** — "let's go" at the briefing stage is consent to proceed with research, not standing approval for every future decision. Ask each gate individually.
+
+These banned reasons all fired at once in a past combo-CLI run and caused a user-critical source to be silently swapped out. The marker file exists so this cannot happen again. If you find yourself writing a phrase like "skipping sniff because X" where X is one of the above, stop and call `AskUserQuestion`.
+
+### Combo CLIs: per-source enforcement
+
+When the briefing names multiple sources (e.g., "Google Flights + Kayak + FlightAware"), each named source is evaluated independently. The marker file has one entry per source. All entries must be present before Phase 1.5 can proceed.
+
+**Source identification rule:** source names come from the briefing, verbatim. Use the user's exact wording as the `source_name` (normalized to kebab-case is fine: "Kayak /direct" → `kayak-direct`, "Google Flights" → `google-flights`, "FlightAware" → `flightaware`). Do not merge sources. Do not drop one in favor of another.
+
+**Per-source decision flow:**
+
+For each named source, run the "When to offer sniff" decision matrix independently, using the research findings for THAT source. Each source produces its own `AskUserQuestion` call or its own silent-skip marker entry.
+
+**Combo CLI example** (flightgoat pattern — directional guidance, not prescription):
+
+| Source | Spec state | Expected decision |
+|--------|------------|-------------------|
+| `flightaware` | Documented OpenAPI spec found (53 endpoints, appears complete) | `skip-silent` with reason `spec-complete` |
+| `google-flights` | No official spec, but community wrapper exists (`fli`) | Ask via `AskUserQuestion` → record user's answer |
+| `kayak-direct` | No spec, no wrapper, user named this as a key feature | Ask via `AskUserQuestion` → record user's answer |
+
+The marker file for this run would contain three entries. Phase 1.5 would HALT if any were missing.
+
+**When the user cares about only one source:** you still ask for all sources that trigger the gate. The user can decline the others. Asking is cheap. Skipping silently breaks the contract.
+
+### Skip this gate entirely when
+
+These are the only cases where Phase 1.7 is bypassed as a whole (not just skipped for one source). Even in these cases, a marker file with a single `skip-silent` entry is written to satisfy Phase 1.5's check:
+
+- User passed `--spec` and the spec is the canonical source for every named source → marker: `{ "source_name": "<api>", "decision": "skip-silent", "reason": "user-provided-spec" }`
+- User passed `--har` → marker: `{ "source_name": "<api>", "decision": "skip-silent", "reason": "user-provided-har" }`
+- `SNIFF_TARGET_URL` is set from Phase 0 (user chose "The website itself") → marker: `{ "source_name": "<api>", "decision": "pre-approved", "reason": "phase-0-website-choice" }`, then go directly to "If user approves sniff"
+
+### Time budget
+
+The sniff gate should complete within 3 minutes of the user approving sniff. If browser automation tooling fails to produce results after 3 minutes of attempts, fall back immediately:
 - If a spec already exists (enrichment mode): "Sniff failed after 3 minutes — proceeding with existing spec."
 - If no spec exists (primary mode): "Sniff failed after 3 minutes — falling back to --docs generation."
+
 Do NOT spend time debugging tool integration issues. The sniff is optional enrichment, not a blocking requirement. If the first approach fails, fall back to the next option — do not retry the same broken approach.
+
+**The time budget applies AFTER the user approves.** Do not use it as a reason to skip the gate before asking.
 
 ### When to offer sniff
 
 | Spec found? | Research shows gaps? | Auth required? | Action |
 |-------------|---------------------|----------------|--------|
 | Yes | Yes — docs or competitors show significantly more endpoints than the spec | No | **MUST offer sniff as enrichment** |
-| Yes | No — spec appears complete | Any | Skip silently |
+| Yes | No — spec appears complete | Any | Skip silently (write marker with `decision: skip-silent`) |
 | No | Community docs exist (e.g., Public-ESPN-API) | No | **MUST offer sniff OR --docs** — present both options so the user decides |
 | No | No docs found either | No | **MUST offer sniff as primary discovery** |
 | No | N/A | Yes (login) + `AUTH_SESSION_AVAILABLE=true` | **Offer authenticated sniff** — the user confirmed a session in Phase 1.6 |
-| No | N/A | Yes (login) + `AUTH_SESSION_AVAILABLE=false` | Skip — fall back to `--docs` |
+| No | N/A | Yes (login) + `AUTH_SESSION_AVAILABLE=false` | Skip — fall back to `--docs` (write marker with `decision: skip-silent`, `reason: login-required-no-session`) |
 
 **Gap detection heuristic:** If Phase 1 research found documentation, competitor tools, or community projects that reference significantly more endpoints or features than the resolved spec covers, that's a gap signal. Example: "The Zuplo OpenAPI spec has 42 endpoints, but the Public-ESPN-API docs describe 370+."
+
+**When the decision matrix says "Offer sniff", you MUST ask the user via `AskUserQuestion`.** Skipping the question and writing a `skip-silent` marker is a contract violation — `skip-silent` is only valid when the matrix says "Skip silently" or one of the Banned Skip Reasons is the only thing holding you back (in which case, you should be asking anyway).
 
 ### Sniff as enrichment (spec exists but has gaps)
 
@@ -650,6 +733,19 @@ When `AUTH_SESSION_AVAILABLE=false`, show only options 2-4 (the existing 3-optio
 
 ### If user approves sniff
 
+**Before doing anything else, write the marker entry** for this source:
+
+```json
+{
+  "source_name": "<normalized name from briefing>",
+  "decision": "approved",
+  "reason": "<which option they picked, e.g., 'authenticated sniff' or 'sniff and merge'>",
+  "asked_at": "<current ISO8601 timestamp>"
+}
+```
+
+Append it to `$PRESS_RUNSTATE/runs/$RUN_ID/sniff-gate.json` (create the file if it doesn't exist).
+
 #### Step 0: Identify the User Goal
 
 Before building the capture plan, answer one question: **What does the end user of this CLI actually want to do?**
@@ -673,7 +769,24 @@ capture, HAR analysis, and discovery report writing.
 
 ### If user declines sniff
 
+**Write the marker entry** for this source before proceeding:
+
+```json
+{
+  "source_name": "<normalized name from briefing>",
+  "decision": "declined",
+  "reason": "<which option they picked, e.g., 'use existing spec' or 'use docs instead'>",
+  "asked_at": "<current ISO8601 timestamp>"
+}
+```
+
+Append it to `$PRESS_RUNSTATE/runs/$RUN_ID/sniff-gate.json`.
+
 Proceed with whatever spec source exists. If no spec was found, fall back to `--docs` or ask the user to provide a spec/HAR manually.
+
+### Before leaving Phase 1.7
+
+Every source named in the briefing must have exactly one entry in `sniff-gate.json`. Before proceeding to Phase 1.8, re-read the marker file and verify the count matches the number of named sources from the briefing. If a source is missing, return to the decision matrix for that source. Phase 1.5 will HALT if this check fails.
 
 ---
 
@@ -730,7 +843,25 @@ Proceed with whatever spec source exists. If no spec was found, fall back to `--
 
 THIS IS A MANDATORY STOP GATE. Do not generate until this is complete and approved.
 
-**Pre-check:** If no spec or HAR file has been resolved by this point and Phase 1.7 (Sniff Gate) was not evaluated, STOP. Go back and run the sniff gate decision matrix. The absorb manifest depends on knowing the API surface, which requires a spec.
+### Pre-flight check: sniff-gate marker
+
+Before any absorb work, verify `$PRESS_RUNSTATE/runs/$RUN_ID/sniff-gate.json` exists and contains an entry for every source named in the briefing.
+
+**If the file is missing:** HARD STOP. Print:
+
+> Phase 1.7 Sniff Gate did not record a decision. Return to Phase 1.7 and evaluate the sniff gate for every source named in the briefing.
+
+Do not proceed to Step 1.5a until the file exists.
+
+**If the file exists but is missing an entry for a named source:** HARD STOP. Print:
+
+> Sniff Gate missing decision for source `<name>`. Return to Phase 1.7 and evaluate the decision matrix for that source.
+
+Do not proceed until every briefing source has a marker entry.
+
+**Resume leniency:** If the run was started by an older version of the skill that didn't write markers, warn and continue — do not hard-fail on legacy resumes. Distinguish by checking whether `state.json` predates the marker contract (the marker file didn't exist before 2026-04-11). New runs always hard-fail on a missing marker.
+
+**Pre-check (existing):** If no spec or HAR file has been resolved by this point and Phase 1.7 (Sniff Gate) was not evaluated, STOP. Go back and run the sniff gate decision matrix. The absorb manifest depends on knowing the API surface, which requires a spec.
 
 The GOAT CLI doesn't "find gaps." It absorbs EVERY feature from EVERY tool and then transcends with compound use cases nobody thought of. This phase builds the absorb manifest.
 

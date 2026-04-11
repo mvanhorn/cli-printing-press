@@ -2,6 +2,8 @@
 
 > **When to read:** This file is referenced by Phase 1.7 of the printing-press skill.
 > Read it when the user approves sniff (browser-use or agent-browser capture of live API traffic).
+>
+> **Context:** This file documents what happens AFTER Phase 1.7 decides to sniff. The decision itself — approve, decline, or silent-skip — is recorded in `$PRESS_RUNSTATE/runs/$RUN_ID/sniff-gate.json` by Phase 1.7 before this reference is loaded. Phase 1.5 refuses to proceed without that marker file. See SKILL.md Phase 1.7 "Enforcement: the sniff-gate.json marker file" for the contract.
 
 ### Cardinal Rules
 
