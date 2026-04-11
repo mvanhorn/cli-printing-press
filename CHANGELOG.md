@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/mvanhorn/cli-printing-press/compare/v1.3.1...v1.3.2) (2026-04-11)
+
+
+### Bug Fixes
+
+* **skills:** enforce sniff gate with marker file contract ([#166](https://github.com/mvanhorn/cli-printing-press/issues/166)) ([e8aa611](https://github.com/mvanhorn/cli-printing-press/commit/e8aa611cc91077a513328141953567d8677f3489))
+
 ## [1.3.1](https://github.com/mvanhorn/cli-printing-press/compare/v1.3.0...v1.3.1) (2026-04-11)
 
 
