@@ -94,9 +94,7 @@ type cliError struct {
 func (e *cliError) Error() string { return e.err.Error() }
 func (e *cliError) Unwrap() error { return e.err }
 
-{{- if .HasMultiPositional}}
 func usageErr(err error) error    { return &cliError{code: 2, err: err} }
-{{- end}}
 func notFoundErr(err error) error { return &cliError{code: 3, err: err} }
 func authErr(err error) error     { return &cliError{code: 4, err: err} }
 func apiErr(err error) error      { return &cliError{code: 5, err: err} }
