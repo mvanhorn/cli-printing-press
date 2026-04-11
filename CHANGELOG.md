@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/mvanhorn/cli-printing-press/compare/v1.3.0...v1.3.1) (2026-04-11)
+
+
+### Bug Fixes
+
+* **cli:** address Kalshi retro findings — --name flag, sync keys, primary key detection ([#163](https://github.com/mvanhorn/cli-printing-press/issues/163)) ([#164](https://github.com/mvanhorn/cli-printing-press/issues/164)) ([ab7f83c](https://github.com/mvanhorn/cli-printing-press/commit/ab7f83c97ef5c5babfe41fdf498df0eeb43bd03d))
+
 ## [1.3.0](https://github.com/mvanhorn/cli-printing-press/compare/v1.2.1...v1.3.0) (2026-04-11)
 
 
