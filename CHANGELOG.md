@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.3.0](https://github.com/mvanhorn/cli-printing-press/compare/v1.2.1...v1.3.0) (2026-04-11)
+
+
+### Features
+
+* **cli:** add --dates sync flag and wrapper-object list detection ([#154](https://github.com/mvanhorn/cli-printing-press/issues/154)) ([49148b4](https://github.com/mvanhorn/cli-printing-press/commit/49148b437ddc577786549c413fe62bced135b43f))
+* **cli:** add printing-press-library plugin to marketplace ([#161](https://github.com/mvanhorn/cli-printing-press/issues/161)) ([cbcd67d](https://github.com/mvanhorn/cli-printing-press/commit/cbcd67dbddd83eb3bbc7155c5c0e2f3a06009a15))
+* **cli:** apply PostHog agent-first learnings to MCP server generation ([#160](https://github.com/mvanhorn/cli-printing-press/issues/160)) ([8354f52](https://github.com/mvanhorn/cli-printing-press/commit/8354f5283a25461499eee5a8e5a4c605363a39aa))
+* **cli:** printing press improvements from agent-capture retro ([#141](https://github.com/mvanhorn/cli-printing-press/issues/141)) ([911dc29](https://github.com/mvanhorn/cli-printing-press/commit/911dc2906ea6d01c644917ce1a8f125f85f7f47e))
+
+
+### Bug Fixes
+
+* **cli:** always emit usageErr helper ([#162](https://github.com/mvanhorn/cli-printing-press/issues/162)) ([4d3c31f](https://github.com/mvanhorn/cli-printing-press/commit/4d3c31f87eb3306bdcae307a3a6c35c04b3fd028))
+* **cli:** GraphQL type dedup, usageErr emission, and FTS5 manual sync ([#149](https://github.com/mvanhorn/cli-printing-press/issues/149)) ([92074e6](https://github.com/mvanhorn/cli-printing-press/commit/92074e672957b2d448fbee65cdc71aad705391c8))
+* **cli:** retro fixes from trigger-dev generation ([#159](https://github.com/mvanhorn/cli-printing-press/issues/159)) ([f9e6c10](https://github.com/mvanhorn/cli-printing-press/commit/f9e6c108be3c9b94dd5a9e78c6efaacc55934e23))
+* **skills:** correct publish package flag name and staging workflow ([776d433](https://github.com/mvanhorn/cli-printing-press/commit/776d433ca94b32af8be25fbc3694ce3ff0dea1e4))
+
 ## [1.2.1](https://github.com/mvanhorn/cli-printing-press/compare/v1.2.0...v1.2.1) (2026-04-09)
 
 

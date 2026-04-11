@@ -7,7 +7,7 @@ import (
 
 // Version is the current printing-press version. It is set at build time
 // via ldflags for tagged releases, or falls back to the hardcoded value.
-var Version = "1.2.1" // x-release-please-version
+var Version = "1.3.0" // x-release-please-version
 
 func init() {
 	info, ok := debug.ReadBuildInfo()
