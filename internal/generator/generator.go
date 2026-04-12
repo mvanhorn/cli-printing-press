@@ -278,6 +278,35 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return "resource"
 		},
+		// goRawSafe makes a string safe to embed inside a Go raw-string literal
+		// (backtick-delimited). Go raw strings cannot contain backticks —
+		// there's no escape — so the compiler rejects the file outright.
+		// Narrative fields are LLM-authored and routinely contain backticks
+		// (e.g. "the `--agent` flag"), so stripping is mandatory before
+		// rendering into Short/Long. Replaces ` with ' to preserve intent.
+		"goRawSafe": func(s string) string {
+			return strings.ReplaceAll(s, "`", "'")
+		},
+		// yamlDoubleQuoted escapes a string for safe embedding inside a YAML
+		// double-quoted scalar. Handles the three failure modes we've seen
+		// from LLM-authored narrative fields: unescaped " (breaks parser),
+		// unescaped \ (swallows next char), and raw newlines (terminates
+		// scalar). Leaves single quotes alone — valid in double-quoted YAML.
+		"yamlDoubleQuoted": func(s string) string {
+			s = strings.ReplaceAll(s, `\`, `\\`)
+			s = strings.ReplaceAll(s, `"`, `\"`)
+			s = strings.ReplaceAll(s, "\n", `\n`)
+			s = strings.ReplaceAll(s, "\r", `\r`)
+			s = strings.ReplaceAll(s, "\t", `\t`)
+			return s
+		},
+		// yamlSingleQuoted escapes a string for safe embedding inside a YAML
+		// single-quoted scalar. Only single quotes need escaping — doubled
+		// per YAML 1.2 spec. Used for trigger phrases where we want to
+		// preserve double quotes naturally.
+		"yamlSingleQuoted": func(s string) string {
+			return strings.ReplaceAll(s, `'`, `''`)
+		},
 		// groupNovelFeatures clusters features by their Group field, preserving
 		// first-seen order of group names. Features with empty Group land in a
 		// trailing "More" bucket so nothing gets dropped. Returns nil when no

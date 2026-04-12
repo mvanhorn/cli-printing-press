@@ -42,16 +42,16 @@ func Execute() error {
 	rootCmd := &cobra.Command{
 		Use:   "{{.Name}}-pp-cli",
 {{- if and .Narrative .Narrative.Headline}}
-		Short: {{backtick}}{{humanName .Name}} CLI — {{.Narrative.Headline}}{{backtick}},
+		Short: {{backtick}}{{humanName .Name}} CLI — {{goRawSafe .Narrative.Headline}}{{backtick}},
 {{- else}}
 		Short: "Manage {{.Name}} resources via the {{.Name}} API",
 {{- end}}
 {{- if .TopNovelFeatures}}
-		Long: {{backtick}}{{humanName .Name}} CLI{{if and .Narrative .Narrative.Headline}} — {{.Narrative.Headline}}{{end}}
+		Long: {{backtick}}{{humanName .Name}} CLI{{if and .Narrative .Narrative.Headline}} — {{goRawSafe .Narrative.Headline}}{{end}}
 
 Highlights (not in the official API docs):
 {{- range .TopNovelFeatures}}
-  • {{.Command}}   {{.Description}}
+  • {{goRawSafe .Command}}   {{goRawSafe .Description}}
 {{- end}}
 
 Agent mode: add --agent to any command for JSON output + non-interactive mode.

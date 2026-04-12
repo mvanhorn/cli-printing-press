@@ -9,6 +9,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 // TestSkillRendersFrontmatterAndCapabilities verifies that a generated
@@ -117,6 +118,84 @@ func TestSkillFallsBackWhenNarrativeAbsent(t *testing.T) {
 		"Exit codes always render")
 	assert.True(t, strings.Contains(content, "## Command Reference"),
 		"Command Reference always renders from the spec")
+}
+
+// TestSkillFrontmatterEscapesNarrativeQuotesAndNewlines asserts that
+// LLM-authored narrative fields with double quotes, newlines, or
+// backslashes don't break the YAML frontmatter. Without escaping, an
+// inner " collapses the outer scalar and every YAML parser fails.
+func TestSkillFrontmatterEscapesNarrativeQuotesAndNewlines(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("yamlsafe")
+	apiSpec.Description = "First line.\nSecond line with a \"quoted\" term."
+	outputDir := filepath.Join(t.TempDir(), "yamlsafe-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		Headline:       `An "agent-native" CLI with \backslash and "quotes"`,
+		TriggerPhrases: []string{`what's the "best" price`, "simple phrase"},
+	}
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	content := string(skill)
+
+	// Extract the frontmatter (between the two --- lines).
+	require.True(t, strings.HasPrefix(content, "---\n"), "frontmatter should open with ---")
+	end := strings.Index(content[4:], "\n---\n")
+	require.NotEqual(t, -1, end, "frontmatter should close with ---")
+	frontmatter := content[:4+end+5]
+
+	// The frontmatter must be parseable YAML. Parse it and verify the
+	// description round-trips the intended content.
+	var parsed struct {
+		Name         string `yaml:"name"`
+		Description  string `yaml:"description"`
+		ArgumentHint string `yaml:"argument-hint"`
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(frontmatter, "---\n"), "---\n")
+	require.NoError(t, yaml.Unmarshal([]byte(body), &parsed),
+		"frontmatter must be valid YAML; content was:\n%s", body)
+
+	assert.Equal(t, "pp-yamlsafe", parsed.Name)
+	assert.True(t, strings.Contains(parsed.Description, `An "agent-native" CLI`),
+		"double quotes in headline should round-trip through YAML parse: got %q", parsed.Description)
+	assert.True(t, strings.Contains(parsed.Description, `\backslash`),
+		"backslashes in headline should round-trip through YAML parse: got %q", parsed.Description)
+	assert.True(t, strings.Contains(parsed.Description, `what's the "best" price`),
+		"quotes in trigger phrases should round-trip: got %q", parsed.Description)
+}
+
+// TestSkillFrontmatterFallbackHandlesMultilineSpecDescription asserts that
+// OpenAPI specs with multi-line info.description values don't break the
+// YAML frontmatter in the narrative-absent fallback path.
+func TestSkillFrontmatterFallbackHandlesMultilineSpecDescription(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("multiline")
+	apiSpec.Description = "Line one of the description.\nLine two has more detail.\nLine three."
+	outputDir := filepath.Join(t.TempDir(), "multiline-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	content := string(skill)
+
+	end := strings.Index(content[4:], "\n---\n")
+	require.NotEqual(t, -1, end)
+	body := strings.TrimSuffix(strings.TrimPrefix(content[:4+end+5], "---\n"), "---\n")
+
+	var parsed struct {
+		Description string `yaml:"description"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(body), &parsed),
+		"frontmatter must be valid YAML even with multi-line spec description")
+	assert.True(t, strings.HasPrefix(parsed.Description, "Printing Press CLI for Multiline"))
+	// Multi-line description should be flattened by oneline helper.
+	assert.False(t, strings.Contains(parsed.Description, "\n"),
+		"description should not contain raw newlines after oneline flattening")
 }
 
 // TestSkillRendersAuthBranchPerType asserts the deterministic Auth Setup

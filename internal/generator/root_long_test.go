@@ -2,6 +2,7 @@ package generator
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -51,6 +52,78 @@ func TestRootLongIncludesTopNovelFeatures(t *testing.T) {
 		"root Long should point at doctor for auth/connectivity checks")
 	assert.True(t, strings.Contains(content, "Every feature plus a local store"),
 		"root Short and Long should incorporate the narrative headline")
+}
+
+// TestRootLongHandlesBackticksInNarrativeText asserts that backticks in
+// LLM-authored narrative fields (common — e.g. "the `--agent` flag") do
+// not produce invalid Go source. Root-template embeds Short/Long inside
+// Go raw-string literals, which cannot contain backticks; without
+// escaping, the generated root.go fails to compile.
+func TestRootLongHandlesBackticksInNarrativeText(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("ticks")
+	outputDir := filepath.Join(t.TempDir(), "ticks-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{
+		Headline: "The `--agent`-native CLI",
+	}
+	gen.NovelFeatures = []NovelFeature{
+		{Command: "portfolio perf", Description: "Uses the `sync` data via `--json`"},
+	}
+	require.NoError(t, gen.Generate())
+
+	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	content := string(rootGo)
+
+	// No backtick should appear inside the Short/Long raw strings.
+	// Extract the Command block and assert it contains no raw backtick
+	// other than the string delimiters themselves. Simplest check: count
+	// backticks in the Short line — should be exactly 2 (the delimiters).
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "Short:") && strings.Contains(line, "`") {
+			count := strings.Count(line, "`")
+			assert.Equal(t, 2, count,
+				"Short line should have exactly two backticks (the raw-string delimiters); got %d. Line: %s", count, line)
+		}
+	}
+
+	// Confirm the sanitizer rewrote backticks to apostrophes (preserving intent).
+	assert.True(t, strings.Contains(content, "The '--agent'-native CLI"),
+		"backticks in headline should be sanitized to apostrophes, not stripped")
+	assert.True(t, strings.Contains(content, "'sync' data via '--json'"),
+		"backticks in novel-feature description should be sanitized to apostrophes")
+
+	// Most important: the generated Go must actually be parseable.
+	// Run go vet to catch syntax errors without a full build.
+	require.NoError(t, runGoVet(t, outputDir),
+		"generated root.go with sanitized narrative should compile")
+}
+
+func runGoVet(t *testing.T, dir string) error {
+	t.Helper()
+	cacheDir, err := goBuildCacheDir(dir)
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command("go", "vet", "./internal/cli/...")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir, "GOFLAGS=-mod=mod")
+	// go vet requires a valid module — run mod tidy first.
+	tidy := exec.Command("go", "mod", "tidy")
+	tidy.Dir = dir
+	tidy.Env = cmd.Env
+	if out, err := tidy.CombinedOutput(); err != nil {
+		t.Logf("mod tidy output: %s", string(out))
+		return err
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Logf("go vet output: %s", string(out))
+	}
+	return err
 }
 
 // TestRootLongFallsBackWhenNoNarrative asserts a sensible generic Long is

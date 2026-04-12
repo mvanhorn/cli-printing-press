@@ -1,6 +1,6 @@
 ---
 name: pp-{{.Name}}
-description: "{{if and .Narrative .Narrative.Headline}}{{.Narrative.Headline}}{{else}}Printing Press CLI for {{humanName .Name}}. {{.Description}}{{end}}{{if and .Narrative .Narrative.TriggerPhrases}} Trigger phrases: {{range $i, $p := .Narrative.TriggerPhrases}}{{if $i}}, {{end}}'{{$p}}'{{end}}.{{end}}"
+description: "{{if and .Narrative .Narrative.Headline}}{{yamlDoubleQuoted .Narrative.Headline}}{{else}}Printing Press CLI for {{humanName .Name}}. {{yamlDoubleQuoted (oneline .Description)}}{{end}}{{if and .Narrative .Narrative.TriggerPhrases}} Trigger phrases: {{range $i, $p := .Narrative.TriggerPhrases}}{{if $i}}, {{end}}'{{yamlDoubleQuoted $p}}'{{end}}.{{end}}"
 argument-hint: "<command> [args] | install cli|mcp"
 allowed-tools: "Read Bash"
 metadata: '{"openclaw":{"requires":{"bins":["{{.Name}}-pp-cli"]},"install":[{"id":"go","kind":"shell","command":"go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}-pp-cli/cmd/{{.Name}}-pp-cli@latest","bins":["{{.Name}}-pp-cli"],"label":"Install via go install"}]}}'
