@@ -262,11 +262,11 @@ func buildData(opts refreshDocsOpts, classified []docparse.Classification, resea
 	// normalization. Falls back to the API name as-is.
 	d.DisplayName = deriveDisplayName(d.APIName)
 
-	// Attach research-derived sources and description.
+	// Attach research-derived sources. Note: research.APIName and
+	// research.Recommendation are intentionally not used — APIName comes
+	// from provenance (authoritative) and Recommendation isn't a
+	// description. Both are read elsewhere in the pipeline.
 	if research != nil {
-		if research.APIName != "" {
-			// Keep provenance-derived APIName; research.APIName is advisory.
-		}
 		for _, alt := range research.Alternatives {
 			d.Sources = append(d.Sources, docrefresh.Source{
 				Name:     alt.Name,
@@ -274,12 +274,6 @@ func buildData(opts refreshDocsOpts, classified []docparse.Classification, resea
 				Language: alt.Language,
 				Stars:    alt.Stars,
 			})
-		}
-		// If no description from elsewhere, use the first recommendation or a generic.
-		if d.Description == "" && research.Recommendation != "" {
-			// Recommendation isn't a description; leave empty rather than
-			// embed workflow text. Description stays blank in no-LLM mode
-			// unless provided elsewhere.
 		}
 	}
 
