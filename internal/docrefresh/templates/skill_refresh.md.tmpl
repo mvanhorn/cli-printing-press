@@ -1,0 +1,121 @@
+---
+name: pp-{{.APIName}}
+description: "{{if and .Narrative .Narrative.Headline}}{{.Narrative.Headline}}{{else}}Printing Press CLI for {{.DisplayName}}{{if not .DisplayName}}{{.APIName}}{{end}}.{{if .Description}} {{.Description}}{{end}}{{end}}{{if and .Narrative .Narrative.TriggerPhrases}} Trigger phrases: {{join .Narrative.TriggerPhrases ", "}}.{{end}}"
+argument-hint: "<command> [args] | install cli|mcp"
+allowed-tools: "Read Bash"
+metadata: '{"openclaw":{"requires":{"bins":["{{.CLIName}}"]},"install":[{"id":"go","kind":"shell","command":"go install {{.ModulePath}}/cmd/{{.CLIName}}@latest","bins":["{{.CLIName}}"],"label":"Install via go install"}]}}'
+---
+
+# {{.DisplayName}}{{if not .DisplayName}}{{.APIName}}{{end}} — Printing Press CLI
+{{if and .Narrative .Narrative.ValueProp}}
+{{.Narrative.ValueProp}}
+{{else if .Description}}
+{{.Description}}
+{{end}}
+{{if and .Narrative .Narrative.WhenToUse}}## When to Use This CLI
+
+{{.Narrative.WhenToUse}}
+
+{{end}}{{if .TranscendenceCommands}}## Unique Capabilities
+{{$groups := groups .TranscendenceCommands}}{{if gt (len $groups) 1}}{{range $groups}}
+### {{.Name}}
+{{range .Commands}}
+- **`{{.Path}}`** — {{.Short}}{{if .WhyItMatters}}
+
+  _{{.WhyItMatters}}_{{end}}{{if .Example}}
+
+  ```bash
+  {{.Example}}
+  ```{{end}}
+{{end}}{{end}}{{else}}{{range .TranscendenceCommands}}
+- **`{{.Path}}`** — {{.Short}}{{if .WhyItMatters}}
+
+  _{{.WhyItMatters}}_{{end}}{{if .Example}}
+
+  ```bash
+  {{.Example}}
+  ```{{end}}
+{{end}}{{end}}
+{{end}}{{if .BaseCommands}}## Command Reference
+{{range .BaseCommands}}
+- `{{$.CLIName}} {{.Path}}` — {{.Short}}
+{{- end}}
+
+{{end}}{{if and .Narrative .Narrative.Recipes}}## Recipes
+{{range .Narrative.Recipes}}
+### {{.Title}}
+
+```bash
+{{.Command}}
+```
+{{if .Explanation}}{{.Explanation}}
+
+{{end}}{{end}}
+{{end}}## Auth Setup
+{{if and .Narrative .Narrative.AuthNarrative}}
+{{.Narrative.AuthNarrative}}
+{{else if eq .AuthType "api_key"}}
+Set your API key via environment variable:
+
+```bash
+{{range .AuthEnvVars}}export {{.}}="<your-key>"
+{{end}}```
+
+Run `{{.CLIName}} doctor` to verify.
+{{else if eq .AuthType "bearer_token"}}
+Store your bearer token:
+
+```bash
+{{.CLIName}} auth set-token YOUR_TOKEN
+```
+{{else if eq .AuthType "oauth2"}}
+Authenticate via the browser:
+
+```bash
+{{.CLIName}} auth login
+```
+{{else if or (eq .AuthType "cookie") (eq .AuthType "composed")}}
+This CLI uses a browser session. Log in via Chrome, then run:
+
+```bash
+{{.CLIName}} auth login
+```
+{{else}}
+No authentication required.
+{{end}}
+## Agent Mode
+
+Add `--agent` to any command. Expands to: `--json --compact --no-input --no-color --yes`.
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 2 | Usage error |
+| 3 | Resource not found |
+| 4 | Authentication required |
+| 5 | API error |
+| 7 | Rate limited |
+
+## Argument Parsing
+
+Parse `$ARGUMENTS`:
+
+1. **Empty, `help`, or `--help`** → show `{{.CLIName}} --help` output
+2. **Starts with `install`** → ends with `mcp` → MCP installation; otherwise → CLI installation
+3. **Anything else** → Direct Use (execute as CLI command with `--agent`)
+
+## CLI Installation
+
+1. Check Go: `go version` (requires Go 1.23+)
+2. Install: `go install {{.ModulePath}}/cmd/{{.CLIName}}@latest`
+3. Verify: `{{.CLIName}} --version`
+
+## Direct Use
+
+1. Check if installed: `which {{.CLIName}}`
+2. Run the command with `--agent`:
+   ```bash
+   {{.CLIName}} <command> [args] --agent
+   ```
