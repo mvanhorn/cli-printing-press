@@ -1,0 +1,54 @@
+type Query {
+  issues(first: Int, after: String): IssueConnection
+  issue(id: String!): Issue
+  projects(first: Int, after: String): ProjectConnection
+  project(id: String!): Project
+}
+
+type Mutation {
+  issueCreate(input: IssueCreateInput!): Issue
+  issueUpdate(id: String!, input: IssueUpdateInput!): Issue
+  issueDelete(id: String!): Boolean
+}
+
+type IssueConnection {
+  nodes: [Issue]
+  pageInfo: PageInfo
+}
+
+type ProjectConnection {
+  nodes: [Project]
+  pageInfo: PageInfo
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  endCursor: String
+}
+
+type Issue {
+  id: ID!
+  title: String!
+  description: String
+  status: String
+  createdAt: String
+  updatedAt: String
+}
+
+type Project {
+  id: ID!
+  name: String!
+  description: String
+  status: String
+}
+
+input IssueCreateInput {
+  title: String!
+  description: String
+}
+
+input IssueUpdateInput {
+  title: String
+  description: String
+  status: String
+}

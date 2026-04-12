@@ -154,10 +154,15 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return false
 		},
-		"exampleLine": g.exampleLine,
-		"currentYear": func() string { return strconv.Itoa(time.Now().Year()) },
-		"modulePath":  func() string { return naming.CLI(s.Name) },
-		"kebab":       toKebab,
+		"exampleLine":       g.exampleLine,
+		"currentYear":       func() string { return strconv.Itoa(time.Now().Year()) },
+		"modulePath":        func() string { return naming.CLI(s.Name) },
+		"graphqlQueryField": graphqlQueryField,
+		"graphqlFieldSelection": func(typeName string, types map[string]spec.TypeDef) []string {
+			return graphqlFieldSelection(typeName, types)
+		},
+		"backtick": func() string { return "`" },
+		"kebab":    toKebab,
 		"humanName": func(s string) string {
 			// "steam-web" → "Steam Web", "notion" → "Notion"
 			return cases.Title(language.English).String(strings.ReplaceAll(s, "-", " "))
@@ -487,6 +492,16 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	// For GraphQL specs, emit additional client files (GraphQL transport + query constants)
+	if isGraphQLSpec(g.Spec) {
+		if err := g.renderTemplate("graphql_client.go.tmpl", filepath.Join("internal", "client", "graphql.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering graphql client: %w", err)
+		}
+		if err := g.renderTemplate("graphql_queries.go.tmpl", filepath.Join("internal", "client", "queries.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering graphql queries: %w", err)
+		}
+	}
+
 	// Compute promoted commands early — needed to determine Hidden flag on parent commands
 	promotedCommands := buildPromotedCommands(g.Spec)
 	hasPromoted := len(promotedCommands) > 0
@@ -720,6 +735,14 @@ func (g *Generator) Generate() error {
 		"analytics.go.tmpl": filepath.Join("internal", "cli", "analytics.go"),
 	}
 
+	// Build GraphQL field path mapping for sync templates
+	gqlFieldPaths := map[string]string{}
+	for rName, r := range g.Spec.Resources {
+		if ep, ok := r.Endpoints["list"]; ok && ep.ResponsePath != "" {
+			gqlFieldPaths[rName] = graphqlQueryField(ep.ResponsePath)
+		}
+	}
+
 	visionData := struct {
 		*spec.APISpec
 		SyncableResources      []profiler.SyncableResource
@@ -731,6 +754,7 @@ func (g *Generator) Generate() error {
 		SearchQueryParam       string
 		SearchEndpointMethod   string
 		SearchBodyFields       []profiler.SearchBodyField
+		GraphQLFieldPaths      map[string]string
 	}{
 		APISpec:                g.Spec,
 		SyncableResources:      g.profile.SyncableResources,
@@ -742,8 +766,10 @@ func (g *Generator) Generate() error {
 		SearchQueryParam:       g.profile.SearchQueryParam,
 		SearchEndpointMethod:   g.profile.SearchEndpointMethod,
 		SearchBodyFields:       g.profile.SearchBodyFields,
+		GraphQLFieldPaths:      gqlFieldPaths,
 	}
 
+	gqlSpec := isGraphQLSpec(g.Spec)
 	for _, tmplName := range g.VisionSet.TemplateNames() {
 		if tmplName == "store.go.tmpl" {
 			continue // already rendered above
@@ -752,11 +778,16 @@ func (g *Generator) Generate() error {
 		if !ok {
 			continue
 		}
+		// For GraphQL specs, use the GraphQL sync template instead of the REST one
+		actualTmpl := tmplName
+		if tmplName == "sync.go.tmpl" && gqlSpec {
+			actualTmpl = "graphql_sync.go.tmpl"
+		}
 		var tmplData any = g.Spec
 		if tmplName == "sync.go.tmpl" || tmplName == "search.go.tmpl" {
 			tmplData = visionData
 		}
-		if err := g.renderTemplate(tmplName, outPath, tmplData); err != nil {
+		if err := g.renderTemplate(actualTmpl, outPath, tmplData); err != nil {
 			return fmt.Errorf("rendering vision %s: %w", tmplName, err)
 		}
 	}
@@ -1620,4 +1651,61 @@ func envVarPlaceholder(envVar string) string {
 		lower = append(lower, strings.ToLower(p))
 	}
 	return strings.Join(lower, "_")
+}
+
+// isGraphQLSpec returns true if the spec was produced by a GraphQL SDL parser.
+// Detection heuristic: all list endpoints have path "/graphql".
+func isGraphQLSpec(s *spec.APISpec) bool {
+	hasListEndpoint := false
+	for _, r := range s.Resources {
+		for eName, ep := range r.Endpoints {
+			if eName == "list" {
+				hasListEndpoint = true
+				if ep.Path != "/graphql" {
+					return false
+				}
+			}
+		}
+	}
+	return hasListEndpoint
+}
+
+// graphqlQueryField extracts the GraphQL query field name from a ResponsePath.
+// For example, "data.issues.nodes" returns "issues", "data.issue" returns "issue".
+// For SyncableResource.Path which is always "/graphql", return the resource name.
+func graphqlQueryField(responsePath string) string {
+	responsePath = strings.TrimPrefix(responsePath, "/graphql")
+	if responsePath == "" || responsePath == "/graphql" {
+		return ""
+	}
+	parts := strings.Split(responsePath, ".")
+	// Strip "data" prefix
+	if len(parts) > 0 && parts[0] == "data" {
+		parts = parts[1:]
+	}
+	// Strip "nodes" suffix
+	if len(parts) > 0 && parts[len(parts)-1] == "nodes" {
+		parts = parts[:len(parts)-1]
+	}
+	if len(parts) > 0 {
+		return parts[0]
+	}
+	return responsePath
+}
+
+// graphqlFieldSelection returns the list of field names for a GraphQL query
+// selection set, derived from the type definition in the spec.
+func graphqlFieldSelection(typeName string, types map[string]spec.TypeDef) []string {
+	td, ok := types[typeName]
+	if !ok {
+		return []string{"id"}
+	}
+	var fields []string
+	for _, f := range td.Fields {
+		fields = append(fields, f.Name)
+	}
+	if len(fields) == 0 {
+		return []string{"id"}
+	}
+	return fields
 }
