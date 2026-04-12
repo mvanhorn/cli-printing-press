@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.0.0](https://github.com/mvanhorn/cli-printing-press/compare/v1.3.2...v2.0.0) (2026-04-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** decouple printing-press-library into standalone marketplace
+
+### Features
+
+* **cli:** wrapper-only catalog entries for reverse-engineered APIs ([#177](https://github.com/mvanhorn/cli-printing-press/issues/177)) ([096950f](https://github.com/mvanhorn/cli-printing-press/commit/096950fd8bca3d8f1f1375dd93670019e29ea3f1))
+
+
+### Bug Fixes
+
+* **ci:** auto-sync go install when installed binary exists ([2e21807](https://github.com/mvanhorn/cli-printing-press/commit/2e21807d7bbbf9ccd4de67b6f4fd15501f1862a9))
+* **cli:** address remaining ESPN retro findings — verify hints, FTS5, doctor ([#179](https://github.com/mvanhorn/cli-printing-press/issues/179)) ([9da1cab](https://github.com/mvanhorn/cli-printing-press/commit/9da1cabde05d593c628fda65613a92980dd292cb))
+* **cli:** address retro findings from yahoo-finance run ([#174](https://github.com/mvanhorn/cli-printing-press/issues/174)) ([#175](https://github.com/mvanhorn/cli-printing-press/issues/175)) ([8357850](https://github.com/mvanhorn/cli-printing-press/commit/8357850dd103e6bb041e51890e3e73c0240f38e7))
+* **cli:** decouple CLI version from API version ([68bc76f](https://github.com/mvanhorn/cli-printing-press/commit/68bc76f3ade620d696c08f60f9b8e738e7d9af65))
+* **cli:** decouple printing-press-library into standalone marketplace ([cd93b17](https://github.com/mvanhorn/cli-printing-press/commit/cd93b172c28e7a7d37985104161a5e14c79cab54))
+* **cli:** default empty version to 1.0.0 and normalize to semver ([f07a795](https://github.com/mvanhorn/cli-printing-press/commit/f07a795de84c2321989880400c6d60f4e0c9e8a5))
+* **cli:** double -pp-cli suffix in manifest + Phase 5 skips no-auth APIs ([0656975](https://github.com/mvanhorn/cli-printing-press/commit/065697576de1dd38b658e0a1ecbe92f74222c345)), closes [#173](https://github.com/mvanhorn/cli-printing-press/issues/173)
+* **cli:** movie-goat retro — generator param handling, write-through, sync ceiling, scorer ([#172](https://github.com/mvanhorn/cli-printing-press/issues/172)) ([ad9e4ae](https://github.com/mvanhorn/cli-printing-press/commit/ad9e4aee960e981ad11b318b7632444213f714c8))
+* **skills:** add combo-CLI priority gate to prevent source inversion ([#176](https://github.com/mvanhorn/cli-printing-press/issues/176)) ([23ccc60](https://github.com/mvanhorn/cli-printing-press/commit/23ccc603fc878ffb0174015a986f77d302dc5197))
+* **skills:** add self-vetting gate for transcendence features ([c04b6c1](https://github.com/mvanhorn/cli-printing-press/commit/c04b6c1021dea97be0e5f9616410ba7c712c25f8))
+* **skills:** user-first transcendence feature discovery ([a1fae23](https://github.com/mvanhorn/cli-printing-press/commit/a1fae23bafbf90ea542f61ce412e92c261801c3c))
+* use git-subdir source for printing-press-library plugin ([#169](https://github.com/mvanhorn/cli-printing-press/issues/169)) ([ac47b18](https://github.com/mvanhorn/cli-printing-press/commit/ac47b18ed7ada1d350f415073208c045876941d2))
+
 ## [1.3.2](https://github.com/mvanhorn/cli-printing-press/compare/v1.3.1...v1.3.2) (2026-04-11)
 
 
