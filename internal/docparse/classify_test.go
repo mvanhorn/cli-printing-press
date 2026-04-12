@@ -52,7 +52,7 @@ func TestClassify_NoGitRepo(t *testing.T) {
 		{Use: "quote", File: "/tmp/quote.go"},
 		{Use: "portfolio", File: "/tmp/portfolio.go"},
 	}
-	classified, err := Classify(cmds, "", "", nil)
+	classified, err := Classify(cmds, ClassifyOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestClassify_BaseVsTranscendence(t *testing.T) {
 		{Use: "watchlist", File: filepath.Join(cliPath, "internal/cli/watchlist.go")},
 	}
 
-	classified, err := Classify(cmds, repo, cliRelPath, prov)
+	classified, err := Classify(cmds, ClassifyOpts{GitRepo: repo, CLIRelPath: cliRelPath, CLISourceDir: cliPath, Provenance: prov})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestClassify_NilProvenanceMeansNoTranscendence(t *testing.T) {
 	cmds := []Command{
 		{Use: "watchlist", File: filepath.Join(cliPath, "internal/cli/watchlist.go")},
 	}
-	classified, err := Classify(cmds, repo, "library/commerce/yahoo-finance", nil)
+	classified, err := Classify(cmds, ClassifyOpts{GitRepo: repo, CLIRelPath: "library/commerce/yahoo-finance", CLISourceDir: cliPath})
 	if err != nil {
 		t.Fatal(err)
 	}
