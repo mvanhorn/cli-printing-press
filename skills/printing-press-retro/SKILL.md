@@ -249,6 +249,33 @@ file exclusions too broad, section-counting heuristics.
 The scorer audit is not optional. Every finding from a score penalty must have a
 "Scorer correct?" assessment before proposing a fix direction.
 
+### 2g. Combo CLI priority audit
+
+**Only runs when the briefing named 2+ sources.** Check `$RUN_DIR/source-priority.json`
+(from the Multi-Source Priority Gate in the main skill). If it doesn't exist but the
+briefing or user command clearly listed multiple services, that's itself a finding:
+the priority gate didn't fire when it should have.
+
+For runs with a `source-priority.json`, cross-reference it against the absorb manifest
+and the shipped CLI:
+
+1. **Command count per source.** Count commands attributed to each named source in the
+   manifest. The primary should have **at least as many** as any secondary. If it has
+   fewer, that's a **priority inversion** and becomes a finding — even if the user
+   approved the manifest, it means the skill's discovery path for the primary failed
+   silently.
+2. **Auth scoping.** If the primary was declared free in the priority gate but the
+   shipped CLI requires a paid key for the primary's headline commands, that's a
+   finding — the economics check either didn't run or didn't route the paid key
+   correctly to secondary-only scope.
+3. **README leadership.** The primary should lead the README and `--help`. If a
+   secondary is the first thing the user sees, flag it.
+
+Each of these is a **skill instruction gap** category finding. The durable fix lives
+in `skills/printing-press/SKILL.md` (the Multi-Source Priority Gate, the Priority
+inversion check before Phase Gate 1.5, and the brief's `## Source Priority` section)
+or in the generator if README ordering is template-driven.
+
 ## Phase 3: Classify findings
 
 For each finding from Phase 2, answer these seven questions. Skip findings that only

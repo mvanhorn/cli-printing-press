@@ -184,6 +184,43 @@ If the user selects **"I have context to share"**, capture their free-text respo
 
 If the user selects **"I have an API key or I'm logged in"**, ask which one and capture it. Set `AUTH_CONTEXT` fields so the API Key Gate (Phase 0.5) and Pre-Sniff Auth Intelligence (Phase 1.6, if implemented) do not re-ask.
 
+### Multi-Source Priority Gate
+
+After the briefing question resolves, inspect the user's original argument AND any `USER_BRIEFING_CONTEXT` they provided. If together they name **two or more distinct services, sites, or APIs** (e.g., "Google Flights and Kayak", "Notion + Linear combo CLI", "flightgoat: Google Flights, Kayak.com/direct, and FlightAware"), this is a combo CLI and priority ordering MUST be confirmed before Phase 1 research.
+
+**Why this gate exists:** Phase 1 research defaults to the first resolvable spec as the primary source. When the user listed services in a specific order, that order is their intent — but the generator's spec-first bias will silently invert it (picking a well-documented paid API over a free reverse-engineered one the user actually wanted as the headline feature). This has caused real user-visible failures where the CLI shipped with the wrong primary and required a paid API key for what the user intended as the free primary command.
+
+**Parse the order from the prose.** Use the user's wording verbatim. Commas, "then", "and", explicit "primary/secondary", or numbered lists all signal ordering. If the user wrote "Google Flights, Kayak, FlightAware" — that is the order. Do not reorder by spec availability, tier, or ease of generation.
+
+**Confirm via `AskUserQuestion`:**
+
+> "You mentioned **<Source A>**, **<Source B>**, and **<Source C>**. I'll treat **<Source A>** as the primary — it gets the headline commands, the top of the README, and the first-run experience. Is that the right order?"
+
+Options:
+1. **Yes, that order is correct** — Proceed with `SOURCE_PRIORITY=[A, B, C]` captured to run state.
+2. **Different order** — User provides the correct ordering; capture it.
+3. **They're peers, no primary** — Rare; capture as equal weighting but warn the user that one will still lead the README.
+
+Write the confirmed ordering to `$API_RUN_DIR/source-priority.json`:
+
+```json
+{
+  "sources": ["google-flights", "kayak-direct", "flightaware"],
+  "confirmed_at": "<ISO timestamp>",
+  "raw_user_phrasing": "<verbatim text that established the order>"
+}
+```
+
+**Phase 1 MUST consult this file.** When selecting a spec source, the primary source wins even if it has no spec and a later source has a clean OpenAPI. When the primary has no official spec, flag that openly in the brief under `## Source Priority` (see template below) and route to the sniff/docs path for the primary — do not promote a secondary source just because its spec is cleaner.
+
+**Economics check.** If the confirmed primary source is free (no API key required) AND the generator's default path would make the primary CLI commands require a paid key (because the auth applies broadly or because a paid secondary source is bleeding into the primary path), surface the tradeoff explicitly before generating:
+
+> "The primary source (**<Source A>**) is free, but the default path would require a **<paid key>** for the headline commands because <reason>. Options: (1) keep primary free, gate only the secondary commands on the paid key; (2) require the paid key for everything; (3) drop the paid source."
+
+Default to option 1 unless the user overrides. Record the decision in `source-priority.json` under `auth_scoping`.
+
+**Single-source runs:** If only one service is named, skip this gate entirely — no ordering to confirm.
+
 ---
 
 ## Setup
@@ -543,6 +580,14 @@ Suggested shape:
 
 ## User Vision
 - [USER_BRIEFING_CONTEXT if provided, otherwise omit this section]
+
+## Source Priority
+- [Only present for combo CLIs. Copy the confirmed ordering from `source-priority.json`.]
+- Primary: <Source A> — [spec state: official / community-wrapper / no-spec-sniff-required] — [auth: free / paid]
+- Secondary: <Source B> — [...]
+- Tertiary: <Source C> — [...]
+- **Economics:** [e.g., "Primary is free; paid key for <Source B> is scoped to its own commands only."]
+- **Inversion risk:** [e.g., "Primary has no OpenAPI; secondary has 53-endpoint spec. Do NOT let spec completeness invert the ordering."]
 
 ## Product Thesis
 - Name:
@@ -1000,6 +1045,31 @@ For each tool, fill in what you know from the research. Stars and command_count 
 5. If no transcendence features scored >= 5/10, omit the `novel_features` field entirely.
 
 Also write discovery pages if sniff was used. The generator reads these from `$API_RUN_DIR/discovery/sniff-report.md` (which the sniff gate already writes there). No additional action needed for discovery pages -- they are already in the right location.
+
+### Priority inversion check (combo CLIs only)
+
+**Only runs when `source-priority.json` exists from the Multi-Source Priority Gate.**
+
+Before Phase Gate 1.5, tally the commands/features the manifest attributes to each named source. Compare against the confirmed priority ordering:
+
+- If the primary source has **fewer** commands than any secondary source, this is a **priority inversion** — the free/primary-intent source got demoted because the secondary had more spec coverage.
+- If the primary source has **zero** commands (all its features were dropped because it lacked a spec), this is a **hard inversion** — the primary was silently replaced.
+
+When an inversion is detected, HALT before Phase Gate 1.5 and print:
+
+> ⚠ **Priority inversion detected.**
+>
+> The confirmed primary is **<Source A>** but the manifest gives it <N> commands vs **<Source B>** (secondary) with <M> commands. This usually means the primary's discovery path (sniff, community wrapper, HTML parser) didn't land, and the secondary's clean spec took over.
+>
+> The user said <Source A> is the headline. Shipping this manifest would invert their stated priority.
+
+Then ask via `AskUserQuestion`:
+
+1. **Re-run discovery for <Source A>** — loop back to Phase 1.7 sniff or Phase 1.8 crowd sniff for the primary source specifically.
+2. **Accept the inversion** — the user explicitly confirms they're fine with the secondary leading. Record this in `source-priority.json` as `inversion_accepted: true`.
+3. **Drop <Source B>** — remove the secondary from the manifest so it can't overshadow the primary.
+
+Do not proceed to the prose showcase until this is resolved.
 
 ### Phase Gate 1.5
 
