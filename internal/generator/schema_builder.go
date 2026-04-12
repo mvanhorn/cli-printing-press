@@ -344,22 +344,6 @@ func safeSQLName(name string) string {
 	return name
 }
 
-// allFieldsAreColumns returns true if every field name exists as an extracted
-// column on the table. Used to decide whether FTS content-sync triggers are
-// safe (they reference new.field which only works for real columns).
-func allFieldsAreColumns(fields []string, columns []ColumnDef) bool {
-	colSet := make(map[string]bool, len(columns))
-	for _, col := range columns {
-		colSet[col.Name] = true
-	}
-	for _, f := range fields {
-		if !colSet[f] {
-			return false
-		}
-	}
-	return true
-}
-
 // toSnakeCase converts camelCase, PascalCase, or kebab-case to snake_case.
 func toSnakeCase(s string) string {
 	s = strings.ReplaceAll(s, ".", "_")
