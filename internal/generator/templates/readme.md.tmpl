@@ -90,14 +90,15 @@ When your session expires, run `auth login --chrome` again.
 
 This checks your configuration{{if and (ne .Auth.Type "") (ne .Auth.Type "none")}} and credentials{{end}}.
 
+{{- $firstCmd := firstCommandExample .Resources}}
+{{- if $firstCmd}}
+
 ### {{if and (ne .Auth.Type "") (ne .Auth.Type "none")}}4{{else}}3{{end}}. Try Your First Command
 
 ```bash
-{{- range $name, $_ := .Resources}}
-{{$.Name}}-pp-cli {{$name}} list
-{{- break}}
-{{- end}}
+{{.Name}}-pp-cli {{$firstCmd}}
 ```
+{{- end}}
 {{- if .NovelFeatures}}
 
 ## Unique Features
@@ -123,23 +124,34 @@ Run `{{.Name}}-pp-cli --help` for the full command reference and flag list.
 {{end}}
 
 ## Output Formats
+{{- $example := firstCommandExample .Resources}}
+{{- if $example}}
 
 ```bash
 # Human-readable table (default in terminal, JSON when piped)
-{{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list
+{{.Name}}-pp-cli {{$example}}
 
 # JSON for scripting and agents
-{{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list --json
+{{.Name}}-pp-cli {{$example}} --json
 
 # Filter to specific fields
-{{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list --json --select id,name,status
+{{.Name}}-pp-cli {{$example}} --json --select id,name,status
 
 # Dry run — show the request without sending
-{{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list --dry-run
+{{.Name}}-pp-cli {{$example}} --dry-run
 
 # Agent mode — JSON + compact + no prompts in one flag
-{{.Name}}-pp-cli {{range $name, $_ := .Resources}}{{$name}}{{break}}{{end}} list --agent
+{{.Name}}-pp-cli {{$example}} --agent
 ```
+{{- else}}
+
+Every command supports these output flags:
+
+- `--json` — structured output for scripting and agents
+- `--select id,name,status` — filter to specific fields
+- `--dry-run` — preview the request without sending
+- `--agent` — JSON + compact + non-interactive in one flag
+{{- end}}
 
 ## Agent Usage
 
@@ -219,30 +231,6 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
     }
   }
 }
-```
-
-## Cookbook
-
-Common workflows and recipes:
-
-```bash
-# List resources as JSON for scripting
-{{.Name}}-pp-cli {{firstResource .Resources}} list --json
-
-# Filter to specific fields
-{{.Name}}-pp-cli {{firstResource .Resources}} list --json --select id,name,status
-
-# Dry run to preview the request
-{{.Name}}-pp-cli {{firstResource .Resources}} list --dry-run
-
-# Sync data locally for offline search
-{{.Name}}-pp-cli sync
-
-# Search synced data
-{{.Name}}-pp-cli search "query"
-
-# Export for backup
-{{.Name}}-pp-cli export --format jsonl > backup.jsonl
 ```
 
 ## Health Check
