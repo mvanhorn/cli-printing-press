@@ -2,9 +2,11 @@ package openapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -918,6 +920,62 @@ paths:
 		assert.Equal(t, "petstore", parsed.Name)
 		assert.True(t, len(parsed.Resources) > 0, "petstore should have resources")
 	})
+}
+
+func TestPathPriorityScore(t *testing.T) {
+	t.Parallel()
+
+	t.Run("admin paths score lower than user paths", func(t *testing.T) {
+		assert.Greater(t, pathPriorityScore("/users"), pathPriorityScore("/admin/users"))
+		assert.Greater(t, pathPriorityScore("/channels"), pathPriorityScore("/admin.conversations"))
+		assert.Greater(t, pathPriorityScore("/messages"), pathPriorityScore("/internal/metrics"))
+		assert.Greater(t, pathPriorityScore("/items"), pathPriorityScore("/system/health"))
+		assert.Greater(t, pathPriorityScore("/teams"), pathPriorityScore("/management/roles"))
+	})
+
+	t.Run("shallow paths score higher than deep paths", func(t *testing.T) {
+		assert.Greater(t, pathPriorityScore("/users"), pathPriorityScore("/users/{id}/posts/{postId}/comments"))
+	})
+
+	t.Run("short paths get bonus", func(t *testing.T) {
+		short := pathPriorityScore("/users")
+		long := pathPriorityScore("/a/b/c/d")
+		assert.Greater(t, short, long)
+	})
+}
+
+func TestPathPriorityScoreSortOrder(t *testing.T) {
+	t.Parallel()
+
+	// Build 600 paths: 100 admin.* paths and 500 user-facing paths.
+	var paths []string
+	for i := 0; i < 100; i++ {
+		paths = append(paths, fmt.Sprintf("/admin.resource%d/action", i))
+	}
+	for i := 0; i < 500; i++ {
+		paths = append(paths, fmt.Sprintf("/resource%d", i))
+	}
+
+	// Sort by priority score descending, alphabetical tiebreaker.
+	sort.SliceStable(paths, func(i, j int) bool {
+		si, sj := pathPriorityScore(paths[i]), pathPriorityScore(paths[j])
+		if si != sj {
+			return si > sj
+		}
+		return paths[i] < paths[j]
+	})
+
+	// With a 500-path cap, all admin paths should be in the tail (indices 500+).
+	const maxResources = 500
+	kept := paths[:maxResources]
+	dropped := paths[maxResources:]
+
+	for _, p := range dropped {
+		assert.Contains(t, p, "admin", "expected only admin paths to be dropped, but got: %s", p)
+	}
+	for _, p := range kept {
+		assert.NotContains(t, p, "admin", "expected no admin paths in kept set, but got: %s", p)
+	}
 }
 
 func mustMarshalJSON(t *testing.T, v any) []byte {

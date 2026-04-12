@@ -1071,6 +1071,176 @@ func (c *Client) do() {
 	})
 }
 
+func TestLoadOpenAPISpec_Swagger20SecurityDefinitions(t *testing.T) {
+	t.Run("swagger 2.0 apiKey in header with Authorization maps to bearer", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "swagger.json")
+		writeScorecardFixture(t, dir, "swagger.json", `{
+  "swagger": "2.0",
+  "paths": {
+    "/api/chat": {
+      "get": {
+        "responses": { "200": { "description": "ok" } }
+      }
+    }
+  },
+  "securityDefinitions": {
+    "api_key": {
+      "type": "apiKey",
+      "in": "header",
+      "name": "Authorization"
+    }
+  },
+  "security": [
+    { "api_key": [] }
+  ]
+}`)
+
+		info, err := loadOpenAPISpec(specPath)
+		assert.NoError(t, err)
+		assert.Len(t, info.SecuritySchemes, 1)
+		scheme := info.SecuritySchemes["api_key"]
+		assert.Equal(t, "http", scheme.Type)
+		assert.Equal(t, "bearer", scheme.Scheme)
+		assert.Len(t, info.SecurityRequirements, 1)
+	})
+
+	t.Run("swagger 2.0 oauth2 maps correctly", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "swagger.json")
+		writeScorecardFixture(t, dir, "swagger.json", `{
+  "swagger": "2.0",
+  "paths": {
+    "/api/data": {
+      "get": {
+        "responses": { "200": { "description": "ok" } }
+      }
+    }
+  },
+  "securityDefinitions": {
+    "oauth": {
+      "type": "oauth2",
+      "flow": "accessCode"
+    }
+  },
+  "security": [
+    { "oauth": [] }
+  ]
+}`)
+
+		info, err := loadOpenAPISpec(specPath)
+		assert.NoError(t, err)
+		assert.Len(t, info.SecuritySchemes, 1)
+		scheme := info.SecuritySchemes["oauth"]
+		assert.Equal(t, "oauth2", scheme.Type)
+	})
+
+	t.Run("swagger 2.0 basic auth maps to http basic", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "swagger.json")
+		writeScorecardFixture(t, dir, "swagger.json", `{
+  "swagger": "2.0",
+  "paths": { "/api": {} },
+  "securityDefinitions": {
+    "basicAuth": {
+      "type": "basic"
+    }
+  },
+  "security": [
+    { "basicAuth": [] }
+  ]
+}`)
+
+		info, err := loadOpenAPISpec(specPath)
+		assert.NoError(t, err)
+		scheme := info.SecuritySchemes["basicAuth"]
+		assert.Equal(t, "http", scheme.Type)
+		assert.Equal(t, "basic", scheme.Scheme)
+	})
+
+	t.Run("OAS3 takes precedence over swagger 2.0 securityDefinitions", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "mixed.json")
+		writeScorecardFixture(t, dir, "mixed.json", `{
+  "paths": {
+    "/api": {
+      "get": {
+        "responses": { "200": { "description": "ok" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "securityDefinitions": {
+    "api_key": {
+      "type": "apiKey",
+      "in": "header",
+      "name": "X-API-Key"
+    }
+  },
+  "security": [
+    { "bearerAuth": [] }
+  ]
+}`)
+
+		info, err := loadOpenAPISpec(specPath)
+		assert.NoError(t, err)
+		// OAS3 should win: only bearerAuth, not api_key.
+		assert.Len(t, info.SecuritySchemes, 1)
+		_, hasBearerAuth := info.SecuritySchemes["bearerAuth"]
+		assert.True(t, hasBearerAuth)
+		_, hasAPIKey := info.SecuritySchemes["api_key"]
+		assert.False(t, hasAPIKey)
+	})
+
+	t.Run("spec with neither OAS3 nor swagger 2.0 security has empty schemes", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "bare.json")
+		writeScorecardFixture(t, dir, "bare.json", `{
+  "paths": {
+    "/api": {}
+  }
+}`)
+
+		info, err := loadOpenAPISpec(specPath)
+		assert.NoError(t, err)
+		assert.Empty(t, info.SecuritySchemes)
+		assert.Empty(t, info.SecurityRequirements)
+	})
+
+	t.Run("swagger 2.0 apiKey without Authorization stays as apikey", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "swagger.json")
+		writeScorecardFixture(t, dir, "swagger.json", `{
+  "swagger": "2.0",
+  "paths": { "/api": {} },
+  "securityDefinitions": {
+    "token": {
+      "type": "apiKey",
+      "in": "header",
+      "name": "X-API-Token"
+    }
+  },
+  "security": [
+    { "token": [] }
+  ]
+}`)
+
+		info, err := loadOpenAPISpec(specPath)
+		assert.NoError(t, err)
+		scheme := info.SecuritySchemes["token"]
+		assert.Equal(t, "apikey", scheme.Type)
+		assert.Equal(t, "header", scheme.In)
+		assert.Equal(t, "X-API-Token", scheme.HeaderName)
+	})
+}
+
 func writeScorecardFixture(t *testing.T, root, relPath, content string) {
 	t.Helper()
 

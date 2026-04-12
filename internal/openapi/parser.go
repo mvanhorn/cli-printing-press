@@ -900,6 +900,41 @@ func securitySchemeValue(ref *openapi3.SecuritySchemeRef) *openapi3.SecuritySche
 	return ref.Value
 }
 
+// pathPriorityScore assigns a priority score to an API path so that
+// user-facing endpoints sort before admin/internal ones. Higher is better.
+// Scoring rules:
+//   - Base score: 100
+//   - Subtract 10 per path segment (depth penalty)
+//   - Subtract 30 if any segment starts with admin, internal, system, or management
+//   - Add 10 for short paths (2 or fewer segments)
+func pathPriorityScore(path string) int {
+	score := 100
+
+	trimmed := strings.TrimPrefix(path, "/")
+	if trimmed == "" {
+		return score + 10 // root path, short bonus
+	}
+	segments := strings.Split(trimmed, "/")
+	score -= 10 * len(segments)
+
+	if len(segments) <= 2 {
+		score += 10
+	}
+
+	lowPath := strings.ToLower(path)
+	for _, prefix := range []string{"admin", "internal", "system", "management"} {
+		for _, seg := range strings.Split(strings.TrimPrefix(lowPath, "/"), "/") {
+			// Match segments that start with the prefix (catches admin, admin.users, etc.)
+			if strings.HasPrefix(seg, prefix) {
+				score -= 30
+				break
+			}
+		}
+	}
+
+	return score
+}
+
 func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 	if doc == nil || out == nil || doc.Paths == nil {
 		return
@@ -912,7 +947,13 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 	for path := range pathMap {
 		pathKeys = append(pathKeys, path)
 	}
-	sort.Strings(pathKeys)
+	sort.SliceStable(pathKeys, func(i, j int) bool {
+		si, sj := pathPriorityScore(pathKeys[i]), pathPriorityScore(pathKeys[j])
+		if si != sj {
+			return si > sj
+		}
+		return pathKeys[i] < pathKeys[j]
+	})
 	commonPrefix := detectCommonPrefix(pathKeys, basePath)
 
 	// Auto-calibrate endpoint limit unless the user explicitly set it.

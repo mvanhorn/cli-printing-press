@@ -41,7 +41,10 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
-	db.SetMaxOpenConns(1)
+	// WAL mode + 2 connections allows one read cursor open while a second
+	// query executes (e.g., analytics commands calling helpers during row
+	// iteration). Writes are still serialized by SQLite's WAL lock.
+	db.SetMaxOpenConns(2)
 
 	s := &Store{db: db, path: dbPath}
 	if err := s.migrate(); err != nil {

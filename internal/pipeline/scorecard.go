@@ -1125,6 +1125,39 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 		}
 	}
 
+	// Swagger 2.0 fallback: check top-level securityDefinitions when OAS3
+	// components.securitySchemes is empty or missing.
+	if len(info.SecuritySchemes) == 0 {
+		if securityDefs, ok := raw["securityDefinitions"].(map[string]any); ok {
+			for schemeName, value := range securityDefs {
+				scheme := openAPISecurityScheme{Key: schemeName}
+				if fields, ok := value.(map[string]any); ok {
+					swType := strings.ToLower(asString(fields["type"]))
+					swIn := strings.ToLower(asString(fields["in"]))
+					swName := asString(fields["name"])
+
+					switch swType {
+					case "oauth2":
+						scheme.Type = "oauth2"
+					case "apikey":
+						scheme.Type = "apikey"
+						scheme.In = swIn
+						scheme.HeaderName = swName
+						// Detect Bearer-style API key in header with Authorization name.
+						if swIn == "header" && strings.EqualFold(swName, "Authorization") {
+							scheme.Type = "http"
+							scheme.Scheme = "bearer"
+						}
+					case "basic":
+						scheme.Type = "http"
+						scheme.Scheme = "basic"
+					}
+				}
+				info.SecuritySchemes[schemeName] = scheme
+			}
+		}
+	}
+
 	rootSecurity, rootHasSecurity := parseSecurityRequirementSet(raw["security"])
 	foundOperation := false
 	if paths, ok := raw["paths"].(map[string]any); ok {
