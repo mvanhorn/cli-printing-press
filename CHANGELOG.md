@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.1.0](https://github.com/mvanhorn/cli-printing-press/compare/v2.0.0...v2.1.0) (2026-04-12)
+
+
+### Features
+
+* **skills:** add DeepWiki codebase analysis to research phase ([#156](https://github.com/mvanhorn/cli-printing-press/issues/156)) ([6cc5a5f](https://github.com/mvanhorn/cli-printing-press/commit/6cc5a5f6d2d204714c478e404ec97e34659c6657))
+
+
+### Bug Fixes
+
+* **ci:** make validate-catalog fail loud on missing base ref ([#180](https://github.com/mvanhorn/cli-printing-press/issues/180)) ([8239f28](https://github.com/mvanhorn/cli-printing-press/commit/8239f28bbf5841ce623796fbdf79bbd9761847aa))
+
 ## [2.0.0](https://github.com/mvanhorn/cli-printing-press/compare/v1.3.2...v2.0.0) (2026-04-12)
 
 
