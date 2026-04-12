@@ -485,6 +485,32 @@ func (s *Store) GetSyncCursor(resourceType string) string {
 	return ""
 }
 
+// ListIDs returns all IDs from a resource's domain table, or from the generic
+// resources table if no domain table exists. Used by dependent sync to iterate parents.
+func (s *Store) ListIDs(resourceType string) ([]string, error) {
+	// Try domain table first (tables are named after the resource type)
+	query := fmt.Sprintf("SELECT id FROM %s", resourceType)
+	rows, err := s.db.Query(query)
+	if err != nil {
+		// Fall back to generic resources table
+		rows, err = s.db.Query("SELECT id FROM resources WHERE resource_type = ?", resourceType)
+		if err != nil {
+			return nil, err
+		}
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // GetLastSyncedAt returns the last sync timestamp for a resource type.
 func (s *Store) GetLastSyncedAt(resourceType string) string {
 	var ts sql.NullString

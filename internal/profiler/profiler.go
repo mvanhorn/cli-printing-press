@@ -59,6 +59,15 @@ type SyncableResource struct {
 	Path string
 }
 
+// DependentResource describes a child resource that requires iterating a parent
+// to sync (e.g., /channels/{channelId}/messages depends on channels).
+type DependentResource struct {
+	Name           string // child resource name, e.g. "messages"
+	ParentResource string // parent resource name, e.g. "channels"
+	ParentIDParam  string // path param name, e.g. "channel_id"
+	Path           string // full path template, e.g. "/channels/{channel_id}/messages"
+}
+
 // APIProfile describes the shape of an API and what power-user features it warrants.
 type APIProfile struct {
 	HighVolume       bool
@@ -75,8 +84,9 @@ type APIProfile struct {
 	TotalEndpoints   int
 	ReadRatio        float64
 
-	SyncableResources []SyncableResource
-	SearchableFields  map[string][]string
+	SyncableResources      []SyncableResource
+	DependentSyncResources []DependentResource
+	SearchableFields       map[string][]string
 
 	// SearchEndpointPath is the API path for live search (e.g., "/search", "/users/search").
 	// Empty if the API has no search endpoint.
@@ -107,7 +117,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 	}
 
 	resourceNames := collectResourceNames(s.Resources)
-	syncable := make(map[string]string) // resource name -> list endpoint path
+	syncable := make(map[string]string)      // resource name -> list endpoint path
+	parameterized := make(map[string]string) // resource name -> parameterized list endpoint path (excluded from flat sync)
 	searchable := make(map[string]map[string]struct{})
 	listResources := make(map[string]struct{})
 
@@ -267,6 +278,12 @@ func Profile(s *spec.APISpec) *APIProfile {
 							// deterministic output regardless of Go map iteration order.
 							syncable[expandedName] = expandedPath
 						}
+					} else if strings.Contains(endpoint.Path, "{") {
+						// Parameterized paginated paths can't sync standalone — track
+						// them for dependent-resource detection below.
+						if _, ok := parameterized[resourceName]; !ok {
+							parameterized[resourceName] = endpoint.Path
+						}
 					} else {
 						// Paginated endpoints override the path set above — they have
 						// richer pagination support for full data retrieval.
@@ -366,6 +383,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 	p.NeedsSearch = len(listResources) >= 3 && float64(searchEndpointCount)/float64(len(listResources)) < 0.5
 
 	p.SyncableResources = sortedSyncableResources(syncable)
+	p.DependentSyncResources = detectDependentResources(parameterized, syncable)
 	for resource, fields := range searchable {
 		p.SearchableFields[resource] = sortedKeys(fields)
 	}
@@ -843,6 +861,55 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// detectDependentResources examines parameterized paths and identifies parent-child
+// relationships. For example, /channels/{channel_id}/messages becomes a dependent
+// resource of "channels" (only one level of nesting).
+func detectDependentResources(parameterized map[string]string, syncable map[string]string) []DependentResource {
+	var deps []DependentResource
+	for childName, path := range parameterized {
+		// Extract the first {param} from the path
+		start := strings.Index(path, "{")
+		end := strings.Index(path, "}")
+		if start < 0 || end < 0 || end <= start {
+			continue
+		}
+		paramName := path[start+1 : end]
+
+		// Derive the parent resource name by stripping trailing Id/_id from the param.
+		// e.g., "channel_id" -> "channel", "channelId" -> "channel"
+		parentCandidate := paramName
+		parentCandidate = strings.TrimSuffix(parentCandidate, "_id")
+		parentCandidate = strings.TrimSuffix(parentCandidate, "Id")
+		parentCandidate = strings.TrimSuffix(parentCandidate, "ID")
+		parentCandidate = strings.ToLower(parentCandidate)
+
+		// Check if a flat syncable resource exists matching the parent name
+		// (try both singular and common plural forms).
+		parentResource := ""
+		for _, candidate := range []string{parentCandidate, parentCandidate + "s", parentCandidate + "es"} {
+			if _, ok := syncable[candidate]; ok {
+				parentResource = candidate
+				break
+			}
+		}
+		if parentResource == "" {
+			continue
+		}
+
+		deps = append(deps, DependentResource{
+			Name:           childName,
+			ParentResource: parentResource,
+			ParentIDParam:  paramName,
+			Path:           path,
+		})
+	}
+	// Sort for deterministic output
+	sort.Slice(deps, func(i, j int) bool {
+		return deps[i].Name < deps[j].Name
+	})
+	return deps
 }
 
 // sortedSyncableResources converts a name->path map into a sorted slice of SyncableResource.

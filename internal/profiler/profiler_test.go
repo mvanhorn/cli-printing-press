@@ -30,8 +30,20 @@ func TestProfileDiscord(t *testing.T) {
 	for i, sr := range profile.SyncableResources {
 		syncNames[i] = sr.Name
 	}
-	assert.Contains(t, syncNames, "messages")
+	// Messages has a parameterized path (/channels/{channel_id}/messages) so it
+	// should NOT be in flat SyncableResources - it goes to DependentSyncResources.
+	assert.NotContains(t, syncNames, "messages")
 	assert.Contains(t, profile.SearchableFields["messages"], "content")
+
+	// Dependent resources should be detected for parameterized paths
+	depNames := make([]string, len(profile.DependentSyncResources))
+	for i, dr := range profile.DependentSyncResources {
+		depNames[i] = dr.Name
+	}
+	assert.Contains(t, depNames, "messages")
+	assert.Contains(t, depNames, "threads")
+	assert.Contains(t, depNames, "members")
+	assert.Contains(t, depNames, "roles")
 }
 
 func TestProfileMinimal(t *testing.T) {
@@ -665,4 +677,74 @@ func TestProfileSimpleListEndpointSyncable(t *testing.T) {
 
 	// query is POST-only so it should be excluded
 	assert.NotContains(t, syncNames, "query", "POST-only resource should not be syncable")
+}
+
+func TestProfileDependentResources(t *testing.T) {
+	// A spec with /channels (flat) and /channels/{channelId}/messages (parameterized)
+	// should produce a DependentResource linking messages to channels.
+	s := &spec.APISpec{
+		Name: "messaging",
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/channels",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+			"messages": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/channels/{channelId}/messages",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	// channels should be in flat SyncableResources
+	syncNames := make([]string, len(profile.SyncableResources))
+	for i, sr := range profile.SyncableResources {
+		syncNames[i] = sr.Name
+	}
+	assert.Contains(t, syncNames, "channels")
+	assert.NotContains(t, syncNames, "messages", "parameterized path should not be in flat sync")
+
+	// messages should be a dependent resource with channels as parent
+	require.Len(t, profile.DependentSyncResources, 1)
+	dep := profile.DependentSyncResources[0]
+	assert.Equal(t, "messages", dep.Name)
+	assert.Equal(t, "channels", dep.ParentResource)
+	assert.Equal(t, "channelId", dep.ParentIDParam)
+	assert.Equal(t, "/channels/{channelId}/messages", dep.Path)
+}
+
+func TestProfileDependentResources_NoParentNoDependent(t *testing.T) {
+	// If the parent resource doesn't exist as a flat syncable, no dependent is created.
+	s := &spec.APISpec{
+		Name: "orphan",
+		Resources: map[string]spec.Resource{
+			"messages": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/channels/{channelId}/messages",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	assert.Empty(t, profile.DependentSyncResources, "no parent resource means no dependent detection")
 }

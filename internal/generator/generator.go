@@ -659,6 +659,36 @@ func (g *Generator) Generate() error {
 	// Vision features: profile already computed in early profiling above
 	schema := BuildSchema(g.Spec)
 
+	// Add parent_id column to tables for dependent (parent-child) sync resources
+	if g.profile != nil {
+		depSet := make(map[string]bool)
+		for _, dep := range g.profile.DependentSyncResources {
+			depSet[dep.Name] = true
+		}
+		for i, table := range schema {
+			if depSet[table.Name] {
+				hasParentID := false
+				for _, col := range table.Columns {
+					if col.Name == "parent_id" {
+						hasParentID = true
+						break
+					}
+				}
+				if !hasParentID {
+					schema[i].Columns = append(schema[i].Columns, ColumnDef{
+						Name: "parent_id",
+						Type: "TEXT",
+					})
+					schema[i].Indexes = append(schema[i].Indexes, IndexDef{
+						Name:      "idx_" + table.Name + "_parent_id",
+						TableName: table.Name,
+						Columns:   "parent_id",
+					})
+				}
+			}
+		}
+	}
+
 	// Create store directory if needed
 	if g.VisionSet.Store {
 		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "store"), 0755); err != nil {
@@ -692,24 +722,26 @@ func (g *Generator) Generate() error {
 
 	visionData := struct {
 		*spec.APISpec
-		SyncableResources    []profiler.SyncableResource
-		SearchableFields     map[string][]string
-		Tables               []TableDef
-		Pagination           profiler.PaginationProfile
-		SearchEndpointPath   string
-		SearchQueryParam     string
-		SearchEndpointMethod string
-		SearchBodyFields     []profiler.SearchBodyField
+		SyncableResources      []profiler.SyncableResource
+		DependentSyncResources []profiler.DependentResource
+		SearchableFields       map[string][]string
+		Tables                 []TableDef
+		Pagination             profiler.PaginationProfile
+		SearchEndpointPath     string
+		SearchQueryParam       string
+		SearchEndpointMethod   string
+		SearchBodyFields       []profiler.SearchBodyField
 	}{
-		APISpec:              g.Spec,
-		SyncableResources:    g.profile.SyncableResources,
-		SearchableFields:     g.profile.SearchableFields,
-		Tables:               schema,
-		Pagination:           g.profile.Pagination,
-		SearchEndpointPath:   g.profile.SearchEndpointPath,
-		SearchQueryParam:     g.profile.SearchQueryParam,
-		SearchEndpointMethod: g.profile.SearchEndpointMethod,
-		SearchBodyFields:     g.profile.SearchBodyFields,
+		APISpec:                g.Spec,
+		SyncableResources:      g.profile.SyncableResources,
+		DependentSyncResources: g.profile.DependentSyncResources,
+		SearchableFields:       g.profile.SearchableFields,
+		Tables:                 schema,
+		Pagination:             g.profile.Pagination,
+		SearchEndpointPath:     g.profile.SearchEndpointPath,
+		SearchQueryParam:       g.profile.SearchQueryParam,
+		SearchEndpointMethod:   g.profile.SearchEndpointMethod,
+		SearchBodyFields:       g.profile.SearchBodyFields,
 	}
 
 	for _, tmplName := range g.VisionSet.TemplateNames() {

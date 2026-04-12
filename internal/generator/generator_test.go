@@ -1669,3 +1669,98 @@ func TestEnvVarBuiltinFieldDedup(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerateDependentSyncCompiles(t *testing.T) {
+	t.Parallel()
+
+	// A spec with parent-child paths should generate compilable sync code
+	// that includes the dependent sync functions.
+	apiSpec := &spec.APISpec{
+		Name:    "messaging",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"MESSAGING_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/messaging-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Description: "Manage channels",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels",
+						Description: "List channels",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+					"create": {
+						Method:      "POST",
+						Path:        "/channels",
+						Description: "Create a channel",
+						Body: []spec.Param{
+							{Name: "name", Type: "string"},
+							{Name: "description", Type: "string"},
+						},
+					},
+				},
+			},
+			"messages": {
+				Description: "Manage messages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels/{channelId}/messages",
+						Description: "List messages in a channel",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+					"create": {
+						Method:      "POST",
+						Path:        "/channels/{channelId}/messages",
+						Description: "Send a message",
+						Body: []spec.Param{
+							{Name: "content", Type: "string"},
+							{Name: "title", Type: "string"},
+						},
+					},
+				},
+			},
+			"users": {
+				Description: "Manage users",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/users",
+						Description: "List users",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	// Verify sync.go was generated with dependent sync content
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+	assert.Contains(t, syncContent, "syncDependentResource", "sync.go should contain dependent sync function")
+	assert.Contains(t, syncContent, "dependentResourceDefs", "sync.go should contain dependent resource definitions")
+	assert.Contains(t, syncContent, `"messages"`, "sync.go should reference messages as a dependent resource")
+	assert.Contains(t, syncContent, `"channels"`, "sync.go should reference channels as the parent")
+
+	// The generated project should compile
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}

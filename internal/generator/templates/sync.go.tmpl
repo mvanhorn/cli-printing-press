@@ -154,6 +154,24 @@ Once synced, use the 'search' command for instant full-text search.`,
 				}
 			}
 
+{{- if .DependentSyncResources}}
+			// Sync dependent (parent-child) resources sequentially after flat resources.
+			depResults := syncDependentResources(c, db, sinceTS, full, maxPages{{if .Pagination.DateRangeParam}}, syncDates{{end}})
+			for _, res := range depResults {
+				if res.Err != nil {
+					if humanFriendly {
+						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
+					}
+					errCount++
+				} else {
+					if humanFriendly {
+						fmt.Fprintf(os.Stderr, "  %s: %d synced (done)\n", res.Resource, res.Count)
+					}
+					totalSynced += res.Count
+				}
+			}
+{{- end}}
+
 			elapsed := time.Since(started)
 			fmt.Fprintf(os.Stderr, "Sync complete: %d records across %d resources (%.1fs)\n",
 				totalSynced, len(resources), elapsed.Seconds())
@@ -514,6 +532,147 @@ func syncResourcePath(resource string) string {
 	}
 	return "/" + resource
 }
+
+{{- if .DependentSyncResources}}
+
+// dependentResourceDef describes a child resource that requires iterating parent IDs to sync.
+type dependentResourceDef struct {
+	Name          string
+	ParentTable   string
+	ParentIDParam string
+	PathTemplate  string
+}
+
+func dependentResourceDefs() []dependentResourceDef {
+	return []dependentResourceDef{
+{{- range .DependentSyncResources}}
+		{Name: "{{.Name}}", ParentTable: "{{.ParentResource}}", ParentIDParam: "{{.ParentIDParam}}", PathTemplate: "{{.Path}}"},
+{{- end}}
+	}
+}
+
+// syncDependentResources iterates parent tables and syncs child resources per parent ID.
+func syncDependentResources(c interface {
+	Get(string, map[string]string) (json.RawMessage, error)
+	RateLimit() float64
+}, db *store.Store, sinceTS string, full bool, maxPages int{{if .Pagination.DateRangeParam}}, dates string{{end}}) []syncResult {
+	var results []syncResult
+	for _, dep := range dependentResourceDefs() {
+		res := syncDependentResource(c, db, dep, sinceTS, full, maxPages{{if .Pagination.DateRangeParam}}, dates{{end}})
+		results = append(results, res)
+	}
+	return results
+}
+
+// syncDependentResource syncs a single child resource by iterating all parent IDs.
+func syncDependentResource(c interface {
+	Get(string, map[string]string) (json.RawMessage, error)
+	RateLimit() float64
+}, db *store.Store, dep dependentResourceDef, sinceTS string, full bool, maxPages int{{if .Pagination.DateRangeParam}}, dates string{{end}}) syncResult {
+	started := time.Now()
+
+	// Query parent table for all IDs
+	parentIDs, err := db.ListIDs(dep.ParentTable)
+	if err != nil || len(parentIDs) == 0 {
+		if len(parentIDs) == 0 {
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "  %s: skipping (parent table %s is empty, sync it first)\n", dep.Name, dep.ParentTable)
+			}
+			return syncResult{Resource: dep.Name, Duration: time.Since(started)}
+		}
+		return syncResult{Resource: dep.Name, Err: fmt.Errorf("querying parent table %s: %w", dep.ParentTable, err), Duration: time.Since(started)}
+	}
+
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "  %s: syncing for %d %s parents\n", dep.Name, len(parentIDs), dep.ParentTable)
+	}
+
+	var totalCount int
+	pageSize := determinePaginationDefaults()
+
+	for idx, parentID := range parentIDs {
+		// Build child endpoint path by replacing the param placeholder
+		path := strings.Replace(dep.PathTemplate, "{"+dep.ParentIDParam+"}", parentID, 1)
+
+		if humanFriendly {
+			fmt.Fprintf(os.Stderr, "\r  %s: syncing for %s (%d/%d parents)", dep.Name, dep.ParentTable, idx+1, len(parentIDs))
+		}
+
+		cursor := ""
+		pagesFetched := 0
+
+		for {
+			params := map[string]string{}
+			params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
+			if cursor != "" {
+				params[pageSize.cursorParam] = cursor
+			}
+			if sinceTS != "" {
+				params[determineSinceParam()] = sinceTS
+			}
+{{- if .Pagination.DateRangeParam}}
+			if dates != "" {
+				params[determineDateRangeParam()] = dates
+			}
+{{- end}}
+
+			data, err := c.Get(path, params)
+			if err != nil {
+				// Non-fatal per parent: log and continue to next parent
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\n  %s: error for parent %s: %v\n", dep.Name, parentID, err)
+				}
+				break
+			}
+
+			items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
+			if len(items) == 0 {
+				break
+			}
+
+			// Inject parent_id into each item before upserting
+			for i, item := range items {
+				var obj map[string]json.RawMessage
+				if err := json.Unmarshal(item, &obj); err == nil {
+					parentIDJSON, _ := json.Marshal(parentID)
+					obj["parent_id"] = parentIDJSON
+					if modified, err := json.Marshal(obj); err == nil {
+						items[i] = modified
+					}
+				}
+			}
+
+			if err := db.UpsertBatch(dep.Name, items); err != nil {
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\n  %s: upsert error for parent %s: %v\n", dep.Name, parentID, err)
+				}
+				break
+			}
+
+			totalCount += len(items)
+			pagesFetched++
+
+			if maxPages > 0 && pagesFetched >= maxPages {
+				break
+			}
+			if !hasMore || len(items) < pageSize.limit || nextCursor == "" {
+				break
+			}
+			cursor = nextCursor
+		}
+
+		// Brief rate-limit pause between parents to avoid hammering the API
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "\n")
+	}
+
+	_ = db.SaveSyncState(dep.Name, "", totalCount)
+	return syncResult{Resource: dep.Name, Count: totalCount, Duration: time.Since(started)}
+}
+{{- end}}
 
 func extractID(obj map[string]any) string {
 	for _, key := range []string{"id", "ID", "ticker", "event_ticker", "series_ticker", "key", "code", "uid", "uuid", "slug", "name"} {
