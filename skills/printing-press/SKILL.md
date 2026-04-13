@@ -80,6 +80,10 @@ See the `printing-press-polish` skill for details. It runs diagnostics, fixes ve
 
 ## Rules
 
+- **Do not ship a CLI that hasn't been behaviorally tested against real targets.** `go build` and `verify` pass-rate are structural signals, not correctness signals. Phase 5's mechanical test matrix runs every subcommand + `--json` + error paths; if that matrix was not executed, the CLI is not shippable. Quick Check is the floor; Full Dogfood is required when the user asks for thoroughness.
+- **Bugs found during dogfood are fix-before-ship, not "file for v0.2".** If a 1-3 file edit resolves it, do it now. `ship-with-gaps` is deprecated as a default verdict (see Phase 4). Context is freshest in-session; a v0.2 backlog that may never be revisited ships known-broken CLIs.
+- **Features approved in Phase 1.5 are shipping scope.** Do not downgrade a shipping-scope feature to a stub mid-build. If implementation becomes infeasible, return to Phase 1.5 with a revised manifest and get explicit re-approval.
+- **Do not quote human-time estimates** ("~15-30 min", "~1 hour", "quick fix") in `AskUserQuestion` options, phase descriptions, or reference docs. Describe scope instead (lines of code, files touched, relative size).
 - Optimize for time-to-ship, not time-to-document.
 - Reuse prior research whenever it is already good enough.
 - Do not split one idea across multiple mandatory artifacts.
@@ -332,6 +336,21 @@ Maintain a lightweight state file at `$STATE_FILE` so `/printing-press-score` ca
 }
 ```
 
+**Gopls workspace noise suppression.** After the CLI is generated (end of Phase 2), write a `go.work` file inside `$CLI_WORK_DIR` so gopls sees the generated module and stops firing `UndeclaredName` / `BrokenImport` / "file is within module X which is not included in your workspace" diagnostics on CLI source files. These are false alarms — the CLI builds cleanly under `go build ./...` — but they consume attention and mask real errors. The `go.work` should declare only the CLI dir:
+
+```bash
+# Run once after Phase 2 generate completes.
+if [ ! -f "$CLI_WORK_DIR/go.work" ]; then
+  cat > "$CLI_WORK_DIR/go.work" <<'EOF'
+go 1.23
+
+use .
+EOF
+fi
+```
+
+The file is one-shot and inert — it doesn't affect `go build` or `go test` but silences gopls in the editor. Do NOT commit it when promoting to the library; remove before promote or add to the promote command's exclude list.
+
 There are exactly three writable locations. Every file this skill produces goes to one of them:
 
 - **`$PRESS_RUNSTATE/`** — mutable working state for the current run (research, proofs, pipeline artifacts, plans, intermediate docs)
@@ -459,7 +478,7 @@ Before new research:
 
    Then ask:
    1. **"Generate a fresh CLI"** — Re-runs the Printing Press into a working directory, overwrites generated code, then rebuilds transcendence features. Prior research is reused if recent. ~15-20 min.
-   2. **"Improve existing CLI"** — Keeps all current code, audits for quality gaps, implements top improvements. The Printing Press is not re-run. ~10 min.
+   2. **"Improve existing CLI"** — Keeps all current code, audits for quality gaps, implements top improvements. The Printing Press is not re-run.
    3. **"Review prior research first"** — Show the full research brief and absorb manifest before deciding.
 
    If the user picks option 1, proceed to Phase 1 (research) and then Phase 2 (generate) as normal.
@@ -1005,6 +1024,10 @@ Every row = a feature we MUST build. No exceptions. If someone else has it, we h
 
 SDK wrapper methods should be treated as features to absorb — each public method/function is a feature the CLI should match.
 
+**Stubs must be explicit.** If any row in the manifest will ship as a stub (placeholder implementation that emits "not yet wired" / "wip" messaging), add a `Status` column with value `(stub)` and a one-line reason why the full implementation is deferred (e.g., "(stub — requires paid API)", "(stub — requires headless Chrome)"). Do NOT quietly ship stubs for features the user approved as shipping scope.
+
+The Phase Gate 1.5 prose showcase (below) MUST read out stub items separately so the user explicitly approves the stub list. After approval, Phase 3 builds shipping-scope features fully and stubs with honest messaging; no mid-build downgrade from shipping-scope to stub is permitted. If an agent discovers during Phase 3 that a shipping-scope feature cannot be implemented in-session, they must return to Phase 1.5 with a revised manifest — not unilaterally downgrade to a stub.
+
 ### Step 1.5c: Identify transcendence features
 
 Start with the users, not the technology. The best features come from understanding
@@ -1501,6 +1524,21 @@ After building each command in Priority 1 and Priority 2, verify these 7 princip
 6. **Composability**: Exit codes are typed (0/2/3/4/5/7), output pipes to `jq` cleanly
 7. **Bounded responses**: `--compact` returns only high-gravity fields, list commands have `--limit`
 
+### Phase 3 delegation: require feature-level acceptance
+
+When Phase 3 implementation is delegated to a sub-agent (via `Agent` tool or Codex), the delegation prompt MUST require behavioral acceptance tests per major feature, not just "does the command build and run." Agents consistently over-report success when the contract is only "command executes without error."
+
+Required in every Phase 3 delegation prompt:
+
+1. **Per-feature acceptance assertions** that check output content, not just exit codes. Examples the prompt should make concrete:
+   - Search/ranker: "After `<cli> goat 'brownies'`, assert at least 3 of the top 5 results contain 'brown' in their title or URL. If fewer, the extractor is broken."
+   - Lookup: "After `<cli> sub buttermilk --json`, assert the parsed JSON is an array of objects with `substitute`, `ratio`, `context` fields."
+   - Transform: "After `<cli> recipe get <known-url> --servings 6`, assert the output ingredient quantities differ from the `--servings 4` invocation (scaling actually ran)."
+2. **Negative tests** per filter/search command: run with a deliberately-mismatching query and assert the result set does NOT contain irrelevant items.
+3. **Structured pass/fail report** in the agent's response (raw output of each assertion, not a summary).
+
+A Phase 3 delegation that reports PASS without behavioral assertions is treated as untrusted — re-run acceptance tests before accepting the result.
+
 ### Search Dedup Rule
 
 When building cross-entity search commands, use per-table FTS search methods individually. Do NOT combine per-table search with the generic `db.Search()` — this causes duplicate results because the same entities exist in both `resources_fts` and per-table FTS indexes.
@@ -1603,7 +1641,9 @@ Ship threshold:
 - `dogfood` no longer fails because of spec parsing, binary path, or skipped examples
 - `dogfood` wiring checks pass (no unregistered commands, no config field mismatches)
 - `workflow-verify` verdict is `workflow-pass` or `unverified-needs-auth` (not `workflow-fail`)
-- `scorecard` is at least 65, or meaningfully improved and no core behavior is broken
+- `scorecard` is at least 65 and **no flagship or approved-in-Phase-1.5 feature returns wrong/empty output**
+
+**Behavioral correctness is part of the ship threshold, not just structural quality.** A Grade A scorecard with a broken flagship feature (e.g., `goat "brownies"` returning a chili recipe) does NOT pass the ship threshold. Run a sample invocation of every novel-feature command before declaring shipcheck complete.
 
 Maximum 2 shipcheck loops by default.
 
@@ -1617,7 +1657,13 @@ Include:
 - fixes applied
 - before/after verify pass rate
 - before/after scorecard total
-- final ship recommendation: `ship`, `ship-with-gaps`, or `hold`
+- final ship recommendation: `ship` or `hold`
+
+**Verdict rules:**
+- `ship`: all ship-threshold conditions met AND no known functional bugs in shipping-scope features.
+- `hold`: one or more conditions missing, OR functional bugs exist that cannot be fixed in-session.
+
+`ship-with-gaps` is deprecated as a default verdict. It is NOT valid for bugs that require only 1-3 file edits; those MUST be fixed before ship. It is only acceptable when (a) a bug genuinely requires a refactor, external dependency change, or API access not available in-session, AND (b) the bug is clearly documented with a `## Known Gaps` block in both the shipcheck report and the generated README. If an agent cannot meet both (a) and (b), the verdict is `hold`, not `ship-with-gaps`.
 
 If the final verdict is `hold`, release the lock without promoting to library:
 ```bash
@@ -1638,8 +1684,8 @@ Present via `AskUserQuestion`:
 
 > "Shipcheck passed. How thoroughly should I test against the live API?"
 >
-> 1. **Quick check (recommended)** — Read-only: doctor, list, sync, search, output modes (~5 min)
-> 2. **Full dogfood** — Complete lifecycle with mutations: create, modify, cancel, sync verification (~15-30 min). I'll create test entities on your account.
+> 1. **Quick check (recommended)** — Read-only: doctor, list, sync, search, output modes.
+> 2. **Full dogfood** — Complete mechanical test matrix across every subcommand, including error paths and output fidelity. Optionally includes write-side lifecycle (create/modify/cancel) when an API key allows.
 
 There is no skip option when an API key is available or the API requires no
 auth. Phase 5 auto-skips ONLY when the API requires auth AND no key is
@@ -1653,32 +1699,45 @@ easiest to test and the most embarrassing to ship untested.
 
 Do NOT proceed without asking. Do NOT substitute an ad-hoc smoke test.
 
-### Step 2: Run structured tests
+### Step 2: Build the test matrix mechanically
 
-For each test, print the command and result in this format:
+**Full dogfood is not a judgment call about "enough."** Build the test matrix from the CLI's actual command tree:
+
+1. Parse `<cli> --help` recursively until every leaf subcommand is enumerated.
+2. Write the full command list to `$PROOFS_DIR/<stamp>-dogfood-matrix.txt` before running any tests.
+3. For each leaf subcommand, generate at minimum these tests:
+   - **Help check**: `<cli> <subcmd> --help` returns exit 0 and produces an Examples section.
+   - **Happy path**: one invocation with realistic args. Exit 0 expected.
+   - **JSON fidelity**: append `--json` to the happy path; pipe through `python3 -c "import sys,json; json.load(sys.stdin)"` to assert valid JSON.
+   - **Error path** (when the command takes an arg): one invocation with a deliberately bad arg (invalid ID, malformed date, non-existent URL). Exit non-zero expected.
+4. Render a live progress line at start: `Dogfood matrix: N leaves × 3-4 tests = M tests total. Running...`
+5. Report pass/fail per test, accumulate to a final tally, and write `$PROOFS_DIR/<stamp>-dogfood-results.md`.
+
+**Critical: pipe-free exit-code checks.** A shell command like `"$BIN" foo | tail -2` captures `tail`'s exit code, not the binary's. Always run as:
+
+```bash
+"$BIN" <subcmd> <args> > /tmp/out 2>&1
+code=$?
+# then check $code directly
 ```
-[1/N] <test name>
-  $ <command>
-  <result summary>
-  PASS / FAIL
-```
 
-**Quick check tests (always run unless skipped):**
-1. `doctor` — auth valid, API reachable
-2. 3-5 list commands (`bookings`, `event-types`, `schedules`, `slots`, `me`) — return data, not empty
-3. `sync --full` → `sql "SELECT count(*) FROM user_bookings"` — count > 0
-4. `search "<term from synced data>"` — finds results
-5. One list command with `--json`, `--select <fields>`, `--csv` — all produce correct output
-6. One transcendence command with synced data (`health`, `today --date <date>`) — produces output
+Never use `"$BIN" ... && echo ok || echo fail` for exit-code testing — short-circuit and unpredictable piping masks real failures.
 
-**Full dogfood tests (if user selected):**
-7. Create a test entity via the API (booking, record, etc.) with obviously-test data
-8. Verify creation in list command + get-by-ID
-9. Re-sync → search for test entity → verify in transcendence commands
-10. Test 2-3 mutation subcommands (reschedule, cancel, etc.) — verify via `--help` that the command path is discoverable, then execute
-11. Re-sync → verify status change in SQL and health
-12. Output fidelity: `--json` produces valid JSON, `--select` returns only those fields, `--csv` has header row
-13. Error paths: non-existent ID → meaningful error, missing required flag → help text
+**Quick check (auto-selected test subset):**
+1. `doctor` — auth valid, API reachable.
+2. 3-5 list commands — return data, not empty.
+3. `sync --full` → data appears in local store.
+4. `search "<term from synced data>"` — finds results.
+5. One list command with `--json`, `--select <fields>`, `--csv` — all produce correct output.
+6. One transcendence command — produces output that relates to the query (not just non-empty: verify relevance by checking output content contains query tokens or expected shape).
+
+**Full dogfood adds to the matrix:**
+- Every approved feature in the Phase 1.5 manifest gets a sample invocation with domain-realistic args.
+- For every command that takes an arg, one error-path test.
+- For every command that supports `--json`, one JSON parse validation.
+- For write-side commands (when API key + user consent): create test entity with obviously-test data, verify in subsequent list/get, test one mutation, verify change.
+
+**Binary support:** future versions of `printing-press dogfood --live` will run this matrix as a single command — see issue #198. Until that ships, the agent must construct the matrix manually from `--help` and run it.
 
 ### Step 3: Fix issues inline
 
@@ -1706,7 +1765,9 @@ Acceptance Report: <api>
 
 **Acceptance threshold:**
 - Quick Check: 5/6 core tests must pass. Auth (`doctor`) or sync failure is automatic FAIL.
-- Full Dogfood: 10/13 tests must pass. Auth or sync failure is automatic FAIL.
+- Full Dogfood: every mandatory test in the matrix must pass. A single broken flagship feature is automatic FAIL. Auth/sync failures are automatic FAIL.
+
+**Bugs surfaced in Phase 5 must be fixed now, not deferred.** Do not offer the user a "ship as-is and file for v0.2" option when the fix is a 1-3 file edit. Present a "Fix now" (default), "Fix critical only", "Hold (don't ship)" set. Deferring bugs to a v0.2 backlog is an anti-pattern — context is freshest in-session, and a backlog that may never be revisited ships known-broken CLIs.
 
 **Gate = PASS:** proceed to Phase 5.5 (Polish).
 
@@ -1756,8 +1817,8 @@ Polish pass:
 ```
 
 **Verdict override:** If the agent's `ship_recommendation` is `hold` and the
-Phase 4 verdict was `ship` or `ship-with-gaps`, downgrade to `hold`. Release
-the lock without promoting.
+Phase 4 verdict was `ship`, downgrade to `hold`. Release the lock without
+promoting.
 
 Write the agent's full response to:
 
@@ -1777,7 +1838,7 @@ available during this run:
 
 ### Promote to Library
 
-If the shipcheck verdict is `ship` or `ship-with-gaps`, promote the verified CLI from the working directory to the library. This must happen BEFORE archiving — the CLI in the library is the primary deliverable.
+If the shipcheck verdict is `ship`, promote the verified CLI from the working directory to the library. This must happen BEFORE archiving — the CLI in the library is the primary deliverable.
 
 ```bash
 # Promote verified CLI to library (copies working dir, writes manifest, releases lock)
@@ -1826,7 +1887,7 @@ fi
 
 ## Phase 6: Publish
 
-**This phase is NOT optional.** Every run with a `ship` or `ship-with-gaps` verdict MUST reach this point. Do not skip it.
+**This phase is NOT optional.** Every run with a `ship` verdict MUST reach this point. Do not skip it.
 
 After archiving, offer to publish the CLI to the library repo.
 
@@ -1836,7 +1897,7 @@ Use the most recent shipcheck verdict:
 - if Phase 5 reran shipcheck after a live-smoke fix, use that rerun verdict
 - otherwise use the Phase 4 verdict
 
-Skip this phase entirely if the final shipcheck verdict is `hold`. Only proceed for `ship` or `ship-with-gaps`.
+Skip this phase entirely if the final shipcheck verdict is `hold`. Only proceed for `ship`.
 
 ### Check for existing PR
 
@@ -1868,7 +1929,7 @@ Present via `AskUserQuestion`:
 > 3. **Run retro** (analyze the session to find improvements for the Printing Press)
 > 4. **Done for now**
 
-If the verdict was `ship-with-gaps`, prepend: "Note: shipcheck found minor gaps (see the shipcheck report above)." and recommend the polish option.
+If the shipcheck report contains a `## Known Gaps` block (the rare case where `ship-with-gaps` was justified per the Phase 4 rules — a refactor or external-dependency blocker), prepend: "Note: shipcheck documented known gaps (see the shipcheck report above)." and recommend the polish option.
 
 ### If "Publish now"
 

@@ -80,7 +80,7 @@ If neither tool is installed, offer to install via `AskUserQuestion`:
 > "No browser automation tool found. I need one to sniff the live site. Which would you like to install?"
 >
 > Options:
-> 1. **Install browser-use (Recommended)** — "CLI-driven browser automation. Claude drives the browsing via open/eval/scroll commands. Requires Python. ~2 min install."
+> 1. **Install browser-use (Recommended)** — "CLI-driven browser automation. Claude drives the browsing via open/eval/scroll commands. Requires Python."
 > 2. **Install agent-browser** — "Lighter install (~30s). I'll drive the browsing. Requires Node.js."
 > 3. **Skip — I'll provide a HAR manually** — "Export a HAR yourself from browser DevTools and provide the path."
 
@@ -186,7 +186,7 @@ Present via `AskUserQuestion`:
 > "Chrome is running. I'll grab your cookies, then need you to quit Chrome so I can sniff with full page access."
 >
 > 1. **Grab session, then quit Chrome** (Recommended) — "I save your cookies via agent-browser, you quit Chrome, then I sniff with browser-use using your profile. Full DOM access."
-> 2. **Log in within a new browser window** — "I'll open a visible browser. You log in, then I sniff. ~1 minute."
+> 2. **Log in within a new browser window** — "I'll open a visible browser. You log in, then I sniff."
 > 3. **I'll export a HAR file** — "You browse the site in DevTools, export the HAR."
 
 For option 1 (save-then-restore):
@@ -300,6 +300,33 @@ If cookies are verified, proceed to Steps 2a/2b capture flow with the authentica
 Claude drives browser-use directly via CLI commands — no LLM key needed, no Python API versioning issues. Uses the browser's native Performance API to collect API endpoint URLs from each page.
 
 **IMPORTANT: Run the page collection loop in foreground, not background.** The loop takes ~60-90 seconds for 10-15 pages. Background execution has unreliable output capture for shell functions that call browser-use. Always run this inline.
+
+##### browser-use eval returns synchronous values only
+
+The `browser-use eval <expr>` CLI returns only synchronous JSON-serializable values. Any expression whose last value is a Promise returns `None`, even though the Promise may fire correctly in the background. This is a common trap when probing authenticated endpoints via inline `fetch()` from the page context.
+
+**Wrong (returns `None` before the Promise resolves):**
+```bash
+browser-use eval "fetch('/api/cookbook', {credentials:'include'}).then(r => r.text())"
+# result: None  (looks like the fetch failed, but it didn't)
+```
+
+**Right (kick off the fetch, store the result in a window var, read back on a later eval):**
+```bash
+# Step 1: kick off
+browser-use eval "window.__probe = 'pending'; fetch('/api/cookbook', {credentials:'include'}).then(r => r.text()).then(t => { window.__probe = t.slice(0, 3000); }).catch(e => { window.__probe = 'ERR: ' + e; }); 'kicked'"
+
+# Step 2: read back (can be immediate if you just want to confirm the interceptor ran;
+# do one or two more evals as no-ops to let the Promise resolve)
+browser-use eval "1"
+browser-use eval "window.__probe"
+```
+
+The pattern is safe because subsequent `eval` calls run in the same JS context — browser-use keeps the tab open — so `window` state persists between calls.
+
+When the stored value reads as `"pending"`, the Promise hasn't resolved yet. Explicitly handle the error case (`.catch(e => window.__probe = 'ERR: ' + e)`) so you can distinguish "in flight" from "errored".
+
+For XHR-based interceptor captures, the same pattern applies: install the interceptor once, then issue the fetch without consuming the Promise in the eval return value. Read accumulated logs from `window.__apilog` on subsequent calls.
 
 **Step 2a.1: Build the user flow plan**
 
