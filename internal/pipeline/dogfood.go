@@ -218,16 +218,23 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 // Match strategies in both modes: exact match, then hyphen-prefix on
 // the last segment (sibling specialization — "auth login" → "auth
 // login-chrome"). Aliases run the same rules.
+//
+// Paths and leaves are both consulted. Path matching is preferred when
+// it fires because it's more specific, but leaf matching runs as a
+// fallback on every planned command — tree reconstruction only sees
+// commands wired via direct `rootCmd.AddCommand(newFooCmd())` /
+// `cmd.AddCommand(newFooCmd())` literals, so any CLI using variable-
+// based or late-bound registration (`sub := newFooCmd(); parent.
+// AddCommand(sub)`) will have a partial paths map. Treating a
+// non-empty paths map as "complete" would false-negative legitimate
+// built commands.
 func matchNovelFeature(nf NovelFeature, paths, leaves map[string]bool) bool {
 	plan := commandPath(nf.Command)
 	if plan == "" {
 		return false
 	}
 	try := func(p string) bool {
-		if len(paths) > 0 {
-			return matchPath(p, paths)
-		}
-		return matchLeaf(p, leaves)
+		return matchPath(p, paths) || matchLeaf(p, leaves)
 	}
 	if try(plan) {
 		return true

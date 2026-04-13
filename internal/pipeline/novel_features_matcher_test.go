@@ -99,6 +99,25 @@ func TestMatchNovelFeature_NoFalsePositive_BareLeaf(t *testing.T) {
 	}
 }
 
+// Tree reconstruction only captures commands wired via direct
+// `parent.AddCommand(newFooCmd())` literals; CLIs that use variable
+// indirection (`sub := newFooCmd(); parent.AddCommand(sub)`) produce a
+// partial paths map. The matcher must still fall back to the
+// Use-field-scanned leaves so legitimately-built features aren't
+// reported missing. Regression guard for a pattern shipped in yahoo-
+// finance and hackernews.
+func TestMatchNovelFeature_FallsBackToLeavesWhenPathsPartial(t *testing.T) {
+	// paths has the directly-wired command only; `ask` is present in
+	// the source but wired through a variable, so it shows up in leaves
+	// but not paths.
+	paths := map[string]bool{"show": true}
+	leaves := map[string]bool{"show": true, "ask": true}
+	nf := NovelFeature{Command: "ask"}
+	if !matchNovelFeature(nf, paths, leaves) {
+		t.Error("'ask' (present in leaves, absent from partial paths) should still match")
+	}
+}
+
 func TestCommandPath(t *testing.T) {
 	cases := map[string]string{
 		"portfolio perf":                       "portfolio perf",
