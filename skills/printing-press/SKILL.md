@@ -1724,6 +1724,71 @@ A template-level check would require every possible semantic mismatch to be patt
 
 The agent can't verify runtime behavior without running commands; stick to help-text and source-based claims. For runtime-behavior claims (e.g., "returns 5 matching recipes"), Phase 5 dogfood is the right gate.
 
+## Phase 4.85: Agentic Output Review
+
+**Runs after Phase 4.8, before Phase 5.** Phase 4.8 reviews SKILL.md prose against the shipped CLI. Phase 4.85 reviews the CLI's **actual command output** for plausibility — the class of bug rule-based checks can't encode:
+
+- `sub buttermilk` returning oil/coconut oil (substring match matches "butter" inside "buttermilk")
+- `trending --site smittenkitchen,budgetbytes` silently dropping one source with no warning
+- Top-ranked result for `goat brownies` is a Texas Chili recipe (broken extractor returned off-query matches)
+- URLs in output point to `/random/` or `/feed/` rather than real permalinks
+- Ranking weights produce implausible top-N orderings
+
+These are recipe-goat bugs the user caught in 5 minutes of hands-on testing. None were surfaced by existing dogfood, verify, or the rule-based `scorecard --live-check` rules — only a human-in-the-loop pattern-matcher found them. Phase 4.85 is that loop.
+
+**Wave B rollout policy (first 2 weeks):** all findings from this phase are surfaced as **warnings**, not blockers. Shipcheck does not fail on Phase 4.85 findings. The goal of Wave B is to calibrate false-positive rates across domains (transactional APIs like Stripe, document stores like Notion, scraping CLIs like recipe-goat) before Wave C flips errors to blocking.
+
+### Dispatch
+
+Use the Agent tool (general-purpose) with this prompt contract:
+
+> Review the sampled outputs from the shipped CLI at `$CLI_WORK_DIR`. You have these ground-truth sources:
+>
+> - Sampled command output: run `printing-press scorecard --dir $CLI_WORK_DIR --live-check --json` and read the `live_check.features[]` array. Each entry has the command, example invocation, actual stdout, the pass/fail reason, and a `warnings` array (populated by rule-based checks like the raw-HTML-entity detector).
+> - `$CLI_WORK_DIR/research.json` `novel_features` (planned behavior per feature) and `novel_features_built` (verified built commands).
+> - The CLI binary at `$CLI_WORK_DIR/<cli-name>-pp-cli` — you may invoke additional commands to gather more output when a finding needs verification.
+>
+> For each of these checks, report findings under 50 words each. Only report issues a human user would notice in 5 minutes of hands-on testing — not every edge case a thorough QA pass might find:
+>
+> 1. **Output matches query intent.** For sampled novel features with a query argument, does the output contain results clearly related to the query? (Catches: `sub buttermilk` → butter/oil; `goat brownies` → chili; `search "tax forms"` → invoice templates.)
+> 2. **No obvious format bugs.** Does the output contain raw HTML entities, mojibake (question marks or replacement chars in titles), or malformed URLs (pointing at `/random/`, `/feed/`, category pages)? (Rule-based live-check catches numeric entities; this layer catches the broader class.)
+> 3. **Aggregation commands show all requested sources.** For commands with a `--source`/`--site`/`--region` CSV flag: if the user requested N sources, does output show N, or does stderr explain the missing ones? (Catches: trending silent drop.)
+> 4. **Result ordering/ranking makes sense.** For commands that claim to rank or sort, does the top result look plausibly best given the query? (Catches: broken score weights, off-by-one sort bugs, fallback to recency when relevance fails.)
+>
+> Return a list of findings. For each: check name, severity (`warning` in Wave B; `error` reserved for Wave C), one-line description, one-sentence fix suggestion. If the CLI passes all four checks, return "PASS — no findings."
+
+### Gate
+
+Wave B policy (current):
+
+- All findings surface as `warning` — never `error`. Shipcheck proceeds regardless.
+- Findings are recorded in the run's scorecard JSON as `agentic_output_review.findings[]` and displayed to the user for review.
+- The user decides case by case whether to fix before shipping.
+
+**Non-interactive contract (CI, cron, batch regeneration):**
+
+- If stdout is not a TTY, findings default to fail-open-with-log: recorded in the scorecard, shipcheck proceeds without prompting.
+- Reviewer crashes (timeout, agent-budget exhaustion) map to `SKIP` status with detail in the scorecard — shipcheck treats as informational, not blocking.
+- No `--auto-approve-warnings` flag yet. The policy is already "warnings don't block" in Wave B, so the flag has no effect to gate.
+
+Wave C (separate future PR) will flip `error`-severity findings to blocking after calibration data across the library shows false-positive rate below 10%.
+
+### Polish skill invocation
+
+Phase 4.85 also runs during `/printing-press-polish` as the backfill path for CLIs shipped before this phase existed. Polish already dispatches verify + dogfood + scorecard via the `polish-worker` agent; Phase 4.85 runs as part of the same worker pipeline so every polish run re-reviews outputs of older CLIs without a separate campaign.
+
+### Why agentic vs template-only
+
+Output-plausibility questions are not pattern-matchable against source. Rule-based live-check rules cover what regexes can (numeric HTML entities, query-token absence). Everything else — "is butter a plausible substitute for buttermilk?", "does the top search result look related to the query?" — is an LLM-shaped question. The token cost is bounded (once per run, not per command) and the catch rate against the bug classes recipe-goat exhibited justifies the dispatch.
+
+### Known blind spots
+
+- Can't verify numeric accuracy (prices, ratings, rankings vs ground-truth). If the CLI says a recipe has 4.8 stars and it actually has 4.2, Phase 4.85 won't catch it.
+- Can't detect data-freshness issues (recipe published 2019 vs 2024). These need live comparison against authoritative sources.
+- Can't judge subjective preferences ("is this the *best* recipe for chocolate chip cookies?").
+- Sampled outputs only — covers the commands in `live_check.features[]`. Full command-tree coverage belongs in Phase 5 dogfood.
+- Non-English output: the reviewer's query-intent check assumes English-language query/output. For non-English CLIs, calibrate the prompt separately.
+
 ## Phase 5: Dogfood Testing
 
 **MANDATORY when an API key is available. Do NOT skip or shortcut this phase.**

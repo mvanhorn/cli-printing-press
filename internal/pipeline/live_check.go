@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -66,12 +67,19 @@ func (r *LiveCheckResult) Checked() int {
 }
 
 // LiveFeatureResult is one feature's outcome.
+//
+// Warnings carries advisory findings that don't flip the feature's Status
+// — the plan's Wave B ships output-quality checks (like raw HTML entities)
+// as warnings for a 2-week calibration window before Wave C escalates them
+// to failures. Consumers should surface warnings in reports but not factor
+// them into pass-rate math until Wave C lands.
 type LiveFeatureResult struct {
-	Name    string     `json:"name"`
-	Command string     `json:"command"`
-	Example string     `json:"example"`
-	Status  LiveStatus `json:"status"`
-	Reason  string     `json:"reason,omitempty"`
+	Name     string     `json:"name"`
+	Command  string     `json:"command"`
+	Example  string     `json:"example"`
+	Status   LiveStatus `json:"status"`
+	Reason   string     `json:"reason,omitempty"`
+	Warnings []string   `json:"warnings,omitempty"`
 }
 
 // LiveCheckOptions bundles the optional knobs for RunLiveCheck. CLIDir is
@@ -285,7 +293,51 @@ func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.
 	}
 
 	result.Status = StatusPass
+	if msg := detectRawHTMLEntities(stdoutCap.String(), args); msg != "" {
+		result.Warnings = append(result.Warnings, msg)
+	}
 	return result
+}
+
+// rawHTMLEntityRe matches numeric HTML character references like &#39; (the
+// recipe-goat "The Food Lab&#39;s" bug). Named entities (&amp;, &quot;, &lt;)
+// are intentionally excluded in Wave B — they false-positive on legitimate
+// JSON strings ("AT&amp;T") and on documentation text, so we calibrate the
+// stricter numeric-only rule first. Wave C may broaden to named entities
+// after observing the library's actual output patterns.
+var rawHTMLEntityRe = regexp.MustCompile(`&#\d+;`)
+
+// detectRawHTMLEntities returns a short human-readable reason when output
+// contains raw numeric HTML entities, or "" when output is clean. Gated to
+// non-JSON output so JSON-mode features (whose output legitimately contains
+// escape sequences) don't trip the check.
+//
+// Detection heuristics for JSON mode:
+//   - `--json` appears in args
+//   - First non-whitespace character of output is `{` or `[`
+//
+// Both heuristics are conservative: a feature that renders JSON inside a
+// human table would still be checked, which is the right behavior.
+func detectRawHTMLEntities(output string, args []string) string {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return ""
+	}
+	// Skip JSON-mode: agent-facing output legitimately contains escape
+	// sequences and isn't rendered to a human terminal.
+	for _, a := range args {
+		if a == "--json" {
+			return ""
+		}
+	}
+	if first := trimmed[0]; first == '{' || first == '[' {
+		return ""
+	}
+	match := rawHTMLEntityRe.FindString(output)
+	if match == "" {
+		return ""
+	}
+	return fmt.Sprintf("raw HTML entity %q in output (decode with cliutil.CleanText or equivalent)", match)
 }
 
 // limitedWriter caps the bytes forwarded to w at `remaining`; further writes
