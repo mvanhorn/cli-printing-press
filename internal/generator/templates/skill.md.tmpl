@@ -68,6 +68,13 @@ These capabilities aren't available in any other tool for this API.
 - `{{$.Name}}-pp-cli {{$name}} {{$eName}}` — {{oneline $endpoint.Description}}
 {{- end}}
 {{end}}
+{{- if .ExtraCommands}}
+
+**Hand-written commands**
+{{range .ExtraCommands}}
+- `{{$.Name}}-pp-cli {{.Name}}{{if .Args}} {{.Args}}{{end}}` — {{oneline .Description}}
+{{- end}}
+{{end}}
 {{- if and .Narrative .Narrative.Recipes}}
 
 ## Recipes

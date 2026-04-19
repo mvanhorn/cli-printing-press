@@ -261,3 +261,59 @@ func TestSkillRendersAuthBranchPerType(t *testing.T) {
 		})
 	}
 }
+
+// TestSkillRendersExtraCommands asserts that hand-written commands declared
+// in spec.ExtraCommands appear in the generated SKILL.md Command Reference,
+// after the spec-driven resources, with binary prefix and optional args.
+// This closes the drift class where SKILL.md silently omitted hand-written
+// commands like `today`, `streak`, `rivals` because the template only iterated
+// .Resources.
+func TestSkillRendersExtraCommands(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("sports")
+	apiSpec.ExtraCommands = []spec.ExtraCommand{
+		{Name: "trending", Description: "Most-followed athletes and teams across all leagues"},
+		{Name: "boxscore", Description: "Full box score for an event", Args: "<event_id>"},
+		{Name: "h2h", Description: "Head-to-head detail between two teams", Args: "<team1> <team2>"},
+	}
+	outputDir := filepath.Join(t.TempDir(), "sports-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	content := string(skill)
+
+	assert.Contains(t, content, "**Hand-written commands**",
+		"Command Reference should include a Hand-written commands subsection when ExtraCommands present")
+	assert.Contains(t, content, "`sports-pp-cli trending`",
+		"extra command without args should render as just binary + name")
+	assert.Contains(t, content, "`sports-pp-cli boxscore <event_id>`",
+		"extra command with args should render args after the name")
+	assert.Contains(t, content, "Most-followed athletes and teams across all leagues",
+		"extra command description should appear in the rendered output")
+	assert.Contains(t, content, "`sports-pp-cli h2h <team1> <team2>`",
+		"extra command with multi-arg signature should render verbatim")
+}
+
+// TestSkillNoExtraCommandsIsBackwardCompatible asserts the template emits
+// no Hand-written commands subsection when ExtraCommands is absent. This
+// preserves the rendering of every existing CLI that has no extra_commands
+// declaration in its spec.yaml.
+func TestSkillNoExtraCommandsIsBackwardCompatible(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("plain")
+	require.Empty(t, apiSpec.ExtraCommands)
+	outputDir := filepath.Join(t.TempDir(), "plain-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	content := string(skill)
+
+	assert.NotContains(t, content, "**Hand-written commands**",
+		"Hand-written commands subsection should not appear when ExtraCommands is absent")
+}

@@ -611,3 +611,156 @@ resources:
 	assert.Len(t, items.Endpoints, 1)
 	assert.Contains(t, items.Endpoints, "fallback")
 }
+
+func TestExtraCommandsParse(t *testing.T) {
+	input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+extra_commands:
+  - name: dashboard
+    description: Favorites at a glance
+  - name: boxscore
+    description: Full box score for an event
+    args: "<event_id>"
+  - name: tv airing-today
+    description: TV episodes airing today
+`
+	s, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+	require.Len(t, s.ExtraCommands, 3)
+	assert.Equal(t, "dashboard", s.ExtraCommands[0].Name)
+	assert.Equal(t, "Favorites at a glance", s.ExtraCommands[0].Description)
+	assert.Empty(t, s.ExtraCommands[0].Args)
+	assert.Equal(t, "<event_id>", s.ExtraCommands[1].Args)
+	assert.Equal(t, "tv airing-today", s.ExtraCommands[2].Name)
+}
+
+func TestExtraCommandsAbsentIsBackwardCompatible(t *testing.T) {
+	input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+`
+	s, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+	assert.Empty(t, s.ExtraCommands)
+}
+
+func TestExtraCommandsValidation(t *testing.T) {
+	base := func(extras []ExtraCommand) APISpec {
+		return APISpec{
+			Name:    "demo",
+			BaseURL: "http://x",
+			Resources: map[string]Resource{
+				"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+			},
+			ExtraCommands: extras,
+		}
+	}
+
+	tests := []struct {
+		name    string
+		extras  []ExtraCommand
+		wantErr string
+	}{
+		{
+			name:    "missing name",
+			extras:  []ExtraCommand{{Description: "no name"}},
+			wantErr: "name is required",
+		},
+		{
+			name:    "missing description",
+			extras:  []ExtraCommand{{Name: "boxscore"}},
+			wantErr: "description is required",
+		},
+		{
+			name:    "uppercase name rejected",
+			extras:  []ExtraCommand{{Name: "Boxscore", Description: "x"}},
+			wantErr: "must be lowercase command path",
+		},
+		{
+			name:    "underscore in name rejected",
+			extras:  []ExtraCommand{{Name: "box_score", Description: "x"}},
+			wantErr: "must be lowercase command path",
+		},
+		{
+			name:    "duplicate name rejected",
+			extras:  []ExtraCommand{{Name: "boxscore", Description: "first"}, {Name: "boxscore", Description: "second"}},
+			wantErr: "appears more than once",
+		},
+		{
+			name:    "more than three segments rejected",
+			extras:  []ExtraCommand{{Name: "a b c d", Description: "too deep"}},
+			wantErr: "must be lowercase command path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := base(tt.extras)
+			err := s.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestExtraCommandsAcceptsValidShapes(t *testing.T) {
+	valid := []ExtraCommand{
+		{Name: "boxscore", Description: "single leaf"},
+		{Name: "tv airing-today", Description: "two segments with hyphen"},
+		{Name: "a b-c d", Description: "three segments"},
+		{Name: "trending", Description: "no args"},
+		{Name: "h2h", Description: "with digits and args", Args: "<team1> <team2>"},
+	}
+	s := APISpec{
+		Name:          "demo",
+		BaseURL:       "http://x",
+		Resources:     map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+		ExtraCommands: valid,
+	}
+	require.NoError(t, s.Validate())
+}
+
+func TestExtraCommandsRoundTripYAML(t *testing.T) {
+	original := APISpec{
+		Name:    "demo",
+		BaseURL: "http://x",
+		Auth:    AuthConfig{Type: "none"},
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+		ExtraCommands: []ExtraCommand{
+			{Name: "dashboard", Description: "Favorites"},
+			{Name: "boxscore", Description: "Box score", Args: "<event_id>"},
+		},
+	}
+	data, err := yaml.Marshal(original)
+	require.NoError(t, err)
+	var parsed APISpec
+	require.NoError(t, yaml.Unmarshal(data, &parsed))
+	assert.Equal(t, original.ExtraCommands, parsed.ExtraCommands)
+}

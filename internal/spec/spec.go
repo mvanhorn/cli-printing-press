@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -36,6 +37,19 @@ type APISpec struct {
 	Config          ConfigSpec          `yaml:"config" json:"config"`
 	Resources       map[string]Resource `yaml:"resources" json:"resources"`
 	Types           map[string]TypeDef  `yaml:"types" json:"types"`
+	ExtraCommands   []ExtraCommand      `yaml:"extra_commands,omitempty" json:"extra_commands,omitempty"` // hand-written cobra commands declared so SKILL.md can document them; spec-only metadata, no code generated
+}
+
+// ExtraCommand declares a hand-written cobra command so the SKILL.md
+// Command Reference can list it alongside spec-driven resources. The
+// generator does not emit code for these — authors hand-write the
+// command in internal/cli/. Without this declaration the SKILL.md
+// template only sees .Resources and silently omits hand-written
+// commands, which is the drift class that motivated this field.
+type ExtraCommand struct {
+	Name        string `yaml:"name" json:"name"`                     // command path, e.g. "boxscore" or "tv airing-today"
+	Description string `yaml:"description" json:"description"`       // one-line description rendered after a dash
+	Args        string `yaml:"args,omitempty" json:"args,omitempty"` // optional positional arg signature, e.g. "<event_id>" or "<team1> <team2>"
 }
 
 // IsSynthetic reports whether this spec declares a multi-source / combo CLI
@@ -318,6 +332,9 @@ func (s *APISpec) Validate() error {
 	if len(s.Resources) == 0 {
 		return fmt.Errorf("at least one resource is required")
 	}
+	if err := validateExtraCommands(s.ExtraCommands); err != nil {
+		return err
+	}
 	for name, r := range s.Resources {
 		if len(r.Endpoints) == 0 && len(r.SubResources) == 0 {
 			return fmt.Errorf("resource %q has no endpoints", name)
@@ -343,6 +360,34 @@ func (s *APISpec) Validate() error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// extraCommandNameRe permits a single command leaf or a parent+leaf path
+// like "tv airing-today". Each segment must be lowercase with hyphens,
+// matching cobra's convention. Anything else (uppercase, underscores,
+// spaces in a segment) would not match an actual cobra Use: declaration
+// and would silently fail the verify-skill unknown-command check at the
+// consumer side, so we reject early here.
+var extraCommandNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]*( [a-z][a-z0-9-]*){0,2}$`)
+
+func validateExtraCommands(cmds []ExtraCommand) error {
+	seen := make(map[string]struct{}, len(cmds))
+	for i, c := range cmds {
+		if c.Name == "" {
+			return fmt.Errorf("extra_commands[%d]: name is required", i)
+		}
+		if !extraCommandNameRe.MatchString(c.Name) {
+			return fmt.Errorf("extra_commands[%d]: name %q must be lowercase command path (one to three segments separated by single spaces, lowercase letters, digits, and hyphens)", i, c.Name)
+		}
+		if c.Description == "" {
+			return fmt.Errorf("extra_commands[%d] (%s): description is required", i, c.Name)
+		}
+		if _, dup := seen[c.Name]; dup {
+			return fmt.Errorf("extra_commands[%d]: name %q appears more than once", i, c.Name)
+		}
+		seen[c.Name] = struct{}{}
 	}
 	return nil
 }
