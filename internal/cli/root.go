@@ -51,6 +51,7 @@ func Execute() error {
 	rootCmd.AddCommand(newCrowdSniffCmd())
 	rootCmd.AddCommand(newCatalogCmd())
 	rootCmd.AddCommand(newLibraryCmd())
+	rootCmd.AddCommand(newAuthCmd())
 	rootCmd.AddCommand(newPublishCmd())
 	rootCmd.AddCommand(newPolishCmd())
 	rootCmd.AddCommand(newWorkflowVerifyCmd())

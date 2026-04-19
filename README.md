@@ -283,6 +283,17 @@ printing-press scorecard --dir ./hubspot-pp-cli --spec ./hubspot-spec.json
 printing-press dogfood --dir ./hubspot-pp-cli --spec ./hubspot-spec.json
 ```
 
+## Diagnosing Auth
+
+`printing-press auth doctor` scans every installed printed CLI's `tools-manifest.json` and reports whether its declared env vars are set, unset, or suspicious. Fingerprints show the first four characters of each set value, never the full token.
+
+```bash
+printing-press auth doctor
+printing-press auth doctor --json
+```
+
+Useful when an agent hits a 401 on a printed CLI: one command shows whether the token is missing, truncated, or shadowed by a stale value without having to inspect shell config. Offline, read-only, and exits 0 even when findings include "not set" or "suspicious" because this is diagnostic, not gating.
+
 ## Library
 
 Published CLIs live in [printing-press-library](https://github.com/mvanhorn/printing-press-library), organized by category.
