@@ -24,13 +24,15 @@ go install github.com/mvanhorn/cli-printing-press/cmd/printing-press@latest
 ```
 
 ```
-/install mvanhorn/cli-printing-press
+/plugin marketplace add mvanhorn/cli-printing-press
+/plugin install cli-printing-press@cli-printing-press
 ```
 
 Want to browse and run pre-built CLIs from the [Printing Press Library](https://github.com/mvanhorn/printing-press-library)? Install the library plugin too:
 
 ```
-/install mvanhorn/printing-press-library
+/plugin marketplace add mvanhorn/printing-press-library
+/plugin install printing-press-library@printing-press-library
 ```
 
 ## Why These CLIs Win
@@ -318,7 +320,8 @@ go install github.com/mvanhorn/cli-printing-press/cmd/printing-press@latest
 Then install the Claude Code plugin:
 
 ```
-/install mvanhorn/cli-printing-press
+/plugin marketplace add mvanhorn/cli-printing-press
+/plugin install cli-printing-press@cli-printing-press
 ```
 
 No repo checkout needed. The binary embeds its own catalog data and the plugin provides the `/printing-press` skill.
@@ -326,7 +329,8 @@ No repo checkout needed. The binary embeds its own catalog data and the plugin p
 To also browse and run pre-built CLIs from the [Printing Press Library](https://github.com/mvanhorn/printing-press-library):
 
 ```
-/install mvanhorn/printing-press-library
+/plugin marketplace add mvanhorn/printing-press-library
+/plugin install printing-press-library@printing-press-library
 ```
 
 ### Run It
