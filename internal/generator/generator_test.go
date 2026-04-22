@@ -106,6 +106,78 @@ func TestGenerateCliutilPackage(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cliutil/...")
 }
 
+// TestGenerateFreshnessHelperEmitted verifies that the cliutil freshness
+// helper and auto-refresh wrapper are emitted when the spec opts into
+// cache, and that the resulting CLI compiles end-to-end and its cliutil
+// tests pass.
+func TestGenerateFreshnessHelperEmitted(t *testing.T) {
+	t.Parallel()
+
+	// Start from stytch (has resources -> has store) and flip cache on.
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "stytch.yaml"))
+	require.NoError(t, err)
+	apiSpec.Cache = spec.CacheConfig{Enabled: true, StaleAfter: "6h"}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	cliutilDir := filepath.Join(outputDir, "internal", "cliutil")
+	for _, name := range []string{"freshness.go", "freshness_test.go"} {
+		_, err := os.Stat(filepath.Join(cliutilDir, name))
+		require.NoError(t, err, "expected %s to be emitted when cache is enabled", name)
+	}
+
+	// auto_refresh.go wires EnsureFresh into the root command.
+	autoRefreshPath := filepath.Join(outputDir, "internal", "cli", "auto_refresh.go")
+	data, err := os.ReadFile(autoRefreshPath)
+	require.NoError(t, err, "auto_refresh.go must be emitted when cache is enabled")
+	src := string(data)
+	for _, snippet := range []string{
+		"var readCommandResources = map[string][]string{",
+		"func cachePolicy() cliutil.Policy",
+		"func autoRefreshIfStale(",
+		"func runAutoRefresh(",
+		// Env opt-out is derived at runtime from the CLI name; probe the
+		// expression that yields e.g. "STYTCH_NO_AUTO_REFRESH".
+		`strings.ReplaceAll(strings.ToUpper("stytch"), "-", "_") + "_NO_AUTO_REFRESH"`,
+	} {
+		assert.Contains(t, src, snippet, "auto_refresh.go missing %q", snippet)
+	}
+
+	// Root command must wire the hook.
+	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(rootSrc), "autoRefreshIfStale(cmd.Context(), &flags, resources)",
+		"root.go must invoke autoRefreshIfStale from PersistentPreRunE")
+
+	// Generated helper must compile and its tests must pass end-to-end,
+	// exercising the sync_state contract against a real SQLite DB.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+	runGoCommand(t, outputDir, "test", "./internal/cliutil/...")
+}
+
+// TestGenerateFreshnessHelperSkippedWhenCacheOff verifies that a spec
+// without cache or share does not receive the freshness helper.
+// CLIs without a cache story should not carry dead code.
+func TestGenerateFreshnessHelperSkippedWhenCacheOff(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "stytch.yaml"))
+	require.NoError(t, err)
+	require.False(t, apiSpec.Cache.Enabled, "baseline stytch spec should not enable cache")
+	require.False(t, apiSpec.Share.Enabled, "baseline stytch spec should not enable share")
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	freshnessPath := filepath.Join(outputDir, "internal", "cliutil", "freshness.go")
+	_, err = os.Stat(freshnessPath)
+	assert.True(t, os.IsNotExist(err), "freshness.go must not be emitted when cache and share are both off")
+}
+
 // TestGenerateAgentContextCommand verifies that every generated CLI ships
 // with the agent-context subcommand and that it emits valid JSON matching
 // the documented schema. Inspired by Cloudflare's /cdn-cgi/explorer/api

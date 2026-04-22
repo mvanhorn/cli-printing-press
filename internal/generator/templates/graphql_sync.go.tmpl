@@ -33,6 +33,7 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var concurrency int
 	var dbPath string
 	var maxPages int
+	var latestOnly bool
 
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -50,7 +51,10 @@ Once synced, use the 'search' command for instant full-text search.`,
   {{.Name}}-pp-cli sync --full
 
   # Parallel sync with 8 workers
-  {{.Name}}-pp-cli sync --concurrency 8`,
+  {{.Name}}-pp-cli sync --concurrency 8
+
+  # Latest-only: refresh head of each resource, no historical backfill
+  {{.Name}}-pp-cli sync --latest-only`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {
@@ -77,6 +81,23 @@ Once synced, use the 'search' command for instant full-text search.`,
 			if full {
 				for _, resource := range resources {
 					_ = db.SaveSyncState(resource, "", 0)
+				}
+			}
+
+			// --latest-only: cap at page 1 and clear the resume cursor so
+			// we fetch from the head. --since takes precedence when both
+			// are set (historical context trumps latest-head).
+			if latestOnly {
+				if since == "" {
+					maxPages = 1
+					for _, resource := range resources {
+						existing, _, _, _ := db.GetSyncState(resource)
+						if existing != "" {
+							_ = db.SaveSyncState(resource, "", 0)
+						}
+					}
+				} else if humanFriendly {
+					fmt.Fprintln(os.Stderr, "warning: --latest-only ignored because --since is set; --since takes precedence")
 				}
 			}
 
@@ -156,6 +177,7 @@ Once synced, use the 'search' command for instant full-text search.`,
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/{{.Name}}-pp-cli/data.db)")
 	cmd.Flags().IntVar(&maxPages, "max-pages", 10, "Maximum pages to fetch per resource (0 = unlimited)")
+	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
 
 	return cmd
 }

@@ -719,6 +719,38 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	// Emit the cliutil freshness helper only when the spec opts into cache
+	// or share and the CLI has a local store. Without a store there is
+	// nothing to check freshness against; without cache or share opt-in
+	// there is no caller that consumes the Decision.
+	if g.VisionSet.Store && (g.Spec.Cache.Enabled || g.Spec.Share.Enabled) {
+		if err := g.renderTemplate("cliutil_freshness.go.tmpl", filepath.Join("internal", "cliutil", "freshness.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cliutil freshness: %w", err)
+		}
+		if err := g.renderTemplate("cliutil_freshness_test.go.tmpl", filepath.Join("internal", "cliutil", "freshness_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cliutil freshness test: %w", err)
+		}
+	}
+
+	// Emit the auto-refresh wrapper only when cache is explicitly enabled
+	// and the CLI has both a store and a sync path to call. Without sync
+	// there is nothing to refresh with; without cache.enabled there is no
+	// read-path hook that would call autoRefreshIfStale.
+	if g.VisionSet.Store && g.VisionSet.Sync && g.Spec.Cache.Enabled {
+		autoRefreshData := struct {
+			*spec.APISpec
+			SyncableResources []profiler.SyncableResource
+			Pagination        profiler.PaginationProfile
+		}{
+			APISpec:           g.Spec,
+			SyncableResources: g.profile.SyncableResources,
+			Pagination:        g.profile.Pagination,
+		}
+		if err := g.renderTemplate("auto_refresh.go.tmpl", filepath.Join("internal", "cli", "auto_refresh.go"), autoRefreshData); err != nil {
+			return fmt.Errorf("rendering auto_refresh: %w", err)
+		}
+	}
+
 	if g.FixtureSet != nil {
 		if err := g.renderTemplate("captured_test.go.tmpl", filepath.Join("internal", "client", "client_captured_test.go"), g.FixtureSet); err != nil {
 			return fmt.Errorf("rendering captured fixture tests: %w", err)
