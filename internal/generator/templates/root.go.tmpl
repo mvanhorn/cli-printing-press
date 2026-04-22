@@ -217,6 +217,9 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 {{- if .VisionSet.Store}}
 	rootCmd.AddCommand(newWorkflowCmd(&flags))
 {{- end}}
+{{- if .Share.Enabled}}
+	rootCmd.AddCommand(newShareCmd(&flags))
+{{- end}}
 {{- range .WorkflowConstructors}}
 	rootCmd.AddCommand(new{{.}}Cmd(&flags))
 {{- end}}

@@ -751,6 +751,25 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	// Emit the git-backed share package only when explicitly enabled and
+	// the CLI has a local store. Share requires a SnapshotTables allowlist;
+	// spec.Validate has already rejected a missing allowlist with a clear
+	// error before we reach this point.
+	if g.VisionSet.Store && g.Spec.Share.Enabled {
+		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "share"), 0o755); err != nil {
+			return fmt.Errorf("creating share dir: %w", err)
+		}
+		if err := g.renderTemplate("share.go.tmpl", filepath.Join("internal", "share", "share.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering share: %w", err)
+		}
+		if err := g.renderTemplate("share_test.go.tmpl", filepath.Join("internal", "share", "share_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering share test: %w", err)
+		}
+		if err := g.renderTemplate("share_commands.go.tmpl", filepath.Join("internal", "cli", "share_commands.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering share commands: %w", err)
+		}
+	}
+
 	if g.FixtureSet != nil {
 		if err := g.renderTemplate("captured_test.go.tmpl", filepath.Join("internal", "client", "client_captured_test.go"), g.FixtureSet); err != nil {
 			return fmt.Errorf("rendering captured fixture tests: %w", err)

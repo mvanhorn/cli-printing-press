@@ -514,7 +514,7 @@ func runLinks() string {
 		pipelineDir := t.TempDir()
 		sc, err := RunScorecard(dir, pipelineDir, "", nil)
 		assert.NoError(t, err)
-		assert.ElementsMatch(t, []string{"mcp_token_efficiency", "path_validity", "auth_protocol"}, sc.UnscoredDimensions)
+		assert.ElementsMatch(t, []string{"mcp_token_efficiency", "cache_freshness", "path_validity", "auth_protocol"}, sc.UnscoredDimensions)
 		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
 		assert.NotContains(t, sc.GapReport, "auth_protocol scored 0/10 - needs improvement")
 	})
@@ -843,7 +843,73 @@ func runLinks() string {
 		body := string(data)
 		assert.True(t, strings.Contains(body, `"path_validity":0`))
 		assert.True(t, strings.Contains(body, `"auth_protocol":0`))
-		assert.True(t, strings.Contains(body, `"unscored_dimensions":["mcp_token_efficiency","path_validity","auth_protocol"]`))
+		assert.True(t, strings.Contains(body, `"unscored_dimensions":["mcp_token_efficiency","cache_freshness","path_validity","auth_protocol"]`))
+	})
+}
+
+func TestScoreCacheFreshness(t *testing.T) {
+	t.Run("no store returns zero unscored", func(t *testing.T) {
+		dir := t.TempDir()
+		score, scored := scoreCacheFreshness(dir)
+		assert.False(t, scored, "missing store.go must mark the dimension unscored")
+		assert.Equal(t, 0, score)
+	})
+
+	t.Run("store only with no phase 1-3 signals scores zero", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+
+func Open() {}`)
+		score, scored := scoreCacheFreshness(dir)
+		assert.True(t, scored)
+		assert.Equal(t, 0, score)
+	})
+
+	t.Run("schema version + doctor + auto-refresh + share scores 10", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+
+const StoreSchemaVersion = 1
+
+func migrate() {
+	_ = "PRAGMA user_version"
+}`)
+		writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+func collectCacheReport() {}`)
+		writeScorecardFixture(t, dir, "internal/cli/auto_refresh.go", `package cli
+
+func autoRefreshIfStale() {}`)
+		writeScorecardFixture(t, dir, "internal/cliutil/freshness.go", `package cliutil
+
+func EnsureFresh() {}`)
+		writeScorecardFixture(t, dir, "internal/share/share.go", `package share
+
+func Export() {}`)
+		writeScorecardFixture(t, dir, "internal/cli/share_commands.go", `package cli
+
+func newShareCmd() {}`)
+
+		score, scored := scoreCacheFreshness(dir)
+		assert.True(t, scored)
+		assert.Equal(t, 10, score)
+	})
+
+	t.Run("schema version + doctor only scores 5", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+
+const StoreSchemaVersion = 1
+
+func migrate() {
+	_ = "PRAGMA user_version"
+}`)
+		writeScorecardFixture(t, dir, "internal/cli/doctor.go", `package cli
+
+func collectCacheReport() {}`)
+		score, scored := scoreCacheFreshness(dir)
+		assert.True(t, scored)
+		assert.Equal(t, 5, score) // 3 (schema gate) + 2 (doctor cache section)
 	})
 }
 

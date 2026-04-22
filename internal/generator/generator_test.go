@@ -158,6 +158,82 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cliutil/...")
 }
 
+// TestGenerateShareEmittedWhenEnabled verifies the end-to-end share
+// surface: share package, share commands, and the share subcommand
+// registered on the root command. Exercises the generated share_test.go
+// to confirm the round-trip export → import contract holds.
+func TestGenerateShareEmittedWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "stytch.yaml"))
+	require.NoError(t, err)
+	apiSpec.Cache = spec.CacheConfig{Enabled: true, StaleAfter: "6h"}
+	apiSpec.Share = spec.ShareConfig{
+		Enabled:        true,
+		SnapshotTables: []string{"users", "sync_state"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	// share package is emitted under internal/share.
+	for _, name := range []string{"share.go", "share_test.go"} {
+		_, err := os.Stat(filepath.Join(outputDir, "internal", "share", name))
+		require.NoError(t, err, "expected internal/share/%s to be emitted when share is enabled", name)
+	}
+
+	// share cobra commands are emitted under internal/cli.
+	shareCmdsPath := filepath.Join(outputDir, "internal", "cli", "share_commands.go")
+	data, err := os.ReadFile(shareCmdsPath)
+	require.NoError(t, err)
+	for _, snippet := range []string{
+		"func newShareCmd",
+		"func newShareExportCmd",
+		"func newShareImportCmd",
+		"func newSharePublishCmd",
+		"func newShareSubscribeCmd",
+	} {
+		assert.Contains(t, string(data), snippet, "share_commands.go missing %q", snippet)
+	}
+
+	// root.go registers the share parent command.
+	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(rootSrc), "rootCmd.AddCommand(newShareCmd(&flags))",
+		"root.go must register newShareCmd when share is enabled")
+
+	// The generated share package tests must compile and pass; this is
+	// the round-trip safety net for the Unit 5 contract.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+	runGoCommand(t, outputDir, "test", "./internal/share/...")
+}
+
+// TestGenerateShareSkippedWhenDisabled confirms share is not emitted for
+// CLIs that don't opt in. Matters because share.go imports git via
+// os/exec and pulls in a new emission path; absent specs should carry
+// none of that overhead.
+func TestGenerateShareSkippedWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "stytch.yaml"))
+	require.NoError(t, err)
+	require.False(t, apiSpec.Share.Enabled)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	for _, name := range []string{
+		filepath.Join("internal", "share", "share.go"),
+		filepath.Join("internal", "cli", "share_commands.go"),
+	} {
+		_, err := os.Stat(filepath.Join(outputDir, name))
+		assert.True(t, os.IsNotExist(err), "%s must not be emitted when share is disabled", name)
+	}
+}
+
 // TestGenerateFreshnessHelperSkippedWhenCacheOff verifies that a spec
 // without cache or share does not receive the freshness helper.
 // CLIs without a cache story should not carry dead code.

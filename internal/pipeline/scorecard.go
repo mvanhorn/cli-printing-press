@@ -40,21 +40,22 @@ type Scorecard struct {
 
 // SteinerScore breaks down the Steinberger bar into 11 dimensions, each 0-10.
 type SteinerScore struct {
-	OutputModes   int `json:"output_modes"`             // 0-10
-	Auth          int `json:"auth"`                     // 0-10
-	ErrorHandling int `json:"error_handling"`           // 0-10
-	TerminalUX    int `json:"terminal_ux"`              // 0-10
-	README        int `json:"readme"`                   // 0-10
-	Doctor        int `json:"doctor"`                   // 0-10
-	AgentNative   int `json:"agent_native"`             // 0-10
-	MCPQuality    int `json:"mcp_quality"`              // 0-10
-	MCPTokenEff   int `json:"mcp_token_efficiency"`     // 0-10; unscored when no MCP surface
-	LocalCache    int `json:"local_cache"`              // 0-10
-	Breadth       int `json:"breadth"`                  // 0-10: how many commands (penalizes empty CLIs)
-	Vision        int `json:"vision"`                   // 0-10
-	Workflows     int `json:"workflows"`                // 0-10
-	Insight       int `json:"insight"`                  // 0-10
-	AgentWorkflow int `json:"agent_workflow_readiness"` // 0-10: HeyGen-derived - async jobs, profiles, deliver, feedback
+	OutputModes    int `json:"output_modes"`             // 0-10
+	Auth           int `json:"auth"`                     // 0-10
+	ErrorHandling  int `json:"error_handling"`           // 0-10
+	TerminalUX     int `json:"terminal_ux"`              // 0-10
+	README         int `json:"readme"`                   // 0-10
+	Doctor         int `json:"doctor"`                   // 0-10
+	AgentNative    int `json:"agent_native"`             // 0-10
+	MCPQuality     int `json:"mcp_quality"`              // 0-10
+	MCPTokenEff    int `json:"mcp_token_efficiency"`     // 0-10; unscored when no MCP surface
+	LocalCache     int `json:"local_cache"`              // 0-10
+	CacheFreshness int `json:"cache_freshness"`          // 0-10; unscored when the CLI has no local store
+	Breadth        int `json:"breadth"`                  // 0-10: how many commands (penalizes empty CLIs)
+	Vision         int `json:"vision"`                   // 0-10
+	Workflows      int `json:"workflows"`                // 0-10
+	Insight        int `json:"insight"`                  // 0-10
+	AgentWorkflow  int `json:"agent_workflow_readiness"` // 0-10: HeyGen-derived - async jobs, profiles, deliver, feedback
 	// Tier 2: Domain Correctness (semantic checks)
 	PathValidity          int    `json:"path_validity"`           // 0-10
 	AuthProtocol          int    `json:"auth_protocol"`           // 0-10
@@ -98,6 +99,11 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, "mcp_token_efficiency")
 	}
 	sc.Steinberger.LocalCache = scoreLocalCache(outputDir)
+	if cacheFreshnessScore, scored := scoreCacheFreshness(outputDir); scored {
+		sc.Steinberger.CacheFreshness = cacheFreshnessScore
+	} else {
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, "cache_freshness")
+	}
 	sc.Steinberger.Breadth = scoreBreadth(outputDir)
 	sc.Steinberger.Vision = scoreVision(outputDir)
 	sc.Steinberger.Workflows = scoreWorkflows(outputDir)
@@ -149,6 +155,7 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 		sc.Steinberger.MCPQuality +
 		sc.Steinberger.MCPTokenEff +
 		sc.Steinberger.LocalCache +
+		sc.Steinberger.CacheFreshness +
 		sc.Steinberger.Breadth +
 		sc.Steinberger.Vision +
 		sc.Steinberger.Workflows +
@@ -171,10 +178,14 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 		sc.Steinberger.DeadCode
 
 	// Weighted composite: Tier 1 = 50%, Tier 2 = 50% of final 100-point scale.
-	// Tier 1 max is 140 with MCP, 130 without (mcp_token_efficiency unscored).
-	tier1Max := 150
+	// Tier 1 max is 160 with MCP + cache_freshness, 150 without MCP, 150 without
+	// cache_freshness, 140 without either.
+	tier1Max := 160
 	if sc.IsDimensionUnscored("mcp_token_efficiency") {
-		tier1Max = 140
+		tier1Max -= 10
+	}
+	if sc.IsDimensionUnscored("cache_freshness") {
+		tier1Max -= 10
 	}
 	tier1Normalized := (tier1Raw * 50) / tier1Max // scale 0-tier1Max to 0-50
 	tier2Max := 50
@@ -666,6 +677,65 @@ func scoreLocalCache(dir string) int {
 		score = 10
 	}
 	return score
+}
+
+// scoreCacheFreshness rewards the discrawl-inspired Phase 1-3 capabilities.
+// Returns (score, true) when the CLI has a local store; (0, false) otherwise
+// so the dimension is marked N/A and excluded from the tier1 denominator.
+// Each sub-capability is worth 2-3 points; the total is capped at 10.
+//
+// The signals are string-matched against well-known template artifacts
+// rather than imported symbols because the scorer must not depend on
+// the generated package paths — every printed CLI has a distinct module
+// path.
+func scoreCacheFreshness(dir string) (int, bool) {
+	storePath := filepath.Join(dir, "internal", "store", "store.go")
+	storeContent := readFileContent(storePath)
+	if storeContent == "" {
+		return 0, false
+	}
+	score := 0
+
+	// (a) Schema-version gate: the StoreSchemaVersion constant + PRAGMA
+	// user_version read/write fail-fast against schema drift. Worth 3 pts
+	// because without it, binary upgrades silently corrupt reads.
+	if strings.Contains(storeContent, "StoreSchemaVersion") && strings.Contains(storeContent, "user_version") {
+		score += 3
+	}
+
+	// (b) Doctor cache section: collectCacheReport + renderCacheReport
+	// emit the agent-consumable freshness surface.
+	doctorPath := filepath.Join(dir, "internal", "cli", "doctor.go")
+	doctorContent := readFileContent(doctorPath)
+	if strings.Contains(doctorContent, "collectCacheReport") {
+		score += 2
+	}
+
+	// (c) Auto-refresh wired: the PersistentPreRunE hook invokes
+	// autoRefreshIfStale, and the cliutil freshness helper exists. Worth
+	// 3 pts because this is the user's headline ask.
+	autoRefreshPath := filepath.Join(dir, "internal", "cli", "auto_refresh.go")
+	autoRefreshContent := readFileContent(autoRefreshPath)
+	freshnessPath := filepath.Join(dir, "internal", "cliutil", "freshness.go")
+	freshnessContent := readFileContent(freshnessPath)
+	if strings.Contains(autoRefreshContent, "autoRefreshIfStale") && strings.Contains(freshnessContent, "EnsureFresh") {
+		score += 3
+	}
+
+	// (d) Share export/import present: internal/share/share.go + share
+	// subcommands provide the git-backed sharing surface.
+	sharePath := filepath.Join(dir, "internal", "share", "share.go")
+	shareContent := readFileContent(sharePath)
+	shareCmdsPath := filepath.Join(dir, "internal", "cli", "share_commands.go")
+	shareCmdsContent := readFileContent(shareCmdsPath)
+	if strings.Contains(shareContent, "func Export") && strings.Contains(shareCmdsContent, "newShareCmd") {
+		score += 2
+	}
+
+	if score > 10 {
+		score = 10
+	}
+	return score, true
 }
 
 func scoreBreadth(dir string) int {
