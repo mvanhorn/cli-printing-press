@@ -177,6 +177,8 @@ Phase 5     Live Smoke (optional)     (2-5 min)    Read-only API smoke + data-fl
 
 **Discovery provenance.** When the press sniffs a website, it archives everything - pages visited, endpoints discovered, response samples, rate limiting events - into a `discovery/` manuscript alongside the research and proofs. Full audit trail.
 
+**Full pipeline contract.** The fast path above compresses a longer 9-phase managed pipeline - preflight, research, scaffold, enrich, regenerate, review, agent-readiness, comparative, ship. Inputs, outputs, gates, and artifacts for each phase are documented in [docs/PIPELINE.md](docs/PIPELINE.md). Use it when you want to stop at any phase, resume later, re-run one step, or port the flow to another tool.
+
 ### Codex Mode (opt-in)
 
 ```bash

@@ -40,6 +40,7 @@ A pre-commit hook runs `gofmt -w` on staged Go files automatically. A pre-push h
 - `catalog/` - API catalog entries (YAML) + Go embed package (`catalog.FS`). Adding a YAML file here requires rebuilding the binary
 - `skills/` - Claude Code skill definitions
 - `testdata/` - Test fixtures (internal + OpenAPI specs)
+- `docs/PIPELINE.md` - Portable contract for the 9-phase generation pipeline (preflight through ship). Phase names and ordering are authoritative in `internal/pipeline/state.go`; per-phase intent is authoritative in `internal/pipeline/seeds.go`. Update `docs/PIPELINE.md` in the same PR whenever those files change
 
 ## Glossary
 
