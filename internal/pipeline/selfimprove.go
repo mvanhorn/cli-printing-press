@@ -9,14 +9,15 @@ import (
 
 // templateMapping maps Steinberger dimensions to the template files responsible.
 var templateMapping = map[string][]string{
-	"output_modes":   {"root.go.tmpl", "helpers.go.tmpl"},
-	"auth":           {"config.go.tmpl", "auth.go.tmpl"},
-	"error_handling": {"helpers.go.tmpl"},
-	"terminal_ux":    {"helpers.go.tmpl"},
-	"readme":         {"readme.md.tmpl"},
-	"doctor":         {"doctor.go.tmpl"},
-	"agent_native":   {"root.go.tmpl", "helpers.go.tmpl"},
-	"local_cache":    {},
+	"output_modes":          {"root.go.tmpl", "helpers.go.tmpl"},
+	"auth":                  {"config.go.tmpl", "auth.go.tmpl"},
+	"error_handling":        {"helpers.go.tmpl"},
+	"terminal_ux":           {"helpers.go.tmpl"},
+	"readme":                {"readme.md.tmpl"},
+	"doctor":                {"doctor.go.tmpl"},
+	"agent_native":          {"root.go.tmpl", "helpers.go.tmpl"},
+	"local_cache":           {},
+	"live_api_verification": {},
 }
 
 // dimensionAdvice maps each dimension to concrete improvement guidance.
@@ -83,6 +84,26 @@ Templates to modify: root.go.tmpl (add flags), helpers.go.tmpl (add dry-run logi
 - Provides --clear-cache flag to purge
 
 Note: No existing template covers this - a new cache.go.tmpl is needed.`,
+
+	"live_api_verification": `Re-run verify against the real API instead of the mock server.
+A low score here means the CLI has never been exercised end-to-end against
+its real backend, so nothing catches wire-level breakage - wrong base URL,
+auth-header mismatch, pagination shape, content-type quirks.
+
+Steps to improve:
+1. Set the CLI's auth env var (e.g., GITHUB_TOKEN, HUBSPOT_API_KEY) to a
+   real read-only credential.
+2. Re-run verify with the credential set so VerifyConfig.APIKey is non-empty.
+3. Investigate any command that fails live but passes mock - the mock is
+   lying about one of: response shape, pagination cursor, error envelope.
+4. Fix the generator or the printed CLI depending on which side is wrong,
+   then re-run verify until PassRate is at or above 95%.
+
+Template surface: no template change usually needed; this dimension
+measures runtime behavior against a real endpoint, not generated-code
+structure. If the fix requires a template change, use the template that
+owns the failing surface (client.go.tmpl for HTTP details, root.go.tmpl
+for flag wiring, etc.).`,
 }
 
 // GenerateFixPlans creates a fix plan markdown file for each Steinberger
@@ -104,11 +125,22 @@ func GenerateFixPlans(scorecard *Scorecard, pipelineDir string) ([]string, error
 		{"doctor", scorecard.Steinberger.Doctor},
 		{"agent_native", scorecard.Steinberger.AgentNative},
 		{"local_cache", scorecard.Steinberger.LocalCache},
+		{"live_api_verification", scorecard.Steinberger.LiveAPIVerification},
 	}
+
+	// live_api_verification is Tier 2 and opt-in: when verify didn't run
+	// live, the dimension is unscored (score 0 but also flagged in
+	// UnscoredDimensions). We don't write a fix plan for an unscored dim
+	// because the operator already knows verify didn't run - that's the
+	// prerequisite, not a scoring problem.
+	liveUnscored := scorecard.IsDimensionUnscored("live_api_verification")
 
 	var plans []string
 	for _, d := range dimensions {
 		if d.score >= 5 {
+			continue
+		}
+		if d.name == "live_api_verification" && liveUnscored {
 			continue
 		}
 

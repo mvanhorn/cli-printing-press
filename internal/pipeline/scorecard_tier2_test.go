@@ -514,7 +514,7 @@ func runLinks() string {
 		pipelineDir := t.TempDir()
 		sc, err := RunScorecard(dir, pipelineDir, "", nil)
 		assert.NoError(t, err)
-		assert.ElementsMatch(t, []string{"mcp_token_efficiency", "cache_freshness", "path_validity", "auth_protocol"}, sc.UnscoredDimensions)
+		assert.ElementsMatch(t, []string{"mcp_token_efficiency", "cache_freshness", "path_validity", "auth_protocol", "live_api_verification"}, sc.UnscoredDimensions)
 		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
 		assert.NotContains(t, sc.GapReport, "auth_protocol scored 0/10 - needs improvement")
 	})
@@ -843,7 +843,7 @@ func runLinks() string {
 		body := string(data)
 		assert.True(t, strings.Contains(body, `"path_validity":0`))
 		assert.True(t, strings.Contains(body, `"auth_protocol":0`))
-		assert.True(t, strings.Contains(body, `"unscored_dimensions":["mcp_token_efficiency","cache_freshness","path_validity","auth_protocol"]`))
+		assert.True(t, strings.Contains(body, `"unscored_dimensions":["mcp_token_efficiency","cache_freshness","path_validity","auth_protocol","live_api_verification"]`))
 	})
 }
 

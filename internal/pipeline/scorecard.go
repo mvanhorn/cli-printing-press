@@ -63,6 +63,7 @@ type SteinerScore struct {
 	SyncCorrectness       int    `json:"sync_correctness"`        // 0-10
 	TypeFidelity          int    `json:"type_fidelity"`           // 0-5
 	DeadCode              int    `json:"dead_code"`               // 0-5
+	LiveAPIVerification   int    `json:"live_api_verification"`   // 0-10; unscored when verify ran in mock/structural mode or was skipped
 	Total                 int    `json:"total"`                   // 0-100 (weighted: 50% infrastructure + 50% domain)
 	Percentage            int    `json:"percentage"`              // 0-100
 	CalibrationNote       string `json:"calibration_note,omitempty"`
@@ -144,6 +145,18 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 	sc.Steinberger.TypeFidelity = scoreTypeFidelity(outputDir)
 	sc.Steinberger.DeadCode = scoreDeadCode(outputDir)
 
+	// LiveAPIVerification is scored only when verify ran in live mode (real
+	// API, not a mock server and not structural-only). Mock-backed verify
+	// passes and live verify passes look identical in dogfood output; making
+	// this a distinct dimension in the scorecard lets reviewers tell them
+	// apart at a glance and gives selfimprove a targeted fix plan when a
+	// shipped CLI has never been exercised against the real API.
+	if liveScore, scored := scoreLiveAPIVerification(verifyReport); scored {
+		sc.Steinberger.LiveAPIVerification = liveScore
+	} else {
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, "live_api_verification")
+	}
+
 	// Tier 1: Infrastructure (string-matching, 150 max; 140 when no MCP surface)
 	tier1Raw := sc.Steinberger.OutputModes +
 		sc.Steinberger.Auth +
@@ -169,13 +182,14 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 		}
 	}
 
-	// Tier 2: Domain Correctness (semantic, 50 max)
+	// Tier 2: Domain Correctness (semantic, 60 max when live verify ran)
 	tier2Raw := sc.Steinberger.PathValidity +
 		sc.Steinberger.AuthProtocol +
 		sc.Steinberger.DataPipelineIntegrity +
 		sc.Steinberger.SyncCorrectness +
 		sc.Steinberger.TypeFidelity +
-		sc.Steinberger.DeadCode
+		sc.Steinberger.DeadCode +
+		sc.Steinberger.LiveAPIVerification
 
 	// Weighted composite: Tier 1 = 50%, Tier 2 = 50% of final 100-point scale.
 	// Tier 1 max is 160 with MCP + cache_freshness, 150 without MCP, 150 without
@@ -188,7 +202,14 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 		tier1Max -= 10
 	}
 	tier1Normalized := (tier1Raw * 50) / tier1Max // scale 0-tier1Max to 0-50
-	tier2Max := 50
+	// Tier 2 max is 60 when live verify ran, 50 otherwise. The live-verify
+	// dimension is opt-in: a CLI that only ran mock-backed verify keeps the
+	// same effective tier2 denominator it had before the dimension existed,
+	// so grades for existing CLIs do not shift when this gate lands.
+	tier2Max := 60
+	if sc.IsDimensionUnscored("live_api_verification") {
+		tier2Max -= 10
+	}
 	if sc.IsDimensionUnscored("path_validity") {
 		tier2Max -= 10
 	}
@@ -732,6 +753,37 @@ func scoreCacheFreshness(dir string) (int, bool) {
 		score += 2
 	}
 
+	if score > 10 {
+		score = 10
+	}
+	return score, true
+}
+
+// scoreLiveAPIVerification returns a 0-10 score reflecting whether verify
+// ran against the real API and how many of its checks passed. It returns
+// (0, false) in every case where the signal is absent or untrustworthy:
+// no verify report threaded in, verify ran against a mock, or verify ran
+// in structural-only mode. A scored result always means the CLI has at
+// least been exercised against its real backend.
+//
+// PassRate is already 0-100 (e.g., 91.0 for 91%), matching the existing
+// calibration path in RunScorecard. The 95% cap at 10 mirrors the
+// established convention that near-perfect is perfect for grading.
+func scoreLiveAPIVerification(verifyReport *VerifyReport) (int, bool) {
+	if verifyReport == nil {
+		return 0, false
+	}
+	if verifyReport.Mode != "live" {
+		return 0, false
+	}
+	if verifyReport.PassRate >= 95 {
+		return 10, true
+	}
+	// Linear scale below the cap: 0% → 0, 10% → 1, ..., 94% → 9.
+	score := int(verifyReport.PassRate / 10)
+	if score < 0 {
+		score = 0
+	}
 	if score > 10 {
 		score = 10
 	}
