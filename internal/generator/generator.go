@@ -488,6 +488,15 @@ type helpersTemplateData struct {
 	HelperFlags
 }
 
+// doctorTemplateData wraps APISpec with a HasStore flag so the doctor
+// template can gate its cache-health section. Doctor is emitted for every
+// CLI — with or without a local store — so the template needs explicit
+// knowledge of whether internal/store exists.
+type doctorTemplateData struct {
+	*spec.APISpec
+	HasStore bool
+}
+
 // readmeTemplateData wraps APISpec with additional fields for README rendering.
 type readmeTemplateData struct {
 	*spec.APISpec
@@ -696,6 +705,11 @@ func (g *Generator) Generate() error {
 			data = &helpersTemplateData{
 				APISpec:     g.Spec,
 				HelperFlags: hFlags,
+			}
+		case "doctor.go.tmpl":
+			data = &doctorTemplateData{
+				APISpec:  g.Spec,
+				HasStore: g.VisionSet.Store,
 			}
 		default:
 			data = g.Spec
@@ -952,6 +966,9 @@ func (g *Generator) Generate() error {
 		}
 		if err := g.renderTemplate("store.go.tmpl", filepath.Join("internal", "store", "store.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store: %w", err)
+		}
+		if err := g.renderTemplate("store_schema_version_test.go.tmpl", filepath.Join("internal", "store", "schema_version_test.go"), storeData); err != nil {
+			return fmt.Errorf("rendering store schema version test: %w", err)
 		}
 	}
 

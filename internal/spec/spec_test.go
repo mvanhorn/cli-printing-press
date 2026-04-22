@@ -764,3 +764,195 @@ func TestExtraCommandsRoundTripYAML(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal(data, &parsed))
 	assert.Equal(t, original.ExtraCommands, parsed.ExtraCommands)
 }
+
+func TestCacheShareParse(t *testing.T) {
+	input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+cache:
+  enabled: true
+  stale_after: 6h
+  refresh_timeout: 30s
+  env_opt_out: DEMO_NO_AUTO_REFRESH
+  resources:
+    items: 5m
+share:
+  enabled: true
+  snapshot_tables:
+    - items
+    - sync_state
+  default_repo: git@github.com:acme/demo-snapshots.git
+  default_branch: main
+`
+	s, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+	assert.True(t, s.Cache.Enabled)
+	assert.Equal(t, "6h", s.Cache.StaleAfter)
+	assert.Equal(t, "30s", s.Cache.RefreshTimeout)
+	assert.Equal(t, "DEMO_NO_AUTO_REFRESH", s.Cache.EnvOptOut)
+	assert.Equal(t, "5m", s.Cache.Resources["items"])
+	assert.True(t, s.Share.Enabled)
+	assert.Equal(t, []string{"items", "sync_state"}, s.Share.SnapshotTables)
+	assert.Equal(t, "git@github.com:acme/demo-snapshots.git", s.Share.DefaultRepo)
+	assert.Equal(t, "main", s.Share.DefaultBranch)
+}
+
+func TestCacheShareAbsentIsBackwardCompatible(t *testing.T) {
+	input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+`
+	s, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+	assert.False(t, s.Cache.Enabled)
+	assert.False(t, s.Share.Enabled)
+	assert.Empty(t, s.Cache.Resources)
+	assert.Empty(t, s.Share.SnapshotTables)
+}
+
+func TestCacheShareValidation(t *testing.T) {
+	base := func(cache CacheConfig, share ShareConfig) APISpec {
+		return APISpec{
+			Name:    "demo",
+			BaseURL: "http://x",
+			Resources: map[string]Resource{
+				"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+			},
+			Cache: cache,
+			Share: share,
+		}
+	}
+
+	tests := []struct {
+		name    string
+		cache   CacheConfig
+		share   ShareConfig
+		wantErr string
+	}{
+		{
+			name:    "share enabled without snapshot_tables",
+			share:   ShareConfig{Enabled: true},
+			wantErr: "non-empty share.snapshot_tables allowlist",
+		},
+		{
+			name:    "share snapshot_tables set but disabled",
+			share:   ShareConfig{Enabled: false, SnapshotTables: []string{"items"}},
+			wantErr: "snapshot_tables is set but share.enabled is false",
+		},
+		{
+			name:    "share table auth_tokens rejected",
+			share:   ShareConfig{Enabled: true, SnapshotTables: []string{"auth_tokens"}},
+			wantErr: "denylist",
+		},
+		{
+			name:    "share table oauth_cache rejected",
+			share:   ShareConfig{Enabled: true, SnapshotTables: []string{"oauth_cache"}},
+			wantErr: "denylist",
+		},
+		{
+			name:    "share table session_secrets rejected",
+			share:   ShareConfig{Enabled: true, SnapshotTables: []string{"session_secrets"}},
+			wantErr: "denylist",
+		},
+		{
+			name:    "share table uppercase rejected",
+			share:   ShareConfig{Enabled: true, SnapshotTables: []string{"Items"}},
+			wantErr: "lowercase SQLite identifier",
+		},
+		{
+			name:    "share table duplicate rejected",
+			share:   ShareConfig{Enabled: true, SnapshotTables: []string{"items", "items"}},
+			wantErr: "appears more than once",
+		},
+		{
+			name:    "cache stale_after invalid duration",
+			cache:   CacheConfig{Enabled: true, StaleAfter: "yesterday"},
+			wantErr: "not a valid Go duration",
+		},
+		{
+			name:    "cache refresh_timeout invalid duration",
+			cache:   CacheConfig{Enabled: true, RefreshTimeout: "soonish"},
+			wantErr: "not a valid Go duration",
+		},
+		{
+			name:    "cache per-resource invalid duration",
+			cache:   CacheConfig{Enabled: true, Resources: map[string]string{"items": "eh"}},
+			wantErr: "not a valid Go duration",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := base(tt.cache, tt.share)
+			err := s.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestCacheShareAcceptsValidShapes(t *testing.T) {
+	tests := []struct {
+		name  string
+		cache CacheConfig
+		share ShareConfig
+	}{
+		{
+			name:  "cache only, no share",
+			cache: CacheConfig{Enabled: true, StaleAfter: "6h", RefreshTimeout: "30s"},
+		},
+		{
+			name:  "cache with per-resource overrides",
+			cache: CacheConfig{Enabled: true, StaleAfter: "6h", Resources: map[string]string{"items": "5m", "teams": "24h"}},
+		},
+		{
+			name:  "share only, no cache",
+			share: ShareConfig{Enabled: true, SnapshotTables: []string{"items", "teams", "sync_state"}},
+		},
+		{
+			name:  "cache and share both enabled",
+			cache: CacheConfig{Enabled: true, StaleAfter: "6h"},
+			share: ShareConfig{Enabled: true, SnapshotTables: []string{"items"}, DefaultBranch: "main"},
+		},
+		{
+			name:  "composite duration (90m, 1h30m) accepted",
+			cache: CacheConfig{Enabled: true, StaleAfter: "1h30m"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := APISpec{
+				Name:      "demo",
+				BaseURL:   "http://x",
+				Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+				Cache:     tt.cache,
+				Share:     tt.share,
+			}
+			require.NoError(t, s.Validate())
+		})
+	}
+}

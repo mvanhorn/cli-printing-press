@@ -38,6 +38,8 @@ type APISpec struct {
 	Resources       map[string]Resource `yaml:"resources" json:"resources"`
 	Types           map[string]TypeDef  `yaml:"types" json:"types"`
 	ExtraCommands   []ExtraCommand      `yaml:"extra_commands,omitempty" json:"extra_commands,omitempty"` // hand-written cobra commands declared so SKILL.md can document them; spec-only metadata, no code generated
+	Cache           CacheConfig         `yaml:"cache,omitempty" json:"cache,omitempty"`                   // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
+	Share           ShareConfig         `yaml:"share,omitempty" json:"share,omitempty"`                   // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
 }
 
 // ExtraCommand declares a hand-written cobra command so the SKILL.md
@@ -104,6 +106,35 @@ type AuthConfig struct {
 type ConfigSpec struct {
 	Format string `yaml:"format" json:"format"` // toml, yaml
 	Path   string `yaml:"path" json:"path"`
+}
+
+// CacheConfig gates the auto-refresh machinery emitted into a printed CLI.
+// Opt-in — CLIs whose local store is per-user state (carts, drafts) should leave
+// Enabled at its zero value so reads never silently replace the user's state
+// with a snapshot from a different session.
+//
+// StaleAfter and RefreshTimeout are strings parsed to time.Duration at CLI
+// runtime; keeping them as strings lets spec authors write "6h" or "30s" and
+// preserves the yaml-level representation for round-trip tooling.
+type CacheConfig struct {
+	Enabled        bool              `yaml:"enabled,omitempty" json:"enabled,omitempty"`                 // master switch; when false, freshness helpers and pre-run refresh hook are not emitted
+	StaleAfter     string            `yaml:"stale_after,omitempty" json:"stale_after,omitempty"`         // default duration after which any resource's last_synced_at is considered stale (e.g., "6h"). Blank means runtime default (6h).
+	RefreshTimeout string            `yaml:"refresh_timeout,omitempty" json:"refresh_timeout,omitempty"` // max wall-clock the pre-run refresh may block the command (e.g., "30s"). On timeout the command serves stale data with a stderr warning. Blank means runtime default (30s).
+	EnvOptOut      string            `yaml:"env_opt_out,omitempty" json:"env_opt_out,omitempty"`         // env var name that disables auto-refresh when set to "1" (e.g., LINEAR_NO_AUTO_REFRESH). Blank lets the template derive {{upper name}}_NO_AUTO_REFRESH.
+	Resources      map[string]string `yaml:"resources,omitempty" json:"resources,omitempty"`             // per-resource override of stale_after (e.g., quotes: "5m", channels: "24h"). Resources not listed inherit StaleAfter.
+}
+
+// ShareConfig gates the git-backed snapshot share surface emitted into a
+// printed CLI. When Enabled, the generator emits an internal/share package
+// plus a `share` cobra command (publish, subscribe, export, import). Share
+// is off by default because it is a multi-user feature and most CLIs are
+// single-user; enabling also requires an explicit SnapshotTables allowlist
+// to prevent accidental export of auth or per-user state.
+type ShareConfig struct {
+	Enabled        bool     `yaml:"enabled,omitempty" json:"enabled,omitempty"`                 // master switch; when false, the share package and command are not emitted
+	SnapshotTables []string `yaml:"snapshot_tables,omitempty" json:"snapshot_tables,omitempty"` // explicit allowlist of SQLite tables included in the snapshot. Required when Enabled. Names matching denylisted patterns (*_cache, *_secrets, auth_*) are rejected at parse time.
+	DefaultRepo    string   `yaml:"default_repo,omitempty" json:"default_repo,omitempty"`       // optional default git remote (e.g., "git@github.com:acme/linear-snapshots.git"); command-line --repo flag always wins
+	DefaultBranch  string   `yaml:"default_branch,omitempty" json:"default_branch,omitempty"`   // optional default branch for push/pull; blank means "main"
 }
 
 type Resource struct {
@@ -335,6 +366,9 @@ func (s *APISpec) Validate() error {
 	if err := validateExtraCommands(s.ExtraCommands); err != nil {
 		return err
 	}
+	if err := validateCacheShare(s.Cache, s.Share); err != nil {
+		return err
+	}
 	for name, r := range s.Resources {
 		if len(r.Endpoints) == 0 && len(r.SubResources) == 0 {
 			return fmt.Errorf("resource %q has no endpoints", name)
@@ -388,6 +422,65 @@ func validateExtraCommands(cmds []ExtraCommand) error {
 			return fmt.Errorf("extra_commands[%d]: name %q appears more than once", i, c.Name)
 		}
 		seen[c.Name] = struct{}{}
+	}
+	return nil
+}
+
+// shareTableDenyRe matches table names that must never appear in a share
+// snapshot: anything ending in _cache or _secrets, or starting with auth_.
+// These patterns catch the tables most likely to hold bearer tokens,
+// device fingerprints, or derived per-user state that should never travel
+// in a shared git repo.
+var shareTableDenyRe = regexp.MustCompile(`(?i)^auth_|_cache$|_secrets$`)
+
+// shareTableNameRe enforces SQLite-compatible lowercase identifiers for
+// snapshot table entries. Keeping this strict avoids surprises when the
+// generator later emits SELECT/DELETE statements against these names.
+var shareTableNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// durationLikeRe is a forgiving parse-time sanity check for CacheConfig
+// duration strings. The strict parse happens in the generated CLI at
+// runtime via time.ParseDuration; this check only rejects obviously
+// malformed values so typos surface at spec load, not at end-user runtime.
+var durationLikeRe = regexp.MustCompile(`^\d+(\.\d+)?(ns|us|µs|ms|s|m|h)(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))*$`)
+
+func validateCacheShare(cache CacheConfig, share ShareConfig) error {
+	if cache.StaleAfter != "" && !durationLikeRe.MatchString(cache.StaleAfter) {
+		return fmt.Errorf("cache.stale_after %q is not a valid Go duration", cache.StaleAfter)
+	}
+	if cache.RefreshTimeout != "" && !durationLikeRe.MatchString(cache.RefreshTimeout) {
+		return fmt.Errorf("cache.refresh_timeout %q is not a valid Go duration", cache.RefreshTimeout)
+	}
+	for resource, dur := range cache.Resources {
+		if resource == "" {
+			return fmt.Errorf("cache.resources: resource name must not be empty")
+		}
+		if !durationLikeRe.MatchString(dur) {
+			return fmt.Errorf("cache.resources[%s] = %q is not a valid Go duration", resource, dur)
+		}
+	}
+
+	if !share.Enabled {
+		if len(share.SnapshotTables) > 0 {
+			return fmt.Errorf("share.snapshot_tables is set but share.enabled is false; either enable or remove")
+		}
+		return nil
+	}
+	if len(share.SnapshotTables) == 0 {
+		return fmt.Errorf("share.enabled requires a non-empty share.snapshot_tables allowlist")
+	}
+	seen := make(map[string]struct{}, len(share.SnapshotTables))
+	for i, t := range share.SnapshotTables {
+		if !shareTableNameRe.MatchString(t) {
+			return fmt.Errorf("share.snapshot_tables[%d]: %q must be a lowercase SQLite identifier (letters, digits, underscore)", i, t)
+		}
+		if shareTableDenyRe.MatchString(t) {
+			return fmt.Errorf("share.snapshot_tables[%d]: %q matches the denylist (auth_*, *_cache, *_secrets) and must not be shared", i, t)
+		}
+		if _, dup := seen[t]; dup {
+			return fmt.Errorf("share.snapshot_tables[%d]: %q appears more than once", i, t)
+		}
+		seen[t] = struct{}{}
 	}
 	return nil
 }
