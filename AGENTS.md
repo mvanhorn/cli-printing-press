@@ -15,6 +15,24 @@ This repo contains **the machine** (generator, templates, binary, skills) that p
 
 **When adding a capability that affects scoring**, update the scorer in the same change. The goal is not to inflate scores — it's to ensure the scorer accurately reflects the capability. If you add composed cookie auth but the scorer only recognizes Bearer/Basic, it will penalize a correctly-implemented CLI. Fix the scorer to recognize the new pattern, not to give it a free pass.
 
+### Anti-Reimplementation
+
+A printed CLI wraps an API. It does not replace the API. Novel-feature commands must call the real endpoint, or read from the local SQLite store populated by sync. Anything in between is a reimplementation, and reimplementations are worse than the API they pretend to replace.
+
+Concretely, the generator and review loop reject:
+
+- Hand-rolled response builders that return constants, hardcoded JSON, or struct literals shaped like an API payload
+- Endpoint stubs that return `"OK"` or a canned success message without calling the client
+- Aggregations computed in-process when the API has an aggregation endpoint
+- Enum mappings and reference data synthesized locally when the API returns them
+
+Two carve-outs are legitimate:
+
+- Commands that read from the generated `internal/store` package to join or query sync'd data (the `stale`, `bottleneck`, `health`, `reconcile` family). These are local-data commands, not fake API calls.
+- Commands that cache an API response in the store after calling it. Presence of both a client call and a store call is fine.
+
+The rule is enforced in two places. The absorb manifest has a Kill Check (see `skills/printing-press/references/absorb-scoring.md`) that rejects reimplementation candidates before they enter the feature list. Dogfood runs `reimplementation_check` over every built novel-feature command and flags any handler file that shows neither a client call nor a store access.
+
 ## Build, Test & Lint
 
 ```bash

@@ -19,20 +19,21 @@ import (
 )
 
 type DogfoodReport struct {
-	Dir                string                   `json:"dir"`
-	SpecPath           string                   `json:"spec_path,omitempty"`
-	Verdict            string                   `json:"verdict"`
-	PathCheck          PathCheckResult          `json:"path_check"`
-	AuthCheck          AuthCheckResult          `json:"auth_check"`
-	DeadFlags          DeadCodeResult           `json:"dead_flags"`
-	DeadFuncs          DeadCodeResult           `json:"dead_functions"`
-	PipelineCheck      PipelineResult           `json:"pipeline_check"`
-	ExampleCheck       ExampleCheckResult       `json:"example_check"`
-	WiringCheck        WiringCheckResult        `json:"wiring_check"`
-	NovelFeaturesCheck NovelFeaturesCheckResult `json:"novel_features_check"`
-	TestPresence       TestPresenceResult       `json:"test_presence"`
-	NamingCheck        NamingCheckResult        `json:"naming_check"`
-	Issues             []string                 `json:"issues"`
+	Dir                   string                      `json:"dir"`
+	SpecPath              string                      `json:"spec_path,omitempty"`
+	Verdict               string                      `json:"verdict"`
+	PathCheck             PathCheckResult             `json:"path_check"`
+	AuthCheck             AuthCheckResult             `json:"auth_check"`
+	DeadFlags             DeadCodeResult              `json:"dead_flags"`
+	DeadFuncs             DeadCodeResult              `json:"dead_functions"`
+	PipelineCheck         PipelineResult              `json:"pipeline_check"`
+	ExampleCheck          ExampleCheckResult          `json:"example_check"`
+	WiringCheck           WiringCheckResult           `json:"wiring_check"`
+	NovelFeaturesCheck    NovelFeaturesCheckResult    `json:"novel_features_check"`
+	ReimplementationCheck ReimplementationCheckResult `json:"reimplementation_check"`
+	TestPresence          TestPresenceResult          `json:"test_presence"`
+	NamingCheck           NamingCheckResult           `json:"naming_check"`
+	Issues                []string                    `json:"issues"`
 }
 
 // NamingCheckResult reports non-canonical command verbs and flag names
@@ -202,6 +203,7 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	report.ExampleCheck = checkExamples(dir)
 	report.WiringCheck = checkWiring(dir)
 	report.NovelFeaturesCheck = checkNovelFeatures(dir, cfg.researchDir)
+	report.ReimplementationCheck = checkReimplementation(dir, cfg.researchDir)
 	report.TestPresence = checkTestPresence(dir)
 	report.NamingCheck = checkNamingConsistency(dir)
 	report.Issues = collectDogfoodIssues(report, spec != nil)
@@ -1240,6 +1242,13 @@ func deriveDogfoodVerdict(report *DogfoodReport, hasSpec bool) string {
 	if len(report.NovelFeaturesCheck.Missing) > 0 {
 		return "WARN"
 	}
+	if len(report.ReimplementationCheck.Suspicious) > 0 {
+		// Hand-rolled responses and empty-stub commands surface as WARN so
+		// they're visible in the shipcheck block without hard-blocking a
+		// run that may legitimately be in an early iteration. Reviewers
+		// upgrade to FAIL when the pipeline integrity check also drops.
+		return "WARN"
+	}
 	return "PASS"
 }
 
@@ -1291,6 +1300,16 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 			len(report.NovelFeaturesCheck.Missing),
 			report.NovelFeaturesCheck.Planned,
 			strings.Join(report.NovelFeaturesCheck.Missing, ", ")))
+	}
+	if len(report.ReimplementationCheck.Suspicious) > 0 {
+		parts := make([]string, 0, len(report.ReimplementationCheck.Suspicious))
+		for _, f := range report.ReimplementationCheck.Suspicious {
+			parts = append(parts, fmt.Sprintf("%s (%s) — %s", f.Command, f.File, f.Reason))
+		}
+		issues = append(issues, fmt.Sprintf("%d/%d novel features look reimplemented: %s",
+			len(report.ReimplementationCheck.Suspicious),
+			report.ReimplementationCheck.Checked,
+			strings.Join(parts, "; ")))
 	}
 	if len(report.TestPresence.MissingTests) > 0 {
 		issues = append(issues, fmt.Sprintf("pure-logic packages with no tests: %s",
