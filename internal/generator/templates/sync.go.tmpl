@@ -471,7 +471,7 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 
 	switch resource {
 {{- range .Tables}}
-{{- if and (gt (len .Columns) 3) (ne .Name "sync_state")}}
+{{- if and (gt (len .Columns) 3) (ne .Name "sync_state") (hasDomainUpsert .Name)}}
 	case "{{.Name}}":
 		return db.Upsert{{pascal .Name}}(data)
 {{- end}}

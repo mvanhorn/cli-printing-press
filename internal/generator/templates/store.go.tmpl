@@ -285,7 +285,7 @@ func lookupFieldValue(obj map[string]any, snakeKey string) any {
 }
 
 {{- range .Tables}}
-{{- if and (gt (len .Columns) 3) (ne .Name "sync_state")}}
+{{- if and (gt (len .Columns) 3) (ne .Name "sync_state") (hasDomainUpsert .Name)}}
 // Upsert{{pascal .Name}} inserts or updates a {{.Name}} record with domain-specific columns.
 func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 	var obj map[string]any

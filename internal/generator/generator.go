@@ -241,6 +241,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		},
 		"envName":  func(s string) string { return strings.ToUpper(strings.ReplaceAll(s, "-", "_")) },
 		"safeName": safeSQLName,
+		"hasDomainUpsert": func(name string) bool {
+			return domainUpsertMethodName(name) != "UpsertBatch"
+		},
 		"pathContainsParam": func(path, name string) bool {
 			return strings.Contains(path, "{"+name+"}")
 		},
@@ -1313,6 +1316,10 @@ func toPascal(s string) string {
 		parts[i] = strings.ToUpper(lower[:1]) + lower[1:]
 	}
 	return strings.Join(parts, "")
+}
+
+func domainUpsertMethodName(tableName string) string {
+	return "Upsert" + toPascal(tableName)
 }
 
 // isIDParam returns true if the parameter name suggests it's an identifier

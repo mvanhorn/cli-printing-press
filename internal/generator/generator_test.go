@@ -395,6 +395,60 @@ func TestGenerateWithEmptyOwner(t *testing.T) {
 	assert.NotContains(t, string(gomod), "module github.com/")
 }
 
+func TestGenerateStoreWithBatchResourceDoesNotDuplicateUpsertBatch(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "batch",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/batch-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"batch": {
+				Description: "Manage batch jobs",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/batch",
+						Description: "List batch jobs",
+						Params: []spec.Param{
+							{Name: "id", Type: "string"},
+							{Name: "name", Type: "string"},
+							{Name: "status", Type: "string"},
+							{Name: "created_at", Type: "string", Format: "date-time"},
+						},
+					},
+					"create": {
+						Method:      "POST",
+						Path:        "/batch",
+						Description: "Create a batch job",
+						Body: []spec.Param{
+							{Name: "name", Type: "string"},
+							{Name: "description", Type: "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(storeSrc), "func (s *Store) UpsertBatch("))
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/store")
+}
+
 // --- Unit 7: Feature Verification Tests ---
 
 func generatePetstore(t *testing.T) string {
