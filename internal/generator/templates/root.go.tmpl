@@ -193,6 +193,7 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	rootCmd.AddCommand(newAgentContextCmd(rootCmd))
 	rootCmd.AddCommand(newProfileCmd(&flags))
 	rootCmd.AddCommand(newFeedbackCmd(&flags))
+	rootCmd.AddCommand(newWhichCmd(&flags))
 {{- if .HasAsyncJobs}}
 	rootCmd.AddCommand(newJobsCmd(&flags))
 {{- end}}

@@ -680,6 +680,8 @@ func (g *Generator) Generate() error {
 		"profile.go.tmpl":        filepath.Join("internal", "cli", "profile.go"),
 		"deliver.go.tmpl":        filepath.Join("internal", "cli", "deliver.go"),
 		"feedback.go.tmpl":       filepath.Join("internal", "cli", "feedback.go"),
+		"which.go.tmpl":          filepath.Join("internal", "cli", "which.go"),
+		"which_test.go.tmpl":     filepath.Join("internal", "cli", "which_test.go"),
 		"config.go.tmpl":         filepath.Join("internal", "config", "config.go"),
 		"cache.go.tmpl":          filepath.Join("internal", "cache", "cache.go"),
 		"client.go.tmpl":         filepath.Join("internal", "client", "client.go"),
@@ -697,7 +699,7 @@ func (g *Generator) Generate() error {
 	for tmplName, outPath := range singleFiles {
 		var data any
 		switch tmplName {
-		case "readme.md.tmpl", "skill.md.tmpl":
+		case "readme.md.tmpl", "skill.md.tmpl", "which.go.tmpl", "which_test.go.tmpl":
 			data = g.readmeData()
 		case "helpers.go.tmpl":
 			hFlags := computeHelperFlags(g.Spec)

@@ -30,9 +30,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +1 for internal/cli/deliver.go (HeyGen-style --deliver output routing)
 		// +1 for internal/cli/feedback.go (HeyGen-style in-band agent feedback channel)
 		// +1 for internal/store/schema_version_test.go (PRAGMA user_version gate, discrawl-inspired)
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 40},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 44},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 42},
+		// +2 for internal/cli/which.go + which_test.go (capability-to-command resolver)
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 42},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 46},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 44},
 	}
 
 	for _, tt := range tests {
