@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0](https://github.com/mvanhorn/cli-printing-press/compare/v2.2.0...v2.3.0) (2026-04-23)
+
+
+### Features
+
+* **cli:** add machine-owned freshness coverage ([#249](https://github.com/mvanhorn/cli-printing-press/issues/249)) ([4291b3b](https://github.com/mvanhorn/cli-printing-press/commit/4291b3b96f9ddc4306e101d88588f2edd0a41e5b))
+
 ## [2.2.0](https://github.com/mvanhorn/cli-printing-press/compare/v2.1.0...v2.2.0) (2026-04-23)
 
 
