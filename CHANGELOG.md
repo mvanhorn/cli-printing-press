@@ -1,5 +1,62 @@
 # Changelog
 
+## [2.2.0](https://github.com/mvanhorn/cli-printing-press/compare/v2.1.0...v2.2.0) (2026-04-23)
+
+
+### Features
+
+* **cli:** --deliver routes command output to file or webhook ([f6e7493](https://github.com/mvanhorn/cli-printing-press/commit/f6e74931b899c2188ca6e8b9833717f0aa158d04))
+* **cli:** add auth doctor subcommand ([#226](https://github.com/mvanhorn/cli-printing-press/issues/226)) ([72916ac](https://github.com/mvanhorn/cli-printing-press/commit/72916ac1e571975da741706ea519aa25f60c18db))
+* **cli:** add http streamable transport to generated MCP servers ([#242](https://github.com/mvanhorn/cli-printing-press/issues/242)) ([bce586b](https://github.com/mvanhorn/cli-printing-press/commit/bce586bc1031f5eefa630ec429e40cdb63950dc0))
+* **cli:** add live_api_verification scorecard dimension ([#239](https://github.com/mvanhorn/cli-printing-press/issues/239)) ([440f654](https://github.com/mvanhorn/cli-printing-press/commit/440f654d8262c564e8d2f3bd8cbcdb7691fd1c8b))
+* **cli:** add travel and food-and-dining categories ([#187](https://github.com/mvanhorn/cli-printing-press/issues/187)) ([0ac6513](https://github.com/mvanhorn/cli-printing-press/commit/0ac6513428501cc4f2c9b6331ed2dc55cfe3fbf1))
+* **cli:** agent_workflow_readiness scorecard dimension ([3ae025f](https://github.com/mvanhorn/cli-printing-press/commit/3ae025f8249f3b15bee9fda18da3699a8416d3f6))
+* **cli:** apply Cloudflare Wrangler CLI learnings (naming check, MCP token efficiency, agent-context) ([#216](https://github.com/mvanhorn/cli-printing-press/issues/216)) ([dc5a8cc](https://github.com/mvanhorn/cli-printing-press/commit/dc5a8cc42943e43a1536681763c2cb913e86f531))
+* **cli:** async-job detection, --wait flag, jobs command ([1c17285](https://github.com/mvanhorn/cli-printing-press/commit/1c172850d5882ea89cf00d3e74090c47cdcab6de))
+* **cli:** auth.optional spec field — doctor INFO not FAIL, README framing, auth cmd names env var ([#211](https://github.com/mvanhorn/cli-printing-press/issues/211)) ([831040d](https://github.com/mvanhorn/cli-printing-press/commit/831040d58463ecc3734ac663fd43988ed149106d))
+* **cli:** auto-refresh stale caches before read commands ([#233](https://github.com/mvanhorn/cli-printing-press/issues/233)) ([4c05e1e](https://github.com/mvanhorn/cli-printing-press/commit/4c05e1eee2f5e53c6cd4067ae5c4e8f75b48bc16))
+* **cli:** code-orchestration thin surface for large-surface APIs ([#244](https://github.com/mvanhorn/cli-printing-press/issues/244)) ([a4207be](https://github.com/mvanhorn/cli-printing-press/commit/a4207be8bec5cc7a4f32bf039a6ef2b3d2aa3e87))
+* **cli:** declare intent-grouped MCP tools in the spec ([#243](https://github.com/mvanhorn/cli-printing-press/issues/243)) ([85d4ace](https://github.com/mvanhorn/cli-printing-press/commit/85d4ace95a6dfcb94e030e1576776da295fa1e9b))
+* **cli:** enum validation for params declared with enum constraints ([#208](https://github.com/mvanhorn/cli-printing-press/issues/208)) ([26bc905](https://github.com/mvanhorn/cli-printing-press/commit/26bc905746cfd3e22dabce8ced66082d4f77bd1e))
+* **cli:** feedback subcommand for agent-in-band friction reports ([c6223b4](https://github.com/mvanhorn/cli-printing-press/commit/c6223b41f2f77b0defa9ac5e4a590045cb9ead03))
+* **cli:** generate &lt;cli&gt; which &lt;capability&gt; resolver in every printed CLI ([#240](https://github.com/mvanhorn/cli-printing-press/issues/240)) ([9dd5632](https://github.com/mvanhorn/cli-printing-press/commit/9dd5632a1a5cdc742d997cc8b764d9169a7c4f81))
+* **cli:** generate replayable website CLIs ([#241](https://github.com/mvanhorn/cli-printing-press/issues/241)) ([e741db8](https://github.com/mvanhorn/cli-printing-press/commit/e741db807506a9bf343293a182f0e8958bd9665b))
+* **cli:** git-backed snapshot share + cache_freshness scorecard dimension ([#234](https://github.com/mvanhorn/cli-printing-press/issues/234)) ([5e2ed6a](https://github.com/mvanhorn/cli-printing-press/commit/5e2ed6a8a43205eb9c408171be467cc1806b9e75))
+* **cli:** HeyGen CLI learnings - async jobs, profiles, --deliver, feedback ([db2ed65](https://github.com/mvanhorn/cli-printing-press/commit/db2ed654f383322bd747dba54207bf43f3cdfc6f))
+* **cli:** kind: synthetic spec attribute for multi-source CLIs — closes [#203](https://github.com/mvanhorn/cli-printing-press/issues/203) ([#209](https://github.com/mvanhorn/cli-printing-press/issues/209)) ([caa283e](https://github.com/mvanhorn/cli-printing-press/commit/caa283ed147a40946751f81a9889ad9d32a1bf9b))
+* **cli:** machine-output-verification Wave A — cliutil package + dogfood test-presence gate ([#213](https://github.com/mvanhorn/cli-printing-press/issues/213)) ([65dacc2](https://github.com/mvanhorn/cli-printing-press/commit/65dacc25a739492a012f18f48204b050656ff94d))
+* **cli:** machine-output-verification Wave B — live-check entity rule + Phase 4.85 agentic output review ([#214](https://github.com/mvanhorn/cli-printing-press/issues/214)) ([270270a](https://github.com/mvanhorn/cli-printing-press/commit/270270ab1da2b80352b59a7bc7be2af35d3e7536))
+* **cli:** mcp-audit subcommand + docs for the new MCP surface ([#246](https://github.com/mvanhorn/cli-printing-press/issues/246)) ([38db061](https://github.com/mvanhorn/cli-printing-press/commit/38db061099b28c1d7dd307e0a3aedb83bb1601d1))
+* **cli:** named-profile system for repeatable agent contexts ([7140c3e](https://github.com/mvanhorn/cli-printing-press/commit/7140c3e72a63bcaf6057e07149e6817c3c30e267))
+* **cli:** patch skips AST mutations owned by colliding features ([#222](https://github.com/mvanhorn/cli-printing-press/issues/222)) ([331809d](https://github.com/mvanhorn/cli-printing-press/commit/331809da1185d0c4758565b90506d33692257d3c))
+* **cli:** printing-press patch — AST-inject PR [#218](https://github.com/mvanhorn/cli-printing-press/issues/218) features into published CLIs ([#221](https://github.com/mvanhorn/cli-printing-press/issues/221)) ([16ed5a5](https://github.com/mvanhorn/cli-printing-press/commit/16ed5a566b6cb511c58a190f0a4fc8aa3de2a3ef))
+* **cli:** printing-press verify-skill + Phase 4 wiring + Phase 4.8 agentic SKILL reviewer ([#212](https://github.com/mvanhorn/cli-printing-press/issues/212)) ([18cb521](https://github.com/mvanhorn/cli-printing-press/commit/18cb521e6ce4f91b1f463952cdb3f65ddde161e8))
+* **cli:** reimplementation gate in absorb scoring and dogfood ([#238](https://github.com/mvanhorn/cli-printing-press/issues/238)) ([00b9a0d](https://github.com/mvanhorn/cli-printing-press/commit/00b9a0d42498d7f810ffc0ef4bac3c06db27ecab))
+* **cli:** schema-version gate, doctor cache section, cache/share spec surface ([#232](https://github.com/mvanhorn/cli-printing-press/issues/232)) ([e116a27](https://github.com/mvanhorn/cli-printing-press/commit/e116a27c1fad3226fc9432da5cb972b169585efb))
+* **cli:** scorecard --live-check samples novel-feature examples against real targets — closes [#200](https://github.com/mvanhorn/cli-printing-press/issues/200) ([#210](https://github.com/mvanhorn/cli-printing-press/issues/210)) ([df242da](https://github.com/mvanhorn/cli-printing-press/commit/df242da414371f480d394435ad933b9d77b26aec))
+* **cli:** scorecard dimensions for remote transport, tool design, surface strategy ([#245](https://github.com/mvanhorn/cli-printing-press/issues/245)) ([2d07a02](https://github.com/mvanhorn/cli-printing-press/commit/2d07a0218423e3090cbdc033cd9998006fc7c309))
+* **cli:** support extra_commands: in spec.yaml for hand-written commands ([#227](https://github.com/mvanhorn/cli-printing-press/issues/227)) ([84043f3](https://github.com/mvanhorn/cli-printing-press/commit/84043f3a72fbf2f20dd028a6793c0e0f96db5b0f))
+* **scripts:** add verify-skill — static SKILL.md validator ([#194](https://github.com/mvanhorn/cli-printing-press/issues/194)) ([297c3c1](https://github.com/mvanhorn/cli-printing-press/commit/297c3c14f2cd35cd359b503fddc2a8524421a5ce))
+
+
+### Bug Fixes
+
+* **ci:** allow release-please PR title scope ([#248](https://github.com/mvanhorn/cli-printing-press/issues/248)) ([bc13a5b](https://github.com/mvanhorn/cli-printing-press/commit/bc13a5b4f84aa63b7f935908db1e230895f243dc))
+* **cli:** add transitive reachability to dogfood dead function scanner ([#183](https://github.com/mvanhorn/cli-printing-press/issues/183)) ([b436b08](https://github.com/mvanhorn/cli-printing-press/commit/b436b081953eb7a92005249cd0554466a54824de))
+* **cli:** authenticate mega MCP library fetches with GITHUB_TOKEN ([97dbcbb](https://github.com/mvanhorn/cli-printing-press/commit/97dbcbbbf404bcd173cadd35c97efcbbc2130241))
+* **cli:** authenticate mega MCP library fetches with GITHUB_TOKEN ([1d4e642](https://github.com/mvanhorn/cli-printing-press/commit/1d4e642c31e39638ccde61336826bee35ba5b858))
+* **cli:** cross-CLI retro findings - store, sync, scorer, GraphQL templates ([#185](https://github.com/mvanhorn/cli-printing-press/issues/185)) ([e2009bb](https://github.com/mvanhorn/cli-printing-press/commit/e2009bb1fb1d522844baef8e0a8cc7e49506d857))
+* **cli:** enrich README and generate SKILL.md so printed CLIs stop looking like scaffolding ([#186](https://github.com/mvanhorn/cli-printing-press/issues/186)) ([1011df3](https://github.com/mvanhorn/cli-printing-press/commit/1011df38524c5dc6ebf78a10fe7cb2f6a367272d))
+* **cli:** patch verifies target shape + runs build in target dir ([#224](https://github.com/mvanhorn/cli-printing-press/issues/224)) ([86bdfd2](https://github.com/mvanhorn/cli-printing-press/commit/86bdfd2ef5cc79b48e51fadb3bfef8ce4f1ed32c))
+* **cli:** path-aware dogfood novel-feature matcher ([#195](https://github.com/mvanhorn/cli-printing-press/issues/195)) ([126b00d](https://github.com/mvanhorn/cli-printing-press/commit/126b00d055f31b4189123ffe52862b23ba119a2d))
+* **cli:** promoted-command presence check uses promoted type ([#196](https://github.com/mvanhorn/cli-printing-press/issues/196)) ([4ebfa08](https://github.com/mvanhorn/cli-printing-press/commit/4ebfa08801e47967a104976ae1f1d73242f19abb))
+* **cli:** publish manifest must read spec.yaml alongside spec.json ([#220](https://github.com/mvanhorn/cli-printing-press/issues/220)) ([c5ed436](https://github.com/mvanhorn/cli-printing-press/commit/c5ed4369a52f331e5a3fcccf922c754f2f4b5027))
+* **cli:** scope goimports to patched files only ([#223](https://github.com/mvanhorn/cli-printing-press/issues/223)) ([8c54c4c](https://github.com/mvanhorn/cli-printing-press/commit/8c54c4c8223288a49f042651f6c0638d58162501))
+* **cli:** support nested --select paths + suppress provenance on non-TTY stdout ([#229](https://github.com/mvanhorn/cli-printing-press/issues/229)) ([ac4d6aa](https://github.com/mvanhorn/cli-printing-press/commit/ac4d6aa22ff7ef42128d005c4bc39c605ff05733))
+* **skills:** keep scratch artifacts out of repo docs ([#247](https://github.com/mvanhorn/cli-printing-press/issues/247)) ([d14cefa](https://github.com/mvanhorn/cli-printing-press/commit/d14cefaae705cb5fc51bd426e6ddc1b1bdbd80e2))
+* **skills:** Phase 4.85 prompt refinements from calibration dispatch ([#215](https://github.com/mvanhorn/cli-printing-press/issues/215)) ([6f8b0c7](https://github.com/mvanhorn/cli-printing-press/commit/6f8b0c7d6a05151d74131323c18d6bf8405f197b))
+* **skills:** retro 2026-04-13 — stop the ship-broken pattern and require mechanical Phase 5 dogfood ([#207](https://github.com/mvanhorn/cli-printing-press/issues/207)) ([3bef9d6](https://github.com/mvanhorn/cli-printing-press/commit/3bef9d6c5318bb1fe57bdadb0bb62adf9dbd67af))
+
 ## [2.1.0](https://github.com/mvanhorn/cli-printing-press/compare/v2.0.0...v2.1.0) (2026-04-12)
 
 
