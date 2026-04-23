@@ -84,7 +84,7 @@ func TestSkillRendersFrontmatterAndCapabilities(t *testing.T) {
 		"SKILL should include CLI install instructions")
 	assert.True(t, strings.Contains(content, "## MCP Server Installation"),
 		"SKILL should include MCP install instructions")
-	assert.True(t, strings.Contains(content, "| 7 | Rate limited"),
+	assert.True(t, strings.Contains(content, "| 10 | Config error"),
 		"Exit codes table should render")
 }
 
@@ -118,6 +118,29 @@ func TestSkillFallsBackWhenNarrativeAbsent(t *testing.T) {
 		"Exit codes always render")
 	assert.True(t, strings.Contains(content, "## Command Reference"),
 		"Command Reference always renders from the spec")
+}
+
+func TestReadOnlyNoAuthSkillSuppressesInapplicableBoilerplate(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("skillro")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	outputDir := filepath.Join(t.TempDir(), "skillro-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	content := string(skill)
+
+	assert.Contains(t, content, "Read-only")
+	assert.Contains(t, content, "## When Not to Use This CLI")
+	assert.NotContains(t, content, "<cli>-pp-cli")
+	assert.NotContains(t, content, "<CLI>_FEEDBACK")
+	assert.NotContains(t, content, "--wait-timeout")
+	assert.NotContains(t, content, "| 4 | Authentication required |")
+	assert.Contains(t, content, "| 7 | Rate limited")
+	assert.NotContains(t, content, "GET responses cached for 5 minutes")
 }
 
 // TestSkillFrontmatterEscapesNarrativeQuotesAndNewlines asserts that
@@ -190,6 +213,24 @@ func TestSkillFrontmatterEscapesNarrativeQuotesAndNewlines(t *testing.T) {
 		assert.True(t, strings.Contains(parsed.Description, want),
 			"trigger phrase %q should round-trip verbatim through YAML parse; got description: %q", want, parsed.Description)
 	}
+}
+
+func TestSkillUsesExplicitDisplayNameForProse(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("producthunt")
+	outputDir := filepath.Join(t.TempDir(), "producthunt-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{DisplayName: "Product Hunt"}
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	content := string(skill)
+
+	assert.Contains(t, content, "# Product Hunt — Printing Press CLI")
+	assert.Contains(t, content, `Printing Press CLI for Product Hunt.`)
+	assert.NotContains(t, content, "# Producthunt — Printing Press CLI")
 }
 
 // TestSkillFrontmatterFallbackHandlesMultilineSpecDescription asserts that

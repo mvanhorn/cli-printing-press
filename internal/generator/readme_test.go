@@ -114,6 +114,34 @@ func TestGeneratedREADMEHasNoHallucinatedCookbook(t *testing.T) {
 		"README should not reference an unimplemented export command")
 }
 
+func TestReadOnlyNoAuthReadmeSuppressesCrudAuthBoilerplate(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("readonly")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources["items"] = spec.Resource{
+		Description: "Read items",
+		Endpoints: map[string]spec.Endpoint{
+			"list": {Method: "GET", Path: "/items", Description: "List items"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "readonly-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	content := string(readme)
+
+	assert.Contains(t, content, "Read-only by default")
+	assert.NotContains(t, content, "creates return \"already exists\"")
+	assert.NotContains(t, content, "create --stdin")
+	assert.NotContains(t, content, "Authentication errors (exit code 4)")
+	assert.NotContains(t, content, "`4` auth error")
+	assert.Contains(t, content, "`7` rate limited")
+}
+
 // TestReadmeHandlesEmptyButPresentNarrative asserts that a non-nil but
 // fully-empty ReadmeNarrative doesn't cause dangling headers, broken
 // sections, or nil-slice panics. The absorb LLM can legitimately return
@@ -224,6 +252,23 @@ func TestReadmeRendersNarrativeHeadlineAndValueProp(t *testing.T) {
 		"headline should render as bold text")
 	assert.True(t, strings.Contains(content, "Quotes, fundamentals, and a SQLite-backed portfolio tracker."),
 		"value prop should render as a paragraph")
+}
+
+func TestReadmeUsesExplicitDisplayNameForProse(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("producthunt")
+	outputDir := filepath.Join(t.TempDir(), "producthunt-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.Narrative = &ReadmeNarrative{DisplayName: "Product Hunt"}
+	require.NoError(t, gen.Generate())
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	content := string(readme)
+
+	assert.Contains(t, content, "# Product Hunt CLI")
+	assert.NotContains(t, content, "# Producthunt CLI")
 }
 
 // TestReadmeFallsBackWhenNarrativeAbsent asserts the generic description

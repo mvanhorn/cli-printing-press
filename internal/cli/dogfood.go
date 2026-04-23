@@ -63,13 +63,16 @@ func printDogfoodReport(report *pipeline.DogfoodReport) {
 	fmt.Println()
 
 	pathStatus := "SKIP"
-	if report.SpecPath != "" {
+	if report.SpecPath != "" && !report.PathCheck.Skipped {
 		pathStatus = "PASS"
 		if report.PathCheck.Pct < 70 {
 			pathStatus = "FAIL"
 		}
 	}
 	fmt.Printf("Path Validity:     %d/%d valid (%s)\n", report.PathCheck.Valid, report.PathCheck.Tested, pathStatus)
+	if report.PathCheck.Skipped && report.PathCheck.Detail != "" {
+		fmt.Printf("  Detail: %s\n", report.PathCheck.Detail)
+	}
 	for _, path := range report.PathCheck.Invalid {
 		fmt.Printf("  - %s: not in spec\n", path)
 	}

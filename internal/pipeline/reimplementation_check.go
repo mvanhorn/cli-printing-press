@@ -1,6 +1,9 @@
 package pipeline
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -62,6 +65,11 @@ var (
 	// common shape is `store.Open(...)`. Agent-authored commands that
 	// read sync'd data consistently use this entry point.
 	storeCallRe = regexp.MustCompile(`\bstore\.[A-Z]\w*\s*\(`)
+
+	// storeTypeRe catches helpers that accept or return the generated
+	// store type even if the actual store call happens through another
+	// helper.
+	storeTypeRe = regexp.MustCompile(`\b\*?store\.Store\b`)
 
 	// clientImportRe catches the generated client package import:
 	// `"<module>/internal/client"`. Not every client call requires this
@@ -145,6 +153,7 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 	}
 
 	result := ReimplementationCheckResult{}
+	storeHelpers := storeHelperNames(fileContent)
 	for _, nf := range research.NovelFeatures {
 		leaf := lastPathSegment(commandPath(nf.Command))
 		if leaf == "" {
@@ -160,7 +169,7 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 		// and take the most favorable classification - any single file
 		// with the right signals vindicates the command.
 		result.Checked++
-		finding, exempt, ok := classifyReimplementation(files, fileContent)
+		finding, exempt, ok := classifyReimplementation(files, fileContent, storeHelpers)
 		if exempt {
 			result.ExemptedViaStore++
 			continue
@@ -190,7 +199,7 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 //
 // The trivial-body regex is consulted only when rule 3 fires, to pick
 // between "empty stub" and "hand-rolled response" as the reason.
-func classifyReimplementation(files []string, fileContent map[string]string) (ReimplementationFinding, bool, bool) {
+func classifyReimplementation(files []string, fileContent map[string]string, storeHelpers map[string]bool) (ReimplementationFinding, bool, bool) {
 	hasClient := false
 	hasTrivialBody := false
 	primaryFile := files[0]
@@ -200,6 +209,9 @@ func classifyReimplementation(files []string, fileContent map[string]string) (Re
 			continue
 		}
 		if hasStoreSignal(content) {
+			return ReimplementationFinding{File: f}, true, true
+		}
+		if callsStoreHelper(content, storeHelpers) {
 			return ReimplementationFinding{File: f}, true, true
 		}
 		if hasClientSignal(content) {
@@ -221,6 +233,49 @@ func classifyReimplementation(files []string, fileContent map[string]string) (Re
 
 func hasStoreSignal(content string) bool {
 	return storeImportRe.MatchString(content) || storeCallRe.MatchString(content)
+}
+
+func storeHelperNames(fileContent map[string]string) map[string]bool {
+	helpers := map[string]bool{}
+	for _, content := range fileContent {
+		if !hasStoreSignal(content) {
+			continue
+		}
+		collectStoreHelpers(content, helpers)
+	}
+	return helpers
+}
+
+func collectStoreHelpers(content string, helpers map[string]bool) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "", content, 0)
+	if err != nil {
+		return
+	}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name == nil {
+			continue
+		}
+		start := fset.Position(fn.Pos()).Offset
+		end := fset.Position(fn.End()).Offset
+		if start < 0 || end > len(content) || start >= end {
+			continue
+		}
+		funcText := content[start:end]
+		if storeCallRe.MatchString(funcText) || storeTypeRe.MatchString(funcText) {
+			helpers[fn.Name.Name] = true
+		}
+	}
+}
+
+func callsStoreHelper(content string, helpers map[string]bool) bool {
+	for name := range helpers {
+		if regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\s*\(`).MatchString(content) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasClientSignal(content string) bool {

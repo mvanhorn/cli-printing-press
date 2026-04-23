@@ -286,8 +286,9 @@ func TestWriteAndLoadResearchWithEnrichedNovelFeatures(t *testing.T) {
 			},
 		},
 		Narrative: &ReadmeNarrative{
-			Headline:  "Every Yahoo Finance feature plus a local portfolio tracker",
-			ValueProp: "Quotes, charts, fundamentals, options chains — plus portfolio and watchlist state nothing else has.",
+			DisplayName: "Yahoo Finance",
+			Headline:    "Every Yahoo Finance feature plus a local portfolio tracker",
+			ValueProp:   "Quotes, charts, fundamentals, options chains — plus portfolio and watchlist state nothing else has.",
 			QuickStart: []QuickStartStep{
 				{Command: "yahoo-finance-pp-cli quote AAPL", Comment: "Your first quote"},
 			},
@@ -312,6 +313,7 @@ func TestWriteAndLoadResearchWithEnrichedNovelFeatures(t *testing.T) {
 	assert.Equal(t, "Local state that compounds", nf.Group)
 
 	require.NotNil(t, loaded.Narrative)
+	assert.Equal(t, "Yahoo Finance", loaded.Narrative.DisplayName)
 	assert.Equal(t, "Every Yahoo Finance feature plus a local portfolio tracker", loaded.Narrative.Headline)
 	assert.Len(t, loaded.Narrative.QuickStart, 1)
 	assert.Equal(t, "Your first quote", loaded.Narrative.QuickStart[0].Comment)

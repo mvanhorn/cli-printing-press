@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"bytes"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -81,6 +82,7 @@ type novelFeatureGroup struct {
 // Holds LLM-authored prose that makes generated docs feel like product
 // documentation rather than scaffolding. All fields are optional.
 type ReadmeNarrative struct {
+	DisplayName    string
 	Headline       string
 	ValueProp      string
 	AuthNarrative  string
@@ -571,12 +573,16 @@ type clientTemplateData struct {
 // readmeTemplateData wraps APISpec with additional fields for README rendering.
 type readmeTemplateData struct {
 	*spec.APISpec
-	Sources         []ReadmeSource
-	DiscoveryPages  []string
-	NovelFeatures   []NovelFeature
-	Narrative       *ReadmeNarrative
-	HasDataLayer    bool
-	TrafficAnalysis *trafficAnalysisTemplateData
+	Sources          []ReadmeSource
+	DiscoveryPages   []string
+	NovelFeatures    []NovelFeature
+	Narrative        *ReadmeNarrative
+	ProseName        string
+	HasDataLayer     bool
+	HasAsyncJobs     bool
+	HasWriteCommands bool
+	HasAuth          bool
+	TrafficAnalysis  *trafficAnalysisTemplateData
 }
 
 type generatorTemplateData struct {
@@ -607,13 +613,60 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		}
 	}
 	return &readmeTemplateData{
-		APISpec:         g.Spec,
-		Sources:         g.Sources,
-		DiscoveryPages:  g.DiscoveryPages,
-		NovelFeatures:   g.NovelFeatures,
-		Narrative:       g.Narrative,
-		HasDataLayer:    g.VisionSet.Store,
-		TrafficAnalysis: g.trafficAnalysisData(),
+		APISpec:          g.Spec,
+		Sources:          g.Sources,
+		DiscoveryPages:   g.DiscoveryPages,
+		NovelFeatures:    g.NovelFeatures,
+		Narrative:        g.Narrative,
+		ProseName:        g.proseName(),
+		HasDataLayer:     g.VisionSet.Store,
+		HasAsyncJobs:     len(g.AsyncJobs) > 0,
+		HasWriteCommands: hasWriteCommands(g.Spec.Resources),
+		HasAuth:          hasAuth(g.Spec.Auth),
+		TrafficAnalysis:  g.trafficAnalysisData(),
+	}
+}
+
+func (g *Generator) proseName() string {
+	if g.Narrative != nil && strings.TrimSpace(g.Narrative.DisplayName) != "" {
+		return strings.TrimSpace(g.Narrative.DisplayName)
+	}
+	return cases.Title(language.English).String(strings.ReplaceAll(g.Spec.Name, "-", " "))
+}
+
+func hasAuth(auth spec.AuthConfig) bool {
+	return strings.TrimSpace(auth.Type) != "" && auth.Type != "none"
+}
+
+func hasWriteCommands(resources map[string]spec.Resource) bool {
+	for _, resource := range resources {
+		if resourceHasWriteCommand(resource) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceHasWriteCommand(resource spec.Resource) bool {
+	for _, endpoint := range resource.Endpoints {
+		if methodIsWrite(endpoint.Method) {
+			return true
+		}
+	}
+	for _, sub := range resource.SubResources {
+		if resourceHasWriteCommand(sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func methodIsWrite(method string) bool {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case "POST", "PUT", "PATCH", "DELETE":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1521,16 +1574,28 @@ func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
 	}
 
 	fullPath := filepath.Join(g.OutputDir, outPath)
-	f, err := os.Create(fullPath)
-	if err != nil {
-		return fmt.Errorf("creating %s: %w", fullPath, err)
-	}
-	defer func() { _ = f.Close() }()
-
-	if err := tmpl.Execute(f, data); err != nil {
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
 		return fmt.Errorf("executing template %s: %w", tmplName, err)
 	}
+	if err := validateRenderedArtifact(outPath, buf.String()); err != nil {
+		return err
+	}
 
+	return os.WriteFile(fullPath, buf.Bytes(), 0o644)
+}
+
+func validateRenderedArtifact(outPath, content string) error {
+	switch filepath.Base(outPath) {
+	case "README.md", "SKILL.md":
+	default:
+		return nil
+	}
+	for _, marker := range []string{"<cli>-pp-cli", "~/.<cli>-pp-cli", "<CLI>_", "{{.Name}}"} {
+		if strings.Contains(content, marker) {
+			return fmt.Errorf("%s contains unsubstituted placeholder %q", outPath, marker)
+		}
+	}
 	return nil
 }
 

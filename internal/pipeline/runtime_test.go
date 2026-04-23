@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -334,6 +335,16 @@ func TestSyntheticArgValue(t *testing.T) {
 			assert.Equal(t, tt.expected, syntheticArgValue(tt.name))
 		})
 	}
+}
+
+func TestIsIntentionalStubExit(t *testing.T) {
+	assert.True(t, isIntentionalStubExit(fmt.Errorf("exit 3: {\"cf_gated\":true,\"message\":\"stub command\"}")))
+	assert.True(t, isIntentionalStubExit(fmt.Errorf("exit 3: {\"cf_gated\": true, \"message\":\"needs manual clearance\"}")))
+	assert.False(t, isIntentionalStubExit(fmt.Errorf("exit 3: not implemented because this path is Cloudflare gated")))
+	assert.False(t, isIntentionalStubExit(fmt.Errorf("exit 3: stubbed")))
+	assert.False(t, isIntentionalStubExit(fmt.Errorf("exit 3: stub command")))
+	assert.False(t, isIntentionalStubExit(fmt.Errorf("exit 3: resource not found")))
+	assert.False(t, isIntentionalStubExit(nil))
 }
 
 func TestSyntheticFlagValue(t *testing.T) {

@@ -780,7 +780,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	if cmd.Kind != "local" && cmd.Kind != "data-layer" {
 		args := buildTestArgs(cmd.Name, cmd.Args, extraFlags, "--dry-run")
 		err := runCLI(binary, args, env, 10*time.Second)
-		result.DryRun = err == nil
+		result.DryRun = err == nil || isIntentionalStubExit(err)
 	} else {
 		result.DryRun = true // skip = pass
 	}
@@ -793,7 +793,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	} else {
 		args := buildTestArgs(cmd.Name, cmd.Args, extraFlags, "--json")
 		err := runCLI(binary, args, env, 15*time.Second)
-		result.Execute = err == nil
+		result.Execute = err == nil || isIntentionalStubExit(err)
 	}
 
 	// Score
@@ -810,6 +810,15 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	result.Score = score
 
 	return result
+}
+
+func isIntentionalStubExit(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, `"cf_gated":true`) ||
+		strings.Contains(msg, `"cf_gated": true`)
 }
 
 func runBrowserSessionProofTest(binary string, auth apispec.AuthConfig) CommandResult {

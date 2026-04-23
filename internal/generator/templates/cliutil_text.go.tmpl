@@ -6,6 +6,7 @@ package cliutil
 import (
 	"html"
 	"strings"
+	"time"
 )
 
 // CleanText normalizes scraped text by trimming whitespace and decoding
@@ -19,4 +20,31 @@ import (
 // deeper escaping problem upstream — fix there, not here.
 func CleanText(s string) string {
 	return html.UnescapeString(strings.TrimSpace(s))
+}
+
+// ParseStoredTime parses timestamps read back from SQLite-backed generated
+// stores. modernc.org/sqlite can serialize time.Time using Go's native
+// time.String format, while hand-written sync code often stores RFC3339.
+// Use this helper instead of a single time.Parse(time.RFC3339, value) call
+// when scanning timestamp columns from the store.
+func ParseStoredTime(s string) time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		"2006-01-02 15:04:05.999999 -0700 MST",
+		"2006-01-02 15:04:05.999 -0700 MST",
+		"2006-01-02 15:04:05 -0700 MST",
+		"2006-01-02 15:04:05.999999999 -0700",
+		"2006-01-02 15:04:05 -0700",
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }

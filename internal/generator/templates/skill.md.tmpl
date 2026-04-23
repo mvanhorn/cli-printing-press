@@ -1,12 +1,12 @@
 ---
 name: pp-{{.Name}}
-description: "{{if and .Narrative .Narrative.Headline}}{{yamlDoubleQuoted .Narrative.Headline}}{{else}}Printing Press CLI for {{humanName .Name}}. {{yamlDoubleQuoted (oneline .Description)}}{{end}}{{if and .Narrative .Narrative.TriggerPhrases}} Trigger phrases: {{range $i, $p := .Narrative.TriggerPhrases}}{{if $i}}, {{end}}`{{yamlDoubleQuoted $p}}`{{end}}.{{end}}"
+description: "{{if and .Narrative .Narrative.Headline}}{{yamlDoubleQuoted .Narrative.Headline}}{{else}}Printing Press CLI for {{yamlDoubleQuoted .ProseName}}. {{yamlDoubleQuoted (oneline .Description)}}{{end}}{{if and .Narrative .Narrative.TriggerPhrases}} Trigger phrases: {{range $i, $p := .Narrative.TriggerPhrases}}{{if $i}}, {{end}}`{{yamlDoubleQuoted $p}}`{{end}}.{{end}}"
 argument-hint: "<command> [args] | install cli|mcp"
 allowed-tools: "Read Bash"
 metadata: '{"openclaw":{"requires":{"bins":["{{.Name}}-pp-cli"]},"install":[{"id":"go","kind":"shell","command":"go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}-pp-cli/cmd/{{.Name}}-pp-cli@latest","bins":["{{.Name}}-pp-cli"],"label":"Install via go install"}]}}'
 ---
 
-# {{humanName .Name}} — Printing Press CLI
+# {{.ProseName}} — Printing Press CLI
 {{- if and .Narrative .Narrative.ValueProp}}
 
 {{.Narrative.ValueProp}}
@@ -19,6 +19,12 @@ metadata: '{"openclaw":{"requires":{"bins":["{{.Name}}-pp-cli"]},"install":[{"id
 ## When to Use This CLI
 
 {{.Narrative.WhenToUse}}
+{{- end}}
+{{- if not .HasWriteCommands}}
+
+## When Not to Use This CLI
+
+Do not activate this CLI for requests that require creating, updating, deleting, publishing, commenting, upvoting, inviting, ordering, sending messages, booking, purchasing, or changing remote state. This printed CLI exposes read-only commands for inspection, export, sync, and analysis.
 {{- end}}
 {{- if .NovelFeatures}}
 
@@ -131,7 +137,7 @@ When you know what you want to do but not which command does it, ask the CLI dir
 {{- end}}
 
 ## Auth Setup
-{{- if and .Narrative .Narrative.AuthNarrative}}
+{{- if and .HasAuth .Narrative .Narrative.AuthNarrative}}
 
 {{.Narrative.AuthNarrative}}
 {{- else if eq .Auth.Type "api_key"}}
@@ -189,12 +195,21 @@ Add `--agent` to any command. Expands to: `--json --compact --no-input --no-colo
 - **Filterable** — `--select` keeps a subset of fields. Dotted paths descend into nested structures; arrays traverse element-wise. Critical for keeping context small on verbose APIs:
 
   ```bash
-  {{.Name}}-pp-cli <command> --agent --select id,name,status
-  {{.Name}}-pp-cli <command> --agent --select items.id,items.owner.name
+  {{- $agentExample := firstCommandExample .Resources}}
+  {{- if $agentExample}}
+  {{.Name}}-pp-cli {{$agentExample}} --agent --select id,name,status
+  {{- else}}
+  {{.Name}}-pp-cli --help
+  {{- end}}
   ```
 - **Previewable** — `--dry-run` shows the request without sending
-- **Cacheable** — GET responses cached for 5 minutes, bypass with `--no-cache`
+{{- if .HasDataLayer}}
+- **Offline-friendly** — sync/search commands can use the local SQLite store when available
+{{- end}}
 - **Non-interactive** — never prompts, every input is a flag
+{{- if not .HasWriteCommands}}
+- **Read-only** — do not use this CLI for create, update, delete, publish, comment, upvote, invite, order, send, or other mutating requests
+{{- end}}
 {{- if .HasDataLayer}}
 
 ### Response envelope
@@ -216,12 +231,12 @@ Parse `.results` for data and `.meta.source` to know whether it's live or local.
 When you (or the agent) notice something off about this CLI, record it:
 
 ```
-<cli>-pp-cli feedback "the --since flag is inclusive but docs say exclusive"
-<cli>-pp-cli feedback --stdin < notes.txt
-<cli>-pp-cli feedback list --json --limit 10
+{{.Name}}-pp-cli feedback "the --since flag is inclusive but docs say exclusive"
+{{.Name}}-pp-cli feedback --stdin < notes.txt
+{{.Name}}-pp-cli feedback list --json --limit 10
 ```
 
-Entries are stored locally at `~/.<cli>-pp-cli/feedback.jsonl`. They are never POSTed unless `<CLI>_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `<CLI>_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
+Entries are stored locally at `~/.{{.Name}}-pp-cli/feedback.jsonl`. They are never POSTed unless `{{envName .Name}}_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `{{envName .Name}}_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
 
 Write what *surprised* you, not a bug report. Short, specific, one line: that is the part that compounds.
 
@@ -242,14 +257,16 @@ Unknown schemes are refused with a structured error naming the supported set. We
 A profile is a saved set of flag values, reused across invocations. Use it when a scheduled agent calls the same command every run with the same configuration - HeyGen's "Beacon" pattern.
 
 ```
-<cli>-pp-cli profile save briefing --<flag> <value> ...
-<cli>-pp-cli --profile briefing <command> ...
-<cli>-pp-cli profile list [--json]
-<cli>-pp-cli profile show briefing
-<cli>-pp-cli profile delete briefing --yes
+{{.Name}}-pp-cli profile save briefing --json
+{{.Name}}-pp-cli --profile briefing {{if firstCommandExample .Resources}}{{firstCommandExample .Resources}}{{else}}doctor{{end}}
+{{.Name}}-pp-cli profile list --json
+{{.Name}}-pp-cli profile show briefing
+{{.Name}}-pp-cli profile delete briefing --yes
 ```
 
 Explicit flags always win over profile values; profile values win over defaults. `agent-context` lists all available profiles under `available_profiles` so introspecting agents discover them at runtime.
+
+{{- if .HasAsyncJobs}}
 
 ## Async Jobs
 
@@ -262,6 +279,7 @@ For endpoints that submit long-running work, the generator detects the submit-th
 | `--wait-interval` | Initial poll interval (default 2s; grows with exponential backoff up to 30s) |
 
 Use async submission without `--wait` when you want to fire-and-forget; use `--wait` when you want one command to return the finished artifact.
+{{- end}}
 
 ## Exit Codes
 
@@ -270,7 +288,9 @@ Use async submission without `--wait` when you want to fire-and-forget; use `--w
 | 0 | Success |
 | 2 | Usage error (wrong arguments) |
 | 3 | Resource not found |
+{{- if .HasAuth}}
 | 4 | Authentication required |
+{{- end}}
 | 5 | API error (upstream issue) |
 | 7 | Rate limited (wait and retry) |
 | 10 | Config error |

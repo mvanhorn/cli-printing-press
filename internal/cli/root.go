@@ -59,6 +59,7 @@ func Execute() error {
 	rootCmd.AddCommand(newWorkflowVerifyCmd())
 	rootCmd.AddCommand(newLockCmd())
 	rootCmd.AddCommand(newMCPAuditCmd())
+	rootCmd.AddCommand(newSchemaCmd())
 
 	return rootCmd.Execute()
 }
@@ -1007,6 +1008,7 @@ func translateNarrative(n *pipeline.ReadmeNarrative) *generator.ReadmeNarrative 
 		return nil
 	}
 	out := &generator.ReadmeNarrative{
+		DisplayName:    n.DisplayName,
 		Headline:       n.Headline,
 		ValueProp:      n.ValueProp,
 		AuthNarrative:  n.AuthNarrative,

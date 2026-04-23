@@ -73,6 +73,10 @@ type NovelFeature struct {
 // absent. Populated during the absorb phase from the brief and competitor
 // research; persisted in research.json so rebuilds are reproducible.
 type ReadmeNarrative struct {
+	// DisplayName is the canonical prose name for the API/product. It may
+	// differ from the slug used for code and binary names, e.g. "Product Hunt"
+	// instead of "producthunt".
+	DisplayName string `json:"display_name,omitempty"`
 	// Headline is a bold one-sentence value prop rendered beneath the title
 	// (e.g. "Every Notion feature, plus sync, search, and a local database").
 	Headline string `json:"headline,omitempty"`

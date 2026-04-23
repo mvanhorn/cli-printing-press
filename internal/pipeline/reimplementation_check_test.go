@@ -121,6 +121,101 @@ func newBottleneckCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
+func TestCheckReimplementation_StoreHelperHop_Exempted(t *testing.T) {
+	files := map[string]string{
+		"types.go": `package cli
+
+import "example.com/mod/internal/store"
+
+func openStore(path string) (*store.Store, error) {
+	return store.Open(path)
+}
+`,
+		"trend.go": `package cli
+
+import "github.com/spf13/cobra"
+
+func newTrendCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "trend",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db, err := openStore("x.db")
+			if err != nil { return err }
+			_ = db
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Trend", Command: "trend"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if got.ExemptedViaStore != 1 {
+		t.Fatalf("ExemptedViaStore: want 1, got %d", got.ExemptedViaStore)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d", len(got.Suspicious))
+	}
+}
+
+func TestCheckReimplementation_FormatterInStoreFile_NotExempted(t *testing.T) {
+	files := map[string]string{
+		"types.go": `package cli
+
+import (
+	"strings"
+
+	"example.com/mod/internal/store"
+)
+
+func openStore(path string) (*store.Store, error) {
+	return store.Open(path)
+}
+
+func formatTitle(title string) string {
+	return strings.TrimSpace(title)
+}
+`,
+		"trend.go": `package cli
+
+import "github.com/spf13/cobra"
+
+func newTrendCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "trend",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_ = formatTitle("static")
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Trend", Command: "trend"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if got.ExemptedViaStore != 0 {
+		t.Fatalf("ExemptedViaStore: want 0, got %d", got.ExemptedViaStore)
+	}
+	if len(got.Suspicious) != 1 {
+		t.Fatalf("Suspicious: want 1, got %d", len(got.Suspicious))
+	}
+	if got.Suspicious[0].Command != "trend" {
+		t.Fatalf("Command: want trend, got %s", got.Suspicious[0].Command)
+	}
+}
+
 // Error path: a novel-feature command body that returns a constant
 // string with no client calls is flagged with "hand-rolled response."
 func TestCheckReimplementation_ConstantString_Flagged(t *testing.T) {

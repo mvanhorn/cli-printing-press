@@ -1,4 +1,4 @@
-# {{humanName .Name}} CLI
+# {{.ProseName}} CLI
 {{- if and .Narrative .Narrative.Headline}}
 
 **{{.Narrative.Headline}}**
@@ -12,7 +12,7 @@
 {{- end}}
 {{- if .WebsiteURL}}
 
-Learn more at [{{humanName .Name}}]({{.WebsiteURL}}).
+Learn more at [{{.ProseName}}]({{.WebsiteURL}}).
 {{- end}}
 
 ## Install
@@ -222,14 +222,19 @@ This CLI is designed for AI agent consumption:
 - **Pipeable** - `--json` output to stdout, errors to stderr
 - **Filterable** - `--select id,name` returns only fields you need
 - **Previewable** - `--dry-run` shows the request without sending
+{{- if .HasWriteCommands}}
 - **Retryable** - creates return "already exists" on retry, deletes return "already deleted"
 - **Confirmable** - `--yes` for explicit confirmation of destructive actions
-- **Piped input** - `echo '{"key":"value"}' | {{.Name}}-pp-cli <resource> create --stdin`
-- **Cacheable** - GET responses cached for 5 minutes, bypass with `--no-cache`
+- **Piped input** - write commands can accept structured input when their help lists `--stdin`
+{{- else}}
+- **Read-only by default** - this CLI does not create, update, delete, publish, send, or mutate remote resources
+{{- end}}
+{{- if .HasDataLayer}}
+- **Offline-friendly** - sync/search commands can use the local SQLite store when available
+{{- end}}
 - **Agent-safe by default** - no colors or formatting unless `--human-friendly` is set
-- **Progress events** - paginated commands emit NDJSON events to stderr in default mode
 
-Exit codes: `0` success, `2` usage error, `3` not found, `4` auth error, `5` API error, `7` rate limited, `10` config error.
+Exit codes: `0` success, `2` usage error, `3` not found{{if .HasAuth}}, `4` auth error{{end}}, `5` API error, `7` rate limited, `10` config error.
 
 ## Use as MCP Server
 
@@ -315,19 +320,17 @@ Environment variables:
 
 ## Troubleshooting
 
+{{- if .HasAuth}}
 **Authentication errors (exit code 4)**
 - Run `{{.Name}}-pp-cli doctor` to check credentials
 {{- if .Auth.EnvVars}}
 - Verify the environment variable is set: `echo ${{index .Auth.EnvVars 0}}`
 {{- end}}
 
+{{- end}}
 **Not found errors (exit code 3)**
 - Check the resource ID is correct
 - Run the `list` command to see available items
-
-**Rate limit errors (exit code 7)**
-- The CLI auto-retries with exponential backoff
-- If persistent, wait a few minutes and try again
 {{- if and .Narrative .Narrative.Troubleshoots}}
 
 ### API-specific
