@@ -1180,6 +1180,11 @@ func (g *Generator) Generate() error {
 				return fmt.Errorf("rendering MCP intents: %w", err)
 			}
 		}
+		if g.Spec.MCP.IsCodeOrchestration() {
+			if err := g.renderTemplate("mcp_code_orch.go.tmpl", filepath.Join("internal", "mcp", "code_orch.go"), mcpData); err != nil {
+				return fmt.Errorf("rendering MCP code-orchestration: %w", err)
+			}
+		}
 	}
 
 	// Generate api discovery command when promoted commands exist (lets users browse hidden interfaces)

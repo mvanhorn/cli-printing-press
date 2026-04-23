@@ -1229,6 +1229,59 @@ func TestMCPIntentsValidation(t *testing.T) {
 	}
 }
 
+func TestMCPOrchestrationValidation(t *testing.T) {
+	base := func(mcp MCPConfig) APISpec {
+		return APISpec{
+			Name:      "demo",
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+			MCP:       mcp,
+		}
+	}
+
+	tests := []struct {
+		name    string
+		mcp     MCPConfig
+		wantErr string
+	}{
+		{
+			name:    "unknown orchestration rejected",
+			mcp:     MCPConfig{Orchestration: "magic"},
+			wantErr: "must be one of endpoint-mirror, intent, code",
+		},
+		{
+			name:    "negative threshold rejected",
+			mcp:     MCPConfig{OrchestrationThreshold: -1},
+			wantErr: "must be non-negative",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := base(tt.mcp)
+			err := s.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+
+	// Happy paths for orchestration modes and threshold fallback.
+	ok := []MCPConfig{
+		{}, // absent = endpoint-mirror default
+		{Orchestration: "endpoint-mirror"},
+		{Orchestration: "intent"},
+		{Orchestration: "code"},
+		{Orchestration: "code", OrchestrationThreshold: 100},
+	}
+	for i, mcp := range ok {
+		s := base(mcp)
+		require.NoError(t, s.Validate(), "case %d", i)
+	}
+	assert.Equal(t, 50, MCPConfig{}.EffectiveOrchestrationThreshold())
+	assert.Equal(t, 100, MCPConfig{OrchestrationThreshold: 100}.EffectiveOrchestrationThreshold())
+	assert.True(t, MCPConfig{Orchestration: "code"}.IsCodeOrchestration())
+	assert.False(t, MCPConfig{Orchestration: "intent"}.IsCodeOrchestration())
+}
+
 func TestMCPConfigAcceptsValidShapes(t *testing.T) {
 	tests := []struct {
 		name string

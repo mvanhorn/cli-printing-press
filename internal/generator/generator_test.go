@@ -2179,6 +2179,73 @@ func TestGenerateMCPMainRemoteOptIn(t *testing.T) {
 	}
 }
 
+// TestGenerateMCPCodeOrchestrationEmitsSearchExecute proves that when the
+// spec opts into code-orchestration, the generator emits only
+// <api>_search and <api>_execute as MCP tools, covering every endpoint via
+// a single registry. This is the thin surface pattern referenced by
+// Anthropic's 2026-04-22 post (Cloudflare's ~2,500-endpoint server in ~1K
+// tokens).
+func TestGenerateMCPCodeOrchestrationEmitsSearchExecute(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	apiSpec.MCP = spec.MCPConfig{Orchestration: "code"}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	codeOrchPath := filepath.Join(outputDir, "internal", "mcp", "code_orch.go")
+	data, err := os.ReadFile(codeOrchPath)
+	require.NoError(t, err, "code_orch.go must be emitted when orchestration is code")
+	body := string(data)
+
+	for _, want := range []string{
+		`func RegisterCodeOrchestrationTools(`,
+		`mcplib.NewTool("loops_search"`,
+		`mcplib.NewTool("loops_execute"`,
+		`codeOrchEndpoints = []codeOrchEndpoint`,
+		`func handleCodeOrchSearch(`,
+		`func handleCodeOrchExecute(`,
+	} {
+		assert.Contains(t, body, want, "code_orch.go missing expected snippet %q", want)
+	}
+
+	toolsPath := filepath.Join(outputDir, "internal", "mcp", "tools.go")
+	toolsData, err := os.ReadFile(toolsPath)
+	require.NoError(t, err)
+	toolsBody := string(toolsData)
+	assert.Contains(t, toolsBody, "RegisterCodeOrchestrationTools(s)",
+		"code-orchestration RegisterTools must call RegisterCodeOrchestrationTools")
+	assert.NotContains(t, toolsBody, `mcplib.NewTool("contacts_list"`,
+		"endpoint-mirror tools must be fully suppressed in code-orch mode")
+
+	// End-to-end: the generated project must compile.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+// TestGenerateMCPCodeOrchestrationSkippedByDefault guards against the
+// template accidentally emitting code_orch.go for specs that didn't opt in.
+// Small APIs should keep today's endpoint-mirror shape; the thin surface
+// costs a discovery round-trip the agent doesn't need when there are only
+// a handful of tools.
+func TestGenerateMCPCodeOrchestrationSkippedByDefault(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	require.False(t, apiSpec.MCP.IsCodeOrchestration())
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	_, err = os.Stat(filepath.Join(outputDir, "internal", "mcp", "code_orch.go"))
+	assert.True(t, os.IsNotExist(err), "code_orch.go must not be emitted without orchestration: code")
+}
+
 // TestGenerateMCPIntentsEmittedWhenDeclared proves that a spec with mcp.intents
 // emits internal/mcp/intents.go, wires the intent handler into RegisterTools
 // via RegisterIntents, and keeps endpoint-mirror tools by default.

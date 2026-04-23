@@ -60,6 +60,11 @@ func sanitizeErrorBody(msg string) string {
 
 // RegisterTools registers all API operations as MCP tools.
 func RegisterTools(s *server.MCPServer) {
+{{- if .MCP.IsCodeOrchestration}}
+	// Code-orchestration mode — the full surface is covered by two tools
+	// (<api>_search + <api>_execute). Endpoint-mirror tools are suppressed.
+	RegisterCodeOrchestrationTools(s)
+{{- else}}
 {{- if ne .MCP.EndpointTools "hidden"}}
 {{- range $name, $resource := .Resources}}
 {{- range $eName, $endpoint := $resource.Endpoints}}
@@ -103,6 +108,7 @@ func RegisterTools(s *server.MCPServer) {
 {{- if .MCP.Intents}}
 	// Intent tools — higher-level compositions declared in the spec.
 	RegisterIntents(s)
+{{- end}}
 {{- end}}
 
 {{- if .VisionSet.Sync}}

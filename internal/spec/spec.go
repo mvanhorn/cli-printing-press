@@ -153,10 +153,12 @@ type ShareConfig struct {
 // ["stdio"] for backward compatibility. Unknown values are rejected at spec
 // load; this prevents silent drift when new transports are introduced.
 type MCPConfig struct {
-	Transport     []string `yaml:"transport,omitempty" json:"transport,omitempty"`           // allowed transports the generated binary compiles support for; empty == [stdio]. Runtime transport is chosen via the --transport flag and PP_MCP_TRANSPORT env.
-	Addr          string   `yaml:"addr,omitempty" json:"addr,omitempty"`                     // default bind address for the http transport (e.g., ":7777"). Blank means runtime default (":7777"). Ignored unless http is in Transport.
-	Intents       []Intent `yaml:"intents,omitempty" json:"intents,omitempty"`               // higher-level MCP tools that compose multiple endpoint calls. The agent sees one intent tool; the generator emits a handler that fans out to the declared endpoints sequentially. Anti-pattern to fight: one-tool-per-endpoint mirrors that force agents to stitch primitives.
-	EndpointTools string   `yaml:"endpoint_tools,omitempty" json:"endpoint_tools,omitempty"` // "visible" (default) keeps the per-endpoint MCP tools; "hidden" suppresses them so only intents + generator-emitted tools appear. Use "hidden" when intents fully cover the surface and raw endpoints would be noise.
+	Transport              []string `yaml:"transport,omitempty" json:"transport,omitempty"`                             // allowed transports the generated binary compiles support for; empty == [stdio]. Runtime transport is chosen via the --transport flag and PP_MCP_TRANSPORT env.
+	Addr                   string   `yaml:"addr,omitempty" json:"addr,omitempty"`                                       // default bind address for the http transport (e.g., ":7777"). Blank means runtime default (":7777"). Ignored unless http is in Transport.
+	Intents                []Intent `yaml:"intents,omitempty" json:"intents,omitempty"`                                 // higher-level MCP tools that compose multiple endpoint calls. The agent sees one intent tool; the generator emits a handler that fans out to the declared endpoints sequentially. Anti-pattern to fight: one-tool-per-endpoint mirrors that force agents to stitch primitives.
+	EndpointTools          string   `yaml:"endpoint_tools,omitempty" json:"endpoint_tools,omitempty"`                   // "visible" (default) keeps the per-endpoint MCP tools; "hidden" suppresses them so only intents + generator-emitted tools appear. Use "hidden" when intents fully cover the surface and raw endpoints would be noise.
+	Orchestration          string   `yaml:"orchestration,omitempty" json:"orchestration,omitempty"`                     // "endpoint-mirror" (default), "intent", or "code". Code-orchestration emits a thin <api>_search + <api>_execute pair covering the full surface in ~1K tokens; used for very large APIs where even intent-grouped tools would overflow context. Mutually exclusive with endpoint-mirror at emission time.
+	OrchestrationThreshold int      `yaml:"orchestration_threshold,omitempty" json:"orchestration_threshold,omitempty"` // endpoint count above which the generator warns that code-orchestration would be a better default. Zero means use the built-in default (50).
 }
 
 // Intent declares an MCP tool that composes multiple endpoint calls into a
@@ -619,7 +621,37 @@ func validateMCP(m MCPConfig, resources map[string]Resource) error {
 	if m.EndpointTools != "" && m.EndpointTools != "visible" && m.EndpointTools != "hidden" {
 		return fmt.Errorf("mcp.endpoint_tools: %q must be \"visible\" or \"hidden\"", m.EndpointTools)
 	}
+	switch m.Orchestration {
+	case "", "endpoint-mirror", "intent", "code":
+	default:
+		return fmt.Errorf("mcp.orchestration: %q must be one of endpoint-mirror, intent, code", m.Orchestration)
+	}
+	if m.OrchestrationThreshold < 0 {
+		return fmt.Errorf("mcp.orchestration_threshold: %d must be non-negative", m.OrchestrationThreshold)
+	}
 	return validateIntents(m.Intents, resources)
+}
+
+// DefaultOrchestrationThreshold is the endpoint-count above which the
+// generator recommends (but does not require) code-orchestration. At 50+
+// endpoints, even intent-grouped tools tend to overflow an agent's usable
+// context; code-orchestration covers the full surface in a pair of tools.
+const DefaultOrchestrationThreshold = 50
+
+// EffectiveOrchestrationThreshold returns the resolved threshold, applying
+// the built-in default when the spec leaves it unset.
+func (m MCPConfig) EffectiveOrchestrationThreshold() int {
+	if m.OrchestrationThreshold <= 0 {
+		return DefaultOrchestrationThreshold
+	}
+	return m.OrchestrationThreshold
+}
+
+// IsCodeOrchestration reports whether this MCP config opts into the
+// code-orchestration thin surface. Templates branch on this to emit only
+// <api>_search + <api>_execute instead of the endpoint-mirror.
+func (m MCPConfig) IsCodeOrchestration() bool {
+	return m.Orchestration == "code"
 }
 
 // intentNameRe enforces snake_case for MCP intent tool names so they line up
