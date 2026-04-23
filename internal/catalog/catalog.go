@@ -60,6 +60,12 @@ var validClientPatterns = map[string]struct{}{
 	"graphql":        {}, // GraphQL endpoint, needs query/mutation wrapper
 }
 
+var validHTTPTransports = map[string]struct{}{
+	"standard":          {}, // Plain net/http, default for official APIs
+	"browser-chrome":    {}, // Browser-compatible transport for web-discovered/non-official APIs
+	"browser-chrome-h3": {}, // Chrome-compatible HTTP transport forced through HTTP/3
+}
+
 type KnownAlt struct {
 	Name     string `yaml:"name"`
 	URL      string `yaml:"url"`
@@ -111,6 +117,9 @@ type Entry struct {
 	// ClientPattern describes the HTTP client pattern needed. Empty defaults to "rest".
 	// Values: rest, proxy-envelope, graphql.
 	ClientPattern string `yaml:"client_pattern,omitempty"`
+	// HTTPTransport describes the runtime HTTP transport. Empty defaults by provenance:
+	// official uses standard; non-official web-discovered sources use browser-chrome.
+	HTTPTransport string `yaml:"http_transport,omitempty"`
 	// ProxyRoutes maps path prefixes to backend service names for proxy-envelope APIs.
 	// Only relevant when ClientPattern is "proxy-envelope".
 	ProxyRoutes map[string]string `yaml:"proxy_routes,omitempty"`
@@ -262,6 +271,11 @@ func (e *Entry) Validate() error {
 	if e.ClientPattern != "" {
 		if _, ok := validClientPatterns[e.ClientPattern]; !ok {
 			return fmt.Errorf("client_pattern must be one of: rest, proxy-envelope, graphql")
+		}
+	}
+	if e.HTTPTransport != "" {
+		if _, ok := validHTTPTransports[e.HTTPTransport]; !ok {
+			return fmt.Errorf("http_transport must be one of: standard, browser-chrome, browser-chrome-h3")
 		}
 	}
 

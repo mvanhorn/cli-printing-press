@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/mvanhorn/cli-printing-press/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/internal/crowdsniff"
@@ -84,12 +85,16 @@ func runCrowdSniff(ctx context.Context, apiName, baseURL, outputPath string, asJ
 
 	results := make([]crowdsniff.SourceResult, len(sources))
 	g := new(errgroup.Group)
+	var warningMu sync.Mutex
 
 	for i, src := range sources {
+		i, src := i, src
 		g.Go(func() error {
 			result, err := src.Discover(ctx, apiName)
 			if err != nil {
+				warningMu.Lock()
 				fmt.Fprintf(stderr, "warning: source %d: %v\n", i, err)
+				warningMu.Unlock()
 				return nil
 			}
 			results[i] = result
@@ -142,6 +147,7 @@ func runCrowdSniff(ctx context.Context, apiName, baseURL, outputPath string, asJ
 	if err != nil {
 		return fmt.Errorf("building spec: %w", err)
 	}
+	apiSpec.SpecSource = "community"
 
 	if outputPath == "" {
 		outputPath = defaultCrowdSniffCachePath(apiName)

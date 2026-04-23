@@ -1,17 +1,22 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/internal/browsersniff"
+	"github.com/mvanhorn/cli-printing-press/internal/spec"
 	"github.com/spf13/cobra"
 )
 
 func newBrowserSniffCmd() *cobra.Command {
 	var harPath string
 	var outputPath string
+	var analysisOutputPath string
 	var name string
 	var blocklist string
 	var authFrom string
@@ -51,9 +56,17 @@ func newBrowserSniffCmd() *cobra.Command {
 			if outputPath == "" {
 				outputPath = browsersniff.DefaultCachePath(apiSpec.Name)
 			}
+			if analysisOutputPath == "" {
+				analysisOutputPath = browsersniff.DefaultTrafficAnalysisPath(outputPath)
+			}
 
-			if err := browsersniff.WriteSpec(apiSpec, outputPath); err != nil {
-				return fmt.Errorf("writing spec: %w", err)
+			trafficAnalysis, err := browsersniff.AnalyzeTraffic(capture)
+			if err != nil {
+				return fmt.Errorf("analyzing traffic: %w", err)
+			}
+			browsersniff.ApplyReachabilityDefaults(apiSpec, trafficAnalysis)
+			if err := writeBrowserSniffOutputs(apiSpec, trafficAnalysis, outputPath, analysisOutputPath); err != nil {
+				return err
 			}
 
 			endpoints := 0
@@ -62,6 +75,7 @@ func newBrowserSniffCmd() *cobra.Command {
 			}
 
 			fmt.Printf("Spec written to %s (%d endpoints across %d resources)\n", outputPath, endpoints, len(apiSpec.Resources))
+			fmt.Printf("Traffic analysis written to %s\n", analysisOutputPath)
 			fmt.Printf("Run 'printing-press generate --spec %s' to build the CLI\n", outputPath)
 			return nil
 		},
@@ -69,12 +83,91 @@ func newBrowserSniffCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&harPath, "har", "", "Path to HAR or enriched capture file")
 	cmd.Flags().StringVar(&outputPath, "output", "", "Output path for generated spec YAML")
+	cmd.Flags().StringVar(&analysisOutputPath, "analysis-output", "", "Output path for traffic analysis JSON (defaults beside the spec)")
 	cmd.Flags().StringVar(&name, "name", "", "Override the auto-detected API name")
 	cmd.Flags().StringVar(&blocklist, "blocklist", "", "Comma-separated additional domains to filter")
 	cmd.Flags().StringVar(&authFrom, "auth-from", "", "Path to an enriched capture file to import auth from")
 	_ = cmd.MarkFlagRequired("har")
 
 	return cmd
+}
+
+func writeBrowserSniffOutputs(apiSpec *spec.APISpec, trafficAnalysis *browsersniff.TrafficAnalysis, outputPath string, analysisOutputPath string) error {
+	specTmp := siblingTempPath(outputPath, "spec")
+	analysisTmp := siblingTempPath(analysisOutputPath, "traffic-analysis")
+	defer func() { _ = os.Remove(specTmp) }()
+	defer func() { _ = os.Remove(analysisTmp) }()
+
+	if err := browsersniff.WriteSpec(apiSpec, specTmp); err != nil {
+		return fmt.Errorf("writing spec: %w", err)
+	}
+	if err := browsersniff.WriteTrafficAnalysis(trafficAnalysis, analysisTmp); err != nil {
+		return fmt.Errorf("writing traffic analysis: %w", err)
+	}
+
+	analysisBackup, analysisHadBackup, err := backupFileForReplace(analysisOutputPath)
+	if err != nil {
+		return fmt.Errorf("preparing traffic analysis publish: %w", err)
+	}
+	specBackup, specHadBackup, err := backupFileForReplace(outputPath)
+	if err != nil {
+		restoreFileBackup(analysisOutputPath, analysisBackup, analysisHadBackup)
+		return fmt.Errorf("preparing spec publish: %w", err)
+	}
+	cleanupBackups := true
+	defer func() {
+		if cleanupBackups {
+			_ = os.Remove(analysisBackup)
+			_ = os.Remove(specBackup)
+		}
+	}()
+
+	if err := os.Rename(analysisTmp, analysisOutputPath); err != nil {
+		restoreFileBackup(analysisOutputPath, analysisBackup, analysisHadBackup)
+		restoreFileBackup(outputPath, specBackup, specHadBackup)
+		return fmt.Errorf("publishing traffic analysis: %w", err)
+	}
+	if err := os.Rename(specTmp, outputPath); err != nil {
+		_ = os.Remove(analysisOutputPath)
+		restoreFileBackup(analysisOutputPath, analysisBackup, analysisHadBackup)
+		restoreFileBackup(outputPath, specBackup, specHadBackup)
+		return fmt.Errorf("publishing spec: %w", err)
+	}
+
+	return nil
+}
+
+func siblingTempPath(path string, suffix string) string {
+	return filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+"."+suffix+".tmp")
+}
+
+func backupFileForReplace(path string) (string, bool, error) {
+	info, err := os.Stat(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", false, err
+	}
+	if err == nil && info.IsDir() {
+		return "", false, fmt.Errorf("%s is a directory", path)
+	}
+
+	backup := siblingTempPath(path, "backup")
+	_ = os.Remove(backup)
+	if err := os.Rename(path, backup); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return backup, false, nil
+		}
+		return backup, false, err
+	}
+	return backup, true, nil
+}
+
+func restoreFileBackup(path string, backup string, hadBackup bool) {
+	_ = os.Remove(path)
+	if hadBackup {
+		_ = os.Rename(backup, path)
+		return
+	}
+	_ = os.Remove(backup)
 }
 
 func splitCSV(value string) []string {

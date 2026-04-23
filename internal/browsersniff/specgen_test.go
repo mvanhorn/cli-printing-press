@@ -31,6 +31,7 @@ func TestAnalyze(t *testing.T) {
 	}
 
 	assert.True(t, foundEndpointWithParams)
+	assert.Equal(t, "sniffed", apiSpec.SpecSource)
 	assert.NoError(t, apiSpec.Validate())
 }
 
@@ -151,6 +152,190 @@ func TestAnalyzeCapture_UsesCapturedCookieAuth(t *testing.T) {
 	assert.Equal(t, "cookie", apiSpec.Auth.In)
 	assert.Equal(t, "spotify.com", apiSpec.Auth.CookieDomain)
 	assert.Equal(t, []string{"SPOTIFY_COOKIES"}, apiSpec.Auth.EnvVars)
+}
+
+func TestAnalyzeCapture_ExpandsGraphQLBFFOperations(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.example.com",
+		Entries: []EnrichedEntry{
+			graphqlBFFEntry("PostsToday", `{"date":"2026-04-22"}`, "aaa111"),
+			graphqlBFFEntry("ProductPageLaunches", `{"slug":"sample-product"}`, "bbb222"),
+			graphqlBFFEntry("PostsToday", `{"date":"2026-04-23"}`, "aaa111"),
+		},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+	require.NotNil(t, apiSpec)
+
+	require.NotContains(t, apiSpec.Resources, "graphql")
+	posts := apiSpec.Resources["posts"]
+	products := apiSpec.Resources["products"]
+	require.NotNil(t, posts.Endpoints)
+	require.NotNil(t, products.Endpoints)
+
+	postsToday := posts.Endpoints["today"]
+	assert.Equal(t, "POST", postsToday.Method)
+	assert.Equal(t, "/frontend/graphql", postsToday.Path)
+	assert.Equal(t, "Fetch posts today", postsToday.Description)
+	assert.NotContains(t, postsToday.Description, "PostsToday")
+	require.Len(t, postsToday.Body, 3)
+	assert.Equal(t, "operationName", postsToday.Body[0].Name)
+	assert.Equal(t, "PostsToday", postsToday.Body[0].Default)
+	assert.Equal(t, "variables", postsToday.Body[1].Name)
+	assert.Equal(t, "object", postsToday.Body[1].Type)
+	assert.Equal(t, "extensions", postsToday.Body[2].Name)
+	assert.Equal(t, "object", postsToday.Body[2].Type)
+
+	extensions, ok := postsToday.Body[2].Default.(map[string]any)
+	require.True(t, ok)
+	persisted, ok := extensions["persistedQuery"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "aaa111", persisted["sha256Hash"])
+
+	launches := products.Endpoints["launches"]
+	assert.Equal(t, "POST", launches.Method)
+	assert.Equal(t, "/frontend/graphql", launches.Path)
+}
+
+func TestAnalyzeCapture_ExpandsURLOnlyGraphQLBFFOperations(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.example.com",
+		Entries: []EnrichedEntry{
+			graphQLBFFGETEntry("PostsToday", "aaa111"),
+			graphQLBFFGETEntry("ProductPageLaunches", "bbb222"),
+		},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+	require.NotNil(t, apiSpec)
+
+	posts := apiSpec.Resources["posts"]
+	products := apiSpec.Resources["products"]
+	require.NotNil(t, posts.Endpoints)
+	require.NotNil(t, products.Endpoints)
+	assert.Contains(t, posts.Endpoints, "today")
+	assert.Contains(t, products.Endpoints, "launches")
+	assert.Equal(t, "GET", posts.Endpoints["today"].Method)
+	assert.Empty(t, posts.Endpoints["today"].Body)
+	assert.Equal(t, "operationName", posts.Endpoints["today"].Params[0].Name)
+	assert.Equal(t, "variables", posts.Endpoints["today"].Params[1].Name)
+	assert.Equal(t, "extensions", posts.Endpoints["today"].Params[2].Name)
+}
+
+func TestAnalyzeCapture_IncludesUsefulHTMLSurfaces(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "data:text/plain,bootstrap",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://noise.example.net/promo",
+				ResponseStatus:      200,
+				ResponseContentType: "text/html; charset=utf-8",
+				ResponseBody:        `<html><head><title>Noise</title></head><body><a href="/products/noise">Noise</a></body></html>`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://www.example.com/",
+				ResponseStatus:      200,
+				ResponseContentType: "text/html; charset=utf-8",
+				ResponseBody:        `<html><head><title>Products</title></head><body><a href="/products/speakon">1. SpeakON</a><a href="/products/instant-db">2. InstantDB</a></body></html>`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://www.example.com/products/speakon",
+				ResponseStatus:      200,
+				ResponseContentType: "text/html; charset=utf-8",
+				ResponseBody:        `<html><head><title>SpeakON</title><meta name="description" content="AI device"></head><body><h1>SpeakON</h1></body></html>`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://www.example.com/challenge",
+				ResponseStatus:      200,
+				ResponseContentType: "text/html",
+				ResponseBody:        `<html><title>Just a moment...</title><p>Cloudflare challenge</p></html>`,
+			},
+		},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+	assert.Equal(t, "https://www.example.com", apiSpec.BaseURL)
+
+	home := apiSpec.Resources["default"].Endpoints["list_endpoint"]
+	assert.Equal(t, spec.ResponseFormatHTML, home.ResponseFormat)
+	require.NotNil(t, home.HTMLExtract)
+	assert.Equal(t, spec.HTMLExtractModeLinks, home.HTMLExtract.Mode)
+	assert.Contains(t, home.HTMLExtract.LinkPrefixes, "/products")
+
+	product := apiSpec.Resources["products"].Endpoints["get_products"]
+	assert.Equal(t, "/products/{slug}", product.Path)
+	assert.Equal(t, spec.ResponseFormatHTML, product.ResponseFormat)
+	require.NotNil(t, product.HTMLExtract)
+	assert.Equal(t, spec.HTMLExtractModePage, product.HTMLExtract.Mode)
+	require.Len(t, product.Params, 1)
+	assert.Equal(t, "slug", product.Params[0].Name)
+
+	assert.NotContains(t, apiSpec.Resources, "challenge")
+	assert.NotContains(t, apiSpec.Resources, "promo")
+}
+
+func TestGraphQLBFFCommandPathUsesSemanticResources(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		operation string
+		resource  string
+		endpoint  string
+	}{
+		{operation: "ProductPageLaunches", resource: "products", endpoint: "launches"},
+		{operation: "CategoryPageQuery", resource: "categories", endpoint: "get"},
+		{operation: "HeaderDesktopProductsNavigationQuery", resource: "site", endpoint: "navigation"},
+		{operation: "FooterLinksQuery", resource: "site", endpoint: "links"},
+		{operation: "DetailedReviewsFeedQuery", resource: "reviews", endpoint: "feed"},
+		{operation: "GetProductDetails", resource: "products", endpoint: "get"},
+		{operation: "ListProducts", resource: "products", endpoint: "get"},
+		{operation: "SearchMakersByName", resource: "makers", endpoint: "by_name"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.operation, func(t *testing.T) {
+			t.Parallel()
+			resource, endpoint := graphQLBFFCommandPath(tt.operation)
+			assert.Equal(t, tt.resource, resource)
+			assert.Equal(t, tt.endpoint, endpoint)
+		})
+	}
+}
+
+func graphqlBFFEntry(operationName, variablesJSON, hash string) EnrichedEntry {
+	return EnrichedEntry{
+		Method:              "POST",
+		URL:                 "https://www.example.com/frontend/graphql",
+		RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+		RequestBody:         `{"operationName":"` + operationName + `","variables":` + variablesJSON + `,"extensions":{"persistedQuery":{"version":1,"sha256Hash":"` + hash + `"}}}`,
+		ResponseStatus:      200,
+		ResponseContentType: "application/json",
+		ResponseBody:        `{"data":{"node":{"id":"1"}}}`,
+	}
+}
+
+func graphQLBFFGETEntry(operationName, hash string) EnrichedEntry {
+	return EnrichedEntry{
+		Method: "GET",
+		URL: "https://www.example.com/frontend/graphql?operationName=" + operationName +
+			`&variables=%7B%7D&extensions=%7B%22persistedQuery%22%3A%7B%22version%22%3A1%2C%22sha256Hash%22%3A%22` + hash + `%22%7D%7D`,
+		ResponseStatus:      200,
+		ResponseContentType: "application/json",
+		ResponseBody:        `{"data":{"node":{"id":"1"}}}`,
+	}
 }
 
 func TestDetectAuth_PrefersCapturedAuthOverHeaders(t *testing.T) {

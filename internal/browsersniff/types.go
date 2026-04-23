@@ -9,8 +9,10 @@ type HARLog struct {
 }
 
 type HAREntry struct {
-	Request  HARRequest  `json:"request"`
-	Response HARResponse `json:"response"`
+	StartedDateTime string      `json:"startedDateTime,omitempty"`
+	Time            float64     `json:"time,omitempty"`
+	Request         HARRequest  `json:"request"`
+	Response        HARResponse `json:"response"`
 }
 
 type HARRequest struct {
@@ -27,6 +29,7 @@ type HARPostData struct {
 
 type HARResponse struct {
 	Status  int                `json:"status"`
+	Headers []HARHeader        `json:"headers,omitempty"`
 	Content HARResponseContent `json:"content"`
 }
 
@@ -61,11 +64,14 @@ type AuthCapture struct {
 type EnrichedEntry struct {
 	Method              string            `json:"method"`
 	URL                 string            `json:"url"`
+	StartedDateTime     string            `json:"started_date_time,omitempty"`
+	DurationMS          float64           `json:"duration_ms,omitempty"`
 	RequestBody         string            `json:"request_body"`
 	ResponseBody        string            `json:"response_body"`
 	ResponseStatus      int               `json:"response_status"`
 	ResponseContentType string            `json:"response_content_type"`
 	RequestHeaders      map[string]string `json:"request_headers"`
+	ResponseHeaders     map[string]string `json:"response_headers,omitempty"`
 	Classification      string            `json:"classification"`
 	IsNoise             bool              `json:"is_noise"`
 }

@@ -126,6 +126,13 @@ func TestValidateEntry(t *testing.T) {
 			},
 			wantErr: "client_pattern must be one of",
 		},
+		{
+			name: "invalid http_transport",
+			mutate: func(e *Entry) {
+				e.HTTPTransport = "lynx"
+			},
+			wantErr: "http_transport must be one of",
+		},
 	}
 
 	for _, tt := range tests {
@@ -225,6 +232,7 @@ func TestSniffedEntryValid(t *testing.T) {
 		SpecSource:    "sniffed",
 		AuthRequired:  &f,
 		ClientPattern: "proxy-envelope",
+		HTTPTransport: "browser-chrome-h3",
 	}
 	assert.NoError(t, entry.Validate())
 }
@@ -244,6 +252,7 @@ func TestOptionalFieldsOmittedValid(t *testing.T) {
 	assert.Empty(t, entry.SpecSource)
 	assert.Nil(t, entry.AuthRequired)
 	assert.Empty(t, entry.ClientPattern)
+	assert.Empty(t, entry.HTTPTransport)
 }
 
 func TestWrapperOnlyEntryValid(t *testing.T) {

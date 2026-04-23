@@ -126,6 +126,9 @@ func newCatalogShowCmd() *cobra.Command {
 			if entry.ClientPattern != "" {
 				fmt.Printf("Client Pattern: %s\n", entry.ClientPattern)
 			}
+			if entry.HTTPTransport != "" {
+				fmt.Printf("HTTP Transport: %s\n", entry.HTTPTransport)
+			}
 			if entry.AuthRequired != nil {
 				fmt.Printf("Auth Required:  %v\n", *entry.AuthRequired)
 			}

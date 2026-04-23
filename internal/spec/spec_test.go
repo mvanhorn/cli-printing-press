@@ -1307,3 +1307,97 @@ func TestMCPConfigAcceptsValidShapes(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPTransportValidationAndDefaults(t *testing.T) {
+	t.Parallel()
+
+	base := APISpec{
+		Name:    "demo",
+		BaseURL: "http://x",
+		Auth:    AuthConfig{Type: "none"},
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+	}
+
+	assert.Equal(t, HTTPTransportStandard, base.EffectiveHTTPTransport())
+
+	sniffed := base
+	sniffed.SpecSource = "sniffed"
+	assert.Equal(t, HTTPTransportBrowserChrome, sniffed.EffectiveHTTPTransport())
+	require.NoError(t, sniffed.Validate())
+
+	community := base
+	community.SpecSource = "community"
+	assert.Equal(t, HTTPTransportBrowserChrome, community.EffectiveHTTPTransport())
+
+	h3 := base
+	h3.HTTPTransport = HTTPTransportBrowserChromeH3
+	assert.Equal(t, HTTPTransportBrowserChromeH3, h3.EffectiveHTTPTransport())
+	assert.True(t, h3.UsesBrowserHTTPTransport())
+	assert.True(t, h3.UsesBrowserHTTP3Transport())
+	assert.True(t, h3.UsesBrowserManagedUserAgent())
+	require.NoError(t, h3.Validate())
+
+	override := sniffed
+	override.HTTPTransport = HTTPTransportStandard
+	assert.Equal(t, HTTPTransportStandard, override.EffectiveHTTPTransport())
+	require.NoError(t, override.Validate())
+
+	runtime := base
+	runtime.HTTPTransport = "browser-runtime"
+	assert.Equal(t, HTTPTransportStandard, runtime.EffectiveHTTPTransport())
+	assert.False(t, runtime.UsesBrowserManagedUserAgent())
+	require.ErrorContains(t, runtime.Validate(), "http_transport must be one of")
+
+	invalid := base
+	invalid.HTTPTransport = "lynx"
+	require.ErrorContains(t, invalid.Validate(), "http_transport must be one of")
+}
+
+func TestHTMLResponseExtractionValidation(t *testing.T) {
+	t.Parallel()
+
+	validHTMLSpec := func() APISpec {
+		return APISpec{
+			Name:    "webhtml",
+			BaseURL: "https://www.example.com",
+			Resources: map[string]Resource{
+				"posts": {
+					Description: "Posts",
+					Endpoints: map[string]Endpoint{
+						"list": {
+							Method:         "GET",
+							Path:           "/",
+							Description:    "List posts",
+							ResponseFormat: ResponseFormatHTML,
+							HTMLExtract: &HTMLExtract{
+								Mode:         HTMLExtractModeLinks,
+								LinkPrefixes: []string{"/products"},
+								Limit:        20,
+							},
+							Response: ResponseDef{Type: "array", Item: "html_link"},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	base := validHTMLSpec()
+	require.NoError(t, base.Validate())
+	assert.True(t, base.HasHTMLExtraction())
+	assert.True(t, base.Resources["posts"].Endpoints["list"].UsesHTMLResponse())
+
+	badFormat := validHTMLSpec()
+	ep := badFormat.Resources["posts"].Endpoints["list"]
+	ep.ResponseFormat = "xml"
+	badFormat.Resources["posts"].Endpoints["list"] = ep
+	require.ErrorContains(t, badFormat.Validate(), "response_format must be one of")
+
+	badMethod := validHTMLSpec()
+	ep = badMethod.Resources["posts"].Endpoints["list"]
+	ep.Method = "POST"
+	badMethod.Resources["posts"].Endpoints["list"] = ep
+	require.ErrorContains(t, badMethod.Validate(), "html response_format is only supported")
+}

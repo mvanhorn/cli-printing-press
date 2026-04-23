@@ -19,6 +19,22 @@ const (
 	KindSynthetic = "synthetic" // multi-source / combo CLI; dogfood + scorecard relax path-validity
 )
 
+const (
+	HTTPTransportStandard        = "standard"          // default for official API clients
+	HTTPTransportBrowserChrome   = "browser-chrome"    // Chrome-impersonated transport for browser-facing web surfaces
+	HTTPTransportBrowserChromeH3 = "browser-chrome-h3" // Chrome-impersonated transport forced through HTTP/3 for stricter bot screens
+)
+
+const (
+	ResponseFormatJSON = "json"
+	ResponseFormatHTML = "html"
+)
+
+const (
+	HTMLExtractModePage  = "page"
+	HTMLExtractModeLinks = "links"
+)
+
 type APISpec struct {
 	Name            string              `yaml:"name" json:"name"`
 	Description     string              `yaml:"description" json:"description"`
@@ -29,6 +45,7 @@ type APISpec struct {
 	Kind            string              `yaml:"kind,omitempty" json:"kind,omitempty"`                     // "rest" (default) or "synthetic" — synthetic CLIs aggregate multiple sources beyond the spec; dogfood's path-validity check is relaxed accordingly
 	SpecSource      string              `yaml:"spec_source,omitempty" json:"spec_source,omitempty"`       // official, community, sniffed, docs — affects generated client defaults
 	ClientPattern   string              `yaml:"client_pattern,omitempty" json:"client_pattern,omitempty"` // rest (default), proxy-envelope — affects generated HTTP client
+	HTTPTransport   string              `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-chrome, or browser-chrome-h3
 	ProxyRoutes     map[string]string   `yaml:"proxy_routes,omitempty" json:"proxy_routes,omitempty"`     // path prefix → service name for proxy-envelope routing
 	WebsiteURL      string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`       // product/company website (not the API base URL)
 	Category        string              `yaml:"category,omitempty" json:"category,omitempty"`             // catalog category (e.g., productivity, developer-tools) — used for library install path
@@ -62,6 +79,70 @@ func (s *APISpec) IsSynthetic() bool {
 	return s != nil && s.Kind == KindSynthetic
 }
 
+func (s *APISpec) EffectiveHTTPTransport() string {
+	if s == nil {
+		return HTTPTransportStandard
+	}
+	switch s.HTTPTransport {
+	case HTTPTransportStandard, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
+		return s.HTTPTransport
+	}
+	switch s.SpecSource {
+	case "community", "sniffed":
+		return HTTPTransportBrowserChrome
+	default:
+		return HTTPTransportStandard
+	}
+}
+
+func (s *APISpec) UsesBrowserHTTPTransport() bool {
+	switch s.EffectiveHTTPTransport() {
+	case HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *APISpec) UsesBrowserHTTP3Transport() bool {
+	return s.EffectiveHTTPTransport() == HTTPTransportBrowserChromeH3
+}
+
+func (s *APISpec) UsesBrowserManagedUserAgent() bool {
+	switch s.EffectiveHTTPTransport() {
+	case HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *APISpec) HasHTMLExtraction() bool {
+	if s == nil {
+		return false
+	}
+	for _, resource := range s.Resources {
+		if resourceHasHTMLExtraction(resource) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceHasHTMLExtraction(resource Resource) bool {
+	for _, endpoint := range resource.Endpoints {
+		if endpoint.UsesHTMLResponse() {
+			return true
+		}
+	}
+	for _, sub := range resource.SubResources {
+		if resourceHasHTMLExtraction(sub) {
+			return true
+		}
+	}
+	return false
+}
+
 // RequiredHeader represents a non-auth header that the API requires on most
 // requests (e.g., cal-api-version, Stripe-Version, anthropic-version).
 // Detected automatically from OpenAPI specs when a required header parameter
@@ -86,6 +167,15 @@ type AuthConfig struct {
 	CookieDomain     string   `yaml:"cookie_domain,omitempty" json:"cookie_domain,omitempty"` // domain to read browser cookies from (e.g. ".notion.so")
 	Cookies          []string `yaml:"cookies,omitempty" json:"cookies,omitempty"`             // named cookies to extract for composed auth (e.g. ["customerId", "authToken"])
 	Inferred         bool     `yaml:"inferred,omitempty" json:"inferred,omitempty"`           // true when auth was inferred from spec description, not declared in securitySchemes
+
+	// Browser-session verification fields. Used when a website-facing CLI
+	// depends on browser-derived cookies or clearance state for its required
+	// happy path. The generator emits validation and proof handling, and the
+	// shipcheck pipeline treats a missing proof as a blocker.
+	RequiresBrowserSession         bool   `yaml:"requires_browser_session,omitempty" json:"requires_browser_session,omitempty"`
+	BrowserSessionReason           string `yaml:"browser_session_reason,omitempty" json:"browser_session_reason,omitempty"`
+	BrowserSessionValidationPath   string `yaml:"browser_session_validation_path,omitempty" json:"browser_session_validation_path,omitempty"`
+	BrowserSessionValidationMethod string `yaml:"browser_session_validation_method,omitempty" json:"browser_session_validation_method,omitempty"`
 
 	// Session-handshake fields. Used only when Type == "session_handshake".
 	// The pattern: GET BootstrapURL to seed cookies → GET TokenURL to receive
@@ -240,12 +330,38 @@ type Endpoint struct {
 	Params          []Param           `yaml:"params" json:"params"`
 	Body            []Param           `yaml:"body" json:"body"`
 	Response        ResponseDef       `yaml:"response" json:"response"`
+	ResponseFormat  string            `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
+	HTMLExtract     *HTMLExtract      `yaml:"html_extract,omitempty" json:"html_extract,omitempty"`       // extraction options when response_format is html
 	Pagination      *Pagination       `yaml:"pagination" json:"pagination"`
 	ResponsePath    string            `yaml:"response_path,omitempty" json:"response_path,omitempty"`       // path to extract data array from response (e.g., "data", "results.items")
 	Meta            map[string]string `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
 	HeaderOverrides []RequiredHeader  `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
 	NoAuth          bool              `yaml:"no_auth,omitempty" json:"no_auth,omitempty"`                   // true when the endpoint does not require authentication
 	Alias           string            `yaml:"-" json:"-"`                                                   // computed, not from YAML
+}
+
+func (e Endpoint) EffectiveResponseFormat() string {
+	if strings.TrimSpace(e.ResponseFormat) == "" {
+		return ResponseFormatJSON
+	}
+	return e.ResponseFormat
+}
+
+func (e Endpoint) UsesHTMLResponse() bool {
+	return e.EffectiveResponseFormat() == ResponseFormatHTML
+}
+
+type HTMLExtract struct {
+	Mode         string   `yaml:"mode,omitempty" json:"mode,omitempty"`                   // page (default) or links
+	LinkPrefixes []string `yaml:"link_prefixes,omitempty" json:"link_prefixes,omitempty"` // URL path prefixes to keep when extracting links
+	Limit        int      `yaml:"limit,omitempty" json:"limit,omitempty"`                 // max links to return; defaults at runtime
+}
+
+func (h *HTMLExtract) EffectiveMode() string {
+	if h == nil || strings.TrimSpace(h.Mode) == "" {
+		return HTMLExtractModePage
+	}
+	return h.Mode
 }
 
 type Param struct {
@@ -451,6 +567,11 @@ func (s *APISpec) Validate() error {
 	if len(s.Resources) == 0 {
 		return fmt.Errorf("at least one resource is required")
 	}
+	switch s.HTTPTransport {
+	case "", HTTPTransportStandard, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
+	default:
+		return fmt.Errorf("http_transport must be one of: standard, browser-chrome, browser-chrome-h3")
+	}
 	if err := validateExtraCommands(s.ExtraCommands); err != nil {
 		return err
 	}
@@ -471,6 +592,9 @@ func (s *APISpec) Validate() error {
 			if e.Path == "" {
 				return fmt.Errorf("resource %q endpoint %q: path is required", name, eName)
 			}
+			if err := validateEndpointResponseFormat(e); err != nil {
+				return fmt.Errorf("resource %q endpoint %q: %w", name, eName, err)
+			}
 		}
 		for subName, sub := range r.SubResources {
 			if len(sub.Endpoints) == 0 {
@@ -483,8 +607,39 @@ func (s *APISpec) Validate() error {
 				if e.Path == "" {
 					return fmt.Errorf("resource %q sub-resource %q endpoint %q: path is required", name, subName, eName)
 				}
+				if err := validateEndpointResponseFormat(e); err != nil {
+					return fmt.Errorf("resource %q sub-resource %q endpoint %q: %w", name, subName, eName, err)
+				}
 			}
 		}
+	}
+	return nil
+}
+
+func validateEndpointResponseFormat(e Endpoint) error {
+	switch e.ResponseFormat {
+	case "", ResponseFormatJSON, ResponseFormatHTML:
+	default:
+		return fmt.Errorf("response_format must be one of: json, html")
+	}
+	if !e.UsesHTMLResponse() {
+		return nil
+	}
+	switch strings.ToUpper(strings.TrimSpace(e.Method)) {
+	case "GET", "HEAD":
+	default:
+		return fmt.Errorf("html response_format is only supported for GET/HEAD endpoints")
+	}
+	if e.HTMLExtract == nil {
+		return nil
+	}
+	switch e.HTMLExtract.Mode {
+	case "", HTMLExtractModePage, HTMLExtractModeLinks:
+	default:
+		return fmt.Errorf("html_extract.mode must be one of: page, links")
+	}
+	if e.HTMLExtract.Limit < 0 {
+		return fmt.Errorf("html_extract.limit must be >= 0")
 	}
 	return nil
 }
