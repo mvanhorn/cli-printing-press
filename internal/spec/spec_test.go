@@ -956,3 +956,137 @@ func TestCacheShareAcceptsValidShapes(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPConfigAbsentIsBackwardCompatible(t *testing.T) {
+	input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+`
+	s, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+	assert.Empty(t, s.MCP.Transport)
+	assert.Empty(t, s.MCP.Addr)
+	assert.Equal(t, []string{"stdio"}, s.MCP.EffectiveTransports())
+	assert.True(t, s.MCP.HasTransport("stdio"))
+	assert.False(t, s.MCP.HasTransport("http"))
+}
+
+func TestMCPConfigParses(t *testing.T) {
+	input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+mcp:
+  transport: [stdio, http]
+  addr: ":8123"
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      list:
+        method: GET
+        path: /items
+`
+	s, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+	require.NoError(t, s.Validate())
+	assert.Equal(t, []string{"stdio", "http"}, s.MCP.Transport)
+	assert.Equal(t, ":8123", s.MCP.Addr)
+	assert.True(t, s.MCP.HasTransport("stdio"))
+	assert.True(t, s.MCP.HasTransport("http"))
+	assert.True(t, s.MCP.HasTransport("HTTP"), "HasTransport is case-insensitive")
+}
+
+func TestMCPConfigValidation(t *testing.T) {
+	base := func(mcp MCPConfig) APISpec {
+		return APISpec{
+			Name:      "demo",
+			BaseURL:   "http://x",
+			Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+			MCP:       mcp,
+		}
+	}
+
+	tests := []struct {
+		name    string
+		mcp     MCPConfig
+		wantErr string
+	}{
+		{
+			name:    "unknown transport rejected",
+			mcp:     MCPConfig{Transport: []string{"grpc"}},
+			wantErr: "not a supported transport",
+		},
+		{
+			name:    "empty string transport rejected",
+			mcp:     MCPConfig{Transport: []string{""}},
+			wantErr: "value must not be empty",
+		},
+		{
+			name:    "duplicate transport rejected",
+			mcp:     MCPConfig{Transport: []string{"stdio", "stdio"}},
+			wantErr: "appears more than once",
+		},
+		{
+			name:    "addr without http rejected",
+			mcp:     MCPConfig{Transport: []string{"stdio"}, Addr: ":7777"},
+			wantErr: "mcp.addr is set but mcp.transport does not include http",
+		},
+		{
+			name:    "malformed addr rejected",
+			mcp:     MCPConfig{Transport: []string{"http"}, Addr: "7777"},
+			wantErr: "not a valid bind address",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := base(tt.mcp)
+			err := s.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestMCPConfigAcceptsValidShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		mcp  MCPConfig
+	}{
+		{name: "empty config (backward compatible)"},
+		{name: "stdio only explicit", mcp: MCPConfig{Transport: []string{"stdio"}}},
+		{name: "both transports", mcp: MCPConfig{Transport: []string{"stdio", "http"}}},
+		{name: "http only", mcp: MCPConfig{Transport: []string{"http"}}},
+		{name: "http with default addr", mcp: MCPConfig{Transport: []string{"http"}, Addr: ":7777"}},
+		{name: "http with host addr", mcp: MCPConfig{Transport: []string{"stdio", "http"}, Addr: "127.0.0.1:8080"}},
+		{name: "uppercase transport normalizes", mcp: MCPConfig{Transport: []string{"HTTP"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := APISpec{
+				Name:      "demo",
+				BaseURL:   "http://x",
+				Resources: map[string]Resource{"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}}},
+				MCP:       tt.mcp,
+			}
+			require.NoError(t, s.Validate())
+		})
+	}
+}

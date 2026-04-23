@@ -153,17 +153,22 @@ func makeAPIHandler(method, pathTemplate string, positionalParams []string) serv
 			return mcplib.NewToolResultError(err.Error()), nil
 		}
 
+		// mcp-go v0.47+ made CallToolParams.Arguments an `any` to support
+		// non-map payloads; GetArguments() returns the map[string]any shape
+		// we rely on here (or an empty map when the payload is something else).
+		args := req.GetArguments()
+
 		// Build path by substituting positional params
 		path := pathTemplate
 		for _, p := range positionalParams {
-			if v, ok := req.Params.Arguments[p]; ok {
+			if v, ok := args[p]; ok {
 				path = strings.Replace(path, "{"+p+"}", fmt.Sprintf("%v", v), 1)
 			}
 		}
 
 		// Collect non-positional params as query params
 		params := make(map[string]string)
-		for k, v := range req.Params.Arguments {
+		for k, v := range args {
 			isPositional := false
 			for _, p := range positionalParams {
 				if k == p {
@@ -181,13 +186,13 @@ func makeAPIHandler(method, pathTemplate string, positionalParams []string) serv
 		case "GET":
 			data, err = c.Get(path, params)
 		case "POST":
-			body, _ := json.Marshal(req.Params.Arguments)
+			body, _ := json.Marshal(args)
 			data, _, err = c.Post(path, body)
 		case "PUT":
-			body, _ := json.Marshal(req.Params.Arguments)
+			body, _ := json.Marshal(args)
 			data, _, err = c.Put(path, body)
 		case "PATCH":
-			body, _ := json.Marshal(req.Params.Arguments)
+			body, _ := json.Marshal(args)
 			data, _, err = c.Patch(path, body)
 		case "DELETE":
 			data, _, err = c.Delete(path)
@@ -306,13 +311,14 @@ func handleSync(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallTo
 {{- if .VisionSet.Search}}
 
 func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	query, ok := req.Params.Arguments["query"].(string)
+	args := req.GetArguments()
+	query, ok := args["query"].(string)
 	if !ok || query == "" {
 		return mcplib.NewToolResultError("query is required"), nil
 	}
 
 	limit := 25
-	if v, ok := req.Params.Arguments["limit"].(float64); ok && v > 0 {
+	if v, ok := args["limit"].(float64); ok && v > 0 {
 		limit = int(v)
 	}
 
@@ -335,7 +341,8 @@ func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.Call
 {{- if .VisionSet.Store}}
 
 func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	query, ok := req.Params.Arguments["query"].(string)
+	args := req.GetArguments()
+	query, ok := args["query"].(string)
 	if !ok || query == "" {
 		return mcplib.NewToolResultError("query is required"), nil
 	}

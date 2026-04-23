@@ -40,6 +40,7 @@ type APISpec struct {
 	ExtraCommands   []ExtraCommand      `yaml:"extra_commands,omitempty" json:"extra_commands,omitempty"` // hand-written cobra commands declared so SKILL.md can document them; spec-only metadata, no code generated
 	Cache           CacheConfig         `yaml:"cache,omitempty" json:"cache,omitempty"`                   // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
 	Share           ShareConfig         `yaml:"share,omitempty" json:"share,omitempty"`                   // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
+	MCP             MCPConfig           `yaml:"mcp,omitempty" json:"mcp,omitempty"`                       // MCP server generation config; when unset, the emitted MCP binary is stdio-only (today's default). Opting into http adds a --transport/--addr flag surface so the same binary can serve cloud-hosted agents.
 }
 
 // ExtraCommand declares a hand-written cobra command so the SKILL.md
@@ -135,6 +136,47 @@ type ShareConfig struct {
 	SnapshotTables []string `yaml:"snapshot_tables,omitempty" json:"snapshot_tables,omitempty"` // explicit allowlist of SQLite tables included in the snapshot. Required when Enabled. Names matching denylisted patterns (*_cache, *_secrets, auth_*) are rejected at parse time.
 	DefaultRepo    string   `yaml:"default_repo,omitempty" json:"default_repo,omitempty"`       // optional default git remote (e.g., "git@github.com:acme/linear-snapshots.git"); command-line --repo flag always wins
 	DefaultBranch  string   `yaml:"default_branch,omitempty" json:"default_branch,omitempty"`   // optional default branch for push/pull; blank means "main"
+}
+
+// MCPConfig declares how the generated MCP server binary is shaped. When empty
+// the generator emits today's behavior: a stdio-only server via server.ServeStdio.
+// Opting http into Transport adds a --transport flag (stdio|http) and, for http,
+// an --addr flag so the same binary can also serve an HTTP streamable transport.
+//
+// Rationale: stdio-only servers can only reach clients that share a filesystem
+// and can spawn a subprocess. Cloud-hosted agents (hosted Claude Code sessions,
+// Managed Agents, web clients) cannot, so they need a remote transport option.
+// Declaring transports in the spec rather than inferring at generate time keeps
+// the decision visible and reviewable in the published CLI's source spec.
+//
+// Allowed Transport values: "stdio", "http". An empty list is treated as
+// ["stdio"] for backward compatibility. Unknown values are rejected at spec
+// load; this prevents silent drift when new transports are introduced.
+type MCPConfig struct {
+	Transport []string `yaml:"transport,omitempty" json:"transport,omitempty"` // allowed transports the generated binary compiles support for; empty == [stdio]. Runtime transport is chosen via the --transport flag and PP_MCP_TRANSPORT env.
+	Addr      string   `yaml:"addr,omitempty" json:"addr,omitempty"`           // default bind address for the http transport (e.g., ":7777"). Blank means runtime default (":7777"). Ignored unless http is in Transport.
+}
+
+// EffectiveTransports returns the transports the generated binary should
+// support, defaulting to stdio when none are declared. Using this helper from
+// templates and the generator avoids sprinkling the default in two places.
+func (m MCPConfig) EffectiveTransports() []string {
+	if len(m.Transport) == 0 {
+		return []string{"stdio"}
+	}
+	return m.Transport
+}
+
+// HasTransport reports whether t is among the effective transports for this
+// MCPConfig. Case-insensitive on the comparison since spec authors may write
+// "HTTP" and the generator normalizes to lowercase at validation time.
+func (m MCPConfig) HasTransport(t string) bool {
+	for _, v := range m.EffectiveTransports() {
+		if strings.EqualFold(v, t) {
+			return true
+		}
+	}
+	return false
 }
 
 type Resource struct {
@@ -369,6 +411,9 @@ func (s *APISpec) Validate() error {
 	if err := validateCacheShare(s.Cache, s.Share); err != nil {
 		return err
 	}
+	if err := validateMCP(s.MCP); err != nil {
+		return err
+	}
 	for name, r := range s.Resources {
 		if len(r.Endpoints) == 0 && len(r.SubResources) == 0 {
 			return fmt.Errorf("resource %q has no endpoints", name)
@@ -481,6 +526,51 @@ func validateCacheShare(cache CacheConfig, share ShareConfig) error {
 			return fmt.Errorf("share.snapshot_tables[%d]: %q appears more than once", i, t)
 		}
 		seen[t] = struct{}{}
+	}
+	return nil
+}
+
+// allowedMCPTransports is the canonical set of transports a printed CLI may
+// declare. Kept explicit (rather than computed from a broader registry) so a
+// typo like "htpp" is caught at spec load with a clear error message naming
+// the valid options, not silently carried through to a build failure in the
+// template.
+var allowedMCPTransports = map[string]struct{}{
+	"stdio": {},
+	"http":  {},
+}
+
+// addrLikeRe accepts a ":port" or "host:port" form for the optional MCP http
+// bind address. Intentionally loose — the Go net package parses and reports a
+// better runtime error; this is a spec-load sanity check to reject obvious
+// typos (e.g., "7777" with no colon) early.
+var addrLikeRe = regexp.MustCompile(`^[A-Za-z0-9.\-_]*:[0-9]+$`)
+
+// validateMCP enforces the Transport allowlist and normalizes the Addr shape.
+// An empty Transport is valid (default stdio); non-empty lists must contain
+// only entries from allowedMCPTransports, with no duplicates.
+func validateMCP(m MCPConfig) error {
+	seen := make(map[string]struct{}, len(m.Transport))
+	for i, t := range m.Transport {
+		normalized := strings.ToLower(strings.TrimSpace(t))
+		if normalized == "" {
+			return fmt.Errorf("mcp.transport[%d]: value must not be empty", i)
+		}
+		if _, ok := allowedMCPTransports[normalized]; !ok {
+			return fmt.Errorf("mcp.transport[%d]: %q is not a supported transport (allowed: stdio, http)", i, t)
+		}
+		if _, dup := seen[normalized]; dup {
+			return fmt.Errorf("mcp.transport[%d]: %q appears more than once", i, t)
+		}
+		seen[normalized] = struct{}{}
+	}
+	if m.Addr != "" {
+		if _, httpEnabled := seen["http"]; !httpEnabled {
+			return fmt.Errorf("mcp.addr is set but mcp.transport does not include http; either add http or remove addr")
+		}
+		if !addrLikeRe.MatchString(m.Addr) {
+			return fmt.Errorf("mcp.addr %q is not a valid bind address (expect \":port\" or \"host:port\")", m.Addr)
+		}
 	}
 	return nil
 }

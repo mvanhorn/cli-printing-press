@@ -3,6 +3,73 @@
 
 package main
 
+{{- if .MCP.HasTransport "http"}}
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/mark3labs/mcp-go/server"
+	mcptools "{{modulePath}}/internal/mcp"
+)
+
+// Transport selection order: --transport flag, then PP_MCP_TRANSPORT env,
+// then the first transport declared in the spec (see MCPConfig.Transport).
+// The flag surface lets one binary serve stdio locally and streamable HTTP
+// when hosted in a container or remote sandbox, matching the Anthropic
+// guidance that production agents need a remote option.
+
+const (
+	defaultHTTPAddr = "{{if .MCP.Addr}}{{.MCP.Addr}}{{else}}:7777{{end}}"
+)
+
+func main() {
+	s := server.NewMCPServer(
+		"{{.Name}}-pp-mcp",
+		"1.0.0",
+		server.WithToolCapabilities(false),
+	)
+
+	mcptools.RegisterTools(s)
+
+	transport := flag.String("transport", defaultTransport(), "MCP transport: stdio | http")
+	addr := flag.String("addr", defaultHTTPAddr, "bind address for http transport (host:port or :port)")
+	flag.Parse()
+
+	switch strings.ToLower(*transport) {
+	case "stdio":
+		if err := server.ServeStdio(s); err != nil {
+			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+			os.Exit(1)
+		}
+	case "http":
+		httpSrv := server.NewStreamableHTTPServer(s)
+		fmt.Fprintf(os.Stderr, "{{.Name}}-pp-mcp serving MCP over streamable HTTP at %s\n", *addr)
+		if err := httpSrv.Start(*addr); err != nil {
+			fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+			os.Exit(1)
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "unknown --transport %q (supported: stdio, http)\n", *transport)
+		os.Exit(2)
+	}
+}
+
+// defaultTransport reads PP_MCP_TRANSPORT env when set, otherwise falls back
+// to "stdio" so running the binary with no args keeps today's behavior.
+// Container-hosted agents can pin the transport via env without a flag, which
+// matches how hosted-agent process supervisors typically pass configuration.
+func defaultTransport() string {
+	if t := os.Getenv("PP_MCP_TRANSPORT"); t != "" {
+		return t
+	}
+	return "stdio"
+}
+
+{{- else}}
+
 import (
 	"fmt"
 	"os"
@@ -25,3 +92,5 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+{{- end}}

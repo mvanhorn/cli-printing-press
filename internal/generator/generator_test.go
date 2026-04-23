@@ -2113,3 +2113,138 @@ func TestGenerateGraphQLCompiles(t *testing.T) {
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
 }
+
+// TestGenerateMCPMainStdioDefault confirms that a spec with no mcp: block
+// produces the same stdio-only MCP entry point we've always emitted. Remote
+// transport is opt-in; the default stays on the current behavior so existing
+// published CLIs regenerate byte-compatibly. Guards against the template
+// accidentally pulling in flag / StreamableHTTP imports for stdio-only specs.
+func TestGenerateMCPMainStdioDefault(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	require.Empty(t, apiSpec.MCP.Transport, "baseline loops spec should not declare MCP transports")
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	mainPath := filepath.Join(outputDir, "cmd", naming.MCP(apiSpec.Name), "main.go")
+	data, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	body := string(data)
+
+	assert.Contains(t, body, "server.ServeStdio(s)", "stdio-only spec must still call ServeStdio")
+	assert.NotContains(t, body, "flag.String", "stdio-only spec must not pull in the flag package")
+	assert.NotContains(t, body, "NewStreamableHTTPServer", "stdio-only spec must not reference the HTTP transport")
+	assert.NotContains(t, body, "PP_MCP_TRANSPORT", "stdio-only spec must not reference the transport env override")
+}
+
+// TestGenerateMCPMainRemoteOptIn confirms that declaring mcp.transport: [stdio, http]
+// emits a flag-aware main with both transport branches, including the env-based
+// default and the custom --addr. Uses a byte-level check on the template
+// output rather than parsing the generated AST to match the Share test style.
+func TestGenerateMCPMainRemoteOptIn(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	apiSpec.MCP = spec.MCPConfig{
+		Transport: []string{"stdio", "http"},
+		Addr:      ":8123",
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	mainPath := filepath.Join(outputDir, "cmd", naming.MCP(apiSpec.Name), "main.go")
+	data, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	body := string(data)
+
+	for _, want := range []string{
+		`"flag"`,
+		`"strings"`,
+		`defaultHTTPAddr = ":8123"`,
+		`flag.String("transport"`,
+		`flag.String("addr"`,
+		`server.ServeStdio(s)`,
+		`server.NewStreamableHTTPServer(s)`,
+		`httpSrv.Start(*addr)`,
+		`PP_MCP_TRANSPORT`,
+	} {
+		assert.Contains(t, body, want, "remote-opt-in main should contain %q", want)
+	}
+}
+
+// TestGenerateMCPMainRemoteRuntime is the runtime signal for U1. Building the
+// binary is necessary but not sufficient — we also want to catch the shape of
+// failures the build cannot see (e.g., a panic in defaultTransport or an
+// unreachable switch arm). This test spawns the generated binary with the
+// default --help and with an unknown --transport value, then asserts on the
+// exit codes + stderr. Full JSON-RPC handshake over stdio or HTTP is out of
+// scope here — U4's scorecard integration test will cover that.
+func TestGenerateMCPMainRemoteRuntime(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	apiSpec.MCP = spec.MCPConfig{Transport: []string{"stdio", "http"}}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+
+	mcpBinary := filepath.Join(outputDir, naming.MCP(apiSpec.Name))
+	runGoCommand(t, outputDir, "build", "-o", mcpBinary, "./cmd/"+naming.MCP(apiSpec.Name))
+
+	// --help should print both flags so an agent can discover transport + addr.
+	helpOut, err := exec.Command(mcpBinary, "--help").CombinedOutput()
+	// cobra-style --help exits 0 or 2 depending on the library; we only care
+	// that the usage string mentions both flags.
+	_ = err
+	helpStr := string(helpOut)
+	assert.Contains(t, helpStr, "-transport", "--help must mention the transport flag")
+	assert.Contains(t, helpStr, "-addr", "--help must mention the addr flag")
+
+	// An unknown transport should fail fast with exit code 2 and a stderr
+	// message naming the valid set. This is the primary agent-facing error.
+	cmd := exec.Command(mcpBinary, "--transport", "grpc")
+	errOut, runErr := cmd.CombinedOutput()
+	require.Error(t, runErr, "unknown transport must return a non-zero exit")
+	assert.Contains(t, string(errOut), "unknown --transport",
+		"stderr should name the unknown-transport failure mode")
+	assert.Contains(t, string(errOut), "stdio, http",
+		"stderr should enumerate the supported transports")
+}
+
+// TestGenerateMCPMainRemoteCompiles is the integration signal for U1: when a
+// spec opts into the http transport, the generated project must still compile
+// end to end. This is where a missing import or symbol mismatch in the
+// template would blow up, so it catches what the string-based test cannot.
+func TestGenerateMCPMainRemoteCompiles(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	apiSpec.MCP = spec.MCPConfig{Transport: []string{"stdio", "http"}}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+
+	mcpBinary := filepath.Join(outputDir, naming.MCP(apiSpec.Name))
+	runGoCommand(t, outputDir, "build", "-o", mcpBinary, "./cmd/"+naming.MCP(apiSpec.Name))
+
+	info, err := os.Stat(mcpBinary)
+	require.NoError(t, err)
+	require.False(t, info.IsDir())
+	require.NotZero(t, info.Size())
+}
