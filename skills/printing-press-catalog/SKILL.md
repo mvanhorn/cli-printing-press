@@ -132,7 +132,10 @@ When invoked with `install <name>`:
 4. Show preview: "Installing <display_name> CLI from <spec_url>"
 5. Download the spec and generate:
    ```bash
-   curl -sL -o /tmp/catalog-spec-$$.yaml "<spec_url>"
+   CATALOG_TMP_DIR="/tmp/printing-press/catalog"
+   mkdir -p "$CATALOG_TMP_DIR"
+   SPEC_TMP="$(mktemp "$CATALOG_TMP_DIR/<name>-spec-XXXXXX.yaml")"
+   curl -sL -o "$SPEC_TMP" "<spec_url>"
    OUTPUT_BASE="$PRESS_LIBRARY/<name>-pp-cli"
    OUTPUT_DIR="$OUTPUT_BASE"
    i=2
@@ -141,7 +144,7 @@ When invoked with `install <name>`:
      i=$((i + 1))
    done
    printing-press generate \
-     --spec /tmp/catalog-spec-$$.yaml \
+     --spec "$SPEC_TMP" \
      --output "$OUTPUT_DIR" \
      --validate
    ```

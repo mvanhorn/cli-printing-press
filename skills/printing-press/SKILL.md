@@ -87,7 +87,7 @@ See the `printing-press-polish` skill for details. It runs diagnostics, fixes ve
 - Optimize for time-to-ship, not time-to-document.
 - Reuse prior research whenever it is already good enough.
 - Do not split one idea across multiple mandatory artifacts.
-- All files produced by this skill go under `$PRESS_RUNSTATE/` (working state) or `$PRESS_MANUSCRIPTS/` (archived). These are the only writable locations.
+- Durable files produced by this skill go under `$PRESS_RUNSTATE/` (working state) or `$PRESS_MANUSCRIPTS/` (archived). Short-lived command captures may use `/tmp/printing-press/` and must be removed after use.
 - Do not create a separate narrative phase for dogfood, dead-code audit, runtime verification, and final score. Treat them as one shipcheck block.
 - Run cheap, high-signal checks early.
 - Fix blockers and high-leverage failures first.
@@ -338,11 +338,15 @@ Maintain a lightweight state file at `$STATE_FILE` so `/printing-press-score` ca
 
 Do not create a `go.work` file in `$CLI_WORK_DIR`. Generated modules must build and test as standalone modules; a mismatched workspace `go` directive can break Go 1.25+ toolchains and lefthook checks. Editor/gopls workspace noise is cosmetic and must not be traded for broken `go build` or `go test`.
 
-There are exactly three writable locations. Every file this skill produces goes to one of them:
+There are exactly three durable writable locations. Every generated artifact this
+skill preserves goes to one of them:
 
 - **`$PRESS_RUNSTATE/`** — mutable working state for the current run (research, proofs, pipeline artifacts, plans, intermediate docs)
 - **`$PRESS_LIBRARY/`** — published CLIs (`<api-slug>/` subdirectories)
 - **`$PRESS_MANUSCRIPTS/`** — archived run evidence (research, proofs, discovery)
+
+Short-lived command captures may use `/tmp/printing-press/` with unique `mktemp`
+paths and must be deleted after use.
 
 Examples of the current naming/layout:
 - `~/printing-press/library/notion/` — published CLI directory (keyed by API slug)
@@ -1893,9 +1897,13 @@ Do NOT proceed without asking. Do NOT substitute an ad-hoc smoke test. If some c
 **Critical: pipe-free exit-code checks.** A shell command like `"$BIN" foo | tail -2` captures `tail`'s exit code, not the binary's. Always run as:
 
 ```bash
-"$BIN" <subcmd> <args> > /tmp/out 2>&1
+DOGFOOD_TMP_DIR="/tmp/printing-press/dogfood"
+mkdir -p "$DOGFOOD_TMP_DIR"
+OUT_FILE="$(mktemp "$DOGFOOD_TMP_DIR/<api>-out-XXXXXX")"
+"$BIN" <subcmd> <args> > "$OUT_FILE" 2>&1
 code=$?
 # then check $code directly
+rm -f "$OUT_FILE"
 ```
 
 Never use `"$BIN" ... && echo ok || echo fail` for exit-code testing — short-circuit and unpredictable piping masks real failures.

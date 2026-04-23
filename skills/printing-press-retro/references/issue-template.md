@@ -145,6 +145,9 @@ if [ "$GH_AVAILABLE" = false ]; then
   echo "  1. Go to: https://github.com/mvanhorn/cli-printing-press/issues/new"
   echo "  2. Title: $ISSUE_TITLE"
   echo "  3. Copy the retro content from: $RETRO_PROOF_PATH"
+  if [ -n "$RETRO_SCRATCH_PATH" ] && [ -f "$RETRO_SCRATCH_PATH" ]; then
+    echo "     Temp copy: $RETRO_SCRATCH_PATH"
+  fi
   if [ -n "$MANUSCRIPTS_URL" ]; then
     echo "  4. Manuscripts: $MANUSCRIPTS_URL"
   fi
@@ -154,6 +157,9 @@ if [ "$GH_AVAILABLE" = false ]; then
   echo ""
   echo "The retro document has been saved locally to:"
   echo "  $RETRO_PROOF_PATH"
+  if [ -n "$RETRO_SCRATCH_PATH" ] && [ -f "$RETRO_SCRATCH_PATH" ]; then
+    echo "  $RETRO_SCRATCH_PATH"
+  fi
 fi
 ```
 
@@ -174,4 +180,5 @@ well under this for typical retros. If `gh issue create` fails with a body-size 
 | `$MANUSCRIPTS_URL` | artifact-packaging.md | catbox URL or empty |
 | `$CLI_SOURCE_URL` | artifact-packaging.md | catbox URL or empty |
 | `$RETRO_PROOF_PATH` | SKILL.md Phase 5 | Path to saved retro in manuscript proofs |
+| `$RETRO_SCRATCH_PATH` | SKILL.md Phase 5 | Path to temp retro copy under `/tmp/printing-press/retro/` |
 | All retro findings | SKILL.md Phase 4 | The prioritized findings to populate tables |

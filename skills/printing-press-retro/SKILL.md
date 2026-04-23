@@ -73,8 +73,9 @@ _scope_dir="$(cd "$_scope_dir" && pwd -P)"
 PRESS_HOME="$HOME/printing-press"
 PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
 PRESS_LIBRARY="$PRESS_HOME/library"
+RETRO_SCRATCH_DIR="/tmp/printing-press/retro"
 
-mkdir -p "$PRESS_MANUSCRIPTS" "$PRESS_LIBRARY"
+mkdir -p "$PRESS_MANUSCRIPTS" "$PRESS_LIBRARY" "$RETRO_SCRATCH_DIR"
 
 # Detect whether we're inside the printing-press repo
 IN_REPO=false
@@ -423,13 +424,23 @@ Write the full retro document using this template:
 - ...
 ```
 
-Save the retro to manuscript proofs (always):
+Save the retro to manuscript proofs (always) and to the temp retro scratch
+directory (always). Do not save retro documents under the source repo's
+`docs/retros/` directory; the skill must work the same way for users who do not
+have the repo checked out, and retro documents are issue artifacts rather than
+durable repo docs.
 
 ```bash
-RETRO_PROOF_PATH="$PRESS_MANUSCRIPTS/$API_NAME/$RUN_ID/proofs/$(date +%Y%m%d-%H%M%S)-retro-$CLI_NAME.md"
+RETRO_STAMP="$(date +%Y%m%d-%H%M%S)"
+RETRO_PROOF_PATH="$PRESS_MANUSCRIPTS/$API_NAME/$RUN_ID/proofs/$RETRO_STAMP-retro-$CLI_NAME.md"
+RETRO_SCRATCH_DIR="/tmp/printing-press/retro"
+RETRO_SCRATCH_PATH="$RETRO_SCRATCH_DIR/$RETRO_STAMP-$API_NAME-retro.md"
+mkdir -p "$(dirname "$RETRO_PROOF_PATH")" "$RETRO_SCRATCH_DIR"
 ```
 
-This must complete before Phase 6 Step 1 copies the manuscripts directory to staging.
+Write the full retro document to `$RETRO_PROOF_PATH`, then copy that file to
+`$RETRO_SCRATCH_PATH`. This must complete before Phase 6 Step 1 copies the
+manuscripts directory to staging.
 
 ## Phase 5.5: Plannable work units
 
@@ -480,9 +491,10 @@ Use judgment. A retro that found three things but all three are "this API has a 
 auth scheme no other API uses" is not worth an issue. A retro that found one small
 template gap that would help every future CLI *is* worth an issue.
 
-If the issue is skipped, still save the retro locally (manuscript proofs + `docs/retros/`
-if in-repo), present the findings to the user, then jump directly to Phase 6 Step 6
-(present results — adjusted to show local-only paths) and Step 8 (offer next steps).
+If the issue is skipped, still save the retro locally (manuscript proofs +
+`/tmp/printing-press/retro/`), present the findings to the user, then jump
+directly to Phase 6 Step 6 (present results — adjusted to show local-only paths)
+and Step 8 (offer next steps).
 
 ## Phase 6: Package, upload, and present
 
@@ -519,14 +531,14 @@ via `AskUserQuestion`.
 Options:
 1. **Submit** — upload artifacts and create the issue
 2. **Let me review the files first** — I'll check the staging folder, then come back
-3. **Save locally only** — skip the issue, just save to manuscripts
+3. **Save locally only** — skip the issue, keep the manuscript proof and temp copy
 
 If the user picks "Let me review the files first," acknowledge and wait. When they
 come back, re-ask with Submit / Save locally only.
 
-If the user picks "Save locally only," skip Steps 3 and 4 — save to manuscript
-proofs (and `docs/retros/` if in-repo), clean up the staging folder, then jump
-to Step 6.
+If the user picks "Save locally only," skip Steps 3 and 4 — the retro is already
+saved to manuscript proofs and `/tmp/printing-press/retro/`. Clean up the staging
+folder, then jump to Step 6.
 
 ### Step 3: Upload artifacts
 
@@ -543,14 +555,16 @@ document). Create the issue via `gh issue create --repo mvanhorn/cli-printing-pr
 If `gh` is not authenticated or issue creation fails, follow the graceful degradation
 path in the issue-template reference: save locally and print manual filing instructions.
 
-### Step 5: Local save (conditional)
+### Step 5: Local scratch copy
 
-If `IN_REPO=true`, also save the retro to the repo:
+Ensure the temp scratch copy exists. This is the human-friendly local path for
+reviewing or manually filing the retro when upload or issue creation fails.
 
 ```bash
-RETRO_DIR="$REPO_ROOT/docs/retros"
-mkdir -p "$RETRO_DIR"
-RETRO_FILE="$RETRO_DIR/$(date +%Y-%m-%d)-$API_NAME-retro.md"
+if [ -f "$RETRO_PROOF_PATH" ]; then
+  mkdir -p "$RETRO_SCRATCH_DIR"
+  cp "$RETRO_PROOF_PATH" "$RETRO_SCRATCH_PATH"
+fi
 ```
 
 ### Step 6: Present results
@@ -563,6 +577,7 @@ After the issue is created, show the user:
 >
 > Found <N> findings across <M> work units.
 > *(if artifacts uploaded)* Artifacts: [manuscripts](<URL>) · [CLI source](<URL>)
+> Local copy: <$RETRO_SCRATCH_PATH>
 
 If the issue wasn't created (user chose local-only, or gh failed), show the local
 save paths instead.

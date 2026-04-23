@@ -318,11 +318,14 @@ MODULE_PATH="<module_path_base>/<category>/<api-slug>"
 
 For example: `github.com/mvanhorn/printing-press-library/library/productivity/notion`
 
-Run `publish package` with `--target` to stage the CLI into a temporary directory, then copy it into the publish repo:
+Run `publish package` with `--target` to stage the CLI into a unique temporary
+directory, then copy it into the publish repo:
 
 ```bash
-STAGING_DIR="/tmp/publish-staging-<api-slug>"
-rm -rf "$STAGING_DIR"
+PUBLISH_STAGING_ROOT="/tmp/printing-press/publish"
+mkdir -p "$PUBLISH_STAGING_ROOT"
+STAGING_PARENT="$(mktemp -d "$PUBLISH_STAGING_ROOT/<api-slug>-XXXXXX")"
+STAGING_DIR="$STAGING_PARENT/package"
 
 printing-press publish package \
   --dir <cli-dir> \
@@ -348,6 +351,13 @@ rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" "$PUBLISH_REP
 
 # Verify it builds from the publish repo
 cd "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" && go build ./...
+```
+
+After the publish repo copy and build verification are complete, remove the staging
+directory:
+
+```bash
+rm -rf "$STAGING_PARENT"
 ```
 
 Note: `staged_dir` uses the CLI name (e.g., `espn-pp-cli`) but the publish repo uses the API slug (e.g., `espn`). The copy step handles this rename.
