@@ -57,6 +57,7 @@ func Execute() error {
 	rootCmd.AddCommand(newPolishCmd())
 	rootCmd.AddCommand(newWorkflowVerifyCmd())
 	rootCmd.AddCommand(newLockCmd())
+	rootCmd.AddCommand(newMCPAuditCmd())
 
 	return rootCmd.Execute()
 }

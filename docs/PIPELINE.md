@@ -164,7 +164,7 @@ Outputs:
 Gates:
 - Dogfood: structural checks (path validity, auth, dead flags, wiring) pass at the configured tier
 - Verify: runtime behavioral checks against the real API or a mock server return PASS (or WARN after an auto-remediation pass)
-- Scorecard: overall grade clears the operator's configured threshold
+- Scorecard: overall grade clears the operator's configured threshold. Tier-1 dimensions include three MCP-shape dimensions (`mcp_remote_transport`, `mcp_tool_design`, `mcp_surface_strategy`) added in the April 2026 MCP production-readiness pass — opt-in via the `(score, bool)` pattern so CLIs without the relevant surface remain unscored.
 
 Artifacts:
 - `pipeline/dogfood-results.json`

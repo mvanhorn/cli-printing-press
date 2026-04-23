@@ -142,6 +142,33 @@ One spec  -->  printing-press generate  -->  <api>-pp-cli (cobra)  +  <api>-pp-m
 
 Every API that gets a CLI+MCP becomes instantly accessible to every AI coding tool. The printing press is the factory.
 
+### MCP spec surface (U1-U3)
+
+The generator ships three opt-in knobs on the spec's `mcp:` block, aligned with Anthropic's [2026-04-22 MCP production-agents guidance](https://www.anthropic.com/news/building-agents-that-reach-production-systems-with-mcp):
+
+```yaml
+mcp:
+  transport: [stdio, http]        # U1 — remote-capable for cloud-hosted agents; default [stdio]
+  addr: ":7777"                   # U1 — default bind for the http transport
+  orchestration: code             # U3 — "endpoint-mirror" (default), "intent", or "code"
+  endpoint_tools: hidden          # U2 — suppress raw endpoint tools when intents cover the surface
+  intents:                        # U2 — compose multi-step tools declaratively
+    - name: create_issue_from_thread
+      description: "Create an issue from a Slack thread."
+      params:
+        - { name: thread_id, type: string, required: true, description: "slack thread id" }
+      steps:
+        - endpoint: messages.get_thread
+          bind: { thread_id: "${input.thread_id}" }
+          capture: thread
+        - endpoint: issues.create
+          bind: { title: "${thread.subject}", description: "${thread.body}" }
+          capture: issue
+      returns: issue
+```
+
+Run `printing-press mcp-audit` after changes to see which library CLIs would benefit from the new surface.
+
 ## Domain Archetypes
 
 The profiler classifies every API into a domain archetype and auto-generates the right workflow + insight commands:
