@@ -40,22 +40,25 @@ type Scorecard struct {
 
 // SteinerScore breaks down the Steinberger bar into 11 dimensions, each 0-10.
 type SteinerScore struct {
-	OutputModes    int `json:"output_modes"`             // 0-10
-	Auth           int `json:"auth"`                     // 0-10
-	ErrorHandling  int `json:"error_handling"`           // 0-10
-	TerminalUX     int `json:"terminal_ux"`              // 0-10
-	README         int `json:"readme"`                   // 0-10
-	Doctor         int `json:"doctor"`                   // 0-10
-	AgentNative    int `json:"agent_native"`             // 0-10
-	MCPQuality     int `json:"mcp_quality"`              // 0-10
-	MCPTokenEff    int `json:"mcp_token_efficiency"`     // 0-10; unscored when no MCP surface
-	LocalCache     int `json:"local_cache"`              // 0-10
-	CacheFreshness int `json:"cache_freshness"`          // 0-10; unscored when the CLI has no local store
-	Breadth        int `json:"breadth"`                  // 0-10: how many commands (penalizes empty CLIs)
-	Vision         int `json:"vision"`                   // 0-10
-	Workflows      int `json:"workflows"`                // 0-10
-	Insight        int `json:"insight"`                  // 0-10
-	AgentWorkflow  int `json:"agent_workflow_readiness"` // 0-10: HeyGen-derived - async jobs, profiles, deliver, feedback
+	OutputModes        int `json:"output_modes"`             // 0-10
+	Auth               int `json:"auth"`                     // 0-10
+	ErrorHandling      int `json:"error_handling"`           // 0-10
+	TerminalUX         int `json:"terminal_ux"`              // 0-10
+	README             int `json:"readme"`                   // 0-10
+	Doctor             int `json:"doctor"`                   // 0-10
+	AgentNative        int `json:"agent_native"`             // 0-10
+	MCPQuality         int `json:"mcp_quality"`              // 0-10
+	MCPTokenEff        int `json:"mcp_token_efficiency"`     // 0-10; unscored when no MCP surface
+	MCPRemoteTransport int `json:"mcp_remote_transport"`     // 0-10; unscored when no MCP surface. Rewards remote-capable servers per Anthropic's 2026-04 MCP guidance.
+	MCPToolDesign      int `json:"mcp_tool_design"`          // 0-10; unscored when no MCP surface or endpoint count below toolDesignMinEndpoints. Rewards intent-grouped tools vs. endpoint mirrors.
+	MCPSurfaceStrategy int `json:"mcp_surface_strategy"`     // 0-10; unscored unless the endpoint surface exceeds surfaceStrategyLargeThreshold or code-orchestration is explicitly used. Penalizes endpoint-mirror at scale.
+	LocalCache         int `json:"local_cache"`              // 0-10
+	CacheFreshness     int `json:"cache_freshness"`          // 0-10; unscored when the CLI has no local store
+	Breadth            int `json:"breadth"`                  // 0-10: how many commands (penalizes empty CLIs)
+	Vision             int `json:"vision"`                   // 0-10
+	Workflows          int `json:"workflows"`                // 0-10
+	Insight            int `json:"insight"`                  // 0-10
+	AgentWorkflow      int `json:"agent_workflow_readiness"` // 0-10: HeyGen-derived - async jobs, profiles, deliver, feedback
 	// Tier 2: Domain Correctness (semantic checks)
 	PathValidity          int    `json:"path_validity"`           // 0-10
 	AuthProtocol          int    `json:"auth_protocol"`           // 0-10
@@ -98,6 +101,21 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 		sc.Steinberger.MCPTokenEff = mcpTokenScore
 	} else {
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, "mcp_token_efficiency")
+	}
+	if remoteScore, scored := scoreMCPRemoteTransport(outputDir); scored {
+		sc.Steinberger.MCPRemoteTransport = remoteScore
+	} else {
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, "mcp_remote_transport")
+	}
+	if toolDesignScore, scored := scoreMCPToolDesign(outputDir); scored {
+		sc.Steinberger.MCPToolDesign = toolDesignScore
+	} else {
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, "mcp_tool_design")
+	}
+	if strategyScore, scored := scoreMCPSurfaceStrategy(outputDir); scored {
+		sc.Steinberger.MCPSurfaceStrategy = strategyScore
+	} else {
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, "mcp_surface_strategy")
 	}
 	sc.Steinberger.LocalCache = scoreLocalCache(outputDir)
 	if cacheFreshnessScore, scored := scoreCacheFreshness(outputDir); scored {
@@ -157,7 +175,9 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 		sc.UnscoredDimensions = append(sc.UnscoredDimensions, "live_api_verification")
 	}
 
-	// Tier 1: Infrastructure (string-matching, 150 max; 140 when no MCP surface)
+	// Tier 1: Infrastructure (string-matching, 190 max; reduced per dimension
+	// when the opt-in MCP, cache_freshness, and new MCP-shape dimensions are
+	// absent for this CLI — see tier1Max below).
 	tier1Raw := sc.Steinberger.OutputModes +
 		sc.Steinberger.Auth +
 		sc.Steinberger.ErrorHandling +
@@ -167,6 +187,9 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 		sc.Steinberger.AgentNative +
 		sc.Steinberger.MCPQuality +
 		sc.Steinberger.MCPTokenEff +
+		sc.Steinberger.MCPRemoteTransport +
+		sc.Steinberger.MCPToolDesign +
+		sc.Steinberger.MCPSurfaceStrategy +
 		sc.Steinberger.LocalCache +
 		sc.Steinberger.CacheFreshness +
 		sc.Steinberger.Breadth +
@@ -194,11 +217,20 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 	// Weighted composite: Tier 1 = 50%, Tier 2 = 50% of final 100-point scale.
 	// Tier 1 max is 160 with MCP + cache_freshness, 150 without MCP, 150 without
 	// cache_freshness, 140 without either.
-	tier1Max := 160
+	tier1Max := 190
 	if sc.IsDimensionUnscored("mcp_token_efficiency") {
 		tier1Max -= 10
 	}
 	if sc.IsDimensionUnscored("cache_freshness") {
+		tier1Max -= 10
+	}
+	if sc.IsDimensionUnscored("mcp_remote_transport") {
+		tier1Max -= 10
+	}
+	if sc.IsDimensionUnscored("mcp_tool_design") {
+		tier1Max -= 10
+	}
+	if sc.IsDimensionUnscored("mcp_surface_strategy") {
 		tier1Max -= 10
 	}
 	tier1Normalized := (tier1Raw * 50) / tier1Max // scale 0-tier1Max to 0-50
