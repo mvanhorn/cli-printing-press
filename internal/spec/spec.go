@@ -153,8 +153,52 @@ type ShareConfig struct {
 // ["stdio"] for backward compatibility. Unknown values are rejected at spec
 // load; this prevents silent drift when new transports are introduced.
 type MCPConfig struct {
-	Transport []string `yaml:"transport,omitempty" json:"transport,omitempty"` // allowed transports the generated binary compiles support for; empty == [stdio]. Runtime transport is chosen via the --transport flag and PP_MCP_TRANSPORT env.
-	Addr      string   `yaml:"addr,omitempty" json:"addr,omitempty"`           // default bind address for the http transport (e.g., ":7777"). Blank means runtime default (":7777"). Ignored unless http is in Transport.
+	Transport     []string `yaml:"transport,omitempty" json:"transport,omitempty"`           // allowed transports the generated binary compiles support for; empty == [stdio]. Runtime transport is chosen via the --transport flag and PP_MCP_TRANSPORT env.
+	Addr          string   `yaml:"addr,omitempty" json:"addr,omitempty"`                     // default bind address for the http transport (e.g., ":7777"). Blank means runtime default (":7777"). Ignored unless http is in Transport.
+	Intents       []Intent `yaml:"intents,omitempty" json:"intents,omitempty"`               // higher-level MCP tools that compose multiple endpoint calls. The agent sees one intent tool; the generator emits a handler that fans out to the declared endpoints sequentially. Anti-pattern to fight: one-tool-per-endpoint mirrors that force agents to stitch primitives.
+	EndpointTools string   `yaml:"endpoint_tools,omitempty" json:"endpoint_tools,omitempty"` // "visible" (default) keeps the per-endpoint MCP tools; "hidden" suppresses them so only intents + generator-emitted tools appear. Use "hidden" when intents fully cover the surface and raw endpoints would be noise.
+}
+
+// Intent declares an MCP tool that composes multiple endpoint calls into a
+// single agent-facing operation. The generator emits one handler per intent
+// that resolves bindings, calls each endpoint in order against the CLI's
+// existing HTTP client, and returns the captured value named by Returns.
+//
+// Binding syntax — each value in a step's Bind map is a string expression:
+//   - `${input.<name>}`    resolves to the MCP request's input parameter
+//   - `${<capture>.<field>}` resolves to a field of a previous step's captured JSON response
+//   - anything else is used as a string literal
+//
+// Type coercion: all bound values are rendered as strings at runtime; JSON
+// bodies for POST/PUT/PATCH are built from the resolved map. The intent
+// surface intentionally does not support array indexing, conditional
+// branching, or looping in v1 — those escapes belong in U3's code-orchestration
+// pattern, not here.
+type Intent struct {
+	Name        string        `yaml:"name" json:"name"`                           // MCP tool name; snake_case, unique within the spec
+	Description string        `yaml:"description" json:"description"`             // agent-facing description; should name the *intent*, not the endpoints
+	Params      []IntentParam `yaml:"params,omitempty" json:"params,omitempty"`   // input parameters the intent tool exposes to MCP callers
+	Steps       []IntentStep  `yaml:"steps" json:"steps"`                         // ordered list of endpoint calls; at least one required
+	Returns     string        `yaml:"returns,omitempty" json:"returns,omitempty"` // capture name whose value is returned to the caller; defaults to the last step's capture when blank
+}
+
+// IntentParam mirrors a narrow slice of the endpoint Param type. Kept small by
+// design: intents are compositions, so parameter shapes should be simple
+// string/int/bool inputs that bind into step calls, not full nested bodies.
+type IntentParam struct {
+	Name        string `yaml:"name" json:"name"`
+	Type        string `yaml:"type" json:"type"` // one of: string, integer, boolean
+	Required    bool   `yaml:"required,omitempty" json:"required,omitempty"`
+	Description string `yaml:"description" json:"description"`
+}
+
+// IntentStep declares one endpoint call inside an intent. Endpoint references
+// are `resource.endpoint` or `resource.sub_resource.endpoint`; the validator
+// confirms the path resolves against APISpec.Resources at spec load.
+type IntentStep struct {
+	Endpoint string            `yaml:"endpoint" json:"endpoint"`                   // dotted path into the spec's resources, e.g., "messages.get_thread"
+	Bind     map[string]string `yaml:"bind,omitempty" json:"bind,omitempty"`       // map of endpoint param name -> binding expression
+	Capture  string            `yaml:"capture,omitempty" json:"capture,omitempty"` // name to bind this step's response under for subsequent steps / returns; must be unique within the intent
 }
 
 // EffectiveTransports returns the transports the generated binary should
@@ -411,7 +455,7 @@ func (s *APISpec) Validate() error {
 	if err := validateCacheShare(s.Cache, s.Share); err != nil {
 		return err
 	}
-	if err := validateMCP(s.MCP); err != nil {
+	if err := validateMCP(s.MCP, s.Resources); err != nil {
 		return err
 	}
 	for name, r := range s.Resources {
@@ -549,7 +593,7 @@ var addrLikeRe = regexp.MustCompile(`^[A-Za-z0-9.\-_]*:[0-9]+$`)
 // validateMCP enforces the Transport allowlist and normalizes the Addr shape.
 // An empty Transport is valid (default stdio); non-empty lists must contain
 // only entries from allowedMCPTransports, with no duplicates.
-func validateMCP(m MCPConfig) error {
+func validateMCP(m MCPConfig, resources map[string]Resource) error {
 	seen := make(map[string]struct{}, len(m.Transport))
 	for i, t := range m.Transport {
 		normalized := strings.ToLower(strings.TrimSpace(t))
@@ -572,7 +616,137 @@ func validateMCP(m MCPConfig) error {
 			return fmt.Errorf("mcp.addr %q is not a valid bind address (expect \":port\" or \"host:port\")", m.Addr)
 		}
 	}
+	if m.EndpointTools != "" && m.EndpointTools != "visible" && m.EndpointTools != "hidden" {
+		return fmt.Errorf("mcp.endpoint_tools: %q must be \"visible\" or \"hidden\"", m.EndpointTools)
+	}
+	return validateIntents(m.Intents, resources)
+}
+
+// intentNameRe enforces snake_case for MCP intent tool names so they line up
+// with the snake_case convention used for endpoint-mirror tool names.
+var intentNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// allowedIntentParamTypes matches the narrow type set IntentParam supports.
+// Intents compose endpoints; complex shapes belong in the endpoint bodies.
+var allowedIntentParamTypes = map[string]struct{}{
+	"string": {}, "integer": {}, "boolean": {},
+}
+
+// bindingExprRe matches either ${input.<name>} or ${<capture>.<field>} where
+// the path after the dot may contain additional dot-separated segments. The
+// generator's runtime resolver walks the path on a map[string]any, so deep
+// paths are supported even though the validator only peeks at the first
+// segment to verify the reference target exists.
+var bindingExprRe = regexp.MustCompile(`^\$\{([a-z][a-z0-9_]*)(\.[a-zA-Z0-9_]+)+\}$`)
+
+func validateIntents(intents []Intent, resources map[string]Resource) error {
+	seenNames := make(map[string]struct{}, len(intents))
+	for i, intent := range intents {
+		if intent.Name == "" {
+			return fmt.Errorf("mcp.intents[%d]: name is required", i)
+		}
+		if !intentNameRe.MatchString(intent.Name) {
+			return fmt.Errorf("mcp.intents[%d]: name %q must be snake_case (lowercase letters, digits, underscore)", i, intent.Name)
+		}
+		if _, dup := seenNames[intent.Name]; dup {
+			return fmt.Errorf("mcp.intents[%d]: name %q appears more than once", i, intent.Name)
+		}
+		seenNames[intent.Name] = struct{}{}
+		if intent.Description == "" {
+			return fmt.Errorf("mcp.intents[%d] (%s): description is required", i, intent.Name)
+		}
+		if len(intent.Steps) == 0 {
+			return fmt.Errorf("mcp.intents[%d] (%s): at least one step is required", i, intent.Name)
+		}
+		inputNames := make(map[string]struct{}, len(intent.Params))
+		for pi, p := range intent.Params {
+			if p.Name == "" {
+				return fmt.Errorf("mcp.intents[%d] (%s): params[%d].name is required", i, intent.Name, pi)
+			}
+			if _, ok := allowedIntentParamTypes[p.Type]; !ok {
+				return fmt.Errorf("mcp.intents[%d] (%s): params[%d] (%s): type %q must be one of string, integer, boolean", i, intent.Name, pi, p.Name, p.Type)
+			}
+			if _, dup := inputNames[p.Name]; dup {
+				return fmt.Errorf("mcp.intents[%d] (%s): params[%d]: name %q appears more than once", i, intent.Name, pi, p.Name)
+			}
+			inputNames[p.Name] = struct{}{}
+		}
+		captures := make(map[string]struct{}, len(intent.Steps))
+		for si, step := range intent.Steps {
+			if step.Endpoint == "" {
+				return fmt.Errorf("mcp.intents[%d] (%s): steps[%d].endpoint is required", i, intent.Name, si)
+			}
+			if _, ok := lookupEndpoint(resources, step.Endpoint); !ok {
+				return fmt.Errorf("mcp.intents[%d] (%s): steps[%d].endpoint %q does not resolve against the spec's resources", i, intent.Name, si, step.Endpoint)
+			}
+			for paramName, expr := range step.Bind {
+				if paramName == "" {
+					return fmt.Errorf("mcp.intents[%d] (%s): steps[%d].bind: param name must not be empty", i, intent.Name, si)
+				}
+				if strings.HasPrefix(expr, "${") {
+					m := bindingExprRe.FindStringSubmatch(expr)
+					if m == nil {
+						return fmt.Errorf("mcp.intents[%d] (%s): steps[%d].bind[%s]: %q is not a valid binding (expect ${input.<name>} or ${capture.<field>})", i, intent.Name, si, paramName, expr)
+					}
+					root := m[1]
+					if root == "input" {
+						fieldPath := strings.TrimPrefix(m[2], ".")
+						firstSeg := strings.SplitN(fieldPath, ".", 2)[0]
+						if _, ok := inputNames[firstSeg]; !ok {
+							return fmt.Errorf("mcp.intents[%d] (%s): steps[%d].bind[%s]: %q references undeclared input %q", i, intent.Name, si, paramName, expr, firstSeg)
+						}
+					} else if _, ok := captures[root]; !ok {
+						return fmt.Errorf("mcp.intents[%d] (%s): steps[%d].bind[%s]: %q references undeclared capture %q (captures must be defined in a prior step)", i, intent.Name, si, paramName, expr, root)
+					}
+				}
+			}
+			if step.Capture != "" {
+				if step.Capture == "input" {
+					return fmt.Errorf("mcp.intents[%d] (%s): steps[%d].capture: %q is reserved for intent inputs", i, intent.Name, si, step.Capture)
+				}
+				if _, dup := captures[step.Capture]; dup {
+					return fmt.Errorf("mcp.intents[%d] (%s): steps[%d].capture %q appears more than once", i, intent.Name, si, step.Capture)
+				}
+				captures[step.Capture] = struct{}{}
+			}
+		}
+		if intent.Returns != "" {
+			if _, ok := captures[intent.Returns]; !ok {
+				return fmt.Errorf("mcp.intents[%d] (%s): returns %q does not match any step capture", i, intent.Name, intent.Returns)
+			}
+		}
+	}
 	return nil
+}
+
+// lookupEndpoint resolves a dotted endpoint reference (`resource.endpoint` or
+// `resource.sub_resource.endpoint`) against the spec's resource map. Returns
+// the endpoint and whether it was found. The generator uses the same lookup
+// to emit the right HTTP method and path at intent-handler emission time.
+func lookupEndpoint(resources map[string]Resource, ref string) (Endpoint, bool) {
+	parts := strings.Split(ref, ".")
+	switch len(parts) {
+	case 2:
+		r, ok := resources[parts[0]]
+		if !ok {
+			return Endpoint{}, false
+		}
+		e, ok := r.Endpoints[parts[1]]
+		return e, ok
+	case 3:
+		r, ok := resources[parts[0]]
+		if !ok {
+			return Endpoint{}, false
+		}
+		sub, ok := r.SubResources[parts[1]]
+		if !ok {
+			return Endpoint{}, false
+		}
+		e, ok := sub.Endpoints[parts[2]]
+		return e, ok
+	default:
+		return Endpoint{}, false
+	}
 }
 
 // CountMCPTools counts total endpoints and public (NoAuth) endpoints across

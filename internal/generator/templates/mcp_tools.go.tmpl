@@ -60,6 +60,7 @@ func sanitizeErrorBody(msg string) string {
 
 // RegisterTools registers all API operations as MCP tools.
 func RegisterTools(s *server.MCPServer) {
+{{- if ne .MCP.EndpointTools "hidden"}}
 {{- range $name, $resource := .Resources}}
 {{- range $eName, $endpoint := $resource.Endpoints}}
 	s.AddTool(
@@ -97,6 +98,11 @@ func RegisterTools(s *server.MCPServer) {
 	)
 {{- end}}
 {{- end}}
+{{- end}}
+{{- end}}
+{{- if .MCP.Intents}}
+	// Intent tools — higher-level compositions declared in the spec.
+	RegisterIntents(s)
 {{- end}}
 
 {{- if .VisionSet.Sync}}

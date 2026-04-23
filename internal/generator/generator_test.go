@@ -2179,6 +2179,109 @@ func TestGenerateMCPMainRemoteOptIn(t *testing.T) {
 	}
 }
 
+// TestGenerateMCPIntentsEmittedWhenDeclared proves that a spec with mcp.intents
+// emits internal/mcp/intents.go, wires the intent handler into RegisterTools
+// via RegisterIntents, and keeps endpoint-mirror tools by default.
+func TestGenerateMCPIntentsEmittedWhenDeclared(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	apiSpec.MCP = spec.MCPConfig{
+		Intents: []spec.Intent{
+			{
+				Name:        "fetch_contact_then_noop",
+				Description: "Fetch a contact, then do nothing (integration fixture)",
+				Params: []spec.IntentParam{
+					{Name: "contact_id", Type: "string", Required: true, Description: "contact id"},
+				},
+				Steps: []spec.IntentStep{
+					{
+						Endpoint: "contacts.list",
+						Bind:     map[string]string{"limit": "${input.contact_id}"},
+						Capture:  "contacts",
+					},
+				},
+				Returns: "contacts",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	intentsPath := filepath.Join(outputDir, "internal", "mcp", "intents.go")
+	data, err := os.ReadFile(intentsPath)
+	require.NoError(t, err, "intents.go must be emitted when intents are declared")
+	body := string(data)
+
+	for _, want := range []string{
+		`func RegisterIntents(`,
+		`handleFetchContactThenNoop`,
+		`mcplib.NewTool("fetch_contact_then_noop"`,
+		`intentEndpoints = map[string]intentEndpointMeta{`,
+		`"contacts.list"`,
+		`func resolveIntentBinding(`,
+		`func callIntentEndpoint(`,
+	} {
+		assert.Contains(t, body, want, "intents.go missing expected snippet %q", want)
+	}
+
+	toolsPath := filepath.Join(outputDir, "internal", "mcp", "tools.go")
+	toolsData, err := os.ReadFile(toolsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(toolsData), "RegisterIntents(s)",
+		"RegisterTools must wire in RegisterIntents when intents are declared")
+	assert.Contains(t, string(toolsData), `mcplib.NewTool("contacts_list"`,
+		"raw endpoint-mirror tools remain visible by default")
+
+	// End-to-end signal — the whole generated project must compile.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+// TestGenerateMCPEndpointToolsHiddenSuppressesEndpointTools proves that
+// endpoint_tools: hidden removes the raw per-endpoint MCP tools but keeps
+// the intent registration wired in. This is the surface agents see when the
+// intent declarations fully cover the useful operations.
+func TestGenerateMCPEndpointToolsHiddenSuppressesEndpointTools(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	apiSpec.MCP = spec.MCPConfig{
+		EndpointTools: "hidden",
+		Intents: []spec.Intent{
+			{
+				Name:        "noop_intent",
+				Description: "Fixture intent",
+				Steps: []spec.IntentStep{
+					{Endpoint: "contacts.list", Capture: "contacts"},
+				},
+				Returns: "contacts",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	toolsPath := filepath.Join(outputDir, "internal", "mcp", "tools.go")
+	data, err := os.ReadFile(toolsPath)
+	require.NoError(t, err)
+	body := string(data)
+
+	assert.NotContains(t, body, `mcplib.NewTool("contacts_list"`,
+		"raw endpoint tools must be hidden when endpoint_tools: hidden")
+	assert.Contains(t, body, "RegisterIntents(s)",
+		"intent registration must still be called when endpoint tools are hidden")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 // TestGenerateMCPMainRemoteRuntime is the runtime signal for U1. Building the
 // binary is necessary but not sufficient — we also want to catch the shape of
 // failures the build cannot see (e.g., a panic in defaultTransport or an

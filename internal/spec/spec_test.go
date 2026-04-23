@@ -1065,6 +1065,170 @@ func TestMCPConfigValidation(t *testing.T) {
 	}
 }
 
+func TestMCPIntentsParse(t *testing.T) {
+	input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/demo/config.toml
+mcp:
+  endpoint_tools: hidden
+  intents:
+    - name: fetch_and_summarize
+      description: Fetch an item then summarize it
+      params:
+        - name: item_id
+          type: string
+          required: true
+          description: item identifier
+      steps:
+        - endpoint: items.get
+          bind:
+            id: ${input.item_id}
+          capture: item
+      returns: item
+resources:
+  items:
+    description: "Items"
+    endpoints:
+      get:
+        method: GET
+        path: /items/{id}
+        params:
+          - name: id
+            type: string
+            required: true
+            positional: true
+`
+	s, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+	require.NoError(t, s.Validate())
+	require.Len(t, s.MCP.Intents, 1)
+	assert.Equal(t, "fetch_and_summarize", s.MCP.Intents[0].Name)
+	assert.Equal(t, "hidden", s.MCP.EndpointTools)
+}
+
+func TestMCPIntentsValidation(t *testing.T) {
+	base := func(mcp MCPConfig) APISpec {
+		return APISpec{
+			Name:    "demo",
+			BaseURL: "http://x",
+			Resources: map[string]Resource{
+				"items": {
+					Endpoints: map[string]Endpoint{
+						"get":  {Method: "GET", Path: "/items/{id}"},
+						"list": {Method: "GET", Path: "/items"},
+					},
+				},
+			},
+			MCP: mcp,
+		}
+	}
+
+	ok := Intent{
+		Name:        "get_item",
+		Description: "Get an item",
+		Params:      []IntentParam{{Name: "id", Type: "string", Required: true, Description: "id"}},
+		Steps: []IntentStep{
+			{Endpoint: "items.get", Bind: map[string]string{"id": "${input.id}"}, Capture: "item"},
+		},
+		Returns: "item",
+	}
+
+	tests := []struct {
+		name    string
+		intents []Intent
+		tools   string
+		wantErr string
+	}{
+		{
+			name:    "unknown endpoint reference rejected",
+			intents: []Intent{{Name: "x", Description: "x", Steps: []IntentStep{{Endpoint: "items.delete"}}}},
+			wantErr: "does not resolve against the spec",
+		},
+		{
+			name: "undeclared input reference rejected",
+			intents: []Intent{{
+				Name:        "x",
+				Description: "x",
+				Steps:       []IntentStep{{Endpoint: "items.get", Bind: map[string]string{"id": "${input.missing}"}}},
+			}},
+			wantErr: "undeclared input",
+		},
+		{
+			name: "capture referenced before definition rejected",
+			intents: []Intent{{
+				Name:        "x",
+				Description: "x",
+				Steps: []IntentStep{
+					{Endpoint: "items.get", Bind: map[string]string{"id": "${first.id}"}, Capture: "second"},
+				},
+			}},
+			wantErr: "undeclared capture",
+		},
+		{
+			name: "duplicate intent name rejected",
+			intents: []Intent{
+				ok,
+				{Name: "get_item", Description: "dup", Steps: []IntentStep{{Endpoint: "items.get"}}},
+			},
+			wantErr: "appears more than once",
+		},
+		{
+			name: "bad intent param type rejected",
+			intents: []Intent{{
+				Name:        "x",
+				Description: "x",
+				Params:      []IntentParam{{Name: "id", Type: "object", Description: "bad"}},
+				Steps:       []IntentStep{{Endpoint: "items.get"}},
+			}},
+			wantErr: "must be one of string, integer, boolean",
+		},
+		{
+			name: "missing returns capture rejected",
+			intents: []Intent{{
+				Name:        "x",
+				Description: "x",
+				Steps:       []IntentStep{{Endpoint: "items.get", Capture: "item"}},
+				Returns:     "not_a_capture",
+			}},
+			wantErr: "returns \"not_a_capture\" does not match",
+		},
+		{
+			name: "malformed binding rejected",
+			intents: []Intent{{
+				Name:        "x",
+				Description: "x",
+				Params:      []IntentParam{{Name: "id", Type: "string", Description: "id"}},
+				Steps:       []IntentStep{{Endpoint: "items.get", Bind: map[string]string{"id": "${input}"}}},
+			}},
+			wantErr: "is not a valid binding",
+		},
+		{
+			name:    "bad endpoint_tools value rejected",
+			intents: []Intent{ok},
+			tools:   "maybe",
+			wantErr: "must be \"visible\" or \"hidden\"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mcp := MCPConfig{Intents: tt.intents}
+			if tt.tools != "" {
+				mcp.EndpointTools = tt.tools
+			}
+			s := base(mcp)
+			err := s.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestMCPConfigAcceptsValidShapes(t *testing.T) {
 	tests := []struct {
 		name string
