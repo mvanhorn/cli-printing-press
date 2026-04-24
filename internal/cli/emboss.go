@@ -157,9 +157,9 @@ The improvement steps (2-4) are driven by the /printing-press emboss skill.`,
 			}
 
 			fmt.Fprintln(os.Stderr, "\nBaseline saved. Now run the skill for improvements:")
-			fmt.Fprintf(os.Stderr, "  /printing-press emboss %s\n\n", workingDir)
+			fmt.Fprintf(os.Stderr, "  /printing-press emboss %q\n\n", workingDir)
 			fmt.Fprintln(os.Stderr, "When done, re-run this command to compute the delta:")
-			fmt.Fprintf(os.Stderr, "  printing-press emboss --dir %s --spec %s\n", workingDir, specPath)
+			fmt.Fprintf(os.Stderr, "  printing-press emboss --dir %q --spec %q\n", workingDir, specPath)
 			return nil
 		},
 	}
