@@ -38,6 +38,9 @@ func ApplyAuthFormat(format string, envVars map[string]string) (string, error) {
 
 	// Perform substitutions.
 	for key, value := range replacements {
+		if strings.Contains(value, "}") {
+			return "", fmt.Errorf("env var value for %s contains invalid character }", key)
+		}
 		result = strings.ReplaceAll(result, "{"+key+"}", value)
 	}
 

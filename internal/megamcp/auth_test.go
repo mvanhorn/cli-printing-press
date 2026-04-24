@@ -63,6 +63,12 @@ func TestApplyAuthFormat(t *testing.T) {
 			envVars: map[string]string{},
 			want:    "",
 		},
+		{
+			name:    "value with closing brace rejected",
+			format:  "Bearer {token}",
+			envVars: map[string]string{"token": "abc}123"},
+			wantErr: "invalid character }",
+		},
 	}
 
 	for _, tt := range tests {
