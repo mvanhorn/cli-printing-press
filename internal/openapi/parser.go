@@ -92,15 +92,21 @@ func stripBrokenRefs(data []byte, errMsg string) []byte {
 		if pathsRaw, ok := raw["paths"]; ok {
 			var paths map[string]json.RawMessage
 			if json.Unmarshal(pathsRaw, &paths) == nil {
+				var pathsToDelete []string
 				for pathKey, pathVal := range paths {
 					if strings.Contains(string(pathVal), refStr) {
-						delete(paths, pathKey)
+						pathsToDelete = append(pathsToDelete, pathKey)
 						fmt.Fprintf(os.Stderr, "info: removed path %s (references broken %s)\n", pathKey, brokenKey)
-						modified = true
 					}
 				}
-				pathsBytes, _ := json.Marshal(paths)
-				raw["paths"] = pathsBytes
+				for _, pk := range pathsToDelete {
+					delete(paths, pk)
+					modified = true
+				}
+				if len(pathsToDelete) > 0 {
+					pathsBytes, _ := json.Marshal(paths)
+					raw["paths"] = pathsBytes
+				}
 			}
 		}
 
