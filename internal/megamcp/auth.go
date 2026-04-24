@@ -21,33 +21,44 @@ func ApplyAuthFormat(format string, envVars map[string]string) (string, error) {
 
 	result := format
 
-	// Build replacement map: env var names and their semantic aliases.
 	replacements := make(map[string]string)
+	validPlaceholders := make(map[string]bool)
 	var firstValue string
 	for name, value := range envVars {
 		replacements[name] = value
+		validPlaceholders["{"+name+"}"] = true
 		if firstValue == "" {
 			firstValue = value
 		}
 	}
-	// Semantic placeholders map to the first env var value.
 	if firstValue != "" {
 		replacements["token"] = firstValue
 		replacements["access_token"] = firstValue
+		validPlaceholders["{token}"] = true
+		validPlaceholders["{access_token}"] = true
+	}
+
+	// Validate all placeholders in the format string before substitution.
+	for i := 0; i < len(result); {
+		idx := strings.Index(result[i:], "{")
+		if idx < 0 {
+			break
+		}
+		idx += i
+		closeIdx := strings.Index(result[idx:], "}")
+		if closeIdx < 0 {
+			break
+		}
+		placeholder := result[idx : idx+closeIdx+1]
+		if !validPlaceholders[placeholder] {
+			return "", fmt.Errorf("unrecognized placeholder %s in auth format %q", placeholder, format)
+		}
+		i = idx + closeIdx + 1
 	}
 
 	// Perform substitutions.
 	for key, value := range replacements {
 		result = strings.ReplaceAll(result, "{"+key+"}", value)
-	}
-
-	// Reject if any unrecognized placeholders remain.
-	if idx := strings.Index(result, "{"); idx >= 0 {
-		end := strings.Index(result[idx:], "}")
-		if end > 0 {
-			placeholder := result[idx : idx+end+1]
-			return "", fmt.Errorf("unrecognized placeholder %s in auth format %q", placeholder, format)
-		}
 	}
 
 	return result, nil
