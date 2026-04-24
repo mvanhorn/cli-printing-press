@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.3.1](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.0...v2.3.1) (2026-04-24)
+
+
+### Bug Fixes
+
+* **cli:** quote paths in emboss stderr output to prevent shell injection ([#256](https://github.com/mvanhorn/cli-printing-press/issues/256)) ([1645e96](https://github.com/mvanhorn/cli-printing-press/commit/1645e962836b331da44734973016177fbdae3ba4))
+* **megamcp:** validate placeholders before substitution in ApplyAuthFormat ([#262](https://github.com/mvanhorn/cli-printing-press/issues/262)) ([2c802af](https://github.com/mvanhorn/cli-printing-press/commit/2c802afe51115d90ef69fc64b00a47fe3d279e60))
+* **openapi:** collect paths to delete before mutation in stripBrokenRefs ([#259](https://github.com/mvanhorn/cli-printing-press/issues/259)) ([28ba1e0](https://github.com/mvanhorn/cli-printing-press/commit/28ba1e01d86e4d5b756dab9a4e0fce36bd41c3a9))
+
 ## [2.3.0](https://github.com/mvanhorn/cli-printing-press/compare/v2.2.0...v2.3.0) (2026-04-23)
 
 
