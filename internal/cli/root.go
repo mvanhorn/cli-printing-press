@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -814,6 +815,17 @@ func fetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, err
 		return nil, fmt.Errorf("reading response body: %w", err)
 	}
 
+	// Content-validity check: reject responses that look like error pages
+	// instead of feeding them to the parser (which emits confusing errors).
+	if len(data) < 256 {
+		trimmed := strings.TrimSpace(string(data))
+		if strings.HasPrefix(trimmed, "<") ||
+			regexp.MustCompile(`^\d{3}:\s`).MatchString(trimmed) {
+			return nil, fmt.Errorf("spec_url %s returned a small response that does not look like an OpenAPI spec (%d bytes): %q",
+				specURL, len(data), trunc50(trimmed))
+		}
+	}
+
 	if !skipCache {
 		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 			return nil, fmt.Errorf("creating cache directory: %w", err)
@@ -824,6 +836,13 @@ func fetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, err
 	}
 
 	return data, nil
+}
+
+func trunc50(s string) string {
+	if len(s) > 50 {
+		return s[:50] + "..."
+	}
+	return s
 }
 
 func newVersionCmd() *cobra.Command {
