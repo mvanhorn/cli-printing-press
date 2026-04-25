@@ -36,9 +36,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// +1 for internal/cli/feedback.go (HeyGen-style in-band agent feedback channel)
 		// +1 for internal/store/schema_version_test.go (PRAGMA user_version gate, discrawl-inspired)
 		// +2 for internal/cli/which.go + which_test.go (capability-to-command resolver)
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 43},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 48},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 45},
+		// +1 for internal/store/upsert_batch_test.go (regression for issue #268: typed-table dispatch)
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 44},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 49},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 46},
 	}
 
 	for _, tt := range tests {
@@ -921,6 +922,68 @@ func TestGenerateStoreWithBatchResourceDoesNotDuplicateUpsertBatch(t *testing.T)
 	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
 	require.NoError(t, err)
 	assert.Equal(t, 1, strings.Count(string(storeSrc), "func (s *Store) UpsertBatch("))
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/store")
+}
+
+// TestGenerateStoreUpsertBatchDispatchesToTypedTable is the regression test
+// for issue #268. UpsertBatch was writing only to the generic resources
+// table, leaving typed tables empty after every paginated sync. The fix
+// added a switch dispatch inside UpsertBatch's transaction. This test
+// generates a spec with a typed table, then runs the generated store
+// tests — the emitted TestUpsertBatch_Populates*Table tests fail if the
+// dispatch ever regresses.
+func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "ads",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/ads-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"campaigns": {
+				Description: "Manage campaigns",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/campaigns",
+						Description: "List campaigns",
+						Response:    spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "id", Type: "string"},
+							{Name: "name", Type: "string"},
+							{Name: "status", Type: "string"},
+							{Name: "account_id", Type: "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	src := string(storeSrc)
+
+	// The generator must emit the typed-table helper plus a wrapping public
+	// Upsert<Pascal> for the campaigns resource.
+	assert.Contains(t, src, "func (s *Store) upsertCampaignsTx(", "typed Tx helper missing for campaigns")
+	assert.Contains(t, src, "func (s *Store) UpsertCampaigns(", "public typed upsert missing for campaigns")
+
+	// UpsertBatch must dispatch to the typed helper inside its switch.
+	assert.Regexp(t, `(?s)func \(s \*Store\) UpsertBatch\(.*case "campaigns":\s+if err := s\.upsertCampaignsTx\(`, src,
+		"UpsertBatch must dispatch to upsertCampaignsTx — without this, paginated syncs leave typed tables empty (issue #268)")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/store")
@@ -2885,9 +2948,13 @@ func TestGenerateDependentSyncCompiles(t *testing.T) {
 	assert.Contains(t, syncContent, `"messages"`, "sync.go should reference messages as a dependent resource")
 	assert.Contains(t, syncContent, `"channels"`, "sync.go should reference channels as the parent")
 
-	// The generated project should compile
+	// The generated project should compile and the generated store tests
+	// should pass — including TestUpsertBatch_SetsMessagesParentID, which
+	// verifies dependent-resource sync fills the typed parent_id column
+	// (issue #268).
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
+	runGoCommand(t, outputDir, "test", "./internal/store")
 }
 
 func TestGenerateGraphQLCompiles(t *testing.T) {

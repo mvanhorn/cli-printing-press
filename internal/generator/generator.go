@@ -1315,6 +1315,9 @@ func (g *Generator) Generate() error {
 		if err := g.renderTemplate("store_schema_version_test.go.tmpl", filepath.Join("internal", "store", "schema_version_test.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store schema version test: %w", err)
 		}
+		if err := g.renderTemplate("store_upsert_batch_test.go.tmpl", filepath.Join("internal", "store", "upsert_batch_test.go"), storeData); err != nil {
+			return fmt.Errorf("rendering store upsert batch test: %w", err)
+		}
 	}
 
 	// Render vision CLI commands

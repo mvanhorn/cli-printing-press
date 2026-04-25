@@ -345,6 +345,46 @@ func lookupFieldValue(obj map[string]any, snakeKey string) any {
 
 {{- range .Tables}}
 {{- if and (gt (len .Columns) 3) (ne .Name "sync_state") (hasDomainUpsert .Name)}}
+// upsert{{pascal .Name}}Tx writes the typed-table portion of a {{.Name}} upsert
+// inside an existing transaction. The caller is responsible for the generic
+// resources insert (via upsertGenericResourceTx) and for committing the tx.
+// Splitting this out lets UpsertBatch dispatch typed inserts per item without
+// opening a per-item transaction.
+func (s *Store) upsert{{pascal .Name}}Tx(tx *sql.Tx, id string, obj map[string]any, data json.RawMessage) error {
+	if _, err := tx.Exec(
+		`INSERT INTO {{safeName .Name}} ({{columnNames .Columns}})
+		 VALUES ({{columnPlaceholders .Columns}})
+		 ON CONFLICT(id) DO UPDATE SET {{updateSet .Columns}}`,
+		id,
+		string(data),
+		time.Now(),
+{{- range .Columns}}
+{{- if and (ne .Name "id") (ne .Name "data") (ne .Name "synced_at")}}
+		lookupFieldValue(obj, "{{.Name}}"),
+{{- end}}
+{{- end}}
+	); err != nil {
+		return fmt.Errorf("insert into {{.Name}}: %w", err)
+	}
+{{- if and .FTS5 (not .FTS5Triggers)}}
+
+	// Standalone FTS: manually sync since content-sync triggers aren't used.
+	// Use explicit rowid for FTS5 compatibility with modernc.org/sqlite.
+	ftsRowid := ftsRowID(id)
+	_, _ = tx.Exec(`DELETE FROM {{.Name}}_fts WHERE rowid = ?`, ftsRowid)
+	_, _ = tx.Exec(
+		`INSERT INTO {{.Name}}_fts (rowid, id, {{safeJoin .FTS5Fields ", "}}) VALUES (?{{- range .FTS5Fields}}, ?{{- end}}, ?)`,
+		ftsRowid,
+		id,
+{{- range .FTS5Fields}}
+		lookupFieldValue(obj, "{{.}}"),
+{{- end}}
+	)
+{{- end}}
+
+	return nil
+}
+
 // Upsert{{pascal .Name}} inserts or updates a {{.Name}} record with domain-specific columns.
 func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 	var obj map[string]any
@@ -366,38 +406,9 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 	if err := s.upsertGenericResourceTx(tx, "{{.Name}}", id, data); err != nil {
 		return err
 	}
-
-	_, err = tx.Exec(
-		`INSERT INTO {{safeName .Name}} ({{columnNames .Columns}})
-		 VALUES ({{columnPlaceholders .Columns}})
-		 ON CONFLICT(id) DO UPDATE SET {{updateSet .Columns}}`,
-		id,
-		string(data),
-		time.Now(),
-{{- range .Columns}}
-{{- if and (ne .Name "id") (ne .Name "data") (ne .Name "synced_at")}}
-		lookupFieldValue(obj, "{{.Name}}"),
-{{- end}}
-{{- end}}
-	)
-	if err != nil {
+	if err := s.upsert{{pascal .Name}}Tx(tx, id, obj, data); err != nil {
 		return err
 	}
-{{- if and .FTS5 (not .FTS5Triggers)}}
-
-	// Standalone FTS: manually sync since content-sync triggers aren't used.
-	// Use explicit rowid for FTS5 compatibility with modernc.org/sqlite.
-	ftsRowid := ftsRowID(id)
-	_, _ = tx.Exec(`DELETE FROM {{.Name}}_fts WHERE rowid = ?`, ftsRowid)
-	_, _ = tx.Exec(
-		`INSERT INTO {{.Name}}_fts (rowid, id, {{safeJoin .FTS5Fields ", "}}) VALUES (?{{- range .FTS5Fields}}, ?{{- end}}, ?)`,
-		ftsRowid,
-		id,
-{{- range .FTS5Fields}}
-		lookupFieldValue(obj, "{{.}}"),
-{{- end}}
-	)
-{{- end}}
 
 	return tx.Commit()
 }
@@ -407,6 +418,12 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 
 // UpsertBatch inserts or replaces multiple records in a single transaction.
 // This is 10-100x faster than individual Upsert calls for bulk operations.
+//
+// For resource types that have a domain-specific typed table, the per-item
+// generic insert is followed by a dispatch to the matching upsert<Pascal>Tx
+// inside the same transaction. Without that dispatch, paginated syncs would
+// only populate the generic resources table — typed tables (and indexed
+// columns like parent_id added by dependent-resource sync) would stay empty.
 func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -436,26 +453,19 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) error 
 			continue
 		}
 
-		_, err := tx.Exec(
-			`INSERT OR REPLACE INTO resources (id, resource_type, data, synced_at, updated_at)
-			 VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-			id, resourceType, string(item),
-		)
-		if err != nil {
+		if err := s.upsertGenericResourceTx(tx, resourceType, id, item); err != nil {
 			return fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
 		}
 
-		// Update FTS index (non-fatal — matches upsertGenericResourceTx pattern).
-		// Use explicit rowid for FTS5 compatibility with modernc.org/sqlite.
-		ftsRowid := ftsRowID(id)
-		if _, ftsErr := tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowid); ftsErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: FTS index cleanup failed for %s/%s: %v\n", resourceType, id, ftsErr)
-		}
-		if _, ftsErr := tx.Exec(
-			`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, ?, ?, ?)`,
-			ftsRowid, id, resourceType, string(item),
-		); ftsErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: FTS index update failed for %s/%s: %v\n", resourceType, id, ftsErr)
+		switch resourceType {
+{{- range .Tables}}
+{{- if and (gt (len .Columns) 3) (ne .Name "sync_state") (hasDomainUpsert .Name)}}
+		case "{{.Name}}":
+			if err := s.upsert{{pascal .Name}}Tx(tx, id, obj, item); err != nil {
+				return fmt.Errorf("typed upsert for %s/%s: %w", resourceType, id, err)
+			}
+{{- end}}
+{{- end}}
 		}
 	}
 
