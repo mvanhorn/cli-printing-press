@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.5](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.4...v2.3.5) (2026-04-25)
+
+
+### Bug Fixes
+
+* **cli:** normalize generated env var prefixes ([#294](https://github.com/mvanhorn/cli-printing-press/issues/294)) ([0aafafa](https://github.com/mvanhorn/cli-printing-press/commit/0aafafa34b7f7ad6d07eb0c6b9afb1b179debd43))
+
 ## [2.3.4](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.3...v2.3.4) (2026-04-25)
 
 
