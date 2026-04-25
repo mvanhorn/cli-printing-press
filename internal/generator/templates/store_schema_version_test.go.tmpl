@@ -114,3 +114,70 @@ func TestSchemaVersion_ReopenIsIdempotent(t *testing.T) {
 		t.Fatalf("reopened version = %d, want %d", v, StoreSchemaVersion)
 	}
 }
+{{- range $table := .Tables}}
+{{- $hasParentID := false}}
+{{- range $col := $table.Columns}}{{if eq $col.Name "parent_id"}}{{$hasParentID = true}}{{end}}{{end}}
+{{- if $hasParentID}}
+
+// TestMigrate_AddsParentIDOnUpgrade_{{pascal $table.Name}} verifies that opening a
+// database created by an older binary — before the dependent-resources work
+// added the parent_id column — succeeds and adds the column rather than
+// failing with "no such column: parent_id" when CREATE INDEX runs against a
+// pre-existing table. Regression for issue #272.
+func TestMigrate_AddsParentIDOnUpgrade_{{pascal $table.Name}}(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	// Pre-create the DB with the older table shape: id, data, synced_at and
+	// no parent_id column. This mirrors what a pre-dependent-resources binary
+	// would have written. user_version stays 0 (pre-gate).
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE {{safeName $table.Name}} (
+		id TEXT PRIMARY KEY,
+		data JSON NOT NULL,
+		synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`); err != nil {
+		raw.Close()
+		t.Fatalf("create old table: %v", err)
+	}
+	raw.Close()
+
+	// Opening with the new binary must run the CREATE INDEX on parent_id
+	// without erroring on the missing column.
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open upgraded db: %v", err)
+	}
+	defer s.Close()
+
+	// The migration must have added the parent_id column.
+	rows, err := s.DB().Query(`PRAGMA table_info({{safeName $table.Name}})`)
+	if err != nil {
+		t.Fatalf("table_info: %v", err)
+	}
+	defer rows.Close()
+
+	hasParentID := false
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		if name == "parent_id" {
+			hasParentID = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if !hasParentID {
+		t.Fatalf("parent_id column missing from {{safeName $table.Name}} after migrate")
+	}
+}
+{{- end}}
+{{- end}}
