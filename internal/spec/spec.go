@@ -168,6 +168,17 @@ type AuthConfig struct {
 	Cookies          []string `yaml:"cookies,omitempty" json:"cookies,omitempty"`             // named cookies to extract for composed auth (e.g. ["customerId", "authToken"])
 	Inferred         bool     `yaml:"inferred,omitempty" json:"inferred,omitempty"`           // true when auth was inferred from spec description, not declared in securitySchemes
 
+	// VerifyPath is an optional path appended to base_url that the doctor
+	// command probes to validate credentials. Set this to a known-good
+	// authenticated GET endpoint that returns 2xx for any valid token (e.g.
+	// "/me?fields=id" for Meta, "/v1/account" for Stripe, "/user" for GitHub,
+	// "/users/@me" for Discord). When empty, doctor falls back to probing
+	// the bare base URL and classifies 401/403 as "inconclusive" rather than
+	// "invalid", because many versioned API roots return 401 regardless of
+	// token validity (the path isn't a routed endpoint, but the gateway
+	// still demands credentials in a meaningful context).
+	VerifyPath string `yaml:"verify_path,omitempty" json:"verify_path,omitempty"`
+
 	// Browser-session verification fields. Used when a website-facing CLI
 	// depends on browser-derived cookies or clearance state for its required
 	// happy path. The generator emits validation and proof handling, and the

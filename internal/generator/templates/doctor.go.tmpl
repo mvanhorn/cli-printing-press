@@ -195,7 +195,15 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				} else if !apiReachable {
 					report["credentials"] = "skipped (API unreachable)"
 				} else {
+{{- if .Auth.VerifyPath}}
+					verifyPath := "{{.Auth.VerifyPath}}"
+					if !strings.HasPrefix(verifyPath, "/") {
+						verifyPath = "/" + verifyPath
+					}
+					authReq, _ := http.NewRequest("GET", baseURL+verifyPath, nil)
+{{- else}}
 					authReq, _ := http.NewRequest("GET", baseURL, nil)
+{{- end}}
 {{- if and .Auth .Auth.In (eq .Auth.In "query")}}
 					q := authReq.URL.Query()
 					q.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", authHeader)
@@ -218,7 +226,18 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 						case authResp.StatusCode >= 200 && authResp.StatusCode < 300:
 							report["credentials"] = "valid"
 						case authResp.StatusCode == 401 || authResp.StatusCode == 403:
+{{- if .Auth.VerifyPath}}
 							report["credentials"] = fmt.Sprintf("invalid (HTTP %d) — check your credentials", authResp.StatusCode)
+{{- else}}
+							// The probe hit the bare base URL because no auth.verify_path
+							// is configured in the spec. Many APIs return 401/403 from a
+							// bare versioned root regardless of token validity (the path
+							// isn't routed but the gateway still demands credentials).
+							// Don't claim invalid without certainty — set verify_path to
+							// a known-good authenticated GET (e.g. /me, /v1/account, /user)
+							// for a definitive verdict.
+							report["credentials"] = fmt.Sprintf("inconclusive (HTTP %d from base URL — set auth.verify_path in spec for a definitive probe)", authResp.StatusCode)
+{{- end}}
 						default:
 							// Non-auth HTTP error (404, 500, etc.) — don't blame credentials
 							report["credentials"] = fmt.Sprintf("ok (HTTP %d from base URL, but auth was accepted)", authResp.StatusCode)
@@ -269,6 +288,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				case strings.HasPrefix(s, "optional"):
 					// Optional-auth CLI with no key set — informational, not a failure.
 					indicator = yellow("INFO")
+				case strings.HasPrefix(s, "inconclusive"):
+					// The credential probe could not produce a definitive verdict
+					// (typically because the bare base URL returns 401/403 even for
+					// valid tokens). Surface as WARN, not FAIL — the user's actual
+					// commands will reveal a real auth failure if one exists.
+					indicator = yellow("WARN")
 				case strings.Contains(s, "error") || strings.Contains(s, "not configured") || strings.Contains(s, "unreachable") || strings.Contains(s, "invalid") || strings.Contains(s, "missing"):
 					indicator = red("FAIL")
 				case s == "not required":

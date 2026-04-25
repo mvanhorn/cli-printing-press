@@ -2037,6 +2037,104 @@ func TestGeneratedDoctor_AuthHintsWithoutKeyURL(t *testing.T) {
 	assert.NotContains(t, content, "auth_key_url")
 }
 
+func TestGeneratedDoctor_AuthVerifyPathProbesEndpoint(t *testing.T) {
+	t.Parallel()
+
+	// Models the Meta Ads case from issue #267: a versioned base URL where
+	// the bare root returns 401 regardless of token validity. The spec sets
+	// auth.verify_path so doctor probes a known-good endpoint instead.
+	apiSpec := &spec.APISpec{
+		Name:    "metadoc",
+		Version: "0.1.0",
+		BaseURL: "https://graph.facebook.com/v23.0",
+		Auth: spec.AuthConfig{
+			Type:       "bearer_token",
+			Header:     "Authorization",
+			Format:     "Bearer {token}",
+			EnvVars:    []string{"META_ADS_API_TOKEN"},
+			VerifyPath: "/me?fields=id",
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/metadoc-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Description: "Manage ad accounts",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/me/adaccounts", Description: "List accounts"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "metadoc-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	doctorGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	content := string(doctorGo)
+
+	// Probe should target baseURL + verify_path, not bare baseURL
+	assert.Contains(t, content, `verifyPath := "/me?fields=id"`)
+	assert.Contains(t, content, `http.NewRequest("GET", baseURL+verifyPath, nil)`)
+	// When verify_path is set, 401/403 keeps the strict "invalid" verdict
+	assert.Contains(t, content, `"invalid (HTTP %d) — check your credentials"`)
+	// And does NOT emit the inconclusive fallback wording
+	assert.NotContains(t, content, "inconclusive (HTTP %d from base URL")
+}
+
+func TestGeneratedDoctor_NoVerifyPathSoftens401(t *testing.T) {
+	t.Parallel()
+
+	// Without auth.verify_path, the doctor probe falls back to the bare base
+	// URL. 401/403 from the base URL must be reported as "inconclusive", not
+	// "invalid", because many APIs return 401 from un-routed roots regardless
+	// of token validity.
+	apiSpec := &spec.APISpec{
+		Name:    "softdoc",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "X-Api-Key",
+			EnvVars: []string{"SOFT_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/softdoc-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "softdoc-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	doctorGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	content := string(doctorGo)
+
+	// Probe should hit the bare base URL (no verify_path appended)
+	assert.Contains(t, content, `http.NewRequest("GET", baseURL, nil)`)
+	assert.NotContains(t, content, "verifyPath := ")
+	// 401/403 fallback must be the soft "inconclusive" verdict
+	assert.Contains(t, content, `"inconclusive (HTTP %d from base URL — set auth.verify_path in spec for a definitive probe)"`)
+	// And must NOT use the strict "invalid" wording
+	assert.NotContains(t, content, `"invalid (HTTP %d) — check your credentials"`)
+	// Renderer must classify "inconclusive" as WARN before the FAIL clause
+	assert.Contains(t, content, `case strings.HasPrefix(s, "inconclusive"):`)
+	assert.Contains(t, content, `indicator = yellow("WARN")`)
+}
+
 func TestGeneratedDoctor_NoAuthShowsNotRequired(t *testing.T) {
 	t.Parallel()
 
