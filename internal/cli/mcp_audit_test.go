@@ -26,7 +26,7 @@ func mustWrite(t *testing.T, root, rel, body string) {
 func makeMCPTools(n int) string {
 	var b strings.Builder
 	b.WriteString("package mcp\nfunc RegisterTools() {\n")
-	for i := 0; i < n; i++ {
+	for range n {
 		b.WriteString("mcplib.NewTool(\"x\",)\n")
 	}
 	b.WriteString("}\n")

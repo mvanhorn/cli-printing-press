@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -735,12 +736,7 @@ func (g *Generator) hasTrafficAnalysisHint(hint string) bool {
 	if g == nil || g.TrafficAnalysis == nil {
 		return false
 	}
-	for _, got := range g.TrafficAnalysis.GenerationHints {
-		if got == hint {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(g.TrafficAnalysis.GenerationHints, hint)
 }
 
 func appendLimited(values []string, value string, limit int) []string {
@@ -2031,13 +2027,13 @@ func configTag(format string) string {
 func envVarField(envVar string) string {
 	// STYTCH_PROJECT_ID -> ProjectID
 	parts := strings.Split(strings.ToLower(envVar), "_")
-	var result string
+	var result strings.Builder
 	for _, p := range parts {
 		if len(p) > 0 {
-			result += strings.ToUpper(p[:1]) + p[1:]
+			result.WriteString(strings.ToUpper(p[:1]) + p[1:])
 		}
 	}
-	return result
+	return result.String()
 }
 
 // builtinConfigTags lists the JSON/TOML tags of hardcoded Config struct fields

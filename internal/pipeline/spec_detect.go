@@ -14,8 +14,8 @@ import (
 func isInternalYAMLSpec(data []byte) bool {
 	// Internal YAML specs start with "name:" (possibly after comments/blank lines).
 	// OpenAPI specs start with "openapi:" or have a top-level "paths:" key.
-	lines := bytes.Split(data, []byte("\n"))
-	for _, line := range lines {
+	lines := bytes.SplitSeq(data, []byte("\n"))
+	for line := range lines {
 		trimmed := bytes.TrimSpace(line)
 		if len(trimmed) == 0 || trimmed[0] == '#' {
 			continue

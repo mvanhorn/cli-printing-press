@@ -227,14 +227,12 @@ func runFeaturesConcurrent(cliDir, binaryPath string, features []NovelFeature, t
 	close(jobs)
 
 	var wg sync.WaitGroup
-	for w := 0; w < concurrency; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range concurrency {
+		wg.Go(func() {
 			for j := range jobs {
 				results[j.idx] = runOneFeatureCheck(cliDir, binaryPath, features[j.idx], timeout)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	return results
@@ -429,10 +427,7 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 	if lw.remaining <= 0 {
 		return len(p), nil
 	}
-	n := len(p)
-	if n > lw.remaining {
-		n = lw.remaining
-	}
+	n := min(len(p), lw.remaining)
 	if _, err := lw.w.Write(p[:n]); err != nil {
 		return 0, err
 	}
@@ -564,7 +559,7 @@ func looksLikeURLOrID(s string) bool {
 // output. Mirrors the permissive relevance check used inside generated CLIs.
 func outputMentionsQuery(output, query string) bool {
 	lowered := strings.ToLower(output)
-	for _, tok := range strings.Fields(strings.ToLower(query)) {
+	for tok := range strings.FieldsSeq(strings.ToLower(query)) {
 		tok = strings.TrimFunc(tok, func(r rune) bool { return r == '"' || r == '\'' })
 		if len(tok) < 3 {
 			continue

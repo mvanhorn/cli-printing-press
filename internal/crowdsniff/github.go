@@ -370,10 +370,7 @@ func inferMethod(fragment, urlMatch string) string {
 	}
 
 	// Check a window before the URL match for method keywords.
-	start := idx - 80
-	if start < 0 {
-		start = 0
-	}
+	start := max(idx-80, 0)
 	window := fragment[start : idx+len(urlMatch)]
 
 	matches := httpMethodPattern.FindAllString(window, -1)

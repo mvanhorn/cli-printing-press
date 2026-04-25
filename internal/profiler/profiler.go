@@ -1,6 +1,7 @@
 package profiler
 
 import (
+	"slices"
 	"sort"
 	"strings"
 
@@ -177,12 +178,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 					searchParamNames := []string{"q", "query", "search", "keyword", "term", "querytext", "searchterm", "searchtext", "text"}
 					isSearchParam := func(name string) bool {
 						lower := strings.ToLower(name)
-						for _, sp := range searchParamNames {
-							if lower == sp {
-								return true
-							}
-						}
-						return false
+						return slices.Contains(searchParamNames, lower)
 					}
 
 					for _, param := range endpoint.Params {
@@ -780,11 +776,11 @@ func nameVariants(name string) []string {
 	if strings.HasSuffix(normalized, "ies") {
 		addVariant(normalized[:len(normalized)-3]+"y", seen, &variants)
 	}
-	if strings.HasSuffix(normalized, "es") {
-		addVariant(strings.TrimSuffix(normalized, "es"), seen, &variants)
+	if before, ok := strings.CutSuffix(normalized, "es"); ok {
+		addVariant(before, seen, &variants)
 	}
-	if strings.HasSuffix(normalized, "s") {
-		addVariant(strings.TrimSuffix(normalized, "s"), seen, &variants)
+	if before, ok := strings.CutSuffix(normalized, "s"); ok {
+		addVariant(before, seen, &variants)
 	}
 
 	return variants

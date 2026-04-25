@@ -13,8 +13,8 @@ import (
 type PolishRequest struct {
 	APIName    string
 	OutputDir  string
-	SpecSource string      // OpenAPI spec URL or docs URL
-	Research   interface{} // *pipeline.ResearchResult - use interface to avoid circular import
+	SpecSource string // OpenAPI spec URL or docs URL
+	Research   any    // *pipeline.ResearchResult - use interface to avoid circular import
 }
 
 // PolishResult summarizes what the polish pass changed.

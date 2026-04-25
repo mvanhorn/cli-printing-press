@@ -804,10 +804,7 @@ func inferHTMLLinkPrefixes(entries []EnrichedEntry) []string {
 		}
 		return values[i].count > values[j].count
 	})
-	limit := len(values)
-	if limit > 3 {
-		limit = 3
-	}
+	limit := min(len(values), 3)
 	prefixes := make([]string, 0, limit)
 	for _, value := range values[:limit] {
 		prefixes = append(prefixes, value.prefix)
@@ -877,7 +874,7 @@ func inferRequestBody(entries []EnrichedEntry) []spec.Param {
 func inferURLParams(entries []EnrichedEntry, normalizedPath string) []spec.Param {
 	paramsByName := make(map[string]spec.Param)
 
-	for _, segment := range strings.Split(normalizedPath, "/") {
+	for segment := range strings.SplitSeq(normalizedPath, "/") {
 		if !strings.HasPrefix(segment, "{") || !strings.HasSuffix(segment, "}") {
 			continue
 		}

@@ -94,8 +94,8 @@ type EndpointCluster struct {
 	Statuses      []int         `json:"statuses,omitempty"`
 	ContentTypes  []string      `json:"content_types,omitempty"`
 	SizeClass     string        `json:"size_class,omitempty"`
-	RequestShape  ShapeSummary  `json:"request_shape,omitempty"`
-	ResponseShape ShapeSummary  `json:"response_shape,omitempty"`
+	RequestShape  ShapeSummary  `json:"request_shape"`
+	ResponseShape ShapeSummary  `json:"response_shape"`
 	Evidence      []EvidenceRef `json:"evidence,omitempty"`
 }
 

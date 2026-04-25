@@ -520,7 +520,7 @@ func countTableColumns(storeSrc, tableName string) int {
 		return 0
 	}
 	columns := 0
-	for _, line := range strings.Split(match[1], "\n") {
+	for line := range strings.SplitSeq(match[1], "\n") {
 		line = strings.TrimSpace(strings.TrimSuffix(line, ","))
 		if line == "" {
 			continue

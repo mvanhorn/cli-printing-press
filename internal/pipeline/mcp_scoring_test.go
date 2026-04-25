@@ -88,7 +88,7 @@ func TestScoreMCPRemoteTransport(t *testing.T) {
 func buildToolsGo(n int) string {
 	var b strings.Builder
 	b.WriteString("package mcp\nfunc RegisterTools(s *server.MCPServer) {\n")
-	for i := 0; i < n; i++ {
+	for i := range n {
 		b.WriteString("\tmcplib.NewTool(\"endpoint_")
 		b.WriteString(string(rune('a' + i%26)))
 		b.WriteString("\",)\n")

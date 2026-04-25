@@ -85,7 +85,7 @@ The vision command produces the structure; Phase 0 fills it with intelligence.`,
 			fmt.Fprintf(os.Stderr, "Visionary research template written to %s/visionary-research.md\n", absOut)
 			fmt.Fprintf(os.Stderr, "Run Phase 0 (SKILL.md) to fill it with real research.\n")
 			if asJSON {
-				if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+				if err := json.NewEncoder(os.Stdout).Encode(map[string]any{
 					"api_name":    apiName,
 					"output_file": filepath.Join(absOut, "visionary-research.md"),
 				}); err != nil {

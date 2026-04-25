@@ -201,7 +201,7 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	var proxyRoutes map[string]string
 	if doc.Info != nil && doc.Info.Extensions != nil {
 		if raw, ok := doc.Info.Extensions["x-proxy-routes"]; ok {
-			if m, ok := raw.(map[string]interface{}); ok {
+			if m, ok := raw.(map[string]any); ok {
 				proxyRoutes = make(map[string]string, len(m))
 				for k, v := range m {
 					if s, ok := v.(string); ok {
@@ -346,7 +346,7 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 					}
 				}
 				if xCookies, ok := scheme.Extensions["x-auth-cookies"]; ok {
-					if cookieList, ok := xCookies.([]interface{}); ok {
+					if cookieList, ok := xCookies.([]any); ok {
 						for _, c := range cookieList {
 							if s, ok := c.(string); ok {
 								auth.Cookies = append(auth.Cookies, s)
@@ -815,10 +815,7 @@ func findUnnegated(text, keyword string) bool {
 // before the keyword position, catching "does not require Bearer" while avoiding
 // false negation on words like "Notion" that contain "no" as a substring.
 func isNegated(text string, keywordIdx int) bool {
-	start := keywordIdx - 50
-	if start < 0 {
-		start = 0
-	}
+	start := max(keywordIdx-50, 0)
 	preceding := text[start:keywordIdx]
 	for _, neg := range negationWords {
 		idx := strings.Index(preceding, neg)
@@ -943,7 +940,7 @@ func pathPriorityScore(path string) int {
 
 	lowPath := strings.ToLower(path)
 	for _, prefix := range []string{"admin", "internal", "system", "management"} {
-		for _, seg := range strings.Split(strings.TrimPrefix(lowPath, "/"), "/") {
+		for seg := range strings.SplitSeq(strings.TrimPrefix(lowPath, "/"), "/") {
 			// Match segments that start with the prefix (catches admin, admin.users, etc.)
 			if strings.HasPrefix(seg, prefix) {
 				score -= 30
@@ -2460,8 +2457,8 @@ func stripOperationIDResourcePrefix(name string, variants []string) string {
 		stripped := false
 		for _, variant := range variants {
 			prefix := variant + "_"
-			if strings.HasPrefix(name, prefix) {
-				name = strings.TrimPrefix(name, prefix)
+			if after, ok := strings.CutPrefix(name, prefix); ok {
+				name = after
 				stripped = true
 				break
 			}
@@ -2718,8 +2715,8 @@ func isVersionToken(token string) bool {
 		return false
 	}
 
-	if strings.HasPrefix(token, "v") {
-		token = strings.TrimPrefix(token, "v")
+	if after, ok := strings.CutPrefix(token, "v"); ok {
+		token = after
 		if token == "" {
 			return false
 		}

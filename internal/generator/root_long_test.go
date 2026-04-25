@@ -69,7 +69,7 @@ func TestRootLongOverflowsGracefullyAt16PlusFeatures(t *testing.T) {
 	apiSpec := minimalSpec("overflow")
 	outputDir := filepath.Join(t.TempDir(), "overflow-pp-cli")
 	gen := New(apiSpec, outputDir)
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		gen.NovelFeatures = append(gen.NovelFeatures, NovelFeature{
 			Command:     "cmd-" + string(rune('a'+i)),
 			Description: "novel feature number " + string(rune('a'+i)),
@@ -82,7 +82,7 @@ func TestRootLongOverflowsGracefullyAt16PlusFeatures(t *testing.T) {
 	content := string(rootGo)
 
 	// First 15 features render in full.
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		assert.True(t, strings.Contains(content, "cmd-"+string(rune('a'+i))),
 			"feature cmd-%s (rank %d) should render within the 15-item cap", string(rune('a'+i)), i)
 	}
@@ -121,8 +121,8 @@ func TestRootLongHandlesBackticksInNarrativeText(t *testing.T) {
 	// Extract the Command block and assert it contains no raw backtick
 	// other than the string delimiters themselves. Simplest check: count
 	// backticks in the Short line — should be exactly 2 (the delimiters).
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(content, "\n")
+	for line := range lines {
 		if strings.Contains(line, "Short:") && strings.Contains(line, "`") {
 			count := strings.Count(line, "`")
 			assert.Equal(t, 2, count,
@@ -199,7 +199,7 @@ func TestRootLongStaysUnderSizeBudget(t *testing.T) {
 		Headline: "A very verbose headline that exceeds the 120-rune budget: " + longStr,
 	}
 	// Ten features, each with a runaway description.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		gen.NovelFeatures = append(gen.NovelFeatures, NovelFeature{
 			Command:     "cmd" + strings.Repeat("x", i),
 			Description: "runaway description " + longStr,
@@ -226,7 +226,7 @@ func TestRootLongStaysUnderSizeBudget(t *testing.T) {
 
 	// All 10 features render (under the 15-item cap) — we dropped the
 	// top-N cap so novel capabilities aren't hidden from CLI-only agents.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		assert.True(t, strings.Contains(longBody, "cmd"+strings.Repeat("x", i)),
 			"feature cmd%s should appear in Long (10 features is under the 15-cap)", strings.Repeat("x", i))
 	}

@@ -307,12 +307,7 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 }
 
 func (sc *Scorecard) IsDimensionUnscored(name string) bool {
-	for _, dimension := range sc.UnscoredDimensions {
-		if dimension == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(sc.UnscoredDimensions, name)
 }
 
 func scoreOutputModes(dir string) int {
@@ -826,13 +821,7 @@ func scoreLiveAPIVerification(verifyReport *VerifyReport) (int, bool) {
 		return 10, true
 	}
 	// Linear scale below the cap: 0% → 0, 10% → 1, ..., 94% → 9.
-	score := int(verifyReport.PassRate / 10)
-	if score < 0 {
-		score = 0
-	}
-	if score > 10 {
-		score = 10
-	}
+	score := min(max(int(verifyReport.PassRate/10), 0), 10)
 	return score, true
 }
 
@@ -1119,10 +1108,7 @@ func scoreVision(dir string) int {
 		tier2 = 5
 	}
 
-	score := int(tier1 + tier2)
-	if score > 10 {
-		score = 10
-	}
+	score := min(int(tier1+tier2), 10)
 	return score
 }
 
@@ -1173,7 +1159,7 @@ func registeredCommandFiles(cliDir string) map[string]bool {
 			continue
 		}
 		content := readFileContent(filepath.Join(cliDir, e.Name()))
-		for _, line := range strings.Split(content, "\n") {
+		for line := range strings.SplitSeq(content, "\n") {
 			sm := defRe.FindStringSubmatch(line)
 			if sm == nil {
 				continue
@@ -2126,7 +2112,7 @@ func scoreDomainTables(storeContent string) int {
 	columnTables := 0
 	for _, match := range createTableRe.FindAllStringSubmatch(storeContent, -1) {
 		columnCount := 0
-		for _, line := range strings.Split(match[1], "\n") {
+		for line := range strings.SplitSeq(match[1], "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || strings.HasPrefix(line, "--") {
 				continue

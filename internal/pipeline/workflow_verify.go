@@ -178,7 +178,7 @@ func executeStep(binary string, step WorkflowStep, cmdExpanded string, dir strin
 	}
 
 	// Validate JSON output.
-	var parsed interface{}
+	var parsed any
 	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
 		sr.Status = StepStatusFailCLIBug
 		sr.Error = "output is not valid JSON"
@@ -187,7 +187,7 @@ func executeStep(binary string, step WorkflowStep, cmdExpanded string, dir strin
 
 	// Check expect_fields if specified.
 	if len(step.ExpectFields) > 0 {
-		if obj, ok := parsed.(map[string]interface{}); ok {
+		if obj, ok := parsed.(map[string]any); ok {
 			for _, field := range step.ExpectFields {
 				if _, exists := obj[field]; !exists {
 					sr.Status = StepStatusFailCLIBug
@@ -262,7 +262,7 @@ func extractJSONField(jsonData []byte, path string) (string, error) {
 		return "", fmt.Errorf("empty path")
 	}
 
-	var raw interface{}
+	var raw any
 	if err := json.Unmarshal(jsonData, &raw); err != nil {
 		return "", fmt.Errorf("parsing JSON: %w", err)
 	}
@@ -276,7 +276,7 @@ func extractJSONField(jsonData []byte, path string) (string, error) {
 
 		// Navigate into map
 		if name != "" {
-			obj, ok := current.(map[string]interface{})
+			obj, ok := current.(map[string]any)
 			if !ok {
 				return "", fmt.Errorf("expected object at %q, got %T", seg, current)
 			}
@@ -289,7 +289,7 @@ func extractJSONField(jsonData []byte, path string) (string, error) {
 
 		// Navigate into array if index present
 		if hasIdx {
-			arr, ok := current.([]interface{})
+			arr, ok := current.([]any)
 			if !ok {
 				return "", fmt.Errorf("expected array at %q, got %T", seg, current)
 			}

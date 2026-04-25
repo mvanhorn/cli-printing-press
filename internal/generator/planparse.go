@@ -227,8 +227,8 @@ func looksLikeCommand(s string) bool {
 		return false
 	}
 	// Allow "auth login" style subcommands
-	parts := strings.Fields(s)
-	for _, part := range parts {
+	parts := strings.FieldsSeq(s)
+	for part := range parts {
 		for _, r := range part {
 			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' && r != '_' {
 				return false

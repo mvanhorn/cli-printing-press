@@ -108,12 +108,12 @@ func TestRunCrowdSniff_JSONOutput(t *testing.T) {
 	err := runCrowdSniff(context.Background(), "test", "https://api.example.com", outputPath, true, opts)
 	require.NoError(t, err)
 
-	var jsonOut map[string]interface{}
+	var jsonOut map[string]any
 	require.NoError(t, json.Unmarshal(stdout.Bytes(), &jsonOut))
 	assert.Equal(t, outputPath, jsonOut["spec_path"])
 	assert.Equal(t, float64(1), jsonOut["endpoints"])
 	assert.Equal(t, float64(1), jsonOut["resources"])
-	tierBreakdown, ok := jsonOut["tier_breakdown"].(map[string]interface{})
+	tierBreakdown, ok := jsonOut["tier_breakdown"].(map[string]any)
 	require.True(t, ok, "tier_breakdown should be a map")
 	assert.Equal(t, float64(1), tierBreakdown[crowdsniff.TierCodeSearch])
 }
@@ -381,7 +381,7 @@ func TestRunCrowdSniff_JSONOutput_IncludesParamCount(t *testing.T) {
 	err := runCrowdSniff(context.Background(), "test", "https://api.example.com", outputPath, true, opts)
 	require.NoError(t, err)
 
-	var jsonOut map[string]interface{}
+	var jsonOut map[string]any
 	require.NoError(t, json.Unmarshal(stdout.Bytes(), &jsonOut))
 	// 2 params on first endpoint + 1 param on second endpoint = 3 total
 	assert.Equal(t, float64(3), jsonOut["param_count"], "expected param_count to be 3")

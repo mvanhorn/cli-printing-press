@@ -56,7 +56,7 @@ func TestLockAcquire_Success(t *testing.T) {
 	stdout, code := runLockCmd("acquire", "--cli", "test-pp-cli", "--scope", "scope-1")
 	assert.Equal(t, 0, code)
 
-	var result map[string]interface{}
+	var result map[string]any
 	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
 	assert.Equal(t, true, result["acquired"])
 	assert.Equal(t, false, result["blocked"])
@@ -88,7 +88,7 @@ func TestLockAcquire_Blocked(t *testing.T) {
 	stdout, code := runLockCmd("acquire", "--cli", "test-pp-cli", "--scope", "scope-2")
 	assert.Equal(t, ExitInputError, code)
 
-	var result map[string]interface{}
+	var result map[string]any
 	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
 	assert.Equal(t, false, result["acquired"])
 	assert.Equal(t, true, result["blocked"])
@@ -118,7 +118,7 @@ func TestLockUpdate(t *testing.T) {
 	stdout, code := runLockCmd("update", "--cli", "test-pp-cli", "--phase", "build")
 	assert.Equal(t, 0, code)
 
-	var result map[string]interface{}
+	var result map[string]any
 	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
 	assert.Equal(t, true, result["updated"])
 	assert.Equal(t, "build", result["phase"])
@@ -132,7 +132,7 @@ func TestLockRelease(t *testing.T) {
 	stdout, code := runLockCmd("release", "--cli", "test-pp-cli")
 	assert.Equal(t, 0, code)
 
-	var result map[string]interface{}
+	var result map[string]any
 	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
 	assert.Equal(t, true, result["released"])
 
@@ -173,7 +173,7 @@ func TestLockPromote_Success(t *testing.T) {
 	stdout, code := runLockCmd("promote", "--cli", "test-pp-cli", "--dir", workDir)
 	assert.Equal(t, 0, code)
 
-	var result map[string]interface{}
+	var result map[string]any
 	require.NoError(t, json.Unmarshal([]byte(stdout), &result))
 	assert.Equal(t, true, result["promoted"])
 

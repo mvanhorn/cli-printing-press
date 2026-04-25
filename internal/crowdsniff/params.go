@@ -74,10 +74,7 @@ func EnrichWithParams(content string, endpoints []DiscoveredEndpoint) []Discover
 		}
 
 		// Look backward for function signature to determine required/optional.
-		funcStart := methodIdx[0] - maxFuncSignatureLookback
-		if funcStart < 0 {
-			funcStart = 0
-		}
+		funcStart := max(methodIdx[0]-maxFuncSignatureLookback, 0)
 		preamble := content[funcStart:methodIdx[0]]
 		requiredNames := extractRequiredFromSignature(preamble)
 
@@ -112,10 +109,7 @@ const maxFuncSignatureLookback = 1000
 // Returns nil if no params object is found or if the object is malformed.
 func extractParamsFromPosition(content string, urlEndPos int) []DiscoveredParam {
 	// Scan forward for ", {" or ",\n  {" pattern.
-	scanEnd := urlEndPos + maxParamScanDistance
-	if scanEnd > len(content) {
-		scanEnd = len(content)
-	}
+	scanEnd := min(urlEndPos+maxParamScanDistance, len(content))
 	region := content[urlEndPos:scanEnd]
 
 	braceStart := findParamsObjectStart(region)
@@ -180,10 +174,7 @@ func extractBraceBlock(content string, pos int) string {
 	inLineComment := false
 	inBlockComment := false
 
-	scanEnd := pos + maxParamScanDistance
-	if scanEnd > len(content) {
-		scanEnd = len(content)
-	}
+	scanEnd := min(pos+maxParamScanDistance, len(content))
 
 	for i := pos; i < scanEnd; i++ {
 		ch := content[i]
@@ -642,7 +633,7 @@ func parseSignatureParams(paramList string) map[string]bool {
 		}
 
 		// Check for default assignment: name = value
-		if eqIdx := strings.Index(part, "="); eqIdx >= 0 {
+		if found := strings.Contains(part, "="); found {
 			// Has a default → optional, skip.
 			continue
 		}

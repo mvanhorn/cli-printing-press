@@ -1,6 +1,8 @@
 // Package vision defines types for the visionary research system.
 package vision
 
+import "slices"
+
 type DataProfile struct {
 	WritePattern string
 	Volume       string
@@ -106,10 +108,8 @@ func (v *VisionaryPlan) ShouldIncludeTemplate(templateName string) bool {
 		if v.Features[i].TotalScore < 8 {
 			continue
 		}
-		for _, tn := range v.Features[i].TemplateNames {
-			if tn == templateName {
-				return true
-			}
+		if slices.Contains(v.Features[i].TemplateNames, templateName) {
+			return true
 		}
 	}
 	return false

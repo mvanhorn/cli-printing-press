@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -39,7 +40,7 @@ type VerifyReport struct {
 	PassRate               float64         `json:"pass_rate"`
 	DataPipeline           bool            `json:"data_pipeline"`
 	DataPipelineDetail     string          `json:"data_pipeline_detail,omitempty"` // PASS, WARN, SKIP, FAIL with context
-	Freshness              FreshnessResult `json:"freshness,omitempty"`
+	Freshness              FreshnessResult `json:"freshness"`
 	BrowserSessionRequired bool            `json:"browser_session_required,omitempty"`
 	BrowserSessionProof    string          `json:"browser_session_proof,omitempty"`
 	BrowserSessionDetail   string          `json:"browser_session_detail,omitempty"`
@@ -153,13 +154,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	// what the spec declares or the API name implies.
 	if discovered := discoverCLIEnvVars(cfg.Dir); len(discovered) > 0 {
 		for _, ev := range discovered {
-			found := false
-			for _, existing := range authEnvVars {
-				if ev == existing {
-					found = true
-					break
-				}
-			}
+			found := slices.Contains(authEnvVars, ev)
 			if !found {
 				authEnvVars = append(authEnvVars, ev)
 			}
@@ -973,7 +968,7 @@ func runCLIWithOutput(binary string, args []string, env []string, timeout time.D
 // parseSQLOutput extracts non-empty, non-header lines from sql command output.
 func parseSQLOutput(out []byte) []string {
 	var tables []string
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || line == "name" || strings.HasPrefix(line, "---") {
 			continue
@@ -1000,7 +995,7 @@ func parseSQLOutput(out []byte) []string {
 
 // parseCountOutput extracts a numeric count from sql command output.
 func parseCountOutput(out []byte) int {
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || line == "count(*)" || strings.HasPrefix(line, "---") {
 			continue

@@ -49,9 +49,9 @@ func GrepEndpoints(content, sourceName, sourceTier string) ([]DiscoveredEndpoint
 	var baseURLs []string
 	currentOrigin := "" // most recently observed base URL in this file's scan order
 
-	lines := strings.Split(content, "\n")
+	lines := strings.SplitSeq(content, "\n")
 
-	for _, line := range lines {
+	for line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
 			continue
@@ -153,11 +153,11 @@ func extractInlineOrigin(path string) string {
 // parseURLSilent returns just the path portion of an absolute URL, or empty
 // string on failure.
 func parseURLSilent(absURL string) string {
-	idx := strings.Index(absURL, "://")
-	if idx < 0 {
+	_, after, ok := strings.Cut(absURL, "://")
+	if !ok {
 		return ""
 	}
-	rest := absURL[idx+3:]
+	rest := after
 	slash := strings.IndexByte(rest, '/')
 	if slash < 0 {
 		return "/"

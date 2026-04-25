@@ -300,7 +300,7 @@ func ParseDiscoveryPages(discoveryDir string) []string {
 	}
 	var pages []string
 	inSection := false
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "# ") {
 			if strings.Contains(strings.ToLower(trimmed), "pages visited") {
@@ -815,12 +815,12 @@ func BuildCompetitorPrompt(owner, repo, readmeContent string, issueTitles []stri
 		readmeContent = readmeContent[:20000]
 	}
 
-	issueList := ""
+	var issueList strings.Builder
 	for i, title := range issueTitles {
 		if i >= 20 {
 			break
 		}
-		issueList += fmt.Sprintf("- %s\n", title)
+		fmt.Fprintf(&issueList, "- %s\n", title)
 	}
 
 	return fmt.Sprintf(`Analyze this CLI tool repository and extract intelligence.
@@ -847,7 +847,7 @@ Rules:
 - commands_found: Extract ALL CLI subcommands mentioned in the README
 - feature_requests: Summarize unmet user needs from issues
 - pain_points: Identify user frustrations, bugs, UX issues
-- Be specific and actionable in your analysis`, owner, repo, readmeContent, issueList)
+- Be specific and actionable in your analysis`, owner, repo, readmeContent, issueList.String())
 }
 
 // parseCompetitorResponse parses the LLM JSON response into a CompetitorAnalysis.

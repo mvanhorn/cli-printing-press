@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -920,11 +921,8 @@ func checkDeadFunctions(dir string) DeadCodeResult {
 	liveSet := make(map[string]bool)
 	for _, name := range sortedKeys(names) {
 		callRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(name) + `\s*\(`)
-		for _, source := range externalSources {
-			if callRe.MatchString(source) {
-				liveSet[name] = true
-				break
-			}
+		if slices.ContainsFunc(externalSources, callRe.MatchString) {
+			liveSet[name] = true
 		}
 	}
 
@@ -949,7 +947,7 @@ func checkDeadFunctions(dir string) DeadCodeResult {
 	}
 
 	// Iterative expansion: mark transitively reachable helpers as live.
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		changed := false
 		for _, fn := range sortedKeys(names) {
 			if !liveSet[fn] {
@@ -1572,7 +1570,7 @@ func sampleEvenlyCommandPaths(items [][]string, n int) [][]string {
 	}
 	step := float64(len(items)) / float64(n)
 	result := make([][]string, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		idx := int(float64(i) * step)
 		result[i] = items[idx]
 	}
@@ -1714,7 +1712,7 @@ func countDomainTables(storeSource string) int {
 	count := 0
 	for _, match := range matches {
 		columns := 0
-		for _, line := range strings.Split(match[1], "\n") {
+		for line := range strings.SplitSeq(match[1], "\n") {
 			line = strings.TrimSpace(strings.TrimSuffix(line, ","))
 			if line == "" {
 				continue
@@ -1934,7 +1932,7 @@ func checkConfigConsistency(dir string) ConfigConsistResult {
 					}
 				}
 				// Also extract nearby token-related string literals
-				for _, line := range strings.Split(content, "\n") {
+				for line := range strings.SplitSeq(content, "\n") {
 					if pat.MatchString(line) {
 						fieldMatches := fieldExtractRe.FindAllStringSubmatch(line, -1)
 						for _, fm := range fieldMatches {
@@ -1953,7 +1951,7 @@ func checkConfigConsistency(dir string) ConfigConsistResult {
 						readFields[m[1]] = struct{}{}
 					}
 				}
-				for _, line := range strings.Split(content, "\n") {
+				for line := range strings.SplitSeq(content, "\n") {
 					if pat.MatchString(line) {
 						fieldMatches := fieldExtractRe.FindAllStringSubmatch(line, -1)
 						for _, fm := range fieldMatches {
@@ -2075,12 +2073,13 @@ func checkWorkflowCompleteness(dir string) WorkflowCompleteResult {
 	}
 
 	// Gather subcommand help too
-	helpLower := strings.ToLower(helpOut)
+	var helpLower strings.Builder
+	helpLower.WriteString(strings.ToLower(helpOut))
 	topCmds := extractCommandNames(helpOut)
 	for _, topCmd := range topCmds {
 		subOut, err := runDogfoodCmd(binaryPath, 15*time.Second, topCmd, "--help")
 		if err == nil {
-			helpLower += "\n" + strings.ToLower(subOut)
+			helpLower.WriteString("\n" + strings.ToLower(subOut))
 		}
 	}
 
@@ -2090,7 +2089,7 @@ func checkWorkflowCompleteness(dir string) WorkflowCompleteResult {
 		parts := strings.Fields(cmdLower)
 		found := true
 		for _, part := range parts {
-			if !strings.Contains(helpLower, part) {
+			if !strings.Contains(helpLower.String(), part) {
 				found = false
 				break
 			}

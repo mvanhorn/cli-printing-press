@@ -88,7 +88,6 @@ func runCrowdSniff(ctx context.Context, apiName, baseURL, outputPath string, asJ
 	var warningMu sync.Mutex
 
 	for i, src := range sources {
-		i, src := i, src
 		g.Go(func() error {
 			result, err := src.Discover(ctx, apiName)
 			if err != nil {
@@ -172,7 +171,7 @@ func runCrowdSniff(ctx context.Context, apiName, baseURL, outputPath string, asJ
 	}
 
 	if asJSON {
-		return json.NewEncoder(stdout).Encode(map[string]interface{}{
+		return json.NewEncoder(stdout).Encode(map[string]any{
 			"spec_path":      outputPath,
 			"endpoints":      endpointCount,
 			"resources":      len(apiSpec.Resources),

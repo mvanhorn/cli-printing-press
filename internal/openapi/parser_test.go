@@ -949,10 +949,10 @@ func TestPathPriorityScoreSortOrder(t *testing.T) {
 
 	// Build 600 paths: 100 admin.* paths and 500 user-facing paths.
 	var paths []string
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		paths = append(paths, fmt.Sprintf("/admin.resource%d/action", i))
 	}
-	for i := 0; i < 500; i++ {
+	for i := range 500 {
 		paths = append(paths, fmt.Sprintf("/resource%d", i))
 	}
 

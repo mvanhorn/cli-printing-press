@@ -221,7 +221,7 @@ func newGenerateCmd() *cobra.Command {
 
 				fmt.Fprintf(os.Stderr, "Generated %s at %s (from docs)\n", parsed.Name, absOut)
 				if asJSON {
-					if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+					if err := json.NewEncoder(os.Stdout).Encode(map[string]any{
 						"name":       parsed.Name,
 						"output_dir": absOut,
 						"spec_files": specFiles,
@@ -276,7 +276,7 @@ func newGenerateCmd() *cobra.Command {
 
 				fmt.Fprintf(os.Stderr, "Generated %s at %s (from plan)\n", naming.CLI(planSpec.CLIName), absOut)
 				if asJSON {
-					if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+					if err := json.NewEncoder(os.Stdout).Encode(map[string]any{
 						"name":       planSpec.CLIName,
 						"output_dir": absOut,
 						"plan_file":  planFile,
@@ -463,7 +463,7 @@ func newGenerateCmd() *cobra.Command {
 
 			fmt.Fprintf(os.Stderr, "Generated %s at %s\n", apiSpec.Name, absOut)
 			if asJSON {
-				if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+				if err := json.NewEncoder(os.Stdout).Encode(map[string]any{
 					"name":       apiSpec.Name,
 					"output_dir": absOut,
 					"spec_files": specFiles,
@@ -899,7 +899,7 @@ func newPrintCmd() *cobra.Command {
 			fmt.Fprintf(os.Stderr, "\nStart with: /ce:work %s\n", state.PlanPath(pipeline.PhasePreflight))
 
 			if asJSON {
-				if err := json.NewEncoder(os.Stdout).Encode(map[string]interface{}{
+				if err := json.NewEncoder(os.Stdout).Encode(map[string]any{
 					"api_name":         apiName,
 					"pipeline_dir":     state.PipelineDir(),
 					"phases_completed": countCompletedPhases(state),

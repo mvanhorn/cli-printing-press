@@ -212,7 +212,7 @@ func parseSDLTypes(s string) (map[string]gqlType, map[string]struct{}, error) {
 
 func parseEnumValues(body string) []string {
 	var values []string
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		line = strings.TrimSpace(line)
 		line = strings.TrimSuffix(line, ",")
 		if line == "" {
@@ -226,7 +226,7 @@ func parseEnumValues(body string) []string {
 
 func parseFields(body string) []gqlField {
 	var fields []gqlField
-	for _, rawLine := range strings.Split(body, "\n") {
+	for rawLine := range strings.SplitSeq(body, "\n") {
 		line := strings.TrimSpace(rawLine)
 		if line == "" || strings.HasPrefix(line, "@") {
 			continue

@@ -124,7 +124,7 @@ func TestPRTitleWorkflowAllowsReleasePleaseScope(t *testing.T) {
 		require.True(t, ok, "semantic pull request action should declare scopes")
 
 		allowed := map[string]bool{}
-		for _, scope := range strings.Fields(scopes) {
+		for scope := range strings.FieldsSeq(scopes) {
 			allowed[scope] = true
 		}
 

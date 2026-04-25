@@ -139,7 +139,7 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 	genOut, genErr := cmd.CombinedOutput()
 	result.GatesOutput = string(genOut)
 
-	for _, line := range strings.Split(result.GatesOutput, "\n") {
+	for line := range strings.SplitSeq(result.GatesOutput, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.Contains(trimmed, "PASS") {
 			result.GatesPassed++
@@ -317,7 +317,7 @@ func ensureJSON(data []byte) ([]byte, error) {
 	if json.Valid(data) {
 		return data, nil
 	}
-	var obj interface{}
+	var obj any
 	if err := yaml.Unmarshal(data, &obj); err != nil {
 		return nil, fmt.Errorf("not valid JSON or YAML: %w", err)
 	}

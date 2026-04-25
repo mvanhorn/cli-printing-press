@@ -25,12 +25,9 @@ func Fingerprint(value string) string {
 	var b strings.Builder
 	b.Grow(fingerprintLen + 3)
 
-	limit := fingerprintLen
-	if len(runes) < limit {
-		limit = len(runes)
-	}
+	limit := min(len(runes), fingerprintLen)
 
-	for i := 0; i < limit; i++ {
+	for i := range limit {
 		r := runes[i]
 		if !unicode.IsPrint(r) {
 			b.WriteRune('?')

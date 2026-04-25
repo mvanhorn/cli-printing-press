@@ -77,7 +77,7 @@ func TestClaimOutputDir_ConcurrentClaims(t *testing.T) {
 	errs := make(chan error, goroutines)
 
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
+	for range goroutines {
 		go func() {
 			defer wg.Done()
 			claimed, err := ClaimOutputDir(base)

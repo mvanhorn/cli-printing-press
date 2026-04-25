@@ -55,9 +55,9 @@ type APISpec struct {
 	Resources       map[string]Resource `yaml:"resources" json:"resources"`
 	Types           map[string]TypeDef  `yaml:"types" json:"types"`
 	ExtraCommands   []ExtraCommand      `yaml:"extra_commands,omitempty" json:"extra_commands,omitempty"` // hand-written cobra commands declared so SKILL.md can document them; spec-only metadata, no code generated
-	Cache           CacheConfig         `yaml:"cache,omitempty" json:"cache,omitempty"`                   // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
-	Share           ShareConfig         `yaml:"share,omitempty" json:"share,omitempty"`                   // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
-	MCP             MCPConfig           `yaml:"mcp,omitempty" json:"mcp,omitempty"`                       // MCP server generation config; when unset, the emitted MCP binary is stdio-only (today's default). Opting into http adds a --transport/--addr flag surface so the same binary can serve cloud-hosted agents.
+	Cache           CacheConfig         `yaml:"cache,omitempty" json:"cache"`                             // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
+	Share           ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
+	MCP             MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, the emitted MCP binary is stdio-only (today's default). Opting into http adds a --transport/--addr flag surface so the same binary can serve cloud-hosted agents.
 }
 
 // ExtraCommand declares a hand-written cobra command so the SKILL.md

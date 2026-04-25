@@ -58,7 +58,7 @@ func newLockAcquireCmd() *cobra.Command {
 			if err != nil {
 				// Check if it's a "lock held" error — return structured JSON + non-zero exit.
 				status := pipeline.LockStatus(cliName)
-				result := map[string]interface{}{
+				result := map[string]any{
 					"acquired": false,
 					"blocked":  true,
 					"error":    err.Error(),
@@ -70,7 +70,7 @@ func newLockAcquireCmd() *cobra.Command {
 				return &ExitError{Code: ExitInputError, Err: err, Silent: true}
 			}
 
-			result := map[string]interface{}{
+			result := map[string]any{
 				"acquired":    true,
 				"blocked":     false,
 				"cli":         cliName,
@@ -110,7 +110,7 @@ func newLockUpdateCmd() *cobra.Command {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("updating lock: %w", err)}
 			}
 
-			result := map[string]interface{}{
+			result := map[string]any{
 				"updated": true,
 				"cli":     cliName,
 				"phase":   phase,
@@ -190,7 +190,7 @@ func newLockReleaseCmd() *cobra.Command {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("releasing lock: %w", err)}
 			}
 
-			result := map[string]interface{}{
+			result := map[string]any{
 				"released": true,
 				"cli":      cliName,
 			}
@@ -242,7 +242,7 @@ func newLockPromoteCmd() *cobra.Command {
 				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("promoting CLI: %w", err)}
 			}
 
-			result := map[string]interface{}{
+			result := map[string]any{
 				"promoted":    true,
 				"cli":         cliName,
 				"library_dir": state.PublishedDir,

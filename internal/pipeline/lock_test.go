@@ -445,7 +445,7 @@ func TestConcurrentAcquire(t *testing.T) {
 	var wg sync.WaitGroup
 	successes := make(chan string, goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		wg.Add(1)
 		scope := "scope-" + string(rune('A'+i))
 		go func(s string) {

@@ -43,7 +43,7 @@ func RemoveDeadCode(dir string, dryRun bool) (*PolishResult, error) {
 	}
 
 	const maxPasses = 3
-	for pass := 0; pass < maxPasses; pass++ {
+	for pass := range maxPasses {
 		deadFuncs := findAllDeadFunctions(cliDir, cmdDir)
 		if len(deadFuncs) == 0 {
 			break

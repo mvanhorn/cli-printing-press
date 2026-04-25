@@ -94,7 +94,7 @@ func TestWriteCLIManifestOmitsEmptyOptionalFields(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify optional fields are not present in JSON
-	var raw map[string]interface{}
+	var raw map[string]any
 	require.NoError(t, json.Unmarshal(data, &raw))
 
 	_, hasCatalog := raw["catalog_entry"]
@@ -651,7 +651,7 @@ func TestWriteSmitheryYAML(t *testing.T) {
 		// Verify the file is valid YAML by re-parsing it
 		content, err := os.ReadFile(filepath.Join(dir, "smithery.yaml"))
 		require.NoError(t, err)
-		var parsed map[string]interface{}
+		var parsed map[string]any
 		require.NoError(t, yaml.Unmarshal(content, &parsed), "smithery.yaml should be valid YAML even with special chars in description")
 		assert.Contains(t, parsed["description"], "Notion")
 	})

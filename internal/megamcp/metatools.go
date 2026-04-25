@@ -248,10 +248,7 @@ func makeActivateAPIHandler(am *ActivationManager) server.ToolHandlerFunc {
 		toolNames := am.toolNamesForSlug(slug)
 		examples := ""
 		if len(toolNames) > 0 {
-			limit := 3
-			if len(toolNames) < limit {
-				limit = len(toolNames)
-			}
+			limit := min(len(toolNames), 3)
 			examples = "\n\nExample tools:\n"
 			for _, name := range toolNames[:limit] {
 				examples += fmt.Sprintf("- %s\n", name)

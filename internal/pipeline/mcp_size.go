@@ -104,10 +104,7 @@ func estimateMCPTokens(dir string) MCPTokenEstimate {
 		sort.Slice(heaviest, func(i, j int) bool {
 			return heaviest[i].Chars > heaviest[j].Chars
 		})
-		top := 3
-		if len(heaviest) < top {
-			top = len(heaviest)
-		}
+		top := min(len(heaviest), 3)
 		est.TopHeaviest = heaviest[:top]
 	}
 

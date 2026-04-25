@@ -281,7 +281,6 @@ func TestSkillRendersAuthBranchPerType(t *testing.T) {
 		{"none", "none", "No authentication required"},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			apiSpec := minimalSpec("auth" + tc.name)

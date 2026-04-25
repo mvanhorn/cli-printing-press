@@ -1587,7 +1587,7 @@ func TestBuildPromotedCommands(t *testing.T) {
 				},
 			},
 		}
-		for i := 0; i < 20; i++ {
+		for range 20 {
 			promoted := buildPromotedCommands(s)
 			assert.Empty(t, promoted)
 		}
@@ -1612,7 +1612,7 @@ func TestBuildPromotedCommands(t *testing.T) {
 				},
 			},
 		}
-		for i := 0; i < 20; i++ {
+		for range 20 {
 			promoted := buildPromotedCommands(s)
 			require.Len(t, promoted, 2)
 			assert.Equal(t, "accounts", promoted[0].ResourceName)
