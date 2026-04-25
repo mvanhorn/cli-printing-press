@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.3.3](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.2...v2.3.3) (2026-04-25)
+
+
+### Bug Fixes
+
+* **ci:** build from local checkout instead of proxying private module ([#279](https://github.com/mvanhorn/cli-printing-press/issues/279)) ([1a95d78](https://github.com/mvanhorn/cli-printing-press/commit/1a95d78bf77fd72e53948e52c50a0fbfaa972696))
+* **cli:** backfill parent_id on store upgrade ([#272](https://github.com/mvanhorn/cli-printing-press/issues/272)) ([#276](https://github.com/mvanhorn/cli-printing-press/issues/276)) ([892de38](https://github.com/mvanhorn/cli-printing-press/commit/892de38b779dc8d86174127185f3af549f1a8479))
+* **cli:** dedup colliding flag identifiers in generated commands ([#283](https://github.com/mvanhorn/cli-printing-press/issues/283)) ([72a84a8](https://github.com/mvanhorn/cli-printing-press/commit/72a84a88d671174c814b09fb4f5032cc26f4b867))
+* **cli:** extend flag-identifier dedup to request body fields ([#288](https://github.com/mvanhorn/cli-printing-press/issues/288)) ([1552938](https://github.com/mvanhorn/cli-printing-press/commit/15529383018a26747632e65e65e90803edee2ac5))
+* **cli:** honor explicit --output flag in generate ([#281](https://github.com/mvanhorn/cli-printing-press/issues/281)) ([6bbae93](https://github.com/mvanhorn/cli-printing-press/commit/6bbae936a0504dabab1febd4d00d3debeeaf50e6))
+* **cli:** normalize object-shaped description fields before parsing ([#285](https://github.com/mvanhorn/cli-printing-press/issues/285)) ([6361826](https://github.com/mvanhorn/cli-printing-press/commit/6361826d8414debc288f84cb25d7d74f8ad2d90b))
+* **cli:** prepend T to type names that match Go reserved words ([#284](https://github.com/mvanhorn/cli-printing-press/issues/284)) ([1a95a78](https://github.com/mvanhorn/cli-printing-press/commit/1a95a78adf905538a1a649d992ac2d4ad8337821))
+* **cli:** refresh stale catalog entries and reject non-spec bodies ([#286](https://github.com/mvanhorn/cli-printing-press/issues/286)) ([ee6bd88](https://github.com/mvanhorn/cli-printing-press/commit/ee6bd881eca4e1eb1563968e54cd082bd725fecb))
+* **cli:** treat access-denied sync errors as warnings ([#274](https://github.com/mvanhorn/cli-printing-press/issues/274)) ([#280](https://github.com/mvanhorn/cli-printing-press/issues/280)) ([55114c4](https://github.com/mvanhorn/cli-printing-press/commit/55114c4e344fd9563495745142d41c0551a4ae41))
+* **cli:** validate generated JSON string flags ([#278](https://github.com/mvanhorn/cli-printing-press/issues/278)) ([ea0fbe9](https://github.com/mvanhorn/cli-printing-press/commit/ea0fbe94b398179ad083c9ec16ca6c544dfce0a9))
+
 ## [2.3.2](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.1...v2.3.2) (2026-04-25)
 
 
