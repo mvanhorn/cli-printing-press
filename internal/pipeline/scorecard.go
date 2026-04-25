@@ -1964,12 +1964,13 @@ func scoreTypeFidelity(dir string) int {
 		score++
 	}
 
-	allCLI := ""
+	var allCLIBuilder strings.Builder
 	for _, content := range sampleCommandFiles(dir, 0) {
-		allCLI += content
+		allCLIBuilder.WriteString(content)
 	}
-	allCLI += readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
-	allCLI += readFileContent(filepath.Join(dir, "internal", "cli", "root.go"))
+	allCLIBuilder.WriteString(readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go")))
+	allCLIBuilder.WriteString(readFileContent(filepath.Join(dir, "internal", "cli", "root.go")))
+	allCLI := allCLIBuilder.String()
 	if !strings.Contains(allCLI, "var _ = strings.ReplaceAll") && !strings.Contains(allCLI, "var _ = fmt.Sprintf") {
 		score++
 	}

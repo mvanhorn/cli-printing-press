@@ -14,6 +14,12 @@ linters:
     - errcheck
     - staticcheck
     - unused
+    # Catches accumulated "Go has a newer way to do this" patterns:
+    # interface{} → any, ad-hoc loops → slices.Contains, range-over-int,
+    # min/max builtins, strings.Builder, CutPrefix/CutSuffix, etc. Without
+    # this enabled the codebase drifts (~100 hits accumulated before this
+    # config was introduced); turning it on now keeps it clean.
+    - modernize
   settings:
     errcheck:
       exclude-functions:
