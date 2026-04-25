@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.3.2](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.1...v2.3.2) (2026-04-25)
+
+
+### Bug Fixes
+
+* **cli:** avoid duplicate batch store upsert generation ([#231](https://github.com/mvanhorn/cli-printing-press/issues/231)) ([24785ee](https://github.com/mvanhorn/cli-printing-press/commit/24785ee5bc564a1c7e5d5cab82385b114719a55d))
+* **cli:** dispatch UpsertBatch to typed tables ([#268](https://github.com/mvanhorn/cli-printing-press/issues/268)) ([#271](https://github.com/mvanhorn/cli-printing-press/issues/271)) ([8eea3a0](https://github.com/mvanhorn/cli-printing-press/commit/8eea3a0e4bb02e380458cfc2062ea5a04afa31ca))
+* **cli:** stop doctor from claiming valid creds are invalid ([#270](https://github.com/mvanhorn/cli-printing-press/issues/270)) ([6a18477](https://github.com/mvanhorn/cli-printing-press/commit/6a184771b6bcca0c2957bb13ade7515eccdc9eff))
+* **megamcp:** reject env var values containing '}' in ApplyAuthFormat ([#252](https://github.com/mvanhorn/cli-printing-press/issues/252)) ([55b3f5e](https://github.com/mvanhorn/cli-printing-press/commit/55b3f5e1510524f70a340436b2071276988eb4e4))
+
 ## [2.3.1](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.0...v2.3.1) (2026-04-24)
 
 
