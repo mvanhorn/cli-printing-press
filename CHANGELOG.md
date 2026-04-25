@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.3.4](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.3...v2.3.4) (2026-04-25)
+
+
+### Bug Fixes
+
+* **catalog:** update stale spec URLs + add download content-validity check ([#282](https://github.com/mvanhorn/cli-printing-press/issues/282)) ([4a77f46](https://github.com/mvanhorn/cli-printing-press/commit/4a77f46c3dc9965d68e2ae4bbcc3b2002a1a1f9a))
+* **cli:** gate publishing on transcendence features ([#293](https://github.com/mvanhorn/cli-printing-press/issues/293)) ([ac74e7d](https://github.com/mvanhorn/cli-printing-press/commit/ac74e7d2d7dcd661fc4532ecf943933591171b76))
+* **cli:** make firstCommandExample helper promotion-aware ([#291](https://github.com/mvanhorn/cli-printing-press/issues/291)) ([6ed197c](https://github.com/mvanhorn/cli-printing-press/commit/6ed197c43e2c2bdcedfa66772af8f5b5f24cacbe))
+
 ## [2.3.3](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.2...v2.3.3) (2026-04-25)
 
 

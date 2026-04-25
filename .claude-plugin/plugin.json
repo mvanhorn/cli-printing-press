@@ -1,6 +1,6 @@
 {
   "name": "cli-printing-press",
-  "version": "2.3.3",
+  "version": "2.3.4",
   "description": "Generate production Go CLIs from API descriptions or OpenAPI specs",
   "repository": "mvanhorn/cli-printing-press"
 }
