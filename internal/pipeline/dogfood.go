@@ -1922,45 +1922,8 @@ func checkConfigConsistency(dir string) ConfigConsistResult {
 		}
 		content := string(data)
 
-		for _, pat := range writePatterns {
-			if pat.MatchString(content) {
-				// Extract field names from the same lines
-				matches := pat.FindAllStringSubmatch(content, -1)
-				for _, m := range matches {
-					if len(m) > 1 && m[1] != "" {
-						writeFields[m[1]] = struct{}{}
-					}
-				}
-				// Also extract nearby token-related string literals
-				for line := range strings.SplitSeq(content, "\n") {
-					if pat.MatchString(line) {
-						fieldMatches := fieldExtractRe.FindAllStringSubmatch(line, -1)
-						for _, fm := range fieldMatches {
-							writeFields[fm[1]] = struct{}{}
-						}
-					}
-				}
-			}
-		}
-
-		for _, pat := range readPatterns {
-			if pat.MatchString(content) {
-				matches := pat.FindAllStringSubmatch(content, -1)
-				for _, m := range matches {
-					if len(m) > 1 && m[1] != "" {
-						readFields[m[1]] = struct{}{}
-					}
-				}
-				for line := range strings.SplitSeq(content, "\n") {
-					if pat.MatchString(line) {
-						fieldMatches := fieldExtractRe.FindAllStringSubmatch(line, -1)
-						for _, fm := range fieldMatches {
-							readFields[fm[1]] = struct{}{}
-						}
-					}
-				}
-			}
-		}
+		collectConfigFields(content, writePatterns, fieldExtractRe, writeFields)
+		collectConfigFields(content, readPatterns, fieldExtractRe, readFields)
 	}
 
 	result.WriteFields = sortedKeys(writeFields)
@@ -1993,6 +1956,29 @@ func checkConfigConsistency(dir string) ConfigConsistResult {
 	}
 
 	return result
+}
+
+func collectConfigFields(content string, patterns []*regexp.Regexp, fieldExtractRe *regexp.Regexp, fields map[string]struct{}) {
+	for _, pat := range patterns {
+		if !pat.MatchString(content) {
+			continue
+		}
+		matches := pat.FindAllStringSubmatch(content, -1)
+		for _, m := range matches {
+			if len(m) > 1 && m[1] != "" {
+				fields[m[1]] = struct{}{}
+			}
+		}
+		for line := range strings.SplitSeq(content, "\n") {
+			if !pat.MatchString(line) {
+				continue
+			}
+			fieldMatches := fieldExtractRe.FindAllStringSubmatch(line, -1)
+			for _, fm := range fieldMatches {
+				fields[fm[1]] = struct{}{}
+			}
+		}
+	}
 }
 
 // workflowManifest represents the structure of workflow_verify.yaml.
