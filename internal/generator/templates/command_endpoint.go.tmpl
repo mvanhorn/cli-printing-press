@@ -42,7 +42,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 
 	cmd := &cobra.Command{
-		Use:   "{{.EndpointName}}{{positionalArgs .Endpoint}}",
+		Use:   "{{kebab .EndpointName}}{{positionalArgs .Endpoint}}",
 {{- if .Endpoint.Alias}}
 		Aliases: []string{"{{.Endpoint.Alias}}"},
 {{- end}}

@@ -2326,6 +2326,14 @@ func toKebab(s string) string {
 	}
 	var result strings.Builder
 	for i, r := range s {
+		// Snake-case underscores convert to dashes. Lets spec keys like
+		// `customer_feedback` and `slot_list_for_date` flow through to
+		// user-facing cobra `Use:` strings as `customer-feedback` and
+		// `slot-list-for-date` instead of preserving the snake form.
+		if r == '_' {
+			result.WriteByte('-')
+			continue
+		}
 		if unicode.IsUpper(r) && i > 0 {
 			prev := rune(s[i-1])
 			// Insert hyphen before uppercase letter if preceded by lowercase,

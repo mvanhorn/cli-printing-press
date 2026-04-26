@@ -3572,3 +3572,26 @@ func TestGenerateMCPMainRemoteCompiles(t *testing.T) {
 	require.False(t, info.IsDir())
 	require.NotZero(t, info.Size())
 }
+
+func TestToKebab_SnakeCaseInput(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input    string
+		expected string
+		why      string
+	}{
+		{"customer_feedback", "customer-feedback", "snake_case spec key flows to user-facing kebab-case"},
+		{"slot_list_for_date", "slot-list-for-date", "multi-segment snake → kebab"},
+		{"window_days", "window-days", "two-word snake → kebab"},
+		{"already-kebab", "already-kebab", "kebab passes through unchanged"},
+		{"mixed_caseInput", "mixed-case-input", "mixed snake + camel both convert"},
+		{"single", "single", "single-word lowercase unchanged"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
+			got := toKebab(tt.input)
+			require.Equal(t, tt.expected, got, tt.why)
+		})
+	}
+}
