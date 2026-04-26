@@ -459,10 +459,92 @@ func ParseBytes(data []byte) (*APISpec, error) {
 		return nil, fmt.Errorf("parsing yaml: %w", yamlErr)
 	}
 	s.expandOperations()
+	s.enrichPathParams()
 	if err := s.Validate(); err != nil {
 		return nil, fmt.Errorf("validation: %w", err)
 	}
 	return &s, nil
+}
+
+// pathParamRe matches `{name}` placeholders in a path template. Names are
+// alphanumeric/underscore — the conservative subset every parser observed in
+// the wild uses. Anchoring on `{` and `}` keeps it from over-matching JSON
+// fragments accidentally embedded in path strings.
+var pathParamRe = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// enrichPathParams walks every resource and sub-resource endpoint and ensures
+// each `{paramName}` placeholder in the endpoint path is represented in
+// Endpoint.Params with Positional: true, Required: true. The expandOperations
+// path already populates these for shorthand-generated endpoints; explicit
+// `endpoints:` blocks in the YAML do not, so without this step the generator
+// emits a literal-placeholder URL with no positional-arg parsing — every
+// path-templated request returns 404 at runtime.
+//
+// Existing Params are never modified. If a placeholder name already appears
+// in Endpoint.Params or Endpoint.Body, the placeholder is left alone — the
+// author is presumed to have declared it intentionally (with their own type,
+// description, or default).
+//
+// Order is preserved: placeholders are appended in the order they appear in
+// the path so generated cobra `Args: cobra.ExactArgs(N)` sites and the
+// matching `replacePathParam(...args[i])` calls line up.
+func (s *APISpec) enrichPathParams() {
+	for resourceName, r := range s.Resources {
+		s.enrichResourcePathParams(&r)
+		s.Resources[resourceName] = r
+	}
+}
+
+func (s *APISpec) enrichResourcePathParams(r *Resource) {
+	if r.Endpoints != nil {
+		for endpointName, e := range r.Endpoints {
+			enrichEndpointPathParams(&e)
+			r.Endpoints[endpointName] = e
+		}
+	}
+	for subName, sub := range r.SubResources {
+		s.enrichResourcePathParams(&sub)
+		r.SubResources[subName] = sub
+	}
+}
+
+func enrichEndpointPathParams(e *Endpoint) {
+	if e.Path == "" {
+		return
+	}
+	matches := pathParamRe.FindAllStringSubmatch(e.Path, -1)
+	if len(matches) == 0 {
+		return
+	}
+	// Build a set of names already declared so we never duplicate or overwrite
+	// an author-provided Param/Body entry.
+	declared := make(map[string]struct{}, len(e.Params)+len(e.Body))
+	for _, p := range e.Params {
+		declared[p.Name] = struct{}{}
+	}
+	for _, p := range e.Body {
+		declared[p.Name] = struct{}{}
+	}
+	// Track which placeholders we've already appended in this pass so a
+	// repeated placeholder (rare but valid) doesn't add the param twice.
+	seen := make(map[string]struct{}, len(matches))
+	for _, m := range matches {
+		name := m[1]
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		if _, exists := declared[name]; exists {
+			continue
+		}
+		e.Params = append(e.Params, Param{
+			Name:        name,
+			Type:        "string",
+			Required:    true,
+			Positional:  true,
+			Description: name,
+		})
+	}
 }
 
 // expandOperations converts operations shorthand (e.g., [list, get, create])
