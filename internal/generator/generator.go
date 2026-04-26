@@ -1293,9 +1293,33 @@ func (g *Generator) renderMCPEntrypoint() error {
 }
 
 func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand, promotedResourceNames map[string]bool) error {
-	hasPromoted := len(promotedCommands) > 0
+	schema := g.schemaWithDependentParents()
 
-	// Vision features: profile already computed in early profiling above
+	if err := g.renderStoreFiles(schema); err != nil {
+		return err
+	}
+
+	visionData := g.visionRenderData(schema)
+	if err := g.renderVisionCommands(visionData); err != nil {
+		return err
+	}
+	workflowConstructors, err := g.renderWorkflowFiles(visionData)
+	if err != nil {
+		return err
+	}
+	insightConstructors := g.renderInsightFiles()
+
+	if err := g.renderMCPToolFiles(schema); err != nil {
+		return err
+	}
+	if err := g.renderPromotedCommandFiles(promotedCommands); err != nil {
+		return err
+	}
+
+	return g.renderRootProjectFiles(promotedCommands, promotedResourceNames, workflowConstructors, insightConstructors)
+}
+
+func (g *Generator) schemaWithDependentParents() []TableDef {
 	schema := BuildSchema(g.Spec)
 
 	// Add parent_id column to tables for dependent (parent-child) sync resources
@@ -1328,6 +1352,10 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 		}
 	}
 
+	return schema
+}
+
+func (g *Generator) renderStoreFiles(schema []TableDef) error {
 	// Create store directory if needed
 	if g.VisionSet.Store {
 		if err := os.MkdirAll(filepath.Join(g.OutputDir, "internal", "store"), 0755); err != nil {
@@ -1355,17 +1383,24 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 		}
 	}
 
-	// Render vision CLI commands
-	visionCmds := map[string]string{
-		"export.go.tmpl":    filepath.Join("internal", "cli", "export.go"),
-		"import.go.tmpl":    filepath.Join("internal", "cli", "import.go"),
-		"search.go.tmpl":    filepath.Join("internal", "cli", "search.go"),
-		"sync.go.tmpl":      filepath.Join("internal", "cli", "sync.go"),
-		"tail.go.tmpl":      filepath.Join("internal", "cli", "tail.go"),
-		"analytics.go.tmpl": filepath.Join("internal", "cli", "analytics.go"),
-	}
+	return nil
+}
 
-	// Build GraphQL field path mapping for sync templates
+type visionRenderData struct {
+	*spec.APISpec
+	SyncableResources      []profiler.SyncableResource
+	DependentSyncResources []profiler.DependentResource
+	SearchableFields       map[string][]string
+	Tables                 []TableDef
+	Pagination             profiler.PaginationProfile
+	SearchEndpointPath     string
+	SearchQueryParam       string
+	SearchEndpointMethod   string
+	SearchBodyFields       []profiler.SearchBodyField
+	GraphQLFieldPaths      map[string]string
+}
+
+func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 	gqlFieldPaths := map[string]string{}
 	for rName, r := range g.Spec.Resources {
 		if ep, ok := r.Endpoints["list"]; ok && ep.ResponsePath != "" {
@@ -1373,19 +1408,7 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 		}
 	}
 
-	visionData := struct {
-		*spec.APISpec
-		SyncableResources      []profiler.SyncableResource
-		DependentSyncResources []profiler.DependentResource
-		SearchableFields       map[string][]string
-		Tables                 []TableDef
-		Pagination             profiler.PaginationProfile
-		SearchEndpointPath     string
-		SearchQueryParam       string
-		SearchEndpointMethod   string
-		SearchBodyFields       []profiler.SearchBodyField
-		GraphQLFieldPaths      map[string]string
-	}{
+	return visionRenderData{
 		APISpec:                g.Spec,
 		SyncableResources:      g.profile.SyncableResources,
 		DependentSyncResources: g.profile.DependentSyncResources,
@@ -1397,6 +1420,18 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 		SearchEndpointMethod:   g.profile.SearchEndpointMethod,
 		SearchBodyFields:       g.profile.SearchBodyFields,
 		GraphQLFieldPaths:      gqlFieldPaths,
+	}
+}
+
+func (g *Generator) renderVisionCommands(visionData visionRenderData) error {
+	// Render vision CLI commands
+	visionCmds := map[string]string{
+		"export.go.tmpl":    filepath.Join("internal", "cli", "export.go"),
+		"import.go.tmpl":    filepath.Join("internal", "cli", "import.go"),
+		"search.go.tmpl":    filepath.Join("internal", "cli", "search.go"),
+		"sync.go.tmpl":      filepath.Join("internal", "cli", "sync.go"),
+		"tail.go.tmpl":      filepath.Join("internal", "cli", "tail.go"),
+		"analytics.go.tmpl": filepath.Join("internal", "cli", "analytics.go"),
 	}
 
 	gqlSpec := isGraphQLSpec(g.Spec)
@@ -1422,10 +1457,14 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 		}
 	}
 
+	return nil
+}
+
+func (g *Generator) renderWorkflowFiles(visionData visionRenderData) ([]string, error) {
 	// Render data source resolution template when store is enabled
 	if g.VisionSet.Store {
 		if err := g.renderTemplate("data_source.go.tmpl", filepath.Join("internal", "cli", "data_source.go"), visionData); err != nil {
-			return fmt.Errorf("rendering data_source: %w", err)
+			return nil, fmt.Errorf("rendering data_source: %w", err)
 		}
 	}
 
@@ -1441,7 +1480,7 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 			SearchableFields:  g.profile.SearchableFields,
 		}
 		if err := g.renderTemplate("channel_workflow.go.tmpl", filepath.Join("internal", "cli", "channel_workflow.go"), workflowData); err != nil {
-			return fmt.Errorf("rendering workflow: %w", err)
+			return nil, fmt.Errorf("rendering workflow: %w", err)
 		}
 	}
 
@@ -1459,7 +1498,12 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 		}
 	}
 
+	return renderedWorkflowConstructors, nil
+}
+
+func (g *Generator) renderInsightFiles() []string {
 	var renderedInsightConstructors []string
+
 	// Render insight templates
 	for _, tmpl := range g.VisionSet.Insights {
 		outName := strings.TrimSuffix(filepath.Base(tmpl), ".tmpl")
@@ -1473,6 +1517,10 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 		}
 	}
 
+	return renderedInsightConstructors
+}
+
+func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 	// Render MCP tools registration (needs VisionSet + store data + tool counts for annotations)
 	if g.VisionSet.MCP {
 		mcpTotal, mcpPublic := g.Spec.CountMCPTools()
@@ -1513,8 +1561,12 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 		}
 	}
 
+	return nil
+}
+
+func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedCommand) error {
 	// Generate api discovery command when promoted commands exist (lets users browse the raw generated surface)
-	if hasPromoted {
+	if len(promotedCommands) > 0 {
 		if err := g.renderTemplate("api_discovery.go.tmpl", filepath.Join("internal", "cli", "api_discovery.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering api discovery: %w", err)
 		}
@@ -1550,7 +1602,7 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 		}
 	}
 
-	return g.renderRootProjectFiles(promotedCommands, promotedResourceNames, renderedWorkflowConstructors, renderedInsightConstructors)
+	return nil
 }
 
 func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, promotedResourceNames map[string]bool, renderedWorkflowConstructors, renderedInsightConstructors []string) error {
