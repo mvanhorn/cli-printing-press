@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.7](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.6...v2.3.7) (2026-04-26)
+
+
+### Bug Fixes
+
+* **cli:** use /v2 module path so go install reports correct version ([#298](https://github.com/mvanhorn/cli-printing-press/issues/298)) ([1ab789e](https://github.com/mvanhorn/cli-printing-press/commit/1ab789ea583abcf1a8fe5e0d8719a024cab5308c))
+* **cli:** use strconv.Atoi for major-version parsing in guard test ([#300](https://github.com/mvanhorn/cli-printing-press/issues/300)) ([0cc7017](https://github.com/mvanhorn/cli-printing-press/commit/0cc70170f37f8dc6c5e38b6253ed03cec64ae5ed))
+
 ## [2.3.6](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.5...v2.3.6) (2026-04-26)
 
 
