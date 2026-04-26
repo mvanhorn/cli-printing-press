@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.6](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.5...v2.3.6) (2026-04-26)
+
+
+### Bug Fixes
+
+* **cli:** normalize routing prefixes in OpenAPI paths ([#296](https://github.com/mvanhorn/cli-printing-press/issues/296)) ([1e06456](https://github.com/mvanhorn/cli-printing-press/commit/1e06456c34869c2e356cd7c10ca7c601d829c93d))
+
 ## [2.3.5](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.4...v2.3.5) (2026-04-25)
 
 
