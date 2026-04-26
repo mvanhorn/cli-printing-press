@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.8](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.7...v2.3.8) (2026-04-26)
+
+
+### Bug Fixes
+
+* **cli:** retro [#301](https://github.com/mvanhorn/cli-printing-press/issues/301) — six improvements from recipe-goat regenerate ([#303](https://github.com/mvanhorn/cli-printing-press/issues/303)) ([8aad8d8](https://github.com/mvanhorn/cli-printing-press/commit/8aad8d858bf7c7e3d7036ad433323dd26b0bdbb2))
+* **cli:** retro [#302](https://github.com/mvanhorn/cli-printing-press/issues/302) — nine fixes from pagliacci-pizza regenerate ([#305](https://github.com/mvanhorn/cli-printing-press/issues/305)) ([6181ee3](https://github.com/mvanhorn/cli-printing-press/commit/6181ee36d01366731d3262014877d42c7e9ad302))
+
 ## [2.3.7](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.6...v2.3.7) (2026-04-26)
 
 
