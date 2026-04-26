@@ -116,9 +116,11 @@ run_case() {
   command_text="$(cat "$case_dir/command.txt")"
 
   BINARY="$binary" CASE_ACTUAL_DIR="$out_dir" REPO_ROOT="$repo_root" \
-    GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_COUNT=2 \
     GIT_CONFIG_KEY_0=github.user \
     GIT_CONFIG_VALUE_0="$golden_owner" \
+    GIT_CONFIG_KEY_1=user.name \
+    GIT_CONFIG_VALUE_1="$golden_owner" \
     bash -c "$command_text" >"$raw_stdout" 2>"$raw_stderr" || exit_code=$?
 
   normalize_text <"$raw_stdout" >"$out_dir/stdout.txt"

@@ -1,0 +1,79 @@
+{
+  "auth_check": {
+    "detail": "spec not provided; auth protocol check skipped",
+    "generated_format": "",
+    "match": true,
+    "spec_scheme": ""
+  },
+  "browser_session_check": {
+    "detail": "spec not provided; browser-session auth check skipped",
+    "pass": true,
+    "required": false
+  },
+  "dead_flags": {
+    "dead": 0,
+    "total": 17
+  },
+  "dead_functions": {
+    "dead": 1,
+    "items": [
+      "wrapResultsWithFreshness"
+    ],
+    "total": 50
+  },
+  "dir": "<ARTIFACT_DIR>/generate-golden-api/printing-press-golden",
+  "example_check": {
+    "detail": "could not build CLI binary: exit status 1",
+    "skipped": true,
+    "tested": 0,
+    "valid_examples": 0,
+    "with_examples": 0
+  },
+  "issues": [
+    "1 dead helper functions found",
+    "example check skipped: could not build CLI binary: exit status 1"
+  ],
+  "naming_check": {
+    "checked": 27
+  },
+  "novel_features_check": {
+    "found": 0,
+    "planned": 0,
+    "skipped": true
+  },
+  "path_check": {
+    "tested": 0,
+    "valid": 0,
+    "valid_pct": 0
+  },
+  "pipeline_check": {
+    "detail": "sync uses domain-specific Upsert methods; search methods not found; 1 domain tables found",
+    "domain_tables": 1,
+    "search_calls_domain": false,
+    "sync_calls_domain": true
+  },
+  "reimplementation_check": {
+    "checked": 0,
+    "exempted_via_store": 0,
+    "skipped": true
+  },
+  "test_presence": {
+    "checked": 0
+  },
+  "verdict": "WARN",
+  "wiring_check": {
+    "command_tree": {
+      "defined": 35,
+      "registered": 35
+    },
+    "config_consistency": {
+      "consistent": true
+    },
+    "workflow_completeness": {
+      "detail": "no workflow_verify.yaml found",
+      "mapped_steps": 0,
+      "skipped": true,
+      "total_steps": 0
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "scorecard": {
+    "api_name": "printing-press-golden",
+    "competitor_scores": null,
+    "gap_report": [
+      "breadth scored 4/10 - needs improvement",
+      "MCP: 6 tools (1 public, 5 auth-required) — readiness: full"
+    ],
+    "overall_grade": "A",
+    "steinberger": {
+      "agent_native": 10,
+      "agent_workflow_readiness": 9,
+      "auth": 10,
+      "auth_protocol": 0,
+      "breadth": 4,
+      "cache_freshness": 5,
+      "data_pipeline_integrity": 7,
+      "dead_code": 4,
+      "doctor": 10,
+      "error_handling": 10,
+      "insight": 8,
+      "live_api_verification": 0,
+      "local_cache": 10,
+      "mcp_quality": 10,
+      "mcp_remote_transport": 5,
+      "mcp_surface_strategy": 0,
+      "mcp_token_efficiency": 7,
+      "mcp_tool_design": 0,
+      "output_modes": 10,
+      "path_validity": 0,
+      "percentage": 81,
+      "readme": 8,
+      "sync_correctness": 10,
+      "terminal_ux": 8,
+      "total": 81,
+      "type_fidelity": 3,
+      "vision": 7,
+      "workflows": 10
+    },
+    "unscored_dimensions": [
+      "mcp_tool_design",
+      "mcp_surface_strategy",
+      "path_validity",
+      "auth_protocol",
+      "live_api_verification"
+    ]
+  }
+}

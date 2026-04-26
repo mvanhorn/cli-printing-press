@@ -1,1 +1,4 @@
+set -euo pipefail
 "$BINARY" generate --spec testdata/golden/fixtures/golden-api.yaml --output "$CASE_ACTUAL_DIR/printing-press-golden" --force --spec-url file://testdata/golden/fixtures/golden-api.yaml --validate=false
+"$BINARY" dogfood --dir "$CASE_ACTUAL_DIR/printing-press-golden" --json > "$CASE_ACTUAL_DIR/dogfood.json"
+"$BINARY" scorecard --dir "$CASE_ACTUAL_DIR/printing-press-golden" --json > "$CASE_ACTUAL_DIR/scorecard.json"
