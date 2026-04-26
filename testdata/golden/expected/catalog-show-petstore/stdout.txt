@@ -1,0 +1,11 @@
+Name:           petstore
+Display Name:   Petstore
+Description:    Canonical OpenAPI example - pet store management
+Category:       example
+Tier:           official
+Spec URL:       https://petstore3.swagger.io/api/v3/openapi.yaml
+Spec Format:    yaml
+OpenAPI:        3.0
+Homepage:       https://petstore3.swagger.io
+Notes:          None.
+Verified:       2026-03-23

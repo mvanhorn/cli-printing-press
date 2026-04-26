@@ -456,6 +456,22 @@ golangci-lint run ./...
 
 A pre-push lefthook hook runs `golangci-lint` on changed files; the same config (`.golangci.yml`) runs in CI. Install hooks with `brew install lefthook && lefthook install`. To test local skill changes, run `claude --plugin-dir .` so `/printing-press` loads from your working copy. See [AGENTS.md](AGENTS.md) for full conventions, glossary, and release flow.
 
+### Golden Output Harness
+
+Golden output checks compare deterministic, offline `printing-press` commands against committed stdout, stderr, and exit-code fixtures:
+
+```bash
+scripts/golden.sh verify
+```
+
+Use update mode only after an intentional behavior change:
+
+```bash
+scripts/golden.sh update
+```
+
+The harness rebuilds `./printing-press`, writes actual outputs under `.gotmp/golden/actual`, and compares them to `testdata/golden/expected`. It normalizes only machine-specific paths: the repo root, the home directory, and the golden artifact directory.
+
 ## Credits
 
 - Peter Steinberger ([@steipete](https://github.com/steipete)). [discrawl](https://github.com/steipete/discrawl) and [gogcli](https://github.com/steipete/gogcli) set the bar. The quality scoring system is inspired by his work; discrawl's sync architecture directly influenced the printing press templates.

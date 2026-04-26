@@ -1,0 +1,41 @@
+auth:
+  stytch               Authentication and user management API
+
+cloud:
+  digitalocean         Cloud infrastructure and developer platform API
+
+developer-tools:
+  github               Software development platform API
+  launchdarkly         Feature flag management - flags, environments, segments, experiments, audit logs
+  postman-explore      Public API network directory for discovering community collections, workspaces, and APIs
+
+example:
+  petstore             Canonical OpenAPI example - pet store management
+
+marketing:
+  producthunt          Find, monitor, and export Product Hunt launches for launch research, scouting, and competitive tracking without requiring a Product Hunt API application.
+
+monitoring:
+  sentry               Error tracking and performance monitoring - projects, issues, events, releases
+
+other:
+  google-flights       Flight search via Google Flights. No public API — reached through community-maintained reverse-engineered wrappers.
+  kayak                Flight, hotel, and car rental aggregator. No public API and no maintained community wrappers — reached by scraping embedded JSON from server-rendered pages.
+
+payments:
+  plaid                Banking API for account linking, transactions, identity verification, and income
+  stripe               Payment processing and financial infrastructure API
+
+project-management:
+  asana                Work management and project tracking API
+
+sales-and-crm:
+  hubspot              CRM contacts API
+  pipedrive            CRM for sales teams - deals, contacts, pipelines, activities, and organizations
+
+social-and-messaging:
+  discord              Chat and community platform API
+  front                Customer communication platform API
+  telegram             Telegram Bot API for building bots - send messages, manage chats, webhooks, stickers
+  twilio               Communication APIs for SMS, voice, and messaging
+

@@ -1,0 +1,1 @@
+./printing-press browser-sniff --har testdata/sniff/sample.har --output <ARTIFACT_DIR>/browser-sniff-sample/spec.yaml --analysis-output <ARTIFACT_DIR>/browser-sniff-sample/traffic-analysis.json

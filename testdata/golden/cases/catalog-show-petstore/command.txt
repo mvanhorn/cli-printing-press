@@ -1,0 +1,1 @@
+./printing-press catalog show petstore
