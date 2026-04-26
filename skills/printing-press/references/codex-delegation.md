@@ -26,10 +26,9 @@ When `CODEX_MODE` is true, delegate code-writing tasks to Codex CLI. Claude stil
 
    d. **Delegate** — Pipe to Codex:
    ```bash
+   # Model and reasoning effort inherit from ~/.codex/config.toml. Do not pin -m / -c here.
    cd "$PRESS_LIBRARY/<api>-pp-cli" && echo "$CODEX_PROMPT" | codex exec \
      --yolo \
-     -c 'model_reasoning_effort="medium"' \
-     -m "gpt-5.4" \
      -
    ```
 
@@ -212,10 +211,9 @@ When `CODEX_MODE` is true, delegate each bug fix to Codex. The shipcheck tools t
    ```
 
    ```bash
+   # Model and reasoning effort inherit from ~/.codex/config.toml. Do not pin -m / -c here.
    cd "$PRESS_LIBRARY/<api>-pp-cli" && echo "$CODEX_PROMPT" | codex exec \
      --yolo \
-     -c 'model_reasoning_effort="medium"' \
-     -m "gpt-5.4" \
      -
    ```
 

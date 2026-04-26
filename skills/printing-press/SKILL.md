@@ -294,7 +294,9 @@ fi
 # Health check: verify codex binary exists
 if [ "$CODEX_MODE" = "true" ]; then
   if command -v codex >/dev/null 2>&1; then
-    CODEX_MODEL=$(codex config get model 2>/dev/null || echo "gpt-5.4")
+    # Model and reasoning effort inherit from ~/.codex/config.toml. Do not pin -m / -c here.
+    CODEX_MODEL=$(grep -E '^model[[:space:]]*=' ~/.codex/config.toml 2>/dev/null | head -1 | sed -E 's/^model[[:space:]]*=[[:space:]]*"?([^"]+)"?.*$/\1/')
+    [ -z "$CODEX_MODEL" ] && CODEX_MODEL="codex default"
     echo "Codex mode enabled (model: $CODEX_MODEL). Code-writing tasks will be delegated to Codex."
   else
     echo "Codex CLI not found - running in standard mode."
