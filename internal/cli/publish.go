@@ -588,7 +588,15 @@ func runValidation(dir string) ValidateResult {
 		}
 	}
 
-	// 8. Manuscripts check (warn-only)
+	// 8. SKILL.md verification — fail if the agent-facing skill advertises
+	// commands, flags, or arguments the shipped CLI source does not provide.
+	skillCheck := checkVerifySkill(dir)
+	if !skillCheck.Passed {
+		allPassed = false
+	}
+	result.Checks = append(result.Checks, skillCheck)
+
+	// 9. Manuscripts check (warn-only)
 	// Try CLI name first (new convention), then API name, then fuzzy resolve
 	apiName := result.APIName
 	if apiName == "" {
@@ -615,6 +623,18 @@ func runValidation(dir string) ValidateResult {
 
 	result.Passed = allPassed
 	return result
+}
+
+func checkVerifySkill(dir string) CheckResult {
+	run, err := runVerifySkillScript(dir, nil, false, false)
+	if err != nil {
+		errMsg := strings.TrimSpace(run.Stdout + "\n" + run.Stderr)
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		return CheckResult{Name: "verify-skill", Passed: false, Error: errMsg}
+	}
+	return CheckResult{Name: "verify-skill", Passed: true}
 }
 
 func runGoCheck(dir string, args ...string) CheckResult {

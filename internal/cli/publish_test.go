@@ -150,7 +150,7 @@ func TestPublishValidateJSONHasAllChecks(t *testing.T) {
 	}
 
 	// All checks should be present (they may fail in test env, but must exist)
-	expectedChecks := []string{"manifest", "transcendence", "go mod tidy", "go vet", "go build", "--help", "--version", "manuscripts"}
+	expectedChecks := []string{"manifest", "transcendence", "go mod tidy", "go vet", "go build", "--help", "--version", "verify-skill", "manuscripts"}
 	for _, name := range expectedChecks {
 		assert.True(t, checkNames[name], "should have %q check", name)
 	}
@@ -311,6 +311,48 @@ func TestPublishPackageRejectsUnknownCategory(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--category must be one of:")
+}
+
+func TestPublishPackageFailsWhenSkillReferencesUnknownCommand(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	// Regression guard: library CI caught SKILL.md references such as
+	// `wikipedia-pp-cli feed get-on-this-day` where the shipped CLI only had
+	// `feed`. publish package should fail locally before staging that PR.
+	skillPath := filepath.Join(cliDir, "SKILL.md")
+	f, err := os.OpenFile(skillPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err)
+	_, err = f.WriteString("\n```bash\ntest-pp-cli hallucinated-command --agent\n```\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validation failed")
+
+	var result ValidateResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.False(t, result.Passed)
+
+	var skillCheck *CheckResult
+	for i := range result.Checks {
+		if result.Checks[i].Name == "verify-skill" {
+			skillCheck = &result.Checks[i]
+			break
+		}
+	}
+	require.NotNil(t, skillCheck)
+	assert.False(t, skillCheck.Passed)
+	assert.Contains(t, skillCheck.Error, "unknown-command")
+
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed verification should not create staging target")
 }
 
 func TestPublishPackageDoesNotStageCompiledBinary(t *testing.T) {
@@ -692,6 +734,13 @@ func writePublishableTestCLI(t *testing.T, dir string) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(`module example.com/test-pp-cli
 
 go 1.24
+
+require github.com/spf13/cobra v1.10.2
+
+require (
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/spf13/pflag v1.0.9 // indirect
+)
 `), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "cmd", "test-pp-cli", "main.go"), []byte(`package main
 
@@ -714,6 +763,33 @@ func main() {
 	fmt.Println("ok")
 }
 `), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.sum"), []byte(`github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6NIQQ7OS05n1F4g=
+github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
+github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
+github.com/russross/blackfriday/v2 v2.1.0/go.mod h1:+Rmxgy9KzJVeS9/2gXHxylqXiyQDYRxCVz55jmeOWTM=
+github.com/spf13/cobra v1.10.2 h1:DMTTonx5m65Ic0GOoRY2c16WCbHxOOw6xxezuLaBpcU=
+github.com/spf13/cobra v1.10.2/go.mod h1:7C1pvHqHw5A4vrJfjNwvOdzYu0Gml16OCs2GRiTUUS4=
+github.com/spf13/pflag v1.0.9 h1:9exaQaMOCwffKiiiYk6/BndUBv+iRViNW+4lEMi0PvY=
+github.com/spf13/pflag v1.0.9/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
+go.yaml.in/yaml/v3 v3.0.4/go.mod h1:DhzuOOF2ATzADvBadXxruRBLzYTpT36CKvDb3+aBEFg=
+gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
+`), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "root.go"), []byte(`package cli
+
+import "github.com/spf13/cobra"
+
+func newRootCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "test-pp-cli"}
+	cmd.AddCommand(newInsightCmd())
+	return cmd
+}
+
+func newInsightCmd() *cobra.Command {
+	return &cobra.Command{Use: "insight", Short: "Show test insight"}
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Test CLI\n\n## Command Reference\n\n- `test-pp-cli insight` — Show test insight\n\n## Usage\n\n```bash\ntest-pp-cli insight --agent\n```\n"), 0o644))
 
 	writeTestManifest(t, dir, pipeline.CLIManifest{
 		SchemaVersion: 1,

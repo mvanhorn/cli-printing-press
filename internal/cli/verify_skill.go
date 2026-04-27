@@ -19,6 +19,74 @@ import (
 //go:embed verify_skill_bundled.py
 var verifySkillScript string
 
+type verifySkillRunResult struct {
+	Stdout   string
+	Stderr   string
+	ExitCode int
+}
+
+func runVerifySkillScript(dir string, only []string, asJSON bool, strict bool) (verifySkillRunResult, error) {
+	result := verifySkillRunResult{}
+
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return result, fmt.Errorf("resolving --dir: %w", err)
+	}
+	if _, err := os.Stat(filepath.Join(abs, "SKILL.md")); err != nil {
+		result.ExitCode = ExitInputError
+		return result, &ExitError{Code: ExitInputError, Err: fmt.Errorf("no SKILL.md in %s", abs)}
+	}
+	if _, err := os.Stat(filepath.Join(abs, "internal", "cli")); err != nil {
+		result.ExitCode = ExitInputError
+		return result, &ExitError{Code: ExitInputError, Err: fmt.Errorf("no internal/cli/ in %s", abs)}
+	}
+
+	tmpFile, err := os.CreateTemp("", "verify-skill-*.py")
+	if err != nil {
+		return result, fmt.Errorf("creating temp file: %w", err)
+	}
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	if _, err := tmpFile.WriteString(verifySkillScript); err != nil {
+		_ = tmpFile.Close()
+		return result, fmt.Errorf("writing temp file: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		return result, fmt.Errorf("closing temp file: %w", err)
+	}
+
+	pyArgs := []string{tmpFile.Name(), "--dir", abs}
+	for _, o := range only {
+		pyArgs = append(pyArgs, "--only", o)
+	}
+	if asJSON {
+		pyArgs = append(pyArgs, "--json")
+	}
+	if strict {
+		pyArgs = append(pyArgs, "--strict")
+	}
+
+	py := exec.Command("python3", pyArgs...)
+	py.Stdin = os.Stdin
+	var stdout, stderr bytes.Buffer
+	py.Stdout = &stdout
+	py.Stderr = &stderr
+	runErr := py.Run()
+	result.Stdout = stdout.String()
+	result.Stderr = stderr.String()
+	if runErr != nil {
+		if exitErr, ok := runErr.(*exec.ExitError); ok {
+			result.ExitCode = exitErr.ExitCode()
+			return result, &ExitError{
+				Code:   exitErr.ExitCode(),
+				Err:    fmt.Errorf("SKILL verification failed"),
+				Silent: true,
+			}
+		}
+		return result, fmt.Errorf("running verifier: %w", runErr)
+	}
+	return result, nil
+}
+
 func newVerifySkillCmd() *cobra.Command {
 	var (
 		dir    string
@@ -32,11 +100,12 @@ func newVerifySkillCmd() *cobra.Command {
 		Short:         "Verify SKILL.md matches the shipped CLI source",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Long: `Run three checks against a printed CLI's SKILL.md:
+		Long: `Run four checks against a printed CLI's SKILL.md:
 
   1. flag-names — every --flag referenced in SKILL.md is declared in internal/cli/*.go
   2. flag-commands — every --flag used on a specific command is declared on that command (or persistent)
   3. positional-args — positional args in bash recipes match the command's Use: field
+  4. unknown-command — every referenced command path maps to a cobra Use: declaration
 
 Fails when the SKILL advertises commands, flags, or arguments that the binary
 doesn't actually provide — which is how the recipe-goat "search --max-time"
@@ -45,7 +114,7 @@ CI check (scripts/verify-skill/verify_skill.py) via an embedded copy so no
 external script path is needed.
 
 Requires python3 on PATH (same dependency as the cookie-auth doctor check).`,
-		Example: `  # Run all three checks against a generated CLI
+		Example: `  # Run all checks against a generated CLI
   printing-press verify-skill --dir ./my-api-pp-cli
 
   # JSON output for programmatic consumption
@@ -57,73 +126,24 @@ Requires python3 on PATH (same dependency as the cookie-auth doctor check).`,
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
 			}
-			abs, err := filepath.Abs(dir)
-			if err != nil {
-				return fmt.Errorf("resolving --dir: %w", err)
-			}
-			if _, err := os.Stat(filepath.Join(abs, "SKILL.md")); err != nil {
-				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("no SKILL.md in %s", abs)}
-			}
-			if _, err := os.Stat(filepath.Join(abs, "internal", "cli")); err != nil {
-				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("no internal/cli/ in %s", abs)}
-			}
 
-			tmpFile, err := os.CreateTemp("", "verify-skill-*.py")
-			if err != nil {
-				return fmt.Errorf("creating temp file: %w", err)
-			}
-			defer func() { _ = os.Remove(tmpFile.Name()) }()
-			if _, err := tmpFile.WriteString(verifySkillScript); err != nil {
-				_ = tmpFile.Close()
-				return fmt.Errorf("writing temp file: %w", err)
-			}
-			if err := tmpFile.Close(); err != nil {
-				return fmt.Errorf("closing temp file: %w", err)
-			}
-
-			pyArgs := []string{tmpFile.Name(), "--dir", abs}
-			for _, o := range only {
-				pyArgs = append(pyArgs, "--only", o)
-			}
-			if asJSON {
-				pyArgs = append(pyArgs, "--json")
-			}
-			if strict {
-				pyArgs = append(pyArgs, "--strict")
-			}
-
-			py := exec.Command("python3", pyArgs...)
-			py.Stdin = os.Stdin
-			var stdout, stderr bytes.Buffer
-			py.Stdout = &stdout
-			py.Stderr = &stderr
-			runErr := py.Run()
+			result, runErr := runVerifySkillScript(dir, only, asJSON, strict)
 			// Forward verifier output to the caller regardless of exit code.
-			if stdout.Len() > 0 {
-				fmt.Fprint(os.Stdout, stdout.String())
+			if result.Stdout != "" {
+				fmt.Fprint(os.Stdout, result.Stdout)
 			}
-			if stderr.Len() > 0 {
-				fmt.Fprint(os.Stderr, stderr.String())
+			if result.Stderr != "" {
+				fmt.Fprint(os.Stderr, result.Stderr)
 			}
 			if runErr != nil {
-				if exitErr, ok := runErr.(*exec.ExitError); ok {
-					// Propagate the verifier's exit code. 1 = findings, 2 = usage.
-					// Silent=true suppresses cobra's "Error: ..." prefix since
-					// the verifier already printed a human-readable report.
-					return &ExitError{
-						Code:   exitErr.ExitCode(),
-						Err:    fmt.Errorf("SKILL verification failed"),
-						Silent: true,
-					}
-				}
-				return fmt.Errorf("running verifier: %w", runErr)
+				return runErr
 			}
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&dir, "dir", "", "Path to the printed CLI directory (contains SKILL.md + internal/cli/)")
-	cmd.Flags().StringSliceVar(&only, "only", nil, "Run only the named check(s): flag-names, flag-commands, positional-args (repeatable)")
+	cmd.Flags().StringSliceVar(&only, "only", nil, "Run only the named check(s): flag-names, flag-commands, positional-args, unknown-command (repeatable)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Treat likely-false-positive findings as failures")
 
