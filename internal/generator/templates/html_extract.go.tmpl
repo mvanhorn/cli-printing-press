@@ -6,10 +6,14 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
 	stdhtml "html"
+{{- end }}
 	"net/url"
+{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
 	"regexp"
 	"strconv"
+{{- end }}
 	"strings"
 
 	xhtml "golang.org/x/net/html"
@@ -23,6 +27,8 @@ type htmlExtractionOptions struct {
 	ScriptSelector string // for mode: embedded-json — selector "tag" or "tag#id"
 	JSONPath       string // for mode: embedded-json — dot-notation walk
 }
+
+{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
 
 type htmlExtractedPage struct {
 	Title        string     `json:"title,omitempty"`
@@ -53,6 +59,7 @@ var htmlRawTextTags = map[string]struct{}{
 	"style":    {},
 	"template": {},
 }
+{{- end }}
 
 func extractHTMLResponse(raw []byte, opts htmlExtractionOptions) (json.RawMessage, error) {
 	// Dispatch on Mode at the top so each branch owns its own parsing
@@ -63,14 +70,20 @@ func extractHTMLResponse(raw []byte, opts htmlExtractionOptions) (json.RawMessag
 	// titles. Page and links share the page-mode parse.
 	mode := strings.ToLower(strings.TrimSpace(opts.Mode))
 	switch mode {
+{{- if .HasHTMLExtractMode "embedded-json" }}
 	case "embedded-json":
 		return extractEmbeddedJSON(raw, opts)
+{{- end }}
+{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
 	case "links", "page", "":
 		return extractHTMLPageOrLinks(raw, opts)
+{{- end }}
 	default:
 		return nil, fmt.Errorf("unsupported html_extract mode: %q", opts.Mode)
 	}
 }
+
+{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
 
 // extractHTMLPageOrLinks handles the page (default) and links modes.
 // Both require parsing the HTML and walking the DOM; the only difference
@@ -125,6 +138,9 @@ func extractHTMLPageOrLinks(raw []byte, opts htmlExtractionOptions) (json.RawMes
 		return json.RawMessage(data), err
 	}
 }
+
+{{- end }}
+{{- if .HasHTMLExtractMode "embedded-json" }}
 
 // extractEmbeddedJSON parses HTML, finds the <script> tag matching
 // opts.ScriptSelector (default "script#__NEXT_DATA__"), parses its text
@@ -219,6 +235,8 @@ func walkJSONDotPath(v interface{}, path string) interface{} {
 	return cur
 }
 
+{{- end }}
+
 func walkHTML(n *xhtml.Node, visit func(*xhtml.Node)) {
 	if n == nil {
 		return
@@ -228,6 +246,8 @@ func walkHTML(n *xhtml.Node, visit func(*xhtml.Node)) {
 		walkHTML(child, visit)
 	}
 }
+
+{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
 
 func applyMeta(page *htmlExtractedPage, n *xhtml.Node) {
 	name := strings.ToLower(attrValue(n, "name"))
@@ -300,6 +320,8 @@ func normalizeHTMLURL(raw string, base string) string {
 	return baseURL.ResolveReference(ref).String()
 }
 
+{{- end }}
+
 func htmlExtractionRequestURL(base string, path string, params map[string]string) string {
 	baseURL, err := url.Parse(base)
 	if err != nil || baseURL.Scheme == "" || baseURL.Host == "" {
@@ -321,6 +343,8 @@ func htmlExtractionRequestURL(base string, path string, params map[string]string
 	}
 	return full.String()
 }
+
+{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
 
 func htmlLinkMatchesPrefixes(path string, prefixes []string) bool {
 	if len(prefixes) == 0 {
@@ -372,6 +396,8 @@ func htmlLinkSlug(path string, prefixes []string) string {
 	return parts[len(parts)-1]
 }
 
+{{- end }}
+
 func attrValue(n *xhtml.Node, name string) string {
 	for _, attr := range n.Attr {
 		if strings.EqualFold(attr.Key, name) {
@@ -390,6 +416,8 @@ func nodeText(n *xhtml.Node) string {
 	})
 	return strings.Join(parts, " ")
 }
+
+{{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
 
 // nodeTextSuppressing walks n's descendants and concatenates TextNode content,
 // skipping subtrees rooted at noscript/script/style/template elements. The
@@ -558,3 +586,5 @@ func looksLikeHTMLChallenge(title string, raw string) bool {
 	}
 	return false
 }
+
+{{- end }}

@@ -976,6 +976,157 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 	assert.Contains(t, string(out), "embedded-json")
 }
 
+// TestGenerateHTMLExtractionPerModeGating asserts that html_extract.go is
+// emitted with only the helpers that match the mode(s) the spec actually
+// uses. A spec that declares only mode: embedded-json must NOT emit the
+// page-mode DOM walkers (htmlExtractedPage, applyMeta, htmlLink, etc.);
+// a spec that declares only mode: page must NOT emit the embedded-json
+// walker (extractEmbeddedJSON, walkJSONDotPath); a mixed spec emits both.
+// This is the core U6 retro contract: per-mode gating eliminates the
+// dead-helper count in the printed CLI.
+func TestGenerateHTMLExtractionPerModeGating(t *testing.T) {
+	t.Parallel()
+
+	specWithMode := func(name, mode string) *spec.APISpec {
+		s := &spec.APISpec{
+			Name:    name,
+			Version: "0.1.0",
+			BaseURL: "https://example.com",
+			Auth:    spec.AuthConfig{Type: "none"},
+			Config: spec.ConfigSpec{
+				Format: "toml",
+				Path:   "~/.config/" + name + "-pp-cli/config.toml",
+			},
+			Resources: map[string]spec.Resource{
+				"posts": {
+					Description: "Browse posts",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method:         "GET",
+							Path:           "/",
+							Description:    "List posts",
+							ResponseFormat: spec.ResponseFormatHTML,
+							HTMLExtract: &spec.HTMLExtract{
+								Mode:     mode,
+								JSONPath: "props.pageProps.posts",
+							},
+							Response: spec.ResponseDef{Type: "array", Item: "object"},
+						},
+					},
+				},
+			},
+		}
+		return s
+	}
+
+	read := func(t *testing.T, dir string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(dir, "internal", "cli", "html_extract.go"))
+		require.NoError(t, err)
+		return string(data)
+	}
+
+	// Helpers are matched by their declaration line ("func name(" or
+	// "type name") so a substring mention inside a comment doesn't
+	// cause a false positive — the dispatcher's comment legitimately
+	// names the page-mode walker even when the page-mode branch is
+	// gated out.
+	hasFunc := func(body, name string) bool {
+		return strings.Contains(body, "func "+name+"(")
+	}
+	hasType := func(body, name string) bool {
+		return strings.Contains(body, "type "+name+" ")
+	}
+
+	t.Run("embedded-json-only omits page+links helpers", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "ejonly-pp-cli")
+		require.NoError(t, New(specWithMode("ejonly", spec.HTMLExtractModeEmbeddedJSON), dir).Generate())
+		body := read(t, dir)
+		// embedded-json branch present
+		assert.True(t, hasFunc(body, "extractEmbeddedJSON"))
+		assert.True(t, hasFunc(body, "walkJSONDotPath"))
+		// page+links branch absent
+		assert.False(t, hasFunc(body, "extractHTMLPageOrLinks"))
+		assert.False(t, hasType(body, "htmlExtractedPage"))
+		assert.False(t, hasFunc(body, "applyMeta"))
+		assert.False(t, hasFunc(body, "extractHTMLLink"))
+		assert.False(t, hasFunc(body, "looksLikeHTMLChallenge"))
+		assert.False(t, hasFunc(body, "nodeTextSuppressing"))
+		assert.False(t, hasFunc(body, "firstImageSrc"))
+		assert.False(t, hasFunc(body, "cleanHTMLText"))
+		// Imports that only the page+links branch needs are not emitted
+		assert.NotContains(t, body, `"regexp"`)
+		assert.NotContains(t, body, `"strconv"`)
+		assert.NotContains(t, body, `stdhtml "html"`)
+		// Must still build cleanly even with helpers gated out
+		runGoCommand(t, dir, "mod", "tidy")
+		runGoCommand(t, dir, "build", "./...")
+	})
+
+	t.Run("page-only omits embedded-json helpers", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "pageonly-pp-cli")
+		require.NoError(t, New(specWithMode("pageonly", spec.HTMLExtractModePage), dir).Generate())
+		body := read(t, dir)
+		// page branch present
+		assert.True(t, hasFunc(body, "extractHTMLPageOrLinks"))
+		assert.True(t, hasType(body, "htmlExtractedPage"))
+		assert.True(t, hasFunc(body, "applyMeta"))
+		// embedded-json branch absent
+		assert.False(t, hasFunc(body, "extractEmbeddedJSON"))
+		assert.False(t, hasFunc(body, "walkJSONDotPath"))
+		assert.False(t, hasFunc(body, "parseSimpleSelector"))
+		assert.False(t, hasFunc(body, "findScriptByTagAndID"))
+		// Must still build cleanly
+		runGoCommand(t, dir, "mod", "tidy")
+		runGoCommand(t, dir, "build", "./...")
+	})
+
+	t.Run("mixed modes emit both branches", func(t *testing.T) {
+		// One endpoint per mode in the same spec.
+		mixedSpec := &spec.APISpec{
+			Name:    "mixed",
+			Version: "0.1.0",
+			BaseURL: "https://example.com",
+			Auth:    spec.AuthConfig{Type: "none"},
+			Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/mixed-pp-cli/config.toml"},
+			Resources: map[string]spec.Resource{
+				"posts": {
+					Description: "Posts",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET", Path: "/", Description: "List",
+							ResponseFormat: spec.ResponseFormatHTML,
+							HTMLExtract:    &spec.HTMLExtract{Mode: spec.HTMLExtractModePage},
+							Response:       spec.ResponseDef{Type: "object"},
+						},
+					},
+				},
+				"data": {
+					Description: "Embedded",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET", Path: "/data", Description: "List from embedded JSON",
+							ResponseFormat: spec.ResponseFormatHTML,
+							HTMLExtract: &spec.HTMLExtract{
+								Mode:     spec.HTMLExtractModeEmbeddedJSON,
+								JSONPath: "props.pageProps.data",
+							},
+							Response: spec.ResponseDef{Type: "object"},
+						},
+					},
+				},
+			},
+		}
+		dir := filepath.Join(t.TempDir(), "mixed-pp-cli")
+		require.NoError(t, New(mixedSpec, dir).Generate())
+		body := read(t, dir)
+		assert.Contains(t, body, "extractHTMLPageOrLinks")
+		assert.Contains(t, body, "extractEmbeddedJSON")
+		runGoCommand(t, dir, "mod", "tidy")
+		runGoCommand(t, dir, "build", "./...")
+	})
+}
+
 func TestGenerateStandardTransportForOfficialAPI(t *testing.T) {
 	t.Parallel()
 

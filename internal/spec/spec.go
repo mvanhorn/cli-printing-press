@@ -166,6 +166,48 @@ func resourceHasHTMLExtraction(resource Resource) bool {
 	return false
 }
 
+// HasHTMLExtractMode reports whether any endpoint in the spec declares
+// html_extract with the given effective mode. Used by the html_extract
+// template to gate per-mode helpers: a CLI that uses only
+// HTMLExtractModeEmbeddedJSON does not need the page-mode DOM walkers
+// or links-mode anchor parsing, and vice versa.
+//
+// `mode` should be one of the HTMLExtractMode* constants. Modes that
+// don't appear in any endpoint return false; modes are matched by their
+// effective value (so an unset Mode counts as page).
+func (s *APISpec) HasHTMLExtractMode(mode string) bool {
+	if s == nil {
+		return false
+	}
+	target := strings.ToLower(strings.TrimSpace(mode))
+	if target == "" {
+		return false
+	}
+	for _, resource := range s.Resources {
+		if resourceHasHTMLExtractMode(resource, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceHasHTMLExtractMode(resource Resource, mode string) bool {
+	for _, endpoint := range resource.Endpoints {
+		if !endpoint.UsesHTMLResponse() {
+			continue
+		}
+		if strings.ToLower(endpoint.HTMLExtract.EffectiveMode()) == mode {
+			return true
+		}
+	}
+	for _, sub := range resource.SubResources {
+		if resourceHasHTMLExtractMode(sub, mode) {
+			return true
+		}
+	}
+	return false
+}
+
 // RequiredHeader represents a non-auth header that the API requires on most
 // requests (e.g., cal-api-version, Stripe-Version, anthropic-version).
 // Detected automatically from OpenAPI specs when a required header parameter
