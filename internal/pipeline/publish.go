@@ -262,8 +262,14 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		m.Description = entry.Description
 	}
 
-	// Load novel features from research.json if available.
-	if research, err := LoadResearch(state.PipelineDir()); err == nil && research.NovelFeaturesBuilt != nil {
+	// Load novel features from research.json if available. When research.json
+	// can't be located (typically because state.RunID is empty in a fallback
+	// scenario, or the run's pipeline dir was GCed), emit a debug breadcrumb
+	// to stderr so the silent dropout from earlier versions is no longer
+	// silent. The breadcrumb names the path that was attempted; the caller
+	// (lock promote, publish) shows it but does not treat it as an error.
+	pipelineDir := state.PipelineDir()
+	if research, err := LoadResearch(pipelineDir); err == nil && research.NovelFeaturesBuilt != nil {
 		for _, nf := range *research.NovelFeaturesBuilt {
 			m.NovelFeatures = append(m.NovelFeatures, NovelFeatureManifest{
 				Name:        nf.Name,
@@ -271,6 +277,11 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 				Description: nf.Description,
 			})
 		}
+	} else {
+		fmt.Fprintf(os.Stderr,
+			"debug: research.json not found at %s; skipping novel_features enrichment "+
+				"(state.RunID=%q)\n",
+			filepath.Join(pipelineDir, "research.json"), state.RunID)
 	}
 
 	return WriteCLIManifest(dir, m)

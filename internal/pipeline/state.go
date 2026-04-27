@@ -303,17 +303,47 @@ func FindStateByWorkingDir(dir string) (*PipelineState, error) {
 }
 
 // NewMinimalState creates a lightweight state for CLIs that skipped the
-// generate pipeline (e.g. plan-driven CLIs). It carries enough metadata
-// for promote to copy the directory and write a manifest.
+// generate pipeline (e.g. plan-driven CLIs) or whose working directory
+// doesn't match any current runstate via FindStateByWorkingDir.
+//
+// If a runstate exists for this API name in the scoped runstate registry,
+// its RunID and Scope are borrowed so downstream consumers (notably
+// writeCLIManifestForPublish's research.json enrichment via
+// state.PipelineDir()) can locate the run's pipeline artifacts. The
+// caller's WorkingDir/OutputDir win over the recovered state's so
+// promotion still copies from the correct source. APIName matching is
+// enforced by findRunstateStatePath inside resolveStatePath / LoadState;
+// this function does not re-validate.
+//
+// When no recoverable runstate exists, RunID stays empty and downstream
+// research.json lookup falls through to its no-op path. The caller can
+// observe the recovery decision via state.RunID after construction.
 func NewMinimalState(cliName, workingDir string) *PipelineState {
-	return &PipelineState{
+	apiName := naming.TrimCLISuffix(cliName)
+	state := &PipelineState{
 		Version:    currentStateVersion,
-		APIName:    naming.TrimCLISuffix(cliName),
+		APIName:    apiName,
 		WorkingDir: workingDir,
 		OutputDir:  workingDir,
 		StartedAt:  time.Now(),
 		Phases:     make(map[string]PhaseState),
 	}
+
+	// Recover RunID from the scoped runstate registry when possible. A
+	// matching state file means a prior generation for this API stored
+	// its RunID and pipeline artifacts on disk; downstream enrichment
+	// can find them via state.PipelineDir(). On any error (no registry
+	// hit, parse failure, IO error) fall through to the empty-RunID
+	// minimal state — preserving today's behavior for plan-driven CLIs
+	// that genuinely have no prior runstate.
+	if loaded, err := LoadState(apiName); err == nil && loaded != nil && loaded.RunID != "" {
+		state.RunID = loaded.RunID
+		if state.Scope == "" {
+			state.Scope = loaded.Scope
+		}
+	}
+
+	return state
 }
 
 // NewState creates a fresh pipeline state.
