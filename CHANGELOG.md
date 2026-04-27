@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.3.9](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.8...v2.3.9) (2026-04-27)
+
+
+### Bug Fixes
+
+* **ci:** include refactors in release notes ([#328](https://github.com/mvanhorn/cli-printing-press/issues/328)) ([df551b3](https://github.com/mvanhorn/cli-printing-press/commit/df551b3739a078f803cec5d9207a63da2ed85e61))
+* **cli:** harden store migrations for generated identifiers ([#308](https://github.com/mvanhorn/cli-printing-press/issues/308)) ([f33d8e5](https://github.com/mvanhorn/cli-printing-press/commit/f33d8e55fbd219ce51ff90a9439dc72324695310))
+* **skills:** inherit Codex model from ~/.codex/config.toml instead of hardcoding ([#317](https://github.com/mvanhorn/cli-printing-press/issues/317)) ([b54882a](https://github.com/mvanhorn/cli-printing-press/commit/b54882aa7e3b45b529289def54981dd36c91cc7d))
+
+
+### Code Refactoring
+
+* **cli:** share generated auth helpers ([#312](https://github.com/mvanhorn/cli-printing-press/issues/312)) ([b8bb5c1](https://github.com/mvanhorn/cli-printing-press/commit/b8bb5c1ee3884526cb4dfec04379ff22a20c559f))
+* **cli:** share generated naming helpers ([#327](https://github.com/mvanhorn/cli-printing-press/issues/327)) ([52bde6b](https://github.com/mvanhorn/cli-printing-press/commit/52bde6b4336e9af38fd64d27e528f5e1935ca263))
+* **cli:** share verify report finalization ([#319](https://github.com/mvanhorn/cli-printing-press/issues/319)) ([ee923f8](https://github.com/mvanhorn/cli-printing-press/commit/ee923f84f3723d8b4e04daeb1b998093a7d7620a))
+* **cli:** simplify generate orchestration ([#325](https://github.com/mvanhorn/cli-printing-press/issues/325)) ([545ffb9](https://github.com/mvanhorn/cli-printing-press/commit/545ffb94eefb98a17b002d226de708589c1e5a58))
+* **cli:** simplify refactor-safe helpers ([#311](https://github.com/mvanhorn/cli-printing-press/issues/311)) ([fd2ea4f](https://github.com/mvanhorn/cli-printing-press/commit/fd2ea4f4067a2f29e5fc07ddd28dcc5e1d12b77c))
+* **cli:** simplify scorecard dimension bookkeeping ([#326](https://github.com/mvanhorn/cli-printing-press/issues/326)) ([a2fe158](https://github.com/mvanhorn/cli-printing-press/commit/a2fe1581ee495139d4e6134126c4ab48eba2c016))
+* **cli:** split generator render stages ([#313](https://github.com/mvanhorn/cli-printing-press/issues/313)) ([79b134a](https://github.com/mvanhorn/cli-printing-press/commit/79b134aa36c72160c6b28c23f016cb15fef112d2))
+* **cli:** split generator vision render stages ([#314](https://github.com/mvanhorn/cli-printing-press/issues/314)) ([52a3dbc](https://github.com/mvanhorn/cli-printing-press/commit/52a3dbc5882353749617bdb2d3ab23313c5af5e7))
+* **cli:** split scorecard scoring stages ([#315](https://github.com/mvanhorn/cli-printing-press/issues/315)) ([015ad88](https://github.com/mvanhorn/cli-printing-press/commit/015ad88e834e1f6ca2e24cf53e88f4d18fe8dd0b))
+* **cli:** split structural verify runtime ([#320](https://github.com/mvanhorn/cli-printing-press/issues/320)) ([7e733aa](https://github.com/mvanhorn/cli-printing-press/commit/7e733aa7715d7fe29405335883bb7e6740260397))
+* **cli:** split verify command helpers ([#322](https://github.com/mvanhorn/cli-printing-press/issues/322)) ([b100149](https://github.com/mvanhorn/cli-printing-press/commit/b10014911fc55e8468520affddb3ce5a5af2fb96))
+* **cli:** split verify exec helpers ([#321](https://github.com/mvanhorn/cli-printing-press/issues/321)) ([18cf50f](https://github.com/mvanhorn/cli-printing-press/commit/18cf50f130ea3876e4cf17a197ffd5e32b9c4caf))
+* **cli:** table-drive dogfood verdict rules ([#318](https://github.com/mvanhorn/cli-printing-press/issues/318)) ([faac0d3](https://github.com/mvanhorn/cli-printing-press/commit/faac0d39a9b7be88054b21ac4c01f3d621553db6))
+* **cli:** table-drive fullrun comparison metrics ([#316](https://github.com/mvanhorn/cli-printing-press/issues/316)) ([a5c59b3](https://github.com/mvanhorn/cli-printing-press/commit/a5c59b330452f93d17c0bb5fb336640184e4a20b))
+
 ## [2.3.8](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.7...v2.3.8) (2026-04-26)
 
 
