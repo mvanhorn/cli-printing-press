@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.4.0](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.9...v2.4.0) (2026-04-27)
+
+
+### Features
+
+* **cli:** add printing-press shipcheck umbrella + Phase 4 enforcement + polish-worker hook ([#353](https://github.com/mvanhorn/cli-printing-press/issues/353)) ([494abe4](https://github.com/mvanhorn/cli-printing-press/commit/494abe48c4c3dd5cb1fb26a6e5321c4f50939776))
+* **cli:** add probe-reachability for no-browser challenge classification ([#331](https://github.com/mvanhorn/cli-printing-press/issues/331)) ([09dccfb](https://github.com/mvanhorn/cli-printing-press/commit/09dccfb9e3124cac54be3ad40603a36b5da9079b))
+* **cli:** add unknown-command check + sync test for verify-skill ([#339](https://github.com/mvanhorn/cli-printing-press/issues/339)) ([907c698](https://github.com/mvanhorn/cli-printing-press/commit/907c6986b51119eb767a0d82f8d33361b62e1499))
+* **cli:** emit promoted-leaf paths in SKILL.md ([#338](https://github.com/mvanhorn/cli-printing-press/issues/338)) ([4219e71](https://github.com/mvanhorn/cli-printing-press/commit/4219e712e6c6014d9eab9b1fca92601c2812994e))
+* **cli:** printing-press machine fixes from food52 retro ([#337](https://github.com/mvanhorn/cli-printing-press/issues/337)) ([#342](https://github.com/mvanhorn/cli-printing-press/issues/342)) ([5fa694a](https://github.com/mvanhorn/cli-printing-press/commit/5fa694a07b8f39becc53189c5c9765d98c1c27c7))
+* **skills:** reconcile prior novel features on reprint ([#329](https://github.com/mvanhorn/cli-printing-press/issues/329)) ([5966298](https://github.com/mvanhorn/cli-printing-press/commit/5966298e75007394a2f44afafac9eb9292d7acb2))
+
+
+### Bug Fixes
+
+* **cli:** Cal.com retro [#334](https://github.com/mvanhorn/cli-printing-press/issues/334) — 4 of 5 P1 machine fixes (per-endpoint headers, novel_features, auth set-token, PII scrub) ([#341](https://github.com/mvanhorn/cli-printing-press/issues/341)) ([c74dcd4](https://github.com/mvanhorn/cli-printing-press/commit/c74dcd458c94640c6688f9f4fc5fb15a8af5bb2f))
+* **cli:** machine improvements from hackernews retro [#350](https://github.com/mvanhorn/cli-printing-press/issues/350) ([#352](https://github.com/mvanhorn/cli-printing-press/issues/352)) ([0ed2fbd](https://github.com/mvanhorn/cli-printing-press/commit/0ed2fbd809bf93c386022647f583fe6a12abd761))
+* **cli:** printing-press P1 machine fixes (issue [#333](https://github.com/mvanhorn/cli-printing-press/issues/333)) ([#335](https://github.com/mvanhorn/cli-printing-press/issues/335)) ([6b2be74](https://github.com/mvanhorn/cli-printing-press/commit/6b2be74d017b862ceab688d1061aa39ab59ff6c8))
+* **cli:** recover RunID in NewMinimalState so lock promote enriches novel_features ([#340](https://github.com/mvanhorn/cli-printing-press/issues/340)) ([b25c2b9](https://github.com/mvanhorn/cli-printing-press/commit/b25c2b9019cb48a39b60e7da84c605ad0b3e9166))
+* **cli:** score auth prefixes from config ([#332](https://github.com/mvanhorn/cli-printing-press/issues/332)) ([8bad2ef](https://github.com/mvanhorn/cli-printing-press/commit/8bad2efd83dc85c125b69471c8b4336aec7d4dff))
+* **cli:** sync dogfood novel features into CLI artifacts ([#344](https://github.com/mvanhorn/cli-printing-press/issues/344)) ([d86d3af](https://github.com/mvanhorn/cli-printing-press/commit/d86d3af1f159e787ee9106eef84571b06fbe5e48))
+* **publish:** gate packaging on skill verification ([#348](https://github.com/mvanhorn/cli-printing-press/issues/348)) ([47fe339](https://github.com/mvanhorn/cli-printing-press/commit/47fe3393590de1cb71778de7b7748af3d6e1736c))
+
 ## [2.3.9](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.8...v2.3.9) (2026-04-27)
 
 
