@@ -85,21 +85,26 @@ func attachFreshness(prov DataProvenance, flags *rootFlags) DataProvenance {
 //   - isList: true for list endpoints, false for get-by-ID endpoints
 //   - path: the API path (e.g., "/links" or "/links/abc123")
 //   - params: query parameters for the API call
-func resolveRead(c *client.Client, flags *rootFlags, resourceType string, isList bool, path string, params map[string]string) (json.RawMessage, DataProvenance, error) {
+//   - headers: per-endpoint required headers (e.g. cal-api-version, Stripe-Version)
+//     baked in by the command template at codegen time. Pass nil when the endpoint
+//     declares no per-endpoint header overrides. Without this parameter, store-backed
+//     reads on per-endpoint-versioned APIs silently get the wrong response shape
+//     (cal-com retro #334 F1).
+func resolveRead(c *client.Client, flags *rootFlags, resourceType string, isList bool, path string, params map[string]string, headers map[string]string) (json.RawMessage, DataProvenance, error) {
 	switch flags.dataSource {
 	case "local":
 		data, prov, err := resolveLocal(resourceType, isList, path, params, "user_requested")
 		return data, attachFreshness(prov, flags), err
 
 	case "live":
-		data, err := c.Get(path, params)
+		data, err := c.GetWithHeaders(path, params, headers)
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
 		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 
 	default: // "auto"
-		data, err := c.Get(path, params)
+		data, err := c.GetWithHeaders(path, params, headers)
 		if err == nil {
 			writeThroughCache(resourceType, data)
 			return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
@@ -118,22 +123,24 @@ func resolveRead(c *client.Client, flags *rootFlags, resourceType string, isList
 }
 
 // resolvePaginatedRead dispatches a paginated GET request to either the live API
-// or local store. When local, skips pagination and returns all synced data.
-func resolvePaginatedRead(c *client.Client, flags *rootFlags, resourceType string, path string, params map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, DataProvenance, error) {
+// or local store. When local, skips pagination and returns all synced data. The
+// headers argument carries per-endpoint required headers; pass nil when the
+// endpoint declares no overrides.
+func resolvePaginatedRead(c *client.Client, flags *rootFlags, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, DataProvenance, error) {
 	switch flags.dataSource {
 	case "local":
 		data, prov, err := resolveLocal(resourceType, true, path, params, "user_requested")
 		return data, attachFreshness(prov, flags), err
 
 	case "live":
-		data, err := paginatedGet(c, path, params, fetchAll, cursorParam, nextCursorPath, hasMoreField)
+		data, err := paginatedGet(c, path, params, headers, fetchAll, cursorParam, nextCursorPath, hasMoreField)
 		if err != nil {
 			return nil, DataProvenance{}, err
 		}
 		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 
 	default: // "auto"
-		data, err := paginatedGet(c, path, params, fetchAll, cursorParam, nextCursorPath, hasMoreField)
+		data, err := paginatedGet(c, path, params, headers, fetchAll, cursorParam, nextCursorPath, hasMoreField)
 		if err == nil {
 			writeThroughCache(resourceType, data)
 			return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil

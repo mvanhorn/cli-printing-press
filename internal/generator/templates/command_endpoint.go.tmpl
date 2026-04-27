@@ -165,7 +165,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				"{{.Name}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
+			}, {{if .Endpoint.HeaderOverrides}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- else}}
 			data, err := paginatedGet(c, path, map[string]string{
 {{- range $i, $p := .Endpoint.Params}}
@@ -176,7 +176,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				"{{.Name}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
+			}, {{if .Endpoint.HeaderOverrides}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- end}}
 {{- else}}
 			params := map[string]string{}
@@ -191,7 +191,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- end}}
 {{- if .HasStore}}
-			data, prov, err := resolveRead(c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params)
+			data, prov, err := resolveRead(c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, {{if .Endpoint.HeaderOverrides}}headerOverrides{{else}}nil{{end}})
 {{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, err := c.GetWithHeaders(path, params, headerOverrides)

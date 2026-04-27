@@ -353,10 +353,13 @@ func replacePathParam(path, name, value string) string {
 }
 {{- end}}
 
-// paginatedGet fetches pages and concatenates array results.
+// paginatedGet fetches pages and concatenates array results. The headers
+// argument carries per-endpoint required headers (e.g. cal-api-version) that
+// must be sent on every page request, including the first; pass nil when the
+// endpoint has no per-endpoint header overrides.
 func paginatedGet(c interface {
-	Get(path string, params map[string]string) (json.RawMessage, error)
-}, path string, params map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
+	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+}, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
 	// Clean zero-value params
 	clean := map[string]string{}
 	for k, v := range params {
@@ -366,7 +369,7 @@ func paginatedGet(c interface {
 	}
 
 	if !fetchAll {
-		return c.Get(path, clean)
+		return c.GetWithHeaders(path, clean, headers)
 	}
 
 	// Fetch all pages
@@ -380,7 +383,7 @@ func paginatedGet(c interface {
 			fmt.Fprintf(os.Stderr, `{"event":"page_fetch","page":%d}`+"\n", page)
 		}
 
-		data, err := c.Get(path, clean)
+		data, err := c.GetWithHeaders(path, clean, headers)
 		if err != nil {
 			return nil, err
 		}

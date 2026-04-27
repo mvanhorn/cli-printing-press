@@ -111,7 +111,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				"{{.Name}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
+			}, nil, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- else}}
 			data, err := paginatedGet(c, path, map[string]string{
 {{- range $i, $p := .Endpoint.Params}}
@@ -122,7 +122,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				"{{.Name}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
+			}, nil, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- end}}
 {{- else}}
 			params := map[string]string{}
@@ -137,7 +137,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- if .HasStore}}
-			data, prov, err := resolveRead(c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params)
+			data, prov, err := resolveRead(c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, nil)
 {{- else}}
 			data, err := c.Get(path, params)
 {{- end}}
