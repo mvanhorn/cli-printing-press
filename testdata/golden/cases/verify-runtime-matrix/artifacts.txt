@@ -1,0 +1,3 @@
+structural-pass.json
+structural-fail.json
+mock-pass.json

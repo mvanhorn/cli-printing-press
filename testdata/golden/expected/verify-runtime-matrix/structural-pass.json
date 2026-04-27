@@ -1,0 +1,29 @@
+{
+  "verify": {
+    "binary": "<ARTIFACT_DIR>/verify-runtime-matrix/fixtures/structural-pass-pp-cli/structural-pass-pp-cli",
+    "critical": 0,
+    "data_pipeline": true,
+    "data_pipeline_detail": "PASS (version command)",
+    "failed": 0,
+    "freshness": {
+      "detail": "cache freshness helper not emitted",
+      "enabled": false,
+      "verdict": "SKIP"
+    },
+    "mode": "structural",
+    "pass_rate": 100,
+    "passed": 1,
+    "results": [
+      {
+        "command": "items",
+        "dry_run": true,
+        "execute": true,
+        "help": true,
+        "kind": "structural",
+        "score": 3
+      }
+    ],
+    "total": 1,
+    "verdict": "PASS"
+  }
+}

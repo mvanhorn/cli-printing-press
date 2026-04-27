@@ -1,0 +1,1 @@
+warning: no servers defined in spec; generated CLI will require base_url in config

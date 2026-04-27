@@ -1,0 +1,11 @@
+openapi: 3.0.0
+info:
+  title: Verify Runtime Matrix
+  version: "1.0"
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: ok

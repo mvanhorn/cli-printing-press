@@ -1,0 +1,5 @@
+set -euo pipefail
+cp -R testdata/golden/fixtures/verify-runtime-matrix "$CASE_ACTUAL_DIR/fixtures"
+"$BINARY" verify --dir "$CASE_ACTUAL_DIR/fixtures/structural-pass-pp-cli" --no-spec --json > "$CASE_ACTUAL_DIR/structural-pass.json"
+"$BINARY" verify --dir "$CASE_ACTUAL_DIR/fixtures/structural-fail-pp-cli" --no-spec --json > "$CASE_ACTUAL_DIR/structural-fail.json"
+"$BINARY" verify --dir "$CASE_ACTUAL_DIR/fixtures/mock-pass-pp-cli" --spec "$CASE_ACTUAL_DIR/fixtures/mock-pass-pp-cli/spec.yaml" --json > "$CASE_ACTUAL_DIR/mock-pass.json"

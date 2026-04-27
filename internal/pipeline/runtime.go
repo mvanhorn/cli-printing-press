@@ -211,34 +211,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 		}
 	}
 
-	// 9. Compute aggregate
-	for _, r := range report.Results {
-		report.Total++
-		if r.Score >= 2 {
-			report.Passed++
-		} else {
-			report.Failed++
-			if r.Score == 0 {
-				report.Critical++
-			}
-		}
-	}
-	if report.Total > 0 {
-		report.PassRate = float64(report.Passed) / float64(report.Total) * 100
-	}
-
-	// 10. Verdict
-	switch {
-	case report.PassRate >= float64(cfg.Threshold) && report.DataPipeline && report.Critical == 0:
-		report.Verdict = "PASS"
-	case report.PassRate >= 60 && report.Critical <= 3:
-		report.Verdict = "WARN"
-	default:
-		report.Verdict = "FAIL"
-	}
-	if report.BrowserSessionRequired && report.BrowserSessionProof != "valid" {
-		report.Verdict = "FAIL"
-	}
+	finalizeVerifyReport(report, cfg.Threshold, true)
 
 	return report, nil
 }
@@ -289,31 +262,7 @@ func runStructuralVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	}
 	report.Freshness = runFreshnessContractTest(cfg.Dir)
 
-	// 5. Aggregate
-	for _, r := range report.Results {
-		report.Total++
-		if r.Score >= 2 {
-			report.Passed++
-		} else {
-			report.Failed++
-			if r.Score == 0 {
-				report.Critical++
-			}
-		}
-	}
-	if report.Total > 0 {
-		report.PassRate = float64(report.Passed) / float64(report.Total) * 100
-	}
-
-	// 6. Verdict
-	switch {
-	case report.PassRate >= float64(cfg.Threshold) && report.Critical == 0:
-		report.Verdict = "PASS"
-	case report.PassRate >= 60 && report.Critical <= 3:
-		report.Verdict = "WARN"
-	default:
-		report.Verdict = "FAIL"
-	}
+	finalizeVerifyReport(report, cfg.Threshold, false)
 
 	return report, nil
 }
