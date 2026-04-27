@@ -26,6 +26,17 @@ pre-commit:
         files="$(printf '%s\n' {staged_files} | grep -v '^testdata/golden/expected/' || true)"
         test -z "$files" || { printf '%s\n' "$files" | xargs gofmt -w; printf '%s\n' "$files" | xargs git add; }
       stage_fixed: true
+    sync-verify-skill:
+      # Keep internal/cli/verify_skill_bundled.py byte-identical to the
+      # canonical scripts/verify-skill/verify_skill.py so the binary's
+      # `verify-skill` runs the same checks as the library repo's CI. The
+      # Go test TestVerifySkillScriptInSync is the safety net for commits
+      # that bypass lefthook (--no-verify); this hook is the auto-fix path.
+      glob: "scripts/verify-skill/verify_skill.py"
+      run: |
+        cp scripts/verify-skill/verify_skill.py internal/cli/verify_skill_bundled.py
+        git add internal/cli/verify_skill_bundled.py
+      stage_fixed: true
 
 pre-push:
   commands:

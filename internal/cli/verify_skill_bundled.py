@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """verify_skill.py — validate that SKILL.md matches the shipped CLI source.
 
-Three checks run in sequence:
+Four checks run in sequence:
 
   1. flag-names — every `--flag` in SKILL.md is declared as a cobra flag
      somewhere in internal/cli/*.go.
@@ -9,6 +9,11 @@ Three checks run in sequence:
      on that command (or as a persistent/root flag).
   3. positional-args — positional args in bash recipes match the command's
      `Use:` field signature (required + optional + variadic).
+  4. unknown-command — every command path referenced in SKILL.md (in bash
+     recipes and inline backticks under `## Command Reference`) maps to a
+     real cobra `Use:` declaration in internal/cli/*.go. Catches docs that
+     promise commands the binary does not implement (e.g. SKILL.md lists
+     `qr get-qrcode` but the CLI only registers a leaf `qr` after promotion).
 
 The checks are pattern-matching heuristics against Go AST-adjacent text.
 False positives are possible for edge cases:
@@ -25,6 +30,7 @@ USAGE
     python3 verify_skill.py --dir <cli-dir>
     python3 verify_skill.py --dir <cli-dir> --json
     python3 verify_skill.py --dir <cli-dir> --only flag-names
+    python3 verify_skill.py --dir <cli-dir> --only unknown-command
     python3 verify_skill.py --dir <cli-dir> --strict  # treat known-FPs as failures
 
 Exit codes:
@@ -57,6 +63,15 @@ COMMON_FLAGS = {
 }
 
 CODEBLOCK_BASH = re.compile(r"```bash\n(.*?)\n```", re.DOTALL)
+COMMAND_REFERENCE_SECTION_RE = re.compile(
+    r"^##\s+Command\s+Reference\s*$(.*?)(?=^##\s+|\Z)",
+    re.DOTALL | re.MULTILINE | re.IGNORECASE,
+)
+# Cobra registers help/completion automatically; treat as always-present.
+# Other CLIs may surface version as a real cobra command, but it is also a
+# common --version flag pattern; we conservatively whitelist it too so a
+# `<binary> version` reference never fires this check.
+BUILTIN_COMMANDS = {"help", "completion", "version"}
 USE_RE = re.compile(r'Use:\s*"([^"]+)"')
 ARGS_RE = re.compile(
     r'Args:\s*cobra\.(ExactArgs|MinimumNArgs|MaximumNArgs|RangeArgs|NoArgs|OnlyValidArgs|ExactValidArgs)\s*\(([^)]*)\)'
@@ -666,6 +681,109 @@ def check_positional_args(cli_dir: Path, skill: Path, cli_binary: str, report: R
         )
 
 
+def _extract_inline_commands(skill_text: str, cli_binary: str) -> list[list[str]]:
+    """Pull `<binary> <cmd> [more]` snippets from inline backticks under the
+    `## Command Reference` section. Returns command paths only, no flags or
+    positional args (those are surfaced through the bash-recipe checks).
+
+    Why scoped to ## Command Reference: SKILL.md narrative prose mentions
+    binary names in flowing text where false positives would be high. The
+    Command Reference section is the canonical promise to the reader.
+    """
+    sec = COMMAND_REFERENCE_SECTION_RE.search(skill_text)
+    if not sec:
+        return []
+    section_body = sec.group(1)
+    binary_token = re.escape(cli_binary)
+    inline_re = re.compile(rf"`({binary_token}(?:\s+[^`]+)?)`")
+    paths: list[list[str]] = []
+    for m in inline_re.finditer(section_body):
+        snippet = m.group(1).strip()
+        after = snippet[len(cli_binary):].strip()
+        if not after:
+            continue
+        tokens = after.split()
+        cmd_path: list[str] = []
+        for t in tokens:
+            if t.startswith("-") or t.startswith("<") or t.startswith("[") \
+               or t.startswith("$") or t.startswith("\"") or t.startswith("'") \
+               or t.startswith("`") or "/" in t or "=" in t:
+                break
+            if not re.match(r"^[a-z][a-z0-9-]*$", t):
+                break
+            cmd_path.append(t)
+            if len(cmd_path) >= 3:
+                break
+        if cmd_path:
+            paths.append(cmd_path)
+    return paths
+
+
+def check_unknown_commands(cli_dir: Path, skill: Path, cli_binary: str, report: Report) -> None:
+    """Report command paths in SKILL.md that have no matching cobra Use:
+    declaration in internal/cli/*.go. Source paths come from two surfaces:
+
+      - Bash recipes (extract_recipes), which the other checks already walk
+        but skip silently when the command is missing
+      - Inline backtick references inside the `## Command Reference` section
+
+    Each unique cmd_path is reported at most once per SKILL.md.
+
+    Uses the in-repo find_command_source which walks the rootCmd.AddCommand
+    graph and resolves multi-level command paths (e.g., `links stale` vs
+    `profile save`) without false-positive collisions on shared leaf names.
+    """
+    skill_text = skill.read_text()
+    seen: set[tuple[str, ...]] = set()
+    sources: list[tuple[list[str], str]] = []
+
+    for cmd_path, _pos, _flags in extract_recipes(skill, cli_binary, cli_dir):
+        if cmd_path:
+            sources.append((cmd_path, "bash recipe"))
+    for cmd_path in _extract_inline_commands(skill_text, cli_binary):
+        sources.append((cmd_path, "Command Reference inline"))
+
+    for cmd_path, surface in sources:
+        if not cmd_path:
+            continue
+        head = cmd_path[0]
+        # Skip non-command tokens that the recipe parser may have promoted
+        # into cmd_path[0]: flags, placeholders, env vars, etc. These belong
+        # to other checks or are documentation conventions, not commands.
+        if head in BUILTIN_COMMANDS:
+            continue
+        if head.startswith(("-", "<", "[", "$")) or "=" in head:
+            continue
+        if not re.match(r"^[a-z][a-z0-9-]*$", head):
+            continue
+        key = tuple(cmd_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        files, _use, _args = find_command_source(cli_dir, cmd_path)
+        if files:
+            continue
+        # Walk back to the longest existing prefix for a clearer error.
+        detail = "command path not found in internal/cli/*.go (no matching Use: declaration)"
+        for k in range(len(cmd_path) - 1, 0, -1):
+            prefix_files, _, _ = find_command_source(cli_dir, cmd_path[:k])
+            if prefix_files:
+                detail = (
+                    f"command path not found in internal/cli/*.go; "
+                    f"closest existing prefix is `{cli_binary} {' '.join(cmd_path[:k])}`"
+                )
+                break
+        report.findings.append(
+            Finding(
+                check="unknown-command",
+                severity="error",
+                command=f"{cli_binary} {' '.join(cmd_path)}",
+                detail=detail,
+                evidence=surface,
+            )
+        )
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -697,7 +815,7 @@ def run_checks(cli_dir: Path, only: set[str] | None) -> Report:
     cli_binary = derive_cli_binary(cli_dir)
     report = Report(cli_dir=str(cli_dir), skill_path=str(skill))
 
-    checks = only or {"flag-names", "flag-commands", "positional-args"}
+    checks = only or {"flag-names", "flag-commands", "positional-args", "unknown-command"}
     if "flag-names" in checks:
         report.checks_run.append("flag-names")
         check_flag_names(cli_dir, skill, report)
@@ -707,6 +825,9 @@ def run_checks(cli_dir: Path, only: set[str] | None) -> Report:
     if "positional-args" in checks:
         report.checks_run.append("positional-args")
         check_positional_args(cli_dir, skill, cli_binary, report)
+    if "unknown-command" in checks:
+        report.checks_run.append("unknown-command")
+        check_unknown_commands(cli_dir, skill, cli_binary, report)
     return report
 
 
@@ -757,7 +878,7 @@ def main():
     p.add_argument("--dir", required=True, help="CLI directory (contains SKILL.md + internal/cli/)")
     p.add_argument(
         "--only",
-        choices=["flag-names", "flag-commands", "positional-args"],
+        choices=["flag-names", "flag-commands", "positional-args", "unknown-command"],
         action="append",
         help="Run only the named check(s). Pass multiple times to include multiple.",
     )
