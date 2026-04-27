@@ -99,7 +99,11 @@ This CLI was generated with browser-observed traffic context.
 {{range $name, $resource := .Resources}}
 **{{$name}}** — {{$resource.Description}}
 {{range $eName, $endpoint := $resource.Endpoints}}
+{{- if index $.PromotedResourceNames $name}}
+- `{{$.Name}}-pp-cli {{$name}}{{positionalArgs $endpoint}}` — {{oneline $endpoint.Description}}
+{{- else}}
 - `{{$.Name}}-pp-cli {{$name}} {{$eName}}` — {{oneline $endpoint.Description}}
+{{- end}}
 {{- end}}
 {{end}}
 {{- if .ExtraCommands}}

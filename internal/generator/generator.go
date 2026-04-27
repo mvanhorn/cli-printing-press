@@ -131,9 +131,17 @@ type Generator struct {
 	NovelFeatures   []NovelFeature          // Transcendence features for README/SKILL
 	Narrative       *ReadmeNarrative        // LLM-authored prose for README/SKILL; optional
 	AsyncJobs       map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
-	profile         *profiler.APIProfile
-	funcs           template.FuncMap
-	templates       map[string]*template.Template
+
+	// Promoted-command plan, populated by Generate() before any rendering so
+	// SKILL/README templates can honor leaf promotion (and not emit phantom paths
+	// like `<cli> qr get-qrcode` for a resource the generator collapsed to `qr`).
+	PromotedCommands      []PromotedCommand
+	PromotedResourceNames map[string]bool
+	PromotedEndpointNames map[string]string
+
+	profile   *profiler.APIProfile
+	funcs     template.FuncMap
+	templates map[string]*template.Template
 }
 
 func New(s *spec.APISpec, outputDir string) *Generator {
@@ -566,6 +574,18 @@ type readmeTemplateData struct {
 	HasAuth           bool
 	FreshnessCommands []string
 	TrafficAnalysis   *trafficAnalysisTemplateData
+	// PromotedResourceNames maps a resource name to true when the generator
+	// collapsed that single-endpoint resource into a leaf command. Templates
+	// (notably skill.md.tmpl's Command Reference) use this to emit `<cli>
+	// <resource>` instead of `<cli> <resource> <endpoint>` — the operation-id
+	// path doesn't exist as a registered cobra Use: declaration for promoted
+	// resources, so emitting it produces SKILL.md content that the
+	// unknown-command verifier rejects.
+	PromotedResourceNames map[string]bool
+	// PromotedEndpointNames maps a resource name to the single endpoint name
+	// that was promoted (e.g. "qr" → "get-qrcode"). Currently informational —
+	// templates that need to surface the underlying operation-id can read it.
+	PromotedEndpointNames map[string]string
 }
 
 type generatorTemplateData struct {
@@ -596,18 +616,20 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		}
 	}
 	return &readmeTemplateData{
-		APISpec:           g.Spec,
-		Sources:           g.Sources,
-		DiscoveryPages:    g.DiscoveryPages,
-		NovelFeatures:     g.NovelFeatures,
-		Narrative:         g.Narrative,
-		ProseName:         g.proseName(),
-		HasDataLayer:      g.VisionSet.Store,
-		HasAsyncJobs:      len(g.AsyncJobs) > 0,
-		HasWriteCommands:  hasWriteCommands(g.Spec.Resources),
-		HasAuth:           hasAuth(g.Spec.Auth),
-		FreshnessCommands: g.freshnessCommandPaths(),
-		TrafficAnalysis:   g.trafficAnalysisData(),
+		APISpec:               g.Spec,
+		Sources:               g.Sources,
+		DiscoveryPages:        g.DiscoveryPages,
+		NovelFeatures:         g.NovelFeatures,
+		Narrative:             g.Narrative,
+		ProseName:             g.proseName(),
+		HasDataLayer:          g.VisionSet.Store,
+		HasAsyncJobs:          len(g.AsyncJobs) > 0,
+		HasWriteCommands:      hasWriteCommands(g.Spec.Resources),
+		HasAuth:               hasAuth(g.Spec.Auth),
+		FreshnessCommands:     g.freshnessCommandPaths(),
+		TrafficAnalysis:       g.trafficAnalysisData(),
+		PromotedResourceNames: g.PromotedResourceNames,
+		PromotedEndpointNames: g.PromotedEndpointNames,
 	}
 }
 
@@ -1069,6 +1091,15 @@ func (g *Generator) Generate() error {
 	if err := g.prepareOutput(); err != nil {
 		return err
 	}
+
+	// Lifted ahead of any rendering: SKILL/README emission needs promoted-resource
+	// awareness so it doesn't emit operation-id-shaped paths (`qr get-qrcode`) for
+	// resources the generator collapsed to a leaf (`qr`). buildPromotedCommandPlan
+	// is pure over g.Spec, so running it here is identical to running it where it
+	// used to live, except the maps are now visible to readmeData() / template
+	// rendering.
+	g.PromotedCommands, g.PromotedResourceNames, g.PromotedEndpointNames = buildPromotedCommandPlan(g.Spec)
+
 	if err := g.renderSingleFiles(); err != nil {
 		return err
 	}
@@ -1076,9 +1107,7 @@ func (g *Generator) Generate() error {
 		return err
 	}
 
-	promotedCommands, promotedResourceNames, promotedEndpointNames := buildPromotedCommandPlan(g.Spec)
-
-	if err := g.renderResourceCommands(promotedResourceNames, promotedEndpointNames); err != nil {
+	if err := g.renderResourceCommands(g.PromotedResourceNames, g.PromotedEndpointNames); err != nil {
 		return err
 	}
 
@@ -1088,7 +1117,7 @@ func (g *Generator) Generate() error {
 	if err := g.renderMCPEntrypoint(); err != nil {
 		return err
 	}
-	return g.renderVisionAndRootFiles(promotedCommands, promotedResourceNames)
+	return g.renderVisionAndRootFiles(g.PromotedCommands, g.PromotedResourceNames)
 }
 
 func buildPromotedCommandPlan(apiSpec *spec.APISpec) ([]PromotedCommand, map[string]bool, map[string]string) {
