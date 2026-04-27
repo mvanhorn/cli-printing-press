@@ -41,13 +41,13 @@ The rule is enforced in two places. The absorb manifest has a Kill Check (see `s
 ```bash
 go build -o ./printing-press ./cmd/printing-press
 go test ./...
-gofmt -w ./...
+go fmt ./...
 golangci-lint run ./...
 ```
 
 A pre-commit hook runs `gofmt -w` on staged Go files automatically. A pre-push hook runs `golangci-lint`. The same config (`.golangci.yml`: errcheck, govet, staticcheck, unused) runs in CI. To run lint manually: `golangci-lint run ./...`
 
-**Always run `gofmt -w ./...` after writing Go code.** Subagents and code generators often produce valid but unformatted Go. The pre-commit hook catches this for commits in the repo, but code written to external directories (e.g., `~/printing-press/library/`) must be formatted explicitly.
+**Always run `go fmt ./...` after writing Go code.** Use `go fmt`, not raw `gofmt` — `gofmt` doesn't accept Go package patterns, and `gofmt -w .` would walk into `testdata/golden/expected/` and rewrite frozen golden fixtures. `go fmt ./...` skips `testdata` and `vendor` by convention. Subagents and code generators often produce valid but unformatted Go. The pre-commit hook catches this for commits in the repo, but code written to external directories (e.g., `~/printing-press/library/`) must be formatted explicitly.
 
 **IMPORTANT: Always use relative paths for build output.** Never build to `/tmp` or any shared absolute path. Multiple worktrees run concurrently and will stomp on each other. Use `./printing-press` exactly as shown above.
 
