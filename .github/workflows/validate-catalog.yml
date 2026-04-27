@@ -5,9 +5,17 @@ on:
     paths:
       - 'catalog/**'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
         with:
@@ -35,7 +43,7 @@ jobs:
 
           mapfile -t CHANGED < <(git diff --name-only --diff-filter=ACMR "origin/${{ github.base_ref }}...HEAD" -- 'catalog/*.yaml')
 
-          if [ ${#CHANGED[@]} -eq 0 ]; then
+          if [ "${#CHANGED[@]}" -eq 0 ]; then
             echo "FAIL: workflow triggered on catalog/** changes but git diff found no changed catalog/*.yaml files."
             echo "This usually means the base ref was not fetched. Check actions/checkout fetch-depth."
             exit 1
@@ -63,7 +71,7 @@ jobs:
               exit 1
             fi
 
-            SPEC_FILE=/tmp/spec-validate.yaml
+            SPEC_FILE="$(mktemp "${RUNNER_TEMP:-/tmp}/spec-validate.XXXXXX.yaml")"
             RAW_PREFIX="https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/"
             if [[ "$SPEC_URL" == "$RAW_PREFIX"* ]]; then
               LOCAL_SPEC="${SPEC_URL#"$RAW_PREFIX"}"
@@ -87,12 +95,13 @@ jobs:
 
             # Generate from the resolved spec.
             NAME=$(grep '^name:' "$file" | head -1 | sed 's/name: *//')
+            OUT_DIR="${RUNNER_TEMP:-/tmp}/${NAME}-cli"
 
             ./printing-press generate \
               --spec "$SPEC_FILE" \
-              --output /tmp/${NAME}-cli \
+              --output "$OUT_DIR" \
               --validate
 
             echo "PASS: Generated CLI compiles"
-            rm -rf /tmp/${NAME}-cli "$SPEC_FILE"
+            rm -rf "$OUT_DIR" "$SPEC_FILE"
           done
