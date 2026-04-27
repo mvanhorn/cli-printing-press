@@ -791,12 +791,35 @@ These are the only cases where Phase 1.7 is bypassed as a whole (not just skippe
 
 ### Direct HTTP challenge rule
 
-If a reachability probe during Phase 1 research returns bot-protection evidence (`403`, `429`, `cf-mitigated: challenge`, `x-vercel-mitigated: challenge`, `x-vercel-challenge-token`, AWS WAF, DataDome, PerimeterX, CAPTCHA, "Just a moment", "access denied"), treat it as a **browser-sniff escalation signal**, not as a browser-sniff failure.
+If a reachability probe during Phase 1 research returns bot-protection evidence (`403`, `429`, `cf-mitigated: challenge`, `x-vercel-mitigated: challenge`, `x-vercel-challenge-token`, AWS WAF, DataDome, PerimeterX, CAPTCHA, "Just a moment", "access denied"), **run the no-browser reachability probe before announcing any browser escalation**:
 
-When browser-sniff is approved or pre-approved:
+```bash
+printing-press probe-reachability "<url>" --json
+```
+
+This is non-negotiable. **Do not present transport tiers as a peer menu for the user to choose between.** Phrases like "Browser-sniff + clearance cookie", "Browser-sniff with Surf-only", "Try without browser at all", or "Browser-sniff, prefer Surf" route the user through implementation choices (Surf vs cookie vs full browser) they don't have context to make. The classifier is `probe-reachability`; the agent runs it and decides. Intent-level menus are fine — "Browser-sniff or HOLD?", "Browser-sniff or pick a different API?", or the standard yes/no browser-sniff offers below all ask about goals, not transport, and remain available.
+
+Escalate consent in the order the agent actually needs it, not bundled up-front:
+
+1. **Runtime probe (silent)** — `probe-reachability` runs without prompting. The user already opted into "the website itself" or equivalent in Phase 0; running an HTTP request needs no further consent.
+2. **Browser-sniff offer (intent prompt)** — Phase 1.7's normal "Browser-Sniff as enrichment" / "Browser-Sniff as primary" prompts ask whether to do browser-sniff at all. These are intent-level. Show them when the discovery matrix says to.
+3. **Chrome attach (separate consent if escalation happens)** — when the agent actually needs to open or attach to Chrome (because the discovery flow requires a real browser, or because `mode: browser_clearance_http` means the runtime needs cookie capture), surface that as its own moment so the user knows they may need to solve a challenge or sign in. The user-facing prompts at lines below already disclose Chrome attach as a possibility; that is the right place to confirm. Do not pre-announce Chrome attach when the probe has already settled the runtime as `browser_http` and the spec is complete enough to skip discovery — there is no Chrome attach to announce in that path.
+
+Two concerns are decided here, separately:
+
+- **Runtime** (does the printed CLI need browser-compatible HTTP, a clearance cookie, or live page-context execution?) — settled entirely by `probe-reachability`.
+- **Discovery** (does Phase 1.7 need to capture XHR traffic via a real browser to learn endpoints?) — settled by Phase 1.7's normal "When to offer browser-sniff" decision matrix above. Independent of runtime.
+
+The probe runs stdlib HTTP, then Surf with a Chrome TLS fingerprint, and emits one of `standard_http | browser_http | browser_clearance_http | unknown`. Apply `mode` to the **runtime** decision:
+
+- **`mode: standard_http`** — runtime is plain HTTP (the original probe was transient). Continue Phase 1.7 normally; the discovery decision is unchanged.
+- **`mode: browser_http`** — **runtime is settled: ship Surf transport** (`UsesBrowserHTTPTransport` will be set in the generator's traffic-analysis hints). The printed CLI will not include `auth login --chrome` for clearance cookies — Surf alone clears the challenge. Continue Phase 1.7's discovery decision normally; the existing "Browser-Sniff as enrichment" / "Browser-Sniff as primary" prompts (above) are framed around endpoint discovery and are correct as-written. Do **not** add clearance-cookie language to those prompts.
+- **`mode: browser_clearance_http`** — both probes hit protection signals. The runtime needs more than Surf (clearance cookie or live page-context execution; the probe cannot distinguish), so a real browser capture is required to find out. Proceed through Phase 1.7's normal browser-sniff offer (intent-level yes/no). The consent for Chrome attach happens at the moment the agent actually opens/attaches, where the user-facing prompts in `references/browser-sniff-capture.md` already disclose what's about to happen and may ask the user to solve a challenge. Note in the brief that runtime is provisionally `browser_clearance_http` pending capture results.
+- **`mode: unknown`** — probes failed at the transport layer (DNS/timeout/5xx). Fall through to the existing browser-sniff offer; the user decides whether to retry or pivot.
+
+When browser-sniff is approved or pre-approved AND the probe says `browser_clearance_http` or `unknown`:
 - Do **not** offer alternate CLI shapes (RSS-first, official API, docs-only, narrower scope, "try anyway") before a real browser capture has been attempted.
 - Do **not** write the brief as if browser-sniff is complete after only curl/direct HTTP probes.
-- Proceed to "If user approves browser-sniff" and explicitly tell the user: "Direct HTTP is blocked by `<protection>`, so I need a real browser capture. I will open or attach to Chrome; please solve the challenge and navigate the target flow."
 - If browser automation tooling is unavailable, offer the user a manual HAR path before offering any scope pivot.
 
 Only after the browser capture attempt fails by the criteria in `references/browser-sniff-capture.md` may you ask whether to pivot to RSS, official API, docs-only, or a smaller CLI scope.
@@ -1289,15 +1312,24 @@ curl -s -o /dev/null -w "%{http_code}" -m 10 "<base_url>/<simplest_get_path>" 2>
 
 Or use `WebFetch` if curl is unavailable. The goal is one real response code.
 
+**If the check returns 403/429 with bot-protection evidence and `probe-reachability` has not already run for this URL during Phase 1.7's Direct HTTP challenge rule, run it now before consulting the decision matrix:**
+
+```bash
+printing-press probe-reachability "<base_url>" --json
+```
+
+The matrix below references `probe-reachability` `mode` for the bot-detection rows. If the probe already ran in Phase 1.7, reuse that result; do not re-probe.
+
 ### Decision Matrix
 
 | Result | Browser capture result | Traffic-analysis reachability | Action |
 |--------|------------------------|-------------------------------|--------|
 | 2xx/3xx | Any | Any | **PASS** - proceed to Phase 2 |
 | 401 (no key provided) | Any | Any | **PASS** - expected when API needs auth and user declined key gate |
+| 403/429 with HTML/bot detection | `probe-reachability` returned `browser_http` | runtime is `browser_http` (Surf) | **PASS** - the printed CLI will ship Surf transport which clears the protection. No clearance cookie capture in the printed CLI, regardless of whether browser-sniff also ran for endpoint discovery |
 | 403/429 with HTML/bot detection | Successful useful capture | `browser_http` or `browser_clearance_http` | **PASS** - proceed with browser-compatible HTTP / clearance strategy |
 | Any | Capture only works through a live page context | `browser_required` | **HOLD** - find a lighter replayable surface before Phase 2 |
-| 403/429 with HTML/bot detection | No browser capture attempted but browser-sniff approved/pre-approved | Any | **RETURN TO PHASE 1.7** - attempt cleared-browser capture before pivoting scope |
+| 403/429 with HTML/bot detection | No browser capture attempted but browser-sniff approved/pre-approved AND `probe-reachability` returned `browser_clearance_http` or `unknown` | Any | **RETURN TO PHASE 1.7** - attempt cleared-browser capture before pivoting scope |
 | 403/429 with HTML/bot detection | Capture contains only challenge/error pages | Any | **HARD STOP** |
 | 403 | No successful useful capture | Research found 403 issues | **HARD STOP** |
 | 403 | No successful useful capture | No 403 research issues | **WARN** - ask user |
