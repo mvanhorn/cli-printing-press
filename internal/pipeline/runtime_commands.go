@@ -6,8 +6,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/v2/internal/canonicalargs"
 )
 
 func discoverCommands(dir string, binaryPath string) []discoveredCommand {
@@ -112,7 +115,13 @@ type discoveredCommand struct {
 // inferPositionalArgs runs `<binary> <cmd> --help`, parses the Usage line for
 // positional arg placeholders like <region> or [price], and maps them to
 // synthetic values. On any failure, it falls back to no extra args.
-func inferPositionalArgs(binary string, cmd *discoveredCommand) {
+//
+// `paramDefaults` (when non-nil) is consulted first for each placeholder
+// name: if the spec author declared a `default:` on a positional param of
+// that name, the default wins over canonicalargs and the per-name switch.
+// This lets specs supply realistic, domain-correct values (e.g., a real
+// recipe slug) without modifying the generator.
+func inferPositionalArgs(binary string, cmd *discoveredCommand, paramDefaults map[string]string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -130,8 +139,36 @@ func inferPositionalArgs(binary string, cmd *discoveredCommand) {
 	}
 
 	for _, name := range extractPositionalPlaceholders(string(m[1])) {
-		cmd.Args = append(cmd.Args, syntheticArgValue(name))
+		cmd.Args = append(cmd.Args, resolvePositionalValue(name, paramDefaults))
 	}
+}
+
+// resolvePositionalValue is the canonical lookup chain shared by verify
+// dispatch and any other call site that needs a synthetic value for a
+// positional placeholder. Order:
+//
+//  1. spec author's Param.Default for a positional named `name` (when
+//     the verifier supplied paramDefaults built from the parsed spec)
+//  2. the cross-domain canonicalargs registry (since/until/tag/vertical)
+//  3. the legacy per-name switch in syntheticArgValue (back-compat —
+//     returns calibrated values for slug/query/url/etc.)
+//  4. the "mock-value" catch-all from syntheticArgValue's default arm
+//
+// Domain-specific names (servings, ingredient, sport, ticker, ...) have
+// no entry in the generic registry on purpose; spec authors set them via
+// Param.Default so the value is correct for their API rather than a
+// machine-baked guess.
+func resolvePositionalValue(name string, paramDefaults map[string]string) string {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if paramDefaults != nil {
+		if v, ok := paramDefaults[key]; ok && v != "" {
+			return v
+		}
+	}
+	if v, ok := canonicalargs.Lookup(key); ok {
+		return v
+	}
+	return syntheticArgValue(key)
 }
 
 // flagDescriptorRe matches a bracketed token whose body looks like a flag
@@ -201,6 +238,144 @@ func syntheticArgValue(name string) string {
 	default:
 		return "mock-value"
 	}
+}
+
+// sideEffectHelpKeywords are substrings that, when present in a
+// command's `--help` output, suggest the command performs a visible
+// side effect (opens a browser tab, dials out, etc.). The list
+// intentionally errs toward false-positive: a "browser-friendly"
+// innocuous mention costs us at most a skipped Execute test in mock
+// mode, while a missed true side effect spams the user's tabs or
+// sends a real notification.
+//
+// "browser" alone is broad on purpose — catches "opens in your
+// browser", "default browser", "in the browser", "browser-based",
+// etc. without requiring callers to enumerate every phrasing
+// downstream documentation may use.
+var sideEffectHelpKeywords = []string{
+	"browser",
+	"shells out to",
+}
+
+// sideEffectShellBinaries are OS-level commands that, when invoked via
+// exec.Command from inside a printed CLI's source tree, are strong
+// evidence of a visible side effect. macOS `open`, Linux `xdg-open`,
+// Windows `start` all open URLs/files in the user's default handler.
+var sideEffectShellBinaries = []string{
+	`exec.Command("open"`,
+	`exec.Command("xdg-open"`,
+	`exec.Command("start"`,
+}
+
+// sideEffectGoImports are third-party Go import paths whose presence in
+// the printed CLI's source signals shell-out to a browser or OS handler.
+// pkg/browser is the canonical Go library for "open this URL in the
+// user's browser".
+var sideEffectGoImports = []string{
+	`"github.com/pkg/browser"`,
+}
+
+// isSideEffectCommand returns true when a command looks like it performs
+// a visible side effect (opens a browser tab, sends a notification,
+// shells out to an OS handler) based on its `--help` output and the
+// printed CLI's source under sourceDir. Defense-in-depth: even when this
+// returns false, generated commands should still check
+// cliutil.IsVerifyEnv() before doing anything visible.
+//
+// `sourceDir` is the printed CLI's root (e.g., ~/printing-press/library/<api>)
+// — NOT the printing-press binary's own internal/cli/. The function
+// searches under sourceDir/internal/cli/ for handler files matching the
+// command's name (cmd.Name maps to cmd files like new<Name>Cmd in
+// generator output).
+//
+// Both checks are heuristic. The `--help` scan catches commands with
+// descriptive help text; the source-tree scan catches commands whose
+// source obviously shells out. False positives are rare and acceptable —
+// the cost is "skipped in mock-mode Execute test", not a failure.
+func isSideEffectCommand(binary string, cmd *discoveredCommand, sourceDir string) bool {
+	if helpScanIndicatesSideEffect(binary, cmd) {
+		return true
+	}
+	if sourceScanIndicatesSideEffect(cmd, sourceDir) {
+		return true
+	}
+	return false
+}
+
+func helpScanIndicatesSideEffect(binary string, cmd *discoveredCommand) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	helpCmd := exec.CommandContext(ctx, binary, cmd.Name, "--help")
+	out, err := helpCmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	helpLower := strings.ToLower(string(out))
+	for _, kw := range sideEffectHelpKeywords {
+		if strings.Contains(helpLower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func sourceScanIndicatesSideEffect(cmd *discoveredCommand, sourceDir string) bool {
+	if sourceDir == "" {
+		return false
+	}
+	cliDir := filepath.Join(sourceDir, "internal", "cli")
+	entries, err := os.ReadDir(cliDir)
+	if err != nil {
+		return false
+	}
+
+	cmdNameVariants := commandSourceNameVariants(cmd.Name)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		if !fileNameMatchesCommand(name, cmdNameVariants) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(cliDir, name))
+		if err != nil {
+			continue
+		}
+		body := string(data)
+		for _, marker := range sideEffectShellBinaries {
+			if strings.Contains(body, marker) {
+				return true
+			}
+		}
+		for _, imp := range sideEffectGoImports {
+			if strings.Contains(body, imp) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// commandSourceNameVariants returns the source-file basenames a command's
+// handler is most likely to live in. Generator emits `new<Camel>Cmd` in
+// files named after the command word; novel-feature commands often use
+// the bare command name as the file basename. Both are checked.
+func commandSourceNameVariants(cmdName string) []string {
+	cleaned := strings.ToLower(strings.TrimSpace(cmdName))
+	if cleaned == "" {
+		return nil
+	}
+	return []string{cleaned + ".go"}
+}
+
+func fileNameMatchesCommand(filename string, variants []string) bool {
+	lower := strings.ToLower(filename)
+	return slices.Contains(variants, lower)
 }
 
 func classifyCommandKind(cmd *discoveredCommand, spec *openAPISpec) {

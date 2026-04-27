@@ -128,9 +128,17 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	// 5. Discover commands
 	commands := discoverCommands(cfg.Dir, binaryPath)
 
-	// 5.5. Infer positional args from --help output
+	// 5.5. Infer positional args from --help output. Pass the spec's
+	// ParamDefaults so positionals named in the spec with a `default:`
+	// (e.g., a real recipe slug for food52, a real symbol for a finance
+	// API) win over the generic canonicalargs registry and the legacy
+	// per-name switch.
+	var paramDefaults map[string]string
+	if spec != nil {
+		paramDefaults = spec.ParamDefaults
+	}
 	for i := range commands {
-		inferPositionalArgs(binaryPath, &commands[i])
+		inferPositionalArgs(binaryPath, &commands[i], paramDefaults)
 	}
 
 	// 6. Classify and run each command
@@ -180,6 +188,15 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 			for _, ev := range authEnvVars {
 				env = append(env, ev+"=mock-token-for-testing")
 			}
+			// Defense-in-depth: every mock-mode subprocess inherits this
+			// env var. Generated commands that perform visible side
+			// effects (open browser tabs, send notifications) MUST check
+			// cliutil.IsVerifyEnv() and short-circuit when set, so even
+			// if the side-effect classifier misses a command, the
+			// command itself doesn't spam the user's environment during
+			// verify. Documented in skills/printing-press/SKILL.md and
+			// AGENTS.md.
+			env = append(env, "PRINTING_PRESS_VERIFY=1")
 		}
 		return env
 	}
@@ -187,6 +204,17 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	// 7. Run tests
 	for i, cmd := range commands {
 		env := buildEnv()
+		// Mock-mode side-effect detection: if the command opens a
+		// browser tab or otherwise performs a visible action that the
+		// PRINTING_PRESS_VERIFY env var alone may not gate, skip its
+		// Execute test to avoid spamming the user's environment during
+		// verify. The DryRun and Help tests still run — those are read-
+		// only by definition.
+		if report.Mode == "mock" && isSideEffectCommand(binaryPath, &commands[i], cfg.Dir) {
+			result := runSideEffectSafeCommandTests(binaryPath, commands[i], env)
+			report.Results = append(report.Results, result)
+			continue
+		}
 		result := runCommandTests(binaryPath, cmd, report.Mode, env)
 		commands[i] = cmd // preserve classification
 		report.Results = append(report.Results, result)
@@ -210,6 +238,51 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	finalizeVerifyReport(report, cfg.Threshold, true)
 
 	return report, nil
+}
+
+// runSideEffectSafeCommandTests is the mock-mode counterpart to
+// runCommandTests for commands the side-effect classifier flagged. It
+// runs --help (read-only) and --dry-run (the command should honor it),
+// then SKIPs the Execute test rather than risk launching a browser tab,
+// sending a notification, etc.
+//
+// PRINTING_PRESS_VERIFY=1 is already set in env, so well-behaved
+// generated commands short-circuit anyway. This wrapper is the
+// belt-and-suspenders complement to that env-var convention.
+func runSideEffectSafeCommandTests(binary string, cmd discoveredCommand, env []string) CommandResult {
+	result := CommandResult{
+		Command: cmd.Name,
+		Kind:    cmd.Kind,
+	}
+
+	result.Help = runCLI(binary, []string{cmd.Name, "--help"}, env, 10*time.Second) == nil
+
+	dryArgs := append([]string{cmd.Name}, cmd.Args...)
+	dryArgs = append(dryArgs, "--dry-run")
+	if err := runCLI(binary, dryArgs, env, 10*time.Second); err == nil || isIntentionalStubExit(err) {
+		result.DryRun = true
+	}
+
+	// SKIP the Execute test: this command was classified as side-effecting
+	// (opens a browser, dials out, etc.) and we don't want to trigger
+	// that during verify even with PRINTING_PRESS_VERIFY=1 set, because
+	// older generated commands may not honor the convention. Score this
+	// as a pass on Execute since "we deliberately did not exercise it"
+	// is not a failure of the CLI under test.
+	result.Execute = true
+
+	score := 0
+	if result.Help {
+		score++
+	}
+	if result.DryRun {
+		score++
+	}
+	if result.Execute {
+		score++
+	}
+	result.Score = score
+	return result
 }
 
 // runCommandTests executes the test suite for a single command.

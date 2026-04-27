@@ -447,6 +447,140 @@ func TestSyntheticArgValue(t *testing.T) {
 	}
 }
 
+func TestResolvePositionalValue_SpecDefaultWins(t *testing.T) {
+	defaults := map[string]string{
+		"servings": "4",
+		"category": "weeknight",        // overrides the per-name switch's "general"
+		"slug":     "real-recipe-slug", // overrides "general"
+		"airport":  "PDX",
+	}
+	assert.Equal(t, "4", resolvePositionalValue("servings", defaults))
+	// Spec default beats canonicalargs (which has no servings entry).
+	assert.Equal(t, "weeknight", resolvePositionalValue("category", defaults))
+	// Spec default beats the legacy syntheticArgValue switch.
+	assert.Equal(t, "real-recipe-slug", resolvePositionalValue("slug", defaults))
+	// Case insensitive.
+	assert.Equal(t, "PDX", resolvePositionalValue("AIRPORT", defaults))
+}
+
+func TestResolvePositionalValue_FallsThroughToCanonicalargs(t *testing.T) {
+	// nil paramDefaults — the next step is canonicalargs.
+	assert.Equal(t, "2026-01-01", resolvePositionalValue("since", nil))
+	assert.Equal(t, "2026-12-31", resolvePositionalValue("until", nil))
+	assert.Equal(t, "mock-tag", resolvePositionalValue("tag", nil))
+	assert.Equal(t, "mock-vertical", resolvePositionalValue("vertical", nil))
+}
+
+func TestResolvePositionalValue_FallsThroughToLegacySwitch(t *testing.T) {
+	// Names not in canonicalargs but present in syntheticArgValue's
+	// per-name switch must keep returning their calibrated values.
+	assert.Equal(t, "mock-query", resolvePositionalValue("query", nil))
+	assert.Equal(t, "/mock/path", resolvePositionalValue("url", nil))
+	assert.Equal(t, "general", resolvePositionalValue("slug", nil))
+	assert.Equal(t, "12345", resolvePositionalValue("id", nil))
+}
+
+func TestResolvePositionalValue_CatchAll(t *testing.T) {
+	assert.Equal(t, "mock-value", resolvePositionalValue("airport_code", nil))
+	assert.Equal(t, "mock-value", resolvePositionalValue("totally-novel-name", nil))
+}
+
+// Spec defaults registered with the same canonical key (lowercase, trimmed)
+// as a canonicalargs entry must still win — verifies the lookup order.
+func TestResolvePositionalValue_SpecDefaultBeatsCanonicalargs(t *testing.T) {
+	defaults := map[string]string{"tag": "real-tag-value"}
+	assert.Equal(t, "real-tag-value", resolvePositionalValue("tag", defaults))
+}
+
+// An empty-string default in the map must NOT short-circuit; the lookup
+// chain continues to canonicalargs / syntheticArgValue. Empty defaults
+// signal "spec author left it blank", not "use blank".
+func TestResolvePositionalValue_EmptyDefaultDoesNotMaskFallback(t *testing.T) {
+	defaults := map[string]string{"tag": ""}
+	assert.Equal(t, "mock-tag", resolvePositionalValue("tag", defaults))
+}
+
+func TestHelpScanIndicatesSideEffect(t *testing.T) {
+	binaryPath := buildHelpScanFixture(t, `Open a recipe in your default browser.
+
+Usage:
+  fixture-pp-cli open <slug>
+
+Examples:
+  fixture-pp-cli open recipes-1`)
+	cmd := &discoveredCommand{Name: "open"}
+	assert.True(t, helpScanIndicatesSideEffect(binaryPath, cmd),
+		"help text mentioning 'browser' should be classified as side-effecting")
+}
+
+func TestHelpScanReturnsFalseForBenignHelp(t *testing.T) {
+	binaryPath := buildHelpScanFixture(t, `List recipes.
+
+Usage:
+  fixture-pp-cli list
+
+Examples:
+  fixture-pp-cli list --json`)
+	cmd := &discoveredCommand{Name: "list"}
+	assert.False(t, helpScanIndicatesSideEffect(binaryPath, cmd),
+		"benign help text should not be classified as side-effecting")
+}
+
+func TestSourceScanIndicatesSideEffect_DetectsExecOpen(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	body := `package cli
+import "os/exec"
+func openHandler(url string) error {
+    return exec.Command("open", url).Run()
+}`
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "open.go"), []byte(body), 0o644))
+
+	cmd := &discoveredCommand{Name: "open"}
+	assert.True(t, sourceScanIndicatesSideEffect(cmd, dir))
+}
+
+func TestSourceScanIndicatesSideEffect_DetectsPkgBrowserImport(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	body := `package cli
+import "github.com/pkg/browser"
+func openHandler(url string) error {
+    return browser.OpenURL(url)
+}`
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "open.go"), []byte(body), 0o644))
+
+	cmd := &discoveredCommand{Name: "open"}
+	assert.True(t, sourceScanIndicatesSideEffect(cmd, dir))
+}
+
+func TestSourceScanIndicatesSideEffect_IgnoresBenignHandler(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	body := `package cli
+func listHandler() error { return nil }`
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "list.go"), []byte(body), 0o644))
+
+	cmd := &discoveredCommand{Name: "list"}
+	assert.False(t, sourceScanIndicatesSideEffect(cmd, dir))
+}
+
+// buildHelpScanFixture writes a tiny shell script that prints the given
+// help text on stdout for any args, builds nothing, and returns its path.
+// helpScanIndicatesSideEffect only cares about CombinedOutput, so a shell
+// stub is enough — no need to compile a Go binary for each fixture.
+func buildHelpScanFixture(t *testing.T, helpText string) string {
+	t.Helper()
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "fixture-pp-cli")
+	script := "#!/bin/sh\ncat <<'EOF'\n" + helpText + "\nEOF\n"
+	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
+	return scriptPath
+}
+
 func TestIsIntentionalStubExit(t *testing.T) {
 	assert.True(t, isIntentionalStubExit(fmt.Errorf("exit 3: {\"cf_gated\":true,\"message\":\"stub command\"}")))
 	assert.True(t, isIntentionalStubExit(fmt.Errorf("exit 3: {\"cf_gated\": true, \"message\":\"needs manual clearance\"}")))

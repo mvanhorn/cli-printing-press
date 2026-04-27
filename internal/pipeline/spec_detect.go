@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 
 	apispec "github.com/mvanhorn/cli-printing-press/v2/internal/spec"
 )
@@ -44,6 +45,69 @@ func internalSpecToDogfoodSpec(s *apispec.APISpec) *openAPISpec {
 		Auth:          s.Auth,
 		Kind:          s.Kind,
 		HTTPTransport: s.EffectiveHTTPTransport(),
+		ParamDefaults: collectInternalSpecParamDefaults(s),
+	}
+}
+
+// collectInternalSpecParamDefaults walks every endpoint param in the spec
+// and records its declared Default (when non-empty) keyed on the lowercase
+// param name. Later wins on duplicate names — that's fine because the
+// verifier matches placeholders by name regardless of which endpoint they
+// appear under, and a spec author defining the same name with different
+// defaults across endpoints is already an inconsistency they'll surface
+// elsewhere. Only positional params contribute (placeholder lookup is the
+// caller).
+func collectInternalSpecParamDefaults(s *apispec.APISpec) map[string]string {
+	if s == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, resource := range s.Resources {
+		collectResourceParamDefaults(resource, out)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func collectResourceParamDefaults(r apispec.Resource, out map[string]string) {
+	for _, endpoint := range r.Endpoints {
+		for _, param := range endpoint.Params {
+			if !param.Positional {
+				continue
+			}
+			if param.Default == nil {
+				continue
+			}
+			str := stringifyParamDefault(param.Default)
+			if str == "" {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(param.Name))
+			if key == "" {
+				continue
+			}
+			out[key] = str
+		}
+	}
+	for _, sub := range r.SubResources {
+		collectResourceParamDefaults(sub, out)
+	}
+}
+
+// stringifyParamDefault converts a Param.Default (typed as `any` per the
+// spec schema, since YAML can deliver int/bool/string) into the wire-side
+// string the verifier passes on the command line. Returns "" for nil or
+// empty-string defaults; numbers and bools render via fmt.Sprintf("%v",...).
+func stringifyParamDefault(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	default:
+		return fmt.Sprintf("%v", t)
 	}
 }
 

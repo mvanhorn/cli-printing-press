@@ -174,6 +174,14 @@ type openAPISpec struct {
 	Auth          apispec.AuthConfig
 	Kind          string // see apispec.KindREST / apispec.KindSynthetic
 	HTTPTransport string
+	// ParamDefaults maps a positional placeholder name (lowercase) to its
+	// spec-declared default value, when one is set. Verify mock-mode uses
+	// this as the first step in its lookup chain so spec authors can name
+	// realistic placeholder values without modifying the generator (e.g.,
+	// food52's `servings: 4` rather than the generic `mock-value`). Built
+	// only for internal-format specs; OpenAPI specs leave this nil and
+	// fall through to the generic `canonicalargs` registry.
+	ParamDefaults map[string]string
 }
 
 func (s *openAPISpec) IsSynthetic() bool {
