@@ -73,6 +73,69 @@ with no external dependencies."
 
 If you can't write that sentence, the feature fails the vet.
 
+#### Reprint Reconciliation
+
+**Run only when this is a reprint** — when a prior `research.json` exists at
+`$PRESS_LIBRARY/<api>/research.json` (provenance) or under
+`$PRESS_MANUSCRIPTS/<api-slug>/*/research.json` (archived runs). Skip on first
+prints.
+
+Agents are non-deterministic. The user-first discovery above runs from current
+research and can miss strong features the prior CLI shipped — even when the
+agent has otherwise referenced the prior CLI elsewhere in this session. This
+step is a forcing function: prior novel features become candidate input, not
+gospel and not noise.
+
+##### Step 1: Load the prior list
+
+```bash
+PRIOR_RESEARCH=""
+if [ -f "$PRESS_LIBRARY/<api>/research.json" ]; then
+  PRIOR_RESEARCH="$PRESS_LIBRARY/<api>/research.json"
+elif [ -d "$PRESS_MANUSCRIPTS/<api-slug>" ]; then
+  PRIOR_RESEARCH=$(ls -1t "$PRESS_MANUSCRIPTS/<api-slug>"/*/research.json 2>/dev/null | head -1)
+fi
+```
+
+From the prior `research.json`, pull `novel_features` (planned) and
+`novel_features_built` (actually shipped). For each prior feature, capture
+command, description, prior score, and whether it was built or remained a
+stub.
+
+##### Step 2: Score each prior feature against the current personas
+
+Use the personas from User-First Feature Discovery Steps 1–3. For every prior
+feature, answer:
+
+- **Persona fit:** Which current persona does this feature serve? Name them
+  explicitly. "None" is a valid answer and triggers a drop.
+- **Still buildable:** Pass the Step 4 kill/keep checks against the current
+  spec, auth, and scope. API drift since last print may have killed it.
+- **Shipped quality:** Planned-but-not-built features get extra scrutiny — the
+  prior run already failed to land them.
+
+Re-score on the same 4 dimensions (Domain Fit, User Pain, Build Feasibility,
+Research Backing). Do not inherit the prior score; re-derive from current
+research and current personas.
+
+##### Step 3: Verdict and feed into the candidate pool
+
+Tag each prior feature with one verdict, then add it (or don't) to the same
+candidate pool that user-first discovery and gap analysis populate:
+
+| Verdict | When | Pool action |
+|---------|------|-------------|
+| **Keep** | Persona fit, score ≥ 5/10, buildable | Add with prior `command` reused so the reprint stays compatible |
+| **Reframe** | Right idea, wrong shape — persona fit exists but command/scope drifted | Add with a new `command`/`description`; flag the rename |
+| **Drop** | No persona fit, score < 5/10, or unbuildable now | Exclude; record one-line reason for the manifest |
+
+##### Step 4: Surface in the absorb manifest
+
+In the transcendence table, add a `Source` column for reprint runs:
+`prior (kept)`, `prior (reframed from <old-command>)`, or `new`. Below the
+table, list dropped prior features with their one-line justifications so the
+user can override the drop at the Phase 1.5 gate review.
+
 #### Gap Analysis
 
 After the user-first discovery, run these technical analyses to find anything
@@ -95,7 +158,7 @@ the persona work missed:
 
 #### Generate, Vet, and Score
 
-1. **Generate** 5-12 candidate features from the user-first discovery + gap analysis.
+1. **Generate** 5-12 candidate features from the user-first discovery + reprint reconciliation (when applicable) + gap analysis.
 2. **Vet** each through the Step 4 kill/keep checks. Cut or reframe failures.
 3. **Score** survivors on 4 dimensions:
 

@@ -1098,6 +1098,11 @@ Minimum 5 transcendence features. These are the commands that differentiate the 
 **This step runs automatically.** Read [references/absorb-scoring.md](references/absorb-scoring.md)
 for the gap analysis framework, scoring dimensions, and candidate generation process.
 
+**On reprints, the same reference file's "Reprint Reconciliation" section runs as a forcing
+function**: every prior novel feature is re-scored against the current personas and tagged
+keep / reframe / drop with a one-line justification. Prior features are never silently
+absorbed and never silently dropped.
+
 ### Step 1.5d: Write the manifest artifact
 
 Write to `$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`
