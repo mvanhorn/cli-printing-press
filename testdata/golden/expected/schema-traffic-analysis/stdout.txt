@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mvanhorn/cli-printing-press/schemas/traffic-analysis.schema.json",
+  "title": "CLI Printing Press traffic-analysis.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "summary", "protocols", "auth", "endpoint_clusters"],
+  "properties": {
+    "version": {"type": "string"},
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entry_count", "api_entry_count", "noise_entry_count"],
+      "properties": {
+        "target_url": {"type": "string"},
+        "captured_at": {"type": "string"},
+        "entry_count": {"type": "integer", "minimum": 0},
+        "api_entry_count": {"type": "integer", "minimum": 0},
+        "noise_entry_count": {"type": "integer", "minimum": 0},
+        "host_distribution": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "time_start": {"type": "string"},
+        "time_end": {"type": "string"}
+      }
+    },
+    "reachability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "confidence"],
+      "properties": {
+        "mode": {"type": "string", "enum": ["standard_http", "browser_http", "browser_clearance_http", "browser_required", "blocked", "unknown"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "reasons": {"type": "array", "items": {"type": "string"}},
+        "evidence": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/evidence_ref"}, {"type": "string"}]}}
+      }
+    },
+    "protocols": {"type": "array", "items": {"$ref": "#/$defs/protocol_observation"}},
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "candidates": {"type": "array", "items": {"$ref": "#/$defs/auth_candidate"}}
+      }
+    },
+    "protections": {"type": "array", "items": {"$ref": "#/$defs/protection_observation"}},
+    "endpoint_clusters": {"type": "array", "items": {"$ref": "#/$defs/endpoint_cluster"}},
+    "request_sequences": {"type": "array", "items": {"$ref": "#/$defs/request_sequence"}},
+    "pagination": {"type": "array", "items": {"$ref": "#/$defs/pagination_signal"}},
+    "candidate_commands": {"type": "array", "items": {"$ref": "#/$defs/candidate_command"}},
+    "generation_hints": {"type": "array", "items": {"type": "string"}},
+    "warnings": {"type": "array", "items": {"$ref": "#/$defs/analysis_warning"}}
+  },
+  "$defs": {
+    "evidence_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entry_index"],
+      "properties": {
+        "entry_index": {"type": "integer", "minimum": 0},
+        "method": {"type": "string"},
+        "host": {"type": "string"},
+        "path": {"type": "string"},
+        "status": {"type": "integer"},
+        "content_type": {"type": "string"},
+        "reason": {"type": "string"}
+      }
+    },
+    "protocol_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "confidence"],
+      "properties": {
+        "label": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/evidence_ref"}, {"type": "string"}]}},
+        "details": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "auth_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "confidence"],
+      "properties": {
+        "type": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "header_names": {"type": "array", "items": {"type": "string"}},
+        "query_names": {"type": "array", "items": {"type": "string"}},
+        "cookie_names": {"type": "array", "items": {"type": "string"}},
+        "domain_hints": {"type": "array", "items": {"type": "string"}},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence_ref"}}
+      }
+    },
+    "protection_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "confidence"],
+      "properties": {
+        "label": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/evidence_ref"}, {"type": "string"}]}},
+        "notes": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "endpoint_cluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "path", "count"],
+      "properties": {
+        "host": {"type": "string"},
+        "method": {"type": "string"},
+        "path": {"type": "string"},
+        "count": {"type": "integer", "minimum": 0},
+        "statuses": {"type": "array", "items": {"type": "integer"}},
+        "content_types": {"type": "array", "items": {"type": "string"}},
+        "size_class": {"type": "string"},
+        "request_shape": {"$ref": "#/$defs/shape_summary"},
+        "response_shape": {"$ref": "#/$defs/shape_summary"},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence_ref"}}
+      }
+    },
+    "shape_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {"type": "string"},
+        "fields": {"type": "array", "items": {"$ref": "#/$defs/shape_field"}}
+      }
+    },
+    "shape_field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {"type": "string"},
+        "type": {"type": "string"},
+        "required": {"type": "boolean"},
+        "format": {"type": "string"}
+      }
+    },
+    "request_sequence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "confidence"],
+      "properties": {
+        "label": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/evidence_ref"}, {"type": "string"}]}},
+        "notes": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "pagination_signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["location", "name", "confidence"],
+      "properties": {
+        "location": {"type": "string"},
+        "name": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence_ref"}}
+      }
+    },
+    "candidate_command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "confidence"],
+      "properties": {
+        "name": {"type": "string"},
+        "resource": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "rationale": {"type": "string"},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence_ref"}}
+      }
+    },
+    "analysis_warning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "message", "confidence"],
+      "properties": {
+        "type": {"type": "string"},
+        "message": {"type": "string"},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence_ref"}}
+      }
+    }
+  }
+}

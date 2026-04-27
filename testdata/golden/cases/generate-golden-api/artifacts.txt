@@ -16,3 +16,7 @@ printing-press-golden/internal/mcp/tools.go
 printing-press-golden/internal/types/types.go
 dogfood.json
 scorecard.json
+printing-press-golden/README.md
+printing-press-golden/SKILL.md
+printing-press-golden/internal/cli/doctor.go
+printing-press-golden/internal/cliutil/verifyenv.go
