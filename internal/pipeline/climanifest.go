@@ -167,8 +167,6 @@ func specChecksum(path string) (string, error) {
 // CLI's flow (composed, cookie).
 func computeMCPReady(authType string) string {
 	switch authType {
-	case "none", "api_key", "bearer_token":
-		return "full"
 	case "cookie", "composed":
 		return "partial"
 	default:
