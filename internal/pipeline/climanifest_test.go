@@ -13,7 +13,6 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v2/internal/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 )
 
 func TestWriteCLIManifest(t *testing.T) {
@@ -567,94 +566,141 @@ func TestComputeMCPReady(t *testing.T) {
 	}
 }
 
-func TestWriteSmitheryYAML(t *testing.T) {
-	t.Run("no manifest file — no smithery written", func(t *testing.T) {
+func TestWriteMCPBManifest(t *testing.T) {
+	t.Run("no manifest file → no MCPB manifest written", func(t *testing.T) {
 		dir := t.TempDir()
-		err := writeSmitheryYAML(dir)
+		err := WriteMCPBManifest(dir)
 		require.NoError(t, err)
-		_, statErr := os.Stat(filepath.Join(dir, "smithery.yaml"))
+		_, statErr := os.Stat(filepath.Join(dir, MCPBManifestFilename))
 		assert.True(t, os.IsNotExist(statErr))
 	})
 
-	t.Run("cli-only readiness — no smithery written", func(t *testing.T) {
+	t.Run("cli-only readiness → skipped (host can't use bundle alone)", func(t *testing.T) {
 		dir := t.TempDir()
 		m := CLIManifest{MCPBinary: "test-pp-mcp", MCPReady: "cli-only"}
-		data, _ := json.Marshal(m)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+		writeManifest(t, dir, m)
 
-		err := writeSmitheryYAML(dir)
-		require.NoError(t, err)
-		_, statErr := os.Stat(filepath.Join(dir, "smithery.yaml"))
+		require.NoError(t, WriteMCPBManifest(dir))
+		_, statErr := os.Stat(filepath.Join(dir, MCPBManifestFilename))
 		assert.True(t, os.IsNotExist(statErr))
 	})
 
-	t.Run("api_key auth — env vars required", func(t *testing.T) {
+	t.Run("missing MCP binary → skipped", func(t *testing.T) {
 		dir := t.TempDir()
-		m := CLIManifest{
+		writeManifest(t, dir, CLIManifest{APIName: "no-mcp", MCPReady: "full"})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		_, statErr := os.Stat(filepath.Join(dir, MCPBManifestFilename))
+		assert.True(t, os.IsNotExist(statErr))
+	})
+
+	t.Run("api_key auth emits required user_config fields", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:     "stripe",
+			DisplayName: "Stripe",
 			MCPBinary:   "stripe-pp-mcp",
 			MCPReady:    "full",
 			AuthType:    "api_key",
 			AuthEnvVars: []string{"STRIPE_API_KEY"},
-			APIName:     "stripe",
+			AuthKeyURL:  "https://dashboard.stripe.com/apikeys",
 			Description: "Stripe payments API",
-		}
-		data, _ := json.Marshal(m)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+		})
 
-		err := writeSmitheryYAML(dir)
-		require.NoError(t, err)
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
 
-		content, err := os.ReadFile(filepath.Join(dir, "smithery.yaml"))
-		require.NoError(t, err)
-		s := string(content)
-		assert.Contains(t, s, "name: stripe-pp-mcp")
-		assert.Contains(t, s, "description: Stripe payments API")
-		assert.Contains(t, s, "command: go run ./cmd/stripe-pp-mcp")
-		assert.Contains(t, s, "STRIPE_API_KEY")
-		assert.Contains(t, s, "required: true")
+		assert.Equal(t, MCPBManifestVersion, got.ManifestVersion)
+		assert.Equal(t, "stripe-pp-mcp", got.Name)
+		assert.Equal(t, "Stripe", got.DisplayName)
+		assert.Equal(t, "Stripe payments API", got.Description)
+		assert.Equal(t, "binary", got.Server.Type)
+		assert.Equal(t, "bin/stripe-pp-mcp", got.Server.EntryPoint)
+		assert.Equal(t, "${__dirname}/bin/stripe-pp-mcp", got.Server.MCPConfig.Command)
+		assert.Equal(t, "${user_config.stripe_api_key}", got.Server.MCPConfig.Env["STRIPE_API_KEY"])
+
+		key, ok := got.UserConfig["stripe_api_key"]
+		require.True(t, ok, "user_config must include the env var key")
+		assert.Equal(t, "STRIPE_API_KEY", key.Title)
+		assert.True(t, key.Sensitive)
+		assert.True(t, key.Required, "api_key auth must be required")
+		assert.Contains(t, key.Description, "https://dashboard.stripe.com/apikeys")
 	})
 
-	t.Run("cookie auth — env vars optional", func(t *testing.T) {
+	t.Run("composed auth emits optional user_config fields", func(t *testing.T) {
 		dir := t.TempDir()
-		m := CLIManifest{
+		writeManifest(t, dir, CLIManifest{
+			APIName:     "pizza",
 			MCPBinary:   "pizza-pp-mcp",
 			MCPReady:    "partial",
-			AuthType:    "cookie",
+			AuthType:    "composed",
 			AuthEnvVars: []string{"PIZZA_AUTH"},
-			APIName:     "pizza",
-		}
-		data, _ := json.Marshal(m)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+		})
 
-		err := writeSmitheryYAML(dir)
-		require.NoError(t, err)
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
 
-		content, err := os.ReadFile(filepath.Join(dir, "smithery.yaml"))
-		require.NoError(t, err)
-		assert.Contains(t, string(content), "required: false")
+		key, ok := got.UserConfig["pizza_auth"]
+		require.True(t, ok)
+		assert.False(t, key.Required, "composed auth keeps user_config optional")
+		assert.Contains(t, key.Description, "Optional.")
 	})
 
-	t.Run("description with special characters is safely escaped", func(t *testing.T) {
+	t.Run("multiple optional env vars (company-goat shape)", func(t *testing.T) {
 		dir := t.TempDir()
-		m := CLIManifest{
-			MCPBinary:   "test-pp-mcp",
+		writeManifest(t, dir, CLIManifest{
+			APIName:     "company-goat",
+			DisplayName: "Company GOAT",
+			MCPBinary:   "company-goat-pp-mcp",
 			MCPReady:    "full",
-			APIName:     "test",
-			Description: `Notion: "All-in-one" workspace & collaboration`,
+			AuthType:    "none",
+			AuthEnvVars: []string{"GITHUB_TOKEN", "COMPANIES_HOUSE_API_KEY"},
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		// Both env vars surface as user_config slots; auth_type "none" keeps
+		// them optional even when env vars exist (sub-source credentials).
+		assert.Len(t, got.UserConfig, 2)
+		for _, key := range []string{"github_token", "companies_house_api_key"} {
+			v, ok := got.UserConfig[key]
+			require.True(t, ok, "user_config must include %q", key)
+			assert.False(t, v.Required, "auth_type=none keeps env vars optional")
 		}
-		data, _ := json.Marshal(m)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
-
-		err := writeSmitheryYAML(dir)
-		require.NoError(t, err)
-
-		// Verify the file is valid YAML by re-parsing it
-		content, err := os.ReadFile(filepath.Join(dir, "smithery.yaml"))
-		require.NoError(t, err)
-		var parsed map[string]any
-		require.NoError(t, yaml.Unmarshal(content, &parsed), "smithery.yaml should be valid YAML even with special chars in description")
-		assert.Contains(t, parsed["description"], "Notion")
 	})
+
+	t.Run("no auth env vars → no user_config or env block", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:   "espn",
+			MCPBinary: "espn-pp-mcp",
+			MCPReady:  "full",
+			AuthType:  "none",
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Empty(t, got.UserConfig)
+		assert.Empty(t, got.Server.MCPConfig.Env)
+	})
+}
+
+func writeManifest(t *testing.T, dir string, m CLIManifest) {
+	t.Helper()
+	data, err := json.Marshal(m)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+}
+
+func readMCPBManifest(t *testing.T, dir string) MCPBManifest {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, MCPBManifestFilename))
+	require.NoError(t, err)
+	var got MCPBManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	return got
 }
 
 func TestDetectSpecFormat(t *testing.T) {

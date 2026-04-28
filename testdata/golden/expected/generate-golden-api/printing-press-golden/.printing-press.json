@@ -6,6 +6,7 @@
   ],
   "auth_type": "api_key",
   "cli_name": "printing-press-golden-pp-cli",
+  "display_name": "Printing Press Golden",
   "generated_at": "<GENERATED_AT>",
   "mcp_binary": "printing-press-golden-pp-mcp",
   "mcp_public_tool_count": 1,

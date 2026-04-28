@@ -1,4 +1,5 @@
 printing-press-golden/.printing-press.json
+printing-press-golden/manifest.json
 printing-press-golden/go.mod
 printing-press-golden/cmd/printing-press-golden-pp-cli/main.go
 printing-press-golden/internal/client/client.go
@@ -13,6 +14,7 @@ printing-press-golden/internal/cli/promoted_public.go
 printing-press-golden/internal/cliutil/text.go
 printing-press-golden/internal/config/config.go
 printing-press-golden/internal/mcp/tools.go
+printing-press-golden/cmd/printing-press-golden-pp-mcp/main.go
 printing-press-golden/internal/types/types.go
 dogfood.json
 scorecard.json

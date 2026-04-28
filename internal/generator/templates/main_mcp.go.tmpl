@@ -27,7 +27,7 @@ const (
 
 func main() {
 	s := server.NewMCPServer(
-		"{{.Name}}-pp-mcp",
+		"{{.EffectiveDisplayName}}",
 		"1.0.0",
 		server.WithToolCapabilities(false),
 	)
@@ -80,7 +80,7 @@ import (
 
 func main() {
 	s := server.NewMCPServer(
-		"{{.Name}}-pp-mcp",
+		"{{.EffectiveDisplayName}}",
 		"1.0.0",
 		server.WithToolCapabilities(false),
 	)

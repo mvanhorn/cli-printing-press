@@ -49,6 +49,15 @@ const DefaultEmbeddedJSONScriptSelector = "script#__NEXT_DATA__"
 
 type APISpec struct {
 	Name string `yaml:"name" json:"name"`
+	// DisplayName is the human-readable brand name used in user-facing
+	// surfaces that aren't a kebab-case slug — Claude Desktop's connector
+	// list, MCPB manifest display_name, the MCP server's protocol-level
+	// name in `server.NewMCPServer(...)`. Authors can set it explicitly
+	// (e.g. "Company GOAT", "Cal.com", "PokéAPI") to preserve unusual
+	// capitalization or punctuation; when empty the generator title-cases
+	// Name as a fallback. The generate command also fills this from a
+	// matching catalog entry's display_name when available.
+	DisplayName string `yaml:"display_name,omitempty" json:"display_name,omitempty"`
 	// Description describes the API itself ("REST API for ordering pizza").
 	// It flows into generated docs and SKILL.md but is intentionally NOT used
 	// as the printed CLI's --help text; that's CLIDescription's job.
@@ -100,6 +109,29 @@ type ExtraCommand struct {
 // strict path-validity and scorecard marks path_validity as unscored.
 func (s *APISpec) IsSynthetic() bool {
 	return s != nil && s.Kind == KindSynthetic
+}
+
+// EffectiveDisplayName returns the human-readable brand name for this CLI.
+// If the author set DisplayName explicitly (preserving capitalization like
+// "Company GOAT", "Cal.com", "PokéAPI"), that wins. Otherwise we title-case
+// Name as a sensible default. Used by the MCP server's protocol-level name,
+// the MCPB manifest's display_name field, and any other surface that needs
+// a friendly identity instead of the kebab-case slug.
+func (s *APISpec) EffectiveDisplayName() string {
+	if s == nil {
+		return ""
+	}
+	if strings.TrimSpace(s.DisplayName) != "" {
+		return s.DisplayName
+	}
+	parts := strings.Split(s.Name, "-")
+	for i, p := range parts {
+		if p == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(p[:1]) + p[1:]
+	}
+	return strings.Join(parts, " ")
 }
 
 func (s *APISpec) EffectiveHTTPTransport() string {

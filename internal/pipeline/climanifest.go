@@ -33,25 +33,35 @@ type CLIManifest struct {
 	// It is not the executable name, and for collision-renamed published copies
 	// it may differ from the package directory key.
 	APIName string `json:"api_name"`
+	// DisplayName is the human-readable brand name used by user-facing
+	// surfaces that don't want a kebab-case slug — Claude Desktop's
+	// connector list, the MCPB manifest's display_name field, the MCP
+	// server's protocol-level name. Sourced from the spec's display_name
+	// (if set) or a matching catalog entry, with a title-cased fallback.
+	DisplayName string `json:"display_name,omitempty"`
 	// CLIName is the executable/binary name (for example "espn-pp-cli").
 	// It does not track the slug-keyed library directory.
-	CLIName            string                 `json:"cli_name"`
-	SpecURL            string                 `json:"spec_url,omitempty"`
-	SpecPath           string                 `json:"spec_path,omitempty"`
-	SpecFormat         string                 `json:"spec_format,omitempty"`
-	SpecChecksum       string                 `json:"spec_checksum,omitempty"`
-	RunID              string                 `json:"run_id,omitempty"`
-	CatalogEntry       string                 `json:"catalog_entry,omitempty"`
-	Category           string                 `json:"category,omitempty"`
-	Description        string                 `json:"description,omitempty"`
-	MCPBinary          string                 `json:"mcp_binary,omitempty"`
-	MCPToolCount       int                    `json:"mcp_tool_count,omitempty"`
-	MCPPublicToolCount int                    `json:"mcp_public_tool_count,omitempty"`
-	MCPReady           string                 `json:"mcp_ready,omitempty"`
-	APIVersion         string                 `json:"api_version,omitempty"` // from the spec's info.version — provenance only, not the CLI version
-	AuthType           string                 `json:"auth_type,omitempty"`
-	AuthEnvVars        []string               `json:"auth_env_vars,omitempty"`
-	NovelFeatures      []NovelFeatureManifest `json:"novel_features,omitempty"`
+	CLIName            string   `json:"cli_name"`
+	SpecURL            string   `json:"spec_url,omitempty"`
+	SpecPath           string   `json:"spec_path,omitempty"`
+	SpecFormat         string   `json:"spec_format,omitempty"`
+	SpecChecksum       string   `json:"spec_checksum,omitempty"`
+	RunID              string   `json:"run_id,omitempty"`
+	CatalogEntry       string   `json:"catalog_entry,omitempty"`
+	Category           string   `json:"category,omitempty"`
+	Description        string   `json:"description,omitempty"`
+	MCPBinary          string   `json:"mcp_binary,omitempty"`
+	MCPToolCount       int      `json:"mcp_tool_count,omitempty"`
+	MCPPublicToolCount int      `json:"mcp_public_tool_count,omitempty"`
+	MCPReady           string   `json:"mcp_ready,omitempty"`
+	APIVersion         string   `json:"api_version,omitempty"` // from the spec's info.version — provenance only, not the CLI version
+	AuthType           string   `json:"auth_type,omitempty"`
+	AuthEnvVars        []string `json:"auth_env_vars,omitempty"`
+	// AuthKeyURL is the page where users register for an API key. Used by
+	// downstream emitters (MCPB manifest user_config descriptions, doctor
+	// hints) to point users at the right credential source.
+	AuthKeyURL    string                 `json:"auth_key_url,omitempty"`
+	NovelFeatures []NovelFeatureManifest `json:"novel_features,omitempty"`
 }
 
 // NovelFeatureManifest is a compact representation of a transcendence feature
@@ -175,6 +185,10 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.MCPReady = computeMCPReady(parsed.Auth.Type, public)
 	m.AuthType = parsed.Auth.Type
 	m.AuthEnvVars = parsed.Auth.EnvVars
+	m.AuthKeyURL = parsed.Auth.KeyURL
+	if m.DisplayName == "" {
+		m.DisplayName = parsed.EffectiveDisplayName()
+	}
 }
 
 // GenerateManifestParams holds the information available at generate time
@@ -247,6 +261,12 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		m.CatalogEntry = entry.Name
 		m.Category = entry.Category
 		m.Description = entry.Description
+		// Catalog's display_name wins over spec/title-case fallback when both
+		// are present. Spec authors and catalog curators sometimes both set
+		// it; the catalog is the curated cross-CLI source of truth.
+		if entry.DisplayName != "" {
+			m.DisplayName = entry.DisplayName
+		}
 	}
 
 	// Record the API version from the spec for provenance (not the CLI version).
@@ -262,7 +282,14 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		m.NovelFeatures = p.NovelFeatures
 	}
 
-	return WriteCLIManifest(p.OutputDir, m)
+	if err := WriteCLIManifest(p.OutputDir, m); err != nil {
+		return err
+	}
+	// Emit MCPB manifest.json next to .printing-press.json so the bundle
+	// build pipeline (and humans reading the CLI dir) finds it co-located
+	// with the MCP source. Silently no-ops for cli-only readiness or
+	// missing MCP binary — both are non-error states.
+	return WriteMCPBManifest(p.OutputDir)
 }
 
 // detectSpecFormat examines the raw spec bytes and returns a format

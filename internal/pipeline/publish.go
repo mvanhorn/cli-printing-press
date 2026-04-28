@@ -18,8 +18,6 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v2/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/version"
-
-	"gopkg.in/yaml.v3"
 )
 
 type RunManifest struct {
@@ -116,10 +114,11 @@ func PublishWorkingCLI(state *PipelineState, targetDir string) (string, error) {
 		return "", err
 	}
 
-	// Generate smithery.yaml for MCP marketplace listing if applicable.
-	if err := writeSmitheryYAML(finalDir); err != nil {
-		// Non-blocking: log warning but don't fail the publish.
-		fmt.Fprintf(os.Stderr, "warning: could not write smithery.yaml: %v\n", err)
+	// Refresh the MCPB manifest.json for the final published location.
+	// Generate already wrote one alongside .printing-press.json; rewriting
+	// here picks up any provenance fields the publish step added.
+	if err := WriteMCPBManifest(finalDir); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write MCPB manifest.json: %v\n", err)
 	}
 
 	if err := state.Save(); err != nil {
@@ -432,78 +431,6 @@ func pickNovelFeaturesForManifest(research *ResearchResult) []NovelFeature {
 		return *research.NovelFeaturesBuilt
 	}
 	return research.NovelFeatures
-}
-
-// smitheryConfig is the marketplace metadata schema for Smithery.
-type smitheryConfig struct {
-	Name         string                    `yaml:"name"`
-	Description  string                    `yaml:"description"`
-	StartCommand smitheryStartCommand      `yaml:"startCommand"`
-	Env          map[string]smitheryEnvVar `yaml:"env,omitempty"`
-}
-
-type smitheryStartCommand struct {
-	Command string `yaml:"command"`
-}
-
-type smitheryEnvVar struct {
-	Description string `yaml:"description"`
-	Required    bool   `yaml:"required"`
-}
-
-// writeSmitheryYAML generates a smithery.yaml marketplace metadata file
-// alongside the CLI manifest. Reads .printing-press.json from dir to get
-// MCP metadata. Skips writing if MCPReady is "cli-only" or if no MCP
-// metadata is present.
-func writeSmitheryYAML(dir string) error {
-	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
-	if err != nil {
-		return nil // no manifest, nothing to do
-	}
-	var m CLIManifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		return fmt.Errorf("parsing manifest for smithery: %w", err)
-	}
-	if m.MCPBinary == "" || m.MCPReady == "cli-only" {
-		return nil // no MCP or cli-only — skip
-	}
-
-	desc := m.Description
-	if desc == "" {
-		desc = m.APIName + " API"
-	}
-
-	cfg := smitheryConfig{
-		Name:        m.MCPBinary,
-		Description: desc,
-		StartCommand: smitheryStartCommand{
-			Command: "go run ./cmd/" + m.MCPBinary,
-		},
-	}
-
-	if len(m.AuthEnvVars) > 0 {
-		cfg.Env = make(map[string]smitheryEnvVar)
-		isCookieAuth := m.AuthType == "cookie" || m.AuthType == "composed"
-		for _, envVar := range m.AuthEnvVars {
-			if isCookieAuth {
-				cfg.Env[envVar] = smitheryEnvVar{
-					Description: "Required for authenticated endpoints only — some tools work without credentials",
-					Required:    false,
-				}
-			} else {
-				cfg.Env[envVar] = smitheryEnvVar{
-					Description: m.APIName + " API credential",
-					Required:    true,
-				}
-			}
-		}
-	}
-
-	out, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("marshaling smithery.yaml: %w", err)
-	}
-	return os.WriteFile(filepath.Join(dir, "smithery.yaml"), out, 0o644)
 }
 
 func CopyDir(src, dst string) error {

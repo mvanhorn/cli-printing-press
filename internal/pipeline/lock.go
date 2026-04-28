@@ -227,9 +227,10 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 		return fmt.Errorf("writing CLI manifest: %w", err)
 	}
 
-	// Generate smithery.yaml for MCP marketplace listing if applicable.
-	if err := writeSmitheryYAML(stagingDir); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not write smithery.yaml: %v\n", err)
+	// Refresh the MCPB manifest.json in the staging dir so the lock-and-promote
+	// flow keeps it in sync with the post-publish CLIManifest fields.
+	if err := WriteMCPBManifest(stagingDir); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write MCPB manifest.json: %v\n", err)
 	}
 
 	// Remove any stale backup from a prior successful swap before we create a
