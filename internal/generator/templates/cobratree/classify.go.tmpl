@@ -12,6 +12,13 @@ import (
 const (
 	EndpointAnnotation = "pp:endpoint"
 	HiddenAnnotation   = "mcp:hidden"
+	// ReadOnlyAnnotation, when set on a Cobra command to "true"/"1"/"yes",
+	// causes the runtime walker to register the resulting MCP tool with
+	// readOnlyHint=true. Use for novel CLI commands that don't mutate
+	// external state — read-only API queries, local cache reads, etc.
+	// Without it, hosts like Claude Desktop default to "could write or
+	// delete" and demand permission per call.
+	ReadOnlyAnnotation = "mcp:read-only"
 )
 
 type commandKind int
@@ -84,9 +91,17 @@ func endpointID(cmd *cobra.Command) string {
 }
 
 func isMCPHidden(cmd *cobra.Command) bool {
+	return annotationIsTrue(cmd, HiddenAnnotation)
+}
+
+func isMCPReadOnly(cmd *cobra.Command) bool {
+	return annotationIsTrue(cmd, ReadOnlyAnnotation)
+}
+
+func annotationIsTrue(cmd *cobra.Command, key string) bool {
 	if cmd == nil || cmd.Annotations == nil {
 		return false
 	}
-	v := strings.ToLower(strings.TrimSpace(cmd.Annotations[HiddenAnnotation]))
+	v := strings.ToLower(strings.TrimSpace(cmd.Annotations[key]))
 	return v == "true" || v == "1" || v == "yes"
 }

@@ -27,6 +27,8 @@ func RegisterTools(s *server.MCPServer) {
 	s.AddTool(
 		mcplib.NewTool("projects_create",
 			mcplib.WithDescription("Create project Returns Project."),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("POST", "/projects", []string{ }),
 	)
@@ -34,6 +36,9 @@ func RegisterTools(s *server.MCPServer) {
 		mcplib.NewTool("projects_get",
 			mcplib.WithDescription("Get project"),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("GET", "/projects/{projectId}", []string{"projectId", }),
 	)
@@ -43,6 +48,9 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("status", mcplib.Description("Status")),
 			mcplib.WithString("limit", mcplib.Description("Limit")),
 			mcplib.WithString("cursor", mcplib.Description("Cursor")),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("GET", "/projects", []string{ }),
 	)
@@ -53,6 +61,9 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("priority", mcplib.Description("Priority")),
 			mcplib.WithString("limit", mcplib.Description("Limit")),
 			mcplib.WithString("cursor", mcplib.Description("Cursor")),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("GET", "/projects/{projectId}/tasks", []string{"projectId", }),
 	)
@@ -61,12 +72,16 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDescription("Update project task Partial update."),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
 			mcplib.WithString("taskId", mcplib.Required(), mcplib.Description("Task id")),
+			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("PATCH", "/projects/{projectId}/tasks/{taskId}", []string{"projectId","taskId", }),
 	)
 	s.AddTool(
 		mcplib.NewTool("public_get-status",
 			mcplib.WithDescription("Get public service status (public)"),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("GET", "/public/status", []string{ }),
 	)
@@ -74,6 +89,9 @@ func RegisterTools(s *server.MCPServer) {
 		mcplib.NewTool("reports_summary_get-report-year",
 			mcplib.WithDescription("Get a report summary for a year"),
 			mcplib.WithString("year", mcplib.Required(), mcplib.Description("Year")),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("GET", "/reports/{year}/summary", []string{"year", }),
 	)
@@ -82,6 +100,8 @@ func RegisterTools(s *server.MCPServer) {
 		mcplib.NewTool("sql",
 			mcplib.WithDescription("Run read-only SQL against local database. Use for ad-hoc analysis, aggregations, and joins across synced resources. Requires sync first."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("SQL query (SELECT only). Tables match resource names.")),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
 		),
 		handleSQL,
 	)
@@ -91,6 +111,8 @@ func RegisterTools(s *server.MCPServer) {
 	s.AddTool(
 		mcplib.NewTool("context",
 			mcplib.WithDescription("Get API domain context: resource taxonomy, auth requirements, query tips, and unique capabilities. Call this first."),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
 		),
 		handleContext,
 	)

@@ -56,6 +56,18 @@ Excluding `sync` while exposing the typed `sql` tool is a **broken contract** �
 
 A novel domain command that maps cleanly to a single agent action gets exposed automatically. The author does not need to declare it anywhere.
 
+### Tool safety annotations
+
+The MCP spec includes per-tool annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) that hosts like Claude Desktop use to classify tool safety and decide when to ask for user permission. Without annotations the host defaults conservatively to "could write or delete," demanding permission per call.
+
+The generator emits annotations automatically based on what it knows:
+
+- **Spec endpoint mirrors:** annotated from the HTTP method. `GET` → `readOnlyHint: true` + `openWorldHint: true`. `DELETE` → `destructiveHint: true` + `openWorldHint: true`. `POST`/`PUT`/`PATCH` get `openWorldHint: true` (writes, not destructive). All endpoint-mirror tools also carry `openWorldHint: true` since they call external APIs.
+- **Built-in MCP tools:** `context`, `sql`, `search` all carry `readOnlyHint: true` (no `openWorldHint` — they read local domain context, the local DB, or the local FTS index, not external APIs).
+- **Runtime-walker shell-out tools:** the walker can't infer semantics from a Cobra command alone, so they ship without annotations by default. Authors can opt a command into the read-only hint via `cmd.Annotations["mcp:read-only"] = "true"` (parallel to `mcp:hidden`). Use this on novel CLI commands that don't mutate external state — read-only API queries, local cache lookups, lightweight derivations.
+
+Default openness: missing annotations don't break anything; they just produce more permission prompts. Adding the wrong annotation (e.g., claiming `readOnlyHint: true` on a tool that mutates state) is the failure mode to avoid — the host trusts the claim and stops asking.
+
 ### Adding a new framework command
 
 When you add a new generator-emitted top-level command, the default is **expose it as an MCP tool** — no action needed in the walker. The runtime walker registers any user-facing Cobra command as a shell-out tool automatically.
