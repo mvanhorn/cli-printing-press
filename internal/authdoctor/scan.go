@@ -2,9 +2,9 @@
 // the env-var status of every installed printed CLI. It is the data layer
 // for the `printing-press auth doctor` command.
 //
-// The scanner reads each API's tools-manifest.json (the same file megamcp
-// consumes) and classifies each declared env var as ok, suspicious,
-// not-set, or no-auth. No network calls. No writes to disk.
+// The scanner reads each API's tools-manifest.json and classifies each
+// declared env var as ok, suspicious, not-set, or no-auth. No network
+// calls. No writes to disk.
 package authdoctor
 
 import (

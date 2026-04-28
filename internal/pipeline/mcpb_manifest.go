@@ -129,11 +129,9 @@ type MCPBCompat struct {
 // WriteMCPBManifest emits manifest.json for a published CLI directory by
 // reading .printing-press.json. Skips silently only when the CLI dir has
 // no .printing-press.json or no MCP binary — every other CLI ships a
-// manifest, including composed/cookie-auth ones whose MCPReady label
-// says "partial" or "cli-only". The user_config block already conveys
-// auth-required-or-optional (per authRequiresCredential), so withholding
-// the manifest from cli-only readiness CLIs only hurt users who could
-// otherwise install the bundle and use any unauthenticated tools.
+// manifest, including composed/cookie-auth ones with a "partial" MCPReady
+// label. The user_config block conveys auth-required-or-optional via
+// authRequiresCredential, which is enough for the host to prompt or skip.
 //
 // Callers that already have the CLIManifest in memory should use
 // WriteMCPBManifestFromStruct to avoid the re-read.

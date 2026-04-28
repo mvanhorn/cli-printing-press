@@ -125,7 +125,7 @@ func autoBundleForHost(cliDir string, w io.Writer) {
 	manifestData, err := os.ReadFile(manifestPath)
 	if err != nil {
 		// "No manifest" means generate decided this CLI doesn't ship as
-		// a bundle (cli-only readiness, no MCP). That's expected — silent.
+		// a bundle (no MCP binary). That's expected — silent.
 		return
 	}
 	var manifest pipeline.MCPBManifest

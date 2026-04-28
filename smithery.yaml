@@ -1,8 +1,0 @@
-name: printing-press-mcp
-description: >
-  Access 270+ API tools across 6 APIs through one MCP server.
-  Sports scores (ESPN), link management (Dub), pizza ordering (Pagliacci),
-  game stats (Steam), and more. Zero config for public APIs — set env vars
-  for authenticated APIs. Discover APIs with library_info, activate on demand.
-startCommand:
-  command: printing-press-mcp

@@ -36,8 +36,8 @@ type BundleParams struct {
 //	bin/<binary>            (the path declared by manifest's server.entry_point)
 //
 // Returns nil and creates no file when manifest.json is missing — the
-// caller's CLI dir is presumably one we don't want to bundle (cli-only
-// readiness, no MCP, etc., the same gates WriteMCPBManifest uses).
+// caller's CLI dir is presumably one we don't want to bundle (no MCP
+// binary, the same gate WriteMCPBManifest uses).
 func BuildMCPBBundle(params BundleParams) error {
 	manifestPath := filepath.Join(params.CLIDir, MCPBManifestFilename)
 	manifestData, err := os.ReadFile(manifestPath)

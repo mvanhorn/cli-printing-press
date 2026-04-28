@@ -15,13 +15,13 @@ import (
 )
 
 // ToolsManifestFilename is the name of the tools manifest file written to each
-// published CLI directory for use by the mega MCP server.
+// published CLI directory. Consumed by `printing-press auth doctor` and
+// `printing-press mcp-audit` to inspect the published library without parsing
+// the original spec.
 const ToolsManifestFilename = "tools-manifest.json"
 
 // ToolsManifest describes every MCP tool for an API, along with API-level
-// metadata needed by the mega MCP to register and execute tools without
-// runtime spec parsing. These types will move to internal/megamcp/types.go
-// in Unit 3.
+// metadata, in a form the diagnostic commands can read directly.
 type ToolsManifest struct {
 	APIName         string           `json:"api_name"`
 	BaseURL         string           `json:"base_url"`

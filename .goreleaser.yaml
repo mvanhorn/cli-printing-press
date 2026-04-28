@@ -19,24 +19,6 @@ builds:
       - -s -w -X github.com/mvanhorn/cli-printing-press/v2/internal/version.Version={{.Version}}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
-  - id: printing-press-mcp
-    main: ./cmd/printing-press-mcp
-    binary: printing-press-mcp
-    env:
-      - CGO_ENABLED=0
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-    flags:
-      - -trimpath
-    ldflags:
-      - -s -w -X github.com/mvanhorn/cli-printing-press/v2/internal/version.Version={{.Version}}
-    mod_timestamp: "{{ .CommitTimestamp }}"
-
 archives:
   - id: printing-press
     builds:
@@ -44,17 +26,6 @@ archives:
     formats:
       - tar.gz
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
-    format_overrides:
-      - goos: windows
-        formats:
-          - zip
-
-  - id: printing-press-mcp
-    builds:
-      - printing-press-mcp
-    formats:
-      - tar.gz
-    name_template: "printing-press-mcp_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
         formats:

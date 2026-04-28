@@ -164,16 +164,7 @@ func specChecksum(path string) (string, error) {
 // to ship?". The label exists to set user expectations: full = every
 // tool works without per-tool auth setup; partial = some tools work
 // without credentials, others need auth provided through the companion
-// CLI's flow (composed, cookie). cli-only is reserved for the
-// degenerate case of no MCP tools at all and is rarely set in practice.
-//
-// Why no `publicTools > 0` gate for composed/cookie any more: the count
-// relies on spec authors tagging endpoints `no_auth: true`, which most
-// generated specs don't audit carefully. A composed-auth CLI with zero
-// no_auth tags was previously labeled cli-only even when many endpoints
-// (registration, login, public discovery) actually work without auth.
-// Defaulting to "partial" matches the typical reality and avoids
-// suppressing manifest emission downstream.
+// CLI's flow (composed, cookie).
 func computeMCPReady(authType string) string {
 	switch authType {
 	case "none", "api_key", "bearer_token":
