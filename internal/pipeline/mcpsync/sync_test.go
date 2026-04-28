@@ -119,6 +119,50 @@ func ExitCode(err error) int { return 0 }
 	assert.NotContains(t, src, "newRootCmd(flags)")
 }
 
+// TestValidateSpecNameMatchesDirAccepts ensures matching name and dir
+// pass the preflight without error. The dir basename is the source of
+// truth for the package identity (it appears in go.mod, in directory
+// listings, in the published library URL); spec.yaml.name should track it.
+func TestValidateSpecNameMatchesDirAccepts(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "weather-goat")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	parsed := &spec.APISpec{Name: "weather-goat"}
+	if err := validateSpecNameMatchesDir(cliDir, parsed); err != nil {
+		t.Errorf("matching name should accept; got %v", err)
+	}
+}
+
+// TestValidateSpecNameMatchesDirRejectsDrift catches the weather-goat
+// class of bug: spec.yaml.name = "weather" but directory is
+// "weather-goat" because an old rename never updated the spec.
+func TestValidateSpecNameMatchesDirRejectsDrift(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "weather-goat")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	parsed := &spec.APISpec{Name: "weather"}
+	err := validateSpecNameMatchesDir(cliDir, parsed)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "spec.yaml name \"weather\"")
+	assert.Contains(t, err.Error(), "directory basename \"weather-goat\"")
+	assert.Contains(t, err.Error(), "--force")
+}
+
+// TestValidateSpecNameMatchesDirNoOpOnEmptySpec — a nil spec or empty
+// name skips validation. The downstream loadArchivedSpec already errors
+// on missing spec; this layer doesn't need to redundantly check.
+func TestValidateSpecNameMatchesDirNoOpOnEmptySpec(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "anything")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	if err := validateSpecNameMatchesDir(cliDir, nil); err != nil {
+		t.Errorf("nil spec should not error; got %v", err)
+	}
+	if err := validateSpecNameMatchesDir(cliDir, &spec.APISpec{}); err != nil {
+		t.Errorf("empty name should not error; got %v", err)
+	}
+}
+
 // TestRemoveStaleMCPHandlersFile locks behavior for the food52 case:
 // older generator templates emitted MCP handlers in a separate
 // internal/mcp/handlers.go; the current template emits everything in

@@ -59,6 +59,20 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// Validate that spec.yaml.name matches the directory's basename.
+	// Older library CLIs sometimes have drift (weather-goat's
+	// spec.yaml.name = "weather"; open-meteo's name diverges similarly)
+	// because the directory was renamed via emboss/republish but the
+	// spec was never updated. Without this guard, the generator
+	// faithfully creates spurious cmd/<spec.name>-pp-cli/ and
+	// cmd/<spec.name>-pp-mcp/ directories alongside the canonical ones,
+	// and emits server.NewMCPServer(<spec.name>) with the wrong identity.
+	// The fix per CLI is to update spec.yaml's name field to match the
+	// directory; mcp-sync surfaces the divergence rather than silently
+	// generating wrong artifacts.
+	if err := validateSpecNameMatchesDir(cliDir, parsed); err != nil && !opts.Force {
+		return Result{}, err
+	}
 	// Preserve the existing manifest.json's display_name onto the parsed
 	// spec when the spec itself doesn't carry one. Library CLIs printed
 	// before spec.display_name existed (v1.x) lack the canonical source,
@@ -377,6 +391,29 @@ func titleCaseFromSlug(slug string) string {
 		runes[0] -= 'a' - 'A'
 	}
 	return string(runes)
+}
+
+// validateSpecNameMatchesDir refuses to migrate when spec.yaml.name
+// diverges from the CLI directory's basename. This catches the
+// weather-goat / open-meteo class of drift where an old emboss/rename
+// updated the directory but left spec.yaml.name behind, producing
+// spurious cmd/<spec.name>-pp-{cli,mcp}/ directories on regen and a
+// wrong MCP server identity. Caller can pass --force to bypass when
+// they know the divergence is intentional (e.g., a deliberate alias).
+func validateSpecNameMatchesDir(cliDir string, parsed *spec.APISpec) error {
+	if parsed == nil || parsed.Name == "" {
+		return nil
+	}
+	dirName := filepath.Base(cliDir)
+	if dirName == parsed.Name {
+		return nil
+	}
+	return fmt.Errorf(
+		"spec.yaml name %q does not match directory basename %q. "+
+			"This produces spurious cmd/%s-pp-{cli,mcp}/ directories on regen and an incorrect MCP server identity. "+
+			"Fix spec.yaml's `name:` field to match the directory, or pass --force to bypass",
+		parsed.Name, dirName, parsed.Name,
+	)
 }
 
 // removeStaleMCPHandlersFile deletes internal/mcp/handlers.go when it

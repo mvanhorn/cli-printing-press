@@ -1197,14 +1197,29 @@ func (g *Generator) GenerateMCPSurfaceOnly() error {
 		return err
 	}
 	g.PromotedCommands, g.PromotedResourceNames, g.PromotedEndpointNames = buildPromotedCommandPlan(g.Spec)
-	for tmplName, outPath := range map[string]string{
+	mcpFiles := map[string]string{
 		"cobratree/walker.go.tmpl":   filepath.Join("internal", "mcp", "cobratree", "walker.go"),
 		"cobratree/classify.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "classify.go"),
 		"cobratree/typemap.go.tmpl":  filepath.Join("internal", "mcp", "cobratree", "typemap.go"),
 		"cobratree/shellout.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "shellout.go"),
 		"cobratree/cli_path.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "cli_path.go"),
 		"cobratree/names.go.tmpl":    filepath.Join("internal", "mcp", "cobratree", "names.go"),
-	} {
+		// cliutil files. The MCP template references cliutil helpers
+		// (SanitizeErrorBody, LooksLikeAuthError, etc.) that newer
+		// generator releases have added. Library CLIs printed before
+		// those helpers existed have stale cliutil packages, and the
+		// regenerated tools.go fails to build with "undefined:
+		// cliutil.SanitizeErrorBody". Regenerating the cliutil package
+		// alongside the MCP surface keeps helpers current. Per AGENTS.md,
+		// internal/cliutil is generator-reserved — agents are not
+		// supposed to hand-edit it, so unconditional regen is safe.
+		"cliutil_fanout.go.tmpl":    filepath.Join("internal", "cliutil", "fanout.go"),
+		"cliutil_text.go.tmpl":      filepath.Join("internal", "cliutil", "text.go"),
+		"cliutil_probe.go.tmpl":     filepath.Join("internal", "cliutil", "probe.go"),
+		"cliutil_ratelimit.go.tmpl": filepath.Join("internal", "cliutil", "ratelimit.go"),
+		"cliutil_verifyenv.go.tmpl": filepath.Join("internal", "cliutil", "verifyenv.go"),
+	}
+	for tmplName, outPath := range mcpFiles {
 		if err := g.renderTemplate(tmplName, outPath, g.Spec); err != nil {
 			return fmt.Errorf("rendering %s: %w", tmplName, err)
 		}
