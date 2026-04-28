@@ -36,6 +36,37 @@ Three carve-outs are legitimate:
 
 The rule is enforced in two places. The absorb manifest has a Kill Check (see `skills/printing-press/references/absorb-scoring.md`) that rejects reimplementation candidates before they enter the feature list. Dogfood runs `reimplementation_check` over every built novel-feature command and flags any handler file that shows neither a client call nor a store access (and lacks the static-reference opt-out).
 
+## Agent-Native Surface
+
+Every printed CLI exposes two surfaces: the **CLI surface** that humans drive with shell commands, and the **MCP surface** that agents call as tools. Per the agent-native parity principle, any action a user can take should be reachable by an agent — but the surfaces are not identical. The CLI carries operator/human ergonomics that don't belong in an agent's tool catalog.
+
+### What belongs on the MCP surface
+
+The runtime walker in `internal/mcp/cobratree/` mirrors the Cobra tree at server start. Default: every user-facing command becomes an MCP tool. The walker filters via three rules, in order:
+
+1. **Endpoint mirrors keep typed schemas.** A Cobra command annotated `cmd.Annotations["pp:endpoint"] = "<resource>.<endpoint>"` is registered as a typed MCP tool by the existing template (one per spec endpoint, schema derived from spec params). The walker skips these so they aren't shell-out duplicates.
+2. **Framework commands are excluded by name.** The `frameworkCommands` set in `cobratree/classify.go.tmpl` lists the canonical generator-emitted commands that exist for human/operator workflows only — `doctor`, `version`, `auth`, `profile`, `feedback`, `which`, `agent-context`, `export`, `import`, `sync`, `sql`, `search`, `workflow`, `stale`, `orphans`, `load`, `api`, `analytics`, `reconcile`, `about`, `completion`, `help`. Some (`sync`, `sql`, `search`) overlap with typed MCP tools the template registers separately; without this skip list the walker would register colliding shell-out duplicates.
+3. **Per-command opt-out via annotation.** Domain commands that should not be agent tools — interactive setup wizards, debug commands, anything that needs human-in-the-loop input — set `cmd.Annotations["mcp:hidden"] = "true"` at construction time.
+
+A novel domain command that maps cleanly to a single agent action gets exposed automatically. The author does not need to declare it anywhere.
+
+### Adding a new framework command
+
+When you add a new generator-emitted top-level command that should NOT be an agent tool, you must update **two** places:
+
+1. The template that emits the command (e.g., `internal/generator/templates/<name>.go.tmpl`).
+2. The `frameworkCommands` set in `internal/generator/templates/cobratree/classify.go.tmpl`.
+
+Skipping step 2 silently leaks the command into every printed CLI's MCP surface as a shell-out tool. The fix is mechanical and there is no other guard — golden tests catch the resulting tool list shift, but only if a fixture exercises that command path.
+
+This is the same shape as the "When adding a capability that affects scoring" rule a few sections up: a new generator capability must update the dependent verifier or surface in the same change. Forgetting either half ships a CLI whose advertised contract diverges from what's actually emitted.
+
+### Why agent-facing != user-facing
+
+Diagnostics (`doctor`, `version`), interactive setup (`auth login`), local-only operations (`profile save`, `feedback`), and shell ergonomics (`completion`, `which`) all belong on the human-facing CLI. Exposing them as MCP tools doesn't help agents — it pollutes the tool catalog with tools that either fail without TTY input, return information the agent doesn't need (e.g., the CLI's own version), or duplicate first-class MCP tools (`agent-context` would shadow the typed `context` MCP tool). Curated absence is a feature.
+
+The default flips toward exposure for one reason: agents must be able to do anything users can. So the rules are written as exceptions to a permissive default, not as an allowlist. When in doubt, leave it exposed — undeclared MCP gaps were the bug class that drove this whole architecture (see `docs/plans/2026-04-28-001-feat-mcp-cobra-tree-mirror-plan.md` for the audit that surfaced ESPN missing 18 commands and company-goat missing 7).
+
 ## Build, Test & Lint
 
 ```bash
@@ -123,7 +154,7 @@ Key terms used throughout this repo. Several have overloaded meanings — the gl
 | **verify** | Runtime behavioral testing of a printed CLI — runs every command against the real API (read-only) or a mock server. Produces PASS/WARN/FAIL verdicts. Has `--fix` mode for auto-patching. Distinct from quality gates (static) and dogfood (structural). |
 | **dogfood** | Generation-time structural validation of a printed CLI against its source spec. Catches dead flags, invalid API paths, auth mismatches, and MCP surface parity drift. Subcommand: `printing-press dogfood`. Compare with **doctor** (shipped in the CLI for end-users) and **verify** (runtime behavioral). |
 | **cliutil** | The generator-owned Go package emitted into every printed CLI at `internal/cliutil/`. Houses shared helpers meant for agent-authored novel code to import: `cliutil.FanoutRun` for aggregation commands (per-source error collection, bounded concurrency, source-order output), `cliutil.CleanText` for HTML/JSON-LD text normalization, `cliutil.IsVerifyEnv()` for the side-effect short-circuit (see **side-effect command convention**). **Generator-reserved namespace** — agents authoring novel code in Phase 3 must not put their code in `internal/cliutil/` or name their own helpers that collide with cliutil's exports. |
-| **cobratree** | The generator-owned Go package emitted into every printed CLI at `internal/mcp/cobratree/`. The MCP server uses it to walk the printed CLI's Cobra command tree at startup and register shell-out tools for user-facing commands that are not already typed endpoint tools. Commands opt out with `cmd.Annotations["mcp:hidden"] = "true"`; endpoint commands are marked with `cmd.Annotations["pp:endpoint"]`. **Generator-reserved namespace** — do not hand-author code here. |
+| **cobratree** | The generator-owned Go package emitted into every printed CLI at `internal/mcp/cobratree/`. The MCP server uses it to walk the printed CLI's Cobra command tree at startup and register shell-out tools for user-facing commands that are not already typed endpoint tools. Classification rules and the framework skip list live in `cobratree/classify.go.tmpl`; see **Agent-Native Surface** for when to add to the framework set vs. annotate `mcp:hidden`. **Generator-reserved namespace** — do not hand-author code here. |
 | **side-effect command convention** | Two-part rule for hand-written novel commands that perform visible actions (open browser tabs, send notifications, dial out to OS handlers). (1) Print by default; require explicit opt-in (`--launch`, `--send`, `--play`) to actually act. (2) Short-circuit when `cliutil.IsVerifyEnv()` is true — the verifier sets `PRINTING_PRESS_VERIFY=1` in every mock-mode subprocess, and the env-var check is the floor that catches any command the verifier's heuristic side-effect classifier misses. Documented in `skills/printing-press/SKILL.md` Phase 3 (principle 9). |
 | **canonicalargs** | Tiny generator subpackage at `internal/canonicalargs/` exporting `Lookup(name) (string, bool)` for cross-domain positional placeholder names (`since`, `until`, `tag`, `vertical`). Both verify mock-mode dispatch and the SKILL template consult this registry as one step in the lookup chain `spec.Param.Default → canonicalargs → legacy syntheticArgValue switch → "mock-value"`. **Domain-specific names belong in the spec author's `Param.Default`, not here** — anti-pattern: "Never change the machine for one CLI's edge case." |
 | **mcp-sync** | Subcommand on the printing-press binary (`printing-press mcp-sync <cli-dir>`) that migrates generated MCP surfaces from the old static novel-feature list to the runtime Cobra-tree mirror. It rewrites generated MCP files, adds the root command export when possible, regenerates `tools-manifest.json`, and refuses hand-edited `internal/mcp/tools.go` unless `--force` is passed. |

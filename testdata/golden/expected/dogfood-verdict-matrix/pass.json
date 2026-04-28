@@ -27,10 +27,9 @@
   },
   "issues": null,
   "mcp_surface_parity": {
-    "detail": "no internal/mcp/tools.go; CLI does not ship an MCP surface",
+    "detail": "MCP surface mirrors the Cobra tree at runtime",
     "pass": true,
-    "skipped": true,
-    "state": "missing"
+    "state": "runtime_walking"
   },
   "naming_check": {
     "checked": 2

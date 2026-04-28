@@ -23,9 +23,40 @@ const (
 	commandHidden
 )
 
+// frameworkCommands are top-level CLI commands the generator emits for every
+// printed CLI to support local diagnostics, configuration, and ops. They are
+// intentionally NOT exposed as MCP tools: agents do not need to introspect a
+// CLI's own version, run its self-doctor, or shell-out to its profile manager
+// — these belong on the human-facing CLI surface only. Some (sync, sql,
+// search) overlap with typed MCP tools registered elsewhere; without this
+// skip list the walker would register colliding shell-out duplicates.
+//
+// The set must match the canonical framework command list documented in the
+// runtime-mirror plan (KTD-3). Adding a new framework command to the
+// generator means adding it here too.
 var frameworkCommands = map[string]bool{
-	"completion": true,
-	"help":       true,
+	"about":         true,
+	"agent-context": true,
+	"analytics":     true,
+	"api":           true,
+	"auth":          true,
+	"completion":    true,
+	"doctor":        true,
+	"export":        true,
+	"feedback":      true,
+	"help":          true,
+	"import":        true,
+	"load":          true,
+	"orphans":       true,
+	"profile":       true,
+	"reconcile":     true,
+	"search":        true,
+	"sql":           true,
+	"stale":         true,
+	"sync":          true,
+	"version":       true,
+	"which":         true,
+	"workflow":      true,
 }
 
 func classify(cmd *cobra.Command) commandKind {
