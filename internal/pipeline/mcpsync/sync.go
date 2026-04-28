@@ -55,6 +55,19 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// Preserve the existing manifest.json's display_name onto the parsed
+	// spec when the spec itself doesn't carry one. Library CLIs printed
+	// before spec.display_name existed (v1.x) lack the canonical source,
+	// but the PR #145 codemod baked the right brand casing into
+	// manifest.json from registry.json. Without this, mcp-sync's
+	// regeneration drops "ESPN" back to the title-cased slug ("Espn"),
+	// regressing both the MCP server identity (NewMCPServer first arg)
+	// and the bundled manifest's display_name field.
+	if parsed.DisplayName == "" {
+		if existing := readExistingManifestDisplayName(cliDir); existing != "" {
+			parsed.DisplayName = existing
+		}
+	}
 	modulePath, err := readModulePath(cliDir)
 	if err != nil {
 		return Result{}, err
@@ -284,6 +297,52 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	src = src[:exitStart] + "\n\treturn rootCmd\n}\n" + src[exitEnd:]
 
 	return writeFileAtomic(path, []byte(src))
+}
+
+// readExistingManifestDisplayName returns the display_name from an existing
+// manifest.json on disk if it's a real brand name rather than the
+// title-cased slug fallback. Used by Sync to preserve PR #145 codemod
+// brand-casing for library CLIs printed before spec.display_name existed.
+func readExistingManifestDisplayName(cliDir string) string {
+	manifestData, err := os.ReadFile(filepath.Join(cliDir, "manifest.json"))
+	if err != nil {
+		return ""
+	}
+	var existing struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.Unmarshal(manifestData, &existing); err != nil {
+		return ""
+	}
+	if existing.DisplayName == "" {
+		return ""
+	}
+	// The derived form for old prints is the title-cased mcp-binary slug
+	// minus the "-pp-mcp" suffix (e.g., "espn-pp-mcp" → "Espn"). If the
+	// existing display_name matches that derived shape, treat it as no
+	// brand info and fall through.
+	derived := titleCaseFromSlug(strings.TrimSuffix(existing.Name, "-pp-mcp"))
+	if existing.DisplayName == derived {
+		return ""
+	}
+	return existing.DisplayName
+}
+
+// titleCaseFromSlug capitalizes the first rune of a slug. Approximates
+// the spec.EffectiveDisplayName fallback for slugs without an explicit
+// display_name (e.g., "espn" → "Espn"). Mirrors the case-detection logic
+// readExistingManifestDisplayName uses to decide whether the existing
+// manifest carries real brand information.
+func titleCaseFromSlug(slug string) string {
+	if slug == "" {
+		return ""
+	}
+	runes := []rune(slug)
+	if runes[0] >= 'a' && runes[0] <= 'z' {
+		runes[0] -= 'a' - 'A'
+	}
+	return string(runes)
 }
 
 // readModulePath parses the cli's go.mod and returns the declared module

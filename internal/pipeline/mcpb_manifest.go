@@ -161,7 +161,16 @@ func WriteMCPBManifestFromStruct(dir string, m CLIManifest) error {
 }
 
 func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
+	// Resolution order mirrors manifestDescription: canonical source first
+	// (.printing-press.json populated by spec.display_name on modern
+	// prints), then existing manifest.json for older library CLIs whose
+	// codemod-baked display_name carries the right brand casing, then
+	// derived from the API slug. Without the existing-manifest fallback,
+	// mcp-sync regressed library CLIs from "ESPN" → "espn".
 	displayName := m.DisplayName
+	if displayName == "" {
+		displayName = readExistingManifestDisplayName(dir, m.APIName)
+	}
 	if displayName == "" {
 		displayName = m.APIName
 	}
@@ -252,6 +261,49 @@ func readExistingManifestDescription(dir, displayName string) string {
 		return ""
 	}
 	return existing.Description
+}
+
+// readExistingManifestDisplayName returns the display_name from an
+// existing manifest.json if it's a real brand name rather than a derived
+// fallback. The two derived forms we explicitly reject: the bare API slug
+// (lowercase, e.g. "espn") that buildMCPBManifest emits when nothing
+// better is known, and the title-cased slug ("Espn") that the older
+// spec.EffectiveDisplayName fallback used to produce. Anything else —
+// "ESPN", "Cal.com", "Company GOAT", "PokéAPI" — is real brand content
+// from a hand-edit or a codemod and worth preserving across regen.
+func readExistingManifestDisplayName(dir, apiSlug string) string {
+	data, err := os.ReadFile(filepath.Join(dir, MCPBManifestFilename))
+	if err != nil {
+		return ""
+	}
+	var existing struct {
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.Unmarshal(data, &existing); err != nil {
+		return ""
+	}
+	if existing.DisplayName == "" || existing.DisplayName == apiSlug {
+		return ""
+	}
+	titleCased := titleCaseFirstRune(apiSlug)
+	if existing.DisplayName == titleCased {
+		return ""
+	}
+	return existing.DisplayName
+}
+
+// titleCaseFirstRune capitalizes the first ASCII letter of slug. Mirrors
+// the older spec.EffectiveDisplayName fallback so we can detect and
+// reject preserved title-cased slugs that masquerade as real brand names.
+func titleCaseFirstRune(slug string) string {
+	if slug == "" {
+		return ""
+	}
+	runes := []rune(slug)
+	if runes[0] >= 'a' && runes[0] <= 'z' {
+		runes[0] -= 'a' - 'A'
+	}
+	return string(runes)
 }
 
 // buildMCPBEnv maps each declared auth env var into the launch spec's env
