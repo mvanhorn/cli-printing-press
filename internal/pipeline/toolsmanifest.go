@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v2/internal/mcpdesc"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/mcpoverrides"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
@@ -151,7 +152,13 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 				continue
 			}
 			toolName := mcpoverrides.ToolName(rName, "", eName)
-			desc := naming.MCPDescription(endpoint.Description, endpoint.NoAuth, parsed.Auth.Type, public, total)
+			desc := mcpdesc.Compose(mcpdesc.Input{
+				Endpoint:    endpoint,
+				NoAuth:      endpoint.NoAuth,
+				AuthType:    parsed.Auth.Type,
+				PublicCount: public,
+				TotalCount:  total,
+			})
 			tool := buildManifestTool(toolName, desc, endpoint)
 			manifest.Tools = append(manifest.Tools, tool)
 		}
@@ -167,7 +174,13 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 					continue
 				}
 				toolName := mcpoverrides.ToolName(rName, subName, eName)
-				desc := naming.MCPDescription(endpoint.Description, endpoint.NoAuth, parsed.Auth.Type, public, total)
+				desc := mcpdesc.Compose(mcpdesc.Input{
+					Endpoint:    endpoint,
+					NoAuth:      endpoint.NoAuth,
+					AuthType:    parsed.Auth.Type,
+					PublicCount: public,
+					TotalCount:  total,
+				})
 				tool := buildManifestTool(toolName, desc, endpoint)
 				manifest.Tools = append(manifest.Tools, tool)
 			}

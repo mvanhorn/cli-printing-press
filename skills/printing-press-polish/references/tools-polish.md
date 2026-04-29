@@ -77,7 +77,12 @@ A typed endpoint tool whose `description` field in `tools-manifest.json` is empt
 
 ### `thin-mcp-description`
 
-A typed endpoint tool whose description is both short (<60 chars) and low-word-count (<8 words). The dominant pattern: spec-derived summaries like `"Create a tag"`, `"List domains"`, `"Update a link"` — fine for OpenAPI doc rendering, inadequate for an agent picking from a tool catalog. The agent looking at `"Create a tag"` has to guess what fields to pass, what comes back, and when to prefer this over alternatives.
+A typed endpoint tool whose description is both short (<60 chars) and low-word-count (<8 words).
+
+The generator composes a baseline description from spec material at generation time (action + `Required:` + `Optional:` + `Returns` clause), so thin findings should be uncommon when the spec is reasonably complete. When you do see one, it usually means either:
+
+- **The spec is genuinely thin.** No body fields, no response schema, no useful description text — the operation is `GET /health` style with nothing to compose. Verify by reading the spec; if confirmed, accept with the pre-decision fields filled honestly.
+- **An existing override is too short.** Someone wrote a short override into `mcp-descriptions.json` that bypasses the composer. Replace it with a richer override following the criteria below.
 
 **Fix:** rewrite per the MCP description criteria below and write the new text to the override file (see "Override path" below).
 

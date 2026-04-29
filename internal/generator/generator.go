@@ -18,6 +18,7 @@ import (
 	"unicode"
 
 	"github.com/mvanhorn/cli-printing-press/v2/internal/browsersniff"
+	"github.com/mvanhorn/cli-printing-press/v2/internal/mcpdesc"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/profiler"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
@@ -212,8 +213,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"resolveEnvVarField":     resolveEnvVarField,
 		"add":                    func(a, b int) int { return a + b },
 		"oneline":                naming.OneLine,
-		"mcpDescription":         naming.MCPDescription,
-		"mcpDescriptionRich":     mcpDescriptionRich,
+		"composeMCPDesc":         composeMCPDesc,
 		"flagName":               flagName,
 		"paramIdent":             paramIdent,
 		"safeTypeName":           safeTypeName,
@@ -2552,48 +2552,20 @@ func resolveEnvVarField(envVar string) string {
 	return envVarField(envVar)
 }
 
-// mcpDescriptionRich builds an enriched MCP tool description that includes
-// the base description plus response shape hints and method context.
-// This gives agents enough information to choose the right tool without
-// trial-and-error. Total length is capped to prevent token bloat.
-func mcpDescriptionRich(desc string, noAuth bool, authType string, publicCount, totalCount int, method, respType, respItem string) string {
-	base := naming.MCPDescription(desc, noAuth, authType, publicCount, totalCount)
-
-	var suffix string
-
-	// Add response shape hint
-	if respType == "array" && respItem != "" {
-		suffix = "Returns array of " + respItem + "."
-	} else if respType == "array" {
-		suffix = "Returns array."
-	} else if respType == "object" && respItem != "" {
-		suffix = "Returns " + respItem + "."
-	}
-
-	// Add method context for non-obvious cases
-	switch method {
-	case "DELETE":
-		if suffix != "" {
-			suffix += " Destructive."
-		} else {
-			suffix = "Destructive operation."
-		}
-	case "PATCH":
-		if suffix == "" {
-			suffix = "Partial update."
-		}
-	}
-
-	if suffix == "" {
-		return base
-	}
-
-	result := base + " " + suffix
-	// Cap at 200 chars to prevent token bloat (PostHog learned this the hard way)
-	if len(result) > 200 {
-		result = result[:197] + "..."
-	}
-	return result
+// composeMCPDesc is the template helper that wraps mcpdesc.Compose so
+// the mcp_tools.go.tmpl template can build a full description from
+// the parsed endpoint plus auth context. The composer in
+// internal/mcpdesc shapes the action sentence + Required/Optional
+// parameter lines + Returns clause; this wrapper just packages the
+// arguments into the Input struct.
+func composeMCPDesc(endpoint spec.Endpoint, noAuth bool, authType string, publicCount, totalCount int) string {
+	return mcpdesc.Compose(mcpdesc.Input{
+		Endpoint:    endpoint,
+		NoAuth:      noAuth,
+		AuthType:    authType,
+		PublicCount: publicCount,
+		TotalCount:  totalCount,
+	})
 }
 
 func exampleValue(p spec.Param) string {

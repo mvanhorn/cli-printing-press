@@ -38,7 +38,7 @@ func RegisterTools(s *server.MCPServer) {
 {{- range $eName, $endpoint := $resource.Endpoints}}
 	s.AddTool(
 		mcplib.NewTool({{printf "%q" (printf "%s_%s" (snake $name) (snake $eName))}},
-			mcplib.WithDescription({{printf "%q" (mcpDescriptionRich $endpoint.Description $endpoint.NoAuth $.Auth.Type $.MCPPublicCount $.MCPTotalCount $endpoint.Method $endpoint.Response.Type $endpoint.Response.Item)}}),
+			mcplib.WithDescription({{printf "%q" (composeMCPDesc $endpoint $endpoint.NoAuth $.Auth.Type $.MCPPublicCount $.MCPTotalCount)}}),
 {{- range $endpoint.Params}}
 {{- if eq .Type "integer"}}
 			mcplib.WithNumber({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (oneline .Description)}})),
@@ -69,7 +69,7 @@ func RegisterTools(s *server.MCPServer) {
 {{- range $eName, $endpoint := $subResource.Endpoints}}
 	s.AddTool(
 		mcplib.NewTool({{printf "%q" (printf "%s_%s_%s" (snake $name) (snake $subName) (snake $eName))}},
-			mcplib.WithDescription({{printf "%q" (mcpDescriptionRich $endpoint.Description $endpoint.NoAuth $.Auth.Type $.MCPPublicCount $.MCPTotalCount $endpoint.Method $endpoint.Response.Type $endpoint.Response.Item)}}),
+			mcplib.WithDescription({{printf "%q" (composeMCPDesc $endpoint $endpoint.NoAuth $.Auth.Type $.MCPPublicCount $.MCPTotalCount)}}),
 {{- range $endpoint.Params}}
 {{- if eq .Type "integer"}}
 			mcplib.WithNumber({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (oneline .Description)}})),
