@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -93,6 +94,41 @@ func ReadCLIBinaryName(dir string) string {
 		return ""
 	}
 	return m.CLIName
+}
+
+// RefreshCLIManifestFromSpec rereads dir/.printing-press.json, overlays the
+// spec-derived fields from parsed (via populateMCPMetadata), and writes
+// the result back. Used by mcp-sync to keep provenance in sync with
+// spec.yaml — without this, spec.yaml updates to auth.key_url,
+// auth.optional, auth.env_vars, and similar fields never reach
+// downstream emitters (manifest.json, doctor, scorecard) because those
+// read .printing-press.json, not the spec directly.
+//
+// Generate-time fields (spec_url, spec_path, spec_checksum,
+// generated_at, printing_press_version, schema_version, novel_features,
+// catalog_entry, category, cli_name, api_name, api_version, description)
+// are preserved as-is. Only the spec-driven MCP/auth/display fields
+// are refreshed.
+//
+// Returns nil silently when .printing-press.json is missing — callers
+// generating from scratch don't need a provenance-refresh step.
+func RefreshCLIManifestFromSpec(dir string, parsed *spec.APISpec) error {
+	if parsed == nil {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("reading CLI manifest for refresh: %w", err)
+	}
+	var m CLIManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return fmt.Errorf("parsing CLI manifest for refresh: %w", err)
+	}
+	populateMCPMetadata(&m, parsed)
+	return WriteCLIManifest(dir, m)
 }
 
 // WriteCLIManifest marshals m as indented JSON and writes it to

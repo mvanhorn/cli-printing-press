@@ -119,6 +119,16 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	if err := pipeline.WriteToolsManifest(cliDir, parsed); err != nil {
 		return Result{}, fmt.Errorf("regenerating tools-manifest.json: %w", err)
 	}
+	// Refresh .printing-press.json's spec-derived fields before regenerating
+	// manifest.json. WriteMCPBManifest reads provenance from disk, so
+	// without this step spec.yaml updates to auth.key_url, auth.optional,
+	// auth.env_vars, and similar never reach the MCPB Configure modal.
+	// This staleness bit recipe-goat twice in one session — first when
+	// auth.key_url was added (signup URL didn't surface), then again
+	// when auth.optional was added (Required label didn't drop).
+	if err := pipeline.RefreshCLIManifestFromSpec(cliDir, parsed); err != nil {
+		return Result{}, fmt.Errorf("refreshing CLI manifest from spec: %w", err)
+	}
 	// Regenerate the MCPB manifest too. The schema can drift between
 	// generator releases (most recently: cli_binary was removed because
 	// Claude Desktop strict-validates v0.3 keys). mcp-sync without this

@@ -1,11 +1,13 @@
 package mcpsync
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v2/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/v2/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -194,6 +196,85 @@ func RegisterNovelFeatureTools() { shellOutToCLI("items list") }
 	src := string(regenerated)
 	assert.Contains(t, src, "SanitizeErrorBody", "cliutil/text.go should be regenerated with SanitizeErrorBody")
 	assert.NotContains(t, src, "// CleanText is the only helper this older template emitted.", "stale stub content should be replaced")
+}
+
+// TestSyncRefreshesProvenanceFromSpec locks the contract that mcp-sync
+// updates .printing-press.json's spec-derived fields from the current
+// spec.yaml. Pre-fix, mcp-sync wrote manifest.json from stale provenance,
+// so spec.yaml updates to auth.key_url, auth.optional, auth.env_vars,
+// etc. never reached the MCPB Configure modal until someone hand-injected
+// them into .printing-press.json. Bit recipe-goat twice in one session.
+func TestSyncRefreshesProvenanceFromSpec(t *testing.T) {
+	t.Parallel()
+
+	// Step 1: generate the CLI with an initial spec (no key_url, not optional).
+	apiSpec := &spec.APISpec{
+		Name:    "provrefresh",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"PROVREFRESH_TOKEN"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/provrefresh-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+	cliDir := filepath.Join(t.TempDir(), "provrefresh")
+	gen := generator.New(apiSpec, cliDir)
+	require.NoError(t, gen.Generate())
+
+	// Step 2: simulate a generate-time provenance write. WriteManifestForGenerate
+	// is what cli/generate.go calls; the test exercises the same path.
+	require.NoError(t, pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
+		APIName:   apiSpec.Name,
+		OutputDir: cliDir,
+		Spec:      apiSpec,
+	}))
+
+	// Step 3: edit spec.yaml with the new auth.key_url + auth.optional that
+	// the original spec lacked. This is the field-update scenario that
+	// breaks without provenance refresh.
+	apiSpec.Auth.KeyURL = "https://example.com/get-a-token"
+	apiSpec.Auth.Optional = true
+	specData, err := yaml.Marshal(apiSpec)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.yaml"), specData, 0o644))
+
+	// Step 4: run mcp-sync. It should pick up the new spec values and
+	// refresh .printing-press.json + manifest.json.
+	result, err := Sync(cliDir, Options{})
+	require.NoError(t, err)
+	assert.True(t, result.Changed)
+
+	// Step 5: verify .printing-press.json now reflects the new spec.
+	provData, err := os.ReadFile(filepath.Join(cliDir, pipeline.CLIManifestFilename))
+	require.NoError(t, err)
+	var prov pipeline.CLIManifest
+	require.NoError(t, json.Unmarshal(provData, &prov))
+	assert.Equal(t, "https://example.com/get-a-token", prov.AuthKeyURL, "auth_key_url must refresh from spec.yaml on mcp-sync")
+	assert.True(t, prov.AuthOptional, "auth_optional must refresh from spec.yaml on mcp-sync")
+
+	// Step 6: verify the MCPB manifest also reflects the new spec — this
+	// is the user-visible failure mode (Configure modal wording / Required
+	// flag). Confirms the full chain spec.yaml → .printing-press.json →
+	// manifest.json works end-to-end.
+	manifestData, err := os.ReadFile(filepath.Join(cliDir, pipeline.MCPBManifestFilename))
+	require.NoError(t, err)
+	manifestStr := string(manifestData)
+	assert.Contains(t, manifestStr, "https://example.com/get-a-token", "manifest description should surface key_url after refresh")
+	assert.Contains(t, manifestStr, `"description": "Optional. Sets`, "manifest description should reflect auth_optional with the Optional. prefix")
 }
 
 // TestValidateSpecNameMatchesDirAccepts ensures matching name and dir
