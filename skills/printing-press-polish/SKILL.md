@@ -48,6 +48,22 @@ PRESS_HOME="$HOME/printing-press"
 PRESS_LIBRARY="$PRESS_HOME/library"
 ```
 
+### Public-library hint
+
+If the user's request includes phrasing like "polish notion **in the
+public library**", "polish **from the public library**", or "polish the
+published cal-com" — and the named CLI is **not** in
+`$PRESS_LIBRARY/<slug>/` — they're asking to polish a CLI that lives
+upstream but not locally. Polish runs against the internal library, so
+the right move is to import first.
+
+Suggest: `/printing-press-import <slug>` to bring it in, then re-run
+polish. Don't try to polish a CLI that isn't in the internal library.
+
+If the named CLI **is** already in `$PRESS_LIBRARY/<slug>/`, the
+"public library" phrasing is informational — just proceed with polish
+and let the divergence check (below) handle any drift.
+
 ### Resolve CLI
 
 The argument can be:
