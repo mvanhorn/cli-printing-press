@@ -808,6 +808,88 @@ func TestWriteMCPBManifestPreservesExistingDescription(t *testing.T) {
 	})
 }
 
+func TestWriteMCPBManifest_DerivedDescriptionTrimsAPIFromDisplayName(t *testing.T) {
+	// Spec authors commonly suffix " API" on info.title and
+	// x-display-name. Without trimming, the derived description
+	// concatenates "Stripe API" + " API surface as MCP tools." into
+	// "Stripe API API surface as MCP tools." Single-source the trim
+	// at concat sites; the manifest's display_name field still keeps
+	// the unmodified spec value.
+	tests := []struct {
+		name        string
+		displayName string
+		want        string
+	}{
+		{"trailing API trimmed", "Stripe API", "Stripe API surface as MCP tools."},
+		{"branded with punctuation+API trimmed", "Cal.com API", "Cal.com API surface as MCP tools."},
+		{"no trailing API unchanged", "Stripe", "Stripe API surface as MCP tools."},
+		{"embedded API not trimmed", "API Gateway", "API Gateway API surface as MCP tools."},
+		{"trailing APIs (plural) not trimmed", "Stripe APIs", "Stripe APIs API surface as MCP tools."},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeManifest(t, dir, CLIManifest{
+				APIName:     "test",
+				DisplayName: tc.displayName,
+				MCPBinary:   "test-pp-mcp",
+				MCPReady:    "full",
+			})
+			require.NoError(t, WriteMCPBManifest(dir))
+			assert.Equal(t, tc.want, readMCPBManifest(t, dir).Description)
+			// display_name field itself stays unmodified — only concat
+			// sites trim the redundant " API" suffix.
+			assert.Equal(t, tc.displayName, readMCPBManifest(t, dir).DisplayName)
+		})
+	}
+}
+
+func TestWriteMCPBManifest_MigratesPriorDoubledAPIDescription(t *testing.T) {
+	// Manifests written before this fix carry the doubled form
+	// "Stripe API API surface as MCP tools." On the next mcp-sync,
+	// the new derived default ("Stripe API surface as MCP tools.")
+	// no longer matches; a naive "preserve when not matching"
+	// preserves the doubled form forever. Recognize the prior form
+	// too so the regen refreshes to the trimmed default.
+	dir := t.TempDir()
+	writeMCPBManifest(t, dir, MCPBManifest{
+		ManifestVersion: MCPBManifestVersion,
+		Name:            "stripe-pp-mcp",
+		DisplayName:     "Stripe API",
+		Description:     "Stripe API API surface as MCP tools.",
+	})
+	writeManifest(t, dir, CLIManifest{
+		APIName:     "stripe",
+		DisplayName: "Stripe API",
+		MCPBinary:   "stripe-pp-mcp",
+		MCPReady:    "full",
+	})
+	require.NoError(t, WriteMCPBManifest(dir))
+	assert.Equal(t, "Stripe API surface as MCP tools.", readMCPBManifest(t, dir).Description)
+}
+
+func TestWriteMCPBManifest_EnvVarDescriptionTrimsAPIFromDisplayName(t *testing.T) {
+	// The user_config env var description's "<displayName> MCP server"
+	// substring uses the same trim so "Stripe API MCP server" reads
+	// as "Stripe MCP server" — slightly more natural English and
+	// keeps the surfaces consistent.
+	dir := t.TempDir()
+	writeManifest(t, dir, CLIManifest{
+		APIName:     "stripe",
+		DisplayName: "Stripe API",
+		MCPBinary:   "stripe-pp-mcp",
+		MCPReady:    "full",
+		AuthType:    "bearer_token",
+		AuthEnvVars: []string{"STRIPE_TOKEN"},
+	})
+	require.NoError(t, WriteMCPBManifest(dir))
+	got := readMCPBManifest(t, dir)
+	require.NotNil(t, got.UserConfig)
+	stripe, ok := got.UserConfig["stripe_token"]
+	require.True(t, ok, "stripe_token user_config entry must exist")
+	assert.Equal(t, "Sets STRIPE_TOKEN for the Stripe MCP server.", stripe.Description)
+}
+
 func TestRefreshCLIManifestFromSpecRefreshesDisplayName(t *testing.T) {
 	// RefreshCLIManifestFromSpec must overwrite an existing
 	// DisplayName, not preserve it — otherwise stale slug-derived

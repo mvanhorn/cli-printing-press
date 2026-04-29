@@ -220,17 +220,32 @@ func bundleVersion(m CLIManifest) string {
 
 // manifestDescription returns the existing hand-edited description over
 // the canonical one from .printing-press.json. The existing snapshot's
-// description is only treated as "hand-edited" when it differs from the
-// derived default — so a prior derived default still loses to canonical.
+// description is only treated as "hand-edited" when it differs from
+// every form the generator would have emitted — current and prior — so
+// a manifest written before the displayNameForConcat trim still gets
+// recognized as derived and refreshed from canonical.
 func manifestDescription(existing *existingMCPBManifest, m CLIManifest, displayName string) string {
-	derivedDefault := displayName + " API surface as MCP tools."
-	if existing != nil && existing.Description != "" && existing.Description != derivedDefault {
+	derivedDefault := displayNameForConcat(displayName) + " API surface as MCP tools."
+	priorDerivedDefault := displayName + " API surface as MCP tools."
+	if existing != nil && existing.Description != "" &&
+		existing.Description != derivedDefault &&
+		existing.Description != priorDerivedDefault {
 		return existing.Description
 	}
 	if m.Description != "" {
 		return m.Description
 	}
 	return derivedDefault
+}
+
+// displayNameForConcat strips a trailing " API" from displayName so
+// concatenating with text that already names the API doesn't read
+// "Stripe API API surface as MCP tools." or "Stripe API MCP server."
+// Spec authors commonly include " API" as a suffix in info.title and
+// x-display-name; we let them keep that form for the manifest's
+// display_name field while removing the redundancy at concat sites.
+func displayNameForConcat(displayName string) string {
+	return strings.TrimSuffix(displayName, " API")
 }
 
 // existingMCPBManifest is the subset of manifest.json the manifest writer
@@ -319,7 +334,7 @@ func envVarDescription(m CLIManifest, envVar string, required bool) string {
 	b.WriteString(envVar)
 	b.WriteString(" for the ")
 	if m.DisplayName != "" {
-		b.WriteString(m.DisplayName)
+		b.WriteString(displayNameForConcat(m.DisplayName))
 	} else {
 		b.WriteString(m.APIName)
 	}
