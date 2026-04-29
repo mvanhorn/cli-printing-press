@@ -660,6 +660,33 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.Contains(t, key.Description, "Optional.")
 	})
 
+	t.Run("api_key auth with auth_optional=true flips Required to false", func(t *testing.T) {
+		// recipe-goat shape: USDA_FDC_API_KEY is api_key but only powers
+		// opt-in `recipe get --nutrition`. spec.yaml's `auth.optional: true`
+		// must override authRequiresCredential's per-type heuristic so the
+		// MCPB Configure modal doesn't mark it Required.
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:      "recipe-goat",
+			DisplayName:  "Recipe Goat",
+			MCPBinary:    "recipe-goat-pp-mcp",
+			MCPReady:     "full",
+			AuthType:     "api_key",
+			AuthEnvVars:  []string{"USDA_FDC_API_KEY"},
+			AuthKeyURL:   "https://fdc.nal.usda.gov/api-key-signup",
+			AuthOptional: true,
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		key, ok := got.UserConfig["usda_fdc_api_key"]
+		require.True(t, ok)
+		assert.False(t, key.Required, "auth_optional=true must flip Required to false even on api_key")
+		assert.Contains(t, key.Description, "Optional.", "description prefix should reflect optional state")
+		assert.Contains(t, key.Description, "https://fdc.nal.usda.gov/api-key-signup")
+	})
+
 	t.Run("multiple optional env vars (company-goat shape)", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, CLIManifest{

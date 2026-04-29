@@ -60,7 +60,12 @@ type CLIManifest struct {
 	// AuthKeyURL is the page where users register for an API key. Used by
 	// downstream emitters (MCPB manifest user_config descriptions, doctor
 	// hints) to point users at the right credential source.
-	AuthKeyURL    string                 `json:"auth_key_url,omitempty"`
+	AuthKeyURL string `json:"auth_key_url,omitempty"`
+	// AuthOptional is true when the credential gates a subset of features
+	// (e.g., USDA nutrition backfill on recipe-goat) rather than every
+	// API call. Drives the MCPB user_config Required field so opt-in
+	// keys don't surface as mandatory in install dialogs.
+	AuthOptional  bool                   `json:"auth_optional,omitempty"`
 	NovelFeatures []NovelFeatureManifest `json:"novel_features,omitempty"`
 }
 
@@ -203,6 +208,7 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.AuthType = parsed.Auth.Type
 	m.AuthEnvVars = parsed.Auth.EnvVars
 	m.AuthKeyURL = parsed.Auth.KeyURL
+	m.AuthOptional = parsed.Auth.Optional
 	if m.DisplayName == "" {
 		m.DisplayName = parsed.EffectiveDisplayName()
 	}

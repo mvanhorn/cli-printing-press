@@ -282,7 +282,12 @@ func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
 	if len(m.AuthEnvVars) == 0 {
 		return nil
 	}
-	required := authRequiresCredential(m.AuthType)
+	// AuthOptional overrides the auth-type heuristic. api_key would otherwise
+	// be Required: true, but recipe-goat's USDA_FDC_API_KEY only powers an
+	// opt-in `--nutrition` flag — marking it required hides the fact that
+	// every other tool works without the key. The spec author's `optional:
+	// true` is the explicit signal.
+	required := authRequiresCredential(m.AuthType) && !m.AuthOptional
 	vars := make(map[string]MCPBVar, len(m.AuthEnvVars))
 	for _, name := range m.AuthEnvVars {
 		vars[userConfigKey(name)] = MCPBVar{
