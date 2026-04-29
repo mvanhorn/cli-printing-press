@@ -124,7 +124,14 @@ The internal copy at `$CLI_DIR` can drift from the public library (`mvanhorn/pri
 
 1. **Locate the public library clone.** Honor `$PRINTING_PRESS_LIBRARY_PUBLIC` if set; otherwise scan the user's filesystem however fits this platform. Validate every candidate by checking the git remote points at `mvanhorn/printing-press-library` — other directories may share the name (forks, accidental name collisions). If multiple valid clones exist, prefer the most recently modified; ask the user to disambiguate only if still unclear.
 2. **Locate this CLI inside the clone.** `find <clone>/library -type d -name "<api>-pp-cli"` or equivalent.
-3. **Run `diff -r <public-cli-dir> $CLI_DIR`** (excluding build artifacts, the `.printing-press-tools-polish.json` ledger, and the binary).
+3. **Run `diff -r <public-cli-dir> $CLI_DIR`** with these exclusions, all of which are expected to diverge after publish:
+   - `.printing-press-tools-polish.json` (local ledger, not published)
+   - `go.mod` and `go.sum` — publish rewrites the module path from `<api>-pp-cli` to `github.com/mvanhorn/printing-press-library/library/<category>/<api>`
+   - All `.go` files where the only difference is the rewritten import path (the publish step propagates the new module path through every internal import). When inspecting `.go` diffs, scan for substantive changes — anything beyond the module-path prefix swap is real divergence.
+
+   Concretely: `diff -r --exclude=go.mod --exclude=go.sum --exclude=.printing-press-tools-polish.json <public-cli-dir> $CLI_DIR`.
+
+   Don't pass `--exclude='<api>-pp-cli'` or `--exclude='<api>-pp-mcp'` — those names match both the root-level binary files **and** the `cmd/<api>-pp-cli/` and `cmd/<api>-pp-mcp/` source directories. Excluding by binary name silently skips the entire `cmd/` subtree, hiding real divergence in `main.go`. The "Only in $CLI_DIR: <api>-pp-cli" line for the built binary is one row of expected output, not noise worth filtering at the cost of completeness.
 4. **Surface the result** before continuing.
 
 Outcomes:
