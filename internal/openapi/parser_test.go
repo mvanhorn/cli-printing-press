@@ -1539,11 +1539,10 @@ func captureWarnings(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
-// TestParseFrameworkCollisionRenamesAndWarns covers the auto-rename
-// behavior introduced for F1 from PokéAPI's retro: a /version path
-// produces a `version` resource that would shadow the framework cobra
-// command, so the parser renames it to <api-slug>-version and emits a
-// warning naming both forms.
+// TestParseFrameworkCollisionRenamesAndWarns asserts that an OpenAPI
+// path producing a top-level resource name in ReservedCobraUseNames is
+// renamed to <api-slug>-<original> and a warning is emitted naming both
+// forms.
 func TestParseFrameworkCollisionRenamesAndWarns(t *testing.T) {
 	yamlSpec := []byte(`openapi: "3.0.3"
 info:
@@ -1606,9 +1605,9 @@ paths:
 	assert.Contains(t, output, "shadow framework cobra command", "warning must explain the failure mode")
 }
 
-// TestParseFrameworkCollisionLeavesNonCollidingSpecsAlone ensures specs
-// without a colliding resource produce byte-identical resource maps
-// (no spurious renames, no warnings) — pinning R6 from the plan.
+// TestParseFrameworkCollisionLeavesNonCollidingSpecsAlone asserts specs
+// without a colliding resource produce byte-identical resource maps —
+// no spurious renames, no warnings emitted.
 func TestParseFrameworkCollisionLeavesNonCollidingSpecsAlone(t *testing.T) {
 	yamlSpec := []byte(`openapi: "3.0.3"
 info:

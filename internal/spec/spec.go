@@ -685,28 +685,13 @@ var ReservedCLIResourceNames = map[string]struct{}{
 	"workflow":         {},
 }
 
-// ReservedCobraUseNames is the set of cobra command names registered at the
-// top level of every printed CLI's root cobra tree. A spec resource whose
-// name maps to one of these would shadow the framework command at runtime —
-// e.g., a `version` resource emits a cobra subcommand with `Use: "version"`,
-// hiding the built-in `<cli> version` printer.
-//
-// Distinct from ReservedCLIResourceNames above: that set protects against
-// template-file overwrites (snake_case keys, single-file collision); this
-// set protects the cobra Use namespace (kebab-case keys, runtime command
-// shadowing). Both checks run; the asymmetry is intentional.
-//
-// Hand-maintained. The drift tests in reserved_drift_test.go enforce two
-// invariants: every framework constructor reachable from root.go.tmpl's
-// static AddCommand sites has its Use verb here, and cobratree's
-// frameworkCommands set is a subset of this one.
-//
-// Carve-out classes for entries that lack a constructor in root.go.tmpl:
-//   - Cobra runtime built-ins: completion, help — registered by cobra
-//     automatically with no template source.
-//   - Cobratree-only typed-MCP-tool names: about, sql — present in the
-//     cobratree mirror because the MCP walker skips them at tool
-//     registration; not generator-emitted cobra commands.
+// ReservedCobraUseNames is the set of cobra command names registered at
+// the top level of every printed CLI's root cobra tree. A spec resource
+// whose name maps to one of these would shadow the framework command at
+// runtime. Distinct from ReservedCLIResourceNames above: that set
+// protects template-file overwrites (snake_case); this set protects
+// cobra-Use shadowing (kebab-case). Hand-maintained; drift invariants
+// enforced by tests in reserved_drift_test.go.
 var ReservedCobraUseNames = map[string]struct{}{
 	"about":         {},
 	"agent-context": {},
@@ -751,14 +736,9 @@ func (s *APISpec) validateReservedNames() error {
 }
 
 // validateFrameworkCobraCollisions rejects specs whose top-level resource
-// names would shadow a framework cobra subcommand registered by every
-// printed CLI's root.go. Distinct from validateReservedNames above:
-// that check protects template-file collisions (snake_case keys, file
-// overwrite); this one protects cobra-Use shadowing (kebab-case keys,
-// runtime command hijack).
-//
-// Sub-resources are exempt — they emit under a parent prefix and don't
-// register at the top level — mirroring validateReservedNames' rationale.
+// names would shadow a framework cobra subcommand at runtime. Sub-resources
+// are exempt — they register under a parent prefix and never reach the
+// root.
 func (s *APISpec) validateFrameworkCobraCollisions() error {
 	for name := range s.Resources {
 		kebab := snakeToKebab(name)
@@ -774,10 +754,6 @@ func (s *APISpec) validateFrameworkCobraCollisions() error {
 	return nil
 }
 
-// snakeToKebab converts snake_case identifiers to kebab-case so spec
-// resource names (snake_case by convention) can be looked up against
-// ReservedCobraUseNames (kebab-case keys, matching cobra Use literals).
-// Empty input → empty output.
 func snakeToKebab(s string) string {
 	return strings.ReplaceAll(strings.ToLower(s), "_", "-")
 }

@@ -2010,9 +2010,10 @@ func TestValidateFrameworkCobraCollisions(t *testing.T) {
 
 	t.Run("version resource is rejected with a clear shadow hint", func(t *testing.T) {
 		t.Parallel()
-		// PokéAPI's actual failure mode: a /version path produced a `version`
-		// resource that emitted `Use: "version"`, shadowing the framework's
-		// built-in version printer. This now errors at parse time.
+		// `version` is in ReservedCobraUseNames but NOT in
+		// ReservedCLIResourceNames (no version.go template — the version
+		// subcommand is added inside root.go.tmpl), so this validator is
+		// what catches it.
 		input := `name: testapi
 base_url: https://api.example.com
 auth:
@@ -2035,11 +2036,6 @@ resources:
 
 	t.Run("rename suggestion uses api slug when spec name is set", func(t *testing.T) {
 		t.Parallel()
-		// validateReservedNames runs before this validator, so the easiest
-		// way to exercise the suggestion path is with a colliding name that
-		// is in ReservedCobraUseNames but NOT in ReservedCLIResourceNames.
-		// `version` qualifies — it's a cobra command but has no version.go
-		// template (the version subcommand is added inside root.go.tmpl).
 		input := `name: pokeapi
 base_url: https://pokeapi.co/api/v2
 auth:
@@ -2081,9 +2077,7 @@ resources:
 	t.Run("substring matches are NOT rejected", func(t *testing.T) {
 		t.Parallel()
 		// `versioning_history` contains `version` as a substring but is
-		// not equal to it after kebab-casing — should pass. Mirrors the
-		// existing customer_feedback test (line ~1947) for the
-		// validateReservedNames check.
+		// not equal to it after kebab-casing — should pass.
 		input := `name: testapi
 base_url: https://api.example.com
 auth:
@@ -2104,11 +2098,8 @@ resources:
 
 	t.Run("sub-resources are NOT subject to the framework collision check", func(t *testing.T) {
 		t.Parallel()
-		// Sub-resources emit under <parent>_<sub>.go and produce
-		// new<Parent><Sub>Cmd identifiers, registered as subcommands of
-		// the parent rather than at the root. They cannot shadow framework
-		// commands. Mirrors the existing sub-resource exemption for
-		// validateReservedNames.
+		// Sub-resources register as subcommands of their parent, not at
+		// the root, so they cannot shadow framework commands.
 		input := `name: testapi
 base_url: https://api.example.com
 auth:

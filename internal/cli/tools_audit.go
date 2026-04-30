@@ -47,10 +47,13 @@ const (
 // IsThinMCPDescription) live in pipeline so the scorecard applies the
 // same predicate as the audit.
 
-// frameworkCommands mirrors cobratree/classify.go.tmpl. The runtime
+// FrameworkCommands mirrors cobratree/classify.go.tmpl. The runtime
 // walker skips these names entirely — they're never registered as MCP
-// tools — so audit findings on their Cobra Short are noise.
-var frameworkCommands = map[string]bool{
+// tools — so audit findings on their Cobra Short are noise. Exported
+// so the spec drift test in internal/spec can assert the cobra-Use
+// reserved set is a strict superset (anything cobratree skips at MCP
+// time would shadow at cobra time too).
+var FrameworkCommands = map[string]bool{
 	"about":         true,
 	"agent-context": true,
 	"api":           true,
@@ -165,7 +168,7 @@ type ToolsAuditFinding struct {
 
 // readShapedNames is the heuristic for "this command name suggests a
 // read operation." We exclude verbs already in cobratree's
-// frameworkCommands skip set (search, sql, doctor, version) — the
+// FrameworkCommands skip set (search, sql, doctor, version) — the
 // runtime walker doesn't register those as MCP tools, so a missing
 // read-only annotation is meaningless noise for them.
 //
@@ -374,7 +377,7 @@ func auditCommandFields(file string, line int, f commandFields) []ToolsAuditFind
 	//     name.
 	// For all of these, the Cobra Short isn't the MCP tool description
 	// the agent will see, so flagging it would be noise.
-	isShellOut := !f.hasEndpoint && f.hasRunE && !frameworkCommands[name] && !inFrameworkSubtree(file)
+	isShellOut := !f.hasEndpoint && f.hasRunE && !FrameworkCommands[name] && !inFrameworkSubtree(file)
 
 	var out []ToolsAuditFinding
 	if isShellOut {
@@ -413,7 +416,7 @@ func inFrameworkSubtree(file string) bool {
 	if i := strings.IndexByte(base, '_'); i > 0 {
 		base = base[:i]
 	}
-	return frameworkCommands[base]
+	return FrameworkCommands[base]
 }
 
 // suspiciousShort flags Short text that's both short (under 30 chars)

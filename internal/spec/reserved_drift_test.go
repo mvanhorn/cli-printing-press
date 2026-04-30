@@ -6,8 +6,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v3/internal/cli"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 )
 
@@ -133,14 +135,9 @@ func TestReservedCobraUseNames_NoStaleEntries(t *testing.T) {
 // registration) is a subset of ReservedCobraUseNames. Anything cobratree
 // skips at MCP time would shadow at cobra time too.
 func TestReservedCobraUseNames_CobratreeIsSubset(t *testing.T) {
-	cobratree := cobratreeFrameworkCommands(t)
-	if len(cobratree) == 0 {
-		t.Fatal("could not parse cobratree frameworkCommands set; regex or path likely wrong")
-	}
-
-	for name := range cobratree {
+	for name := range cli.FrameworkCommands {
 		if _, ok := spec.ReservedCobraUseNames[name]; !ok {
-			t.Errorf("cobratree frameworkCommands contains %q but spec.ReservedCobraUseNames does not. Add %q to spec.go so cobra collisions are blocked at parse time.", name, name)
+			t.Errorf("cli.FrameworkCommands contains %q but spec.ReservedCobraUseNames does not. Add %q to spec.go so cobra collisions are blocked at parse time.", name, name)
 		}
 	}
 }
@@ -159,35 +156,47 @@ func TestReservedCobraUseNames_NoSubcommandLeakage(t *testing.T) {
 	}
 }
 
+// staticConstructorsCache and useLiteralsCache memoize the filesystem
+// walks across the four drift-detection tests in this file. Without
+// them, both readStaticConstructors and readConstructorUseLiterals run
+// twice per test invocation (once via the direct test, once via
+// frameworkVerbsFromRoot's stale-entry check), doubling the disk I/O.
+var (
+	staticConstructorsOnce  sync.Once
+	staticConstructorsCache []string
+
+	useLiteralsOnce  sync.Once
+	useLiteralsCache map[string]string
+)
+
 // readStaticConstructors scans root.go.tmpl for literal AddCommand sites
 // and returns the constructor names (e.g., "Doctor", "Auth"). Lines
 // containing `{{` are skipped so per-resource template ranges do not
-// contaminate the result.
+// contaminate the result. Memoized — see staticConstructorsCache.
 func readStaticConstructors(t *testing.T) []string {
 	t.Helper()
-	rootData, err := os.ReadFile(filepath.Join(templateRoot, "root.go.tmpl"))
-	if err != nil {
-		t.Fatalf("reading root.go.tmpl: %v", err)
-	}
-
-	seen := make(map[string]struct{})
-	var ctors []string
-	for line := range strings.SplitSeq(string(rootData), "\n") {
-		if strings.Contains(line, "{{") {
-			continue
+	staticConstructorsOnce.Do(func() {
+		rootData, err := os.ReadFile(filepath.Join(templateRoot, "root.go.tmpl"))
+		if err != nil {
+			t.Fatalf("reading root.go.tmpl: %v", err)
 		}
-		matches := addCommandRegex.FindAllStringSubmatch(line, -1)
-		for _, m := range matches {
-			ctor := m[1]
-			if _, ok := seen[ctor]; ok {
+
+		seen := make(map[string]struct{})
+		for line := range strings.SplitSeq(string(rootData), "\n") {
+			if strings.Contains(line, "{{") {
 				continue
 			}
-			seen[ctor] = struct{}{}
-			ctors = append(ctors, ctor)
+			for _, m := range addCommandRegex.FindAllStringSubmatch(line, -1) {
+				if _, ok := seen[m[1]]; ok {
+					continue
+				}
+				seen[m[1]] = struct{}{}
+				staticConstructorsCache = append(staticConstructorsCache, m[1])
+			}
 		}
-	}
-	sort.Strings(ctors)
-	return ctors
+		sort.Strings(staticConstructorsCache)
+	})
+	return staticConstructorsCache
 }
 
 // readConstructorUseLiterals walks every .go.tmpl under templateRoot
@@ -195,35 +204,37 @@ func readStaticConstructors(t *testing.T) []string {
 // constructor's first Use after its `func new<Name>Cmd` declaration is
 // captured — subcommand Use literals sit inside child constructors after
 // their own func declarations, so they're attributed to those children
-// rather than leaking into the parent's entry.
+// rather than leaking into the parent's entry. Memoized — see
+// useLiteralsCache.
 func readConstructorUseLiterals(t *testing.T) map[string]string {
 	t.Helper()
-	uses := make(map[string]string)
-
-	err := filepath.WalkDir(templateRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() || !strings.HasSuffix(path, ".go.tmpl") {
-			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		for _, m := range constructorUseRegex.FindAllStringSubmatch(string(data), -1) {
-			ctor, use := m[1], m[2]
-			if _, exists := uses[ctor]; exists {
-				continue
+	useLiteralsOnce.Do(func() {
+		useLiteralsCache = make(map[string]string)
+		err := filepath.WalkDir(templateRoot, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
 			}
-			uses[ctor] = use
+			if d.IsDir() || !strings.HasSuffix(path, ".go.tmpl") {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			for _, m := range constructorUseRegex.FindAllStringSubmatch(string(data), -1) {
+				ctor, use := m[1], m[2]
+				if _, exists := useLiteralsCache[ctor]; exists {
+					continue
+				}
+				useLiteralsCache[ctor] = use
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walking templates: %v", err)
 		}
-		return nil
 	})
-	if err != nil {
-		t.Fatalf("walking templates: %v", err)
-	}
-	return uses
+	return useLiteralsCache
 }
 
 // frameworkVerbsFromRoot returns the set of cobra Use verbs derived from
@@ -242,34 +253,4 @@ func frameworkVerbsFromRoot(t *testing.T) map[string]struct{} {
 		verbs[strings.Fields(use)[0]] = struct{}{}
 	}
 	return verbs
-}
-
-// cobratreeFrameworkCommands parses the in-binary mirror of cobratree's
-// frameworkCommands set in internal/cli/tools_audit.go. Reads the mirror
-// rather than the .tmpl because the mirror is the live source the
-// printing-press binary uses; both must stay in sync (AGENTS.md notes
-// drift between them is already a bug).
-func cobratreeFrameworkCommands(t *testing.T) map[string]struct{} {
-	t.Helper()
-	data, err := os.ReadFile("../cli/tools_audit.go")
-	if err != nil {
-		t.Fatalf("reading tools_audit.go: %v", err)
-	}
-	body := string(data)
-	startIdx := strings.Index(body, "var frameworkCommands = map[string]bool{")
-	if startIdx < 0 {
-		t.Fatal("could not find frameworkCommands declaration in tools_audit.go")
-	}
-	endIdx := strings.Index(body[startIdx:], "}")
-	if endIdx < 0 {
-		t.Fatal("could not find closing brace of frameworkCommands")
-	}
-	block := body[startIdx : startIdx+endIdx]
-
-	commands := make(map[string]struct{})
-	entryRegex := regexp.MustCompile(`"([^"]+)":\s+true`)
-	for _, m := range entryRegex.FindAllStringSubmatch(block, -1) {
-		commands[m[1]] = struct{}{}
-	}
-	return commands
 }
