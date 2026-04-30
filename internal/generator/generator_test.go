@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -4107,6 +4108,51 @@ func TestToKebab_SnakeCaseInput(t *testing.T) {
 			t.Parallel()
 			got := toKebab(tt.input)
 			require.Equal(t, tt.expected, got, tt.why)
+		})
+	}
+}
+
+// TestTemplatesEmitReadOnlyAnnotation locks in the contract that
+// novel-command templates whose only effect is reading from the API,
+// the local store, or the CLI tree itself emit the mcp:read-only Cobra
+// annotation. The runtime walker uses this annotation to set
+// readOnlyHint on the resulting MCP tool so hosts skip the per-call
+// permission prompt. See AGENTS.md "Tool safety annotations".
+//
+// Templates intentionally NOT in this list because they mutate state
+// or write user-visible files outside the local cache:
+// export.go.tmpl (--output writes user files), share_commands.go.tmpl
+// (snapshot dirs, git pushes), import/sync/feedback/graphql_sync (writes).
+func TestTemplatesEmitReadOnlyAnnotation(t *testing.T) {
+	t.Parallel()
+	annotationRE := regexp.MustCompile(`Annotations:\s+map\[string\]string\{"mcp:read-only":\s*"true"\}`)
+
+	cases := []struct {
+		template string
+		// minMatches is the number of distinct cobra.Command literals
+		// inside the template that should carry the annotation. Templates
+		// emitting one command have minMatches=1; multi-command templates
+		// list the read-only subcommands' count.
+		minMatches int
+		why        string
+	}{
+		{"analytics.go.tmpl", 1, "analytics queries on the local store"},
+		{"agent_context.go.tmpl", 1, "walks cobra tree, emits introspection JSON"},
+		{"api_discovery.go.tmpl", 1, "walks cobra tree, prints help"},
+		{"tail.go.tmpl", 1, "polls API GETs, NDJSON to stdout"},
+		{"jobs.go.tmpl", 2, "list and get; prune is omitted (mutates ledger)"},
+		{"channel_workflow.go.tmpl", 1, "status only; workflow parent and archive omitted"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.template, func(t *testing.T) {
+			t.Parallel()
+			data, err := os.ReadFile(filepath.Join("templates", tc.template))
+			require.NoError(t, err)
+			matches := annotationRE.FindAllString(string(data), -1)
+			assert.Len(t, matches, tc.minMatches,
+				"%s should carry exactly %d mcp:read-only annotation(s) — %s",
+				tc.template, tc.minMatches, tc.why)
 		})
 	}
 }

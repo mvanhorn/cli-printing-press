@@ -61,6 +61,8 @@ The generator emits annotations automatically:
 - **Built-in tools:** `context`, `sql`, `search` are read-only (no open-world; they read local data).
 - **Shell-out tools (runtime walker):** no annotations by default — the walker can't infer from a Cobra command alone. Opt into read-only with `cmd.Annotations["mcp:read-only"] = "true"` for novel commands that don't mutate external state (read-only API queries, cache lookups, derivations).
 
+When adding a generator template that emits a novel command whose only effect is reading from the API, the local store, or the CLI tree itself, set `Annotations: map[string]string{"mcp:read-only": "true"}` in the rendered Cobra literal. Skip the annotation when the command can mutate external state (writes via API, store updates, git pushes) or write to user-visible files outside the local cache (e.g., commands accepting `--output <file>` or `--repo <dir>`). The polish skill catches misses heuristically per CLI, but template-time emission is the single-source path.
+
 Wrong annotations are worse than missing ones: the host trusts the claim and stops asking. A `readOnlyHint: true` on a mutating tool is a real bug; a missing annotation is just a permission prompt.
 
 ## Build, Test & Lint
