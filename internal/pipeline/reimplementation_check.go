@@ -28,11 +28,10 @@ import (
 // store package. That is correctly a local-data command, not a
 // hand-rolled response.
 //
-// Raw `database/sql` access against the printed CLI's local SQLite file
-// is also a legitimate local-data signal — it's the same data the store
-// package wraps, just accessed through a thinner surface. Files that
-// import `database/sql` and call `sql.Open` or operate on `*sql.DB`
-// pass this check the same way `store.*` callers do.
+// Raw `database/sql` access against the local SQLite file is also a
+// legitimate local-data signal: a file that imports `database/sql`
+// AND calls `sql.Open`/`sql.OpenDB` is reading the same data the
+// store package wraps through a thinner surface.
 type ReimplementationCheckResult struct {
 	// Checked is the number of built novel-feature commands inspected.
 	Checked int `json:"checked"`
@@ -85,21 +84,15 @@ var (
 	storeTypeRe = regexp.MustCompile(`\b\*?store\.Store\b`)
 
 	// rawSQLImportRe catches the standard library database/sql import.
-	// Files that bypass the generated store package and operate on the
-	// printed CLI's local SQLite file directly through database/sql are
-	// reading the same local data, just through a thinner surface — a
-	// legitimate local-data signal, not a hand-rolled response. The
-	// import alone is not enough because it could be present for
-	// unrelated reasons; combined with the open-call signal below it
-	// makes a reliable pair.
+	// The import alone is not a strong signal — it can be present for
+	// unrelated reasons — so hasStoreSignal pairs it with rawSQLOpenCallRe.
 	rawSQLImportRe = regexp.MustCompile(`"database/sql"`)
 
 	// rawSQLOpenCallRe catches the canonical sql.Open / sql.OpenDB
-	// entry points. Specific enough on its own to imply the file is
-	// opening a database, not just touching a *sql.DB by accident.
-	// Method calls like db.Query are intentionally NOT matched here —
-	// names like Query, QueryRow, Exec collide with too many other
-	// receivers (HTTP clients, cobra commands) to be a clean signal.
+	// entry points. Method calls like db.Query are intentionally NOT
+	// matched: names like Query, QueryRow, Exec collide with too many
+	// other receivers (HTTP clients, cobra commands) to be a clean
+	// signal on their own.
 	rawSQLOpenCallRe = regexp.MustCompile(`\bsql\.(Open|OpenDB)\s*\(`)
 
 	// clientImportRe catches the generated client package import:
@@ -324,14 +317,9 @@ func classifyReimplementation(files []string, fileContent map[string]string, sto
 }
 
 func hasStoreSignal(content string) bool {
-	if storeImportRe.MatchString(content) || storeCallRe.MatchString(content) {
-		return true
-	}
-	// Raw database/sql access against the local SQLite file is also a
-	// local-data signal — same data the store package wraps. Require
-	// both the import and a sql.Open call so an unrelated database/sql
-	// import doesn't trigger a false carve-out.
-	return rawSQLImportRe.MatchString(content) && rawSQLOpenCallRe.MatchString(content)
+	return storeImportRe.MatchString(content) ||
+		storeCallRe.MatchString(content) ||
+		(rawSQLImportRe.MatchString(content) && rawSQLOpenCallRe.MatchString(content))
 }
 
 func storeHelperNames(fileContent map[string]string) map[string]bool {

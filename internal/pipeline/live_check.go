@@ -501,27 +501,20 @@ func shellSplit(s string) ([]string, error) {
 //
 // URLs and IDs are intentionally excluded: the CLI's output for a URL-based
 // command (recipe get <url>) wouldn't contain the URL itself, so matching
-// against it produces false negatives.
+// against it produces false negatives. commandPath is the cobra command
+// path being exercised (e.g. "leaderboard top"); positionals that match a
+// word from it are treated as subcommand names, not queries — without
+// this, `leaderboard top` would treat `top` as a search query and fail
+// the relevance heuristic against output that has no reason to echo it.
 //
 // Examples:
 //
-//	["goat", "brownies", "--limit", "5"]  → "brownies"
-//	["sub", "buttermilk"]                 → "buttermilk"
-//	["recipe", "get", "https://foo/bar"]  → "" (URL, skip relevance check)
-//	["cookbook", "list", "--json"]        → "" (no query)
-//
-// commandPath is the cobra command path being exercised (e.g. "leaderboard
-// top"). Positionals that match a word from the command path are treated
-// as subcommand names, not queries — without this, a command like
-// `leaderboard top` would treat `top` as a search query and fail the
-// relevance heuristic against output that has no reason to literally
-// echo the word "top".
+//	args=["goat", "brownies", "--limit", "5"], cmd="goat"           → "brownies"
+//	args=["sub", "buttermilk"], cmd="sub"                            → "buttermilk"
+//	args=["recipe", "get", "https://foo/bar"], cmd="recipe get"      → "" (URL, skip)
+//	args=["cookbook", "list", "--json"], cmd="cookbook list"         → "" (no query)
+//	args=["leaderboard", "top"], cmd="leaderboard top"               → "" (subcommand name)
 func extractQueryToken(args []string, commandPath string) string {
-	cmdWords := make(map[string]struct{})
-	for w := range strings.FieldsSeq(commandPath) {
-		cmdWords[strings.ToLower(w)] = struct{}{}
-	}
-
 	var positionals []string
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "-") {
@@ -533,8 +526,11 @@ func extractQueryToken(args []string, commandPath string) string {
 		return ""
 	}
 	candidate := positionals[len(positionals)-1]
-	if _, ok := cmdWords[strings.ToLower(candidate)]; ok {
-		return ""
+	candidateLower := strings.ToLower(candidate)
+	for word := range strings.FieldsSeq(strings.ToLower(commandPath)) {
+		if word == candidateLower {
+			return ""
+		}
 	}
 	if looksLikeURLOrID(candidate) {
 		return ""

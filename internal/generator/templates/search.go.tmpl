@@ -247,19 +247,15 @@ func outputSearchResults(cmd *cobra.Command, flags *rootFlags, results []json.Ra
 
 	// JSON mode always emits a valid envelope, including on no matches —
 	// agents pipe stdout through json.loads / jq and need parseable output
-	// regardless of result count.
+	// regardless of result count. The filtered slice is built via make
+	// above, so it's non-nil even when empty; json.Marshal renders that
+	// as `[]` rather than `null`.
 	if jsonMode {
-		var data []byte
-		if len(results) == 0 {
-			data = []byte("[]")
-		} else {
-			var err error
-			data, err = json.Marshal(results)
-			if err != nil {
-				return err
-			}
+		data, err := json.Marshal(results)
+		if err != nil {
+			return err
 		}
-		wrapped, err := wrapWithProvenance(json.RawMessage(data), prov)
+		wrapped, err := wrapWithProvenance(data, prov)
 		if err != nil {
 			return err
 		}
