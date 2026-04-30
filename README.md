@@ -12,38 +12,66 @@ Three CLIs printed by the press, installable today:
 
 Browse the full catalog of printed CLIs at [printingpress.dev](https://printingpress.dev) or in the [Printing Press Library](https://github.com/mvanhorn/printing-press-library). 24 CLIs across 17 categories, 17 with full MCP servers.
 
-## Get it
+## Install
 
-Install the binary, then add the Claude Code plugin. Both fit in one paste.
+The Printing Press has two parts, and you need both:
+
+1. **The binary** (`printing-press`) — the engine. Does research, generation, verification, scoring.
+2. **The Claude Code plugin** — adds the `/printing-press` slash command. This is your primary interface; the skill drives the binary behind the scenes.
+
+The plugin alone has nothing to call; the binary alone works but skips the curated agent loop.
+
+**Prerequisites:** [Go 1.22+](https://go.dev/dl/) and [Claude Code](https://claude.ai/code).
+
+**1. Install the binary** (run in your terminal):
 
 ```bash
 go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest
 ```
+
+Verify: `printing-press --version`.
+
+If you skip this step, the plugin will run `go install` for you on first use (assuming Go is on your PATH). Doing it upfront avoids a slow first run.
+
+> **If you hit a `410 Gone` or auth error**, the repo is currently private. Set `GOPRIVATE` so Go fetches directly from GitHub instead of the public module proxy:
+>
+> ```bash
+> GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest
+> ```
+>
+> This requires GitHub access to the repo (SSH key or `gh auth login`). After the public launch, the plain command works for everyone.
+
+**2. Install the plugin** (run inside Claude Code):
 
 ```text
 /plugin marketplace add mvanhorn/cli-printing-press
 /plugin install cli-printing-press@cli-printing-press
 ```
 
-Want pre-built CLIs to use right now? Add the [Printing Press Library](https://github.com/mvanhorn/printing-press-library) plugin too:
+Verify: type `/printing-press` in Claude Code and confirm the skill appears.
+
+### Optional: pre-built CLI library
+
+To browse and install pre-built CLIs from the [Printing Press Library](https://github.com/mvanhorn/printing-press-library) catalog (24 CLIs across 17 categories), add a second plugin in Claude Code:
 
 ```text
 /plugin marketplace add mvanhorn/printing-press-library
 /plugin install printing-press-library@printing-press-library
 ```
 
+This adds the `/ppl` slash command for browsing and installing CLIs from the public catalog.
+
 ## Print a CLI
 
 ```bash
-/printing-press HubSpot                              # From the catalog (19 APIs ready)
-/printing-press --spec ./openapi.yaml                # From a local spec
-/printing-press --har ./capture.har --name ESPN      # From captured browser traffic
-/printing-press https://postman.com/explore          # From a URL (auto-detects intent)
-/printing-press HubSpot codex                        # Codex mode - 60% fewer Opus tokens
-/printing-press emboss notion                        # Second pass: improve an existing CLI
+/printing-press HubSpot                      # From the catalog
+/printing-press --spec ./openapi.yaml        # From a local spec
+/printing-press https://postman.com/explore  # From a URL (no spec needed)
 ```
 
-One command. Lean loop. Produces a Go CLI plus an MCP server that absorbs every feature from every competing tool, then transcends with compound use cases only possible with local data. REST, GraphQL, or browser-sniffed traffic. No OpenAPI spec required.
+`/printing-press` is the slash command from the Claude Code plugin. It drives the `printing-press` binary you installed — research, generation, scoring, and shipcheck all run through the binary. Two parts, one workflow.
+
+One command. Lean loop. Produces a Go CLI plus an MCP server that absorbs every feature from every competing tool, then transcends with compound use cases only possible with local data. REST, GraphQL, or browser-sniffed traffic. No OpenAPI spec required. [See all input modes and output paths →](#run-it)
 
 ## Why these CLIs win
 
@@ -345,38 +373,17 @@ Each published CLI ships a research manuscript, verification proofs, and a `.pri
 
 ## Quick start
 
-### Install
-
-Install the binary (requires Go 1.22+):
-
-```bash
-go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest
-```
-
-Then install the Claude Code plugin:
-
-```text
-/plugin marketplace add mvanhorn/cli-printing-press
-/plugin install cli-printing-press@cli-printing-press
-```
-
-No repo checkout needed. The binary embeds its own catalog data and the plugin provides the `/printing-press` skill.
-
-To also browse and run pre-built CLIs from the [Printing Press Library](https://github.com/mvanhorn/printing-press-library):
-
-```text
-/plugin marketplace add mvanhorn/printing-press-library
-/plugin install printing-press-library@printing-press-library
-```
-
 ### Run it
 
+All input modes:
+
 ```bash
-/printing-press HubSpot                              # From the catalog
+/printing-press HubSpot                              # From the catalog (19 APIs ready)
 /printing-press --spec ./openapi.yaml                # From a local spec
 /printing-press --har ./capture.har --name ESPN      # From captured browser traffic
 /printing-press https://postman.com/explore          # From a URL (auto-detects intent)
-/printing-press Stripe codex                         # Codex mode - 60% fewer Opus tokens
+/printing-press HubSpot codex                        # Codex mode - 60% fewer Opus tokens
+/printing-press emboss notion                        # Second pass: improve an existing CLI
 ```
 
 Each run produces two binaries (`<api>-pp-cli` plus `<api>-pp-mcp`), research documents, verification proofs, and a Quality Score.
