@@ -105,6 +105,39 @@ type APISpec struct {
 	Cache                CacheConfig         `yaml:"cache,omitempty" json:"cache"`                             // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
 	Share                ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
 	MCP                  MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, the emitted MCP binary is stdio-only (today's default). Opting into http adds a --transport/--addr flag surface so the same binary can serve cloud-hosted agents.
+	Throttling           ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling,omitempty"`         // cost-based throttling config; when enabled, the generator emits a ThrottleState that tracks calculated-cost rate-limit budgets (Shopify-shape extensions.cost, GitHub GraphQL rateLimit nodes) and a --throttle-mode flag.
+}
+
+// ThrottlingConfig opts a printed CLI into the cost-based throttling
+// primitives emitted by throttle.go.tmpl. The shape is intentionally minimal
+// for v1 — Enabled flips the entire surface on/off — so spec authors don't
+// need to think about retry counts or backoff before knowing they want
+// throttling at all. Future fields (max retries, custom extensions path)
+// belong on this struct rather than as ad-hoc spec-level fields.
+//
+// Default off: existing GraphQL CLIs (Linear) and REST CLIs regenerate
+// byte-identically when this field is unset. Authors opt in by writing
+// `throttling: { enabled: true }` in the spec YAML.
+//
+// Today the cost parser hardcodes Shopify's response shape
+// (extensions.cost.throttleStatus.{maximumAvailable,currentlyAvailable,restoreRate}).
+// Other APIs that expose calculated-cost rate limits in GraphQL extensions
+// (GitHub's rateLimit node, Datadog's cost limits) will need a pluggable
+// path field; that's a follow-up. The defensive parser in graphql_client.go
+// no-ops when extensions.cost is missing, so enabling throttling on an API
+// without that shape costs nothing — the WaitForBudget side stays !seeded
+// and every call returns immediately, the retry loop only fires on visible
+// 429s and THROTTLED extension codes.
+type ThrottlingConfig struct {
+	Enabled bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+}
+
+// HasCostThrottling reports whether the spec opts into cost-based throttling
+// primitives. Used by the generator to gate emission of throttle.go and the
+// related conditional blocks in client.go / graphql_client.go / root.go.
+// Specs without this flag regenerate byte-identical to the pre-PR-3 output.
+func (s *APISpec) HasCostThrottling() bool {
+	return s != nil && s.Throttling.Enabled
 }
 
 // ExtraCommand declares a hand-written cobra command so the SKILL.md
