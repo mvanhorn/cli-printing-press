@@ -1,5 +1,70 @@
 # Changelog
 
+## [3.0.0](https://github.com/mvanhorn/cli-printing-press/compare/v2.4.0...v3.0.0) (2026-04-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** remove megamcp aggregate server and Composio plan ([#363](https://github.com/mvanhorn/cli-printing-press/issues/363))
+
+### chore
+
+* **cli:** remove megamcp aggregate server and Composio plan ([#363](https://github.com/mvanhorn/cli-printing-press/issues/363)) ([0e1b850](https://github.com/mvanhorn/cli-printing-press/commit/0e1b850854510005ce60ab2153a024e993c5fdea))
+
+
+### Features
+
+* **cli,skills:** generator-time MCP description enrichment from spec ([#396](https://github.com/mvanhorn/cli-printing-press/issues/396)) ([2b7a51e](https://github.com/mvanhorn/cli-printing-press/commit/2b7a51e1bec9e81dd3b340f8cfd680126e75af39)), closes [#384](https://github.com/mvanhorn/cli-printing-press/issues/384)
+* **cli,skills:** polish ledger per-item enforcement + AGENTS.md guidance ([#389](https://github.com/mvanhorn/cli-printing-press/issues/389)) ([0320269](https://github.com/mvanhorn/cli-printing-press/commit/0320269d9e4211aaa3c3996e41f6407d0fd8a2bf))
+* **cli:** add GraphQLEndpointPath and EndpointTemplateVars to APISpec ([73d136f](https://github.com/mvanhorn/cli-printing-press/commit/73d136f732bbd012434458f37b9826dab60842c9))
+* **cli:** add tools-audit subcommand and merge polish into a single skill ([#378](https://github.com/mvanhorn/cli-printing-press/issues/378)) ([e4a0089](https://github.com/mvanhorn/cli-printing-press/commit/e4a0089c9580e7aab2ac7c6cb6987625c0830d95))
+* **cli:** emit buildURL helper + Config.TemplateVars for templated endpoints ([289e598](https://github.com/mvanhorn/cli-printing-press/commit/289e5988d6615058f9f7a892ec3a4a88ea8f11c2))
+* **cli:** emit MCP tools for novel CLI features via shell-out ([#358](https://github.com/mvanhorn/cli-printing-press/issues/358)) ([7f248d5](https://github.com/mvanhorn/cli-printing-press/commit/7f248d5995da3c5687b47f84d5e5087c4e413e3b))
+* **cli:** generator emits mcp:read-only on read-only novel commands ([#401](https://github.com/mvanhorn/cli-printing-press/issues/401)) ([8525915](https://github.com/mvanhorn/cli-printing-press/commit/852591596a8d2f175c1a586bc554b57252b1a411))
+* **cli:** MCP description overrides + tools-audit scoring + polish skill nibbles ([#382](https://github.com/mvanhorn/cli-printing-press/issues/382)) ([e651d01](https://github.com/mvanhorn/cli-printing-press/commit/e651d01f09118dc55eb1d385d70e12492560a810))
+* **cli:** MCP tool surface mirrors Cobra tree at runtime, with mcp-sync backfill ([#367](https://github.com/mvanhorn/cli-printing-press/issues/367)) ([358ff78](https://github.com/mvanhorn/cli-printing-press/commit/358ff782ccf9240514e15f9531850c04927b08a2))
+* **cli:** mcp-sync reads display_name from public library registry.json fallback ([#391](https://github.com/mvanhorn/cli-printing-press/issues/391)) ([64f6798](https://github.com/mvanhorn/cli-printing-press/commit/64f67981e8979e53f09880438665d7c81697ad63))
+* **cli:** MCPB manifest and bundle support for generated CLIs ([#355](https://github.com/mvanhorn/cli-printing-press/issues/355)) ([af21450](https://github.com/mvanhorn/cli-printing-press/commit/af21450994270738936728f5cfefabb75dadba9b))
+* **cli:** per-resource base_url override in spec schema ([#405](https://github.com/mvanhorn/cli-printing-press/issues/405)) ([6586c0a](https://github.com/mvanhorn/cli-printing-press/commit/6586c0a28b135134cab5d5a8f3a4e3156e3c71bc))
+* **cli:** split BaseURL from GraphQLEndpointPath in GraphQL parser + client ([699e8ed](https://github.com/mvanhorn/cli-printing-press/commit/699e8ed750158b1644159e06ac0ab894f25c1dc6))
+* **cli:** substitute EndpointTemplateVars from env at runtime ([8b470bc](https://github.com/mvanhorn/cli-printing-press/commit/8b470bc790b591fe66e78360a9ea87017cde341b))
+* **cli:** substitute EndpointTemplateVars in client.do() + cache key ([8cb57db](https://github.com/mvanhorn/cli-printing-press/commit/8cb57db37db3806997af5520ed79f6d4bc37daf3))
+* **cli:** tools-audit checks MCP descriptions in tools-manifest.json ([#381](https://github.com/mvanhorn/cli-printing-press/issues/381)) ([fee6802](https://github.com/mvanhorn/cli-printing-press/commit/fee6802ec499315d197c543d87be2a6b0c79a618))
+* **skills:** add /printing-press-import to bring published CLIs into internal library ([#398](https://github.com/mvanhorn/cli-printing-press/issues/398)) ([262ab87](https://github.com/mvanhorn/cli-printing-press/commit/262ab87681c6daeb43fcd5685443874faa5a90cc))
+* **skills:** add divergence check to polish skill setup ([#380](https://github.com/mvanhorn/cli-printing-press/issues/380)) ([6727d0d](https://github.com/mvanhorn/cli-printing-press/commit/6727d0d8a5dbbeda949b6e7d436b60b4e7e316dc))
+
+
+### Bug Fixes
+
+* **ci:** remove redundant generated compile work ([#361](https://github.com/mvanhorn/cli-printing-press/issues/361)) ([a5ba1b4](https://github.com/mvanhorn/cli-printing-press/commit/a5ba1b4a4721477b1524dc2cb891848be23e8642))
+* **ci:** shard test lanes ([#362](https://github.com/mvanhorn/cli-printing-press/issues/362)) ([95cf6c8](https://github.com/mvanhorn/cli-printing-press/commit/95cf6c88e4e29444a2947b31ade29b7c29288be9))
+* **ci:** speed up generated compile tests and caches ([#360](https://github.com/mvanhorn/cli-printing-press/issues/360)) ([ddacddb](https://github.com/mvanhorn/cli-printing-press/commit/ddacddba7e82c64fb58cc0e7cb82c1d3e720c3eb))
+* **cli,skills:** manifest display_name preservation + divergence-check exemptions ([#390](https://github.com/mvanhorn/cli-printing-press/issues/390)) ([401bda5](https://github.com/mvanhorn/cli-printing-press/commit/401bda54e3059fe89fc55dd2be53541a74a57424)), closes [#387](https://github.com/mvanhorn/cli-printing-press/issues/387)
+* **cli:** add source rate-limit guardrails ([#366](https://github.com/mvanhorn/cli-printing-press/issues/366)) ([174d23c](https://github.com/mvanhorn/cli-printing-press/commit/174d23c8fb3ab22e6c3cd2073a7fcd7cc2ddf40c))
+* **cli:** dogfood agent-context discovery reads stdout only ([#407](https://github.com/mvanhorn/cli-printing-press/issues/407)) ([fe1e6d7](https://github.com/mvanhorn/cli-printing-press/commit/fe1e6d77ecd61a087e6e86b4b513efc137c59ce9))
+* **cli:** keep template-var env names out of verifier auth discovery ([a0e1bb4](https://github.com/mvanhorn/cli-printing-press/commit/a0e1bb4aae8d8bf40d2db99210fc48615551e413))
+* **cli:** manifest description no longer doubles 'API' when display_name ends in 'API' ([#397](https://github.com/mvanhorn/cli-printing-press/issues/397)) ([fae7e6e](https://github.com/mvanhorn/cli-printing-press/commit/fae7e6e09309dc5ca77ae063849fc60feee85a39)), closes [#393](https://github.com/mvanhorn/cli-printing-press/issues/393)
+* **cli:** manifest emission no longer gated by stale mcp_ready label ([#359](https://github.com/mvanhorn/cli-printing-press/issues/359)) ([2e892e3](https://github.com/mvanhorn/cli-printing-press/commit/2e892e368f3c3249a674b18da27402d47debbafa))
+* **cli:** mcp-sync auto-fixes spec.yaml name drift for internal YAML specs ([#400](https://github.com/mvanhorn/cli-printing-press/issues/400)) ([d1b9cd2](https://github.com/mvanhorn/cli-printing-press/commit/d1b9cd27835c986ba4754d69c62946c492ad1467))
+* **cli:** mcp-sync bumps mcp-go pin when migrating to cobratree surface ([#404](https://github.com/mvanhorn/cli-printing-press/issues/404)) ([7670fe9](https://github.com/mvanhorn/cli-printing-press/commit/7670fe98bc32df56518e5789a9b6f5bd694ce9fa))
+* **cli:** mcp-sync handles older library CLI drift (cliutil + name validation) ([#369](https://github.com/mvanhorn/cli-printing-press/issues/369)) ([1a4bcae](https://github.com/mvanhorn/cli-printing-press/commit/1a4bcae8f94654c64686aee6494bf955a70acfba))
+* **cli:** mcp-sync preserves manifest brand-casing and hand-edited descriptions ([#373](https://github.com/mvanhorn/cli-printing-press/issues/373)) ([9f57c41](https://github.com/mvanhorn/cli-printing-press/commit/9f57c41d693463110979cfa8d05abbe95600f050))
+* **cli:** mcp-sync refreshes .printing-press.json from spec.yaml ([#375](https://github.com/mvanhorn/cli-printing-press/issues/375)) ([40d1ffa](https://github.com/mvanhorn/cli-printing-press/commit/40d1ffadcdaa582a61953a4239a204eda1886334))
+* **cli:** mcp-sync skips deliver/suggestFlag prolog blocks when absent ([#376](https://github.com/mvanhorn/cli-printing-press/issues/376)) ([2b9f2fb](https://github.com/mvanhorn/cli-printing-press/commit/2b9f2fbbecac2c8a2c4a622cd4966f0004d8fab7))
+* **cli:** OpenAPI parser prefers description over summary on operations ([#411](https://github.com/mvanhorn/cli-printing-press/issues/411)) ([cb91024](https://github.com/mvanhorn/cli-printing-press/commit/cb91024d4b6a216ad15f4f8f4683d1f375c2ce50))
+* **cli:** scorecard human output shows N/A for opt-out dimensions ([#406](https://github.com/mvanhorn/cli-printing-press/issues/406)) ([0954bca](https://github.com/mvanhorn/cli-printing-press/commit/0954bcafcc0142cd0517aa2faf48c2e0ba4ce687))
+* **cli:** tools-manifest.json classifies reclassified path params as path, not query ([#394](https://github.com/mvanhorn/cli-printing-press/issues/394)) ([cdd9153](https://github.com/mvanhorn/cli-printing-press/commit/cdd9153b15e9c3a746c612fe12195ce3da9f68f1))
+* **cli:** transliterate spec strings to ASCII via Unidecode at every chokepoint ([#371](https://github.com/mvanhorn/cli-printing-press/issues/371)) ([283c992](https://github.com/mvanhorn/cli-printing-press/commit/283c9923a771c87c9f8b67f47adebabb7a801e75))
+* **cli:** wire auth.optional through CLIManifest to MCPB user_config Required ([#374](https://github.com/mvanhorn/cli-printing-press/issues/374)) ([a158a62](https://github.com/mvanhorn/cli-printing-press/commit/a158a62984b796eb90eb3e09554fe2f8785b88ac))
+* **skills:** drop context: fork from polish so AskUserQuestion works natively ([#410](https://github.com/mvanhorn/cli-printing-press/issues/410)) ([0683ef1](https://github.com/mvanhorn/cli-printing-press/commit/0683ef1f2790672f969f946c6fe34fcf2a85b3bd))
+* **skills:** polish loads AskUserQuestion via ToolSearch in forked context ([#399](https://github.com/mvanhorn/cli-printing-press/issues/399)) ([2d9efda](https://github.com/mvanhorn/cli-printing-press/commit/2d9efda56103259ab474f4101a38f4f383a6f732))
+* **skills:** polish syncs novel_features; publish detects squash-zombie branches ([#414](https://github.com/mvanhorn/cli-printing-press/issues/414)) ([fe5d65c](https://github.com/mvanhorn/cli-printing-press/commit/fe5d65c5178985b2e22331692ac7f2e2b6b4e240))
+
+
+### Code Refactoring
+
+* **skills:** extract Phase 4.85 into printing-press-output-review sub-skill ([#379](https://github.com/mvanhorn/cli-printing-press/issues/379)) ([a9ca3f8](https://github.com/mvanhorn/cli-printing-press/commit/a9ca3f80e2f9291df7d4006c9009667314eb24fa))
+
 ## [2.4.0](https://github.com/mvanhorn/cli-printing-press/compare/v2.3.9...v2.4.0) (2026-04-27)
 
 
