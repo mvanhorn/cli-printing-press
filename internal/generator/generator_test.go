@@ -3956,6 +3956,136 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// TestGeneratedSyncExitPolicyAndStrictFlag pins the WU-2 U4 contract: the
+// generated sync command (a) declares a --strict flag for legacy callers,
+// (b) emits a `criticalResources` map literal at the top of newSyncCmd
+// projecting SyncableResource.Critical (set by U1 from x-critical), (c)
+// implements the four-branch exit-policy that downgrades non-critical
+// failures to warnings unless --strict is set, and (d) emits a one-shot
+// in-band sync_warning with reason "exit_policy_default_changed" the
+// first time the new default suppresses what would have been a non-zero
+// exit under the old contract. The literal "%s" embedded-quote pattern
+// is the same shape used elsewhere in sync.go.tmpl and AGENTS.md calls
+// out the JSON-shape consistency requirement.
+func TestGeneratedSyncExitPolicy(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "exitsync",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"EXITSYNC_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/exitsync-pp-cli/config.toml",
+		},
+		// Two flat resources: one annotated x-critical: true (channels) and
+		// one unannotated (messages). The generator should emit channels in
+		// the criticalResources map and omit messages.
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Description: "Manage channels",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels",
+						Description: "List channels",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Critical:    true,
+					},
+				},
+			},
+			"messages": {
+				Description: "Manage messages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/messages",
+						Description: "List messages",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	// (a) --strict flag declared with the documented description.
+	assert.Contains(t, syncContent,
+		`cmd.Flags().BoolVar(&strict, "strict", false,`,
+		"sync.go must declare --strict flag")
+	assert.Contains(t, syncContent,
+		"legacy behavior",
+		"--strict flag description should mention legacy behavior")
+
+	// (b) criticalResources map literal lists exactly the critical resources.
+	assert.Contains(t, syncContent,
+		`criticalResources := map[string]bool{`,
+		"sync.go must declare criticalResources map literal")
+	assert.Contains(t, syncContent,
+		`"channels": true,`,
+		"criticalResources must include channels (x-critical: true)")
+	// messages is non-critical and must NOT appear with `: true,` in the map.
+	// We can't easily assert absence-from-map without a substring scan; ensure
+	// the unrelated literal isn't there.
+	assert.NotContains(t, syncContent,
+		`"messages": true,`,
+		"criticalResources must NOT include messages (no x-critical)")
+
+	// (c) Four-branch exit policy. The four guards land in sequence; assert
+	// each individually so a refactor can't silently collapse two of them.
+	assert.Contains(t, syncContent,
+		`if strict && errCount > 0 {`,
+		"strict-mode branch must exit non-zero on any error")
+	assert.Contains(t, syncContent,
+		`if criticalErrCount > 0 {`,
+		"critical-failure branch must exit non-zero regardless of --strict")
+	assert.Contains(t, syncContent,
+		`if successCount == 0 {`,
+		"nothing-synced branch must exit non-zero")
+
+	// criticalErrCount must be tallied at result-aggregation time using the
+	// criticalResources map. This pins the lookup mechanism so a refactor
+	// can't accidentally drop the per-resource classification.
+	assert.Contains(t, syncContent,
+		`if criticalResources[res.Resource] {`,
+		"sync.go must classify each errored resource against criticalResources")
+
+	// (d) In-band default-flip signal. Fires once when the new default
+	// suppressed a non-zero exit under the old contract.
+	assert.Contains(t, syncContent,
+		`"reason":"exit_policy_default_changed"`,
+		"sync.go must emit one-shot sync_warning with reason exit_policy_default_changed")
+	assert.Contains(t, syncContent,
+		`if errCount > 0 && !strict && criticalErrCount == 0 && successCount > 0 {`,
+		"default-flip signal must fire only when the new default suppressed a non-zero exit")
+
+	// AGENTS.md: emission must use the "%s" embedded-quote pattern, not
+	// %q. Match the sync_anomaly shape on line 374 of sync.go.tmpl.
+	assert.NotContains(t, syncContent,
+		`"reason":%q,"errored"`,
+		"exit_policy_default_changed must use literal %s interpolation, not %q Go-escaping")
+
+	// Build the generated CLI to catch template-syntax / import errors that
+	// substring assertions miss.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 func TestGenerateGraphQLCompiles(t *testing.T) {
 	t.Parallel()
 

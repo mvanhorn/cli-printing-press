@@ -97,6 +97,7 @@ paths:
         "200":
           description: OK
   /projects:
+    x-critical: true
     get:
       tags: [projects]
       operationId: listProjects

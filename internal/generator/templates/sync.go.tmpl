@@ -35,9 +35,22 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var dbPath string
 	var maxPages int
 	var latestOnly bool
+	var strict bool
 {{- if .Pagination.DateRangeParam}}
 	var dates string
 {{- end}}
+
+	// criticalResources is the template-time projection of SyncableResource.Critical
+	// (set by the profiler from the spec's path-item x-critical extension). It's
+	// consulted at error-aggregation time below so a non-critical failure can be
+	// downgraded to a sync_warning + exit 0 unless --strict was passed. WU-2 U4.
+	criticalResources := map[string]bool{
+{{- range .SyncableResources}}
+{{- if .Critical}}
+		{{printf "%q" .Name}}: true,
+{{- end}}
+{{- end}}
+	}
 
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -177,6 +190,7 @@ Exit codes & warnings:
 
 			var totalSynced int
 			var errCount int
+			var criticalErrCount int
 			var warnCount int
 			var successCount int
 			for res := range results {
@@ -185,6 +199,9 @@ Exit codes & warnings:
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
 					}
 					errCount++
+					if criticalResources[res.Resource] {
+						criticalErrCount++
+					}
 				} else if res.Warn != nil {
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: warning: %v\n", res.Resource, res.Warn)
@@ -208,6 +225,9 @@ Exit codes & warnings:
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
 					}
 					errCount++
+					if criticalResources[res.Resource] {
+						criticalErrCount++
+					}
 				} else if res.Warn != nil {
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: warning: %v\n", res.Resource, res.Warn)
@@ -237,11 +257,37 @@ Exit codes & warnings:
 					totalSynced, totalResources, elapsed.Seconds())
 			}
 
-			if errCount > 0 {
+			// Exit-code policy (WU-2 U4):
+			//   1. --strict + any error  -> non-zero (legacy contract)
+			//   2. any critical failure  -> non-zero regardless of --strict
+			//   3. nothing synced        -> non-zero (preserves "all-warned" / "all-errored" exit)
+			//   4. otherwise             -> exit 0 (any data synced + no critical failed)
+			// When branch 4 suppresses what branch 1 would have rejected, emit a
+			// one-shot sync_warning with reason "exit_policy_default_changed" so
+			// CI scripts that depend on $? != 0 can discover the contract change
+			// without reading the CHANGELOG.
+			if strict && errCount > 0 {
 				return fmt.Errorf("%d resource(s) failed to sync", errCount)
 			}
-			if warnCount > 0 && successCount == 0 {
-				return fmt.Errorf("%d resource(s) skipped due to insufficient access", warnCount)
+			if criticalErrCount > 0 {
+				return fmt.Errorf("%d critical resource(s) failed to sync", criticalErrCount)
+			}
+			if successCount == 0 {
+				if warnCount > 0 && errCount == 0 {
+					return fmt.Errorf("%d resource(s) skipped due to insufficient access", warnCount)
+				}
+				if errCount > 0 {
+					return fmt.Errorf("%d resource(s) failed to sync", errCount)
+				}
+			}
+			if errCount > 0 && !strict && criticalErrCount == 0 && successCount > 0 {
+				if !humanFriendly {
+					msg := fmt.Sprintf("%d resource(s) failed but exit code is 0 because the new default treats non-critical failures as warnings. Pass --strict to restore the old behavior, or annotate critical resources with x-critical: true. See CHANGELOG.", errCount)
+					fmt.Fprintf(os.Stderr, `{"event":"sync_warning","reason":"exit_policy_default_changed","errored":%d,"message":"%s"}`+"\n",
+						errCount, strings.ReplaceAll(msg, `"`, `\"`))
+				} else {
+					fmt.Fprintf(os.Stderr, "warning: %d resource(s) failed but exit code is 0 because the new default treats non-critical failures as warnings. Pass --strict to restore the old behavior, or annotate critical resources with x-critical: true.\n", errCount)
+				}
 			}
 			return nil
 		},
@@ -254,6 +300,7 @@ Exit codes & warnings:
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/{{.Name}}-pp-cli/data.db)")
 	cmd.Flags().IntVar(&maxPages, "max-pages", 1000, "Maximum pages to fetch per resource (0 = unlimited; default raised from 10 to 1000 in WU-2)")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
+	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (legacy behavior; default policy treats non-critical resource failures as warnings).")
 {{- if .Pagination.DateRangeParam}}
 	cmd.Flags().StringVar(&dates, "dates", "", "Date or date range to sync (passed as {{.Pagination.DateRangeParam}} query parameter)")
 {{- end}}
