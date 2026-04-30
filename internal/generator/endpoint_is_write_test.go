@@ -187,6 +187,30 @@ func TestEndpointIsWriteCommand(t *testing.T) {
 			},
 			want: true,
 		},
+		{
+			name:     "POST getOrCreate flips back to write (read-shaped leading token, mutation in tail)",
+			opName:   "getOrCreateUser",
+			endpoint: spec.Endpoint{Method: "POST", Path: "/users"},
+			want:     true,
+		},
+		{
+			name:     "POST fetchAndUpdate flips back to write (mutation token in tail)",
+			opName:   "fetchAndUpdateProfile",
+			endpoint: spec.Endpoint{Method: "POST", Path: "/profile"},
+			want:     true,
+		},
+		{
+			name:     "POST listAndDelete flips back to write",
+			opName:   "listAndDeleteOrphans",
+			endpoint: spec.Endpoint{Method: "POST", Path: "/orphans"},
+			want:     true,
+		},
+		{
+			name:     "leading-token match is whole-word, not prefix substring (getter is not get)",
+			opName:   "getter",
+			endpoint: spec.Endpoint{Method: "POST", Path: "/getter"},
+			want:     true, // single-token "getter" — not the literal "get" verb, fail-closed
+		},
 	}
 
 	for _, tc := range cases {
@@ -262,6 +286,22 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 				Description: "List items",
 			},
 			mustNotHave: []string{"c.Post(", "c.Put(", "c.Patch("},
+		},
+		{
+			// HEAD / OPTIONS aren't supported by the generated client.
+			// Falling back to c.Get keeps generation compileable; the only
+			// alternative would be emitting an undefined method like c.Head.
+			name:         "HEAD endpoint falls back to c.Get",
+			apiName:      "head-promoted",
+			resourceName: "probes",
+			endpointName: "headStatus",
+			endpoint: spec.Endpoint{
+				Method:      "HEAD",
+				Path:        "/status",
+				Description: "Probe status",
+			},
+			mustContain: []string{"c.Get(path, params)"},
+			mustNotHave: []string{"c.Head(", "c.Options("},
 		},
 	}
 

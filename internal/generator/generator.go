@@ -773,8 +773,8 @@ func resourceHasWriteCommand(resource spec.Resource) bool {
 	return false
 }
 
-// methodIsWrite is the verb-only fallback for callers without an Endpoint
-// in hand. Prefer endpointIsWriteCommand when one is available.
+// methodIsWrite is the verb-only fallback. Prefer endpointIsWriteCommand
+// when an Endpoint is in hand.
 func methodIsWrite(method string) bool {
 	switch strings.ToUpper(strings.TrimSpace(method)) {
 	case "POST", "PUT", "PATCH", "DELETE":
@@ -785,9 +785,33 @@ func methodIsWrite(method string) bool {
 }
 
 // readOperationIDPrefixes signal a read regardless of HTTP verb. Matched
-// against leading characters of the operation id, case-insensitive.
-var readOperationIDPrefixes = []string{
-	"get", "list", "search", "find", "query", "count", "describe", "fetch",
+// against the leading camelCase token of the operation id, case-insensitive.
+// Whole-token (not substring) matching avoids false reads on names like
+// "getter" or "listenerStart" while still catching "getUser", "listOrders".
+var readOperationIDPrefixes = map[string]bool{
+	"get":      true,
+	"list":     true,
+	"search":   true,
+	"find":     true,
+	"query":    true,
+	"count":    true,
+	"describe": true,
+	"fetch":    true,
+}
+
+// writeOperationIDFragments name mutations. When a read-shaped leading token
+// is followed by one of these (e.g. getOrCreate, fetchAndUpdate), the
+// classifier flips back to write — the leading verb was misleading.
+var writeOperationIDFragments = map[string]bool{
+	"create": true,
+	"update": true,
+	"delete": true,
+	"remove": true,
+	"add":    true,
+	"insert": true,
+	"set":    true,
+	"upsert": true,
+	"save":   true,
 }
 
 // readBodyParamNames are filter-shape body field names. A POST whose body
@@ -813,7 +837,7 @@ var readBodyParamNames = map[string]bool{
 
 // endpointIsWriteCommand returns true when the endpoint mutates external
 // state. Read signals are checked in cost order: annotation, verb, name
-// prefix, body shape. Fail-closed when none fire so unknown shapes stay
+// token, body shape. Fail-closed when none fire so unknown shapes stay
 // classified as writes.
 //
 // opName is the map key from Resource.Endpoints (the operation id).
@@ -824,13 +848,39 @@ func endpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
 	if !methodIsWrite(endpoint.Method) {
 		return false
 	}
-	lowerName := strings.ToLower(strings.TrimSpace(opName))
-	for _, prefix := range readOperationIDPrefixes {
-		if strings.HasPrefix(lowerName, prefix) {
-			return false
+	tokens := camelCaseTokens(strings.TrimSpace(opName))
+	if len(tokens) > 0 && readOperationIDPrefixes[strings.ToLower(tokens[0])] {
+		for _, tok := range tokens[1:] {
+			if writeOperationIDFragments[strings.ToLower(tok)] {
+				return true
+			}
 		}
+		return false
 	}
 	return !bodyIsAllFilterShape(endpoint.Body)
+}
+
+// camelCaseTokens splits "getOrCreate" → ["get", "Or", "Create"] and
+// "searchAll" → ["search", "All"]. Non-letter runes (digits, separators)
+// stay attached to the preceding token.
+func camelCaseTokens(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var tokens []string
+	var cur []rune
+	for _, r := range s {
+		if unicode.IsUpper(r) && len(cur) > 0 {
+			tokens = append(tokens, string(cur))
+			cur = []rune{r}
+			continue
+		}
+		cur = append(cur, r)
+	}
+	if len(cur) > 0 {
+		tokens = append(tokens, string(cur))
+	}
+	return tokens
 }
 
 // bodyIsAllFilterShape reports whether every body param's name is in

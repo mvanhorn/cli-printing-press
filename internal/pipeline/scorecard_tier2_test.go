@@ -1671,6 +1671,40 @@ resources:
 		assert.NoError(t, err)
 		assert.Equal(t, []string{"/x"}, info.Paths)
 	})
+
+	t.Run("empty file returns explicit error", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "empty.yaml")
+		writeScorecardFixture(t, dir, "empty.yaml", "")
+
+		_, err := loadOpenAPISpec(specPath)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "empty")
+	})
+
+	t.Run("whitespace-only file returns explicit error", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "blank.yaml")
+		writeScorecardFixture(t, dir, "blank.yaml", "   \n\n\t  \n")
+
+		_, err := loadOpenAPISpec(specPath)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "empty")
+	})
+
+	t.Run("UTF-8 BOM-prefixed JSON still detects JSON branch", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "bom.json")
+		// Editors on Windows occasionally emit a UTF-8 BOM at the head of
+		// JSON files. Without the BOM strip it would route to the YAML
+		// branch and the JSON-specific error message would be lost.
+		bom := string([]byte{0xEF, 0xBB, 0xBF})
+		writeScorecardFixture(t, dir, "bom.json", bom+`{"paths": {"/y": {}}}`)
+
+		info, err := loadOpenAPISpec(specPath)
+		assert.NoError(t, err)
+		assert.Equal(t, []string{"/y"}, info.Paths)
+	})
 }
 
 func writeScorecardFixture(t *testing.T, root, relPath, content string) {
