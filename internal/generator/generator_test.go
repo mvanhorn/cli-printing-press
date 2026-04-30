@@ -1282,6 +1282,61 @@ func TestGenerateWithEmptyOwner(t *testing.T) {
 	assert.NotContains(t, string(gomod), "module github.com/")
 }
 
+// TestGenerateStoreMigrateUsesBeginImmediate is a fast canary that the
+// emitted store.go runs migrations inside a BEGIN IMMEDIATE transaction
+// pinned to a single connection. Without it, parallel Open() against a
+// fresh DB races per CREATE TABLE statement and trips SQLITE_BUSY in CI.
+// The shipped store_schema_version_test.go.tmpl exercises the actual
+// concurrency; this test fails the generator immediately on regression
+// without waiting for go test ./internal/store to run.
+func TestGenerateStoreMigrateUsesBeginImmediate(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "begin-immediate-canary",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/begin-immediate-canary-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"things": {
+				Description: "Things",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/things",
+						Description: "List things",
+						Response:    spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "id", Type: "string"},
+							{Name: "name", Type: "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	src := string(storeSrc)
+
+	assert.Contains(t, src, `s.db.Conn(ctx)`,
+		"migrate must pin a connection — BEGIN/COMMIT pairs must run on the same connection")
+	assert.Contains(t, src, `BEGIN IMMEDIATE`,
+		"migrate must wrap migrations in BEGIN IMMEDIATE so concurrent fresh-DB Opens serialize on the RESERVED lock instead of racing per-statement")
+	assert.Contains(t, src, `COMMIT`,
+		"migrate must commit the transaction explicitly")
+}
+
 func TestGenerateStoreWithBatchResourceDoesNotDuplicateUpsertBatch(t *testing.T) {
 	t.Parallel()
 

@@ -6,6 +6,7 @@ package store
 import (
 	"database/sql"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -85,6 +86,37 @@ func TestSchemaVersion_RefusesNewerDB(t *testing.T) {
 	_, err = Open(dbPath)
 	if err == nil {
 		t.Fatalf("expected open to fail on newer schema, got nil")
+	}
+}
+
+// TestMigrate_ConcurrentFreshDB exercises the BEGIN IMMEDIATE migration
+// transaction. Without it, N goroutines opening the same fresh DB in
+// parallel race per CREATE TABLE statement and tripped SQLITE_BUSY in
+// CI. With it, they serialize on the RESERVED lock acquired at BEGIN
+// time and every Open succeeds.
+func TestMigrate_ConcurrentFreshDB(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	const n = 8
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			s, err := Open(dbPath)
+			if err != nil {
+				errs <- err
+				return
+			}
+			s.Close()
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("concurrent Open failed: %v", err)
 	}
 }
 
