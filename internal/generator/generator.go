@@ -868,6 +868,17 @@ func endpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
 	return !bodyIsAllFilterShape(endpoint.Body)
 }
 
+// endpointIsReadCommand is the inverse of endpointIsWriteCommand.
+// Templates use this through the IsReadOnly field on their data
+// structs to decide whether to emit Annotations["mcp:read-only"].
+// Centralizing the negation keeps "read-only command = not a write
+// command" declared in one place; a future definition shift (e.g. a
+// new annotation that forces read-only regardless of verb) only needs
+// one update site.
+func endpointIsReadCommand(endpoint spec.Endpoint, opName string) bool {
+	return !endpointIsWriteCommand(endpoint, opName)
+}
+
 // camelCaseTokens splits "getOrCreate" → ["get", "Or", "Create"] and
 // "searchAll" → ["search", "All"]. Non-letter runes (digits, separators)
 // stay attached to the preceding token.
@@ -1472,7 +1483,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				HasStore:        g.VisionSet.Store,
 				IsAsync:         isAsync,
 				Async:           asyncInfo,
-				IsReadOnly:      !endpointIsWriteCommand(endpoint, eName),
+				IsReadOnly:      endpointIsReadCommand(endpoint, eName),
 				APISpec:         g.Spec,
 			}
 			epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+eName)+".go")
@@ -1533,7 +1544,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 					HasStore:        g.VisionSet.Store,
 					IsAsync:         isAsync,
 					Async:           asyncInfo,
-					IsReadOnly:      !endpointIsWriteCommand(endpoint, eName),
+					IsReadOnly:      endpointIsReadCommand(endpoint, eName),
 					APISpec:         g.Spec,
 				}
 				epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName+"_"+eName)+".go")
@@ -1934,7 +1945,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			HasStore:     g.VisionSet.Store,
 			Resource:     resource,
 			FuncPrefix:   pc.ResourceName,
-			IsReadOnly:   !endpointIsWriteCommand(pc.Endpoint, pc.EndpointName),
+			IsReadOnly:   endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
 			APISpec:      g.Spec,
 		}
 		promotedPath := filepath.Join("internal", "cli", "promoted_"+pc.PromotedName+".go")
