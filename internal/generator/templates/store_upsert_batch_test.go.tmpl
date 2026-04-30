@@ -45,7 +45,7 @@ func TestStoreWrite_NoSQLITE_BUSY_HighConcurrency(t *testing.T) {
 			for i := 0; i < itemsPerBatch; i++ {
 				items = append(items, json.RawMessage(fmt.Sprintf(`{"id": "g%d-i%d"}`, gid, i)))
 			}
-			if _, err := s.UpsertBatch(rt, items); err != nil {
+			if _, _, err := s.UpsertBatch(rt, items); err != nil {
 				errCh <- fmt.Errorf("UpsertBatch goroutine %d: %w", gid, err)
 				return
 			}
@@ -116,13 +116,148 @@ func TestStoreWrite_PanicReleasesLock(t *testing.T) {
 	// Subsequent writer must not block.
 	done := make(chan struct{})
 	go func() {
-		if _, err := s.UpsertBatch("post_panic", []json.RawMessage{json.RawMessage(`{"id": "x"}`)}); err != nil {
+		if _, _, err := s.UpsertBatch("post_panic", []json.RawMessage{json.RawMessage(`{"id": "x"}`)}); err != nil {
 			t.Errorf("post-panic UpsertBatch: %v", err)
 		}
 		close(done)
 	}()
 	<-done
 }
+
+// TestUpsertBatch_TemplatedIDFieldOverrideWins exercises the WU-2 U3
+// per-resource ID-field override. When the spec author annotates a
+// path-item with x-resource-id, the profiler emits SyncableResource.IDField,
+// the generator templates this into resourceIDFieldOverrides, and
+// UpsertBatch consults that map first. This test seeds the override map
+// at runtime (since the generated table here may or may not declare any
+// override) to assert the lookup path itself works.
+func TestUpsertBatch_TemplatedIDFieldOverrideWins(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	// Inject a runtime override for a synthetic resource. Item carries
+	// no generic-fallback field (no id/name/uuid/...) — only a custom
+	// "ticker" field. Without the override, all 3 items would be
+	// dropped as PK-unresolved; with it, all 3 land.
+	prev, hadPrev := resourceIDFieldOverrides["overrideTest"]
+	resourceIDFieldOverrides["overrideTest"] = "ticker"
+	defer func() {
+		if hadPrev {
+			resourceIDFieldOverrides["overrideTest"] = prev
+		} else {
+			delete(resourceIDFieldOverrides, "overrideTest")
+		}
+	}()
+
+	items := []json.RawMessage{
+		json.RawMessage(`{"ticker": "AAPL", "price": 100}`),
+		json.RawMessage(`{"ticker": "GOOG", "price": 200}`),
+		json.RawMessage(`{"ticker": "MSFT", "price": 300}`),
+	}
+	stored, extractFailures, err := s.UpsertBatch("overrideTest", items)
+	if err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	}
+	if stored != 3 {
+		t.Fatalf("stored = %d, want 3 (templated override should resolve all PKs)", stored)
+	}
+	if extractFailures != 0 {
+		t.Fatalf("extractFailures = %d, want 0", extractFailures)
+	}
+}
+
+// TestUpsertBatch_GenericFallbackList covers each name in the reduced
+// fallback list. The kalshi-accreted names (ticker/event_ticker/series_ticker)
+// were dropped in WU-2 U3 because the user owns kalshi and will regenerate
+// it with x-resource-id annotations; this test pins what the generic list
+// is now responsible for so a future trim doesn't silently break unannotated
+// specs.
+func TestUpsertBatch_GenericFallbackList(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	for _, key := range []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"} {
+		t.Run(key, func(t *testing.T) {
+			rt := "fallback_" + key
+			items := []json.RawMessage{
+				json.RawMessage(fmt.Sprintf(`{%q: %q}`, key, "value-1")),
+				json.RawMessage(fmt.Sprintf(`{%q: %q}`, key, "value-2")),
+			}
+			stored, extractFailures, err := s.UpsertBatch(rt, items)
+			if err != nil {
+				t.Fatalf("UpsertBatch(%q): %v", key, err)
+			}
+			if stored != 2 {
+				t.Fatalf("stored = %d, want 2 (fallback %q must resolve)", stored, key)
+			}
+			if extractFailures != 0 {
+				t.Fatalf("extractFailures = %d, want 0", extractFailures)
+			}
+		})
+	}
+
+	// Negative: API-specific names dropped in WU-2 U3 must NOT resolve.
+	// Spec authors annotate these via x-resource-id instead.
+	for _, key := range []string{"ticker", "event_ticker", "series_ticker"} {
+		t.Run("dropped_"+key, func(t *testing.T) {
+			rt := "dropped_" + key
+			items := []json.RawMessage{
+				json.RawMessage(fmt.Sprintf(`{%q: %q}`, key, "v1")),
+			}
+			stored, extractFailures, err := s.UpsertBatch(rt, items)
+			if err != nil {
+				t.Fatalf("UpsertBatch(%q): %v", key, err)
+			}
+			if stored != 0 {
+				t.Fatalf("stored = %d, want 0 (%q must NOT be in the generic fallback list)", stored, key)
+			}
+			if extractFailures != 1 {
+				t.Fatalf("extractFailures = %d, want 1 (%q drop must surface as extract failure)", extractFailures, key)
+			}
+		})
+	}
+}
+
+// TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses pins the third
+// return value: items that survive JSON unmarshal but have no extractable
+// PK (templated override AND generic fallback both miss) bump
+// extractFailures. The sync.go.tmpl call site uses this to emit the
+// per-resource primary_key_unresolved sync_anomaly the first time silent
+// drops occur.
+func TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	items := []json.RawMessage{
+		json.RawMessage(`{"id": "ok-1"}`),
+		json.RawMessage(`{"some_random_field": "no-pk-here"}`),
+		json.RawMessage(`{"id": "ok-2"}`),
+		json.RawMessage(`{"another_field": 42}`),
+	}
+	stored, extractFailures, err := s.UpsertBatch("mixed_extraction", items)
+	if err != nil {
+		t.Fatalf("UpsertBatch: %v", err)
+	}
+	if stored != 2 {
+		t.Fatalf("stored = %d, want 2 (only items with id should land)", stored)
+	}
+	if extractFailures != 2 {
+		t.Fatalf("extractFailures = %d, want 2 (two items have no extractable PK)", extractFailures)
+	}
+}
+
 {{- $hasTyped := false }}
 {{- range .Tables}}
 {{- if and (gt (len .Columns) 3) (ne .Name "sync_state") (hasDomainUpsert .Name)}}
@@ -153,7 +288,7 @@ func TestUpsertBatch_Populates{{pascal .Name}}Table(t *testing.T) {
 		json.RawMessage(`{"id": "test-002"}`),
 		json.RawMessage(`{"id": "test-003"}`),
 	}
-	if _, err := s.UpsertBatch("{{.Name}}", items); err != nil {
+	if _, _, err := s.UpsertBatch("{{.Name}}", items); err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
 	}
 
@@ -194,7 +329,7 @@ func TestUpsertBatch_Sets{{pascal .Name}}ParentID(t *testing.T) {
 		json.RawMessage(`{"id": "child-002", "parent_id": "parent-A"}`),
 		json.RawMessage(`{"id": "child-003", "parent_id": "parent-B"}`),
 	}
-	if _, err := s.UpsertBatch("{{.Name}}", items); err != nil {
+	if _, _, err := s.UpsertBatch("{{.Name}}", items); err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
 	}
 

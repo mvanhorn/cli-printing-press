@@ -316,10 +316,12 @@ func syncResource(c *client.Client, db *store.Store, resource, sinceTS string, f
 			break
 		}
 
-		// Batch upsert all items from this page. Track stored separately
-		// from consumed so we can warn when ID extraction fails for the
-		// whole batch.
-		stored, err := db.UpsertBatch(resource, conn.Nodes)
+		// Batch upsert all items from this page. UpsertBatch returns
+		// (stored, extractFailures, err); see sync.go.tmpl for the
+		// shape rationale. The GraphQL path uses the same store layer
+		// so it inherits the per-resource ID-field override map and
+		// reduced fallback list automatically. WU-2 U3.
+		stored, _, err := db.UpsertBatch(resource, conn.Nodes)
 		if err != nil {
 			if !humanFriendly {
 				fmt.Fprintf(os.Stderr, `{"event":"sync_error","resource":"%s","error":"%s"}`+"\n", resource, strings.ReplaceAll(err.Error(), `"`, `\"`))
@@ -412,8 +414,14 @@ func parseSinceDuration(s string) (time.Time, error) {
 	}
 }
 
+// extractID is currently unused in the GraphQL sync path (UpsertBatch's
+// store-layer override map handles per-resource lookups), but is retained
+// here for parity with the REST sync template and for novel commands that
+// may need a quick PK extractor on a JSON object. WU-2 U3 reduced the
+// fallback list to truly-generic names; spec authors annotate with
+// x-resource-id when the API uses a non-generic primary-key field.
 func extractID(obj map[string]any) string {
-	for _, key := range []string{"id", "ID", "ticker", "key", "code", "uid", "uuid", "slug", "name"} {
+	for _, key := range []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"} {
 		if v, ok := obj[key]; ok {
 			s := fmt.Sprintf("%v", v)
 			if s != "" && s != "<nil>" {

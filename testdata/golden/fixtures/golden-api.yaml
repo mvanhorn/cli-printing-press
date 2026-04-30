@@ -86,6 +86,19 @@ components:
           enum: [low, normal, high]
         completed:
           type: boolean
+    Currency:
+      # Currency lacks `id` and `name` so the IDField fallback chain in
+      # the OpenAPI parser cannot pick a tier-2 (id) or tier-3 (name) PK.
+      # The runtime generic fallback list at UpsertBatch time picks up
+      # `code` instead. This locks the safety-net path in. WU-2 U3.
+      type: object
+      properties:
+        code:
+          type: string
+        symbol:
+          type: string
+        decimals:
+          type: integer
 paths:
   /public/status:
     get:
@@ -98,6 +111,15 @@ paths:
           description: OK
   /projects:
     x-critical: true
+    # x-resource-id locks in U3's templated PK extraction path: the profiler
+    # emits SyncableResource.IDField="id", the generator templates that into
+    # resourceIDFieldOverrides, and UpsertBatch consults the override before
+    # falling back to the generic list. The chosen field happens to also be
+    # in the fallback list — that's intentional for the golden harness so
+    # the BEHAVIOR is identical, but the CODE PATH differs (override map vs
+    # fallback loop). The diff this introduces in the generated store.go
+    # locks the override-emission contract in.
+    x-resource-id: id
     get:
       tags: [projects]
       operationId: listProjects
@@ -229,6 +251,25 @@ paths:
       responses:
         "200":
           description: OK
+  # /currencies has no x-resource-id and the response schema has neither `id`
+  # nor `name` — exercises U3's runtime safety-net path: the generic fallback
+  # list at UpsertBatch resolves the PK via `code`.
+  /currencies:
+    get:
+      tags: [currencies]
+      operationId: listCurrencies
+      summary: List supported currencies
+      parameters:
+        - $ref: "#/components/parameters/ApiVersion"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Currency"
   # Exercises the path-param reclassification path: `year` is in:path, but the
   # OpenAPI parser reclassifies date/year/month-named params to PathParam=true,
   # Positional=false (rendered as a flag, but still substituted in the URL).

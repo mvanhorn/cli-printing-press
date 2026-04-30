@@ -4086,6 +4086,199 @@ func TestGeneratedSyncExitPolicy(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// TestGeneratedSyncIDFieldOverridesAndProbes pins the WU-2 U3 contract: the
+// generated sync command and store layer (a) emit a resourceIDFieldOverrides
+// map literal projecting SyncableResource.IDField (set by U1 from
+// x-resource-id or response-schema fallback), (b) drop kalshi-specific names
+// (ticker/event_ticker/series_ticker) from the runtime fallback list — no
+// other public-library CLIs depend on them and the user owns kalshi, (c)
+// emit per-item primary_key_unresolved sync_anomaly events the first time
+// silent drops occur (rate-limited via anomalyEmitted), and (d) emit the
+// F4b stored_count_zero_after_extraction probe at end-of-resource for the
+// case where extraction succeeded but rows didn't land. The AGENTS.md
+// "%s" embedded-quote pattern applies — same JSON-shape consistency as U2/U4.
+func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "idfieldsync",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"IDFIELDSYNC_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/idfieldsync-pp-cli/config.toml",
+		},
+		// One resource with an explicit IDField (templated path), one without
+		// (runtime fallback). Both have a list endpoint so syncResource is
+		// emitted; messages additionally exercises syncDependentResource via
+		// path-templated parent ID.
+		Resources: map[string]spec.Resource{
+			"events": {
+				Description: "Manage events",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/events",
+						Description: "List events",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						IDField:     "event_id", // Templated override path
+					},
+				},
+			},
+			"channels": {
+				Description: "Manage channels",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels",
+						Description: "List channels",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						// No IDField — exercises the runtime fallback path.
+					},
+				},
+			},
+			"messages": {
+				Description: "Manage messages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels/{channelId}/messages",
+						Description: "List messages",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	storeContent := string(storeGo)
+
+	// (a) resourceIDFieldOverrides map declared in BOTH sync.go and store.go.
+	// The map projects SyncableResource.IDField — events with IDField=event_id
+	// must appear, channels (no IDField) must NOT.
+	assert.Contains(t, syncContent,
+		`var resourceIDFieldOverrides = map[string]string{`,
+		"sync.go must declare resourceIDFieldOverrides map")
+	assert.Contains(t, syncContent,
+		`"events": "event_id",`,
+		"sync.go resourceIDFieldOverrides must include events: event_id (from IDField)")
+	// channels has no IDField — assert it doesn't appear inside the override
+	// map. We can't use NotContains on `"channels":` blanket because the
+	// resource also appears in syncResourcePath ("channels": "/channels"); pin
+	// the absence by extracting the override-map block and asserting.
+	overrideStart := strings.Index(syncContent, `var resourceIDFieldOverrides = map[string]string{`)
+	require.GreaterOrEqual(t, overrideStart, 0)
+	overrideEnd := strings.Index(syncContent[overrideStart:], "}")
+	require.Greater(t, overrideEnd, 0)
+	overrideBlock := syncContent[overrideStart : overrideStart+overrideEnd]
+	assert.NotContains(t, overrideBlock, `"channels"`,
+		"resourceIDFieldOverrides block must NOT include channels (no IDField)")
+	assert.NotContains(t, overrideBlock, `"messages"`,
+		"resourceIDFieldOverrides block must NOT include messages (no IDField)")
+
+	assert.Contains(t, storeContent,
+		`var resourceIDFieldOverrides = map[string]string{`,
+		"store.go must declare resourceIDFieldOverrides map")
+	assert.Contains(t, storeContent,
+		`"events": "event_id",`,
+		"store.go resourceIDFieldOverrides must include events: event_id")
+
+	// (b) Generic fallback list reduced — kalshi-specific names dropped.
+	// The user owns the kalshi CLI and will regenerate with x-resource-id
+	// annotations; no other public-library CLIs depend on these names.
+	assert.Contains(t, storeContent,
+		`var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}`,
+		"store.go genericIDFieldFallbacks must be the reduced WU-2 U3 list")
+	// Negative: kalshi-specific names must not be in the fallback list.
+	// We assert a robust shape: no occurrence of "ticker" inside the fallback
+	// declaration. The generic check below also pins the absence at a
+	// site-independent layer.
+	assert.NotContains(t, storeContent, `"ticker"`,
+		"store.go must not contain ticker as a fallback ID name (WU-2 U3 dropped it)")
+	assert.NotContains(t, storeContent, `"event_ticker"`,
+		"store.go must not contain event_ticker as a fallback ID name (WU-2 U3 dropped it)")
+	assert.NotContains(t, storeContent, `"series_ticker"`,
+		"store.go must not contain series_ticker as a fallback ID name (WU-2 U3 dropped it)")
+
+	// (c) Per-item primary_key_unresolved sync_anomaly emission. Fires
+	// when extractFailures > 0 but at least one item landed; rate-limited
+	// to one event per resource per sync run via anomalyEmitted.
+	assert.Contains(t, syncContent,
+		`"reason":"primary_key_unresolved"`,
+		"sync.go must emit primary_key_unresolved sync_anomaly")
+	assert.Contains(t, syncContent,
+		"anomalyEmitted",
+		"sync.go must rate-limit primary_key_unresolved emission via anomalyEmitted flag")
+	// Pin the literal "%s" interpolation pattern (AGENTS.md).
+	assert.Contains(t, syncContent,
+		`{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":%d,"count":%d,"reason":"primary_key_unresolved"}`,
+		"primary_key_unresolved must use the literal %s interpolation pattern")
+
+	// Existing roll-up sync_anomaly preserved — fires when 100% of items
+	// fail extraction (entire page yields stored=0).
+	assert.Contains(t, syncContent,
+		`"reason":"all_items_failed_id_extraction"`,
+		"sync.go must preserve the all_items_failed_id_extraction roll-up event")
+
+	// (d) F4b symptom probe at end-of-resource. Fires when consumed > 0
+	// AND totalCount (stored) == 0 AND extraction succeeded for at least
+	// one item — the symptom that's currently held out for controlled
+	// repro. Probe must land in BOTH syncResource and syncDependentResource.
+	assert.Contains(t, syncContent,
+		`"reason":"stored_count_zero_after_extraction"`,
+		"sync.go must emit stored_count_zero_after_extraction sync_anomaly (F4b probe)")
+	// Pin the F4b emission shape (literal "%s" embedded quotes).
+	assert.Contains(t, syncContent,
+		`{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"extract_failures":%d,"reason":"stored_count_zero_after_extraction"}`,
+		"F4b probe must use the literal %s interpolation pattern")
+
+	// UpsertBatch's signature is (int, int, error) — sync.go must consume
+	// all three return values. Without this contract, extractFailures would
+	// not be observable from sync's per-item warning code.
+	assert.Contains(t, syncContent,
+		`stored, extractFailures, err := db.UpsertBatch(resource, items)`,
+		"sync.go syncResource must consume the three-tuple UpsertBatch return")
+	assert.Contains(t, syncContent,
+		`stored, extractFailures, err := db.UpsertBatch(dep.Name, items)`,
+		"sync.go syncDependentResource must consume the three-tuple UpsertBatch return")
+
+	// store.go's UpsertBatch declaration matches the new signature.
+	assert.Contains(t, storeContent,
+		`func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, int, error) {`,
+		"store.go UpsertBatch must return (stored, extractFailures, err)")
+
+	// AGENTS.md guard: literal "%s" interpolation, not %q Go-escaping.
+	assert.NotContains(t, syncContent,
+		`"reason":%q,"count"`,
+		"primary_key_unresolved must not use %q Go-escaping")
+
+	// Build the generated CLI to catch template-syntax / import errors that
+	// substring assertions miss. Also run the generated tests so the new
+	// per-resource override and fallback-list tests execute against real code.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+	runGoCommand(t, outputDir, "test", "./internal/store/...", "-run", "TestUpsertBatch_TemplatedIDFieldOverrideWins|TestUpsertBatch_GenericFallbackList|TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses")
+}
+
 func TestGenerateGraphQLCompiles(t *testing.T) {
 	t.Parallel()
 

@@ -623,56 +623,86 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 {{- end}}
 {{- end}}
 
+// resourceIDFieldOverrides projects SyncableResource.IDField (set by the
+// profiler from x-resource-id or response-schema fallback) into a runtime
+// lookup map. UpsertBatch consults this first so the templated path wins
+// over the generic fallback list. Empty when no resource declared an
+// override; the runtime fallback list still applies. WU-2 U3.
+var resourceIDFieldOverrides = map[string]string{
+{{- range .SyncableResources}}
+{{- if .IDField}}
+	{{printf "%q" .Name}}: {{printf "%q" .IDField}},
+{{- end}}
+{{- end}}
+}
+
+// genericIDFieldFallbacks is the runtime safety net for resources that did
+// NOT receive a templated IDField. The list is intentionally short and
+// truly-generic — API-specific names like ticker/event_ticker were dropped
+// in WU-2 U3; spec authors annotate with x-resource-id instead.
+var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}
+
 // UpsertBatch inserts or replaces multiple records in a single transaction
-// and returns the count of items actually stored. This is 10-100x faster
-// than individual Upsert calls for bulk operations.
-//
-// The returned count lets sync log the honest stored-row count rather
-// than the consumed-item count. When the API returns scalar IDs rather
-// than objects (Firebase /topstories.json, GitHub user-repo lists, etc.)
-// every item fails ID extraction and stored=0 even when consumed=N —
-// callers can detect this divergence and warn loudly instead of
-// silently reporting "N synced".
+// and returns (stored, extractFailures, err). stored counts rows actually
+// landed; extractFailures counts items that survived JSON unmarshal but had
+// no extractable primary key (templated IDField AND generic fallback both
+// missed). callers (sync.go.tmpl) compare these against len(items) to emit
+// the per-item primary_key_unresolved warning and the F4b
+// stored_count_zero_after_extraction probe.
 //
 // For resource types that have a domain-specific typed table, the per-item
 // generic insert is followed by a dispatch to the matching upsert<Pascal>Tx
 // inside the same transaction. Without that dispatch, paginated syncs would
 // only populate the generic resources table — typed tables (and indexed
 // columns like parent_id added by dependent-resource sync) would stay empty.
-func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, error) {
+func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, int, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
-		return 0, fmt.Errorf("starting batch transaction: %w", err)
+		return 0, 0, fmt.Errorf("starting batch transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	var stored, skippedCount int
+	var stored, skippedCount, extractFailures int
 	for _, item := range items {
 		var obj map[string]any
 		if err := json.Unmarshal(item, &obj); err != nil {
 			skippedCount++
 			continue
 		}
-		// Try common primary key field names in priority order.
+		// Templated IDField wins; generic fallback list runs second when
+		// the override is empty OR the override field is absent on this
+		// particular item (response shape mismatches happen even when the
+		// spec declares x-resource-id).
 		var id string
-		for _, key := range []string{"id", "ID", "ticker", "event_ticker", "series_ticker", "key", "code", "uid", "uuid", "slug", "name"} {
-			if v := lookupFieldValue(obj, key); v != nil {
+		if override, ok := resourceIDFieldOverrides[resourceType]; ok && override != "" {
+			if v := lookupFieldValue(obj, override); v != nil {
 				s := fmt.Sprintf("%v", v)
 				if s != "" && s != "<nil>" {
 					id = s
-					break
+				}
+			}
+		}
+		if id == "" {
+			for _, key := range genericIDFieldFallbacks {
+				if v := lookupFieldValue(obj, key); v != nil {
+					s := fmt.Sprintf("%v", v)
+					if s != "" && s != "<nil>" {
+						id = s
+						break
+					}
 				}
 			}
 		}
 		if id == "" {
 			skippedCount++
+			extractFailures++
 			continue
 		}
 
 		if err := s.upsertGenericResourceTx(tx, resourceType, id, item); err != nil {
-			return 0, fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
+			return 0, extractFailures, fmt.Errorf("upserting %s/%s: %w", resourceType, id, err)
 		}
 
 		switch resourceType {
@@ -680,7 +710,7 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 {{- if and (gt (len .Columns) 3) (ne .Name "sync_state") (hasDomainUpsert .Name)}}
 		case "{{.Name}}":
 			if err := s.upsert{{pascal .Name}}Tx(tx, id, obj, item); err != nil {
-				return 0, fmt.Errorf("typed upsert for %s/%s: %w", resourceType, id, err)
+				return 0, extractFailures, fmt.Errorf("typed upsert for %s/%s: %w", resourceType, id, err)
 			}
 {{- end}}
 {{- end}}
@@ -695,9 +725,9 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, err
+		return 0, extractFailures, err
 	}
-	return stored, nil
+	return stored, extractFailures, nil
 }
 
 {{- range .Tables}}
