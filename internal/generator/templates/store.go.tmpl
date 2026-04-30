@@ -47,7 +47,18 @@ type Store struct {
 	path    string
 }
 
+// Open opens or creates the SQLite store at dbPath using the background
+// context. Prefer OpenWithContext from a Cobra command so SIGINT during
+// a slow migration interrupts the open instead of stranding the caller.
 func Open(dbPath string) (*Store, error) {
+	return OpenWithContext(context.Background(), dbPath)
+}
+
+// OpenWithContext opens or creates the SQLite store at dbPath. The
+// context is honored by the migration path: cancellation interrupts the
+// retry-on-SQLITE_BUSY loop and propagates ctx.Err() back to the caller
+// instead of waiting out the full migrationLockTimeout.
+func OpenWithContext(ctx context.Context, dbPath string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return nil, fmt.Errorf("creating db directory: %w", err)
 	}
@@ -63,7 +74,7 @@ func Open(dbPath string) (*Store, error) {
 	db.SetMaxOpenConns(2)
 
 	s := &Store{db: db, path: dbPath}
-	if err := s.migrate(); err != nil {
+	if err := s.migrate(ctx); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
@@ -188,13 +199,30 @@ func (s *Store) backfillColumns(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
-func (s *Store) migrate() error {
-	ctx := context.Background()
+func (s *Store) migrate(ctx context.Context) error {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("acquiring migration connection: %w", err)
 	}
 	defer conn.Close()
+
+	// Fast-path: read user_version on the pinned connection before
+	// acquiring the migration lock so an old binary opening a newer-
+	// schema DB rejects immediately instead of waiting up to
+	// migrationLockTimeout for the writer to finish. WAL readers normally
+	// don't block on writers, but the WAL-initialization race on a fresh
+	// DB can still trip SQLITE_BUSY on the first SELECT — so the read is
+	// wrapped in retryOnBusy with the same 30s budget the lock uses.
+	deadline := time.Now().Add(migrationLockTimeout)
+	var current int
+	if err := retryOnBusy(ctx, deadline, "reading schema version", func() error {
+		return conn.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&current)
+	}); err != nil {
+		return err
+	}
+	if current > StoreSchemaVersion {
+		return fmt.Errorf("database schema version %d is newer than supported version %d; upgrade the CLI binary or open an older database", current, StoreSchemaVersion)
+	}
 
 	migrations := []string{
 		`CREATE TABLE IF NOT EXISTS resources (
@@ -272,10 +300,10 @@ func (s *Store) migrate() error {
 	// modernc.org/sqlite's busy_timeout does not always cover write-write
 	// contention at BEGIN/COMMIT time, so we retry both explicitly on
 	// SQLITE_BUSY for up to migrationLockTimeout.
-	return withMigrationLock(ctx, conn, func() error {
-		// Reading user_version inside the lock avoids racing against
-		// another fresh-DB initializer that hasn't yet stamped the
-		// version (which would manifest as a transient SQLITE_BUSY).
+	return withMigrationLock(ctx, conn, deadline, func() error {
+		// Re-read user_version inside the lock as defense in depth: a
+		// peer could have stamped a newer version between our pre-lock
+		// read and our successful BEGIN IMMEDIATE.
 		var current int
 		if err := conn.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&current); err != nil {
 			return fmt.Errorf("reading schema version: %w", err)
@@ -312,16 +340,16 @@ const (
 
 // withMigrationLock runs fn inside a BEGIN IMMEDIATE / COMMIT pair on
 // conn, retrying both BEGIN and COMMIT on SQLITE_BUSY against a single
-// shared deadline so a stuck peer caps Open() latency at roughly
-// migrationLockTimeout — not 2× that, as a per-call deadline would. The
-// real upper bound is migrationLockTimeout plus one trailing backoff
-// interval (≤100ms) plus the driver's busy_timeout for the in-flight
-// Exec, since the deadline is checked after each failed attempt rather
-// than as a hard wall-clock cutoff. The body itself is responsible for
-// using conn (not s.db) so the writes participate in the held
-// transaction.
-func withMigrationLock(ctx context.Context, conn *sql.Conn, fn func() error) error {
-	deadline := time.Now().Add(migrationLockTimeout)
+// caller-provided deadline. The caller passes the same deadline used
+// for the pre-lock user_version read so total Open() latency stays
+// bounded at roughly migrationLockTimeout — not 2× or 3× as separate
+// deadlines per stage would. The real upper bound is the deadline
+// plus one trailing backoff interval (≤100ms) plus the driver's
+// busy_timeout for the in-flight Exec, since the deadline is checked
+// after each failed attempt rather than as a hard wall-clock cutoff.
+// The body itself is responsible for using conn (not s.db) so the
+// writes participate in the held transaction.
+func withMigrationLock(ctx context.Context, conn *sql.Conn, deadline time.Time, fn func() error) error {
 	if err := execWithBusyRetry(ctx, conn, "BEGIN IMMEDIATE", "begin migration transaction", deadline); err != nil {
 		return err
 	}
@@ -353,13 +381,26 @@ func withMigrationLock(ctx context.Context, conn *sql.Conn, fn func() error) err
 }
 
 // execWithBusyRetry runs stmt on conn and retries on SQLITE_BUSY until
-// deadline. It covers both BEGIN IMMEDIATE and COMMIT contention;
+// deadline. It covers BEGIN IMMEDIATE and COMMIT contention;
 // modernc.org/sqlite's busy_timeout does not reliably cover either when
 // multiple connections race for the WAL write lock.
 func execWithBusyRetry(ctx context.Context, conn *sql.Conn, stmt, label string, deadline time.Time) error {
+	return retryOnBusy(ctx, deadline, label, func() error {
+		_, err := conn.ExecContext(ctx, stmt)
+		return err
+	})
+}
+
+// retryOnBusy runs op and retries it on SQLITE_BUSY/LOCKED until
+// deadline. The same retry shape covers Exec, Query, and any other
+// SQLite call that can race the WAL writer lock — including the
+// pre-lock user_version read, where the WAL initialization race on a
+// fresh DB can BUSY a SELECT that should otherwise succeed under WAL
+// reader/writer concurrency.
+func retryOnBusy(ctx context.Context, deadline time.Time, label string, op func() error) error {
 	backoff := migrationLockBackoffMin
 	for {
-		_, err := conn.ExecContext(ctx, stmt)
+		err := op()
 		if err == nil {
 			return nil
 		}

@@ -4,10 +4,13 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -122,6 +125,115 @@ func TestMigrate_ConcurrentFreshDB(t *testing.T) {
 
 	for err := range errs {
 		t.Fatalf("concurrent Open failed: %v", err)
+	}
+}
+
+// TestOpenWithContext_RespectsCancellation verifies that a caller that
+// cancels its context during a stalled migration sees the cancellation
+// surface as the returned error within a short window, instead of
+// having to wait out the full migrationLockTimeout. SIGINT in a Cobra
+// command's context must interrupt store.Open, not just block on it.
+func TestOpenWithContext_RespectsCancellation(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	// Take an exclusive write lock on the DB so a peer's BEGIN IMMEDIATE
+	// will not progress. We hold a long-running transaction on a raw
+	// connection that bypasses the migration lock helper.
+	holder, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("open holder: %v", err)
+	}
+	defer holder.Close()
+	htx, err := holder.Begin()
+	if err != nil {
+		t.Fatalf("begin holder tx: %v", err)
+	}
+	if _, err := htx.Exec(`CREATE TABLE IF NOT EXISTS holder_lock (id INTEGER)`); err != nil {
+		_ = htx.Rollback()
+		t.Fatalf("seed holder write: %v", err)
+	}
+	defer func() { _ = htx.Rollback() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancelAfter := 250 * time.Millisecond
+	go func() {
+		time.Sleep(cancelAfter)
+		cancel()
+	}()
+
+	start := time.Now()
+	_, err = OpenWithContext(ctx, dbPath)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatalf("expected OpenWithContext to fail under contention with cancelled ctx")
+	}
+	// The migration's retry loop observes ctx.Done() — the wrapped error
+	// should carry context.Canceled. Without ctx threading the call would
+	// block until migrationLockTimeout (default 30s) regardless of the
+	// caller's cancellation signal.
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled in error chain, got: %v", err)
+	}
+	// Be generous on the timing assertion to keep the test stable on
+	// slow CI: we only need to prove the wait was bounded by the cancel
+	// interval, not by the 30-second migrationLockTimeout.
+	if elapsed > 5*time.Second {
+		t.Fatalf("OpenWithContext returned after %s; expected return shortly after %s cancel", elapsed, cancelAfter)
+	}
+}
+
+// TestMigrate_RejectsNewerDBImmediately verifies that an old binary
+// opening a newer-schema DB rejects fast even when a peer migrator is
+// still holding the write lock. The schema-version check runs on the
+// pinned connection BEFORE BEGIN IMMEDIATE so the rejection path
+// doesn't have to wait out the migration lock.
+func TestMigrate_RejectsNewerDBImmediately(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	// Pre-stamp the DB at a version this binary doesn't support.
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version = 999`); err != nil {
+		t.Fatalf("stamp future version: %v", err)
+	}
+	raw.Close()
+
+	// Open a peer connection holding a write transaction so any
+	// BEGIN IMMEDIATE attempt would BUSY against it.
+	holder, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("open holder: %v", err)
+	}
+	defer holder.Close()
+	htx, err := holder.Begin()
+	if err != nil {
+		t.Fatalf("begin holder tx: %v", err)
+	}
+	if _, err := htx.Exec(`CREATE TABLE IF NOT EXISTS holder_lock (id INTEGER)`); err != nil {
+		_ = htx.Rollback()
+		t.Fatalf("seed holder write: %v", err)
+	}
+	defer func() { _ = htx.Rollback() }()
+
+	start := time.Now()
+	_, err = Open(dbPath)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatalf("expected Open to refuse a newer-schema DB")
+	}
+	// The fast-path goal: rejection must arrive well under
+	// migrationLockTimeout. 5s leaves headroom over the WAL init race
+	// (a few ms in practice) without being so tight CI flakes.
+	if elapsed > 5*time.Second {
+		t.Fatalf("Open rejected after %s; fast-path should reject in well under migrationLockTimeout (30s)", elapsed)
 	}
 }
 

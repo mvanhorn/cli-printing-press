@@ -92,7 +92,7 @@ Exit codes & warnings:
 				dbPath = defaultDBPath("{{.Name}}-pp-cli")
 			}
 
-			db, err := store.Open(dbPath)
+			db, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {
 				return fmt.Errorf("opening local database: %w", err)
 			}

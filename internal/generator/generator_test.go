@@ -1335,6 +1335,10 @@ func TestGenerateStoreMigrateUsesBeginImmediate(t *testing.T) {
 	// keywords behind. The check would otherwise pass on comments alone.
 	codeOnly := stripGoComments(src)
 
+	assert.Contains(t, codeOnly, `func OpenWithContext(`,
+		"store package must expose OpenWithContext so callers can interrupt slow migrations with their own ctx")
+	assert.Contains(t, codeOnly, `func (s *Store) migrate(ctx context.Context) error`,
+		"migrate must accept a context.Context so caller cancellation propagates into the retry loop")
 	assert.Contains(t, codeOnly, `withMigrationLock(`,
 		"migrate must dispatch the lock helper — without this call, the BEGIN/COMMIT wrapper is unreachable")
 	assert.Contains(t, codeOnly, `s.db.Conn(ctx)`,
@@ -1343,6 +1347,11 @@ func TestGenerateStoreMigrateUsesBeginImmediate(t *testing.T) {
 		"migrate must wrap migrations in BEGIN IMMEDIATE so concurrent fresh-DB Opens serialize on the RESERVED lock instead of racing per-statement")
 	assert.Contains(t, codeOnly, `COMMIT`,
 		"migrate must commit the transaction explicitly")
+	// Fast-path: reading user_version on the pinned connection BEFORE the
+	// migration lock is what lets an old binary refuse a newer-schema DB
+	// without waiting out migrationLockTimeout.
+	assert.Regexp(t, `(?s)func \(s \*Store\) migrate\(ctx context\.Context\) error \{.*PRAGMA user_version.*withMigrationLock`, codeOnly,
+		"migrate must read PRAGMA user_version BEFORE entering withMigrationLock so newer-DB rejection happens before lock acquisition")
 }
 
 // stripGoComments removes // line comments and /* ... */ block comments from
