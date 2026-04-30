@@ -748,3 +748,115 @@ func TestProfileDependentResources_NoParentNoDependent(t *testing.T) {
 	profile := Profile(s)
 	assert.Empty(t, profile.DependentSyncResources, "no parent resource means no dependent detection")
 }
+
+// TestProfileSyncableResourcePropagatesIDFieldAndCritical asserts that the new
+// per-endpoint metadata flows into SyncableResource. The OpenAPI parser is
+// responsible for resolving IDField (x-resource-id → id → name → required
+// scalar) before the profiler runs; the profiler's job is to pick the right
+// endpoint per resource and copy the resolved values through.
+func TestProfileSyncableResourcePropagatesIDFieldAndCritical(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "tickers",
+		Resources: map[string]spec.Resource{
+			"tickers": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/tickers",
+						Response: spec.ResponseDef{Type: "array"},
+						IDField:  "ticker",
+						Critical: true,
+					},
+				},
+			},
+			"events": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/events",
+						Response: spec.ResponseDef{Type: "array"},
+						IDField:  "id",
+						// Critical not set — defaults to false.
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := make(map[string]SyncableResource, len(profile.SyncableResources))
+	for _, r := range profile.SyncableResources {
+		byName[r.Name] = r
+	}
+
+	require.Contains(t, byName, "tickers")
+	assert.Equal(t, "ticker", byName["tickers"].IDField)
+	assert.True(t, byName["tickers"].Critical)
+
+	require.Contains(t, byName, "events")
+	assert.Equal(t, "id", byName["events"].IDField)
+	assert.False(t, byName["events"].Critical)
+}
+
+// TestProfileSyncableResourceUnsetMetadata pins the negative case — a spec with
+// no IDField/Critical on its endpoints emits a SyncableResource with both
+// fields zero-valued. Lets templates fall through to the runtime fallback list.
+func TestProfileSyncableResourceUnsetMetadata(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "widgets",
+		Resources: map[string]spec.Resource{
+			"widgets": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/widgets",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.SyncableResources, 1)
+	assert.Equal(t, "widgets", profile.SyncableResources[0].Name)
+	assert.Empty(t, profile.SyncableResources[0].IDField)
+	assert.False(t, profile.SyncableResources[0].Critical)
+}
+
+// TestProfileSyncableResourceShorterPathWinsMetadata asserts that when two
+// candidate endpoints can populate the same syncable resource, the shorter-path
+// rule that already governs the Path field also picks the IDField/Critical
+// values — i.e., the metadata always reflects the endpoint sync will actually
+// call.
+func TestProfileSyncableResourceShorterPathWinsMetadata(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "things",
+		Resources: map[string]spec.Resource{
+			"things": {
+				Endpoints: map[string]spec.Endpoint{
+					"longList": {
+						Method:   "GET",
+						Path:     "/v1/things/all",
+						Response: spec.ResponseDef{Type: "array"},
+						IDField:  "loser",
+						Critical: false,
+					},
+					"shortList": {
+						Method:   "GET",
+						Path:     "/v1/things",
+						Response: spec.ResponseDef{Type: "array"},
+						IDField:  "winner",
+						Critical: true,
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.SyncableResources, 1)
+	assert.Equal(t, "/v1/things", profile.SyncableResources[0].Path)
+	assert.Equal(t, "winner", profile.SyncableResources[0].IDField)
+	assert.True(t, profile.SyncableResources[0].Critical)
+}

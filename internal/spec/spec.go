@@ -493,7 +493,18 @@ type Endpoint struct {
 	Meta            map[string]string `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
 	HeaderOverrides []RequiredHeader  `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
 	NoAuth          bool              `yaml:"no_auth,omitempty" json:"no_auth,omitempty"`                   // true when the endpoint does not require authentication
-	Alias           string            `yaml:"-" json:"-"`                                                   // computed, not from YAML
+	// IDField is the resolved primary-key field name for items returned by this
+	// endpoint, populated either by a path-item-level `x-resource-id` extension
+	// or, for OpenAPI specs, by walking the response schema (id → name → first
+	// required scalar). Empty when no key could be resolved; templates fall back
+	// to runtime list scanning. Internal YAML specs may set this directly.
+	IDField string `yaml:"id_field,omitempty" json:"id_field,omitempty"`
+	// Critical flags this endpoint's resource as essential to a sync run. When
+	// true, a per-resource failure is treated as a hard failure even under the
+	// new (non-strict) exit-code policy. Populated from the path-item-level
+	// `x-critical` extension on OpenAPI specs; defaults to false.
+	Critical bool   `yaml:"critical,omitempty" json:"critical,omitempty"`
+	Alias    string `yaml:"-" json:"-"` // computed, not from YAML
 }
 
 func (e Endpoint) EffectiveResponseFormat() string {

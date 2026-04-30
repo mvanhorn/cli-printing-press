@@ -1221,3 +1221,304 @@ func TestSelectDescription(t *testing.T) {
 		})
 	}
 }
+
+// findEndpoint walks resource endpoints (top-level and sub-resource) returning
+// the first endpoint whose path matches. Test helper.
+func findEndpoint(t *testing.T, parsed *spec.APISpec, path string) spec.Endpoint {
+	t.Helper()
+	for _, r := range parsed.Resources {
+		for _, e := range r.Endpoints {
+			if e.Path == path {
+				return e
+			}
+		}
+		for _, sub := range r.SubResources {
+			for _, e := range sub.Endpoints {
+				if e.Path == path {
+					return e
+				}
+			}
+		}
+	}
+	t.Fatalf("no endpoint found at path %q", path)
+	return spec.Endpoint{}
+}
+
+func TestParseReadsXResourceIDAndXCritical(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		path         string // OpenAPI path key — kept stable across cases
+		extraExt     string // extra path-item extensions injected raw
+		wantIDField  string
+		wantCritical bool
+	}{
+		{
+			name: "x-resource-id explicit string wins over schema fallbacks",
+			extraExt: `    x-resource-id: ticker
+    x-critical: true
+`,
+			wantIDField:  "ticker",
+			wantCritical: true,
+		},
+		{
+			name: "x-critical accepts string \"true\"",
+			extraExt: `    x-resource-id: ticker
+    x-critical: "true"
+`,
+			wantIDField:  "ticker",
+			wantCritical: true,
+		},
+		{
+			name: "x-critical accepts string \"1\"",
+			extraExt: `    x-resource-id: ticker
+    x-critical: "1"
+`,
+			wantIDField:  "ticker",
+			wantCritical: true,
+		},
+		{
+			name: "x-critical false (bool) leaves resource non-critical",
+			extraExt: `    x-resource-id: ticker
+    x-critical: false
+`,
+			wantIDField:  "ticker",
+			wantCritical: false,
+		},
+		{
+			name: "x-critical non-truthy string treated as false",
+			extraExt: `    x-resource-id: ticker
+    x-critical: "maybe"
+`,
+			wantIDField:  "ticker",
+			wantCritical: false,
+		},
+		{
+			name: "malformed x-resource-id integer ignored, falls back to id",
+			extraExt: `    x-resource-id: 123
+`,
+			wantIDField:  "id", // fallback tier 2: response schema declares id
+			wantCritical: false,
+		},
+		{
+			name:         "no extensions: response-schema fallback picks id",
+			extraExt:     ``,
+			wantIDField:  "id",
+			wantCritical: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+` + tt.extraExt + `    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    label:
+                      type: string
+`)
+			parsed, err := Parse(yamlSpec)
+			require.NoError(t, err)
+
+			ep := findEndpoint(t, parsed, "/widgets")
+			assert.Equal(t, tt.wantIDField, ep.IDField, "IDField")
+			assert.Equal(t, tt.wantCritical, ep.Critical, "Critical")
+		})
+	}
+}
+
+func TestParseIDFieldFallbackChain(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		schemaYAML string
+		wantID     string
+	}{
+		{
+			name: "tier 2: id present (required)",
+			schemaYAML: `                  type: object
+                  required: [id]
+                  properties:
+                    id: {type: string}
+                    label: {type: string}
+`,
+			wantID: "id",
+		},
+		{
+			name: "tier 2: id present (optional) still wins",
+			schemaYAML: `                  type: object
+                  properties:
+                    id: {type: string}
+                    label: {type: string}
+`,
+			wantID: "id",
+		},
+		{
+			name: "tier 3: name when id absent",
+			schemaYAML: `                  type: object
+                  properties:
+                    name: {type: string}
+                    description: {type: string}
+`,
+			wantID: "name",
+		},
+		{
+			name: "tier 4: first required scalar when id and name absent",
+			schemaYAML: `                  type: object
+                  required: [ticker, market]
+                  properties:
+                    market: {type: string}
+                    ticker: {type: string}
+                    description: {type: string}
+`,
+			wantID: "ticker",
+		},
+		{
+			name: "tier 4: object-typed required field is skipped, next scalar wins",
+			schemaYAML: `                  type: object
+                  required: [meta, code]
+                  properties:
+                    meta:
+                      type: object
+                      properties:
+                        version: {type: string}
+                    code: {type: integer}
+`,
+			wantID: "code",
+		},
+		{
+			name: "tier 5: bottoms out when no required scalar exists",
+			schemaYAML: `                  type: object
+                  properties:
+                    payload:
+                      type: object
+                      properties:
+                        x: {type: string}
+`,
+			wantID: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /things:
+    get:
+      operationId: listThings
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+` + tt.schemaYAML)
+			parsed, err := Parse(yamlSpec)
+			require.NoError(t, err)
+
+			ep := findEndpoint(t, parsed, "/things")
+			assert.Equal(t, tt.wantID, ep.IDField)
+			assert.False(t, ep.Critical)
+		})
+	}
+}
+
+// TestParseXResourceIDAppliesToEveryOperationOnPath exercises the "extensions
+// live on the path item" rule — both GET and POST operations under /widgets
+// inherit the x-resource-id and x-critical values, even though x-critical is
+// only meaningful for the syncable list endpoint.
+func TestParseXResourceIDAppliesToEveryOperationOnPath(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    x-resource-id: widget_uid
+    x-critical: true
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: {type: string}
+    post:
+      operationId: createWidget
+      responses:
+        "201":
+          description: Created
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	var seen int
+	for _, r := range parsed.Resources {
+		for _, e := range r.Endpoints {
+			if e.Path == "/widgets" {
+				assert.Equal(t, "widget_uid", e.IDField, "method=%s", e.Method)
+				assert.True(t, e.Critical, "method=%s", e.Method)
+				seen++
+			}
+		}
+	}
+	assert.Equal(t, 2, seen, "expected GET + POST on /widgets to inherit extensions")
+}
+
+// TestParsePetstoreXExtensionsBaseline ensures the existing OpenAPI fixture
+// (no x-resource-id, no x-critical) is unaffected — IDField falls through to
+// the schema-fallback path, Critical stays false.
+func TestParsePetstoreXExtensionsBaseline(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "petstore.yaml"))
+	require.NoError(t, err)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	for _, r := range parsed.Resources {
+		for _, e := range r.Endpoints {
+			assert.False(t, e.Critical, "%s %s: Critical must default to false", e.Method, e.Path)
+		}
+	}
+}

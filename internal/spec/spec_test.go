@@ -292,6 +292,70 @@ resources:
 	})
 }
 
+func TestEndpointIDFieldAndCritical(t *testing.T) {
+	t.Parallel()
+
+	t.Run("parse YAML with id_field and critical set", func(t *testing.T) {
+		t.Parallel()
+		input := `
+name: test
+base_url: http://x
+resources:
+  tickers:
+    description: Tickers
+    endpoints:
+      list:
+        method: GET
+        path: /tickers
+        id_field: ticker
+        critical: true
+`
+		var s APISpec
+		require.NoError(t, yaml.Unmarshal([]byte(input), &s))
+		ep := s.Resources["tickers"].Endpoints["list"]
+		assert.Equal(t, "ticker", ep.IDField)
+		assert.True(t, ep.Critical)
+	})
+
+	t.Run("parse YAML without id_field/critical defaults to zero values", func(t *testing.T) {
+		t.Parallel()
+		input := `
+name: test
+base_url: http://x
+resources:
+  users:
+    description: Users
+    endpoints:
+      list:
+        method: GET
+        path: /users
+`
+		var s APISpec
+		require.NoError(t, yaml.Unmarshal([]byte(input), &s))
+		ep := s.Resources["users"].Endpoints["list"]
+		assert.Empty(t, ep.IDField)
+		assert.False(t, ep.Critical)
+	})
+
+	t.Run("marshal omits id_field/critical when unset", func(t *testing.T) {
+		t.Parallel()
+		ep := Endpoint{Method: "GET", Path: "/users"}
+		data, err := yaml.Marshal(ep)
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), "id_field")
+		assert.NotContains(t, string(data), "critical")
+	})
+
+	t.Run("marshal includes id_field/critical when set", func(t *testing.T) {
+		t.Parallel()
+		ep := Endpoint{Method: "GET", Path: "/tickers", IDField: "ticker", Critical: true}
+		data, err := yaml.Marshal(ep)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "id_field: ticker")
+		assert.Contains(t, string(data), "critical: true")
+	})
+}
+
 func TestCountMCPTools(t *testing.T) {
 	t.Parallel()
 	s := APISpec{

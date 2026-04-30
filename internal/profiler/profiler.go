@@ -58,6 +58,16 @@ type SearchBodyField struct {
 type SyncableResource struct {
 	Name string
 	Path string
+	// IDField is the resolved primary-key field name for items returned by the
+	// list endpoint, populated from the chosen endpoint's resolved value (in
+	// turn populated by the OpenAPI parser's `x-resource-id` extension or the
+	// response-schema fallback chain). Empty when no key could be resolved;
+	// templates fall back to runtime list scanning.
+	IDField string
+	// Critical flags this resource as essential — its failure during sync
+	// should fail the whole run even under the new (non-strict) exit-code
+	// policy. Defaults to false.
+	Critical bool
 }
 
 // DependentResource describes a child resource that requires iterating a parent
@@ -118,8 +128,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 	}
 
 	resourceNames := collectResourceNames(s.Resources)
-	syncable := make(map[string]string)      // resource name -> list endpoint path
-	parameterized := make(map[string]string) // resource name -> parameterized list endpoint path (excluded from flat sync)
+	syncable := make(map[string]syncableMeta) // resource name -> chosen list endpoint metadata
+	parameterized := make(map[string]string)  // resource name -> parameterized list endpoint path (excluded from flat sync)
 	searchable := make(map[string]map[string]struct{})
 	listResources := make(map[string]struct{})
 
@@ -252,8 +262,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 				// (b) endpoints with required non-pagination query params (scoped lists
 				//     like GetFriendList?steamid=REQUIRED that need a parent ID)
 				if !strings.Contains(endpoint.Path, "{") && !hasRequiredScopeParams(endpoint) {
-					if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing) {
-						syncable[resourceName] = endpoint.Path
+					if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing.Path) {
+						syncable[resourceName] = metaFromEndpoint(endpoint)
 					}
 				}
 
@@ -272,7 +282,9 @@ func Profile(s *spec.APISpec) *APIProfile {
 							// Enum-expanded paths are more specific than generic resource
 							// paths, so they always win on name collision. This ensures
 							// deterministic output regardless of Go map iteration order.
-							syncable[expandedName] = expandedPath
+							meta := metaFromEndpoint(endpoint)
+							meta.Path = expandedPath
+							syncable[expandedName] = meta
 						}
 					} else if strings.Contains(endpoint.Path, "{") {
 						// Parameterized paginated paths can't sync standalone — track
@@ -283,8 +295,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 					} else {
 						// Paginated endpoints override the path set above — they have
 						// richer pagination support for full data retrieval.
-						if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing) {
-							syncable[resourceName] = endpoint.Path
+						if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing.Path) {
+							syncable[resourceName] = metaFromEndpoint(endpoint)
 						}
 					}
 				}
@@ -294,8 +306,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 				// wrapper field defined in the spec's types map).
 				// Only include endpoints whose name suggests a collection (list, all,
 				// index, etc.) — exclude singular getters like "get" or "show".
-				if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing) {
-					syncable[resourceName] = endpoint.Path
+				if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing.Path) {
+					syncable[resourceName] = metaFromEndpoint(endpoint)
 				}
 			}
 
@@ -862,7 +874,7 @@ func sortedKeys[V any](m map[string]V) []string {
 // detectDependentResources examines parameterized paths and identifies parent-child
 // relationships. For example, /channels/{channel_id}/messages becomes a dependent
 // resource of "channels" (only one level of nesting).
-func detectDependentResources(parameterized map[string]string, syncable map[string]string) []DependentResource {
+func detectDependentResources(parameterized map[string]string, syncable map[string]syncableMeta) []DependentResource {
 	var deps []DependentResource
 	for childName, path := range parameterized {
 		// Extract the first {param} from the path
@@ -908,8 +920,30 @@ func detectDependentResources(parameterized map[string]string, syncable map[stri
 	return deps
 }
 
-// sortedSyncableResources converts a name->path map into a sorted slice of SyncableResource.
-func sortedSyncableResources(m map[string]string) []SyncableResource {
+// syncableMeta carries the chosen list endpoint's metadata while the profiler
+// is still selecting between candidates (e.g., flat vs. paginated). It is
+// converted into a SyncableResource at the end of Profile().
+type syncableMeta struct {
+	Path     string
+	IDField  string
+	Critical bool
+}
+
+// metaFromEndpoint extracts the IDField and Critical fields a parser populated
+// from path-item-level extensions (or, for IDField, from response-schema
+// inference). Keeps the per-endpoint plumbing in one place so future profiler
+// fields propagate uniformly.
+func metaFromEndpoint(e spec.Endpoint) syncableMeta {
+	return syncableMeta{
+		Path:     e.Path,
+		IDField:  e.IDField,
+		Critical: e.Critical,
+	}
+}
+
+// sortedSyncableResources converts the per-resource metadata map into a sorted
+// slice of SyncableResource so generated output is deterministic.
+func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 	names := make([]string, 0, len(m))
 	for k := range m {
 		names = append(names, k)
@@ -917,7 +951,13 @@ func sortedSyncableResources(m map[string]string) []SyncableResource {
 	sort.Strings(names)
 	resources := make([]SyncableResource, len(names))
 	for i, name := range names {
-		resources[i] = SyncableResource{Name: name, Path: m[name]}
+		meta := m[name]
+		resources[i] = SyncableResource{
+			Name:     name,
+			Path:     meta.Path,
+			IDField:  meta.IDField,
+			Critical: meta.Critical,
+		}
 	}
 	return resources
 }

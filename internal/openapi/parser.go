@@ -1032,6 +1032,13 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			continue
 		}
 
+		// Read path-item-level extensions once per path. They apply to every
+		// operation under this path item — sync resources are resource-scoped,
+		// not method-scoped, so per-operation reads would either duplicate or
+		// disagree on the same identity.
+		pathResourceIDOverride := readPathItemResourceID(pathItem, path)
+		pathCritical := readPathItemCritical(pathItem, path)
+
 		primaryName, subName := resourceAndSubFromPath(path, basePath, commonPrefix)
 		if primaryName == "" {
 			warnf("skipping path %q: could not derive resource name", path)
@@ -1125,6 +1132,18 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				endpoint.Pagination = detectPagination(endpoint.Params, op)
 			}
 			endpoint.NoAuth = operationAllowsAnonymous(op, doc)
+
+			// IDField fallback chain: explicit x-resource-id wins over
+			// response-schema inference. Resolution happens at parse time so
+			// the profiler sees a single resolved value per endpoint and
+			// templates do not re-walk schemas at generation time.
+			if pathResourceIDOverride != "" {
+				endpoint.IDField = pathResourceIDOverride
+			} else {
+				endpoint.IDField = resolveIDFieldFromResponseSchema(op)
+			}
+			endpoint.Critical = pathCritical
+
 			targetEndpoints[endpointName] = endpoint
 		}
 
@@ -1879,6 +1898,151 @@ func selectResponseSchema(response *openapi3.Response) *openapi3.SchemaRef {
 	}
 
 	return nil
+}
+
+// readPathItemResourceID reads the `x-resource-id` extension from a path item
+// and returns the resolved field name. Accepts only string values; non-string
+// values (numbers, booleans, malformed YAML) emit a warning and return "".
+// Empty/missing extensions return "" without warning.
+func readPathItemResourceID(pathItem *openapi3.PathItem, path string) string {
+	if pathItem == nil || pathItem.Extensions == nil {
+		return ""
+	}
+	raw, ok := pathItem.Extensions["x-resource-id"]
+	if !ok {
+		return ""
+	}
+	switch v := raw.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	default:
+		warnf("path %q: x-resource-id must be a string, got %T; ignoring", path, raw)
+		return ""
+	}
+}
+
+// readPathItemCritical reads the `x-critical` extension from a path item.
+// Accepts native booleans and the truthy strings "true"/"1" (case-insensitive).
+// Other shapes emit a warning and return false.
+func readPathItemCritical(pathItem *openapi3.PathItem, path string) bool {
+	if pathItem == nil || pathItem.Extensions == nil {
+		return false
+	}
+	raw, ok := pathItem.Extensions["x-critical"]
+	if !ok {
+		return false
+	}
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1":
+			return true
+		case "false", "0", "":
+			return false
+		default:
+			warnf("path %q: x-critical string %q is not truthy; treating as false", path, v)
+			return false
+		}
+	default:
+		warnf("path %q: x-critical must be bool or truthy string, got %T; treating as false", path, raw)
+		return false
+	}
+}
+
+// resolveIDFieldFromResponseSchema implements tiers 2-4 of the IDField fallback
+// chain: prefer "id", then "name", then the first scalar field listed in the
+// response schema's `required:` array (walking properties in their schema order).
+// Returns "" when no field qualifies; templates fall through to runtime list
+// scanning. Tier 1 (`x-resource-id` extension) is handled separately by the
+// caller — it overrides every tier here.
+func resolveIDFieldFromResponseSchema(op *openapi3.Operation) string {
+	if op == nil || op.Responses == nil {
+		return ""
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil {
+		return ""
+	}
+	schemaRef := selectResponseSchema(success.Value)
+	if schemaRef == nil || schemaRef.Value == nil {
+		return ""
+	}
+
+	// Walk to the item schema: arrays, {data: [...]} wrappers, or the object itself.
+	itemSchema := unwrapItemSchema(schemaRef.Value)
+	if itemSchema == nil {
+		return ""
+	}
+
+	// Tier 2: explicit `id` (required or optional)
+	if _, ok := itemSchema.Properties["id"]; ok {
+		return "id"
+	}
+	// Tier 3: explicit `name`
+	if _, ok := itemSchema.Properties["name"]; ok {
+		return "name"
+	}
+
+	// Tier 4: first scalar field appearing in the schema's required[] array,
+	// matched against properties in their schema-declared order. kin-openapi
+	// preserves YAML/JSON property order in MapKeys/Extensions but not via
+	// range over Properties (it's a Go map). Fall back to iterating the
+	// required[] slice itself: that order is stable and is what spec authors
+	// intend when they care about which field "wins."
+	for _, fieldName := range itemSchema.Required {
+		propRef, ok := itemSchema.Properties[fieldName]
+		if !ok || propRef == nil || propRef.Value == nil {
+			continue
+		}
+		if isScalarSchema(propRef.Value) {
+			return fieldName
+		}
+	}
+
+	return ""
+}
+
+// unwrapItemSchema returns the schema of items inside a list response. Handles
+// three shapes: bare object (no array, treat as a single-item resource and
+// inspect its fields), bare array (return Items.Value), or {data: [...]}
+// wrapper (mirroring mapResponse's handling).
+func unwrapItemSchema(schema *openapi3.Schema) *openapi3.Schema {
+	if schema == nil {
+		return nil
+	}
+	if isArraySchema(schema) && schema.Items != nil {
+		return schemaRefValue(schema.Items)
+	}
+	if isObjectSchema(schema) {
+		// {data: [...]} wrapper convention
+		if dataRef, ok := schema.Properties["data"]; ok {
+			if data := schemaRefValue(dataRef); isArraySchema(data) && data.Items != nil {
+				return schemaRefValue(data.Items)
+			}
+		}
+		return schema
+	}
+	return nil
+}
+
+// isScalarSchema reports whether the schema's type is a scalar — string,
+// integer, number, or boolean. Excludes objects, arrays, and refs that resolve
+// to either. Used by tier 4 of the IDField fallback chain to skip non-scalar
+// fields when picking a primary key.
+func isScalarSchema(schema *openapi3.Schema) bool {
+	if schema == nil || schema.Type == nil {
+		return false
+	}
+	switch {
+	case schema.Type.Includes(openapi3.TypeString),
+		schema.Type.Includes(openapi3.TypeInteger),
+		schema.Type.Includes(openapi3.TypeNumber),
+		schema.Type.Includes(openapi3.TypeBoolean):
+		return true
+	}
+	return false
 }
 
 func mapTypes(doc *openapi3.T, out *spec.APISpec) {
