@@ -3838,17 +3838,17 @@ func TestIsSyncAccessWarningClassification(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestIsSyncAccessWarningClassification")
 }
 
-// TestGeneratedSyncMaxPagesAndStickyCursor verifies WU-2 / U2: the generated
-// sync command (a) defaults --max-pages to 1000, (b) emits a structured
-// sync_warning with reason "max_pages_cap_hit" on BOTH the flat and
-// dependent-resource code paths when the cap is reached, and (c) breaks the
-// pagination loop with a "stuck_pagination" sync_warning when the API
-// echoes a non-advancing next cursor across consecutive pages. The plan
-// (docs/plans/2026-04-30-001) specifies the literal "%s" interpolation
-// pattern (matching sync.go.tmpl line 374's sync_anomaly emission) rather
-// than %q Go-escaping; this test pins both the JSON event shapes and the
-// flag default at the template-emission layer so future template churn
-// cannot silently regress them.
+// TestGeneratedSyncMaxPagesAndStickyCursor verifies that the generated
+// sync command (a) defaults --max-pages to 100 (covers <=10k items/resource
+// at default page size; bigger resources opt in explicitly), (b) emits a
+// structured sync_warning with reason "max_pages_cap_hit" on BOTH the flat
+// and dependent-resource code paths when the cap is reached, and (c) breaks
+// the pagination loop with a "stuck_pagination" sync_warning when the API
+// echoes a non-advancing next cursor across consecutive pages. The literal
+// "%s" interpolation pattern matches the sync_anomaly emission elsewhere in
+// sync.go.tmpl rather than %q Go-escaping; this test pins both the JSON
+// event shapes and the flag default at the template-emission layer so
+// future template churn cannot silently regress them.
 func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	t.Parallel()
 
@@ -3906,9 +3906,11 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	require.NoError(t, err)
 	syncContent := string(syncGo)
 
-	// (a) Default --max-pages raised from 10 to 1000.
-	assert.Contains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 1000,`,
-		"sync.go must declare --max-pages with default 1000 (WU-2 raised the default)")
+	// (a) Default --max-pages is 100 (covers <=10k items per resource at
+	// the default page size of 100; the old 10-page default silently
+	// truncated reference resources at 1000 items).
+	assert.Contains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 100,`,
+		"sync.go must declare --max-pages with default 100")
 	assert.NotContains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
 		"sync.go must not retain the old 10-page default")
 
@@ -3956,17 +3958,16 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
-// TestGeneratedSyncExitPolicyAndStrictFlag pins the WU-2 U4 contract: the
-// generated sync command (a) declares a --strict flag for legacy callers,
-// (b) emits a `criticalResources` map literal at the top of newSyncCmd
-// projecting SyncableResource.Critical (set by U1 from x-critical), (c)
-// implements the four-branch exit-policy that downgrades non-critical
-// failures to warnings unless --strict is set, and (d) emits a one-shot
-// in-band sync_warning with reason "exit_policy_default_changed" the
-// first time the new default suppresses what would have been a non-zero
-// exit under the old contract. The literal "%s" embedded-quote pattern
-// is the same shape used elsewhere in sync.go.tmpl and AGENTS.md calls
-// out the JSON-shape consistency requirement.
+// TestGeneratedSyncExitPolicy pins the generated sync command's exit-code
+// contract: (a) a --strict flag for callers that want any per-resource
+// failure to exit non-zero, (b) a `criticalResources` map literal at the
+// top of newSyncCmd projecting SyncableResource.Critical (set from
+// x-critical), (c) a four-branch exit-policy that downgrades non-critical
+// failures to warnings unless --strict is set, and (d) a one-shot in-band
+// sync_warning with reason "exit_policy_default_changed" emitted the first
+// time the policy suppresses a non-critical failure, so external callers
+// can detect partial-failure tolerance. The literal "%s" embedded-quote
+// pattern matches the shape used elsewhere in sync.go.tmpl.
 func TestGeneratedSyncExitPolicy(t *testing.T) {
 	t.Parallel()
 
@@ -4024,13 +4025,15 @@ func TestGeneratedSyncExitPolicy(t *testing.T) {
 	require.NoError(t, err)
 	syncContent := string(syncGo)
 
-	// (a) --strict flag declared with the documented description.
+	// (a) --strict flag declared with a description that mentions the
+	// per-resource-failure behavior so callers understand the trade-off
+	// against the default critical-only exit policy.
 	assert.Contains(t, syncContent,
 		`cmd.Flags().BoolVar(&strict, "strict", false,`,
 		"sync.go must declare --strict flag")
 	assert.Contains(t, syncContent,
-		"legacy behavior",
-		"--strict flag description should mention legacy behavior")
+		"any per-resource failure",
+		"--strict flag description should describe the per-resource-failure behavior")
 
 	// (b) criticalResources map literal lists exactly the critical resources.
 	assert.Contains(t, syncContent,

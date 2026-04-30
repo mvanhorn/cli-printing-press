@@ -54,14 +54,12 @@ Exit codes & warnings:
   line carrying status, reason, and message fields, and a final
   {"event":"sync_summary",...} aggregates the run.
 
-  By default the command exits 0 when at least one resource synced and
-  no resource flagged in the spec as critical (x-critical: true) failed.
-  Non-critical failures emit a {"event":"sync_warning","reason":
-  "exit_policy_default_changed",...} so callers that scrape sync output
-  can detect the new contract. Pass --strict to restore the legacy
-  behavior (any per-resource failure exits non-zero); the command always
-  exits non-zero when every selected resource failed, regardless of
-  --strict.`,
+  Exit 0 when at least one resource synced and no resource flagged in
+  the spec as critical (x-critical: true) failed; non-critical failures
+  emit {"event":"sync_warning","reason":"exit_policy_default_changed",
+  ...} so callers can detect that a partial failure was tolerated. Pass
+  --strict to exit non-zero on any per-resource failure. Exit is always
+  non-zero when every selected resource failed, regardless of --strict.`,
 		Example: `  # Sync all resources
   {{.Name}}-pp-cli sync
 
@@ -293,9 +291,9 @@ Exit codes & warnings:
 	cmd.Flags().StringVar(&since, "since", "", "Incremental sync duration (e.g. 7d, 24h, 1w, 30m)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/{{.Name}}-pp-cli/data.db)")
-	cmd.Flags().IntVar(&maxPages, "max-pages", 1000, "Maximum pages to fetch per resource (0 = unlimited; default raised from 10 to 1000 in )")
+	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
-	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (legacy behavior; default policy treats non-critical resource failures as warnings).")
+	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero).")
 {{- if .Pagination.DateRangeParam}}
 	cmd.Flags().StringVar(&dates, "dates", "", "Date or date range to sync (passed as {{.Pagination.DateRangeParam}} query parameter)")
 {{- end}}
