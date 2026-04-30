@@ -31,7 +31,7 @@ var (
 	errAnnotationSoftFail = errors.New("endpoint annotation skipped")
 )
 
-var endpointAnnotationLine = regexp.MustCompile(`(?m)^\s*Annotations: map\[string\]string\{"pp:endpoint": "[^"]+"\},\s*$`)
+var endpointAnnotationLine = regexp.MustCompile(`(?m)^\s*Annotations: map\[string\]string\{"pp:endpoint": "[^"]+"(?:, "mcp:read-only": "true")?\},\s*$`)
 
 type Result struct {
 	Changed bool

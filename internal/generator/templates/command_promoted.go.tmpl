@@ -17,6 +17,9 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 	var flag{{camel (paramIdent .)}} {{goTypeForParam .Name .Type}}
 {{- end}}
 {{- end}}
+{{- range .Endpoint.Body}}
+	var body{{camel (paramIdent .)}} {{goType .Type}}
+{{- end}}
 {{- if .Endpoint.Pagination}}
 	var flagAll bool
 {{- end}}
@@ -26,10 +29,17 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 		Short: "{{oneline .Endpoint.Description}}",
 		Long:  "Shortcut for '{{.ResourceName}} {{.EndpointName}}'. {{oneline .Endpoint.Description}}",
 		Example: "  {{modulePath}} {{.PromotedName}}",
-		Annotations: map[string]string{"pp:endpoint": "{{.ResourceName}}.{{.EndpointName}}"},
+		Annotations: map[string]string{"pp:endpoint": "{{.ResourceName}}.{{.EndpointName}}"{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}},
 		RunE: func(cmd *cobra.Command, args []string) error {
 {{- range .Endpoint.Params}}
 {{- if and .Required (not .Positional) (not .Default)}}
+			if !cmd.Flags().Changed("{{flagName (paramIdent .)}}") && !flags.dryRun {
+				return fmt.Errorf("required flag \"%s\" not set", "{{flagName (paramIdent .)}}")
+			}
+{{- end}}
+{{- end}}
+{{- range .Endpoint.Body}}
+{{- if and .Required (not .Default)}}
 			if !cmd.Flags().Changed("{{flagName (paramIdent .)}}") && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "{{flagName (paramIdent .)}}")
 			}
@@ -126,6 +136,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			}, nil, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- end}}
 {{- else}}
+{{- if or .HasStore (eq (upper .Endpoint.Method) "GET") (eq (upper .Endpoint.Method) "HEAD") (eq (upper .Endpoint.Method) "OPTIONS")}}
 			params := map[string]string{}
 {{- range $i, $p := .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
@@ -135,6 +146,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
 				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
 			}
+{{- end}}
 {{- end}}
 {{- end}}
 {{- if .HasStore}}
@@ -147,10 +159,36 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- else if eq (upper .Endpoint.Method) "DELETE"}}
 			data, _, err := c.Delete(path)
 {{- else if or (eq (upper .Endpoint.Method) "POST") (eq (upper .Endpoint.Method) "PUT") (eq (upper .Endpoint.Method) "PATCH")}}
-			// params (built from query/path Params) is sent as the request body.
-			// Rich body shapes should use the typed `<resource> <endpoint>`
-			// command, which declares each body field as a flag.
-			data, _, err := c.{{pascal (lower .Endpoint.Method)}}(path, params)
+			// Build the JSON body from --field flags. Query/path params
+			// are intentionally not folded into the body here — the typed
+			// `<resource> <endpoint>` command is the place to combine
+			// query params with body for non-GET verbs. Promoted commands
+			// cover the common case: body-only POST/PUT/PATCH.
+			body := map[string]any{}
+{{- range .Endpoint.Body}}
+{{- if or (eq .Type "object") (eq .Type "array")}}
+			if body{{camel (paramIdent .)}} != "" {
+				var parsed{{camel (paramIdent .)}} any
+				if err := json.Unmarshal([]byte(body{{camel (paramIdent .)}}), &parsed{{camel (paramIdent .)}}); err != nil {
+					return fmt.Errorf("parsing --{{flagName (paramIdent .)}} JSON: %w", err)
+				}
+				body["{{.Name}}"] = parsed{{camel (paramIdent .)}}
+			}
+{{- else if jsonStringParam .}}
+			if body{{camel (paramIdent .)}} != "" {
+				var parsed{{camel (paramIdent .)}} any
+				if err := json.Unmarshal([]byte(body{{camel (paramIdent .)}}), &parsed{{camel (paramIdent .)}}); err != nil {
+					return fmt.Errorf("parsing --{{flagName (paramIdent .)}} JSON: %w", err)
+				}
+				body["{{.Name}}"] = body{{camel (paramIdent .)}}
+			}
+{{- else}}
+			if body{{camel (paramIdent .)}} != {{zeroVal .Type}} {
+				body["{{.Name}}"] = body{{camel (paramIdent .)}}
+			}
+{{- end}}
+{{- end}}
+			data, _, err := c.{{pascal (lower .Endpoint.Method)}}(path, body)
 {{- else}}
 			// HEAD/OPTIONS and unknown verbs fall back to GET so generation
 			// stays compileable. Spec authors who genuinely need these verbs
@@ -239,6 +277,9 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- if not .Positional}}
 	cmd.Flags().{{cobraFlagFuncForParam .Name .Type}}(&flag{{camel (paramIdent .)}}, "{{flagName (paramIdent .)}}", {{defaultValForParam .}}, "{{oneline .Description}}{{enumDescriptionHint .Enum}}")
 {{- end}}
+{{- end}}
+{{- range .Endpoint.Body}}
+	cmd.Flags().{{cobraFlagFunc .Type}}(&body{{camel (paramIdent .)}}, "{{flagName (paramIdent .)}}", {{defaultVal .}}, "{{oneline .Description}}")
 {{- end}}
 {{- if .Endpoint.Pagination}}
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Fetch all pages")

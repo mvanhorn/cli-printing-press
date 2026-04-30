@@ -369,3 +369,165 @@ func TestHasWriteCommands_GenuineMutationsStayTrue(t *testing.T) {
 	assert.True(t, hasWriteCommands(resources),
 		"a POST endpoint with a write-shape operationId and body should classify as write")
 }
+
+// TestMCPReadOnlyAnnotationEmission verifies the cobratree readOnlyHint
+// cascade. When endpointIsWriteCommand returns false (POST search,
+// POST GraphQL, etc.), the generated cobra command must carry
+// Annotations["mcp:read-only"] = "true" so the runtime cobratree
+// walker marks the MCP tool with readOnlyHint and hosts skip the
+// per-call permission prompt. When the endpoint genuinely mutates
+// state, the annotation must be absent.
+func TestMCPReadOnlyAnnotationEmission(t *testing.T) {
+	cases := []struct {
+		name         string
+		apiName      string
+		resourceName string
+		endpointName string
+		endpoint     spec.Endpoint
+		wantReadOnly bool
+	}{
+		{
+			name:         "POST search endpoint emits mcp:read-only annotation",
+			apiName:      "search-readonly",
+			resourceName: "queries",
+			endpointName: "searchAll",
+			endpoint: spec.Endpoint{
+				Method:      "POST",
+				Path:        "/search-all",
+				Description: "Search collections by free text",
+				Body:        []spec.Param{{Name: "queryText", Type: "string"}},
+			},
+			wantReadOnly: true,
+		},
+		{
+			name:         "GET list endpoint emits mcp:read-only annotation",
+			apiName:      "get-readonly",
+			resourceName: "items",
+			endpointName: "listItems",
+			endpoint: spec.Endpoint{
+				Method:      "GET",
+				Path:        "/items",
+				Description: "List items",
+			},
+			wantReadOnly: true,
+		},
+		{
+			name:         "POST create endpoint omits mcp:read-only annotation",
+			apiName:      "post-mutation",
+			resourceName: "users",
+			endpointName: "createUser",
+			endpoint: spec.Endpoint{
+				Method:      "POST",
+				Path:        "/users",
+				Description: "Create a new user",
+				Body: []spec.Param{
+					{Name: "name", Type: "string"},
+					{Name: "email", Type: "string"},
+				},
+			},
+			wantReadOnly: false,
+		},
+		{
+			name:         "DELETE endpoint omits mcp:read-only annotation",
+			apiName:      "delete-mutation",
+			resourceName: "users",
+			endpointName: "deleteUser",
+			endpoint: spec.Endpoint{
+				Method:      "DELETE",
+				Path:        "/users/{id}",
+				Description: "Delete a user",
+			},
+			wantReadOnly: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec(tc.apiName)
+			apiSpec.Resources = map[string]spec.Resource{
+				tc.resourceName: {
+					Description: tc.resourceName,
+					Endpoints:   map[string]spec.Endpoint{tc.endpointName: tc.endpoint},
+				},
+			}
+
+			outputDir := filepath.Join(t.TempDir(), tc.apiName+"-pp-cli")
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			src := readPromotedCommandFile(t, outputDir)
+			marker := `"mcp:read-only": "true"`
+			if tc.wantReadOnly {
+				require.Contains(t, src, marker,
+					"%s endpoint should emit mcp:read-only annotation so the cobratree walker marks the MCP tool readOnlyHint", tc.endpointName)
+			} else {
+				require.NotContains(t, src, marker,
+					"%s endpoint must NOT emit mcp:read-only annotation — false positive would tell hosts to skip permission prompts on a real mutation", tc.endpointName)
+			}
+		})
+	}
+}
+
+// TestPromotedCommandPlumbsBodyFields verifies that promoted commands
+// emit a per-body-field flag, build a JSON body map from those flags,
+// and pass the body (not URL params) to the client's Post/Put/Patch
+// method. Before this change the promoted template forwarded `params`
+// (built from query/path Params) as the request body for non-GET
+// verbs, which silently dropped every spec-declared body field.
+func TestPromotedCommandPlumbsBodyFields(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("body-plumb")
+	apiSpec.Resources = map[string]spec.Resource{
+		"widgets": {
+			Description: "widgets",
+			Endpoints: map[string]spec.Endpoint{
+				"createWidget": {
+					Method:      "POST",
+					Path:        "/widgets",
+					Description: "Create a widget",
+					Body: []spec.Param{
+						{Name: "name", Type: "string", Required: true},
+						{Name: "color", Type: "string"},
+						{Name: "tags", Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "body-plumb-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	src := readPromotedCommandFile(t, outputDir)
+
+	// 1. Each body field declares a body* var.
+	require.Contains(t, src, "var bodyName string",
+		"promoted command must declare a body var for each body param")
+	require.Contains(t, src, "var bodyColor string")
+	require.Contains(t, src, "var bodyTags string")
+
+	// 2. Each body field registers a --flag.
+	require.Contains(t, src, `cmd.Flags().StringVar(&bodyName, "name"`,
+		"promoted command must register a flag per body param")
+	require.Contains(t, src, `cmd.Flags().StringVar(&bodyColor, "color"`)
+	require.Contains(t, src, `cmd.Flags().StringVar(&bodyTags, "tags"`)
+
+	// 3. Required body field is enforced (not via cobra's MarkFlagRequired,
+	// which breaks --dry-run probes — the verify-friendly RunE pattern
+	// uses an in-RunE check instead).
+	require.Contains(t, src, `cmd.Flags().Changed("name")`,
+		"required body field must be checked in RunE, not via MarkFlagRequired")
+
+	// 4. The RunE builds a body map from the body* vars and passes it
+	// to c.Post — not `params`, which is what the OLD template did.
+	require.Contains(t, src, `body := map[string]any{}`,
+		"promoted command must build a body map from body flags")
+	require.Contains(t, src, `body["name"] = bodyName`,
+		"body map must use the spec-declared field name, not the camelCased flag var")
+	require.Contains(t, src, `c.Post(path, body)`,
+		"promoted command must pass the body map to c.Post, not the params map")
+	require.NotContains(t, src, `c.Post(path, params)`,
+		"promoted command must NOT pass params (URL/path params) as the request body — that was the bug")
+}

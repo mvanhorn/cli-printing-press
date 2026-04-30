@@ -22,7 +22,7 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 		Aliases: []string{"get"},
 		Short: "List project tasks",
 		Example: "  printing-press-golden-pp-cli projects tasks list-project example-value",
-		Annotations: map[string]string{"pp:endpoint": "tasks.list-project"},
+		Annotations: map[string]string{"pp:endpoint": "tasks.list-project", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()

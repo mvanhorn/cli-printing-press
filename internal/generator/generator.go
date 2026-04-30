@@ -606,6 +606,11 @@ type endpointTemplateData struct {
 	HasStore        bool
 	IsAsync         bool
 	Async           AsyncJobInfo
+	// IsReadOnly mirrors !endpointIsWriteCommand(endpoint, name). The
+	// emitted command sets Annotations["mcp:read-only"] = "true" when
+	// it's true so the cobratree MCP walker marks the tool with
+	// readOnlyHint and hosts skip the per-call permission prompt.
+	IsReadOnly bool
 	*spec.APISpec
 }
 
@@ -1467,6 +1472,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				HasStore:        g.VisionSet.Store,
 				IsAsync:         isAsync,
 				Async:           asyncInfo,
+				IsReadOnly:      !endpointIsWriteCommand(endpoint, eName),
 				APISpec:         g.Spec,
 			}
 			epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+eName)+".go")
@@ -1527,6 +1533,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 					HasStore:        g.VisionSet.Store,
 					IsAsync:         isAsync,
 					Async:           asyncInfo,
+					IsReadOnly:      !endpointIsWriteCommand(endpoint, eName),
 					APISpec:         g.Spec,
 				}
 				epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName+"_"+eName)+".go")
@@ -1917,6 +1924,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			HasStore     bool
 			Resource     spec.Resource
 			FuncPrefix   string
+			IsReadOnly   bool
 			*spec.APISpec
 		}{
 			PromotedName: pc.PromotedName,
@@ -1926,6 +1934,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			HasStore:     g.VisionSet.Store,
 			Resource:     resource,
 			FuncPrefix:   pc.ResourceName,
+			IsReadOnly:   !endpointIsWriteCommand(pc.Endpoint, pc.EndpointName),
 			APISpec:      g.Spec,
 		}
 		promotedPath := filepath.Join("internal", "cli", "promoted_"+pc.PromotedName+".go")

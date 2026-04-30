@@ -71,7 +71,7 @@ func RegisterNovelFeatureTools() { shellOutToCLI("projects list") }
 
 	updatedEndpoint, err := os.ReadFile(endpointPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(updatedEndpoint), `Annotations: map[string]string{"pp:endpoint": "projects.list"}`)
+	assert.Contains(t, string(updatedEndpoint), `Annotations: map[string]string{"pp:endpoint": "projects.list", "mcp:read-only": "true"}`)
 
 	updatedTools, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
