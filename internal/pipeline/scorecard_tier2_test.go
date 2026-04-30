@@ -1533,6 +1533,146 @@ func TestLoadOpenAPISpec_Swagger20SecurityDefinitions(t *testing.T) {
 	})
 }
 
+// TestLoadOpenAPISpec_OpenAPIYAML covers the YAML branch that lets
+// scorecard --spec foo.yaml work without converting to JSON first.
+// The function prefers JSON when the spec begins with `{` and falls
+// back to yaml.Unmarshal otherwise so the JSON branch's error message
+// stays diagnostic for malformed JSON inputs.
+func TestLoadOpenAPISpec_OpenAPIYAML(t *testing.T) {
+	t.Run("OpenAPI YAML produces same paths and security as JSON form", func(t *testing.T) {
+		dir := t.TempDir()
+		yamlPath := filepath.Join(dir, "openapi.yaml")
+		writeScorecardFixture(t, dir, "openapi.yaml", `openapi: "3.0.3"
+info:
+  title: Test API
+  version: "1.0.0"
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      responses:
+        "200":
+          description: ok
+  /widgets:
+    post:
+      operationId: createWidget
+      responses:
+        "201":
+          description: created
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+`)
+
+		info, err := loadOpenAPISpec(yamlPath)
+		assert.NoError(t, err)
+		assert.Equal(t, []string{"/users", "/widgets"}, info.Paths)
+		scheme := info.SecuritySchemes["bearerAuth"]
+		assert.Equal(t, "http", scheme.Type)
+		assert.Equal(t, "bearer", scheme.Scheme)
+	})
+
+	t.Run("equivalent JSON and YAML specs produce equivalent info", func(t *testing.T) {
+		dir := t.TempDir()
+		jsonPath := filepath.Join(dir, "spec.json")
+		yamlPath := filepath.Join(dir, "spec.yaml")
+
+		writeScorecardFixture(t, dir, "spec.json", `{
+  "openapi": "3.0.3",
+  "paths": {
+    "/items": { "get": { "responses": { "200": { "description": "ok" } } } }
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKey": { "type": "apiKey", "in": "header", "name": "X-API-Key" }
+    }
+  }
+}`)
+		writeScorecardFixture(t, dir, "spec.yaml", `openapi: "3.0.3"
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+`)
+
+		jsonInfo, err := loadOpenAPISpec(jsonPath)
+		assert.NoError(t, err)
+		yamlInfo, err := loadOpenAPISpec(yamlPath)
+		assert.NoError(t, err)
+
+		assert.Equal(t, jsonInfo.Paths, yamlInfo.Paths)
+		assert.Equal(t, jsonInfo.SecuritySchemes, yamlInfo.SecuritySchemes)
+	})
+
+	t.Run("malformed YAML returns OpenAPI YAML error", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "broken.yaml")
+		// Mixing tabs and spaces is a classic YAML structural failure.
+		writeScorecardFixture(t, dir, "broken.yaml", "openapi: \"3.0.3\"\npaths:\n\t/users:\n  get: {}\n")
+
+		_, err := loadOpenAPISpec(specPath)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "parsing OpenAPI YAML spec")
+	})
+
+	t.Run("malformed JSON keeps the JSON-specific error message", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "broken.json")
+		// Trailing comma is invalid JSON; whitespace-leading `{` routes to JSON branch.
+		writeScorecardFixture(t, dir, "broken.json", `{ "paths": { "/x": {} }, }`)
+
+		_, err := loadOpenAPISpec(specPath)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "parsing spec JSON")
+		assert.NotContains(t, err.Error(), "parsing OpenAPI YAML spec")
+	})
+
+	t.Run("internal YAML spec still routes through internal branch", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "internal.yaml")
+		writeScorecardFixture(t, dir, "internal.yaml", `name: example
+display_name: Example API
+description: Test fixture for internal-YAML routing
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars:
+    - EXAMPLE_TOKEN
+resources:
+  users:
+    description: User accounts
+    endpoints:
+      list:
+        method: GET
+        path: /users
+`)
+
+		info, err := loadOpenAPISpec(specPath)
+		assert.NoError(t, err)
+		assert.NotNil(t, info, "internal-YAML branch should produce a non-nil info")
+	})
+
+	t.Run("leading whitespace before { still detects JSON", func(t *testing.T) {
+		dir := t.TempDir()
+		specPath := filepath.Join(dir, "indented.json")
+		writeScorecardFixture(t, dir, "indented.json", "\n\n  {\"paths\": {\"/x\": {}}}")
+
+		info, err := loadOpenAPISpec(specPath)
+		assert.NoError(t, err)
+		assert.Equal(t, []string{"/x"}, info.Paths)
+	})
+}
+
 func writeScorecardFixture(t *testing.T, root, relPath, content string) {
 	t.Helper()
 

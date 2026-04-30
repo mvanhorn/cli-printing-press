@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	apispec "github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"gopkg.in/yaml.v3"
 )
 
 // infraCoreFiles are CLI infrastructure files excluded from workflow/insight scoring.
@@ -1515,9 +1517,20 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 		return internalSpecToOpenAPISpecInfo(internal), nil
 	}
 
+	// Distinguish OpenAPI JSON from OpenAPI YAML by content sniffing the
+	// first non-whitespace byte. JSON objects start with `{`; YAML mappings
+	// start with letters/quotes. yaml.Unmarshal would accept either format,
+	// but separate branches preserve format-specific error messages.
 	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parsing spec JSON: %w", err)
+	trimmed := bytes.TrimLeft(data, " \t\r\n")
+	if len(trimmed) > 0 && trimmed[0] == '{' {
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return nil, fmt.Errorf("parsing spec JSON: %w", err)
+		}
+	} else {
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			return nil, fmt.Errorf("parsing OpenAPI YAML spec: %w", err)
+		}
 	}
 
 	info := &openAPISpecInfo{
