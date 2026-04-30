@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -74,39 +75,7 @@ func newScorecardCmd() *cobra.Command {
 			}
 
 			// Human-readable output
-			s := sc.Steinberger
-			renderScore := func(name string, score, max int) string {
-				if sc.IsDimensionUnscored(name) {
-					return "N/A"
-				}
-				return fmt.Sprintf("%d/%d", score, max)
-			}
-
-			fmt.Printf("Quality Scorecard: %s\n\n", sc.APIName)
-			fmt.Printf("  Output Modes   %d/10\n", s.OutputModes)
-			fmt.Printf("  Auth           %d/10\n", s.Auth)
-			fmt.Printf("  Error Handling %d/10\n", s.ErrorHandling)
-			fmt.Printf("  Terminal UX    %d/10\n", s.TerminalUX)
-			fmt.Printf("  README         %d/10\n", s.README)
-			fmt.Printf("  Doctor         %d/10\n", s.Doctor)
-			fmt.Printf("  Agent Native   %d/10\n", s.AgentNative)
-			fmt.Printf("  MCP Desc Quality %s\n", renderScore("mcp_description_quality", s.MCPDescriptionQuality, 10))
-			fmt.Printf("  Local Cache    %d/10\n", s.LocalCache)
-			fmt.Printf("  Breadth        %d/10\n", s.Breadth)
-			fmt.Printf("  Vision         %d/10\n", s.Vision)
-			fmt.Printf("  Workflows      %d/10\n", s.Workflows)
-			fmt.Printf("  Insight        %d/10\n", s.Insight)
-			fmt.Printf("\n  Domain Correctness\n")
-			fmt.Printf("  Path Validity          %s\n", renderScore("path_validity", s.PathValidity, 10))
-			fmt.Printf("  Auth Protocol          %s\n", renderScore("auth_protocol", s.AuthProtocol, 10))
-			fmt.Printf("  Data Pipeline Integrity %d/10\n", s.DataPipelineIntegrity)
-			fmt.Printf("  Sync Correctness       %d/10\n", s.SyncCorrectness)
-			fmt.Printf("  Type Fidelity          %d/5\n", s.TypeFidelity)
-			fmt.Printf("  Dead Code              %d/5\n", s.DeadCode)
-			fmt.Printf("\n  Total: %d/100 - Grade %s\n", s.Total, sc.OverallGrade)
-			if len(sc.UnscoredDimensions) > 0 {
-				fmt.Printf("  Note: omitted from denominator: %s\n", strings.Join(sc.UnscoredDimensions, ", "))
-			}
+			renderHumanScorecard(os.Stdout, sc)
 
 			if live != nil {
 				fmt.Printf("\nLive Check (behavioral sample)\n")
@@ -160,4 +129,52 @@ func newScorecardCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&liveCheckTimeout, "live-check-timeout", 10*time.Second, "Per-feature timeout for live check invocations")
 
 	return cmd
+}
+
+// renderHumanScorecard writes the human-readable scorecard table to w.
+// Optional dimensions (those that may land in sc.UnscoredDimensions
+// when the spec hasn't opted into the feature being measured) render
+// as "N/A" via renderOptionalScore so the scorer's "didn't measure"
+// signal isn't flattened into a 0/10 that reads as a defect.
+func renderHumanScorecard(w io.Writer, sc *pipeline.Scorecard) {
+	s := sc.Steinberger
+	render := func(name string, score, max int) string {
+		if sc.IsDimensionUnscored(name) {
+			return "N/A"
+		}
+		return fmt.Sprintf("%d/%d", score, max)
+	}
+
+	fmt.Fprintf(w, "Quality Scorecard: %s\n\n", sc.APIName)
+	fmt.Fprintf(w, "  Output Modes         %d/10\n", s.OutputModes)
+	fmt.Fprintf(w, "  Auth                 %d/10\n", s.Auth)
+	fmt.Fprintf(w, "  Error Handling       %d/10\n", s.ErrorHandling)
+	fmt.Fprintf(w, "  Terminal UX          %d/10\n", s.TerminalUX)
+	fmt.Fprintf(w, "  README               %d/10\n", s.README)
+	fmt.Fprintf(w, "  Doctor               %d/10\n", s.Doctor)
+	fmt.Fprintf(w, "  Agent Native         %d/10\n", s.AgentNative)
+	fmt.Fprintf(w, "  MCP Desc Quality     %s\n", render("mcp_description_quality", s.MCPDescriptionQuality, 10))
+	fmt.Fprintf(w, "  MCP Token Efficiency %s\n", render("mcp_token_efficiency", s.MCPTokenEff, 10))
+	fmt.Fprintf(w, "  MCP Remote Transport %s\n", render("mcp_remote_transport", s.MCPRemoteTransport, 10))
+	fmt.Fprintf(w, "  MCP Tool Design      %s\n", render("mcp_tool_design", s.MCPToolDesign, 10))
+	fmt.Fprintf(w, "  MCP Surface Strategy %s\n", render("mcp_surface_strategy", s.MCPSurfaceStrategy, 10))
+	fmt.Fprintf(w, "  Local Cache          %d/10\n", s.LocalCache)
+	fmt.Fprintf(w, "  Cache Freshness      %s\n", render("cache_freshness", s.CacheFreshness, 10))
+	fmt.Fprintf(w, "  Breadth              %d/10\n", s.Breadth)
+	fmt.Fprintf(w, "  Vision               %d/10\n", s.Vision)
+	fmt.Fprintf(w, "  Workflows            %d/10\n", s.Workflows)
+	fmt.Fprintf(w, "  Insight              %d/10\n", s.Insight)
+	fmt.Fprintf(w, "  Agent Workflow       %d/10\n", s.AgentWorkflow)
+	fmt.Fprintf(w, "\n  Domain Correctness\n")
+	fmt.Fprintf(w, "  Path Validity           %s\n", render("path_validity", s.PathValidity, 10))
+	fmt.Fprintf(w, "  Auth Protocol           %s\n", render("auth_protocol", s.AuthProtocol, 10))
+	fmt.Fprintf(w, "  Data Pipeline Integrity %d/10\n", s.DataPipelineIntegrity)
+	fmt.Fprintf(w, "  Sync Correctness        %d/10\n", s.SyncCorrectness)
+	fmt.Fprintf(w, "  Live API Verification   %s\n", render("live_api_verification", s.LiveAPIVerification, 10))
+	fmt.Fprintf(w, "  Type Fidelity           %d/5\n", s.TypeFidelity)
+	fmt.Fprintf(w, "  Dead Code               %d/5\n", s.DeadCode)
+	fmt.Fprintf(w, "\n  Total: %d/100 - Grade %s\n", s.Total, sc.OverallGrade)
+	if len(sc.UnscoredDimensions) > 0 {
+		fmt.Fprintf(w, "  Note: omitted from denominator: %s\n", strings.Join(sc.UnscoredDimensions, ", "))
+	}
 }
