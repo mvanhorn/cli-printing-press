@@ -164,6 +164,100 @@ func newTrendCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
+// TestCheckReimplementation_RawDatabaseSQL_Exempted covers the carve-out
+// for novel commands that bypass the generated store package and operate
+// on the printed CLI's local SQLite file directly through database/sql.
+// Reading the same local data through a thinner surface still counts as
+// a legitimate local-data signal.
+func TestCheckReimplementation_RawDatabaseSQL_Exempted(t *testing.T) {
+	files := map[string]string{
+		"sqlquery.go": `package cli
+
+import (
+	"database/sql"
+
+	"github.com/spf13/cobra"
+)
+
+func newSQLQueryCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "sqlquery",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			db, err := sql.Open("sqlite", "x.db")
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			rows, err := db.Query("SELECT 1")
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "SQLQuery", Command: "sqlquery"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if got.ExemptedViaStore != 1 {
+		t.Fatalf("ExemptedViaStore: want 1 (raw database/sql counts as local-data signal), got %d", got.ExemptedViaStore)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d", len(got.Suspicious))
+	}
+}
+
+// TestCheckReimplementation_DatabaseSQLImportOnly_Flagged pins the
+// negative: an unrelated import of database/sql without a sql.Open call
+// is not enough to claim a local-data signal. The file still gets
+// flagged as a hand-rolled response.
+func TestCheckReimplementation_DatabaseSQLImportOnly_Flagged(t *testing.T) {
+	files := map[string]string{
+		"fake.go": `package cli
+
+import (
+	"database/sql"
+
+	"github.com/spf13/cobra"
+)
+
+var _ = sql.ErrNoRows
+
+func newFakeCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "fake",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.Println("hardcoded response")
+			return nil
+		},
+	}
+}
+`,
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "Fake", Command: "fake"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if got.ExemptedViaStore != 0 {
+		t.Fatalf("ExemptedViaStore: want 0 (import alone is not enough), got %d", got.ExemptedViaStore)
+	}
+	if len(got.Suspicious) != 1 {
+		t.Fatalf("Suspicious: want 1, got %d", len(got.Suspicious))
+	}
+}
+
 func TestCheckReimplementation_FormatterInStoreFile_NotExempted(t *testing.T) {
 	files := map[string]string{
 		"types.go": `package cli

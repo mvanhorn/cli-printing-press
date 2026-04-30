@@ -30,6 +30,7 @@ Reject:
 Carve-outs:
 
 - Commands that read from `internal/store` (the `stale`, `bottleneck`, `health`, `reconcile` family) — local-data, not fake API calls
+- Commands that bypass the store package and operate on the local SQLite file directly through `database/sql` (import + `sql.Open`/`sql.OpenDB`) — same data, thinner surface
 - Commands that cache an API response in the store after calling it — both a client call and a store call is fine
 - Commands whose data is the curated content itself (substitution tables, holiday lists, currency metadata) — opt in via `// pp:novel-static-reference` directive in the command's source file
 
