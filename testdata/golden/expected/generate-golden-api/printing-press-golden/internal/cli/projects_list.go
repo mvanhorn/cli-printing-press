@@ -42,7 +42,7 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			path := "/projects"
-			data, prov, err := resolvePaginatedRead(c, flags, "projects", path, map[string]string{
+			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "projects", path, map[string]string{
 				"status": fmt.Sprintf("%v", flagStatus),
 				"limit": fmt.Sprintf("%v", flagLimit),
 				"cursor": fmt.Sprintf("%v", flagCursor),

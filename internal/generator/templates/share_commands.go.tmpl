@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -47,7 +48,7 @@ required to be a git repo — use this for offline handoffs or CI staging.`,
 			if repoPath == "" {
 				return fmt.Errorf("--repo is required")
 			}
-			s, err := openShareStore()
+			s, err := openShareStore(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -83,7 +84,7 @@ CI cache warming, or a manual restore from a known-good snapshot.`,
 			if repoPath == "" {
 				return fmt.Errorf("--repo is required")
 			}
-			s, err := openShareStore()
+			s, err := openShareStore(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -133,7 +134,7 @@ Runs idempotently — an unchanged snapshot produces no commit.`,
 				// publish rather than aborting.
 				fmt.Fprintf(os.Stderr, "warning: pull before publish failed (treating as empty remote): %v\n", err)
 			}
-			s, err := openShareStore()
+			s, err := openShareStore(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -197,7 +198,7 @@ cache.enabled is set in the spec.`,
 			if err := share.Pull(ctx, opts); err != nil {
 				return err
 			}
-			s, err := openShareStore()
+			s, err := openShareStore(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -248,9 +249,9 @@ func resolveShareOptions(repoPath, remote, branch string) (share.Options, error)
 // openShareStore opens the local cache store at the canonical path.
 // Kept inline to avoid exposing defaultDBPath's internals to share code
 // that should remain agnostic about CLI layout.
-func openShareStore() (*store.Store, error) {
+func openShareStore(ctx context.Context) (*store.Store, error) {
 	dbPath := defaultDBPath("{{.Name}}-pp-cli")
-	s, err := store.Open(dbPath)
+	s, err := store.OpenWithContext(ctx, dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open cache at %s: %w", dbPath, err)
 	}

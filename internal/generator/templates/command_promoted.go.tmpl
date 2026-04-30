@@ -103,7 +103,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 
 {{- if .Endpoint.Pagination}}
 {{- if .HasStore}}
-			data, prov, err := resolvePaginatedRead(c, flags, "{{lower .ResourceName}}", path, map[string]string{
+			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", path, map[string]string{
 {{- range $i, $p := .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{.Name}}": args[{{$i}}],
@@ -141,7 +141,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			// resolveRead is GET-only internally, so HasStore + non-GET should
 			// be marked Hidden in the printed CLI and reached via the typed
 			// `<resource> <endpoint>` form instead.
-			data, prov, err := resolveRead(c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, nil)
+			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, nil)
 {{- else if eq (upper .Endpoint.Method) "GET"}}
 			data, err := c.Get(path, params)
 {{- else if eq (upper .Endpoint.Method) "DELETE"}}

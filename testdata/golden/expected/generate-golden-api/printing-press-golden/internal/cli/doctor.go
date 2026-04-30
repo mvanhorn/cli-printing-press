@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -196,7 +197,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// Surfaces rows + last_synced_at per resource, schema version,
 			// and a fresh/stale/unknown verdict so agents can introspect
 			// whether to trust the cached data before issuing queries.
-			report["cache"] = collectCacheReport("")
+			report["cache"] = collectCacheReport(cmd.Context(), "")
 
 			report["version"] = version
 
@@ -314,7 +315,7 @@ func doctorExitForFailOn(failOn string, report map[string]any) error {
 // staleAfterSpec is the CLI's configured threshold (e.g. "6h"); empty means
 // use the runtime default. The default is deliberately conservative (6h)
 // because the alternative is no freshness story at all.
-func collectCacheReport(staleAfterSpec string) map[string]any {
+func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]any {
 	report := map[string]any{}
 	dbPath := defaultDBPath("printing-press-golden-pp-cli")
 	report["db_path"] = dbPath
@@ -332,7 +333,7 @@ func collectCacheReport(staleAfterSpec string) map[string]any {
 	}
 	report["db_bytes"] = fi.Size()
 
-	s, err := store.Open(dbPath)
+	s, err := store.OpenWithContext(ctx, dbPath)
 	if err != nil {
 		report["status"] = "error"
 		report["error"] = err.Error()

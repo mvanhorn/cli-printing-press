@@ -157,7 +157,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- if or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")}}
 {{- if .Endpoint.Pagination}}
 {{- if .HasStore}}
-			data, prov, err := resolvePaginatedRead(c, flags, "{{lower .ResourceName}}", path, map[string]string{
+			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", path, map[string]string{
 {{- range $i, $p := .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{.Name}}": args[{{$i}}],
@@ -192,7 +192,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- end}}
 {{- if .HasStore}}
-			data, prov, err := resolveRead(c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, {{if .Endpoint.HeaderOverrides}}headerOverrides{{else}}nil{{end}})
+			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, {{if .Endpoint.HeaderOverrides}}headerOverrides{{else}}nil{{end}})
 {{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, err := c.GetWithHeaders(path, params, headerOverrides)
