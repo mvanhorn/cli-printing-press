@@ -275,29 +275,43 @@ func TestShellSplit(t *testing.T) {
 // an acceptable cost for a stateless heuristic.
 func TestExtractQueryToken(t *testing.T) {
 	cases := []struct {
-		args []string
-		want string
+		args        []string
+		commandPath string
+		want        string
 	}{
-		{[]string{"goat", "brownies", "--limit", "5"}, "brownies"},
-		{[]string{"sub", "buttermilk"}, "buttermilk"},
-		{[]string{"recipe", "get", "https://example.com/recipe"}, ""},
-		{[]string{"recipe", "open", "42"}, ""},
-		{[]string{"tonight", "--max-time", "30m"}, ""},
-		{[]string{"cookbook", "list", "--json"}, ""},
-		{[]string{"cookbook"}, ""},
+		{[]string{"goat", "brownies", "--limit", "5"}, "goat", "brownies"},
+		{[]string{"sub", "buttermilk"}, "sub", "buttermilk"},
+		{[]string{"recipe", "get", "https://example.com/recipe"}, "recipe get", ""},
+		{[]string{"recipe", "open", "42"}, "recipe open", ""},
+		{[]string{"tonight", "--max-time", "30m"}, "tonight", ""},
+		{[]string{"cookbook", "list", "--json"}, "cookbook list", ""},
+		{[]string{"cookbook"}, "cookbook", ""},
 		// Verb-shaped command paths: trailing word names the view, not a
 		// search query. Without this, the relevance check would fail
 		// commands like `slices today --json` whose structured output has
-		// no reason to echo the verb.
-		{[]string{"slices", "today", "--json"}, ""},
-		{[]string{"store", "tonight", "--json"}, ""},
-		{[]string{"events", "now"}, ""},
-		{[]string{"orders", "pending", "--json"}, ""},
-		{[]string{"deals", "current"}, ""},
+		// no reason to echo the verb. The commonCommandVerb fallback
+		// covers these even without the cobra-path lookup.
+		{[]string{"slices", "today", "--json"}, "slices today", ""},
+		{[]string{"store", "tonight", "--json"}, "store tonight", ""},
+		{[]string{"events", "now"}, "events now", ""},
+		{[]string{"orders", "pending", "--json"}, "orders pending", ""},
+		{[]string{"deals", "current"}, "deals current", ""},
+
+		// Cobra-tree-aware: command paths whose trailing word is an
+		// English-shaped verb that is NOT in the static commonCommandVerb
+		// list (e.g., `find`, `top`). The commandPath argument tells us
+		// the word names a subcommand, so it's not a query.
+		{[]string{"leaderboard", "top"}, "leaderboard top", ""},
+		{[]string{"recipes", "find"}, "recipes find", ""},
+		{[]string{"hot", "browse"}, "hot browse", ""},
+
+		// But a positional that LOOKS like a command-path word but isn't
+		// in the commandPath should still be treated as a query.
+		{[]string{"recipes", "find", "ramen"}, "recipes find", "ramen"},
 	}
 	for _, tc := range cases {
-		got := extractQueryToken(tc.args)
-		require.Equal(t, tc.want, got, "args=%v", tc.args)
+		got := extractQueryToken(tc.args, tc.commandPath)
+		require.Equal(t, tc.want, got, "args=%v cmd=%q", tc.args, tc.commandPath)
 	}
 }
 
@@ -308,6 +322,18 @@ func TestOutputMentionsQuery(t *testing.T) {
 	require.False(t, outputMentionsQuery("Texas Chili Recipes", "brownies"))
 	// Tokens under 3 chars are ignored (too generic).
 	require.False(t, outputMentionsQuery("irrelevant", "to"))
+
+	// Comma-separated query tokens — each name should be checked
+	// independently against the output. Without comma-splitting, the
+	// whole "pikachu,charizard,blastoise" string was treated as one
+	// token and never matched a JSON-array shape like
+	// `["pikachu","charizard","blastoise"]` (quote+comma+quote
+	// separators break the substring match).
+	require.True(t, outputMentionsQuery(`["pikachu","charizard","blastoise"]`, "pikachu,charizard,blastoise"))
+	require.True(t, outputMentionsQuery("blastoise sighting", "pikachu,charizard,blastoise"))
+	// Mixed delimiters in the query (commas + spaces) still tokenize
+	// independently so a single-name match counts.
+	require.True(t, outputMentionsQuery("found pikachu", "pikachu, charizard"))
 }
 
 // TestLiveCheckMarshalJSON verifies the custom marshaller emits pass_rate_pct.
