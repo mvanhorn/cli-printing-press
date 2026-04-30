@@ -634,13 +634,22 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 {{- end}}
 {{- end}}
 
-// resourceIDFieldOverrides projects SyncableResource.IDField (set by the
-// profiler from x-resource-id or response-schema fallback) into a runtime
-// lookup map. UpsertBatch consults this first so the templated path wins
-// over the generic fallback list. Empty when no resource declared an
-// override; the runtime fallback list still applies.
+// resourceIDFieldOverrides projects per-resource IDField (set by the profiler
+// from x-resource-id or response-schema fallback) into a runtime lookup map.
+// UpsertBatch consults this first so the templated path wins over the
+// generic fallback list. Empty when no resource declared an override; the
+// runtime fallback list still applies.
+//
+// Includes both flat resources and dependent (parent-child) resources so a
+// child path-item annotated with x-resource-id resolves the same as a flat
+// path-item.
 var resourceIDFieldOverrides = map[string]string{
 {{- range .SyncableResources}}
+{{- if .IDField}}
+	{{printf "%q" .Name}}: {{printf "%q" .IDField}},
+{{- end}}
+{{- end}}
+{{- range .DependentSyncResources}}
 {{- if .IDField}}
 	{{printf "%q" .Name}}: {{printf "%q" .IDField}},
 {{- end}}
@@ -648,9 +657,8 @@ var resourceIDFieldOverrides = map[string]string{
 }
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did
-// NOT receive a templated IDField. The list is intentionally short and
-// truly-generic — API-specific names like ticker/event_ticker were dropped
-//; spec authors annotate with x-resource-id instead.
+// NOT receive a templated IDField. API-specific names belong in spec
+// annotations (x-resource-id), not this list.
 var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}
 
 // UpsertBatch inserts or replaces multiple records in a single transaction
@@ -946,7 +954,7 @@ func (s *Store) ResolveByName(resourceType string, input string, matchFields ...
 	default:
 		hint := matches[0]
 		if len(matches) > 5 {
-			hint = strings.Join(matches[:5], ", ") + ".."
+			hint = strings.Join(matches[:5], ", ") + "..."
 		} else {
 			hint = strings.Join(matches, ", ")
 		}

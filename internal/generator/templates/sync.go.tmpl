@@ -52,9 +52,16 @@ Exit codes & warnings:
   access-policy body) are reported as warnings rather than failing the
   run. In --json mode each is emitted as a {"event":"sync_warning",...}
   line carrying status, reason, and message fields, and a final
-  {"event":"sync_summary",...} aggregates the run. The command exits
-  non-zero only when every selected resource was access-denied or any
-  resource hit a hard error.`,
+  {"event":"sync_summary",...} aggregates the run.
+
+  By default the command exits 0 when at least one resource synced and
+  no resource flagged in the spec as critical (x-critical: true) failed.
+  Non-critical failures emit a {"event":"sync_warning","reason":
+  "exit_policy_default_changed",...} so callers that scrape sync output
+  can detect the new contract. Pass --strict to restore the legacy
+  behavior (any per-resource failure exits non-zero); the command always
+  exits non-zero when every selected resource failed, regardless of
+  --strict.`,
 		Example: `  # Sync all resources
   {{.Name}}-pp-cli sync
 
@@ -948,14 +955,22 @@ func syncDependentResource(c interface {
 }
 {{- end}}
 
-// resourceIDFieldOverrides projects SyncableResource.IDField (set by the
-// profiler from x-resource-id or the response-schema fallback chain) into
-// a runtime lookup map. extractID consults this first so the templated
-// path wins over the generic fallback list; the generic list applies only
-// when the override is empty or the override field is absent on a given
-// item.
+// resourceIDFieldOverrides projects per-resource IDField (set by the profiler
+// from x-resource-id or the response-schema fallback chain) into a runtime
+// lookup map. extractID consults this first so the templated path wins over
+// the generic fallback list; the generic list applies only when the override
+// is empty or the override field is absent on a given item.
+//
+// Includes both flat resources and dependent (parent-child) resources so
+// annotations on a child path-item are honored at runtime, not just on
+// flat paths.
 var resourceIDFieldOverrides = map[string]string{
 {{- range .SyncableResources}}
+{{- if .IDField}}
+	{{printf "%q" .Name}}: {{printf "%q" .IDField}},
+{{- end}}
+{{- end}}
+{{- range .DependentSyncResources}}
 {{- if .IDField}}
 	{{printf "%q" .Name}}: {{printf "%q" .IDField}},
 {{- end}}
@@ -967,12 +982,21 @@ var resourceIDFieldOverrides = map[string]string{
 // annotations (x-resource-id), not this list.
 var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}
 
-// criticalResources is the template-time projection of SyncableResource.Critical
-// (set by the profiler from the spec's path-item x-critical extension). It is
-// consulted at error-aggregation time so a non-critical failure can be
+// criticalResources is the template-time projection of per-resource Critical
+// (set by the profiler from the spec's path-item x-critical extension). It
+// is consulted at error-aggregation time so a non-critical failure can be
 // downgraded to a sync_warning + exit 0 unless --strict was passed.
+//
+// Includes both flat resources and dependent (parent-child) resources so a
+// failed child sync flagged x-critical: true exits non-zero just like a
+// flat-resource critical failure.
 var criticalResources = map[string]bool{
 {{- range .SyncableResources}}
+{{- if .Critical}}
+	{{printf "%q" .Name}}: true,
+{{- end}}
+{{- end}}
+{{- range .DependentSyncResources}}
 {{- if .Critical}}
 	{{printf "%q" .Name}}: true,
 {{- end}}

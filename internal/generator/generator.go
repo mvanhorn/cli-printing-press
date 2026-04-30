@@ -1676,14 +1676,16 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 		}
 		storeData := struct {
 			*spec.APISpec
-			SyncableResources []profiler.SyncableResource
-			SearchableFields  map[string][]string
-			Tables            []TableDef
+			SyncableResources      []profiler.SyncableResource
+			DependentSyncResources []profiler.DependentResource
+			SearchableFields       map[string][]string
+			Tables                 []TableDef
 		}{
-			APISpec:           g.Spec,
-			SyncableResources: g.profile.SyncableResources,
-			SearchableFields:  g.profile.SearchableFields,
-			Tables:            schema,
+			APISpec:                g.Spec,
+			SyncableResources:      g.profile.SyncableResources,
+			DependentSyncResources: g.profile.DependentSyncResources,
+			SearchableFields:       g.profile.SearchableFields,
+			Tables:                 schema,
 		}
 		if err := g.renderTemplate("store.go.tmpl", filepath.Join("internal", "store", "store.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store: %w", err)

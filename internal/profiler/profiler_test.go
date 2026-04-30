@@ -824,6 +824,85 @@ func TestProfileSyncableResourceUnsetMetadata(t *testing.T) {
 	assert.False(t, profile.SyncableResources[0].Critical)
 }
 
+// TestProfileDependentResourcePropagatesIDFieldAndCritical asserts that the
+// per-endpoint IDField/Critical metadata also flows into DependentResource for
+// parameterized child paths. Without this, x-resource-id and x-critical
+// annotations on a child path-item silently get dropped, and the
+// override/critical maps in the generated sync code only cover flat resources.
+func TestProfileDependentResourcePropagatesIDFieldAndCritical(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "chat",
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/channels",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"messages": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/channels/{channel_id}/messages",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						IDField:    "msg_id",
+						Critical:   true,
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.DependentSyncResources, 1)
+	dep := profile.DependentSyncResources[0]
+	assert.Equal(t, "messages", dep.Name)
+	assert.Equal(t, "channels", dep.ParentResource)
+	assert.Equal(t, "channel_id", dep.ParentIDParam)
+	assert.Equal(t, "/channels/{channel_id}/messages", dep.Path)
+	assert.Equal(t, "msg_id", dep.IDField)
+	assert.True(t, dep.Critical)
+}
+
+// TestProfileDependentResourceUnsetMetadata pins the negative case — a
+// parameterized child path with no IDField/Critical emits a DependentResource
+// with both fields zero-valued, leaving the runtime fallback list intact.
+func TestProfileDependentResourceUnsetMetadata(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "chat",
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/channels",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"messages": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/channels/{channel_id}/messages",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.DependentSyncResources, 1)
+	assert.Empty(t, profile.DependentSyncResources[0].IDField)
+	assert.False(t, profile.DependentSyncResources[0].Critical)
+}
+
 // TestProfileSyncableResourceShorterPathWinsMetadata asserts that when two
 // candidate endpoints can populate the same syncable resource, the shorter-path
 // rule that already governs the Path field also picks the IDField/Critical

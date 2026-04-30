@@ -77,6 +77,20 @@ type DependentResource struct {
 	ParentResource string // parent resource name, e.g. "channels"
 	ParentIDParam  string // path param name, e.g. "channel_id"
 	Path           string // full path template, e.g. "/channels/{channel_id}/messages"
+
+	// IDField is the primary-key field name resolved from the spec
+	// (x-resource-id extension or the four-tier fallback chain). Empty when
+	// no override applies; templates fall back to a generic runtime list.
+	// Mirrors SyncableResource.IDField — annotations on a child path-item
+	// flow into this field so the override map covers dependent resources
+	// too, not just flat resources.
+	IDField string
+
+	// Critical signals that a failure of this dependent resource should
+	// fail the whole sync run regardless of --strict. Mirrors
+	// SyncableResource.Critical so spec authors can mark child paths as
+	// load-bearing.
+	Critical bool
 }
 
 // APIProfile describes the shape of an API and what power-user features it warrants.
@@ -128,8 +142,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 	}
 
 	resourceNames := collectResourceNames(s.Resources)
-	syncable := make(map[string]syncableMeta) // resource name -> chosen list endpoint metadata
-	parameterized := make(map[string]string)  // resource name -> parameterized list endpoint path (excluded from flat sync)
+	syncable := make(map[string]syncableMeta)      // resource name -> chosen list endpoint metadata
+	parameterized := make(map[string]syncableMeta) // resource name -> parameterized list endpoint metadata (excluded from flat sync; carries IDField/Critical for dependent-resource emission)
 	searchable := make(map[string]map[string]struct{})
 	listResources := make(map[string]struct{})
 
@@ -288,9 +302,12 @@ func Profile(s *spec.APISpec) *APIProfile {
 						}
 					} else if strings.Contains(endpoint.Path, "{") {
 						// Parameterized paginated paths can't sync standalone — track
-						// them for dependent-resource detection below.
+						// them for dependent-resource detection below. Carry the
+						// endpoint's metadata so x-resource-id and x-critical
+						// annotations on a child path-item flow into the override
+						// and critical-resource maps.
 						if _, ok := parameterized[resourceName]; !ok {
-							parameterized[resourceName] = endpoint.Path
+							parameterized[resourceName] = metaFromEndpoint(endpoint)
 						}
 					} else {
 						// Paginated endpoints override the path set above — they have
@@ -874,9 +891,10 @@ func sortedKeys[V any](m map[string]V) []string {
 // detectDependentResources examines parameterized paths and identifies parent-child
 // relationships. For example, /channels/{channel_id}/messages becomes a dependent
 // resource of "channels" (only one level of nesting).
-func detectDependentResources(parameterized map[string]string, syncable map[string]syncableMeta) []DependentResource {
+func detectDependentResources(parameterized map[string]syncableMeta, syncable map[string]syncableMeta) []DependentResource {
 	var deps []DependentResource
-	for childName, path := range parameterized {
+	for childName, meta := range parameterized {
+		path := meta.Path
 		// Extract the first {param} from the path
 		start := strings.Index(path, "{")
 		end := strings.Index(path, "}")
@@ -911,6 +929,8 @@ func detectDependentResources(parameterized map[string]string, syncable map[stri
 			ParentResource: parentResource,
 			ParentIDParam:  paramName,
 			Path:           path,
+			IDField:        meta.IDField,
+			Critical:       meta.Critical,
 		})
 	}
 	// Sort for deterministic output
