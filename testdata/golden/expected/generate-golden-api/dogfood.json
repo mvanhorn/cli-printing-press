@@ -39,7 +39,7 @@
     "state": "runtime_walking"
   },
   "naming_check": {
-    "checked": 30
+    "checked": 32
   },
   "novel_features_check": {
     "found": 0,
@@ -52,7 +52,7 @@
     "valid_pct": 0
   },
   "pipeline_check": {
-    "detail": "sync uses domain-specific Upsert methods; search methods not found; 1 domain tables found",
+    "detail": "sync uses domain-specific Upsert methods; search uses generic Search only; 1 domain tables found",
     "domain_tables": 1,
     "search_calls_domain": false,
     "sync_calls_domain": true
@@ -72,8 +72,8 @@
   "verdict": "WARN",
   "wiring_check": {
     "command_tree": {
-      "defined": 38,
-      "registered": 38
+      "defined": 40,
+      "registered": 40
     },
     "config_consistency": {
       "consistent": true

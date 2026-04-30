@@ -10,6 +10,12 @@ type CreateProjectRequest struct {
 	Visibility string `json:"visibility"`
 }
 
+type Currency struct {
+	Code string `json:"code"`
+	Decimals int `json:"decimals"`
+	Symbol string `json:"symbol"`
+}
+
 type Project struct {
 	Id string `json:"id"`
 	Name string `json:"name"`

@@ -41,7 +41,7 @@ This checks your configuration and credentials.
 ### 4. Try Your First Command
 
 ```bash
-printing-press-golden-pp-cli projects list
+printing-press-golden-pp-cli currencies
 ```
 
 ## Usage
@@ -49,6 +49,12 @@ printing-press-golden-pp-cli projects list
 Run `printing-press-golden-pp-cli --help` for the full command reference and flag list.
 
 ## Commands
+
+### currencies
+
+Manage currencies
+
+- **`printing-press-golden-pp-cli currencies list`** - List supported currencies
 
 ### projects
 
@@ -74,19 +80,19 @@ Manage reports
 
 ```bash
 # Human-readable table (default in terminal, JSON when piped)
-printing-press-golden-pp-cli projects list
+printing-press-golden-pp-cli currencies
 
 # JSON for scripting and agents
-printing-press-golden-pp-cli projects list --json
+printing-press-golden-pp-cli currencies --json
 
 # Filter to specific fields
-printing-press-golden-pp-cli projects list --json --select id,name,status
+printing-press-golden-pp-cli currencies --json --select id,name,status
 
 # Dry run — show the request without sending
-printing-press-golden-pp-cli projects list --dry-run
+printing-press-golden-pp-cli currencies --dry-run
 
 # Agent mode — JSON + compact + no prompts in one flag
-printing-press-golden-pp-cli projects list --agent
+printing-press-golden-pp-cli currencies --agent
 ```
 
 ## Agent Usage

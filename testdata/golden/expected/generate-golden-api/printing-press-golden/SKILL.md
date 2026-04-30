@@ -12,6 +12,10 @@ Purpose-built fixture for golden generation coverage.
 
 ## Command Reference
 
+**currencies** — Manage currencies
+
+- `printing-press-golden-pp-cli currencies` — List supported currencies
+
 **projects** — Manage projects
 
 - `printing-press-golden-pp-cli projects create` — Create project
@@ -56,7 +60,7 @@ Add `--agent` to any command. Expands to: `--json --compact --no-input --no-colo
 - **Filterable** — `--select` keeps a subset of fields. Dotted paths descend into nested structures; arrays traverse element-wise. Critical for keeping context small on verbose APIs:
 
   ```bash
-  printing-press-golden-pp-cli projects list --agent --select id,name,status
+  printing-press-golden-pp-cli currencies --agent --select id,name,status
   ```
 - **Previewable** — `--dry-run` shows the request without sending
 - **Offline-friendly** — sync/search commands can use the local SQLite store when available
@@ -107,7 +111,7 @@ A profile is a saved set of flag values, reused across invocations. Use it when 
 
 ```
 printing-press-golden-pp-cli profile save briefing --json
-printing-press-golden-pp-cli --profile briefing projects list
+printing-press-golden-pp-cli --profile briefing currencies
 printing-press-golden-pp-cli profile list --json
 printing-press-golden-pp-cli profile show briefing
 printing-press-golden-pp-cli profile delete briefing --yes

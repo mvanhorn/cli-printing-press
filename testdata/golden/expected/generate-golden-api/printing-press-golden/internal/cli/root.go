@@ -174,6 +174,7 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.AddCommand(newWhichCmd(flags))
 	rootCmd.AddCommand(newExportCmd(flags))
 	rootCmd.AddCommand(newImportCmd(flags))
+	rootCmd.AddCommand(newSearchCmd(flags))
 	rootCmd.AddCommand(newSyncCmd(flags))
 	rootCmd.AddCommand(newAnalyticsCmd(flags))
 	rootCmd.AddCommand(newWorkflowCmd(flags))
@@ -181,6 +182,7 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.AddCommand(newOrphansCmd(flags))
 	rootCmd.AddCommand(newLoadCmd(flags))
 	rootCmd.AddCommand(newAPICmd(flags))
+	rootCmd.AddCommand(newCurrenciesPromotedCmd(flags))
 	rootCmd.AddCommand(newPublicPromotedCmd(flags))
 	rootCmd.AddCommand(newVersionCliCmd())
 
