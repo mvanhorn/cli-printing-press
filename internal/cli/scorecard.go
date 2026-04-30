@@ -134,8 +134,8 @@ func newScorecardCmd() *cobra.Command {
 // renderHumanScorecard writes the human-readable scorecard table to w.
 // Optional dimensions (those that may land in sc.UnscoredDimensions
 // when the spec hasn't opted into the feature being measured) render
-// as "N/A" via renderOptionalScore so the scorer's "didn't measure"
-// signal isn't flattened into a 0/10 that reads as a defect.
+// as "N/A" so the scorer's "didn't measure" signal isn't flattened
+// into a 0/10 that reads as a defect.
 func renderHumanScorecard(w io.Writer, sc *pipeline.Scorecard) {
 	s := sc.Steinberger
 	render := func(name string, score, max int) string {
