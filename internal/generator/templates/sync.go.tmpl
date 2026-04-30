@@ -252,7 +252,7 @@ Exit codes & warnings:
 	cmd.Flags().StringVar(&since, "since", "", "Incremental sync duration (e.g. 7d, 24h, 1w, 30m)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/{{.Name}}-pp-cli/data.db)")
-	cmd.Flags().IntVar(&maxPages, "max-pages", 10, "Maximum pages to fetch per resource (0 = unlimited)")
+	cmd.Flags().IntVar(&maxPages, "max-pages", 1000, "Maximum pages to fetch per resource (0 = unlimited; default raised from 10 to 1000 in WU-2)")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
 {{- if .Pagination.DateRangeParam}}
 	cmd.Flags().StringVar(&dates, "dates", "", "Date or date range to sync (passed as {{.Pagination.DateRangeParam}} query parameter)")
@@ -293,6 +293,7 @@ func syncResource(c interface {
 
 	var progressCount int64
 	pagesFetched := 0
+	lastNextCursor := ""
 
 	for {
 		params := map[string]string{}
@@ -406,9 +407,27 @@ func syncResource(c interface {
 		if maxPages > 0 && pagesFetched >= maxPages {
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "\n  %s: reached --max-pages limit (%d pages, %d items)\n", resource, maxPages, totalCount)
+			} else {
+				fmt.Fprintf(os.Stderr, `{"event":"sync_warning","resource":"%s","reason":"max_pages_cap_hit","message":"reached --max-pages cap of %d; data may be truncated. Re-run with --max-pages 0 (unlimited) or higher to verify."}`+"\n", resource, maxPages)
 			}
 			break
 		}
+
+		// Sticky-cursor detector: if the API echoes the same next cursor across
+		// consecutive pages without advancing, abort to prevent burning the
+		// --max-pages budget on a non-terminating loop. Checked AFTER the cap
+		// guard so cap-hit takes precedence; checked BEFORE the natural-end
+		// check below because the natural-end check would not catch a sticky
+		// non-empty cursor on its own.
+		if nextCursor != "" && nextCursor == lastNextCursor {
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "\n  %s: API returned the same next cursor across two pages; aborting to prevent budget waste.\n", resource)
+			} else {
+				fmt.Fprintf(os.Stderr, `{"event":"sync_warning","resource":"%s","reason":"stuck_pagination","message":"API returned the same next cursor across two pages for resource %s; aborting to prevent budget waste."}`+"\n", resource, resource)
+			}
+			break
+		}
+		lastNextCursor = nextCursor
 
 		// Determine if there are more pages
 		if !hasMore || len(items) < pageSize.limit || nextCursor == "" {
@@ -693,6 +712,7 @@ func syncDependentResource(c interface {
 
 		cursor := ""
 		pagesFetched := 0
+		lastNextCursor := ""
 
 		for {
 			params := map[string]string{}
@@ -760,8 +780,25 @@ func syncDependentResource(c interface {
 			pagesFetched++
 
 			if maxPages > 0 && pagesFetched >= maxPages {
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\n  %s: reached --max-pages limit (%d pages, %d items) for parent %s\n", dep.Name, maxPages, totalCount, parentID)
+				} else {
+					fmt.Fprintf(os.Stderr, `{"event":"sync_warning","resource":"%s","parent":"%s","reason":"max_pages_cap_hit","message":"reached --max-pages cap of %d; data may be truncated. Re-run with --max-pages 0 (unlimited) or higher to verify."}`+"\n", dep.Name, parentID, maxPages)
+				}
 				break
 			}
+			// Sticky-cursor detector: see syncResource for rationale. Same shape
+			// here so dependent-resource page loops cannot burn the budget on a
+			// non-advancing next cursor.
+			if nextCursor != "" && nextCursor == lastNextCursor {
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\n  %s: API returned the same next cursor across two pages for parent %s; aborting to prevent budget waste.\n", dep.Name, parentID)
+				} else {
+					fmt.Fprintf(os.Stderr, `{"event":"sync_warning","resource":"%s","parent":"%s","reason":"stuck_pagination","message":"API returned the same next cursor across two pages for resource %s; aborting to prevent budget waste."}`+"\n", dep.Name, parentID, dep.Name)
+				}
+				break
+			}
+			lastNextCursor = nextCursor
 			if !hasMore || len(items) < pageSize.limit || nextCursor == "" {
 				break
 			}

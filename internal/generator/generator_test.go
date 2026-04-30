@@ -3838,6 +3838,124 @@ func TestIsSyncAccessWarningClassification(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestIsSyncAccessWarningClassification")
 }
 
+// TestGeneratedSyncMaxPagesAndStickyCursor verifies WU-2 / U2: the generated
+// sync command (a) defaults --max-pages to 1000, (b) emits a structured
+// sync_warning with reason "max_pages_cap_hit" on BOTH the flat and
+// dependent-resource code paths when the cap is reached, and (c) breaks the
+// pagination loop with a "stuck_pagination" sync_warning when the API
+// echoes a non-advancing next cursor across consecutive pages. The plan
+// (docs/plans/2026-04-30-001) specifies the literal "%s" interpolation
+// pattern (matching sync.go.tmpl line 374's sync_anomaly emission) rather
+// than %q Go-escaping; this test pins both the JSON event shapes and the
+// flag default at the template-emission layer so future template churn
+// cannot silently regress them.
+func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "pagedsync",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"PAGEDSYNC_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/pagedsync-pp-cli/config.toml",
+		},
+		// Parent + child resources so the generated sync.go includes
+		// both syncResource (flat path) and syncDependentResource paths,
+		// each of which must emit the new max_pages_cap_hit warning and
+		// the stuck_pagination detector.
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Description: "Manage channels",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels",
+						Description: "List channels",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+			"messages": {
+				Description: "Manage messages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels/{channelId}/messages",
+						Description: "List messages in a channel",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	// (a) Default --max-pages raised from 10 to 1000.
+	assert.Contains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 1000,`,
+		"sync.go must declare --max-pages with default 1000 (WU-2 raised the default)")
+	assert.NotContains(t, syncContent, `cmd.Flags().IntVar(&maxPages, "max-pages", 10,`,
+		"sync.go must not retain the old 10-page default")
+
+	// (b1) Flat-path cap-hit emits structured sync_warning with reason
+	// "max_pages_cap_hit". Use the literal %s embedded-quote shape — match
+	// the emission in sync.go.tmpl line 374.
+	assert.Contains(t, syncContent,
+		`{"event":"sync_warning","resource":"%s","reason":"max_pages_cap_hit"`,
+		"flat-path cap-hit must emit a structured sync_warning with reason max_pages_cap_hit")
+
+	// (b2) Dependent-path cap-hit emits the same shape (with parent attached).
+	// Pre-WU-2 the dependent-resource cap-hit branch was silent — verify
+	// the new emission lands.
+	assert.Contains(t, syncContent,
+		`{"event":"sync_warning","resource":"%s","parent":"%s","reason":"max_pages_cap_hit"`,
+		"dependent-resource cap-hit must emit a structured sync_warning with reason max_pages_cap_hit")
+
+	// (c) Sticky-cursor detection on the flat path. The check must compare
+	// against a tracked lastNextCursor and emit the structured warning when
+	// the cursor doesn't advance.
+	assert.Contains(t, syncContent, "lastNextCursor",
+		"sync.go must track lastNextCursor for sticky-cursor detection")
+	assert.Contains(t, syncContent, "nextCursor == lastNextCursor",
+		"sync.go must compare nextCursor against lastNextCursor to detect stuck pagination")
+	assert.Contains(t, syncContent,
+		`{"event":"sync_warning","resource":"%s","reason":"stuck_pagination"`,
+		"flat-path stuck-pagination must emit a structured sync_warning")
+
+	// (c2) Dependent-path sticky-cursor emission. Includes parent context.
+	assert.Contains(t, syncContent,
+		`{"event":"sync_warning","resource":"%s","parent":"%s","reason":"stuck_pagination"`,
+		"dependent-resource stuck-pagination must emit a structured sync_warning")
+
+	// AGENTS.md: emission must use the "%s" embedded-quote pattern, not
+	// %q. A %q usage here would be a real bug — JSON shapes for resource
+	// names containing quotes/backslashes would diverge across emission
+	// sites. The plan (docs/plans/2026-04-30-001) calls this out explicitly.
+	assert.NotContains(t, syncContent,
+		`"reason":%q,"message"`,
+		"sync_warning must use literal %s interpolation, not %q Go-escaping")
+
+	// Build the generated CLI to catch template-syntax / import errors that
+	// substring assertions miss.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 func TestGenerateGraphQLCompiles(t *testing.T) {
 	t.Parallel()
 
