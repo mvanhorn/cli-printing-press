@@ -1992,14 +1992,13 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	// Parse data into your feature's view. Use cliutil.CleanText for any
 	// text extracted from HTML or schema.org JSON-LD; re-implementing
 	// HTML-entity unescape inline is the &#39; bug class.
-	if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
-		wrapped, err := wrapWithProvenance(data, DataProvenance{Source: "live"})
-		if err != nil {
-			return err
-		}
-		return printOutput(cmd.OutOrStdout(), wrapped, true)
+	var view yourViewType // = parse(data)
+	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(view)
 	}
-	// Human/terminal output. printTable / printRows helpers in cliutil.
+	// Human/terminal output (table or pretty print).
 	return nil
 },
 ```
@@ -2007,8 +2006,15 @@ RunE: func(cmd *cobra.Command, args []string) error {
 **RunE skeleton — store-query shape** (offline data via the local SQLite):
 
 ```go
+// Declare these alongside the cmd literal, before return cmd:
+//   var dbPath string
+//   cmd.Flags().StringVar(&dbPath, "db", "", "Database path")
+
 RunE: func(cmd *cobra.Command, args []string) error {
-	db, err := store.OpenWithContext(cmd.Context(), dbPath())
+	if dbPath == "" {
+		dbPath = defaultDBPath("<cli>-pp-cli") // replace <cli> with the API slug
+	}
+	db, err := store.OpenWithContext(cmd.Context(), dbPath)
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
@@ -2022,11 +2028,11 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("query: %w", err)
 	}
 	defer rows.Close()
-	// Scan rows into your feature's view.
-	if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
-		// Marshal results (non-nil empty slice → "[]", not "null").
-		// Match the search/sql convention: always emit a valid envelope.
-		return nil
+	var results []yourRowType // scan rows into the slice
+	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(results)
 	}
 	// Human/terminal output.
 	return nil
