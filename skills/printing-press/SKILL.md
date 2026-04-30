@@ -1247,33 +1247,25 @@ Do not proceed to the prose showcase until this is resolved.
 
 **STOP.** Present the absorb manifest to the user in two parts: a prose showcase, then a question.
 
+The prose showcase and the `AskUserQuestion` are two separate turns. Print the showcase as a plain text reply with every novel feature spelled out, then call `AskUserQuestion` with four short options whose descriptions fit on one line each. The question text is one sentence; the user reads the showcase to decide and the options to act. Cramming the feature list into an option description collapses both turns into one and is the failure mode this gate exists to prevent.
+
 **Part 1: Prose showcase (print before the AskUserQuestion)**
 
-Print as regular text output:
+The showcase exists so the user can decide approve / trim / add ideas without asking a follow-up. Cover three things:
 
-> ## Absorb Summary
->
-> I cataloged **[N] features** across [X] tools ([tool names]). Our CLI will match every one of them with offline search, --json output, and agent-native flags.
->
-> ## Novel Features (my ideas, not found in any existing tool)
->
-> Beyond absorbing what exists, I came up with [M] features that no existing tool has. These are all in the proposed shipping scope:
->
-> 1. **[Feature name]** ([score]/10) — [one-line description]. Evidence: [what research finding inspired this].
-> 2. **[Feature name]** ([score]/10) — [one-line description]. Evidence: [source].
-> 3. **[Feature name]** ([score]/10) — [one-line description]. Evidence: [source].
-> 4. **[Feature name]** ([score]/10) — [one-line description]. Evidence: [source].
-> ...
->
-> Total: [N+M] features, [Z]% more than [best existing tool name] ([best tool feature count]).
+1. **Scope** — how many features absorbed across which tools, how many novel on top, how that stacks up against the best existing tool.
+2. **Per-novel-feature readout** — one line each: feature name, what the user gets, and the specific evidence or persona that makes it worth building.
+3. **Anything the user should worry about before approving** — stubs, risky dependencies, expensive endpoints, low-confidence ideas.
 
-Show every qualifying novel feature that scored >= 5/10. Do not hide novel features behind "Plus [N] more" or "see full manifest" language — the gate is where the user decides whether these ideas belong in scope, so every proposed novel feature deserves a short readout. If there are more than 12 qualifying novel features, group them by `group` and list all feature names with one-line descriptions under each group. If 0 qualified, note: "No novel features scored high enough to recommend. The absorbed features cover the landscape well."
+Show every novel feature that scored ≥5/10. Group by theme if there are more than ~12; never hide features behind "Plus N more" or "see full manifest." If zero qualified, say so plainly: "No novel features scored high enough to recommend. The absorbed features cover the landscape well."
+
+Format is otherwise yours — markdown headings, prose, a numbered list, whatever reads cleanly. The must-haves are the three things above and the ≥5/10 coverage rule.
 
 **Part 2: AskUserQuestion**
 
 > "Ready to generate with the full [N+M]-feature manifest? Or do you have ideas to add?"
 
-Options:
+Options (each description must be one short line — the showcase already did the explaining):
 1. **Approve — generate now** — Start CLI generation with the full manifest
 2. **I have ideas to add** — Tell me features from your experience, then we'll generate
 3. **Review full manifest** — Show me every absorbed and novel feature before deciding
