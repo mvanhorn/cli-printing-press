@@ -1148,3 +1148,76 @@ func mustMarshalJSON(t *testing.T, v any) []byte {
 	require.NoError(t, err)
 	return data
 }
+
+// TestSelectDescription locks in that the OpenAPI parser prefers
+// the long-form `description` over the short `summary` when both are
+// present. The earlier rule ("if summary has spaces, use it")
+// inverted the priority for the common case where a multi-word
+// summary sits alongside a rich description, and was the root cause
+// behind 47 thin-mcp-description findings on the scrape-creators
+// CLI even though every endpoint had rich source description text.
+func TestSelectDescription(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		summary     string
+		description string
+		want        string
+	}{
+		{
+			name:        "rich description wins over multi-word summary",
+			summary:     "Get credit balance",
+			description: "Returns the number of API credits remaining on your Scrape Creators account.",
+			want:        "Returns the number of API credits remaining on your Scrape Creators account.",
+		},
+		{
+			name:        "rich description wins over single-word summary",
+			summary:     "Profile",
+			description: "Fetches public profile data for a TikTok user by their handle.",
+			want:        "Fetches public profile data for a TikTok user by their handle.",
+		},
+		{
+			name:        "summary used when description empty",
+			summary:     "Get the user",
+			description: "",
+			want:        "Get the user",
+		},
+		{
+			name:        "shorter description (placeholder) falls back to summary",
+			summary:     "Returns the order with full line items and shipping address",
+			description: "TODO",
+			want:        "Returns the order with full line items and shipping address",
+		},
+		{
+			name:        "mangled operationID summary is humanized when alone",
+			summary:     "GetUserById",
+			description: "",
+			want:        "Get user by id",
+		},
+		{
+			name:        "both empty returns empty",
+			summary:     "",
+			description: "",
+			want:        "",
+		},
+		{
+			name:        "description-only case",
+			summary:     "",
+			description: "Returns recent orders.",
+			want:        "Returns recent orders.",
+		},
+		{
+			name:        "description equal length to summary still prefers description",
+			summary:     "abc",
+			description: "xyz",
+			want:        "xyz",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := selectDescription(tt.summary, tt.description)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

@@ -2918,20 +2918,18 @@ func isRequired(required map[string]struct{}, name string) bool {
 	return ok
 }
 
+// selectDescription chooses between an OpenAPI operation's summary and
+// description. OpenAPI convention has summary as a one-line title and
+// description as long-form prose; when both exist, description carries
+// the richer agent-useful detail and wins. Fall back to summary when
+// description is empty, or when description is shorter than summary
+// (rare: placeholder strings like "TODO" or a truncated migration
+// artifact). Single-word/mangled summaries get humanized in the
+// fallback path.
 func selectDescription(summary, description string) string {
-	summaryHasSpaces := summary != "" && strings.ContainsAny(summary, " \t")
-
-	// If summary is a real sentence (has spaces), prefer it
-	if summaryHasSpaces {
-		return summary
-	}
-
-	// Summary is a single word or empty - prefer the description if available
-	if description != "" {
+	if description != "" && len(description) >= len(summary) {
 		return description
 	}
-
-	// No description - use summary, humanizing if it looks like a mangled operationID
 	if summary != "" {
 		if shouldHumanizeDescription(summary) {
 			return humanizeDescription(summary)
@@ -2941,8 +2939,7 @@ func selectDescription(summary, description string) string {
 		}
 		return summary
 	}
-
-	return ""
+	return description
 }
 
 func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Pagination {
