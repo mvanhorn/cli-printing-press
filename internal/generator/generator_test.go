@@ -5272,3 +5272,28 @@ func TestTemplatesEmitReadOnlyAnnotation(t *testing.T) {
 		})
 	}
 }
+
+// TestSearchTemplateEmitsEmptyJSONEnvelope pins the WU-4 contract: the
+// generated `search` command in --json (or piped) mode must always emit a
+// valid JSON envelope, including on no matches. Agents pipe stdout through
+// json.loads / jq and a silent return-nil breaks parsing.
+func TestSearchTemplateEmitsEmptyJSONEnvelope(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("templates", "search.go.tmpl"))
+	require.NoError(t, err)
+	body := string(data)
+
+	assert.Contains(t, body, `data = []byte("[]")`,
+		"search.go.tmpl must emit an empty JSON array as the data payload when len(results)==0 in JSON mode")
+	assert.Contains(t, body, `jsonMode := flags.asJSON || !isTerminal(cmd.OutOrStdout())`,
+		"search.go.tmpl must compute jsonMode before the empty-results branch so the envelope path runs even on no matches")
+
+	// Negative pin: the previous shape had the empty-stderr branch above the
+	// jsonMode block, so stdout was silent on empty results in JSON mode.
+	jsonModeIdx := strings.Index(body, "jsonMode := flags.asJSON")
+	noResultsIdx := strings.Index(body, `"No results (source: %s)\n"`)
+	require.GreaterOrEqual(t, jsonModeIdx, 0)
+	require.GreaterOrEqual(t, noResultsIdx, 0)
+	assert.Less(t, jsonModeIdx, noResultsIdx,
+		"jsonMode check must come before the human-mode 'No results' stderr line; otherwise the JSON-envelope path is skipped on empty results")
+}

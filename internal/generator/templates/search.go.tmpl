@@ -243,18 +243,21 @@ func outputSearchResults(cmd *cobra.Command, flags *rootFlags, results []json.Ra
 		results = results[:limit]
 	}
 
-	if len(results) == 0 {
-		fmt.Fprintf(cmd.ErrOrStderr(), "No results (source: %s)\n", prov.Source)
-		return nil
-	}
+	jsonMode := flags.asJSON || !isTerminal(cmd.OutOrStdout())
 
-	// Print provenance to stderr for human output
-	printProvenance(cmd, len(results), prov)
-
-	if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
-		data, err := json.Marshal(results)
-		if err != nil {
-			return err
+	// JSON mode always emits a valid envelope, including on no matches —
+	// agents pipe stdout through json.loads / jq and need parseable output
+	// regardless of result count.
+	if jsonMode {
+		var data []byte
+		if len(results) == 0 {
+			data = []byte("[]")
+		} else {
+			var err error
+			data, err = json.Marshal(results)
+			if err != nil {
+				return err
+			}
 		}
 		wrapped, err := wrapWithProvenance(json.RawMessage(data), prov)
 		if err != nil {
@@ -263,6 +266,12 @@ func outputSearchResults(cmd *cobra.Command, flags *rootFlags, results []json.Ra
 		return printOutput(cmd.OutOrStdout(), wrapped, true)
 	}
 
+	if len(results) == 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "No results (source: %s)\n", prov.Source)
+		return nil
+	}
+
+	printProvenance(cmd, len(results), prov)
 	for _, r := range results {
 		fmt.Fprintln(cmd.OutOrStdout(), string(r))
 	}
