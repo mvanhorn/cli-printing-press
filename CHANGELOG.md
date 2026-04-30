@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.0.1](https://github.com/mvanhorn/cli-printing-press/compare/v3.0.0...v3.0.1) (2026-04-30)
+
+
+### Bug Fixes
+
+* **cli:** repair v3 release — version regex, module path, CI gate ([#415](https://github.com/mvanhorn/cli-printing-press/issues/415)) ([4e1db1e](https://github.com/mvanhorn/cli-printing-press/commit/4e1db1e7612431f7d711f12d45c29557910238cf))
+* **skills:** drop context: fork from output-review so AskUserQuestion works natively ([#417](https://github.com/mvanhorn/cli-printing-press/issues/417)) ([ac98c00](https://github.com/mvanhorn/cli-printing-press/commit/ac98c00ac588d8a5e9d0b7c22c59afc0773d29d3))
+
 ## [3.0.0](https://github.com/mvanhorn/cli-printing-press/compare/v2.4.0...v3.0.0) (2026-04-30)
 
 
