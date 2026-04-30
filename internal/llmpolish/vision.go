@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/llm"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/profiler"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/llm"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/profiler"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 )
 
 // VisionCustomization holds LLM-generated customizations for vision templates.

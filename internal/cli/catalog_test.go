@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/catalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

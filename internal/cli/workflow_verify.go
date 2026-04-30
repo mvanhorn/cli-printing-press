@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
 	"github.com/spf13/cobra"
 )
 

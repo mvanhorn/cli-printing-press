@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	apispec "github.com/mvanhorn/cli-printing-press/v2/internal/spec"
+	apispec "github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 )
 
 // infraCoreFiles are CLI infrastructure files excluded from workflow/insight scoring.

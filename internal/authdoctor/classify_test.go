@@ -3,7 +3,7 @@ package authdoctor
 import (
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
 )
 
 func envFrom(m map[string]string) getEnv {

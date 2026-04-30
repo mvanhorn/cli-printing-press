@@ -11,7 +11,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )

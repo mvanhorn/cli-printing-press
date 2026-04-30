@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v2/catalog"
-	catalogpkg "github.com/mvanhorn/cli-printing-press/v2/internal/catalog"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/naming"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/openapi"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/version"
+	"github.com/mvanhorn/cli-printing-press/v3/catalog"
+	catalogpkg "github.com/mvanhorn/cli-printing-press/v3/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/openapi"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/version"
 )
 
 // CLIManifestFilename is the name of the manifest file written to each

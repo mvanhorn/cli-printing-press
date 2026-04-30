@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	catalogpkg "github.com/mvanhorn/cli-printing-press/v2/internal/catalog"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/naming"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/pipeline"
+	catalogpkg "github.com/mvanhorn/cli-printing-press/v3/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
 	"github.com/spf13/cobra"
 )
 

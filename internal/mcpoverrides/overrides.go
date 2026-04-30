@@ -18,8 +18,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/naming"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 )
 
 // Filename is the per-CLI override file name. Lives at the cli-dir

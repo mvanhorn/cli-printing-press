@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 )
 
 // AsyncJobInfo describes one async-job endpoint detected from a spec.

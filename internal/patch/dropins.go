@@ -10,7 +10,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/generator"
 )
 
 // dropin describes one file the patcher creates from a template.

@@ -1,7 +1,7 @@
 package generator
 
 import (
-	"github.com/mvanhorn/cli-printing-press/v2/internal/vision"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/vision"
 )
 
 // VisionTemplateSet defines which visionary templates to include in generation.

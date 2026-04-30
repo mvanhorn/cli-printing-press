@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	apispec "github.com/mvanhorn/cli-printing-press/v2/internal/spec"
+	apispec "github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

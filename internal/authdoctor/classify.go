@@ -3,7 +3,7 @@ package authdoctor
 import (
 	"fmt"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
 )
 
 // minLengthByType gives the minimum expected length of a well-formed

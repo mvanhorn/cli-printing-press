@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
 )
 
 func TestRequiresPreDecisionFields(t *testing.T) {

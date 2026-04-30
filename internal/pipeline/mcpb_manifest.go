@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/version"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/version"
 )
 
 // MCPB-bundle constants. Promoted from string literals so a typo here can't

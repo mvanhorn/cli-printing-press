@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/pipeline"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/vision"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/vision"
 	"github.com/spf13/cobra"
 )
 

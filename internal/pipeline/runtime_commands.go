@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/canonicalargs"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/canonicalargs"
 )
 
 func discoverCommands(dir string, binaryPath string) []discoveredCommand {

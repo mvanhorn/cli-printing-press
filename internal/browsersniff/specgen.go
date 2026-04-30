@@ -10,8 +10,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/discovery"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/discovery"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 	"gopkg.in/yaml.v3"
 )
 

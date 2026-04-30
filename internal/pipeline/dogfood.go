@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/naming"
-	openapiparser "github.com/mvanhorn/cli-printing-press/v2/internal/openapi"
-	apispec "github.com/mvanhorn/cli-printing-press/v2/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
+	openapiparser "github.com/mvanhorn/cli-printing-press/v3/internal/openapi"
+	apispec "github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 	"gopkg.in/yaml.v3"
 )
 

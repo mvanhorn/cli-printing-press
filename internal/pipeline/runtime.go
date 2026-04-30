@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/artifacts"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/naming"
-	apispec "github.com/mvanhorn/cli-printing-press/v2/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/artifacts"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
+	apispec "github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 )
 
 // VerifyConfig configures a runtime verification run.

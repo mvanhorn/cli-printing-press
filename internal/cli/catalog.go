@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	catalogfs "github.com/mvanhorn/cli-printing-press/v2/catalog"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/catalog"
+	catalogfs "github.com/mvanhorn/cli-printing-press/v3/catalog"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/catalog"
 	"github.com/spf13/cobra"
 )
 

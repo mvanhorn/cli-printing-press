@@ -1,4 +1,4 @@
-module github.com/mvanhorn/cli-printing-press/v2
+module github.com/mvanhorn/cli-printing-press/v3
 
 go 1.26.1
 

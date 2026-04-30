@@ -17,8 +17,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/naming"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 )
 
 // optionalListMax caps how many optional params Compose lists inline

@@ -16,7 +16,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X github.com/mvanhorn/cli-printing-press/v2/internal/version.Version={{.Version}}
+      - -s -w -X github.com/mvanhorn/cli-printing-press/v3/internal/version.Version={{.Version}}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:

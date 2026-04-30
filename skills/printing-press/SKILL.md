@@ -253,11 +253,11 @@ elif ! command -v printing-press >/dev/null 2>&1; then
     echo "Added ~/go/bin to PATH"
   elif command -v go >/dev/null 2>&1; then
     echo "printing-press not found. Installing..."
-    GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v2/cmd/printing-press@latest
+    GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest
     export PATH="$HOME/go/bin:$PATH"
   else
     echo "printing-press binary not found and Go is not installed."
-    echo "Install Go first, then run:  go install github.com/mvanhorn/cli-printing-press/v2/cmd/printing-press@latest"
+    echo "Install Go first, then run:  go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest"
     return 1 2>/dev/null || exit 1
   fi
 fi
@@ -309,7 +309,7 @@ CODEX_CONSECUTIVE_FAILURES=0
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-After running the setup contract, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, warn the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v2/cmd/printing-press@latest` to update." Continue anyway but surface the warning prominently.
+After running the setup contract, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, warn the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest` to update." Continue anyway but surface the warning prominently.
 
 After you know `<api>`, initialize the run-scoped artifact paths:
 

@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/llm"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/llm"
 )
 
 // PolishRequest defines what the polish pass needs.

@@ -17,7 +17,7 @@ Browse the full catalog of printed CLIs at [printingpress.dev](https://printingp
 Install the binary, then add the Claude Code plugin. Both fit in one paste.
 
 ```bash
-go install github.com/mvanhorn/cli-printing-press/v2/cmd/printing-press@latest
+go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest
 ```
 
 ```text
@@ -350,7 +350,7 @@ Each published CLI ships a research manuscript, verification proofs, and a `.pri
 Install the binary (requires Go 1.22+):
 
 ```bash
-go install github.com/mvanhorn/cli-printing-press/v2/cmd/printing-press@latest
+go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest
 ```
 
 Then install the Claude Code plugin:

@@ -10,10 +10,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/mcpdesc"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/mcpoverrides"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/naming"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/mcpdesc"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/mcpoverrides"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 )
 
 // ToolsManifestFilename is the name of the tools manifest file written to each

@@ -1,7 +1,7 @@
 package pipeline
 
 import (
-	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 )
 
 // MergeOverlay applies an overlay onto an APISpec, modifying it in place.

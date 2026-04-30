@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/llmpolish"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/llmpolish"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

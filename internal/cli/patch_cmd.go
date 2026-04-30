@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/patch"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/patch"
 	"github.com/spf13/cobra"
 )
 

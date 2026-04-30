@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/reachability"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/reachability"
 	"github.com/spf13/cobra"
 )
 

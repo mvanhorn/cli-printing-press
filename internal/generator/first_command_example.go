@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/canonicalargs"
-	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/canonicalargs"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 )
 
 // firstCommandExample returns a runnable "resource [endpoint] <pos1> <pos2>..."

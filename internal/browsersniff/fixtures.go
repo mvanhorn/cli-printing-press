@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v2/internal/discovery"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/discovery"
 )
 
 type TestFixture struct {
