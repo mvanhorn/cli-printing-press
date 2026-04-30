@@ -27,6 +27,9 @@ func newPublicPromotedCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/public/status"
 			params := map[string]string{}
+			// resolveRead is GET-only internally, so HasStore + non-GET should
+			// be marked Hidden in the printed CLI and reached via the typed
+			// `<resource> <endpoint>` form instead.
 			data, prov, err := resolveRead(c, flags, "public", false, path, params, nil)
 			if err != nil {
 				return classifyAPIError(err)

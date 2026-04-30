@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -527,20 +528,37 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 	fmt.Fprintf(os.Stderr, "  Envelope:\n  %s\n", string(envelopeJSON))
 {{- else}}
 	fmt.Fprintf(os.Stderr, "%s %s\n", method, targetURL)
+	queryPrinted := false
 	if params != nil {
-		for k, v := range params {
-			if v != "" {
-				fmt.Fprintf(os.Stderr, "  ?%s=%s\n", k, v)
+		keys := make([]string, 0, len(params))
+		for k := range params {
+			if params[k] != "" {
+				keys = append(keys, k)
 			}
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			sep := "?"
+			if queryPrinted {
+				sep = "&"
+			}
+			fmt.Fprintf(os.Stderr, "  %s%s=%s\n", sep, k, params[k])
+			queryPrinted = true
 		}
 	}
 {{- if and .Auth .Auth.In (eq .Auth.In "query")}}
 	// Auth material travels as a query parameter on the live request — surface
 	// it in the preview so users can verify wiring.
 	if authHeader != "" {
-		fmt.Fprintf(os.Stderr, "  ?%s=%s\n", "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", maskToken(authHeader))
+		sep := "?"
+		if queryPrinted {
+			sep = "&"
+		}
+		fmt.Fprintf(os.Stderr, "  %s%s=%s\n", sep, "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", maskToken(authHeader))
+		queryPrinted = true
 	}
 {{- end}}
+	_ = queryPrinted
 	if body != nil {
 		var pretty json.RawMessage
 		if json.Unmarshal(body, &pretty) == nil {

@@ -334,6 +334,18 @@ func paginatedGet(c interface {
 	return json.RawMessage(result), nil
 }
 
+// printJSONFiltered marshals a Go-typed value through the same output
+// pipeline endpoint-mirror commands use. Hand-written novel commands that
+// build a typed slice/struct call this so --select, --compact, --csv, and
+// --quiet all behave the same way as on generator-emitted commands.
+func printJSONFiltered(w io.Writer, v any, flags *rootFlags) error {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return printOutputWithFlags(w, json.RawMessage(raw), flags)
+}
+
 // filterFields keeps only the specified fields (comma-separated) from JSON objects/arrays.
 // Supports dotted paths like "events.shortName" to descend into nested structures.
 // Arrays are traversed element-wise: "events.shortName" keeps shortName on each event.

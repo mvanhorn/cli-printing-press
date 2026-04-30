@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"printing-press-golden-pp-cli/internal/cliutil"
@@ -274,13 +275,25 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 // call — the caller is responsible for passing cached auth material only.
 func (c *Client) dryRun(method, targetURL, path string, params map[string]string, body []byte, headerOverrides map[string]string, authHeader string) (json.RawMessage, int, error) {
 	fmt.Fprintf(os.Stderr, "%s %s\n", method, targetURL)
+	queryPrinted := false
 	if params != nil {
-		for k, v := range params {
-			if v != "" {
-				fmt.Fprintf(os.Stderr, "  ?%s=%s\n", k, v)
+		keys := make([]string, 0, len(params))
+		for k := range params {
+			if params[k] != "" {
+				keys = append(keys, k)
 			}
 		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			sep := "?"
+			if queryPrinted {
+				sep = "&"
+			}
+			fmt.Fprintf(os.Stderr, "  %s%s=%s\n", sep, k, params[k])
+			queryPrinted = true
+		}
 	}
+	_ = queryPrinted
 	if body != nil {
 		var pretty json.RawMessage
 		if json.Unmarshal(body, &pretty) == nil {

@@ -198,6 +198,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			if isIDParam(name) && t == "int" {
 				return `""`
 			}
+			if isCursorParam(name) && (t == "int" || t == "float") {
+				return `""`
+			}
 			return zeroVal(t)
 		},
 		"positionalArgs":         positionalArgs,
@@ -2206,6 +2209,24 @@ func isIDParam(name string) bool {
 		lower == "steamid" || lower == "steamids"
 }
 
+// isCursorParam returns true if the parameter name suggests it's a pagination
+// cursor, page, offset, or timestamp that should be typed as string regardless
+// of the spec's declared numeric type. Spec'd as `number` or `integer`, these
+// values cross into scientific-notation territory (~10^6 and above) when Go's
+// default float formatter renders them, which upstream APIs reject as invalid
+// integer cursors. String typing handles opaque tokens, numeric strings, and
+// integer literals uniformly.
+func isCursorParam(name string) bool {
+	lower := strings.ToLower(name)
+	switch lower {
+	case "cursor", "min_cursor", "max_cursor", "next_cursor",
+		"page", "page_token", "next_page_token",
+		"min_time", "max_time", "offset":
+		return true
+	}
+	return false
+}
+
 func goType(t string) string {
 	switch t {
 	case "string":
@@ -2330,27 +2351,42 @@ func cobraFlagFunc(t string) string {
 }
 
 // goTypeForParam returns the Go type for a parameter, overriding int→string
-// for ID-like parameters to avoid overflow and zero-value confusion.
+// for ID-like parameters to avoid overflow and zero-value confusion, and
+// numeric→string for pagination cursors so they survive scientific-notation
+// rendering of large Unix timestamps and millisecond cursors.
 func goTypeForParam(name, t string) string {
 	if isIDParam(name) && t == "int" {
+		return "string"
+	}
+	if isCursorParam(name) && (t == "int" || t == "float") {
 		return "string"
 	}
 	return goType(t)
 }
 
 // cobraFlagFuncForParam returns the cobra flag function, overriding IntVar→StringVar
-// for ID-like parameters.
+// for ID-like parameters and Float64Var/IntVar→StringVar for pagination cursors.
 func cobraFlagFuncForParam(name, t string) string {
 	if isIDParam(name) && t == "int" {
+		return "StringVar"
+	}
+	if isCursorParam(name) && (t == "int" || t == "float") {
 		return "StringVar"
 	}
 	return cobraFlagFunc(t)
 }
 
 // defaultValForParam returns the default value for a flag parameter,
-// overriding int→string for ID-like parameters.
+// overriding int→string for ID-like parameters and numeric→string for
+// pagination cursors so the StringVar default matches the StringVar field type.
 func defaultValForParam(p spec.Param) string {
 	if isIDParam(p.Name) && p.Type == "int" {
+		if p.Default != nil {
+			return fmt.Sprintf("%q", fmt.Sprintf("%v", p.Default))
+		}
+		return `""`
+	}
+	if isCursorParam(p.Name) && (p.Type == "int" || p.Type == "float") {
 		if p.Default != nil {
 			return fmt.Sprintf("%q", fmt.Sprintf("%v", p.Default))
 		}
