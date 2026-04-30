@@ -199,7 +199,7 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 		assert.Contains(t, src, snippet, "auto_refresh.go missing %q", snippet)
 	}
 	optOutIndex := strings.Index(src, "env_opt_out")
-	openStoreIndex := strings.Index(src, "store.Open(dbPath)")
+	openStoreIndex := strings.Index(src, "store.OpenWithContext(ctx, dbPath)")
 	require.NotEqual(t, -1, optOutIndex, "auto_refresh.go must report env opt-out")
 	require.NotEqual(t, -1, openStoreIndex, "auto_refresh.go must open the store after opt-out checks")
 	assert.Less(t, optOutIndex, openStoreIndex, "env opt-out must be checked before opening/migrating the store")

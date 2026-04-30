@@ -298,9 +298,14 @@ func (s *Store) migrate(ctx context.Context) error {
 	// contention at BEGIN/COMMIT time, so we retry both explicitly on
 	// SQLITE_BUSY for up to migrationLockTimeout.
 	return withMigrationLock(ctx, conn, deadline, func() error {
-		// Re-read user_version inside the lock as defense in depth: a
-		// peer could have stamped a newer version between our pre-lock
-		// read and our successful BEGIN IMMEDIATE.
+		// Re-read user_version inside the lock. This is load-bearing,
+		// not paranoid: between the pre-lock read above and our
+		// successful BEGIN IMMEDIATE, a newer-binary peer may have
+		// committed a higher version stamp. Without this re-read, an
+		// older binary (smaller StoreSchemaVersion) would proceed to
+		// stamp its own lower version at the end of the closure,
+		// silently downgrading user_version on a schema that's already
+		// at the newer level. Future maintainers: leave this read in.
 		var current int
 		if err := conn.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&current); err != nil {
 			return fmt.Errorf("reading schema version: %w", err)
@@ -403,7 +408,11 @@ func retryOnBusy(ctx context.Context, deadline time.Time, label string, op func(
 			return fmt.Errorf("%s: %w", label, err)
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("%s: timed out after %s waiting for write lock: %w", label, migrationLockTimeout, err)
+			// The label carries the operation context (e.g. "begin
+			// migration transaction", "reading schema version") — we
+			// don't hardcode "waiting for write lock" because pre-lock
+			// reads also flow through this helper.
+			return fmt.Errorf("%s: timed out after %s under SQLite contention: %w", label, migrationLockTimeout, err)
 		}
 		select {
 		case <-ctx.Done():
