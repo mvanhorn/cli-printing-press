@@ -64,14 +64,23 @@ func NewThrottleState() *ThrottleState {
 	return &ThrottleState{}
 }
 
-// WaitForBudget blocks until the projected bucket has at least
-// nextRequestedCost capacity. Returns immediately when the state has not
-// been seeded by a prior response (no bucket data to project), when the
-// projected balance already covers the cost, or when the API reports a
-// non-positive restore rate (no way to wait it out — fail forward and let
-// HandleThrottleError handle the inevitable 429).
+// WaitForBudget blocks until the projected bucket can admit
+// nextRequestedCost, then debits the cost from the local bucket so
+// concurrent callers see the post-debit balance instead of all reading
+// the same projected value and racing through. Returns immediately when
+// the state has not been seeded by a prior response (no bucket data to
+// project), when the projected balance already covers the cost (debited
+// in place), or when the API reports a non-positive restore rate (no way
+// to wait it out — fail forward and let HandleThrottleError handle the
+// inevitable 429).
+//
+// Reservation drift: the local bucket may briefly diverge from the API's
+// real bucket between the debit and the next response. The next Update()
+// resyncs from the authoritative status, so drift is bounded to one
+// in-flight request per goroutine. Better to over-throttle locally than
+// double-spend a shared budget.
 func (t *ThrottleState) WaitForBudget(ctx context.Context, nextRequestedCost float64) error {
-	sleep := t.computeWait(time.Now(), nextRequestedCost)
+	sleep := t.reserveBudget(time.Now(), nextRequestedCost)
 	if sleep <= 0 {
 		return nil
 	}
@@ -84,12 +93,20 @@ func (t *ThrottleState) WaitForBudget(ctx context.Context, nextRequestedCost flo
 }
 
 // computeWait returns the time WaitForBudget would block, given the
-// observed status and the now/requested arguments. Split out from
-// WaitForBudget so tests can verify the project-forward bucket math
-// without sleeping. Returns 0 when no wait is required.
+// observed status. Pure projection — does not mutate the bucket. Lenient
+// mode uses this to surface the projected wait without reserving budget;
+// tests use it to verify the math without sleeping. Reservation lives in
+// reserveBudget so the two concerns stay distinct.
 func (t *ThrottleState) computeWait(now time.Time, requested float64) time.Duration {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.computeWaitLocked(now, requested)
+}
+
+// computeWaitLocked is the lock-held variant of computeWait. Internal
+// helper so reserveBudget can compute and mutate inside one critical
+// section.
+func (t *ThrottleState) computeWaitLocked(now time.Time, requested float64) time.Duration {
 	if !t.seeded {
 		return 0
 	}
@@ -104,6 +121,50 @@ func (t *ThrottleState) computeWait(now time.Time, requested float64) time.Durat
 	}
 	deficit := requested - projected
 	return time.Duration((deficit / s.RestoreRate) * float64(time.Second))
+}
+
+// reserveBudget atomically computes the wait duration AND debits the
+// requested cost from the local bucket so concurrent callers don't all
+// read the same projected balance and race through. Returns the duration
+// the caller must sleep before issuing the request; 0 means proceed
+// immediately (the cost has been debited).
+//
+// No-wait path: project the bucket forward, deduct the request, stamp
+// LastUpdated to now. The next caller projects from the debited state.
+//
+// Wait path: assume the caller actually waits, so by the time it wakes
+// the bucket will have refilled to exactly `requested` and we debit it
+// to zero. LastUpdated advances to the wake time so the next concurrent
+// caller's projection starts from the cleared bucket.
+//
+// !seeded short-circuits to 0 with no debit so the first request can
+// learn its budget from the response. Same for non-positive restore
+// rate — there's no way to wait it out, so admit and rely on
+// HandleThrottleError for the inevitable 429.
+func (t *ThrottleState) reserveBudget(now time.Time, requested float64) time.Duration {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.seeded {
+		return 0
+	}
+	if t.status.RestoreRate <= 0 {
+		return 0
+	}
+	elapsed := now.Sub(t.status.LastUpdated).Seconds()
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	projected := math.Min(t.status.MaximumAvailable, t.status.CurrentlyAvailable+elapsed*t.status.RestoreRate)
+	if projected >= requested {
+		t.status.CurrentlyAvailable = math.Max(0, projected-requested)
+		t.status.LastUpdated = now
+		return 0
+	}
+	deficit := requested - projected
+	sleep := time.Duration((deficit / t.status.RestoreRate) * float64(time.Second))
+	t.status.CurrentlyAvailable = 0
+	t.status.LastUpdated = now.Add(sleep)
+	return sleep
 }
 
 // Update is called by the GraphQL client after every response that carries

@@ -11,9 +11,11 @@ import (
 	"fmt"
 {{- if .HasCostThrottling}}
 	"os"
-	"time"
 {{- end}}
 	"strings"
+{{- if .HasCostThrottling}}
+	"time"
+{{- end}}
 )
 
 // GraphQLRequest is a standard GraphQL POST body.
@@ -24,9 +26,8 @@ type GraphQLRequest struct {
 
 // GraphQLResponse wraps the standard GraphQL response envelope.
 type GraphQLResponse struct {
-	Data       json.RawMessage `json:"data"`
-	Errors     []GraphQLError  `json:"errors,omitempty"`
-	Extensions json.RawMessage `json:"extensions,omitempty"`
+	Data   json.RawMessage `json:"data"`
+	Errors []GraphQLError  `json:"errors,omitempty"`
 }
 
 // GraphQLError represents a single error from a GraphQL response.

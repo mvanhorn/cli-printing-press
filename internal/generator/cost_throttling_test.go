@@ -275,6 +275,36 @@ func TestThrottleHandleErrorCapsAtMaxRetries(t *testing.T) {
 	}
 }
 
+func TestThrottleReserveBudgetDebitsConcurrentCallers(t *testing.T) {
+	// Codex P2 from PR-3 review: WaitForBudget without reservation lets
+	// every concurrent caller read the same projected balance and race
+	// through. reserveBudget is the fix — under one mutex, project AND
+	// debit. Two callers asking for 50 against a 100/1000 bucket
+	// (restoreRate 50) must each be admitted with no wait, but the
+	// third caller arriving immediately after must wait because the
+	// local bucket is now drained.
+	state := NewThrottleState()
+	state.Update(ThrottleStatus{
+		MaximumAvailable:   1000,
+		CurrentlyAvailable: 100,
+		RestoreRate:        50,
+	})
+	now := time.Now()
+	if got := state.reserveBudget(now, 50); got != 0 {
+		t.Fatalf("first reserveBudget(50) on 100-bucket must not wait; got %s", got)
+	}
+	if got := state.reserveBudget(now, 50); got != 0 {
+		t.Fatalf("second reserveBudget(50) on the now-50 bucket must not wait; got %s", got)
+	}
+	// The third concurrent call lands on a debited-to-zero bucket. With
+	// negligible elapsed time, projected ≈ 0, deficit = 50, sleep = 1s.
+	got := state.reserveBudget(now, 50)
+	const want = time.Second
+	if got < want-50*time.Millisecond || got > want+50*time.Millisecond {
+		t.Fatalf("third reserveBudget after two debits must wait ~1s for the bucket to refill; got %s", got)
+	}
+}
+
 func TestThrottleConcurrentUpdateNoRace(t *testing.T) {
 	// This test is meaningful when run under -race; the bare exec also
 	// verifies the mutex shape is correct (no deadlock).
