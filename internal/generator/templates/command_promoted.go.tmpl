@@ -138,9 +138,24 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- if .HasStore}}
+			// HasStore branch: every method routes through resolveRead today.
+			// resolveRead is GET-only internally, so HasStore + POST still hits
+			// the wrong-verb bug. Adding a POST-aware store-cached path is
+			// tracked as a follow-up to retro #423; for HasStore CLIs with a
+			// promoted POST endpoint, mark that command Hidden in the printed
+			// CLI and use the typed `<resource> <endpoint>` form instead.
 			data, prov, err := resolveRead(c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, nil)
-{{- else}}
+{{- else if eq (upper .Endpoint.Method) "GET"}}
 			data, err := c.Get(path, params)
+{{- else if eq (upper .Endpoint.Method) "DELETE"}}
+			data, _, err := c.Delete(path)
+{{- else}}
+			// {{upper .Endpoint.Method}} promoted endpoint: route to the verb-correct
+			// client method. The params map (built from query/path Params) is sent
+			// as the request body — body-flag plumbing for promoted shortcuts is
+			// tracked as a follow-up. Users with rich body shapes should use the
+			// typed `<resource> <endpoint>` command which has full --flag support.
+			data, _, err := c.{{pascal (lower .Endpoint.Method)}}(path, params)
 {{- end}}
 {{- end}}
 			if err != nil {
