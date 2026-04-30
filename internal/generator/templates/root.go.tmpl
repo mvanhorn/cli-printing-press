@@ -39,6 +39,9 @@ type rootFlags struct {
 	rateLimit    float64
 	dataSource   string
 	freshnessMeta any
+{{- if .HasCostThrottling}}
+	throttleMode string
+{{- end}}
 
 	// deliverBuf captures command output when --deliver is set to a
 	// non-stdout sink. Flushed to the sink after Execute returns.
@@ -155,6 +158,15 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 {{- else}}
 	rootCmd.PersistentFlags().Float64Var(&flags.rateLimit, "rate-limit", 0, "Max requests per second (0 to disable)")
 {{- end}}
+{{- if .HasCostThrottling}}
+	// --throttle-mode controls how the cost-based throttle reacts to a low
+	// budget. strict (default) blocks on WaitForBudget; lenient warns but
+	// proceeds (good for scripts where a momentary over-spend is preferable
+	// to an unexpected pause); off bypasses the throttle entirely. Default
+	// strict so first-time users see correct behavior; document the
+	// tradeoff loudly in --help so scripted callers know to opt out.
+	rootCmd.PersistentFlags().StringVar(&flags.throttleMode, "throttle-mode", "strict", "Cost-based throttle mode: strict (block when bucket is low), lenient (warn but proceed), off (bypass)")
+{{- end}}
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		if flags.deliverSpec != "" {
@@ -207,6 +219,14 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 		default:
 			return fmt.Errorf("invalid --data-source value %q: must be auto, live, or local", flags.dataSource)
 		}
+{{- if .HasCostThrottling}}
+		switch flags.throttleMode {
+		case "strict", "lenient", "off":
+			// valid
+		default:
+			return fmt.Errorf("invalid --throttle-mode value %q: must be strict, lenient, or off", flags.throttleMode)
+		}
+{{- end}}
 {{- if .Cache.Enabled}}
 		// Auto-refresh stale local caches before serving read commands.
 		// Looks up the current command path in readCommandResources and
@@ -293,6 +313,11 @@ func (f *rootFlags) newClient() (*client.Client, error) {
 	c := client.New(cfg, f.timeout, f.rateLimit)
 	c.DryRun = f.dryRun
 	c.NoCache = f.noCache
+{{- if .HasCostThrottling}}
+	if f.throttleMode != "" {
+		c.ThrottleMode = f.throttleMode
+	}
+{{- end}}
 	return c, nil
 }
 

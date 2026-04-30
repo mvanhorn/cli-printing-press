@@ -4,8 +4,15 @@
 package client
 
 import (
+{{- if .HasCostThrottling}}
+	"context"
+{{- end}}
 	"encoding/json"
 	"fmt"
+{{- if .HasCostThrottling}}
+	"os"
+	"time"
+{{- end}}
 	"strings"
 )
 
@@ -17,8 +24,9 @@ type GraphQLRequest struct {
 
 // GraphQLResponse wraps the standard GraphQL response envelope.
 type GraphQLResponse struct {
-	Data   json.RawMessage `json:"data"`
-	Errors []GraphQLError  `json:"errors,omitempty"`
+	Data       json.RawMessage `json:"data"`
+	Errors     []GraphQLError  `json:"errors,omitempty"`
+	Extensions json.RawMessage `json:"extensions,omitempty"`
 }
 
 // GraphQLError represents a single error from a GraphQL response.
@@ -59,9 +67,106 @@ func isGraphQLAccessDenialCode(code string) bool {
 // "/admin/api/{version}/graphql.json") work without editing the client.
 const graphqlEndpointPath = "{{.GraphQLEndpointPath}}"
 
+{{- if .HasCostThrottling}}
+
+// defaultThrottleQueryCost is the cost we ask WaitForBudget to ensure
+// before issuing a GraphQL query. The real cost is whatever the API
+// computes from the query AST and reports back in extensions.cost; we
+// don't compute it locally. Asking for 1.0 means "ensure the bucket can
+// admit at least the cheapest possible query" — over-cost queries still
+// trigger a THROTTLED retry, but the project-forward math at least pauses
+// us when we've drained the bucket entirely.
+const defaultThrottleQueryCost = 1.0
+
+// throttleExtensions is the parser shape for Shopify's
+// extensions.cost.throttleStatus payload. Other GraphQL APIs that expose
+// calculated-cost rate limits in different shapes will need a pluggable
+// parser; today this is the only path. The wrapping is defensive — when
+// extensions.cost is missing (Linear, GitHub's REST GraphQL response,
+// any vanilla server), Unmarshal silently leaves the zero value and
+// updateThrottleFromBody no-ops.
+type throttleExtensions struct {
+	Cost struct {
+		ThrottleStatus struct {
+			MaximumAvailable   float64 `json:"maximumAvailable"`
+			CurrentlyAvailable float64 `json:"currentlyAvailable"`
+			RestoreRate        float64 `json:"restoreRate"`
+		} `json:"throttleStatus"`
+	} `json:"cost"`
+}
+
+// updateThrottleFromBody parses Shopify-shape extensions.cost from a raw
+// GraphQL response body and updates the client's throttle state. Returns
+// true when the body carried a parseable status. Defensive about every
+// upstream shape variation — invalid JSON, missing extensions, missing
+// cost, missing throttleStatus, all-zero values — by treating any of them
+// as a silent no-op rather than an error.
+func (c *Client) updateThrottleFromBody(body []byte) bool {
+	if c == nil || c.Throttle == nil || len(body) == 0 {
+		return false
+	}
+	var env struct {
+		Extensions throttleExtensions `json:"extensions"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return false
+	}
+	ts := env.Extensions.Cost.ThrottleStatus
+	if ts.MaximumAvailable == 0 && ts.CurrentlyAvailable == 0 && ts.RestoreRate == 0 {
+		return false
+	}
+	c.Throttle.Update(ThrottleStatus{
+		MaximumAvailable:   ts.MaximumAvailable,
+		CurrentlyAvailable: ts.CurrentlyAvailable,
+		RestoreRate:        ts.RestoreRate,
+	})
+	return true
+}
+
+// throttleModeOrDefault returns the configured ThrottleMode, falling back
+// to ThrottleModeStrict so the field's zero value still produces blocking
+// behavior. Off / lenient must be opted into explicitly.
+func (c *Client) throttleModeOrDefault() string {
+	switch c.ThrottleMode {
+	case ThrottleModeOff, ThrottleModeLenient, ThrottleModeStrict:
+		return c.ThrottleMode
+	default:
+		return ThrottleModeStrict
+	}
+}
+
+// awaitBudget consults the throttle mode and either blocks on
+// WaitForBudget (strict), warns to stderr without blocking (lenient), or
+// returns immediately (off / no throttle state). The graphql Query path
+// calls this before every Post; novel commands can call it directly when
+// composing multi-query workflows.
+func (c *Client) awaitBudget(ctx context.Context, cost float64) error {
+	if c == nil || c.Throttle == nil {
+		return nil
+	}
+	mode := c.throttleModeOrDefault()
+	if mode == ThrottleModeOff {
+		return nil
+	}
+	if mode == ThrottleModeLenient {
+		// Lenient: don't block, but surface the projected wait so users
+		// running scripts can spot a saturated bucket without staring at
+		// stalled CLI output.
+		if wait := c.Throttle.computeWait(time.Now(), cost); wait > 0 {
+			fmt.Fprintf(os.Stderr, "throttle: bucket low, would wait %s in strict mode\n", wait.Round(time.Millisecond))
+		}
+		return nil
+	}
+	return c.Throttle.WaitForBudget(ctx, cost)
+}
+{{- end}}
+
 // Query executes a GraphQL query via POST against graphqlEndpointPath and
 // returns the raw data payload.
 func (c *Client) Query(query string, variables map[string]any) (json.RawMessage, error) {
+{{- if .HasCostThrottling}}
+	return c.queryWithThrottle(context.Background(), query, variables)
+{{- else}}
 	req := GraphQLRequest{Query: query, Variables: variables}
 	raw, _, err := c.Post(graphqlEndpointPath, req)
 	if err != nil {
@@ -91,7 +196,77 @@ func (c *Client) Query(query string, variables map[string]any) (json.RawMessage,
 		return nil, fmt.Errorf("graphql: %s", strings.Join(msgs, "; "))
 	}
 	return resp.Data, nil
+{{- end}}
 }
+
+{{- if .HasCostThrottling}}
+
+// queryWithThrottle is the throttle-aware Query path. Wraps the bare Post
+// call with WaitForBudget (mode-gated), parses extensions.cost from every
+// response (including error responses, since Shopify reports the bucket
+// even when the query was rejected), and retries on THROTTLED extension
+// codes via HandleThrottleError. HTTP 429s are still handled by the
+// Client.do() layer's existing AdaptiveLimiter retry — this path stacks
+// on top of that without double-handling.
+func (c *Client) queryWithThrottle(ctx context.Context, query string, variables map[string]any) (json.RawMessage, error) {
+	req := GraphQLRequest{Query: query, Variables: variables}
+	mode := c.throttleModeOrDefault()
+	for attempt := 0; ; attempt++ {
+		if err := c.awaitBudget(ctx, defaultThrottleQueryCost); err != nil {
+			return nil, err
+		}
+		raw, _, err := c.Post(graphqlEndpointPath, req)
+		if err != nil {
+			return nil, err
+		}
+		// Update throttle state from extensions.cost regardless of whether
+		// the response carried errors — Shopify includes the bucket even
+		// when reporting a THROTTLED error, and skipping the update would
+		// strand WaitForBudget on stale data after a throttle rejection.
+		c.updateThrottleFromBody(raw)
+
+		var resp GraphQLResponse
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return nil, fmt.Errorf("decoding graphql response: %w", err)
+		}
+		if len(resp.Errors) == 0 {
+			return resp.Data, nil
+		}
+
+		// Off-mode skips the THROTTLED retry path entirely so users who
+		// opt out of throttling don't pay an unexpected sleep. The error
+		// surfaces just like any other GraphQL error in that case.
+		if mode != ThrottleModeOff {
+			retry, wait := c.Throttle.HandleThrottleError(nil, raw, attempt)
+			if retry {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(wait):
+				}
+				continue
+			}
+		}
+
+		msgs := make([]string, len(resp.Errors))
+		codes := make([]string, 0, len(resp.Errors))
+		allDenial := true
+		for i, e := range resp.Errors {
+			msgs[i] = e.Message
+			if e.Extensions.Code != "" {
+				codes = append(codes, e.Extensions.Code)
+			}
+			if !isGraphQLAccessDenialCode(e.Extensions.Code) {
+				allDenial = false
+			}
+		}
+		if allDenial && len(codes) > 0 {
+			return nil, &GraphQLAccessDeniedError{Codes: codes, Messages: msgs}
+		}
+		return nil, fmt.Errorf("graphql: %s", strings.Join(msgs, "; "))
+	}
+}
+{{- end}}
 
 // Mutate executes a GraphQL mutation via POST against graphqlEndpointPath and
 // returns the raw data payload. Identical transport to Query; separate method

@@ -39,6 +39,21 @@ type Client struct {
 {{- if eq .Auth.Type "session_handshake"}}
 	Session    *SessionManager
 {{- end}}
+{{- if .HasCostThrottling}}
+	// Throttle tracks calculated-cost rate-limit budgets reported by the
+	// API in extensions.cost. Initialized in New() so callers don't need
+	// to nil-check; the !seeded guard inside ThrottleState handles the
+	// pre-first-response case. Distinct from `limiter` (cliutil's
+	// AdaptiveLimiter), which paces request count reactively from 429
+	// observation; this one is forward-projecting from the bucket the API
+	// itself reports. They compose: limiter caps RPS, Throttle gates on
+	// remaining query cost.
+	Throttle     *ThrottleState
+	// ThrottleMode is one of ThrottleModeStrict (default; block on
+	// WaitForBudget), ThrottleModeLenient (warn but proceed), or
+	// ThrottleModeOff (bypass). Wired from the --throttle-mode root flag.
+	ThrottleMode string
+{{- end}}
 }
 
 {{if eq .ClientPattern "proxy-envelope"}}
@@ -125,6 +140,10 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		cacheDir:   cacheDir,
 		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
 		Session:    sess,
+{{- if .HasCostThrottling}}
+		Throttle:     NewThrottleState(),
+		ThrottleMode: ThrottleModeStrict,
+{{- end}}
 	}
 {{- else}}
 	httpClient := newHTTPClient(timeout, nil)
@@ -134,6 +153,10 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
 		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
+{{- if .HasCostThrottling}}
+		Throttle:     NewThrottleState(),
+		ThrottleMode: ThrottleModeStrict,
+{{- end}}
 	}
 {{- end}}
 }
