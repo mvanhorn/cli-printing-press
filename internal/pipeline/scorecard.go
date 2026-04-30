@@ -76,6 +76,25 @@ type SteinerScore struct {
 	CalibrationNote       string `json:"calibration_note,omitempty"`
 }
 
+// Dimension identifiers used by recordOptionalScore, scorecardTierMax,
+// IsDimensionUnscored, and renderers (renderHumanScorecard,
+// writeScorecardMD). Any dimension that can land in
+// Scorecard.UnscoredDimensions has a constant here so a typo at any
+// call site fails the compile rather than silently returning false
+// from IsDimensionUnscored. The string values match the JSON struct
+// tags above and must stay in lockstep.
+const (
+	DimMCPDescriptionQuality = "mcp_description_quality"
+	DimMCPTokenEfficiency    = "mcp_token_efficiency"
+	DimMCPRemoteTransport    = "mcp_remote_transport"
+	DimMCPToolDesign         = "mcp_tool_design"
+	DimMCPSurfaceStrategy    = "mcp_surface_strategy"
+	DimCacheFreshness        = "cache_freshness"
+	DimPathValidity          = "path_validity"
+	DimAuthProtocol          = "auth_protocol"
+	DimLiveAPIVerification   = "live_api_verification"
+)
+
 // CompScore compares our score against a competitor on a single dimension.
 type CompScore struct {
 	Name       string `json:"name"`
@@ -120,18 +139,18 @@ func scoreInfrastructureDimensions(sc *Scorecard, outputDir string) {
 	sc.Steinberger.AgentNative = scoreAgentNative(outputDir)
 	sc.Steinberger.MCPQuality = scoreMCPQuality(outputDir)
 	mcpDescScore, mcpDescScored := scoreMCPDescriptionQuality(outputDir)
-	recordOptionalScore(sc, &sc.Steinberger.MCPDescriptionQuality, "mcp_description_quality", mcpDescScore, mcpDescScored)
+	recordOptionalScore(sc, &sc.Steinberger.MCPDescriptionQuality, DimMCPDescriptionQuality, mcpDescScore, mcpDescScored)
 	mcpTokenScore, mcpTokenScored := scoreMCPTokenEfficiency(outputDir)
-	recordOptionalScore(sc, &sc.Steinberger.MCPTokenEff, "mcp_token_efficiency", mcpTokenScore, mcpTokenScored)
+	recordOptionalScore(sc, &sc.Steinberger.MCPTokenEff, DimMCPTokenEfficiency, mcpTokenScore, mcpTokenScored)
 	remoteScore, remoteScored := scoreMCPRemoteTransport(outputDir)
-	recordOptionalScore(sc, &sc.Steinberger.MCPRemoteTransport, "mcp_remote_transport", remoteScore, remoteScored)
+	recordOptionalScore(sc, &sc.Steinberger.MCPRemoteTransport, DimMCPRemoteTransport, remoteScore, remoteScored)
 	toolDesignScore, toolDesignScored := scoreMCPToolDesign(outputDir)
-	recordOptionalScore(sc, &sc.Steinberger.MCPToolDesign, "mcp_tool_design", toolDesignScore, toolDesignScored)
+	recordOptionalScore(sc, &sc.Steinberger.MCPToolDesign, DimMCPToolDesign, toolDesignScore, toolDesignScored)
 	strategyScore, strategyScored := scoreMCPSurfaceStrategy(outputDir)
-	recordOptionalScore(sc, &sc.Steinberger.MCPSurfaceStrategy, "mcp_surface_strategy", strategyScore, strategyScored)
+	recordOptionalScore(sc, &sc.Steinberger.MCPSurfaceStrategy, DimMCPSurfaceStrategy, strategyScore, strategyScored)
 	sc.Steinberger.LocalCache = scoreLocalCache(outputDir)
 	cacheFreshnessScore, cacheFreshnessScored := scoreCacheFreshness(outputDir)
-	recordOptionalScore(sc, &sc.Steinberger.CacheFreshness, "cache_freshness", cacheFreshnessScore, cacheFreshnessScored)
+	recordOptionalScore(sc, &sc.Steinberger.CacheFreshness, DimCacheFreshness, cacheFreshnessScore, cacheFreshnessScored)
 	sc.Steinberger.Breadth = scoreBreadth(outputDir)
 	sc.Steinberger.Vision = scoreVision(outputDir)
 	sc.Steinberger.Workflows = scoreWorkflows(outputDir)
@@ -150,7 +169,7 @@ func recordOptionalScore(sc *Scorecard, target *int, dimension string, score int
 func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) error {
 	if specPath == "" {
 		// No spec: mark spec-dependent dimensions as unscored.
-		sc.UnscoredDimensions = append(sc.UnscoredDimensions, "path_validity", "auth_protocol")
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity, DimAuthProtocol)
 		return nil
 	}
 
@@ -163,19 +182,19 @@ func scoreSpecDimensions(sc *Scorecard, outputDir, specPath string) error {
 		// Hand-built commands intentionally go beyond the spec; path-validity
 		// is not applicable. Mark unscored so the tier-2 denominator excludes
 		// it rather than awarding a 10-point cushion the CLI didn't earn.
-		sc.UnscoredDimensions = append(sc.UnscoredDimensions, "path_validity")
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity)
 	} else {
 		pathValidity := evaluatePathValidity(outputDir, spec)
 		sc.Steinberger.PathValidity = pathValidity.score
 		if !pathValidity.scored {
-			sc.UnscoredDimensions = append(sc.UnscoredDimensions, "path_validity")
+			sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimPathValidity)
 		}
 	}
 
 	authProtocol := evaluateAuthProtocol(outputDir, spec)
 	sc.Steinberger.AuthProtocol = authProtocol.score
 	if !authProtocol.scored {
-		sc.UnscoredDimensions = append(sc.UnscoredDimensions, "auth_protocol")
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimAuthProtocol)
 	}
 	return nil
 }
@@ -195,7 +214,7 @@ func scoreDomainDimensions(sc *Scorecard, outputDir string, verifyReport *Verify
 	if liveScore, scored := scoreLiveAPIVerification(verifyReport); scored {
 		sc.Steinberger.LiveAPIVerification = liveScore
 	} else {
-		sc.UnscoredDimensions = append(sc.UnscoredDimensions, "live_api_verification")
+		sc.UnscoredDimensions = append(sc.UnscoredDimensions, DimLiveAPIVerification)
 	}
 }
 
@@ -893,7 +912,7 @@ func ApplyLiveCheckToScorecard(sc *Scorecard, live *LiveCheckResult) {
 		return
 	}
 	sc.Steinberger.LiveAPIVerification = score
-	sc.UnscoredDimensions = removeUnscoredDimension(sc.UnscoredDimensions, "live_api_verification")
+	sc.UnscoredDimensions = removeUnscoredDimension(sc.UnscoredDimensions, DimLiveAPIVerification)
 	recomputeScorecardTotals(sc)
 	applyScorecardCalibration(sc)
 	sc.OverallGrade = computeGrade(sc.Steinberger.Percentage)
@@ -954,7 +973,7 @@ func recomputeScorecardTotals(sc *Scorecard) {
 		sc.Steinberger.AgentWorkflow,
 	)
 
-	tier1Max := scorecardTierMax(sc, 200, "mcp_description_quality", "mcp_token_efficiency", "cache_freshness", "mcp_remote_transport", "mcp_tool_design", "mcp_surface_strategy")
+	tier1Max := scorecardTierMax(sc, 200, DimMCPDescriptionQuality, DimMCPTokenEfficiency, DimCacheFreshness, DimMCPRemoteTransport, DimMCPToolDesign, DimMCPSurfaceStrategy)
 	tier1Normalized := 0
 	if tier1Max > 0 {
 		tier1Normalized = (tier1Raw * 50) / tier1Max
@@ -970,7 +989,7 @@ func recomputeScorecardTotals(sc *Scorecard) {
 		sc.Steinberger.LiveAPIVerification,
 	)
 
-	tier2Max := scorecardTierMax(sc, 60, "live_api_verification", "path_validity", "auth_protocol")
+	tier2Max := scorecardTierMax(sc, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol)
 	tier2Normalized := 0
 	if tier2Max > 0 {
 		tier2Normalized = (tier2Raw * 50) / tier2Max
@@ -2386,15 +2405,15 @@ func buildGapReport(s SteinerScore, unscored []string) []string {
 		{"doctor", s.Doctor},
 		{"agent_native", s.AgentNative},
 		{"mcp_quality", s.MCPQuality},
-		{"mcp_description_quality", s.MCPDescriptionQuality},
-		{"mcp_token_efficiency", s.MCPTokenEff},
+		{DimMCPDescriptionQuality, s.MCPDescriptionQuality},
+		{DimMCPTokenEfficiency, s.MCPTokenEff},
 		{"local_cache", s.LocalCache},
 		{"breadth", s.Breadth},
 		{"vision", s.Vision},
 		{"workflows", s.Workflows},
 		{"insight", s.Insight},
-		{"path_validity", s.PathValidity},
-		{"auth_protocol", s.AuthProtocol},
+		{DimPathValidity, s.PathValidity},
+		{DimAuthProtocol, s.AuthProtocol},
 		{"data_pipeline_integrity", s.DataPipelineIntegrity},
 		{"sync_correctness", s.SyncCorrectness},
 		{"type_fidelity", s.TypeFidelity},
@@ -2517,15 +2536,15 @@ func writeScorecardMD(sc *Scorecard, pipelineDir string) error {
 		{"Doctor", "doctor", s.Doctor},
 		{"Agent Native", "agent_native", s.AgentNative},
 		{"MCP Quality", "mcp_quality", s.MCPQuality},
-		{"MCP Description Quality", "mcp_description_quality", s.MCPDescriptionQuality},
-		{"MCP Token Efficiency", "mcp_token_efficiency", s.MCPTokenEff},
+		{"MCP Description Quality", DimMCPDescriptionQuality, s.MCPDescriptionQuality},
+		{"MCP Token Efficiency", DimMCPTokenEfficiency, s.MCPTokenEff},
 		{"Local Cache", "local_cache", s.LocalCache},
 		{"Breadth", "breadth", s.Breadth},
 		{"Vision", "vision", s.Vision},
 		{"Workflows", "workflows", s.Workflows},
 		{"Insight", "insight", s.Insight},
-		{"Path Validity", "path_validity", s.PathValidity},
-		{"Auth Protocol", "auth_protocol", s.AuthProtocol},
+		{"Path Validity", DimPathValidity, s.PathValidity},
+		{"Auth Protocol", DimAuthProtocol, s.AuthProtocol},
 		{"Data Pipeline Integrity", "data_pipeline_integrity", s.DataPipelineIntegrity},
 		{"Sync Correctness", "sync_correctness", s.SyncCorrectness},
 	}

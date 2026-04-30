@@ -37,13 +37,13 @@ func TestRenderHumanScorecardShowsNAForUnscoredDimensions(t *testing.T) {
 			Total:                 85,
 		},
 		UnscoredDimensions: []string{
-			"mcp_token_efficiency",
-			"mcp_remote_transport",
-			"mcp_tool_design",
-			"mcp_surface_strategy",
-			"cache_freshness",
-			"auth_protocol",
-			"live_api_verification",
+			pipeline.DimMCPTokenEfficiency,
+			pipeline.DimMCPRemoteTransport,
+			pipeline.DimMCPToolDesign,
+			pipeline.DimMCPSurfaceStrategy,
+			pipeline.DimCacheFreshness,
+			pipeline.DimAuthProtocol,
+			pipeline.DimLiveAPIVerification,
 		},
 	}
 
