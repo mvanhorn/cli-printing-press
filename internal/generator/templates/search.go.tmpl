@@ -161,7 +161,7 @@ In local mode: searches locally synced data only.`,
 				dbPath = defaultDBPath("{{.Name}}-pp-cli")
 			}
 
-			db, err := store.Open(dbPath)
+			db, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {
 				return fmt.Errorf("opening local database: %w\nRun '{{.Name}}-pp-cli sync' first to populate the local database.", err)
 			}

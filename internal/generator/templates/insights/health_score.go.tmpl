@@ -34,7 +34,7 @@ A score of 100 means all items are fresh, assigned, and actively worked on.`,
 				dbPath = defaultDBPath("{{.Name}}-pp-cli")
 			}
 
-			db, err := store.Open(dbPath)
+			db, err := store.OpenWithContext(cmd.Context(), dbPath)
 			if err != nil {
 				return fmt.Errorf("opening local database: %w\nRun '{{.Name}}-pp-cli sync' first.", err)
 			}

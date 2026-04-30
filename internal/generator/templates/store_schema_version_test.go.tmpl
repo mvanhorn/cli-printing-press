@@ -128,6 +128,31 @@ func TestMigrate_ConcurrentFreshDB(t *testing.T) {
 	}
 }
 
+// holdWriteLock takes an exclusive write lock on dbPath that a peer's
+// BEGIN IMMEDIATE cannot acquire until the returned cleanup runs. Used
+// to construct contention scenarios in the migration tests.
+func holdWriteLock(t *testing.T, dbPath string) (cleanup func()) {
+	t.Helper()
+	holder, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		t.Fatalf("open holder: %v", err)
+	}
+	htx, err := holder.Begin()
+	if err != nil {
+		_ = holder.Close()
+		t.Fatalf("begin holder tx: %v", err)
+	}
+	if _, err := htx.Exec(`CREATE TABLE IF NOT EXISTS holder_lock (id INTEGER)`); err != nil {
+		_ = htx.Rollback()
+		_ = holder.Close()
+		t.Fatalf("seed holder write: %v", err)
+	}
+	return func() {
+		_ = htx.Rollback()
+		_ = holder.Close()
+	}
+}
+
 // TestOpenWithContext_RespectsCancellation verifies that a caller that
 // cancels its context during a stalled migration sees the cancellation
 // surface as the returned error within a short window, instead of
@@ -137,51 +162,31 @@ func TestOpenWithContext_RespectsCancellation(t *testing.T) {
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "data.db")
+	defer holdWriteLock(t, dbPath)()
 
-	// Take an exclusive write lock on the DB so a peer's BEGIN IMMEDIATE
-	// will not progress. We hold a long-running transaction on a raw
-	// connection that bypasses the migration lock helper.
-	holder, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
-	if err != nil {
-		t.Fatalf("open holder: %v", err)
-	}
-	defer holder.Close()
-	htx, err := holder.Begin()
-	if err != nil {
-		t.Fatalf("begin holder tx: %v", err)
-	}
-	if _, err := htx.Exec(`CREATE TABLE IF NOT EXISTS holder_lock (id INTEGER)`); err != nil {
-		_ = htx.Rollback()
-		t.Fatalf("seed holder write: %v", err)
-	}
-	defer func() { _ = htx.Rollback() }()
-
+	// Pre-cancel the context. The migration's BEGIN IMMEDIATE will BUSY
+	// against the holder; the very first iteration of retryOnBusy then
+	// hits the ctx.Done() arm of its select and propagates ctx.Canceled.
+	// A blocked-then-cancel pattern using time.Sleep would prove the
+	// same property but cost the sleep interval on every CI run.
 	ctx, cancel := context.WithCancel(context.Background())
-	cancelAfter := 250 * time.Millisecond
-	go func() {
-		time.Sleep(cancelAfter)
-		cancel()
-	}()
+	cancel()
 
 	start := time.Now()
-	_, err = OpenWithContext(ctx, dbPath)
+	_, err := OpenWithContext(ctx, dbPath)
 	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Fatalf("expected OpenWithContext to fail under contention with cancelled ctx")
 	}
-	// The migration's retry loop observes ctx.Done() — the wrapped error
-	// should carry context.Canceled. Without ctx threading the call would
-	// block until migrationLockTimeout (default 30s) regardless of the
-	// caller's cancellation signal.
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled in error chain, got: %v", err)
 	}
-	// Be generous on the timing assertion to keep the test stable on
-	// slow CI: we only need to prove the wait was bounded by the cancel
-	// interval, not by the 30-second migrationLockTimeout.
+	// Without ctx threading this would block until migrationLockTimeout
+	// (default 30s). 5s is generous headroom over the actual return
+	// time (microseconds for a pre-cancelled ctx) without flaking CI.
 	if elapsed > 5*time.Second {
-		t.Fatalf("OpenWithContext returned after %s; expected return shortly after %s cancel", elapsed, cancelAfter)
+		t.Fatalf("OpenWithContext returned after %s; pre-cancelled ctx should short-circuit immediately", elapsed)
 	}
 }
 
@@ -205,22 +210,7 @@ func TestMigrate_RejectsNewerDBImmediately(t *testing.T) {
 	}
 	raw.Close()
 
-	// Open a peer connection holding a write transaction so any
-	// BEGIN IMMEDIATE attempt would BUSY against it.
-	holder, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
-	if err != nil {
-		t.Fatalf("open holder: %v", err)
-	}
-	defer holder.Close()
-	htx, err := holder.Begin()
-	if err != nil {
-		t.Fatalf("begin holder tx: %v", err)
-	}
-	if _, err := htx.Exec(`CREATE TABLE IF NOT EXISTS holder_lock (id INTEGER)`); err != nil {
-		_ = htx.Rollback()
-		t.Fatalf("seed holder write: %v", err)
-	}
-	defer func() { _ = htx.Rollback() }()
+	defer holdWriteLock(t, dbPath)()
 
 	start := time.Now()
 	_, err = Open(dbPath)

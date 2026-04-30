@@ -206,13 +206,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	// Fast-path: read user_version on the pinned connection before
-	// acquiring the migration lock so an old binary opening a newer-
-	// schema DB rejects immediately instead of waiting up to
-	// migrationLockTimeout for the writer to finish. WAL readers normally
-	// don't block on writers, but the WAL-initialization race on a fresh
-	// DB can still trip SQLITE_BUSY on the first SELECT — so the read is
-	// wrapped in retryOnBusy with the same 30s budget the lock uses.
+	// Read user_version before the migration lock so an old binary
+	// opening a newer-schema DB rejects immediately. WAL readers don't
+	// normally block on writers, but the fresh-DB WAL-init race can BUSY
+	// a SELECT — share the lock's deadline so total budget stays bounded.
 	deadline := time.Now().Add(migrationLockTimeout)
 	var current int
 	if err := retryOnBusy(ctx, deadline, "reading schema version", func() error {
@@ -339,16 +336,14 @@ const (
 )
 
 // withMigrationLock runs fn inside a BEGIN IMMEDIATE / COMMIT pair on
-// conn, retrying both BEGIN and COMMIT on SQLITE_BUSY against a single
-// caller-provided deadline. The caller passes the same deadline used
-// for the pre-lock user_version read so total Open() latency stays
-// bounded at roughly migrationLockTimeout — not 2× or 3× as separate
-// deadlines per stage would. The real upper bound is the deadline
-// plus one trailing backoff interval (≤100ms) plus the driver's
-// busy_timeout for the in-flight Exec, since the deadline is checked
-// after each failed attempt rather than as a hard wall-clock cutoff.
-// The body itself is responsible for using conn (not s.db) so the
-// writes participate in the held transaction.
+// conn, retrying both BEGIN and COMMIT on SQLITE_BUSY against the
+// caller-provided deadline. Sharing the deadline with the pre-lock
+// version read keeps total Open() latency bounded by a single budget.
+// The real upper bound is deadline + one trailing backoff interval
+// (≤100ms) + the driver's busy_timeout for the in-flight Exec, since
+// the deadline is checked after each failed attempt rather than as a
+// hard wall-clock cutoff. fn must use conn (not s.db) so its writes
+// participate in the held transaction.
 func withMigrationLock(ctx context.Context, conn *sql.Conn, deadline time.Time, fn func() error) error {
 	if err := execWithBusyRetry(ctx, conn, "BEGIN IMMEDIATE", "begin migration transaction", deadline); err != nil {
 		return err
@@ -415,9 +410,7 @@ func retryOnBusy(ctx context.Context, deadline time.Time, label string, op func(
 			return fmt.Errorf("%s: %w", label, ctx.Err())
 		case <-time.After(backoff):
 		}
-		if backoff *= 2; backoff > migrationLockBackoffMax {
-			backoff = migrationLockBackoffMax
-		}
+		backoff = min(backoff*2, migrationLockBackoffMax)
 	}
 }
 
