@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"regexp"
@@ -1043,6 +1044,18 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 		if primaryName == "" {
 			warnf("skipping path %q: could not derive resource name", path)
 			continue
+		}
+
+		// Framework cobra collision check — only for top-level resources
+		// (subName == ""). Sub-resources register under a parent prefix and
+		// don't shadow framework commands. If primaryName matches a reserved
+		// cobra Use literal, rename to <api-slug>-<resource> and warn so
+		// the operator sees it. Self-collision (the renamed name already
+		// exists in out.Resources) bumps a numeric suffix until unique.
+		if subName == "" {
+			if _, reserved := spec.ReservedCobraUseNames[primaryName]; reserved {
+				primaryName = renameForFrameworkCollision(out, primaryName, path)
+			}
 		}
 
 		resource, ok := out.Resources[primaryName]
@@ -3234,6 +3247,40 @@ func humanizeFieldName(name string) string {
 	return string(runes)
 }
 
+// warnWriter is the destination for warnf. Tests swap it for an
+// in-memory buffer; production code writes to os.Stderr.
+var warnWriter io.Writer = os.Stderr
+
 func warnf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "warning: "+format+"\n", args...)
+	fmt.Fprintf(warnWriter, "warning: "+format+"\n", args...)
+}
+
+// renameForFrameworkCollision returns a kebab-case resource name that
+// won't shadow a framework cobra command. The default form is
+// `<api-slug>-<original>`; if that itself collides with another resource
+// already in out.Resources, a numeric suffix (`-2`, `-3`, ...) is added
+// until the name is unique. A warning is emitted on every rename so the
+// operator sees what happened.
+//
+// Falls back to "api" when out.Name is empty so the rename never
+// produces a leading-hyphen name like "-version".
+func renameForFrameworkCollision(out *spec.APISpec, original, path string) string {
+	slug := out.Name
+	if slug == "" {
+		slug = "api"
+	}
+	candidate := slug + "-" + original
+	if _, exists := out.Resources[candidate]; exists {
+		// Suffix-bump on self-collision. Bounded by maxResources, which
+		// the outer loop already enforces, so the loop terminates.
+		for i := 2; ; i++ {
+			next := fmt.Sprintf("%s-%d", candidate, i)
+			if _, exists := out.Resources[next]; !exists {
+				candidate = next
+				break
+			}
+		}
+	}
+	warnf("resource %q from path %q would shadow framework cobra command %q; renamed to %q", original, path, original, candidate)
+	return candidate
 }

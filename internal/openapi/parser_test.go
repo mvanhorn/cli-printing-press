@@ -1,6 +1,7 @@
 package openapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -1521,4 +1522,216 @@ func TestParsePetstoreXExtensionsBaseline(t *testing.T) {
 			assert.False(t, e.Critical, "%s %s: Critical must default to false", e.Method, e.Path)
 		}
 	}
+}
+
+// captureWarnings swaps the package-level warnWriter for an in-memory
+// buffer, runs fn, and returns whatever fn wrote via warnf. Restores
+// warnWriter on exit so other tests aren't affected. Tests are NOT
+// parallel-safe with this helper because warnWriter is package-global —
+// callers must not call t.Parallel().
+func captureWarnings(t *testing.T, fn func()) string {
+	t.Helper()
+	prev := warnWriter
+	var buf bytes.Buffer
+	warnWriter = &buf
+	defer func() { warnWriter = prev }()
+	fn()
+	return buf.String()
+}
+
+// TestParseFrameworkCollisionRenamesAndWarns covers the auto-rename
+// behavior introduced for F1 from PokéAPI's retro: a /version path
+// produces a `version` resource that would shadow the framework cobra
+// command, so the parser renames it to <api-slug>-version and emits a
+// warning naming both forms.
+func TestParseFrameworkCollisionRenamesAndWarns(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: TestAPI
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /version:
+    get:
+      operationId: listVersions
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+`)
+
+	var parsed *spec.APISpec
+	output := captureWarnings(t, func() {
+		var err error
+		parsed, err = Parse(yamlSpec)
+		require.NoError(t, err)
+	})
+
+	resourceNames := make([]string, 0, len(parsed.Resources))
+	for name := range parsed.Resources {
+		resourceNames = append(resourceNames, name)
+	}
+	sort.Strings(resourceNames)
+
+	assert.NotContains(t, resourceNames, "version", "version resource must be renamed; raw `version` would shadow framework cobra command")
+	assert.Contains(t, resourceNames, "testapi-version", "renamed resource must use <api-slug>-<original> form")
+	assert.Contains(t, resourceNames, "widgets", "non-colliding resources are unchanged")
+
+	assert.Contains(t, output, `"version"`, "warning must name the original resource")
+	assert.Contains(t, output, `"testapi-version"`, "warning must name the renamed resource")
+	assert.Contains(t, output, "shadow framework cobra command", "warning must explain the failure mode")
+}
+
+// TestParseFrameworkCollisionLeavesNonCollidingSpecsAlone ensures specs
+// without a colliding resource produce byte-identical resource maps
+// (no spurious renames, no warnings) — pinning R6 from the plan.
+func TestParseFrameworkCollisionLeavesNonCollidingSpecsAlone(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: TestAPI
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+`)
+
+	var parsed *spec.APISpec
+	output := captureWarnings(t, func() {
+		var err error
+		parsed, err = Parse(yamlSpec)
+		require.NoError(t, err)
+	})
+
+	require.Contains(t, parsed.Resources, "widgets")
+	assert.NotContains(t, output, "shadow framework cobra command", "non-colliding spec must not emit a collision warning")
+}
+
+// TestParseFrameworkCollisionExemptsSubresources verifies sub-resources
+// don't trigger the collision check — paths like /games/{id}/version
+// produce a `version` sub-resource under `games`, which registers as a
+// subcommand of `games` rather than at the root, so it can't shadow the
+// framework's top-level `version` command.
+func TestParseFrameworkCollisionExemptsSubresources(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: TestAPI
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /games:
+    get:
+      operationId: listGames
+      responses:
+        "200":
+          description: ok
+  /games/{id}/version:
+    get:
+      operationId: getGameVersion
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+`)
+
+	var parsed *spec.APISpec
+	output := captureWarnings(t, func() {
+		var err error
+		parsed, err = Parse(yamlSpec)
+		require.NoError(t, err)
+	})
+
+	// The path /games/{id}/version creates a `games` resource with a
+	// `version` sub-resource — neither needs renaming. Top-level `games`
+	// stays as-is; sub-resource `version` lives under it.
+	require.Contains(t, parsed.Resources, "games")
+	games := parsed.Resources["games"]
+	assert.Contains(t, games.SubResources, "version", "version path under games should land as a sub-resource")
+	assert.NotContains(t, parsed.Resources, "version", "top-level version resource must not exist — sub-resources are exempt from rename")
+	assert.NotContains(t, parsed.Resources, "testapi-version", "no rename should fire for sub-resource paths")
+	assert.NotContains(t, output, "shadow framework cobra command", "sub-resources must not trigger the collision warning")
+}
+
+// TestParseFrameworkCollisionFallsBackToApiSlugWhenSpecNameEmpty pins
+// the empty-slug fallback: when out.Name is empty, the rename uses "api"
+// as the slug so the result never has a leading hyphen.
+func TestParseFrameworkCollisionFallsBackToApiSlugWhenSpecNameEmpty(t *testing.T) {
+	// info.title omitted forces cleanSpecName to return its default ("api"),
+	// which the parser then refuses (line 167 in parser.go), so we simulate
+	// the empty-slug path by directly invoking renameForFrameworkCollision
+	// against a spec.APISpec with Name == "".
+	out := &spec.APISpec{Name: "", Resources: map[string]spec.Resource{}}
+	output := captureWarnings(t, func() {
+		renamed := renameForFrameworkCollision(out, "version", "/version")
+		assert.Equal(t, "api-version", renamed, "empty Name must fall back to `api` so the result never starts with a hyphen")
+	})
+	assert.Contains(t, output, `"api-version"`)
+}
+
+// TestParseFrameworkCollisionSelfCollisionBumpsSuffix covers the rare
+// case where <api-slug>-<original> itself collides with another resource
+// already in out.Resources. The implementation falls through to a
+// numeric suffix (-2, -3, ...) until unique.
+func TestParseFrameworkCollisionSelfCollisionBumpsSuffix(t *testing.T) {
+	out := &spec.APISpec{
+		Name: "testapi",
+		Resources: map[string]spec.Resource{
+			"testapi-version": {}, // pre-existing — forces suffix bump
+		},
+	}
+	output := captureWarnings(t, func() {
+		renamed := renameForFrameworkCollision(out, "version", "/version")
+		assert.Equal(t, "testapi-version-2", renamed, "first-fallback should suffix -2 when the primary rename target already exists")
+	})
+	assert.Contains(t, output, `"testapi-version-2"`)
 }
