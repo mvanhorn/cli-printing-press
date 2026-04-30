@@ -4143,6 +4143,138 @@ func TestGenerateNoEndpointTemplateVarsByteCompat(t *testing.T) {
 		"config struct must not carry TemplateVars when EndpointTemplateVars is empty")
 }
 
+// TestGenerateResourceBaseURLOverrideRoutesToOverrideHost — Open-Meteo
+// shape: top-level BaseURL points at api.open-meteo.com, but the
+// geocoding resource lives at geocoding-api.open-meteo.com. The
+// generated handler must emit the override host into `path` so the
+// client's absolute-URL branch routes the request to the right host.
+//
+// Each resource carries two endpoints so the generator emits per-
+// endpoint handler files instead of promoting them to top-level
+// commands (single-endpoint resources are inlined into a promoted
+// command, which would skip the per-endpoint file emit path).
+func TestGenerateResourceBaseURLOverrideRoutesToOverrideHost(t *testing.T) {
+	t.Parallel()
+	apiSpec := minimalSpec("multihost")
+	apiSpec.BaseURL = "https://api.example.com/v1"
+	apiSpec.Resources["forecast"] = spec.Resource{
+		Description: "Weather forecast",
+		Endpoints: map[string]spec.Endpoint{
+			"now":    {Method: "GET", Path: "/forecast", Description: "Current"},
+			"hourly": {Method: "GET", Path: "/forecast/hourly", Description: "Hourly"},
+		},
+	}
+	apiSpec.Resources["geocoding"] = spec.Resource{
+		Description: "Geocoding lookup",
+		BaseURL:     "https://geocoding-api.example.com/v1",
+		Endpoints: map[string]spec.Endpoint{
+			"search":  {Method: "GET", Path: "/search", Description: "Search"},
+			"reverse": {Method: "GET", Path: "/reverse", Description: "Reverse"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	// The geocoding handler emits the absolute URL into `path`.
+	geoHandler, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "geocoding_search.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(geoHandler), `path := "https://geocoding-api.example.com/v1/search"`,
+		"geocoding handler must emit the absolute URL into path")
+
+	// The forecast handler keeps the relative path (no override on this resource).
+	fcHandler, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "forecast_now.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(fcHandler), `path := "/forecast"`,
+		"forecast handler must keep the relative path when its resource has no override")
+
+	// The client emits the absolute-URL branch + isAbsoluteURL helper.
+	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(clientGo), "func isAbsoluteURL(path string) bool",
+		"client must emit isAbsoluteURL helper when at least one resource has a BaseURL override")
+	assert.Contains(t, string(clientGo), "if isAbsoluteURL(path) {",
+		"client.do() must branch on isAbsoluteURL")
+
+	// Must compile.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+// TestGenerateSubResourceInheritsParentBaseURL — a sub-resource without
+// its own BaseURL inherits the parent resource's override. An explicit
+// sub-resource override takes precedence.
+func TestGenerateSubResourceInheritsParentBaseURL(t *testing.T) {
+	t.Parallel()
+	apiSpec := minimalSpec("multihost-sub")
+	apiSpec.BaseURL = "https://api.example.com/v1"
+	apiSpec.Resources["geocoding"] = spec.Resource{
+		Description: "Geocoding",
+		BaseURL:     "https://geocoding-api.example.com/v1",
+		SubResources: map[string]spec.Resource{
+			// Inherits parent override.
+			"city": {
+				Description: "City lookup",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {Method: "GET", Path: "/city", Description: "Get"},
+				},
+			},
+			// Explicit override beats parent.
+			"reverse": {
+				Description: "Reverse geocoding",
+				BaseURL:     "https://reverse-api.example.com/v1",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {Method: "GET", Path: "/reverse", Description: "Get"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	cityHandler, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "geocoding_city_get.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(cityHandler), `path := "https://geocoding-api.example.com/v1/city"`,
+		"sub-resource without its own BaseURL must inherit the parent's override")
+
+	reverseHandler, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "geocoding_reverse_get.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(reverseHandler), `path := "https://reverse-api.example.com/v1/reverse"`,
+		"sub-resource with its own BaseURL must use its own override")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+// TestGenerateNoResourceBaseURLOverrideByteCompat — specs without any
+// per-resource BaseURL override must regenerate without the
+// isAbsoluteURL helper or the absolute-URL branch in client.do().
+// Mirrors the EndpointTemplateVars byte-compat guarantee at the
+// resource level.
+func TestGenerateNoResourceBaseURLOverrideByteCompat(t *testing.T) {
+	t.Parallel()
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	for _, r := range apiSpec.Resources {
+		require.Empty(t, r.BaseURL,
+			"loops fixture must keep resource BaseURL empty for the byte-compat case")
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(clientGo), "isAbsoluteURL",
+		"client.go must not carry the isAbsoluteURL helper when no resource has a BaseURL override")
+	assert.Contains(t, string(clientGo), "targetURL := c.BaseURL + path",
+		"client.do() must keep the raw concat when no resource has a BaseURL override")
+}
+
 // TestGenerateMCPMainStdioDefault confirms that a spec with no mcp: block
 // produces the same stdio-only MCP entry point we've always emitted. Remote
 // transport is opt-in; the default stays on the current behavior so existing

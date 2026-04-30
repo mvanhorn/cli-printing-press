@@ -113,7 +113,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				return err
 			}
 
-			path := "{{.Endpoint.Path}}"
+			path := "{{.ResourceBaseURL}}{{.Endpoint.Path}}"
 {{- range $i, $p := .Endpoint.Params}}
 {{- if .Positional}}
 {{- if gt $i 0}}

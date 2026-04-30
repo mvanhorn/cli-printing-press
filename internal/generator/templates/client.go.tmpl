@@ -281,12 +281,41 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 {{- end}}
 {{- else}}
 {{- if .EndpointTemplateVars}}
-	targetURL, urlErr := buildURL(c.BaseURL, path, endpointVars)
+{{- if .HasResourceBaseURLOverride}}
+	// Per-resource BaseURL overrides flow through as absolute paths
+	// (https:// or http://); buildURL still substitutes any
+	// {placeholder} markers, but the relative-path concat with
+	// c.BaseURL must be skipped for absolute paths.
+	var targetURL string
+	var urlErr error
+	if isAbsoluteURL(path) {
+		targetURL, urlErr = buildURL("", path, endpointVars)
+	} else {
+		targetURL, urlErr = buildURL(c.BaseURL, path, endpointVars)
+	}
 	if urlErr != nil {
 		return nil, 0, urlErr
 	}
 {{- else}}
+	targetURL, urlErr := buildURL(c.BaseURL, path, endpointVars)
+	if urlErr != nil {
+		return nil, 0, urlErr
+	}
+{{- end}}
+{{- else}}
+{{- if .HasResourceBaseURLOverride}}
+	// Per-resource BaseURL overrides flow through as absolute paths
+	// (https:// or http://); the resource template emits the full URL
+	// in `path` and we skip the c.BaseURL concat for those.
+	var targetURL string
+	if isAbsoluteURL(path) {
+		targetURL = path
+	} else {
+		targetURL = c.BaseURL + path
+	}
+{{- else}}
 	targetURL := c.BaseURL + path
+{{- end}}
 {{- end}}
 {{- end}}
 
@@ -753,6 +782,15 @@ func (c *Client) refreshAccessToken() error {
 	return nil
 }
 
+{{if .HasResourceBaseURLOverride -}}
+// isAbsoluteURL reports whether path is already a full URL (per-resource
+// BaseURL override emits the full URL into path; the relative-path
+// concat with c.BaseURL must be skipped for those calls).
+func isAbsoluteURL(path string) bool {
+	return strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://")
+}
+
+{{end -}}
 // sanitizeJSONResponse strips known JSONP/XSSI prefixes and UTF-8 BOM from
 // response bodies so that downstream JSON parsing succeeds. For clean JSON
 // responses these checks are no-ops.

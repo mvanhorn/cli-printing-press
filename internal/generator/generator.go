@@ -581,11 +581,37 @@ type authTemplateData struct {
 	HasGraphQLPersistedQueries bool
 }
 
+// hasResourceBaseURLOverride reports whether any resource (top-level or
+// sub-resource) declares a BaseURL override. The client template uses
+// this to skip the absolute-URL detection branch when no resource needs
+// it, preserving byte-compat for specs that don't opt into the feature.
+func hasResourceBaseURLOverride(s *spec.APISpec) bool {
+	if s == nil {
+		return false
+	}
+	for _, r := range s.Resources {
+		if r.BaseURL != "" {
+			return true
+		}
+		for _, sr := range r.SubResources {
+			if sr.BaseURL != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // clientTemplateData wraps APISpec with optional runtime data hooks used by
 // the generated HTTP client.
 type clientTemplateData struct {
 	*spec.APISpec
 	HasGraphQLPersistedQueries bool
+	// HasResourceBaseURLOverride is true when at least one resource (or
+	// sub-resource) declares its own BaseURL override. The client emits an
+	// absolute-URL detection branch only when this is true; specs without
+	// any override regenerate byte-identically to the pre-feature output.
+	HasResourceBaseURLOverride bool
 }
 
 // readmeTemplateData wraps APISpec with additional fields for README rendering.
@@ -1066,6 +1092,7 @@ func (g *Generator) renderSingleFiles() error {
 			data = &clientTemplateData{
 				APISpec:                    g.Spec,
 				HasGraphQLPersistedQueries: g.hasTrafficAnalysisHint("graphql_persisted_query"),
+				HasResourceBaseURLOverride: hasResourceBaseURLOverride(g.Spec),
 			}
 		case "agent_context.go.tmpl":
 			data = g.templateData()
@@ -1308,25 +1335,27 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			}
 			asyncInfo, isAsync := g.AsyncJobs[name+"/"+eName]
 			epData := struct {
-				ResourceName string
-				FuncPrefix   string
-				CommandPath  string
-				EndpointName string
-				Endpoint     spec.Endpoint
-				HasStore     bool
-				IsAsync      bool
-				Async        AsyncJobInfo
+				ResourceName    string
+				ResourceBaseURL string
+				FuncPrefix      string
+				CommandPath     string
+				EndpointName    string
+				Endpoint        spec.Endpoint
+				HasStore        bool
+				IsAsync         bool
+				Async           AsyncJobInfo
 				*spec.APISpec
 			}{
-				ResourceName: name,
-				FuncPrefix:   name,
-				CommandPath:  name,
-				EndpointName: eName,
-				Endpoint:     endpoint,
-				HasStore:     g.VisionSet.Store,
-				IsAsync:      isAsync,
-				Async:        asyncInfo,
-				APISpec:      g.Spec,
+				ResourceName:    name,
+				ResourceBaseURL: resource.BaseURL,
+				FuncPrefix:      name,
+				CommandPath:     name,
+				EndpointName:    eName,
+				Endpoint:        endpoint,
+				HasStore:        g.VisionSet.Store,
+				IsAsync:         isAsync,
+				Async:           asyncInfo,
+				APISpec:         g.Spec,
 			}
 			epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+eName)+".go")
 			if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
@@ -1365,26 +1394,36 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			for eName, endpoint := range subResource.Endpoints {
 				subKey := subName + "/" + eName
 				asyncInfo, isAsync := g.AsyncJobs[subKey]
+				// Sub-resources inherit the parent resource's BaseURL
+				// override; an explicit sub_resource.base_url wins over
+				// the parent's. Falls through to the spec-level BaseURL
+				// when both are empty.
+				resourceBaseURL := subResource.BaseURL
+				if resourceBaseURL == "" {
+					resourceBaseURL = resource.BaseURL
+				}
 				epData := struct {
-					ResourceName string
-					FuncPrefix   string
-					CommandPath  string
-					EndpointName string
-					Endpoint     spec.Endpoint
-					HasStore     bool
-					IsAsync      bool
-					Async        AsyncJobInfo
+					ResourceName    string
+					ResourceBaseURL string
+					FuncPrefix      string
+					CommandPath     string
+					EndpointName    string
+					Endpoint        spec.Endpoint
+					HasStore        bool
+					IsAsync         bool
+					Async           AsyncJobInfo
 					*spec.APISpec
 				}{
-					ResourceName: subName,
-					FuncPrefix:   name + "-" + subName,
-					CommandPath:  name + " " + subName,
-					EndpointName: eName,
-					Endpoint:     endpoint,
-					HasStore:     g.VisionSet.Store,
-					IsAsync:      isAsync,
-					Async:        asyncInfo,
-					APISpec:      g.Spec,
+					ResourceName:    subName,
+					ResourceBaseURL: resourceBaseURL,
+					FuncPrefix:      name + "-" + subName,
+					CommandPath:     name + " " + subName,
+					EndpointName:    eName,
+					Endpoint:        endpoint,
+					HasStore:        g.VisionSet.Store,
+					IsAsync:         isAsync,
+					Async:           asyncInfo,
+					APISpec:         g.Spec,
 				}
 				epPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName+"_"+eName)+".go")
 				if err := g.renderTemplate("command_endpoint.go.tmpl", epPath, epData); err != nil {
