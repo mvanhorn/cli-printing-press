@@ -111,9 +111,145 @@ During Phase 5.6 (archiving) and before publishing, read and apply
 - API key handling rules during the run
 - Session state cleanup ordering
 
+## Preflight
+
+**This section MUST run before any user-facing prompt — including the Orientation and Briefing flow below.** A missing binary or available upgrade is information the user needs *before* they commit to an API. Do not invoke `AskUserQuestion`, print the orientation prose, or otherwise engage the user until preflight has completed and any signals from `references/setup-checks.md` have been handled.
+
+<!-- PRESS_SETUP_CONTRACT_START -->
+```bash
+# min-binary-version: 0.3.0
+
+# Derive scope first — needed for local build detection
+_scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+_scope_dir="$(cd "$_scope_dir" && pwd -P)"
+
+# Prefer local build when running from inside the printing-press repo.
+# The lefthook build hook keeps ./printing-press current after every commit/pull,
+# so it's always newer than the go-install version.
+if [ -x "$_scope_dir/printing-press" ] && [ -d "$_scope_dir/cmd/printing-press" ]; then
+  export PATH="$_scope_dir:$PATH"
+  echo "Using local build: $_scope_dir/printing-press"
+elif ! command -v printing-press >/dev/null 2>&1; then
+  # Augment PATH if the binary is in ~/go/bin but not on the user's interactive PATH.
+  if [ -x "$HOME/go/bin/printing-press" ]; then
+    export PATH="$HOME/go/bin:$PATH"
+  else
+    # Refuse: the printing-press binary is required and we will not auto-install
+    # it. The README's two-step install (binary + plugin) is the source of truth;
+    # silent auto-install hides failure modes (GOPRIVATE auth, network, wrong
+    # GOPATH) inside an opaque skill invocation.
+    echo ""
+    echo "[setup-error] printing-press binary not found."
+    echo ""
+    if command -v go >/dev/null 2>&1; then
+      echo "Install it in your terminal:"
+      echo "  GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest"
+      echo ""
+      echo "(GOPRIVATE is required while the repo is private. The plain command works after the public launch.)"
+    else
+      echo "Go 1.22+ is also not installed. Install Go from https://go.dev/dl/, then:"
+      echo "  GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest"
+    fi
+    echo ""
+    echo "Verify with: printing-press --version"
+    echo "Then re-run /printing-press."
+    return 1 2>/dev/null || exit 1
+  fi
+fi
+
+PRESS_BASE="$(basename "$_scope_dir" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"
+if [ -z "$PRESS_BASE" ]; then
+  PRESS_BASE="workspace"
+fi
+
+PRESS_SCOPE="$PRESS_BASE-$(printf '%s' "$_scope_dir" | shasum -a 256 | cut -c1-8)"
+PRESS_HOME="$HOME/printing-press"
+PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"
+PRESS_LIBRARY="$PRESS_HOME/library"
+PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
+PRESS_CURRENT="$PRESS_RUNSTATE/current"
+
+mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT"
+
+# --- Latest-version advisory (throttled, fail-open) ---
+# Once per 24h, check whether a newer printing-press release exists and print a
+# one-line notice if so. Uses `go list` so it works for private modules via
+# GOPRIVATE and public modules via the proxy. Runs in every context — devs
+# ahead of latest stay silent (comparison handles it), devs behind latest get
+# the same nudge anyone else does.
+PRESS_VERCHECK_FILE="$PRESS_HOME/.version-check"
+PRESS_VERCHECK_TTL=86400
+_now_ts=$(date +%s)
+_should_check=true
+if [ -f "$PRESS_VERCHECK_FILE" ] && [ -z "$PRESS_VERCHECK_FORCE" ]; then
+  _last_ts=$(awk -F= '/^last_check=/{print $2}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
+  if [ -n "$_last_ts" ] && [ "$((_now_ts - _last_ts))" -lt "$PRESS_VERCHECK_TTL" ]; then
+    _should_check=false
+  fi
+fi
+
+if [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
+  _installed=$(printing-press version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
+  _latest=$(GOPRIVATE=github.com/mvanhorn/* go list -m -versions github.com/mvanhorn/cli-printing-press/v3 2>/dev/null | awk '{print $NF}' | sed 's/^v//')
+
+  if [ -n "$_installed" ] && [ -n "$_latest" ] && [ "$_installed" != "$_latest" ]; then
+    # sort -V is not fully semver-aware: it ranks "3.0.0-rc1" above "3.0.0" instead of below.
+    # Acceptable today (we don't ship pre-release tags); revisit if we ever do.
+    _newer=$(printf "v%s\nv%s\n" "$_installed" "$_latest" | sort -V | tail -1 | sed 's/^v//')
+    if [ "$_newer" = "$_latest" ]; then
+      # Marker for the skill prose below to detect and offer an interactive upgrade.
+      # The skill reads PRESS_UPGRADE_AVAILABLE / PRESS_UPGRADE_INSTALLED from this output.
+      echo ""
+      echo "[upgrade-available] printing-press v$_latest is available (you have v$_installed)"
+      echo "PRESS_UPGRADE_AVAILABLE=$_latest"
+      echo "PRESS_UPGRADE_INSTALLED=$_installed"
+      echo ""
+    fi
+  fi
+
+  printf "last_check=%s\nlatest=%s\n" "$_now_ts" "${_latest:-unknown}" > "$PRESS_VERCHECK_FILE" 2>/dev/null || true
+fi
+
+# --- Codex mode detection (must run as part of setup, not a separate step) ---
+# Codex mode: opt-in only. User must pass "codex" or "--codex" to enable.
+if echo "$ARGUMENTS" | grep -qiE '(^| )(--?codex|codex)( |$)'; then
+  CODEX_MODE=true
+else
+  CODEX_MODE=false
+fi
+
+# Environment guard: don't delegate if already inside a Codex sandbox
+if [ "$CODEX_MODE" = "true" ]; then
+  if [ -n "$CODEX_SANDBOX" ] || [ -n "$CODEX_SESSION_ID" ]; then
+    CODEX_MODE=false
+  fi
+fi
+
+# Health check: verify codex binary exists
+if [ "$CODEX_MODE" = "true" ]; then
+  if command -v codex >/dev/null 2>&1; then
+    # Model and reasoning effort inherit from ~/.codex/config.toml. Do not pin -m / -c here.
+    CODEX_MODEL=$(grep -E '^model[[:space:]]*=' ~/.codex/config.toml 2>/dev/null | head -1 | sed -E 's/^model[[:space:]]*=[[:space:]]*"?([^"]+)"?.*$/\1/')
+    [ -z "$CODEX_MODEL" ] && CODEX_MODEL="codex default"
+    echo "Codex mode enabled (model: $CODEX_MODEL). Code-writing tasks will be delegated to Codex."
+  else
+    echo "Codex CLI not found - running in standard mode."
+    CODEX_MODE=false
+  fi
+fi
+
+# Circuit breaker state
+CODEX_CONSECUTIVE_FAILURES=0
+```
+<!-- PRESS_SETUP_CONTRACT_END -->
+
+**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles three signals the contract emits to stdout: `[setup-error]` (refuse to run, surface the install instructions), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional upgrade), and the min-binary-version compatibility check. Skipping the reference will cause the skill to proceed with a missing or out-of-date binary. Do not skip.
+
+Only after preflight completes successfully (no `[setup-error]`; any `[upgrade-available]` was offered to the user) should you proceed to the Orientation & Briefing section below.
+
 ## Orientation & Briefing
 
-Before setup, check whether the user provided arguments. Handle two cases:
+After preflight has completed, check whether the user provided arguments. Handle two cases:
 
 ### No Arguments: Orientation
 
@@ -125,14 +261,8 @@ If the user typed `/printing-press` with no arguments (no API name, no `--spec`,
 >
 > The process takes 10-40 minutes depending on API complexity. Simple APIs with official specs (Stripe, GitHub) are faster. Undocumented APIs that need discovery (ESPN, Domino's) take longer.
 
-Then present examples and ask via `AskUserQuestion`:
+Print these example invocations as plain text BEFORE the `AskUserQuestion` call (so they appear as context above the question, not as competing menu options):
 
-> "What API would you like to build a CLI for?"
-
-Options:
-1. **I'll type it** — (User provides the API name, URL, or spec path via the automatic "Other" option)
-
-Show example invocations alongside:
 ```
 /printing-press Notion
 /printing-press Discord codex
@@ -141,13 +271,36 @@ Show example invocations alongside:
 /printing-press https://postman.com
 ```
 
-After receiving the answer, set it as the argument and proceed to the briefing below.
+Then ask via `AskUserQuestion`:
+
+- **question:** `"What API would you like to build a CLI for?"`
+- **header:** `"API target"`
+- **multiSelect:** `false`
+- **options:**
+  1. **label:** `"Type it (recommended)"` — **description:** `"Provide an API name, URL, spec path, or HAR file via the 'Other' option below."`
+  2. **label:** `"Browse existing CLIs first"` — **description:** `"Visit the public library to see what's already been printed before deciding what to build."`
+
+**Do not add additional options** — no "Show me popular options", no pre-populated buttons for Notion / Stripe / GitHub / Linear / Discord. The example invocations above already cover the common shapes, and most popular APIs are already in the public library (offering to re-print them is noise). The two options above plus the automatic "Other" field is the entire interface.
+
+If the user picks **"Type it (recommended)"**, they will provide their answer via the auto "Other" field. Set their input as the argument and proceed to the briefing below.
+
+If the user picks **"Browse existing CLIs first"**, print the public library URL prominently and try to open it in the browser, then end the skill so the user can browse before deciding:
+
+```bash
+echo ""
+echo "Public library: https://github.com/mvanhorn/printing-press-library"
+echo "(If you have the Printing Press Library plugin, you can also run /ppl in Claude Code.)"
+echo ""
+command -v open >/dev/null 2>&1 && open https://github.com/mvanhorn/printing-press-library
+```
+
+After printing, end the skill cleanly. Do not proceed to briefing or research — the user is exploring, not building yet. They can re-invoke `/printing-press <api>` once they've decided.
 
 ### With Arguments: Briefing
 
-When the user provided an argument (API name, `--spec`, `--har`, or URL), print a brief process overview before the setup contract runs. This sets expectations and collects any upfront context.
+When the user provided an argument (API name, `--spec`, `--har`, or URL), print a brief process overview. This sets expectations and collects any upfront context. (Preflight has already run at this point.)
 
-Print as prose (in Victorian voice):
+Print as prose, matching the style of the example below:
 
 > Very well. Setting the type for `<API>`.
 >
@@ -172,21 +325,24 @@ If the user provided `--har`, adapt: "You have provided a HAR capture, so I shal
 
 Then ask via `AskUserQuestion`:
 
-**question:** "Anything you want me to know before I begin? A vision for what this CLI should do, specific features you care about, or context I should have?"
+- **question:** `"Anything you want me to know before I begin? A vision for what this CLI should do, specific features you care about, or auth context I should have?"`
+- **header:** `"Briefing"`
+- **multiSelect:** `false`
+- **options:**
+  1. **label:** `"Let's go (recommended)"` — **description:** `"Start research now. I'll ask about API keys, browser auth, or other context when I need them."`
+  2. **label:** `"I have context to share"` — **description:** `"Tell me your vision, specific features, or auth context (API key, logged-in browser session) before research starts."`
 
-**options:**
-1. **No, let's go** — "Start the process with default intelligence"
-2. **I have context to share** — "Tell me your vision, priorities, or specific features you care about"
-3. **I have an API key or I'm logged in** — "Share auth context now so I can plan for authenticated discovery and testing"
+**Do not add additional options** — auth is already handled by Phase 0.5 (API Key Gate) and Phase 1.6 (Pre-Browser-Sniff Auth Intelligence) downstream. A user who wants to volunteer auth context can do so via option 2's free-text response. The two options above plus the automatic "Other" field is the entire interface.
 
-If the user selects **"No, let's go"**, proceed to Setup immediately.
+If the user picks **"Let's go (recommended)"**, proceed to the Multi-Source Priority Gate (or, for single-source runs, directly to Phase 0).
 
-If the user selects **"I have context to share"**, capture their free-text response as `USER_BRIEFING_CONTEXT`. This context will be:
-- Added to the Phase 1 Research Brief under a `## User Vision` section
-- Used as a 4th self-brainstorm question in Phase 1.5c.5: "Based on the user's stated vision, what features directly serve their stated goals that the absorbed features don't cover?"
-- Referenced at the Phase Gate 1.5 absorb gate: "You mentioned [summary] at the start. Want to add more, or does the manifest already cover it?"
+If the user picks **"I have context to share"**, capture their free-text response as `USER_BRIEFING_CONTEXT`. The response may include:
 
-If the user selects **"I have an API key or I'm logged in"**, ask which one and capture it. Set `AUTH_CONTEXT` fields so the API Key Gate (Phase 0.5) and Pre-Browser-Sniff Auth Intelligence (Phase 1.6, if implemented) do not re-ask.
+- **Vision / specific features** — captured as-is. This context will be:
+  - Added to the Phase 1 Research Brief under a `## User Vision` section
+  - Used as a 4th self-brainstorm question in Phase 1.5c.5: "Based on the user's stated vision, what features directly serve their stated goals that the absorbed features don't cover?"
+  - Referenced at the Phase Gate 1.5 absorb gate: "You mentioned [summary] at the start. Want to add more, or does the manifest already cover it?"
+- **Auth context** — if the user mentions an API key, env var, or logged-in browser session, set the corresponding `AUTH_CONTEXT` fields so the API Key Gate (Phase 0.5) and Pre-Browser-Sniff Auth Intelligence (Phase 1.6) do not re-ask.
 
 ### Multi-Source Priority Gate
 
@@ -227,91 +383,9 @@ Default to option 1 unless the user overrides. Record the decision in `source-pr
 
 ---
 
-## Setup
+## Run Initialization
 
-Read and apply [references/voice.md](references/voice.md) for this session.
-
-Before doing anything else:
-
-<!-- PRESS_SETUP_CONTRACT_START -->
-```bash
-# min-binary-version: 0.3.0
-
-# Derive scope first — needed for local build detection
-_scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
-_scope_dir="$(cd "$_scope_dir" && pwd -P)"
-
-# Prefer local build when running from inside the printing-press repo.
-# The lefthook build hook keeps ./printing-press current after every commit/pull,
-# so it's always newer than the go-install version.
-if [ -x "$_scope_dir/printing-press" ] && [ -d "$_scope_dir/cmd/printing-press" ]; then
-  export PATH="$_scope_dir:$PATH"
-  echo "Using local build: $_scope_dir/printing-press"
-elif ! command -v printing-press >/dev/null 2>&1; then
-  if [ -x "$HOME/go/bin/printing-press" ]; then
-    export PATH="$HOME/go/bin:$PATH"
-    echo "Added ~/go/bin to PATH"
-  elif command -v go >/dev/null 2>&1; then
-    echo "printing-press not found. Installing..."
-    GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest
-    export PATH="$HOME/go/bin:$PATH"
-  else
-    echo "printing-press binary not found and Go is not installed."
-    echo "Install Go first, then run:  go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest"
-    return 1 2>/dev/null || exit 1
-  fi
-fi
-
-PRESS_BASE="$(basename "$_scope_dir" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"
-if [ -z "$PRESS_BASE" ]; then
-  PRESS_BASE="workspace"
-fi
-
-PRESS_SCOPE="$PRESS_BASE-$(printf '%s' "$_scope_dir" | shasum -a 256 | cut -c1-8)"
-PRESS_HOME="$HOME/printing-press"
-PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"
-PRESS_LIBRARY="$PRESS_HOME/library"
-PRESS_MANUSCRIPTS="$PRESS_HOME/manuscripts"
-PRESS_CURRENT="$PRESS_RUNSTATE/current"
-
-mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT"
-
-# --- Codex mode detection (must run as part of setup, not a separate step) ---
-# Codex mode: opt-in only. User must pass "codex" or "--codex" to enable.
-if echo "$ARGUMENTS" | grep -qiE '(^| )(--?codex|codex)( |$)'; then
-  CODEX_MODE=true
-else
-  CODEX_MODE=false
-fi
-
-# Environment guard: don't delegate if already inside a Codex sandbox
-if [ "$CODEX_MODE" = "true" ]; then
-  if [ -n "$CODEX_SANDBOX" ] || [ -n "$CODEX_SESSION_ID" ]; then
-    CODEX_MODE=false
-  fi
-fi
-
-# Health check: verify codex binary exists
-if [ "$CODEX_MODE" = "true" ]; then
-  if command -v codex >/dev/null 2>&1; then
-    # Model and reasoning effort inherit from ~/.codex/config.toml. Do not pin -m / -c here.
-    CODEX_MODEL=$(grep -E '^model[[:space:]]*=' ~/.codex/config.toml 2>/dev/null | head -1 | sed -E 's/^model[[:space:]]*=[[:space:]]*"?([^"]+)"?.*$/\1/')
-    [ -z "$CODEX_MODEL" ] && CODEX_MODEL="codex default"
-    echo "Codex mode enabled (model: $CODEX_MODEL). Code-writing tasks will be delegated to Codex."
-  else
-    echo "Codex CLI not found - running in standard mode."
-    CODEX_MODE=false
-  fi
-fi
-
-# Circuit breaker state
-CODEX_CONSECUTIVE_FAILURES=0
-```
-<!-- PRESS_SETUP_CONTRACT_END -->
-
-After running the setup contract, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, warn the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest` to update." Continue anyway but surface the warning prominently.
-
-After you know `<api>`, initialize the run-scoped artifact paths:
+After you know `<api>` (from the Orientation & Briefing flow above; preflight already ran at the top), initialize the run-scoped artifact paths:
 
 ```bash
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
