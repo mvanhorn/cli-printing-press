@@ -442,17 +442,41 @@ type Resource struct {
 	Description string   `yaml:"description" json:"description"`
 	Path        string   `yaml:"path,omitempty" json:"path,omitempty"`             // base path for operations shorthand (e.g., /api/items)
 	Operations  []string `yaml:"operations,omitempty" json:"operations,omitempty"` // shorthand: list, get, create, update, delete, search
-	// BaseURL overrides the spec's top-level BaseURL for every endpoint
-	// under this resource. Use it for APIs that split functionality
-	// across distinct hosts — e.g., Open-Meteo's geocoding-api., AWS
-	// service endpoints. The override is fixed at generation time
-	// (different from EndpointTemplateVars, which resolve runtime env
-	// values into a single URL pattern). Incompatible with the
+	// BaseURL overrides the spec-level BaseURL for this resource's
+	// endpoints. Fixed at generation time. Incompatible with the
 	// proxy-envelope client pattern, which POSTs every request to a
 	// single URL.
 	BaseURL      string              `yaml:"base_url,omitempty" json:"base_url,omitempty"`
 	Endpoints    map[string]Endpoint `yaml:"endpoints" json:"endpoints"`
 	SubResources map[string]Resource `yaml:"sub_resources,omitempty" json:"sub_resources,omitempty"`
+}
+
+// HasResourceBaseURLOverride reports whether any resource (top-level or
+// nested sub-resource) declares a BaseURL override. Used by the client
+// template to gate the absolute-URL detection branch — specs that don't
+// opt in regenerate byte-identically.
+func (s *APISpec) HasResourceBaseURLOverride() bool {
+	if s == nil {
+		return false
+	}
+	for _, resource := range s.Resources {
+		if resourceHasBaseURLOverride(resource) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceHasBaseURLOverride(resource Resource) bool {
+	if resource.BaseURL != "" {
+		return true
+	}
+	for _, sub := range resource.SubResources {
+		if resourceHasBaseURLOverride(sub) {
+			return true
+		}
+	}
+	return false
 }
 
 type Endpoint struct {

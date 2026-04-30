@@ -581,37 +581,29 @@ type authTemplateData struct {
 	HasGraphQLPersistedQueries bool
 }
 
-// hasResourceBaseURLOverride reports whether any resource (top-level or
-// sub-resource) declares a BaseURL override. The client template uses
-// this to skip the absolute-URL detection branch when no resource needs
-// it, preserving byte-compat for specs that don't opt into the feature.
-func hasResourceBaseURLOverride(s *spec.APISpec) bool {
-	if s == nil {
-		return false
-	}
-	for _, r := range s.Resources {
-		if r.BaseURL != "" {
-			return true
-		}
-		for _, sr := range r.SubResources {
-			if sr.BaseURL != "" {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // clientTemplateData wraps APISpec with optional runtime data hooks used by
 // the generated HTTP client.
 type clientTemplateData struct {
 	*spec.APISpec
 	HasGraphQLPersistedQueries bool
-	// HasResourceBaseURLOverride is true when at least one resource (or
-	// sub-resource) declares its own BaseURL override. The client emits an
-	// absolute-URL detection branch only when this is true; specs without
-	// any override regenerate byte-identically to the pre-feature output.
-	HasResourceBaseURLOverride bool
+}
+
+// endpointTemplateData is the data passed to command_endpoint.go.tmpl
+// for both top-level resource endpoints and sub-resource endpoints.
+// ResourceBaseURL carries the resource's BaseURL override (or its
+// inherited parent override for sub-resources); the template prepends
+// it to Endpoint.Path so per-resource hosts produce absolute URLs.
+type endpointTemplateData struct {
+	ResourceName    string
+	ResourceBaseURL string
+	FuncPrefix      string
+	CommandPath     string
+	EndpointName    string
+	Endpoint        spec.Endpoint
+	HasStore        bool
+	IsAsync         bool
+	Async           AsyncJobInfo
+	*spec.APISpec
 }
 
 // readmeTemplateData wraps APISpec with additional fields for README rendering.
@@ -1092,7 +1084,6 @@ func (g *Generator) renderSingleFiles() error {
 			data = &clientTemplateData{
 				APISpec:                    g.Spec,
 				HasGraphQLPersistedQueries: g.hasTrafficAnalysisHint("graphql_persisted_query"),
-				HasResourceBaseURLOverride: hasResourceBaseURLOverride(g.Spec),
 			}
 		case "agent_context.go.tmpl":
 			data = g.templateData()
@@ -1334,18 +1325,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				continue
 			}
 			asyncInfo, isAsync := g.AsyncJobs[name+"/"+eName]
-			epData := struct {
-				ResourceName    string
-				ResourceBaseURL string
-				FuncPrefix      string
-				CommandPath     string
-				EndpointName    string
-				Endpoint        spec.Endpoint
-				HasStore        bool
-				IsAsync         bool
-				Async           AsyncJobInfo
-				*spec.APISpec
-			}{
+			epData := endpointTemplateData{
 				ResourceName:    name,
 				ResourceBaseURL: resource.BaseURL,
 				FuncPrefix:      name,
@@ -1391,31 +1371,19 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				}
 			}
 
+			// Sub-resources inherit the parent's BaseURL override; an
+			// explicit sub_resource.base_url wins. Falls through to the
+			// spec-level BaseURL when both are empty.
+			subResourceBaseURL := subResource.BaseURL
+			if subResourceBaseURL == "" {
+				subResourceBaseURL = resource.BaseURL
+			}
 			for eName, endpoint := range subResource.Endpoints {
 				subKey := subName + "/" + eName
 				asyncInfo, isAsync := g.AsyncJobs[subKey]
-				// Sub-resources inherit the parent resource's BaseURL
-				// override; an explicit sub_resource.base_url wins over
-				// the parent's. Falls through to the spec-level BaseURL
-				// when both are empty.
-				resourceBaseURL := subResource.BaseURL
-				if resourceBaseURL == "" {
-					resourceBaseURL = resource.BaseURL
-				}
-				epData := struct {
-					ResourceName    string
-					ResourceBaseURL string
-					FuncPrefix      string
-					CommandPath     string
-					EndpointName    string
-					Endpoint        spec.Endpoint
-					HasStore        bool
-					IsAsync         bool
-					Async           AsyncJobInfo
-					*spec.APISpec
-				}{
+				epData := endpointTemplateData{
 					ResourceName:    subName,
-					ResourceBaseURL: resourceBaseURL,
+					ResourceBaseURL: subResourceBaseURL,
 					FuncPrefix:      name + "-" + subName,
 					CommandPath:     name + " " + subName,
 					EndpointName:    eName,

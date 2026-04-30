@@ -75,7 +75,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
-			path := "{{.Resource.BaseURL}}{{.Endpoint.Path}}"
+			path := "{{.Resource.BaseURL}}{{.Endpoint.Path}}"{{/* Resource.BaseURL is empty unless the resource declares an override; when set it makes path absolute and the client skips the c.BaseURL concat. */}}
 {{- range $i, $p := .Endpoint.Params}}
 {{- if .Positional}}
 			if len(args) < {{add $i 1}} {
