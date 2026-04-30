@@ -445,6 +445,32 @@ func paginatedGet(c interface {
 	return json.RawMessage(result), nil
 }
 
+// printJSONFiltered marshals v to JSON, applies --select / --compact filters
+// from the rootFlags, and prints the result. Hand-written novel commands MUST
+// use this instead of flags.printJSON when they emit Go-typed values: direct
+// flags.printJSON drops both filters silently, so `<cli> <novel> --json
+// --select foo` returns the full payload. Endpoint-mirror commands stay on
+// printOutputWithFlags, which already composes these helpers; novel commands
+// build a typed slice/struct and need this helper to honor the same
+// agent-facing flag contract.
+func printJSONFiltered(cmd interface {
+	OutOrStdout() io.Writer
+}, v any, flags *rootFlags) error {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	filtered := json.RawMessage(raw)
+	if flags.selectFields != "" {
+		filtered = filterFields(filtered, flags.selectFields)
+	} else if flags.compact {
+		filtered = compactFields(filtered)
+	}
+	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc.SetIndent("", "  ")
+	return enc.Encode(filtered)
+}
+
 // filterFields keeps only the specified fields (comma-separated) from JSON objects/arrays.
 // Supports dotted paths like "events.shortName" to descend into nested structures.
 // Arrays are traversed element-wise: "events.shortName" keeps shortName on each event.

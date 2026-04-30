@@ -1672,10 +1672,10 @@ Priority 3 (polish):
 
 ### Agent Build Checklist (per command)
 
-After building each command in Priority 1 and Priority 2, verify these 9 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
+After building each command in Priority 1 and Priority 2, verify these 11 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
 
 1. **Non-interactive**: No TTY prompts, no `bufio.Scanner(os.Stdin)`, works in CI without a terminal
-2. **Structured output**: `--json` produces valid JSON, `--select` filters fields correctly
+2. **Structured output**: `--json` produces valid JSON, `--select` filters fields correctly. **Hand-written novel commands MUST use `printJSONFiltered(cmd, v, flags)` — direct `flags.printJSON` drops `--select` and `--compact` silently** (see principle 11).
 3. **Progressive help**: `--help` shows realistic examples with domain-specific values (not "abc123"). **Use `Example: strings.Trim(\`...\`, "\n")` (preserves leading 2-space indent) NOT `strings.TrimSpace(\`...\`)` (strips it).** TrimSpace makes the first example line unindented; dogfood's example-detection parser is tolerant of this in current versions, but the indented form renders correctly across every Cobra version and is the convention used by every generated command.
 4. **Actionable errors**: Error messages name the specific flag/arg that's wrong and the correct usage
 5. **Safe retries**: Mutation commands support `--dry-run`, idempotent where possible
@@ -1694,6 +1694,7 @@ After building each command in Priority 1 and Priority 2, verify these 9 princip
      ```
    This is defense-in-depth: the verifier also runs a heuristic side-effect classifier, but it can miss commands whose `--help` text and source don't match the heuristics. The env-var check is the floor.
 10. **Per-source rate limiting**: any hand-written client in a sibling internal package (`internal/source/<name>/`, `internal/recipes/`, `internal/phgraphql/`, etc. — anything not generator-emitted) that makes outbound HTTP calls MUST use `cliutil.AdaptiveLimiter` and surface `*cliutil.RateLimitError` when 429 retries are exhausted. Empty-on-throttle is indistinguishable from "no data exists" and silently corrupts downstream queries. Read [references/per-source-rate-limiting.md](references/per-source-rate-limiting.md) when authoring a sibling client. Enforced at generation time by dogfood's `source_client_check`.
+11. **JSON output goes through `printJSONFiltered`**: novel commands that build a Go-typed slice/struct and emit JSON MUST call `printJSONFiltered(cmd, v, flags)` instead of `flags.printJSON(cmd, v)`. The generator emits `printJSONFiltered` into every CLI's `internal/cli/helpers.go`; it marshals the value, applies `--select` field narrowing or `--compact` field narrowing from `flags`, and prints with two-space indent. Direct `flags.printJSON` skips both filters, so `<cli> <novel> --json --select foo,bar` returns the full payload — a contract violation users discover post-ship. Endpoint-mirror commands stay on `printOutputWithFlags`, which already honors the filters; this rule only applies to hand-written novel commands. Verify with: `<cli> <novel> --json --select <field> | jq 'keys'` returns only the requested fields.
 
 #### Verify-friendly RunE template
 
