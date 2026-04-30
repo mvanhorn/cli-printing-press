@@ -57,7 +57,7 @@ These are different sets:
 **Use crowd-sniff alone** when:
 - Browser automation isn't available or is unreliable
 - The API requires login (browser-sniff skips auth-required sites)
-- Speed matters (crowd-sniff runs without a browser, typically 2-4 minutes)
+- Speed matters (crowd-sniff runs without a browser, typically 5-10 minutes)
 - You want popularity-weighted endpoint coverage
 
 **Use both** when:

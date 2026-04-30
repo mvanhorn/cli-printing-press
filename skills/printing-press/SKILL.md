@@ -83,7 +83,7 @@ See the `printing-press-polish` skill for details. It runs diagnostics, fixes ve
 - **Do not ship a CLI that hasn't been behaviorally tested against real targets.** `go build` and `verify` pass-rate are structural signals, not correctness signals. Phase 5's mechanical test matrix runs every subcommand + `--json` + error paths; if that matrix was not executed, the CLI is not shippable. Quick Check is the floor; Full Dogfood is required when the user asks for thoroughness.
 - **Bugs found during dogfood are fix-before-ship, not "file for v0.2".** If a 1-3 file edit resolves it, do it now. `ship-with-gaps` is deprecated as a default verdict (see Phase 4). Context is freshest in-session; a v0.2 backlog that may never be revisited ships known-broken CLIs.
 - **Features approved in Phase 1.5 are shipping scope.** Do not downgrade a shipping-scope feature to a stub mid-build. If implementation becomes infeasible, return to Phase 1.5 with a revised manifest and get explicit re-approval.
-- **Do not quote human-time estimates** ("~15-30 min", "~1 hour", "quick fix") in `AskUserQuestion` options, phase descriptions, or reference docs. Describe scope instead (lines of code, files touched, relative size).
+- **Do not quote human-time estimates for sub-tasks** ("~15-30 min", "~1 hour", "quick fix") in `AskUserQuestion` options, phase descriptions, or reference docs. The agent does the work, not the user; agent-fabricated estimates are notoriously bad and train users to distrust the prompt. Describe scope instead (lines of code, files touched, relative size). The carve-outs are wall-clock estimates for genuinely time-bound things: the whole-CLI run (set the user's expectation up front — most CLIs take 30+ minutes), tool installs (`go install` takes ~10 seconds), and printing-press subcommands that do network-bound work (crowd-sniff scans npm + GitHub, ~5-10 minutes). Anything bounded by agent reasoning time is not time-bound — describe scope.
 - Optimize for time-to-ship, not time-to-document.
 - Reuse prior research whenever it is already good enough.
 - Do not split one idea across multiple mandatory artifacts.
@@ -259,7 +259,7 @@ If the user typed `/printing-press` with no arguments (no API name, no `--spec`,
 >
 > By the end, you'll have a working CLI in `~/printing-press/library/` that you can use for yourself, ship on your own, or apply to add to the printing-press library.
 >
-> The process takes 10-40 minutes depending on API complexity. Simple APIs with official specs (Stripe, GitHub) are faster. Undocumented APIs that need discovery (ESPN, Domino's) take longer.
+> The process takes 30-60 minutes depending on API complexity. Simple APIs with official specs (Stripe, GitHub) are faster. Undocumented APIs that need discovery (ESPN, Domino's) take longer.
 
 Print these example invocations as plain text BEFORE the `AskUserQuestion` call (so they appear as context above the question, not as competing menu options):
 
@@ -312,7 +312,7 @@ Print as prose, matching the style of the example below:
 >
 > **What you will have at the end:** A fully functional CLI at `~/printing-press/library/<api>` that you can use yourself, ship on your own, or apply to add to the printing-press library.
 >
-> **Time:** 10-40 minutes depending on API complexity.
+> **Time:** 30-60 minutes depending on API complexity.
 >
 > **Things that help if you have them:**
 > - An API key (for live smoke testing at the end)
@@ -544,7 +544,7 @@ Before new research:
    If prior research was also found (step 2), include the research summary alongside the library info.
 
    Then ask:
-   1. **"Generate a fresh CLI"** — Re-runs the Printing Press into a working directory, overwrites generated code, then rebuilds transcendence features. Prior research is reused if recent. ~15-20 min.
+   1. **"Generate a fresh CLI"** — Re-runs the Printing Press into a working directory, overwrites generated code, then rebuilds transcendence features. Prior research is reused if recent.
    2. **"Improve existing CLI"** — Keeps all current code, audits for quality gaps, implements top improvements. The Printing Press is not re-run.
    3. **"Review prior research first"** — Show the full research brief and absorb manifest before deciding.
 
@@ -1017,7 +1017,7 @@ Every source named in the briefing must have exactly one entry in `browser-brows
 
 After Phase 1.7 (Browser-Sniff Gate), evaluate whether mining community signals (npm SDKs and GitHub code search) would improve the spec. Skip this gate entirely if the user already passed `--spec` (spec source is already resolved and appears complete).
 
-**Time budget:** The crowd-sniff gate should complete within 5 minutes. If `printing-press crowd-sniff` fails or times out, fall back immediately:
+**Time budget:** The crowd-sniff gate should complete within 10 minutes. If `printing-press crowd-sniff` fails or times out, fall back immediately:
 - If a spec already exists: "Crowd-sniff failed — proceeding with existing spec."
 - If no spec exists: "Crowd-sniff failed — falling back to --docs generation."
 
@@ -1034,7 +1034,7 @@ After Phase 1.7 (Browser-Sniff Gate), evaluate whether mining community signals 
 
 Present to the user via `AskUserQuestion`:
 
-> "Found a spec with **N endpoints**, but research shows the live API likely has more. Want me to search npm packages and GitHub code for `<api>` to discover additional endpoints? This typically takes 2-4 minutes."
+> "Found a spec with **N endpoints**, but research shows the live API likely has more. Want me to search npm packages and GitHub code for `<api>` to discover additional endpoints? This typically takes 5-10 minutes."
 >
 > Options:
 > 1. **Yes — crowd-sniff and merge** (search npm SDKs and GitHub code, merge discovered endpoints with the existing spec)
@@ -1044,7 +1044,7 @@ Present to the user via `AskUserQuestion`:
 
 Present to the user via `AskUserQuestion`:
 
-> "No OpenAPI spec found for `<API>`. Want me to search npm packages and GitHub code to discover the API from community usage? This typically takes 2-4 minutes."
+> "No OpenAPI spec found for `<API>`. Want me to search npm packages and GitHub code to discover the API from community usage? This typically takes 5-10 minutes."
 >
 > Options:
 > 1. **Yes — crowd-sniff the community** (search npm SDKs and GitHub code, generate a spec from discovered endpoints)
