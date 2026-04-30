@@ -35,6 +35,12 @@ func versionFromBuildInfo(v string) string {
 	if v == "" || v == "(devel)" {
 		return ""
 	}
+	// Strip semver build metadata (e.g. `+dirty` from a build off an
+	// uncommitted working tree) before classification so the pseudo-version
+	// match isn't defeated by the trailing suffix.
+	if i := strings.IndexByte(v, '+'); i >= 0 {
+		v = v[:i]
+	}
 	if pseudoVersionSuffix.MatchString(v) {
 		return ""
 	}
