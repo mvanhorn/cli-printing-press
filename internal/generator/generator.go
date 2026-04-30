@@ -1237,6 +1237,19 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
+	// Emit the cliutil proxypath helper only for proxy-envelope clients —
+	// the BuildPath function is the only caller of net/url.Values in the
+	// cliutil package, and there's no point shipping it (and its tests)
+	// into CLIs that don't speak the proxy-envelope protocol.
+	if g.Spec.ClientPattern == "proxy-envelope" {
+		if err := g.renderTemplate("cliutil_proxypath.go.tmpl", filepath.Join("internal", "cliutil", "proxypath.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cliutil proxypath: %w", err)
+		}
+		if err := g.renderTemplate("cliutil_proxypath_test.go.tmpl", filepath.Join("internal", "cliutil", "proxypath_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering cliutil proxypath test: %w", err)
+		}
+	}
+
 	// Emit the auto-refresh wrapper only when cache is explicitly enabled
 	// and the CLI has both a store and a sync path to call. Without sync
 	// there is nothing to refresh with; without cache.enabled there is no

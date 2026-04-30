@@ -15,7 +15,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+{{- if ne .ClientPattern "proxy-envelope"}}
 	"sort"
+{{- end}}
 	"strings"
 	"time"
 
@@ -71,30 +73,9 @@ func serviceForPath(path string) string {
 	return "{{.Name}}" // default: API name slug
 }
 
-// buildProxyPath appends query params into the path string for the envelope.
-// When the spec-declared path already carries a query string (e.g. an
-// /api?op=list endpoint that takes additional params), use `&` as the
-// joiner so the result stays parseable instead of producing two `?`
-// separators.
-func buildProxyPath(path string, params map[string]string) string {
-	if len(params) == 0 {
-		return path
-	}
-	parts := make([]string, 0, len(params))
-	for k, v := range params {
-		if v != "" {
-			parts = append(parts, k+"="+v)
-		}
-	}
-	if len(parts) == 0 {
-		return path
-	}
-	joiner := "?"
-	if strings.Contains(path, "?") {
-		joiner = "&"
-	}
-	return path + joiner + strings.Join(parts, "&")
-}
+// Path-building for the proxy envelope is in cliutil.BuildPath so it
+// can be unit-tested directly. The cliutil package is generator-emitted
+// alongside this client when ClientPattern == "proxy-envelope".
 {{end}}
 
 // APIError carries HTTP status information for structured exit codes.
@@ -392,7 +373,7 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		envelope := proxyEnvelope{
 			Service: serviceForPath(path),
 			Method:  method,
-			Path:    buildProxyPath(path, params),
+			Path:    cliutil.BuildPath(path, params),
 		}
 		if bodyBytes != nil {
 			envelope.Body = json.RawMessage(bodyBytes)
@@ -526,7 +507,7 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 	envelope := proxyEnvelope{
 		Service: serviceForPath(path),
 		Method:  method,
-		Path:    buildProxyPath(path, params),
+		Path:    cliutil.BuildPath(path, params),
 	}
 	if body != nil {
 		envelope.Body = json.RawMessage(body)
