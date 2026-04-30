@@ -101,7 +101,7 @@ echo "Polishing: $CLI_NAME"
 echo "Location: $CLI_DIR"
 ```
 
-### Find spec
+### Find spec and research dir
 
 ```bash
 API_SLUG="${CLI_NAME%-pp-cli}"
@@ -118,6 +118,25 @@ done
 SPEC_FLAG=""
 if [ -n "$SPEC_PATH" ]; then
   SPEC_FLAG="--spec $SPEC_PATH"
+fi
+
+# Locate the research dir (parent of the spec's research/ folder, i.e.
+# manuscripts/<api>/<run-id>/). dogfood's --research-dir triggers
+# checkNovelFeatures, which writes novel_features_built back into
+# research.json AND syncs the verified list into .printing-press.json.
+# Without this flag, legacy CLIs whose manifest predates the
+# novel_features schema fail publish-validate's transcendence gate.
+RESEARCH_DIR=""
+for d in "$PRESS_HOME/manuscripts/$API_SLUG"/*/research.json "$PRESS_HOME/manuscripts/$CLI_NAME"/*/research.json; do
+  if [ -f "$d" ]; then
+    RESEARCH_DIR="$(dirname "$d")"
+    break
+  fi
+done
+
+RESEARCH_FLAG=""
+if [ -n "$RESEARCH_DIR" ]; then
+  RESEARCH_FLAG="--research-dir $RESEARCH_DIR"
 fi
 ```
 
@@ -162,8 +181,11 @@ cd "$CLI_DIR"
 # Build
 go build -o "$CLI_NAME" ./cmd/"$CLI_NAME" 2>&1
 
-# Diagnostics. SPEC_FLAG is set in the "Find spec" step above.
-printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG 2>&1
+# Diagnostics. SPEC_FLAG and RESEARCH_FLAG are set in the "Find spec
+# and research dir" step above. RESEARCH_FLAG enables dogfood to
+# verify novel features and sync them into .printing-press.json
+# (required for publish-validate's transcendence gate).
+printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG $RESEARCH_FLAG 2>&1
 printing-press verify --dir "$CLI_DIR" $SPEC_FLAG --json 2>&1
 printing-press workflow-verify --dir "$CLI_DIR" --json > /tmp/polish-workflow-verify.json 2>&1 || true
 printing-press verify-skill --dir "$CLI_DIR" --json > /tmp/polish-verify-skill.json 2>&1 || true
