@@ -124,7 +124,7 @@ func TestStoreWrite_PanicReleasesLock(t *testing.T) {
 	<-done
 }
 
-// TestUpsertBatch_TemplatedIDFieldOverrideWins exercises the WU-2 U3
+// TestUpsertBatch_TemplatedIDFieldOverrideWins exercises the
 // per-resource ID-field override. When the spec author annotates a
 // path-item with x-resource-id, the profiler emits SyncableResource.IDField,
 // the generator templates this into resourceIDFieldOverrides, and
@@ -172,7 +172,7 @@ func TestUpsertBatch_TemplatedIDFieldOverrideWins(t *testing.T) {
 
 // TestUpsertBatch_GenericFallbackList covers each name in the reduced
 // fallback list. The kalshi-accreted names (ticker/event_ticker/series_ticker)
-// were dropped in WU-2 U3 because the user owns kalshi and will regenerate
+// were dropped because the user owns kalshi and will regenerate
 // it with x-resource-id annotations; this test pins what the generic list
 // is now responsible for so a future trim doesn't silently break unannotated
 // specs.
@@ -204,7 +204,7 @@ func TestUpsertBatch_GenericFallbackList(t *testing.T) {
 		})
 	}
 
-	// Negative: API-specific names dropped in WU-2 U3 must NOT resolve.
+	// Negative: API-specific names dropped must NOT resolve.
 	// Spec authors annotate these via x-resource-id instead.
 	for _, key := range []string{"ticker", "event_ticker", "series_ticker"} {
 		t.Run("dropped_"+key, func(t *testing.T) {

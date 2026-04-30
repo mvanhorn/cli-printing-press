@@ -40,18 +40,6 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var dates string
 {{- end}}
 
-	// criticalResources is the template-time projection of SyncableResource.Critical
-	// (set by the profiler from the spec's path-item x-critical extension). It's
-	// consulted at error-aggregation time below so a non-critical failure can be
-	// downgraded to a sync_warning + exit 0 unless --strict was passed. WU-2 U4.
-	criticalResources := map[string]bool{
-{{- range .SyncableResources}}
-{{- if .Critical}}
-		{{printf "%q" .Name}}: true,
-{{- end}}
-{{- end}}
-	}
-
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Sync API data to local SQLite for offline search and analysis",
@@ -257,7 +245,7 @@ Exit codes & warnings:
 					totalSynced, totalResources, elapsed.Seconds())
 			}
 
-			// Exit-code policy (WU-2 U4):
+			// Exit-code policy:
 			//   1. --strict + any error  -> non-zero (legacy contract)
 			//   2. any critical failure  -> non-zero regardless of --strict
 			//   3. nothing synced        -> non-zero (preserves "all-warned" / "all-errored" exit)
@@ -298,7 +286,7 @@ Exit codes & warnings:
 	cmd.Flags().StringVar(&since, "since", "", "Incremental sync duration (e.g. 7d, 24h, 1w, 30m)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/{{.Name}}-pp-cli/data.db)")
-	cmd.Flags().IntVar(&maxPages, "max-pages", 1000, "Maximum pages to fetch per resource (0 = unlimited; default raised from 10 to 1000 in WU-2)")
+	cmd.Flags().IntVar(&maxPages, "max-pages", 1000, "Maximum pages to fetch per resource (0 = unlimited; default raised from 10 to 1000 in )")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (legacy behavior; default policy treats non-critical resource failures as warnings).")
 {{- if .Pagination.DateRangeParam}}
@@ -348,7 +336,7 @@ func syncResource(c interface {
 	// sync_anomaly per resource per run when there's at least one miss
 	// (rate-limited via the anomalyEmitted flag) and a roll-up
 	// all_items_failed_id_extraction event when 100% of a single page
-	// failed extraction. WU-2 U3.
+	// failed extraction.
 	var extractFailureTotal int
 	var consumedTotal int
 	anomalyEmitted := false
@@ -524,7 +512,7 @@ func syncResource(c interface {
 	// rows — FTS5 trigger error, transaction rollback, character
 	// encoding. Emit a sync_anomaly so the symptom is visible the
 	// next time it recurs; the underlying root cause is held out for
-	// controlled repro. WU-2 U3.
+	// controlled repro.
 	if consumedTotal > 0 && totalCount == 0 && extractFailureTotal < consumedTotal {
 		if humanFriendly {
 			fmt.Fprintf(os.Stderr, "\nwarning: %s consumed %d items, extracted %d primary keys, but stored 0 rows — extraction succeeded yet nothing landed. Investigate FTS triggers / transaction rollback / encoding.\n", resource, consumedTotal, consumedTotal-extractFailureTotal)
@@ -877,18 +865,22 @@ func syncDependentResource(c interface {
 
 			depConsumedTotal += len(items)
 			depExtractFailureTotal += extractFailures
-			if extractFailures > 0 && stored > 0 && !depAnomalyEmitted {
-				if humanFriendly {
-					fmt.Fprintf(os.Stderr, "\nwarning: %s had %d item(s) with no extractable primary key — those rows were dropped silently. Annotate the spec with x-resource-id to fix.\n", dep.Name, extractFailures)
-				} else {
-					fmt.Fprintf(os.Stderr, `{"event":"sync_anomaly","resource":"%s","parent":"%s","consumed":%d,"stored":%d,"count":%d,"reason":"primary_key_unresolved"}`+"\n", dep.Name, parentID, len(items), stored, extractFailures)
-				}
-				depAnomalyEmitted = true
-			} else if len(items) > 0 && stored == 0 && !depAnomalyEmitted {
+			// Order matches the flat path (syncResource): all-fail first,
+			// then partial-fail. The all-fail case dominates — if stored==0
+			// with at least one item, the resource is broken regardless of
+			// how many extractions failed individually.
+			if len(items) > 0 && stored == 0 && !depAnomalyEmitted {
 				if humanFriendly {
 					fmt.Fprintf(os.Stderr, "\nwarning: %s returned %d items for parent %s but stored 0 — likely scalar item shape or unrecognized primary-key field name.\n", dep.Name, len(items), parentID)
 				} else {
 					fmt.Fprintf(os.Stderr, `{"event":"sync_anomaly","resource":"%s","parent":"%s","consumed":%d,"stored":0,"reason":"all_items_failed_id_extraction"}`+"\n", dep.Name, parentID, len(items))
+				}
+				depAnomalyEmitted = true
+			} else if extractFailures > 0 && stored > 0 && !depAnomalyEmitted {
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\nwarning: %s had %d item(s) with no extractable primary key — those rows were dropped silently. Annotate the spec with x-resource-id to fix.\n", dep.Name, extractFailures)
+				} else {
+					fmt.Fprintf(os.Stderr, `{"event":"sync_anomaly","resource":"%s","parent":"%s","consumed":%d,"stored":%d,"count":%d,"reason":"primary_key_unresolved"}`+"\n", dep.Name, parentID, len(items), stored, extractFailures)
 				}
 				depAnomalyEmitted = true
 			}
@@ -933,7 +925,7 @@ func syncDependentResource(c interface {
 	_ = db.SaveSyncState(dep.Name, "", totalCount)
 
 	// F4b symptom probe: items consumed and extracted but nothing landed.
-	// See syncResource for rationale. WU-2 U3.
+	// See syncResource for rationale.
 	if depConsumedTotal > 0 && totalCount == 0 && depExtractFailureTotal < depConsumedTotal {
 		if humanFriendly {
 			fmt.Fprintf(os.Stderr, "\nwarning: %s consumed %d items, extracted %d primary keys, but stored 0 rows — extraction succeeded yet nothing landed. Investigate FTS triggers / transaction rollback / encoding.\n", dep.Name, depConsumedTotal, depConsumedTotal-depExtractFailureTotal)
@@ -961,7 +953,7 @@ func syncDependentResource(c interface {
 // a runtime lookup map. extractID consults this first so the templated
 // path wins over the generic fallback list; the generic list applies only
 // when the override is empty or the override field is absent on a given
-// item. WU-2 U3.
+// item.
 var resourceIDFieldOverrides = map[string]string{
 {{- range .SyncableResources}}
 {{- if .IDField}}
@@ -971,18 +963,34 @@ var resourceIDFieldOverrides = map[string]string{
 }
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did
-// NOT receive a templated IDField. Truly-generic names only — API-specific
-// names like ticker/event_ticker were dropped in WU-2 U3; spec authors
-// annotate with x-resource-id instead.
+// NOT receive a templated IDField. API-specific names belong in spec
+// annotations (x-resource-id), not this list.
 var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}
+
+// criticalResources is the template-time projection of SyncableResource.Critical
+// (set by the profiler from the spec's path-item x-critical extension). It is
+// consulted at error-aggregation time so a non-critical failure can be
+// downgraded to a sync_warning + exit 0 unless --strict was passed.
+var criticalResources = map[string]bool{
+{{- range .SyncableResources}}
+{{- if .Critical}}
+	{{printf "%q" .Name}}: true,
+{{- end}}
+{{- end}}
+}
 
 // extractID resolves an item's primary-key field. It consults the
 // per-resource templated override first; on miss, it falls through to the
 // generic fallback list. resource may be empty for callers that don't have
 // a resource context (only the generic list applies in that case).
+//
+// Field lookups go through store.LookupFieldValue so snake_case overrides
+// match camelCase JSON renderings. UpsertBatch resolves fields the same
+// way — divergence between the two paths produces silent drops on
+// heterogeneous payloads.
 func extractID(resource string, obj map[string]any) string {
 	if override, ok := resourceIDFieldOverrides[resource]; ok && override != "" {
-		if v, ok := obj[override]; ok {
+		if v := store.LookupFieldValue(obj, override); v != nil {
 			s := fmt.Sprintf("%v", v)
 			if s != "" && s != "<nil>" {
 				return s
@@ -990,7 +998,7 @@ func extractID(resource string, obj map[string]any) string {
 		}
 	}
 	for _, key := range genericIDFieldFallbacks {
-		if v, ok := obj[key]; ok {
+		if v := store.LookupFieldValue(obj, key); v != nil {
 			s := fmt.Sprintf("%v", v)
 			if s != "" && s != "<nil>" {
 				return s

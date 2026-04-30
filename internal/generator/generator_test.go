@@ -4034,8 +4034,8 @@ func TestGeneratedSyncExitPolicy(t *testing.T) {
 
 	// (b) criticalResources map literal lists exactly the critical resources.
 	assert.Contains(t, syncContent,
-		`criticalResources := map[string]bool{`,
-		"sync.go must declare criticalResources map literal")
+		`var criticalResources = map[string]bool{`,
+		"sync.go must declare criticalResources as a package-level var")
 	assert.Contains(t, syncContent,
 		`"channels": true,`,
 		"criticalResources must include channels (x-critical: true)")

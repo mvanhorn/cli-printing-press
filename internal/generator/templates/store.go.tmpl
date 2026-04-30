@@ -531,7 +531,11 @@ func ftsRowID(id string) int64 {
 	return int64(h & 0x7FFFFFFFFFFFFFFF) // ensure positive
 }
 
-func lookupFieldValue(obj map[string]any, snakeKey string) any {
+// LookupFieldValue resolves a field value from a JSON object map, trying
+// the snake_case key first and the camelCase rendering second. Exported so
+// the sync command's extractID and the upsert path resolve fields the same
+// way — a divergence here produces silent drops on heterogeneous payloads.
+func LookupFieldValue(obj map[string]any, snakeKey string) any {
 	if v, ok := obj[snakeKey]; ok {
 		return v
 	}
@@ -546,6 +550,13 @@ func lookupFieldValue(obj map[string]any, snakeKey string) any {
 		return v
 	}
 	return nil
+}
+
+// lookupFieldValue is kept as an unexported alias for in-package callers so
+// the existing UpsertBatch code reads naturally without prefixing every call
+// with the package name.
+func lookupFieldValue(obj map[string]any, snakeKey string) any {
+	return LookupFieldValue(obj, snakeKey)
 }
 
 {{- range .Tables}}
@@ -627,7 +638,7 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 // profiler from x-resource-id or response-schema fallback) into a runtime
 // lookup map. UpsertBatch consults this first so the templated path wins
 // over the generic fallback list. Empty when no resource declared an
-// override; the runtime fallback list still applies. WU-2 U3.
+// override; the runtime fallback list still applies.
 var resourceIDFieldOverrides = map[string]string{
 {{- range .SyncableResources}}
 {{- if .IDField}}
@@ -639,7 +650,7 @@ var resourceIDFieldOverrides = map[string]string{
 // genericIDFieldFallbacks is the runtime safety net for resources that did
 // NOT receive a templated IDField. The list is intentionally short and
 // truly-generic — API-specific names like ticker/event_ticker were dropped
-// in WU-2 U3; spec authors annotate with x-resource-id instead.
+//; spec authors annotate with x-resource-id instead.
 var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}
 
 // UpsertBatch inserts or replaces multiple records in a single transaction
@@ -935,7 +946,7 @@ func (s *Store) ResolveByName(resourceType string, input string, matchFields ...
 	default:
 		hint := matches[0]
 		if len(matches) > 5 {
-			hint = strings.Join(matches[:5], ", ") + "..."
+			hint = strings.Join(matches[:5], ", ") + ".."
 		} else {
 			hint = strings.Join(matches, ", ")
 		}

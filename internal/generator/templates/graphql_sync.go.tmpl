@@ -254,6 +254,13 @@ func syncResource(c *client.Client, db *store.Store, resource, sinceTS string, f
 
 	var totalCount int
 	pagesFetched := 0
+	// consumedTotal/extractFailureTotal feed the F4b symptom probe at end-
+	// of-resource (rows extracted but none stored — likely an FTS5 trigger
+	// failure or transaction rollback below the PK-extraction layer).
+	// anomalyEmitted rate-limits per-resource warnings to one per sync run.
+	consumedTotal := 0
+	extractFailureTotal := 0
+	anomalyEmitted := false
 	pageSize := def.PageSize
 	if pageSize <= 0 {
 		pageSize = 50
@@ -317,25 +324,37 @@ func syncResource(c *client.Client, db *store.Store, resource, sinceTS string, f
 		}
 
 		// Batch upsert all items from this page. UpsertBatch returns
-		// (stored, extractFailures, err); see sync.go.tmpl for the
-		// shape rationale. The GraphQL path uses the same store layer
-		// so it inherits the per-resource ID-field override map and
-		// reduced fallback list automatically. WU-2 U3.
-		stored, _, err := db.UpsertBatch(resource, conn.Nodes)
+		// (stored, extractFailures, err); the GraphQL path uses the same
+		// store layer so it inherits the per-resource ID-field override
+		// map and reduced fallback list automatically.
+		stored, extractFailures, err := db.UpsertBatch(resource, conn.Nodes)
 		if err != nil {
 			if !humanFriendly {
 				fmt.Fprintf(os.Stderr, `{"event":"sync_error","resource":"%s","error":"%s"}`+"\n", resource, strings.ReplaceAll(err.Error(), `"`, `\"`))
 			}
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("upserting batch for %s: %w", resource, err), Duration: time.Since(started)}
 		}
-		if len(conn.Nodes) > 0 && stored == 0 {
+		// Emit at most one anomaly event per resource per sync run to avoid
+		// log spam when extraction fails on every page. Order matches the
+		// REST path (sync.go.tmpl): all-fail first, then partial-fail.
+		if len(conn.Nodes) > 0 && stored == 0 && !anomalyEmitted {
 			if humanFriendly {
 				fmt.Fprintf(os.Stderr, "warning: %s returned %d items but stored 0 — the local store will be empty for this resource. Likely cause: scalar item shape rather than objects with extractable IDs.\n", resource, len(conn.Nodes))
 			} else {
 				fmt.Fprintf(os.Stderr, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"reason":"all_items_failed_id_extraction"}`+"\n", resource, len(conn.Nodes))
 			}
+			anomalyEmitted = true
+		} else if extractFailures > 0 && stored > 0 && !anomalyEmitted {
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "warning: %s — could not extract a primary key for %d item(s); add x-resource-id to your spec.\n", resource, extractFailures)
+			} else {
+				fmt.Fprintf(os.Stderr, `{"event":"sync_anomaly","resource":"%s","count":%d,"reason":"primary_key_unresolved","message":"could not extract a primary key for %d item(s); add x-resource-id to your spec"}`+"\n", resource, extractFailures, extractFailures)
+			}
+			anomalyEmitted = true
 		}
 
+		consumedTotal += len(conn.Nodes)
+		extractFailureTotal += extractFailures
 		totalCount += stored
 
 		// Progress reporting
@@ -370,6 +389,19 @@ func syncResource(c *client.Client, db *store.Store, resource, sinceTS string, f
 
 	// Final sync state: clear cursor (sync is complete), update count
 	_ = db.SaveSyncState(resource, "", totalCount)
+
+	// F4b symptom probe: rows extracted successfully but none landed.
+	// Likely cause is below the PK-extraction layer (FTS5 trigger,
+	// transaction rollback, character encoding). Emits the symptom so
+	// the next reproduction has a concrete starting point; does not
+	// attempt to fix the root cause.
+	if consumedTotal > 0 && totalCount == 0 && extractFailureTotal < consumedTotal {
+		if humanFriendly {
+			fmt.Fprintf(os.Stderr, "warning: %s — extracted %d items but stored 0; %d failed PK extraction. Suspect FTS5 trigger, rollback, or encoding.\n", resource, consumedTotal, extractFailureTotal)
+		} else {
+			fmt.Fprintf(os.Stderr, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"extract_failures":%d,"reason":"stored_count_zero_after_extraction"}`+"\n", resource, consumedTotal, extractFailureTotal)
+		}
+	}
 
 	if !humanFriendly {
 		fmt.Fprintf(os.Stderr, `{"event":"sync_complete","resource":"%s","total":%d,"duration_ms":%d}`+"\n", resource, totalCount, time.Since(started).Milliseconds())
@@ -414,20 +446,3 @@ func parseSinceDuration(s string) (time.Time, error) {
 	}
 }
 
-// extractID is currently unused in the GraphQL sync path (UpsertBatch's
-// store-layer override map handles per-resource lookups), but is retained
-// here for parity with the REST sync template and for novel commands that
-// may need a quick PK extractor on a JSON object. WU-2 U3 reduced the
-// fallback list to truly-generic names; spec authors annotate with
-// x-resource-id when the API uses a non-generic primary-key field.
-func extractID(obj map[string]any) string {
-	for _, key := range []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"} {
-		if v, ok := obj[key]; ok {
-			s := fmt.Sprintf("%v", v)
-			if s != "" && s != "<nil>" {
-				return s
-			}
-		}
-	}
-	return ""
-}
