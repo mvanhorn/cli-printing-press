@@ -3,13 +3,13 @@ package pipeline
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-// TestCheckPrintJSONFiltered_FlagsAntipattern_FlagsAndLine writes a
-// realistic command file containing the flags.printJSON(cmd, v)
-// antipattern and confirms the check finds it with file + line +
-// snippet recorded.
+// TestCheckPrintJSONFiltered_FlagsAntipattern asserts that the check
+// reports file + line + snippet for an offending call site. Without
+// these three fields a reviewer can't act on the finding.
 func TestCheckPrintJSONFiltered_FlagsAntipattern(t *testing.T) {
 	t.Parallel()
 
@@ -60,8 +60,6 @@ func newWidgetsCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
-// TestCheckPrintJSONFiltered_CleanCLI confirms the check returns no
-// findings when every novel command uses the printJSONFiltered helper.
 func TestCheckPrintJSONFiltered_CleanCLI(t *testing.T) {
 	t.Parallel()
 
@@ -99,11 +97,10 @@ func newWidgetsCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
-// TestCheckPrintJSONFiltered_SkipsTestFilesAndHelpers verifies the
-// check ignores files that legitimately reference flags.printJSON: the
-// helpers.go file (where the method is defined) and any _test.go file
-// (test fixtures may demonstrate the antipattern in regression tests).
-func TestCheckPrintJSONFiltered_SkipsTestFilesAndHelpers(t *testing.T) {
+// TestCheckPrintJSONFiltered_SkipsTestFiles confirms _test.go files
+// are excluded — regression-test fixtures may demonstrate the
+// antipattern intentionally.
+func TestCheckPrintJSONFiltered_SkipsTestFiles(t *testing.T) {
 	t.Parallel()
 
 	cliDir := t.TempDir()
@@ -112,20 +109,6 @@ func TestCheckPrintJSONFiltered_SkipsTestFilesAndHelpers(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	// helpers.go contains the method definition, which the regex would
-	// not match anyway (no `cmd,` after `(`), but the explicit skip is
-	// belt-and-suspenders for future helper additions.
-	const helpersGo = `package cli
-
-func (f *rootFlags) printJSON(w *cobra.Command, v any) error {
-	return nil
-}
-`
-	if err := os.WriteFile(filepath.Join(cliPkg, "helpers.go"), []byte(helpersGo), 0o644); err != nil {
-		t.Fatalf("write helpers.go: %v", err)
-	}
-
-	// A _test.go file containing the antipattern — should be skipped.
 	const testGo = `package cli
 
 import "testing"
@@ -141,13 +124,10 @@ func TestRegression(t *testing.T) {
 	result := checkPrintJSONFiltered(cliDir)
 
 	if len(result.Findings) != 0 {
-		t.Fatalf("expected no findings (helpers.go and *_test.go skipped), got: %+v", result.Findings)
+		t.Fatalf("expected no findings (*_test.go skipped), got: %+v", result.Findings)
 	}
 }
 
-// TestCheckPrintJSONFiltered_SkipsWhenNoCliPkg returns Skipped when
-// the cliDir doesn't have an internal/cli directory at all (e.g.,
-// dogfood was pointed at a non-CLI tree).
 func TestCheckPrintJSONFiltered_SkipsWhenNoCliPkg(t *testing.T) {
 	t.Parallel()
 
@@ -160,7 +140,8 @@ func TestCheckPrintJSONFiltered_SkipsWhenNoCliPkg(t *testing.T) {
 
 // TestCheckPrintJSONFiltered_MultipleFindingsAcrossFiles confirms the
 // check accumulates findings across files and across multiple call
-// sites within a single file.
+// sites within a single file. Findings are also sorted by file path
+// (via listGoFiles), so output is deterministic across OSes.
 func TestCheckPrintJSONFiltered_MultipleFindingsAcrossFiles(t *testing.T) {
 	t.Parallel()
 
@@ -170,9 +151,6 @@ func TestCheckPrintJSONFiltered_MultipleFindingsAcrossFiles(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	// Two files, three findings total: jobs.go has two, feedback.go
-	// has one. Lines are deliberately different to verify line numbers
-	// are reported correctly.
 	const jobsGo = `package cli
 
 func A(flags *rootFlags, cmd *cobra.Command) error {
@@ -204,5 +182,37 @@ func C(flags *rootFlags, cmd *cobra.Command) error {
 	}
 	if len(result.Findings) != 3 {
 		t.Fatalf("Findings = %d, want 3: %+v", len(result.Findings), result.Findings)
+	}
+	// listGoFiles sorts alphabetically: feedback.go before jobs.go.
+	if !strings.HasSuffix(result.Findings[0].File, "feedback.go") {
+		t.Errorf("first finding should be from feedback.go, got %q", result.Findings[0].File)
+	}
+}
+
+// TestTruncateSnippet covers the rune-safe truncation guard against
+// dogfood.json bloat. UTF-8 splitting at byte boundaries would corrupt
+// multi-byte characters; rune slicing keeps the output well-formed.
+func TestTruncateSnippet(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   string
+		max  int
+		want string
+	}{
+		{"under cap", "short line", 120, "short line"},
+		{"exact cap", "abcde", 5, "abcde"},
+		{"over cap", "abcdefghij", 5, "abcde…"},
+		{"multibyte preserved", "café日本語abcde", 6, "café日本…"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := truncateSnippet(tc.in, tc.max)
+			if got != tc.want {
+				t.Errorf("truncateSnippet(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
+			}
+		})
 	}
 }

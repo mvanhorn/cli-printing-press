@@ -58,7 +58,7 @@
     "sync_calls_domain": true
   },
   "print_json_filtered_check": {
-    "checked": 2
+    "checked": 3
   },
   "reimplementation_check": {
     "checked": 0,
