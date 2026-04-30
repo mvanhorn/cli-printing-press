@@ -944,6 +944,9 @@ func (s *APISpec) Validate() error {
 	if err := validateMCP(s.MCP, s.Resources); err != nil {
 		return err
 	}
+	if s.ClientPattern == "proxy-envelope" && s.HasResourceBaseURLOverride() {
+		return fmt.Errorf("resource base_url overrides are incompatible with client_pattern=proxy-envelope; the proxy POSTs every request to the spec-level BaseURL, so per-resource overrides would be silently ignored")
+	}
 	for name, r := range s.Resources {
 		if len(r.Endpoints) == 0 && len(r.SubResources) == 0 {
 			return fmt.Errorf("resource %q has no endpoints", name)

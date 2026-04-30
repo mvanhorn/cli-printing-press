@@ -2005,3 +2005,82 @@ func TestSnakeToPascal(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateRejectsResourceBaseURLWithProxyEnvelope — proxy-envelope
+// POSTs every request to a single URL; per-resource overrides would
+// be silently ignored. Validate must fail-fast so spec authors who
+// declare both see the conflict at parse time, not at runtime when
+// requests mysteriously route to the wrong host.
+func TestValidateRejectsResourceBaseURLWithProxyEnvelope(t *testing.T) {
+	t.Parallel()
+	s := &APISpec{
+		Name:          "proxytest",
+		Version:       "0.1.0",
+		BaseURL:       "https://proxy.example.com",
+		ClientPattern: "proxy-envelope",
+		Resources: map[string]Resource{
+			"items": {
+				BaseURL: "https://other.example.com/v1",
+				Endpoints: map[string]Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List"},
+				},
+			},
+		},
+	}
+	err := s.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "proxy-envelope")
+	assert.Contains(t, err.Error(), "base_url")
+}
+
+// TestValidateAcceptsResourceBaseURLWithoutProxyEnvelope — the same
+// resource override is accepted when client_pattern is not the proxy
+// flavor. Negative cases (no resource override, proxy-envelope alone)
+// stay valid.
+func TestValidateAcceptsResourceBaseURLWithoutProxyEnvelope(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		spec *APISpec
+	}{
+		{
+			name: "rest client with resource override",
+			spec: &APISpec{
+				Name:          "ok-multihost",
+				Version:       "0.1.0",
+				BaseURL:       "https://api.example.com",
+				ClientPattern: "rest",
+				Resources: map[string]Resource{
+					"items": {
+						BaseURL: "https://other.example.com/v1",
+						Endpoints: map[string]Endpoint{
+							"list": {Method: "GET", Path: "/items", Description: "List"},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "proxy-envelope without any resource override",
+			spec: &APISpec{
+				Name:          "proxy-only",
+				Version:       "0.1.0",
+				BaseURL:       "https://proxy.example.com",
+				ClientPattern: "proxy-envelope",
+				Resources: map[string]Resource{
+					"items": {
+						Endpoints: map[string]Endpoint{
+							"list": {Method: "GET", Path: "/items", Description: "List"},
+						},
+					},
+				},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.NoError(t, tc.spec.Validate())
+		})
+	}
+}

@@ -4275,6 +4275,84 @@ func TestGenerateNoResourceBaseURLOverrideByteCompat(t *testing.T) {
 		"client.do() must keep the raw concat when no resource has a BaseURL override")
 }
 
+// TestGenerateResourceBaseURLTrailingSlashTrimmed — the most likely
+// spec-author mistake is `base_url: "https://api.example.com/v1/"`
+// (trailing slash) paired with `endpoints[].path: "/search"` (leading
+// slash). Without normalization the emitted handler concatenates to
+// `https://api.example.com/v1//search`. Trim trailing slash off
+// the override at the data-passing site so spec authors don't have
+// to memorize the convention.
+func TestGenerateResourceBaseURLTrailingSlashTrimmed(t *testing.T) {
+	t.Parallel()
+	apiSpec := minimalSpec("trailingslash")
+	apiSpec.Resources["geocoding"] = spec.Resource{
+		Description: "Geocoding lookup",
+		BaseURL:     "https://geocoding-api.example.com/v1/",
+		Endpoints: map[string]spec.Endpoint{
+			"search":  {Method: "GET", Path: "/search", Description: "Search"},
+			"reverse": {Method: "GET", Path: "/reverse", Description: "Reverse"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	geoHandler, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "geocoding_search.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(geoHandler), `path := "https://geocoding-api.example.com/v1/search"`,
+		"trailing slash on the override must be trimmed before concatenation")
+	assert.NotContains(t, string(geoHandler), `path := "https://geocoding-api.example.com/v1//search"`,
+		"double slash from base+path concat must not leak into the generated handler")
+}
+
+// TestGenerateResourceBaseURLWithEndpointTemplateVars — confirms
+// per-resource BaseURL composes correctly with EndpointTemplateVars.
+// A resource declares both a templated host (`{shop}` resolved from
+// env at runtime) and a fixed override host. The generator emits the
+// templated absolute URL into `path`; the client's buildURL substitutes
+// the placeholder before the request fires.
+func TestGenerateResourceBaseURLWithEndpointTemplateVars(t *testing.T) {
+	t.Parallel()
+	apiSpec := minimalSpec("multitenant-multihost")
+	apiSpec.BaseURL = "https://{shop}.api.example.com/v1"
+	apiSpec.EndpointTemplateVars = []string{"shop"}
+	apiSpec.Resources["storefront"] = spec.Resource{
+		Description: "Storefront API on a per-tenant host",
+		BaseURL:     "https://{shop}.storefront-api.example.com/v1",
+		Endpoints: map[string]spec.Endpoint{
+			"products":    {Method: "GET", Path: "/products", Description: "List products"},
+			"collections": {Method: "GET", Path: "/collections", Description: "List collections"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	// Handler emits the override host with the placeholder intact;
+	// resolution happens in the client at request time.
+	handler, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "storefront_products.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(handler),
+		`path := "https://{shop}.storefront-api.example.com/v1/products"`,
+		"override host with {placeholder} markers must flow into path verbatim")
+
+	// Client emits both the EndpointTemplateVars resolution AND the
+	// absolute-URL detection — the combined branch goes through
+	// `buildURL("", path, endpointVars)` for absolute paths.
+	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientStr := string(clientGo)
+	assert.Contains(t, clientStr, "func isAbsoluteURL(path string) bool",
+		"isAbsoluteURL helper must be emitted")
+	assert.Contains(t, clientStr, `buildURL("", path, endpointVars)`,
+		"absolute-URL branch must call buildURL with empty BaseURL so {placeholder} markers in path still substitute")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 // TestGenerateMCPMainStdioDefault confirms that a spec with no mcp: block
 // produces the same stdio-only MCP entry point we've always emitted. Remote
 // transport is opt-in; the default stays on the current behavior so existing

@@ -1327,7 +1327,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			asyncInfo, isAsync := g.AsyncJobs[name+"/"+eName]
 			epData := endpointTemplateData{
 				ResourceName:    name,
-				ResourceBaseURL: resource.BaseURL,
+				ResourceBaseURL: strings.TrimRight(resource.BaseURL, "/"),
 				FuncPrefix:      name,
 				CommandPath:     name,
 				EndpointName:    eName,
@@ -1373,11 +1373,15 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 
 			// Sub-resources inherit the parent's BaseURL override; an
 			// explicit sub_resource.base_url wins. Falls through to the
-			// spec-level BaseURL when both are empty.
+			// spec-level BaseURL when both are empty. Trailing slash is
+			// trimmed so the template's `path := <base><endpoint.path>`
+			// concat doesn't produce `https://x.com/v1//search` when the
+			// override and endpoint path both carry slashes.
 			subResourceBaseURL := subResource.BaseURL
 			if subResourceBaseURL == "" {
 				subResourceBaseURL = resource.BaseURL
 			}
+			subResourceBaseURL = strings.TrimRight(subResourceBaseURL, "/")
 			for eName, endpoint := range subResource.Endpoints {
 				subKey := subName + "/" + eName
 				asyncInfo, isAsync := g.AsyncJobs[subKey]
@@ -1765,8 +1769,12 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 	// Generate promoted top-level commands (user-friendly aliases for nested API commands)
 	// promotedCommands was computed earlier so promoted resources can replace their raw parents.
 	for _, pc := range promotedCommands {
-		// Look up the full resource to pass sibling endpoints/sub-resources
+		// Look up the full resource to pass sibling endpoints/sub-resources.
+		// Trim trailing slash on BaseURL so the promoted handler's
+		// `path := <Resource.BaseURL><Endpoint.Path>` concat doesn't
+		// produce `https://x.com/v1//search`.
 		resource := g.Spec.Resources[pc.ResourceName]
+		resource.BaseURL = strings.TrimRight(resource.BaseURL, "/")
 		promotedData := struct {
 			PromotedName string
 			ResourceName string
