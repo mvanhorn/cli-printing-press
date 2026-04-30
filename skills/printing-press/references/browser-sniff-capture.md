@@ -301,6 +301,38 @@ Do NOT silently proceed without auth when the session has expired. The authentic
 
 If cookies are verified, proceed to Steps 2a/2b capture flow with the authenticated session loaded. The session state file is stored at `$DISCOVERY_DIR/session-state.json`.
 
+#### Step 2a.0: Direct-API-probe fallback (try before browser-use when WAF-protected)
+
+When `probe-reachability` returns `mode: browser_http` (Cloudflare, Vercel, or another WAF challenge in front of the site), browser-use can still get blocked at runtime even though `surf` would clear the challenge. Before launching browser-use, attempt a direct curl probe with a Chrome User-Agent to see whether the site's API surface answers without a resident browser.
+
+This is most likely to succeed against:
+
+- Sites with a discoverable proxy-envelope endpoint (a single internal route such as `/_api/ws/proxy`, `/api/graphql`, or `/internal/rpc` that fronts the public API).
+- Sites whose public API responds to a Chrome UA without JS challenge (the WAF gates HTML pages but exempts `/api/*` paths).
+
+Probe pattern:
+
+```bash
+# Pick a candidate endpoint surfaced by the Phase 1 research brief or
+# the proxy-envelope detection step above.
+PROBE_URL='https://<site>/<candidate-api-path>'
+
+curl -s -o /tmp/probe-response.json -w '%{http_code}\n' \
+  -A 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36' \
+  -H 'Accept: application/json' \
+  "$PROBE_URL"
+```
+
+Decision criteria:
+
+- **HTTP 200 with structured JSON** — the direct probe is viable. Capture a handful of representative endpoint responses to `$DISCOVERY_DIR/direct-probe-*.json`, then proceed to Step 2a or fall through to Step 2b (manual HAR via DevTools) for the structured browser-sniff capture. **Do not skip the structured capture** — `printing-press browser-sniff` needs a HAR or enriched-capture JSON, not loose curl responses, and the replayability check still has to run against the captured envelope.
+- **HTTP 403/429 with a Cloudflare challenge body** (`<title>Just a moment...</title>`, `cf_chl_opt`, Vercel/Akamai equivalents) — the WAF is blocking direct probes. Fall through to browser-use; the captured surface will need Surf transport and possibly a clearance-cookie step.
+- **HTTP 401/403 with a structured auth error** (`{"error":"unauthenticated"}`, `WWW-Authenticate: Bearer`) — direct probing works but the path is auth-only. Document the path in the brief and route to the authenticated-flow capture.
+
+The replayability check still applies regardless of probe outcome: any endpoint discovered through direct probing must round-trip through `surf` with the same Chrome TLS fingerprint the printed CLI will ship, or the captured URLs are unusable in production.
+
+Example: a public read-only catalog site fronted by Cloudflare exposes `/_api/ws/proxy` (the internal proxy-envelope) and answers a Chrome-UA `POST` with the right service/method/path body. The direct probe confirmed the envelope shape and request fields in seconds; the structured browser-sniff still ran via DevTools HAR to capture the full set of paths the proxy fronts.
+
 #### Step 2a: browser-use CLI capture (preferred)
 
 Claude drives browser-use directly via CLI commands — no LLM key needed, no Python API versioning issues. Uses the browser's native Performance API to collect API endpoint URLs from each page.
@@ -749,7 +781,10 @@ If hand-writing or repairing `$DISCOVERY_DIR/traffic-analysis.json`, inspect the
 printing-press schema traffic-analysis > "$DISCOVERY_DIR/traffic-analysis.schema.json"
 ```
 
-Notably, confidence fields are numbers from `0` to `1`, not strings such as `"high"`.
+Two fields trip up hand-edits often enough to call out:
+
+- **`version`** is the literal string `"1"` — not semver, not `"1.0.0"`. The downstream parser rejects any other value with `unsupported traffic analysis version`.
+- **Confidence fields** are numbers from `0` to `1`, not strings such as `"high"`.
 
 #### Step 4: Report and update spec source
 
