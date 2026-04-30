@@ -1304,6 +1304,21 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
+	// Specs that opt into cost-based throttling (Throttling.Enabled) get
+	// the ThrottleState primitives — bucket projection, cost-extension
+	// parser, retry helper. Gated by spec opt-in so existing GraphQL
+	// CLIs (Linear) and REST CLIs regenerate byte-identically. Lives
+	// under internal/client/ alongside graphql.go because the parser is
+	// graphql-shaped today; if a REST API ever exposes cost-bucket data
+	// in response headers this file would extend to read those, but the
+	// surface (ThrottleState, WaitForBudget, HandleThrottleError) is
+	// transport-agnostic.
+	if g.Spec.HasCostThrottling() {
+		if err := g.renderTemplate("throttle.go.tmpl", filepath.Join("internal", "client", "throttle.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering throttle helper: %w", err)
+		}
+	}
+
 	// Specs that declare per-tenant URL placeholders (e.g. Shopify's
 	// "{shop}" / "{version}") get a buildURL helper that resolves the
 	// {var} markers against env-backed Config.TemplateVars at request
