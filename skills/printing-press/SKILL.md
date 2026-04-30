@@ -1663,6 +1663,54 @@ Phase 1 research brief for auth requirements and manually add env var support to
 `config.go` using the pattern: add `APIKey`/`APIKeySource` fields to the Config struct,
 and `os.Getenv("<API>_API_KEY")` in the Load function.
 
+**REQUIRED: Validate narrative `command` strings resolve in the CLI tree.**
+The LLM (or human) authoring `research.json` can name commands that don't actually
+exist in the generated CLI — `<cli> stats` when the real shape is `<cli> reports stats`,
+or a command that was dropped because its endpoint had a complex body. Without a check,
+the broken commands ship to the README's Quick Start (`narrative.quickstart`) and the
+SKILL's recipes (`narrative.recipes`); users copy-paste them and hit `unknown command`
+on the very first invocation.
+
+Build the CLI binary first (the CLI does not need to run against a live API for this
+check; `--help` is offline). Then for each `narrative.quickstart[].command` and
+`narrative.recipes[].command`, strip the binary name and trailing arguments to get the
+command path, and confirm it walks the Cobra tree:
+
+```bash
+QUICKSTART_BINARY="$CLI_WORK_DIR/<api>-pp-cli"
+go build -o "$QUICKSTART_BINARY" "$CLI_WORK_DIR/cmd/<api>-pp-cli"
+
+jq -r '
+  ((.narrative.quickstart // []) | .[] | "quickstart\t" + .command),
+  ((.narrative.recipes // [])    | .[] | "recipes\t"    + .command)
+' "$API_RUN_DIR/research.json" \
+  | while IFS=$'\t' read -r section cmd; do
+      # Drop the leading binary name and any --flag/positional arg suffix.
+      # Keep only the literal subcommand words (everything before the first
+      # word that starts with `-` or that contains `=`/`:`/non-alphanumerics).
+      words=$(printf '%s\n' "$cmd" \
+        | awk '{ for (i=2; i<=NF; i++) { if ($i ~ /^-/ || $i ~ /[^a-zA-Z0-9_-]/) break; printf "%s ", $i } }')
+      if ! "$QUICKSTART_BINARY" $words --help >/dev/null 2>&1; then
+        echo "MISSING [$section]: $cmd → $words" >&2
+      fi
+    done
+```
+
+If any commands are reported missing, fix them in `research.json` before continuing.
+Common causes:
+
+- Resource was renamed during generation (typically the spec uses `users` but the LLM
+  wrote `user` in research.json).
+- The endpoint exists but is hidden (had a complex body and was dropped from the
+  promoted-command surface; reach it via the typed `<resource> <endpoint>` form).
+- The command name is a placeholder (`<cli> example`) that should have been replaced
+  with a real path.
+
+`narrative.quickstart` drives the README Quick Start and `narrative.recipes` drives
+the SKILL.md recipes; getting either wrong silently ships copy-paste-broken examples
+to users. The `--help`-walk check is the cheapest catch and runs offline against the
+just-built binary — no live API access needed.
+
 After the description rewrite, update the lock heartbeat:
 
 ```bash
