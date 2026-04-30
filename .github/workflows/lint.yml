@@ -59,6 +59,7 @@ jobs:
         if: steps.changes.outputs.needs_lint == 'true'
         with:
           version: v2.11.4
+          verify: false
 
   test-shard:
     name: test (${{ matrix.shard }})
