@@ -153,12 +153,12 @@ maintainer sees it.`,
 			}
 
 			if flags.asJSON {
-				return flags.printJSON(cmd, map[string]any{
+				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 					"recorded":  true,
 					"truncated": truncated,
 					"upstream":  upstreamResult,
 					"entry":     entry,
-				})
+				}, flags)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "feedback recorded locally (%d chars%s)\n", len(text), func() string {
 				if truncated {
@@ -193,7 +193,7 @@ func newFeedbackListCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				if os.IsNotExist(err) {
 					if flags.asJSON {
-						return flags.printJSON(cmd, []FeedbackEntry{})
+						return printJSONFiltered(cmd.OutOrStdout(), []FeedbackEntry{}, flags)
 					}
 					return nil
 				}
@@ -214,7 +214,7 @@ func newFeedbackListCmd(flags *rootFlags) *cobra.Command {
 			if limit > 0 && limit < len(entries) {
 				entries = entries[len(entries)-limit:]
 			}
-			return flags.printJSON(cmd, entries)
+			return printJSONFiltered(cmd.OutOrStdout(), entries, flags)
 		},
 	}
 	cmd.Flags().IntVar(&limit, "limit", 20, "Maximum number of recent entries to return")

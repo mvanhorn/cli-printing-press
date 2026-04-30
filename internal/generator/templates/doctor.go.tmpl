@@ -324,7 +324,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			report["version"] = version
 
 			if flags.asJSON {
-				if err := flags.printJSON(cmd, report); err != nil {
+				if err := printJSONFiltered(cmd.OutOrStdout(), report, flags); err != nil {
 					return err
 				}
 				return doctorExitForFailOn(failOn, report)

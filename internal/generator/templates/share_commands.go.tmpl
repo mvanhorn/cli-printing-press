@@ -57,14 +57,14 @@ required to be a git repo — use this for offline handoffs or CI staging.`,
 			if err != nil {
 				return err
 			}
-			return flags.printJSON(cmd, map[string]any{
+			return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 				"event":         "share_export",
 				"repo":          repoPath,
 				"generated_at":  manifest.GeneratedAt,
 				"tables":        len(manifest.Tables),
 				"cli_name":      manifest.CLIName,
 				"schema_version": manifest.SchemaVersion,
-			})
+			}, flags)
 		},
 	}
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Directory to write the snapshot to (required)")
@@ -96,14 +96,14 @@ CI cache warming, or a manual restore from a known-good snapshot.`,
 			if err != nil {
 				return err
 			}
-			return flags.printJSON(cmd, map[string]any{
+			return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 				"event":         "share_import",
 				"repo":          repoPath,
 				"changed":       changed,
 				"generated_at":  manifest.GeneratedAt,
 				"tables":        len(manifest.Tables),
 				"schema_version": manifest.SchemaVersion,
-			})
+			}, flags)
 		},
 	}
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Directory to read the snapshot from (required)")
@@ -156,14 +156,14 @@ Runs idempotently — an unchanged snapshot produces no commit.`,
 					return err
 				}
 			}
-			return flags.printJSON(cmd, map[string]any{
+			return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 				"event":        "share_publish",
 				"repo":         opts.RepoPath,
 				"remote":       opts.Remote,
 				"committed":    committed,
 				"generated_at": manifest.GeneratedAt,
 				"tables":       len(manifest.Tables),
-			})
+			}, flags)
 		},
 	}
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Local repo checkout path (default: runstate dir)")
@@ -210,14 +210,14 @@ cache.enabled is set in the spec.`,
 			if err != nil {
 				return err
 			}
-			return flags.printJSON(cmd, map[string]any{
+			return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
 				"event":        "share_subscribe",
 				"repo":         opts.RepoPath,
 				"remote":       opts.Remote,
 				"changed":      changed,
 				"generated_at": manifest.GeneratedAt,
 				"tables":       len(manifest.Tables),
-			})
+			}, flags)
 		},
 	}
 	cmd.Flags().StringVar(&repoPath, "repo", "", "Local repo checkout path (default: runstate dir)")

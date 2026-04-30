@@ -15,10 +15,7 @@
     "total": 17
   },
   "dead_functions": {
-    "dead": 1,
-    "items": [
-      "printJSONFiltered"
-    ],
+    "dead": 0,
     "total": 49
   },
   "dir": "<ARTIFACT_DIR>/generate-golden-api/printing-press-golden",
@@ -30,7 +27,6 @@
     "with_examples": 0
   },
   "issues": [
-    "1 dead helper functions found",
     "example check skipped: could not build CLI binary: exit status 1"
   ],
   "mcp_surface_parity": {
@@ -56,6 +52,9 @@
     "domain_tables": 1,
     "search_calls_domain": false,
     "sync_calls_domain": true
+  },
+  "print_json_filtered_check": {
+    "checked": 31
   },
   "reimplementation_check": {
     "checked": 0,

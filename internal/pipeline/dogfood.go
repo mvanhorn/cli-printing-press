@@ -21,24 +21,25 @@ import (
 )
 
 type DogfoodReport struct {
-	Dir                   string                      `json:"dir"`
-	SpecPath              string                      `json:"spec_path,omitempty"`
-	Verdict               string                      `json:"verdict"`
-	PathCheck             PathCheckResult             `json:"path_check"`
-	AuthCheck             AuthCheckResult             `json:"auth_check"`
-	BrowserSessionCheck   BrowserSessionCheckResult   `json:"browser_session_check"`
-	DeadFlags             DeadCodeResult              `json:"dead_flags"`
-	DeadFuncs             DeadCodeResult              `json:"dead_functions"`
-	PipelineCheck         PipelineResult              `json:"pipeline_check"`
-	ExampleCheck          ExampleCheckResult          `json:"example_check"`
-	WiringCheck           WiringCheckResult           `json:"wiring_check"`
-	NovelFeaturesCheck    NovelFeaturesCheckResult    `json:"novel_features_check"`
-	MCPSurfaceParityCheck MCPSurfaceResult            `json:"mcp_surface_parity"`
-	ReimplementationCheck ReimplementationCheckResult `json:"reimplementation_check"`
-	SourceClientCheck     SourceClientCheckResult     `json:"source_client_check"`
-	TestPresence          TestPresenceResult          `json:"test_presence"`
-	NamingCheck           NamingCheckResult           `json:"naming_check"`
-	Issues                []string                    `json:"issues"`
+	Dir                    string                       `json:"dir"`
+	SpecPath               string                       `json:"spec_path,omitempty"`
+	Verdict                string                       `json:"verdict"`
+	PathCheck              PathCheckResult              `json:"path_check"`
+	AuthCheck              AuthCheckResult              `json:"auth_check"`
+	BrowserSessionCheck    BrowserSessionCheckResult    `json:"browser_session_check"`
+	DeadFlags              DeadCodeResult               `json:"dead_flags"`
+	DeadFuncs              DeadCodeResult               `json:"dead_functions"`
+	PipelineCheck          PipelineResult               `json:"pipeline_check"`
+	ExampleCheck           ExampleCheckResult           `json:"example_check"`
+	WiringCheck            WiringCheckResult            `json:"wiring_check"`
+	NovelFeaturesCheck     NovelFeaturesCheckResult     `json:"novel_features_check"`
+	MCPSurfaceParityCheck  MCPSurfaceResult             `json:"mcp_surface_parity"`
+	ReimplementationCheck  ReimplementationCheckResult  `json:"reimplementation_check"`
+	SourceClientCheck      SourceClientCheckResult      `json:"source_client_check"`
+	PrintJSONFilteredCheck PrintJSONFilteredCheckResult `json:"print_json_filtered_check"`
+	TestPresence           TestPresenceResult           `json:"test_presence"`
+	NamingCheck            NamingCheckResult            `json:"naming_check"`
+	Issues                 []string                     `json:"issues"`
 }
 
 // NamingCheckResult reports non-canonical command verbs and flag names
@@ -263,6 +264,7 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	report.MCPSurfaceParityCheck = checkMCPSurfaceParity(dir)
 	report.ReimplementationCheck = checkReimplementation(dir, cfg.researchDir)
 	report.SourceClientCheck = checkSourceClients(dir)
+	report.PrintJSONFilteredCheck = checkPrintJSONFiltered(dir)
 	report.TestPresence = checkTestPresence(dir)
 	report.NamingCheck = checkNamingConsistency(dir)
 	report.Issues = collectDogfoodIssues(report, spec != nil)
@@ -1354,6 +1356,7 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	// Surface hand-rolled responses without hard-blocking early iteration.
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.ReimplementationCheck.Suspicious) > 0 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.SourceClientCheck.Findings) > 0 }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.PrintJSONFilteredCheck.Findings) > 0 }},
 }
 
 func deriveDogfoodVerdict(report *DogfoodReport, hasSpec bool) string {
@@ -1440,6 +1443,15 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 		}
 		issues = append(issues, fmt.Sprintf("%d source client file(s) without rate-limit handling: %s",
 			len(report.SourceClientCheck.Findings),
+			strings.Join(parts, "; ")))
+	}
+	if len(report.PrintJSONFilteredCheck.Findings) > 0 {
+		parts := make([]string, 0, len(report.PrintJSONFilteredCheck.Findings))
+		for _, f := range report.PrintJSONFilteredCheck.Findings {
+			parts = append(parts, fmt.Sprintf("%s:%d", f.File, f.Line))
+		}
+		issues = append(issues, fmt.Sprintf("%d call site(s) using flags.printJSON(cmd, v) — silently drops --select/--compact/--csv/--quiet, switch to printJSONFiltered(cmd.OutOrStdout(), v, flags): %s",
+			len(report.PrintJSONFilteredCheck.Findings),
 			strings.Join(parts, "; ")))
 	}
 	if len(report.TestPresence.MissingTests) > 0 {

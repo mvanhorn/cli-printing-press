@@ -243,7 +243,7 @@ func newJobsListCmd(flags *rootFlags) *cobra.Command {
 				rows = rows[:limit]
 			}
 			if flags.asJSON {
-				return flags.printJSON(cmd, rows)
+				return printJSONFiltered(cmd.OutOrStdout(), rows, flags)
 			}
 			headers := []string{"JOB_ID", "RESOURCE", "STATUS", "SUBMITTED", "UPDATED"}
 			tbl := make([][]string, 0, len(rows))
@@ -279,7 +279,7 @@ func newJobsGetCmd(flags *rootFlags) *cobra.Command {
 			for _, r := range rows {
 				if r.JobID == args[0] {
 					if flags.asJSON {
-						return flags.printJSON(cmd, r)
+						return printJSONFiltered(cmd.OutOrStdout(), r, flags)
 					}
 					fmt.Fprintf(cmd.OutOrStdout(), "job_id:    %s\nresource:  %s/%s\nstatus:    %s\nsubmitted: %s\nupdated:   %s\n",
 						r.JobID, r.Resource, r.Endpoint, r.Status, r.SubmittedAt.Format(time.RFC3339), r.UpdatedAt.Format(time.RFC3339))
@@ -341,7 +341,7 @@ func newJobsPruneCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			if flags.asJSON {
-				return flags.printJSON(cmd, map[string]any{"pruned": pruned, "kept": len(kept)})
+				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{"pruned": pruned, "kept": len(kept)}, flags)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "pruned %d, kept %d\n", pruned, len(kept))
 			return nil

@@ -50,6 +50,9 @@
     "search_calls_domain": false,
     "sync_calls_domain": true
   },
+  "print_json_filtered_check": {
+    "checked": 2
+  },
   "reimplementation_check": {
     "checked": 0,
     "exempted_via_store": 0,

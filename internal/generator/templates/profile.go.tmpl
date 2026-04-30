@@ -201,7 +201,7 @@ present (other than --profile and --config).`,
 				return err
 			}
 			if flags.asJSON {
-				return flags.printJSON(cmd, s.Profiles[name])
+				return printJSONFiltered(cmd.OutOrStdout(), s.Profiles[name], flags)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "saved profile %q with %d values\n", name, len(values))
 			return nil
@@ -225,7 +225,7 @@ func newProfileUseCmd(flags *rootFlags) *cobra.Command {
 				return fmt.Errorf("profile %q not found", args[0])
 			}
 			if flags.asJSON {
-				return flags.printJSON(cmd, p)
+				return printJSONFiltered(cmd.OutOrStdout(), p, flags)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "profile %q:\n", p.Name)
 			if p.Description != "" {
@@ -268,7 +268,7 @@ func newProfileListCmd(flags *rootFlags) *cobra.Command {
 						"field_count": len(p.Values),
 					})
 				}
-				return flags.printJSON(cmd, out)
+				return printJSONFiltered(cmd.OutOrStdout(), out, flags)
 			}
 			headers := []string{"NAME", "FIELDS", "DESCRIPTION"}
 			rows := make([][]string, 0, len(names))
@@ -294,7 +294,7 @@ func newProfileShowCmd(flags *rootFlags) *cobra.Command {
 			if p == nil {
 				return fmt.Errorf("profile %q not found", args[0])
 			}
-			return flags.printJSON(cmd, p)
+			return printJSONFiltered(cmd.OutOrStdout(), p, flags)
 		},
 	}
 }
