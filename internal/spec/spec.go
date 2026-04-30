@@ -635,6 +635,9 @@ func ParseBytes(data []byte) (*APISpec, error) {
 	if err := s.validateReservedNames(); err != nil {
 		return nil, err
 	}
+	if err := s.validateFrameworkCobraCollisions(); err != nil {
+		return nil, err
+	}
 	if err := s.Validate(); err != nil {
 		return nil, fmt.Errorf("validation: %w", err)
 	}
@@ -745,6 +748,38 @@ func (s *APISpec) validateReservedNames() error {
 		}
 	}
 	return nil
+}
+
+// validateFrameworkCobraCollisions rejects specs whose top-level resource
+// names would shadow a framework cobra subcommand registered by every
+// printed CLI's root.go. Distinct from validateReservedNames above:
+// that check protects template-file collisions (snake_case keys, file
+// overwrite); this one protects cobra-Use shadowing (kebab-case keys,
+// runtime command hijack).
+//
+// Sub-resources are exempt — they emit under a parent prefix and don't
+// register at the top level — mirroring validateReservedNames' rationale.
+func (s *APISpec) validateFrameworkCobraCollisions() error {
+	for name := range s.Resources {
+		kebab := snakeToKebab(name)
+		if _, reserved := ReservedCobraUseNames[kebab]; reserved {
+			suggestion := name + "_resource"
+			if s.Name != "" {
+				suggestion = snakeToKebab(s.Name) + "_" + name
+			}
+			return fmt.Errorf("resource name %q would shadow framework cobra command %q at runtime (every printed CLI registers `<cli> %s` as a built-in). Rename the resource — e.g. %q",
+				name, kebab, kebab, suggestion)
+		}
+	}
+	return nil
+}
+
+// snakeToKebab converts snake_case identifiers to kebab-case so spec
+// resource names (snake_case by convention) can be looked up against
+// ReservedCobraUseNames (kebab-case keys, matching cobra Use literals).
+// Empty input → empty output.
+func snakeToKebab(s string) string {
+	return strings.ReplaceAll(strings.ToLower(s), "_", "-")
 }
 
 // snakeToPascal converts a snake_case identifier to PascalCase so error

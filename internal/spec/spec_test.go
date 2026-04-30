@@ -2004,6 +2004,133 @@ resources:
 		}
 	})
 }
+
+func TestValidateFrameworkCobraCollisions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("version resource is rejected with a clear shadow hint", func(t *testing.T) {
+		t.Parallel()
+		// PokéAPI's actual failure mode: a /version path produced a `version`
+		// resource that emitted `Use: "version"`, shadowing the framework's
+		// built-in version printer. This now errors at parse time.
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  version:
+    description: API version metadata
+    endpoints:
+      list:
+        method: GET
+        path: /version
+        description: List versions
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `"version"`, "error must name the colliding resource")
+		assert.Contains(t, err.Error(), "shadow framework cobra command", "error must explain the failure mode")
+	})
+
+	t.Run("rename suggestion uses api slug when spec name is set", func(t *testing.T) {
+		t.Parallel()
+		// validateReservedNames runs before this validator, so the easiest
+		// way to exercise the suggestion path is with a colliding name that
+		// is in ReservedCobraUseNames but NOT in ReservedCLIResourceNames.
+		// `version` qualifies — it's a cobra command but has no version.go
+		// template (the version subcommand is added inside root.go.tmpl).
+		input := `name: pokeapi
+base_url: https://pokeapi.co/api/v2
+auth:
+  type: none
+resources:
+  version:
+    description: Version
+    endpoints:
+      list:
+        method: GET
+        path: /version
+        description: List
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "pokeapi_version", "rename suggestion should incorporate the api slug")
+	})
+
+	t.Run("non-colliding resource passes", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  store:
+    description: Store
+    endpoints:
+      list:
+        method: GET
+        path: /stores
+        description: List
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
+	t.Run("substring matches are NOT rejected", func(t *testing.T) {
+		t.Parallel()
+		// `versioning_history` contains `version` as a substring but is
+		// not equal to it after kebab-casing — should pass. Mirrors the
+		// existing customer_feedback test (line ~1947) for the
+		// validateReservedNames check.
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  versioning_history:
+    description: Versioning history
+    endpoints:
+      list:
+        method: GET
+        path: /versioning_history
+        description: List
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
+	t.Run("sub-resources are NOT subject to the framework collision check", func(t *testing.T) {
+		t.Parallel()
+		// Sub-resources emit under <parent>_<sub>.go and produce
+		// new<Parent><Sub>Cmd identifiers, registered as subcommands of
+		// the parent rather than at the root. They cannot shadow framework
+		// commands. Mirrors the existing sub-resource exemption for
+		// validateReservedNames.
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TESTAPI_TOKEN]
+resources:
+  game:
+    description: Game
+    sub_resources:
+      version:
+        description: Per-game version metadata
+        endpoints:
+          list:
+            method: GET
+            path: /game/{id}/version
+            description: List
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+}
+
 func TestCLIDescriptionParses(t *testing.T) {
 	t.Parallel()
 	input := `name: testapi
