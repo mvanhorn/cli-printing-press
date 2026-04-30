@@ -58,3 +58,10 @@ jobs:
       - name: Verify golden outputs
         if: steps.changes.outputs.needs_golden == 'true'
         run: scripts/golden.sh verify
+
+      - name: Dump golden diffs on failure
+        if: failure() && steps.changes.outputs.needs_golden == 'true'
+        run: |
+          echo "::group::Golden diff content"
+          find .gotmp/golden/actual -name '*.diff' -print -exec cat {} \;
+          echo "::endgroup::"
