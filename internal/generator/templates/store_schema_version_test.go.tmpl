@@ -91,9 +91,9 @@ func TestSchemaVersion_RefusesNewerDB(t *testing.T) {
 
 // TestMigrate_ConcurrentFreshDB exercises the BEGIN IMMEDIATE migration
 // transaction. Without it, N goroutines opening the same fresh DB in
-// parallel race per CREATE TABLE statement and tripped SQLITE_BUSY in
-// CI. With it, they serialize on the RESERVED lock acquired at BEGIN
-// time and every Open succeeds.
+// parallel race per CREATE TABLE statement and trip SQLITE_BUSY despite
+// the busy_timeout. With it, they serialize on the RESERVED lock
+// acquired at BEGIN time and every Open succeeds.
 func TestMigrate_ConcurrentFreshDB(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 

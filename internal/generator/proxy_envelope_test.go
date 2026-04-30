@@ -8,17 +8,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestProxyEnvelopeBuildPathHonorsExistingQueryString covers the F6 fix
-// from retro #423: when a proxy-envelope path already carries a query
-// string (e.g. /api?op=list), buildProxyPath must use `&` to append
-// additional params instead of `?`. The old form produced two `?`
-// separators, which the upstream proxy rejects as malformed.
+// TestProxyEnvelopeBuildPathHonorsExistingQueryString — when a proxy-
+// envelope path already carries a query string (e.g. /api?op=list),
+// buildProxyPath must use `&` to append additional params instead of `?`.
+// Two `?` separators in one URL produce a path the upstream proxy rejects
+// as malformed.
 //
 // We assert against the emitted client.go rather than calling the helper
 // directly because buildProxyPath only exists inside the proxy-envelope
-// branch of the template; the unit-test path would require generating
-// and importing the produced package, which is what the integration tests
-// already do via runGoCommand.
+// template branch.
 func TestProxyEnvelopeBuildPathHonorsExistingQueryString(t *testing.T) {
 	t.Parallel()
 

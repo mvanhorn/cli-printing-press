@@ -319,11 +319,14 @@ const (
 )
 
 // withMigrationLock runs fn inside a BEGIN IMMEDIATE / COMMIT pair on
-// conn, retrying both BEGIN and COMMIT on SQLITE_BUSY for up to
-// migrationLockTimeout. The body itself is responsible for using conn
-// (not s.db) so the writes participate in the held transaction.
+// conn, retrying both BEGIN and COMMIT on SQLITE_BUSY against a single
+// shared deadline so a stuck peer caps Open() latency at
+// migrationLockTimeout total — not 2× that, as a per-call deadline would.
+// The body itself is responsible for using conn (not s.db) so the writes
+// participate in the held transaction.
 func withMigrationLock(ctx context.Context, conn *sql.Conn, fn func() error) error {
-	if err := execWithBusyRetry(ctx, conn, "BEGIN IMMEDIATE", "begin migration transaction"); err != nil {
+	deadline := time.Now().Add(migrationLockTimeout)
+	if err := execWithBusyRetry(ctx, conn, "BEGIN IMMEDIATE", "begin migration transaction", deadline); err != nil {
 		return err
 	}
 	committed := false
@@ -337,19 +340,18 @@ func withMigrationLock(ctx context.Context, conn *sql.Conn, fn func() error) err
 		return err
 	}
 
-	if err := execWithBusyRetry(ctx, conn, "COMMIT", "commit migration transaction"); err != nil {
+	if err := execWithBusyRetry(ctx, conn, "COMMIT", "commit migration transaction", deadline); err != nil {
 		return err
 	}
 	committed = true
 	return nil
 }
 
-// execWithBusyRetry runs stmt on conn and retries on SQLITE_BUSY. It
-// covers both BEGIN IMMEDIATE and COMMIT contention; modernc.org/sqlite's
-// busy_timeout does not reliably cover either when multiple connections
-// race for the WAL write lock.
-func execWithBusyRetry(ctx context.Context, conn *sql.Conn, stmt, label string) error {
-	deadline := time.Now().Add(migrationLockTimeout)
+// execWithBusyRetry runs stmt on conn and retries on SQLITE_BUSY until
+// deadline. It covers both BEGIN IMMEDIATE and COMMIT contention;
+// modernc.org/sqlite's busy_timeout does not reliably cover either when
+// multiple connections race for the WAL write lock.
+func execWithBusyRetry(ctx context.Context, conn *sql.Conn, stmt, label string, deadline time.Time) error {
 	backoff := migrationLockBackoffMin
 	for {
 		_, err := conn.ExecContext(ctx, stmt)

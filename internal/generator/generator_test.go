@@ -1285,10 +1285,11 @@ func TestGenerateWithEmptyOwner(t *testing.T) {
 // TestGenerateStoreMigrateUsesBeginImmediate is a fast canary that the
 // emitted store.go runs migrations inside a BEGIN IMMEDIATE transaction
 // pinned to a single connection. Without it, parallel Open() against a
-// fresh DB races per CREATE TABLE statement and trips SQLITE_BUSY in CI.
-// The shipped store_schema_version_test.go.tmpl exercises the actual
-// concurrency; this test fails the generator immediately on regression
-// without waiting for go test ./internal/store to run.
+// fresh DB races per CREATE TABLE statement and trips SQLITE_BUSY despite
+// the busy_timeout. The runtime concurrency check ships into every
+// generated CLI's store package; this test fails the generator
+// immediately on regression so the slower runtime check doesn't have
+// to be the first signal.
 func TestGenerateStoreMigrateUsesBeginImmediate(t *testing.T) {
 	t.Parallel()
 
