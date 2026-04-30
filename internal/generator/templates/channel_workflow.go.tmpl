@@ -145,8 +145,9 @@ func newWorkflowStatusCmd(flags *rootFlags) *cobra.Command {
 	var dbPath string
 
 	cmd := &cobra.Command{
-		Use:   "status",
-		Short: "Show local archive status and sync state for all resources",
+		Use:         "status",
+		Short:       "Show local archive status and sync state for all resources",
+		Annotations: map[string]string{"mcp:read-only": "true"},
 		Example: `  # Show archive status
   {{.Name}}-pp-cli workflow status
 

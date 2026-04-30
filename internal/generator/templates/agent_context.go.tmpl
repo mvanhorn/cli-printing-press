@@ -74,8 +74,9 @@ type agentContextFlag struct {
 func newAgentContextCmd(rootCmd *cobra.Command) *cobra.Command {
 	var pretty bool
 	cmd := &cobra.Command{
-		Use:   "agent-context",
-		Short: "Emit structured JSON describing this CLI for agents",
+		Use:         "agent-context",
+		Short:       "Emit structured JSON describing this CLI for agents",
+		Annotations: map[string]string{"mcp:read-only": "true"},
 		Long: `Outputs a machine-readable description of commands, flags, and auth so
 agents can introspect this CLI at runtime without parsing --help or
 reading source. Schema is versioned via schema_version.`,

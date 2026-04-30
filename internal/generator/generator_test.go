@@ -397,12 +397,20 @@ func TestGenerateAgentContextCommand(t *testing.T) {
 		"func newAgentContextCmd",
 		"agentContextSchemaVersion",
 		`"schema_version"`,
-		`Use:   "agent-context"`,
 		"collectAgentCommands",
 		`"pretty"`,
 	} {
 		assert.Contains(t, src, snippet, "agent_context.go missing %q", snippet)
 	}
+	// Field/value pair matched as a regex so column alignment from gofmt
+	// (which shifts when the longest field name in the literal grows)
+	// doesn't break the assertion.
+	assert.Regexp(t, `Use:\s+"agent-context"`, src, `agent_context.go missing Use: "agent-context"`)
+	// agent-context only reads CLI tree state and emits JSON to stdout.
+	// The runtime walker uses this annotation to set readOnlyHint on
+	// the resulting MCP tool so hosts skip the per-call permission prompt.
+	assert.Regexp(t, `Annotations:\s+map\[string\]string\{"mcp:read-only":\s*"true"\}`, src,
+		"agent_context.go must carry mcp:read-only annotation")
 
 	// The subcommand must be registered in root.go so the CLI picks it up.
 	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))

@@ -13,8 +13,9 @@ import (
 
 func newAPICmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "api [interface]",
-		Short: "Browse all API endpoints by interface name",
+		Use:         "api [interface]",
+		Short:       "Browse all API endpoints by interface name",
+		Annotations: map[string]string{"mcp:read-only": "true"},
 		Long: `Browse and call any API endpoint using the raw interface names.
 
 The friendly top-level commands cover the most common operations.

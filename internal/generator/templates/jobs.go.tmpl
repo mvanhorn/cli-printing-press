@@ -228,8 +228,9 @@ func newJobsListCmd(flags *rootFlags) *cobra.Command {
 	var limit int
 	var all bool
 	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List recent async jobs",
+		Use:         "list",
+		Short:       "List recent async jobs",
+		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			rows, err := readJobRows()
 			if err != nil {
@@ -265,9 +266,10 @@ func newJobsListCmd(flags *rootFlags) *cobra.Command {
 
 func newJobsGetCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
-		Use:   "get <job-id>",
-		Short: "Show the latest state row for a job",
-		Args:  cobra.ExactArgs(1),
+		Use:         "get <job-id>",
+		Short:       "Show the latest state row for a job",
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		Args:        cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rows, err := readJobRows()
 			if err != nil {
