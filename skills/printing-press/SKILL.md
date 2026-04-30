@@ -1931,6 +1931,110 @@ Before moving to shipcheck, verify the build log against the absorb manifest:
 
 The generator handles Priority 0 (data layer) and most of Priority 1 (absorbed API endpoints). Priority 2 (transcendence) is always hand-built — the generator does not produce these. If you skip Priority 2, the CLI ships without the features that differentiate it from every other tool.
 
+**Starter templates for novel commands.** Cobra wiring is mechanical and consistent across novel features; the actual feature work lives in the RunE body. Copy the wrapper below and one of the RunE skeletons that follows, fill in the placeholders from the absorb manifest's transcendence row (`Name`, `Command`, `Description`, `Example`, `WhyItMatters`), and replace the body comments with your implementation. Dogfood, verify, and scorecard still apply to the result — the templates raise the floor without changing what shipcheck checks.
+
+```go
+// internal/cli/<command>.go — replace <command> with the kebab leaf
+// of NovelFeature.Command (e.g., "issues stale" → "issues_stale.go").
+package cli
+
+import (
+	"github.com/spf13/cobra"
+	// add: "encoding/json", "fmt", "<module>/internal/store", etc. as needed
+)
+
+func newXxxCmd(flags *rootFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "<leaf-of-Command>",                    // e.g. "stale" for "issues stale"
+		Short:   "<NovelFeature.Description, one line>", // truncate to ~70 chars
+		Long:    "<optional: Description + WhyItMatters>", // omit if Short is enough
+		Example: "  <cli>-pp-cli <Command> --json",       // from NovelFeature.Example
+		Annotations: map[string]string{
+			// Set "mcp:read-only": "true" only when the command does NOT mutate
+			// external state (lookups, comparisons, aggregations, render views).
+			// Omit the whole map for commands that mutate (post, delete, write file).
+			"mcp:read-only": "true",
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Pick the matching RunE skeleton below (API-call or store-query),
+			// then implement the feature-specific path/query/parsing/formatting.
+			return nil
+		},
+	}
+	// cmd.Flags().StringVar(...) — add flags from the planned --flag list, if any
+	return cmd
+}
+
+// Multi-word Commands like "issues stale": this constructor is registered as
+// a child of the matching spec-resource parent (newIssuesCmd) — wire the
+// AddCommand call inside root.go via local-variable capture:
+//   issuesCmd := newIssuesCmd(flags)
+//   issuesCmd.AddCommand(newIssuesStaleCmd(flags))
+//   rootCmd.AddCommand(issuesCmd)
+// Single-word Commands register directly: rootCmd.AddCommand(newXxxCmd(flags)).
+```
+
+**RunE skeleton — API-call shape** (live data via the generated client):
+
+```go
+RunE: func(cmd *cobra.Command, args []string) error {
+	c, err := flags.newClient()
+	if err != nil {
+		return err
+	}
+	// Replace path with the absorbed endpoint or hand-rolled URL. Use
+	// cliutil.FanoutRun for any --site/--source/--region CSV fan-out;
+	// re-implementing fanout inline is the recipe-goat silent-drop bug.
+	data, err := c.Get("/api/v1/path", nil)
+	if err != nil {
+		return fmt.Errorf("fetching <resource>: %w", err)
+	}
+	// Parse data into your feature's view. Use cliutil.CleanText for any
+	// text extracted from HTML or schema.org JSON-LD; re-implementing
+	// HTML-entity unescape inline is the &#39; bug class.
+	if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
+		wrapped, err := wrapWithProvenance(data, DataProvenance{Source: "live"})
+		if err != nil {
+			return err
+		}
+		return printOutput(cmd.OutOrStdout(), wrapped, true)
+	}
+	// Human/terminal output. printTable / printRows helpers in cliutil.
+	return nil
+},
+```
+
+**RunE skeleton — store-query shape** (offline data via the local SQLite):
+
+```go
+RunE: func(cmd *cobra.Command, args []string) error {
+	db, err := store.OpenWithContext(cmd.Context(), dbPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer db.Close()
+	// Replace the query with your aggregation. The store schema mirrors
+	// the synced resources; `printing-press dogfood --json` shows the
+	// table list. SQL must be SELECT-only; the search/sql gates reject
+	// mutating statements.
+	rows, err := db.DB().QueryContext(cmd.Context(), `SELECT id, data FROM <table> WHERE ...`)
+	if err != nil {
+		return fmt.Errorf("query: %w", err)
+	}
+	defer rows.Close()
+	// Scan rows into your feature's view.
+	if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
+		// Marshal results (non-nil empty slice → "[]", not "null").
+		// Match the search/sql convention: always emit a valid envelope.
+		return nil
+	}
+	// Human/terminal output.
+	return nil
+},
+```
+
+For features that combine both (cache an API response in the store, or fall through to live when the local store is stale), nest one skeleton inside the other and use the `--data-source auto/local/live` flag pattern from the generated `sync` command.
+
 **Shared helpers available to novel code:** The generator emits `internal/cliutil/` in every CLI. When authoring novel commands, prefer `cliutil.FanoutRun` for any aggregation command (any `--site`/`--source`/`--region` CSV fan-out) and `cliutil.CleanText` for any text extracted from HTML or schema.org JSON-LD. Re-implementing these inline is how recipe-goat's trending silent-drop and `&#39;` entity bugs shipped.
 
 **MCP exposure:** The generator emits `internal/mcp/cobratree/`, and the MCP binary mirrors the Cobra tree at startup. When you add, rename, or remove a user-facing Cobra command, the MCP surface follows automatically. Two annotations control how each command appears as an MCP tool:
