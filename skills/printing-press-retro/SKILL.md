@@ -52,7 +52,7 @@ different PRs.
 
 ## Cardinal rules
 
-- The retro is about the Printing Press, not the printed CLI. Do not propose fixes to one specific generated CLI.
+- The retro proposes Printing Press changes that help multiple printed CLIs. Don't propose direct edits to the one CLI that just shipped, and don't propose machine changes whose value is unique to this CLI's quirks — those are printed-CLI fixes wearing a generator costume.
 - **Never upload un-scrubbed artifacts.** All artifacts go through the secrets scrub before upload.
 - **Never modify source directories.** Manuscripts and library directories are read-only. Scrub operations work on temporary copies.
 - **Never skip the secrets scrub,** even if the generation pipeline already ran one. Defense in depth.
