@@ -74,11 +74,17 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	// faithfully creates spurious cmd/<spec.name>-pp-cli/ and
 	// cmd/<spec.name>-pp-mcp/ directories alongside the canonical ones,
 	// and emits server.NewMCPServer(<spec.name>) with the wrong identity.
-	// The fix per CLI is to update spec.yaml's name field to match the
-	// directory; mcp-sync surfaces the divergence rather than silently
-	// generating wrong artifacts.
-	if err := validateSpecNameMatchesDir(cliDir, parsed); err != nil && !opts.Force {
+	//
+	// reconcileSpecNameWithDir auto-fixes the common case (internal YAML
+	// spec with a stale top-level `name:` field) by rewriting the line in
+	// place. For OpenAPI/GraphQL specs the fix is too invasive, so it
+	// falls through to the validator's --force-required error.
+	renamedFrom, err := reconcileSpecNameWithDir(cliDir, parsed)
+	if err != nil && !opts.Force {
 		return Result{}, err
+	}
+	if renamedFrom != "" {
+		fmt.Fprintf(os.Stderr, "mcp-sync: rewrote spec.yaml name from %q to %q to match directory basename\n", renamedFrom, parsed.Name)
 	}
 	// Preserve the existing manifest.json's display_name onto the parsed
 	// spec when the spec itself doesn't carry one. Library CLIs printed
@@ -544,6 +550,61 @@ func validateSpecNameMatchesDir(cliDir string, parsed *spec.APISpec) error {
 			"Fix spec.yaml's `name:` field to match the directory, or pass --force to bypass",
 		parsed.Name, dirName, parsed.Name,
 	)
+}
+
+// internalSpecNameLine matches the top-level `name:` key in an internal
+// YAML spec. Anchored to start of line so it never matches nested keys.
+var internalSpecNameLine = regexp.MustCompile(`(?m)^name:[ \t]*.*$`)
+
+// reconcileSpecNameWithDir wraps validateSpecNameMatchesDir with a safe
+// auto-fix for the common drift case: an internal YAML spec whose
+// top-level `name:` field doesn't match the directory basename. The
+// fix rewrites the line in place and updates parsed.Name in memory so
+// downstream generation uses the corrected name.
+//
+// Auto-fix only applies to internal YAML specs because rewriting an
+// OpenAPI `info.title` or a GraphQL schema is invasive and ambiguous —
+// the existing behavior (refuse with --force) remains correct there.
+// Internal JSON specs are also left to the validator; they're rare
+// enough that a manual fix is fine.
+//
+// Returns the prior name when a rename happened so the caller can log
+// it; returns the empty string when no change was needed; returns the
+// validator's error when auto-fix is not applicable.
+func reconcileSpecNameWithDir(cliDir string, parsed *spec.APISpec) (renamedFrom string, err error) {
+	if parsed == nil || parsed.Name == "" {
+		return "", nil
+	}
+	dirName := filepath.Base(cliDir)
+	if dirName == parsed.Name {
+		return "", nil
+	}
+	// Drift detected. Try internal YAML auto-fix.
+	for _, candidate := range []string{"spec.yaml", "spec.yml"} {
+		path := filepath.Join(cliDir, candidate)
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			if errors.Is(readErr, fs.ErrNotExist) {
+				continue
+			}
+			return "", fmt.Errorf("reading %s: %w", path, readErr)
+		}
+		if openapi.IsOpenAPI(data) {
+			// OpenAPI YAML — name derives from info.title; not safe to rewrite.
+			break
+		}
+		if !internalSpecNameLine.Match(data) {
+			break
+		}
+		rewritten := internalSpecNameLine.ReplaceAll(data, []byte("name: "+dirName))
+		if err := os.WriteFile(path, rewritten, 0o644); err != nil {
+			return "", fmt.Errorf("rewriting %s: %w", path, err)
+		}
+		oldName := parsed.Name
+		parsed.Name = dirName
+		return oldName, nil
+	}
+	return "", validateSpecNameMatchesDir(cliDir, parsed)
 }
 
 // removeStaleMCPHandlersFile deletes internal/mcp/handlers.go when it

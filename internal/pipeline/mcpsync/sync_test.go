@@ -321,6 +321,90 @@ func TestValidateSpecNameMatchesDirNoOpOnEmptySpec(t *testing.T) {
 	}
 }
 
+// TestReconcileSpecNameWithDirAutoFixesInternalYAML — the weather-goat
+// case. Internal YAML spec with `name: weather` in a `weather-goat/`
+// directory gets auto-corrected: spec.yaml is rewritten and the parsed
+// struct's Name is updated in-place so downstream generation uses the
+// corrected name.
+func TestReconcileSpecNameWithDirAutoFixesInternalYAML(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "weather-goat")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	specPath := filepath.Join(cliDir, "spec.yaml")
+	original := "name: weather\ndescription: \"Weather GOAT\"\nversion: \"1.0.0\"\nbase_url: \"https://api.example.com\"\n"
+	require.NoError(t, os.WriteFile(specPath, []byte(original), 0o644))
+
+	parsed := &spec.APISpec{Name: "weather"}
+	renamedFrom, err := reconcileSpecNameWithDir(cliDir, parsed)
+	require.NoError(t, err)
+	assert.Equal(t, "weather", renamedFrom, "should report the prior name")
+	assert.Equal(t, "weather-goat", parsed.Name, "parsed.Name should be corrected in place")
+
+	// File on disk should have the corrected name; the rest of the
+	// content (description, version, base_url) should be untouched.
+	updated, err := os.ReadFile(specPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(updated), "name: weather-goat\n")
+	assert.NotContains(t, string(updated), "name: weather\n",
+		"the unanchored 'name: weather' line should be gone")
+	assert.Contains(t, string(updated), `description: "Weather GOAT"`)
+	assert.Contains(t, string(updated), `base_url: "https://api.example.com"`)
+}
+
+// TestReconcileSpecNameWithDirSkipsOpenAPI — for OpenAPI specs the name
+// derives from info.title and rewriting it is invasive. Auto-fix should
+// not touch the file; the validator's --force-required error should
+// surface unchanged.
+func TestReconcileSpecNameWithDirSkipsOpenAPI(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "newname")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	specPath := filepath.Join(cliDir, "spec.yaml")
+	original := "openapi: 3.0.0\ninfo:\n  title: Old Name\n  version: 1.0.0\npaths: {}\n"
+	require.NoError(t, os.WriteFile(specPath, []byte(original), 0o644))
+
+	parsed := &spec.APISpec{Name: "old-name"}
+	renamedFrom, err := reconcileSpecNameWithDir(cliDir, parsed)
+	require.Error(t, err, "OpenAPI spec must surface the validator error rather than be auto-fixed")
+	assert.Equal(t, "", renamedFrom)
+	assert.Equal(t, "old-name", parsed.Name, "parsed.Name must not change for OpenAPI specs")
+	assert.Contains(t, err.Error(), "--force")
+
+	// File on disk must be untouched.
+	after, err := os.ReadFile(specPath)
+	require.NoError(t, err)
+	assert.Equal(t, original, string(after), "OpenAPI spec must not be rewritten")
+}
+
+// TestReconcileSpecNameWithDirNoOpWhenAligned — no drift, no work.
+func TestReconcileSpecNameWithDirNoOpWhenAligned(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "weather-goat")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	parsed := &spec.APISpec{Name: "weather-goat"}
+	renamedFrom, err := reconcileSpecNameWithDir(cliDir, parsed)
+	require.NoError(t, err)
+	assert.Equal(t, "", renamedFrom, "no rename should be reported when names already match")
+}
+
+// TestReconcileSpecNameWithDirNoYAMLFallsThroughToValidator — when no
+// internal YAML spec exists (e.g., spec.json or schema.graphql), the
+// auto-fix path is skipped and the validator's error surfaces.
+func TestReconcileSpecNameWithDirNoYAMLFallsThroughToValidator(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "weather-goat")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	// Only a non-YAML spec exists.
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.json"), []byte(`{"name":"weather"}`), 0o644))
+
+	parsed := &spec.APISpec{Name: "weather"}
+	renamedFrom, err := reconcileSpecNameWithDir(cliDir, parsed)
+	require.Error(t, err)
+	assert.Equal(t, "", renamedFrom)
+	assert.Equal(t, "weather", parsed.Name, "parsed.Name unchanged when auto-fix declines")
+	assert.Contains(t, err.Error(), "--force")
+}
+
 // TestRemoveStaleMCPHandlersFile locks behavior for the food52 case:
 // older generator templates emitted MCP handlers in a separate
 // internal/mcp/handlers.go; the current template emits everything in
