@@ -154,6 +154,59 @@ func TestGenerateCliutilPackage(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cliutil/...")
 }
 
+// TestGenerateNoUnscopedStoreOpen guards every non-test code path in
+// generated CLIs against silently re-introducing context-less store
+// opens. After PR #441 (store.OpenWithContext) and PR #445 (wrapper-
+// function ctx threading), every emitted call to the store should
+// route through OpenWithContext so caller cancellation propagates
+// through the migration retry loop. A future template addition that
+// regresses to store.Open(...) would defeat the entire ctx story.
+//
+// Excludes test files (cliutil tests, share_test.go) since those
+// don't have a Cobra context and Open(dbPath) → OpenWithContext(
+// context.Background(), dbPath) is the correct fallback there.
+func TestGenerateNoUnscopedStoreOpen(t *testing.T) {
+	t.Parallel()
+
+	// Use the share fixture: it exercises the broadest set of templates
+	// (store, sync, cache, share, doctor, MCP, auto-refresh, workflows)
+	// so the walk covers every emission point that historically called
+	// store.Open.
+	apiSpec := minimalSpec("storeopenguard")
+	apiSpec.Cache.Enabled = true
+	apiSpec.Share.Enabled = true
+	apiSpec.Share.SnapshotTables = []string{"items"}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	// Walk every .go file under internal/, skipping test files.
+	// strings.Contains("store.Open(") matches the no-ctx form but not
+	// "store.OpenWithContext(" because the literal "Open(" never appears
+	// in the longer name.
+	internalDir := filepath.Join(outputDir, "internal")
+	err := filepath.Walk(internalDir, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.Contains(string(data), "store.Open(") {
+			rel := filepath.ToSlash(strings.TrimPrefix(path, outputDir+"/"))
+			t.Errorf("%s contains store.Open( without ctx — use store.OpenWithContext(ctx, ...) instead", rel)
+		}
+		return nil
+	})
+	require.NoError(t, err, "walking generated CLI tree")
+}
+
 // TestGenerateFreshnessHelperEmitted verifies that the cliutil freshness
 // helper and auto-refresh wrapper are emitted when the spec opts into
 // cache, and that the resulting CLI compiles end-to-end and its cliutil
