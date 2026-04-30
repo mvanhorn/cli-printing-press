@@ -8,26 +8,19 @@ import (
 )
 
 // BuildPath appends query params to a request path for proxy-envelope
-// clients. Improvements over the prior string-concat implementation it
-// replaces:
+// clients. Non-obvious contract:
 //
-//   - Param values containing `?`, `&`, `=`, `#` are URL-encoded
-//     instead of corrupting the resulting URL.
-//   - Output ordering is deterministic (url.Values.Encode sorts keys
-//     alphabetically); the prior map-range form produced non-stable
-//     output across runs.
-//   - Paths that already carry a query string (e.g. `/api?op=list`)
-//     merge new params through the parsed URL rather than emitting a
-//     second `?` separator.
-//   - Trailing `?` and `&` in the spec-declared path are normalized.
+//   - Empty param values are dropped (not encoded as `key=`).
+//   - When a key appears in both the path's existing query string and
+//     the params map, params wins (url.Values.Set semantics).
+//   - Output ordering is alphabetical-by-key (url.Values.Encode), so
+//     callers can fingerprint the result safely.
+//   - Malformed paths that fail url.Parse are returned verbatim; the
+//     proxy request will surface the parse error during dispatch.
 //
-// Empty param values are dropped — matching the prior helper's
-// contract (empty value → param omitted, not encoded as `key=`).
-//
-// When a key appears in both the path's existing query string and the
-// params map, the params map wins (url.Values.Set semantics). The
-// previous helper concatenated both values, which produced
-// duplicate-key output the proxy endpoint rejected as malformed.
+// Optimized for correctness, not throughput. The proxy-envelope path
+// blocks on a network call (~tens to hundreds of ms); a few extra
+// allocations here are invisible against that.
 func BuildPath(path string, params map[string]string) string {
 	if len(params) == 0 {
 		return path
@@ -35,25 +28,22 @@ func BuildPath(path string, params map[string]string) string {
 
 	u, err := url.Parse(path)
 	if err != nil {
-		// Malformed paths are returned unchanged; the proxy request
-		// will surface the parse error to the caller during dispatch.
 		return path
 	}
 
 	q := u.Query()
-	added := false
 	for k, v := range params {
 		if v == "" {
 			continue
 		}
 		q.Set(k, v)
-		added = true
-	}
-	if !added {
-		// All-empty params: don't rewrite RawQuery, return verbatim so
-		// a path that carried in `?op=list` keeps it byte-for-byte.
-		return path
 	}
 	u.RawQuery = q.Encode()
+	if u.RawQuery == "" {
+		// url.Parse sets ForceQuery on a trailing `?` so u.String()
+		// preserves it; clear the flag when the merged query is empty
+		// so the doc-promised normalization actually holds.
+		u.ForceQuery = false
+	}
 	return u.String()
 }

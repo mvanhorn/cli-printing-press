@@ -47,9 +47,8 @@ func TestProxyEnvelopeBuildPathEmittedAsCliutil(t *testing.T) {
 		"client.go must not carry an inline buildProxyPath; the helper moved to cliutil")
 }
 
-// TestCliutilProxyPath_NotEmittedForRESTClients verifies the helper is
-// scoped to proxy-envelope CLIs. Shipping it (and its test file) into
-// every generated CLI would be dead weight for the REST default.
+// TestCliutilProxyPath_NotEmittedForRESTClients keeps the helper
+// scoped — REST CLIs would carry it as dead weight.
 func TestCliutilProxyPath_NotEmittedForRESTClients(t *testing.T) {
 	t.Parallel()
 

@@ -72,10 +72,6 @@ func serviceForPath(path string) string {
 {{- end}}
 	return "{{.Name}}" // default: API name slug
 }
-
-// Path-building for the proxy envelope is in cliutil.BuildPath so it
-// can be unit-tested directly. The cliutil package is generator-emitted
-// alongside this client when ClientPattern == "proxy-envelope".
 {{end}}
 
 // APIError carries HTTP status information for structured exit codes.

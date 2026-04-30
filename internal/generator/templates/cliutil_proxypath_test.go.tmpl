@@ -75,10 +75,16 @@ func TestBuildPath(t *testing.T) {
 			want:   "/api/things?a=1&c=3",
 		},
 		{
-			name:   "all empty values returns path verbatim",
+			name:   "all empty values preserves an existing query string",
 			path:   "/api/things?op=list",
 			params: map[string]string{"a": "", "b": ""},
 			want:   "/api/things?op=list",
+		},
+		{
+			name:   "all empty values normalizes a trailing question mark",
+			path:   "/api/things?",
+			params: map[string]string{"a": "", "b": ""},
+			want:   "/api/things",
 		},
 		{
 			name:   "trailing question mark in path is normalized",
@@ -152,5 +158,49 @@ func TestBuildPath_MalformedPathReturnedUnchanged(t *testing.T) {
 	got := BuildPath(malformed, map[string]string{"q": "v"})
 	if got != malformed {
 		t.Fatalf("BuildPath on malformed path: got %q, want %q (verbatim)", got, malformed)
+	}
+}
+
+// BenchmarkBuildPath establishes a baseline for the per-request cost.
+// Run with `go test -bench=. ./internal/cliutil` to compare against
+// future changes — the helper sits on the proxy-envelope hot path and
+// any optimization (parsed-path caching, sync.Pool) needs a numeric
+// anchor before it pays for itself.
+func BenchmarkBuildPath(b *testing.B) {
+	cases := []struct {
+		name   string
+		path   string
+		params map[string]string
+	}{
+		{
+			name:   "no params",
+			path:   "/api/things",
+			params: nil,
+		},
+		{
+			name: "small typical proxy-envelope params",
+			path: "/api/things?op=list",
+			params: map[string]string{
+				"q": "test", "limit": "20", "cursor": "abc123", "sort": "name", "order": "asc",
+			},
+		},
+		{
+			name: "many params with encoding",
+			path: "/api/things",
+			params: map[string]string{
+				"a": "1", "b": "2", "c": "3?", "d": "4&5", "e": "6=7", "f": "café",
+				"g": "7", "h": "8", "i": "9", "j": "10", "k": "11", "l": "12",
+				"m": "13", "n": "14", "o": "15", "p": "16", "q": "17", "r": "18",
+				"s": "19", "t": "20",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				_ = BuildPath(tc.path, tc.params)
+			}
+		})
 	}
 }
