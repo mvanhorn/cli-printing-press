@@ -24,6 +24,13 @@ jobs:
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
+        with:
+          # Fall back to GITHUB_TOKEN when RELEASE_PLEASE_TOKEN is unset.
+          # The default GITHUB_TOKEN cannot trigger workflows, so release PRs
+          # opened with it skip CI and bypass tripwires like
+          # TestModulePathMatchesMajorVersion. A PAT or App token in
+          # RELEASE_PLEASE_TOKEN restores normal pull_request triggers.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
   goreleaser:
     needs: release-please
