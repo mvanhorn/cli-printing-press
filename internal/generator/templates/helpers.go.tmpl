@@ -445,30 +445,16 @@ func paginatedGet(c interface {
 	return json.RawMessage(result), nil
 }
 
-// printJSONFiltered marshals v to JSON, applies --select / --compact filters
-// from the rootFlags, and prints the result. Hand-written novel commands MUST
-// use this instead of flags.printJSON when they emit Go-typed values: direct
-// flags.printJSON drops both filters silently, so `<cli> <novel> --json
-// --select foo` returns the full payload. Endpoint-mirror commands stay on
-// printOutputWithFlags, which already composes these helpers; novel commands
-// build a typed slice/struct and need this helper to honor the same
-// agent-facing flag contract.
-func printJSONFiltered(cmd interface {
-	OutOrStdout() io.Writer
-}, v any, flags *rootFlags) error {
+// printJSONFiltered marshals a Go-typed value through the same output
+// pipeline endpoint-mirror commands use. Hand-written novel commands that
+// build a typed slice/struct call this so --select, --compact, --csv, and
+// --quiet all behave the same way as on generator-emitted commands.
+func printJSONFiltered(w io.Writer, v any, flags *rootFlags) error {
 	raw, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	filtered := json.RawMessage(raw)
-	if flags.selectFields != "" {
-		filtered = filterFields(filtered, flags.selectFields)
-	} else if flags.compact {
-		filtered = compactFields(filtered)
-	}
-	enc := json.NewEncoder(cmd.OutOrStdout())
-	enc.SetIndent("", "  ")
-	return enc.Encode(filtered)
+	return printOutputWithFlags(w, json.RawMessage(raw), flags)
 }
 
 // filterFields keeps only the specified fields (comma-separated) from JSON objects/arrays.

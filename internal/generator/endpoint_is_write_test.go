@@ -10,13 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestEndpointIsWriteCommand covers the semantic-aware write classifier from
-// retro #423 (F1). The previous methodIsWrite returned true for every POST,
-// which produced the wrong README boilerplate for read-only APIs that use
-// POST for queries (search-all endpoints, GraphQL operations, RPC-style
-// search APIs). The new endpointIsWriteCommand combines verb + operationId
-// prefix + body shape + mcp:read-only annotation so genuine queries flip
-// HasWriteCommands false and genuine mutations stay true.
+// TestEndpointIsWriteCommand covers the four classification signals: HTTP
+// verb, operationId prefix, body shape, and the mcp:read-only annotation.
+// POST endpoints used as queries (search, GraphQL, RPC-style) must classify
+// as reads; genuine mutations must classify as writes regardless of body
+// shape coincidence.
 func TestEndpointIsWriteCommand(t *testing.T) {
 	t.Parallel()
 
@@ -199,11 +197,10 @@ func TestEndpointIsWriteCommand(t *testing.T) {
 	}
 }
 
-// TestHasWriteCommands_PostAsQueryFlipsHasWriteFalse verifies that the upgrade
-// to endpointIsWriteCommand propagates correctly through resourceHasWriteCommand
-// and hasWriteCommands. A spec with only POST search endpoints should report
-// HasWriteCommands as false so the README emits "Read-only by default" instead
-// of the Retryable/Confirmable/Piped-input boilerplate.
+// TestHasWriteCommands_PostAsQueryFlipsHasWriteFalse verifies the
+// classifier propagates through resourceHasWriteCommand and hasWriteCommands
+// so a resource containing only a POST search endpoint flips HasWriteCommands
+// to false — that signal drives the README's read-only branching.
 func TestHasWriteCommands_PostAsQueryFlipsHasWriteFalse(t *testing.T) {
 	t.Parallel()
 
@@ -226,125 +223,90 @@ func TestHasWriteCommands_PostAsQueryFlipsHasWriteFalse(t *testing.T) {
 		"a resource with only POST search endpoints should classify as read-only")
 }
 
-// TestPromotedCommand_PostEndpointEmitsPost is the integration counterpart
-// to TestEndpointIsWriteCommand. The previous template hardcoded
-// `c.Get(path, params)` for every promoted endpoint, so promoting a POST
-// endpoint produced a runtime HTTP 400 from the wrong-verb mismatch. The
-// fix adds a verb branch in command_promoted.go.tmpl that emits
-// `c.Post(path, body)` for non-GET endpoints. This test builds a fixture
-// CLI with a single POST endpoint (which gets promoted) and asserts the
-// emitted promoted command file contains c.Post, not c.Get.
-func TestPromotedCommand_PostEndpointEmitsPost(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := minimalSpec("post-promoted")
-	// Replace the default GET-only resource with one that has a single
-	// POST endpoint — single-endpoint resources get promoted to top-level
-	// commands.
-	apiSpec.Resources = map[string]spec.Resource{
-		"queries": {
-			Description: "Search the network",
-			Endpoints: map[string]spec.Endpoint{
-				"searchAll": {
-					Method:      "POST",
-					Path:        "/search-all",
-					Description: "Search collections by free text",
-					Body: []spec.Param{
-						{Name: "queryText", Type: "string"},
-					},
-				},
+// TestPromotedCommandVerbBranching covers the integration path: the
+// rendered promoted command emits the same HTTP verb the spec declared,
+// so a POST-only endpoint hits c.Post and a GET-only endpoint stays on
+// c.Get/resolveRead.
+func TestPromotedCommandVerbBranching(t *testing.T) {
+	cases := []struct {
+		name         string
+		apiName      string
+		resourceName string
+		endpointName string
+		endpoint     spec.Endpoint
+		mustContain  []string
+		mustNotHave  []string
+	}{
+		{
+			name:         "POST endpoint emits c.Post",
+			apiName:      "post-promoted",
+			resourceName: "queries",
+			endpointName: "searchAll",
+			endpoint: spec.Endpoint{
+				Method:      "POST",
+				Path:        "/search-all",
+				Description: "Search collections by free text",
+				Body:        []spec.Param{{Name: "queryText", Type: "string"}},
 			},
+			mustContain: []string{"c.Post("},
+			mustNotHave: []string{"c.Get(path, params)"},
+		},
+		{
+			name:         "GET endpoint keeps c.Get / resolveRead",
+			apiName:      "get-promoted",
+			resourceName: "items",
+			endpointName: "listItems",
+			endpoint: spec.Endpoint{
+				Method:      "GET",
+				Path:        "/items",
+				Description: "List items",
+			},
+			mustNotHave: []string{"c.Post(", "c.Put(", "c.Patch("},
 		},
 	}
 
-	outputDir := filepath.Join(t.TempDir(), "post-promoted-pp-cli")
-	require.NoError(t, New(apiSpec, outputDir).Generate())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	// Locate the promoted command file. The generator's promote logic
-	// emits `promoted_<resource-or-endpoint>.go`; check both possibilities.
-	candidates := []string{
-		filepath.Join(outputDir, "internal", "cli", "promoted_queries.go"),
-		filepath.Join(outputDir, "internal", "cli", "promoted_search-all.go"),
-		filepath.Join(outputDir, "internal", "cli", "promoted_searchall.go"),
-		filepath.Join(outputDir, "internal", "cli", "promoted_searchAll.go"),
-	}
-	var found string
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			found = c
-			break
-		}
-	}
-	require.NotEmpty(t, found, "expected a promoted command file in internal/cli/")
-
-	content, err := os.ReadFile(found)
-	require.NoError(t, err)
-	src := string(content)
-
-	require.Contains(t, src, "c.Post(",
-		"a POST-only promoted endpoint should emit c.Post, not c.Get")
-	require.NotContains(t, src, "c.Get(path, params)",
-		"the promoted POST endpoint should NOT contain a c.Get(path, params) call (verb-incorrect path)")
-}
-
-// TestPromotedCommand_GetEndpointStillEmitsGet is the negative guard for
-// the verb branch. GET endpoints continue to emit c.Get(path, params)
-// byte-identically — the verb branch only changes behavior for non-GET.
-func TestPromotedCommand_GetEndpointStillEmitsGet(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := minimalSpec("get-promoted")
-	apiSpec.Resources = map[string]spec.Resource{
-		"items": {
-			Description: "Public items",
-			Endpoints: map[string]spec.Endpoint{
-				"listItems": {
-					Method:      "GET",
-					Path:        "/items",
-					Description: "List items",
+			apiSpec := minimalSpec(tc.apiName)
+			apiSpec.Resources = map[string]spec.Resource{
+				tc.resourceName: {
+					Description: tc.resourceName,
+					Endpoints:   map[string]spec.Endpoint{tc.endpointName: tc.endpoint},
 				},
-			},
-		},
+			}
+
+			outputDir := filepath.Join(t.TempDir(), tc.apiName+"-pp-cli")
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			src := readPromotedCommandFile(t, outputDir)
+			for _, want := range tc.mustContain {
+				require.Contains(t, src, want)
+			}
+			for _, banned := range tc.mustNotHave {
+				require.NotContains(t, src, banned)
+			}
+		})
 	}
-
-	outputDir := filepath.Join(t.TempDir(), "get-promoted-pp-cli")
-	require.NoError(t, New(apiSpec, outputDir).Generate())
-
-	candidates := []string{
-		filepath.Join(outputDir, "internal", "cli", "promoted_items.go"),
-		filepath.Join(outputDir, "internal", "cli", "promoted_list-items.go"),
-		filepath.Join(outputDir, "internal", "cli", "promoted_listitems.go"),
-		filepath.Join(outputDir, "internal", "cli", "promoted_listItems.go"),
-	}
-	var found string
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			found = c
-			break
-		}
-	}
-	require.NotEmpty(t, found, "expected a promoted command file in internal/cli/")
-
-	content, err := os.ReadFile(found)
-	require.NoError(t, err)
-	src := string(content)
-
-	// GET endpoints should never emit c.Post/Put/Patch/Delete in the
-	// promoted command, even when the HasStore branch routes through
-	// resolveRead instead of c.Get directly. The verb branch only
-	// changes behavior for non-GET methods.
-	require.NotContains(t, src, "c.Post(",
-		"a GET promoted endpoint must not contain c.Post — verb branch only fires for non-GET")
-	require.NotContains(t, src, "c.Put(",
-		"a GET promoted endpoint must not contain c.Put")
-	require.NotContains(t, src, "c.Patch(",
-		"a GET promoted endpoint must not contain c.Patch")
 }
 
-// TestHasWriteCommands_GenuineMutationsStayTrue is the negative guard: an
-// API with POST createUser still classifies as write so its README keeps
-// the Retryable boilerplate. Prevents over-broad application of the new
-// semantic signals.
+// readPromotedCommandFile finds the single promoted_*.go file the generator
+// emits for a fixture spec with one resource. Naming varies (resource name
+// vs. kebabed endpoint name vs. camelCase), so the lookup glob-matches.
+func readPromotedCommandFile(t *testing.T, outputDir string) string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(outputDir, "internal", "cli", "promoted_*.go"))
+	require.NoError(t, err)
+	require.Len(t, matches, 1, "expected exactly one promoted command file in internal/cli/")
+	content, err := os.ReadFile(matches[0])
+	require.NoError(t, err)
+	return string(content)
+}
+
+// TestHasWriteCommands_GenuineMutationsStayTrue is the negative guard: a
+// POST createUser endpoint with a write-shape body must still classify as a
+// write so the README keeps emitting the mutation-aware Agent Usage bullets.
 func TestHasWriteCommands_GenuineMutationsStayTrue(t *testing.T) {
 	t.Parallel()
 

@@ -773,11 +773,8 @@ func resourceHasWriteCommand(resource spec.Resource) bool {
 	return false
 }
 
-// methodIsWrite is a verb-only fallback for callers that don't have an
-// Endpoint in hand. Prefer endpointIsWriteCommand when the endpoint and
-// its operation name are available — it folds in semantic signals
-// (operationId prefix, body shape, mcp:read-only annotation) so POST
-// endpoints used for search/query stay correctly classified as reads.
+// methodIsWrite is the verb-only fallback for callers without an Endpoint
+// in hand. Prefer endpointIsWriteCommand when one is available.
 func methodIsWrite(method string) bool {
 	switch strings.ToUpper(strings.TrimSpace(method)) {
 	case "POST", "PUT", "PATCH", "DELETE":
@@ -787,24 +784,15 @@ func methodIsWrite(method string) bool {
 	}
 }
 
-// readOperationIDPrefixes are operationId-name prefixes that signal a read
-// operation regardless of HTTP verb. The Postman /search-all proxy, every
-// GraphQL CLI's POST /graphql query, and any RPC-style search endpoint
-// land here. The list is intentionally tight: prefixes match against the
-// leading characters of the operation id only, so a write-style operation
-// whose name starts with `get` (e.g., a literal `get` operation that
-// mutates) would be misclassified — but in practice nobody names mutations
-// `get*`, and the body-shape and verb signals catch other shapes.
+// readOperationIDPrefixes signal a read regardless of HTTP verb. Matched
+// against leading characters of the operation id, case-insensitive.
 var readOperationIDPrefixes = []string{
 	"get", "list", "search", "find", "query", "count", "describe", "fetch",
 }
 
-// readBodyParamNames are body-parameter names that mark filter-shape
-// payloads. A POST endpoint whose body params are ALL drawn from this set
-// is acting as a query — paginating, sorting, filtering — not a mutation.
-// The shape signal only kicks in when every body param matches, so an
-// endpoint with `filter` + `name` (a write-shape param mixed in) stays
-// classified as a write.
+// readBodyParamNames are filter-shape body field names. A POST whose body
+// params are entirely drawn from this set is acting as a query, not a
+// mutation; mixing in any unknown name flips the endpoint back to write.
 var readBodyParamNames = map[string]bool{
 	"query":     true,
 	"querytext": true,
@@ -824,26 +812,14 @@ var readBodyParamNames = map[string]bool{
 }
 
 // endpointIsWriteCommand returns true when the endpoint mutates external
-// state. It combines four signals so POST-as-query endpoints aren't
-// misclassified as writes:
+// state. Read signals are checked in cost order: annotation, verb, name
+// prefix, body shape. Fail-closed when none fire so unknown shapes stay
+// classified as writes.
 //
-//  1. Explicit `mcp:read-only` annotation in Endpoint.Meta (highest
-//     precedence — set when the spec author has declared intent).
-//  2. HTTP verb: GET / HEAD / OPTIONS are always read.
-//  3. operationId prefix: names starting with get / list / search / find /
-//     query / count / describe / fetch are reads even when the verb is POST.
-//  4. Body shape: a POST whose body params are entirely filter-shape
-//     (query, filter, limit, offset, etc.) is acting as a query.
-//
-// When none of the read signals fire, the endpoint is classified as a
-// write (fail-closed). The opName argument is the map key from
-// Resource.Endpoints — that's the operation id used elsewhere in the
-// generator.
+// opName is the map key from Resource.Endpoints (the operation id).
 func endpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
-	if endpoint.Meta != nil {
-		if v, ok := endpoint.Meta["mcp:read-only"]; ok && strings.EqualFold(strings.TrimSpace(v), "true") {
-			return false
-		}
+	if v, ok := endpoint.Meta["mcp:read-only"]; ok && strings.EqualFold(strings.TrimSpace(v), "true") {
+		return false
 	}
 	if !methodIsWrite(endpoint.Method) {
 		return false
@@ -854,15 +830,18 @@ func endpointIsWriteCommand(endpoint spec.Endpoint, opName string) bool {
 			return false
 		}
 	}
-	if len(endpoint.Body) > 0 {
-		allFilterShape := true
-		for _, p := range endpoint.Body {
-			if !readBodyParamNames[strings.ToLower(strings.TrimSpace(p.Name))] {
-				allFilterShape = false
-				break
-			}
-		}
-		if allFilterShape {
+	return !bodyIsAllFilterShape(endpoint.Body)
+}
+
+// bodyIsAllFilterShape reports whether every body param's name is in
+// readBodyParamNames. Returns false for empty bodies so a POST with no body
+// (the fail-closed default) stays classified as a write.
+func bodyIsAllFilterShape(body []spec.Param) bool {
+	if len(body) == 0 {
+		return false
+	}
+	for _, p := range body {
+		if !readBodyParamNames[strings.ToLower(strings.TrimSpace(p.Name))] {
 			return false
 		}
 	}
