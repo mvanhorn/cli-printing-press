@@ -71,6 +71,10 @@ func serviceForPath(path string) string {
 }
 
 // buildProxyPath appends query params into the path string for the envelope.
+// When the spec-declared path already carries a query string (e.g. an
+// /api?op=list endpoint that takes additional params), use `&` as the
+// joiner so the result stays parseable instead of producing two `?`
+// separators.
 func buildProxyPath(path string, params map[string]string) string {
 	if len(params) == 0 {
 		return path
@@ -84,7 +88,11 @@ func buildProxyPath(path string, params map[string]string) string {
 	if len(parts) == 0 {
 		return path
 	}
-	return path + "?" + strings.Join(parts, "&")
+	joiner := "?"
+	if strings.Contains(path, "?") {
+		joiner = "&"
+	}
+	return path + joiner + strings.Join(parts, "&")
 }
 {{end}}
 
