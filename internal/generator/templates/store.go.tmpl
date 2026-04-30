@@ -91,18 +91,6 @@ func (s *Store) SchemaVersion() (int, error) {
 	return v, nil
 }
 
-// setSchemaVersion stamps PRAGMA user_version. The value is not parameterizable
-// in SQLite's PRAGMA syntax, so it is formatted into the statement; migrate()
-// only calls this with the compile-time StoreSchemaVersion constant, so there
-// is no untrusted input.
-func (s *Store) setSchemaVersion(version int) error {
-	stmt := fmt.Sprintf(`PRAGMA user_version = %d`, version)
-	if _, err := s.db.Exec(stmt); err != nil {
-		return fmt.Errorf("stamp user_version: %w", err)
-	}
-	return nil
-}
-
 // ensureColumn adds a column to an existing table if it isn't already
 // present. It is the upgrade-path safety valve for schema additions:
 // CREATE TABLE IF NOT EXISTS is a no-op when the table already exists, so
@@ -277,7 +265,7 @@ func (s *Store) migrate() error {
 	// modernc.org/sqlite's busy_timeout does not always cover write-write
 	// contention at BEGIN/COMMIT time, so we retry both explicitly on
 	// SQLITE_BUSY for up to migrationLockTimeout.
-	if err := withMigrationLock(ctx, conn, func() error {
+	return withMigrationLock(ctx, conn, func() error {
 		// Reading user_version inside the lock avoids racing against
 		// another fresh-DB initializer that hasn't yet stamped the
 		// version (which would manifest as a transient SQLITE_BUSY).
@@ -306,10 +294,7 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("stamp user_version: %w", err)
 		}
 		return nil
-	}); err != nil {
-		return err
-	}
-	return nil
+	})
 }
 
 const (
@@ -320,10 +305,14 @@ const (
 
 // withMigrationLock runs fn inside a BEGIN IMMEDIATE / COMMIT pair on
 // conn, retrying both BEGIN and COMMIT on SQLITE_BUSY against a single
-// shared deadline so a stuck peer caps Open() latency at
-// migrationLockTimeout total — not 2× that, as a per-call deadline would.
-// The body itself is responsible for using conn (not s.db) so the writes
-// participate in the held transaction.
+// shared deadline so a stuck peer caps Open() latency at roughly
+// migrationLockTimeout — not 2× that, as a per-call deadline would. The
+// real upper bound is migrationLockTimeout plus one trailing backoff
+// interval (≤100ms) plus the driver's busy_timeout for the in-flight
+// Exec, since the deadline is checked after each failed attempt rather
+// than as a hard wall-clock cutoff. The body itself is responsible for
+// using conn (not s.db) so the writes participate in the held
+// transaction.
 func withMigrationLock(ctx context.Context, conn *sql.Conn, fn func() error) error {
 	deadline := time.Now().Add(migrationLockTimeout)
 	if err := execWithBusyRetry(ctx, conn, "BEGIN IMMEDIATE", "begin migration transaction", deadline); err != nil {
@@ -331,8 +320,17 @@ func withMigrationLock(ctx context.Context, conn *sql.Conn, fn func() error) err
 	}
 	committed := false
 	defer func() {
-		if !committed {
-			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		if committed {
+			return
+		}
+		// ROLLBACK uses context.Background() so caller-context cancellation
+		// can't strand the connection in an open transaction. A failed
+		// rollback is rare on local SQLite (broken file handle, fatal
+		// driver error) but worth surfacing — silent swallow leaves a
+		// pinned connection returned to the pool with state that will
+		// confuse later queries.
+		if _, rerr := conn.ExecContext(context.Background(), "ROLLBACK"); rerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: store migration rollback failed: %v\n", rerr)
 		}
 	}()
 
@@ -375,16 +373,22 @@ func execWithBusyRetry(ctx context.Context, conn *sql.Conn, stmt, label string, 
 	}
 }
 
-// isSQLiteBusy reports whether err is a SQLITE_BUSY/locked condition. We
-// match on the error string because the modernc.org/sqlite error type is
-// not exported in a way the generated code can import without dragging
-// the driver package into every store consumer.
+// isSQLiteBusy reports whether err is a retryable SQLite lock condition.
+// Covers both the file-level WAL writer race (SQLITE_BUSY / "database is
+// locked") and the table-level shared-cache contention (SQLITE_LOCKED /
+// "database table is locked"). The match is on the error string because
+// modernc.org/sqlite does not export an error type the generated code
+// can switch on without dragging the driver package into every store
+// consumer.
 func isSQLiteBusy(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "SQLITE_BUSY") || strings.Contains(msg, "database is locked")
+	return strings.Contains(msg, "SQLITE_BUSY") ||
+		strings.Contains(msg, "SQLITE_LOCKED") ||
+		strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked")
 }
 
 func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, data json.RawMessage) error {

@@ -95,6 +95,11 @@ func TestSchemaVersion_RefusesNewerDB(t *testing.T) {
 // the busy_timeout. With it, they serialize on the RESERVED lock
 // acquired at BEGIN time and every Open succeeds.
 func TestMigrate_ConcurrentFreshDB(t *testing.T) {
+	if testing.Short() {
+		t.Skip("concurrent migration test can take up to migrationLockTimeout under contention")
+	}
+	t.Parallel()
+
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 
 	const n = 8
