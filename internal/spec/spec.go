@@ -113,9 +113,9 @@ type APISpec struct {
 // --throttle-mode flag) is shape-agnostic; only the parser that reads the
 // API's response into a ThrottleStatus differs per shape, because every
 // API surfaces its calculated cost in a different place. Adding a new
-// shape means: (1) add a constant here, (2) extend ThrottlingConfig.Validate
-// to accept it, (3) add the parser block to graphql_client.go.tmpl gated
-// on `eq .Throttling.Shape "<name>"`. No core code changes.
+// shape means: (1) add a constant here, (2) extend validateThrottling to
+// accept it, (3) add the parser block to graphql_client.go.tmpl gated on
+// `eq .Throttling.Shape "<name>"`. No core code changes.
 type ThrottleShape string
 
 const (
@@ -129,14 +129,11 @@ const (
 )
 
 // ThrottlingConfig opts a printed CLI into the cost-based throttling
-// primitives. Two fields:
-//   - Enabled: turn the surface on (--throttle-mode flag, ThrottleState,
-//     budget projection, retry helper). Default off so existing CLIs
-//     regenerate byte-identically when this field is unset.
-//   - Shape: which API-specific parser to wire. Required when Enabled is
-//     true. Today only ThrottleShapeShopify is valid; the generic harness
-//     is structured so a new shape is one additional gated block in the
-//     template, not a refactor.
+// primitives. Enabled turns the surface on (--throttle-mode flag,
+// ThrottleState, budget projection, retry helper); default off so existing
+// CLIs regenerate byte-identically when this field is unset. Shape selects
+// the per-API parser and is required when Enabled is true; see ThrottleShape
+// for the valid values and how to add new ones.
 //
 // Authors opt in by writing `throttling: { enabled: true, shape: shopify }`.
 type ThrottlingConfig struct {
@@ -144,9 +141,10 @@ type ThrottlingConfig struct {
 	Shape   ThrottleShape `yaml:"shape,omitempty" json:"shape,omitempty"`
 }
 
-// Validate ensures Shape is set and recognized when Enabled is true. Returns
-// nil for the off case so unrelated specs aren't penalized for never opting in.
-func (c ThrottlingConfig) Validate() error {
+// validateThrottling ensures Shape is set and recognized when Enabled is
+// true. Off case returns nil so unrelated specs aren't penalized for never
+// opting in.
+func validateThrottling(c ThrottlingConfig) error {
 	if !c.Enabled {
 		return nil
 	}
@@ -1078,7 +1076,7 @@ func (s *APISpec) Validate() error {
 	if err := validateMCP(s.MCP, s.Resources); err != nil {
 		return err
 	}
-	if err := s.Throttling.Validate(); err != nil {
+	if err := validateThrottling(s.Throttling); err != nil {
 		return err
 	}
 	if s.ClientPattern == "proxy-envelope" && s.HasResourceBaseURLOverride() {
