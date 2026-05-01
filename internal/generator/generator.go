@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -155,13 +154,7 @@ type Generator struct {
 
 func New(s *spec.APISpec, outputDir string) *Generator {
 	if s.Owner == "" {
-		if out, err := exec.Command("git", "config", "github.user").Output(); err == nil && len(out) > 0 {
-			s.Owner = strings.TrimSpace(string(out))
-		} else if out, err := exec.Command("git", "config", "user.name").Output(); err == nil && len(out) > 0 {
-			s.Owner = strings.TrimSpace(string(out))
-		} else {
-			s.Owner = "USER"
-		}
+		s.Owner = resolveOwnerForExisting(outputDir)
 	}
 	// Sanitize owner for Go module path: lowercase, no spaces/special chars
 	s.Owner = strings.ToLower(s.Owner)

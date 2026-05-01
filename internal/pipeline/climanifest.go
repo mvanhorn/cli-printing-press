@@ -42,7 +42,11 @@ type CLIManifest struct {
 	DisplayName string `json:"display_name,omitempty"`
 	// CLIName is the executable/binary name (for example "espn-pp-cli").
 	// It does not track the slug-keyed library directory.
-	CLIName            string   `json:"cli_name"`
+	CLIName string `json:"cli_name"`
+	// Owner is the attribution recorded in generated copyright headers
+	// (for example "hiten-shah"). Persisted here so subsequent regens
+	// preserve attribution regardless of who's running the generator.
+	Owner              string   `json:"owner,omitempty"`
 	SpecURL            string   `json:"spec_url,omitempty"`
 	SpecPath           string   `json:"spec_path,omitempty"`
 	SpecFormat         string   `json:"spec_format,omitempty"`
@@ -261,6 +265,7 @@ type GenerateManifestParams struct {
 	SpecURL       string   // --spec-url: explicit provenance URL (when --spec is a local downloaded file)
 	DocsURL       string   // --docs URL, if used
 	OutputDir     string
+	Owner         string                 // resolved owner attribution (manifest preserve > copyright parse > git config)
 	Spec          *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
 	NovelFeatures []NovelFeatureManifest // transcendence features from research (nil if unavailable)
 }
@@ -275,6 +280,7 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		PrintingPressVersion: version.Version,
 		APIName:              p.APIName,
 		CLIName:              naming.CLI(p.APIName),
+		Owner:                p.Owner,
 	}
 
 	// Populate spec_url / spec_path from the first spec source.

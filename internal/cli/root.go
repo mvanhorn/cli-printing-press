@@ -75,6 +75,7 @@ func Execute() error {
 func newGenerateCmd() *cobra.Command {
 	var specFiles []string
 	var cliName string
+	var owner string
 	var outputDir string
 	var validate bool
 	var refresh bool
@@ -143,7 +144,7 @@ func newGenerateCmd() *cobra.Command {
 				if err != nil {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing generated spec: %w", err)}
 				}
-				if err := applyGenerateSpecFlags(parsed, specSource, "docs", clientPattern, httpTransport); err != nil {
+				if err := applyGenerateSpecFlags(parsed, specSource, "docs", clientPattern, httpTransport, owner); err != nil {
 					return err
 				}
 
@@ -161,6 +162,7 @@ func newGenerateCmd() *cobra.Command {
 					APIName:       parsed.Name,
 					DocsURL:       docsURL,
 					OutputDir:     absOut,
+					Owner:         parsed.Owner,
 					Spec:          parsed,
 					NovelFeatures: novelFeatures,
 				}); err != nil {
@@ -282,7 +284,7 @@ func newGenerateCmd() *cobra.Command {
 				apiSpec = mergeSpecs(specs, cliName)
 			}
 
-			if err := applyGenerateSpecFlags(apiSpec, specSource, "", clientPattern, httpTransport); err != nil {
+			if err := applyGenerateSpecFlags(apiSpec, specSource, "", clientPattern, httpTransport, owner); err != nil {
 				return err
 			}
 
@@ -321,6 +323,7 @@ func newGenerateCmd() *cobra.Command {
 				SpecSrcs:      specFiles,
 				SpecURL:       specURL,
 				OutputDir:     absOut,
+				Owner:         apiSpec.Owner,
 				Spec:          apiSpec,
 				NovelFeatures: novelFeatures,
 			}); err != nil {
@@ -359,6 +362,7 @@ func newGenerateCmd() *cobra.Command {
 
 	cmd.Flags().StringSliceVar(&specFiles, "spec", nil, "Path or URL to API spec (can be repeated)")
 	cmd.Flags().StringVar(&cliName, "name", "", "CLI name (required when using multiple specs)")
+	cmd.Flags().StringVar(&owner, "owner", "", "Override owner attribution in generated copyright headers (highest priority; otherwise resolved from existing .printing-press.json, copyright header, or git config)")
 	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: ~/printing-press/library/<name>)")
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
@@ -439,7 +443,7 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	return novelFeatures, runGeneratePolishPass(opts.polish, apiSpec.Name, absOut), nil
 }
 
-func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource, clientPattern, httpTransport string) error {
+func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource, clientPattern, httpTransport, owner string) error {
 	if specSource != "" {
 		normalized, err := normalizeSpecSource(specSource)
 		if err != nil {
@@ -462,6 +466,9 @@ func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource
 			return &ExitError{Code: ExitInputError, Err: err}
 		}
 		apiSpec.HTTPTransport = normalized
+	}
+	if owner != "" {
+		apiSpec.Owner = owner
 	}
 	return nil
 }

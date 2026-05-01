@@ -1,10 +1,12 @@
 package generator
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -61,7 +63,7 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 		return fmt.Errorf("plan has no CLI name")
 	}
 
-	owner := resolveOwner()
+	owner := resolveOwnerForExisting(outputDir)
 
 	// Create directory structure
 	dirs := []string{
@@ -284,8 +286,48 @@ func partitionCommands(commands []PlanCommand) (topLevel []PlanCommand, parents 
 	return filteredTopLevel, parents
 }
 
-// resolveOwner tries to determine the GitHub user/org for the module path.
-func resolveOwner() string {
+// resolveOwnerForExisting returns the owner attribution for a regeneration
+// against an existing tree at outputDir. Tiered so regens preserve original
+// attribution instead of silently flipping to whoever's running the
+// generator:
+//  1. .printing-press.json's `owner` field, if present and non-empty
+//  2. parsed `// Copyright YYYY <owner>` line in internal/cli/root.go
+//  3. resolveOwnerForNew() (git config / "USER")
+//
+// Reads .printing-press.json directly rather than calling
+// pipeline.ReadCLIManifestOwner because the pipeline package already
+// imports generator — adding the reverse direction would create a cycle.
+func resolveOwnerForExisting(outputDir string) string {
+	if owner := readManifestOwner(outputDir); owner != "" {
+		return owner
+	}
+	if owner := parseCopyrightOwner(outputDir); owner != "" {
+		return owner
+	}
+	return resolveOwnerForNew()
+}
+
+// readManifestOwner returns the `owner` field from
+// outputDir/.printing-press.json, or "" if the file is absent, malformed,
+// or the field is empty.
+func readManifestOwner(outputDir string) string {
+	data, err := os.ReadFile(filepath.Join(outputDir, ".printing-press.json"))
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		Owner string `json:"owner"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return ""
+	}
+	return m.Owner
+}
+
+// resolveOwnerForNew returns the owner attribution for a brand-new project
+// (no existing tree to read from). Falls through git config in priority
+// order: github.user, sanitized user.name, literal "USER".
+func resolveOwnerForNew() string {
 	if out, err := exec.Command("git", "config", "github.user").Output(); err == nil && len(out) > 0 {
 		return strings.TrimSpace(string(out))
 	}
@@ -293,6 +335,26 @@ func resolveOwner() string {
 		return sanitizeOwner(strings.TrimSpace(string(out)))
 	}
 	return "USER"
+}
+
+// copyrightOwnerRe matches a Go source `// Copyright YYYY <owner>.` line.
+// The owner capture matches the same characters sanitizeOwner would emit
+// (lowercase letters, digits, `-`, `_`) plus uppercase to be lenient on
+// hand-edited files.
+var copyrightOwnerRe = regexp.MustCompile(`(?m)^//\s*Copyright\s+\d+\s+([A-Za-z0-9_-]+)\.`)
+
+// parseCopyrightOwner reads outputDir/internal/cli/root.go (the generator's
+// canonical copyright site) and returns the owner string from the
+// "// Copyright YYYY <owner>." header. Returns "" on any failure.
+func parseCopyrightOwner(outputDir string) string {
+	data, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	if err != nil {
+		return ""
+	}
+	if m := copyrightOwnerRe.FindSubmatch(data); m != nil {
+		return string(m[1])
+	}
+	return ""
 }
 
 // sanitizeOwner cleans up an owner string for use in Go module paths.
