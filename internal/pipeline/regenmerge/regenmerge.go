@@ -1,14 +1,7 @@
-// Package regenmerge classifies a published library CLI's Go files against a
-// fresh-generated tree, decides per-file whether each templated diff is safe
-// to overwrite or contains hand-edits, and applies the safe changes through a
-// stage-and-swap transactional model.
-//
-// The package is the implementation behind the `printing-press regen-merge`
-// subcommand. It targets the per-CLI sweep workflow described in
-// docs/plans/2026-05-01-001-feat-regen-merge-subcommand-plan.md — driving the
-// per-CLI cost from ~30-90 minutes of manual diff-review to ~5-15 minutes by
-// automating the safe applications and surfacing only genuinely-divergent
-// files for human review.
+// Package regenmerge implements the `printing-press regen-merge` subcommand.
+// Targets the per-CLI library sweep workflow: dropping per-CLI cost from
+// ~30-90 min of manual diff-review to ~5-15 min by classifying templated-vs-
+// hand-edited files automatically and surfacing only divergent ones.
 package regenmerge
 
 import (

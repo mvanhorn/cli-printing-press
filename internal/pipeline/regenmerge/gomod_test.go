@@ -1,6 +1,7 @@
 package regenmerge
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -63,8 +64,8 @@ func TestRenderMergedGoModLocalReplaceWins(t *testing.T) {
 	tmp := t.TempDir()
 	pubDir := filepath.Join(tmp, "pub")
 	freshDir := filepath.Join(tmp, "fresh")
-	require.NoError(t, mkdirAll(pubDir))
-	require.NoError(t, mkdirAll(freshDir))
+	require.NoError(t, os.MkdirAll(pubDir, 0o755))
+	require.NoError(t, os.MkdirAll(freshDir, 0o755))
 
 	pubGoMod := []byte(`module github.com/example/monorepo/library/foo
 
@@ -95,8 +96,4 @@ replace github.com/x/y => github.com/upstream/fork v9.9.9
 	r := parsed.Replace[0]
 	assert.Equal(t, "github.com/x/y", r.Old.Path)
 	assert.Equal(t, "./local-fork", r.New.Path, "published's local-path replace wins over fresh's version-replace")
-}
-
-func mkdirAll(dir string) error {
-	return osMkdirAll(dir)
 }

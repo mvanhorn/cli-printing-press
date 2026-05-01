@@ -3,7 +3,6 @@ package regenmerge
 import (
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -64,8 +63,9 @@ func Apply(report *MergeReport, opts Options) error {
 	}
 	cleanup := func() { _ = os.RemoveAll(tempDir) }
 
-	// Deep-copy published → tempdir.
-	if err := deepCopy(cliDir, tempDir); err != nil {
+	// Deep-copy published → tempdir. pipeline.CopyDir handles symlink-target
+	// containment as defense-in-depth.
+	if err := pipeline.CopyDir(cliDir, tempDir); err != nil {
 		cleanup()
 		return fmt.Errorf("deep-copy to tempdir: %w", err)
 	}
@@ -184,47 +184,6 @@ func assertGitClean(dir string) error {
 		return fmt.Errorf("git tree at %s has uncommitted changes; commit/stash first or pass --force:\n%s", dir, out)
 	}
 	return nil
-}
-
-// deepCopy recursively copies src tree to dst.
-func deepCopy(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(src, path)
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		// Skip non-regular files (sockets, symlinks treated as warning).
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if info.Mode()&os.ModeType != 0 {
-			return nil // skip
-		}
-		return copyFile(path, target, info.Mode().Perm())
-	})
-}
-
-func copyFile(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = out.Close() }()
-	_, err = io.Copy(out, in)
-	return err
 }
 
 // readModulePaths reads the module paths from both go.mod files. Either

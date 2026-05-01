@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
 )
 
 // TestApplyPostmanExploreFixture exercises the full Apply flow against the
@@ -140,7 +142,7 @@ func stageFixture(t *testing.T, relSrc string) string {
 	require.NoError(t, os.MkdirAll(staged, 0o755))
 	t.Cleanup(func() { _ = os.RemoveAll(staged) })
 
-	require.NoError(t, deepCopy(src, staged))
+	require.NoError(t, pipeline.CopyDir(src, staged))
 	return staged
 }
 
