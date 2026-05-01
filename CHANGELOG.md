@@ -1,5 +1,39 @@
 # Changelog
 
+## [3.1.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.0.1...v3.1.0) (2026-05-01)
+
+
+### Features
+
+* **cli,skills:** five remaining retro WUs from postman-explore — store concurrency, narrative validator, proxy joiner, browser-sniff docs ([#440](https://github.com/mvanhorn/cli-printing-press/issues/440)) ([d24f60e](https://github.com/mvanhorn/cli-printing-press/commit/d24f60edc2fae62bf963b1ec1465ac73497cc139))
+* **cli,skills:** three retro WUs from postman-explore — POST-as-query detection, novel-command --select, scorecard YAML ([#424](https://github.com/mvanhorn/cli-printing-press/issues/424)) ([8ceea6a](https://github.com/mvanhorn/cli-printing-press/commit/8ceea6ad65a0b27784f0134e20cb55827e21b645))
+* **cli:** add validate-narrative subcommand to replace bash recipe ([#433](https://github.com/mvanhorn/cli-printing-press/issues/433)) ([#456](https://github.com/mvanhorn/cli-printing-press/issues/456)) ([8a548d0](https://github.com/mvanhorn/cli-printing-press/commit/8a548d098ccca4474367c5cf8268759c412e766b))
+* **cli:** cost-based throttling primitives for GraphQL CLIs ([#434](https://github.com/mvanhorn/cli-printing-press/issues/434)) ([de3a4e7](https://github.com/mvanhorn/cli-printing-press/commit/de3a4e7c07e1182ebb8b1e921f50ad5e7cb453d9))
+* **cli:** framework-collision detection in resource-name extraction ([#444](https://github.com/mvanhorn/cli-printing-press/issues/444)) ([6d357b3](https://github.com/mvanhorn/cli-printing-press/commit/6d357b3685fce25fecfb303c7e32a9353a22ac0d))
+* **cli:** WU-2 sync correctness pass (pagination, ID extraction, exit policy, write serialization) ([#430](https://github.com/mvanhorn/cli-printing-press/issues/430)) ([9a13506](https://github.com/mvanhorn/cli-printing-press/commit/9a13506232e9fd8396e16b1c71ab7dbf07e23345))
+* **skills:** preflight gate with interactive upgrade prompt ([#420](https://github.com/mvanhorn/cli-printing-press/issues/420)) ([332e419](https://github.com/mvanhorn/cli-printing-press/commit/332e419b7c7a9de79f4b9b8b877462956a9a499d))
+
+
+### Bug Fixes
+
+* **ci:** disable golangci-lint remote schema verify ([#432](https://github.com/mvanhorn/cli-printing-press/issues/432)) ([b6c7089](https://github.com/mvanhorn/cli-printing-press/commit/b6c70893260b384cb23e384062e73ce92bf924f7))
+* **cli:** cliutil.BuildPath replaces buildProxyPath with proper URL encoding ([#437](https://github.com/mvanhorn/cli-printing-press/issues/437), [#439](https://github.com/mvanhorn/cli-printing-press/issues/439)) ([#443](https://github.com/mvanhorn/cli-printing-press/issues/443)) ([d9472b7](https://github.com/mvanhorn/cli-printing-press/commit/d9472b76b10ae2ab5653713e9fc63a77f20efed5))
+* **cli:** emit mcp:read-only + plumb body fields in promoted commands ([#426](https://github.com/mvanhorn/cli-printing-press/issues/426), [#427](https://github.com/mvanhorn/cli-printing-press/issues/427)) ([#449](https://github.com/mvanhorn/cli-printing-press/issues/449)) ([6aee620](https://github.com/mvanhorn/cli-printing-press/commit/6aee620512ba397f65f8217247515fb77a8452ba))
+* **cli:** emit StringVar for cursor/page/timestamp pagination flags ([#435](https://github.com/mvanhorn/cli-printing-press/issues/435)) ([1556ff1](https://github.com/mvanhorn/cli-printing-press/commit/1556ff1b78f0d6dd7e60ce0e07562769dd2fe80d))
+* **cli:** migrate 15 templates off flags.printJSON + dogfood regression guard ([#428](https://github.com/mvanhorn/cli-printing-press/issues/428)) ([#447](https://github.com/mvanhorn/cli-printing-press/issues/447)) ([1e4798f](https://github.com/mvanhorn/cli-printing-press/commit/1e4798f1ed7a8b7782089e3e54b7cca1e9d167c9))
+* **cli:** pagination cursor lookup recurses into well-known wrapper objects ([#157](https://github.com/mvanhorn/cli-printing-press/issues/157) F3) ([#453](https://github.com/mvanhorn/cli-printing-press/issues/453)) ([a197d41](https://github.com/mvanhorn/cli-printing-press/commit/a197d4146d53ffb17db372b2bc1cea161fc9a9d8))
+* **cli:** retro [#421](https://github.com/mvanhorn/cli-printing-press/issues/421) WU-4, WU-6, WU-7 — search empty JSON, live-check tokenizer, raw database/sql carve-out ([#446](https://github.com/mvanhorn/cli-printing-press/issues/446)) ([ba22f30](https://github.com/mvanhorn/cli-printing-press/commit/ba22f30adacf032a4a180a339859e6d664d094c4))
+* **cli:** store.OpenWithContext + fast-path version check ([#436](https://github.com/mvanhorn/cli-printing-press/issues/436), [#438](https://github.com/mvanhorn/cli-printing-press/issues/438)) ([#441](https://github.com/mvanhorn/cli-printing-press/issues/441)) ([c11d0d9](https://github.com/mvanhorn/cli-printing-press/commit/c11d0d952d388055772722080dd35ef0dd5dfeee))
+* **skills:** add Phase 3 starter templates for novel feature commands ([#451](https://github.com/mvanhorn/cli-printing-press/issues/451)) ([00f8321](https://github.com/mvanhorn/cli-printing-press/commit/00f83219a2f94e3cb8335121053df77f076a0c40))
+* **skills:** keep absorb gate showcase as its own turn ([#418](https://github.com/mvanhorn/cli-printing-press/issues/418)) ([30370eb](https://github.com/mvanhorn/cli-printing-press/commit/30370ebb31ba7ee81e75e1fd4de8961bf2a835df))
+* **skills:** sharpen retro cardinal rule to name over-fitted machine changes ([#422](https://github.com/mvanhorn/cli-printing-press/issues/422)) ([337840c](https://github.com/mvanhorn/cli-printing-press/commit/337840c84eaabe4f6dfcd9f34c52910b851d9e6c))
+* **skills:** tighten human-time-estimate cardinal rule + clean up violations ([#452](https://github.com/mvanhorn/cli-printing-press/issues/452)) ([c78cb18](https://github.com/mvanhorn/cli-printing-press/commit/c78cb18130c28183c79507d42279c99e854e7995))
+
+
+### Code Refactoring
+
+* **cli:** extract body-map block to a shared helper ([#450](https://github.com/mvanhorn/cli-printing-press/issues/450)) ([#457](https://github.com/mvanhorn/cli-printing-press/issues/457)) ([2c59d1c](https://github.com/mvanhorn/cli-printing-press/commit/2c59d1c60de40cc75af5f5b38106afa9fa7ca6ab))
+
 ## [3.0.1](https://github.com/mvanhorn/cli-printing-press/compare/v3.0.0...v3.0.1) (2026-04-30)
 
 
