@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -74,10 +75,7 @@ the SKILL's recipes; users hit "unknown command" on copy-paste.`,
 			}
 
 			if strict && (report.HasFailures() || report.ResearchEmpty) {
-				return &ExitError{
-					Code: ExitInputError,
-					Err:  fmt.Errorf("narrative validation failed: %d missing, %d empty-words, research_empty=%t", report.Missing, report.Empty, report.ResearchEmpty),
-				}
+				return &ExitError{Code: ExitInputError, Err: errors.New("narrative validation failed")}
 			}
 			return nil
 		},
