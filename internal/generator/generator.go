@@ -2473,37 +2473,37 @@ func endpointNeedsClientLimit(endpoint spec.Endpoint) bool {
 // bodyMap renders the per-flag body-building block shared by the
 // POST/PUT/PATCH branches in command_endpoint.go.tmpl and the body
 // branch in command_promoted.go.tmpl. The four sites generated the
-// same Go code at different indentation levels, so this consolidates
-// them and parameterizes the indent. The output is the body of the
+// same Go code at different indentation levels; this consolidates them
+// and parameterizes the indent. The output is the body of the
 // `body := map[string]any{}` block — callers emit the surrounding
 // declaration and the closing brace themselves.
 func bodyMap(body []spec.Param, indent string) string {
 	var b strings.Builder
 	for _, p := range body {
-		ident := toCamel(paramIdent(p))
-		flag := flagName(paramIdent(p))
-		switch {
-		case p.Type == "object" || p.Type == "array":
+		id := paramIdent(p)
+		ident := toCamel(id)
+		flag := flagName(id)
+		isComplex := p.Type == "object" || p.Type == "array"
+		if isComplex || isJSONStringParam(p) {
+			// object/array: store the parsed value (so the API receives
+			// real JSON). jsonStringParam: validate then store the raw
+			// string (the API expects a JSON-encoded string field).
+			rhs := "body" + ident
+			if isComplex {
+				rhs = "parsed" + ident
+			}
 			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
 			fmt.Fprintf(&b, "%s\tvar parsed%s any\n", indent, ident)
 			fmt.Fprintf(&b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
 			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
 			fmt.Fprintf(&b, "%s\t}\n", indent)
-			fmt.Fprintf(&b, "%s\tbody[%q] = parsed%s\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s\tbody[%q] = %s\n", indent, p.Name, rhs)
 			fmt.Fprintf(&b, "%s}\n", indent)
-		case isJSONStringParam(p):
-			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
-			fmt.Fprintf(&b, "%s\tvar parsed%s any\n", indent, ident)
-			fmt.Fprintf(&b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
-			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
-			fmt.Fprintf(&b, "%s\t}\n", indent)
-			fmt.Fprintf(&b, "%s\tbody[%q] = body%s\n", indent, p.Name, ident)
-			fmt.Fprintf(&b, "%s}\n", indent)
-		default:
-			fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
-			fmt.Fprintf(&b, "%s\tbody[%q] = body%s\n", indent, p.Name, ident)
-			fmt.Fprintf(&b, "%s}\n", indent)
+			continue
 		}
+		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
+		fmt.Fprintf(&b, "%s\tbody[%q] = body%s\n", indent, p.Name, ident)
+		fmt.Fprintf(&b, "%s}\n", indent)
 	}
 	return b.String()
 }

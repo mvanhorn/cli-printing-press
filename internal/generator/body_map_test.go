@@ -127,3 +127,19 @@ func TestBodyMap_DashIdentifier(t *testing.T) {
 		t.Errorf("expected JSON key with dash preserved, got: %s", got)
 	}
 }
+
+// TestBodyMap_IdentName verifies the dedup pass's output: when IdentName
+// is set (because two params would otherwise collide on the same Go
+// identifier), the variable name uses IdentName but body[key] keeps the
+// wire Name. Without this, the generated CLI would either fail to compile
+// or send the wrong field name to the server.
+func TestBodyMap_IdentName(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{Name: "start", IdentName: "StartGT", Type: "string"}}, "\t")
+	if !strings.Contains(got, "bodyStartGT") {
+		t.Errorf("expected variable to use IdentName, got: %s", got)
+	}
+	if !strings.Contains(got, `body["start"]`) {
+		t.Errorf("expected wire key to use Name (not IdentName), got: %s", got)
+	}
+}
