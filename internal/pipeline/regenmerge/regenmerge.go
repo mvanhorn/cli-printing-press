@@ -23,8 +23,8 @@ const (
 	VerdictNewTemplateEmission Verdict = "NEW-TEMPLATE-EMISSION"
 
 	// VerdictTemplatedClean marks a file present in both trees where
-	// published's decl-set is a subset of fresh's. Safe to overwrite with
-	// fresh.
+	// published's decl-set is a subset of fresh's AND function bodies
+	// match. Safe to overwrite with fresh.
 	VerdictTemplatedClean Verdict = "TEMPLATED-CLEAN"
 
 	// VerdictTemplatedWithAdditions marks a file present in both trees where
@@ -32,6 +32,14 @@ const (
 	// exist anywhere else in fresh. Hand-edited templated file; do NOT
 	// overwrite — surface for human review.
 	VerdictTemplatedWithAdditions Verdict = "TEMPLATED-WITH-ADDITIONS"
+
+	// VerdictTemplatedBodyDrift marks a file whose decl-set matches
+	// fresh's but whose function bodies call identifiers fresh's same-named
+	// bodies don't. Catches in-place body modifications the decl-set
+	// comparison can't see — e.g., pub's client.go adds a call to a
+	// hand-written helper inside an existing templated function. Preserve
+	// published; surface for human review.
+	VerdictTemplatedBodyDrift Verdict = "TEMPLATED-BODY-DRIFT"
 
 	// VerdictPublishedOnlyTemplated marks a file present only in published
 	// that carries the templated marker. Fresh dropped emitting it. Stale
@@ -62,6 +70,22 @@ type FileClassification struct {
 	// NOVEL-COLLISION verdicts. Lists the top-level declaration names that
 	// differ between published and fresh.
 	DeclSetDelta *DeclSetDelta `json:"decl_set_delta,omitempty"`
+
+	// BodyDrift is populated for TEMPLATED-BODY-DRIFT verdict. Lists
+	// per-function the call-target identifiers pub references that don't
+	// appear anywhere in fresh's tree.
+	BodyDrift *BodyDrift `json:"body_drift,omitempty"`
+}
+
+// BodyDrift records function-body call-target differences between published
+// and fresh for a templated file with matching decl-sets. Each entry names
+// a function that exists in both files but whose published-side body
+// references identifiers fresh's tree doesn't have — a load-bearing signal
+// that pub hand-edited the body to integrate with custom helpers.
+type BodyDrift struct {
+	// Functions maps the qualified function name (bare or "(*Type).Method")
+	// to the list of pub-only call-target identifiers in its body.
+	Functions map[string][]string `json:"functions,omitempty"`
 }
 
 // DeclSetDelta names the declarations that differ between published and fresh

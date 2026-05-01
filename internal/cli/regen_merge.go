@@ -113,6 +113,7 @@ func printHumanRegenReport(w io.Writer, report *regenmerge.MergeReport, applied 
 		regenmerge.VerdictPublishedOnlyTemplated,
 		regenmerge.VerdictNovel,
 		regenmerge.VerdictTemplatedWithAdditions,
+		regenmerge.VerdictTemplatedBodyDrift,
 		regenmerge.VerdictNovelCollision,
 	} {
 		fmt.Fprintf(w, "  %-26s %d\n", v, counts[v])
@@ -122,7 +123,10 @@ func printHumanRegenReport(w io.Writer, report *regenmerge.MergeReport, applied 
 	// Files needing human review.
 	var needsReview []regenmerge.FileClassification
 	for _, fc := range report.Files {
-		if fc.Verdict == regenmerge.VerdictTemplatedWithAdditions || fc.Verdict == regenmerge.VerdictNovelCollision {
+		switch fc.Verdict {
+		case regenmerge.VerdictTemplatedWithAdditions,
+			regenmerge.VerdictTemplatedBodyDrift,
+			regenmerge.VerdictNovelCollision:
 			needsReview = append(needsReview, fc)
 		}
 	}
@@ -136,6 +140,11 @@ func printHumanRegenReport(w io.Writer, report *regenmerge.MergeReport, applied 
 				}
 				if len(fc.DeclSetDelta.InFreshNotPublished) > 0 {
 					fmt.Fprintf(w, "    in_fresh_not_published: %v\n", fc.DeclSetDelta.InFreshNotPublished)
+				}
+			}
+			if fc.BodyDrift != nil {
+				for fn, calls := range fc.BodyDrift.Functions {
+					fmt.Fprintf(w, "    body_drift in %s: %v\n", fn, calls)
 				}
 			}
 		}

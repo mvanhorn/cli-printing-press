@@ -62,14 +62,7 @@ func extractDecls(filename string) (declSet, error) {
 	for _, d := range file.Decls {
 		switch decl := d.(type) {
 		case *ast.FuncDecl:
-			name := decl.Name.Name
-			if decl.Recv != nil && len(decl.Recv.List) > 0 {
-				recv := receiverTypeName(decl.Recv.List[0].Type)
-				if recv != "" {
-					name = "(" + recv + ")." + name
-				}
-			}
-			decls.add(name)
+			decls.add(canonicalFuncName(decl))
 		case *ast.GenDecl:
 			for _, spec := range decl.Specs {
 				switch s := spec.(type) {
@@ -112,6 +105,19 @@ func receiverTypeName(expr ast.Expr) string {
 		return receiverTypeName(t.X)
 	}
 	return ""
+}
+
+// canonicalFuncName returns the qualified name used as the dedup key for
+// function/method decls: bare `Name` for top-level funcs, `(*Type).Name`
+// or `(Type).Name` for methods.
+func canonicalFuncName(fn *ast.FuncDecl) string {
+	name := fn.Name.Name
+	if fn.Recv != nil && len(fn.Recv.List) > 0 {
+		if recv := receiverTypeName(fn.Recv.List[0].Type); recv != "" {
+			name = "(" + recv + ")." + name
+		}
+	}
+	return name
 }
 
 // hasTemplatedMarker reports whether one of the file's first few lines
@@ -219,7 +225,7 @@ func classifyFiles(publishedDir, freshDir string) ([]FileClassification, error) 
 			freshPath := filepath.Join(freshDir, rel)
 			pubMarker := hasTemplatedMarker(pubPath)
 			freshMarker := hasTemplatedMarker(freshPath)
-			fc = decideBothPresent(rel, pubDecls, freshDecls, pubMarker, freshMarker, freshGlobalDecls)
+			fc = decideBothPresent(rel, pubPath, freshPath, pubDecls, freshDecls, pubMarker, freshMarker, freshGlobalDecls)
 		}
 		out = append(out, fc)
 	}
@@ -236,7 +242,7 @@ func stringSet(s []string) map[string]struct{} {
 
 // decideBothPresent runs the in-both branch of the classification decision
 // tree.
-func decideBothPresent(rel string, pub, fresh declSet, pubMarker, freshMarker bool, freshGlobal declSet) FileClassification {
+func decideBothPresent(rel, pubPath, freshPath string, pub, fresh declSet, pubMarker, freshMarker bool, freshGlobal declSet) FileClassification {
 	fc := FileClassification{Path: rel}
 
 	pubExtras := pub.minus(fresh)
@@ -244,21 +250,31 @@ func decideBothPresent(rel string, pub, fresh declSet, pubMarker, freshMarker bo
 	templated := pubMarker || freshMarker || isStrictSubset(pub, fresh)
 
 	if templated {
-		if len(pubExtras) == 0 {
-			fc.Verdict = VerdictTemplatedClean
-			return fc
-		}
-		// Cross-file decl search: are all "extras" in fresh's global decl
-		// set? If so, the generator moved them to a different file —
-		// safe to overwrite.
-		allMoved := true
-		for _, name := range pubExtras {
-			if _, ok := freshGlobal[name]; !ok {
-				allMoved = false
-				break
+		cleanByDeclSet := len(pubExtras) == 0
+		if !cleanByDeclSet {
+			// Cross-file decl search: are all "extras" in fresh's global
+			// decl set? If so, the generator moved them to a different
+			// file — decl-set is clean.
+			allMoved := true
+			for _, name := range pubExtras {
+				if _, ok := freshGlobal[name]; !ok {
+					allMoved = false
+					break
+				}
 			}
+			cleanByDeclSet = allMoved
 		}
-		if allMoved {
+		if cleanByDeclSet {
+			// Decl-set looks clean. One more check: do pub's function
+			// bodies call identifiers fresh's same-function bodies don't?
+			// Catches in-place body modifications that decl-set comparison
+			// misses (e.g., pub adds a call to a hand-written helper
+			// inside an existing templated function).
+			if drift := detectBodyDrift(pubPath, freshPath); drift != nil {
+				fc.Verdict = VerdictTemplatedBodyDrift
+				fc.BodyDrift = drift
+				return fc
+			}
 			fc.Verdict = VerdictTemplatedClean
 			return fc
 		}
