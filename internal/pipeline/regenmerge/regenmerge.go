@@ -143,6 +143,10 @@ func Classify(publishedDir, freshDir string, opts Options) (*MergeReport, error)
 		return nil, fmt.Errorf("resolving fresh dir: %w", err)
 	}
 
+	// CWD-prefix containment is checked only on the published tree; that's
+	// the destructive target. fresh is read-only input — no Apply step
+	// writes there, so allowing /tmp/... or other locations outside CWD is
+	// intended (callers regularly point --fresh at a tempdir).
 	if err := validatePathAgainstCWD(pubAbs, opts.Force); err != nil {
 		return nil, err
 	}

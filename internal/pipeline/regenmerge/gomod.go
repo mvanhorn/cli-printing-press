@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"golang.org/x/mod/modfile"
@@ -38,6 +39,9 @@ func planGoModMerge(publishedDir, freshDir string) (*GoModMerge, error) {
 	freshMF, err := modfile.Parse(freshPath, freshData, nil)
 	if err != nil {
 		return nil, fmt.Errorf("parsing fresh go.mod: %w", err)
+	}
+	if pubMF.Module == nil {
+		return nil, fmt.Errorf("published go.mod has no module declaration")
 	}
 
 	plan := &GoModMerge{
@@ -95,6 +99,9 @@ func renderMergedGoMod(publishedDir, freshDir string) ([]byte, error) {
 	freshMF, err := modfile.Parse(freshPath, freshData, nil)
 	if err != nil {
 		return nil, fmt.Errorf("parsing fresh go.mod: %w", err)
+	}
+	if pubMF.Module == nil {
+		return nil, fmt.Errorf("published go.mod has no module declaration")
 	}
 
 	// Start with fresh's require/replace/exclude as a base, then graft
@@ -170,15 +177,39 @@ func renderMergedGoMod(publishedDir, freshDir string) ([]byte, error) {
 		}
 	}
 
-	// Retract: published's only.
-	for _, r := range pubMF.Retract {
-		if err := merged.AddRetract(r.VersionInterval, r.Rationale); err != nil {
-			return nil, fmt.Errorf("adding retract: %w", err)
+	// Retract: published's only. Retracts require go 1.16+; if the merged
+	// go directive is missing or older, skip retracts rather than letting
+	// AddRetract fail (which would corrupt the merge silently if the caller
+	// swallowed the render error).
+	if supportsRetract(merged.Go) {
+		for _, r := range pubMF.Retract {
+			if err := merged.AddRetract(r.VersionInterval, r.Rationale); err != nil {
+				return nil, fmt.Errorf("adding retract: %w", err)
+			}
 		}
 	}
 
 	merged.Cleanup()
 	return merged.Format()
+}
+
+// supportsRetract reports whether the merged go directive permits retract
+// directives. Retracts require go 1.16+. A missing go directive is treated as
+// unsupported.
+func supportsRetract(g *modfile.Go) bool {
+	if g == nil {
+		return false
+	}
+	parts := strings.SplitN(g.Version, ".", 3)
+	if len(parts) < 2 {
+		return false
+	}
+	major, _ := strconv.Atoi(parts[0])
+	minor, _ := strconv.Atoi(parts[1])
+	if major > 1 {
+		return true
+	}
+	return major == 1 && minor >= 16
 }
 
 // isLocalPathReplace reports whether a replace directive's target is a local

@@ -125,11 +125,16 @@ func collectAddCommandCalls(dir string) (map[string][]addCommandCall, []string, 
 		fset := token.NewFileSet()
 		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err != nil {
-			// Surface as warning by skipping — we don't want a single
-			// broken file to block the whole walk.
+			// A broken file shouldn't block the whole walk, but a silent
+			// skip can corrupt the lost-set: if fresh's host fails to
+			// parse, all pub calls become "lost" and get re-injected on
+			// top of fresh's already-emitted calls. Warn loudly to stderr
+			// so the user sees the parse error and can fix it.
+			fmt.Fprintf(os.Stderr, "regen-merge: warning: skipping unparseable file %s: %v\n", path, err)
 			continue
 		}
 		var fileCalls []addCommandCall
+		var inspectErr error
 		ast.Inspect(file, func(n ast.Node) bool {
 			ce, ok := n.(*ast.CallExpr)
 			if !ok {
@@ -139,9 +144,17 @@ func collectAddCommandCalls(dir string) (map[string][]addCommandCall, []string, 
 			if !ok || sel.Sel == nil || sel.Sel.Name != "AddCommand" {
 				return true
 			}
-			fileCalls = append(fileCalls, formatCallExpr(fset, ce))
+			call, err := formatCallExpr(fset, ce)
+			if err != nil {
+				inspectErr = err
+				return false
+			}
+			fileCalls = append(fileCalls, call)
 			return true
 		})
+		if inspectErr != nil {
+			return nil, nil, fmt.Errorf("formatting AddCommand calls in %s: %w", path, inspectErr)
+		}
 		if len(fileCalls) > 0 {
 			calls[path] = fileCalls
 			hosts = append(hosts, path)
@@ -151,11 +164,13 @@ func collectAddCommandCalls(dir string) (map[string][]addCommandCall, []string, 
 }
 
 // formatCallExpr renders an AddCommand call expression and extracts the
-// constructor name (the function called as the AddCommand argument).
-func formatCallExpr(fset *token.FileSet, ce *ast.CallExpr) addCommandCall {
+// constructor name (the function called as the AddCommand argument). Returns
+// an error if the printer fails so an empty addCommandCall can never enter
+// the call set (where it would corrupt set-comparison via a "" key).
+func formatCallExpr(fset *token.FileSet, ce *ast.CallExpr) (addCommandCall, error) {
 	var buf bytes.Buffer
 	if err := printer.Fprint(&buf, fset, ce); err != nil {
-		return addCommandCall{}
+		return addCommandCall{}, fmt.Errorf("printing AddCommand call: %w", err)
 	}
 	src := buf.String()
 
@@ -175,7 +190,7 @@ func formatCallExpr(fset *token.FileSet, ce *ast.CallExpr) addCommandCall {
 		}
 	}
 
-	return addCommandCall{source: src, normalized: normalized, constructorName: ctor}
+	return addCommandCall{source: src, normalized: normalized, constructorName: ctor}, nil
 }
 
 // collectDeclsFromDir walks dir's .go files (non-recursive) and returns the

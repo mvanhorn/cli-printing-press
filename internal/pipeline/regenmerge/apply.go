@@ -123,14 +123,24 @@ func Apply(report *MergeReport, opts Options) error {
 		}
 	}
 
-	// Overwrite go.mod with the final merged form.
-	if mergedBytes, err := renderMergedGoMod(cliDir, freshDir); err == nil && len(mergedBytes) > 0 {
-		if err := writeFileAtomic(filepath.Join(tempDir, "go.mod"), mergedBytes); err != nil {
-			cleanup()
-			return fmt.Errorf("writing merged go.mod: %w", err)
-		}
-		if report.GoMod != nil {
+	// Overwrite go.mod with the final merged form. If either tree lacks a
+	// go.mod, renderMergedGoMod returns os.ErrNotExist and we skip the
+	// merge — there's nothing to merge. Any other error surfaces as a hard
+	// failure so partial state can't ship as success.
+	if report.GoMod != nil {
+		mergedBytes, err := renderMergedGoMod(cliDir, freshDir)
+		switch {
+		case err == nil:
+			if err := writeFileAtomic(filepath.Join(tempDir, "go.mod"), mergedBytes); err != nil {
+				cleanup()
+				return fmt.Errorf("writing merged go.mod: %w", err)
+			}
 			report.GoMod.Merged = true
+		case errors.Is(err, fs.ErrNotExist):
+			// Nothing to merge; leave whatever's in tempdir.
+		default:
+			cleanup()
+			return fmt.Errorf("rendering merged go.mod: %w", err)
 		}
 	}
 
@@ -170,15 +180,16 @@ func Apply(report *MergeReport, opts Options) error {
 }
 
 // assertGitClean returns an error if the git tree at dir has uncommitted
-// changes. Mitigates the "uncommitted edits to TEMPLATED-CLEAN files
-// silently destroyed" failure mode.
+// changes, OR if dir isn't a git repo / git isn't available. Mitigates the
+// "uncommitted edits to TEMPLATED-CLEAN files silently destroyed" failure
+// mode. Documented contract: --apply requires a clean git tree by default;
+// pass --force to override (which short-circuits this check entirely).
 func assertGitClean(dir string) error {
 	cmd := exec.Command("git", "status", "--porcelain", dir)
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
-		// If git isn't available or the dir isn't a git repo, just warn.
-		return nil
+		return fmt.Errorf("git status failed at %s (not a git repo or git unavailable); commit/init or pass --force: %w", dir, err)
 	}
 	if len(out) > 0 {
 		return fmt.Errorf("git tree at %s has uncommitted changes; commit/stash first or pass --force:\n%s", dir, out)
