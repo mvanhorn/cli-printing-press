@@ -1499,19 +1499,11 @@ func TestGenerateStoreWithBatchResourceDoesNotDuplicateUpsertBatch(t *testing.T)
 // generates a spec with a typed table, then runs the generated store
 // tests — the emitted TestUpsertBatch_Populates*Table tests fail if the
 // dispatch ever regresses.
-// TestSyncExtractPaginationNestedCursor verifies that the emitted
-// extractPaginationFromEnvelope helper finds cursors hidden inside
-// well-known wrapper objects like Slack's response_metadata. Without
-// this, paginated syncs against APIs with envelope-style cursors
-// terminate after the first page even though more data is available.
-//
-// Two-tier check: the generator-level grep asserts the wrapper-key
-// recursion code shipped, and the in-CLI test (written into the
-// emitted tree at internal/cli/sync_pagination_test.go and run via
-// `go test ./internal/cli`) exercises it against real Slack-shaped
-// JSON. Either tier alone is weaker — the grep can't catch a typo
-// inside the recursion, the runtime test can't catch a refactor that
-// keeps the same code shape but breaks the cursor extraction.
+// TestSyncExtractPaginationNestedCursor verifies the emitted
+// extractPaginationFromEnvelope finds cursors inside well-known wrapper
+// objects (Slack response_metadata, etc.). Combines a generator-level
+// emission canary with a behavioral test written into the generated
+// tree, since either tier alone misses real regressions.
 func TestSyncExtractPaginationNestedCursor(t *testing.T) {
 	t.Parallel()
 
@@ -1604,6 +1596,27 @@ func TestExtractPageItemsMongoPaginationEnvelope(t *testing.T) {
 	}
 }
 
+// Fast path: top-level cursor with no wrapper present at all. Proves
+// the common case (Stripe, GitHub, Linear, Notion) doesn't enter the
+// wrapper recursion. Pairs with TopLevelCursorWinsOverWrapper which
+// pairs both forms; this isolates the no-wrapper shape.
+func TestExtractPageItemsTopLevelCursorOnly(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"items": [{"id":1},{"id":2}],
+		"next_cursor": "page-2"
+	}` + "`" + `)
+	items, cursor, hasMore := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 2 {
+		t.Fatalf("want 2 items, got %d", len(items))
+	}
+	if cursor != "page-2" {
+		t.Fatalf("want top-level cursor page-2, got %q", cursor)
+	}
+	if !hasMore {
+		t.Fatalf("want hasMore=true when cursor is present")
+	}
+}
+
 // Negative case: top-level cursor should still win even when a
 // non-cursor field happens to live in a wrapper-named key.
 func TestExtractPageItemsTopLevelCursorWinsOverWrapper(t *testing.T) {
@@ -1637,8 +1650,8 @@ func TestExtractPageItemsNoCursor(t *testing.T) {
 	testPath := filepath.Join(outputDir, "internal", "cli", "sync_pagination_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
 
-	runGoCommand(t, outputDir, "mod", "tidy")
-	runGoCommand(t, outputDir, "test", "-run", "TestExtractPageItems", "./internal/cli")
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractPageItems", "./internal/cli")
 }
 
 func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {

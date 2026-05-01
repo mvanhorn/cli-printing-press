@@ -616,7 +616,6 @@ func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessa
 
 // extractPaginationFromEnvelope extracts cursor and has_more from a response envelope.
 func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorParam string) (string, bool) {
-	var nextCursor string
 	var hasMore bool
 
 	// Try common cursor field names
@@ -624,15 +623,7 @@ func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorPa
 		"next_cursor", "nextCursor", "cursor", "next_page_token",
 		"nextPageToken", "page_token", "after", "end_cursor", "endCursor",
 	}
-	for _, key := range cursorKeys {
-		if raw, ok := envelope[key]; ok {
-			var s string
-			if err := json.Unmarshal(raw, &s); err == nil && s != "" {
-				nextCursor = s
-				break
-			}
-		}
-	}
+	nextCursor := findCursorInMap(envelope, cursorKeys)
 
 	// If no top-level cursor was found, look one level deeper into well-known
 	// pagination wrapper objects. Slack returns {"messages":[...],
@@ -651,16 +642,8 @@ func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorPa
 			if json.Unmarshal(rawWrapper, &inner) != nil {
 				continue
 			}
-			for _, key := range cursorKeys {
-				if rawCursor, ok := inner[key]; ok {
-					var s string
-					if err := json.Unmarshal(rawCursor, &s); err == nil && s != "" {
-						nextCursor = s
-						break
-					}
-				}
-			}
-			if nextCursor != "" {
+			if c := findCursorInMap(inner, cursorKeys); c != "" {
+				nextCursor = c
 				break
 			}
 		}
@@ -682,6 +665,24 @@ func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorPa
 	}
 
 	return nextCursor, hasMore
+}
+
+// findCursorInMap returns the first non-empty string-typed value in m
+// whose key matches one of cursorKeys. Used by extractPaginationFromEnvelope
+// to scan both the top-level envelope and well-known wrapper objects with
+// the same name-match rules — extracted so the two scans can't drift.
+func findCursorInMap(m map[string]json.RawMessage, cursorKeys []string) string {
+	for _, key := range cursorKeys {
+		raw, ok := m[key]
+		if !ok {
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil && s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // upsertSingleObject stores a non-array API response as a single record.
