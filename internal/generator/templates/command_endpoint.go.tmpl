@@ -215,30 +215,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				body = jsonBody
 			} else {
 				body = map[string]any{}
-{{- range .Endpoint.Body}}
-{{- if or (eq .Type "object") (eq .Type "array")}}
-				if body{{camel (paramIdent .)}} != "" {
-					var parsed{{camel (paramIdent .)}} any
-					if err := json.Unmarshal([]byte(body{{camel (paramIdent .)}}), &parsed{{camel (paramIdent .)}}); err != nil {
-						return fmt.Errorf("parsing --{{flagName (paramIdent .)}} JSON: %w", err)
-					}
-					body["{{.Name}}"] = parsed{{camel (paramIdent .)}}
-				}
-{{- else if jsonStringParam .}}
-				if body{{camel (paramIdent .)}} != "" {
-					var parsed{{camel (paramIdent .)}} any
-					if err := json.Unmarshal([]byte(body{{camel (paramIdent .)}}), &parsed{{camel (paramIdent .)}}); err != nil {
-						return fmt.Errorf("parsing --{{flagName (paramIdent .)}} JSON: %w", err)
-					}
-					body["{{.Name}}"] = body{{camel (paramIdent .)}}
-				}
-{{- else}}
-				if body{{camel (paramIdent .)}} != {{zeroVal .Type}} {
-					body["{{.Name}}"] = body{{camel (paramIdent .)}}
-				}
-{{- end}}
-{{- end}}
-			}
+{{bodyMap .Endpoint.Body "\t\t\t\t"}}			}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PostWithHeaders(path, body, headerOverrides)
 {{- else}}
@@ -264,30 +241,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				body = jsonBody
 			} else {
 				body = map[string]any{}
-{{- range .Endpoint.Body}}
-{{- if or (eq .Type "object") (eq .Type "array")}}
-				if body{{camel (paramIdent .)}} != "" {
-					var parsed{{camel (paramIdent .)}} any
-					if err := json.Unmarshal([]byte(body{{camel (paramIdent .)}}), &parsed{{camel (paramIdent .)}}); err != nil {
-						return fmt.Errorf("parsing --{{flagName (paramIdent .)}} JSON: %w", err)
-					}
-					body["{{.Name}}"] = parsed{{camel (paramIdent .)}}
-				}
-{{- else if jsonStringParam .}}
-				if body{{camel (paramIdent .)}} != "" {
-					var parsed{{camel (paramIdent .)}} any
-					if err := json.Unmarshal([]byte(body{{camel (paramIdent .)}}), &parsed{{camel (paramIdent .)}}); err != nil {
-						return fmt.Errorf("parsing --{{flagName (paramIdent .)}} JSON: %w", err)
-					}
-					body["{{.Name}}"] = body{{camel (paramIdent .)}}
-				}
-{{- else}}
-				if body{{camel (paramIdent .)}} != {{zeroVal .Type}} {
-					body["{{.Name}}"] = body{{camel (paramIdent .)}}
-				}
-{{- end}}
-{{- end}}
-			}
+{{bodyMap .Endpoint.Body "\t\t\t\t"}}			}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PutWithHeaders(path, body, headerOverrides)
 {{- else}}
@@ -307,30 +261,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				body = jsonBody
 			} else {
 				body = map[string]any{}
-{{- range .Endpoint.Body}}
-{{- if or (eq .Type "object") (eq .Type "array")}}
-				if body{{camel (paramIdent .)}} != "" {
-					var parsed{{camel (paramIdent .)}} any
-					if err := json.Unmarshal([]byte(body{{camel (paramIdent .)}}), &parsed{{camel (paramIdent .)}}); err != nil {
-						return fmt.Errorf("parsing --{{flagName (paramIdent .)}} JSON: %w", err)
-					}
-					body["{{.Name}}"] = parsed{{camel (paramIdent .)}}
-				}
-{{- else if jsonStringParam .}}
-				if body{{camel (paramIdent .)}} != "" {
-					var parsed{{camel (paramIdent .)}} any
-					if err := json.Unmarshal([]byte(body{{camel (paramIdent .)}}), &parsed{{camel (paramIdent .)}}); err != nil {
-						return fmt.Errorf("parsing --{{flagName (paramIdent .)}} JSON: %w", err)
-					}
-					body["{{.Name}}"] = body{{camel (paramIdent .)}}
-				}
-{{- else}}
-				if body{{camel (paramIdent .)}} != {{zeroVal .Type}} {
-					body["{{.Name}}"] = body{{camel (paramIdent .)}}
-				}
-{{- end}}
-{{- end}}
-			}
+{{bodyMap .Endpoint.Body "\t\t\t\t"}}			}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PatchWithHeaders(path, body, headerOverrides)
 {{- else}}

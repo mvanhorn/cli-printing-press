@@ -165,30 +165,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			// query params with body for non-GET verbs. Promoted commands
 			// cover the common case: body-only POST/PUT/PATCH.
 			body := map[string]any{}
-{{- range .Endpoint.Body}}
-{{- if or (eq .Type "object") (eq .Type "array")}}
-			if body{{camel (paramIdent .)}} != "" {
-				var parsed{{camel (paramIdent .)}} any
-				if err := json.Unmarshal([]byte(body{{camel (paramIdent .)}}), &parsed{{camel (paramIdent .)}}); err != nil {
-					return fmt.Errorf("parsing --{{flagName (paramIdent .)}} JSON: %w", err)
-				}
-				body["{{.Name}}"] = parsed{{camel (paramIdent .)}}
-			}
-{{- else if jsonStringParam .}}
-			if body{{camel (paramIdent .)}} != "" {
-				var parsed{{camel (paramIdent .)}} any
-				if err := json.Unmarshal([]byte(body{{camel (paramIdent .)}}), &parsed{{camel (paramIdent .)}}); err != nil {
-					return fmt.Errorf("parsing --{{flagName (paramIdent .)}} JSON: %w", err)
-				}
-				body["{{.Name}}"] = body{{camel (paramIdent .)}}
-			}
-{{- else}}
-			if body{{camel (paramIdent .)}} != {{zeroVal .Type}} {
-				body["{{.Name}}"] = body{{camel (paramIdent .)}}
-			}
-{{- end}}
-{{- end}}
-			data, _, err := c.{{pascal (lower .Endpoint.Method)}}(path, body)
+{{bodyMap .Endpoint.Body "\t\t\t"}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}(path, body)
 {{- else}}
 			// HEAD/OPTIONS and unknown verbs fall back to GET so generation
 			// stays compileable. Spec authors who genuinely need these verbs
