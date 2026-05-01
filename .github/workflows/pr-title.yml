@@ -30,11 +30,6 @@ jobs:
             build
             style
             revert
-          scopes: |
-            cli
-            skills
-            ci
-            main
           requireScope: true
           subjectPattern: ^.+$
           subjectPatternError: "PR title must have a description after the colon"
