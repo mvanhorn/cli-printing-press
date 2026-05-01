@@ -81,7 +81,7 @@ func TestGenerateCostThrottlingPrimitives(t *testing.T) {
 		Version:             "1.0.0",
 		BaseURL:             "https://api.shoppy.example",
 		GraphQLEndpointPath: "/admin/api/graphql.json",
-		Throttling:          spec.ThrottlingConfig{Enabled: true},
+		Throttling:          spec.ThrottlingConfig{Enabled: true, Shape: spec.ThrottleShapeShopify},
 		Auth: spec.AuthConfig{
 			Type:    "api_key",
 			Header:  "X-API-Token",

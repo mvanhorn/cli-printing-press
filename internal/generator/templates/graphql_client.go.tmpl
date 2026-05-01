@@ -79,13 +79,18 @@ const graphqlEndpointPath = "{{.GraphQLEndpointPath}}"
 // us when we've drained the bucket entirely.
 const defaultThrottleQueryCost = 1.0
 
+// updateThrottleFromBody is the per-shape parser the GraphQL client uses
+// to convert a raw response body into a ThrottleStatus update. Each shape
+// (selected via spec Throttling.Shape) provides its own implementation in
+// a gated block below. Spec validation rejects Enabled=true without a
+// recognized Shape, so callers can rely on this method always existing
+// when HasCostThrottling is true.
+{{- if eq (printf "%s" .Throttling.Shape) "shopify"}}
+
 // throttleExtensions is the parser shape for Shopify's
-// extensions.cost.throttleStatus payload. Other GraphQL APIs that expose
-// calculated-cost rate limits in different shapes will need a pluggable
-// parser; today this is the only path. The wrapping is defensive — when
-// extensions.cost is missing (Linear, GitHub's REST GraphQL response,
-// any vanilla server), Unmarshal silently leaves the zero value and
-// updateThrottleFromBody no-ops.
+// extensions.cost.throttleStatus payload. Defensive — when extensions.cost
+// is missing or malformed, Unmarshal silently leaves the zero value and
+// updateThrottleFromBody no-ops rather than seeding bad data.
 type throttleExtensions struct {
 	Cost struct {
 		ThrottleStatus struct {
@@ -96,12 +101,6 @@ type throttleExtensions struct {
 	} `json:"cost"`
 }
 
-// updateThrottleFromBody parses Shopify-shape extensions.cost from a raw
-// GraphQL response body and updates the client's throttle state. Returns
-// true when the body carried a parseable status. Defensive about every
-// upstream shape variation — invalid JSON, missing extensions, missing
-// cost, missing throttleStatus, all-zero values — by treating any of them
-// as a silent no-op rather than an error.
 func (c *Client) updateThrottleFromBody(body []byte) bool {
 	if c == nil || c.Throttle == nil || len(body) == 0 {
 		return false
@@ -123,6 +122,7 @@ func (c *Client) updateThrottleFromBody(body []byte) bool {
 	})
 	return true
 }
+{{- end}}
 
 // throttleModeOrDefault returns the configured ThrottleMode, falling back
 // to ThrottleModeStrict so the field's zero value still produces blocking

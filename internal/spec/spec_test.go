@@ -87,6 +87,53 @@ func TestValidation(t *testing.T) {
 	}
 }
 
+// TestThrottlingValidate guards the named-adapter contract: enabling
+// throttling without a Shape (or with an unrecognized one) must fail at
+// spec-load time, not silently emit Shopify-shape parser code for an API
+// that isn't Shopify. The off case stays unconditional — specs that don't
+// use throttling never have to think about Shape.
+func TestThrottlingValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     ThrottlingConfig
+		wantErr string
+	}{
+		{
+			name: "off is always valid",
+			cfg:  ThrottlingConfig{},
+		},
+		{
+			name: "off with stray shape is still valid",
+			cfg:  ThrottlingConfig{Shape: ThrottleShapeShopify},
+		},
+		{
+			name: "shopify shape is valid when enabled",
+			cfg:  ThrottlingConfig{Enabled: true, Shape: ThrottleShapeShopify},
+		},
+		{
+			name:    "enabled without shape is rejected",
+			cfg:     ThrottlingConfig{Enabled: true},
+			wantErr: "throttling.shape is required",
+		},
+		{
+			name:    "unknown shape is rejected",
+			cfg:     ThrottlingConfig{Enabled: true, Shape: "github-graphql"},
+			wantErr: "not recognized",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.cfg.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestVersionPassedThrough(t *testing.T) {
 	base := func(v string) APISpec {
 		return APISpec{

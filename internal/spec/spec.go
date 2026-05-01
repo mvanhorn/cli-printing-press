@@ -105,31 +105,59 @@ type APISpec struct {
 	Cache                CacheConfig         `yaml:"cache,omitempty" json:"cache"`                             // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
 	Share                ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
 	MCP                  MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, the emitted MCP binary is stdio-only (today's default). Opting into http adds a --transport/--addr flag surface so the same binary can serve cloud-hosted agents.
-	Throttling           ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling,omitempty"`         // cost-based throttling config; when enabled, the generator emits a ThrottleState that tracks calculated-cost rate-limit budgets (Shopify-shape extensions.cost, GitHub GraphQL rateLimit nodes) and a --throttle-mode flag.
+	Throttling           ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
 }
 
+// ThrottleShape names the API-specific cost-bucket parser the generator
+// wires into the GraphQL client. The generic harness (bucket math, retry,
+// --throttle-mode flag) is shape-agnostic; only the parser that reads the
+// API's response into a ThrottleStatus differs per shape, because every
+// API surfaces its calculated cost in a different place. Adding a new
+// shape means: (1) add a constant here, (2) extend ThrottlingConfig.Validate
+// to accept it, (3) add the parser block to graphql_client.go.tmpl gated
+// on `eq .Throttling.Shape "<name>"`. No core code changes.
+type ThrottleShape string
+
+const (
+	// ThrottleShapeShopify reads `extensions.cost.throttleStatus.{maximumAvailable,
+	// currentlyAvailable,restoreRate}` from each GraphQL response. This is the
+	// only shape supported in v1; GitHub's queryable `rateLimit` field and
+	// Datadog's header-based cost limits will need their own shapes (and the
+	// GitHub case will need a query-rewrite layer, since rateLimit is a schema
+	// field rather than a response extension).
+	ThrottleShapeShopify ThrottleShape = "shopify"
+)
+
 // ThrottlingConfig opts a printed CLI into the cost-based throttling
-// primitives emitted by throttle.go.tmpl. The shape is intentionally minimal
-// for v1 — Enabled flips the entire surface on/off — so spec authors don't
-// need to think about retry counts or backoff before knowing they want
-// throttling at all. Future fields (max retries, custom extensions path)
-// belong on this struct rather than as ad-hoc spec-level fields.
+// primitives. Two fields:
+//   - Enabled: turn the surface on (--throttle-mode flag, ThrottleState,
+//     budget projection, retry helper). Default off so existing CLIs
+//     regenerate byte-identically when this field is unset.
+//   - Shape: which API-specific parser to wire. Required when Enabled is
+//     true. Today only ThrottleShapeShopify is valid; the generic harness
+//     is structured so a new shape is one additional gated block in the
+//     template, not a refactor.
 //
-// Default off: existing GraphQL CLIs (Linear) and REST CLIs regenerate
-// byte-identically when this field is unset. Authors opt in by writing
-// `throttling: { enabled: true }` in the spec YAML.
-//
-// Today the cost parser hardcodes Shopify's response shape
-// (extensions.cost.throttleStatus.{maximumAvailable,currentlyAvailable,restoreRate}).
-// Other APIs that expose calculated-cost rate limits in GraphQL extensions
-// (GitHub's rateLimit node, Datadog's cost limits) will need a pluggable
-// path field; that's a follow-up. The defensive parser in graphql_client.go
-// no-ops when extensions.cost is missing, so enabling throttling on an API
-// without that shape costs nothing — the WaitForBudget side stays !seeded
-// and every call returns immediately, the retry loop only fires on visible
-// 429s and THROTTLED extension codes.
+// Authors opt in by writing `throttling: { enabled: true, shape: shopify }`.
 type ThrottlingConfig struct {
-	Enabled bool `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Enabled bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Shape   ThrottleShape `yaml:"shape,omitempty" json:"shape,omitempty"`
+}
+
+// Validate ensures Shape is set and recognized when Enabled is true. Returns
+// nil for the off case so unrelated specs aren't penalized for never opting in.
+func (c ThrottlingConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	switch c.Shape {
+	case ThrottleShapeShopify:
+		return nil
+	case "":
+		return fmt.Errorf("throttling.shape is required when throttling.enabled is true (valid: %q)", ThrottleShapeShopify)
+	default:
+		return fmt.Errorf("throttling.shape %q is not recognized (valid: %q)", c.Shape, ThrottleShapeShopify)
+	}
 }
 
 // HasCostThrottling reports whether the spec opts into cost-based throttling
@@ -1048,6 +1076,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateMCP(s.MCP, s.Resources); err != nil {
+		return err
+	}
+	if err := s.Throttling.Validate(); err != nil {
 		return err
 	}
 	if s.ClientPattern == "proxy-envelope" && s.HasResourceBaseURLOverride() {
