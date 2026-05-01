@@ -1,0 +1,188 @@
+package regenmerge
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"golang.org/x/mod/modfile"
+)
+
+// planGoModMerge reads both go.mod files and builds the merge plan: published
+// `module` line + fresh `go`/`require` + smart `replace` union (local-path
+// replaces from published win over fresh; version-replaces from fresh win
+// over published when both have a target for the same path).
+//
+// Returns nil GoModMerge if neither tree has a go.mod (trivially nothing to
+// merge).
+func planGoModMerge(publishedDir, freshDir string) (*GoModMerge, error) {
+	pubPath := filepath.Join(publishedDir, "go.mod")
+	freshPath := filepath.Join(freshDir, "go.mod")
+	pubData, pubErr := os.ReadFile(pubPath)
+	freshData, freshErr := os.ReadFile(freshPath)
+	if pubErr != nil && freshErr != nil {
+		return nil, nil
+	}
+	if pubErr != nil {
+		return nil, fmt.Errorf("reading published go.mod: %w", pubErr)
+	}
+	if freshErr != nil {
+		return nil, fmt.Errorf("reading fresh go.mod: %w", freshErr)
+	}
+
+	pubMF, err := modfile.Parse(pubPath, pubData, nil)
+	if err != nil {
+		return nil, fmt.Errorf("parsing published go.mod: %w", err)
+	}
+	freshMF, err := modfile.Parse(freshPath, freshData, nil)
+	if err != nil {
+		return nil, fmt.Errorf("parsing fresh go.mod: %w", err)
+	}
+
+	plan := &GoModMerge{
+		PreservedModulePath: pubMF.Module.Mod.Path,
+	}
+
+	// Compute added/removed requires for the report.
+	pubReqs := map[string]string{}
+	for _, r := range pubMF.Require {
+		pubReqs[r.Mod.Path] = r.Mod.Version
+	}
+	freshReqs := map[string]string{}
+	for _, r := range freshMF.Require {
+		freshReqs[r.Mod.Path] = r.Mod.Version
+	}
+	for path, ver := range freshReqs {
+		if _, ok := pubReqs[path]; !ok {
+			plan.AddedRequires = append(plan.AddedRequires, fmt.Sprintf("%s %s", path, ver))
+		}
+	}
+	for path, ver := range pubReqs {
+		if _, ok := freshReqs[path]; !ok {
+			plan.RemovedRequires = append(plan.RemovedRequires, fmt.Sprintf("%s %s", path, ver))
+		}
+	}
+
+	// Smart replace handling: local-path replaces in published win.
+	for _, r := range pubMF.Replace {
+		if isLocalPathReplace(r.New.Path) {
+			plan.PreservedReplaces = append(plan.PreservedReplaces,
+				fmt.Sprintf("%s => %s", r.Old.Path, r.New.Path))
+		}
+	}
+
+	return plan, nil
+}
+
+// renderMergedGoMod produces the actual merged go.mod bytes from the two
+// inputs. Used by U4's Apply step. Caller writes the bytes.
+func renderMergedGoMod(publishedDir, freshDir string) ([]byte, error) {
+	pubPath := filepath.Join(publishedDir, "go.mod")
+	freshPath := filepath.Join(freshDir, "go.mod")
+	pubData, err := os.ReadFile(pubPath)
+	if err != nil {
+		return nil, err
+	}
+	freshData, err := os.ReadFile(freshPath)
+	if err != nil {
+		return nil, err
+	}
+	pubMF, err := modfile.Parse(pubPath, pubData, nil)
+	if err != nil {
+		return nil, fmt.Errorf("parsing published go.mod: %w", err)
+	}
+	freshMF, err := modfile.Parse(freshPath, freshData, nil)
+	if err != nil {
+		return nil, fmt.Errorf("parsing fresh go.mod: %w", err)
+	}
+
+	// Start with fresh's require/replace/exclude as a base, then graft
+	// published's module path and adjust replaces.
+	merged := &modfile.File{}
+	if err := merged.AddModuleStmt(pubMF.Module.Mod.Path); err != nil {
+		return nil, fmt.Errorf("setting module path: %w", err)
+	}
+	if freshMF.Go != nil {
+		if err := merged.AddGoStmt(freshMF.Go.Version); err != nil {
+			return nil, fmt.Errorf("setting go version: %w", err)
+		}
+	}
+	for _, r := range freshMF.Require {
+		if err := merged.AddRequire(r.Mod.Path, r.Mod.Version); err != nil {
+			return nil, fmt.Errorf("adding require %s: %w", r.Mod.Path, err)
+		}
+	}
+
+	// Replace handling: build a set of paths fresh handles, then add
+	// fresh's replaces; for paths fresh DOESN'T cover, take published's
+	// replace if it's a local-path; for paths fresh DOES cover but
+	// published has a local-path replace for it, prefer published.
+	freshReplacePaths := map[string]bool{}
+	for _, r := range freshMF.Replace {
+		freshReplacePaths[r.Old.Path] = true
+	}
+	for _, r := range pubMF.Replace {
+		if isLocalPathReplace(r.New.Path) {
+			// Local-path replace in published always wins. Add unconditionally;
+			// if fresh had the same path, the published one overrides
+			// because we add it after.
+			if err := merged.AddReplace(r.Old.Path, r.Old.Version, r.New.Path, r.New.Version); err != nil {
+				return nil, fmt.Errorf("adding published replace %s: %w", r.Old.Path, err)
+			}
+			continue
+		}
+		// Non-local-path replace in published — only carry forward if
+		// fresh doesn't have a replace for the same path.
+		if !freshReplacePaths[r.Old.Path] {
+			if err := merged.AddReplace(r.Old.Path, r.Old.Version, r.New.Path, r.New.Version); err != nil {
+				return nil, fmt.Errorf("adding published replace %s: %w", r.Old.Path, err)
+			}
+		}
+	}
+	// Add fresh's replaces only if published didn't already place a
+	// local-path replace for the same path.
+	pubLocalPaths := map[string]bool{}
+	for _, r := range pubMF.Replace {
+		if isLocalPathReplace(r.New.Path) {
+			pubLocalPaths[r.Old.Path] = true
+		}
+	}
+	for _, r := range freshMF.Replace {
+		if pubLocalPaths[r.Old.Path] {
+			continue
+		}
+		if err := merged.AddReplace(r.Old.Path, r.Old.Version, r.New.Path, r.New.Version); err != nil {
+			return nil, fmt.Errorf("adding fresh replace %s: %w", r.Old.Path, err)
+		}
+	}
+
+	// Exclude: union.
+	seenExcl := map[string]bool{}
+	for _, e := range append(pubMF.Exclude, freshMF.Exclude...) {
+		key := e.Mod.Path + "@" + e.Mod.Version
+		if seenExcl[key] {
+			continue
+		}
+		seenExcl[key] = true
+		if err := merged.AddExclude(e.Mod.Path, e.Mod.Version); err != nil {
+			return nil, fmt.Errorf("adding exclude %s: %w", e.Mod.Path, err)
+		}
+	}
+
+	// Retract: published's only.
+	for _, r := range pubMF.Retract {
+		if err := merged.AddRetract(r.VersionInterval, r.Rationale); err != nil {
+			return nil, fmt.Errorf("adding retract: %w", err)
+		}
+	}
+
+	merged.Cleanup()
+	return merged.Format()
+}
+
+// isLocalPathReplace reports whether a replace directive's target is a local
+// path (relative or absolute filesystem path) rather than a module identifier.
+func isLocalPathReplace(target string) bool {
+	return strings.HasPrefix(target, ".") || strings.HasPrefix(target, "/")
+}
