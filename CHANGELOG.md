@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.2.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.1.0...v3.2.0) (2026-05-01)
+
+
+### Features
+
+* **cli:** add regen-merge subcommand for library template sweeps ([#461](https://github.com/mvanhorn/cli-printing-press/issues/461)) ([4c7bd42](https://github.com/mvanhorn/cli-printing-press/commit/4c7bd42dc92036a642d5f9393d3e454d597227bc))
+
+
+### Bug Fixes
+
+* **cli:** unbreak HasStore + non-GET promoted commands ([#425](https://github.com/mvanhorn/cli-printing-press/issues/425)) ([#459](https://github.com/mvanhorn/cli-printing-press/issues/459)) ([a3ea32e](https://github.com/mvanhorn/cli-printing-press/commit/a3ea32edaf982e8d258339dbf2c0b006ea53c4ae))
+
 ## [3.1.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.0.1...v3.1.0) (2026-05-01)
 
 
