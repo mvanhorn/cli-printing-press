@@ -6,9 +6,6 @@ import (
 	"testing"
 )
 
-// TestValidateNarrativeCmd_RequiresFlags confirms cobra returns a
-// usage error rather than nil-derefing or running silently when the
-// caller forgets --research / --binary.
 func TestValidateNarrativeCmd_RequiresFlags(t *testing.T) {
 	t.Parallel()
 

@@ -2,10 +2,12 @@ package narrativecheck
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -28,21 +30,19 @@ func TestExtractSubcommandWords(t *testing.T) {
 		{"trailing flag with value", "mycli widgets list --since 7d", "widgets list"},
 		{"flag mid-tokens", "mycli widgets --since 7d list", "widgets"},
 		{"positional value with equals", "mycli widgets q=hello", "widgets"},
-		// The bash recipe's awk pipeline matches the whole token against
-		// the non-identifier regex, so "ns:resource" causes the loop to
-		// break with no subcommand words emitted (not "ns"). Mirroring
-		// that behavior keeps Go and bash classifiers identical.
+		// awk matches the whole token against the non-identifier regex,
+		// so "ns:resource" emits nothing (not "ns").
 		{"positional value with colon", "mycli ns:resource list", ""},
 		{"bare binary", "mycli", ""},
 		{"binary plus flag only", "mycli --version", ""},
 		{"empty string", "", ""},
-		{"single token with leading dash", "--help", ""}, // first token is the "binary"; nothing after
+		{"single token with leading dash", "--help", ""},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := extractSubcommandWords(tc.in)
+			got := strings.Join(extractSubcommandWords(tc.in), " ")
 			if got != tc.want {
 				t.Errorf("extractSubcommandWords(%q) = %q, want %q", tc.in, got, tc.want)
 			}
@@ -212,9 +212,19 @@ func writeFile(t *testing.T, content string) string {
 // CLI: it accepts `widgets list --help`, `widgets show <id> --help`,
 // and exits non-zero for anything else. The stub is the most direct
 // way to test the exec path without depending on a fully generated CLI.
+//
+// The build is cached across tests via sync.Once — go build is the
+// slowest step in the package's test runtime.
+var (
+	stubOnce sync.Once
+	stubPath string
+	stubErr  error
+)
+
 func buildStubBinary(t *testing.T) string {
 	t.Helper()
-	src := `package main
+	stubOnce.Do(func() {
+		src := `package main
 
 import (
 	"fmt"
@@ -222,9 +232,6 @@ import (
 	"strings"
 )
 
-// validPathPrefixes simulates a cobra tree: each is the canonical
-// subcommand path. Trailing positional args are accepted (cobra's
-// --help works at any level even with extra args).
 var validPathPrefixes = []string{
 	"widgets list",
 	"widgets show",
@@ -250,14 +257,23 @@ func main() {
 	os.Exit(1)
 }
 `
-	srcPath := filepath.Join(t.TempDir(), "stub.go")
-	if err := os.WriteFile(srcPath, []byte(src), 0o644); err != nil {
-		t.Fatal(err)
+		dir, err := os.MkdirTemp("", "narrativecheck-stub-")
+		if err != nil {
+			stubErr = err
+			return
+		}
+		srcPath := filepath.Join(dir, "stub.go")
+		if err := os.WriteFile(srcPath, []byte(src), 0o644); err != nil {
+			stubErr = err
+			return
+		}
+		stubPath = filepath.Join(dir, "stub")
+		if out, err := exec.Command("go", "build", "-o", stubPath, srcPath).CombinedOutput(); err != nil {
+			stubErr = fmt.Errorf("building stub: %v\n%s", err, out)
+		}
+	})
+	if stubErr != nil {
+		t.Fatal(stubErr)
 	}
-	binPath := filepath.Join(t.TempDir(), "stub")
-	cmd := exec.Command("go", "build", "-o", binPath, srcPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("building stub: %v\n%s", err, out)
-	}
-	return binPath
+	return stubPath
 }

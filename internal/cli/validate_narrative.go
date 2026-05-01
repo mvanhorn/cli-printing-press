@@ -21,8 +21,10 @@ func newValidateNarrativeCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "validate-narrative",
-		Short: "Verify research.json narrative commands resolve in a built CLI's Cobra tree",
+		Use:           "validate-narrative",
+		Short:         "Verify research.json narrative commands resolve in a built CLI's Cobra tree",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		Long: `Walks every narrative.quickstart[].command and narrative.recipes[].command
 in research.json and runs '<binary> <words> --help' to confirm each command
 path exists. Replaces the bash recipe in skills/printing-press/SKILL.md so
@@ -46,10 +48,10 @@ the SKILL's recipes; users hit "unknown command" on copy-paste.`,
     --binary $CLI_WORK_DIR/myapi-pp-cli`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if researchPath == "" {
-				return fmt.Errorf("--research is required")
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--research is required")}
 			}
 			if binaryPath == "" {
-				return fmt.Errorf("--binary is required")
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--binary is required")}
 			}
 
 			// Honor SIGINT so a stuck `<binary> --help` (e.g., a CLI
@@ -59,9 +61,10 @@ the SKILL's recipes; users hit "unknown command" on copy-paste.`,
 
 			report, err := narrativecheck.Validate(ctx, researchPath, binaryPath)
 			if err != nil {
-				return err
+				return &ExitError{Code: ExitInputError, Err: err}
 			}
 
+			// Human report goes to stderr so --json on stdout pipes cleanly.
 			if asJSON {
 				if err := json.NewEncoder(cmd.OutOrStdout()).Encode(report); err != nil {
 					return err
@@ -71,7 +74,10 @@ the SKILL's recipes; users hit "unknown command" on copy-paste.`,
 			}
 
 			if strict && (report.HasFailures() || report.ResearchEmpty) {
-				return fmt.Errorf("narrative validation failed: %d missing, %d empty-words, research_empty=%t", report.Missing, report.Empty, report.ResearchEmpty)
+				return &ExitError{
+					Code: ExitInputError,
+					Err:  fmt.Errorf("narrative validation failed: %d missing, %d empty-words, research_empty=%t", report.Missing, report.Empty, report.ResearchEmpty),
+				}
 			}
 			return nil
 		},
@@ -89,9 +95,9 @@ func printHumanReport(w io.Writer, report *narrativecheck.Report) {
 	}
 	for _, r := range report.Results {
 		switch r.Status {
-		case "missing":
+		case narrativecheck.StatusMissing:
 			fmt.Fprintf(w, "MISSING [%s]: %s → %s\n", r.Section, r.Command, r.Words)
-		case "empty-words":
+		case narrativecheck.StatusEmptyWords:
 			fmt.Fprintf(w, "EMPTY [%s]: %s has no subcommand words to verify\n", r.Section, r.Command)
 		}
 	}

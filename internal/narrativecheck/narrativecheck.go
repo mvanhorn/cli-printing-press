@@ -31,23 +31,26 @@ const (
 	SectionRecipes    Section = "recipes"
 )
 
-// Result is a single command's classification.
+// Status is a command's classification after the --help walk.
+type Status string
+
+const (
+	StatusOK         Status = "ok"
+	StatusMissing    Status = "missing"
+	StatusEmptyWords Status = "empty-words"
+)
+
 type Result struct {
 	Section Section `json:"section"`
-	// Command is the full command string from research.json
-	// (e.g., `mycli reports stats --since 7d`).
-	Command string `json:"command"`
+	Command string  `json:"command"`
 	// Words is the extracted subcommand path (e.g., `reports stats`)
 	// after stripping the binary name and the first --flag/positional.
 	// Empty when the command was a bare binary or pure-flag invocation.
-	Words string `json:"words,omitempty"`
-	// Status is one of: "ok", "missing", "empty-words".
-	Status string `json:"status"`
-	// Error is set when Status != "ok" with a one-line description.
-	Error string `json:"error,omitempty"`
+	Words  string `json:"words,omitempty"`
+	Status Status `json:"status"`
+	Error  string `json:"error,omitempty"`
 }
 
-// Report is the validate run's outcome.
 type Report struct {
 	Walked  int      `json:"walked"`
 	Missing int      `json:"missing"`
@@ -63,8 +66,7 @@ type Report struct {
 // Validate parses researchPath, walks every narrative.quickstart and
 // narrative.recipes command, and resolves it against the binary's
 // Cobra tree by running `<binary> <words> --help`. ctx scopes every
-// subprocess so callers can interrupt cleanly. The binary is invoked
-// once per command; commands resolve when --help exits 0.
+// subprocess so callers can interrupt cleanly.
 func Validate(ctx context.Context, researchPath, binaryPath string) (*Report, error) {
 	commands, err := loadCommands(researchPath)
 	if err != nil {
@@ -78,11 +80,11 @@ func Validate(ctx context.Context, researchPath, binaryPath string) (*Report, er
 	for _, sc := range commands {
 		r := classify(ctx, binaryPath, sc.Section, sc.Command)
 		switch r.Status {
-		case "ok":
+		case StatusOK:
 			report.Walked++
-		case "missing":
+		case StatusMissing:
 			report.Missing++
-		case "empty-words":
+		case StatusEmptyWords:
 			report.Empty++
 		}
 		report.Results = append(report.Results, r)
@@ -140,30 +142,28 @@ func loadCommands(researchPath string) ([]sectionCommand, error) {
 	return out, nil
 }
 
-// classify takes a single command and returns its resolution status.
-// Mirrors the bash recipe's wordlist rule: drop the leading binary name
-// (first whitespace-separated token), then keep words until the first
-// flag (starts with `-`) or non-identifier character. Hyphens stay
-// because Cobra subcommands use them (`list-projects`).
+// classify mirrors the bash recipe's wordlist rule: drop the leading
+// binary name, keep words until the first flag (starts with `-`) or
+// non-identifier character. Hyphens stay because Cobra subcommands use
+// them (`list-projects`).
 func classify(ctx context.Context, binaryPath string, section Section, command string) Result {
 	words := extractSubcommandWords(command)
-	r := Result{Section: section, Command: command, Words: words}
+	r := Result{Section: section, Command: command, Words: strings.Join(words, " ")}
 
-	if words == "" {
-		r.Status = "empty-words"
+	if len(words) == 0 {
+		r.Status = StatusEmptyWords
 		r.Error = "command has no subcommand words to verify (bare binary or pure-flag invocation)"
 		return r
 	}
 
-	args := append(strings.Fields(words), "--help")
-	cmd := exec.CommandContext(ctx, binaryPath, args...)
-	if err := cmd.Run(); err != nil {
-		r.Status = "missing"
-		r.Error = fmt.Sprintf("%s %s --help failed: %v", binaryPath, words, err)
+	args := append(words, "--help")
+	if err := exec.CommandContext(ctx, binaryPath, args...).Run(); err != nil {
+		r.Status = StatusMissing
+		r.Error = fmt.Sprintf("%s %s --help failed: %v", binaryPath, r.Words, err)
 		return r
 	}
 
-	r.Status = "ok"
+	r.Status = StatusOK
 	return r
 }
 
@@ -177,10 +177,10 @@ func classify(ctx context.Context, binaryPath string, section Section, command s
 //
 // Strip the first token (binary name), then keep tokens until the first
 // flag or any token containing a character outside [A-Za-z0-9_-].
-func extractSubcommandWords(command string) string {
+func extractSubcommandWords(command string) []string {
 	tokens := strings.Fields(command)
 	if len(tokens) <= 1 {
-		return ""
+		return nil
 	}
 	var words []string
 	for _, tok := range tokens[1:] {
@@ -189,7 +189,7 @@ func extractSubcommandWords(command string) string {
 		}
 		words = append(words, tok)
 	}
-	return strings.Join(words, " ")
+	return words
 }
 
 // isIdentifierToken reports whether s contains only ASCII alphanumerics,
