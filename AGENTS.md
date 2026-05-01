@@ -124,6 +124,7 @@ Golden verification does not replace `go test ./...`, `go vet ./...`, `golangci-
 - `skills/` - Claude Code skill definitions
 - `testdata/` - Test fixtures (internal + OpenAPI specs)
 - `docs/PIPELINE.md` - Portable contract for the 9-phase generation pipeline (preflight through ship). Phase names and ordering are authoritative in `internal/pipeline/state.go`; per-phase intent is authoritative in `internal/pipeline/seeds.go`. Update `docs/PIPELINE.md` in the same PR whenever those files change
+- `docs/SPEC-EXTENSIONS.md` - Canonical reference for Printing Press-specific OpenAPI `x-*` extensions. Update it whenever `internal/openapi/parser.go` adds or changes an `Extensions["x-*"]` lookup
 - `docs/SKILLS.md` - Skill authoring conventions: workflow parity, reference-file pattern, frontmatter fields
 - `docs/PATTERNS.md` - Cross-cutting design patterns (deterministic-inventory ledger, etc.)
 
