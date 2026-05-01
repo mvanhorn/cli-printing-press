@@ -146,8 +146,11 @@ func majorVersion(t *testing.T, v string) int {
 func TestPRTitleWorkflowAllowsReleasePleaseScope(t *testing.T) {
 	// release-please uses the target branch as the conventional-commit scope
 	// for generated release PR titles, e.g. chore(main): release 2.2.0.
-	// The PR title workflow must allow that generated title or release PRs
-	// cannot merge.
+	// The PR title workflow must accept that scope. Two valid configurations:
+	//   - explicit scopes allow-list containing "main"
+	//   - no allow-list at all (any scope passes), with requireScope: true
+	// PR #463 removed the allow-list to stop friction with package-name
+	// scopes like `regenmerge`; this test pins both shapes as acceptable.
 	data, err := os.ReadFile("../../.github/workflows/pr-title.yml")
 	require.NoError(t, err)
 
@@ -169,15 +172,16 @@ func TestPRTitleWorkflowAllowsReleasePleaseScope(t *testing.T) {
 			continue
 		}
 
-		scopes, ok := step.With["scopes"].(string)
-		require.True(t, ok, "semantic pull request action should declare scopes")
-
-		allowed := map[string]bool{}
-		for scope := range strings.FieldsSeq(scopes) {
-			allowed[scope] = true
+		if scopes, ok := step.With["scopes"].(string); ok {
+			allowed := map[string]bool{}
+			for scope := range strings.FieldsSeq(scopes) {
+				allowed[scope] = true
+			}
+			assert.True(t, allowed["main"], "scope allow-list must include 'main' for release-please PR titles")
+			return
 		}
 
-		assert.True(t, allowed["main"], "release-please PR titles use main as the scope")
+		// No allow-list — any scope is accepted, including release-please's "main".
 		return
 	}
 

@@ -1250,7 +1250,12 @@ func printProvenance(cmd *cobra.Command, count int, prov DataProvenance) {
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s%d results (cached, synced %s)\n", prefix, count, age)
 }
 
-// wrapWithProvenance wraps JSON data in a provenance envelope: {"results": ..., "meta": {...}}.
+// wrapWithProvenance wraps response data in a provenance envelope:
+// {"results": ..., "meta": {...}}. When data is valid JSON, it embeds as
+// the parsed shape; when data is non-JSON (e.g., XML/RSS responses, plain
+// text), it embeds as a JSON string so json.Marshal doesn't choke on
+// "invalid character '<'" while still passing the raw payload through to
+// the consumer.
 func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMessage, error) {
 	meta := map[string]any{"source": prov.Source}
 	if prov.SyncedAt != nil {
@@ -1265,8 +1270,12 @@ func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMess
 	if prov.Freshness != nil {
 		meta["freshness"] = prov.Freshness
 	}
+	var results any = json.RawMessage(data)
+	if !json.Valid(data) {
+		results = string(data)
+	}
 	envelope := map[string]any{
-		"results": json.RawMessage(data),
+		"results": results,
 		"meta":    meta,
 	}
 	return json.Marshal(envelope)
