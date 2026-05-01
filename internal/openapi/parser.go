@@ -1360,7 +1360,14 @@ func filterGlobalParams(resources map[string]spec.Resource) {
 		}
 	})
 
-	if totalEndpoints == 0 {
+	// "Global" only makes sense when there are several endpoints to be
+	// global across. With 1 or 2 endpoints, every param is trivially on
+	// 100% of them, which would strip the entire flag set from
+	// single-endpoint specs (e.g., open-meteo: 70+ query params all
+	// dropped, leaving `forecast` as a no-arg command). Require at least
+	// 3 endpoints before applying the filter.
+	const minEndpointsForGlobalFilter = 3
+	if totalEndpoints < minEndpointsForGlobalFilter {
 		return
 	}
 

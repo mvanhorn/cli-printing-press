@@ -1734,3 +1734,58 @@ func TestParseFrameworkCollisionSelfCollisionBumpsSuffix(t *testing.T) {
 	})
 	assert.Contains(t, output, `"testapi-version-2"`)
 }
+
+// TestFilterGlobalParamsRequiresMinEndpoints pins the open-meteo regression:
+// a single-endpoint spec with many query parameters used to have all its
+// params stripped because every param trivially appeared on 100% of
+// endpoints (1/1) and the >80% global-filter threshold matched. The filter
+// now requires at least 3 endpoints before it considers any pattern
+// "global" — fewer endpoints means there's nothing meaningful to compare.
+func TestFilterGlobalParamsRequiresMinEndpoints(t *testing.T) {
+	t.Parallel()
+
+	specYAML := `openapi: 3.0.0
+info:
+  title: TestAPI
+  version: "1.0"
+paths:
+  /v1/forecast:
+    get:
+      operationId: list
+      tags: [forecast]
+      parameters:
+        - name: latitude
+          in: query
+          required: true
+          schema: {type: number}
+        - name: longitude
+          in: query
+          required: true
+          schema: {type: number}
+        - name: hourly
+          in: query
+          schema: {type: string}
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema: {type: object}
+`
+	spec, err := Parse([]byte(specYAML))
+	require.NoError(t, err)
+
+	resource, ok := spec.Resources["forecast"]
+	require.True(t, ok, "forecast resource should exist")
+	endpoint, ok := resource.Endpoints["list"]
+	require.True(t, ok, "list endpoint should exist")
+	assert.Len(t, endpoint.Params, 3, "single-endpoint spec must keep its params; the global-filter must not strip them")
+
+	names := map[string]bool{}
+	for _, p := range endpoint.Params {
+		names[p.Name] = true
+	}
+	for _, want := range []string{"latitude", "longitude", "hourly"} {
+		assert.True(t, names[want], "param %q must be preserved", want)
+	}
+}
