@@ -174,20 +174,46 @@ func formatCallExpr(fset *token.FileSet, ce *ast.CallExpr) (addCommandCall, erro
 	}
 	src := buf.String()
 
-	// Normalize: collapse internal whitespace into single spaces. This
-	// makes `rootCmd.AddCommand(newX(flags))` and the same call across
-	// formatting differences match for set-comparison.
-	normalized := strings.Join(strings.Fields(src), " ")
-
-	// Infer constructor name from the first argument: usually
-	// `newX(args...)` — extract `newX`.
+	// Infer the constructor name from the first argument. Two shapes:
+	//  - `newX(args...)` — extract `newX` from the *ast.CallExpr.
+	//  - `someCmd` — bare ident, treat the ident as the constructor.
 	var ctor string
 	if len(ce.Args) > 0 {
-		if argCall, ok := ce.Args[0].(*ast.CallExpr); ok {
-			if id, ok := argCall.Fun.(*ast.Ident); ok {
+		switch arg := ce.Args[0].(type) {
+		case *ast.CallExpr:
+			if id, ok := arg.Fun.(*ast.Ident); ok {
 				ctor = id.Name
 			}
+		case *ast.Ident:
+			ctor = arg.Name
 		}
+	}
+
+	// Extract the parent receiver: `rootCmd.AddCommand(...)` -> `rootCmd`.
+	// Only handles bare-ident receivers; chained calls fall through to the
+	// text-based fallback below.
+	var parent string
+	if sel, ok := ce.Fun.(*ast.SelectorExpr); ok {
+		if id, ok := sel.X.(*ast.Ident); ok {
+			parent = id.Name
+		}
+	}
+
+	// Semantic dedup key: <parent>.AddCommand(<ctor>). Treats
+	// `rootCmd.AddCommand(newX(flags))` and `rootCmd.AddCommand(newX(&flags))`
+	// as the same call — template generations regularly tweak the
+	// argument shape (pointer vs value, added context arg, etc.) without
+	// changing the registration's identity. A pure text comparison would
+	// flag the older form as "lost" and re-inject it on top of the newer
+	// form, producing duplicate cobra registrations at runtime.
+	//
+	// When parent or ctor can't be cleanly extracted (chained calls,
+	// inline command literals), fall back to whitespace-collapsed source.
+	var normalized string
+	if parent != "" && ctor != "" {
+		normalized = parent + ".AddCommand(" + ctor + ")"
+	} else {
+		normalized = strings.Join(strings.Fields(src), " ")
 	}
 
 	return addCommandCall{source: src, normalized: normalized, constructorName: ctor}, nil

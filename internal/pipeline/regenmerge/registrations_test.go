@@ -99,3 +99,98 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// TestExtractLostRegistrationsArgShapeNoFalsePositives is the regression test
+// for the pypi dogfood finding: a templated AddCommand call where the new
+// template tweaked the argument shape (e.g., `flags` -> `&flags`, or `c`
+// -> `cmd.Context(), c`) must NOT flag the published form as "lost". Pure
+// text comparison would, and the call would be re-injected on top of fresh's
+// existing call producing duplicate cobra registrations at runtime.
+func TestExtractLostRegistrationsArgShapeNoFalsePositives(t *testing.T) {
+	t.Parallel()
+
+	pubCLI := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+	flags := &rootFlags{}
+	rootCmd.AddCommand(newPypiCmd(&flags))
+	rootCmd.AddCommand(newRssCmd(&flags))
+	_ = rootCmd.Execute()
+}
+
+type rootFlags struct{}
+func newPypiCmd(*rootFlags) *cobra.Command { return nil }
+func newRssCmd(*rootFlags) *cobra.Command  { return nil }
+`
+	freshCLI := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+	flags := rootFlags{}
+	rootCmd.AddCommand(newPypiCmd(flags))
+	rootCmd.AddCommand(newRssCmd(flags))
+	_ = rootCmd.Execute()
+}
+
+type rootFlags struct{}
+func newPypiCmd(rootFlags) *cobra.Command { return nil }
+func newRssCmd(rootFlags) *cobra.Command  { return nil }
+`
+	pubDir, freshDir := buildSyntheticFixture(t,
+		map[string]string{"internal/cli/root.go": pubCLI},
+		map[string]string{"internal/cli/root.go": freshCLI})
+	regs, err := extractLostRegistrations(pubDir, freshDir)
+	require.NoError(t, err)
+	assert.Empty(t, regs, "arg-shape variation alone should not produce lost registrations")
+}
+
+// TestExtractLostRegistrationsDistinguishesParents pins the other half of the
+// semantic dedup contract: two calls with the same constructor but different
+// parent receivers are distinct registrations and must not be deduped.
+func TestExtractLostRegistrationsDistinguishesParents(t *testing.T) {
+	t.Parallel()
+
+	pubCLI := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+	parentCmd := &cobra.Command{Use: "p"}
+	rootCmd.AddCommand(parentCmd)
+	parentCmd.AddCommand(newSubCmd())
+	_ = rootCmd.Execute()
+}
+
+func newSubCmd() *cobra.Command { return nil }
+`
+	freshCLI := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newSubCmd())
+	_ = rootCmd.Execute()
+}
+
+func newSubCmd() *cobra.Command { return nil }
+`
+	pubDir, freshDir := buildSyntheticFixture(t,
+		map[string]string{"internal/cli/root.go": pubCLI},
+		map[string]string{"internal/cli/root.go": freshCLI})
+	regs, err := extractLostRegistrations(pubDir, freshDir)
+	require.NoError(t, err)
+
+	// pub registers newSubCmd under parentCmd; fresh registers it under
+	// rootCmd. These are distinct registrations — pub's parentCmd-attached
+	// call should be flagged as lost.
+	require.Len(t, regs, 1, "parentCmd's distinct registration of newSubCmd must be flagged")
+	assert.Contains(t, regs[0].Calls, "parentCmd.AddCommand(newSubCmd())",
+		"lost call should preserve the parentCmd parent (not deduped against rootCmd's call)")
+}
