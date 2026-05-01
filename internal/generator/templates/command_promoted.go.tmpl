@@ -136,7 +136,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			}, nil, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- end}}
 {{- else}}
-{{- if or .HasStore (eq (upper .Endpoint.Method) "GET") (eq (upper .Endpoint.Method) "HEAD") (eq (upper .Endpoint.Method) "OPTIONS")}}
+{{- if or (eq (upper .Endpoint.Method) "GET") (eq (upper .Endpoint.Method) "HEAD") (eq (upper .Endpoint.Method) "OPTIONS")}}
 			params := map[string]string{}
 {{- range $i, $p := .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
@@ -149,23 +149,34 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- end}}
-{{- if .HasStore}}
-			// resolveRead is GET-only internally, so HasStore + non-GET should
-			// be marked Hidden in the printed CLI and reached via the typed
-			// `<resource> <endpoint>` form instead.
+{{- if and .HasStore (eq (upper .Endpoint.Method) "GET")}}
 			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, nil)
 {{- else if eq (upper .Endpoint.Method) "GET"}}
 			data, err := c.Get(path, params)
 {{- else if eq (upper .Endpoint.Method) "DELETE"}}
 			data, _, err := c.Delete(path)
+{{- if .HasStore}}
+			// Synthesize a live-call provenance so the downstream HasStore
+			// block has a `prov` to pass into printProvenance and
+			// wrapWithProvenance — non-GET verbs never round-trip through
+			// resolveRead (GET-only) yet still need the same output shape.
+			prov := attachFreshness(DataProvenance{Source: "live"}, flags)
+{{- end}}
 {{- else if or (eq (upper .Endpoint.Method) "POST") (eq (upper .Endpoint.Method) "PUT") (eq (upper .Endpoint.Method) "PATCH")}}
 			// Build the JSON body from --field flags. Query/path params
 			// are intentionally not folded into the body here — the typed
 			// `<resource> <endpoint>` command is the place to combine
 			// query params with body for non-GET verbs. Promoted commands
-			// cover the common case: body-only POST/PUT/PATCH.
+			// cover the common case: body-only POST/PUT/PATCH. HasStore +
+			// non-GET falls through here (live API call) rather than
+			// resolveRead, which is GET-only internally; a body-aware
+			// cached read helper is filed as #425 for when a second
+			// store-backed POST-search consumer ships.
 			body := map[string]any{}
 {{bodyMap .Endpoint.Body "\t\t\t"}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}(path, body)
+{{- if .HasStore}}
+			prov := attachFreshness(DataProvenance{Source: "live"}, flags)
+{{- end}}
 {{- else}}
 			// HEAD/OPTIONS and unknown verbs fall back to GET so generation
 			// stays compileable. Spec authors who genuinely need these verbs
