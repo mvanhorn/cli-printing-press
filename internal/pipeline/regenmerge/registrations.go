@@ -207,6 +207,13 @@ func formatCallExpr(fset *token.FileSet, ce *ast.CallExpr) (addCommandCall, erro
 	// flag the older form as "lost" and re-inject it on top of the newer
 	// form, producing duplicate cobra registrations at runtime.
 	//
+	// Limitation: AddCommand is variadic. A multi-arg call like
+	// `rootCmd.AddCommand(newA(), newB(), newC())` fingerprints by the
+	// first ctor only, so additional args don't participate in the
+	// lost-set comparison. Cobra projects almost universally use one
+	// AddCommand call per command, so this hasn't bitten in practice;
+	// revisit if a template starts emitting multi-arg form.
+	//
 	// When parent or ctor can't be cleanly extracted (chained calls,
 	// inline command literals), fall back to whitespace-collapsed source.
 	var normalized string

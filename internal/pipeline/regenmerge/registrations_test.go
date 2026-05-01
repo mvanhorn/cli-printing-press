@@ -149,6 +149,35 @@ func newRssCmd(rootFlags) *cobra.Command  { return nil }
 	assert.Empty(t, regs, "arg-shape variation alone should not produce lost registrations")
 }
 
+// TestExtractLostRegistrationsChainedCallFallback pins the fallback contract:
+// when a parent receiver isn't a bare ident (e.g., `getRoot().AddCommand(...)`
+// where the AST root is *ast.CallExpr, not *ast.Ident), the semantic key
+// extraction can't apply, so the call falls back to whitespace-collapsed
+// source comparison. Identical chained calls in pub+fresh must still match
+// under that fallback.
+func TestExtractLostRegistrationsChainedCallFallback(t *testing.T) {
+	t.Parallel()
+
+	chainedCLI := `package cli
+
+import "github.com/spf13/cobra"
+
+func getRoot() *cobra.Command { return &cobra.Command{Use: "x"} }
+
+func Execute() {
+	getRoot().AddCommand(newSubCmd())
+}
+
+func newSubCmd() *cobra.Command { return nil }
+`
+	pubDir, freshDir := buildSyntheticFixture(t,
+		map[string]string{"internal/cli/root.go": chainedCLI},
+		map[string]string{"internal/cli/root.go": chainedCLI})
+	regs, err := extractLostRegistrations(pubDir, freshDir)
+	require.NoError(t, err)
+	assert.Empty(t, regs, "identical chained-call AddCommand should match via text fallback")
+}
+
 // TestExtractLostRegistrationsDistinguishesParents pins the other half of the
 // semantic dedup contract: two calls with the same constructor but different
 // parent receivers are distinct registrations and must not be deduped.
