@@ -43,6 +43,7 @@ func Execute() error {
 	rootCmd.AddCommand(newGenerateCmd())
 	rootCmd.AddCommand(newScorecardCmd())
 	rootCmd.AddCommand(newDogfoodCmd())
+	rootCmd.AddCommand(newValidateNarrativeCmd())
 	rootCmd.AddCommand(newVerifyCmd())
 	rootCmd.AddCommand(newVerifySkillCmd())
 	rootCmd.AddCommand(newEmbossCmd())
