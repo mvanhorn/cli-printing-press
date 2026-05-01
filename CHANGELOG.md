@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.2.1](https://github.com/mvanhorn/cli-printing-press/compare/v3.2.0...v3.2.1) (2026-05-01)
+
+
+### Bug Fixes
+
+* **generator:** gate table creation on hasDomainUpsert ([#465](https://github.com/mvanhorn/cli-printing-press/issues/465) follow-up) ([#467](https://github.com/mvanhorn/cli-printing-press/issues/467)) ([05092ed](https://github.com/mvanhorn/cli-printing-press/commit/05092ed1ed8fbbadec5193dcaba1d71d841a5e55))
+* **generator:** wrapWithProvenance handles non-JSON response bodies ([#464](https://github.com/mvanhorn/cli-printing-press/issues/464)) ([eeb12ea](https://github.com/mvanhorn/cli-printing-press/commit/eeb12ea0c1c1cd18bff2489bab8e003f18a5e767))
+* **openapi:** preserve params on single-endpoint specs ([#465](https://github.com/mvanhorn/cli-printing-press/issues/465)) ([45a7722](https://github.com/mvanhorn/cli-printing-press/commit/45a7722b182d8b046317b2ba5a0bf1d2bd5d3ab4))
+
 ## [3.2.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.1.0...v3.2.0) (2026-05-01)
 
 
