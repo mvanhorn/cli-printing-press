@@ -241,7 +241,10 @@ func (s *Store) migrate(ctx context.Context) error {
 			id, resource_type, content, tokenize='porter unicode61'
 		)`,
 {{- range .Tables}}
-{{- if ne .Name "sync_state"}}
+{{- /* Gate: only create tables that have a typed Upsert. Otherwise the
+       table is dead — UpsertBatch's dispatch skips it and inserts go only
+       to the generic `resources` table. */}}
+{{- if hasTypedTable .}}
 		`CREATE TABLE IF NOT EXISTS {{safeName .Name}} (
 {{- range $i, $col := .Columns}}
 {{- if $i}},{{end}}
@@ -603,7 +606,7 @@ func lookupFieldValue(obj map[string]any, snakeKey string) any {
 }
 
 {{- range .Tables}}
-{{- if and (gt (len .Columns) 3) (ne .Name "sync_state") (hasDomainUpsert .Name)}}
+{{- if hasTypedTable .}}
 // upsert{{pascal .Name}}Tx writes the typed-table portion of a {{.Name}} upsert
 // inside an existing transaction. The caller is responsible for the generic
 // resources insert (via upsertGenericResourceTx) and for committing the tx.
@@ -769,7 +772,7 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 
 		switch resourceType {
 {{- range .Tables}}
-{{- if and (gt (len .Columns) 3) (ne .Name "sync_state") (hasDomainUpsert .Name)}}
+{{- if hasTypedTable .}}
 		case "{{.Name}}":
 			if err := s.upsert{{pascal .Name}}Tx(tx, id, obj, item); err != nil {
 				return 0, extractFailures, fmt.Errorf("typed upsert for %s/%s: %w", resourceType, id, err)

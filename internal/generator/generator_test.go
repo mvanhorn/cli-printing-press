@@ -5504,3 +5504,76 @@ func TestSearchTemplateEmitsEmptyJSONEnvelope(t *testing.T) {
 	assert.Less(t, jsonModeIdx, noResultsIdx,
 		"jsonMode check must come before the human-mode 'No results' stderr line; otherwise the JSON-envelope path is skipped on empty results")
 }
+
+// TestStoreSkipsDeadTablesForResourcesWithoutTypedUpsert pins the gate that
+// ties table creation to typed-Upsert generation. Without it, resources
+// whose names collide with framework cobra commands get renamed
+// `<api-slug>-<name>` and produce 3-column tables that nothing writes to —
+// UpsertBatch's switch has no case for them, so inserts only land in
+// `resources`. The dead typed table bloats schema without ever being
+// populated.
+func TestStoreSkipsDeadTablesForResourcesWithoutTypedUpsert(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "demo",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/demo-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"auth": { // Will rename to `demo-auth` (framework collision)
+				Description: "Auth tokens",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/auth", Description: "List auth tokens"},
+				},
+			},
+			"items": { // Has typed columns -> keeps its table + Upsert
+				Description: "Items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/items",
+						Description: "List items",
+						Params: []spec.Param{
+							{Name: "id", Type: "string"},
+							{Name: "name", Type: "string"},
+							{Name: "status", Type: "string"},
+							{Name: "created_at", Type: "string", Format: "date-time"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	store := string(storeSrc)
+
+	// Pin the exact CREATE TABLE set: only resources, sync_state (always
+	// emitted), and items (has typed columns) survive. No demo_auth, no
+	// renamed-with-suffix dead table, nothing else snuck in.
+	createRe := regexp.MustCompile("`CREATE TABLE IF NOT EXISTS (\\w+) \\(")
+	gotTables := map[string]bool{}
+	for _, m := range createRe.FindAllStringSubmatch(store, -1) {
+		gotTables[m[1]] = true
+	}
+	assert.Equal(t, map[string]bool{"resources": true, "sync_state": true, "items": true}, gotTables,
+		"only typed-table resources + the always-on resources/sync_state should be created")
+
+	// items keeps its typed Upsert; demo_auth/demo-auth gets none.
+	assert.Contains(t, store, "func (s *Store) UpsertItems(", "typed Upsert should exist for items")
+	assert.NotRegexp(t, regexp.MustCompile(`func \(s \*Store\) Upsert(Demo)?Auth\(`), store,
+		"no typed Upsert for the renamed dead resource (under any casing)")
+
+	// Renamed resources still flow through the generic path. Anchor the
+	// claim that UpsertBatch keeps writing to `resources` for unknown types.
+	assert.Contains(t, store, "upsertGenericResourceTx(tx, resourceType, id",
+		"UpsertBatch must still call upsertGenericResourceTx so renamed resources land in `resources`")
+}

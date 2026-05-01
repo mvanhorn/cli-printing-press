@@ -260,13 +260,13 @@ func TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses(t *testing.T) {
 
 {{- $hasTyped := false }}
 {{- range .Tables}}
-{{- if and (gt (len .Columns) 3) (ne .Name "sync_state") (hasDomainUpsert .Name)}}
+{{- if hasTypedTable .}}
 {{- $hasTyped = true }}
 {{- end}}
 {{- end}}
 {{- if $hasTyped }}
 {{- range .Tables}}
-{{- if and (gt (len .Columns) 3) (ne .Name "sync_state") (hasDomainUpsert .Name)}}
+{{- if hasTypedTable .}}
 {{- $hasParentID := false }}
 {{- range .Columns}}{{if eq .Name "parent_id"}}{{$hasParentID = true}}{{end}}{{end}}
 

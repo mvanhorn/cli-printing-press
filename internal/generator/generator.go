@@ -297,6 +297,15 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"hasDomainUpsert": func(name string) bool {
 			return domainUpsertMethodName(name) != "UpsertBatch"
 		},
+		// hasTypedTable is the single source of truth for "this table gets a
+		// typed Upsert<X>." Table creation, typed-Upsert generation, the
+		// UpsertBatch dispatch switch, and the populated-table tests must all
+		// gate on the same predicate; otherwise dead tables (created but never
+		// written to) leak in for resources whose names hit the framework-cobra
+		// rename and end up with only id/data/synced_at columns.
+		"hasTypedTable": func(t TableDef) bool {
+			return len(t.Columns) > 3 && t.Name != "sync_state" && domainUpsertMethodName(t.Name) != "UpsertBatch"
+		},
 		"pathContainsParam": func(path, name string) bool {
 			return strings.Contains(path, "{"+name+"}")
 		},
