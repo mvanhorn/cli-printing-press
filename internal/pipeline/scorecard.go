@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
 	apispec "github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 	"gopkg.in/yaml.v3"
 )
@@ -108,7 +109,11 @@ type CompScore struct {
 // RunScorecard evaluates generated CLI files and produces a scorecard.
 // If verifyReport is non-nil, verify results calibrate the final score.
 func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyReport) (*Scorecard, error) {
-	sc := &Scorecard{APIName: filepath.Base(outputDir)}
+	// Strip the CLI suffix because outputDir from fullrun (paths.WorkingCLIDir)
+	// and library checkouts both end in -pp-cli; APIName is the API slug,
+	// not the binary name, and lands in user-visible output (Markdown
+	// scorecard header, "Quality Scorecard:" CLI line).
+	sc := &Scorecard{APIName: naming.TrimCLISuffix(filepath.Base(outputDir))}
 
 	if err := scoreScorecardDimensions(sc, outputDir, specPath, verifyReport); err != nil {
 		return nil, err
