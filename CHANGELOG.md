@@ -1,5 +1,19 @@
 # Changelog
 
+## [3.3.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.2.1...v3.3.0) (2026-05-02)
+
+
+### Features
+
+* **generator:** owner precedence chain — preserve attribution on regen ([#470](https://github.com/mvanhorn/cli-printing-press/issues/470)) ([d1a8a46](https://github.com/mvanhorn/cli-printing-press/commit/d1a8a467bf0a64cd75f43b40fee270b22b8186b2))
+* **regenmerge:** add TEMPLATED-BODY-DRIFT verdict to catch in-place body edits ([#468](https://github.com/mvanhorn/cli-printing-press/issues/468)) ([abde446](https://github.com/mvanhorn/cli-printing-press/commit/abde446ebe376def6f2380d9c400a2132da3e07b))
+
+
+### Bug Fixes
+
+* **browsersniff:** accept v2-shape traffic-analysis.json on load ([#474](https://github.com/mvanhorn/cli-printing-press/issues/474)) ([#478](https://github.com/mvanhorn/cli-printing-press/issues/478)) ([63c9618](https://github.com/mvanhorn/cli-printing-press/commit/63c9618cfc9d61745189c84b96df96bfe188601d))
+* **regenmerge:** correct owner rewrite + skip injection on preserved hosts ([#477](https://github.com/mvanhorn/cli-printing-press/issues/477)) ([6d45d22](https://github.com/mvanhorn/cli-printing-press/commit/6d45d2287817140223dd9e851738886633197bfe)), closes [#471](https://github.com/mvanhorn/cli-printing-press/issues/471) [#472](https://github.com/mvanhorn/cli-printing-press/issues/472)
+
 ## [3.2.1](https://github.com/mvanhorn/cli-printing-press/compare/v3.2.0...v3.2.1) (2026-05-01)
 
 
