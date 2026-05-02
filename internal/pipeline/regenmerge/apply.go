@@ -123,6 +123,23 @@ func Apply(report *MergeReport, opts Options) error {
 		}
 	}
 
+	// Owner-attribution rewrite: fresh files carry whatever owner the runner's
+	// generator produced (their git config, typically). Without this step,
+	// every TC + NEW file copied from fresh ships with the wrong copyright
+	// when a different operator runs the sweep — observed concretely on the
+	// flightgoat sweep where 100 files flipped to trevin-chow despite the
+	// CLI being matt-van-horn. Resolve both trees' owners via the same
+	// precedence chain the generator uses (manifest > copyright > empty)
+	// and rewrite only when both are determinable and they differ.
+	pubOwner := resolveOwnerForTree(cliDir)
+	freshOwner := resolveOwnerForTree(freshDir)
+	if pubOwner != "" && freshOwner != "" && pubOwner != freshOwner {
+		if err := pipeline.RewriteOwner(tempDir, freshOwner, pubOwner); err != nil {
+			cleanup()
+			return fmt.Errorf("rewriting owner: %w", err)
+		}
+	}
+
 	// Overwrite go.mod with the final merged form. If either tree lacks a
 	// go.mod, renderMergedGoMod returns os.ErrNotExist and we skip the
 	// merge — there's nothing to merge. Any other error surfaces as a hard

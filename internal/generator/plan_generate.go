@@ -309,7 +309,7 @@ func resolveOwnerForExisting(outputDir string) string {
 
 // readManifestOwner returns the `owner` field from
 // outputDir/.printing-press.json, or "" if the file is absent, malformed,
-// or the field is empty.
+// or the field is empty/whitespace.
 func readManifestOwner(outputDir string) string {
 	data, err := os.ReadFile(filepath.Join(outputDir, ".printing-press.json"))
 	if err != nil {
@@ -321,7 +321,7 @@ func readManifestOwner(outputDir string) string {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return ""
 	}
-	return m.Owner
+	return strings.TrimSpace(m.Owner)
 }
 
 // resolveOwnerForNew returns the owner attribution for a brand-new project

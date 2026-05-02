@@ -38,6 +38,18 @@ func extractLostRegistrations(publishedDir, freshDir string) ([]LostRegistration
 		return nil, fmt.Errorf("scanning fresh internal/cli: %w", err)
 	}
 
+	// Apply only overwrites host files that exist in fresh (TEMPLATED-CLEAN +
+	// NEW-TEMPLATE-EMISSION). Hosts that don't exist in fresh are either NOVEL
+	// (preserved verbatim — pub's calls are already in place) or
+	// PUBLISHED-ONLY-TEMPLATED (deleted by Apply — no target to inject into).
+	// Either way, re-injection here would be wrong: NOVEL gets duplicate
+	// AddCommand lines, PUBLISHED-ONLY fails at apply time when the host file
+	// doesn't exist in the staging dir.
+	freshHostBasenames := map[string]struct{}{}
+	for path := range freshCalls {
+		freshHostBasenames[filepath.Base(path)] = struct{}{}
+	}
+
 	// Merged-tree decl-set for referent-existence checks: fresh's
 	// internal/cli/ ∪ published novel files (those Apply preserves into
 	// the merged tree). Without the union, novel-command constructors get
@@ -66,6 +78,9 @@ func extractLostRegistrations(publishedDir, freshDir string) ([]LostRegistration
 	var out []LostRegistration
 	sort.Strings(hostFiles)
 	for _, host := range hostFiles {
+		if _, existsInFresh := freshHostBasenames[filepath.Base(host)]; !existsInFresh {
+			continue
+		}
 		var lost, skipped []string
 		for _, call := range pubCalls[host] {
 			if _, present := freshCallSet[call.normalized]; present {
