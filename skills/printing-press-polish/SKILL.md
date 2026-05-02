@@ -77,6 +77,13 @@ Resolution order:
 3. If arg has `-pp-cli` suffix, strip it and try `$PRESS_LIBRARY/<slug>` (e.g., `redfin-pp-cli` → `redfin`)
 4. Fuzzy search: `ls $PRESS_LIBRARY/ | grep -i <arg>` for close matches
 
+**Caller scenarios.** Polish has two callers and they pass different argument forms:
+
+- **Standalone (user-invoked, `/printing-press-polish redfin`).** The arg is a slug or binary name; resolution lands on `$PRESS_LIBRARY/<slug>/`. This is the published copy and the right target.
+- **Mid-pipeline (main printing-press skill Phase 5.5).** The arg is `$CLI_WORK_DIR` — an absolute path to `~/printing-press/.runstate/.../runs/.../working/<api>-pp-cli/`. Resolution must hit rule 1. **Do not paraphrase this to the slug** — Phase 5.5 fires before the working CLI is promoted, so `$PRESS_LIBRARY/<slug>/` either doesn't exist or holds the *prior* run's stale CLI.
+
+The lock-status check in the next code block is the safety net for the mid-pipeline scenario: if a build lock is held for this CLI (under either name form), polish refuses to run. `printing-press lock` normalizes slug ↔ binary-name internally, so the check works regardless of which form the basename produces.
+
 If no match or multiple matches, present via `AskUserQuestion`. Show at most 4
 matches sorted by modification time (most recent first) with human-friendly
 relative timestamps (e.g., "generated 2 hours ago").

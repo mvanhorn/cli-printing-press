@@ -42,9 +42,21 @@ func LocksDir() string {
 	return filepath.Join(PressHome(), locksDir)
 }
 
-// LockFilePath returns the lock file path for a given CLI name.
+// LockFilePath returns the lock file path for a given CLI name. The name
+// is normalized to the binary-name form (-pp-cli suffix) so the slug and
+// binary name resolve to the same lock file. The build acquires the lock
+// as "<api>-pp-cli" while the polish skill derives the name from a library
+// directory's basename (the slug); without normalization the polish-mid-
+// pipeline safety check silently misses an active lock.
 func LockFilePath(cliName string) string {
-	return filepath.Join(LocksDir(), cliName+".lock")
+	return filepath.Join(LocksDir(), normalizeLockName(cliName)+".lock")
+}
+
+func normalizeLockName(cliName string) string {
+	if naming.IsCLIDirName(cliName) {
+		return cliName
+	}
+	return naming.CLI(cliName)
 }
 
 // AcquireLock attempts to acquire a build lock for the given CLI.

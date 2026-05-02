@@ -211,6 +211,43 @@ func TestReleaseLock_Idempotent(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// LockFilePath must produce the same path regardless of whether the caller
+// passes the slug ("notion") or the binary name ("notion-pp-cli"). Issue #483:
+// the build acquires the lock as "<api>-pp-cli" while the polish skill derives
+// the name from a library directory's basename (the slug), and a mixed-form
+// caller would silently miss an active lock and stomp on a build in progress.
+func TestLockFilePath_NormalizesSlugAndBinaryName(t *testing.T) {
+	setupLockTest(t)
+
+	assert.Equal(t, LockFilePath("notion-pp-cli"), LockFilePath("notion"))
+}
+
+// AcquireLock with the binary name and LockStatus with the slug (or vice
+// versa) must observe the same lock. This is the polish-skill safety net:
+// when polish is invoked mid-pipeline, its lock check needs to detect the
+// build's lock regardless of which name form polish derives.
+func TestLockStatus_SeesLockAcquiredByOtherNameForm(t *testing.T) {
+	setupLockTest(t)
+
+	// Build acquires under the binary name.
+	_, err := AcquireLock("notion-pp-cli", "build-scope", false)
+	require.NoError(t, err)
+
+	// Polish queries with the slug (basename of $PRESS_LIBRARY/notion).
+	status := LockStatus("notion")
+	assert.True(t, status.Held, "lock acquired as binary name must be visible by slug")
+	assert.Equal(t, "build-scope", status.Scope)
+
+	// And the reverse: lock acquired by slug must be visible by binary name.
+	require.NoError(t, ReleaseLock("notion-pp-cli"))
+	_, err = AcquireLock("notion", "polish-scope", false)
+	require.NoError(t, err)
+
+	status = LockStatus("notion-pp-cli")
+	assert.True(t, status.Held, "lock acquired by slug must be visible by binary name")
+	assert.Equal(t, "polish-scope", status.Scope)
+}
+
 func TestPromoteWorkingCLI(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)
