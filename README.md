@@ -113,15 +113,23 @@ By default, active and published output are separated:
 
 When you add `codex`, Phase 3's code generation tasks are delegated to Codex CLI. Claude stays the brain (research, planning, scoring, review). Codex does the hands (writing Go code from scoped prompts). Same quality, 60% fewer Opus tokens. If Codex fails 3 times in a row, the press falls back to doing it locally, no manual intervention needed.
 
-### Emboss mode (improve an existing CLI)
+### Improve an existing CLI
+
+Two second-pass paths with different scopes.
+
+**Polish** — targeted fix-up. Diagnostics (dogfood, verify, scorecard, output review), fixes verify failures, removes dead code, cleans descriptions and READMEs, offers to publish. Auto-runs as Phase 5.5 of every generation; can also run standalone:
+
+```bash
+/printing-press-polish notion
+```
+
+**Emboss** — full second-pass cycle. Audits baseline, re-researches what's changed, identifies top 5 improvements, rebuilds, re-verifies, reports the delta. Use when you want significant additions, not just fixes:
 
 ```bash
 /printing-press emboss notion              # By API name
 /printing-press emboss notion-pp-cli       # By CLI name
 /printing-press emboss ~/printing-press/library/notion          # By full path
 ```
-
-Already generated a CLI? Emboss runs a focused improvement cycle: audit baseline (verify + scorecard), re-research what's changed, identify top 5 improvements, build them, re-verify, report the delta. Offered at the end of every run, never triggered automatically.
 
 ### Publish
 
