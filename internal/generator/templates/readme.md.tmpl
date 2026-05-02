@@ -17,15 +17,15 @@ Learn more at [{{.ProseName}}]({{.WebsiteURL}}).
 
 ## Install
 
+### Binary
+
+Download a pre-built binary for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/{{.Name}}-current). On macOS, clear the Gatekeeper quarantine: `xattr -d com.apple.quarantine <binary>`. On Unix, mark it executable: `chmod +x <binary>`.
+
 ### Go
 
 ```
 go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}/cmd/{{.Name}}-pp-cli@latest
 ```
-
-### Binary
-
-Download from [Releases](https://github.com/mvanhorn/printing-press-library/releases).
 {{- if and .Narrative .Narrative.AuthNarrative}}
 
 {{if .Auth.Optional}}## Optional: API Key{{else}}## Authentication{{end}}
@@ -375,13 +375,13 @@ Store your token first if you haven't:
 
 To install:
 
-1. Download [`{{.Name}}-pp-mcp-darwin-arm64.mcpb`](https://github.com/mvanhorn/printing-press-library/blob/main/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}/build/{{.Name}}-pp-mcp-darwin-arm64.mcpb) from the public library.
+1. Download the `.mcpb` for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/{{.Name}}-current).
 2. Double-click the `.mcpb` file. Claude Desktop opens and walks you through the install.
 {{- if and .Auth.EnvVars (ne .Auth.Type "none") (ne .Auth.Type "cookie") (ne .Auth.Type "composed")}}
 3. Fill in `{{index .Auth.EnvVars 0}}` when Claude Desktop prompts you.
 {{- end}}
 
-Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple Silicon (`darwin-arm64`); for other platforms, build a bundle with `printing-press bundle <cli-dir> --platform <os>/<arch>` or use the manual config below.
+Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple Silicon (`darwin-arm64`) and Windows (`amd64`, `arm64`); for other platforms, use the manual config below.
 
 <details>
 <summary>Manual JSON config (advanced)</summary>

@@ -4,15 +4,15 @@ Purpose-built fixture for golden generation coverage.
 
 ## Install
 
+### Binary
+
+Download a pre-built binary for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/printing-press-golden-current). On macOS, clear the Gatekeeper quarantine: `xattr -d com.apple.quarantine <binary>`. On Unix, mark it executable: `chmod +x <binary>`.
+
 ### Go
 
 ```
 go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden/cmd/printing-press-golden-pp-cli@latest
 ```
-
-### Binary
-
-Download from [Releases](https://github.com/mvanhorn/printing-press-library/releases).
 
 ## Quick Start
 
@@ -144,11 +144,11 @@ This CLI ships an [MCPB](https://github.com/modelcontextprotocol/mcpb) bundle â€
 
 To install:
 
-1. Download [`printing-press-golden-pp-mcp-darwin-arm64.mcpb`](https://github.com/mvanhorn/printing-press-library/blob/main/library/other/printing-press-golden/build/printing-press-golden-pp-mcp-darwin-arm64.mcpb) from the public library.
+1. Download the `.mcpb` for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/printing-press-golden-current).
 2. Double-click the `.mcpb` file. Claude Desktop opens and walks you through the install.
 3. Fill in `PRINTING_PRESS_GOLDEN_API_KEY_AUTH` when Claude Desktop prompts you.
 
-Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple Silicon (`darwin-arm64`); for other platforms, build a bundle with `printing-press bundle <cli-dir> --platform <os>/<arch>` or use the manual config below.
+Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple Silicon (`darwin-arm64`) and Windows (`amd64`, `arm64`); for other platforms, use the manual config below.
 
 <details>
 <summary>Manual JSON config (advanced)</summary>
