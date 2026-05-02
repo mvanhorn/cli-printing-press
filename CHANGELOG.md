@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.2](https://github.com/mvanhorn/cli-printing-press/compare/v3.4.1...v3.4.2) (2026-05-02)
+
+
+### Code Refactoring
+
+* **cli:** reuse generated operation id params ([#496](https://github.com/mvanhorn/cli-printing-press/issues/496)) ([3110d5e](https://github.com/mvanhorn/cli-printing-press/commit/3110d5ec64f3ee56786a5bedea4a063d21ea0fe7))
+
 ## [3.4.1](https://github.com/mvanhorn/cli-printing-press/compare/v3.4.0...v3.4.1) (2026-05-02)
 
 
