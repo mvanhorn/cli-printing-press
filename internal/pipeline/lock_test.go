@@ -212,10 +212,9 @@ func TestReleaseLock_Idempotent(t *testing.T) {
 }
 
 // LockFilePath must produce the same path regardless of whether the caller
-// passes the slug ("notion") or the binary name ("notion-pp-cli"). Issue #483:
-// the build acquires the lock as "<api>-pp-cli" while the polish skill derives
-// the name from a library directory's basename (the slug), and a mixed-form
-// caller would silently miss an active lock and stomp on a build in progress.
+// passes the slug ("notion") or the binary name ("notion-pp-cli"). A mixed-
+// form caller would otherwise silently miss an active lock acquired under
+// the other form.
 func TestLockFilePath_NormalizesSlugAndBinaryName(t *testing.T) {
 	setupLockTest(t)
 
