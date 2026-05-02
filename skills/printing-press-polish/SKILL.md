@@ -8,13 +8,22 @@ description: >
   /printing-press run, or on any CLI in ~/printing-press/library/. Trigger
   phrases: "polish", "improve the CLI", "fix verify", "make it publish-ready",
   "clean up the CLI", "get this ready to ship".
+context: fork
+allowed-tools:
+  - Bash
+  - Read
+  - Glob
+  - Grep
+  - Write
+  - Edit
+  - AskUserQuestion
 ---
 
 # /printing-press-polish
 
 Polish a generated CLI so it passes verification and is ready to publish.
 
-The retro improves the Printing Press. Polish improves the generated CLI.
+The retro improves the Printing Press. Polish improves the generated CLI. This skill runs in a forked context (`context: fork`) so its diagnostic and fix loop doesn't pollute the caller — the diagnostic spam, fix iterations, and re-diagnose noise stay scoped to the polish session, and the caller receives a clean summary.
 
 ```bash
 /printing-press-polish redfin
