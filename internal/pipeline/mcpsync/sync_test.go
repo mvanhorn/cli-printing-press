@@ -303,7 +303,7 @@ func TestValidateSpecNameMatchesDirRejectsDrift(t *testing.T) {
 	err := validateSpecNameMatchesDir(cliDir, parsed)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "spec.yaml name \"weather\"")
-	assert.Contains(t, err.Error(), "directory basename \"weather-goat\"")
+	assert.Contains(t, err.Error(), "directory-derived slug \"weather-goat\"")
 	assert.Contains(t, err.Error(), "--force")
 }
 
@@ -404,6 +404,71 @@ func TestReconcileSpecNameWithDirNoYAMLFallsThroughToValidator(t *testing.T) {
 	assert.Equal(t, "", renamedFrom)
 	assert.Equal(t, "weather", parsed.Name, "parsed.Name unchanged when auto-fix declines")
 	assert.Contains(t, err.Error(), "--force")
+}
+
+// TestValidateSpecNameMatchesDirAcceptsSuffixedDir — working dirs and
+// public-library checkouts both name the directory `<slug>-pp-cli/`
+// (paths.WorkingCLIDir composes naming.CLI(apiName)). spec.yaml.name
+// holds the bare slug, not the binary name. The validator must reduce
+// the basename to its slug form before comparing, otherwise mcp-sync
+// thinks the slug is `<slug>-pp-cli` and the auto-fix path overwrites
+// spec.yaml — downstream generation then emits cmd/<slug>-pp-cli-pp-cli/
+// and cmd/<slug>-pp-cli-pp-mcp/ phantoms next to the canonical dirs.
+func TestValidateSpecNameMatchesDirAcceptsSuffixedDir(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "producthunt-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	parsed := &spec.APISpec{Name: "producthunt"}
+	if err := validateSpecNameMatchesDir(cliDir, parsed); err != nil {
+		t.Errorf("suffixed dir matching its slug should accept; got %v", err)
+	}
+}
+
+// TestReconcileSpecNameWithDirNoOpOnSuffixedDir — same shape as the
+// validator test, but exercises the reconcile entry point and the
+// on-disk file. spec.yaml must not be rewritten and parsed.Name must
+// not be mutated when the directory is the suffixed form of the slug.
+func TestReconcileSpecNameWithDirNoOpOnSuffixedDir(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "producthunt-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	specPath := filepath.Join(cliDir, "spec.yaml")
+	original := "name: producthunt\ndescription: \"Product Hunt API\"\nversion: \"1.0.0\"\nbase_url: \"https://api.producthunt.com\"\n"
+	require.NoError(t, os.WriteFile(specPath, []byte(original), 0o644))
+
+	parsed := &spec.APISpec{Name: "producthunt"}
+	renamedFrom, err := reconcileSpecNameWithDir(cliDir, parsed)
+	require.NoError(t, err)
+	assert.Equal(t, "", renamedFrom, "no rename should fire when the suffixed basename strips to the slug")
+	assert.Equal(t, "producthunt", parsed.Name, "parsed.Name must not be mutated to the suffixed form")
+
+	after, err := os.ReadFile(specPath)
+	require.NoError(t, err)
+	assert.Equal(t, original, string(after), "spec.yaml must be byte-identical when no drift exists")
+}
+
+// TestReconcileSpecNameWithDirRejectsDriftEvenOnSuffixedDir — if the
+// directory is `weather-goat-pp-cli/` but spec.yaml.name is `weather`,
+// the reconcile path should still fire (slug = weather-goat ≠ weather).
+// Stripping the binary suffix must not mask legitimate drift.
+func TestReconcileSpecNameWithDirRejectsDriftEvenOnSuffixedDir(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "weather-goat-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	specPath := filepath.Join(cliDir, "spec.yaml")
+	original := "name: weather\ndescription: \"Weather GOAT\"\nversion: \"1.0.0\"\nbase_url: \"https://api.example.com\"\n"
+	require.NoError(t, os.WriteFile(specPath, []byte(original), 0o644))
+
+	parsed := &spec.APISpec{Name: "weather"}
+	renamedFrom, err := reconcileSpecNameWithDir(cliDir, parsed)
+	require.NoError(t, err)
+	assert.Equal(t, "weather", renamedFrom, "drift to the slug form must still be reported")
+	assert.Equal(t, "weather-goat", parsed.Name, "parsed.Name must reach the bare slug, not the suffixed binary name")
+
+	after, err := os.ReadFile(specPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(after), "name: weather-goat\n", "spec.yaml must hold the bare slug, not the -pp-cli form")
+	assert.NotContains(t, string(after), "weather-goat-pp-cli", "the suffix must never reach the slug-of-record")
 }
 
 // TestEnsureMCPGoMinVersionBumpsOldPin — older library CLIs predating

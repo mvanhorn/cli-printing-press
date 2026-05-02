@@ -13,6 +13,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v3/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/mcpoverrides"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
@@ -86,7 +87,7 @@ func Sync(cliDir string, opts Options) (Result, error) {
 		return Result{}, err
 	}
 	if renamedFrom != "" {
-		fmt.Fprintf(os.Stderr, "mcp-sync: rewrote spec.yaml name from %q to %q to match directory basename\n", renamedFrom, parsed.Name)
+		fmt.Fprintf(os.Stderr, "mcp-sync: rewrote spec.yaml name from %q to %q to match directory-derived slug\n", renamedFrom, parsed.Name)
 	}
 	// Preserve the existing manifest.json's display_name onto the parsed
 	// spec when the spec itself doesn't carry one. Library CLIs printed
@@ -543,26 +544,38 @@ func readRegistryDisplayName(slug string) string {
 	return ""
 }
 
+// slugFromDir returns the API slug implied by cliDir's basename. The
+// local library convention is the bare slug (`notion/`); working dirs
+// (paths.WorkingCLIDir) and public-library checkouts both use the
+// suffixed binary form (`notion-pp-cli/`). Both shapes must compare
+// against the same slug, so strip the current CLI suffix when present
+// — without this, a sync run against any -pp-cli-suffixed directory
+// would treat the binary name as the slug and re-suffix it on regen.
+func slugFromDir(cliDir string) string {
+	return strings.TrimSuffix(filepath.Base(cliDir), naming.CurrentCLISuffix)
+}
+
 // validateSpecNameMatchesDir refuses to migrate when spec.yaml.name
-// diverges from the CLI directory's basename. This catches the
-// weather-goat / open-meteo class of drift where an old emboss/rename
-// updated the directory but left spec.yaml.name behind, producing
-// spurious cmd/<spec.name>-pp-{cli,mcp}/ directories on regen and a
-// wrong MCP server identity. Caller can pass --force to bypass when
-// they know the divergence is intentional (e.g., a deliberate alias).
+// diverges from the slug implied by the CLI directory's basename.
+// This catches the weather-goat / open-meteo class of drift where an
+// old emboss/rename updated the directory but left spec.yaml.name
+// behind, producing spurious cmd/<spec.name>-pp-{cli,mcp}/ directories
+// on regen and a wrong MCP server identity. Caller can pass --force
+// to bypass when they know the divergence is intentional (e.g., a
+// deliberate alias).
 func validateSpecNameMatchesDir(cliDir string, parsed *spec.APISpec) error {
 	if parsed == nil || parsed.Name == "" {
 		return nil
 	}
-	dirName := filepath.Base(cliDir)
-	if dirName == parsed.Name {
+	expected := slugFromDir(cliDir)
+	if expected == parsed.Name {
 		return nil
 	}
 	return fmt.Errorf(
-		"spec.yaml name %q does not match directory basename %q. "+
+		"spec.yaml name %q does not match directory-derived slug %q. "+
 			"This produces spurious cmd/%s-pp-{cli,mcp}/ directories on regen and an incorrect MCP server identity. "+
-			"Fix spec.yaml's `name:` field to match the directory, or pass --force to bypass",
-		parsed.Name, dirName, parsed.Name,
+			"Fix spec.yaml's `name:` field to match the directory slug, or pass --force to bypass",
+		parsed.Name, expected, parsed.Name,
 	)
 }
 
@@ -571,30 +584,31 @@ func validateSpecNameMatchesDir(cliDir string, parsed *spec.APISpec) error {
 var internalSpecNameLine = regexp.MustCompile(`(?m)^name:[ \t]*.*$`)
 
 // reconcileSpecNameWithDir auto-fixes the common drift case (internal
-// YAML spec whose top-level `name:` doesn't match the directory) by
-// rewriting the line in place and updating parsed.Name. Falls back to
-// validateSpecNameMatchesDir's --force-required error for OpenAPI and
-// GraphQL specs, where rewriting info.title or schema metadata is too
-// invasive to do silently. The non-empty renamedFrom return signals
-// the caller to log the rename.
+// YAML spec whose top-level `name:` doesn't match the slug implied by
+// the directory) by rewriting the line in place and updating
+// parsed.Name. Falls back to validateSpecNameMatchesDir's
+// --force-required error for OpenAPI and GraphQL specs, where
+// rewriting info.title or schema metadata is too invasive to do
+// silently. The non-empty renamedFrom return signals the caller to
+// log the rename.
 func reconcileSpecNameWithDir(cliDir string, parsed *spec.APISpec) (renamedFrom string, err error) {
 	if parsed == nil || parsed.Name == "" {
 		return "", nil
 	}
-	dirName := filepath.Base(cliDir)
-	if dirName == parsed.Name {
+	expected := slugFromDir(cliDir)
+	if expected == parsed.Name {
 		return "", nil
 	}
 	specPath, data, ok := findInternalYAMLSpec(cliDir)
 	if !ok || !internalSpecNameLine.Match(data) {
 		return "", validateSpecNameMatchesDir(cliDir, parsed)
 	}
-	rewritten := internalSpecNameLine.ReplaceAll(data, []byte("name: "+dirName))
+	rewritten := internalSpecNameLine.ReplaceAll(data, []byte("name: "+expected))
 	if err := writeFileAtomic(specPath, rewritten); err != nil {
 		return "", fmt.Errorf("rewriting %s: %w", specPath, err)
 	}
 	oldName := parsed.Name
-	parsed.Name = dirName
+	parsed.Name = expected
 	return oldName, nil
 }
 
