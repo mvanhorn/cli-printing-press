@@ -1,5 +1,20 @@
 # Changelog
 
+## [3.5.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.4.3...v3.5.0) (2026-05-02)
+
+
+### Features
+
+* **cli:** JSON:API support for OpenAPI parser (envelope, page[cursor], x-prefix) ([#505](https://github.com/mvanhorn/cli-printing-press/issues/505)) ([5584818](https://github.com/mvanhorn/cli-printing-press/commit/5584818b5ce40dab67923a0ed5ffb55944bb6757))
+
+
+### Bug Fixes
+
+* **cli:** honor documented typed exit codes ([#504](https://github.com/mvanhorn/cli-printing-press/issues/504)) ([31e63be](https://github.com/mvanhorn/cli-printing-press/commit/31e63be4587d1b497f409b55d73ad414e73b6dfa))
+* **cli:** route discriminator sync to typed tables ([#503](https://github.com/mvanhorn/cli-printing-press/issues/503)) ([97180c0](https://github.com/mvanhorn/cli-printing-press/commit/97180c037ba976b528ebc9e1d9ff7e58ca8b630f))
+* **cli:** route resource base urls through mcp surfaces ([#500](https://github.com/mvanhorn/cli-printing-press/issues/500)) ([2817bdc](https://github.com/mvanhorn/cli-printing-press/commit/2817bdc747b2655d34030bafa80a561866574ec1))
+* **cli:** strip build/ from publish staging ([#502](https://github.com/mvanhorn/cli-printing-press/issues/502)) ([263be3b](https://github.com/mvanhorn/cli-printing-press/commit/263be3b3d24ecae4a9995fda9b98de14dd7f2dfe))
+
 ## [3.4.3](https://github.com/mvanhorn/cli-printing-press/compare/v3.4.2...v3.4.3) (2026-05-02)
 
 
