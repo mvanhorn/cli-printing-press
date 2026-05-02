@@ -1,0 +1,138 @@
+openapi: 3.0.0
+info:
+  title: JSON:API Petstore
+  version: 1.0.0
+  description: Minimal JSON:API spec used as a generator-side fixture for envelope flattening, page[cursor] pagination, and x-prefix auth tests.
+servers:
+  - url: https://example.com/api
+paths:
+  /pets:
+    get:
+      summary: List pets
+      operationId: listPets
+      parameters:
+        - name: page[cursor]
+          in: query
+          schema: { type: string }
+        - name: page[size]
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PetList' }
+    post:
+      summary: Create pet
+      operationId: createPet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PetCreate' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PetSingle' }
+  /pets/{id}:
+    get:
+      summary: Get pet
+      operationId: getPet
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PetSingle' }
+    delete:
+      summary: Delete pet
+      operationId: deletePet
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204':
+          description: No content
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-prefix: Token-Prefix
+      description: API key auth via Authorization header with Token-Prefix prefix.
+  schemas:
+    Pet:
+      type: object
+      required: [type, id, attributes]
+      properties:
+        type:
+          type: string
+          enum: [pet]
+        id:
+          type: string
+        attributes:
+          type: object
+          required: [name, species]
+          properties:
+            name:
+              type: string
+            species:
+              type: string
+            age:
+              type: integer
+        relationships:
+          type: object
+          properties:
+            owner:
+              type: object
+              properties:
+                data:
+                  type: object
+                  properties:
+                    type: { type: string }
+                    id: { type: string }
+    PetList:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Pet' }
+        links:
+          type: object
+          properties:
+            next: { type: string }
+    PetSingle:
+      type: object
+      properties:
+        data: { $ref: '#/components/schemas/Pet' }
+    PetCreate:
+      type: object
+      properties:
+        data:
+          type: object
+          required: [type, attributes]
+          properties:
+            type:
+              type: string
+              enum: [pet]
+            attributes:
+              type: object
+              required: [name, species]
+              properties:
+                name:
+                  type: string
+                species:
+                  type: string
+security:
+  - apiKey: []
