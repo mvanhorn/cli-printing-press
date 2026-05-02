@@ -703,31 +703,19 @@ func nextCursorFromLinks(envelope map[string]json.RawMessage, cursorParam string
 		cursorKeys = append(cursorKeys, "after")
 	}
 
-	if parsed, err := url.Parse(nextURL); err == nil {
-		values := parsed.Query()
-		for _, key := range cursorKeys {
-			if key == "" {
-				continue
-			}
-			if cursor := values.Get(key); cursor != "" {
-				return cursor
-			}
+	parsed, err := url.Parse(nextURL)
+	if err != nil {
+		return ""
+	}
+	values := parsed.Query()
+	for _, key := range cursorKeys {
+		if key == "" {
+			continue
+		}
+		if cursor := values.Get(key); cursor != "" {
+			return cursor
 		}
 	}
-
-	if idx := strings.Index(nextURL, "?"); idx >= 0 && idx+1 < len(nextURL) {
-		if values, err := url.ParseQuery(nextURL[idx+1:]); err == nil {
-			for _, key := range cursorKeys {
-				if key == "" {
-					continue
-				}
-				if cursor := values.Get(key); cursor != "" {
-					return cursor
-				}
-			}
-		}
-	}
-
 	return ""
 }
 

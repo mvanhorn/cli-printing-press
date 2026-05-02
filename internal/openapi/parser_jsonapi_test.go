@@ -182,7 +182,6 @@ func TestIsJSONAPIResource_Discriminator(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			got := isJSONAPIResourceSchema(tc.schema)
 			assert.Equal(t, tc.expected, got)

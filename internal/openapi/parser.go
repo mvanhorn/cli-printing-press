@@ -386,11 +386,9 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 			}
 		}
 		if auth.Type == "api_key" && strings.EqualFold(auth.In, "header") {
-			if xPrefix, ok := scheme.Extensions["x-prefix"]; ok {
-				if prefix, ok := xPrefix.(string); ok {
-					if prefix = strings.TrimSpace(prefix); prefix != "" {
-						auth.Format = prefix + " {token}"
-					}
+			if prefix, ok := scheme.Extensions["x-prefix"].(string); ok {
+				if prefix = strings.TrimSpace(prefix); prefix != "" {
+					auth.Format = prefix + " {token}"
 				}
 			}
 		}
