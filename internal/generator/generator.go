@@ -188,10 +188,11 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"defaultValForParam":    defaultValForParam,
 		"zeroVal":               zeroVal,
 		"zeroValForParam": func(name, t string) string {
-			if isIDParam(name) && t == "int" {
+			kind := primitiveKind(t)
+			if isIDParam(name) && kind == "int" {
 				return `""`
 			}
-			if isCursorParam(name) && (t == "int" || t == "float") {
+			if isCursorParam(name) && (kind == "int" || kind == "float") {
 				return `""`
 			}
 			return zeroVal(t)
@@ -2280,8 +2281,27 @@ func isCursorParam(name string) bool {
 	return false
 }
 
+func primitiveKind(t string) string {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "string":
+		return "string"
+	case "integer", "int":
+		return "int"
+	case "boolean", "bool":
+		return "bool"
+	case "number", "float":
+		return "float"
+	case "object":
+		return "object"
+	case "array":
+		return "array"
+	default:
+		return "string"
+	}
+}
+
 func goType(t string) string {
-	switch t {
+	switch primitiveKind(t) {
 	case "string":
 		return "string"
 	case "int":
@@ -2299,7 +2319,7 @@ func goType(t string) string {
 // Unlike goType (used for CLI flags which are always primitives),
 // this maps object/array types to json.RawMessage for type fidelity.
 func goStructType(t string) string {
-	switch t {
+	switch primitiveKind(t) {
 	case "object", "array":
 		return "json.RawMessage"
 	default:
@@ -2389,7 +2409,7 @@ func storeBackfillDecl(col ColumnDef) string {
 }
 
 func cobraFlagFunc(t string) string {
-	switch t {
+	switch primitiveKind(t) {
 	case "string":
 		return "StringVar"
 	case "int":
@@ -2408,10 +2428,11 @@ func cobraFlagFunc(t string) string {
 // numeric→string for pagination cursors so they survive scientific-notation
 // rendering of large Unix timestamps and millisecond cursors.
 func goTypeForParam(name, t string) string {
-	if isIDParam(name) && t == "int" {
+	kind := primitiveKind(t)
+	if isIDParam(name) && kind == "int" {
 		return "string"
 	}
-	if isCursorParam(name) && (t == "int" || t == "float") {
+	if isCursorParam(name) && (kind == "int" || kind == "float") {
 		return "string"
 	}
 	return goType(t)
@@ -2420,10 +2441,11 @@ func goTypeForParam(name, t string) string {
 // cobraFlagFuncForParam returns the cobra flag function, overriding IntVar→StringVar
 // for ID-like parameters and Float64Var/IntVar→StringVar for pagination cursors.
 func cobraFlagFuncForParam(name, t string) string {
-	if isIDParam(name) && t == "int" {
+	kind := primitiveKind(t)
+	if isIDParam(name) && kind == "int" {
 		return "StringVar"
 	}
-	if isCursorParam(name) && (t == "int" || t == "float") {
+	if isCursorParam(name) && (kind == "int" || kind == "float") {
 		return "StringVar"
 	}
 	return cobraFlagFunc(t)
@@ -2433,13 +2455,14 @@ func cobraFlagFuncForParam(name, t string) string {
 // overriding int→string for ID-like parameters and numeric→string for
 // pagination cursors so the StringVar default matches the StringVar field type.
 func defaultValForParam(p spec.Param) string {
-	if isIDParam(p.Name) && p.Type == "int" {
+	kind := primitiveKind(p.Type)
+	if isIDParam(p.Name) && kind == "int" {
 		if p.Default != nil {
 			return fmt.Sprintf("%q", fmt.Sprintf("%v", p.Default))
 		}
 		return `""`
 	}
-	if isCursorParam(p.Name) && (p.Type == "int" || p.Type == "float") {
+	if isCursorParam(p.Name) && (kind == "int" || kind == "float") {
 		if p.Default != nil {
 			return fmt.Sprintf("%q", fmt.Sprintf("%v", p.Default))
 		}
@@ -2601,7 +2624,7 @@ func hasTemporalMarker(s string) bool {
 func defaultVal(p spec.Param) string {
 	if p.Default != nil {
 		// Coerce the default value to match the declared param type
-		switch p.Type {
+		switch primitiveKind(p.Type) {
 		case "string":
 			return fmt.Sprintf("%q", fmt.Sprintf("%v", p.Default))
 		case "bool":
@@ -2642,7 +2665,7 @@ func defaultVal(p spec.Param) string {
 }
 
 func zeroVal(t string) string {
-	switch t {
+	switch primitiveKind(t) {
 	case "string":
 		return `""`
 	case "int":
@@ -3152,7 +3175,15 @@ func graphqlFieldSelection(typeName string, types map[string]spec.TypeDef) []str
 	}
 	var fields []string
 	for _, f := range td.Fields {
-		fields = append(fields, f.Name)
+		name := strings.TrimSpace(f.Name)
+		if name == "" {
+			continue
+		}
+		if selection := strings.TrimSpace(f.Selection); selection != "" {
+			fields = append(fields, name+" "+selection)
+			continue
+		}
+		fields = append(fields, name)
 	}
 	if len(fields) == 0 {
 		return []string{"id"}

@@ -1288,7 +1288,7 @@ func TestGenerateWithOwnerField(t *testing.T) {
 	assert.Contains(t, string(mainGo), "testowner")
 	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 	require.NoError(t, err)
-	assert.Contains(t, string(readme), "go install github.com/mvanhorn/printing-press-library/library/other/owned-pp-cli/cmd/owned-pp-cli@latest")
+	assert.Contains(t, string(readme), "go install github.com/mvanhorn/printing-press-library/library/other/owned/cmd/owned-pp-cli@latest")
 }
 
 func TestGenerateWithEmptyOwner(t *testing.T) {
@@ -4537,6 +4537,26 @@ func TestGenerateGraphQLCompiles(t *testing.T) {
 	// The generated project should compile
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGraphQLFieldSelectionSupportsNestedSelections(t *testing.T) {
+	t.Parallel()
+
+	got := graphqlFieldSelection("Order", map[string]spec.TypeDef{
+		"Order": {
+			Fields: []spec.TypeField{
+				{Name: "id", Type: "string"},
+				{Name: "totalPriceSet", Type: "object", Selection: "{ shopMoney { amount currencyCode } }"},
+				{Name: "customer", Type: "object", Selection: "{ id email }"},
+			},
+		},
+	})
+
+	assert.Equal(t, []string{
+		"id",
+		"totalPriceSet { shopMoney { amount currencyCode } }",
+		"customer { id email }",
+	}, got)
 }
 
 // TestGenerateGraphQLEndpointPathRendersTemplatedURL guards PR-1's contract:

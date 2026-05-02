@@ -20,7 +20,7 @@ Learn more at [{{.ProseName}}]({{.WebsiteURL}}).
 ### Go
 
 ```
-go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}-pp-cli/cmd/{{.Name}}-pp-cli@latest
+go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}/cmd/{{.Name}}-pp-cli@latest
 ```
 
 ### Binary
@@ -53,6 +53,20 @@ See [Install](#install) above.
 {{- if eq .Auth.Type "api_key"}}
 
 ### 2. Set Up Credentials
+
+{{- if .GraphQLEndpointPath}}
+This CLI talks to the {{.ProseName}} GraphQL API at `{{.BaseURL}}{{.GraphQLEndpointPath}}`.
+{{- end}}
+{{- if .EndpointTemplateVars}}
+
+Set the endpoint variables for the tenant, workspace, or API version you want this CLI to use:
+
+```bash
+{{- range .EndpointTemplateVars}}
+export {{envName $.Name}}_{{upper .}}="{{if eq . "shop"}}<your-store>.myshopify.com{{else if eq . "api_version"}}{{$.Version}}{{else}}<{{.}}>{{end}}"
+{{- end}}
+```
+{{- end}}
 
 Get your API key from your API provider's developer portal. The key typically looks like a long alphanumeric string.
 {{- if .Auth.EnvVars}}
@@ -252,6 +266,23 @@ Covered command paths:
 
 JSON outputs that use the generated provenance envelope include freshness metadata at `meta.freshness`. This metadata describes the freshness decision for the covered command path; it does not claim full historical backfill or API-specific enrichment.
 {{- end}}
+{{- if .EndpointTemplateVars}}
+
+## Runtime Endpoint
+
+This CLI resolves endpoint placeholders at runtime, so one installed binary can target different tenants or API versions without regeneration.
+
+Endpoint environment variables:
+{{- range .EndpointTemplateVars}}
+- `{{envName $.Name}}_{{upper .}}` resolves `{ {{- . -}} }`
+{{- end}}
+
+Base URL: `{{.BaseURL}}`
+{{- if .GraphQLEndpointPath}}
+
+GraphQL path: `{{.GraphQLEndpointPath}}`
+{{- end}}
+{{- end}}
 
 ## Use as MCP Server
 
@@ -261,7 +292,7 @@ This CLI ships a companion MCP server for use with Claude Desktop, Cursor, and o
 {{- if and (eq .Auth.Type "api_key") .Auth.EnvVars}}
 
 ```bash
-claude mcp add {{.Name}} {{.Name}}-pp-mcp -e {{index .Auth.EnvVars 0}}=<your-key>
+claude mcp add {{.Name}} {{.Name}}-pp-mcp{{range .EndpointTemplateVars}} -e {{envName $.Name}}_{{upper .}}={{if eq . "shop"}}<your-store>.myshopify.com{{else if eq . "api_version"}}{{$.Version}}{{else}}<{{.}}>{{end}}{{end}} -e {{index .Auth.EnvVars 0}}=<your-key>
 ```
 {{- else if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
 
@@ -309,6 +340,9 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
     "{{.Name}}": {
       "command": "{{.Name}}-pp-mcp"{{- if and .Auth.EnvVars (ne .Auth.Type "none") (ne .Auth.Type "cookie") (ne .Auth.Type "composed")}},
       "env": {
+{{- range .EndpointTemplateVars}}
+        "{{envName $.Name}}_{{upper .}}": "{{if eq . "shop"}}<your-store>.myshopify.com{{else if eq . "api_version"}}{{$.Version}}{{else}}<{{.}}>{{end}}",
+{{- end}}
         "{{index .Auth.EnvVars 0}}": "<your-key>"
       }{{- end}}
     }
@@ -330,6 +364,9 @@ Config file: `{{.Config.Path}}`
 {{- if .Auth.EnvVars}}
 
 Environment variables:
+{{- range .EndpointTemplateVars}}
+- `{{envName $.Name}}_{{upper .}}`
+{{- end}}
 {{- range .Auth.EnvVars}}
 - `{{.}}`
 {{- end}}

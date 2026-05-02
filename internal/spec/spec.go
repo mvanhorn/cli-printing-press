@@ -656,6 +656,11 @@ type TypeDef struct {
 type TypeField struct {
 	Name string `yaml:"name" json:"name"`
 	Type string `yaml:"type" json:"type"`
+	// Selection is an optional GraphQL sub-selection rendered when this field
+	// is used in a generated GraphQL query. It lets wrapper specs keep the Go
+	// field simple (for example, totalPriceSet as json.RawMessage) while still
+	// issuing valid nested GraphQL selections.
+	Selection string `yaml:"selection,omitempty" json:"selection,omitempty"`
 }
 
 func Parse(path string) (*APISpec, error) {

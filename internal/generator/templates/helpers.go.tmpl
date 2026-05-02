@@ -233,6 +233,38 @@ func isSyncAccessWarning(err error) (*accessWarning, bool) {
 func isSyncAccessWarning(err error) (*accessWarning, bool) { return nil, false }
 {{- end}}
 
+{{- if isGraphQL .APISpec}}
+func extractGraphQLConnection(data json.RawMessage, field string) (json.RawMessage, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("parsing graphql data: %w", err)
+	}
+	connRaw, ok := root[field]
+	if !ok {
+		return nil, fmt.Errorf("graphql response missing %q", field)
+	}
+	var conn struct {
+		Nodes []json.RawMessage `json:"nodes"`
+	}
+	if err := json.Unmarshal(connRaw, &conn); err != nil {
+		return nil, fmt.Errorf("parsing graphql connection %q: %w", field, err)
+	}
+	return json.Marshal(conn.Nodes)
+}
+
+func extractGraphQLObject(data json.RawMessage, field string) (json.RawMessage, error) {
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("parsing graphql data: %w", err)
+	}
+	obj, ok := root[field]
+	if !ok {
+		return nil, fmt.Errorf("graphql response missing %q", field)
+	}
+	return obj, nil
+}
+{{- end}}
+
 // classifyAPIError maps API errors to structured exit codes with actionable hints.
 func classifyAPIError(err error) error {
 	msg := err.Error()

@@ -641,6 +641,40 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.Contains(t, key.Description, "https://dashboard.stripe.com/apikeys")
 	})
 
+	t.Run("endpoint template vars emit required user_config fields", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:              "shopify",
+			DisplayName:          "Shopify",
+			MCPBinary:            "shopify-pp-mcp",
+			MCPReady:             "full",
+			APIVersion:           "2026-04",
+			AuthType:             "api_key",
+			AuthEnvVars:          []string{"SHOPIFY_ACCESS_TOKEN"},
+			EndpointTemplateVars: []string{"shop", "api_version"},
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Equal(t, "${user_config.shopify_shop}", got.Server.MCPConfig.Env["SHOPIFY_SHOP"])
+		assert.Equal(t, "${user_config.shopify_api_version}", got.Server.MCPConfig.Env["SHOPIFY_API_VERSION"])
+
+		shop, ok := got.UserConfig["shopify_shop"]
+		require.True(t, ok)
+		assert.Equal(t, "SHOPIFY_SHOP", shop.Title)
+		assert.True(t, shop.Required)
+		assert.False(t, shop.Sensitive)
+		assert.Contains(t, shop.Description, "{shop}")
+
+		apiVersion, ok := got.UserConfig["shopify_api_version"]
+		require.True(t, ok)
+		assert.Equal(t, "SHOPIFY_API_VERSION", apiVersion.Title)
+		assert.True(t, apiVersion.Required)
+		assert.Equal(t, "2026-04", apiVersion.Default)
+		assert.Contains(t, apiVersion.Description, "{api_version}")
+	})
+
 	t.Run("composed auth emits optional user_config fields", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, CLIManifest{

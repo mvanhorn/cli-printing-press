@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/version"
 )
 
@@ -278,23 +279,29 @@ func loadExistingMCPBManifest(dir string) *existingMCPBManifest {
 // the value at runtime from what the user typed (or whatever the keychain
 // has cached). Empty list returns nil so the manifest stays compact.
 func buildMCPBEnv(m CLIManifest) map[string]string {
-	if len(m.AuthEnvVars) == 0 {
+	if len(m.AuthEnvVars) == 0 && len(m.EndpointTemplateVars) == 0 {
 		return nil
 	}
-	env := make(map[string]string, len(m.AuthEnvVars))
+	env := make(map[string]string, len(m.AuthEnvVars)+len(m.EndpointTemplateVars))
 	for _, name := range m.AuthEnvVars {
+		env[name] = "${user_config." + userConfigKey(name) + "}"
+	}
+	for _, templateVar := range m.EndpointTemplateVars {
+		name := endpointTemplateEnvVar(m.APIName, templateVar)
 		env[name] = "${user_config." + userConfigKey(name) + "}"
 	}
 	return env
 }
 
-// buildMCPBUserConfig translates each declared auth env var into a
-// user_config entry. Required-ness depends on auth type: composed/cookie
-// flows mean some tools work unauthenticated, so we keep the field optional
-// and let the user skip it; api_key/bearer_token mean the API needs the
-// credential to do anything useful, so we mark required.
+// buildMCPBUserConfig translates each declared auth env var and endpoint
+// template var into a user_config entry. Required-ness for auth depends on
+// auth type: composed/cookie flows mean some tools work unauthenticated, so
+// we keep the field optional and let the user skip it; api_key/bearer_token
+// mean the API needs the credential to do anything useful, so we mark
+// required. Endpoint template vars are always required because unresolved
+// placeholders make every request URL invalid.
 func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
-	if len(m.AuthEnvVars) == 0 {
+	if len(m.AuthEnvVars) == 0 && len(m.EndpointTemplateVars) == 0 {
 		return nil
 	}
 	// AuthOptional overrides the auth-type heuristic. api_key would otherwise
@@ -303,7 +310,7 @@ func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
 	// every other tool works without the key. The spec author's `optional:
 	// true` is the explicit signal.
 	required := authRequiresCredential(m.AuthType) && !m.AuthOptional
-	vars := make(map[string]MCPBVar, len(m.AuthEnvVars))
+	vars := make(map[string]MCPBVar, len(m.AuthEnvVars)+len(m.EndpointTemplateVars))
 	for _, name := range m.AuthEnvVars {
 		vars[userConfigKey(name)] = MCPBVar{
 			Type:        mcpbVarTypeString,
@@ -313,13 +320,38 @@ func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
 			Required:    required,
 		}
 	}
+	for _, templateVar := range m.EndpointTemplateVars {
+		name := endpointTemplateEnvVar(m.APIName, templateVar)
+		vars[userConfigKey(name)] = MCPBVar{
+			Type:        mcpbVarTypeString,
+			Title:       name,
+			Description: endpointTemplateVarDescription(templateVar, name),
+			Required:    true,
+			Default:     endpointTemplateDefault(m, templateVar),
+		}
+	}
 	return vars
+}
+
+func endpointTemplateEnvVar(apiName, templateVar string) string {
+	return strings.ToUpper(naming.Snake(apiName) + "_" + naming.Snake(templateVar))
 }
 
 // userConfigKey lowercases the env var so manifest user_config keys match
 // the `${user_config.foo_bar}` substitution syntax in mcp_config.env.
 func userConfigKey(envVar string) string {
 	return strings.ToLower(envVar)
+}
+
+func endpointTemplateVarDescription(templateVar, envVar string) string {
+	return fmt.Sprintf("Sets %s for the endpoint template variable {%s}.", envVar, templateVar)
+}
+
+func endpointTemplateDefault(m CLIManifest, templateVar string) string {
+	if strings.EqualFold(templateVar, "api_version") {
+		return m.APIVersion
+	}
+	return ""
 }
 
 // envVarDescription is the help text under each user_config field. The

@@ -88,6 +88,10 @@ func TestGoTypeForParamCursorOverride(t *testing.T) {
 		{"page_size int stays int", "page_size", "int", "int"},
 		{"threshold float stays float", "threshold", "float", "float64"},
 		{"user_id int becomes string via isIDParam", "user_id", "int", "string"},
+		{"integer alias maps to int", "first", "integer", "int"},
+		{"boolean alias maps to bool", "published", "boolean", "bool"},
+		{"number alias maps to float64", "cost", "number", "float64"},
+		{"integer cursor alias still becomes string", "page", "integer", "string"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -95,6 +99,26 @@ func TestGoTypeForParamCursorOverride(t *testing.T) {
 			assert.Equal(t, tt.want, goTypeForParam(tt.paramName, tt.paramType))
 		})
 	}
+}
+
+func TestCobraFlagFuncAcceptsSpecScalarAliases(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "IntVar", cobraFlagFunc("integer"))
+	assert.Equal(t, "BoolVar", cobraFlagFunc("boolean"))
+	assert.Equal(t, "Float64Var", cobraFlagFunc("number"))
+	assert.Equal(t, "StringVar", cobraFlagFuncForParam("cursor", "integer"))
+}
+
+func TestDefaultAndZeroValuesAcceptSpecScalarAliases(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "25", defaultVal(spec.Param{Name: "first", Type: "integer", Default: 25}))
+	assert.Equal(t, "true", defaultVal(spec.Param{Name: "published", Type: "boolean", Default: true}))
+	assert.Equal(t, "1.500000", defaultVal(spec.Param{Name: "cost", Type: "number", Default: 1.5}))
+	assert.Equal(t, "0", zeroVal("integer"))
+	assert.Equal(t, "false", zeroVal("boolean"))
+	assert.Equal(t, "0.0", zeroVal("number"))
 }
 
 func TestDefaultValForParamCursorOverride(t *testing.T) {

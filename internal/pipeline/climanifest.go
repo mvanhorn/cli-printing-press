@@ -46,22 +46,23 @@ type CLIManifest struct {
 	// Owner is the attribution recorded in generated copyright headers
 	// (for example "hiten-shah"). Persisted here so subsequent regens
 	// preserve attribution regardless of who's running the generator.
-	Owner              string   `json:"owner,omitempty"`
-	SpecURL            string   `json:"spec_url,omitempty"`
-	SpecPath           string   `json:"spec_path,omitempty"`
-	SpecFormat         string   `json:"spec_format,omitempty"`
-	SpecChecksum       string   `json:"spec_checksum,omitempty"`
-	RunID              string   `json:"run_id,omitempty"`
-	CatalogEntry       string   `json:"catalog_entry,omitempty"`
-	Category           string   `json:"category,omitempty"`
-	Description        string   `json:"description,omitempty"`
-	MCPBinary          string   `json:"mcp_binary,omitempty"`
-	MCPToolCount       int      `json:"mcp_tool_count,omitempty"`
-	MCPPublicToolCount int      `json:"mcp_public_tool_count,omitempty"`
-	MCPReady           string   `json:"mcp_ready,omitempty"`
-	APIVersion         string   `json:"api_version,omitempty"` // from the spec's info.version — provenance only, not the CLI version
-	AuthType           string   `json:"auth_type,omitempty"`
-	AuthEnvVars        []string `json:"auth_env_vars,omitempty"`
+	Owner                string   `json:"owner,omitempty"`
+	SpecURL              string   `json:"spec_url,omitempty"`
+	SpecPath             string   `json:"spec_path,omitempty"`
+	SpecFormat           string   `json:"spec_format,omitempty"`
+	SpecChecksum         string   `json:"spec_checksum,omitempty"`
+	RunID                string   `json:"run_id,omitempty"`
+	CatalogEntry         string   `json:"catalog_entry,omitempty"`
+	Category             string   `json:"category,omitempty"`
+	Description          string   `json:"description,omitempty"`
+	MCPBinary            string   `json:"mcp_binary,omitempty"`
+	MCPToolCount         int      `json:"mcp_tool_count,omitempty"`
+	MCPPublicToolCount   int      `json:"mcp_public_tool_count,omitempty"`
+	MCPReady             string   `json:"mcp_ready,omitempty"`
+	APIVersion           string   `json:"api_version,omitempty"` // from the spec's info.version — provenance only, not the CLI version
+	AuthType             string   `json:"auth_type,omitempty"`
+	AuthEnvVars          []string `json:"auth_env_vars,omitempty"`
+	EndpointTemplateVars []string `json:"endpoint_template_vars,omitempty"`
 	// AuthKeyURL is the page where users register for an API key. Used by
 	// downstream emitters (MCPB manifest user_config descriptions, doctor
 	// hints) to point users at the right credential source.
@@ -247,6 +248,7 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.MCPReady = computeMCPReady(parsed.Auth.Type)
 	m.AuthType = parsed.Auth.Type
 	m.AuthEnvVars = parsed.Auth.EnvVars
+	m.EndpointTemplateVars = parsed.EndpointTemplateVars
 	m.AuthKeyURL = parsed.Auth.KeyURL
 	m.AuthOptional = parsed.Auth.Optional
 	// Always refresh from parsed; an empty-check here would let a

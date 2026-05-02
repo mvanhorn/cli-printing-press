@@ -7,7 +7,7 @@ Purpose-built fixture for golden generation coverage.
 ### Go
 
 ```
-go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden-pp-cli/cmd/printing-press-golden-pp-cli@latest
+go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden/cmd/printing-press-golden-pp-cli@latest
 ```
 
 ### Binary

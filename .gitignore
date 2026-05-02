@@ -1,4 +1,7 @@
 .DS_Store
+.env
+.env.*
+catalog/specs/*.graphql
 .cache/
 .gotmp/
 .claude/worktrees/

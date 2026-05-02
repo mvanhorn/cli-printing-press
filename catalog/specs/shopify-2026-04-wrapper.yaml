@@ -1,0 +1,345 @@
+name: shopify
+display_name: Shopify
+description: Ecommerce orders, products, customers, inventory, fulfillment orders, and bulk operations via the Shopify Admin GraphQL API.
+cli_description: Operate a Shopify store from the terminal with local sync, analytics, and bulk exports.
+version: "2026-04"
+spec_source: official
+category: commerce
+website_url: "https://shopify.dev/docs/api/admin-graphql"
+base_url: "https://{shop}"
+graphql_endpoint_path: "/admin/api/{api_version}/graphql.json"
+endpoint_template_vars:
+  - shop
+  - api_version
+
+auth:
+  type: api_key
+  header: X-Shopify-Access-Token
+  in: header
+  env_vars:
+    - SHOPIFY_ACCESS_TOKEN
+  key_url: "https://shopify.dev/docs/apps/build/authentication-authorization/access-tokens"
+
+config:
+  format: toml
+  path: "~/.config/shopify-pp-cli/config.toml"
+
+cache:
+  enabled: true
+  stale_after: "30m"
+  refresh_timeout: "45s"
+  env_opt_out: SHOPIFY_NO_AUTO_REFRESH
+  resources:
+    orders: "10m"
+    products: "1h"
+    inventory-items: "15m"
+    customers: "1h"
+    fulfillment-orders: "10m"
+
+throttling:
+  enabled: true
+  shape: shopify
+
+resources:
+  orders:
+    description: "Shopify orders with money totals, financial state, and fulfillment state."
+    endpoints:
+      list:
+        method: GET
+        path: "/graphql"
+        description: "List orders from the Shopify Admin GraphQL API."
+        params:
+          - name: first
+            type: integer
+            default: 100
+            description: "Page size for Shopify cursor pagination."
+          - name: after
+            type: string
+            description: "Cursor for the next page."
+        response:
+          type: array
+          item: ShopifyOrder
+        response_path: "data.orders.nodes"
+        pagination:
+          type: cursor
+          limit_param: first
+          cursor_param: after
+          next_cursor_path: "data.orders.pageInfo.endCursor"
+          has_more_field: "data.orders.pageInfo.hasNextPage"
+      get:
+        method: GET
+        path: "/graphql"
+        description: "Get one Shopify order by GraphQL ID."
+        params:
+          - name: id
+            type: string
+            required: true
+            positional: true
+            description: "Shopify GraphQL order ID."
+        response:
+          type: object
+          item: ShopifyOrder
+        response_path: "data.order"
+
+  products:
+    description: "Shopify products with product status, catalog metadata, and a compact variant inventory projection."
+    endpoints:
+      list:
+        method: GET
+        path: "/graphql"
+        description: "List products from the Shopify Admin GraphQL API."
+        params:
+          - name: first
+            type: integer
+            default: 100
+            description: "Page size for Shopify cursor pagination."
+          - name: after
+            type: string
+            description: "Cursor for the next page."
+        response:
+          type: array
+          item: ShopifyProduct
+        response_path: "data.products.nodes"
+        pagination:
+          type: cursor
+          limit_param: first
+          cursor_param: after
+          next_cursor_path: "data.products.pageInfo.endCursor"
+          has_more_field: "data.products.pageInfo.hasNextPage"
+      get:
+        method: GET
+        path: "/graphql"
+        description: "Get one Shopify product by GraphQL ID."
+        params:
+          - name: id
+            type: string
+            required: true
+            positional: true
+            description: "Shopify GraphQL product ID."
+        response:
+          type: object
+          item: ShopifyProduct
+        response_path: "data.product"
+
+  inventory-items:
+    description: "Shopify inventory items with tracked status and available quantities by location."
+    endpoints:
+      list:
+        method: GET
+        path: "/graphql"
+        description: "List inventory items from the Shopify Admin GraphQL API."
+        params:
+          - name: first
+            type: integer
+            default: 100
+            description: "Page size for Shopify cursor pagination."
+          - name: after
+            type: string
+            description: "Cursor for the next page."
+        response:
+          type: array
+          item: ShopifyInventoryItem
+        response_path: "data.inventoryItems.nodes"
+        pagination:
+          type: cursor
+          limit_param: first
+          cursor_param: after
+          next_cursor_path: "data.inventoryItems.pageInfo.endCursor"
+          has_more_field: "data.inventoryItems.pageInfo.hasNextPage"
+      get:
+        method: GET
+        path: "/graphql"
+        description: "Get one Shopify inventory item by GraphQL ID."
+        params:
+          - name: id
+            type: string
+            required: true
+            positional: true
+            description: "Shopify GraphQL inventory item ID."
+        response:
+          type: object
+          item: ShopifyInventoryItem
+        response_path: "data.inventoryItem"
+
+  customers:
+    description: "Shopify customers with lifetime order count, lifetime spend, and contact fields."
+    endpoints:
+      list:
+        method: GET
+        path: "/graphql"
+        description: "List customers from the Shopify Admin GraphQL API."
+        params:
+          - name: first
+            type: integer
+            default: 100
+            description: "Page size for Shopify cursor pagination."
+          - name: after
+            type: string
+            description: "Cursor for the next page."
+        response:
+          type: array
+          item: ShopifyCustomer
+        response_path: "data.customers.nodes"
+        pagination:
+          type: cursor
+          limit_param: first
+          cursor_param: after
+          next_cursor_path: "data.customers.pageInfo.endCursor"
+          has_more_field: "data.customers.pageInfo.hasNextPage"
+      get:
+        method: GET
+        path: "/graphql"
+        description: "Get one Shopify customer by GraphQL ID."
+        params:
+          - name: id
+            type: string
+            required: true
+            positional: true
+            description: "Shopify GraphQL customer ID."
+        response:
+          type: object
+          item: ShopifyCustomer
+        response_path: "data.customer"
+
+  fulfillment-orders:
+    description: "Shopify fulfillment orders for lag, routing, and fulfillment-state analysis."
+    endpoints:
+      list:
+        method: GET
+        path: "/graphql"
+        description: "List fulfillment orders from the Shopify Admin GraphQL API."
+        params:
+          - name: first
+            type: integer
+            default: 100
+            description: "Page size for Shopify cursor pagination."
+          - name: after
+            type: string
+            description: "Cursor for the next page."
+        response:
+          type: array
+          item: ShopifyFulfillmentOrder
+        response_path: "data.fulfillmentOrders.nodes"
+        pagination:
+          type: cursor
+          limit_param: first
+          cursor_param: after
+          next_cursor_path: "data.fulfillmentOrders.pageInfo.endCursor"
+          has_more_field: "data.fulfillmentOrders.pageInfo.hasNextPage"
+      get:
+        method: GET
+        path: "/graphql"
+        description: "Get one Shopify fulfillment order by GraphQL ID."
+        params:
+          - name: id
+            type: string
+            required: true
+            positional: true
+            description: "Shopify GraphQL fulfillment order ID."
+        response:
+          type: object
+          item: ShopifyFulfillmentOrder
+        response_path: "data.fulfillmentOrder"
+
+types:
+  ShopifyOrder:
+    fields:
+      - name: id
+        type: string
+      - name: name
+        type: string
+      - name: createdAt
+        type: string
+      - name: processedAt
+        type: string
+      - name: displayFinancialStatus
+        type: string
+      - name: displayFulfillmentStatus
+        type: string
+      - name: currencyCode
+        type: string
+      - name: totalPriceSet
+        type: object
+        selection: "{ shopMoney { amount currencyCode } }"
+      - name: totalRefundedSet
+        type: object
+        selection: "{ shopMoney { amount currencyCode } }"
+
+  ShopifyProduct:
+    fields:
+      - name: id
+        type: string
+      - name: title
+        type: string
+      - name: handle
+        type: string
+      - name: vendor
+        type: string
+      - name: productType
+        type: string
+      - name: status
+        type: string
+      - name: updatedAt
+        type: string
+      - name: variants
+        type: object
+        selection: "(first: 50) { nodes { id sku price inventoryItem { id } } }"
+
+  ShopifyInventoryItem:
+    fields:
+      - name: id
+        type: string
+      - name: sku
+        type: string
+      - name: tracked
+        type: boolean
+      - name: updatedAt
+        type: string
+      - name: inventoryLevels
+        type: object
+        selection: "(first: 50) { nodes { id location { id name } quantities(names: [\"available\"]) { name quantity updatedAt } updatedAt } }"
+
+  ShopifyCustomer:
+    fields:
+      - name: id
+        type: string
+      - name: email
+        type: string
+      - name: firstName
+        type: string
+      - name: lastName
+        type: string
+      - name: numberOfOrders
+        type: integer
+      - name: amountSpent
+        type: object
+        selection: "{ amount currencyCode }"
+      - name: createdAt
+        type: string
+      - name: updatedAt
+        type: string
+
+  ShopifyFulfillmentOrder:
+    fields:
+      - name: id
+        type: string
+      - name: status
+        type: string
+      - name: requestStatus
+        type: string
+      - name: assignedLocation
+        type: object
+        selection: "{ name location { id name } }"
+      - name: fulfillAt
+        type: string
+      - name: createdAt
+        type: string
+      - name: updatedAt
+        type: string
+      - name: order
+        type: object
+        selection: "{ id name }"
+
+extra_commands:
+  - name: bulk-operations
+    description: "Run, poll, and inspect Shopify Admin GraphQL bulk operations."
