@@ -337,6 +337,16 @@ func newPublishPackageCmd() *cobra.Command {
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("copying CLI: %w", err)}
 			}
 
+			// Strip build/ from the staged tree. autoBundleForHost writes
+			// host-platform .mcpb bundles + staged binaries there as a
+			// local-dev convenience; the public library treats CI release
+			// artifacts as canonical, so build/ should never reach the
+			// public library through the publish path.
+			if err := os.RemoveAll(filepath.Join(outCLIDir, "build")); err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping build dir: %w", err)}
+			}
+
 			// Rewrite go.mod module path if --module-path is set
 			if modulePath != "" {
 				oldModPath := cliName // generated CLIs use bare CLI name as module path

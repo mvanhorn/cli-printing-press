@@ -119,6 +119,11 @@ from another build pipeline.`,
 }
 
 // autoBundleForHost packages a host-platform .mcpb after generate.
+// The output lives at <cliDir>/build/ as local-dev scratch — useful for
+// trying the bundle in Claude Desktop on the generating machine before
+// publishing. The canonical multi-platform .mcpb artifacts are produced by
+// the public library's CI on merge to main and attached as release assets;
+// `printing-press publish package` strips build/ from the staged tree.
 // Best-effort: skips silently for expected non-bundle states (no manifest,
 // no go.sum) and warns on real failures (malformed manifest, build/zip
 // errors). Users can always re-run via `printing-press bundle <dir>`.

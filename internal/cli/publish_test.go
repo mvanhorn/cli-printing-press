@@ -377,6 +377,37 @@ func TestPublishPackageDoesNotStageCompiledBinary(t *testing.T) {
 	assert.ErrorIs(t, stagedErr, os.ErrNotExist, "packaged source should not include a compiled binary")
 }
 
+func TestPublishPackageStripsBuildDir(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	// Simulate autoBundleForHost output: build/ exists in the source
+	// dir with a host-platform .mcpb and a staged binary copy.
+	buildDir := filepath.Join(cliDir, "build")
+	require.NoError(t, os.MkdirAll(filepath.Join(buildDir, "stage", "bin"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(buildDir, "test-pp-mcp-darwin-arm64.mcpb"), []byte("zip-bytes"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(buildDir, "stage", "bin", "test-pp-mcp"), []byte("staged-binary"), 0o755))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+
+	// Source build/ stays intact — we don't touch the user's working tree.
+	_, sourceErr := os.Stat(buildDir)
+	assert.NoError(t, sourceErr, "package must not delete the source build/ dir")
+
+	// Staged tree must have no build/ — CI is canonical for distribution.
+	_, stagedErr := os.Stat(filepath.Join(result.StagedDir, "build"))
+	assert.ErrorIs(t, stagedErr, os.ErrNotExist, "staged dir must not include build/")
+}
+
 func TestPublishPackageFailsWhenManuscriptsCopyFails(t *testing.T) {
 	skipIfRootCannotSimulateUnreadable(t)
 	home := setLibraryTestEnv(t)
