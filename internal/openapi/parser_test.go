@@ -1912,3 +1912,105 @@ paths:
 		assert.True(t, names[want], "param %q must be preserved", want)
 	}
 }
+
+// TestParsePerOperationServersFallback covers the case where a spec has no
+// top-level `servers:` block but each operation declares its own. The parser
+// must walk per-operation servers and pick the most common one as base URL.
+// Pre-fix this hit https://api.example.com and produced a CLI that DNS-failed
+// every call — see cli-printing-press#510 for the open-meteo report.
+func TestParsePerOperationServersFallback(t *testing.T) {
+	t.Parallel()
+
+	specYAML := `openapi: "3.0.3"
+info:
+  title: Per-Op Servers Test
+  version: "1.0"
+paths:
+  /forecast:
+    get:
+      operationId: forecast
+      servers:
+        - url: https://api.example.com
+      responses:
+        '200':
+          description: OK
+  /historical:
+    get:
+      operationId: historical
+      servers:
+        - url: https://archive.example.com
+      responses:
+        '200':
+          description: OK
+  /weather:
+    get:
+      operationId: weather
+      servers:
+        - url: https://api.example.com
+      responses:
+        '200':
+          description: OK
+`
+	parsed, err := Parse([]byte(specYAML))
+	require.NoError(t, err)
+	// api.example.com appears 2x, archive.example.com appears 1x — most-common wins.
+	assert.Equal(t, "https://api.example.com", parsed.BaseURL)
+}
+
+// TestParsePerOperationServersFallbackTieBreak verifies deterministic
+// tie-breaking: when two server URLs appear with equal frequency, the
+// lexicographically smaller one wins so the output doesn't churn run-to-run.
+func TestParsePerOperationServersFallbackTieBreak(t *testing.T) {
+	t.Parallel()
+
+	specYAML := `openapi: "3.0.3"
+info:
+  title: Tie Break Test
+  version: "1.0"
+paths:
+  /alpha:
+    get:
+      operationId: alpha
+      servers:
+        - url: https://b.example.com
+      responses:
+        '200': {description: OK}
+  /beta:
+    get:
+      operationId: beta
+      servers:
+        - url: https://a.example.com
+      responses:
+        '200': {description: OK}
+`
+	parsed, err := Parse([]byte(specYAML))
+	require.NoError(t, err)
+	// Both URLs appear once; lexicographically smallest wins.
+	assert.Equal(t, "https://a.example.com", parsed.BaseURL)
+}
+
+// TestParseTopLevelServersStillPreferred verifies the per-operation walk is
+// only used as a fallback. When top-level `servers:` is set, the parser must
+// continue to use it even if operations also declare their own.
+func TestParseTopLevelServersStillPreferred(t *testing.T) {
+	t.Parallel()
+
+	specYAML := `openapi: "3.0.3"
+info:
+  title: Top-Level Wins Test
+  version: "1.0"
+servers:
+  - url: https://global.example.com
+paths:
+  /thing:
+    get:
+      operationId: thing
+      servers:
+        - url: https://override.example.com
+      responses:
+        '200': {description: OK}
+`
+	parsed, err := Parse([]byte(specYAML))
+	require.NoError(t, err)
+	assert.Equal(t, "https://global.example.com", parsed.BaseURL)
+}
