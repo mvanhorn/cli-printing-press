@@ -428,7 +428,13 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 			auth.EnvVars = []string{envPrefix + "_API_KEY"}
 		}
 	case "bearer_token":
-		auth.EnvVars = []string{envPrefix + "_TOKEN"}
+		schemeEnvSuffix := toSnakeCase(schemeName)
+		switch schemeEnvSuffix {
+		case "", "bearer", "bearer_token", "token":
+			auth.EnvVars = []string{envPrefix + "_TOKEN"}
+		default:
+			auth.EnvVars = []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
+		}
 	}
 
 	return auth
@@ -2671,10 +2677,14 @@ func isGenericAPIPrefix(segment string) bool {
 }
 
 func isVersionSegment(segment string) bool {
-	if len(segment) < 2 || segment[0] != 'v' {
+	if segment == "" {
 		return false
 	}
-	_, err := strconv.Atoi(segment[1:])
+	if segment[0] == 'v' && len(segment) >= 2 {
+		_, err := strconv.Atoi(segment[1:])
+		return err == nil
+	}
+	_, err := strconv.Atoi(segment)
 	return err == nil
 }
 

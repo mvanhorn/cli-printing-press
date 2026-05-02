@@ -160,6 +160,37 @@ func TestParseGmailOAuth2(t *testing.T) {
 	assert.NotEmpty(t, parsed.Auth.Scopes)
 }
 
+func TestBearerSchemeNameCanSpecializeEnvVar(t *testing.T) {
+	t.Parallel()
+
+	spec := []byte(`openapi: "3.0.3"
+info:
+  title: Sentry
+  version: "1.0"
+servers:
+  - url: https://example.com
+components:
+  securitySchemes:
+    auth_token:
+      type: http
+      scheme: bearer
+paths:
+  /api/0/organizations/:
+    get:
+      operationId: List Your Organizations
+      security:
+        - auth_token: []
+      responses:
+        "200":
+          description: ok
+`)
+	parsed, err := Parse(spec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Equal(t, []string{"SENTRY_AUTH_TOKEN"}, parsed.Auth.EnvVars)
+}
+
 func TestSkipUnderscoreFields(t *testing.T) {
 	spec := []byte(`
 openapi: "3.0.0"
@@ -413,6 +444,7 @@ func TestPathSegmentsStripsGenericAPIPrefix(t *testing.T) {
 		{"strips version then api", "/v1/api/networkentity", "", "networkentity"},
 		{"strips api then version", "/api/v2/pokemon", "", "pokemon"},
 		{"strips version then api then version", "/v2/api/v1/pokemon", "", "pokemon"},
+		{"strips api then numeric version", "/api/0/organizations", "", "organizations"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
