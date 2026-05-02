@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.4.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.3.0...v3.4.0) (2026-05-02)
+
+
+### Features
+
+* **cli:** add curated Shopify wrapper spec ([#476](https://github.com/mvanhorn/cli-printing-press/issues/476)) ([40cefcb](https://github.com/mvanhorn/cli-printing-press/commit/40cefcb5cf8f48a9a7b286f4a1486f8c7680bc5e))
+
+
+### Bug Fixes
+
+* **cli:** mcp-sync stops conflating API slug with binary name ([#487](https://github.com/mvanhorn/cli-printing-press/issues/487)) ([2899613](https://github.com/mvanhorn/cli-printing-press/commit/2899613de8060e80778fe7ae00ea737d74c5db50))
+* **cli:** scorecard APIName drops binary suffix ([#489](https://github.com/mvanhorn/cli-printing-press/issues/489)) ([c76d3ec](https://github.com/mvanhorn/cli-printing-press/commit/c76d3ec98137dd13d566a161f886f9eace8f608d))
+* **cli:** scorer accuracy — insight prefix, MCP dir selection, freshness coupling ([#486](https://github.com/mvanhorn/cli-printing-press/issues/486)) ([9f26551](https://github.com/mvanhorn/cli-printing-press/commit/9f265510549d5563804d13872301f9b94831f6b5))
+* **generator:** three template defaults polish has to fix manually ([#480](https://github.com/mvanhorn/cli-printing-press/issues/480)) ([#485](https://github.com/mvanhorn/cli-printing-press/issues/485)) ([aab364b](https://github.com/mvanhorn/cli-printing-press/commit/aab364be44d72284b99785cd4a541fddf34dc7e2))
+* **scorer:** live-check treats CLI's graceful empty-handling as PASS, not FAIL ([#488](https://github.com/mvanhorn/cli-printing-press/issues/488)) ([bd102cf](https://github.com/mvanhorn/cli-printing-press/commit/bd102cf047bb542288d26e019dde96fc20893b6b))
+
 ## [3.3.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.2.1...v3.3.0) (2026-05-02)
 
 
