@@ -6,7 +6,7 @@
   ],
   "auth_type": "api_key",
   "cli_name": "cafe-bistro-pp-cli",
-  "display_name": "Cafe Bistro",
+  "display_name": "Café Bistro",
   "generated_at": "<GENERATED_AT>",
   "mcp_binary": "cafe-bistro-pp-mcp",
   "mcp_ready": "full",

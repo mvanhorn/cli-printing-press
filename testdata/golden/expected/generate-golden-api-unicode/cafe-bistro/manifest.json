@@ -10,8 +10,8 @@
       "win32"
     ]
   },
-  "description": "Cafe Bistro API surface as MCP tools.",
-  "display_name": "Cafe Bistro",
+  "description": "Café Bistro API surface as MCP tools.",
+  "display_name": "Café Bistro",
   "license": "Apache-2.0",
   "manifest_version": "0.3",
   "name": "cafe-bistro-pp-mcp",
@@ -28,7 +28,7 @@
   },
   "user_config": {
     "cafe_bistro_api_key_auth": {
-      "description": "Sets CAFE_BISTRO_API_KEY_AUTH for the Cafe Bistro MCP server.",
+      "description": "Sets CAFE_BISTRO_API_KEY_AUTH for the Café Bistro MCP server.",
       "required": true,
       "sensitive": true,
       "title": "CAFE_BISTRO_API_KEY_AUTH",

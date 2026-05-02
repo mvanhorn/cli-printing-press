@@ -183,15 +183,21 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 
 	// Extract x-display-name extension. Carries the human-readable
 	// brand name when it differs from the slug-derived form ("Cal.com"
-	// vs "Cal Com"). Without this, the OpenAPI parser leaves
-	// DisplayName empty and downstream consumers fall back to
-	// naming.HumanName(slug), which deforms multi-word brands.
+	// vs "Cal Com"). When absent, derive a Unicode-preserving form from
+	// info.title so accented brands like "Café Bistro" or "PokéAPI"
+	// don't get flattened by EffectiveDisplayName's HumanName(slug)
+	// fallback (the slug is ASCII-folded for filesystem safety).
 	var displayName string
 	if doc.Info != nil && doc.Info.Extensions != nil {
 		if raw, ok := doc.Info.Extensions["x-display-name"]; ok {
 			if s, ok := raw.(string); ok {
 				displayName = strings.TrimSpace(s)
 			}
+		}
+	}
+	if displayName == "" && doc.Info != nil {
+		if derived := cleanSpecNameUnicode(doc.Info.Title); derived != "" && derived != "api" {
+			displayName = naming.HumanName(derived)
 		}
 	}
 
@@ -2852,7 +2858,13 @@ func toCamelCase(s string) string {
 }
 
 func toKebabCase(input string) string {
-	input = naming.ASCIIFold(input)
+	return toKebabCaseInternal(input, true)
+}
+
+func toKebabCaseInternal(input string, foldASCII bool) string {
+	if foldASCII {
+		input = naming.ASCIIFold(input)
+	}
 	var b strings.Builder
 	lastHyphen := true
 
@@ -2872,8 +2884,50 @@ func toKebabCase(input string) string {
 	return strings.Trim(b.String(), "-")
 }
 
+// specNameNoiseWords names tokens stripped during slug derivation. Shared by
+// the ASCII slug path (cleanSpecName) and the Unicode-preserving display-name
+// path (cleanSpecNameUnicode) so adding a new noise word affects both.
+var specNameNoiseWords = map[string]struct{}{
+	"swagger":       {},
+	"openapi":       {},
+	"rest":          {},
+	"api":           {},
+	"spec":          {},
+	"specification": {},
+	"preview":       {},
+	"http":          {},
+	"with":          {},
+	"and":           {},
+	"from":          {},
+	"for":           {},
+	"the":           {},
+	"by":            {},
+	"of":            {},
+	"in":            {},
+	"on":            {},
+	"to":            {},
+	"fixes":         {},
+	"improvements":  {},
+}
+
 func cleanSpecName(title string) string {
-	title = naming.ASCIIFold(title)
+	return cleanSpecNameInternal(title, true)
+}
+
+// cleanSpecNameUnicode mirrors cleanSpecName's noise-word and version-token
+// stripping but skips the Unicode-to-ASCII fold. Used to derive display_name
+// from info.title when the spec has no x-display-name extension — the slug
+// path still folds ("Café Bistro API" → "cafe-bistro" for filesystem and
+// shell safety), while this path keeps accents intact ("café-bistro") so
+// HumanName produces "Café Bistro" rather than "Cafe Bistro".
+func cleanSpecNameUnicode(title string) string {
+	return cleanSpecNameInternal(title, false)
+}
+
+func cleanSpecNameInternal(title string, foldASCII bool) string {
+	if foldASCII {
+		title = naming.ASCIIFold(title)
+	}
 	title = strings.ToLower(strings.TrimSpace(title))
 	if title == "" {
 		return "api"
@@ -2882,8 +2936,10 @@ func cleanSpecName(title string) string {
 	title = strings.ReplaceAll(title, "open api", " ")
 
 	// Strip apostrophes so brand names like "Domino's" become "dominos" not
-	// "domino-s". Smart-quote U+2019 already folds to ASCII via ASCIIFold above.
+	// "domino-s". When foldASCII is false, smart-quote U+2019 hasn't been
+	// folded to ASCII '\'' yet, so strip both forms.
 	title = strings.ReplaceAll(title, "'", "")
+	title = strings.ReplaceAll(title, "’", "")
 
 	var normalized strings.Builder
 	lastSpace := true
@@ -2904,35 +2960,19 @@ func cleanSpecName(title string) string {
 		return "api"
 	}
 
-	noiseWords := map[string]struct{}{
-		"swagger":       {},
-		"openapi":       {},
-		"rest":          {},
-		"api":           {},
-		"spec":          {},
-		"specification": {},
-		"preview":       {},
-		"http":          {},
-		"with":          {},
-		"and":           {},
-		"from":          {},
-		"for":           {},
-		"the":           {},
-		"by":            {},
-		"of":            {},
-		"in":            {},
-		"on":            {},
-		"to":            {},
-		"fixes":         {},
-		"improvements":  {},
-	}
-
 	filtered := make([]string, 0, len(tokens))
 	for _, token := range tokens {
-		if _, ok := noiseWords[token]; ok {
+		// Compare against an ASCII-folded form so accented variants like
+		// "ApÍ" still match the noise-word filter even when foldASCII is
+		// false; the original token text is what gets kept.
+		compare := token
+		if !foldASCII {
+			compare = naming.ASCIIFold(token)
+		}
+		if _, ok := specNameNoiseWords[compare]; ok {
 			continue
 		}
-		if isVersionToken(token) {
+		if isVersionToken(compare) {
 			continue
 		}
 		filtered = append(filtered, token)
@@ -2941,7 +2981,7 @@ func cleanSpecName(title string) string {
 		filtered = filtered[:3]
 	}
 
-	name := toKebabCase(strings.Join(filtered, " "))
+	name := toKebabCaseInternal(strings.Join(filtered, " "), foldASCII)
 	if name == "" {
 		return "api"
 	}

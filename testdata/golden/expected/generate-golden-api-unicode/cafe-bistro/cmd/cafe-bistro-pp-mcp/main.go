@@ -13,7 +13,7 @@ import (
 
 func main() {
 	s := server.NewMCPServer(
-		"Cafe Bistro",
+		"Café Bistro",
 		"1.0.0",
 		server.WithToolCapabilities(false),
 	)
