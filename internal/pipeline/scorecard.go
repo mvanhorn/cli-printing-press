@@ -1168,25 +1168,20 @@ func scoreVision(dir string) int {
 	return score
 }
 
-// manifestNovelFeatureLeaves reads .printing-press.json from dir and returns
-// the lowercased leaf segments of every novel_features[].command. Returns nil
-// when the manifest is missing, unparseable, or carries no novel features.
-//
-// Used by scoreInsight to credit registered files whose Use: matches an
-// agent-declared transcendence command, regardless of whether the leaf appears
-// in the hardcoded insight prefix list. The agent's own classification at
-// planning time (later filtered by dogfood to verified-built features) is a
-// stronger signal than name-based heuristics.
+// cobraUseLeafRe extracts the first whitespace-delimited token from a Cobra
+// `Use: "..."` literal — the leaf command name (e.g., `"trajectory <slug>"`
+// → `trajectory`).
+var cobraUseLeafRe = regexp.MustCompile(`Use:\s*"([^"\s]+)`)
+
+// manifestNovelFeatureLeaves returns the leaves of every novel_features[].command
+// in dir/.printing-press.json. Returns nil when the manifest is missing,
+// unparseable, or carries no novel features.
 func manifestNovelFeatureLeaves(dir string) map[string]bool {
 	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
 	if err != nil {
 		return nil
 	}
-	var m struct {
-		NovelFeatures []struct {
-			Command string `json:"command"`
-		} `json:"novel_features"`
-	}
+	var m CLIManifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil
 	}
@@ -1195,8 +1190,7 @@ func manifestNovelFeatureLeaves(dir string) map[string]bool {
 	}
 	leaves := make(map[string]bool, len(m.NovelFeatures))
 	for _, nf := range m.NovelFeatures {
-		path := commandPath(nf.Command)
-		_, leaf := splitCommandPath(path)
+		_, leaf := splitCommandPath(commandPath(nf.Command))
 		if leaf != "" {
 			leaves[leaf] = true
 		}
@@ -1369,16 +1363,10 @@ func scoreInsight(dir string) int {
 		"stats", "conflicts", "stale", "analytics", "busiest", "velocity",
 		"utilization", "coverage", "gaps", "noshow"}
 
-	// Leaves of agent-declared novel feature commands (dogfood-verified, recorded
-	// in .printing-press.json). The prefix list above can't enumerate every
-	// reasonable insight verb across APIs (trajectory, snapshot, calendar, etc.);
-	// this lookup credits files whose Use: matches a leaf the agent itself
-	// classified as a transcendence feature. Empty when the manifest is absent
-	// or has no novel features, in which case scoring falls back to the
-	// existing prefix + structural signals only.
+	// novelLeaves credits files whose Cobra Use matches an agent-declared
+	// transcendence command. The prefix list above can't enumerate every
+	// reasonable insight verb across APIs.
 	novelLeaves := manifestNovelFeatureLeaves(dir)
-
-	useLeafRe := regexp.MustCompile(`Use:\s*"([^"\s]+)`)
 
 	found := 0
 	for _, e := range entries {
@@ -1393,7 +1381,7 @@ func scoreInsight(dir string) int {
 		}
 		name := strings.ToLower(e.Name())
 
-		// Signal 1: filename prefix match (supplementary — kept for backward compat)
+		// Signal 1: filename prefix match
 		prefixMatch := false
 		for _, prefix := range insightPrefixes {
 			if strings.HasPrefix(name, prefix) {
@@ -1411,17 +1399,15 @@ func scoreInsight(dir string) int {
 			continue
 		}
 
-		// Signal 2 (planning-aware): the file declares a Cobra Use: matching a
-		// leaf the agent recorded as a novel feature. Trusts the agent's own
-		// classification rather than guessing from filename or structure.
+		// Signal 2: file declares a Cobra Use: matching an agent-declared novel feature.
 		if len(novelLeaves) > 0 {
-			if m := useLeafRe.FindStringSubmatch(content); m != nil && novelLeaves[strings.ToLower(m[1])] {
+			if m := cobraUseLeafRe.FindStringSubmatch(content); m != nil && novelLeaves[strings.ToLower(m[1])] {
 				found++
 				continue
 			}
 		}
 
-		// Signal 3 (existing): store + SQL aggregation
+		// Signal 3: store + SQL aggregation
 		usesStore := strings.Contains(content, "/store") || strings.Contains(content, "store.Open") || strings.Contains(content, "store.New")
 		rateRe := regexp.MustCompile(`\brate\b|\bRate\b`)
 		hasSQLAgg := strings.Contains(content, "COUNT(") || strings.Contains(content, "SUM(") ||
@@ -1432,7 +1418,7 @@ func scoreInsight(dir string) int {
 			continue
 		}
 
-		// Signal 4 (existing): behavioral — command produces derived/aggregated output.
+		// Signal 4: behavioral — command produces derived/aggregated output.
 		// Detects Go-level aggregation: sorting, percentage calculations, comparisons,
 		// summary statistics. Requires multi-source input (2+ API calls or store usage)
 		// to avoid counting simple pass-through commands.

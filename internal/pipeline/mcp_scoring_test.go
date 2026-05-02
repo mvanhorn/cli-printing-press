@@ -83,8 +83,9 @@ func TestScoreMCPRemoteTransport(t *testing.T) {
 
 	t.Run("manifest cli_name selects canonical mcp dir over duplicates", func(t *testing.T) {
 		dir := t.TempDir()
-		// A duplicate dir whose name sorts before the canonical one — the old
-		// suffix-and-break loop would pick this and read its stdio-only main.go.
+		// Duplicate -pp-mcp dirs must not shadow the canonical one. The
+		// duplicate sorts lexically first, so a suffix-only scan would pick
+		// it and read the wrong main.go.
 		writeMCPFile(t, dir, "cmd/demo-pp-cli-pp-mcp/main.go", stdioOnlyMain)
 		writeMCPFile(t, dir, "cmd/demo-pp-mcp/main.go", bothTransportsMain)
 		writeMCPFile(t, dir, ".printing-press.json", `{"cli_name": "demo-pp-cli"}`)

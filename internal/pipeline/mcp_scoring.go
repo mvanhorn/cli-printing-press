@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
 )
 
 // Thresholds for the tool-design dimension. Intent-grouping is only worth
@@ -31,19 +33,18 @@ type mcpSurface struct {
 	intentTools     int    // count of intent tool registrations inside intents.go
 }
 
-// mcpMainPath resolves the path to the canonical cmd/<cli>-pp-mcp/main.go.
-// Prefers the dir derived from .printing-press.json's cli_name (cli_name with
-// "-pp-cli" → "-pp-mcp") so duplicate or shadow dirs left behind by spec/name
-// rewrites can't shadow the canonical surface. Falls back to the first dir
-// matching the "-pp-mcp" suffix when the manifest is missing or unparseable —
-// the legacy behavior, preserved for fixtures and trees that never had a
-// manifest written.
+// mcpMainPath returns the path to the canonical cmd/<cli>-pp-mcp/main.go, or
+// "" when none exists. Prefers the dir derived from .printing-press.json's
+// cli_name so duplicate or shadow dirs left behind by spec/name rewrites
+// can't shadow the canonical surface. Falls back to the first dir matching
+// naming.MCPSuffix when the manifest is missing — preserves the legacy
+// behavior for fixtures and trees that never had a manifest written.
 //
-// Returns "" when no plausible candidate exists.
-func mcpMainPath(dir, cmdDir string) string {
-	if cli := ReadCLIBinaryName(dir); strings.HasSuffix(cli, "-pp-cli") {
-		canonical := strings.TrimSuffix(cli, "-pp-cli") + "-pp-mcp"
-		candidate := filepath.Join(cmdDir, canonical, "main.go")
+// Always stats the candidate before returning so callers can trust the path.
+func mcpMainPath(dir string) string {
+	cmdDir := filepath.Join(dir, "cmd")
+	if cli := ReadCLIBinaryName(dir); strings.HasSuffix(cli, naming.CurrentCLISuffix) {
+		candidate := filepath.Join(cmdDir, naming.MCP(naming.TrimCLISuffix(cli)), "main.go")
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
 		}
@@ -56,8 +57,11 @@ func mcpMainPath(dir, cmdDir string) string {
 		if !e.IsDir() {
 			continue
 		}
-		if strings.HasSuffix(e.Name(), "-pp-mcp") {
-			return filepath.Join(cmdDir, e.Name(), "main.go")
+		if strings.HasSuffix(e.Name(), naming.MCPSuffix) {
+			candidate := filepath.Join(cmdDir, e.Name(), "main.go")
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
 		}
 	}
 	return ""
@@ -69,13 +73,8 @@ func mcpMainPath(dir, cmdDir string) string {
 // dimension as unscored.
 func detectMCPSurface(dir string) mcpSurface {
 	var s mcpSurface
-
-	cmdDir := filepath.Join(dir, "cmd")
-	s.mainPath = mcpMainPath(dir, cmdDir)
+	s.mainPath = mcpMainPath(dir)
 	if s.mainPath == "" {
-		return s
-	}
-	if _, err := os.Stat(s.mainPath); err != nil {
 		return s
 	}
 	s.present = true
