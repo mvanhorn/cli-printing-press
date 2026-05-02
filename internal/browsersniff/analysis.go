@@ -31,6 +31,106 @@ type TrafficAnalysis struct {
 	Warnings          []AnalysisWarning       `json:"warnings,omitempty"`
 }
 
+// UnmarshalJSON normalizes two v2 shapes that v3 no longer emits but that
+// hand-authored or v2-binary-generated traffic analyses still carry:
+//
+//   - `version: "1.0"` → normalized to "1" so the version check in
+//     ReadTrafficAnalysis matches without rejecting otherwise-loadable input.
+//   - `generation_hints: {key: bool}` (object) → flattened to a sorted slice
+//     of true keys, matching the v3 derivation.
+//
+// See issue #474 for the broader compat story.
+func (t *TrafficAnalysis) UnmarshalJSON(data []byte) error {
+	type alias TrafficAnalysis
+	var legacy struct {
+		*alias
+		GenerationHints json.RawMessage `json:"generation_hints,omitempty"`
+	}
+	legacy.alias = (*alias)(t)
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	t.Version = normalizeTrafficAnalysisVersion(t.Version)
+	if len(legacy.GenerationHints) == 0 {
+		t.GenerationHints = nil
+		return nil
+	}
+	hints, err := unmarshalGenerationHints(legacy.GenerationHints)
+	if err != nil {
+		return fmt.Errorf("generation hints: %w", err)
+	}
+	t.GenerationHints = hints
+	return nil
+}
+
+// normalizeTrafficAnalysisVersion accepts the legacy "1.0" form (v2 binaries
+// emitted "1.0"; v3 emits "1") so the consumer-side version check doesn't
+// have to know about minor-version trivia.
+func normalizeTrafficAnalysisVersion(v string) string {
+	switch strings.TrimSpace(v) {
+	case "1.0":
+		return "1"
+	default:
+		return v
+	}
+}
+
+// unmarshalStringOrStringSlice accepts a JSON value that is either a string
+// (returned as a single-element slice) or a string slice. Used by Notes
+// fields to bridge the v2 "string" / v3 "[]string" shape change.
+func unmarshalStringOrStringSlice(data []byte) ([]string, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	if data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return nil, fmt.Errorf("string form: %w", err)
+		}
+		if s == "" {
+			return nil, nil
+		}
+		return []string{s}, nil
+	}
+	var slice []string
+	if err := json.Unmarshal(data, &slice); err != nil {
+		return nil, fmt.Errorf("string-slice form: %w", err)
+	}
+	return slice, nil
+}
+
+// unmarshalGenerationHints accepts both the v3 `[]string` form and the v2
+// `map[string]bool` form. The map form (where each true entry was a derived
+// hint key) flattens to a sorted slice — matching what deriveGenerationHints
+// produces today.
+func unmarshalGenerationHints(data []byte) ([]string, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+	if data[0] == '[' {
+		var slice []string
+		if err := json.Unmarshal(data, &slice); err != nil {
+			return nil, fmt.Errorf("slice form: %w", err)
+		}
+		return slice, nil
+	}
+	var legacyMap map[string]bool
+	if err := json.Unmarshal(data, &legacyMap); err != nil {
+		return nil, fmt.Errorf("legacy map form: %w", err)
+	}
+	if len(legacyMap) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(legacyMap))
+	for k, v := range legacyMap {
+		if v {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 type TrafficAnalysisSummary struct {
 	TargetURL        string         `json:"target_url,omitempty"`
 	CapturedAt       string         `json:"captured_at,omitempty"`
@@ -124,6 +224,31 @@ type AuthAnalysis struct {
 	Candidates []AuthCandidate `json:"candidates,omitempty"`
 }
 
+// UnmarshalJSON accepts v2-shape `auth.candidate_types: ["api_key", "none"]`
+// (a flat list of type strings) alongside v3-shape `auth.candidates: [{...}]`
+// (objects with type/confidence/evidence). Each legacy string is materialized
+// as `{type: <s>, confidence: 1.0}`. See issue #474.
+func (a *AuthAnalysis) UnmarshalJSON(data []byte) error {
+	var legacy struct {
+		Candidates     []AuthCandidate `json:"candidates,omitempty"`
+		CandidateTypes []string        `json:"candidate_types,omitempty"`
+	}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	a.Candidates = legacy.Candidates
+	if len(a.Candidates) == 0 && len(legacy.CandidateTypes) > 0 {
+		a.Candidates = make([]AuthCandidate, 0, len(legacy.CandidateTypes))
+		for _, t := range legacy.CandidateTypes {
+			a.Candidates = append(a.Candidates, AuthCandidate{
+				Type:       t,
+				Confidence: 1.0,
+			})
+		}
+	}
+	return nil
+}
+
 type AuthCandidate struct {
 	Type        string        `json:"type"`
 	Confidence  float64       `json:"confidence"`
@@ -146,6 +271,32 @@ type ProtectionObservation struct {
 	Confidence float64       `json:"confidence"`
 	Evidence   []EvidenceRef `json:"evidence,omitempty"`
 	Notes      []string      `json:"notes,omitempty"`
+}
+
+// UnmarshalJSON accepts v2-shape `notes: "..."` (single string) alongside
+// v3-shape `notes: ["...", ...]`. Hand-authored or v2-generated traffic
+// analyses with string notes were a real shape; rejecting them outright
+// forced manual conversion (see issue #474).
+func (p *ProtectionObservation) UnmarshalJSON(data []byte) error {
+	type alias ProtectionObservation
+	var legacy struct {
+		*alias
+		Notes json.RawMessage `json:"notes,omitempty"`
+	}
+	legacy.alias = (*alias)(p)
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	if len(legacy.Notes) > 0 {
+		notes, err := unmarshalStringOrStringSlice(legacy.Notes)
+		if err != nil {
+			return fmt.Errorf("protection notes: %w", err)
+		}
+		p.Notes = notes
+	} else {
+		p.Notes = nil
+	}
+	return nil
 }
 
 type EndpointCluster struct {
@@ -180,6 +331,31 @@ type RequestSequence struct {
 	Notes      []string      `json:"notes,omitempty"`
 }
 
+// UnmarshalJSON accepts v2-shape `notes: "..."` (single string) alongside
+// v3-shape `notes: ["...", ...]`. See ProtectionObservation.UnmarshalJSON
+// and issue #474 for the broader compat rationale.
+func (r *RequestSequence) UnmarshalJSON(data []byte) error {
+	type alias RequestSequence
+	var legacy struct {
+		*alias
+		Notes json.RawMessage `json:"notes,omitempty"`
+	}
+	legacy.alias = (*alias)(r)
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	if len(legacy.Notes) > 0 {
+		notes, err := unmarshalStringOrStringSlice(legacy.Notes)
+		if err != nil {
+			return fmt.Errorf("request sequence notes: %w", err)
+		}
+		r.Notes = notes
+	} else {
+		r.Notes = nil
+	}
+	return nil
+}
+
 type PaginationSignal struct {
 	Location   string        `json:"location"`
 	Name       string        `json:"name"`
@@ -200,6 +376,37 @@ type AnalysisWarning struct {
 	Message    string        `json:"message"`
 	Confidence float64       `json:"confidence"`
 	Evidence   []EvidenceRef `json:"evidence,omitempty"`
+}
+
+// UnmarshalJSON accepts v2-shape `warnings: ["...", "..."]` (flat strings)
+// alongside v3-shape `warnings: [{type, message, confidence, evidence}]`
+// (objects). Legacy strings are materialized as
+// `{type: "scope_note", message: <s>, confidence: 1.0, evidence: [<s>]}` —
+// the same shape the v2-to-v3 migration script used. See issue #474.
+func (w *AnalysisWarning) UnmarshalJSON(data []byte) error {
+	if len(data) > 0 && data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return fmt.Errorf("analysis warning string: %w", err)
+		}
+		*w = AnalysisWarning{
+			Type:       "scope_note",
+			Message:    s,
+			Confidence: 1.0,
+			Evidence: []EvidenceRef{{
+				EntryIndex: EvidenceRefStringSentinel,
+				Reason:     s,
+			}},
+		}
+		return nil
+	}
+	type alias AnalysisWarning
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return fmt.Errorf("analysis warning object: %w", err)
+	}
+	*w = AnalysisWarning(a)
+	return nil
 }
 
 func AnalyzeTraffic(capture *EnrichedCapture) (*TrafficAnalysis, error) {
