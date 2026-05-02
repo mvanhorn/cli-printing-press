@@ -70,10 +70,10 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 	{
 		ID:      "{{$name}}.{{$eName}}",
 		Method:  "{{upper $endpoint.Method}}",
-		Path:    "{{$endpoint.Path}}",
+		Path:    "{{effectiveEndpointPath $resource $endpoint}}",
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
-		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $endpoint.Path}}),
+		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}),
 	},
 {{- end}}
 {{- range $subName, $subResource := $resource.SubResources}}
@@ -81,10 +81,10 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 	{
 		ID:      "{{$name}}.{{$subName}}.{{$eName}}",
 		Method:  "{{upper $endpoint.Method}}",
-		Path:    "{{$endpoint.Path}}",
+		Path:    "{{effectiveSubEndpointPath $resource $subResource $endpoint}}",
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
-		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $endpoint.Path}}),
+		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}),
 	},
 {{- end}}
 {{- end}}

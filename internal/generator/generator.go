@@ -246,6 +246,12 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			e, _ := lookupEndpointForTemplate(resources, ref)
 			return e
 		},
+		"lookupEndpointPath": func(resources map[string]spec.Resource, ref string) string {
+			path, _ := lookupEndpointPathForTemplate(resources, ref)
+			return path
+		},
+		"effectiveEndpointPath":    effectiveEndpointPath,
+		"effectiveSubEndpointPath": effectiveSubEndpointPath,
 		"enumLiteral": func(values []string) string {
 			// Render a string slice as a Go []string literal for template embedding.
 			// Example: ["asc","desc"] → `"asc", "desc"`. Returns empty string when
@@ -3219,4 +3225,56 @@ func lookupEndpointForTemplate(resources map[string]spec.Resource, ref string) (
 	default:
 		return spec.Endpoint{}, false
 	}
+}
+
+func lookupEndpointPathForTemplate(resources map[string]spec.Resource, ref string) (string, bool) {
+	parts := strings.Split(ref, ".")
+	switch len(parts) {
+	case 2:
+		r, ok := resources[parts[0]]
+		if !ok {
+			return "", false
+		}
+		e, ok := r.Endpoints[parts[1]]
+		if !ok {
+			return "", false
+		}
+		return effectiveEndpointPath(r, e), true
+	case 3:
+		r, ok := resources[parts[0]]
+		if !ok {
+			return "", false
+		}
+		sub, ok := r.SubResources[parts[1]]
+		if !ok {
+			return "", false
+		}
+		e, ok := sub.Endpoints[parts[2]]
+		if !ok {
+			return "", false
+		}
+		return effectiveSubEndpointPath(r, sub, e), true
+	default:
+		return "", false
+	}
+}
+
+func effectiveEndpointPath(resource spec.Resource, endpoint spec.Endpoint) string {
+	return endpointPathWithBase(resource.BaseURL, endpoint.Path)
+}
+
+func effectiveSubEndpointPath(parent spec.Resource, sub spec.Resource, endpoint spec.Endpoint) string {
+	baseURL := sub.BaseURL
+	if baseURL == "" {
+		baseURL = parent.BaseURL
+	}
+	return endpointPathWithBase(baseURL, endpoint.Path)
+}
+
+func endpointPathWithBase(baseURL, path string) string {
+	baseURL = strings.TrimRight(baseURL, "/")
+	if baseURL == "" {
+		return path
+	}
+	return baseURL + path
 }

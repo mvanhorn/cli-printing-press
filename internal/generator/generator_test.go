@@ -4972,6 +4972,18 @@ func TestGenerateResourceBaseURLOverrideRoutesToOverrideHost(t *testing.T) {
 	assert.Contains(t, string(clientGo), "if isAbsoluteURL(path) {",
 		"client.do() must branch on isAbsoluteURL")
 
+	// Typed MCP endpoint tools must use the same effective path as the CLI
+	// command. The cobratree walker skips pp:endpoint commands, so a raw
+	// endpoint-mirror tool with "/search" would route agents to the spec-level
+	// BaseURL instead of the resource override host.
+	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpToolsStr := string(mcpTools)
+	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search"`,
+		"geocoding MCP endpoint mirror must emit the absolute override URL")
+	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "/forecast"`,
+		"forecast MCP endpoint mirror must keep the relative path when its resource has no override")
+
 	// Must compile.
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
@@ -5123,6 +5135,69 @@ func TestGenerateResourceBaseURLWithEndpointTemplateVars(t *testing.T) {
 		"isAbsoluteURL helper must be emitted")
 	assert.Contains(t, clientStr, `buildURL("", path, endpointVars)`,
 		"absolute-URL branch must call buildURL with empty BaseURL so {placeholder} markers in path still substitute")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+// TestGenerateResourceBaseURLOverrideRoutesAgentDispatchSurfaces covers MCP
+// surfaces that execute through generated registries instead of Cobra
+// commands. The CLI command templates already prepend Resource.BaseURL; these
+// registries must do the same or agents route overridden resources to the
+// wrong host.
+func TestGenerateResourceBaseURLOverrideRoutesAgentDispatchSurfaces(t *testing.T) {
+	t.Parallel()
+	apiSpec := minimalSpec("multihost-agent")
+	apiSpec.BaseURL = "https://api.example.com/v1"
+	apiSpec.Resources["geocoding"] = spec.Resource{
+		Description: "Geocoding lookup",
+		BaseURL:     "https://geocoding-api.example.com/v1",
+		Endpoints: map[string]spec.Endpoint{
+			"search": {
+				Method:      "GET",
+				Path:        "/search",
+				Description: "Search",
+				Params: []spec.Param{
+					{Name: "q", Type: "string", Required: true, Description: "query"},
+				},
+			},
+			"reverse": {Method: "GET", Path: "/reverse", Description: "Reverse"},
+		},
+	}
+	apiSpec.MCP = spec.MCPConfig{
+		Orchestration: "code",
+		Intents: []spec.Intent{
+			{
+				Name:        "geocode",
+				Description: "Geocode a query",
+				Params: []spec.IntentParam{
+					{Name: "q", Type: "string", Required: true, Description: "query"},
+				},
+				Steps: []spec.IntentStep{
+					{
+						Endpoint: "geocoding.search",
+						Bind:     map[string]string{"q": "${input.q}"},
+						Capture:  "results",
+					},
+				},
+				Returns: "results",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	codeOrch, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "code_orch.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(codeOrch), `Path:    "https://geocoding-api.example.com/v1/search"`,
+		"code-orchestration execute must use the effective resource override URL")
+
+	intents, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "intents.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(intents), `"geocoding.search": {method: "GET", path: "https://geocoding-api.example.com/v1/search"}`,
+		"intent dispatch must use the effective resource override URL")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")

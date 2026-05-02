@@ -62,7 +62,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithOpenWorldHintAnnotation(true),
 {{- end}}
 		),
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" $endpoint.Path}}, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 	)
 {{- end}}
 {{- range $subName, $subResource := $resource.SubResources}}
@@ -93,7 +93,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithOpenWorldHintAnnotation(true),
 {{- end}}
 		),
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" $endpoint.Path}}, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 	)
 {{- end}}
 {{- end}}

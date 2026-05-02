@@ -9,7 +9,7 @@ Use this format when no OpenAPI spec is available.
 name: my-api                     # string (REQUIRED) CLI binary prefix, e.g. "my-api"
 description: "My API CLI"       # string shown in command help
 version: "0.1.0"                # string baked into generated binary
-base_url: "https://api.example.com/v1" # string (REQUIRED) base API URL
+base_url: "https://api.example.com/v1" # string (REQUIRED) default base API URL
 
 auth:                             # object (AuthConfig)
   type: api_key                   # string: api_key | oauth2 | bearer_token | none
@@ -27,6 +27,7 @@ config:                           # object (ConfigSpec)
 resources:                        # map[string]Resource (REQUIRED: at least one key)
   users:                          # resource key becomes top-level command: <name>-cli users
     description: "Manage users"  # string resource help text
+    base_url: "https://directory.example.com/v1" # string optional override for this resource and inherited sub-resources
     endpoints:                    # map[string]Endpoint (REQUIRED: at least one key)
       list:                       # endpoint key becomes subcommand: users list
         method: GET               # string (REQUIRED) must be one of GET | POST | PUT | DELETE
@@ -74,7 +75,7 @@ types:                            # map[string]TypeDef named response/body model
 name: stytch # CLI binary prefix => stytch-cli
 description: "Stytch authentication API CLI" # Root help text and README summary
 version: "0.1.0" # Printed by `stytch-cli version`
-base_url: "https://api.stytch.com/v1" # Base URL all endpoint paths are joined against
+base_url: "https://api.stytch.com/v1" # Default base URL endpoint paths are joined against
 
 auth:
   type: api_key # Uses API key style auth
@@ -208,21 +209,24 @@ types:
 Validation in `spec.Validate()` enforces:
 
 - `name` is required
-- `base_url` is required
+- root `base_url` is required unless `base_path` is supplied
 - at least one `resources` entry is required
 - every resource must have at least one endpoint
 - every endpoint must have both `method` and `path`
+- `resources.<name>.base_url` is allowed for resources that live on another host; sub-resources inherit the parent override unless they set their own `base_url`
+- resource `base_url` overrides cannot be combined with `client_pattern: proxy-envelope`, because proxy-envelope clients POST every request to the root `base_url`
 
 ## 4. Common Mistakes
 
 These commonly cause generation/build failures or incorrect CLI behavior:
 
-- Missing required fields (`name`, `base_url`, resource endpoints, endpoint `method`, endpoint `path`)
+- Missing required fields (`name`, root `base_url`, resource endpoints, endpoint `method`, endpoint `path`)
 - Invalid `method` values (generator templates only handle `GET`, `POST`, `PUT`, `DELETE`)
 - Missing `path` on endpoints
 - Defining `body` params on `GET` endpoints (allowed in YAML, but ignored by GET command generation)
 - Forgetting `positional: true` for params used in `/{path_placeholders}`
 - Using parameter types outside supported scalar set: `string`, `int`, `bool`, `float`
+- Putting a website/feed host in the root `base_url` just to make one resource work; keep the root API host as the default and use a resource `base_url` override for the outlier surface
 
 ## 5. Type Mapping
 
