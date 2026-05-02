@@ -23,7 +23,7 @@ The plugin alone has nothing to call; the binary alone works but skips the curat
 
 **Prerequisites:** [Go 1.22+](https://go.dev/dl/) and [Claude Code](https://claude.ai/code).
 
-**1. Install the binary** (run in your terminal):
+### 1. Install the binary
 
 ```bash
 go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest
@@ -41,14 +41,33 @@ If you skip this step, the plugin will run `go install` for you on first use (as
 >
 > This requires GitHub access to the repo (SSH key or `gh auth login`). After the public launch, the plain command works for everyone.
 
-**2. Install the plugin** (run inside Claude Code):
+### 2. Install the plugin — pick one path
+
+Both paths give you the `/printing-press` slash command. They differ in how skills are kept up to date and whether parallel runs are easy.
+
+#### Option A — Clone and run (recommended for active users)
+
+Loads the plugin directly from a local clone of this repo. `git pull` is your update mechanism, so you always have the latest skills with no plugin-marketplace lag. Add `-w` to start the session in a fresh git worktree — handy for printing multiple CLIs in parallel without runs stomping on each other.
+
+```bash
+git clone https://github.com/mvanhorn/cli-printing-press.git
+cd cli-printing-press
+claude --plugin-dir .          # load this repo's skills directly
+claude --plugin-dir . -w       # ...in a new worktree (parallel runs)
+```
+
+Update with `git pull` whenever you want fresh skills. The binary from step 1 still does the heavy lifting; `--plugin-dir .` only changes where the plugin loads from.
+
+#### Option B — Plugin marketplace (one-shot, auto-updated by Claude)
+
+Stable releases, kept up to date by Claude's plugin update mechanism. Run inside Claude Code:
 
 ```text
 /plugin marketplace add mvanhorn/cli-printing-press
 /plugin install cli-printing-press@cli-printing-press
 ```
 
-Verify: type `/printing-press` in Claude Code and confirm the skill appears.
+Verify (either path): type `/printing-press` in Claude Code and confirm the slash command appears.
 
 ### Optional: pre-built CLI library
 
@@ -472,7 +491,7 @@ lefthook install --reset-hooks-path
 
 Use `--reset-hooks-path` so stale local `core.hooksPath` settings do not block hook sync. Avoid `lefthook install --force` unless intentionally overriding a custom hooks path.
 
-To test local skill changes, run `claude --plugin-dir .` so `/printing-press` loads from your working copy. See [AGENTS.md](AGENTS.md) for full conventions, glossary, and release flow.
+If you installed via [Option A — Clone and run](#option-a--clone-and-run-recommended-for-active-users), `claude --plugin-dir .` already loads `/printing-press` from your working copy, so local skill edits take effect on the next session start. See [AGENTS.md](AGENTS.md) for full conventions, glossary, and release flow.
 
 ### Golden Output Harness
 
