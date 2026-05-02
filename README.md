@@ -81,12 +81,8 @@ This adds the `/ppl` slash command for browsing and installing CLIs from the pub
 ## Quick start
 
 ```bash
-/printing-press HubSpot                              # From the catalog (19 APIs ready)
-/printing-press --spec ./openapi.yaml                # From a local spec
-/printing-press --har ./capture.har --name ESPN      # From captured browser traffic
-/printing-press https://postman.com/explore          # From a URL (auto-detects intent)
-/printing-press HubSpot codex                        # Codex mode - 60% fewer Opus tokens
-/printing-press emboss notion                        # Second pass: improve an existing CLI
+/printing-press Notion                               # Print a CLI for an API by name
+/printing-press https://postman.com/explore         # ...or point it at a website (no spec needed)
 ```
 
 `/printing-press` is the slash command from the Claude Code plugin. It drives the `printing-press` binary you installed — research, generation, scoring, and shipcheck all run through the binary. Two parts, one workflow.
