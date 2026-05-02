@@ -27,7 +27,7 @@ The Printing Press has two parts, and you need both:
 
 The plugin alone has nothing to call; the binary alone works but skips the curated agent loop.
 
-**Prerequisites:** [Go 1.22+](https://go.dev/dl/) and [Claude Code](https://claude.ai/code).
+**Prerequisites:** [Go 1.26+](https://go.dev/dl/) and [Claude Code](https://claude.ai/code).
 
 ### 1. Install the binary
 
@@ -471,7 +471,7 @@ After the public launch, the plain command works for everyone.
 
 ## Limitations
 
-- **Requires Go 1.22+ and Claude Code.** No standalone distribution today; the slash command is the supported entry point.
+- **Requires Go 1.26+ and Claude Code.** No standalone distribution today; the slash command is the supported entry point.
 - **Generated CLIs are domain-shaped, not vendor-replacements.** A `<api>-pp-cli` covers the agent power-user surface, not every back-office knob a vendor's official CLI ships.
 - **Browser-sniff requires manual capture.** You point a browser at the site (or import a HAR); the press doesn't crawl autonomously.
 - **Live verify is read-only.** Phase 5 runs GET only and never mutates. Real write-path coverage lives in unit tests and the dogfood structural checks.
