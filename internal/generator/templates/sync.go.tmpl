@@ -6,6 +6,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -618,12 +619,16 @@ func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessa
 func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorParam string) (string, bool) {
 	var hasMore bool
 
+	nextCursor := nextCursorFromLinks(envelope, cursorParam)
+
 	// Try common cursor field names
 	cursorKeys := []string{
 		"next_cursor", "nextCursor", "cursor", "next_page_token",
 		"nextPageToken", "page_token", "after", "end_cursor", "endCursor",
 	}
-	nextCursor := findCursorInMap(envelope, cursorKeys)
+	if nextCursor == "" {
+		nextCursor = findCursorInMap(envelope, cursorKeys)
+	}
 
 	// If no top-level cursor was found, look one level deeper into well-known
 	// pagination wrapper objects. Slack returns {"messages":[...],
@@ -665,6 +670,65 @@ func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorPa
 	}
 
 	return nextCursor, hasMore
+}
+
+// nextCursorFromLinks extracts JSON:API-style pagination cursors from
+// {"links":{"next":"https://example.com/items?page[cursor]=..."}}.
+func nextCursorFromLinks(envelope map[string]json.RawMessage, cursorParam string) string {
+	rawLinks, ok := envelope["links"]
+	if !ok {
+		return ""
+	}
+	var links map[string]json.RawMessage
+	if json.Unmarshal(rawLinks, &links) != nil {
+		return ""
+	}
+	rawNext, ok := links["next"]
+	if !ok {
+		return ""
+	}
+	var nextURL string
+	if json.Unmarshal(rawNext, &nextURL) != nil || nextURL == "" {
+		return ""
+	}
+
+	cursorKeys := []string{cursorParam}
+	if cursorParam != "page[cursor]" {
+		cursorKeys = append(cursorKeys, "page[cursor]")
+	}
+	if cursorParam != "cursor" {
+		cursorKeys = append(cursorKeys, "cursor")
+	}
+	if cursorParam != "after" {
+		cursorKeys = append(cursorKeys, "after")
+	}
+
+	if parsed, err := url.Parse(nextURL); err == nil {
+		values := parsed.Query()
+		for _, key := range cursorKeys {
+			if key == "" {
+				continue
+			}
+			if cursor := values.Get(key); cursor != "" {
+				return cursor
+			}
+		}
+	}
+
+	if idx := strings.Index(nextURL, "?"); idx >= 0 && idx+1 < len(nextURL) {
+		if values, err := url.ParseQuery(nextURL[idx+1:]); err == nil {
+			for _, key := range cursorKeys {
+				if key == "" {
+					continue
+				}
+				if cursor := values.Get(key); cursor != "" {
+					return cursor
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
 // findCursorInMap returns the first non-empty string-typed value in m

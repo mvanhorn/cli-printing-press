@@ -17,6 +17,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-proxy-routes` | `info` | `APISpec.ProxyRoutes` | No |
 | `x-auth-type` | `components.securitySchemes.<name>` | `APISpec.Auth.Type` | No |
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
+| `x-prefix` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
 | `x-auth-cookie-domain` | `components.securitySchemes.<name>` | `APISpec.Auth.CookieDomain` | No |
 | `x-auth-cookies` | `components.securitySchemes.<name>` | `APISpec.Auth.Cookies` | No |
 | `x-resource-id` | path item | `Endpoint.IDField` | No |
@@ -149,6 +150,32 @@ Rules:
 - Optional.
 - Only read when `x-auth-type: composed`.
 - Must be a string.
+
+### `x-prefix`
+
+Declares a literal token prefix for header API key schemes.
+
+Parsed field: `APISpec.Auth.Format`
+
+Rules:
+- Optional.
+- Only read for OpenAPI `apiKey` security schemes with `in: header`.
+- Must be a string.
+- Leading and trailing whitespace is trimmed.
+- When present, the parser stores `"<prefix> {token}"` in `Auth.Format`.
+- Ignored for query API keys and non-API-key auth schemes.
+
+Example:
+
+```yaml
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-prefix: Klaviyo-API-Key
+```
 
 ### `x-auth-cookie-domain`
 

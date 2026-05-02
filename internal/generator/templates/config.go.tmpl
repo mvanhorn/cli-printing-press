@@ -129,9 +129,14 @@ func (c *Config) AuthHeader() string {
 {{- end}}
 	{{- if .Auth.Format}}
 	replacements := map[string]string{
+		"token": token,
 	{{- range .Auth.EnvVars}}
+	{{- if ne (envVarPlaceholder .) "token"}}
 		"{{envVarPlaceholder .}}": c.{{resolveEnvVarField .}},
+	{{- end}}
+	{{- if ne . "token"}}
 		"{{.}}": c.{{resolveEnvVarField .}},
+	{{- end}}
 	{{- end}}
 	}
 	return applyAuthFormat("{{.Auth.Format}}", replacements)

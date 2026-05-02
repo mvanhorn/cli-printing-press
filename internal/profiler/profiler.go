@@ -613,6 +613,7 @@ func hasRequiredScopeParams(endpoint spec.Endpoint) bool {
 	paginationParams := map[string]bool{
 		"limit": true, "per_page": true, "page_size": true, "pageSize": true, "first": true, "count": true, "max_results": true,
 		"after": true, "cursor": true, "page_token": true, "offset": true, "page": true, "before": true, "starting_after": true,
+		"page[cursor]": true, "page[size]": true,
 		"since": true, "updated_after": true, "modified_since": true, "since_id": true,
 		"key": true, "format": true, // auth and format params, not scope
 	}

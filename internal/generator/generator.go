@@ -2277,7 +2277,7 @@ func isCursorParam(name string) bool {
 	switch lower {
 	case "cursor", "min_cursor", "max_cursor", "next_cursor",
 		"page", "page_token", "next_page_token",
-		"min_time", "max_time", "offset":
+		"page[cursor]", "min_time", "max_time", "offset":
 		return true
 	}
 	return false

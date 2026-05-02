@@ -61,6 +61,38 @@ func TestParseJSONAPI_FlattensAttributes(t *testing.T) {
 	assert.NotContains(t, fieldNames, "attributes", "envelope wrapper `attributes` must not survive flattening")
 }
 
+func TestParseJSONAPI_DetectsBracketedCursorPagination(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "jsonapi-petstore.yaml"))
+	require.NoError(t, err)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	pets := parsed.Resources["pets"]
+	list := pets.Endpoints["list"]
+	require.NotNil(t, list.Pagination, "list endpoint must detect JSON:API page[cursor] pagination")
+	assert.Equal(t, "cursor", list.Pagination.Type)
+	assert.Equal(t, "page[cursor]", list.Pagination.CursorParam)
+	assert.Equal(t, "page[size]", list.Pagination.LimitParam)
+}
+
+func TestParseJSONAPI_MapsAPIKeyPrefixExtension(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "jsonapi-petstore.yaml"))
+	require.NoError(t, err)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, "Authorization", parsed.Auth.Header)
+	assert.Equal(t, "header", parsed.Auth.In)
+	assert.Equal(t, "Token-Prefix {token}", parsed.Auth.Format)
+}
+
 // TestParseJSONAPI_LeavesNonJSONAPISpecsAlone confirms the flattening is
 // gated. Existing OpenAPI fixtures (Stripe shape, HubSpot shape) must
 // produce byte-identical TypeDefs to before. petstore.yaml uses a flat

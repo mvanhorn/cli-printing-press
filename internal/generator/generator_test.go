@@ -566,6 +566,59 @@ func TestGeneratedOutput_READMEBearerTokenMCPSetup(t *testing.T) {
 	assert.NotContains(t, content, "bearer-pp-cli auth login\n\nclaude mcp add bearer bearer-pp-mcp")
 }
 
+func TestGenerateAPIKeyAuthFormatSupportsTokenPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "prefix",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			In:      "header",
+			Header:  "Authorization",
+			Format:  "Klaviyo-API-Key {token}",
+			EnvVars: []string{"PREFIX_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/prefix-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/items",
+						Description: "List items",
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	const inlineTest = `package config
+
+import "testing"
+
+func TestAPIKeyFormatTokenPlaceholder(t *testing.T) {
+	cfg := &Config{PrefixApiKey: "secret"}
+	if got := cfg.AuthHeader(); got != "Klaviyo-API-Key secret" {
+		t.Fatalf("AuthHeader() = %q, want %q", got, "Klaviyo-API-Key secret")
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "config", "auth_format_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/config")
+}
+
 func countFiles(t *testing.T, root string) int {
 	t.Helper()
 
@@ -1547,6 +1600,8 @@ func TestSyncExtractPaginationNestedCursor(t *testing.T) {
 	// Tier 1: emission canary. The wrapper-key recursion must ship.
 	assert.Contains(t, src, "paginationWrapperKeys",
 		"sync.go must declare paginationWrapperKeys for nested-cursor support")
+	assert.Contains(t, src, "nextCursorFromLinks",
+		"sync.go must parse JSON:API links.next cursors")
 	assert.Contains(t, src, `"response_metadata"`,
 		"paginationWrapperKeys must include response_metadata (Slack's envelope)")
 	assert.Contains(t, src, `"pagination"`,
@@ -1593,6 +1648,41 @@ func TestExtractPageItemsMongoPaginationEnvelope(t *testing.T) {
 	}
 	if !hasMore {
 		t.Fatalf("want hasMore=true when nested cursor is present")
+	}
+}
+
+func TestExtractPageItemsJSONAPILinksNext(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"data": [{"id":"pet_1"},{"id":"pet_2"}],
+		"links": {
+			"next": "https://api.example.com/pets?page%5Bcursor%5D=opaque-cursor&page%5Bsize%5D=2"
+		}
+	}` + "`" + `)
+	items, cursor, hasMore := extractPageItems(json.RawMessage(body), "page[cursor]")
+	if len(items) != 2 {
+		t.Fatalf("want 2 items, got %d", len(items))
+	}
+	if cursor != "opaque-cursor" {
+		t.Fatalf("want cursor opaque-cursor, got %q", cursor)
+	}
+	if !hasMore {
+		t.Fatalf("want hasMore=true when links.next cursor is present")
+	}
+}
+
+func TestExtractPageItemsJSONAPILinksNextUnencodedBrackets(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"data": [{"id":"pet_1"}],
+		"links": {
+			"next": "https://api.example.com/pets?page[cursor]=raw-brackets"
+		}
+	}` + "`" + `)
+	_, cursor, hasMore := extractPageItems(json.RawMessage(body), "page[cursor]")
+	if cursor != "raw-brackets" {
+		t.Fatalf("want cursor raw-brackets, got %q", cursor)
+	}
+	if !hasMore {
+		t.Fatalf("want hasMore=true when links.next cursor is present")
 	}
 }
 

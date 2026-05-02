@@ -385,8 +385,17 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 				break
 			}
 		}
+		if auth.Type == "api_key" && strings.EqualFold(auth.In, "header") {
+			if xPrefix, ok := scheme.Extensions["x-prefix"]; ok {
+				if prefix, ok := xPrefix.(string); ok {
+					if prefix = strings.TrimSpace(prefix); prefix != "" {
+						auth.Format = prefix + " {token}"
+					}
+				}
+			}
+		}
 		// Detect bot token pattern from scheme name (e.g. "BotToken")
-		if strings.Contains(strings.ToLower(schemeName), "bot") && strings.EqualFold(auth.Header, "Authorization") {
+		if auth.Format == "" && strings.Contains(strings.ToLower(schemeName), "bot") && strings.EqualFold(auth.Header, "Authorization") {
 			auth.Format = "Bot {bot_token}"
 		}
 	case "oauth2":
@@ -3235,7 +3244,7 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	var pag spec.Pagination
 
 	// Detect limit param
-	for _, name := range []string{"limit", "maxresults", "pagesize", "page_size", "max_results", "per_page"} {
+	for _, name := range []string{"limit", "maxresults", "pagesize", "page_size", "max_results", "per_page", "page[size]"} {
 		if _, ok := paramNames[name]; ok {
 			pag.LimitParam = name
 			break
@@ -3252,7 +3261,7 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 		}
 	}
 	if pag.Type == "" {
-		for _, name := range []string{"after", "cursor"} {
+		for _, name := range []string{"after", "cursor", "page[cursor]"} {
 			if _, ok := paramNames[name]; ok {
 				pag.CursorParam = name
 				pag.Type = "cursor"
