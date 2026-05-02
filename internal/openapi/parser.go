@@ -2884,9 +2884,8 @@ func toKebabCaseInternal(input string, foldASCII bool) string {
 	return strings.Trim(b.String(), "-")
 }
 
-// specNameNoiseWords names tokens stripped during slug derivation. Shared by
-// the ASCII slug path (cleanSpecName) and the Unicode-preserving display-name
-// path (cleanSpecNameUnicode) so adding a new noise word affects both.
+// specNameNoiseWords are tokens stripped during slug derivation. Shared
+// across both fold variants so adding a word affects slug and display_name.
 var specNameNoiseWords = map[string]struct{}{
 	"swagger":       {},
 	"openapi":       {},
@@ -2914,12 +2913,8 @@ func cleanSpecName(title string) string {
 	return cleanSpecNameInternal(title, true)
 }
 
-// cleanSpecNameUnicode mirrors cleanSpecName's noise-word and version-token
-// stripping but skips the Unicode-to-ASCII fold. Used to derive display_name
-// from info.title when the spec has no x-display-name extension — the slug
-// path still folds ("Café Bistro API" → "cafe-bistro" for filesystem and
-// shell safety), while this path keeps accents intact ("café-bistro") so
-// HumanName produces "Café Bistro" rather than "Cafe Bistro".
+// cleanSpecNameUnicode is cleanSpecName without the ASCII fold, so display_name
+// keeps accents the slug must drop for filesystem and shell safety.
 func cleanSpecNameUnicode(title string) string {
 	return cleanSpecNameInternal(title, false)
 }
@@ -2962,9 +2957,8 @@ func cleanSpecNameInternal(title string, foldASCII bool) string {
 
 	filtered := make([]string, 0, len(tokens))
 	for _, token := range tokens {
-		// Compare against an ASCII-folded form so accented variants like
-		// "ApÍ" still match the noise-word filter even when foldASCII is
-		// false; the original token text is what gets kept.
+		// The noise list is ASCII; fold for the membership check so accented
+		// variants still match, but keep the original token in the output.
 		compare := token
 		if !foldASCII {
 			compare = naming.ASCIIFold(token)
