@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.6.1](https://github.com/mvanhorn/cli-printing-press/compare/v3.6.0...v3.6.1) (2026-05-02)
+
+
+### Bug Fixes
+
+* **cli:** OpenAPI parser walks per-operation servers as fallback ([#511](https://github.com/mvanhorn/cli-printing-press/issues/511)) ([702f54a](https://github.com/mvanhorn/cli-printing-press/commit/702f54a1455919be3516a104266f30ea3216fd60))
+
 ## [3.6.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.5.0...v3.6.0) (2026-05-02)
 
 
