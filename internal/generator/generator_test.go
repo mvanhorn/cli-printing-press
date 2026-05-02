@@ -3456,6 +3456,7 @@ func TestGenerateWhichFallsBackToCommandTree(t *testing.T) {
 	assert.Contains(t, whichSrc, `Command: "products list"`)
 	assert.Contains(t, whichSrc, `Description: "List products"`)
 	assert.Contains(t, whichSrc, `Command: "products reviews list"`)
+	assert.Contains(t, whichSrc, `"pp:typed-exit-codes": "0,2"`)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	binaryPath := filepath.Join(outputDir, "whichfallback-pp-cli")

@@ -16,11 +16,11 @@ import (
 func discoverCommands(dir string, binaryPath string) []discoveredCommand {
 	if binaryPath != "" {
 		if cmds := discoverCommandsFromHelp(binaryPath); len(cmds) > 0 {
-			return cmds
+			return enrichCommandAnnotationsFromSource(dir, cmds)
 		}
 	}
 
-	return discoverCommandsFromSource(dir)
+	return enrichCommandAnnotationsFromSource(dir, discoverCommandsFromSource(dir))
 }
 
 func discoverCommandsFromHelp(binaryPath string) []discoveredCommand {
@@ -107,9 +107,10 @@ func discoverCommandsFromSource(dir string) []discoveredCommand {
 }
 
 type discoveredCommand struct {
-	Name string
-	Kind string // read, write, local, data-layer
-	Args []string
+	Name        string
+	Kind        string // read, write, local, data-layer
+	Args        []string
+	Annotations map[string]string
 }
 
 // inferPositionalArgs runs `<binary> <cmd> --help`, parses the Usage line for

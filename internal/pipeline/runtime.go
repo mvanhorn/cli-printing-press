@@ -311,7 +311,9 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	}
 
 	// Test 1: --help
-	result.Help = runCLI(binary, []string{cmd.Name, "--help"}, env, 10*time.Second) == nil
+	helpOutput, helpErr := runCLIWithOutput(binary, []string{cmd.Name, "--help"}, env, 10*time.Second)
+	result.Help = helpErr == nil
+	typedCodes := typedSuccessCodes(cmd, string(helpOutput))
 
 	// Get any required flags/args for this command.
 	// First, probe the binary for cobra-declared required flags (generic, spec-agnostic).
@@ -334,7 +336,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	if cmd.Kind != "local" && cmd.Kind != "data-layer" {
 		args := buildTestArgs(cmd.Name, cmd.Args, extraFlags, "--dry-run")
 		err := runCLI(binary, args, env, 10*time.Second)
-		result.DryRun = err == nil || isIntentionalStubExit(err)
+		result.DryRun = err == nil || isIntentionalStubExit(err) || isDocumentedSuccessExit(err, typedCodes)
 	} else {
 		result.DryRun = true // skip = pass
 	}
@@ -347,7 +349,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	} else {
 		args := buildTestArgs(cmd.Name, cmd.Args, extraFlags, "--json")
 		err := runCLI(binary, args, env, 15*time.Second)
-		result.Execute = err == nil || isIntentionalStubExit(err)
+		result.Execute = err == nil || isIntentionalStubExit(err) || isDocumentedSuccessExit(err, typedCodes)
 	}
 
 	// Score

@@ -66,6 +66,16 @@ When adding a generator template that emits a novel command whose only effect is
 
 Wrong annotations are worse than missing ones: the host trusts the claim and stops asking. A `readOnlyHint: true` on a mutating tool is a real bug; a missing annotation is just a permission prompt.
 
+### Typed exit-code verification
+
+`printing-press verify` treats exit `0` as success by default. For commands where a non-zero code is an intentional, non-error control-flow result (for example, "no confident match"), declare that contract in the Cobra command:
+
+```go
+Annotations: map[string]string{"pp:typed-exit-codes": "0,2"},
+```
+
+The verifier reads this annotation first, then falls back to parsing a command-level `Exit codes:` help block when the annotation is absent. Do **not** put the whole global failure palette (`3` not found, `4` auth, `5` API error, etc.) in a command-level `Exit codes:` block unless those codes should count as a verify pass for that specific command. General troubleshooting exit-code docs belong in README/SKILL prose, not command help.
+
 ## Build, Test & Lint
 
 ```bash

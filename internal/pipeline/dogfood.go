@@ -1734,18 +1734,6 @@ func runDogfoodCmd(binary string, timeout time.Duration, args ...string) (string
 // continuation of the Examples block — losing-by-default is safer than
 // misclassifying real example content as a section boundary.
 func extractExamplesSection(helpOutput string) string {
-	// Canonical Cobra section header set. Match on the trimmed line being
-	// exactly equal to one of these (case-sensitive — Cobra's emission is).
-	cobraSectionHeaders := map[string]struct{}{
-		"Usage:":                  {},
-		"Aliases:":                {},
-		"Available Commands:":     {},
-		"Examples:":               {},
-		"Flags:":                  {},
-		"Global Flags:":           {},
-		"Additional help topics:": {},
-	}
-
 	lines := strings.Split(helpOutput, "\n")
 	var inExamples bool
 	var examples []string
@@ -1759,7 +1747,7 @@ func extractExamplesSection(helpOutput string) string {
 			continue
 		}
 		// Section boundary: a known Cobra section header.
-		if _, ok := cobraSectionHeaders[trimmed]; ok {
+		if isCobraHelpSectionHeader(trimmed) {
 			break
 		}
 		// Cobra emits a "Use \"<root> <subcommand> [command] --help\" for

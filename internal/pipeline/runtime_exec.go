@@ -95,7 +95,7 @@ func runCLIWithOutput(binary string, args []string, env []string, timeout time.D
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return out, fmt.Errorf("exit %v: %s", err, string(out))
+		return out, fmt.Errorf("exit %w: %s", err, string(out))
 	}
 	return out, nil
 }

@@ -591,6 +591,144 @@ func TestIsIntentionalStubExit(t *testing.T) {
 	assert.False(t, isIntentionalStubExit(nil))
 }
 
+func TestParseExitCodesFromHelp(t *testing.T) {
+	tests := []struct {
+		name string
+		help string
+		want map[int]bool
+		ok   bool
+	}{
+		{
+			name: "command help block",
+			help: `Resolve capabilities.
+
+Exit codes:
+  0  at least one match found
+  2  no confident match - fall back to help
+
+Flags:
+  -h, --help   help for which`,
+			want: map[int]bool{0: true, 2: true},
+			ok:   true,
+		},
+		{
+			name: "next section without blank",
+			help: `Resolve capabilities.
+
+Exit codes:
+  0  at least one match found
+  2  no confident match
+Examples:
+  cli which search`,
+			want: map[int]bool{0: true, 2: true},
+			ok:   true,
+		},
+		{
+			name: "malformed block",
+			help: `Resolve capabilities.
+
+Exit codes:
+success only`,
+			want: nil,
+			ok:   false,
+		},
+		{
+			name: "no block",
+			help: `Resolve capabilities.
+
+Flags:
+  -h, --help   help for which`,
+			want: nil,
+			ok:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseExitCodesFromHelp(tt.help)
+			assert.Equal(t, tt.ok, ok)
+			if tt.ok {
+				assert.Equal(t, tt.want, got)
+			}
+		})
+	}
+}
+
+func TestParseTypedExitCodesAnnotation(t *testing.T) {
+	got, ok := parseTypedExitCodesAnnotation("0,2")
+	assert.True(t, ok)
+	assert.Equal(t, map[int]bool{0: true, 2: true}, got)
+
+	got, ok = parseTypedExitCodesAnnotation("0, 2, 3")
+	assert.True(t, ok)
+	assert.Equal(t, map[int]bool{0: true, 2: true, 3: true}, got)
+
+	_, ok = parseTypedExitCodesAnnotation("")
+	assert.False(t, ok)
+	_, ok = parseTypedExitCodesAnnotation("abc")
+	assert.False(t, ok)
+	_, ok = parseTypedExitCodesAnnotation("-1")
+	assert.False(t, ok)
+}
+
+func TestTypedSuccessCodesAnnotationWinsOverHelp(t *testing.T) {
+	cmd := discoveredCommand{
+		Name: "which",
+		Annotations: map[string]string{
+			typedExitCodesAnnotation: "0,2",
+		},
+	}
+	help := `Exit codes:
+  0  success
+  3  not found`
+
+	assert.Equal(t, map[int]bool{0: true, 2: true}, typedSuccessCodes(cmd, help))
+}
+
+func TestTypedSuccessCodesMalformedAnnotationFallsBackToHelp(t *testing.T) {
+	cmd := discoveredCommand{
+		Name: "which",
+		Annotations: map[string]string{
+			typedExitCodesAnnotation: "0,nope",
+		},
+	}
+	help := `Exit codes:
+  0  success
+  2  no confident match`
+
+	assert.Equal(t, map[int]bool{0: true, 2: true}, typedSuccessCodes(cmd, help))
+}
+
+func TestIsDocumentedSuccessExit(t *testing.T) {
+	err := exec.Command("sh", "-c", "exit 2").Run()
+	require.Error(t, err)
+
+	wrapped := fmt.Errorf("exit %w: no confident match", err)
+	assert.True(t, isDocumentedSuccessExit(wrapped, map[int]bool{0: true, 2: true}))
+	assert.False(t, isDocumentedSuccessExit(wrapped, map[int]bool{0: true}))
+	assert.False(t, isDocumentedSuccessExit(nil, map[int]bool{0: true, 2: true}))
+}
+
+func TestEnrichCommandAnnotationsFromSource(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "which.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+func newWhichCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "which [query]",
+		Annotations: map[string]string{"pp:typed-exit-codes": "0,2"},
+	}
+}
+`)
+
+	commands := enrichCommandAnnotationsFromSource(dir, []discoveredCommand{{Name: "which"}})
+	require.Len(t, commands, 1)
+	assert.Equal(t, "0,2", commands[0].Annotations[typedExitCodesAnnotation])
+}
+
 func TestSyntheticFlagValue(t *testing.T) {
 	tests := []struct {
 		name     string
