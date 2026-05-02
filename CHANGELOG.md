@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.4.1](https://github.com/mvanhorn/cli-printing-press/compare/v3.4.0...v3.4.1) (2026-05-02)
+
+
+### Bug Fixes
+
+* **cli:** normalize lock name so slug and binary form share lock file ([#493](https://github.com/mvanhorn/cli-printing-press/issues/493)) ([820ba7b](https://github.com/mvanhorn/cli-printing-press/commit/820ba7b1fb543ee9b8c663c3f39b5a7f284822db))
+* **cli:** preserve Unicode in OpenAPI display_name ([#492](https://github.com/mvanhorn/cli-printing-press/issues/492)) ([67597db](https://github.com/mvanhorn/cli-printing-press/commit/67597dbb1a795ac19b5643f7cf06b266cc48ef28))
+
 ## [3.4.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.3.0...v3.4.0) (2026-05-02)
 
 
