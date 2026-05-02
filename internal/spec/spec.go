@@ -948,7 +948,9 @@ func (s *APISpec) expandOperations() {
 		if r.Endpoints == nil {
 			r.Endpoints = make(map[string]Endpoint)
 		}
-		idParam := singularize(name) + "Id"
+		singularName := singularize(name)
+		idParam := singularName + "Id"
+		idPath := r.Path + "/{" + idParam + "}"
 		for _, op := range r.Operations {
 			// Skip if an explicit endpoint already exists with this name
 			if _, exists := r.Endpoints[op]; exists {
@@ -965,47 +967,29 @@ func (s *APISpec) expandOperations() {
 			case "get":
 				r.Endpoints["get"] = Endpoint{
 					Method:      "GET",
-					Path:        r.Path + "/{" + idParam + "}",
-					Description: "Get a " + singularize(name) + " by ID",
-					Params: []Param{{
-						Name:        idParam,
-						Type:        "string",
-						Required:    true,
-						Positional:  true,
-						Description: singularize(name) + " ID",
-					}},
+					Path:        idPath,
+					Description: "Get a " + singularName + " by ID",
+					Params:      operationIDParams(idParam, singularName),
 				}
 			case "create":
 				r.Endpoints["create"] = Endpoint{
 					Method:      "POST",
 					Path:        r.Path,
-					Description: "Create a new " + singularize(name),
+					Description: "Create a new " + singularName,
 				}
 			case "update":
 				r.Endpoints["update"] = Endpoint{
 					Method:      "PATCH",
-					Path:        r.Path + "/{" + idParam + "}",
-					Description: "Update a " + singularize(name),
-					Params: []Param{{
-						Name:        idParam,
-						Type:        "string",
-						Required:    true,
-						Positional:  true,
-						Description: singularize(name) + " ID",
-					}},
+					Path:        idPath,
+					Description: "Update a " + singularName,
+					Params:      operationIDParams(idParam, singularName),
 				}
 			case "delete":
 				r.Endpoints["delete"] = Endpoint{
 					Method:      "DELETE",
-					Path:        r.Path + "/{" + idParam + "}",
-					Description: "Delete a " + singularize(name),
-					Params: []Param{{
-						Name:        idParam,
-						Type:        "string",
-						Required:    true,
-						Positional:  true,
-						Description: singularize(name) + " ID",
-					}},
+					Path:        idPath,
+					Description: "Delete a " + singularName,
+					Params:      operationIDParams(idParam, singularName),
 				}
 			case "search":
 				r.Endpoints["search"] = Endpoint{
@@ -1023,6 +1007,16 @@ func (s *APISpec) expandOperations() {
 		}
 		s.Resources[name] = r
 	}
+}
+
+func operationIDParams(idParam, singularName string) []Param {
+	return []Param{{
+		Name:        idParam,
+		Type:        "string",
+		Required:    true,
+		Positional:  true,
+		Description: singularName + " ID",
+	}}
 }
 
 // singularize returns a simple singular form of a plural noun.
