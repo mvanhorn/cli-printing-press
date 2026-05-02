@@ -339,7 +339,7 @@ func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
 			stderr := stderrCap.String()
-			if isGracefulEmptyResponse(exitErr.ExitCode(), stderr, args) {
+			if isGracefulEmptyResponse(stderr, args) {
 				// CLI exited non-zero gracefully on "no record matches this
 				// input" — that's the CORRECT behavior for an unknown slug
 				// (research.json's LLM-authored example slugs decay over
@@ -643,42 +643,30 @@ var gracefulEmptyPhrases = []string{
 // the CLI gracefully handled an "input maps to no record" case rather than
 // hit an actual bug. Two conditions must both hold:
 //
-//  1. stderr contains one of gracefulEmptyPhrases (the CLI is reporting an
-//     empty-result outcome, not a generic failure).
-//  2. stderr echoes at least one of the user-supplied positional args. This
-//     filters out generic failures (auth, config, network) that happen to
-//     contain "not found" but don't reference the user's input — a config
-//     error keeps failing; a "post not found: my-launch-slug" passes.
+//  1. stderr contains one of gracefulEmptyPhrases.
+//  2. stderr echoes at least one of the user-supplied positional args
+//     (≥ 3 chars). This is the key boundary — it filters out generic
+//     failures like "config file not found" or "authentication required"
+//     that happen to contain a graceful phrase but don't reference user
+//     input. Flag values written as "--key value" count as positional
+//     candidates because a CLI echoing a flag's value (e.g. --query notion
+//     → "no match for query: notion") is still strong evidence that user
+//     input was processed.
 //
-// The second condition is the key boundary. Without it, "config file not
-// found" would silently mask broken auth across the library. With it, the
-// signal is "the CLI processed the user's input and reported nothing
-// matched" — exactly the contract a content-rotating API CLI should honor
-// when research.json's LLM-authored example slug decays. See issue #484.
-//
-// Defensive: returns false on exit 0. Callers shouldn't invoke for a
-// successful exit, but the early-out keeps the contract obvious.
-func isGracefulEmptyResponse(exitCode int, stderr string, args []string) bool {
-	if exitCode == 0 {
-		return false
-	}
+// Caller contract: invoke only on non-zero exits. See issue #484.
+func isGracefulEmptyResponse(stderr string, args []string) bool {
 	lower := strings.ToLower(stderr)
-	matched := false
-	for _, phrase := range gracefulEmptyPhrases {
-		if strings.Contains(lower, phrase) {
-			matched = true
-			break
-		}
-	}
-	if !matched {
+	if !containsAnyOf(lower, gracefulEmptyPhrases) {
 		return false
 	}
-	for _, arg := range positionalCandidates(args) {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			continue
+		}
 		a := strings.ToLower(arg)
 		if len(a) < 3 {
-			// Skip short tokens to avoid coincidental substring matches
-			// (e.g., "go" appearing inside "Error: ..."). Three chars is
-			// the same threshold outputMentionsQuery uses.
+			// Skip short tokens to avoid coincidental substring matches.
+			// Three chars is the same threshold outputMentionsQuery uses.
 			continue
 		}
 		if strings.Contains(lower, a) {
@@ -688,22 +676,17 @@ func isGracefulEmptyResponse(exitCode int, stderr string, args []string) bool {
 	return false
 }
 
-// positionalCandidates returns args that don't start with "-". Boolean
-// flags and assignment-style flags (--key=value) are filtered out
-// entirely. Value flags written as "--key value" leave their value in the
-// result, which is intentional: if a CLI's "not found" message echoes a
-// flag's value (e.g. --query notion → "no match for query: notion"), that
-// is still strong evidence the CLI processed user input and found
-// nothing — which is exactly the signal we want.
-func positionalCandidates(args []string) []string {
-	out := make([]string, 0, len(args))
-	for _, a := range args {
-		if strings.HasPrefix(a, "-") {
-			continue
+// containsAnyOf reports whether any of needles is a substring of s. The
+// "any-of" suffix distinguishes this from dogfood.go's containsAny, which
+// has the inverse signature ([]string sources, string needle). Caller is
+// expected to pass a pre-lowered s when matching case-insensitively.
+func containsAnyOf(s string, needles []string) bool {
+	for _, n := range needles {
+		if strings.Contains(s, n) {
+			return true
 		}
-		out = append(out, a)
 	}
-	return out
+	return false
 }
 
 // InsightCapFromLiveCheck returns the maximum Insight score a CLI should
