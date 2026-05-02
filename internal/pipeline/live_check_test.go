@@ -602,3 +602,128 @@ func TestDetectRawHTMLEntities_TruncatesLongMatchInMessage(t *testing.T) {
 	require.NotEmpty(t, msg)
 	require.LessOrEqual(t, len(msg), 200, "warning message should stay bounded regardless of match length")
 }
+
+// TestLiveCheck_PassOnGracefulEmpty captures the producthunt #484 case: when
+// the CLI exits non-zero with stderr that says "<resource> not found: <arg>",
+// that's the CORRECT behavior for "your input maps to no record on the live
+// API" — not a CLI bug. The sampler should pass these.
+//
+// Background: research.json's novel_features[].example field is LLM-authored
+// prose. For content-rotating APIs (Product Hunt, news, trending feeds), an
+// example slug that worked at authoring time may decay or have been a
+// placeholder ("my-launch-slug"). A well-behaved CLI handles the empty case
+// gracefully; the sampler used to penalize that as a CLI failure.
+func TestLiveCheck_PassOnGracefulEmpty(t *testing.T) {
+	cases := []struct {
+		name   string
+		stderr string
+	}{
+		{"not found echoes positional arg",
+			`echo "Error: post not found: my-launch-slug" >&2; exit 1`},
+		{"no results phrase echoes arg",
+			`echo "no results for query: my-launch-slug" >&2; exit 1`},
+		{"no match phrase echoes arg",
+			`echo "no match found for: my-launch-slug" >&2; exit 1`},
+		{"no record phrase echoes arg",
+			`echo "no record matching slug=my-launch-slug" >&2; exit 1`},
+		{"no such phrase echoes arg",
+			`echo "no such post: my-launch-slug" >&2; exit 1`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeStubBinary(t, dir, "stub", tc.stderr)
+			writeTestResearchJSON(t, dir, []NovelFeature{
+				{Name: "Lookup", Command: "posts get",
+					Example: `stub posts get my-launch-slug --json`},
+			})
+			result := RunLiveCheck(LiveCheckOptions{
+				CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second,
+			})
+			require.Equal(t, 1, result.Passed, "graceful empty should count as PASS")
+			require.Equal(t, 0, result.Failed, "graceful empty must not count as FAIL")
+			require.Contains(t, result.Features[0].Reason, "graceful empty",
+				"reason should label the graceful-empty branch so reviewers know why it passed")
+		})
+	}
+}
+
+// TestLiveCheck_FailOnGenericExitErrorWithoutArgEcho preserves the original
+// fail-on-exit contract for cases where the failure isn't a graceful empty:
+// generic errors, auth failures, config issues that don't echo user input
+// must still count as CLI failures. Without this guard, the new graceful-
+// empty detection would silently mask real bugs whose stderr happens to
+// contain a phrase like "not found" (e.g., "config file not found").
+func TestLiveCheck_FailOnGenericExitErrorWithoutArgEcho(t *testing.T) {
+	cases := []struct {
+		name   string
+		stderr string
+	}{
+		{"phrase present but no arg echo",
+			`echo "config file not found" >&2; exit 1`},
+		{"no graceful phrase, no arg echo",
+			`echo "something went wrong" >&2; exit 5`},
+		{"phrase present, arg echo absent (auth failure)",
+			`echo "Error: authentication required — no token found" >&2; exit 2`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeStubBinary(t, dir, "stub", tc.stderr)
+			writeTestResearchJSON(t, dir, []NovelFeature{
+				{Name: "Lookup", Command: "posts get",
+					Example: `stub posts get my-launch-slug --json`},
+			})
+			result := RunLiveCheck(LiveCheckOptions{
+				CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second,
+			})
+			require.Equal(t, 0, result.Passed, "generic exit error must NOT pass via graceful-empty")
+			require.Equal(t, 1, result.Failed, "generic exit error should still fail")
+		})
+	}
+}
+
+// TestIsGracefulEmptyResponse exercises the helper directly across exit-code,
+// phrase, and arg-echo dimensions. Table-driven to keep the boundary explicit.
+func TestIsGracefulEmptyResponse(t *testing.T) {
+	cases := []struct {
+		name     string
+		exitCode int
+		stderr   string
+		args     []string
+		want     bool
+	}{
+		{"exit 0 is defensive — never graceful",
+			0, "post not found: my-slug", []string{"posts", "get", "my-slug"}, false},
+		{"phrase + arg echo → graceful",
+			1, "Error: post not found: my-launch-slug",
+			[]string{"posts", "get", "my-launch-slug"}, true},
+		{"phrase but no arg echo → not graceful (config error case)",
+			1, "config file not found",
+			[]string{"posts", "get", "my-launch-slug"}, false},
+		{"arg echo but no phrase → not graceful",
+			1, "Error: 500 internal server error processing my-launch-slug",
+			[]string{"posts", "get", "my-launch-slug"}, false},
+		{"no positional args → not graceful (no input to echo)",
+			1, "Error: post not found", []string{"posts", "list"}, false},
+		{"flag-only args → no positional candidates → not graceful",
+			1, "Error: post not found", []string{"--limit", "5"}, false},
+		{"no results phrase + arg echo → graceful",
+			1, "no results for cursor-ide", []string{"posts", "get", "cursor-ide"}, true},
+		{"empty stderr → not graceful",
+			1, "", []string{"posts", "get", "my-slug"}, false},
+		{"case-insensitive phrase match",
+			1, "Post NOT FOUND: my-slug", []string{"posts", "get", "my-slug"}, true},
+		{"short positional args (< 3 chars) skipped to avoid coincidence",
+			1, "no results for go", []string{"posts", "get", "go"}, false},
+		{"flag value as positional candidate is fine for arg-echo",
+			1, "no match for query: notion",
+			[]string{"posts", "search", "--query", "notion"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isGracefulEmptyResponse(tc.exitCode, tc.stderr, tc.args)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}

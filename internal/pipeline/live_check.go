@@ -338,7 +338,19 @@ func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
-			return fail(fmt.Sprintf("exit %d: %s", exitErr.ExitCode(), trimOutput(stderrCap.String())))
+			stderr := stderrCap.String()
+			if isGracefulEmptyResponse(exitErr.ExitCode(), stderr, args) {
+				// CLI exited non-zero gracefully on "no record matches this
+				// input" — that's the CORRECT behavior for an unknown slug
+				// (research.json's LLM-authored example slugs decay over
+				// time on content-rotating APIs). Don't penalize a feature
+				// that handled the empty case well. See issue #484.
+				result.Status = StatusPass
+				result.Reason = "graceful empty: " + trimOutput(stderr)
+				result.OutputSample = sampleOutput(stderr)
+				return result
+			}
+			return fail(fmt.Sprintf("exit %d: %s", exitErr.ExitCode(), trimOutput(stderr)))
 		}
 		return fail("run error: " + runErr.Error())
 	}
@@ -613,6 +625,85 @@ func trimOutput(s string) string {
 		s = s[:300] + "..."
 	}
 	return s
+}
+
+// gracefulEmptyPhrases is the closed vocabulary of stderr substrings that
+// signal "the CLI looked up the user's input and found no matching record."
+// Kept short and explicit to avoid false positives on generic error prose.
+// Lower-cased; matched case-insensitively against stderr.
+var gracefulEmptyPhrases = []string{
+	"not found",
+	"no results",
+	"no match",
+	"no record",
+	"no such",
+}
+
+// isGracefulEmptyResponse reports whether a non-zero exit + stderr indicates
+// the CLI gracefully handled an "input maps to no record" case rather than
+// hit an actual bug. Two conditions must both hold:
+//
+//  1. stderr contains one of gracefulEmptyPhrases (the CLI is reporting an
+//     empty-result outcome, not a generic failure).
+//  2. stderr echoes at least one of the user-supplied positional args. This
+//     filters out generic failures (auth, config, network) that happen to
+//     contain "not found" but don't reference the user's input — a config
+//     error keeps failing; a "post not found: my-launch-slug" passes.
+//
+// The second condition is the key boundary. Without it, "config file not
+// found" would silently mask broken auth across the library. With it, the
+// signal is "the CLI processed the user's input and reported nothing
+// matched" — exactly the contract a content-rotating API CLI should honor
+// when research.json's LLM-authored example slug decays. See issue #484.
+//
+// Defensive: returns false on exit 0. Callers shouldn't invoke for a
+// successful exit, but the early-out keeps the contract obvious.
+func isGracefulEmptyResponse(exitCode int, stderr string, args []string) bool {
+	if exitCode == 0 {
+		return false
+	}
+	lower := strings.ToLower(stderr)
+	matched := false
+	for _, phrase := range gracefulEmptyPhrases {
+		if strings.Contains(lower, phrase) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false
+	}
+	for _, arg := range positionalCandidates(args) {
+		a := strings.ToLower(arg)
+		if len(a) < 3 {
+			// Skip short tokens to avoid coincidental substring matches
+			// (e.g., "go" appearing inside "Error: ..."). Three chars is
+			// the same threshold outputMentionsQuery uses.
+			continue
+		}
+		if strings.Contains(lower, a) {
+			return true
+		}
+	}
+	return false
+}
+
+// positionalCandidates returns args that don't start with "-". Boolean
+// flags and assignment-style flags (--key=value) are filtered out
+// entirely. Value flags written as "--key value" leave their value in the
+// result, which is intentional: if a CLI's "not found" message echoes a
+// flag's value (e.g. --query notion → "no match for query: notion"), that
+// is still strong evidence the CLI processed user input and found
+// nothing — which is exactly the signal we want.
+func positionalCandidates(args []string) []string {
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 // InsightCapFromLiveCheck returns the maximum Insight score a CLI should
