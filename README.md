@@ -546,7 +546,7 @@ The generated-CLI golden uses `testdata/golden/fixtures/golden-api.yaml`, a purp
 ## Credits
 
 - Peter Steinberger ([@steipete](https://github.com/steipete)). [discrawl](https://github.com/steipete/discrawl) and [gogcli](https://github.com/steipete/gogcli) set the bar. The quality scoring system is inspired by his work; discrawl's sync architecture directly influenced the printing press templates.
-- Trevin Chow ([@trevin](https://x.com/trevin)). [7 Principles for Agent-Friendly CLIs](https://x.com/trevin/status/2037250000821059933) shaped the agent-first template design. Co-builder shipping PRs daily.
+- Trevin Chow ([@trevin](https://x.com/trevin)). [10 Principles for Agent Native CLIs](https://trevinsays.com/p/10-principles-for-agent-native-clis) shaped the agent-first template design. Co-creator shipping PRs daily.
 - Ramp ([@tryramp](https://github.com/ramp-public/ramp-cli)). Their agent-first CLI inspired auto-JSON piping, --no-input, and --compact output.
 - The community filers and contributors whose issues and PRs nudged the catalog forward.
 
