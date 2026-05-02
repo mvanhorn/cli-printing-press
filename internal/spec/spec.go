@@ -637,8 +637,14 @@ type Param struct {
 }
 
 type ResponseDef struct {
-	Type string `yaml:"type" json:"type"` // object, array
-	Item string `yaml:"item" json:"item"` // type name
+	Type          string                 `yaml:"type" json:"type"` // object, array
+	Item          string                 `yaml:"item" json:"item"` // type name
+	Discriminator *ResponseDiscriminator `yaml:"discriminator,omitempty" json:"discriminator,omitempty"`
+}
+
+type ResponseDiscriminator struct {
+	Field   string            `yaml:"field" json:"field"`
+	Mapping map[string]string `yaml:"mapping,omitempty" json:"mapping,omitempty"` // discriminator value -> schema/resource name
 }
 
 type Pagination struct {
@@ -654,8 +660,9 @@ type TypeDef struct {
 }
 
 type TypeField struct {
-	Name string `yaml:"name" json:"name"`
-	Type string `yaml:"type" json:"type"`
+	Name string   `yaml:"name" json:"name"`
+	Type string   `yaml:"type" json:"type"`
+	Enum []string `yaml:"enum,omitempty" json:"enum,omitempty"`
 	// Selection is an optional GraphQL sub-selection rendered when this field
 	// is used in a generated GraphQL query. It lets wrapper specs keep the Go
 	// field simple (for example, totalPriceSet as json.RawMessage) while still

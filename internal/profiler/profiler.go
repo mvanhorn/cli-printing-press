@@ -54,6 +54,20 @@ type SearchBodyField struct {
 	Required bool   `json:"required"`
 }
 
+// DiscriminatorMapping routes one discriminator value to the concrete resource
+// whose typed table should receive the item.
+type DiscriminatorMapping struct {
+	Value    string
+	Resource string
+}
+
+// DiscriminatorDispatch describes a mixed response payload whose items carry a
+// discriminator field such as type/kind/__typename/objectType.
+type DiscriminatorDispatch struct {
+	Field    string
+	Mappings []DiscriminatorMapping
+}
+
 // SyncableResource describes a resource that supports list sync (paginated or single-page).
 type SyncableResource struct {
 	Name string
@@ -68,6 +82,11 @@ type SyncableResource struct {
 	// should fail the whole run even under the new (non-strict) exit-code
 	// policy. Defaults to false.
 	Critical bool
+
+	// Discriminator routes heterogeneous response items to concrete typed
+	// resources before storage. Empty when the endpoint returns a homogeneous
+	// resource.
+	Discriminator DiscriminatorDispatch
 }
 
 // DependentResource describes a child resource that requires iterating a parent
@@ -91,6 +110,10 @@ type DependentResource struct {
 	// SyncableResource.Critical so spec authors can mark child paths as
 	// load-bearing.
 	Critical bool
+
+	// Discriminator routes heterogeneous dependent-resource response items to
+	// concrete typed resources before storage.
+	Discriminator DiscriminatorDispatch
 }
 
 // APIProfile describes the shape of an API and what power-user features it warrants.
@@ -141,7 +164,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 		SearchableFields: make(map[string][]string),
 	}
 
-	resourceNames := collectResourceNames(s.Resources)
+	resourceNames, resourceNameIndex := collectResourceNameMetadata(s.Resources)
 	syncable := make(map[string]syncableMeta)      // resource name -> chosen list endpoint metadata
 	parameterized := make(map[string]syncableMeta) // resource name -> parameterized list endpoint metadata (excluded from flat sync; carries IDField/Critical for dependent-resource emission)
 	searchable := make(map[string]map[string]struct{})
@@ -277,7 +300,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 				//     like GetFriendList?steamid=REQUIRED that need a parent ID)
 				if !strings.Contains(endpoint.Path, "{") && !hasRequiredScopeParams(endpoint) {
 					if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing.Path) {
-						syncable[resourceName] = metaFromEndpoint(endpoint)
+						syncable[resourceName] = metaFromEndpoint(endpoint, s.Types, resourceNameIndex)
 					}
 				}
 
@@ -296,7 +319,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 							// Enum-expanded paths are more specific than generic resource
 							// paths, so they always win on name collision. This ensures
 							// deterministic output regardless of Go map iteration order.
-							meta := metaFromEndpoint(endpoint)
+							meta := metaFromEndpoint(endpoint, s.Types, resourceNameIndex)
 							meta.Path = expandedPath
 							syncable[expandedName] = meta
 						}
@@ -307,13 +330,13 @@ func Profile(s *spec.APISpec) *APIProfile {
 						// annotations on a child path-item flow into the override
 						// and critical-resource maps.
 						if _, ok := parameterized[resourceName]; !ok {
-							parameterized[resourceName] = metaFromEndpoint(endpoint)
+							parameterized[resourceName] = metaFromEndpoint(endpoint, s.Types, resourceNameIndex)
 						}
 					} else {
 						// Paginated endpoints override the path set above — they have
 						// richer pagination support for full data retrieval.
 						if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing.Path) {
-							syncable[resourceName] = metaFromEndpoint(endpoint)
+							syncable[resourceName] = metaFromEndpoint(endpoint, s.Types, resourceNameIndex)
 						}
 					}
 				}
@@ -324,7 +347,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 				// Only include endpoints whose name suggests a collection (list, all,
 				// index, etc.) — exclude singular getters like "get" or "show".
 				if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing.Path) {
-					syncable[resourceName] = metaFromEndpoint(endpoint)
+					syncable[resourceName] = metaFromEndpoint(endpoint, s.Types, resourceNameIndex)
 				}
 			}
 
@@ -382,7 +405,9 @@ func Profile(s *spec.APISpec) *APIProfile {
 			p.CRUDResources++
 		}
 
-		for subName, sub := range r.SubResources {
+		subNames := sortedKeys(r.SubResources)
+		for _, subName := range subNames {
+			sub := r.SubResources[subName]
 			walk(subName, sub)
 		}
 	}
@@ -772,24 +797,29 @@ func matchesResource(name string, resourceNames map[string]struct{}) bool {
 	return false
 }
 
-func collectResourceNames(resources map[string]spec.Resource) map[string]struct{} {
+func collectResourceNameMetadata(resources map[string]spec.Resource) (map[string]struct{}, map[string]string) {
 	names := make(map[string]struct{})
+	index := make(map[string]string)
 
-	var walk func(name string, r spec.Resource)
-	walk = func(name string, r spec.Resource) {
+	walkResources(resources, func(name string, _ spec.Resource) {
+		resourceName := strings.ToLower(name)
 		for _, variant := range nameVariants(name) {
 			names[variant] = struct{}{}
+			if _, ok := index[variant]; !ok {
+				index[variant] = resourceName
+			}
 		}
-		for subName, sub := range r.SubResources {
-			walk(subName, sub)
-		}
-	}
+	})
 
-	for name, resource := range resources {
-		walk(name, resource)
-	}
+	return names, index
+}
 
-	return names
+func walkResources(resources map[string]spec.Resource, visit func(name string, resource spec.Resource)) {
+	for _, name := range sortedKeys(resources) {
+		resource := resources[name]
+		visit(name, resource)
+		walkResources(resource.SubResources, visit)
+	}
 }
 
 func nameVariants(name string) []string {
@@ -931,6 +961,7 @@ func detectDependentResources(parameterized map[string]syncableMeta, syncable ma
 			Path:           path,
 			IDField:        meta.IDField,
 			Critical:       meta.Critical,
+			Discriminator:  meta.Discriminator,
 		})
 	}
 	// Sort for deterministic output
@@ -944,21 +975,118 @@ func detectDependentResources(parameterized map[string]syncableMeta, syncable ma
 // is still selecting between candidates (e.g., flat vs. paginated). It is
 // converted into a SyncableResource at the end of Profile().
 type syncableMeta struct {
-	Path     string
-	IDField  string
-	Critical bool
+	Path          string
+	IDField       string
+	Critical      bool
+	Discriminator DiscriminatorDispatch
 }
 
 // metaFromEndpoint extracts the IDField and Critical fields a parser populated
 // from path-item-level extensions (or, for IDField, from response-schema
 // inference). Keeps the per-endpoint plumbing in one place so future profiler
 // fields propagate uniformly.
-func metaFromEndpoint(e spec.Endpoint) syncableMeta {
+func metaFromEndpoint(e spec.Endpoint, types map[string]spec.TypeDef, resourceNameIndex map[string]string) syncableMeta {
 	return syncableMeta{
-		Path:     e.Path,
-		IDField:  e.IDField,
-		Critical: e.Critical,
+		Path:          e.Path,
+		IDField:       e.IDField,
+		Critical:      e.Critical,
+		Discriminator: discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
 	}
+}
+
+func discriminatorDispatchForEndpoint(endpoint spec.Endpoint, types map[string]spec.TypeDef, resourceNameIndex map[string]string) DiscriminatorDispatch {
+	if endpoint.Response.Discriminator != nil {
+		dispatch := buildDiscriminatorDispatch(endpoint.Response.Discriminator.Field, endpoint.Response.Discriminator.Mapping, resourceNameIndex)
+		if len(dispatch.Mappings) >= 2 {
+			return dispatch
+		}
+	}
+
+	typeDef, ok := lookupTypeDef(endpoint.Response.Item, types)
+	if !ok {
+		return DiscriminatorDispatch{}
+	}
+	for _, field := range typeDef.Fields {
+		if !isDiscriminatorField(field.Name) || len(field.Enum) < 2 {
+			continue
+		}
+		mapping := make(map[string]string, len(field.Enum))
+		for _, value := range field.Enum {
+			mapping[value] = value
+		}
+		dispatch := buildDiscriminatorDispatch(field.Name, mapping, resourceNameIndex)
+		if len(dispatch.Mappings) >= 2 {
+			return dispatch
+		}
+	}
+	return DiscriminatorDispatch{}
+}
+
+func lookupTypeDef(name string, types map[string]spec.TypeDef) (spec.TypeDef, bool) {
+	if name == "" || len(types) == 0 {
+		return spec.TypeDef{}, false
+	}
+	if typeDef, ok := types[name]; ok {
+		return typeDef, true
+	}
+	normalized := normalizeName(name)
+	for typeName, typeDef := range types {
+		if normalizeName(typeName) == normalized {
+			return typeDef, true
+		}
+	}
+	return spec.TypeDef{}, false
+}
+
+func isDiscriminatorField(name string) bool {
+	switch strings.ToLower(strings.ReplaceAll(name, "_", "")) {
+	case "type", "kind", "typename", "objecttype":
+		return true
+	default:
+		return false
+	}
+}
+
+func buildDiscriminatorDispatch(field string, rawMapping map[string]string, resourceNameIndex map[string]string) DiscriminatorDispatch {
+	if strings.TrimSpace(field) == "" || len(rawMapping) == 0 || len(resourceNameIndex) == 0 {
+		return DiscriminatorDispatch{}
+	}
+	values := make([]string, 0, len(rawMapping))
+	for value := range rawMapping {
+		values = append(values, value)
+	}
+	sort.Strings(values)
+
+	seenResources := make(map[string]struct{})
+	dispatch := DiscriminatorDispatch{Field: field}
+	for _, value := range values {
+		target := rawMapping[value]
+		resource, ok := resourceNameForDiscriminatorTarget(target, resourceNameIndex)
+		if !ok {
+			resource, ok = resourceNameForDiscriminatorTarget(value, resourceNameIndex)
+		}
+		if !ok {
+			continue
+		}
+		dispatch.Mappings = append(dispatch.Mappings, DiscriminatorMapping{
+			Value:    value,
+			Resource: resource,
+		})
+		seenResources[resource] = struct{}{}
+	}
+	if len(seenResources) < 2 {
+		return DiscriminatorDispatch{}
+	}
+	return dispatch
+}
+
+func resourceNameForDiscriminatorTarget(target string, resourceNameIndex map[string]string) (string, bool) {
+	for _, variant := range nameVariants(target) {
+		if resource, ok := resourceNameIndex[variant]; ok {
+			return resource, true
+		}
+	}
+	return "", false
 }
 
 // sortedSyncableResources converts the per-resource metadata map into a sorted
@@ -973,10 +1101,11 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 	for i, name := range names {
 		meta := m[name]
 		resources[i] = SyncableResource{
-			Name:     name,
-			Path:     meta.Path,
-			IDField:  meta.IDField,
-			Critical: meta.Critical,
+			Name:          name,
+			Path:          meta.Path,
+			IDField:       meta.IDField,
+			Critical:      meta.Critical,
+			Discriminator: meta.Discriminator,
 		}
 	}
 	return resources

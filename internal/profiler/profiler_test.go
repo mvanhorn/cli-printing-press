@@ -134,6 +134,52 @@ func TestProfileEnumExpansion(t *testing.T) {
 	assert.Equal(t, "/v1/api/team", syncPaths["team"])
 }
 
+func TestProfileDiscriminatorDispatchFromResponseTypeEnum(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "mixed-network",
+		Resources: map[string]spec.Resource{
+			"network_entities": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/network-entities",
+						Response:   spec.ResponseDef{Type: "array", Item: "NetworkEntity"},
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+			"workspaces":  {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/workspaces"}}},
+			"collections": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/collections"}}},
+			"teams":       {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/teams"}}},
+		},
+		Types: map[string]spec.TypeDef{
+			"NetworkEntity": {
+				Fields: []spec.TypeField{
+					{Name: "type", Type: "string", Enum: []string{"workspace", "collection", "team", "unknown"}},
+					{Name: "id", Type: "string"},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	var mixed SyncableResource
+	for _, resource := range profile.SyncableResources {
+		if resource.Name == "network_entities" {
+			mixed = resource
+			break
+		}
+	}
+	require.Equal(t, "network_entities", mixed.Name)
+	require.Equal(t, "type", mixed.Discriminator.Field)
+	assert.Equal(t, []DiscriminatorMapping{
+		{Value: "collection", Resource: "collections"},
+		{Value: "team", Resource: "teams"},
+		{Value: "workspace", Resource: "workspaces"},
+	}, mixed.Discriminator.Mappings)
+}
+
 func TestProfileEnumExpansion_NoExpansionForNonEnum(t *testing.T) {
 	// Standard API without enum params should not be affected
 	profile := Profile(petstoreSpec())

@@ -1820,7 +1820,7 @@ func collectAllOfProperties(
 		if prop == nil {
 			continue
 		}
-		properties[name] = prop
+		properties[naming.ASCIIFold(name)] = prop
 	}
 	for _, sub := range schema.AllOf {
 		if collectAllOfProperties(sub, properties, required, visited) {
@@ -1849,24 +1849,28 @@ func mapResponse(op *openapi3.Operation, fallbackName string) (spec.ResponseDef,
 	schema := schemaRef.Value
 	if isObjectSchema(schema) {
 		if dataRef := schema.Properties["data"]; dataRef != nil && isArraySchema(schemaRefValue(dataRef)) {
+			itemRef := schemaRefValue(dataRef).Items
 			return spec.ResponseDef{
-				Type: "array",
-				Item: schemaTypeName(schemaRefValue(dataRef).Items, fallbackName+"Item"),
+				Type:          "array",
+				Item:          schemaTypeName(itemRef, fallbackName+"Item"),
+				Discriminator: mapResponseDiscriminator(itemRef),
 			}, "data"
 		}
 	}
 
 	if isArraySchema(schema) {
 		return spec.ResponseDef{
-			Type: "array",
-			Item: schemaTypeName(schema.Items, fallbackName+"Item"),
+			Type:          "array",
+			Item:          schemaTypeName(schema.Items, fallbackName+"Item"),
+			Discriminator: mapResponseDiscriminator(schema.Items),
 		}, ""
 	}
 
 	if isObjectSchema(schema) {
 		return spec.ResponseDef{
-			Type: "object",
-			Item: schemaTypeName(schemaRef, fallbackName+"Response"),
+			Type:          "object",
+			Item:          schemaTypeName(schemaRef, fallbackName+"Response"),
+			Discriminator: mapResponseDiscriminator(schemaRef),
 		}, ""
 	}
 
@@ -2130,14 +2134,49 @@ func mapTypes(doc *openapi3.T, out *spec.APISpec) {
 				continue
 			}
 			seenGoNames[goFieldName] = true
+			fieldSchema := schemaRefValue(properties[fieldName])
 			fields = append(fields, spec.TypeField{
 				Name: fieldName,
-				Type: mapSchemaType(schemaRefValue(properties[fieldName])),
+				Type: mapSchemaType(fieldSchema),
+				Enum: schemaEnum(fieldSchema),
 			})
 		}
 
 		out.Types[goName] = spec.TypeDef{Fields: fields}
 	}
+}
+
+func mapResponseDiscriminator(schemaRef *openapi3.SchemaRef) *spec.ResponseDiscriminator {
+	schema := schemaRefValue(schemaRef)
+	if schema == nil || schema.Discriminator == nil || strings.TrimSpace(schema.Discriminator.PropertyName) == "" {
+		return nil
+	}
+
+	out := &spec.ResponseDiscriminator{
+		Field:   strings.TrimSpace(schema.Discriminator.PropertyName),
+		Mapping: map[string]string{},
+	}
+	if len(schema.Discriminator.Mapping) == 0 {
+		return out
+	}
+
+	values := make([]string, 0, len(schema.Discriminator.Mapping))
+	for value := range schema.Discriminator.Mapping {
+		values = append(values, value)
+	}
+	sort.Strings(values)
+	for _, value := range values {
+		ref := schema.Discriminator.Mapping[value].Ref
+		target := refComponentName(ref)
+		if target == "" {
+			target = ref
+		}
+		if target == "" {
+			target = value
+		}
+		out.Mapping[value] = toTypeName(target)
+	}
+	return out
 }
 
 func collectTypeProperties(schemaRef *openapi3.SchemaRef, properties map[string]*openapi3.SchemaRef, visited map[*openapi3.Schema]struct{}) {
@@ -2158,7 +2197,7 @@ func collectTypeProperties(schemaRef *openapi3.SchemaRef, properties map[string]
 		if strings.HasPrefix(name, "_") {
 			continue
 		}
-		properties[sanitizeTypeName(name)] = prop
+		properties[naming.ASCIIFold(name)] = prop
 	}
 	for _, sub := range schema.AllOf {
 		collectTypeProperties(sub, properties, visited)

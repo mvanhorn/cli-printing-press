@@ -2,6 +2,7 @@ package generator
 
 import (
 	"encoding/json"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"net/http"
@@ -1707,6 +1708,128 @@ func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/store")
+}
+
+func TestSyncDiscriminatorDispatchRoutesMixedItemsToTypedTables(t *testing.T) {
+	t.Parallel()
+
+	typedListEndpoint := func(path string) spec.Endpoint {
+		return spec.Endpoint{
+			Method:      "GET",
+			Path:        path,
+			Description: "List typed entities",
+			Response:    spec.ResponseDef{Type: "array"},
+			Params: []spec.Param{
+				{Name: "id", Type: "string"},
+				{Name: "type", Type: "string"},
+				{Name: "name", Type: "string"},
+				{Name: "created_at", Type: "string", Format: "date-time"},
+			},
+		}
+	}
+
+	apiSpec := &spec.APISpec{
+		Name:    "mixednet",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/mixednet-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"network_entities": {
+				Description: "Mixed network entities",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/network-entities",
+						Description: "List mixed network entities",
+						Response:    spec.ResponseDef{Type: "array", Item: "NetworkEntity"},
+						Params: []spec.Param{
+							{Name: "limit", Type: "integer"},
+							{Name: "cursor", Type: "string"},
+						},
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+			"workspaces": {
+				Description: "Workspaces",
+				Endpoints:   map[string]spec.Endpoint{"list": typedListEndpoint("/workspaces")},
+			},
+			"collections": {
+				Description: "Collections",
+				Endpoints:   map[string]spec.Endpoint{"list": typedListEndpoint("/collections")},
+			},
+			"teams": {
+				Description: "Teams",
+				Endpoints:   map[string]spec.Endpoint{"list": typedListEndpoint("/teams")},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"NetworkEntity": {
+				Fields: []spec.TypeField{
+					{Name: "type", Type: "string", Enum: []string{"workspace", "collection", "team"}},
+					{Name: "id", Type: "string"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	src := string(syncSrc)
+	assert.Contains(t, src, `"workspace": "workspaces"`)
+	assert.Contains(t, src, `upsertResourceBatch(db, resource, items)`)
+
+	inlineTest := fmt.Sprintf(`package cli
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"testing"
+
+	"%s/internal/store"
+)
+
+func TestUpsertResourceBatchRoutesDiscriminatorItems(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open: %%v", err)
+	}
+	defer s.Close()
+
+	items := []json.RawMessage{
+		json.RawMessage(`+"`"+`{"type":"workspace","id":"w1","name":"Workspace","created_at":"2026-01-01T00:00:00Z"}`+"`"+`),
+		json.RawMessage(`+"`"+`{"type":"collection","id":"c1","name":"Collection","created_at":"2026-01-01T00:00:00Z"}`+"`"+`),
+		json.RawMessage(`+"`"+`{"type":"team","id":"t1","name":"Team","created_at":"2026-01-01T00:00:00Z"}`+"`"+`),
+	}
+	stored, extractFailures, err := upsertResourceBatch(s, "network_entities", items)
+	if err != nil {
+		t.Fatalf("upsertResourceBatch: %%v", err)
+	}
+	if stored != len(items) || extractFailures != 0 {
+		t.Fatalf("stored/extractFailures = %%d/%%d, want %%d/0", stored, extractFailures, len(items))
+	}
+
+	for _, table := range []string{"workspaces", "collections", "teams"} {
+		var count int
+		if err := s.DB().QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil {
+			t.Fatalf("count %%s: %%v", table, err)
+		}
+		if count != 1 {
+			t.Fatalf("%%s count = %%d, want 1", table, count)
+		}
+	}
+}
+`, naming.CLI(apiSpec.Name))
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_discriminator_test.go"), []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli", "./internal/store")
 }
 
 func TestGenerateStoreBackfillsIndexedColumnsOnUpgrade(t *testing.T) {
@@ -4475,11 +4598,11 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 	// all three return values. Without this contract, extractFailures would
 	// not be observable from sync's per-item warning code.
 	assert.Contains(t, syncContent,
-		`stored, extractFailures, err := db.UpsertBatch(resource, items)`,
-		"sync.go syncResource must consume the three-tuple UpsertBatch return")
+		`stored, extractFailures, err := upsertResourceBatch(db, resource, items)`,
+		"sync.go syncResource must consume the three-tuple batch upsert return")
 	assert.Contains(t, syncContent,
-		`stored, extractFailures, err := db.UpsertBatch(dep.Name, items)`,
-		"sync.go syncDependentResource must consume the three-tuple UpsertBatch return")
+		`stored, extractFailures, err := upsertResourceBatch(db, dep.Name, items)`,
+		"sync.go syncDependentResource must consume the three-tuple batch upsert return")
 
 	// store.go's UpsertBatch declaration matches the new signature.
 	assert.Contains(t, storeContent,

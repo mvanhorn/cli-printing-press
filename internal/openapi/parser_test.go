@@ -50,6 +50,76 @@ func TestParsePetstore(t *testing.T) {
 	assert.Contains(t, parsed.Types, "Pet")
 }
 
+func TestParsePreservesResponseDiscriminatorAndEnumFields(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Mixed Network
+  version: 1.0.0
+paths:
+  /network-entities:
+    get:
+      operationId: listNetworkEntities
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/NetworkEntity"
+components:
+  schemas:
+    NetworkEntity:
+      type: object
+      discriminator:
+        propertyName: type
+        mapping:
+          workspace: "#/components/schemas/Workspace"
+          collection: "#/components/schemas/Collection"
+      properties:
+        type:
+          type: string
+          enum: [workspace, collection]
+        id:
+          type: string
+    Workspace:
+      type: object
+      properties:
+        id:
+          type: string
+    Collection:
+      type: object
+      properties:
+        id:
+          type: string
+`))
+	require.NoError(t, err)
+
+	endpoint := parsed.Resources["network-entities"].Endpoints["list"]
+	require.NotNil(t, endpoint.Response.Discriminator)
+	assert.Equal(t, "type", endpoint.Response.Discriminator.Field)
+	assert.Equal(t, map[string]string{
+		"collection": "Collection",
+		"workspace":  "Workspace",
+	}, endpoint.Response.Discriminator.Mapping)
+
+	var typeField spec.TypeField
+	for _, field := range parsed.Types["NetworkEntity"].Fields {
+		if field.Name == "type" {
+			typeField = field
+			break
+		}
+	}
+	assert.Equal(t, []string{"workspace", "collection"}, typeField.Enum)
+}
+
 func TestParseStytchOpenAPI(t *testing.T) {
 	t.Parallel()
 
