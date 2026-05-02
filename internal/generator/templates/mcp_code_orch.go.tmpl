@@ -67,24 +67,26 @@ type codeOrchEndpoint struct {
 var codeOrchEndpoints = []codeOrchEndpoint{
 {{- range $name, $resource := .Resources}}
 {{- range $eName, $endpoint := $resource.Endpoints}}
+{{- $path := effectiveEndpointPath $resource $endpoint}}
 	{
 		ID:      "{{$name}}.{{$eName}}",
 		Method:  "{{upper $endpoint.Method}}",
-		Path:    "{{effectiveEndpointPath $resource $endpoint}}",
+		Path:    "{{$path}}",
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
-		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}),
+		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $path}}),
 	},
 {{- end}}
 {{- range $subName, $subResource := $resource.SubResources}}
 {{- range $eName, $endpoint := $subResource.Endpoints}}
+{{- $path := effectiveSubEndpointPath $resource $subResource $endpoint}}
 	{
 		ID:      "{{$name}}.{{$subName}}.{{$eName}}",
 		Method:  "{{upper $endpoint.Method}}",
-		Path:    "{{effectiveSubEndpointPath $resource $subResource $endpoint}}",
+		Path:    "{{$path}}",
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
-		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}),
+		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $path}}),
 	},
 {{- end}}
 {{- end}}

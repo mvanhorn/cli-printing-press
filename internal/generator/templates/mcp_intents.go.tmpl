@@ -211,7 +211,7 @@ var intentEndpoints = map[string]intentEndpointMeta{
 {{- range .MCP.Intents}}
 {{- range .Steps}}
 {{- $ep := lookupEndpoint $.Resources .Endpoint}}
-	{{printf "%q" .Endpoint}}: {method: {{printf "%q" (upper $ep.Method)}}, path: {{printf "%q" (lookupEndpointPath $.Resources .Endpoint)}}},
+	{{printf "%q" .Endpoint}}: {method: {{printf "%q" (upper $ep.Method)}}, path: {{printf "%q" $ep.EffectivePath}}},
 {{- end}}
 {{- end}}
 }
