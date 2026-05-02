@@ -544,30 +544,20 @@ func readRegistryDisplayName(slug string) string {
 	return ""
 }
 
-// slugFromDir returns the API slug implied by cliDir's basename. The
-// local library convention is the bare slug (`notion/`); working dirs
-// (paths.WorkingCLIDir) and public-library checkouts both use the
-// suffixed binary form (`notion-pp-cli/`). Both shapes must compare
-// against the same slug, so strip the current CLI suffix when present
-// — without this, a sync run against any -pp-cli-suffixed directory
-// would treat the binary name as the slug and re-suffix it on regen.
-func slugFromDir(cliDir string) string {
-	return strings.TrimSuffix(filepath.Base(cliDir), naming.CurrentCLISuffix)
-}
-
 // validateSpecNameMatchesDir refuses to migrate when spec.yaml.name
-// diverges from the slug implied by the CLI directory's basename.
-// This catches the weather-goat / open-meteo class of drift where an
-// old emboss/rename updated the directory but left spec.yaml.name
-// behind, producing spurious cmd/<spec.name>-pp-{cli,mcp}/ directories
-// on regen and a wrong MCP server identity. Caller can pass --force
-// to bypass when they know the divergence is intentional (e.g., a
-// deliberate alias).
+// diverges from the slug derived from the CLI directory's basename
+// (via naming.TrimCLISuffix, which strips both -pp-cli and legacy -cli
+// forms). This catches the weather-goat / open-meteo class of drift
+// where an old emboss/rename updated the directory but left
+// spec.yaml.name behind, producing spurious cmd/<spec.name>-pp-{cli,mcp}/
+// directories on regen and a wrong MCP server identity. Caller can pass
+// --force to bypass when they know the divergence is intentional
+// (e.g., a deliberate alias).
 func validateSpecNameMatchesDir(cliDir string, parsed *spec.APISpec) error {
 	if parsed == nil || parsed.Name == "" {
 		return nil
 	}
-	expected := slugFromDir(cliDir)
+	expected := naming.TrimCLISuffix(filepath.Base(cliDir))
 	if expected == parsed.Name {
 		return nil
 	}
@@ -595,7 +585,7 @@ func reconcileSpecNameWithDir(cliDir string, parsed *spec.APISpec) (renamedFrom 
 	if parsed == nil || parsed.Name == "" {
 		return "", nil
 	}
-	expected := slugFromDir(cliDir)
+	expected := naming.TrimCLISuffix(filepath.Base(cliDir))
 	if expected == parsed.Name {
 		return "", nil
 	}

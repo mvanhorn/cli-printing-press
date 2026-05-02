@@ -407,13 +407,9 @@ func TestReconcileSpecNameWithDirNoYAMLFallsThroughToValidator(t *testing.T) {
 }
 
 // TestValidateSpecNameMatchesDirAcceptsSuffixedDir — working dirs and
-// public-library checkouts both name the directory `<slug>-pp-cli/`
-// (paths.WorkingCLIDir composes naming.CLI(apiName)). spec.yaml.name
-// holds the bare slug, not the binary name. The validator must reduce
-// the basename to its slug form before comparing, otherwise mcp-sync
-// thinks the slug is `<slug>-pp-cli` and the auto-fix path overwrites
-// spec.yaml — downstream generation then emits cmd/<slug>-pp-cli-pp-cli/
-// and cmd/<slug>-pp-cli-pp-mcp/ phantoms next to the canonical dirs.
+// public-library checkouts both use the suffixed form `<slug>-pp-cli/`,
+// while spec.yaml.name holds the bare slug. The validator must reduce
+// the basename to its slug form before comparing.
 func TestValidateSpecNameMatchesDirAcceptsSuffixedDir(t *testing.T) {
 	t.Parallel()
 	cliDir := filepath.Join(t.TempDir(), "producthunt-pp-cli")
@@ -424,9 +420,21 @@ func TestValidateSpecNameMatchesDirAcceptsSuffixedDir(t *testing.T) {
 	}
 }
 
-// TestReconcileSpecNameWithDirNoOpOnSuffixedDir — same shape as the
-// validator test, but exercises the reconcile entry point and the
-// on-disk file. spec.yaml must not be rewritten and parsed.Name must
+// TestValidateSpecNameMatchesDirAcceptsLegacySuffixedDir — older library
+// CLIs predating -pp-cli use the bare -cli suffix. naming.TrimCLISuffix
+// handles both forms; this locks in coverage for the legacy shape.
+func TestValidateSpecNameMatchesDirAcceptsLegacySuffixedDir(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "weather-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	parsed := &spec.APISpec{Name: "weather"}
+	if err := validateSpecNameMatchesDir(cliDir, parsed); err != nil {
+		t.Errorf("legacy -cli suffix should reduce to the slug and accept; got %v", err)
+	}
+}
+
+// TestReconcileSpecNameWithDirNoOpOnSuffixedDir — exercises the
+// reconcile path: spec.yaml must not be rewritten and parsed.Name must
 // not be mutated when the directory is the suffixed form of the slug.
 func TestReconcileSpecNameWithDirNoOpOnSuffixedDir(t *testing.T) {
 	t.Parallel()
@@ -447,10 +455,9 @@ func TestReconcileSpecNameWithDirNoOpOnSuffixedDir(t *testing.T) {
 	assert.Equal(t, original, string(after), "spec.yaml must be byte-identical when no drift exists")
 }
 
-// TestReconcileSpecNameWithDirRejectsDriftEvenOnSuffixedDir — if the
-// directory is `weather-goat-pp-cli/` but spec.yaml.name is `weather`,
-// the reconcile path should still fire (slug = weather-goat ≠ weather).
-// Stripping the binary suffix must not mask legitimate drift.
+// TestReconcileSpecNameWithDirRejectsDriftEvenOnSuffixedDir — stripping
+// the CLI suffix must not mask legitimate drift. dir = weather-goat-pp-cli
+// reduces to slug "weather-goat", which still mismatches spec.Name "weather".
 func TestReconcileSpecNameWithDirRejectsDriftEvenOnSuffixedDir(t *testing.T) {
 	t.Parallel()
 	cliDir := filepath.Join(t.TempDir(), "weather-goat-pp-cli")
