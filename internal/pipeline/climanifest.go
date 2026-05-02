@@ -249,10 +249,20 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.AuthEnvVars = parsed.Auth.EnvVars
 	m.AuthKeyURL = parsed.Auth.KeyURL
 	m.AuthOptional = parsed.Auth.Optional
-	// Always refresh from parsed; an empty-check here would let a
-	// stale .printing-press.json overwrite the spec on the next
-	// mcp-sync cycle.
-	m.DisplayName = parsed.EffectiveDisplayName()
+	// DisplayName precedence: explicit spec field > catalog-set existing
+	// value > slug-derived fallback. Unconditional fallback would clobber a
+	// curated catalog value when the spec is silent.
+	if parsed.DisplayName != "" {
+		m.DisplayName = parsed.DisplayName
+	} else if m.DisplayName == "" {
+		m.DisplayName = parsed.EffectiveDisplayName()
+	}
+	// CLIDescription overrides existing m.Description so the spec's
+	// CLI-shaped copy ships in manifest.json instead of the API-shaped
+	// catalog default.
+	if parsed.CLIDescription != "" {
+		m.Description = parsed.CLIDescription
+	}
 }
 
 // GenerateManifestParams holds the information available at generate time

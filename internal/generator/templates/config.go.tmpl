@@ -141,16 +141,10 @@ func (c *Config) AuthHeader() string {
 	return ""
 	{{- end}}
 {{- else if eq .Auth.Type "bearer_token"}}
-	if c.AccessToken != "" {
-		c.AuthSource = "oauth2"
-		{{- if .Auth.Format}}
-		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
-		{{- else}}
-		return "Bearer " + c.AccessToken
-		{{- end}}
-	}
+	// Env-var token wins over file-stored AccessToken (env > config convention).
 	{{- if gt (len .Auth.EnvVars) 0}}
 	if c.{{resolveEnvVarField (index .Auth.EnvVars 0)}} != "" {
+		c.AuthSource = "env:{{index .Auth.EnvVars 0}}"
 		{{- if .Auth.Format}}
 		return applyAuthFormat("{{.Auth.Format}}", map[string]string{
 			"{{envVarPlaceholder (index .Auth.EnvVars 0)}}": c.{{resolveEnvVarField (index .Auth.EnvVars 0)}},
@@ -162,28 +156,40 @@ func (c *Config) AuthHeader() string {
 		{{- end}}
 	}
 	{{- end}}
+	if c.AccessToken != "" {
+		c.AuthSource = "oauth2"
+		{{- if .Auth.Format}}
+		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
+		{{- else}}
+		return "Bearer " + c.AccessToken
+		{{- end}}
+	}
 	return ""
 {{- else if eq .Auth.Type "cookie"}}
+	// Env-var token wins over file-stored AccessToken (env > config convention).
+	{{- if gt (len .Auth.EnvVars) 0}}
+	if c.{{resolveEnvVarField (index .Auth.EnvVars 0)}} != "" {
+		c.AuthSource = "env:{{index .Auth.EnvVars 0}}"
+		return c.{{resolveEnvVarField (index .Auth.EnvVars 0)}}
+	}
+	{{- end}}
 	if c.AccessToken != "" {
 		c.AuthSource = "browser"
 		return c.AccessToken
 	}
+	return ""
+{{- else if eq .Auth.Type "composed"}}
+	// Env-var token wins over file-stored AccessToken (env > config convention).
 	{{- if gt (len .Auth.EnvVars) 0}}
 	if c.{{resolveEnvVarField (index .Auth.EnvVars 0)}} != "" {
+		c.AuthSource = "env:{{index .Auth.EnvVars 0}}"
 		return c.{{resolveEnvVarField (index .Auth.EnvVars 0)}}
 	}
 	{{- end}}
-	return ""
-{{- else if eq .Auth.Type "composed"}}
 	if c.AccessToken != "" {
 		c.AuthSource = "chrome-composed"
 		return c.AccessToken
 	}
-	{{- if gt (len .Auth.EnvVars) 0}}
-	if c.{{resolveEnvVarField (index .Auth.EnvVars 0)}} != "" {
-		return c.{{resolveEnvVarField (index .Auth.EnvVars 0)}}
-	}
-	{{- end}}
 	return ""
 {{- else}}
 	return ""

@@ -1008,3 +1008,59 @@ func TestPopulateMCPMetadata(t *testing.T) {
 	assert.Equal(t, "cookie", m.AuthType)
 	assert.Equal(t, []string{"TEST_AUTH"}, m.AuthEnvVars)
 }
+
+// TestPopulateMCPMetadataDisplayNamePrecedence pins:
+//
+//	spec.DisplayName (explicit) > existing m.DisplayName (catalog) > EffectiveDisplayName fallback
+func TestPopulateMCPMetadataDisplayNamePrecedence(t *testing.T) {
+	t.Run("spec explicit wins over existing catalog value", func(t *testing.T) {
+		m := CLIManifest{DisplayName: "Catalog Name"}
+		populateMCPMetadata(&m, &spec.APISpec{
+			Name:        "test",
+			DisplayName: "Spec Name",
+			Auth:        spec.AuthConfig{Type: "none"},
+		})
+		assert.Equal(t, "Spec Name", m.DisplayName)
+	})
+
+	t.Run("existing catalog value preserved when spec is silent", func(t *testing.T) {
+		m := CLIManifest{DisplayName: "Catalog Name"}
+		populateMCPMetadata(&m, &spec.APISpec{
+			Name: "twoword",
+			Auth: spec.AuthConfig{Type: "none"},
+		})
+		assert.Equal(t, "Catalog Name", m.DisplayName)
+	})
+
+	t.Run("title-case fallback fires only when both spec and existing are empty", func(t *testing.T) {
+		var m CLIManifest
+		populateMCPMetadata(&m, &spec.APISpec{
+			Name: "test-api",
+			Auth: spec.AuthConfig{Type: "none"},
+		})
+		assert.Equal(t, "Test Api", m.DisplayName)
+	})
+}
+
+// TestPopulateMCPMetadataCLIDescription pins that spec.cli_description
+// overrides existing m.Description (catalog default).
+func TestPopulateMCPMetadataCLIDescription(t *testing.T) {
+	t.Run("cli_description overrides catalog description", func(t *testing.T) {
+		m := CLIManifest{Description: "API-shaped catalog description."}
+		populateMCPMetadata(&m, &spec.APISpec{
+			Name:           "test",
+			CLIDescription: "CLI-shaped description.",
+			Auth:           spec.AuthConfig{Type: "none"},
+		})
+		assert.Equal(t, "CLI-shaped description.", m.Description)
+	})
+
+	t.Run("empty cli_description leaves catalog description in place", func(t *testing.T) {
+		m := CLIManifest{Description: "Catalog description."}
+		populateMCPMetadata(&m, &spec.APISpec{
+			Name: "test",
+			Auth: spec.AuthConfig{Type: "none"},
+		})
+		assert.Equal(t, "Catalog description.", m.Description)
+	})
+}
