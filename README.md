@@ -1,5 +1,11 @@
 # CLI Printing Press
 
+[![CI](https://github.com/mvanhorn/cli-printing-press/actions/workflows/lint.yml/badge.svg)](https://github.com/mvanhorn/cli-printing-press/actions/workflows/lint.yml)
+[![Golden](https://github.com/mvanhorn/cli-printing-press/actions/workflows/golden.yml/badge.svg)](https://github.com/mvanhorn/cli-printing-press/actions/workflows/golden.yml)
+[![Release](https://img.shields.io/github/v/release/mvanhorn/cli-printing-press?display_name=tag&sort=semver)](https://github.com/mvanhorn/cli-printing-press/releases)
+[![Go](https://img.shields.io/github/go-mod/go-version/mvanhorn/cli-printing-press)](go.mod)
+[![License](https://img.shields.io/github/license/mvanhorn/cli-printing-press)](LICENSE)
+
 Nothing is more valuable than time and money. In a world of AI agents, that's speed and token spend. A well-designed CLI is muscle memory for an agent: no hunting through docs, no wrong turns, no wasted tokens. We built the Printing Press to print the best CLIs in the world for agents.
 
 It reads the official API docs, studies every popular community CLI and MCP server, sniffs the web for the APIs nobody published (think Google Flights or Dominos), and applies the power-user playbook Peter Steinberger proved with [discrawl](https://github.com/steipete/discrawl) and [gogcli](https://github.com/steipete/gogcli) - local SQLite, compound commands, agent-native flags. It fuses all of that and prints a token-efficient Go CLI plus a Claude Code skill plus an MCP server for any API or any website.
@@ -31,15 +37,7 @@ go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest
 
 Verify: `printing-press --version`.
 
-If you skip this step, the plugin will run `go install` for you on first use (assuming Go is on your PATH). Doing it upfront avoids a slow first run.
-
-> **If you hit a `410 Gone` or auth error**, the repo is currently private. Set `GOPRIVATE` so Go fetches directly from GitHub instead of the public module proxy:
->
-> ```bash
-> GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest
-> ```
->
-> This requires GitHub access to the repo (SSH key or `gh auth login`). After the public launch, the plain command works for everyone.
+If you skip this step, the plugin will run `go install` for you on first use (assuming Go is on your PATH). Doing it upfront avoids a slow first run. If `go install` fails with `410 Gone` or an auth error, see [Troubleshooting](#troubleshooting).
 
 ### 2. Install the plugin — pick one path
 
@@ -80,23 +78,66 @@ To browse and install pre-built CLIs from the [Printing Press Library](https://g
 
 This adds the `/ppl` slash command for browsing and installing CLIs from the public catalog.
 
-## Print a CLI
+## Quick start
 
 ```bash
-/printing-press HubSpot                      # From the catalog
-/printing-press --spec ./openapi.yaml        # From a local spec
-/printing-press https://postman.com/explore  # From a URL (no spec needed)
+/printing-press HubSpot                              # From the catalog (19 APIs ready)
+/printing-press --spec ./openapi.yaml                # From a local spec
+/printing-press --har ./capture.har --name ESPN      # From captured browser traffic
+/printing-press https://postman.com/explore          # From a URL (auto-detects intent)
+/printing-press HubSpot codex                        # Codex mode - 60% fewer Opus tokens
+/printing-press emboss notion                        # Second pass: improve an existing CLI
 ```
 
 `/printing-press` is the slash command from the Claude Code plugin. It drives the `printing-press` binary you installed — research, generation, scoring, and shipcheck all run through the binary. Two parts, one workflow.
 
-One command. Lean loop. Produces a Go CLI plus an MCP server that absorbs every feature from every competing tool, then transcends with compound use cases only possible with local data. REST, GraphQL, or browser-sniffed traffic. No OpenAPI spec required. [See all input modes and output paths →](#run-it)
+One command. Lean loop. Produces a Go CLI plus an MCP server that absorbs every feature from every competing tool, then transcends with compound use cases only possible with local data. REST, GraphQL, or browser-sniffed traffic. No OpenAPI spec required.
+
+Each run produces two binaries (`<api>-pp-cli` plus `<api>-pp-mcp`), research documents, verification proofs, and a Quality Score.
+
+By default, active and published output are separated:
+
+- Active managed runs work in `~/printing-press/.runstate/<scope>/runs/<run-id>/working/<api>-pp-cli`
+- Published CLIs go to `~/printing-press/library/<api>`
+- Archived manuscripts go to `~/printing-press/manuscripts/<api>/<run-id>/`
+- Manuscripts are split into `research/`, `proofs/`, `discovery/`, and `pipeline/`
+
+`<scope>` is derived from the current git checkout path, so parallel worktrees do not stomp on each other. If you pass `--output`, that overrides the generated CLI location for that command.
+
+### Codex mode (60% fewer Opus tokens)
+
+```bash
+/printing-press HubSpot codex    # Offload code generation to Codex CLI
+/printing-press HubSpot          # Standard Opus mode (default)
+```
+
+When you add `codex`, Phase 3's code generation tasks are delegated to Codex CLI. Claude stays the brain (research, planning, scoring, review). Codex does the hands (writing Go code from scoped prompts). Same quality, 60% fewer Opus tokens. If Codex fails 3 times in a row, the press falls back to doing it locally, no manual intervention needed.
+
+### Emboss mode (improve an existing CLI)
+
+```bash
+/printing-press emboss notion              # By API name
+/printing-press emboss notion-pp-cli       # By CLI name
+/printing-press emboss ~/printing-press/library/notion          # By full path
+```
+
+Already generated a CLI? Emboss runs a focused improvement cycle: audit baseline (verify + scorecard), re-research what's changed, identify top 5 improvements, build them, re-verify, report the delta. Offered at the end of every run, never triggered automatically.
+
+### Publish
+
+When you're happy with a CLI, publish it to the library:
+
+```bash
+/printing-press-publish linear                       # Validates, packages, creates PR
+```
 
 ## Why these CLIs win
 
 Most generators wrap endpoints and stop. Printing Press generates CLIs that understand the domain.
 
 Local-first data layer. High-gravity resources get domain-specific SQLite tables (not JSON blobs), FTS5 full-text search indexes, and incremental sync with cursor tracking. `sync` pulls data down. `search` finds it in milliseconds. `sql` lets power users query directly. All offline, all local.
+
+Machine-owned freshness. Store-backed CLIs can opt into a bounded pre-read refresh via `cache.enabled` so `--data-source auto` keeps the local store current without a manual `sync`. `--data-source local` and `--data-source live` give you full control.
 
 Compound commands no wrapper can do. Once data lives in SQLite, commands like `stale`, `health`, `bottleneck`, and `reconcile` become possible - they join across resources and analyze history. A stateless API wrapper literally cannot do this.
 
@@ -109,24 +150,6 @@ Dual interface from one spec. Every API gets a Cobra CLI (`<api>-pp-cli`) and an
 Verified, not vibes. Four mechanical checks - scorecard, dogfood, proof-of-behavior, live API smoke test - catch hallucinated paths, dead flags, auth mismatches, and broken data pipelines before you ship.
 
 Credits its sources. Every generated README includes a Sources and Inspiration section that credits the ecosystem tools studied during research. We built on giants' shoulders and we say so.
-
-## Every endpoint. Every insight. One command.
-
-Discord's API has 300+ endpoints. Most generators stop there - wrap every endpoint, ship it, done. But [discrawl](https://github.com/steipete/discrawl) - Peter Steinberger's Discord tool - ignores most of them. It ships 11 commands: `sync`, `search`, `sql`, `tail`, `mentions`, `members`. 583 stars.
-
-Why does the 11-command tool win? Because Steinberger saw something Discord's own API designers didn't: conversations are institutional knowledge. Every message thread is a document that should be archived, indexed, and searched locally. Those 11 commands embody that insight. The 300 endpoint wrappers don't.
-
-Until now, you had to choose: breadth (wrap every endpoint) or depth (understand the user). The printing press eliminates that choice. It generates the full API surface AND matches every feature the top competitor has AND adds the discrawl-style intelligence layer AND an MCP server. One spec in. Everything out.
-
-## Absorb and transcend
-
-The GOAT CLI isn't built by finding gaps. It's built by absorbing every good idea and compounding on top.
-
-Layer 1, absorb. Before generating, the ecosystem absorb gate catalogs every feature from every Claude Code plugin, MCP server, community skill, competing CLI, and automation script for your API. Every feature becomes a row in the absorb manifest, something our CLI must match AND beat with offline support, agent-native output, and SQLite persistence. The system even auto-suggests novel features it thinks are missing from the ecosystem before you approve the manifest.
-
-Layer 2, transcend. Once you have everything in SQLite, compound use cases emerge that no stateless tool can do. Velocity tracking requires historical cycle data. Churn risk requires joining charges + subscriptions. Bottleneck detection requires the full issue relationship graph. These are the Non-Obvious Insight commands, and they only work because Layer 1 put everything in a local database.
-
-The GOAT = everything everyone else does + everything nobody else thought of.
 
 ## The non-obvious insight
 
@@ -154,15 +177,27 @@ The NOI is the creative DNA of every CLI the press generates. Phase 0 cannot com
 
 The printing press automates what Steinberger does intuitively: look at an API, see what power users actually do with it, and build the commands that matter. Then also wrap every endpoint for completeness.
 
-## How I knew this was real
+## The thinking behind it
 
-I was choosing between Peter Steinberger's [gogcli](https://github.com/steipete/gogcli) (6.5K+ stars, Go) and Google's official [Workspace CLI](https://github.com/googleworkspace/cli) (10K+ stars in a week, Rust). I ran [/last30days](https://github.com/mvanhorn/last30days-skill) - my recency research skill - across 34 X posts, 5 YouTube videos, and 10 web sources.
+### Every endpoint. Every insight. One command.
 
-The verdict: use gogcli. The newer, official tool with 10x the API coverage lost to the older third-party one. As one user put it: "my preference is 100% gogcli since I have my agent working a lot with Google Docs and sheets, and gogcli just makes him able to do what he needs to do."
+Discord's API has 300+ endpoints. Most generators stop there - wrap every endpoint, ship it, done. But [discrawl](https://github.com/steipete/discrawl) - Peter Steinberger's Discord tool - ignores most of them. It ships 11 commands: `sync`, `search`, `sql`, `tail`, `mentions`, `members`. 583 stars.
 
-Breadth doesn't beat depth. Understanding the user beats understanding the API.
+Why does the 11-command tool win? Because Steinberger saw something Discord's own API designers didn't: conversations are institutional knowledge. Every message thread is a document that should be archived, indexed, and searched locally. Those 11 commands embody that insight. The 300 endpoint wrappers don't.
 
-## The creativity ladder
+Until now, you had to choose: breadth (wrap every endpoint) or depth (understand the user). The printing press eliminates that choice. It generates the full API surface AND matches every feature the top competitor has AND adds the discrawl-style intelligence layer AND an MCP server. One spec in. Everything out.
+
+### Absorb and transcend
+
+The GOAT CLI isn't built by finding gaps. It's built by absorbing every good idea and compounding on top.
+
+Layer 1, absorb. Before generating, the ecosystem absorb gate catalogs every feature from every Claude Code plugin, MCP server, community skill, competing CLI, and automation script for your API. Every feature becomes a row in the absorb manifest, something our CLI must match AND beat with offline support, agent-native output, and SQLite persistence. The system even auto-suggests novel features it thinks are missing from the ecosystem before you approve the manifest.
+
+Layer 2, transcend. Once you have everything in SQLite, compound use cases emerge that no stateless tool can do. Velocity tracking requires historical cycle data. Churn risk requires joining charges + subscriptions. Bottleneck detection requires the full issue relationship graph. These are the Non-Obvious Insight commands, and they only work because Layer 1 put everything in a local database.
+
+The GOAT = everything everyone else does + everything nobody else thought of.
+
+### The creativity ladder
 
 Most API CLIs stop at Rung 1. The printing press climbs to Rung 5.
 
@@ -178,7 +213,15 @@ Rung 3 is table stakes. Rung 4 is where discrawl lives. Rung 5 is where nobody e
 
 The press generates the API wrapper in Phase 2 (Rung 1-2). Then it generates the discrawl-style data layer and workflow commands in Phase 3 (Rung 3-5) from domain archetype templates. Both in one run.
 
-## Why not just CLIs - CLIs plus MCP
+### How we knew this was real
+
+When choosing between Peter Steinberger's [gogcli](https://github.com/steipete/gogcli) (6.5K+ stars, Go) and Google's official [Workspace CLI](https://github.com/googleworkspace/cli) (10K+ stars in a week, Rust), we ran [/last30days](https://github.com/mvanhorn/last30days-skill) - a recency research skill - across 34 X posts, 5 YouTube videos, and 10 web sources.
+
+The verdict: use gogcli. The newer, official tool with 10x the API coverage lost to the older third-party one. As one user put it: "my preference is 100% gogcli since I have my agent working a lot with Google Docs and sheets, and gogcli just makes him able to do what he needs to do."
+
+Breadth doesn't beat depth. Understanding the user beats understanding the API.
+
+### Why CLIs plus MCP
 
 The NOI is the creative intelligence. The printing press generates both interfaces from one spec:
 
@@ -198,57 +241,6 @@ One spec  ->  printing-press generate  ->  <api>-pp-cli (cobra)  +  <api>-pp-mcp
 ```
 
 Every API that gets a CLI+MCP becomes instantly accessible to every AI coding tool. The printing press is the factory.
-
-### MCP spec surface (U1-U3)
-
-The generator ships three opt-in knobs on the spec's `mcp:` block, aligned with Anthropic's [2026-04-22 production-agent MCP guidance](https://www.anthropic.com/news/building-agents-that-reach-production-systems-with-mcp):
-
-```yaml
-mcp:
-  transport: [stdio, http]        # U1 - remote-capable for cloud-hosted agents; default [stdio]
-  addr: ":7777"                   # U1 - default bind for the http transport
-  orchestration: code             # U3 - "endpoint-mirror" (default), "intent", or "code"
-  endpoint_tools: hidden          # U2 - suppress raw endpoint tools when intents cover the surface
-  intents:                        # U2 - compose multi-step tools declaratively
-    - name: create_issue_from_thread
-      description: "Create an issue from a Slack thread."
-      params:
-        - { name: thread_id, type: string, required: true, description: "slack thread id" }
-      steps:
-        - endpoint: messages.get_thread
-          bind: { thread_id: "${input.thread_id}" }
-          capture: thread
-        - endpoint: issues.create
-          bind: { title: "${thread.subject}", description: "${thread.body}" }
-          capture: issue
-      returns: issue
-```
-
-Run `printing-press mcp-audit` after changes to see which library CLIs would benefit from the new surface.
-
-## Domain archetypes
-
-The profiler classifies every API into a domain archetype and auto-generates the right workflow + insight commands:
-
-| Archetype | Detected by | Auto-generated commands |
-|-----------|------------|------------------------|
-| Project Management | issue/task/ticket resources, assignee fields, priority levels | `stale`, `orphans`, `load`, `health`, `similar` |
-| Communication | message/channel/thread resources, threading fields | `channel-health`, `message-stats`, `health`, `similar` |
-| Payments | charge/payment/invoice resources, amount/currency fields | `reconcile`, `revenue`, `health`, `similar` |
-| Infrastructure | server/deploy/instance resources | `health`, `similar` |
-| Content | document/page/block resources | `health`, `similar` |
-
-The archetype is detected automatically from the spec. The entity mapper figures out which resource is the "primary entity" (issues for PM, messages for comms, charges for payments) and wires the templates accordingly.
-
-## What's new since v1.0 (current: v2.3.7)
-
-The press has shipped continuously since 1.0. Five capabilities you can use today:
-
-- Browser-sniff with traffic analysis. `/printing-press --har ./capture.har` analyzes the capture and produces an OpenAPI-compatible spec plus a `discovery/` manuscript with protocol, auth, and rate-limiting signals. Use when no official spec exists.
-- MCP production-readiness. Specs can opt into HTTP transport (`transport: [stdio, http]`), declarative multi-step intent tools (`intents:`), or a Cloudflare-style thin code-orchestration surface (`orchestration: code`). Run `printing-press mcp-audit` to see which library CLIs would benefit.
-- Machine-owned freshness. Store-backed CLIs with `cache.enabled` opt into a bounded pre-read refresh in `--data-source auto` so local SQLite stays current without a manual `sync`. `--data-source local` and `--data-source live` give you full control.
-- Auth doctor. `printing-press auth doctor` scans every installed printed CLI and reports whether its declared env vars are set, suspicious, or missing. Fingerprints show only the first four characters. Useful when an agent hits a 401 and you need to know whether the token is missing or stale before reading shell config.
-- Codex mode. `/printing-press <api> codex` offloads Phase 3 code generation to Codex CLI for ~60% fewer Opus tokens. Claude stays the brain (research, planning, scoring, review); Codex does the hands. Falls back to local generation after 3 failures, no manual intervention.
 
 ## How it works
 
@@ -273,24 +265,32 @@ Discovery provenance. When the press sniffs a website, it archives everything - 
 
 Full pipeline contract. The fast path above compresses a longer 9-phase managed pipeline: preflight, research, scaffold, enrich, regenerate, review, agent-readiness, comparative, ship. Inputs, outputs, gates, and artifacts for each phase are documented in [docs/PIPELINE.md](docs/PIPELINE.md). Use it when you want to stop at any phase, resume later, re-run one step, or port the flow to another tool.
 
-### Codex mode (opt-in)
+### MCP spec surface
 
-```bash
-/printing-press HubSpot codex    # Offload code generation to Codex CLI (~60% Opus token savings)
-/printing-press HubSpot          # Standard Opus mode (default)
+The generator ships three opt-in knobs on the spec's `mcp:` block, aligned with Anthropic's [production-agent MCP guidance](https://www.anthropic.com/news/building-agents-that-reach-production-systems-with-mcp):
+
+```yaml
+mcp:
+  transport: [stdio, http]        # remote-capable for cloud-hosted agents; default [stdio]
+  addr: ":7777"                   # default bind for the http transport
+  orchestration: code             # "endpoint-mirror" (default), "intent", or "code"
+  endpoint_tools: hidden          # suppress raw endpoint tools when intents cover the surface
+  intents:                        # compose multi-step tools declaratively
+    - name: create_issue_from_thread
+      description: "Create an issue from a Slack thread."
+      params:
+        - { name: thread_id, type: string, required: true, description: "slack thread id" }
+      steps:
+        - endpoint: messages.get_thread
+          bind: { thread_id: "${input.thread_id}" }
+          capture: thread
+        - endpoint: issues.create
+          bind: { title: "${thread.subject}", description: "${thread.body}" }
+          capture: issue
+      returns: issue
 ```
 
-When you add `codex`, Phase 3's code generation tasks are delegated to Codex CLI. Claude stays the brain (research, planning, scoring, review). Codex does the hands (writing Go code from scoped prompts). Same quality, 60% fewer Opus tokens. If Codex fails 3 times in a row, the press falls back to doing it locally, no manual intervention needed.
-
-### Emboss mode (second pass)
-
-```bash
-/printing-press emboss notion              # By API name
-/printing-press emboss notion-pp-cli       # By CLI name
-/printing-press emboss ~/printing-press/library/notion          # By full path
-```
-
-Already generated a CLI? Emboss runs a focused improvement cycle: audit baseline (verify + scorecard), re-research what's changed, identify top 5 improvements, build them, re-verify, report the delta. Offered at the end of every run, never triggered automatically.
+Run `printing-press mcp-audit` after changes to see which library CLIs would benefit from the new surface.
 
 ## What gets generated
 
@@ -312,9 +312,25 @@ Insight commands (Rung 5): `health` (composite score), `similar` (duplicate dete
 
 Production-ready output. Command name normalization (`retrieve-a` -> `get`, `post` -> `create`, `patch` -> `update`); `.printing-press.json` provenance manifest; "Sources and Inspiration" section in each generated README; proxy-envelope support for APIs that wrap requests in a POST envelope; adaptive rate limiting on browser-sniffed APIs (start slow, ramp on success, back off on 429); minimum 1 test file per package; `.goreleaser.yaml` plus Homebrew formula plus GitHub Actions CI; REST or GraphQL specs both supported; MCP server auto-emitted at `cmd/api-mcp/main.go`; cursor-based pagination, batch SQLite transactions, tuned pragmas, `--since` incremental sync, and `--concurrency` parallel workers in every `sync` (discrawl-inspired).
 
-## Quality scoring - three benchmarks
+### Domain archetypes
 
-Three benchmarks, not one. All must pass:
+The profiler classifies every API into a domain archetype and auto-generates the right workflow + insight commands:
+
+| Archetype | Detected by | Auto-generated commands |
+|-----------|------------|------------------------|
+| Project Management | issue/task/ticket resources, assignee fields, priority levels | `stale`, `orphans`, `load`, `health`, `similar` |
+| Communication | message/channel/thread resources, threading fields | `channel-health`, `message-stats`, `health`, `similar` |
+| Payments | charge/payment/invoice resources, amount/currency fields | `reconcile`, `revenue`, `health`, `similar` |
+| Infrastructure | server/deploy/instance resources | `health`, `similar` |
+| Content | document/page/block resources | `health`, `similar` |
+
+The archetype is detected automatically from the spec. The entity mapper figures out which resource is the "primary entity" (issues for PM, messages for comms, charges for payments) and wires the templates accordingly.
+
+## Verification & quality
+
+Four mechanical checks before a CLI can ship: a two-tier scorecard, structural dogfood, proof of behavior, and (when an API key is present) a live read-only smoke test. No vibes, no self-assessment.
+
+Three benchmarks shape the scorecard, all must pass:
 
 1. Architecture (discrawl benchmark). Does it have a real data layer: domain-specific SQLite, FTS5, incremental sync, workflow commands?
 2. Quality (gogcli benchmark). Does the code have proper output modes, typed errors, agent-native flags, doctor, README with cookbook?
@@ -322,7 +338,9 @@ Three benchmarks, not one. All must pass:
 
 Architecture without features is a toy. Features without architecture is a thin wrapper. Quality without either is polished nothing.
 
-Inspired by Peter Steinberger's [gogcli](https://github.com/steipete/gogcli). Two tiers, 100 points max, weighted 50/50. Grade A = 85+.
+### Two-tier scorecard (100 points)
+
+Inspired by Peter Steinberger's [gogcli](https://github.com/steipete/gogcli). Two tiers, weighted 50/50. Grade A = 85+.
 
 Tier 1: infrastructure (50 points). Does the skeleton have the right patterns?
 
@@ -349,84 +367,7 @@ Why two tiers? A scorecard that only checks syntax ("does this string exist in t
 
 Anti-gaming rules prevent optimizing for score instead of features. Table stakes (features competitors have) are Priority 1. Scorecard optimization is Priority 4.
 
-```bash
-# Runtime verification: tests every command against real API or mock server
-printing-press verify --dir ./hubspot-pp-cli --spec ./hubspot-spec.json --api-key $TOKEN
-
-# Emboss audit: baseline snapshot for improvement cycle
-printing-press emboss --dir ./hubspot-pp-cli --spec ./hubspot-spec.json --audit-only
-
-# Quality scorecard: two-tier structural scoring
-printing-press scorecard --dir ./hubspot-pp-cli --spec ./hubspot-spec.json
-
-# Mechanical dogfood: catches dead flags, invalid paths, auth mismatches
-printing-press dogfood --dir ./hubspot-pp-cli --spec ./hubspot-spec.json
-```
-
-## Diagnosing auth
-
-`printing-press auth doctor` scans every installed printed CLI's `tools-manifest.json` and reports whether its declared env vars are set, unset, or suspicious. Fingerprints show the first four characters of each set value, never the full token.
-
-```bash
-printing-press auth doctor
-printing-press auth doctor --json
-```
-
-Useful when an agent hits a 401 on a printed CLI: one command shows whether the token is missing, truncated, or shadowed by a stale value without having to inspect shell config. Offline, read-only, and exits 0 even when findings include "not set" or "suspicious" because this is diagnostic, not gating.
-
-## Library
-
-Published CLIs live in the [Printing Press Library](https://github.com/mvanhorn/printing-press-library), organized by category. 24 CLIs across 17 categories, 17 with full MCP servers. Browse at [printingpress.dev](https://printingpress.dev) or run `/ppl` after installing the Library plugin.
-
-A small sample, see the [full catalog](https://github.com/mvanhorn/printing-press-library#catalog) for all 24:
-
-| CLI | Category | What it does |
-|-----|----------|--------------|
-| `espn-pp-cli` | Media and Entertainment | ESPN sports data: scores, stats, standings across 17 sports. |
-| `flightgoat-pp-cli` | Travel | Kayak nonstop search plus sniffed Google Flights, in one call. |
-| `linear-pp-cli` | Project Management | 50ms compound queries against a local Linear mirror. |
-| `kalshi-pp-cli` | Payments | Trade prediction markets from the terminal. |
-| `recipe-goat-pp-cli` | Food and Dining | Trust-aware ranking across 37 recipe sites. |
-
-Each published CLI ships a research manuscript, verification proofs, and a `.printing-press.json` provenance manifest.
-
-## Quick start
-
-### Run it
-
-All input modes:
-
-```bash
-/printing-press HubSpot                              # From the catalog (19 APIs ready)
-/printing-press --spec ./openapi.yaml                # From a local spec
-/printing-press --har ./capture.har --name ESPN      # From captured browser traffic
-/printing-press https://postman.com/explore          # From a URL (auto-detects intent)
-/printing-press HubSpot codex                        # Codex mode - 60% fewer Opus tokens
-/printing-press emboss notion                        # Second pass: improve an existing CLI
-```
-
-Each run produces two binaries (`<api>-pp-cli` plus `<api>-pp-mcp`), research documents, verification proofs, and a Quality Score.
-
-By default, active and published output are separated:
-
-- Active managed runs work in `~/printing-press/.runstate/<scope>/runs/<run-id>/working/<api>-pp-cli`
-- Published CLIs go to `~/printing-press/library/<api>`
-- Archived manuscripts go to `~/printing-press/manuscripts/<api>/<run-id>/`
-- Manuscripts are split into `research/`, `proofs/`, `discovery/`, and `pipeline/`
-
-`<scope>` is derived from the current git checkout path, so parallel worktrees do not stomp on each other. If you pass `--output`, that overrides the generated CLI location for that command.
-
-### Publish
-
-When you're happy with a CLI, publish it to the library:
-
-```bash
-/printing-press-publish linear                       # Validates, packages, creates PR
-```
-
-## Verification tools
-
-Four layers of mechanical validation. No vibes, no self-assessment.
+### Verification commands
 
 ```bash
 # Quality scorecard: two-tier scoring (infrastructure + domain correctness)
@@ -434,6 +375,12 @@ printing-press scorecard --dir ./my-pp-cli --spec ./openapi.json
 
 # Dogfood: catches dead flags, dead functions, auth mismatches, invalid paths
 printing-press dogfood --dir ./my-pp-cli --spec ./openapi.json
+
+# Runtime verification: tests every command against real API or mock server
+printing-press verify --dir ./my-pp-cli --spec ./openapi.json --api-key $TOKEN
+
+# Emboss audit: baseline snapshot for improvement cycle
+printing-press emboss --dir ./my-pp-cli --spec ./openapi.json --audit-only
 ```
 
 ### Proof of behavior
@@ -467,9 +414,90 @@ Verdict:  PASS - CLI works against real API
 
 Safety: GET only, --limit 1, 10s timeout, stops on 401. Never creates, posts, or deletes anything.
 
+### Auth doctor
+
+`printing-press auth doctor` scans every installed printed CLI's `tools-manifest.json` and reports whether its declared env vars are set, unset, or suspicious. Fingerprints show the first four characters of each set value, never the full token.
+
+```bash
+printing-press auth doctor
+printing-press auth doctor --json
+```
+
+Useful when an agent hits a 401 on a printed CLI: one command shows whether the token is missing, truncated, or shadowed by a stale value without having to inspect shell config. Offline, read-only, and exits 0 even when findings include "not set" or "suspicious" because this is diagnostic, not gating.
+
 ### Ship loop
 
 "Is this shippable?" triggers a fix cycle: identify top 3 issues, fix them, re-score. Max 3 iterations. No more dead-end assessments.
+
+## Library
+
+Published CLIs live in the [Printing Press Library](https://github.com/mvanhorn/printing-press-library), organized by category. 24 CLIs across 17 categories, 17 with full MCP servers. Browse at [printingpress.dev](https://printingpress.dev) or run `/ppl` after installing the Library plugin.
+
+A small sample, see the [full catalog](https://github.com/mvanhorn/printing-press-library#catalog) for all 24:
+
+| CLI | Category | What it does |
+|-----|----------|--------------|
+| `espn-pp-cli` | Media and Entertainment | ESPN sports data: scores, stats, standings across 17 sports. |
+| `flightgoat-pp-cli` | Travel | Kayak nonstop search plus sniffed Google Flights, in one call. |
+| `linear-pp-cli` | Project Management | 50ms compound queries against a local Linear mirror. |
+| `kalshi-pp-cli` | Payments | Trade prediction markets from the terminal. |
+| `recipe-goat-pp-cli` | Food and Dining | Trust-aware ranking across 37 recipe sites. |
+
+Each published CLI ships a research manuscript, verification proofs, and a `.printing-press.json` provenance manifest.
+
+## Troubleshooting
+
+**`go install` returns `410 Gone` or an auth error.** The repo is currently private. Set `GOPRIVATE` so Go fetches directly from GitHub instead of the public module proxy, and ensure you have GitHub access (SSH key or `gh auth login`):
+
+```bash
+GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest
+```
+
+After the public launch, the plain command works for everyone.
+
+**`/printing-press` slash command doesn't appear in Claude Code.** Restart your Claude Code session after installing the plugin. For Option A, confirm `claude --plugin-dir .` was run from the cloned repo. For Option B, run `/plugin list` to verify the install.
+
+**`printing-press: command not found` after a successful `go install`.** `$GOPATH/bin` (default `~/go/bin`) isn't on your `PATH`. Add it to your shell profile.
+
+**Live API smoke test reports 401.** Token unset or stale. Run `printing-press auth doctor` to see which env vars are missing or suspicious before reading shell config.
+
+**Browser-sniff captures no useful endpoints.** The site likely uses websockets, gRPC, or aggressive bot detection. Try a HAR export from DevTools (`/printing-press --har ./capture.har`) instead of the live browser flow.
+
+**Codex mode falls back to local generation.** Expected behavior after 3 consecutive Codex failures. Standard Opus mode takes over with no manual intervention.
+
+## Limitations
+
+- **Requires Go 1.22+ and Claude Code.** No standalone distribution today; the slash command is the supported entry point.
+- **Generated CLIs are domain-shaped, not vendor-replacements.** A `<api>-pp-cli` covers the agent power-user surface, not every back-office knob a vendor's official CLI ships.
+- **Browser-sniff requires manual capture.** You point a browser at the site (or import a HAR); the press doesn't crawl autonomously.
+- **Live verify is read-only.** Phase 5 runs GET only and never mutates. Real write-path coverage lives in unit tests and the dogfood structural checks.
+- **Scoring is structural, not end-user QA.** A Grade A scorecard means the CLI follows the patterns; it doesn't replace using the CLI in anger for an afternoon.
+- **`regen-merge` is macOS+Linux only.** Windows isn't supported for the regen-merge subcommand today.
+
+## FAQ
+
+**Why not Speakeasy, Fern, or openapi-generator?** Those wrap endpoints. We wrap endpoints AND generate the discrawl-style data layer (SQLite, FTS5, sync, compound commands) AND the MCP server AND the agent-native UX (typed exit codes, `--compact`, auto-JSON-when-piped). The output is shaped for an agent that will call it thousands of times a day.
+
+**Does it work without Claude?** The binary works standalone (research, generation, verification, scoring), but the curated agent loop — research absorption, novel-feature suggestion, ship cycle — runs through the `/printing-press` slash command in Claude Code. Bring your own agent loop if you want to skip it.
+
+**Does it require an OpenAPI spec?** No. Three input modes: a spec (`--spec`), a HAR file (`--har`), or just a URL. The browser-sniff gate launches a browser, captures traffic, and reverse-engineers the spec for sites that don't publish one.
+
+**How fresh is the local SQLite cache?** Configurable. Without `cache.enabled`, you run `sync` manually. With `cache.enabled` and `--data-source auto`, the CLI runs a bounded pre-read refresh before serving local data. `--data-source local` skips refresh; `--data-source live` bypasses the cache entirely.
+
+**What does shipping a CLI cost in tokens?** Standard Opus mode runs end-to-end on Opus. Codex mode (`/printing-press <api> codex`) offloads Phase 3 code generation to Codex CLI for ~60% fewer Opus tokens. Both produce equivalent quality.
+
+**Can I run the verification tools on a CLI I built by hand?** Yes. `printing-press scorecard`, `dogfood`, and `verify` accept any directory + spec. Tier 1 of the scorecard checks for agent-native patterns; Tier 2 checks paths/auth/data-flow against the spec.
+
+## Contributing
+
+Bug reports, feature requests, and PRs are welcome. A few conventions to know before opening a PR:
+
+- **Conventional commits + scopes.** PR titles follow `type(scope): description` with `cli`, `skills`, or `ci` as the scope. The `PR Title` GitHub Action enforces this. See [AGENTS.md](AGENTS.md) for the full rule set.
+- **Releases are automated.** release-please opens release PRs as conventional commits accumulate. Don't manually edit version numbers — three files stay in sync via release-please annotations.
+- **Pre-commit and pre-push hooks.** `lefthook install --reset-hooks-path` wires up `gofmt` (pre-commit) and `golangci-lint` (pre-push). The same lint config runs in CI.
+- **Conventions and glossary live in [AGENTS.md](AGENTS.md).** Read it before larger changes — terminology like "machine vs printed CLI", "absorb gate", and "shipcheck" is documented there.
+
+For larger changes, opening an issue first to align on scope is helpful.
 
 ## Development
 
