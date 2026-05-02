@@ -80,6 +80,28 @@ func TestScoreMCPRemoteTransport(t *testing.T) {
 		assert.True(t, scored)
 		assert.Equal(t, 10, score)
 	})
+
+	t.Run("manifest cli_name selects canonical mcp dir over duplicates", func(t *testing.T) {
+		dir := t.TempDir()
+		// A duplicate dir whose name sorts before the canonical one — the old
+		// suffix-and-break loop would pick this and read its stdio-only main.go.
+		writeMCPFile(t, dir, "cmd/demo-pp-cli-pp-mcp/main.go", stdioOnlyMain)
+		writeMCPFile(t, dir, "cmd/demo-pp-mcp/main.go", bothTransportsMain)
+		writeMCPFile(t, dir, ".printing-press.json", `{"cli_name": "demo-pp-cli"}`)
+
+		score, scored := scoreMCPRemoteTransport(dir)
+		assert.True(t, scored)
+		assert.Equal(t, 10, score, "scorer must read the canonical demo-pp-mcp main.go, not the lexically-first duplicate")
+	})
+
+	t.Run("falls back to suffix scan when manifest is missing", func(t *testing.T) {
+		dir := t.TempDir()
+		writeMCPFile(t, dir, "cmd/demo-pp-mcp/main.go", bothTransportsMain)
+
+		score, scored := scoreMCPRemoteTransport(dir)
+		assert.True(t, scored)
+		assert.Equal(t, 10, score, "no manifest → legacy suffix scan still works")
+	})
 }
 
 // buildToolsGo fabricates an internal/mcp/tools.go containing `n` endpoint

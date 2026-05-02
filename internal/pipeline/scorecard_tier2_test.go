@@ -1026,7 +1026,7 @@ func Open() {}`)
 		assert.Equal(t, 0, score)
 	})
 
-	t.Run("schema version + doctor + auto-refresh + share scores 10", func(t *testing.T) {
+	t.Run("schema version + doctor + auto-refresh scores 10", func(t *testing.T) {
 		dir := t.TempDir()
 		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
 
@@ -1044,6 +1044,17 @@ func autoRefreshIfStale() {}`)
 		writeScorecardFixture(t, dir, "internal/cliutil/freshness.go", `package cliutil
 
 func EnsureFresh() {}`)
+
+		score, scored := scoreCacheFreshness(dir)
+		assert.True(t, scored)
+		assert.Equal(t, 10, score, "all three freshness signals should top the dimension out without an unrelated share feature")
+	})
+
+	t.Run("share feature does not influence freshness", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/store/store.go", `package store
+
+func Open() {}`)
 		writeScorecardFixture(t, dir, "internal/share/share.go", `package share
 
 func Export() {}`)
@@ -1053,7 +1064,7 @@ func newShareCmd() {}`)
 
 		score, scored := scoreCacheFreshness(dir)
 		assert.True(t, scored)
-		assert.Equal(t, 10, score)
+		assert.Equal(t, 0, score, "share is a separate feature and must not award freshness points")
 	})
 
 	t.Run("schema version + doctor only scores 5", func(t *testing.T) {
@@ -1256,6 +1267,88 @@ func runLookup(db *store.DB) {
 `)
 
 		assert.Equal(t, 0, scoreInsight(dir))
+	})
+
+	t.Run("credits manifest novel features whose Use leaves don't match prefix list", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// root.go registers each constructor so registeredCommandFiles can
+		// verify the files are actually wired in.
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+
+func register() {
+	rootCmd.AddCommand(newTrajectoryCmd())
+	rootCmd.AddCommand(newSnapshotCmd())
+	rootCmd.AddCommand(newCalendarCmd())
+	rootCmd.AddCommand(newLookalikeCmd())
+}`)
+
+		// None of these names match insightPrefixes; they would score 0 today
+		// without manifest crediting.
+		writeScorecardFixture(t, dir, "internal/cli/posts_trajectory.go", `package cli
+
+func newTrajectoryCmd() *cobra.Command {
+	return &cobra.Command{Use: "trajectory <slug>"}
+}`)
+		writeScorecardFixture(t, dir, "internal/cli/category_snapshot.go", `package cli
+
+func newSnapshotCmd() *cobra.Command {
+	return &cobra.Command{Use: "snapshot <slug>"}
+}`)
+		writeScorecardFixture(t, dir, "internal/cli/launches_calendar.go", `package cli
+
+func newCalendarCmd() *cobra.Command {
+	return &cobra.Command{Use: "calendar"}
+}`)
+		writeScorecardFixture(t, dir, "internal/cli/posts_lookalike.go", `package cli
+
+func newLookalikeCmd() *cobra.Command {
+	return &cobra.Command{Use: "lookalike <slug>"}
+}`)
+
+		// Manifest declares all four as novel features.
+		writeScorecardFixture(t, dir, ".printing-press.json", `{
+  "schema_version": 1,
+  "api_name": "demo",
+  "cli_name": "demo-pp-cli",
+  "novel_features": [
+    {"name": "Trajectory", "command": "posts trajectory", "description": "x"},
+    {"name": "Snapshot", "command": "category snapshot", "description": "x"},
+    {"name": "Calendar", "command": "launches calendar", "description": "x"},
+    {"name": "Lookalike", "command": "posts lookalike", "description": "x"}
+  ]
+}`)
+
+		assert.Equal(t, 8, scoreInsight(dir), "4 novel-feature commands should map to 8/10 via the found→score table")
+	})
+
+	t.Run("ignores manifest novel features whose files are not registered", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// root.go registers a different command — registeredCommandFiles is
+		// non-empty, so the registration filter applies and orphaned files
+		// must be skipped even when they appear in novel_features.
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `package cli
+
+func register() {
+	rootCmd.AddCommand(newOtherCmd())
+}`)
+		writeScorecardFixture(t, dir, "internal/cli/other.go", `package cli
+
+func newOtherCmd() *cobra.Command {
+	return &cobra.Command{Use: "other"}
+}`)
+		writeScorecardFixture(t, dir, "internal/cli/posts_trajectory.go", `package cli
+
+func newTrajectoryCmd() *cobra.Command {
+	return &cobra.Command{Use: "trajectory"}
+}`)
+		writeScorecardFixture(t, dir, ".printing-press.json", `{
+  "cli_name": "demo-pp-cli",
+  "novel_features": [{"name": "T", "command": "posts trajectory", "description": "x"}]
+}`)
+
+		assert.Equal(t, 0, scoreInsight(dir), "novel features must still pass the registeredCommandFiles gate")
 	})
 }
 
