@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.3](https://github.com/mvanhorn/cli-printing-press/compare/v3.4.2...v3.4.3) (2026-05-02)
+
+
+### Bug Fixes
+
+* **cli:** README template recommends MCPB drag-and-drop and skill install ([#498](https://github.com/mvanhorn/cli-printing-press/issues/498)) ([0a741d3](https://github.com/mvanhorn/cli-printing-press/commit/0a741d32fad4a930c52378cd2d1d1a111b51bcae))
+
 ## [3.4.2](https://github.com/mvanhorn/cli-printing-press/compare/v3.4.1...v3.4.2) (2026-05-02)
 
 
