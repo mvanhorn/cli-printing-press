@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.6.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.5.0...v3.6.0) (2026-05-02)
+
+
+### Features
+
+* **cli:** README template links to release page for binary + MCPB ([#508](https://github.com/mvanhorn/cli-printing-press/issues/508)) ([73468ba](https://github.com/mvanhorn/cli-printing-press/commit/73468bac246ff3116cf2d85693c35a80e5ece7b2))
+
+
+### Bug Fixes
+
+* **cli:** handle sentry openapi generation ([#507](https://github.com/mvanhorn/cli-printing-press/issues/507)) ([e37cff9](https://github.com/mvanhorn/cli-printing-press/commit/e37cff9d36101695268636badbeb341670f9e9ff))
+
 ## [3.5.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.4.3...v3.5.0) (2026-05-02)
 
 
