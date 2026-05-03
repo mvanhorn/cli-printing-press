@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.8.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.7.0...v3.8.0) (2026-05-03)
+
+
+### Features
+
+* **cli:** OAuth2 client_credentials grant + bearer_token AuthHeader precedence fix ([#528](https://github.com/mvanhorn/cli-printing-press/issues/528)) ([593ce97](https://github.com/mvanhorn/cli-printing-press/commit/593ce970a252630f7da42f78dcb885564bf518da))
+
+
+### Bug Fixes
+
+* **cli:** FedEx retro batch — 5 small fixes (WU-2, WU-3, WU-4, WU-5, WU-7) ([#526](https://github.com/mvanhorn/cli-printing-press/issues/526)) ([e761d04](https://github.com/mvanhorn/cli-printing-press/commit/e761d04d9d0670871e49586352f4bf3e9077f816))
+
 ## [3.7.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.6.2...v3.7.0) (2026-05-03)
 
 
