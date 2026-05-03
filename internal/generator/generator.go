@@ -1588,16 +1588,23 @@ func (g *Generator) renderAuthFiles() error {
 	if !g.shouldEmitAuth() {
 		return nil
 	}
-	// Render auth command - use full OAuth2 template when authorization URL is present,
-	// browser cookie template for cookie-auth APIs, otherwise simple token-management template
+	// Render auth command. Template selection priority:
+	//   1. OAuth2 client_credentials (server-to-server, no user redirect)
+	//   2. OAuth2 authorization_code (3-legged, AuthorizationURL non-empty)
+	//   3. Browser-cookie / composed / persisted-query
+	//   4. Simple token-management (catch-all)
 	authPath := filepath.Join("internal", "cli", "auth.go")
 	authTmpl := "auth_simple.go.tmpl"
-	if g.Spec.Auth.AuthorizationURL != "" {
+	switch {
+	case g.Spec.Auth.OAuth2Grant == spec.OAuth2GrantClientCredentials && g.Spec.Auth.TokenURL != "":
+		authTmpl = "auth_client_credentials.go.tmpl"
+	case g.Spec.Auth.AuthorizationURL != "":
 		authTmpl = "auth.go.tmpl"
-	} else if g.Spec.Auth.Type == "cookie" || g.Spec.Auth.Type == "composed" || g.hasTrafficAnalysisHint("graphql_persisted_query") {
-		// Select the browser-aware auth template for browser-cookie auth or a
-		// persisted-query registry, even for auth.type:none. Query refresh flows
-		// need temporary browser capture support, not a resident browser transport.
+	case g.Spec.Auth.Type == "cookie" || g.Spec.Auth.Type == "composed" || g.hasTrafficAnalysisHint("graphql_persisted_query"):
+		// Browser-aware auth template for browser-cookie auth or a
+		// persisted-query registry, even for auth.type:none. Query refresh
+		// flows need temporary browser capture support, not a resident
+		// browser transport.
 		authTmpl = "auth_browser.go.tmpl"
 	}
 	authData := &authTemplateData{
