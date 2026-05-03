@@ -366,6 +366,54 @@ type AuthConfig struct {
 	TokenParamIn       string `yaml:"token_param_in,omitempty" json:"token_param_in,omitempty"`             // "query" or "header"; default "query"
 	InvalidateOnStatus []int  `yaml:"invalidate_on_status,omitempty" json:"invalidate_on_status,omitempty"` // HTTP status codes that should invalidate the cached token and re-bootstrap (e.g. [401, 403])
 	SessionTTLHours    int    `yaml:"session_ttl_hours,omitempty" json:"session_ttl_hours,omitempty"`       // how long to trust a cached session (default 24)
+
+	// OAuth2Grant discriminates between the OAuth2 sub-flows the generator
+	// supports for Type=="oauth2". Defaults to "authorization_code" (the
+	// 3-legged user-OAuth flow with a callback server) when empty.
+	// "client_credentials" emits the 2-legged server-to-server flow used by
+	// Auth0 Management, Microsoft Graph daemon apps, FedEx, etc.: POST to
+	// TokenURL with form-encoded grant_type=client_credentials&client_id=
+	// &client_secret=, no user redirect, no refresh_token.
+	//
+	// Field is meaningless for non-oauth2 Type values; templates ignore it.
+	// Use EffectiveOAuth2Grant() instead of reading this directly so the
+	// default lives in one place.
+	OAuth2Grant string `yaml:"oauth2_grant,omitempty" json:"oauth2_grant,omitempty"`
+}
+
+// OAuth2GrantAuthorizationCode is the default 3-legged user-OAuth flow:
+// browser redirect to AuthorizationURL, callback server, code exchange at
+// TokenURL. Existing template behavior; what specs without an explicit
+// OAuth2Grant get.
+const OAuth2GrantAuthorizationCode = "authorization_code"
+
+// OAuth2GrantClientCredentials is the 2-legged server-to-server flow:
+// POST to TokenURL with form-encoded credentials, no user redirect, no
+// refresh_token. Used for M2M APIs (Auth0 Management, Microsoft Graph
+// daemon apps, FedEx).
+const OAuth2GrantClientCredentials = "client_credentials"
+
+// EffectiveOAuth2Grant returns the configured OAuth2 grant type, defaulting
+// to OAuth2GrantAuthorizationCode when unset.
+func (c AuthConfig) EffectiveOAuth2Grant() string {
+	if strings.TrimSpace(c.OAuth2Grant) == "" {
+		return OAuth2GrantAuthorizationCode
+	}
+	return c.OAuth2Grant
+}
+
+// validateOAuth2Grant ensures OAuth2Grant is empty or one of the supported
+// values. Empty is accepted (treated as the default). Cross-checking against
+// AuthConfig.Type is intentionally skipped: the field is ignored for
+// non-oauth2 types, matching how SessionTTLHours and similar fields behave.
+func validateOAuth2Grant(c AuthConfig) error {
+	switch c.OAuth2Grant {
+	case "", OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials:
+		return nil
+	default:
+		return fmt.Errorf("auth.oauth2_grant %q is not recognized (valid: %q, %q)",
+			c.OAuth2Grant, OAuth2GrantAuthorizationCode, OAuth2GrantClientCredentials)
+	}
 }
 
 type ConfigSpec struct {
@@ -1083,6 +1131,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateThrottling(s.Throttling); err != nil {
+		return err
+	}
+	if err := validateOAuth2Grant(s.Auth); err != nil {
 		return err
 	}
 	if s.ClientPattern == "proxy-envelope" && s.HasResourceBaseURLOverride() {

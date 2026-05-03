@@ -144,6 +144,64 @@ func TestThrottlingValidate(t *testing.T) {
 	}
 }
 
+func TestOAuth2GrantValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     AuthConfig
+		wantErr string
+	}{
+		{name: "empty is valid (defaults to authorization_code)", cfg: AuthConfig{}},
+		{name: "explicit authorization_code is valid", cfg: AuthConfig{OAuth2Grant: OAuth2GrantAuthorizationCode}},
+		{name: "client_credentials is valid", cfg: AuthConfig{OAuth2Grant: OAuth2GrantClientCredentials}},
+		{
+			// Cross-checking against AuthConfig.Type is intentionally skipped
+			// (the field is meaningless for non-oauth2 types but harmless to
+			// declare); validation should accept this combo.
+			name: "set on a non-oauth2 type is accepted (ignored at template time)",
+			cfg:  AuthConfig{Type: "api_key", OAuth2Grant: OAuth2GrantClientCredentials},
+		},
+		{
+			name:    "unknown grant is rejected with valid set in error",
+			cfg:     AuthConfig{OAuth2Grant: "device_code"},
+			wantErr: `auth.oauth2_grant "device_code" is not recognized`,
+		},
+		{
+			name:    "typo (e.g. authorisation) is rejected",
+			cfg:     AuthConfig{OAuth2Grant: "authorisation_code"},
+			wantErr: "not recognized",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateOAuth2Grant(tt.cfg)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestEffectiveOAuth2Grant(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  AuthConfig
+		want string
+	}{
+		{name: "empty defaults to authorization_code", cfg: AuthConfig{}, want: OAuth2GrantAuthorizationCode},
+		{name: "whitespace-only also defaults", cfg: AuthConfig{OAuth2Grant: "   "}, want: OAuth2GrantAuthorizationCode},
+		{name: "explicit authorization_code round-trips", cfg: AuthConfig{OAuth2Grant: OAuth2GrantAuthorizationCode}, want: OAuth2GrantAuthorizationCode},
+		{name: "client_credentials round-trips", cfg: AuthConfig{OAuth2Grant: OAuth2GrantClientCredentials}, want: OAuth2GrantClientCredentials},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.cfg.EffectiveOAuth2Grant())
+		})
+	}
+}
+
 func TestVersionPassedThrough(t *testing.T) {
 	base := func(v string) APISpec {
 		return APISpec{
