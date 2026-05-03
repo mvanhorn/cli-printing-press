@@ -1536,6 +1536,79 @@ resources:
         # no_auth defaults to false — placing an order needs auth
 ```
 
+### Pre-Generation MCP Enrichment
+
+Before generating, count the spec's MCP tool surface and decide whether to opt
+into the spec's `mcp:` enrichment fields. This matters most for medium-to-large
+APIs (>30 tools) where the default endpoint-mirror surface scores poorly on the
+scorecard's MCP architectural dimensions and burns agent context at runtime.
+
+**Why before generation, not after:** the generator emits the MCP server's
+`main.go`, `tools.go`, `intents.go`, `code_orch.go`, `tools-manifest.json`, and
+README MCP section from the spec at generate-time. Patching after generation
+fragments across 4+ files, won't be byte-identical, and the polish skill cannot
+fix it (polish doesn't re-run generation). Enriching the spec means every
+template emits the right surface from the start.
+
+**Count the tool surface.** Two parts:
+
+1. **Typed endpoints** — count `endpoints` across all `resources` (and
+   `sub_resources`) in the spec. These become per-endpoint MCP tools at
+   generate-time.
+2. **Cobratree-walked tools** — the runtime walker registers user-facing Cobra
+   commands as MCP tools. Estimate as: `extra_commands` count + ~13 framework
+   tools that ship by default (sql, search, context, sync, stale, doctor,
+   reconcile, etc., minus framework-skipped). When novel features are planned,
+   add their estimated command count.
+
+The total is what an agent loads at MCP server start.
+
+**Decision table:**
+
+| Total tools | Action |
+|-------------|--------|
+| <30 | Skip — default endpoint-mirror surface is fine. |
+| 30–50 | Ask the user. Suggest `mcp.transport: [stdio, http]` for remote reach; suggest `mcp.intents` if there are clear multi-step workflows. |
+| >50 | Default to recommending the Cloudflare pattern (transport + code orchestration + hidden endpoint tools). The generator will also print a warning at this size. |
+
+**The Cloudflare pattern** (recommended for large surfaces) — edit the spec's
+`mcp:` block before running `generate`:
+
+```yaml
+mcp:
+  transport: [stdio, http]    # remote-capable; reaches hosted agents
+  orchestration: code         # thin <api>_search + <api>_execute pair
+  endpoint_tools: hidden      # suppress raw per-endpoint mirrors
+  intents:                    # optional; named multi-step intents
+    - name: <intent_name>
+      description: <agent-facing intent description>
+      params: [...]
+      steps: [...]
+```
+
+`mcp.transport: [stdio, http]` adds HTTP streamable transport so cloud-hosted
+agents (Managed Agents, web clients) can connect. `mcp.orchestration: code`
+emits the thin search+execute pair that covers the full surface in ~1K tokens.
+`mcp.endpoint_tools: hidden` removes the raw per-endpoint tools that would
+otherwise still show up alongside the orchestration pair.
+
+**Smaller-surface variants:**
+
+- Just want remote reach? `mcp.transport: [stdio, http]` alone is fine.
+- Have 3–5 obvious multi-step workflows but <50 endpoints? Add `mcp.intents`
+  without code orchestration; leave `endpoint_tools` at default (visible).
+
+**When to skip entirely:** small APIs (<30 tools), one-shot specs that won't
+be installed as MCP servers, or APIs where the user explicitly opts out of MCP
+enrichment.
+
+**Verifying after generation:** the scorecard's `mcp_remote_transport`,
+`mcp_tool_design`, and `mcp_surface_strategy` dimensions reflect the choices
+above. A correctly enriched spec for a >50 tool API should score 10/10 on all
+three. If polish later reports these dims weak, that's a sign this enrichment
+step was skipped — re-run generation with the enriched spec rather than
+trying to fix it in polish.
+
 ### Lock and Generate
 
 Before running any generate command, acquire the build lock:
