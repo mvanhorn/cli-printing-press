@@ -19,6 +19,9 @@ import (
 	"sort"
 {{- end}}
 	"strings"
+{{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
+	"sync"
+{{- end}}
 	"time"
 
 {{- if .UsesBrowserHTTPTransport}}
@@ -36,6 +39,12 @@ type Client struct {
 	NoCache    bool
 	cacheDir   string
 	limiter    *cliutil.AdaptiveLimiter
+{{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
+	// ccMu serializes OAuth2 client_credentials token mints so concurrent
+	// API calls inside the 60s pre-expiry window don't all dial the token
+	// endpoint and race on Config field writes / file persistence.
+	ccMu sync.Mutex
+{{- end}}
 {{- if eq .Auth.Type "session_handshake"}}
 	Session    *SessionManager
 {{- end}}
@@ -740,13 +749,19 @@ func (c *Client) authHeader() (string, error) {
 	}
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 	// 60s window avoids in-flight requests racing the expiry boundary.
+	// Double-checked lock so only one goroutine mints under contention.
 	if needsClientCredentialsMint(c.Config) {
-		clientID, clientSecret := resolveClientCredentials(c.Config)
-		if clientID != "" && clientSecret != "" {
-			if err := c.mintClientCredentials(clientID, clientSecret); err != nil {
-				return "", err
+		c.ccMu.Lock()
+		if needsClientCredentialsMint(c.Config) {
+			clientID, clientSecret := resolveClientCredentials(c.Config)
+			if clientID != "" && clientSecret != "" {
+				if err := c.mintClientCredentials(clientID, clientSecret); err != nil {
+					c.ccMu.Unlock()
+					return "", err
+				}
 			}
 		}
+		c.ccMu.Unlock()
 	}
 {{- else}}
 	if c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" {
