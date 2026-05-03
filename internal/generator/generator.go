@@ -1356,6 +1356,7 @@ func (g *Generator) renderOptionalSupportFiles() error {
 }
 
 func (g *Generator) Generate() error {
+	warnUnenrichedLargeMCPSurface(g.Spec, os.Stderr)
 	if err := g.prepareOutput(); err != nil {
 		return err
 	}
