@@ -146,7 +146,20 @@ func (c *Config) AuthHeader() string {
 	return ""
 	{{- end}}
 {{- else if eq .Auth.Type "bearer_token"}}
-	// Env-var token wins over file-stored AccessToken (env > config convention).
+	// AccessToken (cached after auth login or set-token) wins over the
+	// env-var-as-bearer fallback below. The fallback is for the simple
+	// case where the env var IS a usable bearer JWT (personal access
+	// tokens, GitHub PATs, etc.). For OAuth2 client_credentials APIs
+	// the env var is the Client ID — sending it as Bearer would 401
+	// every request. AccessToken-first handles both cases.
+	if c.AccessToken != "" {
+		c.AuthSource = "oauth2"
+		{{- if .Auth.Format}}
+		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
+		{{- else}}
+		return "Bearer " + c.AccessToken
+		{{- end}}
+	}
 	{{- if gt (len .Auth.EnvVars) 0}}
 	if c.{{resolveEnvVarField (index .Auth.EnvVars 0)}} != "" {
 		c.AuthSource = "env:{{index .Auth.EnvVars 0}}"
@@ -161,14 +174,6 @@ func (c *Config) AuthHeader() string {
 		{{- end}}
 	}
 	{{- end}}
-	if c.AccessToken != "" {
-		c.AuthSource = "oauth2"
-		{{- if .Auth.Format}}
-		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
-		{{- else}}
-		return "Bearer " + c.AccessToken
-		{{- end}}
-	}
 	return ""
 {{- else if eq .Auth.Type "cookie"}}
 	// Env-var token wins over file-stored AccessToken (env > config convention).
