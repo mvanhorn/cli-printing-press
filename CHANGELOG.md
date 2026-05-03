@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.7.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.6.2...v3.7.0) (2026-05-03)
+
+
+### Features
+
+* **skills:** pre-generation MCP enrichment for large surfaces ([#522](https://github.com/mvanhorn/cli-printing-press/issues/522)) ([53be120](https://github.com/mvanhorn/cli-printing-press/commit/53be12097d48f1b22fd05aab43c90fa6b52df4e8))
+* **skills:** retro defaults to don't-file; adversarial triage gates ([#524](https://github.com/mvanhorn/cli-printing-press/issues/524)) ([3c04a06](https://github.com/mvanhorn/cli-printing-press/commit/3c04a0656324c82ea41bac6191d822904eb24953))
+
 ## [3.6.2](https://github.com/mvanhorn/cli-printing-press/compare/v3.6.1...v3.6.2) (2026-05-03)
 
 
