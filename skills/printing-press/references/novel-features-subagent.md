@@ -5,6 +5,25 @@
 > invocation, the subagent prompt template, and the output parsing rules for
 > novel-feature brainstorming.
 
+## Invariants
+
+The subagent spawns once per absorb step, in every printing-press run. The
+only legal non-spawn outcome is the pre-flight HALT defined below.
+
+- A missing prior `research.json` is a first print, not a skip signal — the
+  subagent still spawns; only Pass 2(d) (reprint reconciliation) is omitted.
+- A complete-looking prior manifest is not a skip signal either — Pass 2(d)
+  re-scores prior features against the current personas, which is the
+  entire reason the reprint case exists. Strong priors make the spawn more
+  valuable, not less.
+- Hand-curating from a prior manifest, falling back to inline brainstorming
+  in SKILL.md, or disclosing a skip in the gate showcase are violations of
+  this contract, not exits from it.
+- Run the prior-research discovery snippet below as written. Do not
+  substitute a hand-eyeballed `ls` of the manuscripts directory; the
+  snippet's path (`$PRESS_MANUSCRIPTS/<api-slug>/*/research.json`) is at the
+  run-id level, not inside the `research/` subdirectory.
+
 ## Pre-flight check
 
 Before spawning, confirm the Phase 1 brief has both:

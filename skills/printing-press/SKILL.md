@@ -1191,13 +1191,28 @@ Minimum 5 transcendence features. These are the commands that differentiate the 
 
 ### Step 1.5c.5: Auto-Suggest Novel Features (subagent)
 
-**This step runs automatically via a Task subagent.** Read
-[references/novel-features-subagent.md](references/novel-features-subagent.md)
-for the input bundle, prompt template, output contract, and failure handling.
-The subagent owns the full brainstorm — customer model, 2× candidate
-generation, adversarial cut, and reprint reconciliation when a prior
-`research.json` exists. Survivors come back with explicit kill reasons for
-rejected siblings so the cut is auditable.
+**Always spawn the subagent — first prints and reprints alike.** The subagent
+is the only path that produces this step's outputs (customer model, candidate
+list, adversarial cut, killed-candidate audit trail). There is no manual
+fallback. Specifically, do not:
+
+- hand-curate the transcendence list from a prior manifest, even when the
+  prior looks complete. Prior `research.json` is INPUT to Pass 2(d), never
+  a substitute for the spawn.
+- fall back to inline brainstorming inside the SKILL.
+- skip on cost grounds. With a strong prior the subagent confirms or
+  reframes; with no prior it generates from scratch. Run it either way.
+- treat disclosure as authorization. Announcing a skip in the gate showcase
+  does not make the skip legal.
+
+Read [references/novel-features-subagent.md](references/novel-features-subagent.md)
+for the prior-research discovery snippet, input bundle, prompt template, and
+output contract. Run the discovery snippet as written — do not substitute an
+`ls` of the manuscripts directory. The snippet's `none` branch (no prior
+research) is a first print, not a skip signal.
+
+The only legitimate non-spawn outcome is the pre-flight HALT (brief lacks
+user research) defined in the reference file.
 
 ### Step 1.5d: Write the manifest artifact
 
