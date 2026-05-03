@@ -1,6 +1,7 @@
 package regenmerge
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -139,6 +140,44 @@ func TestClassifyOutsideCwdRejected(t *testing.T) {
 	_, err := Classify("/tmp/regen-merge-test-nonexistent", "/tmp/fresh", Options{Force: false})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "outside the current working directory")
+}
+
+// TestClassifySpecYamlPropagates pins the contract that spec.yaml at the CLI
+// root is classified (and therefore overwritten by Apply) so source-spec
+// changes propagate into the library copy. Before this fix, regen-merge
+// silently ignored spec.yaml — and downstream tools (mcp-sync, dogfood,
+// scorecard) consumed the stale library spec, undoing source-spec
+// enrichments such as `mcp.endpoint_tools: hidden`.
+func TestClassifySpecYamlPropagates(t *testing.T) {
+	t.Parallel()
+
+	pubDir := t.TempDir()
+	freshDir := t.TempDir()
+
+	// Both trees have a spec.yaml at the root; published is older, fresh
+	// includes a new mcp: block. Either content works; we only check the
+	// verdict here. Apply is covered by the existing TEMPLATED-CLEAN path.
+	require.NoError(t, os.WriteFile(filepath.Join(pubDir, "spec.yaml"),
+		[]byte("name: x\nversion: \"0.1.0\"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(freshDir, "spec.yaml"),
+		[]byte("name: x\nversion: \"0.1.0\"\nmcp:\n  endpoint_tools: hidden\n"), 0o644))
+
+	// Minimal go.mod on both sides so the planGoModMerge path doesn't error
+	// out before classification reaches spec.yaml.
+	require.NoError(t, os.WriteFile(filepath.Join(pubDir, "go.mod"),
+		[]byte("module x\n\ngo 1.23\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(freshDir, "go.mod"),
+		[]byte("module x\n\ngo 1.23\n"), 0o644))
+
+	report, err := Classify(pubDir, freshDir, Options{Force: true})
+	require.NoError(t, err)
+	require.NotNil(t, report)
+
+	verdicts := verdictMap(report)
+	got, ok := verdicts["spec.yaml"]
+	require.True(t, ok, "spec.yaml must participate in classification; got verdicts: %v", verdicts)
+	assert.Equal(t, VerdictTemplatedClean, got,
+		"spec.yaml present in both trees should be TEMPLATED-CLEAN so Apply overwrites with fresh")
 }
 
 // --- fixture helpers ---

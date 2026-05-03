@@ -73,12 +73,22 @@ func shouldWalkDir(name string) bool {
 // Includes .go and a small allowlist of root-level config files. Compiled
 // binaries (no extension at the CLI dir root) and other non-source files are
 // skipped.
+//
+// spec.yaml / spec.json at the CLI root are generator-owned: every CLI keeps
+// a copy of the spec it was generated from, so downstream tools (mcp-sync,
+// dogfood, scorecard) can re-parse the contract without going back to the
+// source repo. When the source spec changes (e.g., user adds an `mcp:` block
+// for the Cloudflare pattern), regen-merge needs to propagate the new spec
+// into the library copy so those downstream tools see the change.
+// Without this, mcp-sync re-emits raw endpoint tools because the library
+// spec.yaml predates the `endpoint_tools: hidden` enrichment, undoing the
+// optimization. Classified TEMPLATED-CLEAN below; Apply overwrites with fresh.
 func shouldClassifyFile(rel string) bool {
 	if strings.HasSuffix(rel, ".go") {
 		return true
 	}
 	switch filepath.Base(rel) {
-	case "go.mod", "go.sum":
+	case "go.mod", "go.sum", "spec.yaml", "spec.json":
 		return true
 	}
 	return false
