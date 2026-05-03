@@ -739,9 +739,7 @@ func (c *Client) authHeader() (string, error) {
 		return "", nil
 	}
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
-	// Client_credentials has no refresh_token. Re-mint via the same grant
-	// when the cached token is missing or within a 60s safety window of
-	// expiry. Window avoids in-flight requests racing the boundary.
+	// 60s window avoids in-flight requests racing the expiry boundary.
 	if needsClientCredentialsMint(c.Config) {
 		clientID, clientSecret := resolveClientCredentials(c.Config)
 		if clientID != "" && clientSecret != "" {
@@ -813,7 +811,7 @@ func (c *Client) mintClientCredentials(clientID, clientSecret string) error {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("OAuth client_credentials mint: HTTP %d: %s", resp.StatusCode, truncateBody(body))
+		return fmt.Errorf("OAuth client_credentials mint: HTTP %d: %s", resp.StatusCode, cliutil.SanitizeErrorBody(string(body)))
 	}
 	var tokenResp struct {
 		AccessToken string `json:"access_token"`

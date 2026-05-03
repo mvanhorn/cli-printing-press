@@ -146,12 +146,8 @@ func (c *Config) AuthHeader() string {
 	return ""
 	{{- end}}
 {{- else if eq .Auth.Type "bearer_token"}}
-	// AccessToken (cached after auth login or set-token) wins over the
-	// env-var-as-bearer fallback below. The fallback is for the simple
-	// case where the env var IS a usable bearer JWT (personal access
-	// tokens, GitHub PATs, etc.). For OAuth2 client_credentials APIs
-	// the env var is the Client ID — sending it as Bearer would 401
-	// every request. AccessToken-first handles both cases.
+	// AccessToken wins over the env-var-as-bearer fallback: under OAuth2
+	// client_credentials the env var is the Client ID, not a bearer token.
 	if c.AccessToken != "" {
 		c.AuthSource = "oauth2"
 		{{- if .Auth.Format}}

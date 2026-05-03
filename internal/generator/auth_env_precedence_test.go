@@ -11,15 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestAuthHeader_BearerTokenAccessTokenWinsOverEnv pins the bearer_token
-// precedence: a cached AccessToken (minted via OAuth login or set-token)
-// wins over the env-var-as-bearer fallback. Env-var-as-bearer remains as
-// a fallback for the simple case where the env var IS a usable bearer JWT
-// (personal access tokens, GitHub PATs).
-//
-// For OAuth2 client_credentials APIs the env var is the Client ID, not a
-// usable bearer — sending it as Bearer would 401 every request. The
-// AccessToken-first precedence handles both cases correctly.
+// TestAuthHeader_BearerTokenAccessTokenWinsOverEnv pins that a cached
+// AccessToken wins over the env-var-as-bearer fallback for bearer_token.
+// Env-var-as-bearer remains the fallback for the simple case where the
+// env var IS a usable bearer JWT (personal access tokens, GitHub PATs).
 func TestAuthHeader_BearerTokenAccessTokenWinsOverEnv(t *testing.T) {
 	t.Parallel()
 
@@ -49,7 +44,7 @@ func TestAuthHeader_BearerTokenAccessTokenWinsOverEnv(t *testing.T) {
 	require.NotEqual(t, -1, envIdx)
 	require.NotEqual(t, -1, tokenIdx)
 	assert.Less(t, tokenIdx, envIdx,
-		"AccessToken check must appear BEFORE env-var fallback for bearer_token (was the FedEx Invalid CXS JWT bug)")
+		"AccessToken check must appear BEFORE env-var fallback for bearer_token")
 }
 
 // TestAuthHeader_EnvVarWinsOverFileTokenForCookieComposed pins that
