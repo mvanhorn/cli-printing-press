@@ -405,6 +405,29 @@ func validateOAuth2Grant(c AuthConfig) error {
 	}
 }
 
+// validateSessionHandshake enforces fail-fast on session_handshake auth specs
+// that would otherwise emit silently-broken Go code: missing token_param_name
+// produces q.Set("", token); a SessionTokenURL is required to bootstrap; and
+// token_param_in is byte-compared in the template, so spec authors who write
+// "Header" or "QUERY" silently route to the wrong attachment path.
+func validateSessionHandshake(c AuthConfig) error {
+	if c.Type != "session_handshake" {
+		return nil
+	}
+	if c.SessionTokenURL == "" {
+		return fmt.Errorf("auth.session_token_url is required when auth.type is %q", c.Type)
+	}
+	if c.TokenParamName == "" {
+		return fmt.Errorf("auth.token_param_name is required when auth.type is %q", c.Type)
+	}
+	switch c.TokenParamIn {
+	case "", "header", "query":
+		return nil
+	default:
+		return fmt.Errorf("auth.token_param_in %q is not recognized (valid: %q, %q)", c.TokenParamIn, "header", "query")
+	}
+}
+
 type ConfigSpec struct {
 	Format string `yaml:"format" json:"format"` // toml, yaml
 	Path   string `yaml:"path" json:"path"`
@@ -1123,6 +1146,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateOAuth2Grant(s.Auth); err != nil {
+		return err
+	}
+	if err := validateSessionHandshake(s.Auth); err != nil {
 		return err
 	}
 	if s.ClientPattern == "proxy-envelope" && s.HasResourceBaseURLOverride() {

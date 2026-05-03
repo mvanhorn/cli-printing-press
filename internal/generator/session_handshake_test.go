@@ -181,6 +181,130 @@ func TestSessionHandshakeBrowserTransportSharesJar(t *testing.T) {
 	}
 }
 
+// canonicalSessionHandshakeSpec returns a session-handshake spec that uses
+// only the canonical fields (TokenParamName / TokenParamIn) and omits the
+// api_key In / Header pair so tests can verify session-handshake fields
+// drive generation on their own.
+func canonicalSessionHandshakeSpec() *spec.APISpec {
+	return &spec.APISpec{
+		Name:        "demo",
+		Version:     "1.0.0",
+		Description: "test",
+		BaseURL:     "https://query1.example.com",
+		Auth: spec.AuthConfig{
+			Type:               "session_handshake",
+			BootstrapURL:       "https://bootstrap.example.com/",
+			SessionTokenURL:    "https://query2.example.com/v1/getcrumb",
+			TokenFormat:        "text",
+			TokenParamName:     "crumb",
+			TokenParamIn:       "query",
+			InvalidateOnStatus: []int{401, 403},
+		},
+		Config: spec.ConfigSpec{Format: "toml", Path: "~/.config/demo-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"quote": {
+				Description: "Quotes",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/v7/finance/quote", Description: "Get quotes"},
+				},
+			},
+		},
+	}
+}
+
+// TestSessionHandshakeTokenAttachesAsQueryParam verifies that for
+// session_handshake auth with TokenParamIn=query, the generated client.go
+// attaches the token as a query parameter named TokenParamName — NOT as an
+// Authorization header. The spec's canonical fields for session-handshake
+// token placement are TokenParamIn / TokenParamName, distinct from the
+// api_key In / Header pair. A spec that sets only the canonical fields
+// must still produce a query-param attachment, not fall through to a
+// header.
+func TestSessionHandshakeTokenAttachesAsQueryParam(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := New(canonicalSessionHandshakeSpec(), dir).Generate(); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	clientContent, err := os.ReadFile(filepath.Join(dir, "internal", "client", "client.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(clientContent), `q.Set("crumb", authHeader)`) {
+		t.Error("client.go does not attach the session-handshake token as a query parameter named \"crumb\" — likely fell through to header attachment")
+	}
+	if strings.Contains(string(clientContent), `req.Header.Set("Authorization", authHeader)`) {
+		t.Error("client.go still emits req.Header.Set(\"Authorization\", authHeader) for session_handshake auth — token will reach the wrong place")
+	}
+}
+
+// TestSessionHandshakeTokenAttachesAsHeader covers the alternate placement
+// where session-handshake tokens travel as a request header (TokenParamIn
+// "header") instead of a query parameter. The template branches on this
+// value in both do() and dryRun(); without this test the header path is
+// uncovered and a regression flipping the polarity of the conditional
+// would not be caught.
+func TestSessionHandshakeTokenAttachesAsHeader(t *testing.T) {
+	t.Parallel()
+
+	sp := canonicalSessionHandshakeSpec()
+	sp.Auth.TokenParamIn = "header"
+	sp.Auth.TokenParamName = "X-Crumb"
+
+	dir := t.TempDir()
+	if err := New(sp, dir).Generate(); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	clientContent, err := os.ReadFile(filepath.Join(dir, "internal", "client", "client.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(clientContent), `req.Header.Set("X-Crumb", authHeader)`) {
+		t.Error("client.go does not attach the session-handshake token as a request header named \"X-Crumb\" — header branch is broken or unreachable")
+	}
+	if strings.Contains(string(clientContent), `q.Set("X-Crumb", authHeader)`) {
+		t.Error("client.go also emits a query-param attachment for TokenParamIn=header — branches collapsed")
+	}
+}
+
+// TestSessionHandshakeCookiePersistenceMultiHost verifies the generated
+// session.go snapshots cookies for every host the session interacts with
+// (bootstrap, token, data base) so cookies set during bootstrap survive
+// across invocations and reach the data host that needs them. cookiejar
+// strips Domain on Cookies(u), so a single-host snapshot loses any cookie
+// not host-scoped to that host.
+func TestSessionHandshakeCookiePersistenceMultiHost(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := New(canonicalSessionHandshakeSpec(), dir).Generate(); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	sessionContent, err := os.ReadFile(filepath.Join(dir, "internal", "client", "session.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{
+		`sessionDataBaseURL   = "https://query1.example.com"`,
+		`for _, host := range []string{sessionBootstrapURL, sessionTokenURL, sessionDataBaseURL}`,
+	} {
+		if !strings.Contains(string(sessionContent), want) {
+			t.Errorf("session.go missing expected substring %q", want)
+		}
+	}
+
+	if strings.Contains(string(sessionContent), `// Persist cookies for the token endpoint host (broadest plausible scope).`) {
+		t.Error("session.go still contains the single-host cookie-persistence comment — cross-host bootstrap cookies will be dropped on save")
+	}
+}
+
 // TestSessionHandshakeNotEmittedForOtherAuth verifies the session helper is
 // NOT emitted for non-session auth types — no file bloat for bearer_token CLIs.
 func TestSessionHandshakeNotEmittedForOtherAuth(t *testing.T) {

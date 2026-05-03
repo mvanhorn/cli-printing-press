@@ -184,6 +184,99 @@ func TestOAuth2GrantValidate(t *testing.T) {
 	}
 }
 
+func TestSessionHandshakeValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     AuthConfig
+		wantErr string
+	}{
+		{name: "non-session_handshake type is unaffected", cfg: AuthConfig{Type: "api_key"}},
+		{
+			name: "valid session_handshake config",
+			cfg: AuthConfig{
+				Type:            "session_handshake",
+				SessionTokenURL: "https://api.example.com/token",
+				TokenParamName:  "crumb",
+				TokenParamIn:    "query",
+			},
+		},
+		{
+			name: "TokenParamIn empty is accepted (template defaults to query)",
+			cfg: AuthConfig{
+				Type:            "session_handshake",
+				SessionTokenURL: "https://api.example.com/token",
+				TokenParamName:  "crumb",
+			},
+		},
+		{
+			name: "header attachment is accepted",
+			cfg: AuthConfig{
+				Type:            "session_handshake",
+				SessionTokenURL: "https://api.example.com/token",
+				TokenParamName:  "crumb",
+				TokenParamIn:    "header",
+			},
+		},
+		{
+			name: "missing SessionTokenURL is rejected",
+			cfg: AuthConfig{
+				Type:           "session_handshake",
+				TokenParamName: "crumb",
+			},
+			wantErr: "auth.session_token_url is required",
+		},
+		{
+			name: "missing TokenParamName is rejected (would emit q.Set(\"\", token))",
+			cfg: AuthConfig{
+				Type:            "session_handshake",
+				SessionTokenURL: "https://api.example.com/token",
+			},
+			wantErr: "auth.token_param_name is required",
+		},
+		{
+			name: "title-cased TokenParamIn is rejected (template byte-compares)",
+			cfg: AuthConfig{
+				Type:            "session_handshake",
+				SessionTokenURL: "https://api.example.com/token",
+				TokenParamName:  "crumb",
+				TokenParamIn:    "Header",
+			},
+			wantErr: `auth.token_param_in "Header" is not recognized`,
+		},
+		{
+			name: "uppercase TokenParamIn is rejected",
+			cfg: AuthConfig{
+				Type:            "session_handshake",
+				SessionTokenURL: "https://api.example.com/token",
+				TokenParamName:  "crumb",
+				TokenParamIn:    "QUERY",
+			},
+			wantErr: "not recognized",
+		},
+		{
+			name: "unknown TokenParamIn value is rejected",
+			cfg: AuthConfig{
+				Type:            "session_handshake",
+				SessionTokenURL: "https://api.example.com/token",
+				TokenParamName:  "crumb",
+				TokenParamIn:    "cookie",
+			},
+			wantErr: "not recognized",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateSessionHandshake(tt.cfg)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestEffectiveOAuth2Grant(t *testing.T) {
 	tests := []struct {
 		name string

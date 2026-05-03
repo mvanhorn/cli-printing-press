@@ -442,7 +442,15 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 {{- end}}
 
 		if authHeader != "" {
-{{- if and .Auth .Auth.In (eq .Auth.In "query")}}
+{{- if eq .Auth.Type "session_handshake"}}
+{{- if eq .Auth.TokenParamIn "header"}}
+			req.Header.Set("{{.Auth.TokenParamName}}", authHeader)
+{{- else}}
+			q := req.URL.Query()
+			q.Set("{{.Auth.TokenParamName}}", authHeader)
+			req.URL.RawQuery = q.Encode()
+{{- end}}
+{{- else if and .Auth .Auth.In (eq .Auth.In "query")}}
 			// API key goes in query parameter
 			q := req.URL.Query()
 			q.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", authHeader)
@@ -563,7 +571,20 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 			queryPrinted = true
 		}
 	}
-{{- if and .Auth .Auth.In (eq .Auth.In "query")}}
+{{- if eq .Auth.Type "session_handshake"}}
+{{- if ne .Auth.TokenParamIn "header"}}
+	// Session-handshake token travels as a query parameter on the live
+	// request — surface it in the preview so users can verify wiring.
+	if authHeader != "" {
+		sep := "?"
+		if queryPrinted {
+			sep = "&"
+		}
+		fmt.Fprintf(os.Stderr, "  %s%s=%s\n", sep, "{{.Auth.TokenParamName}}", maskToken(authHeader))
+		queryPrinted = true
+	}
+{{- end}}
+{{- else if and .Auth .Auth.In (eq .Auth.In "query")}}
 	// Auth material travels as a query parameter on the live request — surface
 	// it in the preview so users can verify wiring.
 	if authHeader != "" {
@@ -586,7 +607,13 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 		}
 	}
 {{- end}}
-{{- if not (and .Auth .Auth.In (eq .Auth.In "query"))}}
+{{- if eq .Auth.Type "session_handshake"}}
+{{- if eq .Auth.TokenParamIn "header"}}
+	if authHeader != "" {
+		fmt.Fprintf(os.Stderr, "  %s: %s\n", "{{.Auth.TokenParamName}}", maskToken(authHeader))
+	}
+{{- end}}
+{{- else if not (and .Auth .Auth.In (eq .Auth.In "query"))}}
 	if authHeader != "" {
 		fmt.Fprintf(os.Stderr, "  %s: %s\n", "{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", maskToken(authHeader))
 	}

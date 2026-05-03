@@ -33,6 +33,7 @@ import (
 const (
 	sessionBootstrapURL  = "{{.Auth.BootstrapURL}}"
 	sessionTokenURL      = "{{.Auth.SessionTokenURL}}"
+	sessionDataBaseURL   = "{{.BaseURL}}"
 	sessionTokenFormat   = "{{if .Auth.TokenFormat}}{{.Auth.TokenFormat}}{{else}}text{{end}}"
 	sessionTokenJSONPath = "{{.Auth.TokenJSONPath}}"
 	sessionUserAgent     = "Mozilla/5.0 (compatible; {{.Name}}-pp-cli)"
@@ -270,12 +271,30 @@ func (m *SessionManager) saveToDisk() {
 	tok := m.token
 	m.mu.Unlock()
 
+	// Persist cookies for every host the session interacts with. cookiejar
+	// strips Domain on Cookies(u), so a single-host snapshot drops cookies
+	// scoped to a parent domain that other hosts in the handshake also rely
+	// on. Re-snapshot per host so each destination has the cookies it needs
+	// after restore.
 	var cookies []jarCookie
-	// Persist cookies for the token endpoint host (broadest plausible scope).
-	if u, err := url.Parse(sessionTokenURL); err == nil {
+	seen := make(map[string]bool)
+	for _, host := range []string{sessionBootstrapURL, sessionTokenURL, sessionDataBaseURL} {
+		if host == "" {
+			continue
+		}
+		u, err := url.Parse(host)
+		if err != nil || u.Host == "" {
+			continue
+		}
+		rootURL := u.Scheme + "://" + u.Host + "/"
 		for _, ck := range m.jar.Cookies(u) {
+			key := rootURL + "|" + ck.Name + "=" + ck.Value
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 			cookies = append(cookies, jarCookie{
-				URL:     u.Scheme + "://" + u.Host + "/",
+				URL:     rootURL,
 				Name:    ck.Name,
 				Value:   ck.Value,
 				Path:    ck.Path,
