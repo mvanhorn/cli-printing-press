@@ -24,16 +24,31 @@ allowed-tools:
 
 Analyze a Printing Press session to find ways to improve the system that produces
 CLIs — the Go binary, templates, skills, and catalog. Not fixes to the specific CLI
-that was just printed, but improvements so the *next* CLI comes out stronger with
-less manual effort.
+that was just printed, but improvements so the *next* CLI comes out stronger.
 
-This goes beyond bugs. The most valuable findings are often the work that *succeeded
-but shouldn't have been necessary* — features you built by hand that the Printing
-Press should have emitted, friction that recurs on every generation, and optimizations
-you discovered that should become defaults.
+**It is a non-goal for the Printing Press to produce flawless CLIs without manual
+tweaks.** That's the nature of the system. We expect agents to reason over the
+generated CLI, customize for the specific API, build novel features, and iterate.
+Some hand-built work in every run is normal.
 
-The retro creates a GitHub issue on the printing-press repo with your findings and
-artifacts so maintainers (or an AI agent) can fix the Printing Press.
+The retro's job is to find the subset of manual work where **the machine could
+have realistically raised the floor** — given the agent a better starting point,
+prevented the issue entirely, or eliminated friction that would recur on the
+next CLI. Two clear cases qualify:
+
+1. **The machine could have completely prevented the issue, and the pattern is
+   generalizable across many printed CLIs.** File it.
+2. **The machine could have raised the floor meaningfully** — better default,
+   partial scaffold, helper that absorbs the boilerplate — **across multiple
+   CLIs you can name with evidence.** File it.
+
+Otherwise, the manual work is normal iteration and should not generate a finding.
+Some items make it back as machine fixes; not all. The retro is the filter that
+distinguishes the two.
+
+The retro creates a GitHub issue on the printing-press repo with the findings
+that survive triage and the adversarial check, plus artifacts, so maintainers
+(or an AI agent) can fix the Printing Press.
 
 ## Terminology
 
@@ -52,6 +67,8 @@ different PRs.
 
 ## Cardinal rules
 
+- **Default is "don't change the machine."** The Printing Press is mature — 30+ CLIs printed, most templates exercised across many shapes. The burden of proof is on the finding, not on the Skip path. Most things you encountered while printing one CLI are that CLI's quirks, iteration noise, or upstream API behavior — not generator gaps. Propose a machine change only when cross-CLI evidence is concrete and the finding survives the Phase 3 adversarial check (Step G).
+- **A retro of three sharp findings is more valuable than ten mixed-quality findings.** Each filed finding spends maintainer attention. If you find yourself writing "every finding warrants action" or producing zero drops and zero skips, stop and re-triage — that outcome is the failure mode this skill exists to prevent.
 - The retro proposes Printing Press changes that help multiple printed CLIs. Don't propose direct edits to the one CLI that just shipped, and don't propose machine changes whose value is unique to this CLI's quirks — those are printed-CLI fixes wearing a generator costume.
 - **Never upload un-scrubbed artifacts.** All artifacts go through the secrets scrub before upload.
 - **Never modify source directories.** Manuscripts and library directories are read-only. Scrub operations work on temporary copies.
@@ -189,8 +206,20 @@ proof or by re-running the tools if `IN_REPO` is true and the binary is availabl
 
 ## Phase 2: Mine the session
 
-Scan the conversation history for six categories of signal. Every finding becomes a
-row in Phase 3 — don't filter yet, just collect.
+Scan the conversation history for six categories of signal and produce a candidate
+list. The candidate list is *not* the finding list — Phase 2.5 triage will cull it
+and Phase 3 will further drop weak survivors. Most candidates will not survive.
+
+While collecting, distinguish:
+
+- **Iteration noise** — one-off retries, typos, normal trial-and-error during a
+  long generation. Skip these even at the candidate stage; they don't survive triage.
+- **Per-CLI quirks** — behavior tied to this API's shape (auth oddity, undocumented
+  endpoint, vendor-specific envelope) that wouldn't recur on another spec. Add to
+  the candidate list with a "looks per-CLI" tag — most will be dropped at triage.
+- **Systemic friction** — patterns that would plausibly recur on the next CLI
+  (template gap, default that needs to change, skill instruction that misled you).
+  These are what the retro exists to surface.
 
 **If running in a fresh conversation without generation history:** Note this and
 proceed with manuscript evidence only. Focus on what the manuscripts reveal — scorecard
@@ -204,14 +233,52 @@ code that didn't compile. What broke and what fixed it?
 
 ### 2b. Manual code edits
 
-Every hand-edit to generated code is a signal — the Printing Press *should have* gotten
-it right but didn't. These are the highest-value findings because they point directly
-at template gaps.
+Manual edits during iteration are normal — agents reason over the generated CLI
+and tweak. A single edit to handle this CLI's quirk is the workflow.
+
+For each manual edit, ask: **could the machine have raised the floor here?**
+
+- *Could the machine have completely prevented this edit?* Default was wrong for
+  most APIs, template emitted broken code, parser missed a common pattern. If
+  yes AND the same edit would be needed on multiple CLIs you can name with
+  evidence → candidate.
+- *Could the machine have given a better starting point that made the edit
+  smaller, simpler, or skippable in common cases?* Even if you'd still tweak,
+  raising the floor compounds across future CLIs. If yes AND generalizable →
+  candidate.
+- *Was this just per-API customization the agent was expected to do?* Drop.
+- *Was this iteration noise (typo, retry, transient confusion)?* Drop.
+
+The triage question is whether the machine raising the floor would compound
+across future CLIs — not whether this one CLI would have shipped a few lines
+lighter.
 
 ### 2c. Features built from scratch
 
-Features that had to be written entirely by hand. Ask: is this a feature class the
-Printing Press could reasonably emit, or is it genuinely custom?
+Hand-built features (transcendence commands, novel commands, helper packages for
+secondary APIs) are part of the workflow — agents build the domain-specific
+value layer on top of the API surface the machine emits. Building features by
+hand is not by itself a finding.
+
+For each hand-built feature, ask: **could the machine have raised the floor for
+this kind of feature?**
+
+- *Could the machine have emitted a working default version, even if you'd still
+  customize it?* (E.g., every list+detail API benefits from a `summary`
+  aggregation that the machine could scaffold from the spec.) Candidate, if
+  generalizable across multiple named APIs.
+- *Could the machine have emitted scaffolding, types, or helpers that would have
+  cut the build effort meaningfully?* (E.g., a typed secondary-client template
+  for combo CLIs, a fanout-aggregation helper.) Candidate, if generalizable.
+- *Is this genuinely custom domain logic the machine couldn't realistically
+  generate from a spec?* (E.g., booking a slot is custom orchestration; the
+  machine can emit the underlying endpoints but not the choreography.) Drop —
+  the SKILL is the right place to share the recipe, not the generator.
+
+The "raises the floor" test separates "machine fix" from "SKILL recipe": if the
+machine's contribution would still leave significant per-CLI work, the recipe
+belongs in the SKILL so the next agent knows the pattern; if the machine could
+absorb the boilerplate cleanly, it's a generator template.
 
 ### 2d. Recurring friction
 
@@ -277,10 +344,53 @@ in `skills/printing-press/SKILL.md` (the Multi-Source Priority Gate, the Priorit
 inversion check before Phase Gate 1.5, and the brief's `## Source Priority` section)
 or in the generator if README ordering is template-driven.
 
+## Phase 2.5: Triage candidates
+
+Before Phase 3 spends deep analysis on each candidate, run a fast triage to drop
+candidates that don't justify the deeper look. **Most candidates should die here.**
+The retro is a filter, not a funnel — if everything from Phase 2 makes it to Phase
+3 unchanged, triage isn't doing its job.
+
+For each candidate, ask in order:
+
+1. **Was this iteration noise?** Normal trial-and-error during generation —
+   one-off retry, typo recovery, agent forgetting a flag, transient network blip. Drop.
+2. **Is this a printed-CLI fix?** The fix lives in `~/printing-press/library/<api>/`
+   and helps only this one CLI. If the proposed change is "edit this command in
+   this CLI" or "regenerate after fixing the spec," it's not a retro finding — it's
+   a polish pass on that CLI. Drop.
+3. **Is this an upstream API quirk?** The vendor returns null instead of 404, or
+   ignores a query param the docs claim to honor, or has rate limits the spec
+   doesn't declare. The Printing Press doesn't fix vendors. If the only fix is
+   "work around this in the generator for every CLI," that's almost always wrong;
+   if it's "let one CLI work around it," that's a printed-CLI fix. Drop.
+4. **Is the only evidence "I noticed this once"?** A one-time observation that you
+   can't connect to a recurring pattern across other CLIs is a candidate for Drop,
+   not a P3. P3 means "low priority systemic finding," not "I want to record this
+   somewhere."
+5. **Does the same finding appear in 2+ prior retros without being implemented?**
+   Don't re-raise at the same priority. Either drop it (the cost-benefit math has
+   been "no" twice and the retro is becoming a wishlist), or reframe as a smaller
+   incremental fix that addresses part of the friction. Search:
+   `grep -l "<finding keywords>" ~/printing-press/manuscripts/*/proofs/*-retro-*.md`
+
+Survivors of these five questions go to Phase 3. Dropped candidates are recorded
+as one-line entries in the retro's "Dropped at triage" section — they exist for
+your own discipline check and for the maintainer to see triage actually ran.
+
+**Anti-pattern to avoid.** A recent Pagliacci retro produced *"Skip: None. Every
+finding warrants action."* That sentence is the failure mode this triage exists
+to prevent. Two of those findings (snake_case in `Use:`, root.go `Short:` rewrite
+that the SKILL already documents as a manual step) were classic per-CLI / instructional
+candidates that should have been dropped here. If you find yourself writing
+"every finding warrants action," stop and re-run triage.
+
 ## Phase 3: Classify findings
 
-For each finding from Phase 2, answer these seven questions. Skip findings that only
-affect this specific API and wouldn't recur.
+For each candidate that survived Phase 2.5 triage, answer these seven questions.
+Question 5 has seven sub-steps (A through G); Step G is the adversarial check.
+Findings that fail Step G drop out — they don't get a priority, they don't go in
+the Do/Skip tables, they go on the dropped-candidates list with the reason.
 
 **1. What happened?** One sentence — the symptom, not the fix.
 
@@ -319,12 +429,15 @@ affect this specific API and wouldn't recur.
 **Step A: Cross-API stress test.** Test across API shapes (standard REST, proxy-envelope,
 RPC-style) and input methods (OpenAPI, crowd-sniffed, HAR-sniffed, no spec).
 
-**Step B: Name three concrete APIs that would benefit.** List three specific APIs by name
-(e.g., "Stripe, Notion, GitHub") that would benefit from this fix beyond the one that
-surfaced it. If you can only name two — or one plus handwaving "many APIs in theory" — the
-finding is capped at **P3 with a `subclass:<name>` annotation**, or moves to Skipped.
-Concrete cross-API evidence is the burden of proof for P1/P2; "20% of catalog" without
-naming three is optimism, not evidence.
+**Step B: Name three concrete APIs from the catalog with direct evidence.** Not "every
+API with multi-word resources" or "any browser-sniffed CLI." Name three specific APIs
+already in `~/printing-press/library/` (or the embedded `catalog/` directory) where you
+can point to evidence the pattern exists: a path in their spec, a known endpoint shape,
+a header the vendor documents, an output you can reproduce. "Stripe, Notion, GitHub
+probably have this" is hand-waving; "Stripe (Stripe-Version header in spec line N),
+GitHub (X-GitHub-Api-Version on the issues endpoints), Linear (api-version on /v2/*)"
+is evidence. If you can name only two with evidence — or three with hand-waving — the
+finding drops to **P3 max with a `subclass:<name>` annotation**, or moves to Drop.
 
 **Step C: Counter-check question.** Ask explicitly: "If I implemented this fix, would it
 actively hurt any API that doesn't have this pattern?" If yes, the fix needs a guard or
@@ -344,12 +457,34 @@ same priority is a triage failure, not stronger evidence.
 **Step E: Assess fallback cost.** How reliably will Claude catch and fix this across every
 future API? A "simple" edit Claude forgets 30% of the time means 30% ship with the defect.
 
-**Step F: Make the tradeoff.** Default is **fix it in the Printing Press**. The burden of
-proof is on *not* fixing. Skip only when the behavior is unlikely to recur across 50
-different APIs AND Step B couldn't name three concrete APIs.
+**Step F: Make the tradeoff.** Default is **don't change the machine.** The burden of
+proof is on the finding to justify a machine change. Continue to Step G only when all
+three of these are true:
+
+(a) Step B named three concrete APIs *with evidence* (not speculation).
+(b) Step D's recurrence-cost check didn't disqualify the finding.
+(c) Step C's counter-check didn't surface a hurts-other-APIs concern that lacks a guard.
+
+If a finding can't clear all three, it doesn't get a priority — it goes to Drop with
+the specific reason ("only named 2 APIs with evidence" / "raised 3 times, still not
+justified" / "fix would hurt single-paginator APIs without a guard").
 
 When the finding applies to an API subclass, include: Condition (when to activate),
 Guard (when to skip), Frequency estimate.
+
+**Step G: Construct the case against filing.** Before recording the finding, write
+1-2 sentences arguing the *opposite* — what makes this look like a printed-CLI
+fix, an iteration artifact, or a wishlist item. Why might a maintainer close this
+as "works as designed" or "too narrow for a machine fix"? What's the strongest
+version of "this shouldn't be filed"?
+
+If the case-against is stronger than the case-for, drop the finding. If they're
+roughly even, drop the finding (default direction is don't-file). Only when the
+case-for is clearly stronger does the finding survive to Phase 4.
+
+This step is not a formality. It is the explicit place where weak findings die.
+A finding that survives Step G should be able to state, in one sentence, why
+the case-against fails — and that sentence is worth quoting in the retro entry.
 
 **6. Is this inherent or fixable?** Push hard on whether smarter templates, a
 post-processing step, or better spec analysis could eliminate the friction. If inherent,
@@ -374,14 +509,29 @@ machine. The good fix lets the profiler drive behavior from the spec.
 
 ## Phase 4: Prioritize
 
-Sort findings into two buckets:
+Sort survivors of Phase 3 into three buckets:
 
-- **Do** — a Printing Press fix is warranted. Assign a priority (P1, P2, P3) based on
-  frequency, fallback reliability, and complexity. Scorer bugs are just findings like
-  any other — rank them by impact alongside template gaps and parser issues.
-- **Skip** — unlikely to recur. State why.
+- **Do** — survived Phase 3 Step G with a clear case-for. Assign a priority (P1,
+  P2, P3) based on frequency, fallback reliability, and complexity. Scorer bugs
+  are just findings like any other — rank them by impact alongside template gaps
+  and parser issues.
+- **Skip** — survived Phase 2.5 triage but didn't clear Phase 3 (Step B couldn't
+  name 3 APIs with evidence, Step D recurrence-cost disqualified, or Step G's
+  case-against was stronger). State the specific step that failed. These are
+  listed in the retro so the maintainer can see what was considered and rejected.
+- **Drop** — rejected at Phase 2.5 triage as iteration noise, printed-CLI fix,
+  upstream API quirk, unproven one-off, or recurring-not-implemented. Listed as
+  one-liners only — they don't need full analysis, they need a record so triage
+  is auditable.
 
 No numerical scoring formulas. State the priority reasoning in words.
+
+**Sanity check before moving to Phase 5.** Look at the bucket distribution.
+Almost every retro should have *some* drops and *some* skips. A retro with
+"all Do, no Skip, no Drop" is the failure mode — re-run triage and Step G on
+the weakest findings. Likewise, if every Do is P1, you're not prioritizing,
+you're inflating; force yourself to identify the weakest "Do" and ask whether
+it really beats the Skip bar.
 
 ## Phase 5: Write the retro
 
@@ -431,8 +581,20 @@ Write the full retro document using this template:
 *Omit empty priority sections.*
 
 ### Skip
-| Finding | Title | Why unlikely to recur |
-|---------|-------|----------------------|
+| Finding | Title | Why it didn't make it (Step B / Step D / Step G) |
+|---------|-------|--------------------------------------------------|
+
+*Findings that survived Phase 2.5 triage but failed Phase 3 — name the specific
+step that failed (e.g., "Step B: only 2 APIs with evidence" / "Step G: case-against
+stronger; mostly per-CLI"). Empty if every Phase 3 candidate filed.*
+
+### Dropped at triage
+| Candidate | One-liner | Drop reason |
+|-----------|-----------|-------------|
+
+*Candidates rejected at Phase 2.5. One line each. Reasons: `iteration-noise` /
+`printed-CLI` / `API-quirk` / `unproven-one-off` / `raised-N-times`. If this
+section is empty, re-check Phase 2.5 — almost every retro has some.*
 
 ## Work Units
 (see Phase 5.5)
@@ -633,17 +795,21 @@ Printing Press repo and cannot act on the findings directly.
 - Prefer automatic fixes (templates, binary) over instructional fixes (skill).
 - For recurring friction, always answer "inherent or fixable?" honestly.
 - Be honest about what went well. Protecting good patterns matters.
-- **Bias toward fixing only when the fix would help APIs you can name.**
-  When in doubt, fix it — but only when Phase 3 Step B gave you three concrete
-  cross-API examples. "20% of catalog" without named APIs is optimism, not
-  evidence. The retro is a triage tool, not a wishlist; an issue overloaded
-  with subclass findings shipped at P2 wastes maintainer attention. Scope
-  narrowly with conditional logic when a real cross-API pattern is in play.
-- **Look for broader patterns.** Before skipping, consider whether this is the first
-  sighting of a behavior you'd encounter again.
+- **Default is don't-file.** Bias toward filing only when Phase 3 Step B gave you
+  three concrete cross-API examples *with evidence* (not speculation), and the
+  Step G case-against was clearly weaker than the case-for. "20% of catalog"
+  without named APIs is optimism. "Every API has multi-word resources" is
+  hand-waving. The retro is a filter, not a wishlist; an issue overloaded
+  with weak findings wastes maintainer attention.
+- **When in doubt, drop.** A finding you're uncertain about almost certainly
+  shouldn't be filed. The next CLI's retro will surface it again with stronger
+  evidence if it's real; if it doesn't, it wasn't.
+- **Look for broader patterns.** When something *does* clear the bar, check
+  whether this is the first sighting of a behavior you'd encounter again.
 - When a fix applies to an API subclass, include the condition AND the guard.
 - **No time estimates.** Use complexity sizing (small/medium/large).
-- Be thorough. Include enough detail that someone reading months later can understand
-  the finding, the reasoning, and the proposed fix without the original conversation.
+- Be thorough on the findings that survive. Include enough detail that someone
+  reading months later can understand the finding, the reasoning, and the proposed
+  fix without the original conversation.
 - Do not add more phases, documents, or gates to the main printing-press skill.
   Propose making existing phases smarter or the Printing Press emit better defaults.

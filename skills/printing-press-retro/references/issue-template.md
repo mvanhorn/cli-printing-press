@@ -33,6 +33,7 @@ retro — not the full retro document. The full retro is linked via catbox artif
 | Fix loops | <N> |
 | Manual code edits | <N> |
 | Features built from scratch | <N> |
+| Triage | <K> candidates → <D> filed / <S> skipped / <X> dropped |
 
 ## What the Printing Press Got Right
 
@@ -62,11 +63,14 @@ and complexity. Scorer bugs are ranked alongside other findings.*
 
 ## Skipped
 
-| Finding | Title | Why unlikely to recur |
-|---------|-------|----------------------|
-| F<n> | <one-line title> | <one-line reasoning> |
+| Finding | Title | Why it didn't make it (Step B / Step D / Step G) |
+|---------|-------|--------------------------------------------------|
+| F<n> | <one-line title> | <one-line reasoning, naming the Phase 3 step that failed> |
 
-*Omit this section if no findings were skipped.*
+*Findings that survived triage but didn't clear Phase 3. Omit this section if no
+findings were skipped. Drops (rejected at Phase 2.5 triage) are recorded in the
+full retro document linked under Artifacts, not here — they're triage hygiene,
+not maintainer-facing signal.*
 
 ## Work Units
 
