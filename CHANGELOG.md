@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.6.2](https://github.com/mvanhorn/cli-printing-press/compare/v3.6.1...v3.6.2) (2026-05-03)
+
+
+### Bug Fixes
+
+* **cli:** MCP template ports — NoCache=true + codeOrch stopword filter (refs [#515](https://github.com/mvanhorn/cli-printing-press/issues/515) F1, F4) ([#521](https://github.com/mvanhorn/cli-printing-press/issues/521)) ([734e00d](https://github.com/mvanhorn/cli-printing-press/commit/734e00d14d73c55de921c8840910900b6ff041cd))
+* **cli:** scorer respects runtime MCP surface selection (refs [#516](https://github.com/mvanhorn/cli-printing-press/issues/516) WU-A4) ([#519](https://github.com/mvanhorn/cli-printing-press/issues/519)) ([358e46a](https://github.com/mvanhorn/cli-printing-press/commit/358e46a67a8e961d6096f0290d32429fd6cd2960))
+
 ## [3.6.1](https://github.com/mvanhorn/cli-printing-press/compare/v3.6.0...v3.6.1) (2026-05-02)
 
 
