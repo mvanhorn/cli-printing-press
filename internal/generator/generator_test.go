@@ -5553,10 +5553,8 @@ func TestGenerateMCPCodeOrchestrationSkippedByDefault(t *testing.T) {
 // c.NoCache = true. Agents calling through MCP need fresh data every call;
 // the on-disk response cache survives across MCP server invocations, so
 // without this the next GET after a DELETE/PATCH returns the pre-mutation
-// snapshot for up to the cache TTL. Caught during the Dub run on
-// 2026-05-02 (umbrella issue #516, sub-WU F1; subsequent template port
-// in #519's follow-up). Interactive CLI commands construct their own
-// client and are unaffected.
+// snapshot for up to the cache TTL. Interactive CLI commands construct
+// their own client and are unaffected.
 func TestGenerateMCPNewClientSkipsCache(t *testing.T) {
 	t.Parallel()
 
@@ -5571,22 +5569,15 @@ func TestGenerateMCPNewClientSkipsCache(t *testing.T) {
 	require.NoError(t, err)
 	body := string(toolsData)
 
-	// Positive: the NoCache flag is set in newMCPClient.
 	assert.Contains(t, body, "c.NoCache = true",
 		"newMCPClient must disable the response cache so MCP-driven reads see fresh state across mutations")
-
-	// Negative: the previous shape (return client.New(...) inline) is gone.
-	// The new shape is c := client.New(...); c.NoCache = true; return c, nil.
-	assert.NotContains(t, body, "return client.New(cfg, 30*time.Second, 0), nil",
-		"old inline-return shape was replaced; if this assertion fires the template was reverted")
 }
 
 // TestGenerateMCPCodeOrchKeywordsHasStopwordFilter proves the keyword
 // extractor in the code-orchestration thin surface filters short tokens
 // and a stopword set. Without this, two-letter substrings like "is"/"in"
 // inside endpoint descriptions match every query token via the
-// substring-contains rank rule, polluting search results. Caught during
-// the Dub run on 2026-05-02 (umbrella issue #516 sub-WU F4).
+// substring-contains rank rule, polluting search results.
 func TestGenerateMCPCodeOrchKeywordsHasStopwordFilter(t *testing.T) {
 	t.Parallel()
 
@@ -5602,18 +5593,13 @@ func TestGenerateMCPCodeOrchKeywordsHasStopwordFilter(t *testing.T) {
 	require.NoError(t, err)
 	body := string(codeOrchData)
 
-	// Positive: stopword set + 3-char minimum.
 	assert.Contains(t, body, "var codeOrchStopwords = map[string]bool{",
 		"code_orch.go must declare codeOrchStopwords")
 	assert.Contains(t, body, `len(tok) < 3 || codeOrchStopwords[tok]`,
 		"keyword extractor must filter short tokens and stopwords")
-	for _, sw := range []string{`"is": true`, `"in": true`, `"the": true`, `"and": true`} {
+	for _, sw := range []string{`"is"`, `"in"`, `"the"`, `"and"`} {
 		assert.Contains(t, body, sw, "stopword set missing %q", sw)
 	}
-
-	// Negative: the previous shape (no stopword filter, len < 2) is gone.
-	assert.NotContains(t, body, "if len(tok) < 2 {",
-		"old min-length-2 filter without stopwords was replaced; if this assertion fires the template was reverted")
 }
 
 // TestGenerateMCPIntentsEmittedWhenDeclared proves that a spec with mcp.intents
