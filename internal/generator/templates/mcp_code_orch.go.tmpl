@@ -93,9 +93,27 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- end}}
 }
 
+// codeOrchStopwords are words too common to contribute useful ranking
+// signal. Without filtering, two-letter substrings like "is" and "in"
+// inside endpoint descriptions match every query term that contains those
+// bigrams (e.g., a search for "list links" matches every endpoint whose
+// description contains "is enrolled" because "is" is two chars and the
+// substring matcher accepts kw.contains(t) || t.contains(kw)). Combined
+// with a 3-character minimum, the stopword filter removes the worst-of-class
+// noise.
+var codeOrchStopwords = map[string]bool{
+	"a": true, "an": true, "and": true, "are": true, "as": true,
+	"at": true, "be": true, "by": true, "for": true, "from": true,
+	"has": true, "in": true, "is": true, "it": true, "its": true,
+	"of": true, "on": true, "or": true, "that": true, "the": true,
+	"this": true, "to": true, "was": true, "will": true, "with": true,
+	"your": true, "you": true, "any": true, "all": true,
+}
+
 // codeOrchKeywords produces the lowercase token stream used for search
 // ranking. Defined at package level so the registry initializer can call it
-// inline above without pulling in a separate precompute step.
+// inline above without pulling in a separate precompute step. Tokens
+// shorter than 3 characters and stopwords (above) are filtered out.
 func codeOrchKeywords(resource, endpoint, summary, path string) []string {
 	raw := strings.ToLower(resource + " " + endpoint + " " + summary + " " + path)
 	raw = strings.Map(func(r rune) rune {
@@ -105,11 +123,13 @@ func codeOrchKeywords(resource, endpoint, summary, path string) []string {
 		}
 		return r
 	}, raw)
-	out := make([]string, 0, 8)
+	out := make([]string, 0, 16)
+	seen := map[string]bool{}
 	for _, tok := range strings.Fields(raw) {
-		if len(tok) < 2 {
+		if len(tok) < 3 || codeOrchStopwords[tok] || seen[tok] {
 			continue
 		}
+		seen[tok] = true
 		out = append(out, tok)
 	}
 	return out
