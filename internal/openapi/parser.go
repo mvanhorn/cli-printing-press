@@ -379,7 +379,20 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 		auth.Type = "bearer_token"
 		auth.Header = "Authorization"
 		if scheme.Flows != nil {
-			if ac := scheme.Flows.AuthorizationCode; ac != nil {
+			// Prefer client_credentials when both flows are declared.
+			// Server-to-server is the more common shape for printed CLIs
+			// (which run in CI/scripts, not interactive browsers); the spec
+			// author can override post-import by setting OAuth2Grant
+			// explicitly. AuthorizationURL stays empty for the cc flow
+			// (no user redirect), which is the correct shape.
+			if cc := scheme.Flows.ClientCredentials; cc != nil && strings.TrimSpace(cc.TokenURL) != "" {
+				auth.OAuth2Grant = spec.OAuth2GrantClientCredentials
+				auth.TokenURL = cc.TokenURL
+				for scope := range cc.Scopes {
+					auth.Scopes = append(auth.Scopes, scope)
+				}
+				sort.Strings(auth.Scopes)
+			} else if ac := scheme.Flows.AuthorizationCode; ac != nil {
 				auth.AuthorizationURL = ac.AuthorizationURL
 				auth.TokenURL = ac.TokenURL
 				for scope := range ac.Scopes {

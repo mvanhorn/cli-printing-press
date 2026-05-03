@@ -158,6 +158,137 @@ func TestParseGmailOAuth2(t *testing.T) {
 	assert.Equal(t, "https://accounts.google.com/o/oauth2/auth", parsed.Auth.AuthorizationURL)
 	assert.Equal(t, "https://accounts.google.com/o/oauth2/token", parsed.Auth.TokenURL)
 	assert.NotEmpty(t, parsed.Auth.Scopes)
+	// gmail uses authorization_code flow; OAuth2Grant stays empty so the
+	// EffectiveOAuth2Grant() default of "authorization_code" applies.
+	assert.Equal(t, "", parsed.Auth.OAuth2Grant)
+}
+
+func TestParseOAuth2ClientCredentialsFlow(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Auth0Mgmt
+  version: "1.0"
+servers:
+  - url: https://example.auth0.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://example.auth0.com/oauth/token
+          scopes:
+            read:users: Read user profiles
+            write:users: Manage users
+paths:
+  /api/v2/users:
+    get:
+      operationId: list users
+      security:
+        - OAuth2: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type, "parser keeps bearer_token shape; grant lives on OAuth2Grant")
+	assert.Equal(t, "client_credentials", parsed.Auth.OAuth2Grant)
+	assert.Equal(t, "https://example.auth0.com/oauth/token", parsed.Auth.TokenURL)
+	assert.Empty(t, parsed.Auth.AuthorizationURL, "client_credentials flow has no user redirect")
+	assert.Equal(t, []string{"read:users", "write:users"}, parsed.Auth.Scopes)
+}
+
+func TestParseOAuth2BothFlowsPrefersClientCredentials(t *testing.T) {
+	t.Parallel()
+
+	// When a single OAuth2 scheme declares both authorizationCode and
+	// clientCredentials flows, the parser prefers clientCredentials —
+	// server-to-server is the more common shape for printed CLIs (which
+	// run in CI/scripts, not interactive browsers). Spec authors override
+	// post-import by setting OAuth2Grant explicitly.
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Hybrid
+  version: "1.0"
+servers:
+  - url: https://example.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/oauth/authorize
+          tokenUrl: https://example.com/oauth/token-ac
+          scopes:
+            user: User access
+        clientCredentials:
+          tokenUrl: https://example.com/oauth/token-cc
+          scopes:
+            admin: Admin access
+paths:
+  /v1/things:
+    get:
+      operationId: list things
+      security:
+        - OAuth2: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "client_credentials", parsed.Auth.OAuth2Grant)
+	assert.Equal(t, "https://example.com/oauth/token-cc", parsed.Auth.TokenURL,
+		"clientCredentials tokenUrl wins, not authorizationCode's")
+	assert.Empty(t, parsed.Auth.AuthorizationURL, "no user redirect for the cc flow")
+	assert.Equal(t, []string{"admin"}, parsed.Auth.Scopes,
+		"clientCredentials scopes win, not authorizationCode's")
+}
+
+func TestParseOAuth2ClientCredentialsMissingTokenURLSkipsBranch(t *testing.T) {
+	t.Parallel()
+
+	// Malformed spec: clientCredentials block exists but has no tokenUrl.
+	// Parser should skip the cc branch and fall through to the next flow
+	// (or leave fields empty if no other flows exist), not crash.
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Malformed
+  version: "1.0"
+servers:
+  - url: https://example.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: ""
+          scopes: {}
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes: {}
+paths:
+  /v1/foo:
+    get:
+      operationId: foo
+      security:
+        - OAuth2: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	// Falls through to authorizationCode since cc had no tokenUrl.
+	assert.Equal(t, "", parsed.Auth.OAuth2Grant)
+	assert.Equal(t, "https://example.com/token", parsed.Auth.TokenURL)
+	assert.Equal(t, "https://example.com/auth", parsed.Auth.AuthorizationURL)
 }
 
 func TestBearerSchemeNameCanSpecializeEnvVar(t *testing.T) {
