@@ -468,6 +468,21 @@ The ship gates are a floor, not a ceiling. After they pass, look at scorecard di
 3. **If the deficit is structural, document and accept.** Some dimensions assume capabilities the CLI's domain doesn't have (a read-only API scored against write-workflow dimensions, a CLI with no auth scored on auth dimensions, a small API penalized on `surface_strategy` thresholds calibrated for large APIs). Note the reason in `skipped_findings` and move on.
 4. **Never add scaffolding to satisfy the scorer.** Fake commands, fake tests, fake flags, or boilerplate prose written purely to nudge a number — those degrade the CLI to satisfy the proxy. The scorer is imperfect by design (the "scoring may be imperfect" caveat in AGENTS.md applies). Trust the underlying judgment, not the number.
 
+#### MCP scorecard dims map to spec fields, not generator code
+
+When `mcp_token_efficiency`, `mcp_tool_design`, `mcp_remote_transport`, or `mcp_surface_strategy` are below max, the fix is almost always a spec edit + regenerate (or `regen-merge` from a freshly-generated tree), **not** a generator-template change. Polish CAN address these — do not classify them as "feature add to a generator-owned file, retro candidate."
+
+| Weak dim | Spec field that fixes it | What to add to `spec.yaml`'s `mcp:` block |
+|---|---|---|
+| `mcp_remote_transport` | `mcp.transport` | `transport: [stdio, http]` (default is stdio-only; HTTP costs nothing and lets the same binary serve cloud-hosted agents) |
+| `mcp_token_efficiency`, `mcp_surface_strategy` | `mcp.endpoint_tools`, `mcp.orchestration` | `endpoint_tools: hidden` + `orchestration: code` (Cloudflare pattern: ~70 raw endpoint tools collapse to `<api>_search` + `<api>_execute`; all endpoints still reachable via execute) |
+| `mcp_tool_design` | `mcp.intents` | Define multi-step intent compositions for the workflows the API supports |
+| `mcp_description_quality` | `mcp-descriptions.json` (override file at the CLI root) | Per-tool description overrides; thin spec-derived descriptions get richer text without spec edits |
+
+Recommended threshold: at >50 typed endpoints, default to recommending all four (`transport`, `endpoint_tools=hidden`, `orchestration=code`, `intents` for the headline workflows). Below 30, `transport=[stdio, http]` is the only zero-cost win. The full reference is `docs/SPEC-EXTENSIONS.md`.
+
+After editing the spec, regenerate (or `regen-merge` the changes into the published library) so the new `mcp:` block reaches templates. Cobratree-walked novel commands continue to surface as MCP tools either way; they don't need spec changes.
+
 Rule of thumb: if your fix would still be valuable if the scorecard didn't exist, do it. If the only motivation is "to push the score," don't.
 
 ## Display delta and emit result block
