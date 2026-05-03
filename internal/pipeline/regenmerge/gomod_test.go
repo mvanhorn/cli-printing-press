@@ -97,3 +97,63 @@ replace github.com/x/y => github.com/upstream/fork v9.9.9
 	assert.Equal(t, "github.com/x/y", r.Old.Path)
 	assert.Equal(t, "./local-fork", r.New.Path, "published's local-path replace wins over fresh's version-replace")
 }
+
+// TestRenderMergedGoModPreservesPublishedOnlyRequires pins the contract that
+// requires present in published but absent from fresh survive the merge.
+// Typical case: agent ran `go get modernc.org/sqlite` after generation to
+// build a hand-coded local store; the dep isn't in the spec and won't be in
+// the fresh tree's go.mod. Without preservation, the merged go.mod drops the
+// dep and `go build` fails on the next sweep.
+func TestRenderMergedGoModPreservesPublishedOnlyRequires(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	pubDir := filepath.Join(tmp, "pub")
+	freshDir := filepath.Join(tmp, "fresh")
+	require.NoError(t, os.MkdirAll(pubDir, 0o755))
+	require.NoError(t, os.MkdirAll(freshDir, 0o755))
+
+	// Published has a hand-added sqlite dep on top of fresh's baseline.
+	pubGoMod := []byte(`module github.com/example/monorepo/library/foo
+
+go 1.23.0
+
+require (
+	github.com/spf13/cobra v1.9.1
+	modernc.org/sqlite v1.50.0
+)
+`)
+	freshGoMod := []byte(`module foo-pp-cli
+
+go 1.23.0
+
+require github.com/spf13/cobra v1.9.1
+`)
+	require.NoError(t, writeFileAtomic(filepath.Join(pubDir, "go.mod"), pubGoMod))
+	require.NoError(t, writeFileAtomic(filepath.Join(freshDir, "go.mod"), freshGoMod))
+
+	// Plan: published-only require lands in PreservedRequires (not RemovedRequires).
+	plan, err := planGoModMerge(pubDir, freshDir)
+	require.NoError(t, err)
+	require.NotNil(t, plan)
+	assert.Empty(t, plan.RemovedRequires,
+		"published-only requires must not be reported as removed; they're preserved")
+	require.Len(t, plan.PreservedRequires, 1)
+	assert.Contains(t, plan.PreservedRequires[0], "modernc.org/sqlite",
+		"sqlite dep must be reported as preserved so operators can see hand-additions survive")
+
+	// Render: merged go.mod still requires sqlite.
+	bytes, err := renderMergedGoMod(pubDir, freshDir)
+	require.NoError(t, err)
+	parsed, err := modfile.Parse("merged-go.mod", bytes, nil)
+	require.NoError(t, err)
+
+	gotPaths := map[string]string{}
+	for _, req := range parsed.Require {
+		gotPaths[req.Mod.Path] = req.Mod.Version
+	}
+	assert.Equal(t, "v1.50.0", gotPaths["modernc.org/sqlite"],
+		"hand-added sqlite must survive the merge with its published version")
+	assert.Equal(t, "v1.9.1", gotPaths["github.com/spf13/cobra"],
+		"shared deps stay at fresh's version")
+}

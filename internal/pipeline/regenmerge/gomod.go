@@ -62,9 +62,13 @@ func planGoModMerge(publishedDir, freshDir string) (*GoModMerge, error) {
 			plan.AddedRequires = append(plan.AddedRequires, fmt.Sprintf("%s %s", path, ver))
 		}
 	}
+	// Published-only requires get preserved (see GoModMerge.PreservedRequires
+	// doc for rationale). Without this list in the report, agent operators
+	// can't see what survives the merge — and would have no way to confirm
+	// hand-added deps weren't silently dropped.
 	for path, ver := range pubReqs {
 		if _, ok := freshReqs[path]; !ok {
-			plan.RemovedRequires = append(plan.RemovedRequires, fmt.Sprintf("%s %s", path, ver))
+			plan.PreservedRequires = append(plan.PreservedRequires, fmt.Sprintf("%s %s", path, ver))
 		}
 	}
 
@@ -115,9 +119,28 @@ func renderMergedGoMod(publishedDir, freshDir string) ([]byte, error) {
 			return nil, fmt.Errorf("setting go version: %w", err)
 		}
 	}
+	// Merged require set: union of published and fresh.
+	//
+	// Fresh wins on shared paths (newer generator templates pin newer
+	// versions, and dropping fresh's pin would silently downgrade indirect
+	// deps). Published-only requires are preserved so deps the agent added
+	// after the original generation (e.g., `go get modernc.org/sqlite` for
+	// a hand-built local store) survive a regen-merge. Without this, the
+	// merged go.mod would drop the dep and `go build` would fail with
+	// "no required module provides package <X>" on the next build.
+	freshReqPaths := map[string]bool{}
 	for _, r := range freshMF.Require {
+		freshReqPaths[r.Mod.Path] = true
 		if err := merged.AddRequire(r.Mod.Path, r.Mod.Version); err != nil {
-			return nil, fmt.Errorf("adding require %s: %w", r.Mod.Path, err)
+			return nil, fmt.Errorf("adding fresh require %s: %w", r.Mod.Path, err)
+		}
+	}
+	for _, r := range pubMF.Require {
+		if freshReqPaths[r.Mod.Path] {
+			continue
+		}
+		if err := merged.AddRequire(r.Mod.Path, r.Mod.Version); err != nil {
+			return nil, fmt.Errorf("adding published-only require %s: %w", r.Mod.Path, err)
 		}
 	}
 

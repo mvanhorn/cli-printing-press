@@ -125,8 +125,18 @@ type GoModMerge struct {
 	Merged              bool     `json:"merged"`
 	PreservedModulePath string   `json:"preserved_module_path"`
 	AddedRequires       []string `json:"added_requires,omitempty"`
-	RemovedRequires     []string `json:"removed_requires,omitempty"`
-	PreservedReplaces   []string `json:"preserved_replaces,omitempty"`
+	// PreservedRequires lists requires present in published but absent from
+	// fresh that the merge keeps. Typical case: deps the agent added after
+	// the original generation (e.g., `go get modernc.org/sqlite` for a
+	// hand-built local store). Without preserving them, the merged go.mod
+	// would drop the dep and `go build` would fail with "no required
+	// module provides package <X>" on the next build.
+	PreservedRequires []string `json:"preserved_requires,omitempty"`
+	// RemovedRequires is reserved for requires that the merge intentionally
+	// drops. Currently always empty — published-only requires are preserved
+	// by default (see PreservedRequires).
+	RemovedRequires   []string `json:"removed_requires,omitempty"`
+	PreservedReplaces []string `json:"preserved_replaces,omitempty"`
 }
 
 // MergeReport is the full output of Classify (and Apply, with applied flags
