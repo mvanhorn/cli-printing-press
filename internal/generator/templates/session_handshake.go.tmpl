@@ -65,11 +65,17 @@ type SessionManager struct {
 
 // newSessionManager constructs a SessionManager with a cookie jar attached to
 // its HTTP client. Any cached session on disk is loaded immediately.
+//
+// The bootstrap and token-fetch calls go through the same newHTTPClient as the
+// data path so a browser-impersonated transport (Surf, when configured) is
+// applied to the handshake itself — otherwise the very calls that establish
+// the session run as a vanilla net/http client and get rate-limited away
+// even when the data client would have cleared the bot wall.
 func newSessionManager(timeout time.Duration) *SessionManager {
 	jar, _ := cookiejar.New(nil)
 	m := &SessionManager{
 		jar:    jar,
-		client: &http.Client{Timeout: timeout, Jar: jar},
+		client: newHTTPClient(timeout, jar),
 	}
 	m.loadFromDisk()
 	return m
