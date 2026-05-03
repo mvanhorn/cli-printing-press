@@ -216,6 +216,8 @@ go vet ./... 2>&1
 
 verify-skill and workflow-verify run alongside dogfood/verify/scorecard so polish catches the same class of failures the public-library CI catches. Polish hard-gates `ship` on `verify-skill` exit 0 (see ship logic at the end).
 
+**If Phase 1 baseline reveals the underlying CLI needs re-discovery** — broken HTML/SSR extraction, sparse capture (fewer than 5 unique endpoints in the source manuscript), wrong endpoint shapes, missing GraphQL operation hashes, or any signal that the CLI was generated from incomplete capture — polish does not normally do browser capture itself, but the shared playbook at `skills/printing-press/references/browser-sniff-capture.md` covers all available capture backends including the Claude chrome-MCP (`mcp__claude-in-chrome__*`) and computer-use (`mcp__computer-use__*`) when the runtime exposes them. Read Step 1 (tool detection), Step 2c.5 (failure-recovery menu), and Step 2e (chrome-MCP capture playbook) of that reference before improvising. Re-discovery from polish is rare but real; when it happens, use the shared backends — do not invent a new capture flow.
+
 Parse findings into categories:
 
 | Category | Source | What to look for |

@@ -9,7 +9,7 @@
 
 ### Cardinal Rules
 
-1. **Prefer browser-use CLI mode for capture, but keep valid fallbacks.** Use browser-use CLI mode when available because it gives stable open/eval/scroll control and response interception without an LLM key. If browser-use is unavailable or incompatible, use agent-browser only when it can produce equivalent network capture artifacts, or ask the user for a manual DevTools HAR. Do NOT substitute curl probing, JS bundle grepping, or agent-browser auto-connect alone for an approved browser capture.
+1. **Prefer browser-use CLI mode for capture, but keep valid fallbacks.** Use browser-use CLI mode when available because it gives stable open/eval/scroll control and response interception without an LLM key. If browser-use is unavailable or incompatible, the valid fallback set is: `agent-browser` (when it can produce equivalent network capture artifacts), the Claude chrome-MCP (`mcp__claude-in-chrome__*` — drives the user's existing Chrome session via the browser extension; see Step 2e), computer-use as a visual-feedback aid for the manual-HAR flow (`mcp__computer-use__*` — read-only on browsers, used to take screenshots and guide the user; see Step 1d's manual-HAR expansion), or asking the user for a manual DevTools HAR. Do NOT substitute curl probing, JS bundle grepping, or agent-browser auto-connect alone for an approved browser capture. Detection of which fallbacks are actually available happens in Step 1; menu composition for failure-recovery selection is in Step 2c.5. Rule 5 (replayability) applies to all of these — fallback shape does not relax the success criterion.
 
 2. **Do NOT skip auth discovery when the session expires.** *(Only applies when `AUTH_SESSION_AVAILABLE=true` — the user confirmed they're logged in.)* If a Chrome profile loads but the session has expired (login page visible instead of account page), offer headed login as a fallback. Never proceed without auth just because the profile session was stale. For anonymous sniffs (no auth context), this rule does not apply.
 
@@ -78,6 +78,19 @@ fi
 If a tool is found, report: "Using **<tool>** for temporary traffic capture during generation (CLI-driven mode — no LLM key needed)." and proceed to Step 1c to verify compatibility.
 
 **Important:** browser-use has two modes: autonomous Agent mode (requires an LLM API key like ANTHROPIC_API_KEY) and CLI mode (open/eval/scroll — no key needed). **Always use CLI mode for browser-sniff.** It is more reliable, version-stable, and does not require the user to provide an additional API key. Do NOT attempt to use browser-use's Python `Agent` class — it requires an LLM key that may not be available.
+
+**Also detect: optional MCP-driven fallback backends.** Two additional capture options exist when the runtime exposes them — they enter only on failure-recovery in Step 2c.5 or as opt-in choices in Step 1b's install picker, never as defaults. Detection is **agent-prose, not shell-probe** — the agent inspects its own available and deferred tool lists (visible in system reminders / the deferred-tool block / `ToolSearch` catalog) and asserts the flags inline in its reasoning. Bash blocks cannot read the agent's own tool registry; do not write `command -v mcp__claude-in-chrome__` style probes.
+
+> **Inspect your tool catalog now and assert these flags in your reasoning, not as shell vars.** They are read by Step 2c.5 (recovery menu composition) and Step 2e (chrome-MCP capture playbook) later in this same conversation turn.
+>
+> - If `mcp__claude-in-chrome__*` tools appear in your available or deferred tool list, set `CHROME_MCP_AVAILABLE=true`. Otherwise `false`.
+> - If `mcp__computer-use__*` tools appear in your available or deferred tool list, set `COMPUTER_USE_AVAILABLE=true`. Otherwise `false`.
+> - The probe is intentionally cheap — actual schema loading via `ToolSearch` is deferred until the user picks the option from a menu.
+> - On platforms that don't expose a deferred-tool list (non-Claude-Code targets running this skill via plugin install), the agent observes neither MCP and both flags default to `false`. Downstream behavior is unchanged from today's.
+
+If either MCP flag is true, extend the status report:
+
+> "Using **<tool>** for traffic capture. Fallbacks available: chrome-MCP, computer-use." (list whichever flags are true)
 
 #### Step 1b: Install capture tool (if none found)
 
@@ -259,7 +272,28 @@ agent-browser state save "$DISCOVERY_DIR/session-state.json"
 ```
 Close the headed browser and restart headless with the saved state.
 
-**For HAR export (option 3):** Guide the user through DevTools > Network > Save all as HAR. Then use `--har` path. Make clear that a HAR is discovery input, not a promise that every captured HTML/XHR route becomes a printed CLI command. After analyzing the HAR, keep only surfaces that replay through lightweight HTTP/Surf/browser-compatible HTTP, browser-clearance cookie import plus replay, or structured HTML/SSR/RSS extraction. If the HAR only proves live page-context execution works, HOLD or pivot scope.
+**For HAR export (option 3):** Guide the user through the DevTools HAR-export flow. Make clear that a HAR is discovery input, not a promise that every captured HTML/XHR route becomes a printed CLI command. After analyzing the HAR, keep only surfaces that replay through lightweight HTTP/Surf/browser-compatible HTTP, browser-clearance cookie import plus replay, or structured HTML/SSR/RSS extraction. If the HAR only proves live page-context execution works, HOLD or pivot scope.
+
+**Chrome 147+ DevTools HAR export — concrete instructions.** Recent Chrome versions (147+) removed "Save all as HAR with content" from the right-click menu in the Network panel. The download-arrow icon at the top of the Network panel is now the only stable export path. Walk the user through these steps in order — they are the steps a user got stuck on in a recent session, so the language is deliberately literal:
+
+1. **Open DevTools.** `Cmd+Option+I` (macOS) or `Ctrl+Shift+I` (Windows/Linux). If DevTools is already open but on the wrong tab, the next step covers it.
+2. **Switch to the Network panel.** It is in the top tab strip alongside Elements, Console, Sources, Performance. If DevTools is narrow, the Network tab may be hidden behind a `>>` overflow chevron at the right end of the tab strip — click `>>` and pick **Network**. Do not pick "Recorder" — that is a different panel.
+3. **Confirm recording is on.** A red dot at the top-left of the Network panel means recording is on. If it is gray/black, click it once to enable.
+4. **Check "Preserve log" and "Disable cache"** — both are checkboxes in the Network panel toolbar. Preserve log keeps records across navigations; disable cache forces fresh requests so the HAR contains real network activity.
+5. **Clear any prior requests.** Click the 🚫 (clear / no-entry) icon in the toolbar to start with an empty log.
+6. **Reproduce the user flow on the target site** — navigate, click into the section the printed CLI needs, scroll, interact. Wait for network activity to settle between actions.
+7. **Export the HAR.** Click the **download-arrow icon** at the top-left of the Network panel toolbar (between the upload-arrow icon `↑` and the record/clear icons — it looks like a `↓` arrow with a horizontal bar underneath). A macOS/Windows save dialog opens. Save as `<api>-capture.har` somewhere accessible like `~/Downloads/`.
+8. **Tell the agent the path.** The agent runs `printing-press browser-sniff --har <path>` next.
+
+**Computer-use visual-feedback-loop (only when `COMPUTER_USE_AVAILABLE=true`).** Computer-use cannot click or type into Chrome (browsers are tier-"read" — visible in screenshots, but input is blocked). Its value here is closing the loop with the user when text instructions get them stuck. Pattern:
+
+1. **Before screenshotting, instruct the user to collapse the Network panel detail pane** so only the request list is visible. The detail pane shows full request and response headers including `Authorization` and `Cookie`; collapsing it before each screenshot keeps credentials out of the captured PNG. (Click the `×` on any open request detail, or click in the request list to deselect.)
+2. **Take a screenshot via `mcp__computer-use__screenshot`** at each instruction checkpoint (after step 1, after step 2, after step 7).
+3. **Display the screenshot inline AND describe what the agent sees in 1-2 sentences.** This is mandatory — silent storage helps no one. Pattern: `Read` the saved PNG path so the image shows in the response, then say something like "I see your DevTools is on the Recorder tab, not Network — click `>>` in the tab strip and pick Network." The screenshot becomes part of the agent's reasoning AND the user-facing feedback.
+4. **Save screenshots to `$DISCOVERY_DIR/devtools-help-*.png`** during the session so they're available for inline display and so manuscripts archiving can clean them up.
+5. **Phase 5.5 cleanup:** the archive-time cleanup must explicitly delete `$DISCOVERY_DIR/devtools-help-*.png` — these are ephemeral debug aids, not durable artifacts, and the text-based credential scrubber in `secret-protection.md` cannot redact PNG contents. Make sure the `cleanup` block in the run wrap-up includes `rm -f "$DISCOVERY_DIR"/devtools-help-*.png 2>/dev/null` or equivalent.
+
+If `COMPUTER_USE_AVAILABLE=false`, the text-only instructions above stand on their own. Do not skip them just because computer-use isn't available — the click path itself is the load-bearing fix.
 
 **After any session transfer method**, verify cookies transferred before proceeding:
 
@@ -686,6 +720,111 @@ If browser-use is not available, use agent-browser with Claude driving the explo
    agent-browser network har stop "$DISCOVERY_DIR/browser-sniff-capture.har"
    ```
 
+#### Step 2e: Claude chrome-MCP capture (failure-recovery fallback)
+
+Use this backend when (a) the user picks chrome-MCP from the Step 2c.5 recovery menu after `browser-use` or `agent-browser` was hard-blocked by an anti-bot gate, or (b) the user opted into chrome-MCP up-front from the Step 1b install picker. Detection is set in Step 1 (`CHROME_MCP_AVAILABLE`). Skip this section entirely if `CHROME_MCP_AVAILABLE=false`.
+
+**Why chrome-MCP exists as a fallback.** chrome-MCP drives the user's already-running Chrome via a browser extension, so capture happens inside the user's logged-in session — no cookie transfer step (unlike Step 1d), and the WAF sees a real Chrome instance with the user's normal fingerprint. This is exactly what unblocks targets that hard-blocked headless Chromium-based capture (browser-use, agent-browser) under Akamai / DataDome / sophisticated bot detection.
+
+**Auth surface caveat.** chrome-MCP captures every request the user's tab fires, including ones carrying `Authorization` headers, session cookies, OAuth tokens, and JWTs from the live session. The credential strip rules below are mandatory, not advisory.
+
+**Prerequisites.**
+
+- The Chrome browser extension for chrome-MCP must be installed and connected. If `tabs_context_mcp` returns an error indicating the extension isn't connected, instruct the user via `AskUserQuestion` to connect the extension and retry. If they decline, fall back to the Step 2c.5 recovery menu with chrome-MCP removed (the menu re-fires per the menu re-fire rule in Step 2c.5).
+- Chrome must be visible and unminimized (chrome-MCP cannot drive a hidden window).
+- For authenticated discovery: the user should already be logged in to `<site>` in their Chrome session. No separate cookie transfer step.
+
+**Tab scope rule (mandatory — not optional).**
+
+Always create a fresh capture tab via `mcp__claude-in-chrome__tabs_create_mcp`, even if `tabs_context_mcp` shows a tab already open at `<site>`. Reasons:
+
+- The user's existing tab may have unsaved work (a draft message, a partially-filled form, a search the user is mid-way through). Navigating it away is data loss.
+- Other open tabs may be sensitive (banking, internal tools, personal email). The agent has no way to classify them; the safe default is to never touch them.
+- A fresh tab gives the agent a clean DOM and clean network log scoped to the discovery target.
+
+`tabs_context_mcp` is called for awareness only — to confirm the extension is connected and to log how many tabs the user has open. **Never `navigate` an existing tab.** Always `tabs_create_mcp` → `navigate` in the new tab. After capture, close the capture tab via `mcp__claude-in-chrome__tabs_close_mcp` so the user's tab strip returns to its original state.
+
+**Body-capture interceptor (mandatory — install BEFORE navigation).**
+
+`mcp__claude-in-chrome__read_network_requests` returns request metadata (URL, method, request headers, response status) but **does not include response bodies**. The downstream `internal/browsersniff/parser.go` consumer requires `response_body` populated per entry, so an extra step is mandatory.
+
+Two viable approaches:
+
+1. **Recommended: in-page interceptor installed before navigation.** Use `mcp__claude-in-chrome__javascript_tool` to install a `fetch` and `XMLHttpRequest` interceptor in the new tab BEFORE navigating to `<site>`. The interceptor pushes each completed request's body into `window.__capture_bodies` keyed by URL+method. After capture, `javascript_tool` reads `window.__capture_bodies` back. This avoids re-firing requests against a wary WAF.
+
+2. **Fallback: `javascript_tool` re-fetches each captured URL after the fact.** Mirrors the `agent-browser network request <id> --json` enrichment loop in Step 2b. Use this only when option 1 fails (e.g., the page wraps `fetch` itself and the interceptor can't shadow it). Re-fetching may trip rate limits — apply the pacing rules below.
+
+The interceptor sketch (illustrative, adapt to the page's actual fetch shape):
+
+```javascript
+// Run via mcp__claude-in-chrome__javascript_tool BEFORE mcp__claude-in-chrome__navigate
+window.__capture_bodies = {};
+const _origFetch = window.fetch;
+window.fetch = async function(...args) {
+  const resp = await _origFetch.apply(this, args);
+  const cloned = resp.clone();
+  const url = typeof args[0] === 'string' ? args[0] : args[0].url;
+  const method = (args[1] && args[1].method) || 'GET';
+  cloned.text().then(body => {
+    window.__capture_bodies[`${method} ${url}`] = body;
+  }).catch(() => {});
+  return resp;
+};
+// XHR interceptor analogous; install both
+```
+
+**Capture flow (full sequence).**
+
+1. `mcp__claude-in-chrome__tabs_context_mcp` — awareness only; confirm extension is connected
+2. `mcp__claude-in-chrome__tabs_create_mcp` — fresh capture tab
+3. `mcp__claude-in-chrome__javascript_tool` — install fetch + XHR body interceptor in the new tab
+4. `mcp__claude-in-chrome__navigate` — open the discovery target URL
+5. Interaction loop (per the same "click + scroll + interact" guidance the browser-use flow uses):
+   - `mcp__claude-in-chrome__read_page` to find interactive elements
+   - `mcp__claude-in-chrome__find` + `mcp__claude-in-chrome__left_click` (or `form_input` for forms) to interact
+   - For SPAs that hydrate via JS without a fresh navigation, do at least 3 meaningful interactions before reading the network log
+6. `mcp__claude-in-chrome__read_network_requests` — pull request metadata
+7. `mcp__claude-in-chrome__javascript_tool` — read back `window.__capture_bodies`
+8. Optional: `mcp__claude-in-chrome__get_page_text` for SSR-rendered content
+9. Merge metadata + bodies into the enriched-capture JSON shape (next subsection)
+10. `mcp__claude-in-chrome__tabs_close_mcp` — clean up the capture tab
+
+**Output format.**
+
+Write to `$DISCOVERY_DIR/browser-sniff-capture.json` using the `EnrichedCapture` shape from `internal/browsersniff/types.go`:
+
+- Top-level: `target_url`, `captured_at` (RFC3339), `interaction_rounds` (count of meaningful interactions), `auth` (object describing how auth flows for this capture; `{"type": "chrome_mcp_session", "site": "<site>"}` is fine), `entries[]`
+- Per-entry: `method`, `url`, `request_headers` (object), `response_headers` (object), `request_body` (string, may be empty), `response_body` (string, populated from interceptor), `response_status` (int), `response_content_type` (string), `classification` (leave empty; analyzer fills), `is_noise` (leave false; analyzer fills)
+
+This is the same shape `agent-browser`'s enriched-capture JSON uses (Step 2b lines 685-695), so downstream parsing is unchanged.
+
+**Write-time credential strip (mandatory — not optional).**
+
+Before writing the entry to `$DISCOVERY_DIR/browser-sniff-capture.json`, scrub credentials from `request_headers` and `response_headers`:
+
+- Remove headers with names matching (case-insensitive): `Authorization`, `Cookie`, `Set-Cookie`, `Proxy-Authorization`, `X-Api-Key`, `X-Auth-Token`, `X-Session-Id`, and any header matching the regex `/^x-.*-(token|key|auth|session|secret)$/i`.
+- For URLs containing query parameters that look like tokens (`access_token=`, `api_key=`, `token=`, `key=`, `signature=`, `auth=`, `password=`), redact the value to `REDACTED` in the stored URL.
+
+Cross-reference `secret-protection.md` for the canonical scrub list — when the canonical list updates, this section must update too. The strip happens at write time so the artifact never sits on disk with live credentials, even briefly. Phase 5.5 archive-time strip is a defense-in-depth backstop, not the primary control for chrome-MCP captures.
+
+**Pacing scope.**
+
+The adaptive-pacing rules at the top of "If user approves browser-sniff" (start at 1s, ramp down on success, double on 429, hard-stop after 3 consecutive 429s) apply to operations the agent initiates: `navigate` between pages, `javascript_tool`-fired `fetch()` calls, and any re-fetch loop in the fallback body-capture approach. They do **not** apply to `read_network_requests` itself — that's observational and reads what the page already fired. Apply pacing where the agent is the request source, not the observer.
+
+**Failure detection (multi-trigger).**
+
+A chrome-MCP capture has not succeeded just because `read_network_requests` returned 142 entries — the entries may all be challenge-page noise. Before reporting success, check all three triggers; any one means "WAF is also blocking chrome-MCP, treat as capture failure":
+
+1. **HTTP status pattern.** Count entries by status. If fewer than 30% returned 2xx, OR more than 30% returned 403/429, the capture is failing.
+2. **Body markers.** Scan response bodies for known challenge sentinels: `Just a moment` (Cloudflare), `cf_chl_opt` (Cloudflare), `_abck` references in HTML (Akamai), `<title>Access Denied</title>` (Akamai/F5), `Pardon Our Interruption` (PerimeterX), `<title>Bot or Not?</title>` (Akamai). Any sentinel in any body triggers detection.
+3. **Page sentinel.** `mcp__claude-in-chrome__get_page_text` after the interaction loop — if the visible page contains "verifying you are human", "checking your browser", "captcha" (case-insensitive), or "access denied", treat as challenge.
+
+When any trigger fires, do NOT write the artifact. Re-fire the Step 2c.5 recovery menu with chrome-MCP removed from the option list (per the menu re-fire rule in Step 2c.5). Record the failure in the marker file's `reason` field: `chrome-mcp captured N requests but failure detection triggered: <which trigger fired>`.
+
+**Replayability check.**
+
+Even when failure detection passes, the same replayability constraint from cardinal rule 5 applies: the captured surface must round-trip through Surf with the same Chrome TLS fingerprint the printed CLI will ship, or the captured URLs are unusable in production. Do not skip this check just because the user's authenticated browser session worked — the printed CLI does not have the user's authenticated browser session.
+
 #### Step 2c: Thin-results safety check
 
 After completing the primary user flow capture (browser-use or agent-browser), count unique API endpoints discovered. If fewer than 5 unique endpoints:
@@ -710,15 +849,49 @@ Treat the capture as failed when all or nearly all captured target-site response
 - only login redirects/pages when the user expected an authenticated capture
 - no API-looking requests, no SSR embedded data, no structured HTML/feed data, and no page-context fetch evidence
 
-When this happens, do not continue to Phase 2 with a challenge-page spec. Present via `AskUserQuestion`:
+When this happens, do not continue to Phase 2 with a challenge-page spec. Compose the recovery menu **per the availability of the MCP fallback flags set in Step 1** — the menu shape changes based on what's reachable in this runtime. Use the table below to pick the option set, then present via `AskUserQuestion`.
+
+**Menu composition table.** Always read `CHROME_MCP_AVAILABLE` and `COMPUTER_USE_AVAILABLE` from your reasoning (set in Step 1). Pick the row matching the flag combination:
+
+| `CHROME_MCP_AVAILABLE` | `COMPUTER_USE_AVAILABLE` | Menu options (in order) |
+|---|---|---|
+| false | false | (1) Try cleared-browser capture again, (2) I'll provide a HAR from DevTools, (3) Discuss alternate CLI scope — current behavior, no change |
+| false | true | (1) Try cleared-browser capture again, (2) I'll provide a HAR from DevTools — I'll guide you with screenshots of your DevTools window, (3) Discuss alternate CLI scope |
+| true | false | (1) Try cleared-browser capture again, (2) **Try chrome-MCP** — recommended on anti-bot trigger, (3) I'll provide a HAR from DevTools, (4) Discuss alternate CLI scope |
+| true | true | (1) Try cleared-browser capture again, (2) **Try chrome-MCP** — recommended on anti-bot trigger, (3) I'll provide a HAR from DevTools — I'll guide you with screenshots of your DevTools window, (4) Discuss alternate CLI scope |
+
+**Recommended-badge rule.** When the menu fires because of an anti-bot block (the trigger criteria above: 403/429 with WAF markers, "Just a moment", challenge titles, login-redirect-only when authenticated capture was expected), chrome-MCP carries the **(Recommended)** badge whenever it is present in the menu, regardless of whether computer-use is also detected — chrome-MCP is the highest-leverage path against an anti-bot block because it uses the user's real Chrome session. In other failure modes (thin results from the Step 2c check, time-budget bailout), no option carries the Recommended badge — let the user pick based on context.
+
+**Question stem (teach the chrome-MCP mechanic when present).** When chrome-MCP is in the menu and the user has not seen this menu before in the current session, the question stem must teach the mechanic in one line. The user is mid-failure and may have never encountered chrome-MCP-as-fallback.
+
+When chrome-MCP IS in the menu:
+
+> "The browser capture only saw challenge or login pages, so it did not discover the real website data/API surface. The Chrome-extension MCP can capture from your existing Chrome window — pick this if your Chrome is open and you're already logged in to the target site. What should we do next?"
+
+When chrome-MCP is NOT in the menu (current 3-option case, unchanged):
 
 > "The browser capture only saw challenge or login pages, so it did not discover the real website data/API surface. What should we do next?"
->
-> 1. **Try cleared-browser capture again** — "Open/attach Chrome, solve the challenge, then repeat the browser-sniff."
-> 2. **I'll provide a HAR from DevTools** — "You browse the target site in Chrome and export the HAR. I analyze it for discovery, then keep only routes that pass replayability checks."
-> 3. **Discuss alternate CLI scope** — "Only now consider RSS/docs/official API/browser-backed command scope."
 
-Only option 3 may lead to an RSS-first, official API, docs-only, or narrower-scope proposal. Record the failed capture in `$DISCOVERY_DIR/browser-sniff-report.md` if a report is written.
+**Fixed option labels and bodies.** Use these exact strings as the `AskUserQuestion` option labels and descriptions — the implementer should not paraphrase. Labels are short (4-7 words), self-contained (some harnesses render labels without descriptions), and front-load the differentiator. Composition is per the table above; pick the option set for the flag combination, then mark Recommended where the rule above says.
+
+- **"Try cleared-browser capture again"** — "Open/attach Chrome, solve the challenge, then repeat the browser-sniff with the previous backend."
+- **"Try chrome-MCP"** — "Capture from your already-running Chrome window via the Chrome extension MCP. Uses your logged-in session, no cookie transfer. The agent will create a fresh tab and close it when done."
+- **"I'll provide a HAR from DevTools"** — "You browse the target site in your Chrome and export a HAR. The agent analyzes it for discovery, then keeps only routes that pass replayability checks."
+- **"I'll provide a HAR from DevTools — I'll guide you with screenshots of your DevTools window"** — "Same as 'I'll provide a HAR from DevTools', plus the agent uses computer-use to take screenshots of your Chrome window at each step and tells you what it sees so you don't get stuck on the export flow."
+- **"Discuss alternate CLI scope"** — "Step away from this discovery target and consider RSS/docs/official API/narrower-scope proposals. Only pick this when the other options have been tried."
+
+**Routing on selection.**
+
+- "Try cleared-browser capture again" → re-run the previously-attempted backend (browser-use or agent-browser) per the existing capture flow. If it fails again with the same trigger, re-fire this menu with this option's body amended to "(this option already failed once; consider another path)" — the option stays in the menu but loses any badge.
+- "Try chrome-MCP" → load the chrome-MCP MCP tools via `ToolSearch` (`select:mcp__claude-in-chrome__*`), then proceed to **Step 2e** for the capture playbook.
+- "I'll provide a HAR from DevTools" (either variant) → proceed to the manual-HAR flow at Step 1d (the existing branch). When the user picks the augmented variant, the manual-HAR body augmentation in Step 1d kicks in — see Step 1d for the computer-use visual-feedback-loop.
+- "Discuss alternate CLI scope" → leave this flow and return to upstream scope discussion. Record `decision: alternate_scope` in the marker file.
+
+**Menu re-fire on backend failure (session-scoped state).** When the user picks a backend from this menu and that backend ALSO fails (per the Step 2c.5 trigger criteria for browser-use/agent-browser/manual-HAR, or per the Step 2e multi-trigger failure detection for chrome-MCP), re-fire this exact menu with the failed option removed. Track which backends have been tried in your reasoning across this same recovery session — this is a session-scoped tracking concern, not a marker-file field. Stop re-firing when only "Discuss alternate CLI scope" remains in the menu, or when the user picks "Discuss alternate CLI scope" themselves.
+
+**Marker file `reason` field convention.** When recording the chosen backend in the `browser-browser-sniff-gate.json` marker, name it explicitly so future audit can identify which backend produced the capture. Examples: `reason: "chrome-mcp captured 142 requests; SSR enriched after Akamai block on agent-browser"`, `reason: "manual-HAR with computer-use guidance after browser-use blocked"`. The `reason` field is free-form per the existing schema; no migration needed.
+
+Only the "Discuss alternate CLI scope" option may lead to an RSS-first, official API, docs-only, or narrower-scope proposal. Record the failed capture in `$DISCOVERY_DIR/browser-sniff-report.md` if a report is written.
 
 If direct HTTP is blocked but the page does not require live page-context execution, try the lightweight replay path before proposing a resident browser runtime: Surf/Chrome-compatible HTTP with modern TLS/UA headers, uTLS-style Chrome ClientHello where available, browser-clearance cookie import plus replay, or structured HTML/SSR/RSS extraction. These are discovery and replayability aids, not permission to ship a browser sidecar transport.
 
