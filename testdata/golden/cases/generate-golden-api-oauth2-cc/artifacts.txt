@@ -1,0 +1,26 @@
+# Locks the OAuth2 client_credentials auth shape contract end-to-end.
+# The fixture declares only flows.clientCredentials; every artifact
+# below proves a chokepoint in the auth shape pipeline ran:
+#
+#   parser.go      → AuthConfig.OAuth2Grant=client_credentials, TokenURL set
+#   generator.go   → auth_client_credentials.go.tmpl selected (not auth.go.tmpl)
+#   config.go.tmpl → AuthHeader emits AccessToken-first (the gated branch)
+#   client.go.tmpl → emits needsClientCredentialsMint, mintClientCredentials,
+#                    ccMu sync.Mutex, double-checked lock in authHeader
+#
+# If a future refactor regresses the parser branch, template selection,
+# or the gating, these files either disappear or contain the wrong
+# auth shape and the harness fails with a content diff.
+
+# auth.go is the auth_client_credentials.go.tmpl output: login command
+# does form-encoded POST to TokenURL with grant_type=client_credentials.
+printing-press-oauth2-cc/internal/cli/auth.go
+
+# client.go carries the mint helpers + the mutex + the gated authHeader
+# path. The presence of needsClientCredentialsMint, ccMu, and the
+# double-checked-lock pattern in this file is the load-bearing contract.
+printing-press-oauth2-cc/internal/client/client.go
+
+# config.go's AuthHeader must emit the AccessToken-first gated branch
+# (under client_credentials the env var is the Client ID, not a bearer).
+printing-press-oauth2-cc/internal/config/config.go

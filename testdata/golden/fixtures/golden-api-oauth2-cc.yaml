@@ -1,0 +1,47 @@
+openapi: "3.0.3"
+info:
+  title: Printing Press OAuth2 CC API
+  version: "1.0.0"
+  description: Purpose-built fixture for the OAuth2 client_credentials auth shape.
+servers:
+  - url: https://api.cc.example/v1
+security:
+  - OAuth2CC: []
+components:
+  securitySchemes:
+    # clientCredentials flow declared. The OpenAPI parser detects this
+    # branch and sets AuthConfig.OAuth2Grant=client_credentials, which
+    # gates: (1) generator template selection (auth_client_credentials
+    # vs auth.go.tmpl), (2) AuthHeader precedence (AccessToken-first vs
+    # env-first), (3) client.go mint helpers + ccMu mutex emission.
+    OAuth2CC:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.cc.example/oauth/token
+          scopes:
+            read: Read access
+            write: Write access
+  schemas:
+    Item:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+paths:
+  /items:
+    get:
+      tags: [items]
+      operationId: listItems
+      summary: List items
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Item"

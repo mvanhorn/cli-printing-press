@@ -1,0 +1,1 @@
+Generated printing-press-oauth2 at <ARTIFACT_DIR>/generate-golden-api-oauth2-cc/printing-press-oauth2-cc
