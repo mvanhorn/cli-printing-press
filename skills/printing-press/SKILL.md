@@ -1171,13 +1171,12 @@ who uses this service, what their rituals are, and what questions they can't ans
 today. "What can SQLite do?" is the wrong question. "What would make a power user
 say 'I need this'?" is the right one.
 
-Read [references/absorb-scoring.md](references/absorb-scoring.md) Step 1.5c.5 for
-the **User-First Feature Discovery** framework: identify 2-4 specific user personas,
-map their rituals and frustrations, identify service-specific content patterns, then
-generate features that serve those personas.
+The actual brainstorming runs as a Task subagent in Step 1.5c.5 below — customer
+model → 2× candidates → adversarial cut. Step 1.5c is the motivation; do not
+generate transcendence features inline here.
 
-After the user-first pass, also check for compound use cases that are only possible
-with local data:
+The transcendence table in the manifest (Step 1.5d) renders rows in this shape,
+which the subagent's `### Survivors` output already matches:
 
 ```markdown
 ### Transcendence (only possible with our approach)
@@ -1190,15 +1189,15 @@ with local data:
 
 Minimum 5 transcendence features. These are the commands that differentiate the CLI.
 
-### Step 1.5c.5: Auto-Suggest Novel Features
+### Step 1.5c.5: Auto-Suggest Novel Features (subagent)
 
-**This step runs automatically.** Read [references/absorb-scoring.md](references/absorb-scoring.md)
-for the gap analysis framework, scoring dimensions, and candidate generation process.
-
-**On reprints, the same reference file's "Reprint Reconciliation" section runs as a forcing
-function**: every prior novel feature is re-scored against the current personas and tagged
-keep / reframe / drop with a one-line justification. Prior features are never silently
-absorbed and never silently dropped.
+**This step runs automatically via a Task subagent.** Read
+[references/novel-features-subagent.md](references/novel-features-subagent.md)
+for the input bundle, prompt template, output contract, and failure handling.
+The subagent owns the full brainstorm — customer model, 2× candidate
+generation, adversarial cut, and reprint reconciliation when a prior
+`research.json` exists. Survivors come back with explicit kill reasons for
+rejected siblings so the cut is auditable.
 
 ### Step 1.5d: Write the manifest artifact
 
