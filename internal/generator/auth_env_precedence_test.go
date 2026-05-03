@@ -11,28 +11,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestAuthHeader_BearerTokenAccessTokenWinsOverEnv pins that a cached
-// AccessToken wins over the env-var-as-bearer fallback for bearer_token.
-// Env-var-as-bearer remains the fallback for the simple case where the
-// env var IS a usable bearer JWT (personal access tokens, GitHub PATs).
-func TestAuthHeader_BearerTokenAccessTokenWinsOverEnv(t *testing.T) {
+// TestAuthHeader_ClientCredentialsAccessTokenWinsOverEnv pins that under
+// OAuth2 client_credentials the cached AccessToken wins over the env-var
+// fallback. The env var is the Client ID, not a usable bearer JWT.
+func TestAuthHeader_ClientCredentialsAccessTokenWinsOverEnv(t *testing.T) {
 	t.Parallel()
 
-	apiSpec := minimalSpec("bearer-precedence")
+	apiSpec := minimalSpec("cc-precedence")
 	apiSpec.Auth = spec.AuthConfig{
-		Type:    "bearer_token",
-		Header:  "Authorization",
-		EnvVars: []string{"BEARER_AUTH_TEST_TOKEN"},
+		Type:        "bearer_token",
+		Header:      "Authorization",
+		EnvVars:     []string{"CC_AUTH_TEST_CLIENT_ID"},
+		OAuth2Grant: spec.OAuth2GrantClientCredentials,
+		TokenURL:    "https://example.com/token",
 	}
 
-	outputDir := filepath.Join(t.TempDir(), "bearer-precedence-pp-cli")
+	outputDir := filepath.Join(t.TempDir(), "cc-precedence-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
 	require.NoError(t, err)
 	content := string(cfgSrc)
 
-	envCheck := "if c." + resolveEnvVarField("BEARER_AUTH_TEST_TOKEN") + ` != ""`
+	envCheck := "if c." + resolveEnvVarField("CC_AUTH_TEST_CLIENT_ID") + ` != ""`
 	tokenCheck := `if c.AccessToken != ""`
 
 	require.Contains(t, content, envCheck, "AuthHeader must keep the env-var fallback")
@@ -44,13 +45,14 @@ func TestAuthHeader_BearerTokenAccessTokenWinsOverEnv(t *testing.T) {
 	require.NotEqual(t, -1, envIdx)
 	require.NotEqual(t, -1, tokenIdx)
 	assert.Less(t, tokenIdx, envIdx,
-		"AccessToken check must appear BEFORE env-var fallback for bearer_token")
+		"AccessToken check must appear BEFORE env-var fallback under OAuth2 client_credentials")
 }
 
-// TestAuthHeader_EnvVarWinsOverFileTokenForCookieComposed pins that
-// cookie and composed types still check env-var FIRST (unchanged from
-// the env > config convention; only bearer_token's precedence flipped).
-func TestAuthHeader_EnvVarWinsOverFileTokenForCookieComposed(t *testing.T) {
+// TestAuthHeader_EnvVarWinsOverFileToken pins env-first precedence for
+// the non-client_credentials cases — plain bearer_token (PAT-style),
+// cookie, and composed all follow the env > config convention so a
+// freshly-rotated env var wins over a stale on-disk AccessToken.
+func TestAuthHeader_EnvVarWinsOverFileToken(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
@@ -58,6 +60,7 @@ func TestAuthHeader_EnvVarWinsOverFileTokenForCookieComposed(t *testing.T) {
 		authType string
 		envVar   string
 	}{
+		{"bearer_token", "bearer_token", "BEARER_AUTH_TEST_TOKEN"},
 		{"cookie", "cookie", "COOKIE_AUTH_TEST_TOKEN"},
 		{"composed", "composed", "COMPOSED_AUTH_TEST_TOKEN"},
 	}

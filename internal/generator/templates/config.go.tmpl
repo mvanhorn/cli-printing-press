@@ -146,8 +146,9 @@ func (c *Config) AuthHeader() string {
 	return ""
 	{{- end}}
 {{- else if eq .Auth.Type "bearer_token"}}
-	// AccessToken wins over the env-var-as-bearer fallback: under OAuth2
-	// client_credentials the env var is the Client ID, not a bearer token.
+{{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
+	// Under OAuth2 client_credentials the env var is the Client ID, not a
+	// usable bearer; the minted AccessToken must win.
 	if c.AccessToken != "" {
 		c.AuthSource = "oauth2"
 		{{- if .Auth.Format}}
@@ -171,6 +172,32 @@ func (c *Config) AuthHeader() string {
 	}
 	{{- end}}
 	return ""
+{{- else}}
+	// Env-var token wins over file-stored AccessToken (env > config convention).
+	{{- if gt (len .Auth.EnvVars) 0}}
+	if c.{{resolveEnvVarField (index .Auth.EnvVars 0)}} != "" {
+		c.AuthSource = "env:{{index .Auth.EnvVars 0}}"
+		{{- if .Auth.Format}}
+		return applyAuthFormat("{{.Auth.Format}}", map[string]string{
+			"{{envVarPlaceholder (index .Auth.EnvVars 0)}}": c.{{resolveEnvVarField (index .Auth.EnvVars 0)}},
+			"{{index .Auth.EnvVars 0}}": c.{{resolveEnvVarField (index .Auth.EnvVars 0)}},
+			"token": c.{{resolveEnvVarField (index .Auth.EnvVars 0)}},
+		})
+		{{- else}}
+		return "Bearer " + c.{{resolveEnvVarField (index .Auth.EnvVars 0)}}
+		{{- end}}
+	}
+	{{- end}}
+	if c.AccessToken != "" {
+		c.AuthSource = "oauth2"
+		{{- if .Auth.Format}}
+		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
+		{{- else}}
+		return "Bearer " + c.AccessToken
+		{{- end}}
+	}
+	return ""
+{{- end}}
 {{- else if eq .Auth.Type "cookie"}}
 	// Env-var token wins over file-stored AccessToken (env > config convention).
 	{{- if gt (len .Auth.EnvVars) 0}}

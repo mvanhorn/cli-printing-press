@@ -1596,7 +1596,7 @@ func (g *Generator) renderAuthFiles() error {
 	authPath := filepath.Join("internal", "cli", "auth.go")
 	authTmpl := "auth_simple.go.tmpl"
 	switch {
-	case g.Spec.Auth.OAuth2Grant == spec.OAuth2GrantClientCredentials && g.Spec.Auth.TokenURL != "":
+	case g.Spec.Auth.EffectiveOAuth2Grant() == spec.OAuth2GrantClientCredentials && g.Spec.Auth.TokenURL != "":
 		authTmpl = "auth_client_credentials.go.tmpl"
 	case g.Spec.Auth.AuthorizationURL != "":
 		authTmpl = "auth.go.tmpl"
