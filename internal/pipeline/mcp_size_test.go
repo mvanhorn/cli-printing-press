@@ -118,3 +118,138 @@ func TestScoreMCPTokenEfficiency_PartialCreditMedium(t *testing.T) {
 	assert.True(t, scored)
 	assert.Equal(t, 7, score)
 }
+
+// TestEstimateMCPTokens_RuntimeSurfaceSelection captures WU-A4 from
+// retro umbrella #516: when the MCP main.go has surface-selection logic
+// defaulting to a thin code-orchestration surface, the agent loads the
+// thin surface (e.g., dub_search + dub_execute), NOT the full
+// endpoint-mirror in tools.go. The token-efficiency score must reflect
+// the actual default surface, not the static tools.go.
+func TestEstimateMCPTokens_RuntimeSurfaceSelection(t *testing.T) {
+	t.Run("thin default selects code_orch.go for token counting", func(t *testing.T) {
+		dir := t.TempDir()
+		mcpDir := filepath.Join(dir, "internal", "mcp")
+		require.NoError(t, os.MkdirAll(mcpDir, 0o755))
+
+		// Write a "tools.go" with 3 verbose endpoint mirrors that would
+		// score badly on token efficiency if read directly.
+		toolsBody := `package mcp
+
+import mcplib "github.com/mark3labs/mcp-go/mcp"
+
+func RegisterTools(s *server.MCPServer) {
+	s.AddTool(mcplib.NewTool("verbose_endpoint_one", mcplib.WithDescription("` + strings.Repeat("x", 400) + `")), nil)
+	s.AddTool(mcplib.NewTool("verbose_endpoint_two", mcplib.WithDescription("` + strings.Repeat("y", 400) + `")), nil)
+	s.AddTool(mcplib.NewTool("verbose_endpoint_three", mcplib.WithDescription("` + strings.Repeat("z", 400) + `")), nil)
+}
+`
+		require.NoError(t, os.WriteFile(filepath.Join(mcpDir, "tools.go"), []byte(toolsBody), 0o644))
+
+		// Write a "code_orch.go" with the thin 2-tool surface — short descriptions.
+		codeOrchBody := `package mcp
+
+import mcplib "github.com/mark3labs/mcp-go/mcp"
+
+func RegisterCodeOrchestrationTools(s *server.MCPServer) {
+	s.AddTool(mcplib.NewTool("dub_search", mcplib.WithDescription("Search the API.")), nil)
+	s.AddTool(mcplib.NewTool("dub_execute", mcplib.WithDescription("Execute one endpoint.")), nil)
+}
+`
+		require.NoError(t, os.WriteFile(filepath.Join(mcpDir, "code_orch.go"), []byte(codeOrchBody), 0o644))
+
+		// Write a "main.go" that defaults DUB_MCP_SURFACE to "thin".
+		cmdDir := filepath.Join(dir, "cmd", "demo-pp-mcp")
+		require.NoError(t, os.MkdirAll(cmdDir, 0o755))
+		mainBody := `package main
+
+import (
+	"os"
+	mcptools "demo-pp-cli/internal/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+func main() {
+	s := server.NewMCPServer("Demo", "1.0.0")
+	surface := os.Getenv("DUB_MCP_SURFACE")
+	if surface == "" {
+		surface = "thin"
+	}
+	switch surface {
+	case "thin":
+		mcptools.RegisterCodeOrchestrationTools(s)
+	case "full":
+		mcptools.RegisterTools(s)
+	}
+}
+`
+		require.NoError(t, os.WriteFile(filepath.Join(cmdDir, "main.go"), []byte(mainBody), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"),
+			[]byte(`{"cli_name":"demo-pp-cli"}`), 0o644))
+
+		est := estimateMCPTokens(dir)
+		// EXPECT: scorer sees the thin surface (2 tools, short descriptions),
+		// NOT the full surface (3 tools with 400-char descriptions each).
+		require.Equal(t, 2, est.ToolCount, "should count code_orch.go's 2 tools, not tools.go's 3")
+		assert.Less(t, est.TotalTokens, 100, "thin surface tools have short descriptions; should be well under 100 total tokens")
+	})
+
+	t.Run("no surface selection falls through to tools.go (no regression)", func(t *testing.T) {
+		// Existing behavior preserved when there's no main.go surface
+		// selection: just read tools.go.
+		dir := writeMCPTools(t, `
+	s.AddTool(mcplib.NewTool("get_thing", mcplib.WithDescription("Retrieve a thing.")), nil)
+`)
+		est := estimateMCPTokens(dir)
+		require.Equal(t, 1, est.ToolCount)
+		assert.Equal(t, "get_thing", est.PerTool[0].Name)
+	})
+
+	t.Run("full default selects tools.go (DUB_MCP_SURFACE=full not thin)", func(t *testing.T) {
+		dir := t.TempDir()
+		mcpDir := filepath.Join(dir, "internal", "mcp")
+		require.NoError(t, os.MkdirAll(mcpDir, 0o755))
+
+		// tools.go has 1 tool (chosen by default since surface=full)
+		toolsBody := `package mcp
+
+import mcplib "github.com/mark3labs/mcp-go/mcp"
+
+func RegisterTools(s *server.MCPServer) {
+	s.AddTool(mcplib.NewTool("typed_tool", mcplib.WithDescription("Typed.")), nil)
+}
+`
+		require.NoError(t, os.WriteFile(filepath.Join(mcpDir, "tools.go"), []byte(toolsBody), 0o644))
+
+		// code_orch.go exists but main.go default is "full"
+		codeOrchBody := `package mcp
+
+func RegisterCodeOrchestrationTools(s *server.MCPServer) {
+	s.AddTool(mcplib.NewTool("thin_search", mcplib.WithDescription("S.")), nil)
+	s.AddTool(mcplib.NewTool("thin_execute", mcplib.WithDescription("E.")), nil)
+}
+`
+		require.NoError(t, os.WriteFile(filepath.Join(mcpDir, "code_orch.go"), []byte(codeOrchBody), 0o644))
+
+		cmdDir := filepath.Join(dir, "cmd", "demo-pp-mcp")
+		require.NoError(t, os.MkdirAll(cmdDir, 0o755))
+		mainBody := `package main
+
+import "os"
+
+func main() {
+	surface := os.Getenv("DUB_MCP_SURFACE")
+	if surface == "" {
+		surface = "full"
+	}
+	_ = surface
+}
+`
+		require.NoError(t, os.WriteFile(filepath.Join(cmdDir, "main.go"), []byte(mainBody), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"),
+			[]byte(`{"cli_name":"demo-pp-cli"}`), 0o644))
+
+		est := estimateMCPTokens(dir)
+		require.Equal(t, 1, est.ToolCount, "full default → tools.go")
+		assert.Equal(t, "typed_tool", est.PerTool[0].Name)
+	})
+}
