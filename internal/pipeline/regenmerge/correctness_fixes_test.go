@@ -74,7 +74,7 @@ type rootFlags struct{}
 			"internal/cli/root.go": freshRoot,
 		})
 
-	regs, err := extractLostRegistrations(pubDir, freshDir)
+	regs, err := extractLostRegistrations(pubDir, freshDir, nil)
 	require.NoError(t, err)
 
 	// novel.go must NOT appear in lost-registrations output, even though pub

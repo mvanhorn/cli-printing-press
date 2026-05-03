@@ -16,7 +16,7 @@ func TestExtractLostRegistrationsPostmanExplore(t *testing.T) {
 
 	pubDir, freshDir := postmanFixture(t)
 
-	regs, err := extractLostRegistrations(pubDir, freshDir)
+	regs, err := extractLostRegistrations(pubDir, freshDir, nil)
 	require.NoError(t, err)
 
 	// Group by host file.
@@ -144,7 +144,7 @@ func newRssCmd(rootFlags) *cobra.Command  { return nil }
 	pubDir, freshDir := buildSyntheticFixture(t,
 		map[string]string{"internal/cli/root.go": pubCLI},
 		map[string]string{"internal/cli/root.go": freshCLI})
-	regs, err := extractLostRegistrations(pubDir, freshDir)
+	regs, err := extractLostRegistrations(pubDir, freshDir, nil)
 	require.NoError(t, err)
 	assert.Empty(t, regs, "arg-shape variation alone should not produce lost registrations")
 }
@@ -173,7 +173,7 @@ func newSubCmd() *cobra.Command { return nil }
 	pubDir, freshDir := buildSyntheticFixture(t,
 		map[string]string{"internal/cli/root.go": chainedCLI},
 		map[string]string{"internal/cli/root.go": chainedCLI})
-	regs, err := extractLostRegistrations(pubDir, freshDir)
+	regs, err := extractLostRegistrations(pubDir, freshDir, nil)
 	require.NoError(t, err)
 	assert.Empty(t, regs, "identical chained-call AddCommand should match via text fallback")
 }
@@ -213,7 +213,7 @@ func newSubCmd() *cobra.Command { return nil }
 	pubDir, freshDir := buildSyntheticFixture(t,
 		map[string]string{"internal/cli/root.go": pubCLI},
 		map[string]string{"internal/cli/root.go": freshCLI})
-	regs, err := extractLostRegistrations(pubDir, freshDir)
+	regs, err := extractLostRegistrations(pubDir, freshDir, nil)
 	require.NoError(t, err)
 
 	// pub registers newSubCmd under parentCmd; fresh registers it under
@@ -222,4 +222,81 @@ func newSubCmd() *cobra.Command { return nil }
 	require.Len(t, regs, 1, "parentCmd's distinct registration of newSubCmd must be flagged")
 	assert.Contains(t, regs[0].Calls, "parentCmd.AddCommand(newSubCmd())",
 		"lost call should preserve the parentCmd parent (not deduped against rootCmd's call)")
+}
+
+// TestExtractLostRegistrationsSkipsPreservedHosts pins the contract that hosts
+// whose Apply verdict preserves published verbatim (TEMPLATED-BODY-DRIFT,
+// TEMPLATED-WITH-ADDITIONS, NOVEL, NOVEL-COLLISION) do NOT contribute lost
+// registrations. The published file already has the calls; re-injection
+// would duplicate them and crash the resulting CLI at startup with
+// "command is already added". Was the FedEx retro's WU-2 root cause:
+// hand-edited root.go classified TEMPLATED-BODY-DRIFT, but lost-registration
+// extraction still flagged the hand-added AddCommands and Apply re-injected
+// them on top of the already-present originals.
+func TestExtractLostRegistrationsSkipsPreservedHosts(t *testing.T) {
+	t.Parallel()
+
+	// pub/root.go has hand-added AddCommand call; fresh/root.go is the
+	// generator's pristine version without it.
+	pubRoot := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newGenericCmd())
+	rootCmd.AddCommand(newHandAddedCmd())
+	_ = rootCmd.Execute()
+}
+
+func newGenericCmd() *cobra.Command   { return nil }
+func newHandAddedCmd() *cobra.Command { return nil }
+`
+	freshRoot := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newGenericCmd())
+	_ = rootCmd.Execute()
+}
+
+func newGenericCmd() *cobra.Command   { return nil }
+func newHandAddedCmd() *cobra.Command { return nil }
+`
+	pubDir, freshDir := buildSyntheticFixture(t,
+		map[string]string{"internal/cli/root.go": pubRoot},
+		map[string]string{"internal/cli/root.go": freshRoot})
+
+	// Without the verdict map (nil → no skip), the call is correctly
+	// flagged as lost so it can be re-injected into a TEMPLATED-CLEAN host.
+	regsNoFilter, err := extractLostRegistrations(pubDir, freshDir, nil)
+	require.NoError(t, err)
+	require.Len(t, regsNoFilter, 1, "without verdict filter, lost call must be flagged")
+	assert.Contains(t, regsNoFilter[0].Calls, "rootCmd.AddCommand(newHandAddedCmd())")
+
+	// With root.go marked TEMPLATED-BODY-DRIFT (Apply preserves published
+	// verbatim), the same call must NOT be flagged — it already lives in
+	// the file that survives the merge.
+	verdicts := map[string]Verdict{"internal/cli/root.go": VerdictTemplatedBodyDrift}
+	regsWithFilter, err := extractLostRegistrations(pubDir, freshDir, verdicts)
+	require.NoError(t, err)
+	assert.Empty(t, regsWithFilter,
+		"TEMPLATED-BODY-DRIFT host must contribute zero lost registrations to avoid duplicate AddCommand injection")
+
+	// Same for TEMPLATED-WITH-ADDITIONS: published is preserved.
+	verdicts["internal/cli/root.go"] = VerdictTemplatedWithAdditions
+	regsAdditions, err := extractLostRegistrations(pubDir, freshDir, verdicts)
+	require.NoError(t, err)
+	assert.Empty(t, regsAdditions,
+		"TEMPLATED-WITH-ADDITIONS host must also be skipped — published is preserved")
+
+	// TEMPLATED-CLEAN host (rare for hand-added registrations but possible
+	// when the calls are inside a function whose decl-set still matches):
+	// fresh wins, so injection is required.
+	verdicts["internal/cli/root.go"] = VerdictTemplatedClean
+	regsClean, err := extractLostRegistrations(pubDir, freshDir, verdicts)
+	require.NoError(t, err)
+	require.Len(t, regsClean, 1, "TEMPLATED-CLEAN host must still need injection so the lost call survives")
 }

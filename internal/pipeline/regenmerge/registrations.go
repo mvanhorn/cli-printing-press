@@ -25,7 +25,16 @@ import (
 // "Host file" is any internal/cli/*.go file in published that contains at
 // least one AddCommand call (root.go, plus resource-parents like
 // category.go).
-func extractLostRegistrations(publishedDir, freshDir string) ([]LostRegistration, error) {
+//
+// pubVerdicts maps relative path → Apply verdict. Hosts whose verdict means
+// the published file is preserved verbatim (TEMPLATED-BODY-DRIFT,
+// TEMPLATED-WITH-ADDITIONS, NOVEL, NOVEL-COLLISION) are skipped — re-injecting
+// AddCommand calls into a file that already has them would duplicate the
+// calls and crash the resulting CLI at startup with
+// "command is already added". Pass an empty map (or a map with all entries
+// classified as TEMPLATED-CLEAN) to opt out of the filter; callers in the
+// Classify pipeline always pass the populated map.
+func extractLostRegistrations(publishedDir, freshDir string, pubVerdicts map[string]Verdict) ([]LostRegistration, error) {
 	pubCLIDir := filepath.Join(publishedDir, "internal", "cli")
 	freshCLIDir := filepath.Join(freshDir, "internal", "cli")
 
@@ -79,6 +88,16 @@ func extractLostRegistrations(publishedDir, freshDir string) ([]LostRegistration
 	sort.Strings(hostFiles)
 	for _, host := range hostFiles {
 		if _, existsInFresh := freshHostBasenames[filepath.Base(host)]; !existsInFresh {
+			continue
+		}
+		// Skip hosts whose Apply verdict preserves published verbatim. The
+		// AddCommand calls are already in the file that survives the merge
+		// — re-injection would duplicate them. Only TEMPLATED-CLEAN and
+		// NEW-TEMPLATE-EMISSION host files get overwritten by Apply with
+		// fresh content, so those are the only ones that need restoration.
+		relPath := filepath.ToSlash(filepath.Join("internal", "cli", filepath.Base(host)))
+		switch pubVerdicts[relPath] {
+		case VerdictTemplatedBodyDrift, VerdictTemplatedWithAdditions, VerdictNovel, VerdictNovelCollision:
 			continue
 		}
 		var lost, skipped []string
