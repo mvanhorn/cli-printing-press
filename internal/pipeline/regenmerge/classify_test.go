@@ -144,10 +144,9 @@ func TestClassifyOutsideCwdRejected(t *testing.T) {
 
 // TestClassifySpecYamlPropagates pins the contract that spec.yaml at the CLI
 // root is classified (and therefore overwritten by Apply) so source-spec
-// changes propagate into the library copy. Before this fix, regen-merge
-// silently ignored spec.yaml — and downstream tools (mcp-sync, dogfood,
-// scorecard) consumed the stale library spec, undoing source-spec
-// enrichments such as `mcp.endpoint_tools: hidden`.
+// changes propagate into the library copy. Without this, downstream tools
+// (mcp-sync, dogfood, scorecard) read a stale library spec and miss
+// source-side enrichments such as `mcp.endpoint_tools: hidden`.
 func TestClassifySpecYamlPropagates(t *testing.T) {
 	t.Parallel()
 

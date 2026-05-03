@@ -173,6 +173,9 @@ func printHumanRegenReport(w io.Writer, report *regenmerge.MergeReport, applied 
 		if len(report.GoMod.AddedRequires) > 0 {
 			fmt.Fprintf(w, "  added requires:   %v\n", report.GoMod.AddedRequires)
 		}
+		if len(report.GoMod.PreservedRequires) > 0 {
+			fmt.Fprintf(w, "  preserved requires: %v\n", report.GoMod.PreservedRequires)
+		}
 		if len(report.GoMod.PreservedReplaces) > 0 {
 			fmt.Fprintf(w, "  preserved local replaces: %v\n", report.GoMod.PreservedReplaces)
 		}

@@ -53,19 +53,6 @@ const (
 	VerdictNovelCollision Verdict = "NOVEL-COLLISION"
 )
 
-// PreservesPublished reports whether Apply leaves the published file in place
-// for this verdict (i.e., does NOT overwrite with fresh). Callers that
-// inject into the merged tree (lost-registration restoration, etc.) must
-// short-circuit when this is true — the file already has whatever they
-// would inject.
-func (v Verdict) PreservesPublished() bool {
-	switch v {
-	case VerdictTemplatedBodyDrift, VerdictTemplatedWithAdditions, VerdictNovel, VerdictNovelCollision:
-		return true
-	}
-	return false
-}
-
 // FileClassification records the verdict and supporting evidence for a single
 // file. Surfaced in MergeReport.Files.
 type FileClassification struct {

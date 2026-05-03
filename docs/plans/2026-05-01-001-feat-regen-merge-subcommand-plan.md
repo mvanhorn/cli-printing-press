@@ -289,7 +289,7 @@ was-templated(F in tree) = marker-on-line-2(F) OR (file is named like a template
     "merged": false,
     "preserved_module_path": "github.com/mvanhorn/printing-press-library/library/.../postman-explore",
     "added_requires": ["github.com/x/y v1.2.3"],
-    "removed_requires": [],
+    "preserved_requires": ["modernc.org/sqlite v1.50.0"],
     "preserved_replaces": ["github.com/local/fork => ./fork"]
   }
 }

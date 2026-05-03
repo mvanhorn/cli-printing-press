@@ -94,7 +94,8 @@ func extractLostRegistrations(publishedDir, freshDir string, pubVerdicts map[str
 		// AddCommand calls already survive the merge in-place; re-injection
 		// would duplicate them.
 		relPath := filepath.ToSlash(filepath.Join("internal", "cli", filepath.Base(host)))
-		if pubVerdicts[relPath].PreservesPublished() {
+		switch pubVerdicts[relPath] {
+		case VerdictTemplatedBodyDrift, VerdictTemplatedWithAdditions, VerdictNovel, VerdictNovelCollision:
 			continue
 		}
 		var lost, skipped []string
