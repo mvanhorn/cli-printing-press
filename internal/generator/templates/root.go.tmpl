@@ -92,11 +92,9 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 
        Size is bounded two ways:
          • per-line: headline truncated to 120 runes, each description to 200.
-           The 200-rune cap is well above typical novel-feature description
-           length (~100-150 chars in research.json) so most lines render in
-           full; Cobra wrap still handles narrow terminals. Earlier 80-rune
-           cap turned every Highlights line into an ellipsed half-sentence
-           (FedEx 14/15 lines, Dub 3/4 lines).
+           The 200-rune cap fits typical novel-feature descriptions
+           (~100-150 chars) so most lines render in full; Cobra wrap still
+           handles narrow terminals.
          • total: overflow beyond 15 features becomes a "…and N more" line
            (NovelOverflowCount set in Go); stops runaway absorb outputs
            from producing a wall of text in --help

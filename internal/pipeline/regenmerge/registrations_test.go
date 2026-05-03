@@ -229,10 +229,7 @@ func newSubCmd() *cobra.Command { return nil }
 // TEMPLATED-WITH-ADDITIONS, NOVEL, NOVEL-COLLISION) do NOT contribute lost
 // registrations. The published file already has the calls; re-injection
 // would duplicate them and crash the resulting CLI at startup with
-// "command is already added". Was the FedEx retro's WU-2 root cause:
-// hand-edited root.go classified TEMPLATED-BODY-DRIFT, but lost-registration
-// extraction still flagged the hand-added AddCommands and Apply re-injected
-// them on top of the already-present originals.
+// "command is already added".
 func TestExtractLostRegistrationsSkipsPreservedHosts(t *testing.T) {
 	t.Parallel()
 

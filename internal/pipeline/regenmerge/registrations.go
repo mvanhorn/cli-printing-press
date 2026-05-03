@@ -90,14 +90,11 @@ func extractLostRegistrations(publishedDir, freshDir string, pubVerdicts map[str
 		if _, existsInFresh := freshHostBasenames[filepath.Base(host)]; !existsInFresh {
 			continue
 		}
-		// Skip hosts whose Apply verdict preserves published verbatim. The
-		// AddCommand calls are already in the file that survives the merge
-		// — re-injection would duplicate them. Only TEMPLATED-CLEAN and
-		// NEW-TEMPLATE-EMISSION host files get overwritten by Apply with
-		// fresh content, so those are the only ones that need restoration.
+		// Skip hosts whose Apply verdict preserves published verbatim — the
+		// AddCommand calls already survive the merge in-place; re-injection
+		// would duplicate them.
 		relPath := filepath.ToSlash(filepath.Join("internal", "cli", filepath.Base(host)))
-		switch pubVerdicts[relPath] {
-		case VerdictTemplatedBodyDrift, VerdictTemplatedWithAdditions, VerdictNovel, VerdictNovelCollision:
+		if pubVerdicts[relPath].PreservesPublished() {
 			continue
 		}
 		var lost, skipped []string

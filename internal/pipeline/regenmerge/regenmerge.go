@@ -53,6 +53,19 @@ const (
 	VerdictNovelCollision Verdict = "NOVEL-COLLISION"
 )
 
+// PreservesPublished reports whether Apply leaves the published file in place
+// for this verdict (i.e., does NOT overwrite with fresh). Callers that
+// inject into the merged tree (lost-registration restoration, etc.) must
+// short-circuit when this is true — the file already has whatever they
+// would inject.
+func (v Verdict) PreservesPublished() bool {
+	switch v {
+	case VerdictTemplatedBodyDrift, VerdictTemplatedWithAdditions, VerdictNovel, VerdictNovelCollision:
+		return true
+	}
+	return false
+}
+
 // FileClassification records the verdict and supporting evidence for a single
 // file. Surfaced in MergeReport.Files.
 type FileClassification struct {
@@ -128,14 +141,8 @@ type GoModMerge struct {
 	// PreservedRequires lists requires present in published but absent from
 	// fresh that the merge keeps. Typical case: deps the agent added after
 	// the original generation (e.g., `go get modernc.org/sqlite` for a
-	// hand-built local store). Without preserving them, the merged go.mod
-	// would drop the dep and `go build` would fail with "no required
-	// module provides package <X>" on the next build.
+	// hand-built local store).
 	PreservedRequires []string `json:"preserved_requires,omitempty"`
-	// RemovedRequires is reserved for requires that the merge intentionally
-	// drops. Currently always empty — published-only requires are preserved
-	// by default (see PreservedRequires).
-	RemovedRequires   []string `json:"removed_requires,omitempty"`
 	PreservedReplaces []string `json:"preserved_replaces,omitempty"`
 }
 

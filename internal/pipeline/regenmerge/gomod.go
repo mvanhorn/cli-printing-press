@@ -62,10 +62,7 @@ func planGoModMerge(publishedDir, freshDir string) (*GoModMerge, error) {
 			plan.AddedRequires = append(plan.AddedRequires, fmt.Sprintf("%s %s", path, ver))
 		}
 	}
-	// Published-only requires get preserved (see GoModMerge.PreservedRequires
-	// doc for rationale). Without this list in the report, agent operators
-	// can't see what survives the merge — and would have no way to confirm
-	// hand-added deps weren't silently dropped.
+	// Published-only requires are preserved (see GoModMerge.PreservedRequires).
 	for path, ver := range pubReqs {
 		if _, ok := freshReqs[path]; !ok {
 			plan.PreservedRequires = append(plan.PreservedRequires, fmt.Sprintf("%s %s", path, ver))

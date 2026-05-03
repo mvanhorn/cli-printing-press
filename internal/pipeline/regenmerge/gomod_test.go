@@ -132,12 +132,10 @@ require github.com/spf13/cobra v1.9.1
 	require.NoError(t, writeFileAtomic(filepath.Join(pubDir, "go.mod"), pubGoMod))
 	require.NoError(t, writeFileAtomic(filepath.Join(freshDir, "go.mod"), freshGoMod))
 
-	// Plan: published-only require lands in PreservedRequires (not RemovedRequires).
+	// Plan: published-only require lands in PreservedRequires.
 	plan, err := planGoModMerge(pubDir, freshDir)
 	require.NoError(t, err)
 	require.NotNil(t, plan)
-	assert.Empty(t, plan.RemovedRequires,
-		"published-only requires must not be reported as removed; they're preserved")
 	require.Len(t, plan.PreservedRequires, 1)
 	assert.Contains(t, plan.PreservedRequires[0], "modernc.org/sqlite",
 		"sqlite dep must be reported as preserved so operators can see hand-additions survive")
