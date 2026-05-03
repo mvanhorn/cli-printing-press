@@ -91,7 +91,12 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
        the CLIs that benefit most from the work.
 
        Size is bounded two ways:
-         • per-line: headline truncated to 120 runes, each description to 80
+         • per-line: headline truncated to 120 runes, each description to 200.
+           The 200-rune cap is well above typical novel-feature description
+           length (~100-150 chars in research.json) so most lines render in
+           full; Cobra wrap still handles narrow terminals. Earlier 80-rune
+           cap turned every Highlights line into an ellipsed half-sentence
+           (FedEx 14/15 lines, Dub 3/4 lines).
          • total: overflow beyond 15 features becomes a "…and N more" line
            (NovelOverflowCount set in Go); stops runaway absorb outputs
            from producing a wall of text in --help
@@ -109,7 +114,7 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 
 Highlights (not in the official API docs):
 {{- range .TopNovelFeatures}}
-  • {{goRawSafe .Command}}   {{goRawSafe (truncate 80 .Description)}}
+  • {{goRawSafe .Command}}   {{goRawSafe (truncate 200 .Description)}}
 {{- end}}
 {{- if .NovelOverflowCount}}
   …and {{.NovelOverflowCount}} more — see README.md for the full list

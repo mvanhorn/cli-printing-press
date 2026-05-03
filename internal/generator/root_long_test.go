@@ -182,12 +182,12 @@ func runGoVet(t *testing.T, dir string) error {
 //
 // Budget (enforced by truncate helper in the template):
 //   - Headline clipped to 120 runes
-//   - Top 3 novel features (cap in Go; remaining 7 dropped)
-//   - Each feature description clipped to 80 runes
+//   - Top 15 novel features (cap in Go; remaining dropped with overflow breadcrumb)
+//   - Each feature description clipped to 200 runes
 //
-// Upper bound: Long should never exceed ~1500 chars in practice even
-// when every field is maxed out. We assert a slightly looser cap (2000)
-// so trivial copy tweaks don't break the test.
+// Upper bound: Long should never exceed ~4000 chars even at the worst
+// case (15 features × 200 chars + headline + framing). We assert a
+// slightly looser cap (5000) so trivial copy tweaks don't break the test.
 func TestRootLongStaysUnderSizeBudget(t *testing.T) {
 	t.Parallel()
 
@@ -220,8 +220,8 @@ func TestRootLongStaysUnderSizeBudget(t *testing.T) {
 	require.NotEqual(t, -1, longEnd, "Long raw string should close")
 	longBody := content[longStart : longStart+longEnd]
 
-	assert.LessOrEqual(t, len(longBody), 2000,
-		"root --help Long should stay under 2000 chars; got %d chars. Body:\n%s",
+	assert.LessOrEqual(t, len(longBody), 5000,
+		"root --help Long should stay under 5000 chars; got %d chars. Body:\n%s",
 		len(longBody), longBody)
 
 	// All 10 features render (under the 15-item cap) — we dropped the

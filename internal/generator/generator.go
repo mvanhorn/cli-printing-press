@@ -1987,11 +1987,11 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 	// the CLIs that benefit most from the absorb work in the first place.
 	//
 	// Size is bounded two ways:
-	//   1. per-line truncation via the template's truncate helper (80 runes)
+	//   1. per-line truncation via the template's truncate helper (200 runes)
 	//   2. a soft cap on total feature lines rendered (MaxHighlightLines);
 	//      overflow becomes a "…and N more — see README" breadcrumb so a
 	//      verbose absorb output doesn't blow up --help
-	const maxHighlightLines = 15 // ~300-char overhead ceiling in the worst case
+	const maxHighlightLines = 15 // ~3000-char description ceiling in the worst case
 	shownNovel := g.NovelFeatures
 	overflow := 0
 	if len(shownNovel) > maxHighlightLines {
