@@ -5558,18 +5558,52 @@ func TestGenerateMCPCodeOrchestrationSkippedByDefault(t *testing.T) {
 func TestGenerateMCPNewClientSkipsCache(t *testing.T) {
 	t.Parallel()
 
+	t.Run("default spec source", func(t *testing.T) {
+		t.Parallel()
+		assertNewMCPClientSkipsCache(t, "")
+	})
+
+	// SpecSource=sniffed takes the rate-limited branch in the template
+	// (client.New(cfg, 30*time.Second, 2) instead of ..., 0). The cache
+	// bypass must apply on both branches; this guards against a future
+	// edit moving NoCache=true inside one of the if/else arms.
+	t.Run("sniffed spec source", func(t *testing.T) {
+		t.Parallel()
+		assertNewMCPClientSkipsCache(t, "sniffed")
+	})
+
+	t.Run("interactive CLI client is not statically NoCache=true", func(t *testing.T) {
+		t.Parallel()
+		apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+		require.NoError(t, err)
+
+		outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		rootData, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+		require.NoError(t, err)
+		rootBody := string(rootData)
+
+		assert.Contains(t, rootBody, "c.NoCache = f.noCache",
+			"interactive CLI's newClient must drive cache from --no-cache flag, not statically")
+	})
+}
+
+// assertNewMCPClientSkipsCache generates a CLI from loops.yaml with the
+// given SpecSource and asserts the MCP server's newMCPClient bypasses the
+// response cache.
+func assertNewMCPClientSkipsCache(t *testing.T, specSource string) {
+	t.Helper()
 	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
 	require.NoError(t, err)
+	apiSpec.SpecSource = specSource
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
-	gen := New(apiSpec, outputDir)
-	require.NoError(t, gen.Generate())
+	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	toolsData, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
-	body := string(toolsData)
-
-	assert.Contains(t, body, "c.NoCache = true",
+	assert.Contains(t, string(toolsData), "c.NoCache = true",
 		"newMCPClient must disable the response cache so MCP-driven reads see fresh state across mutations")
 }
 
