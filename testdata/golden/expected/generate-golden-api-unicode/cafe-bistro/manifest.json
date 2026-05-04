@@ -21,17 +21,17 @@
       "args": [],
       "command": "${__dirname}/bin/cafe-bistro-pp-mcp",
       "env": {
-        "CAFE_BISTRO_API_KEY_AUTH": "${user_config.cafe_bistro_api_key_auth}"
+        "CAFE_BISTRO_API_KEY": "${user_config.cafe_bistro_api_key}"
       }
     },
     "type": "binary"
   },
   "user_config": {
-    "cafe_bistro_api_key_auth": {
-      "description": "Sets CAFE_BISTRO_API_KEY_AUTH for the Café Bistro MCP server.",
+    "cafe_bistro_api_key": {
+      "description": "Sets CAFE_BISTRO_API_KEY for the Café Bistro MCP server.",
       "required": true,
       "sensitive": true,
-      "title": "CAFE_BISTRO_API_KEY_AUTH",
+      "title": "CAFE_BISTRO_API_KEY",
       "type": "string"
     }
   },

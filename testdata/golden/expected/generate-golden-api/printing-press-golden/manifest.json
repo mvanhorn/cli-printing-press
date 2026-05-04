@@ -21,17 +21,17 @@
       "args": [],
       "command": "${__dirname}/bin/printing-press-golden-pp-mcp",
       "env": {
-        "PRINTING_PRESS_GOLDEN_API_KEY_AUTH": "${user_config.printing_press_golden_api_key_auth}"
+        "PRINTING_PRESS_GOLDEN_API_KEY": "${user_config.printing_press_golden_api_key}"
       }
     },
     "type": "binary"
   },
   "user_config": {
-    "printing_press_golden_api_key_auth": {
-      "description": "Sets PRINTING_PRESS_GOLDEN_API_KEY_AUTH for the Printing Press Studio MCP server.",
+    "printing_press_golden_api_key": {
+      "description": "Sets PRINTING_PRESS_GOLDEN_API_KEY for the Printing Press Studio MCP server.",
       "required": true,
       "sensitive": true,
-      "title": "PRINTING_PRESS_GOLDEN_API_KEY_AUTH",
+      "title": "PRINTING_PRESS_GOLDEN_API_KEY",
       "type": "string"
     }
   },

@@ -86,7 +86,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				header := cfg.AuthHeader()
 				if header == "" {
 					report["auth"] = "not configured"
-					report["auth_hint"] = "export PRINTING_PRESS_GOLDEN_API_KEY_AUTH=<your-key>"
+					report["auth_hint"] = "export PRINTING_PRESS_GOLDEN_API_KEY=<your-key>"
 				} else {
 					report["auth"] = "configured"
 					report["auth_source"] = cfg.AuthSource
@@ -97,7 +97,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			authEnvChecked := 0
 			authEnvSet := 0
 			authEnvChecked++
-			if os.Getenv("PRINTING_PRESS_GOLDEN_API_KEY_AUTH") != "" {
+			if os.Getenv("PRINTING_PRESS_GOLDEN_API_KEY") != "" {
 				authEnvSet++
 			}
 			if authEnvSet == 0 {

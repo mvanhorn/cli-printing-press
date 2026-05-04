@@ -205,17 +205,17 @@ func makeAPIHandler(method, pathTemplate string, positionalParams []string) serv
 			case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
 				return mcplib.NewToolResultError("authentication error: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: the API rejected the request — this usually means auth is missing or invalid." +
-					"\n      Set your API key: export PRINTING_PRESS_GOLDEN_API_KEY_AUTH=<your-key>" +
+					"\n      Set your API key: export PRINTING_PRESS_GOLDEN_API_KEY=<your-key>" +
 					"\n      Run 'printing-press-golden-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 401"):
 				return mcplib.NewToolResultError("authentication failed: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: check your API key." +
-					"\n      Set it with: export PRINTING_PRESS_GOLDEN_API_KEY_AUTH=<your-key>" +
+					"\n      Set it with: export PRINTING_PRESS_GOLDEN_API_KEY=<your-key>" +
 					"\n      Run 'printing-press-golden-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 403"):
 				return mcplib.NewToolResultError("permission denied: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: your credentials are valid but lack access to this resource." +
-					"\n      Set it with: export PRINTING_PRESS_GOLDEN_API_KEY_AUTH=<your-key>" +
+					"\n      Set it with: export PRINTING_PRESS_GOLDEN_API_KEY=<your-key>" +
 					"\n      Run 'printing-press-golden-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 404"):
 				if method == "DELETE" {
@@ -356,7 +356,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion printing-press-golden-pp-cli binary.",
 		"auth": map[string]any{
 			"type": "api_key",
-			"env_vars": []string{"PRINTING_PRESS_GOLDEN_API_KEY_AUTH",  },
+			"env_vars": []string{"PRINTING_PRESS_GOLDEN_API_KEY",  },
 		},
 		"resources": []map[string]any{
 			{

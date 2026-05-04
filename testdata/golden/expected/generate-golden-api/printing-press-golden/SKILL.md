@@ -45,7 +45,7 @@ printing-press-golden-pp-cli which "<capability in your own words>"
 Set your API key via environment variable:
 
 ```bash
-export PRINTING_PRESS_GOLDEN_API_KEY_AUTH="<your-key>"
+export PRINTING_PRESS_GOLDEN_API_KEY="<your-key>"
 ```
 
 Or persist it in `~/.config/printing-press-golden-pp-cli/config.toml`.

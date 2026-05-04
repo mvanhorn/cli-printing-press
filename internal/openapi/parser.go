@@ -26,6 +26,14 @@ var (
 	endpointLimitExplicit   = false // true when user set --max-endpoints-per-resource
 )
 
+const (
+	extensionAuthEnvVars     = "x-auth-env-vars"
+	extensionAuthOptional    = "x-auth-optional"
+	extensionAuthKeyURL      = "x-auth-key-url"
+	extensionAuthTitle       = "x-auth-title"
+	extensionAuthDescription = "x-auth-description"
+)
+
 // SetMaxResources overrides the default resource limit. When not called,
 // the parser uses a default of 500 which accommodates all known APIs.
 func SetMaxResources(n int) {
@@ -414,7 +422,7 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 	case "api_key":
 		// Use scheme name for more specific env var (e.g. BotToken -> DISCORD_BOT_TOKEN)
 		schemeEnvSuffix := toSnakeCase(schemeName)
-		if schemeEnvSuffix != "" && schemeEnvSuffix != "api_key" {
+		if schemeEnvSuffix != "" && !isGenericAPIKeySchemeSuffix(schemeEnvSuffix) {
 			auth.EnvVars = []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
 		} else {
 			auth.EnvVars = []string{envPrefix + "_API_KEY"}
@@ -429,7 +437,112 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 		}
 	}
 
+	applyAuthOverrideExtensions(&auth, scheme.Extensions)
 	return auth
+}
+
+func isGenericAPIKeySchemeSuffix(suffix string) bool {
+	normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(suffix)), "_", "")
+	switch normalized {
+	case "", "apikey", "apikeyauth":
+		return true
+	}
+	for _, prefix := range []string{"apikeyv", "apikeyauthv"} {
+		if version, ok := strings.CutPrefix(normalized, prefix); ok {
+			if version != "" && allDigits(version) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func allDigits(s string) bool {
+	for _, r := range s {
+		if !unicode.IsDigit(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]any) {
+	if auth == nil || len(extensions) == 0 {
+		return
+	}
+	if envVars := stringListExtension(extensions, extensionAuthEnvVars); len(envVars) > 0 {
+		auth.EnvVars = envVars
+	}
+	if optional, ok := boolExtension(extensions, extensionAuthOptional); ok {
+		auth.Optional = optional
+	}
+	if keyURL := stringExtension(extensions, extensionAuthKeyURL); keyURL != "" {
+		auth.KeyURL = keyURL
+	}
+	if title := stringExtension(extensions, extensionAuthTitle); title != "" {
+		auth.Title = title
+	}
+	if description := stringExtension(extensions, extensionAuthDescription); description != "" {
+		auth.Description = description
+	}
+}
+
+func stringExtension(extensions map[string]any, name string) string {
+	value, ok := extensions[name]
+	if !ok {
+		return ""
+	}
+	s, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(s)
+}
+
+func stringListExtension(extensions map[string]any, name string) []string {
+	value, ok := extensions[name]
+	if !ok {
+		return nil
+	}
+	switch v := value.(type) {
+	case []string:
+		var out []string
+		for _, item := range v {
+			if item = strings.TrimSpace(item); item != "" {
+				out = append(out, item)
+			}
+		}
+		return out
+	case []any:
+		var out []string
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				continue
+			}
+			if s = strings.TrimSpace(s); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		if s := strings.TrimSpace(v); s != "" {
+			return []string{s}
+		}
+	}
+	return nil
+}
+
+func boolExtension(extensions map[string]any, name string) (bool, bool) {
+	value, ok := extensions[name]
+	if !ok {
+		return false, false
+	}
+	b, ok := value.(bool)
+	if !ok {
+		return false, false
+	}
+	return b, true
 }
 
 // commonAuthQueryParams are query parameter names that commonly carry API keys.

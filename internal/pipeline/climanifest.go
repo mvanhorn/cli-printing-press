@@ -68,6 +68,11 @@ type CLIManifest struct {
 	// downstream emitters (MCPB manifest user_config descriptions, doctor
 	// hints) to point users at the right credential source.
 	AuthKeyURL string `json:"auth_key_url,omitempty"`
+	// AuthTitle and AuthDescription customize the install/config prompt for
+	// the auth credential when the spec's service identity differs from the
+	// wrapped API identity.
+	AuthTitle       string `json:"auth_title,omitempty"`
+	AuthDescription string `json:"auth_description,omitempty"`
 	// AuthOptional is true when the credential gates a subset of features
 	// (e.g., USDA nutrition backfill on recipe-goat) rather than every
 	// API call. Drives the MCPB user_config Required field so opt-in
@@ -264,6 +269,8 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.AuthEnvVars = parsed.Auth.EnvVars
 	m.EndpointTemplateVars = parsed.EndpointTemplateVars
 	m.AuthKeyURL = parsed.Auth.KeyURL
+	m.AuthTitle = parsed.Auth.Title
+	m.AuthDescription = parsed.Auth.Description
 	m.AuthOptional = parsed.Auth.Optional
 	// DisplayName precedence: explicit spec field > catalog-set existing
 	// value > slug-derived fallback. Unconditional fallback would clobber a

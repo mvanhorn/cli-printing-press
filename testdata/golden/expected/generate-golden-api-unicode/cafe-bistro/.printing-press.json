@@ -2,7 +2,7 @@
   "api_name": "cafe-bistro",
   "api_version": "1.0.0",
   "auth_env_vars": [
-    "CAFE_BISTRO_API_KEY_AUTH"
+    "CAFE_BISTRO_API_KEY"
   ],
   "auth_type": "api_key",
   "cli_name": "cafe-bistro-pp-cli",

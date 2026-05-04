@@ -18,6 +18,11 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-auth-type` | `components.securitySchemes.<name>` | `APISpec.Auth.Type` | No |
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
 | `x-prefix` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
+| `x-auth-env-vars` | `components.securitySchemes.<name>` | `APISpec.Auth.EnvVars` | No |
+| `x-auth-optional` | `components.securitySchemes.<name>` | `APISpec.Auth.Optional` | No |
+| `x-auth-key-url` | `components.securitySchemes.<name>` | `APISpec.Auth.KeyURL` | No |
+| `x-auth-title` | `components.securitySchemes.<name>` | `APISpec.Auth.Title` | No |
+| `x-auth-description` | `components.securitySchemes.<name>` | `APISpec.Auth.Description` | No |
 | `x-auth-cookie-domain` | `components.securitySchemes.<name>` | `APISpec.Auth.CookieDomain` | No |
 | `x-auth-cookies` | `components.securitySchemes.<name>` | `APISpec.Auth.Cookies` | No |
 | `x-resource-id` | path item | `Endpoint.IDField` | No |
@@ -125,8 +130,9 @@ info:
 ## Security Scheme Extensions
 
 Security scheme extensions are read from
-`components.securitySchemes.<scheme-name>`. Today they are meaningful for
-`type: apiKey` schemes that declare composed cookie auth.
+`components.securitySchemes.<scheme-name>`. They can declare composed cookie
+auth or override install/config metadata when the API spec's service identity
+differs from the product identity exposed by the printed CLI.
 
 ### `x-auth-type`
 
@@ -175,6 +181,89 @@ components:
       in: header
       name: Authorization
       x-prefix: Klaviyo-API-Key
+```
+
+### `x-auth-env-vars`
+
+Overrides the generated credential environment variable names.
+
+Parsed field: `APISpec.Auth.EnvVars`
+
+Rules:
+- Optional.
+- Must be a list of strings. A single string is also accepted for convenience.
+- Leading and trailing whitespace is trimmed from each item.
+- Empty and non-string list items are ignored.
+- When at least one non-empty item is present, the list replaces the parser's
+  generated env var names.
+
+### `x-auth-optional`
+
+Marks the credential as optional for install/config surfaces.
+
+Parsed field: `APISpec.Auth.Optional`
+
+Rules:
+- Optional.
+- Must be a boolean.
+- `true` makes MCPB `user_config.required` false even for auth types that
+  normally require credentials.
+
+### `x-auth-key-url`
+
+Declares the page where users can get a credential.
+
+Parsed field: `APISpec.Auth.KeyURL`
+
+Rules:
+- Optional.
+- Must be a string.
+- Leading and trailing whitespace is trimmed.
+- The parser does not validate the URL shape.
+
+### `x-auth-title`
+
+Overrides the title shown for the credential field in install/config surfaces.
+
+Parsed field: `APISpec.Auth.Title`
+
+Rules:
+- Optional.
+- Must be a string.
+- Leading and trailing whitespace is trimmed.
+- Used when the selected auth scheme has a single env var. Multiple env vars
+  keep env-var-name titles to avoid duplicate field labels.
+
+### `x-auth-description`
+
+Overrides the full description shown for the credential field in install/config
+surfaces.
+
+Parsed field: `APISpec.Auth.Description`
+
+Rules:
+- Optional.
+- Must be a string.
+- Leading and trailing whitespace is trimmed.
+- Used as the complete description when the selected auth scheme has a single
+  env var. When omitted, the generator builds a description from env var name,
+  display name, optionality, and `x-auth-key-url`.
+
+Example:
+
+```yaml
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-apikey
+      x-auth-env-vars:
+        - FLIGHTAWARE_API_KEY
+      x-auth-optional: true
+      x-auth-key-url: https://flightaware.com/commercial/aeroapi/
+      x-auth-title: FlightAware AeroAPI Key
+      x-auth-description: Optional FlightAware AeroAPI credential for enriched flight data.
 ```
 
 ### `x-auth-cookie-domain`

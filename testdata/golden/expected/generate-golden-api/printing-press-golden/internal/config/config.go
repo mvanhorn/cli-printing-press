@@ -23,7 +23,7 @@ type Config struct {
 	ClientID       string `toml:"client_id"`
 	ClientSecret   string `toml:"client_secret"`
 	Path           string `toml:"-"`
-	PrintingPressGoldenApiKeyAuth string `toml:"press_golden_api_key_auth"`
+	PrintingPressGoldenApiKey string `toml:"press_golden_api_key"`
 }
 
 func Load(configPath string) (*Config, error) {
@@ -51,9 +51,9 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Env var overrides
-	if v := os.Getenv("PRINTING_PRESS_GOLDEN_API_KEY_AUTH"); v != "" {
-		cfg.PrintingPressGoldenApiKeyAuth = v
-		cfg.AuthSource = "env:PRINTING_PRESS_GOLDEN_API_KEY_AUTH"
+	if v := os.Getenv("PRINTING_PRESS_GOLDEN_API_KEY"); v != "" {
+		cfg.PrintingPressGoldenApiKey = v
+		cfg.AuthSource = "env:PRINTING_PRESS_GOLDEN_API_KEY"
 	}
 
 	// Base URL override (used by printing-press verify to point at mock/test servers)
@@ -67,11 +67,11 @@ func (c *Config) AuthHeader() string {
 	if c.AuthHeaderVal != "" {
 		return c.AuthHeaderVal
 	}
-	token := c.PrintingPressGoldenApiKeyAuth
+	token := c.PrintingPressGoldenApiKey
 	if token == "" {
 		return ""
 	}
-	if c.PrintingPressGoldenApiKeyAuth == "" {
+	if c.PrintingPressGoldenApiKey == "" {
 		return ""
 	}
 	return token

@@ -1000,6 +1000,86 @@ paths:
 	assert.Equal(t, "POKEAPI_API_KEY", parsed.Auth.EnvVars[0])
 }
 
+func TestGenericAPIKeySchemeNamesUseAPIKeyEnvVar(t *testing.T) {
+	t.Parallel()
+
+	tests := []string{
+		"ApiKeyAuth",
+		"APIKey",
+		"ApiKeyAuth_v2",
+	}
+
+	for _, schemeName := range tests {
+		t.Run(schemeName, func(t *testing.T) {
+			t.Parallel()
+
+			yamlSpec := fmt.Appendf(nil, `openapi: "3.0.3"
+info:
+  title: FlightGoat
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    %s:
+      type: apiKey
+      in: header
+      name: x-apikey
+paths:
+  /flights:
+    get:
+      responses:
+        "200":
+          description: OK
+`, schemeName)
+			parsed, err := Parse(yamlSpec)
+			require.NoError(t, err)
+
+			assert.Equal(t, "api_key", parsed.Auth.Type)
+			assert.Equal(t, []string{"FLIGHTGOAT_API_KEY"}, parsed.Auth.EnvVars)
+		})
+	}
+}
+
+func TestOpenAPIAuthOverrideExtensions(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: FlightGoat
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-apikey
+      x-auth-env-vars:
+        - FLIGHTAWARE_API_KEY
+      x-auth-optional: true
+      x-auth-key-url: https://flightaware.com/commercial/aeroapi/
+      x-auth-title: FlightAware AeroAPI Key
+      x-auth-description: Optional FlightAware AeroAPI credential for enriched flight data.
+paths:
+  /flights:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, []string{"FLIGHTAWARE_API_KEY"}, parsed.Auth.EnvVars)
+	assert.True(t, parsed.Auth.Optional)
+	assert.Equal(t, "https://flightaware.com/commercial/aeroapi/", parsed.Auth.KeyURL)
+	assert.Equal(t, "FlightAware AeroAPI Key", parsed.Auth.Title)
+	assert.Equal(t, "Optional FlightAware AeroAPI credential for enriched flight data.", parsed.Auth.Description)
+}
+
 func TestInferAuthHeaderParam(t *testing.T) {
 	t.Parallel()
 

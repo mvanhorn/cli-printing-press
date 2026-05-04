@@ -25,7 +25,7 @@ See [Install](#install) above.
 Get your API key from your API provider's developer portal. The key typically looks like a long alphanumeric string.
 
 ```bash
-export PRINTING_PRESS_GOLDEN_API_KEY_AUTH="<paste-your-key>"
+export PRINTING_PRESS_GOLDEN_API_KEY="<paste-your-key>"
 ```
 
 You can also persist this in your config file at `~/.config/printing-press-golden-pp-cli/config.toml`.
@@ -133,7 +133,7 @@ go install github.com/mvanhorn/printing-press-library/library/other/printing-pre
 Then register it:
 
 ```bash
-claude mcp add printing-press-golden printing-press-golden-pp-mcp -e PRINTING_PRESS_GOLDEN_API_KEY_AUTH=<your-key>
+claude mcp add printing-press-golden printing-press-golden-pp-mcp -e PRINTING_PRESS_GOLDEN_API_KEY=<your-key>
 ```
 
 </details>
@@ -146,7 +146,7 @@ To install:
 
 1. Download the `.mcpb` for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/printing-press-golden-current).
 2. Double-click the `.mcpb` file. Claude Desktop opens and walks you through the install.
-3. Fill in `PRINTING_PRESS_GOLDEN_API_KEY_AUTH` when Claude Desktop prompts you.
+3. Fill in `PRINTING_PRESS_GOLDEN_API_KEY` when Claude Desktop prompts you.
 
 Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple Silicon (`darwin-arm64`) and Windows (`amd64`, `arm64`); for other platforms, use the manual config below.
 
@@ -167,7 +167,7 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
     "printing-press-golden": {
       "command": "printing-press-golden-pp-mcp",
       "env": {
-        "PRINTING_PRESS_GOLDEN_API_KEY_AUTH": "<your-key>"
+        "PRINTING_PRESS_GOLDEN_API_KEY": "<your-key>"
       }
     }
   }
@@ -189,12 +189,12 @@ Verifies configuration, credentials, and connectivity to the API.
 Config file: `~/.config/printing-press-golden-pp-cli/config.toml`
 
 Environment variables:
-- `PRINTING_PRESS_GOLDEN_API_KEY_AUTH`
+- `PRINTING_PRESS_GOLDEN_API_KEY`
 
 ## Troubleshooting
 **Authentication errors (exit code 4)**
 - Run `printing-press-golden-pp-cli doctor` to check credentials
-- Verify the environment variable is set: `echo $PRINTING_PRESS_GOLDEN_API_KEY_AUTH`
+- Verify the environment variable is set: `echo $PRINTING_PRESS_GOLDEN_API_KEY`
 **Not found errors (exit code 3)**
 - Check the resource ID is correct
 - Run the `list` command to see available items

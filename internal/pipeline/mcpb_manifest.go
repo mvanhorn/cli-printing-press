@@ -312,10 +312,11 @@ func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
 	required := authRequiresCredential(m.AuthType) && !m.AuthOptional
 	vars := make(map[string]MCPBVar, len(m.AuthEnvVars)+len(m.EndpointTemplateVars))
 	for _, name := range m.AuthEnvVars {
+		title, description := authUserConfigText(m, name, required)
 		vars[userConfigKey(name)] = MCPBVar{
 			Type:        mcpbVarTypeString,
-			Title:       name,
-			Description: envVarDescription(m, name, required),
+			Title:       title,
+			Description: description,
 			Sensitive:   true,
 			Required:    required,
 		}
@@ -345,6 +346,19 @@ func userConfigKey(envVar string) string {
 
 func endpointTemplateVarDescription(templateVar, envVar string) string {
 	return fmt.Sprintf("Sets %s for the endpoint template variable {%s}.", envVar, templateVar)
+}
+
+func authUserConfigText(m CLIManifest, envVar string, required bool) (string, string) {
+	title := envVar
+	if len(m.AuthEnvVars) == 1 {
+		if override := strings.TrimSpace(m.AuthTitle); override != "" {
+			title = override
+		}
+		if description := strings.TrimSpace(m.AuthDescription); description != "" {
+			return title, description
+		}
+	}
+	return title, envVarDescription(m, envVar, required)
 }
 
 func endpointTemplateDefault(m CLIManifest, templateVar string) string {

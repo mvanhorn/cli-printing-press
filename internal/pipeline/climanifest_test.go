@@ -721,6 +721,33 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.Contains(t, key.Description, "https://fdc.nal.usda.gov/api-key-signup")
 	})
 
+	t.Run("auth metadata overrides user_config title and description", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:         "flightgoat",
+			DisplayName:     "Flight GOAT",
+			MCPBinary:       "flightgoat-pp-mcp",
+			MCPReady:        "full",
+			AuthType:        "api_key",
+			AuthEnvVars:     []string{"FLIGHTAWARE_API_KEY"},
+			AuthOptional:    true,
+			AuthKeyURL:      "https://flightaware.com/commercial/aeroapi/",
+			AuthTitle:       "FlightAware AeroAPI Key",
+			AuthDescription: "Optional FlightAware AeroAPI credential for enriched flight data.",
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Equal(t, "${user_config.flightaware_api_key}", got.Server.MCPConfig.Env["FLIGHTAWARE_API_KEY"])
+		key, ok := got.UserConfig["flightaware_api_key"]
+		require.True(t, ok)
+		assert.Equal(t, "FlightAware AeroAPI Key", key.Title)
+		assert.Equal(t, "Optional FlightAware AeroAPI credential for enriched flight data.", key.Description)
+		assert.False(t, key.Required)
+		assert.True(t, key.Sensitive)
+	})
+
 	t.Run("multiple optional env vars (company-goat shape)", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, CLIManifest{
@@ -1022,8 +1049,12 @@ func TestPopulateMCPMetadata(t *testing.T) {
 	populateMCPMetadata(&m, &spec.APISpec{
 		Name: "test",
 		Auth: spec.AuthConfig{
-			Type:    "cookie",
-			EnvVars: []string{"TEST_AUTH"},
+			Type:        "cookie",
+			EnvVars:     []string{"TEST_AUTH"},
+			KeyURL:      "https://auth.example.com",
+			Optional:    true,
+			Title:       "Test Auth",
+			Description: "Use this test credential.",
 		},
 		Resources: map[string]spec.Resource{
 			"items": {
@@ -1041,6 +1072,10 @@ func TestPopulateMCPMetadata(t *testing.T) {
 	assert.Equal(t, "partial", m.MCPReady)
 	assert.Equal(t, "cookie", m.AuthType)
 	assert.Equal(t, []string{"TEST_AUTH"}, m.AuthEnvVars)
+	assert.Equal(t, "https://auth.example.com", m.AuthKeyURL)
+	assert.True(t, m.AuthOptional)
+	assert.Equal(t, "Test Auth", m.AuthTitle)
+	assert.Equal(t, "Use this test credential.", m.AuthDescription)
 }
 
 // TestPopulateMCPMetadataDisplayNamePrecedence pins:

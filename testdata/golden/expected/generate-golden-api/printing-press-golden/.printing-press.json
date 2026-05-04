@@ -2,7 +2,7 @@
   "api_name": "printing-press-golden",
   "api_version": "2026.04",
   "auth_env_vars": [
-    "PRINTING_PRESS_GOLDEN_API_KEY_AUTH"
+    "PRINTING_PRESS_GOLDEN_API_KEY"
   ],
   "auth_type": "api_key",
   "cli_name": "printing-press-golden-pp-cli",
