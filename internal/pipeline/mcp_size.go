@@ -1,11 +1,16 @@
 package pipeline
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
 )
 
 // MCPTokenEstimate reports the approximate token weight of a generated MCP
@@ -153,6 +158,14 @@ func estimateMCPTokens(dir string) MCPTokenEstimate {
 		})
 	}
 
+	if strings.Contains(src, "cobratree.RegisterAll(") {
+		runtimeTools := estimateCobratreeRuntimeTokens(dir)
+		for _, tool := range runtimeTools {
+			totalChars += tool.Chars
+			perTool = append(perTool, tool)
+		}
+	}
+
 	est := MCPTokenEstimate{
 		TotalChars:  totalChars,
 		TotalTokens: totalChars / 4,
@@ -172,6 +185,263 @@ func estimateMCPTokens(dir string) MCPTokenEstimate {
 	}
 
 	return est
+}
+
+// cobratreeFrameworkCommands mirrors the generated cobratree classify
+// template's framework skip set. The scorer cannot import generated code
+// from a printed CLI, so it keeps the same names here for static estimates.
+var cobratreeFrameworkCommands = map[string]bool{
+	"about":         true,
+	"agent-context": true,
+	"api":           true,
+	"auth":          true,
+	"completion":    true,
+	"doctor":        true,
+	"feedback":      true,
+	"help":          true,
+	"profile":       true,
+	"search":        true,
+	"sql":           true,
+	"version":       true,
+	"which":         true,
+}
+
+type cobraCommandLiteral struct {
+	use         string
+	short       string
+	long        string
+	hidden      bool
+	annotations map[string]string
+	runnable    bool
+}
+
+type cobraSourceCommand struct {
+	literal    cobraCommandLiteral
+	hasLiteral bool
+	children   []string
+}
+
+type mcpCobraCommandKind int
+
+const (
+	mcpCobraNovel mcpCobraCommandKind = iota
+	mcpCobraEndpoint
+	mcpCobraFramework
+	mcpCobraHidden
+)
+
+func estimateCobratreeRuntimeTokens(dir string) []MCPToolSize {
+	cliDir := filepath.Join(dir, "internal", "cli")
+	files := listGoFiles(cliDir)
+	if len(files) == 0 {
+		return nil
+	}
+
+	commands := map[string]*cobraSourceCommand{}
+	for _, path := range files {
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			continue
+		}
+		collectCobraSourceCommands(file, commands)
+	}
+	return reachableCobratreeRuntimeTools(commands)
+}
+
+// collectCobraSourceCommands builds a constructor graph for generated Cobra
+// commands. The runtime walker starts from RootCmd/newRootCmd and follows
+// AddCommand edges, so the scorer does the same instead of counting every
+// runnable command literal that happens to exist in internal/cli.
+func collectCobraSourceCommands(file *ast.File, commands map[string]*cobraSourceCommand) {
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Body == nil || fn.Name == nil {
+			continue
+		}
+		fnName := fn.Name.Name
+		if fnName != "RootCmd" && fnName != "newRootCmd" && (!strings.HasPrefix(fnName, "new") || !strings.HasSuffix(fnName, "Cmd")) {
+			continue
+		}
+		rec := sourceCommandRecord(commands, fnName)
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.FuncLit:
+				return false
+			case *ast.CompositeLit:
+				if !rec.hasLiteral && isCobraCommandLiteral(node) {
+					rec.literal = parseCobraCommandLiteral(node)
+					rec.hasLiteral = true
+				}
+			case *ast.CallExpr:
+				if !isAddCommandCall(node) {
+					return true
+				}
+				for _, arg := range node.Args {
+					if child := cobraConstructorCallName(arg); child != "" {
+						rec.children = append(rec.children, child)
+					}
+				}
+			}
+			return true
+		})
+	}
+}
+
+func sourceCommandRecord(commands map[string]*cobraSourceCommand, name string) *cobraSourceCommand {
+	rec := commands[name]
+	if rec == nil {
+		rec = &cobraSourceCommand{}
+		commands[name] = rec
+	}
+	return rec
+}
+
+func reachableCobratreeRuntimeTools(commands map[string]*cobraSourceCommand) []MCPToolSize {
+	var tools []MCPToolSize
+	visited := map[string]bool{}
+	var walk func(string)
+	walk = func(fnName string) {
+		rec := commands[fnName]
+		if rec == nil {
+			return
+		}
+		for _, childName := range rec.children {
+			if visited[childName] {
+				continue
+			}
+			visited[childName] = true
+			child := commands[childName]
+			if child == nil || !child.hasLiteral {
+				continue
+			}
+			kind := cobratreeCommandKind(child.literal)
+			if kind == mcpCobraHidden || kind == mcpCobraFramework {
+				continue
+			}
+			if kind == mcpCobraNovel && child.literal.runnable {
+				if tool, ok := estimateCobratreeCommandTool(child.literal); ok {
+					tools = append(tools, tool)
+				}
+			}
+			walk(childName)
+		}
+	}
+	walk("RootCmd")
+	walk("newRootCmd")
+	return tools
+}
+
+func isAddCommandCall(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	return ok && sel.Sel != nil && sel.Sel.Name == "AddCommand"
+}
+
+func cobraConstructorCallName(expr ast.Expr) string {
+	call, ok := expr.(*ast.CallExpr)
+	if !ok {
+		return ""
+	}
+	ident, ok := call.Fun.(*ast.Ident)
+	if !ok || !strings.HasPrefix(ident.Name, "new") || !strings.HasSuffix(ident.Name, "Cmd") {
+		return ""
+	}
+	return ident.Name
+}
+
+func parseCobraCommandLiteral(lit *ast.CompositeLit) cobraCommandLiteral {
+	cmd := cobraCommandLiteral{annotations: map[string]string{}}
+	for _, elt := range lit.Elts {
+		kv, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := kv.Key.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		switch key.Name {
+		case "Use":
+			cmd.use = stringLiteralValue(kv.Value)
+		case "Short":
+			cmd.short = stringLiteralValue(kv.Value)
+		case "Long":
+			cmd.long = stringLiteralValue(kv.Value)
+		case "Hidden":
+			cmd.hidden = identBoolValue(kv.Value)
+		case "Annotations":
+			cmd.annotations = normalizedStringMapLiteral(kv.Value)
+		case "Run", "RunE":
+			cmd.runnable = true
+		}
+	}
+	return cmd
+}
+
+func estimateCobratreeCommandTool(cmd cobraCommandLiteral) (MCPToolSize, bool) {
+	name := mcpCobraUseName(cmd.use)
+	if name == "" || cmd.hidden || !cmd.runnable {
+		return MCPToolSize{}, false
+	}
+	if cobratreeCommandKind(cmd) != mcpCobraNovel {
+		return MCPToolSize{}, false
+	}
+	toolName := naming.SnakeIdentifier(name)
+	if toolName == "" {
+		return MCPToolSize{}, false
+	}
+	description := cmd.long
+	if description == "" {
+		description = cmd.short
+	}
+	if description == "" {
+		description = "Run `" + name + "` through the companion CLI binary."
+	}
+	chars := len(toolName) + len(description)
+	return MCPToolSize{
+		Name:   "cobratree:" + toolName,
+		Chars:  chars,
+		Tokens: chars / 4,
+	}, true
+}
+
+func cobratreeCommandKind(cmd cobraCommandLiteral) mcpCobraCommandKind {
+	name := mcpCobraUseName(cmd.use)
+	if name == "" || cmd.hidden || annotationIsTrueValue(cmd.annotations["mcp:hidden"]) {
+		return mcpCobraHidden
+	}
+	if strings.TrimSpace(cmd.annotations["pp:endpoint"]) != "" {
+		return mcpCobraEndpoint
+	}
+	if cobratreeFrameworkCommands[name] {
+		return mcpCobraFramework
+	}
+	return mcpCobraNovel
+}
+
+func annotationIsTrueValue(v string) bool {
+	return v == "true" || v == "1" || v == "yes"
+}
+
+func mcpCobraUseName(use string) string {
+	fields := strings.Fields(use)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func identBoolValue(expr ast.Expr) bool {
+	ident, ok := expr.(*ast.Ident)
+	return ok && ident.Name == "true"
+}
+
+func normalizedStringMapLiteral(expr ast.Expr) map[string]string {
+	raw := stringMapLiteral(expr)
+	out := map[string]string{}
+	for key, value := range raw {
+		out[key] = strings.ToLower(strings.TrimSpace(value))
+	}
+	return out
 }
 
 // scoreMCPTokenEfficiency scores 0-10 based on the token weight of the

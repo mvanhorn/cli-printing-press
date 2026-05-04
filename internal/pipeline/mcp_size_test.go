@@ -30,6 +30,13 @@ func RegisterTools(s *server.MCPServer) {
 	return dir
 }
 
+func writeMCPCLISource(t *testing.T, dir, name, content string) {
+	t.Helper()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	writeFile(t, filepath.Join(cliDir, name), content)
+}
+
 func TestEstimateMCPTokens_NoMCPSurface(t *testing.T) {
 	dir := t.TempDir()
 	est := estimateMCPTokens(dir)
@@ -79,6 +86,79 @@ func TestEstimateMCPTokens_MultipleToolsTopHeaviest(t *testing.T) {
 	assert.Equal(t, "huge", est.TopHeaviest[0].Name, "largest tool listed first in TopHeaviest")
 	assert.Greater(t, est.TopHeaviest[0].Chars, est.TopHeaviest[1].Chars)
 	assert.Greater(t, est.TopHeaviest[1].Chars, est.TopHeaviest[2].Chars)
+}
+
+func TestEstimateMCPTokens_IncludesCobratreeRuntimeTools(t *testing.T) {
+	dir := writeMCPTools(t, `
+	s.AddTool(mcplib.NewTool("typed_get", mcplib.WithDescription("Typed endpoint.")), nil)
+	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
+`)
+	writeMCPCLISource(t, dir, "root.go", `package cli
+
+import "github.com/spf13/cobra"
+
+func RootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "demo-pp-cli"}
+	rootCmd.AddCommand(newDigestCmd())
+	rootCmd.AddCommand(newTrendsCmd())
+	rootCmd.AddCommand(newEndpointCmd())
+	rootCmd.AddCommand(newAuthCmd())
+	rootCmd.AddCommand(newHiddenCmd())
+	return rootCmd
+}
+
+func newDigestCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "digest",
+		Short: "Build a compact daily digest.",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+
+func newTrendsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "trends",
+		Long:  "Compare trending entities across synced data and explain what changed.",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+
+func newEndpointCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:         "typed-endpoint",
+		Short:       "Already covered by a typed MCP tool.",
+		Annotations: map[string]string{"pp:endpoint": "items.get"},
+		RunE:        func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+
+func newAuthCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "auth",
+		Short: "Framework command skipped by cobratree.",
+		RunE:  func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+
+func newHiddenCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:         "debug-hidden",
+		Short:       "Hidden from MCP.",
+		Annotations: map[string]string{"mcp:hidden": "true"},
+		RunE:        func(cmd *cobra.Command, args []string) error { return nil },
+	}
+}
+`)
+
+	est := estimateMCPTokens(dir)
+	require.Equal(t, 3, est.ToolCount, "typed tool plus two cobratree runtime tools should all count")
+	names := make([]string, 0, len(est.PerTool))
+	for _, tool := range est.PerTool {
+		names = append(names, tool.Name)
+	}
+	assert.Contains(t, names, "typed_get")
+	assert.Contains(t, names, "cobratree:digest")
+	assert.Contains(t, names, "cobratree:trends")
 }
 
 func TestScoreMCPTokenEfficiency_FullMarksForLeanSurface(t *testing.T) {
