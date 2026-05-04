@@ -66,22 +66,19 @@ Run 'api <interface>' to see that interface's methods.`,
 				return fmt.Errorf("interface %q not found. Run '%s-pp-cli api' to list all interfaces", args[0], "{{.Name}}")
 			}
 
-			// Build a typed slice once, used by both the human format loop
-			// and the JSON envelope. Pre-formatting strings ahead of time
-			// would block the JSON path from emitting clean field values.
+			// Pre-formatting human strings ahead of time would block the JSON
+			// path from emitting clean field values; build the typed slice and
+			// derive human format on print.
 			type ifaceEntry struct {
 				Name  string `json:"name"`
 				Short string `json:"short"`
 			}
 			var ifaces []ifaceEntry
-			var interfaces []string
 			for _, child := range root.Commands() {
 				if child.Hidden {
 					ifaces = append(ifaces, ifaceEntry{Name: child.Name(), Short: child.Short})
-					interfaces = append(interfaces, fmt.Sprintf("  %-45s %s", child.Name(), child.Short))
 				}
 			}
-			sort.Strings(interfaces)
 			sort.Slice(ifaces, func(i, j int) bool { return ifaces[i].Name < ifaces[j].Name })
 
 			// JSON envelope: {interfaces: [...], note?: "..."}.
@@ -94,14 +91,14 @@ Run 'api <interface>' to see that interface's methods.`,
 				return printJSONFiltered(cmd.OutOrStdout(), out, flags)
 			}
 
-			if len(interfaces) == 0 {
+			if len(ifaces) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No hidden API interfaces found.")
 				return nil
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Available API interfaces (%d):\n\n", len(interfaces))
-			for _, line := range interfaces {
-				fmt.Fprintln(cmd.OutOrStdout(), line)
+			fmt.Fprintf(cmd.OutOrStdout(), "Available API interfaces (%d):\n\n", len(ifaces))
+			for _, e := range ifaces {
+				fmt.Fprintf(cmd.OutOrStdout(), "  %-45s %s\n", e.Name, e.Short)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "\nUse '%s-pp-cli api <interface>' to see methods.\n", "{{.Name}}")
 			return nil

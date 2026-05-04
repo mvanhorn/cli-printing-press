@@ -200,10 +200,6 @@ Exit codes & warnings:
 
 			elapsed := time.Since(started)
 			totalResources := successCount + warnCount + errCount
-			if !humanFriendly {
-				fmt.Fprintf(os.Stderr, `{"event":"sync_summary","total_records":%d,"resources":%d,"success":%d,"warned":%d,"errored":%d,"duration_ms":%d}`+"\n",
-					totalSynced, totalResources, successCount, warnCount, errCount, elapsed.Milliseconds())
-			}
 			if humanFriendly {
 				if warnCount > 0 {
 					fmt.Fprintf(os.Stderr, "Sync complete: %d records across %d resources (%d warned, %.1fs)\n",
@@ -212,6 +208,9 @@ Exit codes & warnings:
 					fmt.Fprintf(os.Stderr, "Sync complete: %d records across %d resources (%.1fs)\n",
 						totalSynced, totalResources, elapsed.Seconds())
 				}
+			} else {
+				fmt.Fprintf(os.Stderr, `{"event":"sync_summary","total_records":%d,"resources":%d,"success":%d,"warned":%d,"errored":%d,"duration_ms":%d}`+"\n",
+					totalSynced, totalResources, successCount, warnCount, errCount, elapsed.Milliseconds())
 			}
 
 			// Exit-code policy:

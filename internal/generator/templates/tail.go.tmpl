@@ -46,12 +46,8 @@ native streaming instead of polling.`,
 			// what to pass without parsing a usage error message.
 			// Envelope: {resources: [...], note}.
 			if resource == "" && flags.asJSON {
-				resources := tailKnownResources()
-				if resources == nil {
-					resources = []string{}
-				}
 				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
-					"resources": resources,
+					"resources": tailKnownResources(),
 					"note":      "tail requires a resource name; pass one of the listed names",
 				}, flags)
 			}
