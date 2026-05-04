@@ -234,6 +234,234 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 	}
 }
 
+func TestExtractFirstIDFromJSON(t *testing.T) {
+	tests := []struct {
+		name   string
+		stdout string
+		want   string
+		ok     bool
+	}{
+		{
+			name:   "TMDb results shape",
+			stdout: `{"results":[{"id":"42"}],"total_results":1}`,
+			want:   "42", ok: true,
+		},
+		{
+			name:   "top-level array",
+			stdout: `[{"id":"first"},{"id":"second"}]`,
+			want:   "first", ok: true,
+		},
+		{
+			name:   "items shape (GitHub REST)",
+			stdout: `{"items":[{"id":"abc"}],"total_count":1}`,
+			want:   "abc", ok: true,
+		},
+		{
+			name:   "data array (Stripe)",
+			stdout: `{"object":"list","data":[{"id":"cus_xyz"}],"has_more":false}`,
+			want:   "cus_xyz", ok: true,
+		},
+		{
+			name:   "list shape (long-tail)",
+			stdout: `{"list":[{"id":"L1"}]}`,
+			want:   "L1", ok: true,
+		},
+		{
+			name:   "GraphQL nodes (Shopify)",
+			stdout: `{"data":{"products":{"nodes":[{"id":"gid://shopify/Product/42"}]}}}`,
+			want:   "gid://shopify/Product/42", ok: true,
+		},
+		{
+			name:   "GraphQL edges (Relay-style)",
+			stdout: `{"data":{"viewer":{"repos":{"edges":[{"node":{"id":"R_kgABC123"}}]}}}}`,
+			want:   "R_kgABC123", ok: true,
+		},
+		{
+			name:   "numeric id preserved as string",
+			stdout: `{"results":[{"id":12345}]}`,
+			want:   "12345", ok: true,
+		},
+		{
+			name:   "snowflake-size numeric id (no scientific notation)",
+			stdout: `{"results":[{"id":1234567890123456789}]}`,
+			want:   "1234567890123456789", ok: true,
+		},
+		{
+			name:   "empty results — no id",
+			stdout: `{"results":[]}`,
+			want:   "", ok: false,
+		},
+		{
+			name:   "results without id field",
+			stdout: `{"results":[{"name":"thing"}]}`,
+			want:   "", ok: false,
+		},
+		{
+			name:   "invalid JSON",
+			stdout: `not json at all`,
+			want:   "", ok: false,
+		},
+		{
+			name:   "matches REST results before GraphQL — REST wins",
+			stdout: `{"results":[{"id":"REST"}],"data":{"x":{"nodes":[{"id":"GQL"}]}}}`,
+			want:   "REST", ok: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := extractFirstIDFromJSON(tt.stdout)
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestBuildSiblingMap(t *testing.T) {
+	commands := []liveDogfoodCommand{
+		{Path: []string{"projects", "list"}},
+		{Path: []string{"projects", "get"}},
+		{Path: []string{"projects", "tasks", "list"}},
+		{Path: []string{"projects", "tasks", "update"}},
+		{Path: []string{"users", "get"}},
+	}
+	siblings := buildSiblingMap(commands)
+
+	// Top-level commands keyed by "" (parent path).
+	assert.Len(t, siblings["projects"], 2, "projects subcommands")
+	assert.Len(t, siblings["projects tasks"], 2, "projects tasks subcommands")
+	assert.Len(t, siblings["users"], 1, "users subcommands")
+}
+
+func TestFindListCompanion(t *testing.T) {
+	candidates := []liveDogfoodCommand{
+		{Path: []string{"widgets", "get"}},
+		{Path: []string{"widgets", "list"}},
+		{Path: []string{"widgets", "delete"}},
+	}
+	got := findListCompanion(candidates)
+	if assert.NotNil(t, got) {
+		assert.Equal(t, []string{"widgets", "list"}, got.Path)
+	}
+
+	// Cinema verb fallback.
+	cinema := []liveDogfoodCommand{
+		{Path: []string{"movies", "get"}},
+		{Path: []string{"movies", "popular"}},
+	}
+	got = findListCompanion(cinema)
+	if assert.NotNil(t, got) {
+		assert.Equal(t, []string{"movies", "popular"}, got.Path)
+	}
+
+	// No allowlisted leaf.
+	none := []liveDogfoodCommand{
+		{Path: []string{"x", "delete"}},
+		{Path: []string{"x", "update"}},
+	}
+	assert.Nil(t, findListCompanion(none))
+}
+
+func TestSubstitutePositionals(t *testing.T) {
+	tests := []struct {
+		name        string
+		happyArgs   []string
+		commandPath []string
+		resolved    []string
+		want        []string
+	}{
+		{
+			name:        "single positional",
+			happyArgs:   []string{"widgets", "get", "example-value"},
+			commandPath: []string{"widgets", "get"},
+			resolved:    []string{"42"},
+			want:        []string{"widgets", "get", "42"},
+		},
+		{
+			name:        "two positionals",
+			happyArgs:   []string{"projects", "tasks", "update", "ph1", "ph2"},
+			commandPath: []string{"projects", "tasks", "update"},
+			resolved:    []string{"P1", "T1"},
+			want:        []string{"projects", "tasks", "update", "P1", "T1"},
+		},
+		{
+			name:        "positional before flag",
+			happyArgs:   []string{"widgets", "update", "ph1", "--name", "thing"},
+			commandPath: []string{"widgets", "update"},
+			resolved:    []string{"abc"},
+			want:        []string{"widgets", "update", "abc", "--name", "thing"},
+		},
+		{
+			name:        "no positionals (resolved empty)",
+			happyArgs:   []string{"widgets", "list", "--limit", "5"},
+			commandPath: []string{"widgets", "list"},
+			resolved:    nil,
+			want:        []string{"widgets", "list", "--limit", "5"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := substitutePositionals(tt.happyArgs, tt.commandPath, tt.resolved)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
+	// Skip paths that don't require subprocess invocation (no companion at
+	// the requested depth, non-id-shape mid-chain). Subprocess-driven scenarios
+	// (companion success/failure, JSON parsing) are covered by the
+	// extractFirstIDFromJSON unit tests + RunLiveDogfood integration tests.
+
+	siblingsEmpty := map[string][]liveDogfoodCommand{}
+	cache := newCompanionCache()
+
+	// No positionals → resolveOK with happyArgs unchanged.
+	cmd := liveDogfoodCommand{
+		Path: []string{"widgets", "list"},
+		Help: "Usage:\n  cli widgets list [flags]\n",
+	}
+	args, status, _ := resolveCommandPositionals(cmd, []string{"widgets", "list"}, siblingsEmpty, cache, "", "", time.Second)
+	assert.Equal(t, resolveOK, status)
+	assert.Equal(t, []string{"widgets", "list"}, args)
+
+	// Non-id-shape positional (<query>) at depth 0 → skip.
+	cmd = liveDogfoodCommand{
+		Path: []string{"widgets", "search"},
+		Help: "Usage:\n  cli widgets search <query> [flags]\n",
+	}
+	_, status, reason := resolveCommandPositionals(cmd, []string{"widgets", "search", "x"}, siblingsEmpty, cache, "", "", time.Second)
+	assert.Equal(t, resolveSkip, status)
+	assert.Contains(t, reason, "non-id positional")
+
+	// id-shape positional (bare `id`) but no companion → skip.
+	cmd = liveDogfoodCommand{
+		Path: []string{"widgets", "get"},
+		Help: "Usage:\n  cli widgets get <id> [flags]\n",
+	}
+	_, status, reason = resolveCommandPositionals(cmd, []string{"widgets", "get", "x"}, siblingsEmpty, cache, "", "", time.Second)
+	assert.Equal(t, resolveSkip, status)
+	assert.Contains(t, reason, "no list companion")
+
+	// camelCase id-shape positional (movieId) but no companion → skip.
+	cmd = liveDogfoodCommand{
+		Path: []string{"movies", "get"},
+		Help: "Usage:\n  cli movies get <movieId> [flags]\n",
+	}
+	_, status, reason = resolveCommandPositionals(cmd, []string{"movies", "get", "x"}, siblingsEmpty, cache, "", "", time.Second)
+	assert.Equal(t, resolveSkip, status)
+	assert.Contains(t, reason, "no list companion")
+
+	// Path shorter than placeholders + 1 → skip.
+	cmd = liveDogfoodCommand{
+		Path: []string{"get"},
+		Help: "Usage:\n  cli get <id> <name> [flags]\n",
+	}
+	_, status, _ = resolveCommandPositionals(cmd, []string{"get", "x", "y"}, siblingsEmpty, cache, "", "", time.Second)
+	assert.Equal(t, resolveSkip, status)
+}
+
 func TestCommandSupportsSearch(t *testing.T) {
 	tests := []struct {
 		name string
