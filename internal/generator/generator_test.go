@@ -5950,6 +5950,83 @@ func assertNewMCPClientSkipsCache(t *testing.T, specSource string) {
 		"newMCPClient must disable the response cache so MCP-driven reads see fresh state across mutations")
 }
 
+// TestGenerateMCPHandlerPreservesQueryPositionals proves the makeAPIHandler
+// body in generated MCP tools.go distinguishes real URL path placeholders
+// (e.g. /movie/{movieId}) from CLI positional args that map to query
+// params (e.g. `search <query>` -> ?query=). The bug was that the handler
+// dropped every positionalParams entry from the query map, so a query-style
+// positional like `query` silently disappeared from the request — TMDb
+// returned an empty page for movies_search even with a non-empty query.
+func TestGenerateMCPHandlerPreservesQueryPositionals(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcphandler")
+	apiSpec.Resources = map[string]spec.Resource{
+		"movies": {
+			Description: "Movies",
+			Endpoints: map[string]spec.Endpoint{
+				// Query-style positional: `query` is a CLI positional but
+				// must be sent as ?query=… because the path has no {query}.
+				"search": {
+					Method:      "GET",
+					Path:        "/search/movie",
+					Description: "Search movies",
+					Params: []spec.Param{
+						{Name: "query", Type: "string", Required: true, Positional: true, Description: "Search query"},
+						{Name: "year", Type: "string", Description: "Release year"},
+					},
+				},
+				// Real path param: `movieId` is substituted into the URL.
+				"get": {
+					Method:      "GET",
+					Path:        "/movie/{movieId}",
+					Description: "Get a movie",
+					Params: []spec.Param{
+						{Name: "movieId", Type: "string", Required: true, PathParam: true, Description: "Movie ID"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	toolsData, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	tools := string(toolsData)
+
+	// Call sites still pass both names — the upstream emit is unchanged;
+	// the fix lives entirely inside the handler body.
+	assert.Regexp(t,
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/search/movie",\s*\[]string\{[^}]*"query"`),
+		tools,
+		"search call site must still pass `query` in positionalParams (handler decides path vs query at runtime)")
+	assert.Regexp(t,
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/movie/\{movieId\}",\s*\[]string\{[^}]*"movieId"`),
+		tools,
+		"get-by-id call site must pass `movieId` in positionalParams")
+
+	// Handler body: only entries whose placeholder appears in the path
+	// template are treated as path params. Everything else stays in the
+	// query map.
+	assert.Contains(t, tools,
+		`if !strings.Contains(pathTemplate, placeholder) {`,
+		"makeAPIHandler must skip positionalParams entries that have no matching path placeholder")
+	assert.Contains(t, tools,
+		`pathParams := make(map[string]bool, len(positionalParams))`,
+		"makeAPIHandler must build a pathParams set so the query-collection loop can reuse the path-vs-query decision")
+
+	// Old buggy shape must be gone: a flat positional-skip in the query
+	// loop dropped query-style positionals from the request.
+	assert.NotContains(t, tools, "isPositional := false",
+		"old handler shape skipped every positionalParams entry from query — must not regress")
+
+	// Generated CLI must still compile.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 // TestGenerateMCPCodeOrchKeywordsHasStopwordFilter proves the keyword
 // extractor in the code-orchestration thin surface filters short tokens
 // and a stopword set. Without this, two-letter substrings like "is"/"in"

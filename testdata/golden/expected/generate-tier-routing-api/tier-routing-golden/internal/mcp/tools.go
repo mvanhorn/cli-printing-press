@@ -92,27 +92,29 @@ func makeAPIHandler(method, pathTemplate, tier string, positionalParams []string
 		// we rely on here (or an empty map when the payload is something else).
 		args := req.GetArguments()
 
-		// Build path by substituting positional params
+		// positionalParams mixes real URL path params with CLI positional
+		// args that map to query params (e.g. `search <query>` -> ?query=).
+		// Only treat an entry as a path param when the path template
+		// actually contains {name}; everything else stays in the query map.
 		path := pathTemplate
+		pathParams := make(map[string]bool, len(positionalParams))
 		for _, p := range positionalParams {
+			placeholder := "{" + p + "}"
+			if !strings.Contains(pathTemplate, placeholder) {
+				continue
+			}
+			pathParams[p] = true
 			if v, ok := args[p]; ok {
-				path = strings.Replace(path, "{"+p+"}", fmt.Sprintf("%v", v), 1)
+				path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)
 			}
 		}
 
-		// Collect non-positional params as query params
 		params := make(map[string]string)
 		for k, v := range args {
-			isPositional := false
-			for _, p := range positionalParams {
-				if k == p {
-					isPositional = true
-					break
-				}
+			if pathParams[k] {
+				continue
 			}
-			if !isPositional {
-				params[k] = fmt.Sprintf("%v", v)
-			}
+			params[k] = fmt.Sprintf("%v", v)
 		}
 
 		var data json.RawMessage
