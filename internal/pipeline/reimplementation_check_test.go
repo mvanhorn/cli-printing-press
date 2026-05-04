@@ -583,11 +583,84 @@ func newSubCmd(flags *rootFlags) *cobra.Command {
 	if got.ExemptedViaAnnotation != 1 {
 		t.Fatalf("ExemptedViaAnnotation: want 1 (marker should exempt), got %d", got.ExemptedViaAnnotation)
 	}
+	if got.ExemptedViaClientDirective != 0 {
+		t.Fatalf("ExemptedViaClientDirective: want 0 (static marker is distinct), got %d", got.ExemptedViaClientDirective)
+	}
 	if got.ExemptedViaStore != 0 {
 		t.Errorf("ExemptedViaStore: want 0 (annotation is its own carve-out, not store), got %d", got.ExemptedViaStore)
 	}
 	if len(got.Suspicious) != 0 {
 		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
+func TestCheckReimplementation_ClientCallMarker(t *testing.T) {
+	tests := []struct {
+		name           string
+		marker         string
+		wantDirective  int
+		wantSuspicious int
+	}{
+		{
+			name: "marker exempts hidden client wrapper",
+			marker: `// pp:client-call
+//
+// fetchFlights wraps the real API client through a helper shape the
+// reimplementation regex cannot see.
+
+`,
+			wantDirective: 1,
+		},
+		{
+			name:           "missing marker still flags hidden wrapper",
+			wantSuspicious: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := map[string]string{
+				"flights.go": `package cli
+
+` + tt.marker + `import "github.com/spf13/cobra"
+
+func newFlightsCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use: "flights",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			flights, err := fetchFlights(args[0])
+			if err != nil { return err }
+			_ = flights
+			return nil
+		},
+	}
+}
+`,
+			}
+			cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+				{Name: "Flights", Command: "flights"},
+			})
+
+			got := checkReimplementation(cliDir, pipelineDir)
+			if got.Checked != 1 {
+				t.Fatalf("Checked: want 1, got %d", got.Checked)
+			}
+			if got.ExemptedViaClientDirective != tt.wantDirective {
+				t.Fatalf("ExemptedViaClientDirective: want %d, got %d", tt.wantDirective, got.ExemptedViaClientDirective)
+			}
+			if got.ExemptedViaAnnotation != 0 {
+				t.Fatalf("ExemptedViaAnnotation: want 0 (client-call marker is distinct), got %d", got.ExemptedViaAnnotation)
+			}
+			if got.ExemptedViaStore != 0 {
+				t.Fatalf("ExemptedViaStore: want 0 (client-call marker is not a store signal), got %d", got.ExemptedViaStore)
+			}
+			if len(got.Suspicious) != tt.wantSuspicious {
+				t.Fatalf("Suspicious: want %d, got %d (%v)", tt.wantSuspicious, len(got.Suspicious), got.Suspicious)
+			}
+			if tt.wantSuspicious > 0 && !strings.Contains(got.Suspicious[0].Reason, "no API client call") {
+				t.Errorf("expected hand-rolled-response reason, got %q", got.Suspicious[0].Reason)
+			}
+		})
 	}
 }
 

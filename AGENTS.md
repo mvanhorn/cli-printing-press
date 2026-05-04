@@ -33,8 +33,9 @@ Carve-outs:
 - Commands that bypass the store package and operate on the local SQLite file directly through `database/sql` (import + `sql.Open`/`sql.OpenDB`) — same data, thinner surface
 - Commands that cache an API response in the store after calling it — both a client call and a store call is fine
 - Commands whose data is the curated content itself (substitution tables, holiday lists, currency metadata) — opt in via `// pp:novel-static-reference` directive in the command's source file
+- Commands that call the real API through a wrapper the dogfood heuristic cannot see — opt in via `// pp:client-call` directive in the command's source file, and use it only when the hidden helper performs a real external API call. Do not use it for hardcoded payloads, local-only transforms, or fake endpoint stubs.
 
-Enforced by the absorb manifest's Kill Check (`skills/printing-press/references/absorb-scoring.md`) and dogfood's `reimplementation_check`, which flags handler files showing neither a client call nor a store access (without the static-reference opt-out).
+Enforced by the absorb manifest's Kill Check (`skills/printing-press/references/absorb-scoring.md`) and dogfood's `reimplementation_check`, which flags handler files showing neither a client call nor a store access (without the static-reference or client-call opt-out).
 
 ## Agent-Native Surface
 
