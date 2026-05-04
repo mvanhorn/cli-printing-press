@@ -2944,7 +2944,15 @@ func (g *Generator) mcpParamDescription(p spec.Param) string {
 func exampleValue(p spec.Param) string {
 	nameLower := strings.ToLower(p.Name)
 
-	if strings.HasSuffix(nameLower, "_id") || nameLower == "id" {
+	// Recognise three id-shape patterns: bare `id`, snake_case `*_id`, and
+	// camelCase `*Id` lowered to `*id`. The camelCase clause carries a
+	// string-type fence so booleans/numerics ending in `id` (e.g., `paid`,
+	// `valid`, `creditValid`) flow into their own type branches instead of
+	// emitting a UUID.
+	if nameLower == "id" ||
+		strings.HasSuffix(nameLower, "_id") ||
+		(strings.HasSuffix(nameLower, "id") && len(nameLower) > 2 &&
+			(p.Type == "string" || p.Type == "")) {
 		return "550e8400-e29b-41d4-a716-446655440000"
 	}
 	if strings.Contains(nameLower, "email") {
