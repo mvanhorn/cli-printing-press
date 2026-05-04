@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/mvanhorn/cli-printing-press/v3/internal/shellargs"
 )
 
 // LiveStatus is the outcome of one feature's live check.
@@ -465,45 +467,7 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 // and returns the subcommand arguments (everything after the binary name).
 // Respects double-quoted tokens so queries with spaces stay intact.
 func parseExampleArgs(example string) ([]string, error) {
-	tokens, err := shellSplit(example)
-	if err != nil {
-		return nil, err
-	}
-	if len(tokens) < 2 {
-		return nil, fmt.Errorf("example has no subcommand: %q", example)
-	}
-	return tokens[1:], nil
-}
-
-// shellSplit handles double-quoted tokens — enough for the Example formats
-// the absorb phase produces. No shell metacharacter interpolation is done.
-// Single quotes, escaped characters, and backslashes are not recognized;
-// Examples using those will need updating.
-func shellSplit(s string) ([]string, error) {
-	var tokens []string
-	var current strings.Builder
-	inQuote := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c == '"':
-			inQuote = !inQuote
-		case c == ' ' && !inQuote:
-			if current.Len() > 0 {
-				tokens = append(tokens, current.String())
-				current.Reset()
-			}
-		default:
-			current.WriteByte(c)
-		}
-	}
-	if inQuote {
-		return nil, fmt.Errorf("unclosed quote in %q", s)
-	}
-	if current.Len() > 0 {
-		tokens = append(tokens, current.String())
-	}
-	return tokens, nil
+	return shellargs.ArgsAfterBinary(example)
 }
 
 // extractQueryToken returns a positional argument that looks like a human-

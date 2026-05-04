@@ -1755,31 +1755,36 @@ Phase 1 research brief for auth requirements and manually add env var support to
 `config.go` using the pattern: add `APIKey`/`APIKeySource` fields to the Config struct,
 and `os.Getenv("<API>_API_KEY")` in the Load function.
 
-**REQUIRED: Validate narrative `command` strings resolve in the CLI tree.**
+**REQUIRED: Validate narrative `command` strings before saving/publishing examples.**
 The LLM (or human) authoring `research.json` can name commands that don't actually
 exist in the generated CLI — `<cli> stats` when the real shape is `<cli> reports stats`,
-or a command that was dropped because its endpoint had a complex body. Without a check,
-the broken commands ship to the README's Quick Start (`narrative.quickstart`) and the
-SKILL's recipes (`narrative.recipes`); users copy-paste them and hit `unknown command`
-on the very first invocation.
+or a command that was dropped because its endpoint had a complex body. It can also
+write a real command path with a bogus flag or positional shape. Without a check, the
+broken commands ship to the README's Quick Start (`narrative.quickstart`) and the
+SKILL's recipes (`narrative.recipes`); users copy-paste them and hit failures on the
+very first invocation.
 
 Build the CLI binary, then run `printing-press validate-narrative` against it. The
 subcommand walks every `narrative.quickstart[].command` and `narrative.recipes[].command`,
 strips the binary name and trailing arguments, and runs `<binary> <words> --help` for
-each. The check is offline — no live API access needed.
+each. With `--full-examples`, it also runs the complete example under
+`PRINTING_PRESS_VERIFY=1`, appending `--dry-run` when the command advertises it. This
+catches bad flags and argument shapes without making live API calls.
 
 ```bash
 QUICKSTART_BINARY="$CLI_WORK_DIR/<api>-pp-cli"
 go build -o "$QUICKSTART_BINARY" "$CLI_WORK_DIR/cmd/<api>-pp-cli"
 
-printing-press validate-narrative --strict \
+printing-press validate-narrative --strict --full-examples \
   --research "$API_RUN_DIR/research.json" \
   --binary "$QUICKSTART_BINARY"
 ```
 
 `--strict` exits non-zero on any missing command, empty subcommand-words entry, or
-empty narrative (both sections omitted). Drop `--strict` to get a warn-only report,
-or add `--json` for machine-readable output.
+empty narrative (both sections omitted). With `--full-examples`, it also fails on full
+examples that cannot dry-run or whose full invocation fails. Drop `--strict` to get a
+warn-only report, omit `--full-examples` only when you intentionally want the old
+offline path check, or add `--json` for machine-readable output.
 
 If any commands are reported missing, fix them in `research.json` before continuing.
 Common causes:
@@ -1790,6 +1795,9 @@ Common causes:
   promoted-command surface; reach it via the typed `<resource> <endpoint>` form).
 - The command name is a placeholder (`<cli> example`) that should have been replaced
   with a real path.
+- The path exists but the example uses a flag/argument shape the command does not
+  accept; fix the concrete example in `research.json` before it renders into README
+  and SKILL prose.
 
 `narrative.quickstart` drives the README Quick Start and `narrative.recipes` drives
 the SKILL.md recipes; getting either wrong silently ships copy-paste-broken examples
@@ -2136,6 +2144,11 @@ Fix order (update heartbeat between each fix category to prevent stale lock duri
 4. broken dry-run and runtime command failures
 5. missing novel features (see below)
 6. scorecard-only polish gaps
+
+When category 4 includes narrative examples, rerun
+`printing-press validate-narrative --strict --full-examples` after the fix. The path-only
+mode is not enough before publishing because it cannot catch bad flags on an otherwise
+valid command.
 
 **Missing novel features fix (step 5):** Dogfood writes `novel_features_built` to research.json — only features whose commands actually exist. The original `novel_features` (aspirational list from absorb) is preserved for the audit trail. Dogfood also syncs the generated `.printing-press.json` `novel_features`, `README.md` `## Unique Features` block, `SKILL.md` `## Unique Capabilities` block, and `internal/cli/root.go` `--help` Highlights block from `novel_features_built`; if none survived, it removes the rendered README/SKILL/root help blocks. Dogfood prints `dogfood: synced ... from novel_features_built` for every rendered artifact it changes. After dogfood:
 

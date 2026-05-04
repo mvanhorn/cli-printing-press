@@ -18,18 +18,19 @@ func newValidateNarrativeCmd() *cobra.Command {
 		researchPath string
 		binaryPath   string
 		strict       bool
+		fullExamples bool
 		asJSON       bool
 	)
 
 	cmd := &cobra.Command{
 		Use:           "validate-narrative",
-		Short:         "Verify research.json narrative commands resolve in a built CLI's Cobra tree",
+		Short:         "Verify research.json narrative commands against a built CLI",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Long: `Walks every narrative.quickstart[].command and narrative.recipes[].command
 in research.json and runs '<binary> <words> --help' to confirm each command
-path exists. Replaces the bash recipe in skills/printing-press/SKILL.md so
-the same check is testable, scriptable, and reusable from dogfood/scorecard.
+path exists. With --full-examples, also runs each complete example under
+PRINTING_PRESS_VERIFY=1, appending --dry-run when the command advertises it.
 
 Without this check, broken commands ship to the README's Quick Start and
 the SKILL's recipes; users hit "unknown command" on copy-paste.`,
@@ -40,6 +41,11 @@ the SKILL's recipes; users hit "unknown command" on copy-paste.`,
 
   # Strict: exits non-zero on missing commands or empty narrative
   printing-press validate-narrative --strict \
+    --research $API_RUN_DIR/research.json \
+    --binary $CLI_WORK_DIR/myapi-pp-cli
+
+  # Stronger check: also dry-run full examples to catch bad flags/args
+  printing-press validate-narrative --strict --full-examples \
     --research $API_RUN_DIR/research.json \
     --binary $CLI_WORK_DIR/myapi-pp-cli
 
@@ -60,7 +66,9 @@ the SKILL's recipes; users hit "unknown command" on copy-paste.`,
 			ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 			defer cancel()
 
-			report, err := narrativecheck.Validate(ctx, researchPath, binaryPath)
+			report, err := narrativecheck.ValidateWithOptions(ctx, researchPath, binaryPath, narrativecheck.Options{
+				FullExamples: fullExamples,
+			})
 			if err != nil {
 				return &ExitError{Code: ExitInputError, Err: err}
 			}
@@ -83,6 +91,7 @@ the SKILL's recipes; users hit "unknown command" on copy-paste.`,
 	cmd.Flags().StringVar(&researchPath, "research", "", "Path to research.json (required)")
 	cmd.Flags().StringVar(&binaryPath, "binary", "", "Path to the built CLI binary to walk (required)")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any missing command or empty narrative (default: warn-only)")
+	cmd.Flags().BoolVar(&fullExamples, "full-examples", false, "Also run full narrative examples safely with PRINTING_PRESS_VERIFY=1 and --dry-run where supported")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit machine-readable JSON instead of the human report")
 	return cmd
 }
@@ -97,11 +106,20 @@ func printHumanReport(w io.Writer, report *narrativecheck.Report) {
 			fmt.Fprintf(w, "MISSING [%s]: %s → %s\n", r.Section, r.Command, r.Words)
 		case narrativecheck.StatusEmptyWords:
 			fmt.Fprintf(w, "EMPTY [%s]: %s has no subcommand words to verify\n", r.Section, r.Command)
+		case narrativecheck.StatusExampleFailed:
+			fmt.Fprintf(w, "FAILED [%s]: %s → %s\n", r.Section, r.Command, r.Error)
+		case narrativecheck.StatusUnsupported:
+			fmt.Fprintf(w, "UNSUPPORTED [%s]: %s → %s\n", r.Section, r.Command, r.Error)
 		}
 	}
-	if report.Missing+report.Empty == 0 && !report.ResearchEmpty {
+	if !report.HasFailures() && !report.ResearchEmpty {
+		if report.FullExamples {
+			fmt.Fprintf(w, "OK: %d narrative commands resolved and full examples passed\n", report.Walked)
+			return
+		}
 		fmt.Fprintf(w, "OK: %d narrative commands resolved against the CLI tree\n", report.Walked)
 		return
 	}
-	fmt.Fprintf(w, "DONE: %d ok, %d missing, %d empty-words\n", report.Walked, report.Missing, report.Empty)
+	fmt.Fprintf(w, "DONE: %d ok, %d missing, %d empty-words, %d failed-examples, %d unsupported\n",
+		report.Walked, report.Missing, report.Empty, report.ExampleFailed, report.Unsupported)
 }

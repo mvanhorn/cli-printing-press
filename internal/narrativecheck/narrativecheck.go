@@ -19,6 +19,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/v3/internal/shellargs"
 )
 
 // Section names the narrative section a command lives in. Matches the
@@ -38,6 +40,12 @@ const (
 	StatusOK         Status = "ok"
 	StatusMissing    Status = "missing"
 	StatusEmptyWords Status = "empty-words"
+	// StatusExampleFailed means the command path resolved, but the full
+	// narrative example failed when executed under the verify environment.
+	StatusExampleFailed Status = "example-failed"
+	// StatusUnsupported means full-example validation could not safely run
+	// because the command does not advertise --dry-run.
+	StatusUnsupported Status = "unsupported"
 )
 
 type Result struct {
@@ -52,10 +60,13 @@ type Result struct {
 }
 
 type Report struct {
-	Walked  int      `json:"walked"`
-	Missing int      `json:"missing"`
-	Empty   int      `json:"empty"`
-	Results []Result `json:"results"`
+	Walked        int      `json:"walked"`
+	Missing       int      `json:"missing"`
+	Empty         int      `json:"empty"`
+	ExampleFailed int      `json:"example_failed,omitempty"`
+	Unsupported   int      `json:"unsupported,omitempty"`
+	Results       []Result `json:"results"`
+	FullExamples  bool     `json:"full_examples,omitempty"`
 	// ResearchEmpty is true when neither narrative.quickstart nor
 	// narrative.recipes contained any entries. The LLM may have
 	// omitted both sections by mistake; the caller's --strict flag
@@ -63,11 +74,25 @@ type Report struct {
 	ResearchEmpty bool `json:"research_empty,omitempty"`
 }
 
+// Options controls optional narrative validation checks.
+type Options struct {
+	// FullExamples validates each full narrative command, not just its
+	// Cobra path. The example is run with PRINTING_PRESS_VERIFY=1 and
+	// --dry-run appended when the command advertises --dry-run.
+	FullExamples bool
+}
+
 // Validate parses researchPath, walks every narrative.quickstart and
 // narrative.recipes command, and resolves it against the binary's
 // Cobra tree by running `<binary> <words> --help`. ctx scopes every
 // subprocess so callers can interrupt cleanly.
 func Validate(ctx context.Context, researchPath, binaryPath string) (*Report, error) {
+	return ValidateWithOptions(ctx, researchPath, binaryPath, Options{})
+}
+
+// ValidateWithOptions parses researchPath and validates every narrative
+// command according to opts. The default behavior matches Validate.
+func ValidateWithOptions(ctx context.Context, researchPath, binaryPath string, opts Options) (*Report, error) {
 	commands, err := loadCommands(researchPath)
 	if err != nil {
 		return nil, err
@@ -75,10 +100,11 @@ func Validate(ctx context.Context, researchPath, binaryPath string) (*Report, er
 
 	report := &Report{
 		Results:       make([]Result, 0, len(commands)),
+		FullExamples:  opts.FullExamples,
 		ResearchEmpty: len(commands) == 0,
 	}
 	for _, sc := range commands {
-		r := classify(ctx, binaryPath, sc.Section, sc.Command)
+		r := classify(ctx, binaryPath, sc.Section, sc.Command, opts)
 		switch r.Status {
 		case StatusOK:
 			report.Walked++
@@ -86,6 +112,10 @@ func Validate(ctx context.Context, researchPath, binaryPath string) (*Report, er
 			report.Missing++
 		case StatusEmptyWords:
 			report.Empty++
+		case StatusExampleFailed:
+			report.ExampleFailed++
+		case StatusUnsupported:
+			report.Unsupported++
 		}
 		report.Results = append(report.Results, r)
 	}
@@ -95,7 +125,7 @@ func Validate(ctx context.Context, researchPath, binaryPath string) (*Report, er
 // HasFailures reports whether the run found any missing or empty-words
 // entries. Callers gate --strict exit codes on this.
 func (r *Report) HasFailures() bool {
-	return r.Missing > 0 || r.Empty > 0
+	return r.Missing > 0 || r.Empty > 0 || r.ExampleFailed > 0 || r.Unsupported > 0
 }
 
 type sectionCommand struct {
@@ -146,7 +176,7 @@ func loadCommands(researchPath string) ([]sectionCommand, error) {
 // binary name, keep words until the first flag (starts with `-`) or
 // non-identifier character. Hyphens stay because Cobra subcommands use
 // them (`list-projects`).
-func classify(ctx context.Context, binaryPath string, section Section, command string) Result {
+func classify(ctx context.Context, binaryPath string, section Section, command string, opts Options) Result {
 	words := extractSubcommandWords(command)
 	r := Result{Section: section, Command: command, Words: strings.Join(words, " ")}
 
@@ -156,15 +186,91 @@ func classify(ctx context.Context, binaryPath string, section Section, command s
 		return r
 	}
 
-	args := append(words, "--help")
-	if err := exec.CommandContext(ctx, binaryPath, args...).Run(); err != nil {
+	helpArgs := append(words, "--help")
+	if !opts.FullExamples {
+		if err := exec.CommandContext(ctx, binaryPath, helpArgs...).Run(); err != nil {
+			r.Status = StatusMissing
+			r.Error = fmt.Sprintf("%s %s --help failed: %v", binaryPath, r.Words, err)
+			return r
+		}
+
+		r.Status = StatusOK
+		return r
+	}
+
+	helpOut, err := exec.CommandContext(ctx, binaryPath, helpArgs...).CombinedOutput()
+	if err != nil {
 		r.Status = StatusMissing
 		r.Error = fmt.Sprintf("%s %s --help failed: %v", binaryPath, r.Words, err)
+		return r
+	}
+	return classifyFullExample(ctx, binaryPath, command, helpOut, r)
+}
+
+func classifyFullExample(ctx context.Context, binaryPath, command string, helpOut []byte, r Result) Result {
+	tokens, err := shellargs.Split(command)
+	if err != nil {
+		r.Status = StatusExampleFailed
+		r.Error = err.Error()
+		return r
+	}
+	if len(tokens) <= 1 {
+		r.Status = StatusEmptyWords
+		r.Error = "command has no arguments to execute after the binary name"
+		return r
+	}
+
+	args := append([]string(nil), tokens[1:]...)
+	if !hasEnabledBoolFlag(args, "--dry-run") {
+		if !helpAdvertisesDryRun(helpOut) {
+			r.Status = StatusUnsupported
+			r.Error = "full-example validation skipped: command help does not advertise --dry-run"
+			return r
+		}
+		args = append(args, "--dry-run")
+	}
+
+	cmd := exec.CommandContext(ctx, binaryPath, args...)
+	cmd.Env = append(os.Environ(), "PRINTING_PRESS_VERIFY=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		r.Status = StatusExampleFailed
+		r.Error = fmt.Sprintf("full example failed: %s %s: %v%s",
+			binaryPath,
+			strings.Join(args, " "),
+			err,
+			formatOutputSuffix(out),
+		)
 		return r
 	}
 
 	r.Status = StatusOK
 	return r
+}
+
+func hasEnabledBoolFlag(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag || arg == flag+"=true" {
+			return true
+		}
+	}
+	return false
+}
+
+func helpAdvertisesDryRun(out []byte) bool {
+	return strings.Contains(string(out), "--dry-run")
+}
+
+func formatOutputSuffix(out []byte) string {
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		return ""
+	}
+	const max = 500
+	if len(trimmed) > max {
+		trimmed = trimmed[:max] + "..."
+	}
+	return ": " + trimmed
 }
 
 // extractSubcommandWords replicates the bash recipe's awk wordlist

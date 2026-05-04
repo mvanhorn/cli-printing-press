@@ -178,6 +178,60 @@ func TestValidate_EndToEnd(t *testing.T) {
 	}
 }
 
+func TestValidateWithOptions_FullExamplesCatchesInvalidFlag(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"quickstart":[
+			{"command":"stub widgets list --bad-flag"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, binary, Options{FullExamples: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if report.Walked != 0 {
+		t.Errorf("Walked = %d, want 0", report.Walked)
+	}
+	if report.ExampleFailed != 1 {
+		t.Errorf("ExampleFailed = %d, want 1", report.ExampleFailed)
+	}
+	if !report.HasFailures() {
+		t.Error("HasFailures should be true when a full narrative example fails")
+	}
+	if len(report.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(report.Results))
+	}
+	got := report.Results[0]
+	if got.Status != StatusExampleFailed {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusExampleFailed)
+	}
+	if !strings.Contains(got.Error, "--bad-flag") {
+		t.Errorf("Error %q should mention the invalid flag", got.Error)
+	}
+}
+
+func TestClassifyFullExample_ReportsUnsupportedWhenDryRunUnavailable(t *testing.T) {
+	t.Parallel()
+
+	got := classifyFullExample(
+		context.Background(),
+		"/not/invoked",
+		"stub widgets list",
+		[]byte("Usage: stub widgets list"),
+		Result{Section: SectionQuickstart, Command: "stub widgets list", Words: "widgets list"},
+	)
+	if got.Status != StatusUnsupported {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusUnsupported)
+	}
+	if !strings.Contains(got.Error, "does not advertise --dry-run") {
+		t.Errorf("Error %q should explain why the full example was not run", got.Error)
+	}
+}
+
 // TestValidate_EmptyResearchFlagsResearchEmpty covers the LLM-omitted-
 // both-sections case.
 func TestValidate_EmptyResearchFlagsResearchEmpty(t *testing.T) {
@@ -239,6 +293,12 @@ var validPathPrefixes = []string{
 
 func main() {
 	args := os.Args[1:]
+	for _, a := range args {
+		if a == "--bad-flag" {
+			fmt.Fprintln(os.Stderr, "unknown flag: --bad-flag")
+			os.Exit(1)
+		}
+	}
 	var path []string
 	for _, a := range args {
 		if strings.HasPrefix(a, "-") {
@@ -250,6 +310,7 @@ func main() {
 	for _, prefix := range validPathPrefixes {
 		if joined == prefix || strings.HasPrefix(joined, prefix+" ") {
 			fmt.Println("usage stub:", prefix)
+			fmt.Println("      --dry-run   Show request without sending")
 			return
 		}
 	}

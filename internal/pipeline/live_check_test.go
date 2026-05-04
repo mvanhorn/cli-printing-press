@@ -247,25 +247,6 @@ func TestInsightCap(t *testing.T) {
 	}
 }
 
-// TestShellSplit covers the quoted-query parsing used for Example commands.
-func TestShellSplit(t *testing.T) {
-	cases := []struct {
-		in   string
-		want []string
-	}{
-		{`cli goat brownies`, []string{"cli", "goat", "brownies"}},
-		{`cli goat "chicken tikka masala" --limit 5`, []string{"cli", "goat", "chicken tikka masala", "--limit", "5"}},
-		{`cli  multiple   spaces`, []string{"cli", "multiple", "spaces"}},
-	}
-	for _, tc := range cases {
-		got, err := shellSplit(tc.in)
-		require.NoError(t, err)
-		require.Equal(t, tc.want, got, "input=%q", tc.in)
-	}
-	_, err := shellSplit(`cli "unclosed`)
-	require.Error(t, err)
-}
-
 // TestExtractQueryToken covers the query detection used for relevance checks.
 // The extractor is deliberately simple: it returns the last positional
 // argument before the first flag, after excluding URLs and numeric IDs
