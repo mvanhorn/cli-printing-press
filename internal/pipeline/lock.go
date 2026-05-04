@@ -351,10 +351,20 @@ func validatePhase5GateForPromote(workingDir string, state *PipelineState) error
 	return fmt.Errorf("phase5 gate failed: %s", result.Detail)
 }
 
-// IsStale returns true if the lock's UpdatedAt is older than StaleLockThreshold.
+// IsStale returns true if the lock's heartbeat is too old or its owner
+// process is known to have exited.
 func IsStale(lock *LockState) bool {
-	return time.Since(lock.UpdatedAt) > StaleLockThreshold
+	if time.Since(lock.UpdatedAt) > StaleLockThreshold {
+		return true
+	}
+	return lockOwnerDead(lock)
 }
+
+func lockOwnerDead(lock *LockState) bool {
+	return lock.PID > 0 && !lockOwnerAliveFunc(lock.PID)
+}
+
+var lockOwnerAliveFunc = lockOwnerAlive
 
 func readLock(path string) (*LockState, error) {
 	data, err := os.ReadFile(path)

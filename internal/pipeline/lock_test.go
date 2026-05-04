@@ -81,6 +81,25 @@ func TestAcquireLock_StaleLockAutoReclaim(t *testing.T) {
 	assert.Equal(t, "new-scope", lock.Scope)
 }
 
+func TestAcquireLock_FreshLockDeadPIDAutoReclaim(t *testing.T) {
+	setupLockTest(t)
+	setLockOwnerAliveForTest(t, false)
+
+	require.NoError(t, os.MkdirAll(LocksDir(), 0o755))
+	deadLock := &LockState{
+		Scope:      "old-scope",
+		Phase:      "build",
+		PID:        12345,
+		AcquiredAt: time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	require.NoError(t, writeLock(LockFilePath("test-pp-cli"), deadLock))
+
+	lock, err := AcquireLock("test-pp-cli", "new-scope", false)
+	require.NoError(t, err)
+	assert.Equal(t, "new-scope", lock.Scope)
+}
+
 func TestAcquireLock_FreshLockDifferentScope_Blocked(t *testing.T) {
 	setupLockTest(t)
 
@@ -143,6 +162,27 @@ func TestLockStatus_ActiveLock(t *testing.T) {
 	assert.Equal(t, "acquire", status.Phase)
 	assert.Equal(t, "scope-1", status.Scope)
 	assert.NotNil(t, status.Lock)
+}
+
+func TestLockStatus_FreshLockDeadPIDIsStale(t *testing.T) {
+	setupLockTest(t)
+	setLockOwnerAliveForTest(t, false)
+
+	require.NoError(t, os.MkdirAll(LocksDir(), 0o755))
+	deadLock := &LockState{
+		Scope:      "old-scope",
+		Phase:      "build",
+		PID:        12345,
+		AcquiredAt: time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	require.NoError(t, writeLock(LockFilePath("test-pp-cli"), deadLock))
+
+	status := LockStatus("test-pp-cli")
+	assert.True(t, status.Held)
+	assert.True(t, status.Stale)
+	assert.Equal(t, "build", status.Phase)
+	assert.Equal(t, "old-scope", status.Scope)
 }
 
 func TestLockStatus_NoLock(t *testing.T) {
@@ -606,4 +646,12 @@ func TestConcurrentAcquire(t *testing.T) {
 		winners++
 	}
 	assert.GreaterOrEqual(t, winners, 1, "at least one goroutine should acquire the lock")
+}
+
+func setLockOwnerAliveForTest(t *testing.T, alive bool) {
+	t.Helper()
+
+	original := lockOwnerAliveFunc
+	lockOwnerAliveFunc = func(pid int) bool { return alive }
+	t.Cleanup(func() { lockOwnerAliveFunc = original })
 }
