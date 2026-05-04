@@ -267,6 +267,16 @@ Fix in priority order. After each priority level, update the lock heartbeat:
 printing-press lock update --cli "$CLI_NAME" --phase polish 2>/dev/null
 ```
 
+### Runtime variant default checklist
+
+If a polish fix adds or changes a runtime mode, data-source option, auth tier, transport, or other user-visible default, document this short checklist before selecting the default:
+
+- **User-visible default:** which behavior users get without extra flags or config.
+- **Compatibility risk:** whether existing commands, scripts, MCP tools, or stored config change behavior.
+- **Verification command:** the exact command that proves the default and the non-default escape hatch both work.
+
+Keep the checklist in the polish notes or result block. Skip it for ordinary bug fixes that do not change runtime variants or defaults.
+
 ### Priority 0: MCP surface migration (legacy CLIs)
 
 If Phase 1's `dogfood` reported `MCP Surface: FAIL` with a parity mismatch, the CLI was generated before the runtime cobratree walker existed and is still on the static `internal/mcp/tools.go` surface. The fix is mechanical:

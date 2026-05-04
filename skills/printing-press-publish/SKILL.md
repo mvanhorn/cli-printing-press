@@ -680,7 +680,7 @@ Read `access` and `gh_user` from `$PUBLISH_CONFIG`. These determine how `gh pr c
 
 **For fork-based PRs** (`access` is `fork`): use `--head <gh_user>:feat/<api-slug>` so GitHub creates a cross-repo PR from the fork to the upstream. Without `--head`, `gh pr create` would try to find the branch on the upstream repo (where the user can't push) and fail.
 
-**For push-access PRs** (`access` is `push`): no `--head` needed — the branch is on the same repo.
+**For push-access PRs** (`access` is `push`): use `--head feat/<api-slug>` so GitHub creates the PR from the branch this flow just pushed, even when the managed clone or shell session has other branches checked out.
 
 Build the PR description from:
 - The manifest (`description`, `api_name`, `category`, `printing_press_version`, `spec_url`)
@@ -764,19 +764,17 @@ ACCESS=$(jq -r .access "$PUBLISH_CONFIG")
 GH_USER=$(jq -r .gh_user "$PUBLISH_CONFIG")
 
 if [ "$ACCESS" = "fork" ]; then
-  gh pr create \
-    --repo mvanhorn/printing-press-library \
-    --head "$GH_USER:feat/<api-slug>" \
-    --base main \
-    --title "feat(<api-slug>): add <api-slug>" \
-    --body "<constructed PR body>"
+  PR_HEAD_REF="$GH_USER:feat/<api-slug>"
 else
-  gh pr create \
-    --repo mvanhorn/printing-press-library \
-    --base main \
-    --title "feat(<api-slug>): add <api-slug>" \
-    --body "<constructed PR body>"
+  PR_HEAD_REF="feat/<api-slug>"
 fi
+
+gh pr create \
+  --repo mvanhorn/printing-press-library \
+  --head "$PR_HEAD_REF" \
+  --base main \
+  --title "feat(<api-slug>): add <api-slug>" \
+  --body "<constructed PR body>"
 ```
 
 Display the full PR URL (e.g., `https://github.com/mvanhorn/printing-press-library/pull/10`), not the shorthand `org/repo#N` format. The full URL is clickable in all terminals and contexts.
