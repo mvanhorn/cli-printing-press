@@ -102,8 +102,8 @@ func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFil
 			result.Detail = detail
 			return result
 		}
-		if marker.TestsFailed != 0 {
-			result.Detail = fmt.Sprintf("phase5 acceptance has %d failed tests", marker.TestsFailed)
+		if ok, detail := phase5AcceptancePassed(marker); !ok {
+			result.Detail = detail
 			return result
 		}
 		result.Passed = true
@@ -138,7 +138,7 @@ func validatePhase5PassMarker(marker Phase5GateMarker) string {
 		return "phase5 acceptance marker missing api_name"
 	case strings.TrimSpace(marker.RunID) == "":
 		return "phase5 acceptance marker missing run_id"
-	case strings.TrimSpace(marker.Level) == "":
+	case phase5Level(marker) == "":
 		return "phase5 acceptance marker missing level"
 	case marker.MatrixSize <= 0:
 		return "phase5 acceptance marker missing matrix_size"
@@ -147,6 +147,34 @@ func validatePhase5PassMarker(marker Phase5GateMarker) string {
 	default:
 		return ""
 	}
+}
+
+func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
+	level := phase5Level(marker)
+	switch level {
+	case "quick":
+		if marker.MatrixSize != 6 {
+			return false, fmt.Sprintf("phase5 quick acceptance expected matrix_size 6, got %d", marker.MatrixSize)
+		}
+		if marker.TestsPassed < 5 {
+			return false, fmt.Sprintf("phase5 quick acceptance requires at least 5/6 tests passed, got %d/6", marker.TestsPassed)
+		}
+		return true, ""
+	case "full":
+		if marker.TestsFailed != 0 {
+			return false, fmt.Sprintf("phase5 full acceptance has %d failed tests", marker.TestsFailed)
+		}
+		if marker.TestsPassed != marker.MatrixSize {
+			return false, fmt.Sprintf("phase5 full acceptance requires all %d tests passed, got %d", marker.MatrixSize, marker.TestsPassed)
+		}
+		return true, ""
+	default:
+		return false, fmt.Sprintf("unknown phase5 acceptance level %q", marker.Level)
+	}
+}
+
+func phase5Level(marker Phase5GateMarker) string {
+	return strings.ToLower(strings.TrimSpace(marker.Level))
 }
 
 func validatePhase5SkipMarker(marker Phase5GateMarker) string {

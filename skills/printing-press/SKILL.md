@@ -2444,6 +2444,10 @@ For `Gate: PASS`, also write:
 }
 ```
 
+For `level: "quick"`, `tests_failed` may be `1` only when the Quick Check
+threshold still passed (`matrix_size: 6`, `tests_passed >= 5`) and the miss was
+not auth or sync related. For `level: "full"`, `tests_failed` must be `0`.
+
 If Phase 5 is legitimately skipped because the API requires API-key or bearer
 auth and no credential was available, write:
 
