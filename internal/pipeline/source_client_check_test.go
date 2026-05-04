@@ -82,6 +82,51 @@ func (c *Client) Fetch(url string) error {
 	return nil
 }
 `
+	const generatedClientHelper = `package sec
+
+import (
+	"context"
+
+	"example.com/foo/internal/client"
+)
+
+func Fetch(ctx context.Context, c *client.Client, path string) ([]byte, error) {
+	return c.Get(ctx, path, nil, nil)
+}
+`
+	const rawHTTPWithGeneratedClientImport = `package sec
+
+import (
+	"net/http"
+
+	"example.com/foo/internal/client"
+)
+
+var _ *client.Client
+
+func Fetch(url string) error {
+	resp, err := http.Get(url)
+	if err != nil { return err }
+	_ = resp
+	return nil
+}
+`
+	const generatedClientImportWithUnrelatedCGet = `package sec
+
+import "example.com/foo/internal/client"
+
+var _ *client.Client
+
+type Cache struct{}
+
+func (c *Cache) Get(key string) ([]byte, error) {
+	return nil, nil
+}
+
+func Fetch(c *Cache, key string) ([]byte, error) {
+	return c.Get(key)
+}
+`
 	const limiterButNo429 = `package sec
 
 import (
@@ -231,6 +276,23 @@ func (c *Client) Fetch(url string) error {
 			wantFindings:  1,
 			wantReasonHas: "rate limiter",
 			wantPackage:   "source/sec",
+		},
+		{
+			name:           "generated client helper passes without local limiter",
+			files:          map[string]string{"source/sec/sec.go": generatedClientHelper},
+			wantCheckedPos: true,
+		},
+		{
+			name:          "generated client import does not exempt raw HTTP",
+			files:         map[string]string{"source/sec/sec.go": rawHTTPWithGeneratedClientImport},
+			wantFindings:  1,
+			wantReasonHas: "without rate limiter or typed 429",
+		},
+		{
+			name:          "generated client import does not exempt unrelated c Get",
+			files:         map[string]string{"source/sec/sec.go": generatedClientImportWithUnrelatedCGet},
+			wantFindings:  1,
+			wantReasonHas: "without rate limiter or typed 429",
 		},
 		{
 			name:          "flags swallowed 429",

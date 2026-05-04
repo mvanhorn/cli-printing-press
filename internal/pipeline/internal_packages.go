@@ -20,11 +20,22 @@ var reservedInternalPackages = map[string]bool{
 	"graphql":  true,
 }
 
+const (
+	rawOutboundHTTPCallPattern = `\bhttp\.(?:Get|Post|NewRequest(?:WithContext)?|Do)\s*\(|` +
+		`\b\w+\.HTTPClient\.Do\s*\(|` +
+		`\b\w+\.HTTP\.Do\s*\(`
+	generatedClientReceiverCallPattern = `\bc\.(?:Do|Get|Post)\s*\(`
+)
+
+// rawOutboundHTTPCallRe matches outbound HTTP request shapes that bypass the
+// generated client. Files with these calls need local limiter and typed 429
+// handling when they live in hand-written sibling internal packages.
+var rawOutboundHTTPCallRe = regexp.MustCompile(rawOutboundHTTPCallPattern)
+
+var generatedClientParamRe = regexp.MustCompile(`\bc\s+\*client\.Client\b`)
+var generatedClientReceiverCallRe = regexp.MustCompile(generatedClientReceiverCallPattern)
+
 // outboundHTTPCallRe matches every outbound HTTP request shape that appears in
 // generated and agent-authored Go code. Centralized so reimplementation_check
 // (per-command) and source_client_check (per-sibling-package) cannot diverge.
-var outboundHTTPCallRe = regexp.MustCompile(
-	`\bhttp\.(?:Get|Post|NewRequest(?:WithContext)?|Do)\s*\(|` +
-		`\b\w+\.HTTPClient\.Do\s*\(|` +
-		`\b\w+\.HTTP\.Do\s*\(|` +
-		`\bc\.(?:Do|Get|Post)\s*\(`)
+var outboundHTTPCallRe = regexp.MustCompile(rawOutboundHTTPCallPattern + `|` + generatedClientReceiverCallPattern)

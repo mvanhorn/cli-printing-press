@@ -104,6 +104,9 @@ func walkSourcePackage(cliDir, pkgDir string, result *SourceClientCheckResult) {
 		if !outboundHTTPCallRe.MatchString(content) {
 			return nil
 		}
+		if hasGeneratedClientMediatedCall(content) && !rawOutboundHTTPCallRe.MatchString(content) {
+			return nil
+		}
 
 		hasLimiter := limiterUseRe.MatchString(content)
 		hasTypedError := rateLimitErrorRe.MatchString(content)
@@ -128,4 +131,10 @@ func walkSourcePackage(cliDir, pkgDir string, result *SourceClientCheckResult) {
 		result.Findings = append(result.Findings, finding)
 		return nil
 	})
+}
+
+func hasGeneratedClientMediatedCall(content string) bool {
+	return clientImportRe.MatchString(content) &&
+		generatedClientParamRe.MatchString(content) &&
+		generatedClientReceiverCallRe.MatchString(content)
 }
