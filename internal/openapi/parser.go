@@ -1570,7 +1570,7 @@ func filterGlobalParams(resources map[string]spec.Resource) {
 
 		seen := map[string]struct{}{}
 		for _, param := range endpoint.Params {
-			if param.Positional {
+			if isPathSubstitutionParam(param) {
 				continue
 			}
 			if _, ok := seen[param.Name]; ok {
@@ -1607,7 +1607,7 @@ func filterGlobalParams(resources map[string]spec.Resource) {
 	walkResourceEndpoints(resources, func(endpoint *spec.Endpoint) {
 		filtered := endpoint.Params[:0]
 		for _, param := range endpoint.Params {
-			if !param.Positional {
+			if !isPathSubstitutionParam(param) {
 				if _, ok := globalParams[param.Name]; ok {
 					continue
 				}
@@ -1626,6 +1626,10 @@ func filterGlobalParams(resources map[string]spec.Resource) {
 	for _, name := range names {
 		warnf("filtered global query param %q from generated commands: present on %d/%d endpoints", name, globalParams[name], totalEndpoints)
 	}
+}
+
+func isPathSubstitutionParam(param spec.Param) bool {
+	return param.Positional || param.PathParam
 }
 
 func walkResourceEndpoints(resources map[string]spec.Resource, fn func(endpoint *spec.Endpoint)) {

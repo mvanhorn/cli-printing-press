@@ -4907,6 +4907,109 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/store/...", "-run", "TestUpsertBatch_TemplatedIDFieldOverrideWins|TestUpsertBatch_GenericFallbackList|TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses")
 }
 
+func TestGenerateOperationRoutingPathParamDefault(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "routing",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/routing-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"graphql": {
+				Description: "GraphQL endpoints",
+				SubResources: map[string]spec.Resource{
+					"followers": {
+						Description: "Followers",
+						Endpoints: map[string]spec.Endpoint{
+							"get": {
+								Method:      "GET",
+								Path:        "/graphql/{pathQueryId}/Followers",
+								Description: "Get followers",
+								Params: []spec.Param{
+									{Name: "pathQueryId", Type: "string", PathParam: true, Default: "followers123", Description: "Path query id"},
+									{Name: "variables", Type: "string", Required: true},
+								},
+								Response: spec.ResponseDef{Type: "array"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	cliGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "graphql_followers_get.go"))
+	require.NoError(t, err)
+	cliContent := string(cliGo)
+	assert.Regexp(t,
+		regexp.MustCompile(`cmd\.Flags\(\)\.StringVar\(&flagPathQueryId,\s*"path-query-id",\s*"followers123",\s*"Path query id"\)`),
+		cliContent,
+		"defaulted operation-routing path param should be user-overridable")
+	assert.Contains(t, cliContent,
+		`path = replacePathParam(path, "pathQueryId", fmt.Sprintf("%v", flagPathQueryId))`,
+		"generated command must substitute the path template before calling the API")
+
+	mcpGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	assert.Regexp(t,
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/graphql/\{pathQueryId\}/Followers",\s*\[]string\{[^}]*"pathQueryId"`),
+		string(mcpGo),
+		"MCP handler must receive the routing path param so it can substitute the URL")
+}
+
+func TestGenerateSyncRejectsUnknownResourcePath(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "syncpaths",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/syncpaths-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"widgets": {
+				Description: "Widgets",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/widgets",
+						Description: "List widgets",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+	assert.Contains(t, syncContent,
+		`func syncResourcePath(resource string) (string, error)`,
+		"syncResourcePath should report unsupported resource names explicitly")
+	assert.Contains(t, syncContent,
+		`return "", fmt.Errorf("unknown sync resource %q", resource)`,
+		"sync must not invent REST-style paths for unknown or GraphQL-only resources")
+	assert.NotContains(t, syncContent,
+		`return "/" + resource`,
+		"sync must not request fake /<resource> paths")
+}
+
 func TestGenerateGraphQLCompiles(t *testing.T) {
 	t.Parallel()
 

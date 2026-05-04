@@ -314,7 +314,10 @@ func syncResource(c interface {
 		fmt.Fprintf(os.Stderr, `{"event":"sync_start","resource":"%s"}`+"\n", resource)
 	}
 
-	path := syncResourcePath(resource)
+	path, err := syncResourcePath(resource)
+	if err != nil {
+		return syncResult{Resource: resource, Err: err, Duration: time.Since(started)}
+	}
 	var totalCount int
 
 	// Resume cursor from sync_state (unless --full cleared it)
@@ -882,16 +885,16 @@ func defaultSyncResources() []string {
 // syncResourcePath maps resource names to their actual API endpoint paths.
 // For REST APIs this is typically "/<resource>". For non-REST APIs (e.g., Steam)
 // this preserves the actual endpoint path like "/ISteamApps/GetAppList/v2".
-func syncResourcePath(resource string) string {
+func syncResourcePath(resource string) (string, error) {
 	paths := map[string]string{
 {{- range .SyncableResources}}
 		"{{.Name}}": "{{.Path}}",
 {{- end}}
 	}
 	if p, ok := paths[resource]; ok {
-		return p
+		return p, nil
 	}
-	return "/" + resource
+	return "", fmt.Errorf("unknown sync resource %q", resource)
 }
 
 {{- if .DependentSyncResources}}

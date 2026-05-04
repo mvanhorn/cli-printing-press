@@ -730,6 +730,95 @@ func TestReclassifyPathParamDefaults(t *testing.T) {
 	assert.Equal(t, "PICK", params[2].Default, "enum default should be first value")
 }
 
+func TestParsePreservesDefaultedPathParamsDuringGlobalFilter(t *testing.T) {
+	data := []byte(`
+openapi: 3.0.0
+info:
+  title: GraphQL Routing API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /graphql/{pathQueryId}/Followers:
+    get:
+      operationId: getFollowers
+      parameters:
+        - in: path
+          name: pathQueryId
+          required: true
+          schema:
+            type: string
+            default: followers123
+        - in: query
+          name: variables
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /graphql/{pathQueryId}/Following:
+    get:
+      operationId: getFollowing
+      parameters:
+        - in: path
+          name: pathQueryId
+          required: true
+          schema:
+            type: string
+            default: following123
+        - in: query
+          name: variables
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /graphql/{pathQueryId}/Likes:
+    get:
+      operationId: getLikes
+      parameters:
+        - in: path
+          name: pathQueryId
+          required: true
+          schema:
+            type: string
+            default: likes123
+        - in: query
+          name: variables
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	for _, path := range []string{
+		"/graphql/{pathQueryId}/Followers",
+		"/graphql/{pathQueryId}/Following",
+		"/graphql/{pathQueryId}/Likes",
+	} {
+		endpoint := findEndpoint(t, parsed, path)
+		var routingParam *spec.Param
+		for i := range endpoint.Params {
+			if endpoint.Params[i].Name == "pathQueryId" {
+				routingParam = &endpoint.Params[i]
+				break
+			}
+		}
+		if assert.NotNil(t, routingParam, "pathQueryId should survive global-param filtering") {
+			assert.True(t, routingParam.PathParam, "defaulted path param should remain a URL substitution flag")
+			assert.False(t, routingParam.Positional, "defaulted path param should stay flag-shaped")
+			assert.NotNil(t, routingParam.Default, "operation-specific query id default should be preserved")
+		}
+	}
+}
+
 func TestCleanSpecName(t *testing.T) {
 	tests := []struct {
 		title string
