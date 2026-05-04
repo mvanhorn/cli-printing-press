@@ -125,7 +125,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- if .Positional}}
 {{- if gt $i 0}}
 			if len(args) < {{add $i 1}} {
-				return usageErr(fmt.Errorf("{{.Name}} is required\nUsage: %s %s <%s>", cmd.Root().Name(), cmd.CommandPath(), "{{.Name}}"))
+				return usageErr(fmt.Errorf("{{.Name}} is required\nUsage: %s <%s>", cmd.CommandPath(), "{{.Name}}"))
 			}
 {{- end}}
 {{- if pathContainsParam $.Endpoint.Path .Name}}

@@ -68,6 +68,9 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check CLI health",
+		Example: `  tier-routing-golden-pp-cli doctor
+  tier-routing-golden-pp-cli doctor --json
+  tier-routing-golden-pp-cli doctor --fail-on warn`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report := map[string]any{}
 

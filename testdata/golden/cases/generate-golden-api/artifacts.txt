@@ -29,3 +29,9 @@ printing-press-golden/README.md
 printing-press-golden/SKILL.md
 printing-press-golden/internal/cli/doctor.go
 printing-press-golden/internal/cliutil/verifyenv.go
+printing-press-golden/internal/cli/profile.go
+printing-press-golden/internal/cli/feedback.go
+printing-press-golden/internal/cli/sync.go
+printing-press-golden/internal/cli/api_discovery.go
+printing-press-golden/internal/cli/import.go
+printing-press-golden/internal/cli/which.go

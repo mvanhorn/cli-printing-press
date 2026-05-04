@@ -38,7 +38,7 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 			path := "/projects/{projectId}/tasks/{taskId}"
 			path = replacePathParam(path, "projectId", args[0])
 			if len(args) < 2 {
-				return usageErr(fmt.Errorf("taskId is required\nUsage: %s %s <%s>", cmd.Root().Name(), cmd.CommandPath(), "taskId"))
+				return usageErr(fmt.Errorf("taskId is required\nUsage: %s <%s>", cmd.CommandPath(), "taskId"))
 			}
 			path = replacePathParam(path, "taskId", args[1])
 			var body map[string]any

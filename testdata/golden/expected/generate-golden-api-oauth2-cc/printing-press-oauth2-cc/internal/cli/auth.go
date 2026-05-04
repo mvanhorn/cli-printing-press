@@ -153,7 +153,25 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 
 			w := cmd.OutOrStdout()
 			header := cfg.AuthHeader()
-			if header == "" {
+			authed := header != ""
+			// JSON envelope: {authenticated, source, config}. When not
+			// authenticated, write the envelope first then return authErr
+			// so exit code carries the auth-failure signal.
+			if flags.asJSON {
+				out := map[string]any{
+					"authenticated": authed,
+					"source":        cfg.AuthSource,
+					"config":        cfg.Path,
+				}
+				if printErr := printJSONFiltered(w, out, flags); printErr != nil {
+					return printErr
+				}
+				if !authed {
+					return authErr(fmt.Errorf("no credentials configured"))
+				}
+				return nil
+			}
+			if !authed {
 				fmt.Fprintln(w, red("Not authenticated"))
 				fmt.Fprintln(w, "")
 				fmt.Fprintln(w, "Mint a token:")
@@ -188,6 +206,13 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			if err := cfg.SaveTokens("", "", args[0], "", cfg.TokenExpiry); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
+			// JSON envelope: {saved, config_path}.
+			if flags.asJSON {
+				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					"saved":       true,
+					"config_path": cfg.Path,
+				}, flags)
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", cfg.Path)
 			return nil
 		},
@@ -207,8 +232,25 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 			if err := cfg.ClearTokens(); err != nil {
 				return configErr(fmt.Errorf("clearing tokens: %w", err))
 			}
-			if os.Getenv("PRINTING_PRESS_OAUTH2_OAUTH2_CC") != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Config cleared. Note: PRINTING_PRESS_OAUTH2_OAUTH2_CC env var is still set.\n")
+
+			// Identify which (if any) auth env var is still exported so the
+			// JSON envelope and the human prose can both surface it.
+			envStillSet := ""
+			if envStillSet == "" && os.Getenv("PRINTING_PRESS_OAUTH2_OAUTH2_CC") != "" {
+				envStillSet = "PRINTING_PRESS_OAUTH2_OAUTH2_CC"
+			}
+
+			// JSON envelope: {cleared: true, note?: "<env_var> env var is still set"}.
+			if flags.asJSON {
+				out := map[string]any{"cleared": true}
+				if envStillSet != "" {
+					out["note"] = envStillSet + " env var is still set"
+				}
+				return printJSONFiltered(cmd.OutOrStdout(), out, flags)
+			}
+
+			if envStillSet != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Config cleared. Note: %s env var is still set.\n", envStillSet)
 				return nil
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Logged out. Credentials cleared.")

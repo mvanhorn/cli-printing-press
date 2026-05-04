@@ -200,7 +200,18 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			w := cmd.OutOrStdout()
-			if cfg.AccessToken == "" {
+			authed := cfg.AccessToken != ""
+			// JSON envelope: {authenticated, source, config}.
+			if flags.asJSON {
+				out := map[string]any{
+					"authenticated": authed,
+					"source":        cfg.AuthSource,
+					"config":        cfg.Path,
+				}
+				return printJSONFiltered(w, out, flags)
+			}
+
+			if !authed {
 				fmt.Fprintf(w, "  %s Not authenticated. Run 'auth login' to authenticate.\n", red("FAIL"))
 				return nil
 			}
@@ -236,6 +247,14 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 			}
 			if err := cfg.ClearTokens(); err != nil {
 				return fmt.Errorf("clearing tokens: %w", err)
+			}
+			// JSON envelope: {cleared: true}. The OAuth flavor does not
+			// surface a "note" key because env-var creds aren't part of
+			// this auth flow's contract.
+			if flags.asJSON {
+				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					"cleared": true,
+				}, flags)
 			}
 			fmt.Fprintf(os.Stderr, "Logged out. Tokens removed.\n")
 			return nil

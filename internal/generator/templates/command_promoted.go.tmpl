@@ -92,7 +92,17 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- range $i, $p := .Endpoint.Params}}
 {{- if .Positional}}
 			if len(args) < {{add $i 1}} {
-				return usageErr(fmt.Errorf("{{.Name}} is required\nUsage: %s %s <%s>", cmd.Root().Name(), cmd.CommandPath(), "{{.Name}}"))
+				// JSON envelope: {error, usage}. Written first; the
+				// usageErr return preserves exit code 2 across modes.
+				if flags.asJSON {
+					if printErr := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+						"error": "{{.Name}} is required",
+						"usage": fmt.Sprintf("%s <%s>", cmd.CommandPath(), "{{.Name}}"),
+					}, flags); printErr != nil {
+						return printErr
+					}
+				}
+				return usageErr(fmt.Errorf("{{.Name}} is required\nUsage: %s <%s>", cmd.CommandPath(), "{{.Name}}"))
 			}
 {{- if pathContainsParam $.Endpoint.Path .Name}}
 			path = replacePathParam(path, "{{.Name}}", args[{{$i}}])

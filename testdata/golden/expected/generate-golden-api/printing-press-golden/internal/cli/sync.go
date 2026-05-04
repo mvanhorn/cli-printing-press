@@ -14,8 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"tier-routing-golden-pp-cli/internal/client"
-	"tier-routing-golden-pp-cli/internal/store"
+	"printing-press-golden-pp-cli/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -59,22 +58,22 @@ Exit codes & warnings:
   --strict to exit non-zero on any per-resource failure. Exit is always
   non-zero when every selected resource failed, regardless of --strict.`,
 		Example: `  # Sync all resources
-  tier-routing-golden-pp-cli sync
+  printing-press-golden-pp-cli sync
 
   # Sync specific resources only
-  tier-routing-golden-pp-cli sync --resources channels,messages
+  printing-press-golden-pp-cli sync --resources channels,messages
 
   # Full resync (ignore previous checkpoint)
-  tier-routing-golden-pp-cli sync --full
+  printing-press-golden-pp-cli sync --full
 
   # Incremental sync: only records from the last 7 days
-  tier-routing-golden-pp-cli sync --since 7d
+  printing-press-golden-pp-cli sync --since 7d
 
   # Parallel sync with 8 workers
-  tier-routing-golden-pp-cli sync --concurrency 8
+  printing-press-golden-pp-cli sync --concurrency 8
 
   # Latest-only: refresh head of each resource, no historical backfill
-  tier-routing-golden-pp-cli sync --latest-only`,
+  printing-press-golden-pp-cli sync --latest-only`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {
@@ -83,7 +82,7 @@ Exit codes & warnings:
 			c.NoCache = true
 
 			if dbPath == "" {
-				dbPath = defaultDBPath("tier-routing-golden-pp-cli")
+				dbPath = defaultDBPath("printing-press-golden-pp-cli")
 			}
 
 			db, err := store.OpenWithContext(cmd.Context(), dbPath)
@@ -152,7 +151,7 @@ Exit codes & warnings:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-						res := syncResource(syncClientForResource(c, resource), db, resource, sinceTS, full, maxPages)
+						res := syncResource(c, db, resource, sinceTS, full, maxPages)
 						results <- res
 					}
 				}()
@@ -176,6 +175,30 @@ Exit codes & warnings:
 			var warnCount int
 			var successCount int
 			for res := range results {
+				if res.Err != nil {
+					if humanFriendly {
+						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
+					}
+					errCount++
+					if criticalResources[res.Resource] {
+						criticalErrCount++
+					}
+				} else if res.Warn != nil {
+					if humanFriendly {
+						fmt.Fprintf(os.Stderr, "  %s: warning: %v\n", res.Resource, res.Warn)
+					}
+					warnCount++
+				} else {
+					if humanFriendly {
+						fmt.Fprintf(os.Stderr, "  %s: %d synced (done)\n", res.Resource, res.Count)
+					}
+					totalSynced += res.Count
+					successCount++
+				}
+			}
+			// Sync dependent (parent-child) resources sequentially after flat resources.
+			depResults := syncDependentResources(c, db, sinceTS, full, maxPages)
+			for _, res := range depResults {
 				if res.Err != nil {
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
@@ -254,7 +277,7 @@ Exit codes & warnings:
 	cmd.Flags().BoolVar(&full, "full", false, "Full resync (ignore previous checkpoint)")
 	cmd.Flags().StringVar(&since, "since", "", "Incremental sync duration (e.g. 7d, 24h, 1w, 30m)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/tier-routing-golden-pp-cli/data.db)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/printing-press-golden-pp-cli/data.db)")
 	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero).")
@@ -756,6 +779,12 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 	}
 
 	switch resource {
+	case "projects":
+		return db.UpsertProjects(data)
+	case "tasks":
+		return db.UpsertTasks(data)
+	case "summary":
+		return db.UpsertSummary(data)
 	default:
 		return db.Upsert(resource, id, data)
 	}
@@ -792,7 +821,8 @@ func parseSinceDuration(s string) (time.Time, error) {
 
 func defaultSyncResources() []string {
 	return []string{
-		"items",
+		"currencies",
+		"projects",
 	}
 }
 
@@ -801,7 +831,8 @@ func defaultSyncResources() []string {
 // this preserves the actual endpoint path like "/ISteamApps/GetAppList/v2".
 func syncResourcePath(resource string) (string, error) {
 	paths := map[string]string{
-		"items": "/items",
+		"currencies": "/currencies",
+		"projects": "/projects",
 	}
 	if p, ok := paths[resource]; ok {
 		return p, nil
@@ -809,15 +840,218 @@ func syncResourcePath(resource string) (string, error) {
 	return "", fmt.Errorf("unknown sync resource %q", resource)
 }
 
-var syncResourceTiers = map[string]string{
-	"items": "free",
+// dependentResourceDef describes a child resource that requires iterating parent IDs to sync.
+type dependentResourceDef struct {
+	Name          string
+	ParentTable   string
+	ParentIDParam string
+	PathTemplate  string
 }
 
-func syncClientForResource(c *client.Client, resource string) *client.Client {
-	if tier, ok := syncResourceTiers[resource]; ok {
-		return c.WithTier(tier)
+func dependentResourceDefs() []dependentResourceDef {
+	return []dependentResourceDef{
+		{Name: "tasks", ParentTable: "projects", ParentIDParam: "projectId", PathTemplate: "/projects/{projectId}/tasks"},
 	}
-	return c
+}
+
+// syncDependentResources iterates parent tables and syncs child resources per parent ID.
+func syncDependentResources(c interface {
+	Get(string, map[string]string) (json.RawMessage, error)
+	RateLimit() float64
+}, db *store.Store, sinceTS string, full bool, maxPages int) []syncResult {
+	var results []syncResult
+	for _, dep := range dependentResourceDefs() {
+		res := syncDependentResource(c, db, dep, sinceTS, full, maxPages)
+		results = append(results, res)
+	}
+	return results
+}
+
+// syncDependentResource syncs a single child resource by iterating all parent IDs.
+func syncDependentResource(c interface {
+	Get(string, map[string]string) (json.RawMessage, error)
+	RateLimit() float64
+}, db *store.Store, dep dependentResourceDef, sinceTS string, full bool, maxPages int) syncResult {
+	started := time.Now()
+
+	// Query parent table for all IDs
+	parentIDs, err := db.ListIDs(dep.ParentTable)
+	if err != nil || len(parentIDs) == 0 {
+		if len(parentIDs) == 0 {
+			if humanFriendly {
+				fmt.Fprintf(os.Stderr, "  %s: skipping (parent table %s is empty, sync it first)\n", dep.Name, dep.ParentTable)
+			}
+			return syncResult{Resource: dep.Name, Duration: time.Since(started)}
+		}
+		return syncResult{Resource: dep.Name, Err: fmt.Errorf("querying parent table %s: %w", dep.ParentTable, err), Duration: time.Since(started)}
+	}
+
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "  %s: syncing for %d %s parents\n", dep.Name, len(parentIDs), dep.ParentTable)
+	}
+
+	var totalCount int
+	var deniedParents int
+	var firstDenial *accessWarning
+	pageSize := determinePaginationDefaults()
+	// Per-resource extract-failure tracking for the F4b symptom probe and
+	// per-item primary_key_unresolved warning. See syncResource for the
+	// concurrency rationale (one goroutine per resource → no race).
+	var depExtractFailureTotal int
+	var depConsumedTotal int
+	depAnomalyEmitted := false
+
+	for idx, parentID := range parentIDs {
+		// Build child endpoint path by replacing the param placeholder
+		path := strings.Replace(dep.PathTemplate, "{"+dep.ParentIDParam+"}", parentID, 1)
+
+		if humanFriendly {
+			fmt.Fprintf(os.Stderr, "\r  %s: syncing for %s (%d/%d parents)", dep.Name, dep.ParentTable, idx+1, len(parentIDs))
+		}
+
+		cursor := ""
+		pagesFetched := 0
+		lastNextCursor := ""
+
+		for {
+			params := map[string]string{}
+			params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
+			if cursor != "" {
+				params[pageSize.cursorParam] = cursor
+			}
+			if sinceTS != "" {
+				params[determineSinceParam()] = sinceTS
+			}
+
+			data, err := c.Get(path, params)
+			if err != nil {
+				// Non-fatal per parent: log and continue to next parent.
+				// Track access-denial separately so an all-denied dependent
+				// resource can surface as a Warn rather than silent success.
+				if w, ok := isSyncAccessWarning(err); ok {
+					deniedParents++
+					if firstDenial == nil {
+						firstDenial = w
+					}
+					if humanFriendly {
+						fmt.Fprintf(os.Stderr, "\n  %s: access denied for parent %s: %s\n", dep.Name, parentID, w.Reason)
+					} else {
+						fmt.Fprintf(os.Stderr, `{"event":"sync_warning","resource":"%s","parent":"%s","status":%d,"reason":"%s","message":"%s"}`+"\n",
+							dep.Name, parentID, w.Status, w.Reason, strings.ReplaceAll(w.Message, `"`, `\"`))
+					}
+				} else if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\n  %s: error for parent %s: %v\n", dep.Name, parentID, err)
+				}
+				break
+			}
+
+			items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
+			if len(items) == 0 {
+				break
+			}
+
+			// Inject parent_id into each item before upserting
+			for i, item := range items {
+				var obj map[string]json.RawMessage
+				if err := json.Unmarshal(item, &obj); err == nil {
+					parentIDJSON, _ := json.Marshal(parentID)
+					obj["parent_id"] = parentIDJSON
+					if modified, err := json.Marshal(obj); err == nil {
+						items[i] = modified
+					}
+				}
+			}
+
+			stored, extractFailures, err := upsertResourceBatch(db, dep.Name, items)
+			if err != nil {
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\n  %s: upsert error for parent %s: %v\n", dep.Name, parentID, err)
+				}
+				break
+			}
+
+			depConsumedTotal += len(items)
+			depExtractFailureTotal += extractFailures
+			// Order matches the flat path (syncResource): all-fail first,
+			// then partial-fail. The all-fail case dominates — if stored==0
+			// with at least one item, the resource is broken regardless of
+			// how many extractions failed individually.
+			if len(items) > 0 && stored == 0 && !depAnomalyEmitted {
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\nwarning: %s returned %d items for parent %s but stored 0 — likely scalar item shape or unrecognized primary-key field name.\n", dep.Name, len(items), parentID)
+				} else {
+					fmt.Fprintf(os.Stderr, `{"event":"sync_anomaly","resource":"%s","parent":"%s","consumed":%d,"stored":0,"reason":"all_items_failed_id_extraction"}`+"\n", dep.Name, parentID, len(items))
+				}
+				depAnomalyEmitted = true
+			} else if extractFailures > 0 && stored > 0 && !depAnomalyEmitted {
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\nwarning: %s had %d item(s) with no extractable primary key — those rows were dropped silently. Annotate the spec with x-resource-id to fix.\n", dep.Name, extractFailures)
+				} else {
+					fmt.Fprintf(os.Stderr, `{"event":"sync_anomaly","resource":"%s","parent":"%s","consumed":%d,"stored":%d,"count":%d,"reason":"primary_key_unresolved"}`+"\n", dep.Name, parentID, len(items), stored, extractFailures)
+				}
+				depAnomalyEmitted = true
+			}
+
+			totalCount += stored
+			pagesFetched++
+
+			if maxPages > 0 && pagesFetched >= maxPages {
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\n  %s: reached --max-pages limit (%d pages, %d items) for parent %s\n", dep.Name, maxPages, totalCount, parentID)
+				} else {
+					fmt.Fprintf(os.Stderr, `{"event":"sync_warning","resource":"%s","parent":"%s","reason":"max_pages_cap_hit","message":"reached --max-pages cap of %d; data may be truncated. Re-run with --max-pages 0 (unlimited) or higher to verify."}`+"\n", dep.Name, parentID, maxPages)
+				}
+				break
+			}
+			// Sticky-cursor detector: see syncResource for rationale. Same shape
+			// here so dependent-resource page loops cannot burn the budget on a
+			// non-advancing next cursor.
+			if nextCursor != "" && nextCursor == lastNextCursor {
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\n  %s: API returned the same next cursor across two pages for parent %s; aborting to prevent budget waste.\n", dep.Name, parentID)
+				} else {
+					fmt.Fprintf(os.Stderr, `{"event":"sync_warning","resource":"%s","parent":"%s","reason":"stuck_pagination","message":"API returned the same next cursor across two pages for resource %s; aborting to prevent budget waste."}`+"\n", dep.Name, parentID, dep.Name)
+				}
+				break
+			}
+			lastNextCursor = nextCursor
+			if !hasMore || len(items) < pageSize.limit || nextCursor == "" {
+				break
+			}
+			cursor = nextCursor
+		}
+
+		// Brief rate-limit pause between parents to avoid hammering the API
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "\n")
+	}
+
+	_ = db.SaveSyncState(dep.Name, "", totalCount)
+
+	// F4b symptom probe: items consumed and extracted but nothing landed.
+	// See syncResource for rationale.
+	if depConsumedTotal > 0 && totalCount == 0 && depExtractFailureTotal < depConsumedTotal {
+		if humanFriendly {
+			fmt.Fprintf(os.Stderr, "\nwarning: %s consumed %d items, extracted %d primary keys, but stored 0 rows — extraction succeeded yet nothing landed. Investigate FTS triggers / transaction rollback / encoding.\n", dep.Name, depConsumedTotal, depConsumedTotal-depExtractFailureTotal)
+		} else {
+			fmt.Fprintf(os.Stderr, `{"event":"sync_anomaly","resource":"%s","consumed":%d,"stored":0,"extract_failures":%d,"reason":"stored_count_zero_after_extraction"}`+"\n", dep.Name, depConsumedTotal, depExtractFailureTotal)
+		}
+	}
+
+	// If every parent was access-denied and nothing was synced, surface as a
+	// warning so the run-level summary and exit code reflect insufficient access.
+	if deniedParents == len(parentIDs) && totalCount == 0 && firstDenial != nil {
+		return syncResult{
+			Resource: dep.Name,
+			Count:    0,
+			Warn:     fmt.Errorf("skipped %s: %s on all %d parents", dep.Name, firstDenial.Reason, len(parentIDs)),
+			Duration: time.Since(started),
+		}
+	}
+	return syncResult{Resource: dep.Name, Count: totalCount, Duration: time.Since(started)}
 }
 
 // resourceIDFieldOverrides projects per-resource IDField (set by the profiler
@@ -830,6 +1064,8 @@ func syncClientForResource(c *client.Client, resource string) *client.Client {
 // annotations on a child path-item are honored at runtime, not just on
 // flat paths.
 var resourceIDFieldOverrides = map[string]string{
+	"projects": "id",
+	"tasks": "id",
 }
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did
@@ -846,6 +1082,7 @@ var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key"
 // failed child sync flagged x-critical: true exits non-zero just like a
 // flat-resource critical failure.
 var criticalResources = map[string]bool{
+	"projects": true,
 }
 
 // extractID resolves an item's primary-key field. It consults the
