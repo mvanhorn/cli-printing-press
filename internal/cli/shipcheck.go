@@ -351,7 +351,7 @@ Legs (in canonical order):
   verify           — runtime command testing (with --fix to auto-repair common breakage)
   workflow-verify  — primary workflow end-to-end against the verification manifest
   verify-skill     — SKILL.md flag/positional/command consistency with the shipped CLI
-  scorecard        — Steinberger quality bar (with --live-check sampling novel features)
+  scorecard        — Steinberger quality bar (with --live-check sampled output probes)
 
 In default mode, every leg streams its full output to the terminal as it runs
 and a per-leg verdict table prints at the end. In --json mode, leg output is
@@ -435,7 +435,7 @@ Each leg remains callable standalone — this command is additive orchestration.
 	cmd.Flags().StringVar(&opts.researchDir, "research-dir", "", "Pipeline directory containing research.json (passed to dogfood and scorecard)")
 	cmd.Flags().BoolVar(&opts.asJSON, "json", false, "Emit a structured JSON envelope at end-of-run (suppresses per-leg stdout for clean piping; run legs standalone with --json for per-leg detail)")
 	cmd.Flags().BoolVar(&opts.noFix, "no-fix", false, "Disable verify's --fix auto-repair loop (read-only verify)")
-	cmd.Flags().BoolVar(&opts.noLiveCheck, "no-live-check", false, "Disable scorecard's --live-check live-API sampling")
+	cmd.Flags().BoolVar(&opts.noLiveCheck, "no-live-check", false, "Disable scorecard's --live-check sampled output probe")
 	cmd.Flags().StringVar(&opts.apiKey, "api-key", "", "API key for verify's live testing (read-only GETs only)")
 	cmd.Flags().StringVar(&opts.envVar, "env-var", "", "Environment variable name verify should read for the API key (e.g., GITHUB_TOKEN)")
 	cmd.Flags().BoolVar(&opts.strict, "strict", false, "Pass --strict to verify-skill (treat likely-false-positive findings as failures)")

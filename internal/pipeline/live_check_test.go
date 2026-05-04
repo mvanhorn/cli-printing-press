@@ -151,6 +151,34 @@ func TestLiveCheck_PassOnHappyPath(t *testing.T) {
 	require.Equal(t, 1.0, result.PassRate)
 }
 
+// TestLiveCheck_FailOnTokenEchoOutput guards against commands that satisfy
+// relevance by printing the input token back without returning any result
+// structure. The sampled output probe should feed reviewers, not award
+// behavioral credit for an echo.
+func TestLiveCheck_FailOnTokenEchoOutput(t *testing.T) {
+	dir := t.TempDir()
+	writeStubBinary(t, dir, "stub", `echo "brownies"`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Best ranker", Command: "goat", Example: `stub goat "brownies" --limit 5`},
+	})
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second})
+	require.False(t, result.Unable)
+	require.Equal(t, 1, result.Failed, "expected token-only echo output to fail")
+	require.Contains(t, result.Features[0].Reason, "echo")
+}
+
+func TestLiveCheck_PassOnQueryOnlyJSONOutput(t *testing.T) {
+	dir := t.TempDir()
+	writeStubBinary(t, dir, "stub", `echo '["pikachu","charizard","blastoise"]'`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Pokemon search", Command: "pokemon search", Example: `stub pokemon search "pikachu,charizard,blastoise" --json`},
+	})
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second})
+	require.False(t, result.Unable)
+	require.Equal(t, 1, result.Passed, "structured JSON containing only query values is still a valid result shape")
+	require.Zero(t, result.Failed)
+}
+
 // TestLiveCheck_FailOnIrrelevantOutput verifies the relevance check catches
 // the Recipe GOAT pattern: command runs successfully but returns results that
 // don't match the query (e.g., "brownies" → Texas Chili).

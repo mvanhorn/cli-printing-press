@@ -68,31 +68,7 @@ func TestScoreLiveAPIVerification(t *testing.T) {
 	})
 }
 
-func TestScoreLiveAPIVerificationFromLiveCheck(t *testing.T) {
-	tests := []struct {
-		name       string
-		live       *LiveCheckResult
-		wantScore  int
-		wantScored bool
-	}{
-		{name: "nil", live: nil, wantScored: false},
-		{name: "unable", live: &LiveCheckResult{Unable: true}, wantScored: false},
-		{name: "zero checked", live: &LiveCheckResult{}, wantScored: false},
-		{name: "three pass scores ten", live: &LiveCheckResult{Passed: 3, Failed: 2}, wantScore: 10, wantScored: true},
-		{name: "two pass scores five", live: &LiveCheckResult{Passed: 2, Failed: 3}, wantScore: 5, wantScored: true},
-		{name: "one pass scores five", live: &LiveCheckResult{Passed: 1, Failed: 4}, wantScore: 5, wantScored: true},
-		{name: "zero pass scored zero", live: &LiveCheckResult{Failed: 5}, wantScore: 0, wantScored: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			score, scored := scoreLiveAPIVerificationFromLiveCheck(tt.live)
-			assert.Equal(t, tt.wantScore, score)
-			assert.Equal(t, tt.wantScored, scored)
-		})
-	}
-}
-
-func TestApplyLiveCheckToScorecardCreditsLiveAPIVerification(t *testing.T) {
+func TestApplyLiveCheckToScorecardDoesNotCreditLiveAPIVerification(t *testing.T) {
 	dir := t.TempDir()
 	pipelineDir := t.TempDir()
 	sc, err := RunScorecard(dir, pipelineDir, "", nil)
@@ -100,12 +76,31 @@ func TestApplyLiveCheckToScorecardCreditsLiveAPIVerification(t *testing.T) {
 	assert.Contains(t, sc.UnscoredDimensions, "live_api_verification")
 	beforeTotal := sc.Steinberger.Total
 
-	ApplyLiveCheckToScorecard(sc, &LiveCheckResult{Passed: 3, Failed: 2})
+	ApplyLiveCheckToScorecard(sc, &LiveCheckResult{Passed: 3, PassRate: 1.0})
 
-	assert.NotContains(t, sc.UnscoredDimensions, "live_api_verification")
-	assert.Equal(t, 10, sc.Steinberger.LiveAPIVerification)
-	assert.GreaterOrEqual(t, sc.Steinberger.Total, beforeTotal)
+	assert.Contains(t, sc.UnscoredDimensions, "live_api_verification",
+		"sampled output probes must not masquerade as full live API verification")
+	assert.Equal(t, 0, sc.Steinberger.LiveAPIVerification)
+	assert.Equal(t, beforeTotal, sc.Steinberger.Total,
+		"a passing sampled output probe should not change scorecard totals")
 	assert.Equal(t, sc.Steinberger.Total, sc.Steinberger.Percentage)
+}
+
+func TestApplyLiveCheckToScorecardCapsInsightOnly(t *testing.T) {
+	dir := t.TempDir()
+	pipelineDir := t.TempDir()
+	sc, err := RunScorecard(dir, pipelineDir, "", nil)
+	assert.NoError(t, err)
+	sc.Steinberger.Insight = 10
+	recomputeScorecardTotals(sc)
+	beforeTotal := sc.Steinberger.Total
+
+	ApplyLiveCheckToScorecard(sc, &LiveCheckResult{Passed: 3, Failed: 7, PassRate: 0.3})
+
+	assert.Equal(t, 4, sc.Steinberger.Insight)
+	assert.Less(t, sc.Steinberger.Total, beforeTotal)
+	assert.Contains(t, sc.UnscoredDimensions, "live_api_verification",
+		"live-check may cap Insight but must leave live_api_verification unscored")
 }
 
 func TestApplyLiveCheckToScorecardPreservesBrowserSessionCap(t *testing.T) {
@@ -121,7 +116,7 @@ func TestApplyLiveCheckToScorecardPreservesBrowserSessionCap(t *testing.T) {
 	assert.NoError(t, err)
 	assert.LessOrEqual(t, sc.Steinberger.Total, 69)
 
-	ApplyLiveCheckToScorecard(sc, &LiveCheckResult{Passed: 3})
+	ApplyLiveCheckToScorecard(sc, &LiveCheckResult{Passed: 3, PassRate: 1.0})
 
 	assert.LessOrEqual(t, sc.Steinberger.Total, 69)
 	assert.Equal(t, sc.Steinberger.Total, sc.Steinberger.Percentage)

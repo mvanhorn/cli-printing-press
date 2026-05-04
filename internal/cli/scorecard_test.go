@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -107,4 +108,35 @@ func TestRenderHumanScorecardShowsScoreForScoredDimensions(t *testing.T) {
 		"scored dimension at 0 is not the same as unscored")
 	assert.False(t, strings.Contains(got, "omitted from denominator"),
 		"with no unscored dimensions, the composite-note line must not appear")
+}
+
+func TestScorecardJSONKeepsLiveCheckSeparateFromLiveVerification(t *testing.T) {
+	t.Parallel()
+	sc := &pipeline.Scorecard{
+		APIName: "test-api",
+		Steinberger: pipeline.SteinerScore{
+			Total:      80,
+			Percentage: 80,
+		},
+		UnscoredDimensions: []string{pipeline.DimLiveAPIVerification},
+	}
+	live := &pipeline.LiveCheckResult{
+		Passed:   1,
+		PassRate: 1.0,
+		Features: []pipeline.LiveFeatureResult{{
+			Name:         "sample",
+			Status:       pipeline.StatusPass,
+			OutputSample: "Found 3 brownie recipes",
+		}},
+	}
+
+	payload := map[string]any{"scorecard": sc, "live_check": live}
+	data, err := json.Marshal(payload)
+	assert.NoError(t, err)
+	got := string(data)
+
+	assert.Contains(t, got, `"live_check"`)
+	assert.Contains(t, got, `"output_sample":"Found 3 brownie recipes"`)
+	assert.Contains(t, got, `"unscored_dimensions":["live_api_verification"]`)
+	assert.Contains(t, got, `"live_api_verification":0`)
 }

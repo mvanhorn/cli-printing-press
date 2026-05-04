@@ -888,30 +888,19 @@ func scoreLiveAPIVerification(verifyReport *VerifyReport) (int, bool) {
 	return score, true
 }
 
-func scoreLiveAPIVerificationFromLiveCheck(live *LiveCheckResult) (int, bool) {
-	if live == nil || live.Unable || live.Checked() == 0 {
-		return 0, false
-	}
-	switch {
-	case live.Passed >= 3:
-		return 10, true
-	case live.Passed >= 1:
-		return 5, true
-	default:
-		return 0, true
-	}
-}
-
+// ApplyLiveCheckToScorecard lets sampled command output affect only the
+// scorecard dimensions it can honestly support. A weak or failing sample can
+// cap Insight, but it must not populate LiveAPIVerification; that dimension
+// is reserved for VerifyReport evidence from real live verify runs.
 func ApplyLiveCheckToScorecard(sc *Scorecard, live *LiveCheckResult) {
 	if sc == nil {
 		return
 	}
-	score, scored := scoreLiveAPIVerificationFromLiveCheck(live)
-	if !scored {
+	insightCap := InsightCapFromLiveCheck(live)
+	if insightCap == nil || sc.Steinberger.Insight <= *insightCap {
 		return
 	}
-	sc.Steinberger.LiveAPIVerification = score
-	sc.UnscoredDimensions = removeUnscoredDimension(sc.UnscoredDimensions, DimLiveAPIVerification)
+	sc.Steinberger.Insight = *insightCap
 	recomputeScorecardTotals(sc)
 	applyScorecardCalibration(sc)
 	sc.OverallGrade = computeGrade(sc.Steinberger.Percentage)
@@ -936,16 +925,6 @@ func applyScorecardCalibration(sc *Scorecard) {
 	}
 	sc.Steinberger.Percentage = sc.Steinberger.Total
 	sc.Steinberger.CalibrationNote = strings.Join(notes, "; ")
-}
-
-func removeUnscoredDimension(dimensions []string, name string) []string {
-	out := dimensions[:0]
-	for _, dimension := range dimensions {
-		if dimension != name {
-			out = append(out, dimension)
-		}
-	}
-	return out
 }
 
 func recomputeScorecardTotals(sc *Scorecard) {

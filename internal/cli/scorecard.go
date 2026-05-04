@@ -58,9 +58,6 @@ func newScorecardCmd() *cobra.Command {
 					ResearchDir: researchDir,
 					Timeout:     liveCheckTimeout,
 				})
-				if insightCap := pipeline.InsightCapFromLiveCheck(live); insightCap != nil && sc.Steinberger.Insight > *insightCap {
-					sc.Steinberger.Insight = *insightCap
-				}
 				pipeline.ApplyLiveCheckToScorecard(sc, live)
 			}
 
@@ -78,7 +75,7 @@ func newScorecardCmd() *cobra.Command {
 			renderHumanScorecard(os.Stdout, sc)
 
 			if live != nil {
-				fmt.Printf("\nLive Check (behavioral sample)\n")
+				fmt.Printf("\nSample Output Probe (live command sample)\n")
 				if live.Unable {
 					fmt.Printf("  Unable to run: %s\n", live.Reason)
 				} else {

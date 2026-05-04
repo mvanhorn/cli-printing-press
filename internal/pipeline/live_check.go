@@ -364,6 +364,9 @@ func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.
 		if !outputMentionsQuery(stdoutCap.String(), query) {
 			return fail(fmt.Sprintf("output does not contain any token from query %q", query))
 		}
+		if outputIsBareQueryEcho(stdoutCap.String(), query) {
+			return fail(fmt.Sprintf("output only echoes query %q without result structure", query))
+		}
 	}
 
 	stdout := stdoutCap.String()
@@ -581,6 +584,34 @@ func outputMentionsQuery(output, query string) bool {
 		}
 	}
 	return false
+}
+
+func outputIsBareQueryEcho(output, query string) bool {
+	trimmed := strings.TrimSpace(output)
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		return false
+	}
+	outputWords := normalizedOutputWords(output)
+	queryWords := normalizedOutputWords(query)
+	if len(outputWords) == 0 || len(queryWords) == 0 {
+		return false
+	}
+	if len(outputWords) != len(queryWords) {
+		return false
+	}
+	for i := range outputWords {
+		if outputWords[i] != queryWords[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizedOutputWords(s string) []string {
+	fields := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	return fields
 }
 
 func trimOutput(s string) string {
