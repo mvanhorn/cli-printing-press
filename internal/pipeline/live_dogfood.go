@@ -407,12 +407,16 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport) {
 			report.Skipped++
 		}
 	}
+	// Failed-or-empty wins: any real failure or a fully empty matrix is FAIL,
+	// regardless of level. Then the quick-level PASS arm accepts skip-with-
+	// reason as a non-failure (Skipped counts toward the 5-entry quorum), with
+	// a MatrixSize floor of 4 to guard against pathological all-skip outcomes.
 	switch {
-	case report.Level == "quick" && report.MatrixSize == 6 && report.Passed >= 5:
-		report.Verdict = "PASS"
 	case report.Failed > 0 || report.MatrixSize == 0:
 		report.Verdict = "FAIL"
-	case report.Level == "quick" && report.MatrixSize != 6:
+	case report.Level == "quick" && report.Passed+report.Skipped >= 5 && report.MatrixSize >= 4:
+		report.Verdict = "PASS"
+	case report.Level == "quick":
 		report.Verdict = "FAIL"
 	}
 }

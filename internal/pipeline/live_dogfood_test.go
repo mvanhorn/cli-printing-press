@@ -129,6 +129,111 @@ func TestRunLiveDogfoodAcceptanceRequiresManifestIdentity(t *testing.T) {
 	assert.Contains(t, err.Error(), "CLI manifest")
 }
 
+// TestFinalizeLiveDogfoodReportVerdictGate exercises the quick-level verdict
+// switch directly against synthesized reports. The new gate must accept
+// skip-with-reason as a non-failure (Passed + Skipped >= 5) with a MatrixSize
+// floor of 4, while preserving Failed-dominance and full-level semantics.
+func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
+	mkResult := func(status LiveDogfoodStatus) LiveDogfoodTestResult {
+		return LiveDogfoodTestResult{Status: status}
+	}
+
+	tests := []struct {
+		name    string
+		level   string
+		results []LiveDogfoodTestResult
+		want    string
+	}{
+		{
+			name:  "quick all pass classic",
+			level: "quick",
+			results: []LiveDogfoodTestResult{
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
+			},
+			want: "PASS",
+		},
+		{
+			name:  "quick 5 pass + 1 skip — companion missing",
+			level: "quick",
+			results: []LiveDogfoodTestResult{
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusSkip),
+			},
+			want: "PASS",
+		},
+		{
+			name:  "quick 4 pass + 2 skip — multi-positional skip + no-companion skip",
+			level: "quick",
+			results: []LiveDogfoodTestResult{
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
+				mkResult(LiveDogfoodStatusSkip), mkResult(LiveDogfoodStatusSkip),
+			},
+			want: "PASS",
+		},
+		{
+			name:  "quick 3 pass + 3 skip — MatrixSize floor (3) below 4",
+			level: "quick",
+			results: []LiveDogfoodTestResult{
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusSkip),
+				mkResult(LiveDogfoodStatusSkip), mkResult(LiveDogfoodStatusSkip),
+			},
+			want: "FAIL",
+		},
+		{
+			name:  "quick 4 pass + 1 fail — Failed dominates",
+			level: "quick",
+			results: []LiveDogfoodTestResult{
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
+				mkResult(LiveDogfoodStatusFail),
+			},
+			want: "FAIL",
+		},
+		{
+			name:    "quick all skip — MatrixSize 0",
+			level:   "quick",
+			results: []LiveDogfoodTestResult{mkResult(LiveDogfoodStatusSkip), mkResult(LiveDogfoodStatusSkip)},
+			want:    "FAIL",
+		},
+		{
+			name:  "full all pass — full-level PASS preserved (verdict default)",
+			level: "full",
+			results: []LiveDogfoodTestResult{
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
+				mkResult(LiveDogfoodStatusPass),
+			},
+			want: "PASS",
+		},
+		{
+			name:  "full one fail — Failed dominates at full level",
+			level: "full",
+			results: []LiveDogfoodTestResult{
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
+				mkResult(LiveDogfoodStatusFail),
+			},
+			want: "FAIL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			report := &LiveDogfoodReport{
+				Level:   tt.level,
+				Verdict: "PASS",
+				Tests:   tt.results,
+			}
+			finalizeLiveDogfoodReport(report)
+			assert.Equal(t, tt.want, report.Verdict, "Passed=%d Failed=%d Skipped=%d MatrixSize=%d",
+				report.Passed, report.Failed, report.Skipped, report.MatrixSize)
+		})
+	}
+}
+
 func TestRunLiveDogfoodJSONFlagDetectionIsExact(t *testing.T) {
 	help := `Usage:
   fixture-pp-cli widgets list [flags]
