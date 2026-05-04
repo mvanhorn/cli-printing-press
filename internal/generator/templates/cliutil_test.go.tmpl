@@ -755,6 +755,26 @@ func TestRetryAfter_HTTPDate(t *testing.T) {
 	}
 }
 
+func TestRetryAfter_EpochSeconds(t *testing.T) {
+	future := time.Now().Add(7 * time.Second)
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Set("Retry-After", fmt.Sprint(future.Unix()))
+	got := RetryAfter(resp)
+	if got < 5*time.Second || got > 8*time.Second {
+		t.Errorf("RetryAfter(epoch seconds 7s ahead) = %v, want ~7s", got)
+	}
+}
+
+func TestRetryAfter_EpochMilliseconds(t *testing.T) {
+	future := time.Now().Add(7 * time.Second)
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Set("Retry-After", fmt.Sprint(future.UnixMilli()))
+	got := RetryAfter(resp)
+	if got < 5*time.Second || got > 8*time.Second {
+		t.Errorf("RetryAfter(epoch milliseconds 7s ahead) = %v, want ~7s", got)
+	}
+}
+
 func TestRetryAfter_Cap(t *testing.T) {
 	resp := &http.Response{Header: http.Header{}}
 	resp.Header.Set("Retry-After", "600")

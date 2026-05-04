@@ -121,25 +121,26 @@ func (e *RateLimitError) Error() string {
 // or hostile upstream cannot pin a CLI for hours.
 const MaxRetryWait = 60 * time.Second
 
+const (
+	defaultRetryWait               = 5 * time.Second
+	unixEpochSecondsThreshold      = 1_000_000_000
+	unixEpochMillisecondsThreshold = 1_000_000_000_000
+)
+
 // RetryAfter parses an HTTP Retry-After header (RFC 7231: delta-seconds or
-// HTTP-date), capped at MaxRetryWait. Returns 5s when missing or unparseable.
+// HTTP-date), plus common Unix epoch seconds/milliseconds variants emitted by
+// some APIs. Waits are capped at MaxRetryWait. Returns 5s when missing or
+// unparseable.
 func RetryAfter(resp *http.Response) time.Duration {
 	if resp == nil {
-		return 5 * time.Second
+		return defaultRetryWait
 	}
 	header := strings.TrimSpace(resp.Header.Get("Retry-After"))
 	if header == "" {
-		return 5 * time.Second
+		return defaultRetryWait
 	}
-	if seconds, err := strconv.Atoi(header); err == nil {
-		d := time.Duration(seconds) * time.Second
-		if d > MaxRetryWait {
-			return MaxRetryWait
-		}
-		if d <= 0 {
-			return 5 * time.Second
-		}
-		return d
+	if value, err := strconv.ParseInt(header, 10, 64); err == nil {
+		return retryAfterFromNumber(value)
 	}
 	if t, err := http.ParseTime(header); err == nil {
 		wait := time.Until(t)
@@ -150,7 +151,34 @@ func RetryAfter(resp *http.Response) time.Duration {
 			return wait
 		}
 	}
-	return 5 * time.Second
+	return defaultRetryWait
+}
+
+func retryAfterFromNumber(value int64) time.Duration {
+	if value <= 0 {
+		return defaultRetryWait
+	}
+	if value > int64(MaxRetryWait/time.Second) {
+		if wait := retryAfterEpochWait(value); wait > 0 {
+			if wait > MaxRetryWait {
+				return MaxRetryWait
+			}
+			return wait
+		}
+		return MaxRetryWait
+	}
+	return time.Duration(value) * time.Second
+}
+
+func retryAfterEpochWait(value int64) time.Duration {
+	switch {
+	case value >= unixEpochMillisecondsThreshold:
+		return time.Until(time.UnixMilli(value))
+	case value >= unixEpochSecondsThreshold:
+		return time.Until(time.Unix(value, 0))
+	default:
+		return 0
+	}
 }
 
 // MaxBackoff caps Backoff so tests stay bounded. Callers needing jitter
