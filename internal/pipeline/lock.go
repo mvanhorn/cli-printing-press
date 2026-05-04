@@ -226,6 +226,9 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 	if len(entries) == 0 {
 		return fmt.Errorf("working directory is empty: %s", workingDir)
 	}
+	if err := validatePhase5GateForPromote(workingDir, state); err != nil {
+		return err
+	}
 
 	slug := naming.TrimCLISuffix(cliName)
 	libraryDir := filepath.Join(PublishedLibraryRoot(), slug)
@@ -319,6 +322,33 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 	default:
 		return nil
 	}
+}
+
+func validatePhase5GateForPromote(workingDir string, state *PipelineState) error {
+	if state == nil || state.RunID == "" {
+		return nil
+	}
+
+	manifest := CLIManifest{
+		APIName: state.APIName,
+		CLIName: naming.CLI(state.APIName),
+		RunID:   state.RunID,
+	}
+	if existing, err := ReadCLIManifest(workingDir); err == nil {
+		if existing.APIName != "" {
+			manifest.APIName = existing.APIName
+		}
+		if existing.CLIName != "" {
+			manifest.CLIName = existing.CLIName
+		}
+		manifest.AuthType = existing.AuthType
+	}
+
+	result := ValidatePhase5Gate(state.ProofsDir(), manifest)
+	if result.Passed {
+		return nil
+	}
+	return fmt.Errorf("phase5 gate failed: %s", result.Detail)
 }
 
 // IsStale returns true if the lock's UpdatedAt is older than StaleLockThreshold.

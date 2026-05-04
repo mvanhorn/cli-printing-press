@@ -32,6 +32,14 @@ func writeTestManifest(t *testing.T, dir string, m pipeline.CLIManifest) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, pipeline.CLIManifestFilename), data, 0o644))
 }
 
+func writeTestPhase5GateMarker(t *testing.T, proofsDir, name string, marker pipeline.Phase5GateMarker) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(proofsDir, 0o755))
+	data, err := json.MarshalIndent(marker, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(proofsDir, name), data, 0o644))
+}
+
 func TestLibraryListJSONWithManifests(t *testing.T) {
 	home := setLibraryTestEnv(t)
 	libDir := filepath.Join(home, "library")

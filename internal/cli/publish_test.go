@@ -150,11 +150,45 @@ func TestPublishValidateJSONHasAllChecks(t *testing.T) {
 	}
 
 	// All checks should be present (they may fail in test env, but must exist)
-	expectedChecks := []string{"manifest", "transcendence", "go mod tidy", "go vet", "go build", "--help", "--version", "verify-skill", "manuscripts"}
+	expectedChecks := []string{"manifest", "transcendence", "phase5", "go mod tidy", "go vet", "go build", "--help", "--version", "verify-skill", "manuscripts"}
 	for _, name := range expectedChecks {
 		assert.True(t, checkNames[name], "should have %q check", name)
 	}
 	assert.Len(t, result.Checks, len(expectedChecks), "should have exactly the expected checks")
+}
+
+func TestPublishValidateFailsWithoutPhase5Marker(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	writeTestManifest(t, cliDir, pipeline.CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "test",
+		CLIName:       "test-pp-cli",
+		RunID:         "run-missing-phase5",
+		AuthType:      "api_key",
+	})
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"validate", "--dir", cliDir, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.Error(t, err)
+
+	var result ValidateResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.False(t, result.Passed)
+
+	var phase5Check *CheckResult
+	for i := range result.Checks {
+		if result.Checks[i].Name == "phase5" {
+			phase5Check = &result.Checks[i]
+			break
+		}
+	}
+	require.NotNil(t, phase5Check)
+	assert.False(t, phase5Check.Passed)
+	assert.Contains(t, phase5Check.Error, "missing")
 }
 
 func TestPublishValidateRequiresTranscendenceFeatures(t *testing.T) {
@@ -826,5 +860,26 @@ func newInsightCmd() *cobra.Command {
 		SchemaVersion: 1,
 		APIName:       "test",
 		CLIName:       "test-pp-cli",
+		RunID:         "20260301-000000",
+		AuthType:      "none",
+	})
+	writePublishablePhase5Pass(t)
+}
+
+func writePublishablePhase5Pass(t *testing.T) {
+	t.Helper()
+	home := os.Getenv("PRINTING_PRESS_HOME")
+	require.NotEmpty(t, home)
+	proofsDir := filepath.Join(home, "manuscripts", "test", "20260301-000000", "proofs")
+	writeTestPhase5GateMarker(t, proofsDir, pipeline.Phase5AcceptanceFilename, pipeline.Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "20260301-000000",
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		TestsFailed:   0,
+		AuthContext:   pipeline.Phase5AuthContext{Type: "none"},
 	})
 }

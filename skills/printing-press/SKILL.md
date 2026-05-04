@@ -2381,8 +2381,9 @@ When a test fails, fix it immediately — do not accumulate failures. Tag each f
 
 ### Step 4: Report and gate
 
-Write a structured acceptance report. This report is **required** — Phase 5.6
-checks for it before promoting.
+Write a structured acceptance report and a machine-readable gate marker. The
+JSON marker is **required** — Phase 5.6 and `publish validate` check for it
+before promoting or publishing.
 
 ```
 Acceptance Report: <api>
@@ -2421,6 +2422,54 @@ Write:
 
 `$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-acceptance.md`
 
+For `Gate: PASS`, also write:
+
+`$PROOFS_DIR/phase5-acceptance.json`
+
+```json
+{
+  "schema_version": 1,
+  "api_name": "<api>",
+  "run_id": "<run-id>",
+  "status": "pass",
+  "level": "quick|full",
+  "matrix_size": 42,
+  "tests_passed": 42,
+  "tests_failed": 0,
+  "auth_context": {
+    "type": "none|api_key|bearer_token|cookie|composed|session_handshake",
+    "api_key_available": true,
+    "browser_session_available": false
+  }
+}
+```
+
+If Phase 5 is legitimately skipped because the API requires API-key or bearer
+auth and no credential was available, write:
+
+`$PROOFS_DIR/phase5-skip.json`
+
+```json
+{
+  "schema_version": 1,
+  "api_name": "<api>",
+  "run_id": "<run-id>",
+  "status": "skip",
+  "level": "none",
+  "skip_reason": "auth_required_no_credential",
+  "auth_context": {
+    "type": "api_key|bearer_token|oauth2",
+    "api_key_available": false,
+    "browser_session_available": false
+  }
+}
+```
+
+Do **not** write a skip marker for `auth.type: none`. No-auth APIs are testable
+and require `phase5-acceptance.json`. Do **not** use missing API key as the skip
+reason for cookie, composed, or session-handshake auth; those require browser
+session proof or a hold decision.
+
 ## Phase 5.5: Polish
 
 **Always runs.** Invoke the `printing-press-polish` skill to run diagnostics, fix quality issues, and return a delta. The polish skill carries `context: fork` in its frontmatter, so its diagnostic-fix-rediagnose loop runs in a forked context — diagnostic spam, fix iterations, and re-audits stay scoped to the polish session and don't pollute this generation flow. The skill is autonomous — no user input needed. The goal is to ship the best CLI possible, not the fastest.
@@ -2458,13 +2507,12 @@ Write the polish skill's full response to:
 
 ### Acceptance gate check
 
-Before promoting, verify the acceptance artifact exists when an API key was
-available during this run:
+Before promoting, verify the Phase 5 JSON gate marker:
 
-- If `$PROOFS_DIR/*-acceptance.md` exists with `Gate: PASS` → proceed to promote.
-- If `$PROOFS_DIR/*-acceptance.md` exists with `Gate: FAIL` → CLI is on hold. Do NOT promote. Proceed to Archive Manuscripts.
-- If no acceptance artifact exists AND an API key was available → Phase 5 was skipped. Go back and run it. Do NOT promote without it.
-- If no acceptance artifact exists AND no API key was available → acceptable. Proceed to promote (the CLI was verified mechanically only).
+- If `$PROOFS_DIR/phase5-acceptance.json` exists with `status: "pass"` → proceed to promote.
+- If `$PROOFS_DIR/phase5-acceptance.json` exists with `status: "fail"` → CLI is on hold. Do NOT promote. Proceed to Archive Manuscripts.
+- If `$PROOFS_DIR/phase5-skip.json` exists and the auth-aware skip is valid → proceed to promote.
+- If neither JSON marker exists → Phase 5 was skipped or not recorded. Go back and run it, or write the valid skip marker. Do NOT promote without one.
 
 ### Promote to Library
 

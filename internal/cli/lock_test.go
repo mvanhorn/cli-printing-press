@@ -164,6 +164,7 @@ func TestLockPromote_Success(t *testing.T) {
 	// Create state file for the run.
 	state := pipeline.NewStateWithRun("test", workDir, runID, "test-scope")
 	require.NoError(t, state.Save())
+	writeLockPhase5Pass(t, state)
 
 	// Acquire lock.
 	_, code := runLockCmd("acquire", "--cli", "test-pp-cli", "--scope", "test-scope")
@@ -181,6 +182,21 @@ func TestLockPromote_Success(t *testing.T) {
 	libDir := filepath.Join(pipeline.PublishedLibraryRoot(), "test")
 	_, err := os.Stat(filepath.Join(libDir, "go.mod"))
 	assert.NoError(t, err)
+}
+
+func writeLockPhase5Pass(t *testing.T, state *pipeline.PipelineState) {
+	t.Helper()
+	writeTestPhase5GateMarker(t, state.ProofsDir(), pipeline.Phase5AcceptanceFilename, pipeline.Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       state.APIName,
+		RunID:         state.RunID,
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		TestsFailed:   0,
+		AuthContext:   pipeline.Phase5AuthContext{Type: "none"},
+	})
 }
 
 func TestLockHelpOutput(t *testing.T) {

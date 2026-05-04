@@ -159,6 +159,7 @@ Parse the JSON result. Display each check result to the user:
 ```
 Validating <api-slug>...
   manifest        PASS
+  phase5          PASS
   go mod tidy     PASS
   go vet          PASS
   go build        PASS
@@ -729,6 +730,7 @@ $ <cli-name> --help
 | Check | Result |
 |-------|--------|
 | Manifest | PASS/FAIL |
+| Phase 5 | PASS/FAIL |
 | go mod tidy | PASS/FAIL |
 | go vet | PASS/FAIL |
 | go build | PASS/FAIL |

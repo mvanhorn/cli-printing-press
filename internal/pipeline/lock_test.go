@@ -328,6 +328,7 @@ func TestPromoteWorkingCLI(t *testing.T) {
 
 	// Create minimal state.
 	state := NewStateWithRun("test", workDir, "run-001", "test-scope")
+	writePhase5PassForState(t, state, "none")
 
 	err = PromoteWorkingCLI("test-pp-cli", workDir, state)
 	require.NoError(t, err)
@@ -369,6 +370,7 @@ func TestPromoteWorkingCLI_ReplacesExistingLibrary(t *testing.T) {
 	require.NoError(t, err)
 
 	state := NewStateWithRun("test", workDir, "run-002", "test-scope")
+	writePhase5PassForState(t, state, "none")
 
 	err = PromoteWorkingCLI("test-pp-cli", workDir, state)
 	require.NoError(t, err)
@@ -445,6 +447,7 @@ func TestPromoteWorkingCLI_RetryRestoresBackupBeforeFailure(t *testing.T) {
 	require.NoError(t, os.Symlink(outside, filepath.Join(workDir, "bad-link.txt")))
 
 	state := NewStateWithRun("test", workDir, "run-004", "test-scope")
+	writePhase5PassForState(t, state, "none")
 
 	err := PromoteWorkingCLI("test-pp-cli", workDir, state)
 	require.Error(t, err)
@@ -473,6 +476,7 @@ func TestPromoteWorkingCLI_ReleasesLockWhenStateSaveFails(t *testing.T) {
 	require.NoError(t, err)
 
 	state := NewStateWithRun("test", workDir, "run-005", "test-scope")
+	writePhase5PassForState(t, state, "none")
 
 	// Force state.Save() to fail after the library swap succeeds.
 	require.NoError(t, os.MkdirAll(filepath.Dir(state.PipelineDir()), 0o755))
@@ -491,6 +495,26 @@ func TestPromoteWorkingCLI_ReleasesLockWhenStateSaveFails(t *testing.T) {
 
 	_, err = os.Stat(LockFilePath("test-pp-cli"))
 	assert.True(t, os.IsNotExist(err))
+}
+
+func TestPromoteWorkingCLI_RequiresPhase5GateForRunstatePromote(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+	state := NewStateWithRun("test", workDir, "run-no-phase5", "test-scope")
+	err := PromoteWorkingCLI("test-pp-cli", workDir, state)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "phase5")
+
+	_, statErr := os.Stat(filepath.Join(PublishedLibraryRoot(), "test"))
+	assert.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
 func TestPromoteWorkingCLI_MinimalStateNoRunstate(t *testing.T) {
@@ -535,6 +559,21 @@ func TestIsStale(t *testing.T) {
 
 	boundary := &LockState{UpdatedAt: time.Now().Add(-30*time.Minute - time.Second)}
 	assert.True(t, IsStale(boundary))
+}
+
+func writePhase5PassForState(t *testing.T, state *PipelineState, authType string) {
+	t.Helper()
+	writePhase5GateMarker(t, state.ProofsDir(), Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       state.APIName,
+		RunID:         state.RunID,
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		TestsFailed:   0,
+		AuthContext:   Phase5AuthContext{Type: authType},
+	})
 }
 
 func TestConcurrentAcquire(t *testing.T) {

@@ -91,15 +91,24 @@ type NovelFeatureManifest struct {
 // bundle builder, which can't store the CLI binary name in manifest.json
 // (Claude Desktop's MCPB v0.3 validator rejects unknown top-level keys).
 func ReadCLIBinaryName(dir string) string {
-	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	m, err := ReadCLIManifest(dir)
 	if err != nil {
 		return ""
 	}
+	return m.CLIName
+}
+
+// ReadCLIManifest decodes dir/.printing-press.json.
+func ReadCLIManifest(dir string) (CLIManifest, error) {
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	if err != nil {
+		return CLIManifest{}, err
+	}
 	var m CLIManifest
 	if err := json.Unmarshal(data, &m); err != nil {
-		return ""
+		return CLIManifest{}, err
 	}
-	return m.CLIName
+	return m, nil
 }
 
 // RefreshCLIManifestFromSpec rereads dir/.printing-press.json, overlays the

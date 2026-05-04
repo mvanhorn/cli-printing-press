@@ -524,6 +524,12 @@ func runValidation(dir string) ValidateResult {
 		result.Checks = append(result.Checks, CheckResult{Name: "transcendence", Passed: true})
 	}
 
+	phase5Check := checkPhase5Gate(dir, manifest)
+	if !phase5Check.Passed {
+		allPassed = false
+	}
+	result.Checks = append(result.Checks, phase5Check)
+
 	cliName := result.CLIName
 	if cliName == "" {
 		cliName = filepath.Base(dir)
@@ -633,6 +639,42 @@ func runValidation(dir string) ValidateResult {
 
 	result.Passed = allPassed
 	return result
+}
+
+func checkPhase5Gate(dir string, manifest pipeline.CLIManifest) CheckResult {
+	if manifest.APIName == "" || manifest.CLIName == "" {
+		return CheckResult{Name: "phase5", Passed: false, Error: "manifest unavailable"}
+	}
+	if manifest.RunID == "" {
+		return CheckResult{Name: "phase5", Passed: false, Error: "manifest missing run_id; cannot locate Phase 5 gate proof"}
+	}
+
+	proofsDir := phase5ProofsDir(dir, manifest)
+	result := pipeline.ValidatePhase5Gate(proofsDir, manifest)
+	if !result.Passed {
+		return CheckResult{Name: "phase5", Passed: false, Error: result.Detail}
+	}
+	return CheckResult{Name: "phase5", Passed: true}
+}
+
+func phase5ProofsDir(dir string, manifest pipeline.CLIManifest) string {
+	runID := manifest.RunID
+	candidates := []string{
+		filepath.Join(dir, ".manuscripts", runID, "proofs"),
+	}
+	msRoot := pipeline.PublishedManuscriptsRoot()
+	if manifest.CLIName != "" {
+		candidates = append(candidates, filepath.Join(msRoot, manifest.CLIName, runID, "proofs"))
+	}
+	if manifest.APIName != "" {
+		candidates = append(candidates, filepath.Join(msRoot, manifest.APIName, runID, "proofs"))
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+	}
+	return candidates[0]
 }
 
 func checkVerifySkill(dir string) CheckResult {
