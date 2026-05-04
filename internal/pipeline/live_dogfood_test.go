@@ -99,6 +99,48 @@ func TestRunLiveDogfoodErrorPathAcceptsExpectedNonZeroExit(t *testing.T) {
 	assert.Equal(t, 2, errorPath.ExitCode)
 }
 
+func TestRunLiveDogfoodExplicitBinaryNameMustExist(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: "missing-pp-cli",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing-pp-cli")
+}
+
+func TestRunLiveDogfoodAcceptanceRequiresManifestIdentity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodFixture(t, true)
+	require.NoError(t, os.Remove(filepath.Join(dir, CLIManifestFilename)))
+
+	_, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:              dir,
+		BinaryName:          binaryName,
+		Level:               "full",
+		Timeout:             2 * time.Second,
+		WriteAcceptancePath: filepath.Join(t.TempDir(), Phase5AcceptanceFilename),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CLI manifest")
+}
+
+func TestRunLiveDogfoodJSONFlagDetectionIsExact(t *testing.T) {
+	help := `Usage:
+  fixture-pp-cli widgets list [flags]
+
+Flags:
+      --json-output string   Write JSON to a file
+`
+
+	assert.False(t, commandSupportsJSON(help))
+	assert.True(t, commandSupportsJSON(help+"\n      --json   Output JSON\n"))
+}
+
 func writeLiveDogfoodFixture(t *testing.T, brokenJSONFixed bool) (dir string, binaryName string) {
 	t.Helper()
 

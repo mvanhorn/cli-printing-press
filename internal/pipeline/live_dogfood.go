@@ -100,6 +100,9 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	if err != nil {
 		return nil, err
 	}
+	if level == "quick" {
+		commands = liveDogfoodQuickCommands(commands)
+	}
 	if len(commands) == 0 {
 		return nil, fmt.Errorf("no live dogfood command leaves discovered")
 	}
@@ -117,9 +120,6 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 		report.Commands = append(report.Commands, commandName)
 		report.Tests = append(report.Tests, runLiveDogfoodCommand(binaryPath, opts.CLIDir, command, timeout)...)
 	}
-	if report.Level == "quick" {
-		report.Tests = liveDogfoodQuickSubset(report.Tests)
-	}
 
 	finalizeLiveDogfoodReport(report)
 	if report.Verdict == "PASS" && opts.WriteAcceptancePath != "" {
@@ -133,13 +133,12 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 func liveDogfoodBinaryPath(dir, name string) (string, error) {
 	if path, err := resolveBinaryPath(dir, name); err == nil {
 		return path, nil
+	} else if strings.TrimSpace(name) != "" {
+		return "", err
 	}
 
 	cliName := findCLIName(dir)
 	if cliName == "" {
-		if name != "" {
-			return "", fmt.Errorf("no runnable binary %q found in %q", name, dir)
-		}
 		return "", fmt.Errorf("no runnable binary found in %q and no cmd/<cli-name> package to build", dir)
 	}
 	return buildDogfoodBinary(dir, cliName)
@@ -364,7 +363,7 @@ func liveDogfoodHappyArgs(command liveDogfoodCommand) ([]string, bool) {
 }
 
 func commandSupportsJSON(help string) bool {
-	return strings.Contains(help, "--json")
+	return slices.Contains(extractFlagNames(help), "json")
 }
 
 func appendJSONArg(args []string) []string {
@@ -419,14 +418,15 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport) {
 }
 
 func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodReport) error {
-	manifest, _ := ReadCLIManifest(opts.CLIDir)
-	apiName := manifest.APIName
-	if apiName == "" {
-		apiName = strings.TrimSuffix(filepath.Base(opts.CLIDir), "-pp-cli")
+	manifest, err := ReadCLIManifest(opts.CLIDir)
+	if err != nil {
+		return fmt.Errorf("reading CLI manifest for phase5 acceptance: %w", err)
 	}
-	runID := manifest.RunID
-	if runID == "" {
-		runID = report.RanAt.Format("20060102-150405")
+	if manifest.APIName == "" {
+		return fmt.Errorf("CLI manifest missing api_name; cannot write phase5 acceptance")
+	}
+	if manifest.RunID == "" {
+		return fmt.Errorf("CLI manifest missing run_id; cannot write phase5 acceptance")
 	}
 	authType := manifest.AuthType
 	if authType == "" {
@@ -435,8 +435,8 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 
 	marker := Phase5GateMarker{
 		SchemaVersion: 1,
-		APIName:       apiName,
-		RunID:         runID,
+		APIName:       manifest.APIName,
+		RunID:         manifest.RunID,
 		Status:        "pass",
 		Level:         report.Level,
 		MatrixSize:    report.MatrixSize,
@@ -460,21 +460,11 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 	return nil
 }
 
-func liveDogfoodQuickSubset(tests []LiveDogfoodTestResult) []LiveDogfoodTestResult {
-	out := make([]LiveDogfoodTestResult, 0, len(tests))
-	mandatory := 0
-	for _, test := range tests {
-		if test.Status == LiveDogfoodStatusSkip {
-			out = append(out, test)
-			continue
-		}
-		if mandatory >= 6 {
-			continue
-		}
-		out = append(out, test)
-		mandatory++
+func liveDogfoodQuickCommands(commands []liveDogfoodCommand) []liveDogfoodCommand {
+	if len(commands) <= 2 {
+		return commands
 	}
-	return out
+	return commands[:2]
 }
 
 func normalizeLiveDogfoodLevel(level string) (string, error) {
