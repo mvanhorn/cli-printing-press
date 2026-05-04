@@ -109,6 +109,7 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 
 	// For cookie/composed auth, only include NoAuth endpoints.
 	cookieOrComposed := parsed.Auth.Type == "cookie" || parsed.Auth.Type == "composed"
+	paramDescriptions := mcpdesc.NewParamDescriptionCompactorForEndpoints(manifestEndpoints(parsed, cookieOrComposed))
 
 	manifest := ToolsManifest{
 		APIName:       parsed.Name,
@@ -159,7 +160,7 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 				PublicCount: public,
 				TotalCount:  total,
 			})
-			tool := buildManifestTool(toolName, desc, endpoint)
+			tool := buildManifestTool(toolName, desc, endpoint, paramDescriptions.Description)
 			manifest.Tools = append(manifest.Tools, tool)
 		}
 
@@ -181,7 +182,7 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 					PublicCount: public,
 					TotalCount:  total,
 				})
-				tool := buildManifestTool(toolName, desc, endpoint)
+				tool := buildManifestTool(toolName, desc, endpoint, paramDescriptions.Description)
 				manifest.Tools = append(manifest.Tools, tool)
 			}
 		}
@@ -201,7 +202,7 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 
 // buildManifestTool creates a ManifestTool from an endpoint, classifying
 // each parameter's location.
-func buildManifestTool(name, description string, ep spec.Endpoint) ManifestTool {
+func buildManifestTool(name, description string, ep spec.Endpoint, describeParam func(spec.Param) string) ManifestTool {
 	tool := ManifestTool{
 		Name:        name,
 		Description: description,
@@ -229,7 +230,7 @@ func buildManifestTool(name, description string, ep spec.Endpoint) ManifestTool 
 			Name:        p.Name,
 			Type:        normalizeParamType(p.Type),
 			Location:    loc,
-			Description: p.Description,
+			Description: describeParam(p),
 			Required:    p.Required,
 		})
 	}
@@ -240,7 +241,7 @@ func buildManifestTool(name, description string, ep spec.Endpoint) ManifestTool 
 			Name:        p.Name,
 			Type:        normalizeParamType(p.Type),
 			Location:    "body",
-			Description: p.Description,
+			Description: describeParam(p),
 			Required:    p.Required,
 		})
 	}
@@ -257,6 +258,25 @@ func buildManifestTool(name, description string, ep spec.Endpoint) ManifestTool 
 	}
 
 	return tool
+}
+
+func manifestEndpoints(parsed *spec.APISpec, cookieOrComposed bool) []spec.Endpoint {
+	var endpoints []spec.Endpoint
+	for _, resource := range parsed.Resources {
+		for _, endpoint := range resource.Endpoints {
+			if !cookieOrComposed || endpoint.NoAuth {
+				endpoints = append(endpoints, endpoint)
+			}
+		}
+		for _, subResource := range resource.SubResources {
+			for _, endpoint := range subResource.Endpoints {
+				if !cookieOrComposed || endpoint.NoAuth {
+					endpoints = append(endpoints, endpoint)
+				}
+			}
+		}
+	}
+	return endpoints
 }
 
 // normalizeAuthFormat rewrites the auth format string so that derived

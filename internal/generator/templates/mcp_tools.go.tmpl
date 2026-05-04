@@ -41,11 +41,11 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDescription({{printf "%q" (composeMCPDesc $endpoint $endpoint.NoAuth $.Auth.Type $.MCPPublicCount $.MCPTotalCount)}}),
 {{- range $endpoint.Params}}
 {{- if eq .Type "integer"}}
-			mcplib.WithNumber({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (oneline .Description)}})),
+			mcplib.WithNumber({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
 {{- else if eq .Type "boolean"}}
-			mcplib.WithBoolean({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (oneline .Description)}})),
+			mcplib.WithBoolean({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
 {{- else}}
-			mcplib.WithString({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (oneline .Description)}})),
+			mcplib.WithString({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
 {{- end}}
 {{- end}}
 {{- if eq (upper $endpoint.Method) "GET"}}
@@ -72,11 +72,11 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDescription({{printf "%q" (composeMCPDesc $endpoint $endpoint.NoAuth $.Auth.Type $.MCPPublicCount $.MCPTotalCount)}}),
 {{- range $endpoint.Params}}
 {{- if eq .Type "integer"}}
-			mcplib.WithNumber({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (oneline .Description)}})),
+			mcplib.WithNumber({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
 {{- else if eq .Type "boolean"}}
-			mcplib.WithBoolean({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (oneline .Description)}})),
+			mcplib.WithBoolean({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
 {{- else}}
-			mcplib.WithString({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (oneline .Description)}})),
+			mcplib.WithString({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
 {{- end}}
 {{- end}}
 {{- if eq (upper $endpoint.Method) "GET"}}

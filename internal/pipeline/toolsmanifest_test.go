@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -284,6 +285,89 @@ func TestWriteToolsManifest_ReclassifiedPathParamKeepsPathLocation(t *testing.T)
 	assert.Equal(t, "calendar", calendar.Name)
 	assert.Equal(t, "path", calendar.Location, "reclassified path param must still be location: path")
 	assert.False(t, calendar.Required, "default fills in if omitted; agent may skip the param")
+}
+
+func TestWriteToolsManifest_CompactsRepeatedParamDescriptions(t *testing.T) {
+	dir := t.TempDir()
+	sharedDescription := "Select additional nested resource fields to include in the response. Use comma-separated field names such as owner, permissions, metadata, relationships, and auditTrail; unsupported values are ignored by the upstream API."
+	parsed := &spec.APISpec{
+		Name:    "test-api",
+		BaseURL: "https://api.test.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"Items": {
+				Endpoints: map[string]spec.Endpoint{
+					"List": {
+						Method:      "GET",
+						Path:        "/items",
+						Description: "List items",
+						Params:      []spec.Param{{Name: "expand", Type: "string", Description: sharedDescription}},
+					},
+					"Search": {
+						Method:      "GET",
+						Path:        "/items/search",
+						Description: "Search items",
+						Params:      []spec.Param{{Name: "expand", Type: "string", Description: sharedDescription}},
+					},
+					"Recent": {
+						Method:      "GET",
+						Path:        "/items/recent",
+						Description: "List recent items",
+						Params:      []spec.Param{{Name: "expand", Type: "string", Description: sharedDescription}},
+					},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+
+	data, err := os.ReadFile(filepath.Join(dir, ToolsManifestFilename))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), sharedDescription,
+		"tools-manifest.json should not repeat long shared parameter descriptions verbatim")
+
+	var got ToolsManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	require.Len(t, got.Tools, 3)
+	for _, tool := range got.Tools {
+		require.Len(t, tool.Params, 1)
+		assert.Equal(t, "Select additional nested resource fields to include in the response.", tool.Params[0].Description)
+	}
+}
+
+func TestWriteToolsManifest_PreservesUniqueLongParamDescriptions(t *testing.T) {
+	dir := t.TempDir()
+	description := "Filter records by a curated vendor-specific field path, including deeply nested owner metadata, lifecycle state, and audit fields. Allowed values: owner.profile.email, lifecycle.status, audit.actor, audit.requestId."
+	parsed := &spec.APISpec{
+		Name:    "test-api",
+		BaseURL: "https://api.test.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"Items": {
+				Endpoints: map[string]spec.Endpoint{
+					"List": {
+						Method:      "GET",
+						Path:        "/items",
+						Description: "List items",
+						Params:      []spec.Param{{Name: "filter", Type: "string", Description: description}},
+					},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+
+	data, err := os.ReadFile(filepath.Join(dir, ToolsManifestFilename))
+	require.NoError(t, err)
+
+	var got ToolsManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	require.Len(t, got.Tools, 1)
+	require.Len(t, got.Tools[0].Params, 1)
+	assert.Equal(t, naming.OneLineNormalize(description), got.Tools[0].Params[0].Description)
+	assert.Contains(t, got.Tools[0].Params[0].Description, "audit.requestId")
 }
 
 func TestWriteToolsManifest_AuthConfigRoundTrip(t *testing.T) {

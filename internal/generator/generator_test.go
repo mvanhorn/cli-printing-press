@@ -4129,6 +4129,50 @@ func TestGenerateMCPContextEscapesDomainStrings(t *testing.T) {
 	assert.Contains(t, src, `filter=\"active\"`)
 }
 
+func TestGenerateMCPCompactsRepeatedParamDescriptions(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcp-dedupe")
+	sharedDescription := "Select additional nested resource fields to include in the response. Use comma-separated field names such as owner, permissions, metadata, relationships, and auditTrail; unsupported values are ignored by the upstream API."
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Manage items",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/items",
+					Description: "List items",
+					Params:      []spec.Param{{Name: "expand", Type: "string", Description: sharedDescription}},
+				},
+				"search": {
+					Method:      "GET",
+					Path:        "/items/search",
+					Description: "Search items",
+					Params:      []spec.Param{{Name: "expand", Type: "string", Description: sharedDescription}},
+				},
+				"recent": {
+					Method:      "GET",
+					Path:        "/items/recent",
+					Description: "List recent items",
+					Params:      []spec.Param{{Name: "expand", Type: "string", Description: sharedDescription}},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	toolsData, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	toolsBody := string(toolsData)
+
+	assert.NotContains(t, toolsBody, sharedDescription,
+		"generated MCP runtime schema should not repeat long shared parameter descriptions verbatim")
+	assert.Equal(t, 3, strings.Count(toolsBody, `mcplib.Description("Select additional nested resource fields to include in the response.")`),
+		"shared param descriptions should stay understandable after compaction")
+}
+
 func TestEnvVarBuiltinFieldDedup(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

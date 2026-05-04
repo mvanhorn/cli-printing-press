@@ -150,6 +150,8 @@ type Generator struct {
 	profile   *profiler.APIProfile
 	funcs     template.FuncMap
 	templates map[string]*template.Template
+
+	mcpParamDescriptions *mcpdesc.ParamDescriptionCompactor
 }
 
 func New(s *spec.APISpec, outputDir string) *Generator {
@@ -211,6 +213,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"add":                    func(a, b int) int { return a + b },
 		"oneline":                naming.OneLine,
 		"composeMCPDesc":         composeMCPDesc,
+		"mcpParamDesc":           g.mcpParamDescription,
 		"flagName":               flagName,
 		"paramIdent":             paramIdent,
 		"safeTypeName":           safeTypeName,
@@ -2868,6 +2871,13 @@ func composeMCPDesc(endpoint spec.Endpoint, noAuth bool, authType string, public
 		PublicCount: publicCount,
 		TotalCount:  totalCount,
 	})
+}
+
+func (g *Generator) mcpParamDescription(p spec.Param) string {
+	if g.mcpParamDescriptions == nil {
+		g.mcpParamDescriptions = mcpdesc.NewParamDescriptionCompactor(g.Spec)
+	}
+	return naming.OneLine(g.mcpParamDescriptions.Description(p))
 }
 
 func exampleValue(p spec.Param) string {
