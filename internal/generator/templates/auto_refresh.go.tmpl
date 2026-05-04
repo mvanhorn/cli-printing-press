@@ -189,7 +189,7 @@ func runAutoRefresh(ctx context.Context, flags *rootFlags, db *store.Store, reso
 			return ctx.Err()
 		default:
 		}
-		result := syncResource(c, db, resource, "", false, 1{{if .Pagination.DateRangeParam}}, ""{{end}})
+		result := syncResource({{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, db, resource, "", false, 1{{if .Pagination.DateRangeParam}}, ""{{end}})
 		if result.Err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", resource, result.Err))
 		}

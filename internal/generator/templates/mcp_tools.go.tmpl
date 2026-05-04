@@ -38,7 +38,7 @@ func RegisterTools(s *server.MCPServer) {
 {{- range $eName, $endpoint := $resource.Endpoints}}
 	s.AddTool(
 		mcplib.NewTool({{printf "%q" (printf "%s_%s" (snake $name) (snake $eName))}},
-			mcplib.WithDescription({{printf "%q" (composeMCPDesc $endpoint $endpoint.NoAuth $.Auth.Type $.MCPPublicCount $.MCPTotalCount)}}),
+			mcplib.WithDescription({{printf "%q" (composeMCPDesc $.APISpec $resource $endpoint $.MCPPublicCount $.MCPTotalCount)}}),
 {{- range $endpoint.Params}}
 {{- if eq .Type "integer"}}
 			mcplib.WithNumber({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
@@ -62,14 +62,18 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithOpenWorldHintAnnotation(true),
 {{- end}}
 		),
+{{- if $.HasTierRouting}}
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}, {{printf "%q" (effectiveTier $.APISpec $resource $endpoint)}}, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+{{- else}}
 		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+{{- end}}
 	)
 {{- end}}
 {{- range $subName, $subResource := $resource.SubResources}}
 {{- range $eName, $endpoint := $subResource.Endpoints}}
 	s.AddTool(
 		mcplib.NewTool({{printf "%q" (printf "%s_%s_%s" (snake $name) (snake $subName) (snake $eName))}},
-			mcplib.WithDescription({{printf "%q" (composeMCPDesc $endpoint $endpoint.NoAuth $.Auth.Type $.MCPPublicCount $.MCPTotalCount)}}),
+			mcplib.WithDescription({{printf "%q" (composeMCPSubDesc $.APISpec $resource $subResource $endpoint $.MCPPublicCount $.MCPTotalCount)}}),
 {{- range $endpoint.Params}}
 {{- if eq .Type "integer"}}
 			mcplib.WithNumber({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
@@ -93,7 +97,11 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithOpenWorldHintAnnotation(true),
 {{- end}}
 		),
+{{- if $.HasTierRouting}}
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}, {{printf "%q" (effectiveSubTier $.APISpec $resource $subResource $endpoint)}}, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+{{- else}}
 		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+{{- end}}
 	)
 {{- end}}
 {{- end}}
@@ -149,12 +157,19 @@ func RegisterTools(s *server.MCPServer) {
 }
 
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
+{{- if .HasTierRouting}}
+func makeAPIHandler(method, pathTemplate, tier string, positionalParams []string) server.ToolHandlerFunc {
+{{- else}}
 func makeAPIHandler(method, pathTemplate string, positionalParams []string) server.ToolHandlerFunc {
+{{- end}}
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		c, err := newMCPClient()
 		if err != nil {
 			return mcplib.NewToolResultError(err.Error()), nil
 		}
+	{{- if .HasTierRouting}}
+		c = c.WithTier(tier)
+	{{- end}}
 
 		// mcp-go v0.47+ made CallToolParams.Arguments an `any` to support
 		// non-map payloads; GetArguments() returns the map[string]any shape
@@ -408,6 +423,36 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 {{- if .Auth.KeyURL}}
 			"key_url": {{printf "%q" .Auth.KeyURL}},
 {{- end}}
+		},
+{{- end}}
+{{- if .HasTierRouting}}
+		"tier_routing": map[string]any{
+			"default_tier": {{printf "%q" .TierRouting.DefaultTier}},
+			"tiers": map[string]any{
+{{- range $tierName, $tier := .TierRouting.Tiers}}
+				{{printf "%q" $tierName}}: map[string]any{
+					"auth_type": {{printf "%q" $tier.Auth.Type}},
+{{- if $tier.BaseURL}}
+					"base_url": {{printf "%q" $tier.BaseURL}},
+{{- end}}
+{{- if $tier.Auth.EnvVars}}
+					"env_vars": []string{ {{- range $tier.Auth.EnvVars}}{{printf "%q" .}}, {{end}} },
+{{- end}}
+				},
+{{- end}}
+			},
+			"endpoints": map[string]string{
+{{- range $name, $resource := .Resources}}
+{{- range $eName, $endpoint := $resource.Endpoints}}
+				{{printf "%q" (printf "%s_%s" (snake $name) (snake $eName))}}: {{printf "%q" (effectiveTier $.APISpec $resource $endpoint)}},
+{{- end}}
+{{- range $subName, $subResource := $resource.SubResources}}
+{{- range $eName, $endpoint := $subResource.Endpoints}}
+				{{printf "%q" (printf "%s_%s_%s" (snake $name) (snake $subName) (snake $eName))}}: {{printf "%q" (effectiveSubTier $.APISpec $resource $subResource $endpoint)}},
+{{- end}}
+{{- end}}
+{{- end}}
+			},
 		},
 {{- end}}
 		"resources": []map[string]any{

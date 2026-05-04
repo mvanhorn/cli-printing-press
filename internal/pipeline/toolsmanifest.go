@@ -31,6 +31,7 @@ type ToolsManifest struct {
 	MCPReady        string           `json:"mcp_ready"`
 	HTTPTransport   string           `json:"http_transport,omitempty"`
 	Auth            ManifestAuth     `json:"auth"`
+	TierRouting     *ManifestTiers   `json:"tier_routing,omitempty"`
 	RequiredHeaders []ManifestHeader `json:"required_headers"`
 	Tools           []ManifestTool   `json:"tools"`
 }
@@ -50,12 +51,27 @@ type ManifestAuth struct {
 	BrowserSessionValidationMethod string   `json:"browser_session_validation_method,omitempty"`
 }
 
+// ManifestTiers records per-tier routing and auth metadata so audit/doctor
+// consumers can reason about generated CLIs whose endpoint credentials differ
+// from the global auth block.
+type ManifestTiers struct {
+	DefaultTier string                  `json:"default_tier,omitempty"`
+	Tiers       map[string]ManifestTier `json:"tiers,omitempty"`
+}
+
+type ManifestTier struct {
+	BaseURL            string       `json:"base_url,omitempty"`
+	Auth               ManifestAuth `json:"auth"`
+	AllowCrossHostAuth bool         `json:"allow_cross_host_auth,omitempty"`
+}
+
 // ManifestTool describes a single MCP tool derived from an API endpoint.
 type ManifestTool struct {
 	Name            string           `json:"name"`
 	Description     string           `json:"description"`
 	Method          string           `json:"method"`
 	Path            string           `json:"path"`
+	Tier            string           `json:"tier,omitempty"`
 	NoAuth          bool             `json:"no_auth,omitempty"`
 	Params          []ManifestParam  `json:"params"`
 	HeaderOverrides []ManifestHeader `json:"header_overrides,omitempty"`
@@ -104,33 +120,24 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 		return fmt.Errorf("parsed spec is nil")
 	}
 
-	total, public := parsed.CountMCPTools()
+	endpoints := manifestEndpointRecords(parsed)
+	total, public := manifestToolCounts(endpoints)
 	mcpReady := computeMCPReady(parsed.Auth.Type)
 
-	// For cookie/composed auth, only include NoAuth endpoints.
-	cookieOrComposed := parsed.Auth.Type == "cookie" || parsed.Auth.Type == "composed"
-	paramDescriptions := mcpdesc.NewParamDescriptionCompactorForEndpoints(manifestEndpoints(parsed, cookieOrComposed))
+	paramDescriptions := mcpdesc.NewParamDescriptionCompactorForEndpoints(manifestEndpoints(endpoints))
 
 	manifest := ToolsManifest{
-		APIName:       parsed.Name,
-		BaseURL:       parsed.BaseURL,
-		Description:   parsed.Description,
-		MCPReady:      mcpReady,
-		HTTPTransport: parsed.EffectiveHTTPTransport(),
-		Auth: ManifestAuth{
-			Type:                           parsed.Auth.Type,
-			Header:                         parsed.Auth.Header,
-			Format:                         normalizeAuthFormat(parsed.Auth.Format, parsed.Auth.EnvVars),
-			In:                             parsed.Auth.In,
-			EnvVars:                        parsed.Auth.EnvVars,
-			KeyURL:                         parsed.Auth.KeyURL,
-			CookieDomain:                   parsed.Auth.CookieDomain,
-			RequiresBrowserSession:         parsed.Auth.RequiresBrowserSession,
-			BrowserSessionValidationPath:   parsed.Auth.BrowserSessionValidationPath,
-			BrowserSessionValidationMethod: parsed.Auth.BrowserSessionValidationMethod,
-		},
+		APIName:         parsed.Name,
+		BaseURL:         parsed.BaseURL,
+		Description:     parsed.Description,
+		MCPReady:        mcpReady,
+		HTTPTransport:   parsed.EffectiveHTTPTransport(),
+		Auth:            manifestAuth(parsed.Auth),
 		RequiredHeaders: make([]ManifestHeader, 0, len(parsed.RequiredHeaders)),
 		Tools:           make([]ManifestTool, 0),
+	}
+	if parsed.HasTierRouting() {
+		manifest.TierRouting = buildManifestTiers(parsed.TierRouting)
 	}
 
 	for _, rh := range parsed.RequiredHeaders {
@@ -140,52 +147,18 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 		})
 	}
 
-	// Iterate resources in sorted order for deterministic output.
-	resourceNames := sortedResourceKeys(parsed.Resources)
-	for _, rName := range resourceNames {
-		resource := parsed.Resources[rName]
-
-		// Top-level endpoints
-		endpointNames := sortedEndpointKeys(resource.Endpoints)
-		for _, eName := range endpointNames {
-			endpoint := resource.Endpoints[eName]
-			if cookieOrComposed && !endpoint.NoAuth {
-				continue
-			}
-			toolName := mcpoverrides.ToolName(rName, "", eName)
-			desc := mcpdesc.Compose(mcpdesc.Input{
-				Endpoint:    endpoint,
-				NoAuth:      endpoint.NoAuth,
-				AuthType:    parsed.Auth.Type,
-				PublicCount: public,
-				TotalCount:  total,
-			})
-			tool := buildManifestTool(toolName, desc, endpoint, paramDescriptions.Description)
-			manifest.Tools = append(manifest.Tools, tool)
-		}
-
-		// Sub-resources
-		subNames := sortedResourceKeys(resource.SubResources)
-		for _, subName := range subNames {
-			subResource := resource.SubResources[subName]
-			subEndpointNames := sortedEndpointKeys(subResource.Endpoints)
-			for _, eName := range subEndpointNames {
-				endpoint := subResource.Endpoints[eName]
-				if cookieOrComposed && !endpoint.NoAuth {
-					continue
-				}
-				toolName := mcpoverrides.ToolName(rName, subName, eName)
-				desc := mcpdesc.Compose(mcpdesc.Input{
-					Endpoint:    endpoint,
-					NoAuth:      endpoint.NoAuth,
-					AuthType:    parsed.Auth.Type,
-					PublicCount: public,
-					TotalCount:  total,
-				})
-				tool := buildManifestTool(toolName, desc, endpoint, paramDescriptions.Description)
-				manifest.Tools = append(manifest.Tools, tool)
-			}
-		}
+	for _, endpoint := range endpoints {
+		desc := mcpdesc.Compose(mcpdesc.Input{
+			Endpoint:    endpoint.Endpoint,
+			NoAuth:      endpoint.NoAuth,
+			AuthType:    endpoint.AuthType,
+			PublicCount: public,
+			TotalCount:  total,
+		})
+		tool := buildManifestTool(endpoint.ToolName, desc, endpoint.Endpoint, paramDescriptions.Description)
+		tool.Tier = endpoint.Tier
+		tool.NoAuth = endpoint.NoAuth
+		manifest.Tools = append(manifest.Tools, tool)
 	}
 
 	data, err := json.MarshalIndent(manifest, "", "  ")
@@ -198,6 +171,115 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 		return fmt.Errorf("writing tools manifest: %w", err)
 	}
 	return nil
+}
+
+func buildManifestTiers(tierRouting spec.TierRoutingConfig) *ManifestTiers {
+	tiers := make(map[string]ManifestTier, len(tierRouting.Tiers))
+	for name, tier := range tierRouting.Tiers {
+		tiers[name] = ManifestTier{
+			BaseURL:            tier.BaseURL,
+			Auth:               manifestAuth(tier.Auth),
+			AllowCrossHostAuth: tier.AllowCrossHostAuth,
+		}
+	}
+	return &ManifestTiers{
+		DefaultTier: tierRouting.DefaultTier,
+		Tiers:       tiers,
+	}
+}
+
+func manifestAuth(auth spec.AuthConfig) ManifestAuth {
+	return ManifestAuth{
+		Type:                           auth.Type,
+		Header:                         auth.Header,
+		Format:                         normalizeAuthFormat(auth.Format, auth.EnvVars),
+		In:                             auth.In,
+		EnvVars:                        auth.EnvVars,
+		KeyURL:                         auth.KeyURL,
+		CookieDomain:                   auth.CookieDomain,
+		RequiresBrowserSession:         auth.RequiresBrowserSession,
+		BrowserSessionValidationPath:   auth.BrowserSessionValidationPath,
+		BrowserSessionValidationMethod: auth.BrowserSessionValidationMethod,
+	}
+}
+
+type manifestEndpointRecord struct {
+	ToolName string
+	Endpoint spec.Endpoint
+	Tier     string
+	NoAuth   bool
+	AuthType string
+}
+
+func manifestEndpointRecords(parsed *spec.APISpec) []manifestEndpointRecord {
+	if parsed == nil {
+		return nil
+	}
+	var records []manifestEndpointRecord
+	resourceNames := sortedResourceKeys(parsed.Resources)
+	for _, rName := range resourceNames {
+		resource := parsed.Resources[rName]
+		endpointNames := sortedEndpointKeys(resource.Endpoints)
+		for _, eName := range endpointNames {
+			endpoint := resource.Endpoints[eName]
+			noAuth, authType, include := effectiveManifestEndpointAuth(parsed, resource, endpoint)
+			if !include {
+				continue
+			}
+			records = append(records, manifestEndpointRecord{
+				ToolName: mcpoverrides.ToolName(rName, "", eName),
+				Endpoint: endpoint,
+				Tier:     parsed.EffectiveTier(resource, endpoint),
+				NoAuth:   noAuth,
+				AuthType: authType,
+			})
+		}
+		subNames := sortedResourceKeys(resource.SubResources)
+		for _, subName := range subNames {
+			subResource := resource.SubResources[subName]
+			effectiveSub := subResource
+			if effectiveSub.Tier == "" {
+				effectiveSub.Tier = resource.Tier
+			}
+			subEndpointNames := sortedEndpointKeys(subResource.Endpoints)
+			for _, eName := range subEndpointNames {
+				endpoint := subResource.Endpoints[eName]
+				noAuth, authType, include := effectiveManifestEndpointAuth(parsed, effectiveSub, endpoint)
+				if !include {
+					continue
+				}
+				records = append(records, manifestEndpointRecord{
+					ToolName: mcpoverrides.ToolName(rName, subName, eName),
+					Endpoint: endpoint,
+					Tier:     parsed.EffectiveTier(effectiveSub, endpoint),
+					NoAuth:   noAuth,
+					AuthType: authType,
+				})
+			}
+		}
+	}
+	return records
+}
+
+func manifestToolCounts(records []manifestEndpointRecord) (total, public int) {
+	for _, record := range records {
+		total++
+		if record.NoAuth {
+			public++
+		}
+	}
+	return total, public
+}
+
+func effectiveManifestEndpointAuth(parsed *spec.APISpec, resource spec.Resource, endpoint spec.Endpoint) (noAuth bool, authType string, include bool) {
+	authType, noAuth = parsed.EffectiveEndpointAuth(resource, endpoint)
+	if noAuth {
+		return true, authType, true
+	}
+	if parsed.Auth.Type == "cookie" || parsed.Auth.Type == "composed" {
+		return false, authType, authType != parsed.Auth.Type
+	}
+	return noAuth, authType, true
 }
 
 // buildManifestTool creates a ManifestTool from an endpoint, classifying
@@ -260,21 +342,10 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 	return tool
 }
 
-func manifestEndpoints(parsed *spec.APISpec, cookieOrComposed bool) []spec.Endpoint {
-	var endpoints []spec.Endpoint
-	for _, resource := range parsed.Resources {
-		for _, endpoint := range resource.Endpoints {
-			if !cookieOrComposed || endpoint.NoAuth {
-				endpoints = append(endpoints, endpoint)
-			}
-		}
-		for _, subResource := range resource.SubResources {
-			for _, endpoint := range subResource.Endpoints {
-				if !cookieOrComposed || endpoint.NoAuth {
-					endpoints = append(endpoints, endpoint)
-				}
-			}
-		}
+func manifestEndpoints(records []manifestEndpointRecord) []spec.Endpoint {
+	endpoints := make([]spec.Endpoint, 0, len(records))
+	for _, record := range records {
+		endpoints = append(endpoints, record.Endpoint)
 	}
 	return endpoints
 }

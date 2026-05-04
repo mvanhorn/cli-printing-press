@@ -84,6 +84,9 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return err
 			}
+{{- if .EffectiveTier}}
+			c = c.WithTier({{printf "%q" .EffectiveTier}})
+{{- end}}
 
 			path := "{{.Resource.BaseURL}}{{.Endpoint.Path}}"{{/* Resource.BaseURL is empty unless the resource declares an override; when set it makes path absolute and the client skips the c.BaseURL concat. */}}
 {{- range $i, $p := .Endpoint.Params}}

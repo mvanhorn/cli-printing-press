@@ -1,0 +1,49 @@
+name: tier-routing-golden
+description: Golden fixture for tier-routed generated clients.
+version: 1.0.0
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TIER_GLOBAL_TOKEN]
+tier_routing:
+  default_tier: free
+  tiers:
+    free:
+      auth:
+        type: none
+    paid:
+      base_url: https://paid.api.example.com
+      auth:
+        type: api_key
+        in: query
+        header: api_key
+        env_vars: [TIER_PAID_KEY]
+    enterprise:
+      auth:
+        type: bearer_token
+        header: Authorization
+        format: Bearer {access_token}
+        env_vars: [TIER_ENTERPRISE_TOKEN]
+resources:
+  items:
+    description: Items
+    tier: free
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List free items
+        pagination:
+          type: cursor
+          cursor_param: cursor
+          limit_param: limit
+      premium:
+        method: GET
+        path: /items/premium
+        description: List paid items
+        tier: paid
+      enterprise:
+        method: GET
+        path: /items/enterprise
+        description: List enterprise items
+        tier: enterprise

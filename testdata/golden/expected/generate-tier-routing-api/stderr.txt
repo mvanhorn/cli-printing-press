@@ -1,0 +1,1 @@
+Generated tier-routing-golden at <ARTIFACT_DIR>/generate-tier-routing-api/tier-routing-golden

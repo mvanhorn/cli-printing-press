@@ -32,6 +32,12 @@ const (
 	extensionAuthKeyURL      = "x-auth-key-url"
 	extensionAuthTitle       = "x-auth-title"
 	extensionAuthDescription = "x-auth-description"
+	extensionTierRouting     = "x-tier-routing"
+	extensionTier            = "x-tier"
+	extensionAPIName         = "x-api-name"
+	extensionDisplayName     = "x-display-name"
+	extensionWebsite         = "x-website"
+	extensionProxyRoutes     = "x-proxy-routes"
 )
 
 // SetMaxResources overrides the default resource limit. When not called,
@@ -176,8 +182,8 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 		if v := cleanSpecName(doc.Info.Title); v != "" && v != "api" {
 			name = v
 		}
-		if name == "api" && doc.Info.Extensions != nil {
-			if raw, ok := doc.Info.Extensions["x-api-name"]; ok {
+		if name == "api" {
+			if raw, ok := lookupOpenAPIInfoExtension(doc, extensionAPIName); ok {
 				if s, ok := raw.(string); ok {
 					if v := cleanSpecName(s); v != "" && v != "api" {
 						name = v
@@ -196,11 +202,9 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	// don't get flattened by EffectiveDisplayName's HumanName(slug)
 	// fallback (the slug is ASCII-folded for filesystem safety).
 	var displayName string
-	if doc.Info != nil && doc.Info.Extensions != nil {
-		if raw, ok := doc.Info.Extensions["x-display-name"]; ok {
-			if s, ok := raw.(string); ok {
-				displayName = strings.TrimSpace(s)
-			}
+	if raw, ok := lookupOpenAPIInfoExtension(doc, extensionDisplayName); ok {
+		if s, ok := raw.(string); ok {
+			displayName = strings.TrimSpace(s)
 		}
 	}
 	if displayName == "" && doc.Info != nil {
@@ -215,8 +219,8 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 		if doc.Info.Contact != nil && doc.Info.Contact.URL != "" {
 			websiteURL = doc.Info.Contact.URL
 		}
-		if websiteURL == "" && doc.Info.Extensions != nil {
-			if raw, ok := doc.Info.Extensions["x-website"]; ok {
+		if websiteURL == "" {
+			if raw, ok := lookupOpenAPIInfoExtension(doc, extensionWebsite); ok {
 				if s, ok := raw.(string); ok {
 					websiteURL = s
 				}
@@ -229,14 +233,12 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 
 	// Extract x-proxy-routes extension for proxy-envelope client pattern
 	var proxyRoutes map[string]string
-	if doc.Info != nil && doc.Info.Extensions != nil {
-		if raw, ok := doc.Info.Extensions["x-proxy-routes"]; ok {
-			if m, ok := raw.(map[string]any); ok {
-				proxyRoutes = make(map[string]string, len(m))
-				for k, v := range m {
-					if s, ok := v.(string); ok {
-						proxyRoutes[k] = s
-					}
+	if raw, ok := lookupOpenAPIInfoExtension(doc, extensionProxyRoutes); ok {
+		if m, ok := raw.(map[string]any); ok {
+			proxyRoutes = make(map[string]string, len(m))
+			for k, v := range m {
+				if s, ok := v.(string); ok {
+					proxyRoutes[k] = s
 				}
 			}
 		}
@@ -268,6 +270,11 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 		auth = spec.AuthConfig{Type: "none"}
 	}
 
+	tierRouting, err := parseTierRoutingExtension(doc)
+	if err != nil {
+		return nil, err
+	}
+
 	result := &spec.APISpec{
 		Name:        name,
 		DisplayName: displayName,
@@ -278,6 +285,7 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 		WebsiteURL:  websiteURL,
 		ProxyRoutes: proxyRoutes,
 		Auth:        auth,
+		TierRouting: tierRouting,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -310,6 +318,44 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	}
 
 	return result, nil
+}
+
+func parseTierRoutingExtension(doc *openapi3.T) (spec.TierRoutingConfig, error) {
+	raw, ok := lookupOpenAPIExtension(doc, extensionTierRouting)
+	if !ok {
+		return spec.TierRoutingConfig{}, nil
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return spec.TierRoutingConfig{}, fmt.Errorf("marshaling %s: %w", extensionTierRouting, err)
+	}
+	var cfg spec.TierRoutingConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return spec.TierRoutingConfig{}, fmt.Errorf("parsing %s: %w", extensionTierRouting, err)
+	}
+	return cfg, nil
+}
+
+func lookupOpenAPIExtension(doc *openapi3.T, key string) (any, bool) {
+	if doc != nil && doc.Extensions != nil {
+		if raw, ok := doc.Extensions[key]; ok {
+			return raw, true
+		}
+	}
+	if doc != nil && doc.Info != nil && doc.Info.Extensions != nil {
+		if raw, ok := doc.Info.Extensions[key]; ok {
+			return raw, true
+		}
+	}
+	return nil, false
+}
+
+func lookupOpenAPIInfoExtension(doc *openapi3.T, key string) (any, bool) {
+	if doc != nil && doc.Info != nil && doc.Info.Extensions != nil {
+		raw, ok := doc.Info.Extensions[key]
+		return raw, ok
+	}
+	return nil, false
 }
 
 func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
@@ -1163,6 +1209,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 		// disagree on the same identity.
 		pathResourceIDOverride := readPathItemResourceID(pathItem, path)
 		pathCritical := readPathItemCritical(pathItem, path)
+		pathTier := readTierExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
 
 		primaryName, subName := resourceAndSubFromPath(path, basePath, commonPrefix)
 		if primaryName == "" {
@@ -1262,6 +1309,10 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				Description: description,
 				Params:      params,
 				Body:        body,
+			}
+			endpoint.Tier = readTierExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+			if endpoint.Tier == "" {
+				endpoint.Tier = pathTier
 			}
 
 			endpoint.Response, endpoint.ResponsePath = mapResponse(op, endpointName)
@@ -2198,6 +2249,22 @@ func readPathItemCritical(pathItem *openapi3.PathItem, path string) bool {
 		warnf("path %q: x-critical must be bool or truthy string, got %T; treating as false", path, raw)
 		return false
 	}
+}
+
+func readTierExtension(extensions map[string]any, context string) string {
+	if extensions == nil {
+		return ""
+	}
+	raw, ok := extensions[extensionTier]
+	if !ok {
+		return ""
+	}
+	tier, ok := raw.(string)
+	if !ok {
+		warnf("%s: %s must be a string, got %T; ignoring", context, extensionTier, raw)
+		return ""
+	}
+	return strings.TrimSpace(tier)
 }
 
 // resolveIDFieldFromResponseSchema implements tiers 2-4 of the IDField fallback

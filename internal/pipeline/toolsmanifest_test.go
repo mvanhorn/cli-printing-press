@@ -876,6 +876,99 @@ func TestWriteToolsManifest_EmptyParamType(t *testing.T) {
 	assert.Equal(t, "string", got.Tools[0].Params[0].Type, "empty type should default to string")
 }
 
+func TestWriteToolsManifest_TierRoutingMetadata(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "tiered",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "bearer_token", EnvVars: []string{"GLOBAL_TOKEN"}},
+		TierRouting: spec.TierRoutingConfig{
+			DefaultTier: "free",
+			Tiers: map[string]spec.TierConfig{
+				"free": {Auth: spec.AuthConfig{Type: "none"}},
+				"paid": {
+					BaseURL: "https://paid.api.example.com",
+					Auth: spec.AuthConfig{
+						Type:    "api_key",
+						In:      "query",
+						Header:  "api_key",
+						EnvVars: []string{"PAID_KEY"},
+					},
+				},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Tier: "free",
+				Endpoints: map[string]spec.Endpoint{
+					"list":    {Method: "GET", Path: "/items"},
+					"premium": {Method: "GET", Path: "/items/premium", Tier: "paid"},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+
+	require.NotNil(t, got.TierRouting)
+	assert.Equal(t, "free", got.TierRouting.DefaultTier)
+	assert.Equal(t, "none", got.TierRouting.Tiers["free"].Auth.Type)
+	assert.Equal(t, "https://paid.api.example.com", got.TierRouting.Tiers["paid"].BaseURL)
+	assert.Equal(t, []string{"PAID_KEY"}, got.TierRouting.Tiers["paid"].Auth.EnvVars)
+
+	require.Len(t, got.Tools, 2)
+	assert.Equal(t, "free", got.Tools[0].Tier)
+	assert.Equal(t, "paid", got.Tools[1].Tier)
+}
+
+func TestWriteToolsManifest_TierRoutingEffectiveAuth(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "tiered",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "cookie", EnvVars: []string{"SESSION_COOKIE"}},
+		TierRouting: spec.TierRoutingConfig{
+			Tiers: map[string]spec.TierConfig{
+				"free": {Auth: spec.AuthConfig{Type: "none"}},
+				"paid": {
+					Auth: spec.AuthConfig{
+						Type:    "api_key",
+						Header:  "api_key",
+						EnvVars: []string{"PAID_KEY"},
+					},
+				},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Tier: "free",
+				Endpoints: map[string]spec.Endpoint{
+					"list":    {Method: "GET", Path: "/items"},
+					"premium": {Method: "GET", Path: "/items/premium", Tier: "paid"},
+				},
+			},
+			"global": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/global"},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+
+	require.Len(t, got.Tools, 2)
+	assert.Equal(t, "items_list", got.Tools[0].Name)
+	assert.True(t, got.Tools[0].NoAuth)
+	assert.Equal(t, "items_premium", got.Tools[1].Name)
+	assert.False(t, got.Tools[1].NoAuth)
+	assert.Equal(t, "paid", got.Tools[1].Tier)
+}
+
 func TestNormalizeAuthFormat(t *testing.T) {
 	tests := []struct {
 		name    string

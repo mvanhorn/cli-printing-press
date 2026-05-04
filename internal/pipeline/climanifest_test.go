@@ -1078,6 +1078,37 @@ func TestPopulateMCPMetadata(t *testing.T) {
 	assert.Equal(t, "Use this test credential.", m.AuthDescription)
 }
 
+func TestPopulateMCPMetadataIncludesTierEnvVars(t *testing.T) {
+	var m CLIManifest
+	populateMCPMetadata(&m, &spec.APISpec{
+		Name: "tiered",
+		Auth: spec.AuthConfig{
+			Type:    "bearer_token",
+			EnvVars: []string{"GLOBAL_TOKEN"},
+		},
+		TierRouting: spec.TierRoutingConfig{
+			Tiers: map[string]spec.TierConfig{
+				"free": {Auth: spec.AuthConfig{Type: "none"}},
+				"paid": {
+					Auth: spec.AuthConfig{
+						Type:    "api_key",
+						EnvVars: []string{"PAID_KEY", "GLOBAL_TOKEN"},
+					},
+				},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items"},
+				},
+			},
+		},
+	})
+
+	assert.Equal(t, []string{"GLOBAL_TOKEN", "PAID_KEY"}, m.AuthEnvVars)
+}
+
 // TestPopulateMCPMetadataDisplayNamePrecedence pins:
 //
 //	spec.DisplayName (explicit) > existing m.DisplayName (catalog) > EffectiveDisplayName fallback

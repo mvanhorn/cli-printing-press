@@ -143,6 +143,9 @@ func callIntentEndpoint(c *client.Client, ref string, params map[string]any) (an
 	if !ok {
 		return nil, fmt.Errorf("unknown endpoint %q", ref)
 	}
+{{- if .HasTierRouting}}
+	c = c.WithTier(ep.tier)
+{{- end}}
 
 	path := ep.path
 	query := map[string]string{}
@@ -200,6 +203,9 @@ func callIntentEndpoint(c *client.Client, ref string, params map[string]any) (an
 type intentEndpointMeta struct {
 	method string
 	path   string
+{{- if .HasTierRouting}}
+	tier   string
+{{- end}}
 }
 
 // intentEndpoints is the generator-emitted lookup table covering every
@@ -210,8 +216,8 @@ type intentEndpointMeta struct {
 var intentEndpoints = map[string]intentEndpointMeta{
 {{- range .MCP.Intents}}
 {{- range .Steps}}
-{{- $ep := lookupEndpoint $.Resources .Endpoint}}
-	{{printf "%q" .Endpoint}}: {method: {{printf "%q" (upper $ep.Method)}}, path: {{printf "%q" $ep.EffectivePath}}},
+{{- $ep := lookupEndpoint $.APISpec .Endpoint}}
+	{{printf "%q" .Endpoint}}: {method: {{printf "%q" (upper $ep.Method)}}, path: {{printf "%q" $ep.EffectivePath}}{{if $.HasTierRouting}}, tier: {{printf "%q" $ep.EffectiveTier}}{{end}}},
 {{- end}}
 {{- end}}
 }

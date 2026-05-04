@@ -1,0 +1,24 @@
+{
+  "api_name": "tier-routing-golden",
+  "api_version": "1.0.0",
+  "auth_env_vars": [
+    "TIER_GLOBAL_TOKEN",
+    "TIER_ENTERPRISE_TOKEN",
+    "TIER_PAID_KEY"
+  ],
+  "auth_type": "bearer_token",
+  "cli_name": "tier-routing-golden-pp-cli",
+  "display_name": "Tier Routing Golden",
+  "generated_at": "<GENERATED_AT>",
+  "mcp_binary": "tier-routing-golden-pp-mcp",
+  "mcp_public_tool_count": 1,
+  "mcp_ready": "full",
+  "mcp_tool_count": 3,
+  "owner": "printing-press-golden",
+  "printing_press_version": "<PRINTING_PRESS_VERSION>",
+  "schema_version": 1,
+  "spec_checksum": "sha256:a059b4da997e0e835f0cdcd911ef5894fc048b50506bdcd90260a7478efb2958",
+  "spec_format": "internal",
+  "spec_path": "testdata/golden/fixtures/tier-routing-api.yaml",
+  "spec_url": "file://testdata/golden/fixtures/tier-routing-api.yaml"
+}

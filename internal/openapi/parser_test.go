@@ -1510,6 +1510,162 @@ paths:
 	})
 }
 
+func TestParseTierRoutingExtensions(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Tiered API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+x-tier-routing:
+  default_tier: free
+  tiers:
+    free:
+      auth:
+        type: none
+    paid:
+      base_url: https://paid.api.example.com
+      auth:
+        type: api_key
+        in: query
+        header: api_key
+        env_vars: [TIERED_PAID_KEY]
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+paths:
+  /items:
+    x-tier: free
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+  /items/{id}:
+    get:
+      summary: Get item
+      x-tier: paid
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	require.True(t, parsed.HasTierRouting())
+	assert.Equal(t, "free", parsed.TierRouting.DefaultTier)
+	assert.Equal(t, "none", parsed.TierRouting.Tiers["free"].Auth.Type)
+	assert.Equal(t, "https://paid.api.example.com", parsed.TierRouting.Tiers["paid"].BaseURL)
+	items := parsed.Resources["items"]
+	require.NotNil(t, items.Endpoints)
+	assert.Equal(t, "free", findEndpointByPath(items, "/items").Tier)
+	assert.Equal(t, "paid", findEndpointByPath(items, "/items/{id}").Tier)
+}
+
+func TestParseTierRoutingExtensionFromInfo(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Tiered API
+  version: 1.0.0
+  x-tier-routing:
+    default_tier: free
+    tiers:
+      free:
+        auth:
+          type: none
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	require.True(t, parsed.HasTierRouting())
+	assert.Equal(t, "free", parsed.TierRouting.DefaultTier)
+	assert.Equal(t, "none", parsed.TierRouting.Tiers["free"].Auth.Type)
+}
+
+func TestParseTierRoutingRejectsAnonymousSecurityOnCredentialTier(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Contradictory Tier API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+x-tier-routing:
+  default_tier: free
+  tiers:
+    free:
+      auth:
+        type: none
+    paid:
+      auth:
+        type: bearer_token
+        env_vars: [TIERED_PAID_TOKEN]
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+paths:
+  /items:
+    get:
+      summary: List paid items
+      x-tier: paid
+      security: []
+      responses:
+        "200":
+          description: ok
+`)
+
+	_, err := Parse(data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no_auth")
+	assert.Contains(t, err.Error(), "paid")
+}
+
+func findEndpointByPath(resource spec.Resource, path string) spec.Endpoint {
+	for _, endpoint := range resource.Endpoints {
+		if endpoint.Path == path {
+			return endpoint
+		}
+	}
+	for _, sub := range resource.SubResources {
+		for _, endpoint := range sub.Endpoints {
+			if endpoint.Path == path {
+				return endpoint
+			}
+		}
+	}
+	return spec.Endpoint{}
+}
+
 func TestPathPriorityScore(t *testing.T) {
 	t.Parallel()
 

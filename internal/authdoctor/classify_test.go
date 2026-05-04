@@ -215,3 +215,32 @@ func TestClassifyBrowserSessionAlsoReportsEnvVars(t *testing.T) {
 		t.Fatal("browser-session proof finding should explain the required doctor check")
 	}
 }
+
+func TestClassifyTierRoutingEnvVars(t *testing.T) {
+	m := &pipeline.ToolsManifest{
+		Auth: pipeline.ManifestAuth{Type: "none"},
+		TierRouting: &pipeline.ManifestTiers{
+			DefaultTier: "free",
+			Tiers: map[string]pipeline.ManifestTier{
+				"free": {Auth: pipeline.ManifestAuth{Type: "none"}},
+				"paid": {
+					Auth: pipeline.ManifestAuth{
+						Type:    "api_key",
+						EnvVars: []string{"PAID_KEY"},
+					},
+				},
+			},
+		},
+	}
+
+	findings := Classify("tiered", m, envFrom(map[string]string{"PAID_KEY": "paid-secret-value"}))
+	if len(findings) != 1 {
+		t.Fatalf("want paid tier env finding, got %d", len(findings))
+	}
+	if findings[0].Type != "tier:paid/api_key" {
+		t.Fatalf("want scoped tier auth type, got %q", findings[0].Type)
+	}
+	if findings[0].EnvVar != "PAID_KEY" || findings[0].Status != StatusOK {
+		t.Fatalf("want paid tier env var OK, got %+v", findings[0])
+	}
+}

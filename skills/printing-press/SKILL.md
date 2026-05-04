@@ -1495,6 +1495,65 @@ template produces correct auth from the start.
 APIs, public data feeds), don't invent auth. The signal must come from research — not
 from guessing. No research mention of auth = no enrichment.
 
+#### Free/Paid Tier Routing Enrichment
+
+If Phase 1 finds that the headline commands should stay free but secondary
+enrichment needs a paid key, declare tier routing in the spec before generation.
+Do this only when research identifies a real split; do not invent tiers for a
+single-auth API.
+
+Detection signals:
+- Research or source-priority notes say the primary source is free but a secondary
+  source needs a paid/API key.
+- Some endpoints are documented as public while adjacent enrichment endpoints are
+  documented as paid, partner, premium, or quota-gated.
+- Browser/crowd sniffing found public endpoints and SDK/MCP research found a
+  separate credential for expanded coverage.
+
+Action:
+- Internal YAML: add `tier_routing` plus `tier` on the affected resource or
+  endpoint.
+- OpenAPI: add `x-tier-routing` at the root or under `info`, and add `x-tier`
+  to the path item or operation.
+- Use `auth.type: none` for the free tier.
+- Use only `api_key` or `bearer_token` for credential tiers in v1.
+- If a credential tier uses a different `base_url`, it must be HTTPS and same
+  host-family unless `allow_cross_host_auth: true` records explicit review.
+- Do not combine `no_auth: true` or OpenAPI `security: []` with a credential tier.
+
+Skip when:
+- All useful commands require the same credential.
+- The paid source would become the primary headline surface instead of enrichment.
+- The auth split requires OAuth, cookie, composed, or session-handshake tier auth;
+  handle that as a normal auth-mode decision for now.
+
+Example:
+
+```yaml
+tier_routing:
+  default_tier: free
+  tiers:
+    free:
+      auth: {type: none}
+    paid:
+      auth:
+        type: api_key
+        in: query
+        header: api_key
+        env_vars: [EXAMPLE_PAID_KEY]
+resources:
+  search:
+    tier: free
+    endpoints:
+      list:
+        method: GET
+        path: /search
+      enrich:
+        method: GET
+        path: /paid/search
+        tier: paid
+```
+
 #### Tagging endpoints `no_auth: true` (composed/cookie auth APIs)
 
 For APIs whose `auth.type` is `cookie`, `composed`, or `session_handshake` — i.e.,

@@ -2474,3 +2474,285 @@ func TestValidateAcceptsResourceBaseURLWithoutProxyEnvelope(t *testing.T) {
 		})
 	}
 }
+
+func TestParseTierRouting(t *testing.T) {
+	t.Parallel()
+	input := `
+name: tiered
+description: Tiered API
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [TIERED_TOKEN]
+tier_routing:
+  default_tier: free
+  tiers:
+    free:
+      auth:
+        type: none
+    paid:
+      base_url: https://paid.api.example.com
+      auth:
+        type: api_key
+        in: query
+        header: api_key
+        env_vars: [TIERED_PAID_KEY]
+resources:
+  results:
+    description: Search
+    tier: free
+    endpoints:
+      list:
+        method: GET
+        path: /search
+        description: Search public results
+      premium:
+        method: GET
+        path: /premium/search
+        description: Search premium results
+        tier: paid
+`
+
+	s, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+	require.True(t, s.HasTierRouting())
+	assert.Equal(t, "free", s.TierRouting.DefaultTier)
+	assert.Equal(t, "none", s.TierRouting.Tiers["free"].Auth.Type)
+	assert.Equal(t, "https://paid.api.example.com", s.TierRouting.Tiers["paid"].BaseURL)
+	assert.Equal(t, []string{"TIERED_PAID_KEY"}, s.TierRouting.Tiers["paid"].Auth.EnvVars)
+	assert.Equal(t, "free", s.Resources["results"].Tier)
+	assert.Equal(t, "paid", s.Resources["results"].Endpoints["premium"].Tier)
+	assert.Equal(t, "free", s.EffectiveTier(s.Resources["results"], s.Resources["results"].Endpoints["list"]))
+	assert.Equal(t, "paid", s.EffectiveTier(s.Resources["results"], s.Resources["results"].Endpoints["premium"]))
+}
+
+func TestValidateTierRouting(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		mutate  func(*APISpec)
+		wantErr string
+	}{
+		{
+			name: "resource selector and endpoint override",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				resource.Tier = "free"
+				endpoint := resource.Endpoints["get"]
+				endpoint.Tier = "paid"
+				resource.Endpoints["get"] = endpoint
+				s.Resources["items"] = resource
+			},
+		},
+		{
+			name: "no default leaves unselected endpoints on global auth",
+			mutate: func(s *APISpec) {
+				s.TierRouting.DefaultTier = ""
+			},
+		},
+		{
+			name: "unknown endpoint tier",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				endpoint := resource.Endpoints["list"]
+				endpoint.Tier = "enterprise"
+				resource.Endpoints["list"] = endpoint
+				s.Resources["items"] = resource
+			},
+			wantErr: "unknown tier",
+		},
+		{
+			name: "credential tier requires env var",
+			mutate: func(s *APISpec) {
+				tier := s.TierRouting.Tiers["paid"]
+				tier.Auth.EnvVars = nil
+				s.TierRouting.Tiers["paid"] = tier
+			},
+			wantErr: "env_vars",
+		},
+		{
+			name: "unsupported auth type",
+			mutate: func(s *APISpec) {
+				tier := s.TierRouting.Tiers["paid"]
+				tier.Auth.Type = "oauth2"
+				s.TierRouting.Tiers["paid"] = tier
+			},
+			wantErr: "unsupported auth type",
+		},
+		{
+			name: "unsupported placement",
+			mutate: func(s *APISpec) {
+				tier := s.TierRouting.Tiers["paid"]
+				tier.Auth.In = "cookie"
+				s.TierRouting.Tiers["paid"] = tier
+			},
+			wantErr: "auth.in",
+		},
+		{
+			name: "query auth requires parameter name",
+			mutate: func(s *APISpec) {
+				tier := s.TierRouting.Tiers["paid"]
+				tier.Auth.In = "query"
+				tier.Auth.Header = ""
+				s.TierRouting.Tiers["paid"] = tier
+			},
+			wantErr: "header",
+		},
+		{
+			name: "format placeholder must be declared",
+			mutate: func(s *APISpec) {
+				tier := s.TierRouting.Tiers["paid"]
+				tier.Auth.Format = "Token {missing}"
+				s.TierRouting.Tiers["paid"] = tier
+			},
+			wantErr: "placeholder",
+		},
+		{
+			name: "no_auth conflicts with credential tier",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				endpoint := resource.Endpoints["list"]
+				endpoint.NoAuth = true
+				endpoint.Tier = "paid"
+				resource.Endpoints["list"] = endpoint
+				s.Resources["items"] = resource
+			},
+			wantErr: "no_auth",
+		},
+		{
+			name: "proxy envelope conflict",
+			mutate: func(s *APISpec) {
+				s.ClientPattern = "proxy-envelope"
+			},
+			wantErr: "proxy-envelope",
+		},
+		{
+			name: "resource base url conflict",
+			mutate: func(s *APISpec) {
+				resource := s.Resources["items"]
+				resource.BaseURL = "https://other.example.com"
+				s.Resources["items"] = resource
+			},
+			wantErr: "base_url",
+		},
+		{
+			name: "auth-bearing tier through resource base url must pass host review",
+			mutate: func(s *APISpec) {
+				tier := s.TierRouting.Tiers["paid"]
+				tier.BaseURL = ""
+				s.TierRouting.Tiers["paid"] = tier
+				resource := s.Resources["items"]
+				resource.BaseURL = "https://paid.example.net"
+				endpoint := resource.Endpoints["list"]
+				endpoint.Tier = "paid"
+				resource.Endpoints["list"] = endpoint
+				s.Resources["items"] = resource
+			},
+			wantErr: "cross-host",
+		},
+		{
+			name: "auth-bearing tier through reviewed resource base url is accepted",
+			mutate: func(s *APISpec) {
+				tier := s.TierRouting.Tiers["paid"]
+				tier.BaseURL = ""
+				tier.AllowCrossHostAuth = true
+				s.TierRouting.Tiers["paid"] = tier
+				resource := s.Resources["items"]
+				resource.BaseURL = "https://paid.example.net"
+				endpoint := resource.Endpoints["list"]
+				endpoint.Tier = "paid"
+				resource.Endpoints["list"] = endpoint
+				s.Resources["items"] = resource
+			},
+		},
+		{
+			name: "auth-bearing tier base url must be https",
+			mutate: func(s *APISpec) {
+				tier := s.TierRouting.Tiers["paid"]
+				tier.BaseURL = "http://paid.api.example.com"
+				s.TierRouting.Tiers["paid"] = tier
+			},
+			wantErr: "https",
+		},
+		{
+			name: "auth-bearing tier base url rejects loopback",
+			mutate: func(s *APISpec) {
+				tier := s.TierRouting.Tiers["paid"]
+				tier.BaseURL = "https://127.0.0.1"
+				s.TierRouting.Tiers["paid"] = tier
+			},
+			wantErr: "loopback",
+		},
+		{
+			name: "cross host auth requires explicit review",
+			mutate: func(s *APISpec) {
+				tier := s.TierRouting.Tiers["paid"]
+				tier.BaseURL = "https://paid.example.net"
+				s.TierRouting.Tiers["paid"] = tier
+			},
+			wantErr: "cross-host",
+		},
+		{
+			name: "cross host auth accepts explicit review",
+			mutate: func(s *APISpec) {
+				tier := s.TierRouting.Tiers["paid"]
+				tier.BaseURL = "https://paid.example.net"
+				tier.AllowCrossHostAuth = true
+				s.TierRouting.Tiers["paid"] = tier
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			spec := validTierRoutingSpec()
+			tc.mutate(spec)
+			err := spec.Validate()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+func validTierRoutingSpec() *APISpec {
+	return &APISpec{
+		Name:    "tiered",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: AuthConfig{
+			Type:    "bearer_token",
+			EnvVars: []string{"TIERED_TOKEN"},
+		},
+		TierRouting: TierRoutingConfig{
+			DefaultTier: "free",
+			Tiers: map[string]TierConfig{
+				"free": {
+					Auth: AuthConfig{Type: "none"},
+				},
+				"paid": {
+					BaseURL: "https://paid.api.example.com",
+					Auth: AuthConfig{
+						Type:    "api_key",
+						In:      "query",
+						Header:  "api_key",
+						EnvVars: []string{"TIERED_PAID_KEY"},
+					},
+				},
+			},
+		},
+		Resources: map[string]Resource{
+			"items": {
+				Endpoints: map[string]Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+					"get":  {Method: "GET", Path: "/items/{id}", Description: "Get item"},
+				},
+			},
+		},
+	}
+}

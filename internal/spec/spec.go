@@ -3,6 +3,8 @@ package spec
 import (
 	"encoding/json"
 	"fmt"
+	"net/netip"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -29,6 +31,15 @@ const (
 const (
 	ResponseFormatJSON = "json"
 	ResponseFormatHTML = "html"
+)
+
+const (
+	TierAuthTypeNone        = "none"
+	TierAuthTypeAPIKey      = "api_key"
+	TierAuthTypeBearerToken = "bearer_token"
+
+	TierAuthPlacementHeader = "header"
+	TierAuthPlacementQuery  = "query"
 )
 
 const (
@@ -97,6 +108,7 @@ type APISpec struct {
 	WebsiteURL           string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`       // product/company website (not the API base URL)
 	Category             string              `yaml:"category,omitempty" json:"category,omitempty"`             // catalog category (e.g., productivity, developer-tools) — used for library install path
 	Auth                 AuthConfig          `yaml:"auth" json:"auth"`
+	TierRouting          TierRoutingConfig   `yaml:"tier_routing,omitempty" json:"tier_routing,omitzero"`
 	RequiredHeaders      []RequiredHeader    `yaml:"required_headers,omitempty" json:"required_headers,omitempty"`
 	Config               ConfigSpec          `yaml:"config" json:"config"`
 	Resources            map[string]Resource `yaml:"resources" json:"resources"`
@@ -106,6 +118,72 @@ type APISpec struct {
 	Share                ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
 	MCP                  MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, the emitted MCP binary is stdio-only (today's default). Opting into http adds a --transport/--addr flag surface so the same binary can serve cloud-hosted agents.
 	Throttling           ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
+}
+
+type TierRoutingConfig struct {
+	DefaultTier string                `yaml:"default_tier,omitempty" json:"default_tier,omitempty"`
+	Tiers       map[string]TierConfig `yaml:"tiers,omitempty" json:"tiers,omitempty"`
+}
+
+type TierConfig struct {
+	BaseURL            string     `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+	Auth               AuthConfig `yaml:"auth,omitempty" json:"auth,omitzero"`
+	AllowCrossHostAuth bool       `yaml:"allow_cross_host_auth,omitempty" json:"allow_cross_host_auth,omitempty"`
+}
+
+func (s *APISpec) HasTierRouting() bool {
+	if s == nil {
+		return false
+	}
+	return s.TierRouting.DefaultTier != "" || len(s.TierRouting.Tiers) > 0
+}
+
+func (s *APISpec) EffectiveTier(resource Resource, endpoint Endpoint) string {
+	name, _, ok := s.EffectiveTierConfig(resource, endpoint)
+	if !ok {
+		return ""
+	}
+	return name
+}
+
+func (s *APISpec) EffectiveTierConfig(resource Resource, endpoint Endpoint) (string, TierConfig, bool) {
+	if s == nil || !s.HasTierRouting() {
+		return "", TierConfig{}, false
+	}
+	tierName := strings.TrimSpace(endpoint.Tier)
+	if tierName == "" {
+		tierName = strings.TrimSpace(resource.Tier)
+	}
+	if tierName == "" {
+		tierName = strings.TrimSpace(s.TierRouting.DefaultTier)
+	}
+	if tierName == "" {
+		return "", TierConfig{}, false
+	}
+	tier, ok := s.TierRouting.Tiers[tierName]
+	return tierName, tier, ok
+}
+
+func (s *APISpec) EffectiveEndpointAuth(resource Resource, endpoint Endpoint) (authType string, noAuth bool) {
+	if endpoint.NoAuth {
+		return TierAuthTypeNone, true
+	}
+	authType = strings.TrimSpace(s.Auth.Type)
+	if _, tier, ok := s.EffectiveTierConfig(resource, endpoint); ok {
+		authType = normalizeTierAuthType(tier.Auth.Type)
+	}
+	if authType == TierAuthTypeNone {
+		return TierAuthTypeNone, true
+	}
+	return authType, false
+}
+
+func (s *APISpec) EffectiveSubEndpointAuth(parent Resource, subResource Resource, endpoint Endpoint) (authType string, noAuth bool) {
+	effectiveSub := subResource
+	if effectiveSub.Tier == "" {
+		effectiveSub.Tier = parent.Tier
+	}
+	return s.EffectiveEndpointAuth(effectiveSub, endpoint)
 }
 
 // ThrottleShape names the API-specific cost-bucket parser the generator
@@ -568,6 +646,7 @@ type Resource struct {
 	// proxy-envelope client pattern, which POSTs every request to a
 	// single URL.
 	BaseURL      string              `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+	Tier         string              `yaml:"tier,omitempty" json:"tier,omitempty"`
 	Endpoints    map[string]Endpoint `yaml:"endpoints" json:"endpoints"`
 	SubResources map[string]Resource `yaml:"sub_resources,omitempty" json:"sub_resources,omitempty"`
 }
@@ -614,6 +693,7 @@ type Endpoint struct {
 	Meta            map[string]string `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
 	HeaderOverrides []RequiredHeader  `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
 	NoAuth          bool              `yaml:"no_auth,omitempty" json:"no_auth,omitempty"`                   // true when the endpoint does not require authentication
+	Tier            string            `yaml:"tier,omitempty" json:"tier,omitempty"`
 	// IDField is the resolved primary-key field name for items returned by this
 	// endpoint, populated either by a path-item-level `x-resource-id` extension
 	// or, for OpenAPI specs, by walking the response schema (id → name → first
@@ -1153,6 +1233,9 @@ func (s *APISpec) Validate() error {
 	if err := validateSessionHandshake(s.Auth); err != nil {
 		return err
 	}
+	if err := validateTierRouting(s); err != nil {
+		return err
+	}
 	if s.ClientPattern == "proxy-envelope" && s.HasResourceBaseURLOverride() {
 		return fmt.Errorf("resource base_url overrides are incompatible with client_pattern=proxy-envelope; the proxy POSTs every request to the spec-level BaseURL, so per-resource overrides would be silently ignored")
 	}
@@ -1186,6 +1269,232 @@ func (s *APISpec) Validate() error {
 					return fmt.Errorf("resource %q sub-resource %q endpoint %q: %w", name, subName, eName, err)
 				}
 			}
+		}
+	}
+	return nil
+}
+
+func validateTierRouting(s *APISpec) error {
+	if s == nil || !s.HasTierRouting() {
+		return nil
+	}
+	if s.ClientPattern == "proxy-envelope" {
+		return fmt.Errorf("tier_routing is incompatible with client_pattern=proxy-envelope; tier routing needs per-request base URL and auth selection")
+	}
+	if len(s.TierRouting.Tiers) == 0 {
+		return fmt.Errorf("tier_routing.tiers is required when tier_routing is declared")
+	}
+	if s.TierRouting.DefaultTier != "" {
+		if _, ok := s.TierRouting.Tiers[s.TierRouting.DefaultTier]; !ok {
+			return fmt.Errorf("tier_routing.default_tier %q references unknown tier", s.TierRouting.DefaultTier)
+		}
+	}
+	anyTierBaseURL := false
+	for name, tier := range s.TierRouting.Tiers {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("tier_routing.tiers contains an empty tier name")
+		}
+		if strings.TrimSpace(tier.BaseURL) != "" {
+			anyTierBaseURL = true
+		}
+		if err := validateTier(name, tier, s.BaseURL); err != nil {
+			return err
+		}
+	}
+	if anyTierBaseURL && s.HasResourceBaseURLOverride() {
+		return fmt.Errorf("resource base_url overrides are incompatible with tier_routing tier base_url overrides; choose one routing source")
+	}
+	for name, resource := range s.Resources {
+		if err := validateTierRoutingResource(s, name, resource, "", ""); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateTier(name string, tier TierConfig, specBaseURL string) error {
+	authType := normalizeTierAuthType(tier.Auth.Type)
+	switch authType {
+	case TierAuthTypeNone, TierAuthTypeAPIKey, TierAuthTypeBearerToken:
+	default:
+		return fmt.Errorf("tier_routing tier %q uses unsupported auth type %q; supported tier auth types are none, api_key, bearer_token", name, tier.Auth.Type)
+	}
+	if !tierAuthRequiresCredential(tier.Auth) {
+		return nil
+	}
+	if len(tier.Auth.EnvVars) == 0 {
+		return fmt.Errorf("tier_routing tier %q auth.env_vars is required for %s auth", name, authType)
+	}
+	if err := validateTierAuthPlacement(name, tier.Auth); err != nil {
+		return err
+	}
+	if err := validateTierAuthFormat(name, tier.Auth); err != nil {
+		return err
+	}
+	if err := validateCredentialTierBaseURL(name, tier, specBaseURL); err != nil {
+		return err
+	}
+	return nil
+}
+
+func normalizeTierAuthType(authType string) string {
+	authType = strings.TrimSpace(authType)
+	if authType == "" {
+		return TierAuthTypeNone
+	}
+	return authType
+}
+
+func tierAuthRequiresCredential(auth AuthConfig) bool {
+	switch normalizeTierAuthType(auth.Type) {
+	case TierAuthTypeAPIKey, TierAuthTypeBearerToken:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateTierAuthPlacement(name string, auth AuthConfig) error {
+	placement := strings.TrimSpace(auth.In)
+	switch placement {
+	case "", TierAuthPlacementHeader, TierAuthPlacementQuery:
+	default:
+		return fmt.Errorf("tier_routing tier %q auth.in must be header or query", name)
+	}
+	if placement == TierAuthPlacementQuery && strings.TrimSpace(auth.Header) == "" {
+		return fmt.Errorf("tier_routing tier %q auth.header is required as the query parameter name", name)
+	}
+	if normalizeTierAuthType(auth.Type) == TierAuthTypeAPIKey && strings.TrimSpace(auth.Header) == "" {
+		return fmt.Errorf("tier_routing tier %q auth.header is required for api_key auth", name)
+	}
+	return nil
+}
+
+var authFormatPlaceholderRe = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+func validateTierAuthFormat(name string, auth AuthConfig) error {
+	if strings.TrimSpace(auth.Format) == "" {
+		return nil
+	}
+	allowed := map[string]struct{}{
+		"token":        {},
+		"access_token": {},
+	}
+	for _, envVar := range auth.EnvVars {
+		allowed[envVar] = struct{}{}
+		allowed[naming.EnvVarPlaceholder(envVar)] = struct{}{}
+	}
+	for _, match := range authFormatPlaceholderRe.FindAllStringSubmatch(auth.Format, -1) {
+		if _, ok := allowed[match[1]]; !ok {
+			return fmt.Errorf("tier_routing tier %q auth.format references undeclared placeholder %q", name, match[1])
+		}
+	}
+	return nil
+}
+
+func validateCredentialTierBaseURL(name string, tier TierConfig, specBaseURL string) error {
+	if strings.TrimSpace(tier.BaseURL) == "" {
+		return nil
+	}
+	parsed, err := url.Parse(tier.BaseURL)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("tier_routing tier %q base_url must be an absolute URL", name)
+	}
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("tier_routing tier %q base_url must use https when carrying credentials", name)
+	}
+	host := normalizeURLHost(parsed.Hostname())
+	if unsafe := unsafeCredentialHostReason(host); unsafe != "" {
+		return fmt.Errorf("tier_routing tier %q base_url host %q is %s and cannot receive generated credentials", name, host, unsafe)
+	}
+	specHost := hostnameFromURL(specBaseURL)
+	if specHost == "" || sameHostFamily(specHost, host) || tier.AllowCrossHostAuth {
+		return nil
+	}
+	return fmt.Errorf("tier_routing tier %q base_url host %q is cross-host from spec base_url host %q; set allow_cross_host_auth after review", name, host, specHost)
+}
+
+func hostnameFromURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return normalizeURLHost(parsed.Hostname())
+}
+
+func normalizeURLHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+}
+
+func unsafeCredentialHostReason(host string) string {
+	switch {
+	case host == "":
+		return "empty"
+	case host == "localhost" || strings.HasSuffix(host, ".localhost"):
+		return "loopback"
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return ""
+	}
+	switch {
+	case addr.IsLoopback():
+		return "loopback"
+	case addr.IsPrivate():
+		return "private"
+	case addr.IsLinkLocalUnicast():
+		return "link-local"
+	case addr.IsUnspecified():
+		return "unspecified"
+	default:
+		return ""
+	}
+}
+
+func sameHostFamily(specHost, tierHost string) bool {
+	specHost = normalizeURLHost(specHost)
+	tierHost = normalizeURLHost(tierHost)
+	return tierHost == specHost || strings.HasSuffix(tierHost, "."+specHost)
+}
+
+func validateTierRoutingResource(s *APISpec, resourcePath string, resource Resource, inheritedTier, inheritedBaseURL string) error {
+	resourceTier := strings.TrimSpace(resource.Tier)
+	if resourceTier == "" {
+		resourceTier = inheritedTier
+	}
+	resourceBaseURL := strings.TrimSpace(resource.BaseURL)
+	if resourceBaseURL == "" {
+		resourceBaseURL = inheritedBaseURL
+	}
+	if resourceTier != "" {
+		if _, ok := s.TierRouting.Tiers[resourceTier]; !ok {
+			return fmt.Errorf("resource %q references unknown tier %q", resourcePath, resourceTier)
+		}
+	}
+	effectiveResource := resource
+	effectiveResource.Tier = resourceTier
+	for endpointName, endpoint := range resource.Endpoints {
+		tierName, tier, ok := s.EffectiveTierConfig(effectiveResource, endpoint)
+		if tierName == "" {
+			continue
+		}
+		if !ok {
+			return fmt.Errorf("resource %q endpoint %q references unknown tier %q", resourcePath, endpointName, tierName)
+		}
+		if endpoint.NoAuth && tierAuthRequiresCredential(tier.Auth) {
+			return fmt.Errorf("resource %q endpoint %q declares no_auth but tier %q requires credentials", resourcePath, endpointName, tierName)
+		}
+		if tierAuthRequiresCredential(tier.Auth) && strings.TrimSpace(tier.BaseURL) == "" && resourceBaseURL != "" {
+			resourceTier := tier
+			resourceTier.BaseURL = resourceBaseURL
+			if err := validateCredentialTierBaseURL(tierName, resourceTier, s.BaseURL); err != nil {
+				return fmt.Errorf("resource %q endpoint %q: %w", resourcePath, endpointName, err)
+			}
+		}
+	}
+	for subName, sub := range resource.SubResources {
+		if err := validateTierRoutingResource(s, resourcePath+"."+subName, sub, resourceTier, resourceBaseURL); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1560,14 +1869,14 @@ func (s *APISpec) CountMCPTools() (total, public int) {
 	for _, r := range s.Resources {
 		for _, e := range r.Endpoints {
 			total++
-			if e.NoAuth {
+			if _, noAuth := s.EffectiveEndpointAuth(r, e); noAuth {
 				public++
 			}
 		}
 		for _, sub := range r.SubResources {
 			for _, e := range sub.Endpoints {
 				total++
-				if e.NoAuth {
+				if _, noAuth := s.EffectiveSubEndpointAuth(r, sub, e); noAuth {
 					public++
 				}
 			}

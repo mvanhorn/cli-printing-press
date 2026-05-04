@@ -210,9 +210,14 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"envVarIsBuiltinField":   envVarIsBuiltinField,
 		"envVarBuiltinFieldName": envVarBuiltinFieldName,
 		"resolveEnvVarField":     resolveEnvVarField,
+		"authPlacement":          authPlacement,
+		"authParameterName":      authParameterName,
+		"effectiveTier":          effectiveTier,
+		"effectiveSubTier":       effectiveSubTier,
 		"add":                    func(a, b int) int { return a + b },
 		"oneline":                naming.OneLine,
 		"composeMCPDesc":         composeMCPDesc,
+		"composeMCPSubDesc":      composeMCPSubDesc,
 		"mcpParamDesc":           g.mcpParamDescription,
 		"flagName":               flagName,
 		"paramIdent":             paramIdent,
@@ -245,8 +250,8 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"humanName":   naming.HumanName,
 		"envPrefix":   naming.EnvPrefix,
 		"mcpToolName": naming.SnakeIdentifier,
-		"lookupEndpoint": func(resources map[string]spec.Resource, ref string) templateEndpoint {
-			e, _ := lookupEndpointForTemplate(resources, ref)
+		"lookupEndpoint": func(api *spec.APISpec, ref string) templateEndpoint {
+			e, _ := lookupEndpointForTemplate(api, ref)
 			return e
 		},
 		"effectiveEndpointPath":    effectiveEndpointPath,
@@ -608,6 +613,7 @@ type clientTemplateData struct {
 type endpointTemplateData struct {
 	ResourceName    string
 	ResourceBaseURL string
+	EffectiveTier   string
 	FuncPrefix      string
 	CommandPath     string
 	EndpointName    string
@@ -765,6 +771,41 @@ func (g *Generator) proseName() string {
 
 func hasAuth(auth spec.AuthConfig) bool {
 	return strings.TrimSpace(auth.Type) != "" && auth.Type != "none"
+}
+
+func authPlacement(auth spec.AuthConfig) string {
+	if strings.TrimSpace(auth.In) == "query" {
+		return "query"
+	}
+	return "header"
+}
+
+func authParameterName(auth spec.AuthConfig) string {
+	if strings.TrimSpace(auth.Header) != "" {
+		return auth.Header
+	}
+	if authPlacement(auth) == "query" {
+		return "api_key"
+	}
+	return "Authorization"
+}
+
+func effectiveTier(api *spec.APISpec, resource spec.Resource, endpoint spec.Endpoint) string {
+	if api == nil {
+		return ""
+	}
+	return api.EffectiveTier(resource, endpoint)
+}
+
+func effectiveSubTier(api *spec.APISpec, parent spec.Resource, subResource spec.Resource, endpoint spec.Endpoint) string {
+	if api == nil {
+		return ""
+	}
+	effectiveResource := subResource
+	if effectiveResource.Tier == "" {
+		effectiveResource.Tier = parent.Tier
+	}
+	return api.EffectiveTier(effectiveResource, endpoint)
 }
 
 func hasWriteCommands(resources map[string]spec.Resource) bool {
@@ -1501,6 +1542,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			epData := endpointTemplateData{
 				ResourceName:    name,
 				ResourceBaseURL: strings.TrimRight(resource.BaseURL, "/"),
+				EffectiveTier:   g.Spec.EffectiveTier(resource, endpoint),
 				FuncPrefix:      name,
 				CommandPath:     name,
 				EndpointName:    eName,
@@ -1559,9 +1601,14 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			for eName, endpoint := range subResource.Endpoints {
 				subKey := subName + "/" + eName
 				asyncInfo, isAsync := g.AsyncJobs[subKey]
+				effectiveResource := subResource
+				if effectiveResource.Tier == "" {
+					effectiveResource.Tier = resource.Tier
+				}
 				epData := endpointTemplateData{
 					ResourceName:    subName,
 					ResourceBaseURL: subResourceBaseURL,
+					EffectiveTier:   g.Spec.EffectiveTier(effectiveResource, endpoint),
 					FuncPrefix:      name + "-" + subName,
 					CommandPath:     name + " " + subName,
 					EndpointName:    eName,
@@ -1960,25 +2007,27 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 		resource := g.Spec.Resources[pc.ResourceName]
 		resource.BaseURL = strings.TrimRight(resource.BaseURL, "/")
 		promotedData := struct {
-			PromotedName string
-			ResourceName string
-			EndpointName string
-			Endpoint     spec.Endpoint
-			HasStore     bool
-			Resource     spec.Resource
-			FuncPrefix   string
-			IsReadOnly   bool
+			PromotedName  string
+			ResourceName  string
+			EndpointName  string
+			Endpoint      spec.Endpoint
+			EffectiveTier string
+			HasStore      bool
+			Resource      spec.Resource
+			FuncPrefix    string
+			IsReadOnly    bool
 			*spec.APISpec
 		}{
-			PromotedName: pc.PromotedName,
-			ResourceName: pc.ResourceName,
-			EndpointName: pc.EndpointName,
-			Endpoint:     pc.Endpoint,
-			HasStore:     g.VisionSet.Store,
-			Resource:     resource,
-			FuncPrefix:   pc.ResourceName,
-			IsReadOnly:   endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
-			APISpec:      g.Spec,
+			PromotedName:  pc.PromotedName,
+			ResourceName:  pc.ResourceName,
+			EndpointName:  pc.EndpointName,
+			Endpoint:      pc.Endpoint,
+			EffectiveTier: g.Spec.EffectiveTier(resource, pc.Endpoint),
+			HasStore:      g.VisionSet.Store,
+			Resource:      resource,
+			FuncPrefix:    pc.ResourceName,
+			IsReadOnly:    endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
+			APISpec:       g.Spec,
 		}
 		promotedPath := filepath.Join("internal", "cli", "promoted_"+pc.PromotedName+".go")
 		if err := g.renderTemplate("command_promoted.go.tmpl", promotedPath, promotedData); err != nil {
@@ -2863,7 +2912,19 @@ func resolveEnvVarField(envVar string) string {
 // internal/mcpdesc shapes the action sentence + Required/Optional
 // parameter lines + Returns clause; this wrapper just packages the
 // arguments into the Input struct.
-func composeMCPDesc(endpoint spec.Endpoint, noAuth bool, authType string, publicCount, totalCount int) string {
+func composeMCPDesc(api *spec.APISpec, resource spec.Resource, endpoint spec.Endpoint, publicCount, totalCount int) string {
+	authType, noAuth := api.EffectiveEndpointAuth(resource, endpoint)
+	return mcpdesc.Compose(mcpdesc.Input{
+		Endpoint:    endpoint,
+		NoAuth:      noAuth,
+		AuthType:    authType,
+		PublicCount: publicCount,
+		TotalCount:  totalCount,
+	})
+}
+
+func composeMCPSubDesc(api *spec.APISpec, parent spec.Resource, subResource spec.Resource, endpoint spec.Endpoint, publicCount, totalCount int) string {
+	authType, noAuth := api.EffectiveSubEndpointAuth(parent, subResource, endpoint)
 	return mcpdesc.Compose(mcpdesc.Input{
 		Endpoint:    endpoint,
 		NoAuth:      noAuth,
@@ -3214,17 +3275,21 @@ func graphqlFieldSelection(typeName string, types map[string]spec.TypeDef) []str
 type templateEndpoint struct {
 	spec.Endpoint
 	EffectivePath string
+	EffectiveTier string
 }
 
 // lookupEndpointForTemplate resolves a dotted "resource.endpoint" (or
 // "resource.sub_resource.endpoint") reference from the spec's resource map.
 // Templates use it when rendering intent handler dispatch tables so each
 // step's HTTP method and effective path are known at generate time.
-func lookupEndpointForTemplate(resources map[string]spec.Resource, ref string) (templateEndpoint, bool) {
+func lookupEndpointForTemplate(api *spec.APISpec, ref string) (templateEndpoint, bool) {
+	if api == nil {
+		return templateEndpoint{}, false
+	}
 	parts := strings.Split(ref, ".")
 	switch len(parts) {
 	case 2:
-		r, ok := resources[parts[0]]
+		r, ok := api.Resources[parts[0]]
 		if !ok {
 			return templateEndpoint{}, false
 		}
@@ -3235,9 +3300,10 @@ func lookupEndpointForTemplate(resources map[string]spec.Resource, ref string) (
 		return templateEndpoint{
 			Endpoint:      e,
 			EffectivePath: effectiveEndpointPath(r, e),
+			EffectiveTier: api.EffectiveTier(r, e),
 		}, true
 	case 3:
-		r, ok := resources[parts[0]]
+		r, ok := api.Resources[parts[0]]
 		if !ok {
 			return templateEndpoint{}, false
 		}
@@ -3249,9 +3315,14 @@ func lookupEndpointForTemplate(resources map[string]spec.Resource, ref string) (
 		if !ok {
 			return templateEndpoint{}, false
 		}
+		effectiveSub := sub
+		if effectiveSub.Tier == "" {
+			effectiveSub.Tier = r.Tier
+		}
 		return templateEndpoint{
 			Endpoint:      e,
 			EffectivePath: effectiveSubEndpointPath(r, sub, e),
+			EffectiveTier: api.EffectiveTier(effectiveSub, e),
 		}, true
 	default:
 		return templateEndpoint{}, false

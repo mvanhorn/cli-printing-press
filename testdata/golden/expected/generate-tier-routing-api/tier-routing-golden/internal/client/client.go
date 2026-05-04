@@ -17,10 +17,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
-	"printing-press-oauth2-pp-cli/internal/cliutil"
-	"printing-press-oauth2-pp-cli/internal/config"
+	"tier-routing-golden-pp-cli/internal/cliutil"
+	"tier-routing-golden-pp-cli/internal/config"
 )
 
 type Client struct {
@@ -31,10 +30,100 @@ type Client struct {
 	NoCache    bool
 	cacheDir   string
 	limiter    *cliutil.AdaptiveLimiter
-	// ccMu serializes OAuth2 client_credentials token mints so concurrent
-	// API calls inside the 60s pre-expiry window don't all dial the token
-	// endpoint and race on Config field writes / file persistence.
-	ccMu *sync.Mutex
+	requestTier string
+	limiters    map[string]*cliutil.AdaptiveLimiter
+}
+
+type requestAuth struct {
+	Value string
+	In    string
+	Name  string
+}
+
+func (c *Client) WithTier(tier string) *Client {
+	if c == nil || tier == "" {
+		return c
+	}
+	next := *c
+	next.requestTier = tier
+	next.limiter = c.limiterForTier(tier)
+	return &next
+}
+
+func newTierLimiters(rateLimit float64) map[string]*cliutil.AdaptiveLimiter {
+	return map[string]*cliutil.AdaptiveLimiter{
+		"enterprise": cliutil.NewAdaptiveLimiter(rateLimit),
+		"free": cliutil.NewAdaptiveLimiter(rateLimit),
+		"paid": cliutil.NewAdaptiveLimiter(rateLimit),
+	}
+}
+
+func (c *Client) limiterForTier(tier string) *cliutil.AdaptiveLimiter {
+	if c == nil {
+		return nil
+	}
+	if tier == "" {
+		return c.limiter
+	}
+	if limiter, ok := c.limiters[tier]; ok && limiter != nil {
+		return limiter
+	}
+	return c.limiter
+}
+
+func (c *Client) baseURLForRequest() string {
+	switch c.requestTier {
+	case "enterprise":
+		return c.BaseURL
+	case "free":
+		return c.BaseURL
+	case "paid":
+		return strings.TrimRight("https://paid.api.example.com", "/")
+	default:
+		return c.BaseURL
+	}
+}
+
+func (c *Client) authForRequest() (requestAuth, error) {
+	switch c.requestTier {
+	case "enterprise":
+		tierValue0 := os.Getenv("TIER_ENTERPRISE_TOKEN")
+		if tierValue0 == "" {
+			return requestAuth{In: "header", Name: "Authorization"}, nil
+		}
+		value := applyTierAuthFormat("Bearer {access_token}", map[string]string{
+			"token": tierValue0,
+			"access_token": tierValue0,
+			"enterprise_token": tierValue0,
+			"TIER_ENTERPRISE_TOKEN": tierValue0,
+		})
+		return requestAuth{Value: value, In: "header", Name: "Authorization"}, nil
+	case "free":
+		return requestAuth{}, nil
+	case "paid":
+		tierValue0 := os.Getenv("TIER_PAID_KEY")
+		if tierValue0 == "" {
+			return requestAuth{In: "query", Name: "api_key"}, nil
+		}
+		value := tierValue0
+		return requestAuth{Value: value, In: "query", Name: "api_key"}, nil
+	default:
+		value, err := c.authHeader()
+		if err != nil {
+			return requestAuth{}, err
+		}
+		return requestAuth{Value: value, In: "header", Name: "Authorization"}, nil
+	}
+}
+
+func applyTierAuthFormat(format string, replacements map[string]string) string {
+	for key, value := range replacements {
+		format = strings.ReplaceAll(format, "{"+key+"}", value)
+	}
+	if strings.Contains(format, "{") {
+		return ""
+	}
+	return format
 }
 
 
@@ -57,7 +146,7 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	homeDir, _ := os.UserHomeDir()
-	cacheDir := filepath.Join(homeDir, ".cache", "printing-press-oauth2-pp-cli")
+	cacheDir := filepath.Join(homeDir, ".cache", "tier-routing-golden-pp-cli")
 	httpClient := newHTTPClient(timeout, nil)
 	return &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
@@ -65,7 +154,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
 		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
-		ccMu:       &sync.Mutex{},
+		limiters:   newTierLimiters(rateLimit),
 	}
 }
 
@@ -99,6 +188,7 @@ func (c *Client) ProbeGet(path string) (int, error) {
 
 func (c *Client) cacheKey(path string, params map[string]string) string {
 	key := path
+	key += "|tier=" + c.requestTier + "|base_url=" + c.baseURLForRequest()
 	for k, v := range params {
 		key += k + "=" + v
 	}
@@ -160,7 +250,8 @@ func (c *Client) PatchWithHeaders(path string, body any, headers map[string]stri
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
-	targetURL := c.BaseURL + path
+	requestBaseURL := c.baseURLForRequest()
+	targetURL := requestBaseURL + path
 
 	var bodyBytes []byte
 	if body != nil {
@@ -175,7 +266,8 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 	// exactly what would be sent. Uses only cached credentials; a token that
 	// requires a network refresh will be re-fetched on the live request path,
 	// not during dry-run.
-	authHeader, err := c.authHeader()
+	authInfo, err := c.authForRequest()
+	authHeader := authInfo.Value
 	if err != nil {
 		return nil, 0, err
 	}
@@ -215,13 +307,19 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		}
 
 		if authHeader != "" {
-			req.Header.Set("Authorization", authHeader)
+			if authInfo.In == "query" {
+				q := req.URL.Query()
+				q.Set(authInfo.Name, authHeader)
+				req.URL.RawQuery = q.Encode()
+			} else {
+				req.Header.Set(authInfo.Name, authHeader)
+			}
 		}
 		// Per-endpoint header overrides (e.g., different API version per resource)
 		for k, v := range headerOverrides {
 			req.Header.Set(k, v)
 		}
-		req.Header.Set("User-Agent", "printing-press-oauth2-pp-cli/1.0.0")
+		req.Header.Set("User-Agent", "tier-routing-golden-pp-cli/1.0.0")
 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
@@ -279,6 +377,8 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 // using the auth material already resolved in `do()`. Never triggers a network
 // call — the caller is responsible for passing cached auth material only.
 func (c *Client) dryRun(method, targetURL, path string, params map[string]string, body []byte, headerOverrides map[string]string, authHeader string) (json.RawMessage, int, error) {
+	authInfo, _ := c.authForRequest()
+	authInfo.Value = authHeader
 	fmt.Fprintf(os.Stderr, "%s %s\n", method, targetURL)
 	queryPrinted := false
 	if params != nil {
@@ -298,6 +398,14 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 			queryPrinted = true
 		}
 	}
+	if authInfo.Value != "" && authInfo.In == "query" {
+		sep := "?"
+		if queryPrinted {
+			sep = "&"
+		}
+		fmt.Fprintf(os.Stderr, "  %s%s=%s\n", sep, authInfo.Name, maskToken(authInfo.Value))
+		queryPrinted = true
+	}
 	_ = queryPrinted
 	if body != nil {
 		var pretty json.RawMessage
@@ -308,8 +416,8 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 			enc.Encode(pretty)
 		}
 	}
-	if authHeader != "" {
-		fmt.Fprintf(os.Stderr, "  %s: %s\n", "Authorization", maskToken(authHeader))
+	if authInfo.Value != "" && authInfo.In != "query" {
+		fmt.Fprintf(os.Stderr, "  %s: %s\n", authInfo.Name, maskToken(authInfo.Value))
 	}
 	fmt.Fprintf(os.Stderr, "\n(dry run - no request sent)\n")
 	return json.RawMessage(`{"dry_run": true}`), 0, nil
@@ -326,89 +434,12 @@ func (c *Client) authHeader() (string, error) {
 	if c.Config == nil {
 		return "", nil
 	}
-	// 60s window avoids in-flight requests racing the expiry boundary.
-	// Double-checked lock so only one goroutine mints under contention.
-	if needsClientCredentialsMint(c.Config) {
-		if c.ccMu == nil {
-			c.ccMu = &sync.Mutex{}
+	if c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" {
+		if err := c.refreshAccessToken(); err != nil {
+			return "", err
 		}
-		c.ccMu.Lock()
-		if needsClientCredentialsMint(c.Config) {
-			clientID, clientSecret := resolveClientCredentials(c.Config)
-			if clientID != "" && clientSecret != "" {
-				if err := c.mintClientCredentials(clientID, clientSecret); err != nil {
-					c.ccMu.Unlock()
-					return "", err
-				}
-			}
-		}
-		c.ccMu.Unlock()
 	}
 	return c.Config.AuthHeader(), nil
-}
-
-func needsClientCredentialsMint(cfg *config.Config) bool {
-	if cfg.AccessToken == "" {
-		return true
-	}
-	if cfg.TokenExpiry.IsZero() {
-		return false
-	}
-	return time.Until(cfg.TokenExpiry) < 60*time.Second
-}
-
-// resolveClientCredentials prefers what was passed to `auth login` (cached
-// in config) and falls back to environment variables so first-time users
-// can ship without a separate login step.
-func resolveClientCredentials(cfg *config.Config) (string, string) {
-	id := cfg.ClientID
-	secret := cfg.ClientSecret
-	if id == "" {
-		id = os.Getenv("PRINTING_PRESS_OAUTH2_OAUTH2_CC")
-	}
-	return id, secret
-}
-
-func (c *Client) mintClientCredentials(clientID, clientSecret string) error {
-	tokenURL := "https://api.cc.example/oauth/token"
-	if tokenURL == "" {
-		return nil
-	}
-	form := url.Values{
-		"grant_type":    {"client_credentials"},
-		"client_id":     {clientID},
-		"client_secret": {clientSecret},
-	}
-	req, err := http.NewRequest(http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
-	if err != nil {
-		return fmt.Errorf("building token request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("calling token endpoint: %w", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("OAuth client_credentials mint: HTTP %d: %s", resp.StatusCode, cliutil.SanitizeErrorBody(string(body)))
-	}
-	var tokenResp struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int    `json:"expires_in"`
-	}
-	if err := json.Unmarshal(body, &tokenResp); err != nil {
-		return fmt.Errorf("parsing token response: %w", err)
-	}
-	if tokenResp.AccessToken == "" {
-		return fmt.Errorf("OAuth client_credentials mint: response missing access_token")
-	}
-	expiry := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
-	c.Config.AuthHeaderVal = "" // force AuthHeader() to use the new AccessToken path
-	if err := c.Config.SaveTokens(clientID, clientSecret, tokenResp.AccessToken, "", expiry); err != nil {
-		return fmt.Errorf("saving minted token: %w", err)
-	}
-	return nil
 }
 
 func (c *Client) refreshAccessToken() error {
@@ -419,7 +450,7 @@ func (c *Client) refreshAccessToken() error {
 		return nil
 	}
 
-	tokenURL := "https://api.cc.example/oauth/token"
+	tokenURL := ""
 	if tokenURL == "" {
 		return nil
 	}

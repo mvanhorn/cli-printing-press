@@ -1,0 +1,9 @@
+tier-routing-golden/.printing-press.json
+tier-routing-golden/manifest.json
+tier-routing-golden/internal/client/client.go
+tier-routing-golden/internal/cli/items_list.go
+tier-routing-golden/internal/cli/items_premium.go
+tier-routing-golden/internal/cli/items_enterprise.go
+tier-routing-golden/internal/cli/sync.go
+tier-routing-golden/internal/cli/doctor.go
+tier-routing-golden/internal/mcp/tools.go

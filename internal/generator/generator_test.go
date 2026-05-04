@@ -711,8 +711,10 @@ func TestGenerateOAuth2ClientCredentialsClientRefresh(t *testing.T) {
 		"client-id resolver falls back to first env var")
 	assert.Contains(t, body, `os.Getenv("CCCLIENT_SECRET_KEY")`,
 		"client-secret resolver falls back to second env var")
-	assert.Contains(t, body, "ccMu sync.Mutex",
-		"client_credentials spec emits a mutex to serialize concurrent mints")
+	assert.Contains(t, body, "ccMu *sync.Mutex",
+		"client_credentials spec emits a shared mutex to serialize concurrent mints")
+	assert.Contains(t, body, "ccMu:       &sync.Mutex{}",
+		"client_credentials spec initializes the shared mint mutex")
 	assert.Contains(t, body, "c.ccMu.Lock()",
 		"authHeader takes the mint mutex before re-checking the window")
 }
@@ -757,7 +759,7 @@ func TestGenerateOAuth2AuthorizationCodeClientRefreshUnchanged(t *testing.T) {
 		"authorization_code spec must NOT emit client_credentials helpers")
 	assert.NotContains(t, body, "func needsClientCredentialsMint",
 		"authorization_code spec must NOT emit safety-window helper")
-	assert.NotContains(t, body, "ccMu sync.Mutex",
+	assert.NotContains(t, body, "ccMu *sync.Mutex",
 		"authorization_code spec must NOT emit the client_credentials mint mutex")
 }
 

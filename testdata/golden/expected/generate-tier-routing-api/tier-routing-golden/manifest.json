@@ -1,0 +1,55 @@
+{
+  "author": {
+    "name": "CLI Printing Press"
+  },
+  "compatibility": {
+    "claude_desktop": ">=1.0.0",
+    "platforms": [
+      "darwin",
+      "linux",
+      "win32"
+    ]
+  },
+  "description": "Tier Routing Golden API surface as MCP tools.",
+  "display_name": "Tier Routing Golden",
+  "license": "Apache-2.0",
+  "manifest_version": "0.3",
+  "name": "tier-routing-golden-pp-mcp",
+  "server": {
+    "entry_point": "bin/tier-routing-golden-pp-mcp",
+    "mcp_config": {
+      "args": [],
+      "command": "${__dirname}/bin/tier-routing-golden-pp-mcp",
+      "env": {
+        "TIER_ENTERPRISE_TOKEN": "${user_config.tier_enterprise_token}",
+        "TIER_GLOBAL_TOKEN": "${user_config.tier_global_token}",
+        "TIER_PAID_KEY": "${user_config.tier_paid_key}"
+      }
+    },
+    "type": "binary"
+  },
+  "user_config": {
+    "tier_enterprise_token": {
+      "description": "Sets TIER_ENTERPRISE_TOKEN for the Tier Routing Golden MCP server.",
+      "required": true,
+      "sensitive": true,
+      "title": "TIER_ENTERPRISE_TOKEN",
+      "type": "string"
+    },
+    "tier_global_token": {
+      "description": "Sets TIER_GLOBAL_TOKEN for the Tier Routing Golden MCP server.",
+      "required": true,
+      "sensitive": true,
+      "title": "TIER_GLOBAL_TOKEN",
+      "type": "string"
+    },
+    "tier_paid_key": {
+      "description": "Sets TIER_PAID_KEY for the Tier Routing Golden MCP server.",
+      "required": true,
+      "sensitive": true,
+      "title": "TIER_PAID_KEY",
+      "type": "string"
+    }
+  },
+  "version": "<PRINTING_PRESS_VERSION>"
+}

@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/tier-routing-api.yaml --output "$CASE_ACTUAL_DIR/tier-routing-golden" --force --spec-url file://testdata/golden/fixtures/tier-routing-api.yaml --validate=false

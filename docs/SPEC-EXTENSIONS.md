@@ -15,6 +15,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-display-name` | `info` | `APISpec.DisplayName` | No |
 | `x-website` | `info` | `APISpec.WebsiteURL` | No |
 | `x-proxy-routes` | `info` | `APISpec.ProxyRoutes` | No |
+| `x-tier-routing` | root or `info` | `APISpec.TierRouting` | No |
 | `x-auth-type` | `components.securitySchemes.<name>` | `APISpec.Auth.Type` | No |
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
 | `x-prefix` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
@@ -27,6 +28,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-auth-cookies` | `components.securitySchemes.<name>` | `APISpec.Auth.Cookies` | No |
 | `x-resource-id` | path item | `Endpoint.IDField` | No |
 | `x-critical` | path item | `Endpoint.Critical` | No |
+| `x-tier` | path item or operation | `Endpoint.Tier` | No |
 
 ## `info` Extensions
 
@@ -125,6 +127,46 @@ info:
   x-proxy-routes:
     /v1/search: search
     /v1/publish: publishing
+```
+
+### `x-tier-routing`
+
+Declares opt-in free/paid credential routing for APIs where some endpoints work
+without credentials and other endpoints require a separate paid key or token.
+
+Parsed field: `APISpec.TierRouting`
+
+Rules:
+- Optional.
+- May be declared at the OpenAPI root or under `info`.
+- Requires a `tiers` map when present.
+- `default_tier` is optional; endpoints without `x-tier` use global auth when it
+  is absent.
+- V1 tier auth supports only `none`, `api_key`, and `bearer_token`.
+- Credential-bearing tier `base_url` values must be HTTPS and cannot point at
+  loopback, private, link-local, or unrelated hosts unless
+  `allow_cross_host_auth: true` documents explicit review.
+- Incompatible with `client_pattern: proxy-envelope` and with resource-level
+  `base_url` overrides when any tier declares its own `base_url`.
+- Tier credential env vars are read from the environment at request time; they
+  are not serialized into generated config files.
+
+Example:
+
+```yaml
+x-tier-routing:
+  default_tier: free
+  tiers:
+    free:
+      auth:
+        type: none
+    paid:
+      base_url: https://paid.api.example.com
+      auth:
+        type: api_key
+        in: query
+        header: api_key
+        env_vars: [EXAMPLE_PAID_KEY]
 ```
 
 ## Security Scheme Extensions
@@ -371,4 +413,34 @@ paths:
       responses:
         "200":
           description: OK
+```
+
+### `x-tier`
+
+Selects a tier declared by `x-tier-routing` for a path item or one operation.
+
+Parsed field: `Endpoint.Tier`
+
+Rules:
+- Optional.
+- Must be a string.
+- Operation-level `x-tier` overrides path-item-level `x-tier`.
+- The value must name a tier in `x-tier-routing.tiers`.
+- `security: []` / `security: [{}]` must not be combined with an auth-bearing
+  tier. Use a `none` tier for anonymous endpoints.
+
+Example:
+
+```yaml
+paths:
+  /public/search:
+    x-tier: free
+    get:
+      responses:
+        "200": {description: ok}
+  /premium/search:
+    get:
+      x-tier: paid
+      responses:
+        "200": {description: ok}
 ```

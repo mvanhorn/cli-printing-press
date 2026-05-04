@@ -39,11 +39,15 @@ type Client struct {
 	NoCache    bool
 	cacheDir   string
 	limiter    *cliutil.AdaptiveLimiter
+{{- if .HasTierRouting}}
+	requestTier string
+	limiters    map[string]*cliutil.AdaptiveLimiter
+{{- end}}
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 	// ccMu serializes OAuth2 client_credentials token mints so concurrent
 	// API calls inside the 60s pre-expiry window don't all dial the token
 	// endpoint and race on Config field writes / file persistence.
-	ccMu sync.Mutex
+	ccMu *sync.Mutex
 {{- end}}
 {{- if eq .Auth.Type "session_handshake"}}
 	Session    *SessionManager
@@ -58,12 +62,154 @@ type Client struct {
 	// itself reports. They compose: limiter caps RPS, Throttle gates on
 	// remaining query cost.
 	Throttle     *ThrottleState
+{{- if .HasTierRouting}}
+	throttles map[string]*ThrottleState
+{{- end}}
 	// ThrottleMode is one of ThrottleModeStrict (default; block on
 	// WaitForBudget), ThrottleModeLenient (warn but proceed), or
 	// ThrottleModeOff (bypass). Wired from the --throttle-mode root flag.
 	ThrottleMode string
 {{- end}}
 }
+
+{{- if .HasTierRouting}}
+
+type requestAuth struct {
+	Value string
+	In    string
+	Name  string
+}
+
+func (c *Client) WithTier(tier string) *Client {
+	if c == nil || tier == "" {
+		return c
+	}
+	next := *c
+	next.requestTier = tier
+	next.limiter = c.limiterForTier(tier)
+{{- if .HasCostThrottling}}
+	next.Throttle = c.throttleForTier(tier)
+{{- end}}
+	return &next
+}
+
+func newTierLimiters(rateLimit float64) map[string]*cliutil.AdaptiveLimiter {
+	return map[string]*cliutil.AdaptiveLimiter{
+{{- range $tierName, $_ := .TierRouting.Tiers}}
+		{{printf "%q" $tierName}}: cliutil.NewAdaptiveLimiter(rateLimit),
+{{- end}}
+	}
+}
+
+func (c *Client) limiterForTier(tier string) *cliutil.AdaptiveLimiter {
+	if c == nil {
+		return nil
+	}
+	if tier == "" {
+		return c.limiter
+	}
+	if limiter, ok := c.limiters[tier]; ok && limiter != nil {
+		return limiter
+	}
+	return c.limiter
+}
+
+{{- if .HasCostThrottling}}
+
+func newTierThrottles() map[string]*ThrottleState {
+	return map[string]*ThrottleState{
+{{- range $tierName, $_ := .TierRouting.Tiers}}
+		{{printf "%q" $tierName}}: NewThrottleState(),
+{{- end}}
+	}
+}
+
+func (c *Client) throttleForTier(tier string) *ThrottleState {
+	if c == nil {
+		return nil
+	}
+	if tier == "" {
+		return c.Throttle
+	}
+	if throttle, ok := c.throttles[tier]; ok && throttle != nil {
+		return throttle
+	}
+	return c.Throttle
+}
+
+{{- end}}
+
+func (c *Client) baseURLForRequest() string {
+	switch c.requestTier {
+{{- range $tierName, $tier := .TierRouting.Tiers}}
+	case {{printf "%q" $tierName}}:
+	{{- if $tier.BaseURL}}
+		return strings.TrimRight({{printf "%q" $tier.BaseURL}}, "/")
+	{{- else}}
+		return c.BaseURL
+	{{- end}}
+{{- end}}
+	default:
+		return c.BaseURL
+	}
+}
+
+func (c *Client) authForRequest() (requestAuth, error) {
+	switch c.requestTier {
+{{- range $tierName, $tier := .TierRouting.Tiers}}
+	case {{printf "%q" $tierName}}:
+	{{- if or (eq $tier.Auth.Type "") (eq $tier.Auth.Type "none")}}
+		return requestAuth{}, nil
+	{{- else}}
+	{{- $placement := authPlacement $tier.Auth}}
+	{{- $name := authParameterName $tier.Auth}}
+	{{- if $tier.Auth.EnvVars}}
+	{{- range $i, $env := $tier.Auth.EnvVars}}
+		tierValue{{$i}} := os.Getenv({{printf "%q" $env}})
+	{{- end}}
+		if tierValue0 == "" {
+			return requestAuth{In: {{printf "%q" $placement}}, Name: {{printf "%q" $name}}}, nil
+		}
+	{{- if $tier.Auth.Format}}
+		value := applyTierAuthFormat({{printf "%q" $tier.Auth.Format}}, map[string]string{
+			"token": tierValue0,
+			"access_token": tierValue0,
+		{{- range $i, $env := $tier.Auth.EnvVars}}
+			{{printf "%q" (envVarPlaceholder $env)}}: tierValue{{$i}},
+			{{printf "%q" $env}}: tierValue{{$i}},
+		{{- end}}
+		})
+	{{- else if eq $tier.Auth.Type "bearer_token"}}
+		value := "Bearer " + tierValue0
+	{{- else}}
+		value := tierValue0
+	{{- end}}
+		return requestAuth{Value: value, In: {{printf "%q" $placement}}, Name: {{printf "%q" $name}}}, nil
+	{{- else}}
+		return requestAuth{In: {{printf "%q" $placement}}, Name: {{printf "%q" $name}}}, nil
+	{{- end}}
+	{{- end}}
+{{- end}}
+	default:
+		value, err := c.authHeader()
+		if err != nil {
+			return requestAuth{}, err
+		}
+		return requestAuth{Value: value, In: "{{authPlacement .Auth}}", Name: "{{authParameterName .Auth}}"}, nil
+	}
+}
+
+func applyTierAuthFormat(format string, replacements map[string]string) string {
+	for key, value := range replacements {
+		format = strings.ReplaceAll(format, "{"+key+"}", value)
+	}
+	if strings.Contains(format, "{") {
+		return ""
+	}
+	return format
+}
+
+{{- end}}
 
 {{if eq .ClientPattern "proxy-envelope"}}
 // proxyEnvelope is the JSON wrapper sent to the proxy endpoint.
@@ -148,9 +294,18 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
 		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
+{{- if .HasTierRouting}}
+		limiters:   newTierLimiters(rateLimit),
+{{- end}}
+{{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
+		ccMu:       &sync.Mutex{},
+{{- end}}
 		Session:    sess,
 {{- if .HasCostThrottling}}
 		Throttle:     NewThrottleState(),
+{{- if .HasTierRouting}}
+		throttles:    newTierThrottles(),
+{{- end}}
 		ThrottleMode: ThrottleModeStrict,
 {{- end}}
 	}
@@ -162,8 +317,17 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
 		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
+{{- if .HasTierRouting}}
+		limiters:   newTierLimiters(rateLimit),
+{{- end}}
+{{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
+		ccMu:       &sync.Mutex{},
+{{- end}}
 {{- if .HasCostThrottling}}
 		Throttle:     NewThrottleState(),
+{{- if .HasTierRouting}}
+		throttles:    newTierThrottles(),
+{{- end}}
 		ThrottleMode: ThrottleModeStrict,
 {{- end}}
 	}
@@ -200,6 +364,9 @@ func (c *Client) ProbeGet(path string) (int, error) {
 
 func (c *Client) cacheKey(path string, params map[string]string) string {
 	key := path
+{{- if .HasTierRouting}}
+	key += "|tier=" + c.requestTier + "|base_url=" + c.baseURLForRequest()
+{{- end}}
 	for k, v := range params {
 		key += k + "=" + v
 	}
@@ -287,15 +454,18 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		endpointVars = c.Config.TemplateVars
 	}
 {{- end}}
+{{- if .HasTierRouting}}
+	requestBaseURL := c.baseURLForRequest()
+{{- end}}
 {{- if eq .ClientPattern "proxy-envelope"}}
 	// Proxy-envelope: all requests are POST'd to BaseURL with a JSON envelope
 {{- if .EndpointTemplateVars}}
-	targetURL, urlErr := buildURL(c.BaseURL, "", endpointVars)
+	targetURL, urlErr := buildURL({{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{end}}, "", endpointVars)
 	if urlErr != nil {
 		return nil, 0, urlErr
 	}
 {{- else}}
-	targetURL := c.BaseURL
+	targetURL := {{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{end}}
 {{- end}}
 {{- else}}
 {{- if .EndpointTemplateVars}}
@@ -309,13 +479,13 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 	if isAbsoluteURL(path) {
 		targetURL, urlErr = buildURL("", path, endpointVars)
 	} else {
-		targetURL, urlErr = buildURL(c.BaseURL, path, endpointVars)
+		targetURL, urlErr = buildURL({{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{end}}, path, endpointVars)
 	}
 	if urlErr != nil {
 		return nil, 0, urlErr
 	}
 {{- else}}
-	targetURL, urlErr := buildURL(c.BaseURL, path, endpointVars)
+		targetURL, urlErr := buildURL({{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{end}}, path, endpointVars)
 	if urlErr != nil {
 		return nil, 0, urlErr
 	}
@@ -329,10 +499,10 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 	if isAbsoluteURL(path) {
 		targetURL = path
 	} else {
-		targetURL = c.BaseURL + path
+		targetURL = {{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{end}} + path
 	}
 {{- else}}
-	targetURL := c.BaseURL + path
+	targetURL := {{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{end}} + path
 {{- end}}
 {{- end}}
 {{- end}}
@@ -354,7 +524,12 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 	// exactly what would be sent. Uses only cached credentials; a token that
 	// requires a network refresh will be re-fetched on the live request path,
 	// not during dry-run.
+{{- if .HasTierRouting}}
+	authInfo, err := c.authForRequest()
+	authHeader := authInfo.Value
+{{- else}}
 	authHeader, err := c.authHeader()
+{{- end}}
 	if err != nil {
 		return nil, 0, err
 	}
@@ -363,12 +538,15 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 	// (or empty). On the live path, ensure a fresh token if none is cached.
 	// Dry-run deliberately skips this — we want previews to reflect what's
 	// cached, never trigger a network fetch.
-	if !c.DryRun && authHeader == "" && c.Session != nil {
+	if !c.DryRun && {{if .HasTierRouting}}c.requestTier == "" && {{end}}authHeader == "" && c.Session != nil {
 		tok, terr := c.Session.EnsureToken()
 		if terr != nil {
 			return nil, 0, terr
 		}
 		authHeader = tok
+{{- if .HasTierRouting}}
+		authInfo.Value = tok
+{{- end}}
 	}
 {{- end}}
 
@@ -387,12 +565,15 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 
 		// Re-resolve session token each iteration — may have been invalidated
 		// by a previous attempt returning 401/403.
-		if authHeader == "" && c.Session != nil {
+		if {{if .HasTierRouting}}c.requestTier == "" && {{end}}authHeader == "" && c.Session != nil {
 			tok, terr := c.Session.EnsureToken()
 			if terr != nil {
 				return nil, 0, terr
 			}
 			authHeader = tok
+{{- if .HasTierRouting}}
+			authInfo.Value = tok
+{{- end}}
 		}
 {{- end}}
 
@@ -442,7 +623,15 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 {{- end}}
 
 		if authHeader != "" {
-{{- if eq .Auth.Type "session_handshake"}}
+{{- if .HasTierRouting}}
+			if authInfo.In == "query" {
+				q := req.URL.Query()
+				q.Set(authInfo.Name, authHeader)
+				req.URL.RawQuery = q.Encode()
+			} else {
+				req.Header.Set(authInfo.Name, authHeader)
+			}
+{{- else if eq .Auth.Type "session_handshake"}}
 {{- if eq .Auth.TokenParamIn "header"}}
 			req.Header.Set("{{.Auth.TokenParamName}}", authHeader)
 {{- else}}
@@ -513,6 +702,9 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		if c.Session != nil && c.Session.ShouldInvalidate(resp.StatusCode) && attempt < maxRetries && authHeader != "" {
 			c.Session.Invalidate()
 			authHeader = "" // force re-fetch on next iteration
+{{- if .HasTierRouting}}
+			authInfo.Value = ""
+{{- end}}
 			lastErr = apiErr
 			continue
 		}
@@ -538,6 +730,10 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 // using the auth material already resolved in `do()`. Never triggers a network
 // call — the caller is responsible for passing cached auth material only.
 func (c *Client) dryRun(method, targetURL, path string, params map[string]string, body []byte, headerOverrides map[string]string, authHeader string) (json.RawMessage, int, error) {
+{{- if .HasTierRouting}}
+	authInfo, _ := c.authForRequest()
+	authInfo.Value = authHeader
+{{- end}}
 {{- if eq .ClientPattern "proxy-envelope"}}
 	// Show the proxy envelope that would be sent
 	envelope := proxyEnvelope{
@@ -571,7 +767,16 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 			queryPrinted = true
 		}
 	}
-{{- if eq .Auth.Type "session_handshake"}}
+{{- if .HasTierRouting}}
+	if authInfo.Value != "" && authInfo.In == "query" {
+		sep := "?"
+		if queryPrinted {
+			sep = "&"
+		}
+		fmt.Fprintf(os.Stderr, "  %s%s=%s\n", sep, authInfo.Name, maskToken(authInfo.Value))
+		queryPrinted = true
+	}
+{{- else if eq .Auth.Type "session_handshake"}}
 {{- if ne .Auth.TokenParamIn "header"}}
 	// Session-handshake token travels as a query parameter on the live
 	// request — surface it in the preview so users can verify wiring.
@@ -607,7 +812,11 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 		}
 	}
 {{- end}}
-{{- if eq .Auth.Type "session_handshake"}}
+{{- if .HasTierRouting}}
+	if authInfo.Value != "" && authInfo.In != "query" {
+		fmt.Fprintf(os.Stderr, "  %s: %s\n", authInfo.Name, maskToken(authInfo.Value))
+	}
+{{- else if eq .Auth.Type "session_handshake"}}
 {{- if eq .Auth.TokenParamIn "header"}}
 	if authHeader != "" {
 		fmt.Fprintf(os.Stderr, "  %s: %s\n", "{{.Auth.TokenParamName}}", maskToken(authHeader))
@@ -778,6 +987,9 @@ func (c *Client) authHeader() (string, error) {
 	// 60s window avoids in-flight requests racing the expiry boundary.
 	// Double-checked lock so only one goroutine mints under contention.
 	if needsClientCredentialsMint(c.Config) {
+		if c.ccMu == nil {
+			c.ccMu = &sync.Mutex{}
+		}
 		c.ccMu.Lock()
 		if needsClientCredentialsMint(c.Config) {
 			clientID, clientSecret := resolveClientCredentials(c.Config)

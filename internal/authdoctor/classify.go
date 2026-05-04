@@ -2,6 +2,7 @@ package authdoctor
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
 )
@@ -41,36 +42,61 @@ func Classify(slug string, manifest *pipeline.ToolsManifest, env getEnv) []Findi
 		}}
 	}
 
-	authType := manifest.Auth.Type
-	if authType == "" || authType == "none" {
+	findings := classifyAuthBlock(slug, manifest.Auth, env, "")
+	if manifest.TierRouting != nil {
+		tierNames := make([]string, 0, len(manifest.TierRouting.Tiers))
+		for name := range manifest.TierRouting.Tiers {
+			tierNames = append(tierNames, name)
+		}
+		sort.Strings(tierNames)
+		for _, tierName := range tierNames {
+			findings = append(findings, classifyAuthBlock(slug, manifest.TierRouting.Tiers[tierName].Auth, env, tierName)...)
+		}
+	}
+	if len(findings) == 0 {
 		return []Finding{{
 			API:    slug,
-			Type:   displayType(authType),
+			Type:   displayType(manifest.Auth.Type),
 			Status: StatusNoAuth,
 		}}
 	}
+	return findings
+}
 
-	if len(manifest.Auth.EnvVars) == 0 {
+func classifyAuthBlock(slug string, auth pipeline.ManifestAuth, env getEnv, tierName string) []Finding {
+	authType := auth.Type
+	if authType == "" || authType == "none" {
+		return nil
+	}
+	displayAuthType := scopedAuthType(tierName, authType)
+	if len(auth.EnvVars) == 0 {
 		findings := []Finding{{
 			API:    slug,
-			Type:   authType,
+			Type:   displayAuthType,
 			Status: StatusUnknown,
 			Reason: "auth type declared but no env_vars listed in manifest",
 		}}
-		if manifest.Auth.RequiresBrowserSession {
-			findings = append(findings, browserSessionProofFinding(slug, authType))
+		if auth.RequiresBrowserSession {
+			findings = append(findings, browserSessionProofFinding(slug, displayAuthType))
 		}
 		return findings
 	}
 
-	findings := make([]Finding, 0, len(manifest.Auth.EnvVars))
-	for _, envVar := range manifest.Auth.EnvVars {
-		findings = append(findings, classifyEnv(slug, authType, envVar, env))
+	findings := make([]Finding, 0, len(auth.EnvVars))
+	for _, envVar := range auth.EnvVars {
+		findings = append(findings, classifyEnv(slug, displayAuthType, envVar, env))
 	}
-	if manifest.Auth.RequiresBrowserSession {
-		findings = append(findings, browserSessionProofFinding(slug, authType))
+	if auth.RequiresBrowserSession {
+		findings = append(findings, browserSessionProofFinding(slug, displayAuthType))
 	}
 	return findings
+}
+
+func scopedAuthType(tierName, authType string) string {
+	if tierName == "" {
+		return authType
+	}
+	return fmt.Sprintf("tier:%s/%s", tierName, authType)
 }
 
 func browserSessionProofFinding(slug, authType string) Finding {

@@ -56,6 +56,7 @@ type codeOrchEndpoint struct {
 	ID          string
 	Method      string
 	Path        string
+	Tier        string
 	Summary     string
 	Positional  []string
 	keywords    []string
@@ -72,6 +73,9 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		ID:      "{{$name}}.{{$eName}}",
 		Method:  "{{upper $endpoint.Method}}",
 		Path:    "{{$path}}",
+{{- if $.HasTierRouting}}
+		Tier:    {{printf "%q" (effectiveTier $.APISpec $resource $endpoint)}},
+{{- end}}
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
 		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $path}}),
@@ -84,6 +88,9 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		ID:      "{{$name}}.{{$subName}}.{{$eName}}",
 		Method:  "{{upper $endpoint.Method}}",
 		Path:    "{{$path}}",
+{{- if $.HasTierRouting}}
+		Tier:    {{printf "%q" (effectiveSubTier $.APISpec $resource $subResource $endpoint)}},
+{{- end}}
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
 		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $path}}),
@@ -176,6 +183,9 @@ func handleCodeOrchSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcp
 			"method":      r.ep.Method,
 			"path":        r.ep.Path,
 			"summary":     r.ep.Summary,
+{{- if .HasTierRouting}}
+			"tier":        r.ep.Tier,
+{{- end}}
 			"score":       r.score,
 		})
 	}
@@ -210,6 +220,9 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
+{{- if .HasTierRouting}}
+	c = c.WithTier(ep.Tier)
+{{- end}}
 
 	path := ep.Path
 	for _, p := range ep.Positional {

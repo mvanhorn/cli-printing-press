@@ -72,6 +72,7 @@ type DiscriminatorDispatch struct {
 type SyncableResource struct {
 	Name string
 	Path string
+	Tier string
 	// IDField is the resolved primary-key field name for items returned by the
 	// list endpoint, populated from the chosen endpoint's resolved value (in
 	// turn populated by the OpenAPI parser's `x-resource-id` extension or the
@@ -96,6 +97,7 @@ type DependentResource struct {
 	ParentResource string // parent resource name, e.g. "channels"
 	ParentIDParam  string // path param name, e.g. "channel_id"
 	Path           string // full path template, e.g. "/channels/{channel_id}/messages"
+	Tier           string
 
 	// IDField is the primary-key field name resolved from the spec
 	// (x-resource-id extension or the four-tier fallback chain). Empty when
@@ -180,8 +182,11 @@ func Profile(s *spec.APISpec) *APIProfile {
 	dateRangeParams := make(map[string]int)
 	responsePaths := make(map[string]int)
 
-	var walk func(name string, r spec.Resource)
-	walk = func(name string, r spec.Resource) {
+	var walk func(name string, r spec.Resource, inheritedTier string)
+	walk = func(name string, r spec.Resource, inheritedTier string) {
+		if r.Tier == "" {
+			r.Tier = inheritedTier
+		}
 		resourceName := strings.ToLower(name)
 		resourceHasGet := false
 		resourceHasPost := false
@@ -300,7 +305,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 				//     like GetFriendList?steamid=REQUIRED that need a parent ID)
 				if !strings.Contains(endpoint.Path, "{") && !hasRequiredScopeParams(endpoint) {
 					if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing.Path) {
-						syncable[resourceName] = metaFromEndpoint(endpoint, s.Types, resourceNameIndex)
+						syncable[resourceName] = metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex)
 					}
 				}
 
@@ -319,7 +324,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 							// Enum-expanded paths are more specific than generic resource
 							// paths, so they always win on name collision. This ensures
 							// deterministic output regardless of Go map iteration order.
-							meta := metaFromEndpoint(endpoint, s.Types, resourceNameIndex)
+							meta := metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex)
 							meta.Path = expandedPath
 							syncable[expandedName] = meta
 						}
@@ -330,13 +335,13 @@ func Profile(s *spec.APISpec) *APIProfile {
 						// annotations on a child path-item flow into the override
 						// and critical-resource maps.
 						if _, ok := parameterized[resourceName]; !ok {
-							parameterized[resourceName] = metaFromEndpoint(endpoint, s.Types, resourceNameIndex)
+							parameterized[resourceName] = metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex)
 						}
 					} else {
 						// Paginated endpoints override the path set above — they have
 						// richer pagination support for full data retrieval.
 						if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing.Path) {
-							syncable[resourceName] = metaFromEndpoint(endpoint, s.Types, resourceNameIndex)
+							syncable[resourceName] = metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex)
 						}
 					}
 				}
@@ -347,7 +352,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 				// Only include endpoints whose name suggests a collection (list, all,
 				// index, etc.) — exclude singular getters like "get" or "show".
 				if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing.Path) {
-					syncable[resourceName] = metaFromEndpoint(endpoint, s.Types, resourceNameIndex)
+					syncable[resourceName] = metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex)
 				}
 			}
 
@@ -408,12 +413,12 @@ func Profile(s *spec.APISpec) *APIProfile {
 		subNames := sortedKeys(r.SubResources)
 		for _, subName := range subNames {
 			sub := r.SubResources[subName]
-			walk(subName, sub)
+			walk(subName, sub, r.Tier)
 		}
 	}
 
 	for name, resource := range s.Resources {
-		walk(name, resource)
+		walk(name, resource, "")
 	}
 
 	if p.TotalEndpoints > 0 {
@@ -960,6 +965,7 @@ func detectDependentResources(parameterized map[string]syncableMeta, syncable ma
 			ParentResource: parentResource,
 			ParentIDParam:  paramName,
 			Path:           path,
+			Tier:           meta.Tier,
 			IDField:        meta.IDField,
 			Critical:       meta.Critical,
 			Discriminator:  meta.Discriminator,
@@ -977,6 +983,7 @@ func detectDependentResources(parameterized map[string]syncableMeta, syncable ma
 // converted into a SyncableResource at the end of Profile().
 type syncableMeta struct {
 	Path          string
+	Tier          string
 	IDField       string
 	Critical      bool
 	Discriminator DiscriminatorDispatch
@@ -986,9 +993,10 @@ type syncableMeta struct {
 // from path-item-level extensions (or, for IDField, from response-schema
 // inference). Keeps the per-endpoint plumbing in one place so future profiler
 // fields propagate uniformly.
-func metaFromEndpoint(e spec.Endpoint, types map[string]spec.TypeDef, resourceNameIndex map[string]string) syncableMeta {
+func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, types map[string]spec.TypeDef, resourceNameIndex map[string]string) syncableMeta {
 	return syncableMeta{
 		Path:          e.Path,
+		Tier:          s.EffectiveTier(resource, e),
 		IDField:       e.IDField,
 		Critical:      e.Critical,
 		Discriminator: discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
@@ -1104,6 +1112,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 		resources[i] = SyncableResource{
 			Name:          name,
 			Path:          meta.Path,
+			Tier:          meta.Tier,
 			IDField:       meta.IDField,
 			Critical:      meta.Critical,
 			Discriminator: meta.Discriminator,

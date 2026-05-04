@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -266,7 +267,7 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.MCPPublicToolCount = public
 	m.MCPReady = computeMCPReady(parsed.Auth.Type)
 	m.AuthType = parsed.Auth.Type
-	m.AuthEnvVars = parsed.Auth.EnvVars
+	m.AuthEnvVars = manifestAuthEnvVars(parsed)
 	m.EndpointTemplateVars = parsed.EndpointTemplateVars
 	m.AuthKeyURL = parsed.Auth.KeyURL
 	m.AuthTitle = parsed.Auth.Title
@@ -286,6 +287,36 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	if parsed.CLIDescription != "" {
 		m.Description = parsed.CLIDescription
 	}
+}
+
+func manifestAuthEnvVars(parsed *spec.APISpec) []string {
+	if parsed == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var names []string
+	add := func(envVars []string) {
+		for _, name := range envVars {
+			if name == "" {
+				continue
+			}
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			names = append(names, name)
+		}
+	}
+	add(parsed.Auth.EnvVars)
+	tierNames := make([]string, 0, len(parsed.TierRouting.Tiers))
+	for name := range parsed.TierRouting.Tiers {
+		tierNames = append(tierNames, name)
+	}
+	sort.Strings(tierNames)
+	for _, name := range tierNames {
+		add(parsed.TierRouting.Tiers[name].Auth.EnvVars)
+	}
+	return names
 }
 
 // GenerateManifestParams holds the information available at generate time
