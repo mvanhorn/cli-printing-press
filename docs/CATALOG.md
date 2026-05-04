@@ -1,6 +1,6 @@
 # Catalog Entry Validation
 
-Catalog entries in `catalog/` are validated by [`internal/catalog/catalog.go`](/Users/cathrynlavery/Developer/mvanhorn/cli-printing-press/internal/catalog/catalog.go). Keep the inline `AGENTS.md` rule in sync with that validator; when the validator's applicability or allowed values change, update the inline trigger sentence in the same PR.
+Catalog entries in `catalog/` are validated by [`internal/catalog/catalog.go`](../internal/catalog/catalog.go). Keep the inline `AGENTS.md` rule in sync with that validator; when the validator's applicability or allowed values change, update the inline trigger sentence in the same PR.
 
 ## Why the inline rule is strict
 

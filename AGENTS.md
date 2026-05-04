@@ -96,8 +96,8 @@ Every commit and PR title must include one of the allowed scopes. GitHub squash-
 ## Versioning
 Releases are automated by release-please. Never manually edit version numbers.
 - The plugin version lives in exactly two places and must stay in sync: `.claude-plugin/plugin.json` -> `version`, and `internal/version/version.go` -> `var Version` (annotated `x-release-please-version`; goreleaser injects via ldflags).
-- `TestVersionConsistencyAcrossFiles` in [`internal/cli/release_test.go`](/Users/cathrynlavery/Developer/mvanhorn/cli-printing-press/internal/cli/release_test.go:57) fails if those two versions drift.
-- Do not add a `version` field to `.claude-plugin/marketplace.json` plugin entries. `TestMarketplaceJSONHasNoPluginVersion` in [`internal/cli/release_test.go`](/Users/cathrynlavery/Developer/mvanhorn/cli-printing-press/internal/cli/release_test.go:81) fails if a reviewer re-adds one.
+- `TestVersionConsistencyAcrossFiles` in [`internal/cli/release_test.go`](internal/cli/release_test.go#L57) fails if those two versions drift.
+- Do not add a `version` field to `.claude-plugin/marketplace.json` plugin entries. `TestMarketplaceJSONHasNoPluginVersion` in [`internal/cli/release_test.go`](internal/cli/release_test.go#L81) fails if a reviewer re-adds one.
 See [`docs/RELEASE.md`](docs/RELEASE.md) for the merge-the-release-PR flow.
 
 ## Adding Catalog Entries
