@@ -409,20 +409,18 @@ func TestSubstitutePositionals(t *testing.T) {
 }
 
 func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
-	// Skip paths that don't require subprocess invocation (no companion at
-	// the requested depth, non-id-shape mid-chain). Subprocess-driven scenarios
-	// (companion success/failure, JSON parsing) are covered by the
-	// extractFirstIDFromJSON unit tests + RunLiveDogfood integration tests.
-
-	siblingsEmpty := map[string][]liveDogfoodCommand{}
-	cache := newCompanionCache()
+	ctx := resolveCtx{
+		siblings: map[string][]liveDogfoodCommand{},
+		cache:    newCompanionCache(),
+		timeout:  time.Second,
+	}
 
 	// No positionals → resolveOK with happyArgs unchanged.
 	cmd := liveDogfoodCommand{
 		Path: []string{"widgets", "list"},
 		Help: "Usage:\n  cli widgets list [flags]\n",
 	}
-	args, status, _ := resolveCommandPositionals(cmd, []string{"widgets", "list"}, siblingsEmpty, cache, "", "", time.Second)
+	args, status, _ := resolveCommandPositionals(cmd, []string{"widgets", "list"}, ctx)
 	assert.Equal(t, resolveOK, status)
 	assert.Equal(t, []string{"widgets", "list"}, args)
 
@@ -431,7 +429,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"widgets", "search"},
 		Help: "Usage:\n  cli widgets search <query> [flags]\n",
 	}
-	_, status, reason := resolveCommandPositionals(cmd, []string{"widgets", "search", "x"}, siblingsEmpty, cache, "", "", time.Second)
+	_, status, reason := resolveCommandPositionals(cmd, []string{"widgets", "search", "x"}, ctx)
 	assert.Equal(t, resolveSkip, status)
 	assert.Contains(t, reason, "non-id positional")
 
@@ -440,7 +438,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"widgets", "get"},
 		Help: "Usage:\n  cli widgets get <id> [flags]\n",
 	}
-	_, status, reason = resolveCommandPositionals(cmd, []string{"widgets", "get", "x"}, siblingsEmpty, cache, "", "", time.Second)
+	_, status, reason = resolveCommandPositionals(cmd, []string{"widgets", "get", "x"}, ctx)
 	assert.Equal(t, resolveSkip, status)
 	assert.Contains(t, reason, "no list companion")
 
@@ -449,7 +447,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"movies", "get"},
 		Help: "Usage:\n  cli movies get <movieId> [flags]\n",
 	}
-	_, status, reason = resolveCommandPositionals(cmd, []string{"movies", "get", "x"}, siblingsEmpty, cache, "", "", time.Second)
+	_, status, reason = resolveCommandPositionals(cmd, []string{"movies", "get", "x"}, ctx)
 	assert.Equal(t, resolveSkip, status)
 	assert.Contains(t, reason, "no list companion")
 
@@ -458,7 +456,7 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"get"},
 		Help: "Usage:\n  cli get <id> <name> [flags]\n",
 	}
-	_, status, _ = resolveCommandPositionals(cmd, []string{"get", "x", "y"}, siblingsEmpty, cache, "", "", time.Second)
+	_, status, _ = resolveCommandPositionals(cmd, []string{"get", "x", "y"}, ctx)
 	assert.Equal(t, resolveSkip, status)
 }
 
