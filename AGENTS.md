@@ -54,8 +54,8 @@ go test ./...
 go fmt ./...
 golangci-lint run ./...
 ```
-A pre-commit hook runs `gofmt -w` on staged Go files automatically. A pre-push hook runs `golangci-lint`. The same config in `.golangci.yml` runs in CI. Install hooks with `brew install lefthook && lefthook install --reset-hooks-path`; avoid `lefthook install --force` unless intentionally overriding a custom hooks path.
-After writing Go code, format it with `go fmt ./...` before handing back work. Use `go fmt ./...` for repo-wide formatting and `gofmt -w path/to/file.go` only for explicit files. Do not run `gofmt -w ./...` or `gofmt -w .` from the repo root.
+A pre-commit hook runs `gofmt -w` on staged Go files automatically. A pre-push hook runs `golangci-lint`. The same config in `.golangci.yml` runs in CI. Install hooks with `brew install lefthook && lefthook install --reset-hooks-path`; the `--reset-hooks-path` flag clears stale local `core.hooksPath` settings that block hook sync. Avoid `lefthook install --force` unless intentionally overriding a custom hooks path.
+After writing Go code, format it with `go fmt ./...` before handing back work. Use `go fmt ./...` for repo-wide formatting and `gofmt -w path/to/file.go` only for explicit files. Do not run `gofmt -w ./...` (gofmt does not accept Go package patterns) or `gofmt -w .` from the repo root (it walks into `testdata/golden/expected/` and rewrites frozen golden fixtures).
 Always use relative paths for build output. Never build to `/tmp` or another shared absolute path; use `./printing-press`.
 
 ## Generator Output Stability
