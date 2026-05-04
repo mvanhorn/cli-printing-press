@@ -561,6 +561,12 @@ it really beats the Skip bar.
 
 ## Phase 5: Write the retro
 
+The retro document is the durable audit trail — keep all fields below. The
+GitHub issue body in Phase 6 will use a slim subset (action-shaped fields
+only); the full triage rationale lives here, in the doc that gets uploaded as
+an artifact and linked from the issue. See
+`references/issue-template.md` for the issue-body shape.
+
 Write the full retro document using this template:
 
 ```markdown
@@ -744,7 +750,7 @@ For **2+ WUs** (parent-with-sub-issues mode):
 >
 > Here's what will happen on [mvanhorn/cli-printing-press](https://github.com/mvanhorn/cli-printing-press):
 >
-> - **1 parent issue** with retro context (session stats, findings tables, artifact links)
+> - **1 parent issue** with retro context (session stats, summary, WU table, artifact links)
 > - **<M> sub-issues** — one per work unit, each with its own priority, component, and finding details, so each fix can be tracked, assigned, and closed independently
 > - Labels: `retro`, `retro-parent` (parent only), `priority:P1`/`priority:P2`/`priority:P3` and `comp:*` (sub-issues), so future agents can filter all retro WUs by area or priority
 > - Scrubbed artifact zips uploaded to catbox.moe and linked from the parent:
@@ -791,17 +797,26 @@ Run artifact-packaging.md Step 5 (the catbox upload) using the zips already in
 
 ### Step 4: Create GitHub issue(s)
 
-Read and apply [references/issue-template.md](references/issue-template.md). It
-covers:
+Read and apply [references/issue-template.md](references/issue-template.md).
+The "Execution principles" block at the top of that file is mandatory: build
+issue bodies inline (heredocs into shell variables, not the Write tool), run
+the whole step in one Bash invocation, use `gh api --method POST` for
+sub-issue creation, and parallelize sub-issue work. Skipping these costs
+real wall-clock latency — a 2 WU retro should finish issue creation in a
+single round trip's worth of network time, not a serialized stack of them.
 
-1. **Step 1: Ensure labels exist** — create-only `gh label create` safety net
-   for the 9 canonical labels (6 `comp:*` + `priority:P1`/`priority:P2`/`priority:P3`)
-   plus the `retro` / `retro-parent` markers. Run once per invocation. Never
-   edits existing labels.
+The reference covers:
+
+1. **Step 1: Ensure labels exist** — fast-path probe (single `gh label list`)
+   followed by create-only fallbacks for the 11 canonical labels (6 `comp:*`
+   + 3 `priority:P*` + `retro` + `retro-parent`). On a repo where prior retros
+   already provisioned the set, the create loop is skipped entirely.
 2. **Step 2: Dispatch on WU count** — `single` mode (1 WU, inline body) or
    `parent-with-subs` mode (2+ WUs, parent issue + one sub-issue per WU linked
    via the GitHub sub-issues REST API).
-3. The full body templates and the `gh api` calls for sub-issue linkage.
+3. The body templates (action-shaped per-finding subset; the full triage
+   rationale lives in the retro doc linked from the parent's Artifacts) and
+   the parallel sub-issue creation block.
 
 Each sub-issue carries its own `priority:P<n>` priority label and `comp:<slug>` component
 label. This is what enables `gh issue list --label comp:openapi-parser` to surface
