@@ -258,15 +258,55 @@ func runLiveDogfoodCommand(binaryPath, cliDir string, command liveDogfoodCommand
 	}
 
 	if liveDogfoodCommandTakesArg(command.Help) {
-		errorArgs := append(append([]string{}, command.Path...), "__printing_press_invalid__")
+		var errorArgs []string
+		if commandSupportsSearch(command.Help) {
+			// Search-shape: prefer the --query flag when present, otherwise
+			// pass the invalid token as a positional. Append --json so a
+			// well-behaved search emits parseable output we can validate.
+			errorArgs = append([]string{}, command.Path...)
+			if slices.Contains(extractFlagNames(command.Help), "query") {
+				errorArgs = append(errorArgs, "--query", "__printing_press_invalid__")
+			} else {
+				errorArgs = append(errorArgs, "__printing_press_invalid__")
+			}
+			if commandSupportsJSON(command.Help) {
+				errorArgs = appendJSONArg(errorArgs)
+			}
+		} else {
+			errorArgs = append(append([]string{}, command.Path...), "__printing_press_invalid__")
+		}
+
 		errorRun := runLiveDogfoodProcess(binaryPath, cliDir, errorArgs, timeout)
 		errorResult := liveDogfoodResult(commandName, LiveDogfoodTestError, errorArgs, errorRun)
-		if errorRun.exitCode != 0 {
-			errorResult.Status = LiveDogfoodStatusPass
-			errorResult.Reason = ""
+
+		if commandSupportsSearch(command.Help) {
+			// Search-shape strategy: exit non-zero is PASS (the API rejected
+			// the token); exit 0 is PASS UNLESS --json was supplied and the
+			// output isn't valid JSON. Real-world content/feed APIs return
+			// recent items as a fallback for unmatched queries — non-empty
+			// results are not a failure signal here. The only fail mode is
+			// a search command claiming --json support but emitting non-JSON.
+			suppliedJSON := commandSupportsJSON(command.Help)
+			switch {
+			case errorRun.exitCode != 0:
+				errorResult.Status = LiveDogfoodStatusPass
+				errorResult.Reason = ""
+			case suppliedJSON && !json.Valid([]byte(errorRun.stdout)):
+				errorResult.Status = LiveDogfoodStatusFail
+				errorResult.Reason = "invalid JSON under --json"
+			default:
+				errorResult.Status = LiveDogfoodStatusPass
+				errorResult.Reason = ""
+			}
 		} else {
-			errorResult.Status = LiveDogfoodStatusFail
-			errorResult.Reason = "expected non-zero exit for invalid argument"
+			// Mutation/plain-get strategy preserved: non-zero exit required.
+			if errorRun.exitCode != 0 {
+				errorResult.Status = LiveDogfoodStatusPass
+				errorResult.Reason = ""
+			} else {
+				errorResult.Status = LiveDogfoodStatusFail
+				errorResult.Reason = "expected non-zero exit for invalid argument"
+			}
 		}
 		results = append(results, errorResult)
 	} else {
@@ -274,6 +314,18 @@ func runLiveDogfoodCommand(binaryPath, cliDir string, command liveDogfoodCommand
 	}
 
 	return results
+}
+
+// commandSupportsSearch reports whether a command behaves like a search:
+// either it ships a --query flag, or its Usage suffix carries a <query>
+// positional placeholder. Search-shape commands canonically return exit 0
+// with empty (or fallback) results on no-match, so error_path treats them
+// differently from mutating writes.
+func commandSupportsSearch(help string) bool {
+	if slices.Contains(extractFlagNames(help), "query") {
+		return true
+	}
+	return slices.Contains(extractPositionalPlaceholders(liveDogfoodUsageSuffix(help)), "query")
 }
 
 func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout time.Duration) liveDogfoodRun {

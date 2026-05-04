@@ -234,6 +234,73 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 	}
 }
 
+func TestCommandSupportsSearch(t *testing.T) {
+	tests := []struct {
+		name string
+		help string
+		want bool
+	}{
+		{
+			name: "search via --query flag",
+			help: `Usage:
+  fixture-pp-cli widgets search [flags]
+
+Flags:
+      --query string   Search query
+      --json           Output JSON
+`,
+			want: true,
+		},
+		{
+			name: "search via positional <query>",
+			help: `Usage:
+  fixture-pp-cli widgets search <query> [flags]
+
+Flags:
+      --json   Output JSON
+`,
+			want: true,
+		},
+		{
+			name: "non-search list command — no query signal",
+			help: `Usage:
+  fixture-pp-cli widgets list [flags]
+
+Flags:
+      --limit int   Max items
+      --json        Output JSON
+`,
+			want: false,
+		},
+		{
+			name: "exact-match flag — --queue must not match --query",
+			help: `Usage:
+  fixture-pp-cli widgets dispatch [flags]
+
+Flags:
+      --queue string   Job queue name
+`,
+			want: false,
+		},
+		{
+			name: "mutation command — no query signal",
+			help: `Usage:
+  fixture-pp-cli widgets delete <id> [flags]
+
+Flags:
+      --yes   Confirm
+`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, commandSupportsSearch(tt.help))
+		})
+	}
+}
+
 func TestRunLiveDogfoodJSONFlagDetectionIsExact(t *testing.T) {
 	help := `Usage:
   fixture-pp-cli widgets list [flags]
