@@ -2137,12 +2137,12 @@ Fix order (update heartbeat between each fix category to prevent stale lock duri
 5. missing novel features (see below)
 6. scorecard-only polish gaps
 
-**Missing novel features fix (step 5):** Dogfood writes `novel_features_built` to research.json — only features whose commands actually exist. The original `novel_features` (aspirational list from absorb) is preserved for the audit trail. Dogfood also syncs the generated `README.md` `## Unique Features` block and `SKILL.md` `## Unique Capabilities` block from `novel_features_built`; if none survived, it removes those blocks. After dogfood:
+**Missing novel features fix (step 5):** Dogfood writes `novel_features_built` to research.json — only features whose commands actually exist. The original `novel_features` (aspirational list from absorb) is preserved for the audit trail. Dogfood also syncs the generated `.printing-press.json` `novel_features`, `README.md` `## Unique Features` block, `SKILL.md` `## Unique Capabilities` block, and `internal/cli/root.go` `--help` Highlights block from `novel_features_built`; if none survived, it removes the rendered README/SKILL/root help blocks. Dogfood prints `dogfood: synced ... from novel_features_built` for every rendered artifact it changes. After dogfood:
 
 1. Inspect the dogfood planned-vs-built delta
 2. Build missing approved features when they are still in scope
-3. Rerun dogfood so research.json, `.printing-press.json`, README.md, and SKILL.md are all synced from the verified set
-4. Audit surrounding README/SKILL prose, recipes, trigger phrases, and examples for indirect references to dropped features
+3. Rerun dogfood so research.json, `.printing-press.json`, README.md, SKILL.md, and root `--help` Highlights are all synced from the verified set
+4. Audit surrounding README/SKILL/root help prose, recipes, trigger phrases, and examples for indirect references to dropped features
 5. Log which features were dropped (planned vs built delta)
 
 After fixing each category, update the heartbeat:

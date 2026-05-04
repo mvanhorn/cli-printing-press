@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -164,27 +165,31 @@ func novelFeaturesToManifest(features []NovelFeature) []NovelFeatureManifest {
 // SyncCLIManifestNovelFeatures records dogfood-verified novel features in the
 // generated CLI manifest. Empty verified sets intentionally leave the manifest
 // untouched so a failed or incomplete dogfood pass cannot erase prior metadata.
-func SyncCLIManifestNovelFeatures(dir string, features []NovelFeature) error {
+func SyncCLIManifestNovelFeatures(dir string, features []NovelFeature) (bool, error) {
 	if len(features) == 0 {
-		return nil
+		return false, nil
 	}
 
 	manifestPath := filepath.Join(dir, CLIManifestFilename)
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("reading CLI manifest: %w", err)
+		return false, fmt.Errorf("reading CLI manifest: %w", err)
 	}
 
 	var m CLIManifest
 	if err := json.Unmarshal(data, &m); err != nil {
-		return fmt.Errorf("parsing CLI manifest: %w", err)
+		return false, fmt.Errorf("parsing CLI manifest: %w", err)
 	}
-	m.NovelFeatures = novelFeaturesToManifest(features)
+	updated := novelFeaturesToManifest(features)
+	if reflect.DeepEqual(m.NovelFeatures, updated) {
+		return false, nil
+	}
+	m.NovelFeatures = updated
 
-	return WriteCLIManifest(dir, m)
+	return true, WriteCLIManifest(dir, m)
 }
 
 // findArchivedSpec looks for a spec file archived alongside a generated CLI.

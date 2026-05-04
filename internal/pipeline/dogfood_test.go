@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -787,6 +788,27 @@ func newHealthCmd() *cobra.Command {
 func newHealthCmd() *cobra.Command {
 	return &cobra.Command{Use: "health"}
 }`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "root.go"), strings.Join([]string{
+			"package cli",
+			"",
+			"func newRootCmd() *cobra.Command {",
+			"\trootCmd := &cobra.Command{",
+			"\t\tUse: \"test-pp-cli\",",
+			"\t\tLong: `Test CLI",
+			"",
+			"Highlights (not in the official API docs):",
+			"  • health   planned health",
+			"  • triage   planned triage",
+			"",
+			"Agent mode: add --agent to any command for JSON output + non-interactive mode.",
+			"Health check: run 'test-pp-cli doctor' to verify auth and connectivity.",
+			"See README.md or the bundled SKILL.md for recipes.`,",
+			"\t}",
+			"\trootCmd.AddCommand(newHealthCmd())",
+			"\treturn rootCmd",
+			"}",
+			"",
+		}, "\n"))
 		writeTestFile(t, filepath.Join(cliDir, "README.md"), strings.Join([]string{
 			"# Test CLI",
 			"",
@@ -841,7 +863,10 @@ func newHealthCmd() *cobra.Command {
 		}
 		require.NoError(t, writeResearchJSON(research, researchDir))
 
-		result := checkNovelFeatures(cliDir, researchDir)
+		var stderr string
+		result := captureStderr(t, &stderr, func() NovelFeaturesCheckResult {
+			return checkNovelFeatures(cliDir, researchDir)
+		})
 		assert.Equal(t, 1, result.Found)
 		assert.Equal(t, []string{"triage"}, result.Missing)
 
@@ -865,6 +890,15 @@ func newHealthCmd() *cobra.Command {
 		assert.Contains(t, skill, "**`health`**")
 		assert.NotContains(t, skill, "triage")
 		assert.Less(t, strings.Index(skill, "## Unique Capabilities"), strings.Index(skill, "## Command Reference"))
+
+		rootData, err := os.ReadFile(filepath.Join(cliCodeDir, "root.go"))
+		require.NoError(t, err)
+		root := string(rootData)
+		assert.Contains(t, root, "Highlights (not in the official API docs):")
+		assert.Contains(t, root, "health   See scheduling health metrics at a glance")
+		assert.NotContains(t, root, "planned health")
+		assert.NotContains(t, root, "triage")
+		assert.Contains(t, stderr, "dogfood: synced internal/cli/root.go (Highlights) from novel_features_built")
 	})
 
 	t.Run("inserts README and SKILL sections when absent", func(t *testing.T) {
@@ -965,6 +999,24 @@ func TestCheckNovelFeatures_ZeroSurvivors(t *testing.T) {
 	cliCodeDir := filepath.Join(cliDir, "internal", "cli")
 	require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
 	// No command files — nothing registered
+	writeTestFile(t, filepath.Join(cliCodeDir, "root.go"), strings.Join([]string{
+		"package cli",
+		"",
+		"func newRootCmd() *cobra.Command {",
+		"\treturn &cobra.Command{",
+		"\t\tUse: \"test-pp-cli\",",
+		"\t\tLong: `Test CLI",
+		"",
+		"Highlights (not in the official API docs):",
+		"  • health   planned health",
+		"",
+		"Agent mode: add --agent to any command for JSON output + non-interactive mode.",
+		"Health check: run 'test-pp-cli doctor' to verify auth and connectivity.",
+		"See README.md or the bundled SKILL.md for recipes.`,",
+		"\t}",
+		"}",
+		"",
+	}, "\n"))
 	writeTestFile(t, filepath.Join(cliDir, "README.md"), strings.Join([]string{
 		"# Test CLI",
 		"",
@@ -1027,6 +1079,30 @@ func TestCheckNovelFeatures_ZeroSurvivors(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(skillData), "## Unique Capabilities")
 	assert.Contains(t, string(skillData), "## Command Reference")
+
+	rootData, err := os.ReadFile(filepath.Join(cliCodeDir, "root.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(rootData), "Highlights (not in the official API docs):")
+	assert.NotContains(t, string(rootData), "planned health")
+}
+
+func captureStderr[T any](t *testing.T, captured *string, fn func() T) T {
+	t.Helper()
+
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stderr = w
+
+	result := fn()
+
+	require.NoError(t, w.Close())
+	os.Stderr = old
+	out, err := io.ReadAll(r)
+	require.NoError(t, err)
+	require.NoError(t, r.Close())
+	*captured = string(out)
+	return result
 }
 
 func TestDeriveDogfoodVerdict_NovelFeatures(t *testing.T) {

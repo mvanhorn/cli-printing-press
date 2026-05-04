@@ -337,11 +337,22 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 	if err := WriteNovelFeaturesBuilt(researchDir, built); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write novel_features_built: %v\n", err)
 	} else {
-		if err := SyncCLIManifestNovelFeatures(cliDir, built); err != nil {
+		if changed, err := SyncCLIManifestNovelFeatures(cliDir, built); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not sync novel_features to CLI manifest: %v\n", err)
+		} else if changed {
+			fmt.Fprintln(os.Stderr, "dogfood: synced .printing-press.json (novel_features) from novel_features_built")
 		}
-		if err := SyncCLITranscendenceDocs(cliDir, built); err != nil {
+		if artifacts, err := SyncCLITranscendenceDocs(cliDir, built); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not sync transcendence docs: %v\n", err)
+		} else {
+			for _, artifact := range artifacts {
+				fmt.Fprintf(os.Stderr, "dogfood: synced %s (%s) from novel_features_built\n", artifact.Path, artifact.Detail)
+			}
+		}
+		if changed, err := SyncCLIRootHighlights(cliDir, built); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not sync root highlights: %v\n", err)
+		} else if changed {
+			fmt.Fprintln(os.Stderr, "dogfood: synced internal/cli/root.go (Highlights) from novel_features_built")
 		}
 	}
 
