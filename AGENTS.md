@@ -16,7 +16,7 @@ A printed CLI wraps an API; it does not replace one. Novel-feature commands must
 - Reject endpoint stubs that return `"OK"` or a canned success message without calling the client.
 - Reject aggregations computed in-process when the API has an aggregation endpoint.
 - Reject enum mappings and reference data synthesized locally when the API returns them.
-- Carve-outs: commands that read from `internal/store`; commands that operate on the local SQLite file via `database/sql`; commands that call the API and then cache to the store; commands whose data is curated static content via `// pp:novel-static-reference`; commands that make a real hidden client call via `// pp:client-call`.
+- Carve-outs: commands that read from `internal/store`; commands that operate on the local SQLite file via `database/sql`; commands that call the API and then cache to the store; commands whose data is curated static content via `// pp:novel-static-reference`; commands that make a real hidden client call via `// pp:client-call`, but only when the hidden helper performs a real external API call. Do not use `// pp:client-call` for hardcoded payloads, local-only transforms, or fake endpoint stubs.
 Enforced by the absorb manifest's Kill Check (`skills/printing-press/references/absorb-scoring.md`) and dogfood's `reimplementation_check`, which flags handler files showing neither a client call nor a store access without an opt-out.
 
 ## Agent-Native Surface
@@ -53,6 +53,7 @@ Always use relative paths for build output. Never build to `/tmp` or another sha
 ## Generator Output Stability
 Run `scripts/golden.sh verify` whenever a change may affect CLI command output, catalog rendering, browser-sniff or crowd-sniff output, generated specs or generated printed CLI files, templates under `internal/generator/templates/`, naming, endpoint derivation, auth emission, manifest generation, scorecard output, or pipeline artifacts.
 Never update goldens just to make a failing check pass. Run `scripts/golden.sh update` only when the behavior change is intentional, then inspect the diff and explain it in your final response. See [`docs/GOLDEN.md`](docs/GOLDEN.md) for the decision rubric, fixture conventions, and failure handling.
+When adding a new deterministic CLI behavior or generated artifact contract, explicitly decide whether the golden suite needs a new or expanded fixture. A passing `scripts/golden.sh verify` on existing cases does not prove coverage for new auth, pagination, MCP, manifest, naming, or similar deterministic generation behavior.
 
 ## Project Structure
 - `cmd/printing-press/` - CLI entry point
