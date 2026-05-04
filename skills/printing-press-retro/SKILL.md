@@ -415,14 +415,21 @@ the Do/Skip tables, they go on the dropped-candidates list with the reason.
 
 **4. Where in the Printing Press does this originate?**
 
-| Component | Path |
-|-----------|------|
-| Generator templates | `internal/generator/` |
-| Spec parser | `internal/spec/` |
-| OpenAPI parser | `internal/openapi/` |
-| Catalog | `catalog/` |
-| Main skill | `skills/printing-press/SKILL.md` |
-| Verify/dogfood/scorecard | CLI commands |
+Pick exactly one component. The `slug` column drives the `comp:<slug>` label
+applied to the WU sub-issue when filed (Phase 6), which is how agents filter
+related WUs across retros (`gh issue list --label comp:<slug>`).
+
+| Component | Slug | Path |
+|-----------|------|------|
+| Generator templates | `generator` | `internal/generator/` |
+| Spec parser | `spec-parser` | `internal/spec/` |
+| OpenAPI parser | `openapi-parser` | `internal/openapi/` |
+| Catalog | `catalog` | `catalog/` |
+| Main skill | `skill` | `skills/printing-press/SKILL.md` |
+| Verify/dogfood/scorecard | `scorer` | CLI commands |
+
+If a finding genuinely spans two components, pick the one where the durable
+fix lands. Don't multi-label.
 
 **5. Blast radius and fallback cost — should the Printing Press handle this?**
 
@@ -453,6 +460,25 @@ benefit math has been "no" twice. Don't re-raise it at the same priority — eit
 to P3 with a "raised N times, still not justified" annotation, or reframe the finding
 into a smaller incremental fix that addresses part of the friction. Recurrence at the
 same priority is a triage failure, not stronger evidence.
+
+**Capture matched prior retros.** When the search returns hits, record each as a
+structured tuple — retro CLI name, retro file path (or GitHub issue number if the
+retro file's frontmatter contains one), and a one-word classification:
+
+- `aligned` — the prior retro proposed the same fix direction. Strengthens the case;
+  reference it in Step F.
+- `contradicts` — the prior retro proposed an *opposing* fix or chose a different
+  default. Surface this explicitly: a maintainer reading the new finding must see
+  the disagreement. State in one sentence why this retro reaches a different
+  conclusion (e.g., "prior retro saw single-paginator APIs; this one saw an
+  always-paginated API where the prior default would break").
+- `extends` — the prior retro raised an adjacent finding in the same component
+  area but a different specific fix. Useful context, doesn't change the case.
+
+These tuples flow forward into the per-finding template ("Related prior retros")
+and into the issue body when the finding becomes a sub-issue. GitHub auto-cross-
+links any `#N` issue number you write, so contradictions and alignments will show
+up in both retro timelines without further action.
 
 **Step E: Assess fallback cost.** How reliably will Claude catch and fix this across every
 future API? A "simple" edit Claude forgets 30% of the time means 30% ship with the defect.
@@ -563,6 +589,9 @@ Write the full retro document using this template:
 - **Durable fix:** ...
 - **Test:** How to verify (positive + negative)
 - **Evidence:** Session moment that surfaced this
+- **Related prior retros:** *(from Phase 3 Step D; "None" if no matches)*
+  - `<api-slug>` retro #<issue-num-if-known> — `aligned` / `contradicts` / `extends`. <one-sentence note on what changed or what's shared>
+  - ...
 
 ## Prioritized Improvements
 
@@ -632,6 +661,11 @@ For each "Do" finding or group of related findings:
 
 ```markdown
 ### WU-1: <Title> (from F1, F3, ...)
+- **Priority:** P1 / P2 / P3 *(max priority among absorbed findings — P1 if any
+  absorbed finding is P1, else P2 if any is P2, else P3)*
+- **Component:** generator / openapi-parser / spec-parser / scorer / skill / catalog
+  *(must match one of the six fixed component slugs; drives the `comp:*` label
+  applied to the sub-issue when filed)*
 - **Goal:** One sentence describing the outcome
 - **Target:** <component and area, e.g., "Generator templates in internal/generator/">
 - **Acceptance criteria:**
@@ -641,6 +675,12 @@ For each "Do" finding or group of related findings:
 - **Dependencies:** Other work units that must complete first
 - **Complexity:** small / medium / large
 ```
+
+The six fixed component slugs are: `generator` (`internal/generator/`),
+`openapi-parser` (`internal/openapi/`), `spec-parser` (`internal/spec/`),
+`scorer` (verify / dogfood / scorecard), `skill` (`skills/printing-press/SKILL.md`),
+`catalog` (`catalog/`). If a WU genuinely spans two, pick the **primary** one — the
+component where the durable fix will land. Pick exactly one; don't multi-label.
 
 **If running from inside the printing-press repo (`IN_REPO=true`):**
 Resolve target file paths using Glob and Grep tool invocations on `$REPO_ROOT` to
@@ -694,19 +734,41 @@ This is both the review target and the upload source.
 *This step only runs if the Phase 5.6 issue gate passed (there are Printing Press findings to act on).*
 
 Before uploading anything, show the user a friendly summary and ask for confirmation
-via `AskUserQuestion`.
+via `AskUserQuestion`. Tailor the wording to whether this is single-issue or
+parent-with-sub-issues mode (see `references/issue-template.md` Step 2 for the
+`WU_COUNT` dispatch).
+
+For **2+ WUs** (parent-with-sub-issues mode):
 
 > **Ready to submit your retro.**
 >
-> Here's what will happen:
+> Here's what will happen on [mvanhorn/cli-printing-press](https://github.com/mvanhorn/cli-printing-press):
 >
-> - A GitHub issue will be created on [mvanhorn/cli-printing-press](https://github.com/mvanhorn/cli-printing-press) with your **<N> findings** and **<M> work units**
-> - Scrubbed artifact zips will be uploaded to catbox.moe and linked from the issue:
+> - **1 parent issue** with retro context (session stats, findings tables, artifact links)
+> - **<M> sub-issues** — one per work unit, each with its own priority, component, and finding details, so each fix can be tracked, assigned, and closed independently
+> - Labels: `retro`, `retro-parent` (parent only), `priority:P1`/`priority:P2`/`priority:P3` and `comp:*` (sub-issues), so future agents can filter all retro WUs by area or priority
+> - Scrubbed artifact zips uploaded to catbox.moe and linked from the parent:
 >   - **Manuscripts** (<size>) — research brief, shipcheck proof, build logs
 >   - **CLI source** (<size>) — the generated Go code (no binary, no vendor/) *(omit if not available)*
 >
 > **Top findings:**
 > - <1-3 sentence summary of the highest-priority Do Now items>
+>
+> Everything is staged at `<$STAGING_DIR>` if you'd like to inspect the files first.
+
+For **1 WU** (single-issue mode):
+
+> **Ready to submit your retro.**
+>
+> Here's what will happen on [mvanhorn/cli-printing-press](https://github.com/mvanhorn/cli-printing-press):
+>
+> - **1 GitHub issue** with the retro context, work unit, and absorbed findings inline
+> - Labels: `retro`, `priority:P<n>`, `comp:<slug>`, so future agents can filter related work across retros
+> - Scrubbed artifact zips uploaded to catbox.moe and linked from the issue:
+>   - **Manuscripts** (<size>) — research brief, shipcheck proof, build logs
+>   - **CLI source** (<size>) — the generated Go code *(omit if not available)*
+>
+> **Top finding:** <one-sentence summary>
 >
 > Everything is staged at `<$STAGING_DIR>` if you'd like to inspect the files first.
 
@@ -727,15 +789,32 @@ folder, then jump to Step 6.
 Run artifact-packaging.md Step 5 (the catbox upload) using the zips already in
 `$STAGING_DIR`. This produces `$MANUSCRIPTS_URL` and `$CLI_SOURCE_URL`.
 
-### Step 4: Create GitHub issue
+### Step 4: Create GitHub issue(s)
 
-Read and apply [references/issue-template.md](references/issue-template.md).
+Read and apply [references/issue-template.md](references/issue-template.md). It
+covers:
 
-Build the issue body from the retro findings (distilled summary — not the full retro
-document). Create the issue via `gh issue create --repo mvanhorn/cli-printing-press`.
+1. **Step 1: Ensure labels exist** — create-only `gh label create` safety net
+   for the 9 canonical labels (6 `comp:*` + `priority:P1`/`priority:P2`/`priority:P3`)
+   plus the `retro` / `retro-parent` markers. Run once per invocation. Never
+   edits existing labels.
+2. **Step 2: Dispatch on WU count** — `single` mode (1 WU, inline body) or
+   `parent-with-subs` mode (2+ WUs, parent issue + one sub-issue per WU linked
+   via the GitHub sub-issues REST API).
+3. The full body templates and the `gh api` calls for sub-issue linkage.
 
-If `gh` is not authenticated or issue creation fails, follow the graceful degradation
-path in the issue-template reference: save locally and print manual filing instructions.
+Each sub-issue carries its own `priority:P<n>` priority label and `comp:<slug>` component
+label. This is what enables `gh issue list --label comp:openapi-parser` to surface
+every retro WU in that area across every retro — the cross-retro discovery that
+single-issue retros couldn't support.
+
+Each WU sub-issue body also includes the **Related prior retros** block populated
+in Phase 3 Step D, so contradictions and alignments with earlier retros are
+visible and auto-cross-linked in GitHub timelines.
+
+If `gh` is not authenticated, the sub-issues REST endpoint is unavailable, or any
+issue creation fails, follow the graceful degradation path in the issue-template
+reference: save locally and print manual filing instructions.
 
 ### Step 5: Local scratch copy
 
@@ -751,18 +830,50 @@ fi
 
 ### Step 6: Present results
 
-After the issue is created, show the user:
+After the issue(s) are created, show the user a summary tailored to `$ISSUE_MODE`.
+
+For **`parent-with-subs`** (`WU_COUNT >= 2`):
 
 > **Retro submitted!**
 >
-> Issue: <full https:// URL>
+> Parent issue: <full $PARENT_URL>
+> Sub-issues (<M> WUs, P1 → P3 order):
+>   - [P1] WU-1: <title> — <full WU-1 URL>
+>   - [P1] WU-2: <title> — <full WU-2 URL>
+>   - [P2] WU-3: <title> — <full WU-3 URL>
+>   - ...
 >
-> Found <N> findings across <M> work units.
+> Found <N> findings across <M> work units. Sub-issues are tagged with
+> `comp:<slug>` and `priority:P<n>` labels — agents can filter related WUs
+> across retros with `gh issue list --label comp:<slug>` or
+> `gh issue list --label priority:P1`.
 > *(if artifacts uploaded)* Artifacts: [manuscripts](<URL>) · [CLI source](<URL>)
 > Local copy: <$RETRO_SCRATCH_PATH>
 
-If the issue wasn't created (user chose local-only, or gh failed), show the local
-save paths instead.
+If `$FAILED_WUS` is non-empty (set by `references/issue-template.md` Step P3),
+append a warning block before the closing line:
+
+> ⚠️ Some WUs need attention:
+>   - WU-2 (...) — issue creation failed
+>   - WU-4 (#1234) — sub-issue link failed (cross-link in body remains)
+>
+> The parent issue's "Work Units" table marks failed creations as
+> "**FAILED — file manually**" so the gap is visible. Re-run the skill or file
+> the missing sub-issue(s) manually using the retro doc at <$RETRO_SCRATCH_PATH>.
+
+For **`single`** (`WU_COUNT == 1`):
+
+> **Retro submitted!**
+>
+> Issue: <full $ISSUE_URL>
+>
+> 1 work unit (P<n>, comp:<slug>) absorbing <N> findings.
+> *(if artifacts uploaded)* Artifacts: [manuscripts](<URL>) · [CLI source](<URL>)
+> Local copy: <$RETRO_SCRATCH_PATH>
+
+If issue creation wasn't completed (user chose local-only, or gh failed), show
+the local save paths and the manual filing instructions printed by the
+issue-template fallback path.
 
 ### Step 7: Clean up staging folder
 
