@@ -158,7 +158,11 @@ Detail in [`docs/SKILLS.md`](docs/SKILLS.md): workflow parity, the reference-fil
 - The same string literal repeated across sites where the categorical-const rule should have applied
 
 ## Editing AGENTS.md
-The "Code & Comment Hygiene" rules apply here too. Keep inline `AGENTS.md` rules command-shaped and update them when their extracted doc changes. See [`docs/DOCS.md`](docs/DOCS.md) for the full doc-authoring rules and the pointer-rot requirement.
+The "Code & Comment Hygiene" rules apply here too. Keep inline `AGENTS.md` rules command-shaped: trigger, required action or prohibition, concrete values, then a pointer to any longer doc.
+
+**Pointer-rot rule.** When editing a doc under `docs/` that `AGENTS.md` points to, update the inline trigger sentence here in the same PR if applicability changes — a new fire condition, a removed fire condition, or a changed prohibition, enum, file path, test name, or required value. The inline rule is what the agent sees on every turn; the extracted doc is only loaded if the agent follows the pointer.
+
+See [`docs/DOCS.md`](docs/DOCS.md) for the full doc-authoring rules.
 
 ## Patterns
 Cross-cutting design patterns are documented in [`docs/PATTERNS.md`](docs/PATTERNS.md). Notably **Deterministic Inventory + Agent-Marked Ledger** — the shape used by `printing-press tools-audit` for workflows that combine mechanical detection with per-item agent judgment.
