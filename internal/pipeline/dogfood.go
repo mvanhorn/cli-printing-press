@@ -1776,9 +1776,10 @@ func extractExamplesSection(helpOutput string) string {
 	return strings.TrimSpace(strings.Join(examples, "\n"))
 }
 
+var extractFlagNameRe = regexp.MustCompile(`--([a-z][-a-z0-9]*)`)
+
 func extractFlagNames(text string) []string {
-	re := regexp.MustCompile(`--([a-z][-a-z0-9]*)`)
-	matches := re.FindAllStringSubmatch(text, -1)
+	matches := extractFlagNameRe.FindAllStringSubmatch(text, -1)
 	seen := make(map[string]struct{})
 	var flags []string
 	for _, match := range matches {

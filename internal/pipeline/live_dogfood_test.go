@@ -185,6 +185,15 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 			want: "FAIL",
 		},
 		{
+			name:  "quick 1-command all pass — 4 entries should PASS via min(5, M) threshold",
+			level: "quick",
+			results: []LiveDogfoodTestResult{
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
+				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
+			},
+			want: "PASS",
+		},
+		{
 			name:  "quick 4 pass + 1 fail — Failed dominates",
 			level: "quick",
 			results: []LiveDogfoodTestResult{
@@ -415,13 +424,13 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		timeout:  time.Second,
 	}
 
-	// No positionals → resolveOK with happyArgs unchanged.
+	// No positionals → not-skipped, happyArgs unchanged.
 	cmd := liveDogfoodCommand{
 		Path: []string{"widgets", "list"},
 		Help: "Usage:\n  cli widgets list [flags]\n",
 	}
-	args, status, _ := resolveCommandPositionals(cmd, []string{"widgets", "list"}, ctx)
-	assert.Equal(t, resolveOK, status)
+	args, skipped, _ := resolveCommandPositionals(cmd, []string{"widgets", "list"}, ctx)
+	assert.False(t, skipped)
 	assert.Equal(t, []string{"widgets", "list"}, args)
 
 	// Non-id-shape positional (<query>) at depth 0 → skip.
@@ -429,8 +438,8 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"widgets", "search"},
 		Help: "Usage:\n  cli widgets search <query> [flags]\n",
 	}
-	_, status, reason := resolveCommandPositionals(cmd, []string{"widgets", "search", "x"}, ctx)
-	assert.Equal(t, resolveSkip, status)
+	_, skipped, reason := resolveCommandPositionals(cmd, []string{"widgets", "search", "x"}, ctx)
+	assert.True(t, skipped)
 	assert.Contains(t, reason, "non-id positional")
 
 	// id-shape positional (bare `id`) but no companion → skip.
@@ -438,8 +447,8 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"widgets", "get"},
 		Help: "Usage:\n  cli widgets get <id> [flags]\n",
 	}
-	_, status, reason = resolveCommandPositionals(cmd, []string{"widgets", "get", "x"}, ctx)
-	assert.Equal(t, resolveSkip, status)
+	_, skipped, reason = resolveCommandPositionals(cmd, []string{"widgets", "get", "x"}, ctx)
+	assert.True(t, skipped)
 	assert.Contains(t, reason, "no list companion")
 
 	// camelCase id-shape positional (movieId) but no companion → skip.
@@ -447,8 +456,8 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"movies", "get"},
 		Help: "Usage:\n  cli movies get <movieId> [flags]\n",
 	}
-	_, status, reason = resolveCommandPositionals(cmd, []string{"movies", "get", "x"}, ctx)
-	assert.Equal(t, resolveSkip, status)
+	_, skipped, reason = resolveCommandPositionals(cmd, []string{"movies", "get", "x"}, ctx)
+	assert.True(t, skipped)
 	assert.Contains(t, reason, "no list companion")
 
 	// Path shorter than placeholders + 1 → skip.
@@ -456,8 +465,8 @@ func TestResolveCommandPositionalsSkipPaths(t *testing.T) {
 		Path: []string{"get"},
 		Help: "Usage:\n  cli get <id> <name> [flags]\n",
 	}
-	_, status, _ = resolveCommandPositionals(cmd, []string{"get", "x", "y"}, ctx)
-	assert.Equal(t, resolveSkip, status)
+	_, skipped, _ = resolveCommandPositionals(cmd, []string{"get", "x", "y"}, ctx)
+	assert.True(t, skipped)
 }
 
 func TestCommandSupportsSearch(t *testing.T) {
@@ -505,6 +514,32 @@ Flags:
 
 Flags:
       --queue string   Job queue name
+`,
+			want: false,
+		},
+		{
+			name: "Examples block mentioning --query does NOT trigger search-shape (Flags-section scoping)",
+			help: `Usage:
+  fixture-pp-cli widgets delete <id> [flags]
+
+Examples:
+  fixture-pp-cli widgets delete 42
+  # related: fixture-pp-cli widgets list --query=foo
+
+Flags:
+      --yes   Confirm
+`,
+			want: false,
+		},
+		{
+			name: "Long block mentioning --query does NOT trigger search-shape",
+			help: `Long: To delete by filter, see the related --query syntax in widgets list.
+
+Usage:
+  fixture-pp-cli widgets purge <id> [flags]
+
+Flags:
+      --force   Skip confirmation
 `,
 			want: false,
 		},

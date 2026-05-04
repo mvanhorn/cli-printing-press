@@ -2944,12 +2944,16 @@ func (g *Generator) mcpParamDescription(p spec.Param) string {
 func exampleValue(p spec.Param) string {
 	nameLower := strings.ToLower(p.Name)
 
-	// camelCase `*Id` carries a string-type fence so bool/numeric params
-	// ending in "id" (e.g. paid, valid) get their own branches.
+	// camelCase `*Id` carries an exclusion fence so bool/numeric params
+	// ending in "id" (e.g. paid, valid) get their own branches. The fence
+	// is expressed as "not numeric/boolean" rather than "is string" so
+	// alternative string-shaped types (e.g., `uuid`, `guid`) still match.
+	isNumericOrBool := p.Type == "boolean" || p.Type == "bool" ||
+		p.Type == "integer" || p.Type == "int" ||
+		p.Type == "number" || p.Type == "float"
 	if nameLower == "id" ||
 		strings.HasSuffix(nameLower, "_id") ||
-		(strings.HasSuffix(nameLower, "id") && len(nameLower) > 2 &&
-			(p.Type == "string" || p.Type == "")) {
+		(strings.HasSuffix(nameLower, "id") && len(nameLower) > 2 && !isNumericOrBool) {
 		return "550e8400-e29b-41d4-a716-446655440000"
 	}
 	if strings.Contains(nameLower, "email") {

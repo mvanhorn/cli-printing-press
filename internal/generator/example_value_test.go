@@ -50,6 +50,12 @@ func TestExampleValueIDRecognition(t *testing.T) {
 		// away from the UUID branch and into the existing type logic.
 		{"int countId routes to count branch", spec.Param{Name: "countId", Type: "integer"}, "50"},
 
+		// String-shaped alternative types (uuid, guid) ARE matched by the
+		// not-numeric-or-bool fence. Spec authors emitting non-canonical
+		// type strings get UUID examples just like canonical "string".
+		{"camel movieId uuid type", spec.Param{Name: "movieId", Type: "uuid"}, uuid},
+		{"camel personId guid type", spec.Param{Name: "personId", Type: "guid"}, uuid},
+
 		// Negative — does not end in `id`.
 		{"userIdentifier", spec.Param{Name: "userIdentifier", Type: "string"}, "example-value"},
 		{"empty name", spec.Param{Name: "", Type: "string"}, "example-value"},
