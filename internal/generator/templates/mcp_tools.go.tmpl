@@ -177,9 +177,8 @@ func makeAPIHandler(method, pathTemplate string, positionalParams []string) serv
 		args := req.GetArguments()
 
 		// positionalParams mixes real URL path params with CLI positional
-		// args that map to query params (e.g. `search <query>` -> ?query=).
-		// Only treat an entry as a path param when the path template
-		// actually contains {name}; everything else stays in the query map.
+		// args that map to query params (e.g. `search <query>` -> ?query=);
+		// the placeholder check below disambiguates them at runtime.
 		path := pathTemplate
 		pathParams := make(map[string]bool, len(positionalParams))
 		for _, p := range positionalParams {

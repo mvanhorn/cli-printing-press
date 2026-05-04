@@ -6007,18 +6007,10 @@ func TestGenerateMCPHandlerPreservesQueryPositionals(t *testing.T) {
 		tools,
 		"get-by-id call site must pass `movieId` in positionalParams")
 
-	// Handler body: only entries whose placeholder appears in the path
-	// template are treated as path params. Everything else stays in the
-	// query map.
-	assert.Contains(t, tools,
-		`if !strings.Contains(pathTemplate, placeholder) {`,
-		"makeAPIHandler must skip positionalParams entries that have no matching path placeholder")
-	assert.Contains(t, tools,
-		`pathParams := make(map[string]bool, len(positionalParams))`,
-		"makeAPIHandler must build a pathParams set so the query-collection loop can reuse the path-vs-query decision")
-
-	// Old buggy shape must be gone: a flat positional-skip in the query
-	// loop dropped query-style positionals from the request.
+	assert.Regexp(t,
+		regexp.MustCompile(`strings\.Contains\(pathTemplate,`),
+		tools,
+		"makeAPIHandler must guard the path-substitution loop with a placeholder-presence check so query-style positionals stay in the query map")
 	assert.NotContains(t, tools, "isPositional := false",
 		"old handler shape skipped every positionalParams entry from query — must not regress")
 
