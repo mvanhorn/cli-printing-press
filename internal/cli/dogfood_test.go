@@ -1,9 +1,6 @@
 package cli
 
 import (
-	"bytes"
-	"io"
-	"os"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
@@ -30,21 +27,14 @@ func TestPrintDogfoodReportRespectsSkippedPathCheck(t *testing.T) {
 	assert.NotContains(t, out, "Path Validity:     0/0 valid (FAIL)")
 }
 
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
+func TestDogfoodHelpIncludesLiveFlags(t *testing.T) {
+	cmd := newDogfoodCmd()
+	cmd.SetArgs([]string{"--help"})
 
-	orig := os.Stdout
-	r, w, err := os.Pipe()
+	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
-	os.Stdout = w
-	defer func() { os.Stdout = orig }()
 
-	fn()
-	require.NoError(t, w.Close())
-
-	var buf bytes.Buffer
-	_, err = io.Copy(&buf, r)
-	require.NoError(t, err)
-	require.NoError(t, r.Close())
-	return buf.String()
+	assert.Contains(t, output, "--live")
+	assert.Contains(t, output, "--level")
+	assert.Contains(t, output, "--write-acceptance")
 }

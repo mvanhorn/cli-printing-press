@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
 	"github.com/spf13/cobra"
@@ -16,6 +17,11 @@ func newDogfoodCmd() *cobra.Command {
 	var specPath string
 	var researchDir string
 	var asJSON bool
+	var live bool
+	var level string
+	var timeout time.Duration
+	var writeAcceptance string
+	var authEnv string
 
 	cmd := &cobra.Command{
 		Use:   "dogfood",
@@ -27,6 +33,32 @@ func newDogfoodCmd() *cobra.Command {
   # Output as JSON for programmatic use
   printing-press dogfood --dir ./generated/stripe-pp-cli --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if live {
+				report, err := pipeline.RunLiveDogfood(pipeline.LiveDogfoodOptions{
+					CLIDir:              dir,
+					Level:               level,
+					Timeout:             timeout,
+					WriteAcceptancePath: writeAcceptance,
+					AuthEnv:             authEnv,
+				})
+				if err != nil {
+					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("running live dogfood: %w", err)}
+				}
+				if asJSON {
+					enc := json.NewEncoder(os.Stdout)
+					enc.SetIndent("", "  ")
+					if err := enc.Encode(report); err != nil {
+						return err
+					}
+				} else {
+					printLiveDogfoodReport(report)
+				}
+				if report.Verdict != "PASS" {
+					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("live dogfood failed: %d/%d tests failed", report.Failed, report.MatrixSize)}
+				}
+				return nil
+			}
+
 			var opts []pipeline.DogfoodOption
 			if researchDir != "" {
 				opts = append(opts, pipeline.WithResearchDir(researchDir))
@@ -51,8 +83,32 @@ func newDogfoodCmd() *cobra.Command {
 	cmd.Flags().StringVar(&specPath, "spec", "", "Path to the OpenAPI spec file")
 	cmd.Flags().StringVar(&researchDir, "research-dir", "", "Pipeline directory containing research.json for novel features validation")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	cmd.Flags().BoolVar(&live, "live", false, "Run the Phase 5 live command-tree dogfood matrix")
+	cmd.Flags().StringVar(&level, "level", "full", "Live dogfood depth: quick or full")
+	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Timeout for each live dogfood test")
+	cmd.Flags().StringVar(&writeAcceptance, "write-acceptance", "", "Write phase5-acceptance.json to this path when live dogfood passes")
+	cmd.Flags().StringVar(&authEnv, "auth-env", "", "Environment variable that proves an API credential was available for the acceptance marker")
 	_ = cmd.MarkFlagRequired("dir")
 	return cmd
+}
+
+func printLiveDogfoodReport(report *pipeline.LiveDogfoodReport) {
+	fmt.Printf("Live Dogfood Report: %s\n", filepath.Base(report.Dir))
+	fmt.Println("================================")
+	fmt.Println()
+	fmt.Printf("Level:      %s\n", report.Level)
+	fmt.Printf("Verdict:    %s\n", report.Verdict)
+	fmt.Printf("Commands:   %d\n", len(report.Commands))
+	fmt.Printf("Tests:      %d passed, %d failed, %d skipped\n", report.Passed, report.Failed, report.Skipped)
+	fmt.Println()
+	for _, result := range report.Tests {
+		status := strings.ToUpper(string(result.Status))
+		fmt.Printf("[%s] %s %s", status, result.Command, result.Kind)
+		if result.Reason != "" {
+			fmt.Printf(": %s", result.Reason)
+		}
+		fmt.Println()
+	}
 }
 
 func printDogfoodReport(report *pipeline.DogfoodReport) {

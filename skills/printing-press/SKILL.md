@@ -2329,33 +2329,32 @@ easiest to test and the most embarrassing to ship untested.
 
 Do NOT proceed without asking. Do NOT substitute an ad-hoc smoke test. If some commands cannot be exercised because fixture values are missing, classify them as `BLOCKED_FIXTURE` and file/fix the machine gap; do not use that as a reason to recommend Quick.
 
-### Step 2: Build the test matrix mechanically
+### Step 2: Run the binary-owned test matrix
 
-**Full dogfood is not a judgment call about "enough."** Build the test matrix from the CLI's actual command tree:
-
-1. Parse `<cli> --help` recursively until every leaf subcommand is enumerated.
-2. Write the full command list to `$PROOFS_DIR/<stamp>-dogfood-matrix.txt` before running any tests.
-3. For each leaf subcommand, generate at minimum these tests:
-   - **Help check**: `<cli> <subcmd> --help` returns exit 0 and produces an Examples section.
-   - **Happy path**: one invocation with realistic args. Exit 0 expected.
-   - **JSON fidelity**: append `--json` to the happy path; pipe through `python3 -c "import sys,json; json.load(sys.stdin)"` to assert valid JSON.
-   - **Error path** (when the command takes an arg): one invocation with a deliberately bad arg (invalid ID, malformed date, non-existent URL). Exit non-zero expected.
-4. Render a live progress line at start: `Dogfood matrix: N leaves × 3-4 tests = M tests total. Running...`
-5. Report pass/fail per test, accumulate to a final tally, and write `$PROOFS_DIR/<stamp>-dogfood-results.md`.
-
-**Critical: pipe-free exit-code checks.** A shell command like `"$BIN" foo | tail -2` captures `tail`'s exit code, not the binary's. Always run as:
+**Full dogfood is not a judgment call about "enough."** Run the Printing
+Press-owned live matrix so command enumeration, exit-code capture, JSON parsing,
+and acceptance-marker writing are deterministic:
 
 ```bash
-DOGFOOD_TMP_DIR="/tmp/printing-press/dogfood"
-mkdir -p "$DOGFOOD_TMP_DIR"
-OUT_FILE="$(mktemp "$DOGFOOD_TMP_DIR/<api>-out-XXXXXX")"
-"$BIN" <subcmd> <args> > "$OUT_FILE" 2>&1
-code=$?
-# then check $code directly
-rm -f "$OUT_FILE"
+printing-press dogfood --live \
+  --dir "$CLI_WORK_DIR" \
+  --level full \
+  --json \
+  --write-acceptance "$PROOFS_DIR/phase5-acceptance.json"
 ```
 
-Never use `"$BIN" ... && echo ok || echo fail` for exit-code testing — short-circuit and unpredictable piping masks real failures.
+Use `--level quick` only when the user selected Quick Check in Step 1.
+
+The live dogfood runner enumerates the CLI's `agent-context` command tree,
+runs help, happy-path, JSON-fidelity, and error-path checks where applicable,
+captures subprocess exit codes directly without shell pipes, and emits a
+structured report with pass/fail/skipped counts. Save the JSON report to:
+
+`$PROOFS_DIR/<stamp>-dogfood-results.json`
+
+If the command exits non-zero, inspect the structured failures, fix the CLI, and
+rerun live dogfood. Do not hand-edit `phase5-acceptance.json`; it must come from
+the runner.
 
 **Quick check (auto-selected test subset):**
 1. `doctor` — auth valid, API reachable.
@@ -2370,8 +2369,6 @@ Never use `"$BIN" ... && echo ok || echo fail` for exit-code testing — short-c
 - For every command that takes an arg, one error-path test.
 - For every command that supports `--json`, one JSON parse validation.
 - For write-side commands (when API key + user consent): create test entity with obviously-test data, verify in subsequent list/get, test one mutation, verify change.
-
-**Binary support:** future versions of `printing-press dogfood --live` will run this matrix as a single command — see issue #198. Until that ships, the agent must construct the matrix manually from `--help` and run it.
 
 ### Step 3: Fix issues inline
 

@@ -28,6 +28,16 @@ func runWithCapturedStdout(t *testing.T, fn func() error) (string, error) {
 	return string(out), execErr
 }
 
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	out, err := runWithCapturedStdout(t, func() error {
+		fn()
+		return nil
+	})
+	require.NoError(t, err)
+	return out
+}
+
 func TestCatalogListJSON(t *testing.T) {
 	cmd := newCatalogCmd()
 	cmd.SetArgs([]string{"list", "--json"})
