@@ -182,8 +182,8 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&clientID, "client-id", os.Getenv("{{upper .Name}}_CLIENT_ID"), "OAuth2 client ID")
-	cmd.Flags().StringVar(&clientSecret, "client-secret", os.Getenv("{{upper .Name}}_CLIENT_SECRET"), "OAuth2 client secret")
+	cmd.Flags().StringVar(&clientID, "client-id", os.Getenv("{{envName .Name}}_CLIENT_ID"), "OAuth2 client ID")
+	cmd.Flags().StringVar(&clientSecret, "client-secret", os.Getenv("{{envName .Name}}_CLIENT_SECRET"), "OAuth2 client secret")
 	cmd.Flags().IntVar(&port, "port", 8085, "Local callback server port")
 
 	return cmd

@@ -48,6 +48,62 @@ func TestAuthHeader_ClientCredentialsAccessTokenWinsOverEnv(t *testing.T) {
 		"AccessToken check must appear BEFORE env-var fallback under OAuth2 client_credentials")
 }
 
+func TestAuthHeader_OAuth2AuthorizationCodeUsesToken(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("oauth-precedence")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:             "oauth2",
+		Header:           "Authorization",
+		Format:           "Bearer {token}",
+		EnvVars:          []string{"OAUTH_AUTH_TEST_TOKEN"},
+		AuthorizationURL: "https://example.com/auth",
+		TokenURL:         "https://example.com/token",
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "oauth-precedence-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	content := string(cfgSrc)
+
+	envCheck := "if c." + resolveEnvVarField("OAUTH_AUTH_TEST_TOKEN") + ` != ""`
+	tokenCheck := `if c.AccessToken != ""`
+
+	require.Contains(t, content, envCheck)
+	require.Contains(t, content, tokenCheck)
+
+	body := authHeaderBody(t, content)
+	envIdx := strings.Index(body, envCheck)
+	tokenIdx := strings.Index(body, tokenCheck)
+	assert.Less(t, envIdx, tokenIdx,
+		"env-var bearer fallback should win over file token for OAuth2 authorization_code")
+}
+
+func TestAuthLoginEnvVarsUseShellSafePrefix(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("hyphen-api")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:             "oauth2",
+		Header:           "Authorization",
+		AuthorizationURL: "https://example.com/auth",
+		TokenURL:         "https://example.com/token",
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "hyphen-api-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	content := string(authSrc)
+
+	require.Contains(t, content, `os.Getenv("HYPHEN_API_CLIENT_ID")`)
+	require.Contains(t, content, `os.Getenv("HYPHEN_API_CLIENT_SECRET")`)
+	require.NotContains(t, content, `HYPHEN-API_CLIENT_ID`)
+}
+
 // TestAuthHeader_EnvVarWinsOverFileToken pins env-first precedence for
 // the non-client_credentials cases — plain bearer_token (PAT-style),
 // cookie, and composed all follow the env > config convention so a

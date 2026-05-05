@@ -154,7 +154,7 @@ func (c *Config) AuthHeader() string {
 	{{- else}}
 	return ""
 	{{- end}}
-{{- else if eq .Auth.Type "bearer_token"}}
+{{- else if or (eq .Auth.Type "bearer_token") (eq .Auth.Type "oauth2")}}
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 	// Under OAuth2 client_credentials the env var is the Client ID, not a
 	// usable bearer; the minted AccessToken must win.
