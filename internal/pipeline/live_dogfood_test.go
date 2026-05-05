@@ -60,7 +60,7 @@ func TestRunLiveDogfoodWritesAcceptanceMarkerOnPass(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "PASS", report.Verdict, report.Tests)
 
-	// AC #3: widgets get happy_path must exercise the resolve-success chain
+	// widgets get happy_path must exercise the resolve-success chain
 	// (companion widgets list returns parseable JSON, resolver substitutes the
 	// id, get probe runs and passes), not silently skip on companion-parse
 	// failure as it did before the fixture fix.
@@ -881,11 +881,12 @@ HELP
 fi
 
 if [ "$1" = "gizmos" ] && [ "$2" = "list" ]; then
-  # Resolver appends --limit 1 because --limit is declared in Flags. Order may
-  # be --json --limit 1 (current resolver) but test pinning uses substring so
-  # we match either ordering by checking presence of --json AND --limit 1.
+  # Resolver appends --limit 1 because --limit is declared in Flags. Match
+  # only when both --json AND --limit are present, so a regression that
+  # stops appending --limit (bare --json) falls through to the failure
+  # branch instead of being silently accepted.
   case "$*" in
-    *"--json"*"--limit"*|*"--limit"*"--json"*|*"--json"*)
+    *"--json"*"--limit"*|*"--limit"*"--json"*)
       echo '{"results":[{"id":"42"}]}'
       exit 0
       ;;
@@ -967,8 +968,17 @@ HELP
 fi
 
 if [ "$1" = "projects" ] && [ "$2" = "tasks" ] && [ "${3:-}" = "list" ]; then
-  # ${4:-} is the resolved project-id. ${5:-} is --json when supplied.
-  if [ "${5:-}" = "--json" ]; then
+  # ${4:-} is the resolved project-id (or the matrix walker's invalid-token
+  # sentinel for error_path). ${5:-} is --json when supplied. We also handle
+  # the self-companion case (4-arg "... list --json" with no project-id),
+  # which fires when the resolver's findListCompanion picks "projects tasks
+  # list" as the companion for itself; without this branch the matrix walker
+  # would silently skip the bare list probe.
+  if [ "${4:-}" = "__printing_press_invalid__" ]; then
+    echo 'invalid project' >&2
+    exit 2
+  fi
+  if [ "${4:-}" = "--json" ] || [ "${5:-}" = "--json" ]; then
     echo '{"results":[{"id":"T7"}]}'
     exit 0
   fi
@@ -1316,12 +1326,25 @@ func TestRunLiveDogfoodResolveSuccessSinglePositional(t *testing.T) {
 	require.NotNil(t, got, "expected widgets get happy_path in report")
 	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
 
-	// Companion-leaf invariant: the resolver picked widgets list (not
-	// widgets describe, not widgets search). Pinning via argv-log substring
-	// ensures future fixture additions can't silently change companion choice.
+	// Companion-leaf invariant: the resolver picked widgets list, not some
+	// other allowlisted sibling (widgets search is also in crossAPIListVerbs
+	// but sorts later alphabetically). Pin both directions: widgets list
+	// must appear AS a companion call, AND widgets search must NOT appear
+	// as one. The bare-companion shape `widgets search --json` (path +
+	// --json, nothing else) only fires when findListCompanion picks search;
+	// the walker's own probe of widgets search uses --query foo --json from
+	// Examples, which doesn't match the bare companion shape.
 	lines := readArgvLog(t, argvLog)
 	assert.GreaterOrEqual(t, countArgvLines(lines, "widgets list", "--json"), 1,
 		"expected widgets list --json to appear in argv log as the chosen companion")
+	bareSearchCompanion := 0
+	for _, line := range lines {
+		if line == "widgets search --json" {
+			bareSearchCompanion++
+		}
+	}
+	assert.Equal(t, 0, bareSearchCompanion,
+		"widgets search must NOT be picked as companion when widgets list is available; saw bare `widgets search --json` in argv log")
 	assert.GreaterOrEqual(t, countArgvLines(lines, "widgets get 42"), 1,
 		"expected widgets get 42 (post-substitution probe) to appear in argv log")
 }
@@ -1358,18 +1381,22 @@ func TestRunLiveDogfoodResolveSuccessCacheHit(t *testing.T) {
 	require.NotNil(t, descResult)
 	assert.Equal(t, LiveDogfoodStatusPass, descResult.Status, descResult.Reason)
 
-	// Cache hit: one cached id serves both siblings. The walker probes
-	// `widgets list` ITSELF for both happy_path and json_fidelity, both of
-	// which invoke argv `widgets list --json` (Examples already has --json,
-	// so appendJSONArg dedups and json_fidelity reuses the happy argv). That
-	// contributes 2 invocations. The resolver invokes the companion once for
-	// the first widgets-family consumer (alphabetical: widgets describe);
-	// the second consumer (widgets get) hits the cache and adds 0. Total
-	// `widgets list --json` count: 3 with cache hit; 4 with cache miss.
+	// Cache hit: one cached id serves every widgets-family id-shape sibling.
+	// The walker probes `widgets list` itself for both happy_path and
+	// json_fidelity, both of which invoke argv `widgets list --json`
+	// (Examples already has --json, so appendJSONArg dedups and json_fidelity
+	// reuses the happy argv). The resolver invokes the companion exactly
+	// once for the first id-shape sibling probed; subsequent siblings hit
+	// the cache and add 0.
+	const walkerProbes, resolverCallsWithCacheHit = 2, 1
+	const expectedTotal = walkerProbes + resolverCallsWithCacheHit
 	lines := readArgvLog(t, argvLog)
 	companionCalls := countArgvLines(lines, "widgets list", "--json")
-	assert.LessOrEqual(t, companionCalls, 3,
-		"expected at most 3 widgets list --json invocations (2× walker + 1× resolver with cache hit), got %d (cache miss?)", companionCalls)
+	// Equality assertion (not <=) catches both directions: cache miss inflates
+	// to expectedTotal+1, walker-side dedup deflates to expectedTotal-1. Bare
+	// upper bound would silently pass on the second case.
+	assert.Equal(t, expectedTotal, companionCalls,
+		"expected exactly %d widgets list --json invocations (%d walker + %d resolver with cache hit); got %d", expectedTotal, walkerProbes, resolverCallsWithCacheHit, companionCalls)
 
 	// Both probe argvs landed in the log post-substitution.
 	assert.GreaterOrEqual(t, countArgvLines(lines, "widgets get 42"), 1)
@@ -1407,27 +1434,31 @@ func TestRunLiveDogfoodResolveSuccessNegativeCacheSentinel(t *testing.T) {
 	require.NotNil(t, descResult)
 	assert.Equal(t, LiveDogfoodStatusSkip, descResult.Status,
 		"first sibling (describe) should skip with fresh companion-failure reason")
-	assert.Contains(t, descResult.Reason, "list companion failed",
-		"first sibling reason should reference the actual failure, not the cached sentinel")
+	assert.Contains(t, descResult.Reason, "list companion failed at depth",
+		"first sibling reason should reference the actual depth-keyed failure, not the cached sentinel")
 
 	getResult := findResultByCommandKind(report, "failing-resource get", LiveDogfoodTestHappy)
 	require.NotNil(t, getResult)
 	assert.Equal(t, LiveDogfoodStatusSkip, getResult.Status,
 		"second sibling (get) should skip via the cached negative-cache sentinel")
-	assert.Contains(t, getResult.Reason, "previously failed",
+	assert.Contains(t, getResult.Reason, "list companion previously failed at depth",
 		"second sibling reason should reference the cached sentinel, not re-fail the companion")
 
 	// Filter to the actual companion call (--json excludes --help). The
 	// walker probes `failing-resource list` for both happy_path and
 	// json_fidelity (both use argv `failing-resource list --json` since
-	// Examples already includes --json) — 2 invocations. The resolver
-	// invokes the companion once for the first sibling (describe), caches
-	// the sentinel, and the second sibling (get) hits the sentinel without
-	// re-invoking. Total: 3 with sentinel honored; 4 without.
+	// Examples already includes --json). The resolver invokes the companion
+	// once for the first sibling (describe), caches the sentinel, and the
+	// second sibling (get) hits the sentinel without re-invoking.
+	const walkerProbes, resolverCallsWithSentinel = 2, 1
+	const expectedTotal = walkerProbes + resolverCallsWithSentinel
 	lines := readArgvLog(t, argvLog)
 	companionCalls := countArgvLines(lines, "failing-resource list", "--json")
-	assert.LessOrEqual(t, companionCalls, 3,
-		"expected at most 3 failing-resource list --json invocations (2× walker + 1× resolver with sentinel), got %d (sentinel not honored?)", companionCalls)
+	// Equality assertion (not <=) catches sentinel-bypass (4 calls) AND any
+	// future walker-side dedup that would collapse to 2 calls without going
+	// through the sentinel path.
+	assert.Equal(t, expectedTotal, companionCalls,
+		"expected exactly %d failing-resource list --json invocations (%d walker + %d resolver with sentinel); got %d", expectedTotal, walkerProbes, resolverCallsWithSentinel, companionCalls)
 }
 
 // ----- U3: search-aware error_path integration tests -----
