@@ -1,0 +1,11 @@
+node_modules/
+out/
+*.log
+.DS_Store
+.remotion/
+.bundle/
+
+# Audio + large captures - tracked via git LFS, not direct
+# (Remove the next two lines once LFS is configured for the repo)
+# assets/audio/*.mp3
+# assets/audio/*.wav

@@ -1,0 +1,34 @@
+{
+  "name": "launch-video",
+  "version": "0.1.0",
+  "private": true,
+  "description": "45-second launch video for The Printing Press, built in Remotion with HTML-in-canvas",
+  "scripts": {
+    "preview": "remotion studio src/Root.tsx",
+    "render": "remotion render src/Root.tsx Hero out/hero-45s.mp4 --gl=angle",
+    "render:vertical": "remotion render src/Root.tsx HeroVertical out/hero-vertical-45s.mp4 --gl=angle",
+    "render:square": "remotion render src/Root.tsx HeroSquare out/hero-square-45s.mp4 --gl=angle",
+    "render:cutdown": "remotion render src/Root.tsx Hero out/cutdown-15s.mp4 --gl=angle --frames=270-720",
+    "render:all": "bash scripts/render-all.sh",
+    "test": "vitest run",
+    "lint": "remotion lint",
+    "skills:install": "npx skills add remotion-dev/skills && npx skills add remotion-dev/skills/html-in-canvas"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@remotion/bundler": "^4.0.455",
+    "@remotion/cli": "^4.0.455",
+    "@remotion/renderer": "^4.0.455",
+    "remotion": "^4.0.455",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1"
+  }
+}
