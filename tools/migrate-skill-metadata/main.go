@@ -5,14 +5,17 @@
 // cli-skills/pp-*/SKILL.md files. For each file:
 //
 //   - If the frontmatter contains a single-line `metadata: '{"openclaw":...}'`,
-//     parse the embedded JSON, apply schema corrections (kind: shell -> go,
-//     drop command/id/label, derive module from command), and replace that
-//     line with a multi-line nested YAML block at canonical indentation.
+//     parse the embedded JSON for env/primaryEnv, derive the canonical Go
+//     module path from the file's actual filesystem location and sibling
+//     `.printing-press.json` provenance, and replace that line with a
+//     multi-line nested YAML block. The legacy `command:` field's path is
+//     intentionally NOT preserved — it can be stale (CLIs moved between
+//     categories without their SKILL.md being updated). The filesystem
+//     location plus provenance is the canonical truth.
 //
 //   - If the frontmatter has no `metadata:` line at all (the instacart case),
-//     synthesize a block from the sibling `.printing-press.json` provenance
-//     (library files) or from the corresponding library entry (cli-skills
-//     mirrors) and insert it before the closing `---`.
+//     synthesize a block from the same provenance lookup and insert it
+//     before the closing `---`.
 //
 //   - If the frontmatter is already in the nested-YAML form, skip without
 //     writing (idempotent).
@@ -37,7 +40,6 @@ import (
 
 func main() {
 	dryRun := flag.Bool("dry-run", false, "Print what would change without writing")
-	strict := flag.Bool("strict", true, "Refuse files whose JSON doesn't match the expected kind: shell + go-install shape")
 	verbose := flag.Bool("verbose", false, "Print per-file action lines")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: migrate-skill-metadata [flags] <library-root>\n\n")
@@ -53,9 +55,20 @@ func main() {
 	}
 
 	root := flag.Arg(0)
-	absRoot, err := filepath.Abs(root)
+	// Resolve symlinks on the root too. Each per-file path is run through
+	// filepath.EvalSymlinks before the prefix check; if the root itself
+	// is a symlink (common on macOS where /var -> /private/var, so any
+	// mktemp-created tree under /var/folders/... resolves to /private/...
+	// after EvalSymlinks), an unresolved root would fail the prefix check
+	// for every file.
+	absRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot resolve root path: %v\n", err)
+		os.Exit(1)
+	}
+	absRoot, err = filepath.Abs(absRoot)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot absolutize root path: %v\n", err)
 		os.Exit(1)
 	}
 	info, err := os.Stat(absRoot)
@@ -64,7 +77,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	report, err := run(absRoot, *dryRun, *strict, *verbose)
+	report, err := run(absRoot, *dryRun, *verbose)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -99,7 +112,7 @@ func (r *report) print(w *os.File, dryRun bool) {
 	}
 }
 
-func run(absRoot string, dryRun, strict, verbose bool) (*report, error) {
+func run(absRoot string, dryRun, verbose bool) (*report, error) {
 	files, err := discoverSkillFiles(absRoot)
 	if err != nil {
 		return nil, err
@@ -132,7 +145,7 @@ func run(absRoot string, dryRun, strict, verbose bool) (*report, error) {
 			continue
 		}
 
-		action, err := migrateFile(abs, absRoot, strict, dryRun)
+		action, err := migrateFile(abs, absRoot, dryRun)
 		switch {
 		case err != nil:
 			r.errored++
@@ -183,8 +196,13 @@ func discoverSkillFiles(absRoot string) ([]string, error) {
 }
 
 // migrateFile applies the migration to one SKILL.md, returning the action
-// taken: "migrated", "synthesized", "skipped", or "" plus an error.
-func migrateFile(absPath, absRoot string, strict, dryRun bool) (string, error) {
+// taken: "migrated", "synthesized", "skipped", or "" plus an error. The
+// install module path always comes from the file's actual filesystem
+// location and sibling `.printing-press.json` provenance — never from the
+// legacy JSON-string `command:` field, which can be stale (CLIs moved
+// between categories without their SKILL.md being updated). This makes
+// the tool produce correct output by default with no flag to remember.
+func migrateFile(absPath, absRoot string, dryRun bool) (string, error) {
 	content, err := os.ReadFile(absPath)
 	if err != nil {
 		return "", fmt.Errorf("read: %w", err)
@@ -198,19 +216,22 @@ func migrateFile(absPath, absRoot string, strict, dryRun bool) (string, error) {
 
 	jsonLineRe := regexp.MustCompile(`(?m)^metadata: '(.+)'\s*$`)
 	if m := jsonLineRe.FindStringSubmatchIndex(front); m != nil {
-		// Idempotency check: if the line already starts with a multi-line
-		// nested form, FindStringSubmatchIndex would not have matched. So
-		// matching here means we have the legacy JSON-string form.
+		// Legacy JSON-string form. Parse for env/primaryEnv (which the legacy
+		// JSON is the source of truth for) but always derive the module from
+		// provenance + filesystem.
 		jsonValue := front[m[2]:m[3]]
-		// Translate the match indices, which are relative to `front`, into
-		// the original content's coordinate space for splicing.
 		lineStart := frontStart + m[0]
 		lineEnd := frontStart + m[1]
 
-		newBlock, err := transformMetadataJSON(jsonValue, strict)
+		env, primaryEnv, err := parseLegacyOpenclawJSON(jsonValue)
 		if err != nil {
-			return "", fmt.Errorf("transform: %w", err)
+			return "", fmt.Errorf("parse legacy JSON: %w", err)
 		}
+		cliName, category, dirName, err := lookupProvenance(absPath, absRoot)
+		if err != nil {
+			return "", fmt.Errorf("provenance lookup: %w", err)
+		}
+		newBlock := emitMetadataBlock(cliName, buildModulePath(category, dirName, cliName), env, primaryEnv)
 
 		updated := append([]byte{}, content[:lineStart]...)
 		updated = append(updated, []byte(newBlock)...)
@@ -266,84 +287,31 @@ func frontmatterBounds(content []byte) (int, int, error) {
 	return 4, 4 + idx + 1, nil
 }
 
-// installEntryJSON mirrors the legacy `install[]` entry shape we expect to
-// find in current SKILL.md files. We read kind, command, and bins; id and
-// label are silently ignored by encoding/json's unknown-field default since
-// the migration drops them anyway.
-type installEntryJSON struct {
-	Kind    string   `json:"kind"`
-	Command string   `json:"command,omitempty"`
-	Bins    []string `json:"bins,omitempty"`
-}
-
-// openclawJSON is the embedded JSON shape we read out of the legacy
-// `metadata:` string.
+// openclawJSON is the subset of the legacy `metadata:` JSON we extract.
+// Only env and primaryEnv are used; the rest of the JSON (bins, install,
+// kind, command, id, label) is read by encoding/json but discarded —
+// module path comes from filesystem + provenance instead.
 type openclawJSON struct {
 	Requires struct {
-		Bins []string `json:"bins,omitempty"`
-		Env  []string `json:"env,omitempty"`
+		Env []string `json:"env,omitempty"`
 	} `json:"requires"`
-	PrimaryEnv string             `json:"primaryEnv,omitempty"`
-	Install    []installEntryJSON `json:"install,omitempty"`
+	PrimaryEnv string `json:"primaryEnv,omitempty"`
 }
 
-// transformMetadataJSON parses a legacy metadata JSON string and emits the
-// canonical multi-line nested-YAML block. The block ends with a newline so
-// it slots in cleanly where the original single line lived.
-func transformMetadataJSON(jsonStr string, strict bool) (string, error) {
+// parseLegacyOpenclawJSON extracts env/primaryEnv from a legacy metadata
+// JSON string. Only malformed JSON is an error; structurally-unusual but
+// parseable JSON returns whatever env/primaryEnv it carries (or zero
+// values if absent). The migration is structurally robust without strict
+// validation: module path comes from provenance, env-absence emits a
+// no-auth block, and the loop never blocks on shape variation.
+func parseLegacyOpenclawJSON(jsonStr string) (env []string, primaryEnv string, err error) {
 	var meta struct {
 		Openclaw openclawJSON `json:"openclaw"`
 	}
 	if err := json.Unmarshal([]byte(jsonStr), &meta); err != nil {
-		return "", fmt.Errorf("parse JSON: %w", err)
+		return nil, "", fmt.Errorf("parse JSON: %w", err)
 	}
-	if len(meta.Openclaw.Requires.Bins) == 0 {
-		return "", fmt.Errorf("openclaw.requires.bins missing")
-	}
-	if len(meta.Openclaw.Install) == 0 {
-		return "", fmt.Errorf("openclaw.install[] missing")
-	}
-
-	// We only emit the first install entry's binary + module. Today every
-	// printed CLI has exactly one install option (go install), so multi-entry
-	// support is not yet exercised; revisit if multi-platform installs land.
-	first := meta.Openclaw.Install[0]
-	if strict {
-		if first.Kind != "shell" {
-			return "", fmt.Errorf("install[0].kind=%q (strict mode expects 'shell')", first.Kind)
-		}
-		if !strings.HasPrefix(first.Command, "go install ") {
-			return "", fmt.Errorf("install[0].command does not start with 'go install '")
-		}
-	}
-
-	module, err := deriveModule(first.Command)
-	if err != nil {
-		return "", fmt.Errorf("install[0]: %w", err)
-	}
-	bins := first.Bins
-	if len(bins) == 0 {
-		bins = meta.Openclaw.Requires.Bins
-	}
-	cliName := bins[0]
-	return emitMetadataBlock(cliName, module, meta.Openclaw.Requires.Env, meta.Openclaw.PrimaryEnv), nil
-}
-
-// deriveModule strips "go install " prefix and "@latest" or "@<version>"
-// suffix from a command string and returns the bare module path.
-func deriveModule(command string) (string, error) {
-	const prefix = "go install "
-	if !strings.HasPrefix(command, prefix) {
-		return "", fmt.Errorf("command does not start with 'go install '")
-	}
-	rest := strings.TrimPrefix(command, prefix)
-	if at := strings.LastIndex(rest, "@"); at >= 0 {
-		rest = rest[:at]
-	}
-	if rest == "" {
-		return "", fmt.Errorf("module path empty after stripping prefix/version")
-	}
-	return rest, nil
+	return meta.Openclaw.Requires.Env, meta.Openclaw.PrimaryEnv, nil
 }
 
 // buildMetadataBlock is the synthesis-path emitter: derives the module
@@ -357,15 +325,23 @@ func deriveModule(command string) (string, error) {
 // older binary-suffix convention (e.g., library/commerce/dominos-pp-cli/).
 // Module path follows library/<category>/<dirName>/cmd/<cliName>.
 func buildMetadataBlock(cliName, category, dirName string, env []string, primaryEnv string) string {
+	module := buildModulePath(category, dirName, cliName)
+	return emitMetadataBlock(cliName, module, env, primaryEnv)
+}
+
+// buildModulePath returns the canonical Go module path for an install
+// entry. dirName is the library directory basename (slug-only or
+// binary-suffix); cliName is the CLI binary name; both are needed because
+// the directory and binary names diverge for some CLIs.
+func buildModulePath(category, dirName, cliName string) string {
 	if category == "" {
 		category = "other"
 	}
 	if dirName == "" {
 		dirName = cliName
 	}
-	module := "github.com/mvanhorn/printing-press-library/library/" + category +
+	return "github.com/mvanhorn/printing-press-library/library/" + category +
 		"/" + dirName + "/cmd/" + cliName
-	return emitMetadataBlock(cliName, module, env, primaryEnv)
 }
 
 // emitMetadataBlock returns the canonical multi-line YAML metadata block.
@@ -411,78 +387,95 @@ func emitMetadataBlock(cliName, module string, env []string, primaryEnv string) 
 }
 
 // lookupProvenance resolves cli_name, category, and the library directory
-// basename for synthesis.
+// basename for the SKILL.md at skillPath.
 //
-// For library/*/<dir>/SKILL.md, reads the sibling .printing-press.json and
-// uses <dir> as the library directory basename.
-// For cli-skills/pp-<slug>/SKILL.md, scans library/*/*/.printing-press.json
-// for a directory matching <slug> or <slug>-pp-cli and uses that
-// directory's basename. The basename can differ from cli_name (slug-only
-// convention vs. older binary-suffix convention), so the module path must
-// be derived from the actual filesystem location.
+// Category and dirName always come from the file's filesystem position
+// (library/<category>/<dirName>/SKILL.md or cli-skills/pp-<slug>/SKILL.md
+// after pivoting through the registry). cli_name comes from the sibling
+// `.printing-press.json` because the binary name and the directory name
+// can diverge — older CLIs use library/<dir>/ where dir is binary-suffixed,
+// newer CLIs use slug-only directories. .printing-press.json's `category`
+// field is unreliable (often absent in older provenance files), so it's
+// not consulted; the filesystem path is the canonical truth for category.
 func lookupProvenance(skillPath, absRoot string) (cliName, category, dirName string, err error) {
 	dir := filepath.Dir(skillPath)
-	manifestPath := filepath.Join(dir, ".printing-press.json")
-	data, readErr := os.ReadFile(manifestPath)
-	if readErr == nil {
-		cn, cat, perr := parseProvenance(data)
+	rel, err := filepath.Rel(absRoot, skillPath)
+	if err != nil {
+		return "", "", "", fmt.Errorf("relpath: %w", err)
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+
+	// Library file: library/<category>/<dir>/SKILL.md
+	if len(parts) == 4 && parts[0] == "library" && parts[3] == "SKILL.md" {
+		category = parts[1]
+		dirName = parts[2]
+		manifestPath := filepath.Join(dir, ".printing-press.json")
+		data, readErr := os.ReadFile(manifestPath)
+		if readErr != nil {
+			if errors.Is(readErr, fs.ErrNotExist) {
+				return "", "", "", fmt.Errorf("missing sibling .printing-press.json (need cli_name)")
+			}
+			return "", "", "", fmt.Errorf("read sibling provenance: %w", readErr)
+		}
+		cn, perr := parseProvenanceCLIName(data)
 		if perr != nil {
 			return "", "", "", perr
 		}
-		return cn, cat, filepath.Base(dir), nil
+		return cn, category, dirName, nil
 	}
-	// Only fall through to cli-skills mirror lookup when the sibling manifest
-	// genuinely doesn't exist. Other read errors (permission denied, EIO, EISDIR)
-	// would otherwise produce a misleading 'not a pp-* directory' error from the
-	// fallthrough path.
-	if !errors.Is(readErr, fs.ErrNotExist) {
-		return "", "", "", fmt.Errorf("read sibling provenance: %w", readErr)
-	}
-	// cli-skills mirror: derive slug, scan library/.
-	base := filepath.Base(dir)
-	slug := strings.TrimPrefix(base, "pp-")
-	if slug == base {
-		return "", "", "", fmt.Errorf("no sibling .printing-press.json and not a pp-* directory")
-	}
-	candidates := []string{
-		filepath.Join(absRoot, "library", "*", slug, ".printing-press.json"),
-		filepath.Join(absRoot, "library", "*", slug+"-pp-cli", ".printing-press.json"),
-	}
-	for _, pattern := range candidates {
-		// filepath.Glob errors on ErrBadPattern only; the patterns above are
-		// static and known-good, so an error here means the OS layer is broken
-		// rather than the input. Surface it instead of silently skipping.
-		matches, globErr := filepath.Glob(pattern)
-		if globErr != nil {
-			return "", "", "", fmt.Errorf("glob %s: %w", pattern, globErr)
+
+	// cli-skills mirror: cli-skills/pp-<slug>/SKILL.md. Pivot through the
+	// library tree to find the corresponding library entry whose category
+	// and directory basename are the canonical source.
+	if len(parts) == 3 && parts[0] == "cli-skills" && parts[2] == "SKILL.md" && strings.HasPrefix(parts[1], "pp-") {
+		slug := strings.TrimPrefix(parts[1], "pp-")
+		candidates := []string{
+			filepath.Join(absRoot, "library", "*", slug, ".printing-press.json"),
+			filepath.Join(absRoot, "library", "*", slug+"-pp-cli", ".printing-press.json"),
 		}
-		for _, m := range matches {
-			data, err := os.ReadFile(m)
-			if err != nil {
-				continue
+		for _, pattern := range candidates {
+			matches, globErr := filepath.Glob(pattern)
+			if globErr != nil {
+				return "", "", "", fmt.Errorf("glob %s: %w", pattern, globErr)
 			}
-			cn, cat, perr := parseProvenance(data)
-			if perr != nil {
-				return "", "", "", perr
+			for _, m := range matches {
+				data, readErr := os.ReadFile(m)
+				if readErr != nil {
+					continue
+				}
+				cn, perr := parseProvenanceCLIName(data)
+				if perr != nil {
+					return "", "", "", perr
+				}
+				libDir := filepath.Dir(m)
+				libRel, err := filepath.Rel(absRoot, libDir)
+				if err != nil {
+					return "", "", "", fmt.Errorf("relpath libDir: %w", err)
+				}
+				libParts := strings.Split(libRel, string(filepath.Separator))
+				if len(libParts) != 3 || libParts[0] != "library" {
+					return "", "", "", fmt.Errorf("library entry at unexpected path: %s", libRel)
+				}
+				return cn, libParts[1], libParts[2], nil
 			}
-			return cn, cat, filepath.Base(filepath.Dir(m)), nil
 		}
+		return "", "", "", fmt.Errorf("could not resolve provenance for cli-skills mirror pp-%s (no matching library/<cat>/%s or library/<cat>/%s-pp-cli)", slug, slug, slug)
 	}
-	return "", "", "", fmt.Errorf("could not resolve provenance for cli-skills mirror %s", base)
+
+	return "", "", "", fmt.Errorf("path is neither library/<cat>/<dir>/SKILL.md nor cli-skills/pp-<slug>/SKILL.md: %s", rel)
 }
 
-func parseProvenance(data []byte) (cliName, category string, err error) {
+func parseProvenanceCLIName(data []byte) (string, error) {
 	var pp struct {
-		CLIName  string `json:"cli_name"`
-		Category string `json:"category"`
+		CLIName string `json:"cli_name"`
 	}
 	if err := json.Unmarshal(data, &pp); err != nil {
-		return "", "", fmt.Errorf("parse .printing-press.json: %w", err)
+		return "", fmt.Errorf("parse .printing-press.json: %w", err)
 	}
 	if pp.CLIName == "" {
-		return "", "", fmt.Errorf(".printing-press.json missing cli_name")
+		return "", fmt.Errorf(".printing-press.json missing cli_name")
 	}
-	return pp.CLIName, pp.Category, nil
+	return pp.CLIName, nil
 }
 
 // atomicWrite writes data to path via tmp + rename. Preserves the original

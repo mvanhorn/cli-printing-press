@@ -9,33 +9,6 @@ import (
 
 // --- Unit tests for derivation helpers ---
 
-func TestDeriveModule(t *testing.T) {
-	cases := []struct {
-		name    string
-		input   string
-		want    string
-		wantErr bool
-	}{
-		{"latest tag", "go install github.com/x/y/cmd/z@latest", "github.com/x/y/cmd/z", false},
-		{"explicit version", "go install github.com/x/y/cmd/z@v1.2.3", "github.com/x/y/cmd/z", false},
-		{"no version tag", "go install github.com/x/y/cmd/z", "github.com/x/y/cmd/z", false},
-		{"missing prefix", "github.com/x/y/cmd/z@latest", "", true},
-		{"empty after strip", "go install @latest", "", true},
-		{"path with @ in it", "go install github.com/x/y@email.com/cmd/z@latest", "github.com/x/y@email.com/cmd/z", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := deriveModule(tc.input)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
-			}
-			if got != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestEmitMetadataBlock(t *testing.T) {
 	want := "metadata:\n" +
 		"  openclaw:\n" +
@@ -104,98 +77,41 @@ func TestBuildMetadataBlockEmptyDirNameFallsBackToCliName(t *testing.T) {
 	}
 }
 
-// --- transformMetadataJSON tests ---
+// --- parseLegacyOpenclawJSON tests ---
 
-func TestTransformMetadataJSON_HappyPath(t *testing.T) {
-	jsonStr := `{"openclaw":{"requires":{"bins":["dub-pp-cli"]},"install":[{"id":"go","kind":"shell","command":"go install github.com/mvanhorn/printing-press-library/library/other/dub/cmd/dub-pp-cli@latest","bins":["dub-pp-cli"],"label":"Install via go install"}]}}`
-	got, err := transformMetadataJSON(jsonStr, true)
+func TestParseLegacyOpenclawJSON_NoAuth(t *testing.T) {
+	jsonStr := `{"openclaw":{"requires":{"bins":["dub-pp-cli"]},"install":[{"id":"go","kind":"shell","command":"go install github.com/x/y/cmd/dub-pp-cli@latest","bins":["dub-pp-cli"],"label":"Install via go install"}]}}`
+	env, primaryEnv, err := parseLegacyOpenclawJSON(jsonStr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(got, "kind: go") {
-		t.Errorf("output missing kind: go; got:\n%s", got)
+	if len(env) != 0 {
+		t.Errorf("expected no env, got %v", env)
 	}
-	if !strings.Contains(got, "module: github.com/mvanhorn/printing-press-library/library/other/dub/cmd/dub-pp-cli") {
-		t.Errorf("output missing expected module path; got:\n%s", got)
-	}
-	if strings.Contains(got, "kind: shell") {
-		t.Errorf("output should not contain kind: shell; got:\n%s", got)
-	}
-	if strings.Contains(got, "command:") {
-		t.Errorf("output should not contain command:; got:\n%s", got)
-	}
-	if strings.Contains(got, "id:") {
-		t.Errorf("output should not contain id:; got:\n%s", got)
-	}
-	if strings.Contains(got, "label:") {
-		t.Errorf("output should not contain label:; got:\n%s", got)
-	}
-	if strings.Contains(got, "@latest") {
-		t.Errorf("module should have @latest stripped; got:\n%s", got)
+	if primaryEnv != "" {
+		t.Errorf("expected empty primaryEnv, got %q", primaryEnv)
 	}
 }
 
-func TestTransformMetadataJSON_WithAuthEnv(t *testing.T) {
-	jsonStr := `{"openclaw":{"requires":{"bins":["kalshi-pp-cli"],"env":["KALSHI_TOKEN"]},"primaryEnv":"KALSHI_TOKEN","install":[{"id":"go","kind":"shell","command":"go install github.com/mvanhorn/printing-press-library/library/payments/kalshi/cmd/kalshi-pp-cli@latest","bins":["kalshi-pp-cli"],"label":"Install via go install"}]}}`
-	got, err := transformMetadataJSON(jsonStr, true)
+func TestParseLegacyOpenclawJSON_WithAuthEnv(t *testing.T) {
+	jsonStr := `{"openclaw":{"requires":{"bins":["kalshi-pp-cli"],"env":["KALSHI_TOKEN","KALSHI_KEY"]},"primaryEnv":"KALSHI_TOKEN","install":[{"id":"go","kind":"shell","command":"go install x@latest","bins":["kalshi-pp-cli"]}]}}`
+	env, primaryEnv, err := parseLegacyOpenclawJSON(jsonStr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(got, "env:\n        - KALSHI_TOKEN") {
-		t.Errorf("output missing env list; got:\n%s", got)
+	want := []string{"KALSHI_TOKEN", "KALSHI_KEY"}
+	if len(env) != 2 || env[0] != want[0] || env[1] != want[1] {
+		t.Errorf("env mismatch: got %v want %v", env, want)
 	}
-	if !strings.Contains(got, "primaryEnv: KALSHI_TOKEN") {
-		t.Errorf("output missing primaryEnv; got:\n%s", got)
-	}
-}
-
-func TestTransformMetadataJSON_AgentCaptureBareName(t *testing.T) {
-	jsonStr := `{"openclaw":{"requires":{"bins":["agent-capture"]},"install":[{"id":"go","kind":"shell","command":"go install github.com/mvanhorn/printing-press-library/library/developer-tools/agent-capture/cmd/agent-capture@latest","bins":["agent-capture"],"label":"Install via go install"}]}}`
-	got, err := transformMetadataJSON(jsonStr, true)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(got, "bins: [agent-capture]") {
-		t.Errorf("output missing bare bins; got:\n%s", got)
-	}
-	if !strings.Contains(got, "/cmd/agent-capture\n") {
-		t.Errorf("output module should end with /cmd/agent-capture; got:\n%s", got)
+	if primaryEnv != "KALSHI_TOKEN" {
+		t.Errorf("primaryEnv mismatch: got %q", primaryEnv)
 	}
 }
 
-func TestTransformMetadataJSON_StrictRejectsBrewKind(t *testing.T) {
-	jsonStr := `{"openclaw":{"requires":{"bins":["foo"]},"install":[{"kind":"brew","formula":"foo","bins":["foo"]}]}}`
-	_, err := transformMetadataJSON(jsonStr, true)
-	if err == nil {
-		t.Fatalf("expected strict mode to reject kind: brew")
-	}
-	if !strings.Contains(err.Error(), "brew") {
-		t.Errorf("error message should mention the rejected kind; got: %v", err)
-	}
-}
-
-func TestTransformMetadataJSON_StrictRejectsNonGoInstallCommand(t *testing.T) {
-	jsonStr := `{"openclaw":{"requires":{"bins":["foo"]},"install":[{"kind":"shell","command":"curl -L https://x/y | sh","bins":["foo"]}]}}`
-	_, err := transformMetadataJSON(jsonStr, true)
-	if err == nil {
-		t.Fatalf("expected strict mode to reject non-go-install command")
-	}
-}
-
-func TestTransformMetadataJSON_MalformedJSON(t *testing.T) {
-	_, err := transformMetadataJSON(`{not valid json`, true)
+func TestParseLegacyOpenclawJSON_MalformedJSON(t *testing.T) {
+	_, _, err := parseLegacyOpenclawJSON(`{not valid json`)
 	if err == nil {
 		t.Fatalf("expected error on malformed JSON")
-	}
-	if !strings.Contains(err.Error(), "parse JSON") {
-		t.Errorf("error should mention JSON parse failure; got: %v", err)
-	}
-}
-
-func TestTransformMetadataJSON_MissingBins(t *testing.T) {
-	_, err := transformMetadataJSON(`{"openclaw":{"requires":{},"install":[{"kind":"shell","command":"go install x@latest","bins":["x"]}]}}`, true)
-	if err == nil {
-		t.Fatalf("expected error when requires.bins missing")
 	}
 }
 
@@ -236,6 +152,10 @@ func TestMigrateFile_LegacyJSONStringConversion(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(dir+"/.printing-press.json",
+		[]byte(`{"cli_name":"dub-pp-cli","category":"other"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	skill := dir + "/SKILL.md"
 	original := `---
 name: pp-dub
@@ -250,7 +170,7 @@ metadata: '{"openclaw":{"requires":{"bins":["dub-pp-cli"]},"install":[{"id":"go"
 	if err := os.WriteFile(skill, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	action, err := migrateFile(skill, root, true, false)
+	action, err := migrateFile(skill, root, false)
 	if err != nil {
 		t.Fatalf("migrateFile error: %v", err)
 	}
@@ -306,7 +226,7 @@ body
 	if err := os.WriteFile(skill, []byte(alreadyMigrated), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	action, err := migrateFile(skill, root, true, false)
+	action, err := migrateFile(skill, root, false)
 	if err != nil {
 		t.Fatalf("migrateFile error: %v", err)
 	}
@@ -325,6 +245,10 @@ func TestMigrateFile_DryRunDoesNotWrite(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(dir+"/.printing-press.json",
+		[]byte(`{"cli_name":"dub-pp-cli","category":"other"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	skill := dir + "/SKILL.md"
 	original := `---
 name: pp-dub
@@ -339,7 +263,7 @@ body
 	if err := os.WriteFile(skill, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	action, err := migrateFile(skill, root, true, true) // dryRun=true
+	action, err := migrateFile(skill, root, true) // dryRun=true
 	if err != nil {
 		t.Fatalf("migrateFile error: %v", err)
 	}
@@ -375,7 +299,7 @@ body
 	if err := os.WriteFile(skill, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	action, err := migrateFile(skill, root, true, false)
+	action, err := migrateFile(skill, root, false)
 	if err != nil {
 		t.Fatalf("migrateFile error: %v", err)
 	}
@@ -427,7 +351,7 @@ body
 	if err := os.WriteFile(skill, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	action, err := migrateFile(skill, root, true, false)
+	action, err := migrateFile(skill, root, false)
 	if err != nil {
 		t.Fatalf("migrateFile error: %v", err)
 	}
@@ -460,9 +384,52 @@ body
 	if err := os.WriteFile(skill, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := migrateFile(skill, root, true, false)
+	_, err := migrateFile(skill, root, false)
 	if err == nil {
 		t.Fatalf("expected error when synthesis cannot find provenance")
+	}
+}
+
+// TestMigrateFile_RerouteCorrectsStalePath confirms that when the legacy
+// JSON's command field points at a stale path (e.g., a CLI moved between
+// categories without its SKILL.md being updated), the migrated module
+// reflects the file's actual filesystem location, not the stale path.
+func TestMigrateFile_RerouteCorrectsStalePath(t *testing.T) {
+	root := t.TempDir()
+	// CLI lives under library/payments/kalshi but the legacy JSON's
+	// command points at library/other/kalshi (stale category).
+	dir := filepath.Join(root, "library", "payments", "kalshi")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/.printing-press.json",
+		[]byte(`{"cli_name":"kalshi-pp-cli","category":"payments"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skill := dir + "/SKILL.md"
+	original := `---
+name: pp-kalshi
+description: "Kalshi CLI."
+argument-hint: "<command>"
+allowed-tools: "Read Bash"
+metadata: '{"openclaw":{"requires":{"bins":["kalshi-pp-cli"]},"install":[{"id":"go","kind":"shell","command":"go install github.com/mvanhorn/printing-press-library/library/other/kalshi/cmd/kalshi-pp-cli@latest","bins":["kalshi-pp-cli"],"label":"Install via go install"}]}}'
+---
+
+body
+`
+	if err := os.WriteFile(skill, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := migrateFile(skill, root, false); err != nil {
+		t.Fatalf("migrateFile error: %v", err)
+	}
+	got, _ := os.ReadFile(skill)
+	if !strings.Contains(string(got),
+		"module: github.com/mvanhorn/printing-press-library/library/payments/kalshi/cmd/kalshi-pp-cli") {
+		t.Errorf("rerouted module path missing; got:\n%s", string(got))
+	}
+	if strings.Contains(string(got), "library/other/kalshi") {
+		t.Errorf("stale path should have been replaced; got:\n%s", string(got))
 	}
 }
 
@@ -486,7 +453,7 @@ func TestRun_RejectsSymlinkEscapingRoot(t *testing.T) {
 		t.Skipf("symlink not supported on this filesystem: %v", err)
 	}
 
-	report, err := run(root, true, true, false)
+	report, err := run(root, true, false)
 	if err != nil {
 		t.Fatalf("run returned error: %v", err)
 	}
@@ -513,6 +480,10 @@ func TestMigrateFile_BodyJSONShapeIsNotTouched(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(dir+"/.printing-press.json",
+		[]byte(`{"cli_name":"x-pp-cli","category":"other"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	skill := dir + "/SKILL.md"
 	original := `---
 name: pp-x
@@ -533,7 +504,7 @@ End.
 	if err := os.WriteFile(skill, []byte(original), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := migrateFile(skill, root, true, false); err != nil {
+	if _, err := migrateFile(skill, root, false); err != nil {
 		t.Fatalf("migrateFile error: %v", err)
 	}
 	got, _ := os.ReadFile(skill)
