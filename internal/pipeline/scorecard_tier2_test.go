@@ -824,6 +824,330 @@ func (c Config) AuthHeader() string {
 		assert.GreaterOrEqual(t, sc.Steinberger.AuthProtocol, 7)
 	})
 
+	t.Run("single header auth scheme scores full runtime protocol", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setAuth(req *http.Request, token string) {
+	req.Header.Set("Authorization", "Bearer "+token)
+}
+`)
+		writeScorecardFixture(t, dir, "internal/config/config.go", `
+package config
+
+import "os"
+
+func LoadToken() string {
+	return os.Getenv("TOKEN")
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-single-bearer.json")
+		writeScorecardFixture(t, dir, "spec-single-bearer.json", `{
+  "security": [
+    {
+      "TOKEN": []
+    }
+  ],
+  "paths": {
+    "/portfolio": {
+      "get": {
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "TOKEN": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Equal(t, 10, sc.Steinberger.AuthProtocol)
+	})
+
+	t.Run("composed header auth scores unreferenced sibling emissions", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func signKalshiRequest(req *http.Request, key string, signature string, timestamp string) {
+	req.Header.Set("KALSHI-ACCESS-KEY", key)
+	req.Header.Set("KALSHI-ACCESS-SIGNATURE", signature)
+	req.Header.Set("KALSHI-ACCESS-TIMESTAMP", timestamp)
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-kalshi-composed.json")
+		writeScorecardFixture(t, dir, "spec-kalshi-composed.json", `{
+  "security": [
+    {
+      "kalshiAccessKey": []
+    }
+  ],
+  "paths": {
+    "/portfolio/balance": {
+      "get": {
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "kalshiAccessKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "KALSHI-ACCESS-KEY"
+      },
+      "kalshiAccessSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "KALSHI-ACCESS-SIGNATURE"
+      },
+      "kalshiAccessTimestamp": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "KALSHI-ACCESS-TIMESTAMP"
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Equal(t, 10, sc.Steinberger.AuthProtocol)
+	})
+
+	t.Run("composed header auth penalizes missing sibling emissions", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func signKalshiRequest(req *http.Request, key string, signature string) {
+	req.Header.Set("KALSHI-ACCESS-KEY", key)
+	req.Header.Set("KALSHI-ACCESS-SIGNATURE", signature)
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-kalshi-composed-missing.json")
+		writeScorecardFixture(t, dir, "spec-kalshi-composed-missing.json", `{
+  "security": [
+    {
+      "kalshiAccessKey": []
+    }
+  ],
+  "paths": {
+    "/portfolio/balance": {
+      "get": {
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "kalshiAccessKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "KALSHI-ACCESS-KEY"
+      },
+      "kalshiAccessSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "KALSHI-ACCESS-SIGNATURE"
+      },
+      "kalshiAccessTimestamp": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "KALSHI-ACCESS-TIMESTAMP"
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Less(t, sc.Steinberger.AuthProtocol, 5)
+	})
+
+	t.Run("same-prefix standalone header scheme is not pulled into composed auth", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setAuth(req *http.Request, key string) {
+	req.Header.Set("X-API-KEY", key)
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-same-prefix-standalone.json")
+		writeScorecardFixture(t, dir, "spec-same-prefix-standalone.json", `{
+  "security": [
+    {
+      "apiKey": []
+    }
+  ],
+  "paths": {
+    "/links": {
+      "get": {
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-KEY"
+      },
+      "apiToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-TOKEN"
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.GreaterOrEqual(t, sc.Steinberger.AuthProtocol, 8)
+	})
+
+	t.Run("same-prefix security alternatives are not merged into composed auth", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setAuth(req *http.Request, key string) {
+	req.Header.Set("X-API-KEY", key)
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-same-prefix-alternatives.json")
+		writeScorecardFixture(t, dir, "spec-same-prefix-alternatives.json", `{
+  "security": [
+    {
+      "apiKey": []
+    },
+    {
+      "apiSignature": []
+    }
+  ],
+  "paths": {
+    "/links": {
+      "get": {
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-KEY"
+      },
+      "apiSignature": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-SIGNATURE"
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.GreaterOrEqual(t, sc.Steinberger.AuthProtocol, 8)
+	})
+
+	t.Run("required auth alternative penalizes an unimplemented scheme", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setAuth(req *http.Request, key string) {
+	req.Header.Set("X-API-Key", key)
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-required-oauth-and-key.json")
+		writeScorecardFixture(t, dir, "spec-required-oauth-and-key.json", `{
+  "paths": {
+    "/links": {
+      "get": {
+        "security": [
+          {
+            "oauth": [],
+            "apiKey": []
+          }
+        ],
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "oauth": {
+        "type": "oauth2"
+      },
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Less(t, sc.Steinberger.AuthProtocol, 5)
+	})
+
 	t.Run("anonymous alternative leaves auth unscored", func(t *testing.T) {
 		dir := t.TempDir()
 		writeScorecardFixture(t, dir, "internal/client/client.go", `

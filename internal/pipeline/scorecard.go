@@ -1501,6 +1501,14 @@ type openAPISecurityScheme struct {
 	HeaderName string
 }
 
+const (
+	composedHeaderSuffixSignature = "SIGNATURE"
+	composedHeaderSuffixTimestamp = "TIMESTAMP"
+	composedHeaderSuffixDate      = "DATE"
+	composedHeaderSuffixNonce     = "NONCE"
+	composedHeaderSuffixDigest    = "DIGEST"
+)
+
 type securityRequirementSet struct {
 	Alternatives    [][]string
 	AllowsAnonymous bool
@@ -1746,6 +1754,7 @@ func evaluateAuthProtocol(dir string, spec *openAPISpecInfo) dimensionScore {
 		return dimensionScore{scored: true}
 	}
 
+	referencedSchemes := referencedSecuritySchemes(spec.SecurityRequirements)
 	totalScore := 0
 	scoredSets := 0
 	for _, requirementSet := range spec.SecurityRequirements {
@@ -1756,7 +1765,7 @@ func evaluateAuthProtocol(dir string, spec *openAPISpecInfo) dimensionScore {
 		bestScore := -1
 		scoreable := false
 		for _, alternative := range requirementSet.Alternatives {
-			score, ok := scoreAuthAlternative(clientContent, configContent, authContent, spec.SecuritySchemes, alternative)
+			score, ok := scoreAuthAlternative(clientContent, configContent, authContent, spec.SecuritySchemes, alternative, referencedSchemes)
 			if !ok {
 				continue
 			}
@@ -1827,29 +1836,57 @@ func parseSecurityRequirementSet(value any) (securityRequirementSet, bool) {
 	return set, true
 }
 
-func scoreAuthAlternative(clientContent, configContent, authContent string, schemes map[string]openAPISecurityScheme, alternative []string) (int, bool) {
+func referencedSecuritySchemes(requirementSets []securityRequirementSet) map[string]bool {
+	referenced := make(map[string]bool)
+	for _, requirementSet := range requirementSets {
+		for _, alternative := range requirementSet.Alternatives {
+			for _, key := range alternative {
+				referenced[key] = true
+			}
+		}
+	}
+	return referenced
+}
+
+func scoreAuthAlternative(clientContent, configContent, authContent string, schemes map[string]openAPISecurityScheme, alternative []string, referencedSchemes map[string]bool) (int, bool) {
 	if len(alternative) == 0 {
 		return 0, false
 	}
 
+	expandedAlternative := expandComposedHeaderAlternative(schemes, alternative, referencedSchemes)
+	composedHeaders := isComposedHeaderAlternative(schemes, expandedAlternative)
 	total := 0
 	scoreableSchemes := 0
-	for _, key := range alternative {
+	hasZeroScore := false
+	for _, key := range expandedAlternative {
 		scheme, ok := schemes[key]
 		if !ok {
 			continue
 		}
-		score, scoreable := scoreAuthScheme(clientContent, configContent, authContent, scheme)
+		var score int
+		var scoreable bool
+		if composedHeaders && isAPIKeyHeaderScheme(scheme) {
+			score, scoreable = scoreComposedHeaderScheme(clientContent, scheme)
+		} else {
+			score, scoreable = scoreAuthScheme(clientContent, configContent, authContent, scheme)
+		}
 		if !scoreable {
 			continue
 		}
 		total += score
 		scoreableSchemes++
+		if score == 0 {
+			hasZeroScore = true
+		}
 	}
 	if scoreableSchemes == 0 {
 		return 0, false
 	}
-	return total / scoreableSchemes, true
+	score := total / scoreableSchemes
+	if hasZeroScore && scoreableSchemes > 1 && score >= 5 {
+		score = 4
+	}
+	return score, true
 }
 
 func scoreAuthScheme(clientContent, configContent, authContent string, scheme openAPISecurityScheme) (int, bool) {
@@ -1887,8 +1924,7 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 		// Credit authHeaderMatched if the client sets the correct header name,
 		// since that proves the auth plumbing is wired correctly regardless of format.
 		if scheme.In == "header" && headerName != "" {
-			if strings.Contains(clientContent, `Header.Set("`+headerName+`"`) ||
-				strings.Contains(clientContent, `Header.Add("`+headerName+`"`) {
+			if headerAssignmentPresent(clientContent, headerName) {
 				authHeaderMatched = true
 			}
 		}
@@ -1902,8 +1938,7 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 		return 0, false
 	}
 
-	if strings.Contains(clientContent, `Header.Set("`+headerName+`"`) ||
-		strings.Contains(clientContent, `Header.Add("`+headerName+`"`) {
+	if headerAssignmentPresent(clientContent, headerName) {
 		headerNameMatched = true
 	}
 
@@ -1940,7 +1975,113 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 	if score > 10 {
 		score = 10
 	}
+	if headerNameMatched && authHeaderMatched && envMatched {
+		score = 10
+	} else if headerNameMatched && authHeaderMatched && score < 8 {
+		score = 8
+	}
 	return score, true
+}
+
+func expandComposedHeaderAlternative(schemes map[string]openAPISecurityScheme, alternative []string, referencedSchemes map[string]bool) []string {
+	expanded := append([]string(nil), alternative...)
+	seen := make(map[string]bool, len(alternative))
+	prefixes := make(map[string]bool)
+	for _, key := range alternative {
+		seen[key] = true
+		if prefix := composedHeaderPrefix(schemes[key]); prefix != "" {
+			prefixes[prefix] = composedHeaderPrefixHasCompanion(schemes, prefix)
+		}
+	}
+	if len(prefixes) == 0 {
+		return expanded
+	}
+	for key, scheme := range schemes {
+		if seen[key] || !isAPIKeyHeaderScheme(scheme) {
+			continue
+		}
+		if referencedSchemes[key] {
+			continue
+		}
+		if prefixes[composedHeaderPrefix(scheme)] {
+			expanded = append(expanded, key)
+		}
+	}
+	slices.Sort(expanded)
+	return expanded
+}
+
+func composedHeaderPrefixHasCompanion(schemes map[string]openAPISecurityScheme, prefix string) bool {
+	for _, scheme := range schemes {
+		if composedHeaderPrefix(scheme) == prefix && composedHeaderCompanionSuffix(scheme) {
+			return true
+		}
+	}
+	return false
+}
+
+func composedHeaderCompanionSuffix(scheme openAPISecurityScheme) bool {
+	if !isAPIKeyHeaderScheme(scheme) {
+		return false
+	}
+	suffix := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(scheme.HeaderName)), composedHeaderPrefix(scheme))
+	switch suffix {
+	case composedHeaderSuffixSignature, composedHeaderSuffixTimestamp, composedHeaderSuffixDate, composedHeaderSuffixNonce, composedHeaderSuffixDigest:
+		return true
+	default:
+		return false
+	}
+}
+
+func isComposedHeaderAlternative(schemes map[string]openAPISecurityScheme, alternative []string) bool {
+	counts := make(map[string]int)
+	for _, key := range alternative {
+		prefix := composedHeaderPrefix(schemes[key])
+		if prefix != "" {
+			counts[prefix]++
+		}
+	}
+	for _, count := range counts {
+		if count > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func composedHeaderPrefix(scheme openAPISecurityScheme) string {
+	if !isAPIKeyHeaderScheme(scheme) {
+		return ""
+	}
+	headerName := strings.ToUpper(strings.TrimSpace(scheme.HeaderName))
+	idx := strings.LastIndex(headerName, "-")
+	if idx < 0 {
+		return ""
+	}
+	prefix := headerName[:idx+1]
+	if strings.Count(prefix, "-") < 2 {
+		return ""
+	}
+	return prefix
+}
+
+func isAPIKeyHeaderScheme(scheme openAPISecurityScheme) bool {
+	return strings.EqualFold(scheme.Type, "apikey") && scheme.In == "header" && strings.TrimSpace(scheme.HeaderName) != ""
+}
+
+func scoreComposedHeaderScheme(clientContent string, scheme openAPISecurityScheme) (int, bool) {
+	if !isAPIKeyHeaderScheme(scheme) {
+		return 0, false
+	}
+	if headerAssignmentPresent(clientContent, scheme.HeaderName) {
+		return 10, true
+	}
+	return 0, true
+}
+
+func headerAssignmentPresent(clientContent, headerName string) bool {
+	return strings.Contains(clientContent, `Header.Set("`+headerName+`"`) ||
+		strings.Contains(clientContent, `Header.Add("`+headerName+`"`)
 }
 
 func authPrefixLiteralPresent(prefix string, contents ...string) bool {

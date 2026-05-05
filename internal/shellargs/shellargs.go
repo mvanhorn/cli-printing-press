@@ -9,6 +9,8 @@ import (
 // README/SKILL narrative. It preserves double-quoted tokens and backslash
 // escapes, but intentionally does not perform shell expansion.
 func Split(s string) ([]string, error) {
+	s = joinLineContinuations(s)
+
 	var tokens []string
 	var current strings.Builder
 	inQuote := false
@@ -66,6 +68,13 @@ func Split(s string) ([]string, error) {
 		flush()
 	}
 	return tokens, nil
+}
+
+func joinLineContinuations(s string) string {
+	for _, newline := range []string{"\\\r\n", "\\\n"} {
+		s = strings.ReplaceAll(s, newline, "")
+	}
+	return s
 }
 
 // ArgsAfterBinary returns every token after the leading binary name.
