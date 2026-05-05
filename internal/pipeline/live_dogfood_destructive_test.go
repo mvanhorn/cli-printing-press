@@ -78,6 +78,19 @@ func TestIsDestructiveAtAuth(t *testing.T) {
 			name: "empty inputs",
 			want: false,
 		},
+		{
+			// Adversarial reviewer caught: a non-pp:endpoint annotation
+			// containing a destructive term must not trigger the classifier.
+			// Annotation-primary path reads pp:endpoint exclusively; other
+			// keys (description, etc.) are not part of the contract.
+			name: "destructive term in non-pp:endpoint key is ignored",
+			annotations: map[string]string{
+				"pp:endpoint": "users.list-users",
+				"description": "list users (refresh the cache)",
+			},
+			path: []string{"my-cli", "users"},
+			want: false,
+		},
 	}
 
 	for _, tt := range cases {

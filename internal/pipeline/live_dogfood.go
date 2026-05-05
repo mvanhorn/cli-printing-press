@@ -856,8 +856,8 @@ var destructiveAuthTerms = []string{"refresh", "rotate", "revoke"}
 // isDestructiveAtAuth reports whether a command rotates or revokes the
 // bearer the live-dogfood runner is using. Reads pp:endpoint
 // (authoritative for endpoint-mirror commands) and falls back to
-// Cobra-leaf-segment matching for novel commands. Read-only commands
-// are exempt regardless of name.
+// path-segment matching across the command path for novel commands.
+// Read-only commands are exempt regardless of name.
 func isDestructiveAtAuth(annotations map[string]string, commandPath []string) bool {
 	if annotations["mcp:read-only"] == "true" {
 		return false
