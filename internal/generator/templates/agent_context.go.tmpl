@@ -111,7 +111,15 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 			Kind:      {{printf "%q" .Kind}},
 			Required:  {{.Required}},
 			Sensitive: {{.Sensitive}},
-{{- if and (not .Sensitive) .Description}}
+{{- if .Sensitive}}
+{{- if eq (printf "%s" .Kind) "per_call"}}
+			Description: "Set to your API credential.",
+{{- else if eq (printf "%s" .Kind) "auth_flow_input"}}
+			Description: "Set during initial auth setup.",
+{{- else if eq (printf "%s" .Kind) "harvested"}}
+			Description: "Populated automatically by auth login.",
+{{- end}}
+{{- else if .Description}}
 			Description: {{printf "%q" .Description}},
 {{- end}}
 		},

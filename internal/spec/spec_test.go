@@ -269,6 +269,48 @@ func TestAuthEnvVarSpecsRejectDuplicateNames(t *testing.T) {
 	require.ErrorContains(t, s.Validate(), `auth.env_var_specs contains duplicate name "TODOIST_API_KEY"`)
 }
 
+func TestAuthEnvVarSpecsRejectIndependentORGroups(t *testing.T) {
+	s := APISpec{
+		Name:    "auth-api",
+		BaseURL: "https://api.example.com",
+		Auth: AuthConfig{
+			Type: "bearer_token",
+			EnvVarSpecs: []AuthEnvVar{
+				{Name: "FIRST_TOKEN", Kind: AuthEnvVarKindPerCall, Sensitive: true, Description: "Set this OR SECOND_TOKEN."},
+				{Name: "SECOND_TOKEN", Kind: AuthEnvVarKindPerCall, Sensitive: true, Description: "Set this OR FIRST_TOKEN."},
+				{Name: "THIRD_TOKEN", Kind: AuthEnvVarKindPerCall, Sensitive: true, Description: "Set this OR FOURTH_TOKEN."},
+				{Name: "FOURTH_TOKEN", Kind: AuthEnvVarKindPerCall, Sensitive: true, Description: "Set this OR THIRD_TOKEN."},
+			},
+		},
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+	}
+
+	require.ErrorContains(t, s.Validate(), "auth: detected 2+ independent OR-groups in EnvVarSpecs")
+}
+
+func TestAuthEnvVarSpecsAcceptTransitiveORGroup(t *testing.T) {
+	s := APISpec{
+		Name:    "auth-api",
+		BaseURL: "https://api.example.com",
+		Auth: AuthConfig{
+			Type: "bearer_token",
+			EnvVarSpecs: []AuthEnvVar{
+				{Name: "FIRST_TOKEN", Kind: AuthEnvVarKindPerCall, Sensitive: true, Description: "Set this OR SECOND_TOKEN."},
+				{Name: "SECOND_TOKEN", Kind: AuthEnvVarKindPerCall, Sensitive: true, Description: "Set this OR THIRD_TOKEN."},
+				{Name: "THIRD_TOKEN", Kind: AuthEnvVarKindPerCall, Sensitive: true, Description: "Set this OR FOURTH_TOKEN."},
+				{Name: "FOURTH_TOKEN", Kind: AuthEnvVarKindPerCall, Sensitive: true, Description: "Set this OR FIRST_TOKEN."},
+			},
+		},
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+	}
+
+	require.NoError(t, s.Validate())
+}
+
 func TestNormalizeEnvVarSpecsEmptyNameIsIdempotent(t *testing.T) {
 	auth := AuthConfig{
 		Type:    "api_key",

@@ -215,6 +215,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			authEnvRequiredMissing := []string{}
 			authEnvInfo := []string{}
 			authEnvOptionalNames := []string{}
+			// Validation rejects multi-OR-group specs upstream, so the single optional-satisfied state is sufficient at runtime.
 			authEnvOptionalSatisfied := false
 {{- range .Auth.EnvVarSpecs}}
 {{- if eq .Kind "per_call"}}

@@ -135,6 +135,13 @@ func Load(configPath string) (*Config, error) {
 
 func (c *Config) AuthHeader() string {
 {{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
+{{- $orMembers := 0}}
+{{- range .Auth.EnvVarSpecs}}
+{{- if and (eq (printf "%s" .Kind) "per_call") (not .Required)}}
+{{- $orMembers = add $orMembers 1}}
+{{- end}}
+{{- end}}
+{{- $isAuthEnvVarORCase := and (gt $orMembers 1) (eq $orMembers (len .Auth.EnvVarSpecs))}}
 {{- if and .BearerRefresh.Enabled (eq .Auth.Type "bearer_token") (ne .Auth.EffectiveOAuth2Grant "client_credentials")}}
 	if c.AuthHeaderVal != "" && c.AccessToken == "" {
 		return c.AuthHeaderVal
@@ -145,6 +152,24 @@ func (c *Config) AuthHeader() string {
 	}
 {{- end}}
 {{- if eq .Auth.Type "api_key"}}
+{{- if $isAuthEnvVarORCase}}
+	// OR-case fan-out — uses whichever credential the user has set.
+{{- range .Auth.EnvVarSpecs}}
+	if c.{{resolveEnvVarField .Name}} != "" {
+		token := c.{{resolveEnvVarField .Name}}
+		{{- if $.Auth.Format}}
+		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
+			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
+			"{{.Name}}": c.{{resolveEnvVarField .Name}},
+			"token": token,
+		})
+		{{- else}}
+		return token
+		{{- end}}
+	}
+{{- end}}
+	return ""
+{{- else}}
 	{{- with $canonicalEnvVar}}
 	token := c.{{resolveEnvVarField .Name}}
 	if token == "" {
@@ -199,6 +224,7 @@ func (c *Config) AuthHeader() string {
 	{{- else}}
 	return ""
 	{{- end}}
+{{- end}}
 {{- else if or (eq .Auth.Type "bearer_token") (eq .Auth.Type "oauth2")}}
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 	// Under OAuth2 client_credentials the env var is the Client ID, not a
@@ -241,6 +267,24 @@ func (c *Config) AuthHeader() string {
 {{- else}}
 	// Env-var token wins over file-stored AccessToken (env > config convention).
 {{- end}}
+{{- if $isAuthEnvVarORCase}}
+	// OR-case fan-out — uses whichever credential the user has set.
+{{- range .Auth.EnvVarSpecs}}
+	if c.{{resolveEnvVarField .Name}} != "" {
+		c.AuthSource = "env:{{.Name}}"
+		{{- if $.Auth.Format}}
+		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
+			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
+			"{{.Name}}": c.{{resolveEnvVarField .Name}},
+			"token": c.{{resolveEnvVarField .Name}},
+		})
+		{{- else}}
+		return "Bearer " + c.{{resolveEnvVarField .Name}}
+		{{- end}}
+	}
+{{- end}}
+	return ""
+{{- else}}
 	{{- with $canonicalEnvVar}}
 	if c.{{resolveEnvVarField .Name}} != "" {
 		c.AuthSource = "env:{{.Name}}"
@@ -267,14 +311,25 @@ func (c *Config) AuthHeader() string {
 {{- end}}
 	return ""
 {{- end}}
+{{- end}}
 {{- else if eq .Auth.Type "cookie"}}
 	// Env-var token wins over file-stored AccessToken (env > config convention).
+{{- if $isAuthEnvVarORCase}}
+	// OR-case fan-out — uses whichever credential the user has set.
+{{- range .Auth.EnvVarSpecs}}
+	if c.{{resolveEnvVarField .Name}} != "" {
+		c.AuthSource = "env:{{.Name}}"
+		return c.{{resolveEnvVarField .Name}}
+	}
+{{- end}}
+{{- else}}
 	{{- with $canonicalEnvVar}}
 	if c.{{resolveEnvVarField .Name}} != "" {
 		c.AuthSource = "env:{{.Name}}"
 		return c.{{resolveEnvVarField .Name}}
 	}
 	{{- end}}
+{{- end}}
 	if c.AccessToken != "" {
 		c.AuthSource = "browser"
 		return c.AccessToken
@@ -282,12 +337,22 @@ func (c *Config) AuthHeader() string {
 	return ""
 {{- else if eq .Auth.Type "composed"}}
 	// Env-var token wins over file-stored AccessToken (env > config convention).
+{{- if $isAuthEnvVarORCase}}
+	// OR-case fan-out — uses whichever credential the user has set.
+{{- range .Auth.EnvVarSpecs}}
+	if c.{{resolveEnvVarField .Name}} != "" {
+		c.AuthSource = "env:{{.Name}}"
+		return c.{{resolveEnvVarField .Name}}
+	}
+{{- end}}
+{{- else}}
 	{{- with $canonicalEnvVar}}
 	if c.{{resolveEnvVarField .Name}} != "" {
 		c.AuthSource = "env:{{.Name}}"
 		return c.{{resolveEnvVarField .Name}}
 	}
 	{{- end}}
+{{- end}}
 	if c.AccessToken != "" {
 		c.AuthSource = "chrome-composed"
 		return c.AccessToken

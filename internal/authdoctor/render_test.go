@@ -23,6 +23,7 @@ func TestRenderTableRows(t *testing.T) {
 		{API: "dub", Type: "bearer_token", EnvVar: "DUB_TOKEN", Status: StatusSuspicious, Fingerprint: "abc", Reason: "too short"},
 		{API: "hubspot", Type: "api_key", EnvVar: "HUBSPOT_ACCESS_TOKEN", Status: StatusOK, Fingerprint: "pat-..."},
 		{API: "hackernews", Type: "none", Status: StatusNoAuth},
+		{API: "slack", Type: "bearer_token", EnvVar: "SLACK_BOT_TOKEN", Status: StatusInfo, Reason: "set one of: SLACK_BOT_TOKEN or SLACK_USER_TOKEN"},
 	}
 	var buf bytes.Buffer
 	if err := RenderTable(&buf, findings); err != nil {
@@ -44,6 +45,9 @@ func TestRenderTableRows(t *testing.T) {
 	}
 	if !strings.Contains(out, "1 ok") || !strings.Contains(out, "1 suspicious") || !strings.Contains(out, "1 no auth") {
 		t.Errorf("summary counts wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "Summary: 1 ok, 1 suspicious, 0 not set, 1 no auth, 0 unknown, 1 info") {
+		t.Errorf("summary ordering wrong:\n%s", out)
 	}
 }
 

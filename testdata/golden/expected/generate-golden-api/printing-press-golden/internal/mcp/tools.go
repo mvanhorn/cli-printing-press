@@ -363,6 +363,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 					"kind": "per_call",
 					"required": true,
 					"sensitive": true,
+					"description": "Set to your API credential.",
 				},
 			},
 		},

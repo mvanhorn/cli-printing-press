@@ -109,6 +109,7 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 			Kind:      "per_call",
 			Required:  true,
 			Sensitive: true,
+			Description: "Set to your API credential.",
 		},
 		{
 			Name:      "RICH_AUTH_CLIENT_ID",
@@ -122,30 +123,35 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 			Kind:      "auth_flow_input",
 			Required:  false,
 			Sensitive: true,
+			Description: "Set during initial auth setup.",
 		},
 		{
 			Name:      "RICH_AUTH_SESSION_COOKIE",
 			Kind:      "harvested",
 			Required:  false,
 			Sensitive: true,
+			Description: "Populated automatically by auth login.",
 		},
 		{
 			Name:      "RICH_AUTH_OPTIONAL_TOKEN",
 			Kind:      "per_call",
 			Required:  false,
 			Sensitive: true,
+			Description: "Set to your API credential.",
 		},
 		{
 			Name:      "RICH_AUTH_BOT_TOKEN",
 			Kind:      "per_call",
 			Required:  false,
 			Sensitive: true,
+			Description: "Set to your API credential.",
 		},
 		{
 			Name:      "RICH_AUTH_USER_TOKEN",
 			Kind:      "per_call",
 			Required:  false,
 			Sensitive: true,
+			Description: "Set to your API credential.",
 		},
 	}
 	authMode := "api_key"

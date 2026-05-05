@@ -427,7 +427,15 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 					"kind": {{printf "%q" .Kind}},
 					"required": {{.Required}},
 					"sensitive": {{.Sensitive}},
-{{- if and (not .Sensitive) .Description}}
+{{- if .Sensitive}}
+{{- if eq (printf "%s" .Kind) "per_call"}}
+					"description": "Set to your API credential.",
+{{- else if eq (printf "%s" .Kind) "auth_flow_input"}}
+					"description": "Set during initial auth setup.",
+{{- else if eq (printf "%s" .Kind) "harvested"}}
+					"description": "Populated automatically by auth login.",
+{{- end}}
+{{- else if .Description}}
 					"description": {{printf "%q" .Description}},
 {{- end}}
 				},
@@ -463,7 +471,15 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 							"kind": {{printf "%q" .Kind}},
 							"required": {{.Required}},
 							"sensitive": {{.Sensitive}},
-{{- if and (not .Sensitive) .Description}}
+{{- if .Sensitive}}
+{{- if eq (printf "%s" .Kind) "per_call"}}
+							"description": "Set to your API credential.",
+{{- else if eq (printf "%s" .Kind) "auth_flow_input"}}
+							"description": "Set during initial auth setup.",
+{{- else if eq (printf "%s" .Kind) "harvested"}}
+							"description": "Populated automatically by auth login.",
+{{- end}}
+{{- else if .Description}}
 							"description": {{printf "%q" .Description}},
 {{- end}}
 						},

@@ -1455,7 +1455,75 @@ func validateAuthEnvVarSpecs(context string, auth AuthConfig) error {
 				context, i, envVar.Kind, AuthEnvVarKindPerCall, AuthEnvVarKindAuthFlowInput, AuthEnvVarKindHarvested)
 		}
 	}
+	if example, ok := independentAuthORGroupsExample(auth.EnvVarSpecs); ok {
+		return fmt.Errorf("%s: detected 2+ independent OR-groups in EnvVarSpecs (e.g., %s). The current model encodes OR-group membership via per-var Required=false + description text and supports at most one OR-group per auth block; multi-OR-group specs are not supported. Either consolidate to a single OR-group (mark all non-required entries as members of one group via cross-referencing descriptions), or require all credentials (Required=true)", context, example)
+	}
 	return nil
+}
+
+func independentAuthORGroupsExample(envVarSpecs []AuthEnvVar) (string, bool) {
+	members := make([]AuthEnvVar, 0, len(envVarSpecs))
+	memberNames := map[string]struct{}{}
+	for _, envVar := range envVarSpecs {
+		name := strings.TrimSpace(envVar.Name)
+		if name == "" || envVar.Kind != AuthEnvVarKindPerCall || envVar.Required || !strings.Contains(envVar.Description, " OR ") {
+			continue
+		}
+		members = append(members, envVar)
+		memberNames[name] = struct{}{}
+	}
+	if len(members) < 2 {
+		return "", false
+	}
+
+	parent := make(map[string]string, len(members))
+	for _, member := range members {
+		parent[member.Name] = member.Name
+	}
+	var find func(string) string
+	find = func(name string) string {
+		if parent[name] != name {
+			parent[name] = find(parent[name])
+		}
+		return parent[name]
+	}
+	union := func(a, b string) {
+		rootA, rootB := find(a), find(b)
+		if rootA != rootB {
+			parent[rootB] = rootA
+		}
+	}
+
+	tokenPattern := regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
+	for _, member := range members {
+		for _, token := range tokenPattern.FindAllString(member.Description, -1) {
+			if token == member.Name {
+				continue
+			}
+			if _, ok := memberNames[token]; ok {
+				union(member.Name, token)
+			}
+		}
+	}
+
+	groups := map[string][]string{}
+	order := []string{}
+	for _, member := range members {
+		root := find(member.Name)
+		if _, ok := groups[root]; !ok {
+			order = append(order, root)
+		}
+		groups[root] = append(groups[root], member.Name)
+	}
+	if len(groups) < 2 {
+		return "", false
+	}
+
+	parts := make([]string, 0, len(order))
+	for _, root := range order {
+		parts = append(parts, strings.Join(groups[root], " OR "))
+	}
+	return strings.Join(parts, "; "), true
 }
 
 func validateBearerRefresh(s *APISpec) error {

@@ -101,6 +101,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			authEnvRequiredMissing := []string{}
 			authEnvInfo := []string{}
 			authEnvOptionalNames := []string{}
+			// Validation rejects multi-OR-group specs upstream, so the single optional-satisfied state is sufficient at runtime.
 			authEnvOptionalSatisfied := false
 			if os.Getenv("PRINTING_PRESS_GOLDEN_API_KEY") != "" {
 				authEnvSet = append(authEnvSet, "PRINTING_PRESS_GOLDEN_API_KEY")

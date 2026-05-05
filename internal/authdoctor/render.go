@@ -74,8 +74,8 @@ func RenderTable(w io.Writer, findings []Finding) error {
 	}
 
 	s := Summarize(findings)
-	if _, err := fmt.Fprintf(w, "\nSummary: %d ok, %d suspicious, %d not set, %d info, %d no auth, %d unknown\n",
-		s.OK, s.Suspicious, s.NotSet, s.Info, s.NoAuth, s.Unknown); err != nil {
+	if _, err := fmt.Fprintf(w, "\nSummary: %d ok, %d suspicious, %d not set, %d no auth, %d unknown, %d info\n",
+		s.OK, s.Suspicious, s.NotSet, s.NoAuth, s.Unknown, s.Info); err != nil {
 		return err
 	}
 
