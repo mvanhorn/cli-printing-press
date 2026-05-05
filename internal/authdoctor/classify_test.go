@@ -1,9 +1,12 @@
 package authdoctor
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 )
 
 func envFrom(m map[string]string) getEnv {
@@ -190,6 +193,89 @@ func TestClassifyComposedMultipleEnvVarsMixed(t *testing.T) {
 	}
 	if findings[1].Status != StatusNotSet {
 		t.Errorf("COOKIE_B should be NotSet, got %q", findings[1].Status)
+	}
+}
+
+func TestClassifyMixedVersionManifestUsesEnvVarSpecsOnce(t *testing.T) {
+	m := &pipeline.ToolsManifest{
+		Auth: pipeline.ManifestAuth{
+			Type:    "api_key",
+			EnvVars: []string{"RICH_TOKEN"},
+			EnvVarSpecs: []spec.AuthEnvVar{{
+				Name:      "RICH_TOKEN",
+				Kind:      spec.AuthEnvVarKindPerCall,
+				Required:  true,
+				Sensitive: true,
+			}},
+		},
+	}
+
+	findings := Classify("rich", m, envFrom(map[string]string{"RICH_TOKEN": "well-formed-token"}))
+	if len(findings) != 1 {
+		t.Fatalf("want one rich-path finding with no legacy duplicate, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].EnvVar != "RICH_TOKEN" || findings[0].Status != StatusOK {
+		t.Fatalf("want single RICH_TOKEN OK finding, got %+v", findings[0])
+	}
+}
+
+func TestClassifyEnvVarSpecsKindAwareReporting(t *testing.T) {
+	m := &pipeline.ToolsManifest{
+		Auth: pipeline.ManifestAuth{
+			Type:    "composed",
+			EnvVars: []string{"PER_CALL_REQUIRED", "OAUTH_CLIENT_SECRET", "SESSION_COOKIE"},
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "PER_CALL_REQUIRED", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+				{Name: "PER_CALL_OPTIONAL", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true},
+				{Name: "OAUTH_CLIENT_SECRET", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: false, Sensitive: true},
+				{Name: "SESSION_COOKIE", Kind: spec.AuthEnvVarKindHarvested, Required: false, Sensitive: true},
+			},
+		},
+	}
+
+	findings := Classify("rich", m, envFrom(nil))
+	if len(findings) != 4 {
+		t.Fatalf("want one finding per rich env var, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].EnvVar != "PER_CALL_REQUIRED" || findings[0].Status != StatusNotSet {
+		t.Fatalf("required per-call missing should be not_set, got %+v", findings[0])
+	}
+	for _, idx := range []int{1, 2, 3} {
+		if findings[idx].Status != StatusInfo {
+			t.Fatalf("finding %d should be informational, got %+v", idx, findings[idx])
+		}
+	}
+}
+
+func TestClassifyHarvestedEnvVarUsesAuthFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := filepath.Join(home, ".config", "cookie-api-pp-cli")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.toml"), []byte("session = 'ok'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &pipeline.ToolsManifest{
+		Auth: pipeline.ManifestAuth{
+			Type: "cookie",
+			EnvVarSpecs: []spec.AuthEnvVar{{
+				Name:      "COOKIE_API_SESSION",
+				Kind:      spec.AuthEnvVarKindHarvested,
+				Required:  false,
+				Sensitive: true,
+			}},
+		},
+	}
+
+	findings := Classify("cookie-api", m, envFrom(nil))
+	if len(findings) != 1 {
+		t.Fatalf("want one finding, got %d", len(findings))
+	}
+	if findings[0].Status != StatusOK || findings[0].Reason != "auth file present" {
+		t.Fatalf("want harvested auth file to report ok, got %+v", findings[0])
 	}
 }
 

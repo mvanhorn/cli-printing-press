@@ -824,6 +824,75 @@ func (c Config) AuthHeader() string {
 		assert.GreaterOrEqual(t, sc.Steinberger.AuthProtocol, 7)
 	})
 
+	t.Run("rich env var specs only emission remains scoreable", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/cli/auth.go", `
+package cli
+
+func newAuthCmd() {}
+`)
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setAuth(req *http.Request, authHeader string) {
+	req.Header.Set("Authorization", authHeader)
+}
+`)
+		writeScorecardFixture(t, dir, "internal/config/config.go", `
+package config
+
+import "os"
+
+type Config struct {
+	RichAuthApiKey string
+}
+
+func Load() Config {
+	// canonical envVar
+	return Config{RichAuthApiKey: os.Getenv("RICH_AUTH_API_KEY")}
+}
+
+func (c Config) AuthHeader() string {
+	return "Bearer " + c.RichAuthApiKey
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-rich-env-var-specs.json")
+		writeScorecardFixture(t, dir, "spec-rich-env-var-specs.json", `{
+  "paths": {
+    "/items": {
+      "get": {
+        "security": [
+          {
+            "RICH_AUTH_API_KEY": []
+          }
+        ],
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "RICH_AUTH_API_KEY": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.GreaterOrEqual(t, sc.Steinberger.AuthProtocol, 7)
+		assert.Greater(t, sc.Steinberger.Auth, 0)
+	})
+
 	t.Run("anonymous alternative leaves auth unscored", func(t *testing.T) {
 		dir := t.TempDir()
 		writeScorecardFixture(t, dir, "internal/client/client.go", `

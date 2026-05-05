@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/version"
 )
 
@@ -279,12 +280,13 @@ func loadExistingMCPBManifest(dir string) *existingMCPBManifest {
 // the value at runtime from what the user typed (or whatever the keychain
 // has cached). Empty list returns nil so the manifest stays compact.
 func buildMCPBEnv(m CLIManifest) map[string]string {
-	if len(m.AuthEnvVars) == 0 && len(m.EndpointTemplateVars) == 0 {
+	authEnvVarSpecs := mcpbUserConfigAuthEnvVars(m)
+	if len(authEnvVarSpecs) == 0 && len(m.EndpointTemplateVars) == 0 {
 		return nil
 	}
-	env := make(map[string]string, len(m.AuthEnvVars)+len(m.EndpointTemplateVars))
-	for _, name := range m.AuthEnvVars {
-		env[name] = "${user_config." + userConfigKey(name) + "}"
+	env := make(map[string]string, len(authEnvVarSpecs)+len(m.EndpointTemplateVars))
+	for _, envVar := range authEnvVarSpecs {
+		env[envVar.Name] = "${user_config." + userConfigKey(envVar.Name) + "}"
 	}
 	for _, templateVar := range m.EndpointTemplateVars {
 		name := endpointTemplateEnvVar(m.APIName, templateVar)
@@ -301,23 +303,19 @@ func buildMCPBEnv(m CLIManifest) map[string]string {
 // required. Endpoint template vars are always required because unresolved
 // placeholders make every request URL invalid.
 func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
-	if len(m.AuthEnvVars) == 0 && len(m.EndpointTemplateVars) == 0 {
+	authEnvVarSpecs := mcpbUserConfigAuthEnvVars(m)
+	if len(authEnvVarSpecs) == 0 && len(m.EndpointTemplateVars) == 0 {
 		return nil
 	}
-	// AuthOptional overrides the auth-type heuristic. api_key would otherwise
-	// be Required: true, but recipe-goat's USDA_FDC_API_KEY only powers an
-	// opt-in `--nutrition` flag — marking it required hides the fact that
-	// every other tool works without the key. The spec author's `optional:
-	// true` is the explicit signal.
-	required := authRequiresCredential(m.AuthType) && !m.AuthOptional
-	vars := make(map[string]MCPBVar, len(m.AuthEnvVars)+len(m.EndpointTemplateVars))
-	for _, name := range m.AuthEnvVars {
-		title, description := authUserConfigText(m, name, required)
-		vars[userConfigKey(name)] = MCPBVar{
+	vars := make(map[string]MCPBVar, len(authEnvVarSpecs)+len(m.EndpointTemplateVars))
+	for _, envVar := range authEnvVarSpecs {
+		required := envVar.Required && !m.AuthOptional
+		title, description := authUserConfigText(m, envVar, required)
+		vars[userConfigKey(envVar.Name)] = MCPBVar{
 			Type:        mcpbVarTypeString,
 			Title:       title,
 			Description: description,
-			Sensitive:   true,
+			Sensitive:   envVar.Sensitive,
 			Required:    required,
 		}
 	}
@@ -334,6 +332,46 @@ func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
 	return vars
 }
 
+func mcpbUserConfigAuthEnvVars(m CLIManifest) []spec.AuthEnvVar {
+	envVarSpecs := m.AuthEnvVarSpecs
+	if len(envVarSpecs) == 0 && len(m.AuthEnvVars) > 0 {
+		required := authRequiresCredential(m.AuthType)
+		envVarSpecs = make([]spec.AuthEnvVar, 0, len(m.AuthEnvVars))
+		for _, name := range m.AuthEnvVars {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			envVarSpecs = append(envVarSpecs, spec.AuthEnvVar{
+				Name:      name,
+				Kind:      spec.AuthEnvVarKindPerCall,
+				Required:  required,
+				Sensitive: true,
+				Inferred:  true,
+			})
+		}
+	}
+	if len(envVarSpecs) == 0 {
+		return nil
+	}
+	filtered := make([]spec.AuthEnvVar, 0, len(envVarSpecs))
+	for _, envVar := range envVarSpecs {
+		if envVar.Name == "" {
+			continue
+		}
+		switch envVar.Kind {
+		case "", spec.AuthEnvVarKindPerCall:
+			envVar.Kind = spec.AuthEnvVarKindPerCall
+			filtered = append(filtered, envVar)
+		case spec.AuthEnvVarKindAuthFlowInput, spec.AuthEnvVarKindHarvested:
+			continue
+		default:
+			continue
+		}
+	}
+	return filtered
+}
+
 func endpointTemplateEnvVar(apiName, templateVar string) string {
 	return strings.ToUpper(naming.Snake(apiName) + "_" + naming.Snake(templateVar))
 }
@@ -348,9 +386,9 @@ func endpointTemplateVarDescription(templateVar, envVar string) string {
 	return fmt.Sprintf("Sets %s for the endpoint template variable {%s}.", envVar, templateVar)
 }
 
-func authUserConfigText(m CLIManifest, envVar string, required bool) (string, string) {
-	title := envVar
-	if len(m.AuthEnvVars) == 1 {
+func authUserConfigText(m CLIManifest, envVar spec.AuthEnvVar, required bool) (string, string) {
+	title := envVar.Name
+	if len(mcpbUserConfigAuthEnvVars(m)) == 1 {
 		if override := strings.TrimSpace(m.AuthTitle); override != "" {
 			title = override
 		}
@@ -358,7 +396,13 @@ func authUserConfigText(m CLIManifest, envVar string, required bool) (string, st
 			return title, description
 		}
 	}
-	return title, envVarDescription(m, envVar, required)
+	if description := strings.TrimSpace(envVar.Description); description != "" {
+		if !required {
+			return title, "Optional. " + description
+		}
+		return title, description
+	}
+	return title, envVarDescription(m, envVar.Name, required)
 }
 
 func endpointTemplateDefault(m CLIManifest, templateVar string) string {

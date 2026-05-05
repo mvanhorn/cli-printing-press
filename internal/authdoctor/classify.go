@@ -2,9 +2,13 @@ package authdoctor
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 )
 
 // minLengthByType gives the minimum expected length of a well-formed
@@ -69,7 +73,8 @@ func classifyAuthBlock(slug string, auth pipeline.ManifestAuth, env getEnv, tier
 		return nil
 	}
 	displayAuthType := scopedAuthType(tierName, authType)
-	if len(auth.EnvVars) == 0 {
+	envVarSpecs := pipelineEffectiveManifestAuthEnvVarSpecs(auth)
+	if len(envVarSpecs) == 0 {
 		findings := []Finding{{
 			API:    slug,
 			Type:   displayAuthType,
@@ -82,14 +87,55 @@ func classifyAuthBlock(slug string, auth pipeline.ManifestAuth, env getEnv, tier
 		return findings
 	}
 
-	findings := make([]Finding, 0, len(auth.EnvVars))
-	for _, envVar := range auth.EnvVars {
-		findings = append(findings, classifyEnv(slug, displayAuthType, envVar, env))
+	findings := make([]Finding, 0, len(envVarSpecs))
+	for _, envVar := range envVarSpecs {
+		findings = append(findings, classifyEnvSpec(slug, displayAuthType, envVar, env))
 	}
 	if auth.RequiresBrowserSession {
 		findings = append(findings, browserSessionProofFinding(slug, displayAuthType))
 	}
 	return findings
+}
+
+func pipelineEffectiveManifestAuthEnvVarSpecs(auth pipeline.ManifestAuth) []spec.AuthEnvVar {
+	// rich model
+	if len(auth.EnvVarSpecs) > 0 {
+		if len(auth.EnvVars) > 0 && !sameAuthEnvVarNames(auth.EnvVars, auth.EnvVarSpecs) {
+			fmt.Fprintln(os.Stderr, "warning: tools-manifest auth env_vars disagree with env_var_specs; using env_var_specs")
+		}
+		return auth.EnvVarSpecs
+	}
+	// legacy fallback
+	if len(auth.EnvVars) == 0 {
+		return nil
+	}
+	envVarSpecs := make([]spec.AuthEnvVar, 0, len(auth.EnvVars))
+	for _, name := range auth.EnvVars {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		envVarSpecs = append(envVarSpecs, spec.AuthEnvVar{
+			Name:      name,
+			Kind:      spec.AuthEnvVarKindPerCall,
+			Required:  true,
+			Sensitive: true,
+			Inferred:  true,
+		})
+	}
+	return envVarSpecs
+}
+
+func sameAuthEnvVarNames(envVars []string, envVarSpecs []spec.AuthEnvVar) bool {
+	if len(envVars) != len(envVarSpecs) {
+		return false
+	}
+	for i := range envVars {
+		if strings.TrimSpace(envVars[i]) != strings.TrimSpace(envVarSpecs[i].Name) {
+			return false
+		}
+	}
+	return true
 }
 
 func scopedAuthType(tierName, authType string) string {
@@ -133,6 +179,65 @@ func classifyEnv(slug, authType, envVar string, env getEnv) Finding {
 	base.Status = StatusOK
 	base.Fingerprint = Fingerprint(value)
 	return base
+}
+
+func classifyEnvSpec(slug, authType string, envVar spec.AuthEnvVar, env getEnv) Finding {
+	kind := envVar.Kind
+	if kind == "" {
+		kind = spec.AuthEnvVarKindPerCall
+	}
+	switch kind {
+	case spec.AuthEnvVarKindAuthFlowInput:
+		return classifyInfoEnv(slug, authType, envVar.Name, env, "only needed during auth login")
+	case spec.AuthEnvVarKindHarvested:
+		if env(envVar.Name) != "" {
+			return classifyEnv(slug, authType, envVar.Name, env)
+		}
+		if authFileExists(slug) {
+			return Finding{
+				API:    slug,
+				Type:   authType,
+				EnvVar: envVar.Name,
+				Status: StatusOK,
+				Reason: "auth file present",
+			}
+		}
+		return Finding{
+			API:    slug,
+			Type:   authType,
+			EnvVar: envVar.Name,
+			Status: StatusInfo,
+			Reason: "populated by auth login; run auth login --chrome",
+		}
+	default:
+		if !envVar.Required && env(envVar.Name) == "" {
+			return classifyInfoEnv(slug, authType, envVar.Name, env, "optional auth env var is not set")
+		}
+		return classifyEnv(slug, authType, envVar.Name, env)
+	}
+}
+
+func classifyInfoEnv(slug, authType, envVar string, env getEnv, reason string) Finding {
+	if env(envVar) != "" {
+		return classifyEnv(slug, authType, envVar, env)
+	}
+	return Finding{
+		API:    slug,
+		Type:   authType,
+		EnvVar: envVar,
+		Status: StatusInfo,
+		Reason: reason,
+	}
+}
+
+func authFileExists(slug string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	path := filepath.Join(home, ".config", slug+"-pp-cli", "config.toml")
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // suspiciousReason returns a non-empty reason when a set value looks

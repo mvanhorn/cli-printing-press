@@ -29,21 +29,30 @@ type VerifyConfig struct {
 
 // VerifyReport is the output of a runtime verification run.
 type VerifyReport struct {
-	Mode                   string          `json:"mode"` // "live" or "mock"
-	Total                  int             `json:"total"`
-	Passed                 int             `json:"passed"`
-	Failed                 int             `json:"failed"`
-	Critical               int             `json:"critical"`
-	PassRate               float64         `json:"pass_rate"`
-	DataPipeline           bool            `json:"data_pipeline"`
-	DataPipelineDetail     string          `json:"data_pipeline_detail,omitempty"` // PASS, WARN, SKIP, FAIL with context
-	Freshness              FreshnessResult `json:"freshness"`
-	BrowserSessionRequired bool            `json:"browser_session_required,omitempty"`
-	BrowserSessionProof    string          `json:"browser_session_proof,omitempty"`
-	BrowserSessionDetail   string          `json:"browser_session_detail,omitempty"`
-	Verdict                string          `json:"verdict"` // PASS, WARN, FAIL
-	Results                []CommandResult `json:"results"`
-	Binary                 string          `json:"binary"`
+	Mode                   string             `json:"mode"` // "live" or "mock"
+	Total                  int                `json:"total"`
+	Passed                 int                `json:"passed"`
+	Failed                 int                `json:"failed"`
+	Critical               int                `json:"critical"`
+	PassRate               float64            `json:"pass_rate"`
+	DataPipeline           bool               `json:"data_pipeline"`
+	DataPipelineDetail     string             `json:"data_pipeline_detail,omitempty"` // PASS, WARN, SKIP, FAIL with context
+	Freshness              FreshnessResult    `json:"freshness"`
+	BrowserSessionRequired bool               `json:"browser_session_required,omitempty"`
+	BrowserSessionProof    string             `json:"browser_session_proof,omitempty"`
+	BrowserSessionDetail   string             `json:"browser_session_detail,omitempty"`
+	AuthEnvVars            []AuthEnvVarStatus `json:"auth_env_vars,omitempty"`
+	Verdict                string             `json:"verdict"` // PASS, WARN, FAIL
+	Results                []CommandResult    `json:"results"`
+	Binary                 string             `json:"binary"`
+}
+
+type AuthEnvVarStatus struct {
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Required bool   `json:"required"`
+	Status   string `json:"status"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 // CommandResult is the test result for a single command.
@@ -147,23 +156,53 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	}
 
 	// Collect auth env var names. Priority:
-	// 1. Spec's declared env vars (from securitySchemes or auth inference)
-	// 2. Env vars actually read by the CLI's config.go (ground truth)
-	// 3. Derived patterns from the API name (fallback)
-	authEnvVars := []string{envVarName}
-	if spec != nil && len(spec.Auth.EnvVars) > 0 {
-		authEnvVars = spec.Auth.EnvVars
+	// 1. Spec's declared rich env-var model (from securitySchemes or auth inference)
+	// 2. Legacy spec env vars
+	// 3. Env vars actually read by the CLI's config.go (ground truth)
+	// 4. Derived patterns from the API name (fallback)
+	authEnvVarSpecs := []apispec.AuthEnvVar{{
+		Name:      envVarName,
+		Kind:      apispec.AuthEnvVarKindPerCall,
+		Required:  true,
+		Sensitive: true,
+		Inferred:  true,
+	}}
+	if spec != nil {
+		spec.Auth.NormalizeEnvVarSpecs("")
+		if len(spec.Auth.EnvVarSpecs) > 0 {
+			authEnvVarSpecs = append([]apispec.AuthEnvVar(nil), spec.Auth.EnvVarSpecs...)
+		}
 	}
 	// Read the CLI's config.go to discover what env vars it actually reads.
 	// This catches cases where Claude wired a different env var name than
 	// what the spec declares or the API name implies.
 	if discovered := discoverCLIEnvVars(cfg.Dir); len(discovered) > 0 {
 		for _, ev := range discovered {
-			found := slices.Contains(authEnvVars, ev)
+			found := slices.ContainsFunc(authEnvVarSpecs, func(envVar apispec.AuthEnvVar) bool {
+				return envVar.Name == ev
+			})
 			if !found {
-				authEnvVars = append(authEnvVars, ev)
+				authEnvVarSpecs = append(authEnvVarSpecs, apispec.AuthEnvVar{
+					Name:      ev,
+					Kind:      apispec.AuthEnvVarKindPerCall,
+					Required:  true,
+					Sensitive: true,
+					Inferred:  true,
+				})
 			}
 		}
+	}
+	authEnvVars := authEnvVarSpecNames(authEnvVarSpecs)
+	authEnvVarStatuses := summarizeAuthEnvVars(authEnvVarSpecs, cfg.APIKey, report.Mode)
+	if shouldReportAuthEnvVarStatuses(authEnvVarStatuses) {
+		report.AuthEnvVars = authEnvVarStatuses
+	}
+	for _, missing := range missingRequiredAuthEnvVars(authEnvVarStatuses) {
+		report.Results = append(report.Results, CommandResult{
+			Command: "auth-env:" + missing.Name,
+			Kind:    "auth",
+			Error:   missing.Detail,
+		})
 	}
 
 	// EndpointTemplateVars env names live in their own bucket so the
@@ -256,6 +295,75 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	finalizeVerifyReport(report, cfg.Threshold, true)
 
 	return report, nil
+}
+
+func authEnvVarSpecNames(envVarSpecs []apispec.AuthEnvVar) []string {
+	names := make([]string, 0, len(envVarSpecs))
+	seen := make(map[string]struct{}, len(envVarSpecs))
+	for _, envVar := range envVarSpecs {
+		name := strings.TrimSpace(envVar.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names
+}
+
+func summarizeAuthEnvVars(envVarSpecs []apispec.AuthEnvVar, apiKey, mode string) []AuthEnvVarStatus {
+	statuses := make([]AuthEnvVarStatus, 0, len(envVarSpecs))
+	for _, envVar := range envVarSpecs {
+		name := strings.TrimSpace(envVar.Name)
+		if name == "" {
+			continue
+		}
+		kind := envVar.Kind
+		if kind == "" {
+			kind = apispec.AuthEnvVarKindPerCall
+		}
+		status := AuthEnvVarStatus{
+			Name:     name,
+			Kind:     string(kind),
+			Required: envVar.Required,
+			Status:   "ok",
+		}
+		if os.Getenv(name) != "" || apiKey != "" || mode == "mock" {
+			statuses = append(statuses, status)
+			continue
+		}
+		if kind == apispec.AuthEnvVarKindPerCall && envVar.Required {
+			status.Status = "missing_required"
+			status.Detail = "required per-call auth env var is not set"
+		} else {
+			status.Status = "missing_info"
+			status.Detail = "auth env var is not set but does not block verification"
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses
+}
+
+func shouldReportAuthEnvVarStatuses(statuses []AuthEnvVarStatus) bool {
+	for _, status := range statuses {
+		if status.Status != "ok" {
+			return true
+		}
+	}
+	return false
+}
+
+func missingRequiredAuthEnvVars(statuses []AuthEnvVarStatus) []AuthEnvVarStatus {
+	missing := make([]AuthEnvVarStatus, 0)
+	for _, status := range statuses {
+		if status.Status == "missing_required" {
+			missing = append(missing, status)
+		}
+	}
+	return missing
 }
 
 // runSideEffectSafeCommandTests is the mock-mode counterpart to

@@ -347,7 +347,7 @@ func scoreAuth(dir string) int {
 	}
 
 	score := 0
-	// Presence: at least one env var
+	// Auth pattern: generated config reads credentials with os.Getenv.
 	if strings.Count(configContent, "os.Getenv") >= 1 {
 		score += 2
 	}
@@ -357,11 +357,11 @@ func scoreAuth(dir string) int {
 	if strings.Contains(configContent, "0o600") || strings.Contains(configContent, "0600") || strings.Contains(configContent, "0o700") || strings.Contains(configContent, "0700") {
 		score += 2
 	}
-	// Quality: token masking in output (showing partial token)
+	// Auth pattern: client code masks credentials before printing.
 	if strings.Contains(clientContent, "mask") || strings.Contains(clientContent, "***") || strings.Contains(clientContent, "last 4") || (strings.Contains(clientContent, "Authorization") && strings.Contains(clientContent, "[:")) {
 		score += 2
 	}
-	// Quality: multiple auth methods (env var + config + flag)
+	// Auth pattern: config supports multiple credential sources.
 	authSources := 0
 	if strings.Contains(configContent, "os.Getenv") {
 		authSources++
@@ -1723,14 +1723,17 @@ func evaluateAuthProtocol(dir string, spec *openAPISpecInfo) dimensionScore {
 		}
 		// Inferred auth — score based on what the CLI actually has
 		score := 1 // annotated as inferred (user knows to verify)
+		// AuthProtocol pattern: inferred auth must still read an env var.
 		if strings.Contains(configContent, "os.Getenv(") {
 			score += 4 // env var support present
 		}
+		// AuthProtocol pattern: standard/custom header auth in generated client.
 		if strings.Contains(clientContent, "Authorization") || strings.Contains(clientContent, "X-Api-Key") || strings.Contains(clientContent, "X-Auth-Token") || strings.Contains(clientContent, "X-Access-Token") {
 			score += 3 // client sends auth header (standard or custom)
 		}
 		// Query-param auth (e.g., TMDb ?api_key=, Google Maps ?key=):
 		// the client adds the API key to the URL query string instead of a header.
+		// AuthProtocol pattern: query-param auth writes known API-key parameter names.
 		if strings.Contains(clientContent, `q.Set("api_key"`) ||
 			strings.Contains(clientContent, `q.Set("key"`) ||
 			strings.Contains(clientContent, `q.Set("apikey"`) ||
@@ -1902,16 +1905,19 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 		return 0, false
 	}
 
+	// AuthProtocol pattern: generated clients use Header.Set/Add with the expected header name.
 	if strings.Contains(clientContent, `Header.Set("`+headerName+`"`) ||
 		strings.Contains(clientContent, `Header.Add("`+headerName+`"`) {
 		headerNameMatched = true
 	}
 
+	// AuthProtocol pattern: query schemes touch URL query plumbing.
 	if scheme.In == "query" && (strings.Contains(clientContent, ".Query()") || strings.Contains(clientContent, "url.Values") || strings.Contains(clientContent, "RawQuery")) {
 		queryMatched = true
 	}
 
 	envNeedle := sanitizeEnvName(scheme.Key)
+	// AuthProtocol pattern: config.go contains the sanitized scheme key/env name.
 	if envNeedle != "" && strings.Contains(strings.ToUpper(configContent), envNeedle) {
 		envMatched = true
 	}
@@ -1944,6 +1950,7 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 }
 
 func authPrefixLiteralPresent(prefix string, contents ...string) bool {
+	// AuthProtocol pattern: literal auth prefixes are emitted as quoted strings.
 	doubleQuoted := `"` + prefix + ` "`
 	rawQuoted := "`" + prefix + " `"
 	for _, content := range contents {

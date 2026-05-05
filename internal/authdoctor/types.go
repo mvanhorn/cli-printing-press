@@ -7,6 +7,7 @@ const (
 	StatusOK         Status = "ok"
 	StatusSuspicious Status = "suspicious"
 	StatusNotSet     Status = "not_set"
+	StatusInfo       Status = "info"
 	StatusNoAuth     Status = "no_auth"
 	StatusUnknown    Status = "unknown"
 )
@@ -29,6 +30,7 @@ type Summary struct {
 	OK         int `json:"ok"`
 	Suspicious int `json:"suspicious"`
 	NotSet     int `json:"not_set"`
+	Info       int `json:"info"`
 	NoAuth     int `json:"no_auth"`
 	Unknown    int `json:"unknown"`
 }
@@ -44,6 +46,8 @@ func Summarize(findings []Finding) Summary {
 			s.Suspicious++
 		case StatusNotSet:
 			s.NotSet++
+		case StatusInfo:
+			s.Info++
 		case StatusNoAuth:
 			s.NoAuth++
 		case StatusUnknown:

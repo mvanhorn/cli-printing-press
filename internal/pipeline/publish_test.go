@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -223,6 +224,28 @@ func TestWriteCLIManifestForPublish_NovelFeaturesPreservedFromCarryForward(t *te
 	m := readPublishedManifest(t, state.WorkingDir)
 	require.Len(t, m.NovelFeatures, 1, "carry-forward should preserve generate-time novel_features")
 	assert.Equal(t, "today", m.NovelFeatures[0].Command)
+}
+
+func TestWriteCLIManifestForPublish_AuthEnvVarSpecsPreservedFromCarryForward(t *testing.T) {
+	_, state := publishManifestEnvSetup(t, "20260505-auth-env-specs-carry-forward")
+
+	existing := CLIManifest{
+		SchemaVersion:   1,
+		APIName:         "test-api",
+		CLIName:         "test-api-pp-cli",
+		AuthType:        "api_key",
+		AuthEnvVars:     []string{"TEST_API_TOKEN"},
+		AuthEnvVarSpecs: []spec.AuthEnvVar{{Name: "TEST_API_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}},
+	}
+	existingData, err := json.Marshal(existing)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(state.WorkingDir, CLIManifestFilename), existingData, 0o644))
+
+	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+
+	m := readPublishedManifest(t, state.WorkingDir)
+	assert.Equal(t, []string{"TEST_API_TOKEN"}, m.AuthEnvVars)
+	assert.Equal(t, []spec.AuthEnvVar{{Name: "TEST_API_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}}, m.AuthEnvVarSpecs)
 }
 
 // TestWriteCLIManifestForPublish_NovelFeaturesResearchOverridesCarryForward

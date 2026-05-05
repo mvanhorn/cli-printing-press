@@ -217,6 +217,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			m.MCPReady = existing.MCPReady
 			m.AuthType = existing.AuthType
 			m.AuthEnvVars = existing.AuthEnvVars
+			m.AuthEnvVarSpecs = existing.AuthEnvVarSpecs
 			m.NovelFeatures = existing.NovelFeatures
 		}
 	}

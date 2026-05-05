@@ -926,6 +926,32 @@ func initRoot() {
 	assert.FileExists(t, report.Binary)
 }
 
+func TestSummarizeAuthEnvVarsKindAware(t *testing.T) {
+	t.Setenv("REQUIRED_TOKEN", "")
+	t.Setenv("SETUP_SECRET", "")
+	t.Setenv("SESSION_COOKIE", "")
+
+	got := summarizeAuthEnvVars([]apispec.AuthEnvVar{
+		{Name: "REQUIRED_TOKEN", Kind: apispec.AuthEnvVarKindPerCall, Required: true},
+		{Name: "OPTIONAL_TOKEN", Kind: apispec.AuthEnvVarKindPerCall, Required: false},
+		{Name: "SETUP_SECRET", Kind: apispec.AuthEnvVarKindAuthFlowInput, Required: false},
+		{Name: "SESSION_COOKIE", Kind: apispec.AuthEnvVarKindHarvested, Required: false},
+	}, "", "live")
+
+	require.Len(t, got, 4)
+	assert.Equal(t, "missing_required", got[0].Status)
+	assert.Equal(t, []AuthEnvVarStatus{got[0]}, missingRequiredAuthEnvVars(got))
+	assert.Equal(t, "missing_info", got[1].Status)
+	assert.Equal(t, "missing_info", got[2].Status)
+	assert.Equal(t, "missing_info", got[3].Status)
+
+	mock := summarizeAuthEnvVars([]apispec.AuthEnvVar{
+		{Name: "REQUIRED_TOKEN", Kind: apispec.AuthEnvVarKindPerCall, Required: true},
+	}, "", "mock")
+	require.Len(t, mock, 1)
+	assert.Equal(t, "ok", mock[0].Status)
+}
+
 // TestDiscoverCLIEnvVars_SkipsTemplateVarReads guards the verifier integration
 // for endpoint template vars: the helper must NOT report env vars that feed
 // Config.TemplateVars (Shopify's SHOPIFY_SHOP / SHOPIFY_API_VERSION shape) as

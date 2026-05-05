@@ -406,7 +406,25 @@ func TestWriteToolsManifest_AuthConfigRoundTrip(t *testing.T) {
 	assert.Equal(t, "{MY_KEY}", got.Auth.Format)
 	assert.Equal(t, "header", got.Auth.In)
 	assert.Equal(t, []string{"MY_KEY", "MY_BACKUP_KEY"}, got.Auth.EnvVars)
+	assert.Equal(t, []spec.AuthEnvVar{
+		{Name: "MY_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
+		{Name: "MY_BACKUP_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
+	}, got.Auth.EnvVarSpecs)
 	assert.Equal(t, "https://example.com/api-keys", got.Auth.KeyURL)
+}
+
+func TestManifestAuthEffectiveEnvVarSpecsLegacyFallback(t *testing.T) {
+	got := effectiveManifestAuthEnvVarSpecs(ManifestAuth{
+		Type:    "api_key",
+		EnvVars: []string{"LEGACY_TOKEN"},
+	})
+	assert.Equal(t, []spec.AuthEnvVar{{
+		Name:      "LEGACY_TOKEN",
+		Kind:      spec.AuthEnvVarKindPerCall,
+		Required:  true,
+		Sensitive: true,
+		Inferred:  true,
+	}}, got)
 }
 
 func TestWriteToolsManifest_NoAuthEndpointsFlagged(t *testing.T) {

@@ -776,6 +776,45 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.Contains(t, key.Description, "https://fdc.nal.usda.gov/api-key-signup")
 	})
 
+	t.Run("rich auth user_config includes only per-call entries", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:     "rich-auth",
+			DisplayName: "Rich Auth",
+			MCPBinary:   "rich-auth-pp-mcp",
+			MCPReady:    "full",
+			AuthType:    "api_key",
+			AuthEnvVars: []string{"RICH_API_KEY", "RICH_CLIENT_SECRET", "RICH_SESSION"},
+			AuthEnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "RICH_API_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Description: "Per-call API key."},
+				{Name: "RICH_OPTIONAL", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: false, Description: "Optional public selector."},
+				{Name: "RICH_CLIENT_SECRET", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: false, Sensitive: true, Description: "Sensitive setup secret."},
+				{Name: "RICH_SESSION", Kind: spec.AuthEnvVarKindHarvested, Required: false, Sensitive: true, Description: "Harvested browser session."},
+			},
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Equal(t, "${user_config.rich_api_key}", got.Server.MCPConfig.Env["RICH_API_KEY"])
+		assert.Equal(t, "${user_config.rich_optional}", got.Server.MCPConfig.Env["RICH_OPTIONAL"])
+		assert.NotContains(t, got.Server.MCPConfig.Env, "RICH_CLIENT_SECRET")
+		assert.NotContains(t, got.Server.MCPConfig.Env, "RICH_SESSION")
+
+		required, ok := got.UserConfig["rich_api_key"]
+		require.True(t, ok)
+		assert.True(t, required.Required)
+		assert.Equal(t, "Per-call API key.", required.Description)
+
+		optional, ok := got.UserConfig["rich_optional"]
+		require.True(t, ok)
+		assert.False(t, optional.Required)
+		assert.False(t, optional.Sensitive)
+		assert.Equal(t, "Optional. Optional public selector.", optional.Description)
+		assert.NotContains(t, got.UserConfig, "rich_client_secret")
+		assert.NotContains(t, got.UserConfig, "rich_session")
+	})
+
 	t.Run("auth metadata overrides user_config title and description", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, CLIManifest{
@@ -1127,6 +1166,7 @@ func TestPopulateMCPMetadata(t *testing.T) {
 	assert.Equal(t, "partial", m.MCPReady)
 	assert.Equal(t, "cookie", m.AuthType)
 	assert.Equal(t, []string{"TEST_AUTH"}, m.AuthEnvVars)
+	assert.Empty(t, m.AuthEnvVarSpecs)
 	assert.Equal(t, "https://auth.example.com", m.AuthKeyURL)
 	assert.True(t, m.AuthOptional)
 	assert.Equal(t, "Test Auth", m.AuthTitle)
@@ -1162,6 +1202,45 @@ func TestPopulateMCPMetadataIncludesTierEnvVars(t *testing.T) {
 	})
 
 	assert.Equal(t, []string{"GLOBAL_TOKEN", "PAID_KEY"}, m.AuthEnvVars)
+}
+
+func TestPopulateMCPMetadataMergesTierEnvVarSpecsWithTierOverride(t *testing.T) {
+	var m CLIManifest
+	populateMCPMetadata(&m, &spec.APISpec{
+		Name: "tiered-rich",
+		Auth: spec.AuthConfig{
+			Type: "bearer_token",
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "SHARED_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Description: "Global shared token."},
+				{Name: "GLOBAL_ONLY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+		},
+		TierRouting: spec.TierRoutingConfig{
+			Tiers: map[string]spec.TierConfig{
+				"enterprise": {
+					Auth: spec.AuthConfig{
+						Type:    "api_key",
+						EnvVars: []string{"LEGACY_TIER_ONLY"},
+					},
+				},
+				"paid": {
+					Auth: spec.AuthConfig{
+						Type: "api_key",
+						EnvVarSpecs: []spec.AuthEnvVar{
+							{Name: "SHARED_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true, Description: "Tier shared token."},
+						},
+					},
+				},
+			},
+		},
+	})
+
+	assert.Equal(t, []string{"SHARED_TOKEN", "GLOBAL_ONLY", "LEGACY_TIER_ONLY"}, m.AuthEnvVars)
+	assert.Equal(t, []spec.AuthEnvVar{
+		{Name: "SHARED_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true, Description: "Tier shared token."},
+		{Name: "GLOBAL_ONLY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+		{Name: "LEGACY_TIER_ONLY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
+	}, m.AuthEnvVarSpecs)
 }
 
 // TestPopulateMCPMetadataDisplayNamePrecedence pins:
