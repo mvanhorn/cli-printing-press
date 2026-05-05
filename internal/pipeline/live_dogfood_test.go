@@ -583,6 +583,94 @@ Flags:
 	assert.True(t, commandSupportsJSON(help+"\n      --json   Output JSON\n"))
 }
 
+func TestAppendDryRunArg(t *testing.T) {
+	t.Run("appends when missing", func(t *testing.T) {
+		got := appendDryRunArg([]string{"widgets", "create"})
+		assert.Equal(t, []string{"widgets", "create", "--dry-run"}, got)
+	})
+
+	t.Run("idempotent on bare --dry-run", func(t *testing.T) {
+		got := appendDryRunArg([]string{"widgets", "create", "--dry-run"})
+		assert.Equal(t, []string{"widgets", "create", "--dry-run"}, got)
+	})
+
+	t.Run("idempotent on --dry-run= form", func(t *testing.T) {
+		got := appendDryRunArg([]string{"widgets", "create", "--dry-run=true"})
+		assert.Equal(t, []string{"widgets", "create", "--dry-run=true"}, got)
+	})
+
+	t.Run("does not collide with --dry-run-output near-miss", func(t *testing.T) {
+		got := appendDryRunArg([]string{"widgets", "create", "--dry-run-output", "preview.json"})
+		assert.Equal(t, []string{"widgets", "create", "--dry-run-output", "preview.json", "--dry-run"}, got)
+	})
+}
+
+func TestCommandSupportsDryRun(t *testing.T) {
+	tests := []struct {
+		name string
+		help string
+		want bool
+	}{
+		{
+			name: "advertised under Global Flags (generated-CLI shape)",
+			help: `Usage:
+  fixture-pp-cli widgets create [flags]
+
+Flags:
+      --json   Output JSON
+
+Global Flags:
+      --dry-run   Show request without sending
+`,
+			want: true,
+		},
+		{
+			name: "absent — hand-written novel command without --dry-run wiring",
+			help: `Usage:
+  fixture-pp-cli widgets purge <id> [flags]
+
+Flags:
+      --force   Skip confirmation
+`,
+			want: false,
+		},
+		{
+			name: "mention only in Examples — still matches (mirrors commandSupportsJSON's unscoped scan)",
+			help: `Usage:
+  fixture-pp-cli widgets create [flags]
+
+Examples:
+  fixture-pp-cli widgets create --dry-run
+
+Flags:
+      --json   Output JSON
+`,
+			want: true,
+		},
+		{
+			name: "empty help",
+			help: ``,
+			want: false,
+		},
+		{
+			name: "near-miss: --dry-run-output is not --dry-run",
+			help: `Usage:
+  fixture-pp-cli widgets create [flags]
+
+Flags:
+      --dry-run-output string   Write dry-run preview to a file
+`,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, commandSupportsDryRun(tt.help))
+		})
+	}
+}
+
 func writeLiveDogfoodFixture(t *testing.T, brokenJSONFixed bool) (dir string, binaryName string) {
 	t.Helper()
 
@@ -1563,4 +1651,375 @@ func TestRunLiveDogfoodSearchErrorPathMutationFallthrough(t *testing.T) {
 	require.NotNil(t, got)
 	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
 	assert.Equal(t, 2, got.ExitCode)
+}
+
+// writeLiveDogfoodDryRunFixture builds a CLI binary that exposes three
+// commands so the matrix-level dry-run behavior can be exercised end-to-end:
+//
+//   - widgets create — mutator that advertises --dry-run. Exits 0 with a
+//     valid JSON envelope only when --dry-run is present in argv. Without
+//     --dry-run, exits 1 (modeling the live-API placeholder-body rejection
+//     class). When PRINTING_PRESS_TEST_DRY_RUN_BROKEN=1, exits 1 even with
+//     --dry-run, modeling a broken dry-run preview (R3).
+//   - widgets destroy — mutator (leaf in mutatingVerbs) that does NOT
+//     advertise --dry-run (hand-written novel command shape). The matrix
+//     should fail the gate's second leg and keep today behavior: no
+//     --dry-run injection and no error_path_real entry.
+//   - widgets get — non-mutator (read). Advertises --dry-run via the
+//     persistent root flag, but the matrix must not inject because the leaf
+//     is not in mutatingVerbs.
+func writeLiveDogfoodDryRunFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"widgets","subcommands":[
+      {"name":"create"},
+      {"name":"destroy"},
+      {"name":"get"},
+      {"name":"update"}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+# argv contains --dry-run (anywhere)?
+has_dry_run=0
+for a in "$@"; do
+  case "$a" in
+    --dry-run|--dry-run=*) has_dry_run=1 ;;
+  esac
+done
+
+# ---------- widgets create: mutator with --dry-run advertised ----------
+if [ "$1" = "widgets" ] && [ "$2" = "create" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Create a widget.
+
+Usage:
+  fixture-pp-cli widgets create [flags]
+
+Examples:
+  fixture-pp-cli widgets create --name=demo
+
+Flags:
+      --json   Output JSON
+
+Global Flags:
+      --dry-run   Show request without sending
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "create" ]; then
+  if [ "${PRINTING_PRESS_TEST_DRY_RUN_BROKEN:-0}" = "1" ]; then
+    echo 'broken dry-run preview' >&2
+    exit 1
+  fi
+  if [ "$has_dry_run" = "1" ]; then
+    # Dry-run preview envelope shape mirrors what the generated CLI emits.
+    echo '{"action":"post","resource":"widgets","path":"/widgets","status":0,"success":false,"dry_run":true}'
+    exit 0
+  fi
+  if [ "${PRINTING_PRESS_TEST_PERMISSIVE_API:-0}" = "1" ]; then
+    # Models an over-permissive API that quietly accepts placeholder bodies;
+    # error_path_real should surface this as a Fail.
+    echo '{"id":"created"}'
+    exit 0
+  fi
+  echo 'API rejected: missing required body field' >&2
+  exit 1
+fi
+
+# ---------- widgets destroy: mutator (leaf in mutatingVerbs) WITHOUT --dry-run advertised ----------
+if [ "$1" = "widgets" ] && [ "$2" = "destroy" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Destroy widgets matching a filter (hand-written novel command).
+
+Usage:
+  fixture-pp-cli widgets destroy [flags]
+
+Examples:
+  fixture-pp-cli widgets destroy --filter=stale
+
+Flags:
+      --filter string   Filter expression
+      --json            Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "destroy" ]; then
+  if [ "$has_dry_run" = "1" ]; then
+    # If the matrix injects --dry-run despite this command not advertising it,
+    # the fixture surfaces it as a failure so the test catches the regression.
+    echo 'unexpected --dry-run on a command that does not support it' >&2
+    exit 99
+  fi
+  echo '{"destroyed":[]}'
+  exit 0
+fi
+
+# ---------- widgets get: read command with --dry-run advertised globally ----------
+if [ "$1" = "widgets" ] && [ "$2" = "get" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Get a widget.
+
+Usage:
+  fixture-pp-cli widgets get [flags]
+
+Examples:
+  fixture-pp-cli widgets get
+
+Flags:
+      --json   Output JSON
+
+Global Flags:
+      --dry-run   Show request without sending
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "get" ]; then
+  if [ "$has_dry_run" = "1" ]; then
+    # Read commands must never receive --dry-run from the matrix; surface as fail.
+    echo 'unexpected --dry-run on read command' >&2
+    exit 99
+  fi
+  echo '{"id":"42"}'
+  exit 0
+fi
+
+# ---------- widgets update <id>: mutator with positional + no list companion ----------
+# Used to exercise resolveCommandPositionals skip path: the agent-context
+# above does NOT expose a list-shape sibling in the widgets/* parent, so the
+# chain walker can't source a real id, and both happy_path and
+# error_path_real should be skipped with the same reason.
+if [ "$1" = "widgets" ] && [ "$2" = "update" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Update a widget.
+
+Usage:
+  fixture-pp-cli widgets update <id> [flags]
+
+Examples:
+  fixture-pp-cli widgets update 42 --name=demo
+
+Flags:
+      --json   Output JSON
+
+Global Flags:
+      --dry-run   Show request without sending
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "update" ]; then
+  echo 'unexpected widgets update invocation; matrix should have skipped' >&2
+  exit 99
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
+func runDryRunFixtureMatrix(t *testing.T, dir, binaryName string) *LiveDogfoodReport {
+	t.Helper()
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+	return report
+}
+
+func TestRunLiveDogfoodInjectsDryRunForMutator(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets create", LiveDogfoodTestHappy)
+	require.NotNil(t, got, "expected widgets create happy_path result in matrix")
+	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
+	assert.Contains(t, got.Args, "--dry-run",
+		"expected matrix to inject --dry-run into happy_path on a mutator that advertises it")
+}
+
+func TestRunLiveDogfoodJSONFidelityInheritsDryRunForMutator(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets create", LiveDogfoodTestJSON)
+	require.NotNil(t, got, "expected widgets create json_fidelity result in matrix")
+	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
+	assert.Contains(t, got.Args, "--dry-run",
+		"expected json_fidelity to inherit --dry-run from happy_path injection")
+	assert.Contains(t, got.Args, "--json",
+		"expected json_fidelity to add --json on top of the dry-run base")
+}
+
+func TestRunLiveDogfoodHappyPathFailsOnBrokenDryRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	t.Setenv("PRINTING_PRESS_TEST_DRY_RUN_BROKEN", "1")
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	// R3: A CLI whose generated --dry-run is broken still surfaces a
+	// happy_path failure — the dry-run injection must not mask binary-level
+	// failures.
+	got := findResultByCommandKind(report, "widgets create", LiveDogfoodTestHappy)
+	require.NotNil(t, got)
+	assert.Equal(t, LiveDogfoodStatusFail, got.Status,
+		"broken --dry-run preview must surface as happy_path failure (R3)")
+}
+
+func TestRunLiveDogfoodSkipsDryRunInjectionForMutatorWithoutFlag(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	// widgets destroy has a leaf in mutatingVerbs but its help does NOT
+	// advertise --dry-run. The gate's second leg falsifies, so the matrix
+	// must keep today-behavior. The fixture surfaces a regression as exit 99.
+	got := findResultByCommandKind(report, "widgets destroy", LiveDogfoodTestHappy)
+	require.NotNil(t, got)
+	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
+	assert.NotContains(t, got.Args, "--dry-run",
+		"expected matrix to skip --dry-run injection for mutators without the flag advertised")
+}
+
+func TestRunLiveDogfoodSkipsDryRunInjectionForReadCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	// widgets get is a read command. Even though --dry-run is advertised
+	// (as a global flag), the leaf is not in mutatingVerbs, so injection
+	// must not happen. Fixture surfaces a regression as exit 99.
+	got := findResultByCommandKind(report, "widgets get", LiveDogfoodTestHappy)
+	require.NotNil(t, got)
+	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
+	assert.NotContains(t, got.Args, "--dry-run",
+		"expected matrix to skip --dry-run injection on non-mutator read commands")
+}
+
+func TestRunLiveDogfoodEmitsErrorPathRealForMutatorWithDryRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets create", LiveDogfoodTestErrorReal)
+	require.NotNil(t, got, "expected error_path_real entry for mutator advertising --dry-run")
+	// API rejection path: fixture exits 1 without --dry-run → Pass.
+	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
+	assert.NotContains(t, got.Args, "--dry-run",
+		"error_path_real must use the original (pre-injection) args to provoke API rejection")
+}
+
+func TestRunLiveDogfoodErrorPathRealFailsWhenAPIAcceptsPlaceholder(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	t.Setenv("PRINTING_PRESS_TEST_PERMISSIVE_API", "1")
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets create", LiveDogfoodTestErrorReal)
+	require.NotNil(t, got)
+	assert.Equal(t, LiveDogfoodStatusFail, got.Status,
+		"over-permissive API quietly accepting placeholder body must surface as Fail")
+	assert.Equal(t, "expected non-zero exit for placeholder body", got.Reason)
+}
+
+func TestRunLiveDogfoodSkipsErrorPathRealForReadCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets get", LiveDogfoodTestErrorReal)
+	assert.Nil(t, got, "non-mutator commands must not produce an error_path_real entry")
+}
+
+func TestRunLiveDogfoodSkipsErrorPathRealForMutatorWithoutDryRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets destroy", LiveDogfoodTestErrorReal)
+	assert.Nil(t, got, "mutators without --dry-run advertised must not produce an error_path_real entry")
+}
+
+func TestRunLiveDogfoodErrorPathRealSkipMatchesHappyPathReason(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	// widgets update <id> is a mutator advertising --dry-run, but the fixture
+	// has no list companion under widgets/*, so positional resolution skips.
+	// happy_path and error_path_real must skip with the same reason for
+	// triage parity.
+	happy := findResultByCommandKind(report, "widgets update", LiveDogfoodTestHappy)
+	errorReal := findResultByCommandKind(report, "widgets update", LiveDogfoodTestErrorReal)
+	require.NotNil(t, happy)
+	require.NotNil(t, errorReal)
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Equal(t, LiveDogfoodStatusSkip, errorReal.Status)
+	assert.Equal(t, happy.Reason, errorReal.Reason,
+		"error_path_real skip reason must match happy_path skip reason")
+	assert.Contains(t, errorReal.Reason, "no list companion",
+		"resolve-skipped reason should surface the list-companion gap")
+}
+
+// TestRunLiveDogfoodErrorPathRealReportContribution locks in the matrix
+// counters so the new test kind threads through finalizeLiveDogfoodReport
+// without weakening the verdict math (which counts by Status, not by Kind).
+func TestRunLiveDogfoodErrorPathRealReportContribution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	// Sanity: report is non-FAIL even though widgets update is fully skipped.
+	// Counters should sum to MatrixSize and the verdict should be PASS.
+	assert.Equal(t, "PASS", report.Verdict, report.Tests)
+	assert.Equal(t, report.Passed+report.Failed, report.MatrixSize,
+		"MatrixSize should equal Passed + Failed (skipped entries do not contribute)")
+	assert.Equal(t, 0, report.Failed)
 }

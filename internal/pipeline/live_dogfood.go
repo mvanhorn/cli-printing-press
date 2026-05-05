@@ -26,10 +26,11 @@ const (
 type LiveDogfoodTestKind string
 
 const (
-	LiveDogfoodTestHelp  LiveDogfoodTestKind = "help"
-	LiveDogfoodTestHappy LiveDogfoodTestKind = "happy_path"
-	LiveDogfoodTestJSON  LiveDogfoodTestKind = "json_fidelity"
-	LiveDogfoodTestError LiveDogfoodTestKind = "error_path"
+	LiveDogfoodTestHelp      LiveDogfoodTestKind = "help"
+	LiveDogfoodTestHappy     LiveDogfoodTestKind = "happy_path"
+	LiveDogfoodTestJSON      LiveDogfoodTestKind = "json_fidelity"
+	LiveDogfoodTestError     LiveDogfoodTestKind = "error_path"
+	LiveDogfoodTestErrorReal LiveDogfoodTestKind = "error_path_real"
 )
 
 type LiveDogfoodOptions struct {
@@ -620,7 +621,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		return results
 	}
 
-	// error_path gate runs independently below; its own branch.
+	leaf := command.Path[len(command.Path)-1]
+	useDryRun := isMutatingLeaf(leaf) && commandSupportsDryRun(command.Help)
+
 	resolvedArgs, resolveSkipped, resolveReason := resolveCommandPositionals(command, happyArgs, ctx)
 	if resolveSkipped {
 		results = append(results,
@@ -630,8 +633,13 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	} else {
 		happyArgs = resolvedArgs
 
-		happyRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, happyArgs, ctx.timeout)
-		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, happyArgs, happyRun)
+		runArgs := happyArgs
+		if useDryRun {
+			runArgs = appendDryRunArg(happyArgs)
+		}
+
+		happyRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, runArgs, ctx.timeout)
+		happyResult := liveDogfoodResult(commandName, LiveDogfoodTestHappy, runArgs, happyRun)
 		if happyRun.exitCode == 0 {
 			happyResult.Status = LiveDogfoodStatusPass
 			happyResult.Reason = ""
@@ -639,7 +647,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		results = append(results, happyResult)
 
 		if commandSupportsJSON(command.Help) {
-			jsonArgs := appendJSONArg(happyArgs)
+			jsonArgs := appendJSONArg(runArgs)
 			jsonRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout)
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun)
 			if jsonRun.exitCode == 0 {
@@ -663,7 +671,6 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		// Search-shape strategy is suppressed for mutating leaves so a
 		// `delete --query=...` mass-delete is never probed with the
 		// invalid-token sentinel against the live API.
-		leaf := command.Path[len(command.Path)-1]
 		isSearch := commandSupportsSearch(command.Help) && !isMutatingLeaf(leaf)
 		suppliedJSON := slices.Contains(flagNames, "json")
 
@@ -713,6 +720,23 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		results = append(results, errorResult)
 	} else {
 		results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, "no positional argument"))
+	}
+
+	if useDryRun {
+		if resolveSkipped {
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestErrorReal, resolveReason))
+		} else {
+			errorRealRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, happyArgs, ctx.timeout)
+			errorRealResult := liveDogfoodResult(commandName, LiveDogfoodTestErrorReal, happyArgs, errorRealRun)
+			if errorRealRun.exitCode != 0 {
+				errorRealResult.Status = LiveDogfoodStatusPass
+				errorRealResult.Reason = ""
+			} else {
+				errorRealResult.Status = LiveDogfoodStatusFail
+				errorRealResult.Reason = "expected non-zero exit for placeholder body"
+			}
+			results = append(results, errorRealResult)
+		}
 	}
 
 	return results
@@ -849,6 +873,10 @@ func commandSupportsJSON(help string) bool {
 	return slices.Contains(extractFlagNames(help), "json")
 }
 
+func commandSupportsDryRun(help string) bool {
+	return slices.Contains(extractFlagNames(help), "dry-run")
+}
+
 func appendJSONArg(args []string) []string {
 	out := append([]string{}, args...)
 	for _, arg := range out {
@@ -857,6 +885,16 @@ func appendJSONArg(args []string) []string {
 		}
 	}
 	return append(out, "--json")
+}
+
+func appendDryRunArg(args []string) []string {
+	out := append([]string{}, args...)
+	for _, arg := range out {
+		if arg == "--dry-run" || strings.HasPrefix(arg, "--dry-run=") {
+			return out
+		}
+	}
+	return append(out, "--dry-run")
 }
 
 func liveDogfoodCommandTakesArg(help string) bool {
