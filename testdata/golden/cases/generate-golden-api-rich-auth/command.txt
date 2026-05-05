@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/golden-api-rich-auth.yaml --output "$CASE_ACTUAL_DIR/printing-press-rich-auth" --force --spec-url file://testdata/golden/fixtures/golden-api-rich-auth.yaml --validate=false

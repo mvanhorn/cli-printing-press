@@ -23,6 +23,7 @@ type Config struct {
 	ClientID       string `toml:"client_id"`
 	ClientSecret   string `toml:"client_secret"`
 	Path           string `toml:"-"`
+	// canonical envVar
 	PrintingPressGoldenApiKey string `toml:"press_golden_api_key"`
 }
 
@@ -51,6 +52,7 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Env var overrides
+	// canonical envVar
 	if v := os.Getenv("PRINTING_PRESS_GOLDEN_API_KEY"); v != "" {
 		cfg.PrintingPressGoldenApiKey = v
 		cfg.AuthSource = "env:PRINTING_PRESS_GOLDEN_API_KEY"
@@ -67,10 +69,12 @@ func (c *Config) AuthHeader() string {
 	if c.AuthHeaderVal != "" {
 		return c.AuthHeaderVal
 	}
+	// canonical envVar
 	token := c.PrintingPressGoldenApiKey
 	if token == "" {
 		return ""
 	}
+	// canonical envVar
 	if c.PrintingPressGoldenApiKey == "" {
 		return ""
 	}

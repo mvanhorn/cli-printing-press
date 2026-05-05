@@ -1,0 +1,74 @@
+openapi: "3.0.3"
+info:
+  title: Printing Press Rich Auth API
+  version: "1.0.0"
+  description: Purpose-built fixture for rich auth env-var model coverage.
+servers:
+  - url: https://api.rich-auth.example/v1
+security:
+  - RichAuth: []
+components:
+  securitySchemes:
+    RichAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-vars:
+        - name: RICH_AUTH_API_KEY
+          kind: per_call
+          required: true
+          sensitive: true
+          description: Rich Auth API key.
+        - name: RICH_AUTH_CLIENT_ID
+          kind: auth_flow_input
+          required: false
+          sensitive: false
+          description: OAuth application client identifier.
+        - name: RICH_AUTH_CLIENT_SECRET
+          kind: auth_flow_input
+          required: false
+          sensitive: true
+          description: OAuth application client secret.
+        - name: RICH_AUTH_SESSION_COOKIE
+          kind: harvested
+          required: false
+          sensitive: true
+          description: Browser session cookie captured by auth login.
+        - name: RICH_AUTH_OPTIONAL_TOKEN
+          kind: per_call
+          required: false
+          sensitive: true
+          description: Optional token for elevated read limits.
+        - name: RICH_AUTH_BOT_TOKEN
+          kind: per_call
+          required: false
+          sensitive: true
+          description: Set this OR RICH_AUTH_USER_TOKEN for workspace access.
+        - name: RICH_AUTH_USER_TOKEN
+          kind: per_call
+          required: false
+          sensitive: true
+          description: Set this OR RICH_AUTH_BOT_TOKEN for workspace access.
+  schemas:
+    Item:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+paths:
+  /items:
+    get:
+      tags: [items]
+      operationId: listItems
+      summary: List items
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Item"

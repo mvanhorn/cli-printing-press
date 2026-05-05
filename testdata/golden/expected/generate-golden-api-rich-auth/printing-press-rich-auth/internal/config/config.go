@@ -24,23 +24,28 @@ type Config struct {
 	ClientSecret   string `toml:"client_secret"`
 	Path           string `toml:"-"`
 	// canonical envVar
-	PrintingPressOauth2ClientId string `toml:"press_oauth2_client_id"`
-	PrintingPressOauth2ClientSecret string `toml:"press_oauth2_client_secret"`
+	RichAuthApiKey string `toml:"auth_api_key"`
+	RichAuthClientId string `toml:"auth_client_id"`
+	RichAuthClientSecret string `toml:"auth_client_secret"`
+	RichAuthSessionCookie string `toml:"auth_session_cookie"`
+	RichAuthOptionalToken string `toml:"auth_optional_token"`
+	RichAuthBotToken string `toml:"auth_bot_token"`
+	RichAuthUserToken string `toml:"auth_user_token"`
 }
 
 func Load(configPath string) (*Config, error) {
 	cfg := &Config{
-		BaseURL: "https://api.cc.example/v1",
+		BaseURL: "https://api.rich-auth.example/v1",
 	}
 
 	// Resolve config path
 	path := configPath
 	if path == "" {
-		path = os.Getenv("PRINTING_PRESS_OAUTH2_CONFIG")
+		path = os.Getenv("PRINTING_PRESS_RICH_CONFIG")
 	}
 	if path == "" {
 		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, ".config", "printing-press-oauth2-pp-cli", "config.toml")
+		path = filepath.Join(home, ".config", "printing-press-rich-pp-cli", "config.toml")
 	}
 	cfg.Path = path
 
@@ -54,17 +59,37 @@ func Load(configPath string) (*Config, error) {
 
 	// Env var overrides
 	// canonical envVar
-	if v := os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_ID"); v != "" {
-		cfg.PrintingPressOauth2ClientId = v
-		cfg.AuthSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_ID"
+	if v := os.Getenv("RICH_AUTH_API_KEY"); v != "" {
+		cfg.RichAuthApiKey = v
+		cfg.AuthSource = "env:RICH_AUTH_API_KEY"
 	}
-	if v := os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_SECRET"); v != "" {
-		cfg.PrintingPressOauth2ClientSecret = v
-		cfg.AuthSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_SECRET"
+	if v := os.Getenv("RICH_AUTH_CLIENT_ID"); v != "" {
+		cfg.RichAuthClientId = v
+		cfg.AuthSource = "env:RICH_AUTH_CLIENT_ID"
+	}
+	if v := os.Getenv("RICH_AUTH_CLIENT_SECRET"); v != "" {
+		cfg.RichAuthClientSecret = v
+		cfg.AuthSource = "env:RICH_AUTH_CLIENT_SECRET"
+	}
+	if v := os.Getenv("RICH_AUTH_SESSION_COOKIE"); v != "" {
+		cfg.RichAuthSessionCookie = v
+		cfg.AuthSource = "env:RICH_AUTH_SESSION_COOKIE"
+	}
+	if v := os.Getenv("RICH_AUTH_OPTIONAL_TOKEN"); v != "" {
+		cfg.RichAuthOptionalToken = v
+		cfg.AuthSource = "env:RICH_AUTH_OPTIONAL_TOKEN"
+	}
+	if v := os.Getenv("RICH_AUTH_BOT_TOKEN"); v != "" {
+		cfg.RichAuthBotToken = v
+		cfg.AuthSource = "env:RICH_AUTH_BOT_TOKEN"
+	}
+	if v := os.Getenv("RICH_AUTH_USER_TOKEN"); v != "" {
+		cfg.RichAuthUserToken = v
+		cfg.AuthSource = "env:RICH_AUTH_USER_TOKEN"
 	}
 
 	// Base URL override (used by printing-press verify to point at mock/test servers)
-	if v := os.Getenv("PRINTING_PRESS_OAUTH2_BASE_URL"); v != "" {
+	if v := os.Getenv("PRINTING_PRESS_RICH_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
 	return cfg, nil
@@ -74,18 +99,16 @@ func (c *Config) AuthHeader() string {
 	if c.AuthHeaderVal != "" {
 		return c.AuthHeaderVal
 	}
-	// Under OAuth2 client_credentials the env var is the Client ID, not a
-	// usable bearer; the minted AccessToken must win.
-	if c.AccessToken != "" {
-		c.AuthSource = "oauth2"
-		return "Bearer " + c.AccessToken
+	// canonical envVar
+	token := c.RichAuthApiKey
+	if token == "" {
+		return ""
 	}
 	// canonical envVar
-	if c.PrintingPressOauth2ClientId != "" {
-		c.AuthSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_ID"
-		return "Bearer " + c.PrintingPressOauth2ClientId
+	if c.RichAuthApiKey == "" {
+		return ""
 	}
-	return ""
+	return token
 }
 
 func applyAuthFormat(format string, replacements map[string]string) string {

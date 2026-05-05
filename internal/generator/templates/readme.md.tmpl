@@ -1,4 +1,5 @@
 # {{.ProseName}} CLI
+{{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
 {{- if and .Narrative .Narrative.Headline}}
 
 **{{.Narrative.Headline}}**
@@ -69,13 +70,13 @@ export {{envName $.Name}}_{{upper .}}="{{if eq . "shop"}}<your-store>.myshopify.
 {{- end}}
 
 Get your API key from your API provider's developer portal. The key typically looks like a long alphanumeric string.
-{{- if .Auth.EnvVars}}
+{{- with $canonicalEnvVar}}
 
 ```bash
-export {{index .Auth.EnvVars 0}}="<paste-your-key>"
+export {{.Name}}="<paste-your-key>"
 ```
 
-You can also persist this in your config file at `{{.Config.Path}}`.
+You can also persist this in your config file at `{{$.Config.Path}}`.
 {{- end}}
 {{- else if eq .Auth.Type "oauth2"}}
 
@@ -106,12 +107,12 @@ If commands start returning auth errors after working for a while, refresh the p
 {{.Name}}-pp-cli refresh-bearer
 ```
 {{- end}}
-{{- if .Auth.EnvVars}}
+{{- with $canonicalEnvVar}}
 
 Or set it via environment variable:
 
 ```bash
-export {{index .Auth.EnvVars 0}}="your-token-here"
+export {{.Name}}="your-token-here"
 ```
 {{- end}}
 {{- else if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
@@ -313,10 +314,10 @@ go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{
 ```
 
 Then register it:
-{{- if and (eq .Auth.Type "api_key") .Auth.EnvVars}}
+{{- if and (eq .Auth.Type "api_key") $canonicalEnvVar}}
 
 ```bash
-claude mcp add {{.Name}} {{.Name}}-pp-mcp{{range .EndpointTemplateVars}} -e {{envName $.Name}}_{{upper .}}={{if eq . "shop"}}<your-store>.myshopify.com{{else if eq . "api_version"}}{{$.Version}}{{else}}<{{.}}>{{end}}{{end}} -e {{index .Auth.EnvVars 0}}=<your-key>
+claude mcp add {{.Name}} {{.Name}}-pp-mcp{{range .EndpointTemplateVars}} -e {{envName $.Name}}_{{upper .}}={{if eq . "shop"}}<your-store>.myshopify.com{{else if eq . "api_version"}}{{$.Version}}{{else}}<{{.}}>{{end}}{{end}} -e {{$canonicalEnvVar.Name}}=<your-key>
 ```
 {{- else if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
 
@@ -334,10 +335,10 @@ claude mcp add {{.Name}} {{.Name}}-pp-mcp
 
 claude mcp add {{.Name}} {{.Name}}-pp-mcp
 ```
-{{- else if and (eq .Auth.Type "bearer_token") .Auth.EnvVars}}
+{{- else if and (eq .Auth.Type "bearer_token") $canonicalEnvVar}}
 
 ```bash
-claude mcp add {{.Name}} {{.Name}}-pp-mcp -e {{index .Auth.EnvVars 0}}=<your-token>
+claude mcp add {{.Name}} {{.Name}}-pp-mcp -e {{$canonicalEnvVar.Name}}=<your-token>
 ```
 {{- else if eq .Auth.Type "bearer_token"}}
 
@@ -373,7 +374,7 @@ The bundle reuses your local OAuth tokens — authenticate first if you haven't:
 ```bash
 {{.Name}}-pp-cli auth login
 ```
-{{- else if and (eq .Auth.Type "bearer_token") (not .Auth.EnvVars)}}
+{{- else if and (eq .Auth.Type "bearer_token") (not $canonicalEnvVar)}}
 
 Store your token first if you haven't:
 
@@ -386,8 +387,8 @@ To install:
 
 1. Download the `.mcpb` for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/{{.Name}}-current).
 2. Double-click the `.mcpb` file. Claude Desktop opens and walks you through the install.
-{{- if and .Auth.EnvVars (ne .Auth.Type "none") (ne .Auth.Type "cookie") (ne .Auth.Type "composed")}}
-3. Fill in `{{index .Auth.EnvVars 0}}` when Claude Desktop prompts you.
+{{- if and $canonicalEnvVar (ne .Auth.Type "none") (ne .Auth.Type "cookie") (ne .Auth.Type "composed")}}
+3. Fill in `{{$canonicalEnvVar.Name}}` when Claude Desktop prompts you.
 {{- end}}
 
 Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple Silicon (`darwin-arm64`) and Windows (`amd64`, `arm64`); for other platforms, use the manual config below.
@@ -407,12 +408,12 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 {
   "mcpServers": {
     "{{.Name}}": {
-      "command": "{{.Name}}-pp-mcp"{{- if and .Auth.EnvVars (ne .Auth.Type "none") (ne .Auth.Type "cookie") (ne .Auth.Type "composed")}},
+      "command": "{{.Name}}-pp-mcp"{{- if and $canonicalEnvVar (ne .Auth.Type "none") (ne .Auth.Type "cookie") (ne .Auth.Type "composed")}},
       "env": {
 {{- range .EndpointTemplateVars}}
         "{{envName $.Name}}_{{upper .}}": "{{if eq . "shop"}}<your-store>.myshopify.com{{else if eq . "api_version"}}{{$.Version}}{{else}}<{{.}}>{{end}}",
 {{- end}}
-        "{{index .Auth.EnvVars 0}}": "<your-key>"
+        "{{$canonicalEnvVar.Name}}": "<your-key>"
       }{{- end}}
     }
   }
@@ -432,14 +433,23 @@ Verifies configuration{{if and (ne .Auth.Type "") (ne .Auth.Type "none")}}, cred
 ## Configuration
 
 Config file: `{{.Config.Path}}`
-{{- if .Auth.EnvVars}}
+{{- if or .Auth.EnvVarSpecs .Auth.EnvVars}}
 
 Environment variables:
+
+| Name | Kind |
+| --- | --- |
 {{- range .EndpointTemplateVars}}
-- `{{envName $.Name}}_{{upper .}}`
+| `{{envName $.Name}}_{{upper .}}` | endpoint |
 {{- end}}
+{{- if .Auth.EnvVarSpecs}}
+{{- range .Auth.EnvVarSpecs}}
+| `{{.Name}}` | {{.Kind}} |
+{{- end}}
+{{- else}}
 {{- range .Auth.EnvVars}}
-- `{{.}}`
+| `{{.}}` | per_call |
+{{- end}}
 {{- end}}
 {{- end}}
 
@@ -451,8 +461,8 @@ Environment variables:
 {{- if .BearerRefresh.Enabled}}
 - Run `{{.Name}}-pp-cli refresh-bearer` if a long-working public bearer token may have rotated
 {{- end}}
-{{- if .Auth.EnvVars}}
-- Verify the environment variable is set: `echo ${{index .Auth.EnvVars 0}}`
+{{- with $canonicalEnvVar}}
+- Verify the environment variable is set: `echo ${{.Name}}`
 {{- end}}
 
 {{- end}}

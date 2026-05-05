@@ -267,14 +267,28 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion tier-routing-golden-pp-cli binary.",
 		"auth": map[string]any{
 			"type": "bearer_token",
-			"env_vars": []string{"TIER_GLOBAL_TOKEN",  },
+			"env_vars": []map[string]any{
+				{
+					"name": "TIER_GLOBAL_TOKEN",
+					"kind": "per_call",
+					"required": true,
+					"sensitive": true,
+				},
+			},
 		},
 		"tier_routing": map[string]any{
 			"default_tier": "free",
 			"tiers": map[string]any{
 				"enterprise": map[string]any{
 					"auth_type": "bearer_token",
-					"env_vars": []string{"TIER_ENTERPRISE_TOKEN",  },
+					"env_vars": []map[string]any{
+						{
+							"name": "TIER_ENTERPRISE_TOKEN",
+							"kind": "per_call",
+							"required": true,
+							"sensitive": true,
+						},
+					},
 				},
 				"free": map[string]any{
 					"auth_type": "none",
@@ -282,7 +296,14 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 				"paid": map[string]any{
 					"auth_type": "api_key",
 					"base_url": "https://paid.api.example.com",
-					"env_vars": []string{"TIER_PAID_KEY",  },
+					"env_vars": []map[string]any{
+						{
+							"name": "TIER_PAID_KEY",
+							"kind": "per_call",
+							"required": true,
+							"sensitive": true,
+						},
+					},
 				},
 			},
 			"endpoints": map[string]string{

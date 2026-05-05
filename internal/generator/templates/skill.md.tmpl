@@ -6,8 +6,40 @@ allowed-tools: "Read Bash"
 metadata:
   openclaw:
     requires:
+{{- if and (ne .Auth.Type "none") (or .Auth.EnvVarSpecs .Auth.EnvVars)}}
+{{- $wroteRequiredEnv := false}}
+      env: [{{- if .Auth.EnvVarSpecs}}{{range .Auth.EnvVarSpecs}}{{if and (eq .Kind "per_call") .Required}}{{if $wroteRequiredEnv}}, {{end}}{{printf "%q" .Name}}{{- $wroteRequiredEnv = true}}{{end}}{{end}}{{else}}{{range .Auth.EnvVars}}{{if $wroteRequiredEnv}}, {{end}}{{printf "%q" .}}{{- $wroteRequiredEnv = true}}{{end}}{{end}}]
+{{- end}}
       bins:
         - {{.Name}}-pp-cli
+{{- if and (ne .Auth.Type "none") (or .Auth.EnvVarSpecs .Auth.EnvVars)}}
+    envVars:
+{{- if .Auth.EnvVarSpecs}}
+{{- range .Auth.EnvVarSpecs}}
+      - name: {{.Name}}
+        required: {{.Required}}
+{{- if and (eq .Kind "per_call") .Required}}
+        description: "{{if .Description}}{{yamlDoubleQuoted .Description}}{{else}}{{.Name}} credential.{{end}}"
+{{- else if and (eq .Kind "per_call") (not .Required)}}
+        description: "{{yamlDoubleQuoted (printf "Set this OR another listed env var. %s" .Description)}}"
+{{- else if and (eq .Kind "auth_flow_input") (not .Sensitive)}}
+        description: "{{yamlDoubleQuoted (printf "Only needed during `auth login`; not required for normal use. %s" .Description)}}"
+{{- else if and (eq .Kind "auth_flow_input") .Sensitive}}
+        description: "Set during application setup."
+{{- else if eq .Kind "harvested"}}
+        description: "Populated automatically by `auth login`."
+{{- else}}
+        description: "{{if .Description}}{{yamlDoubleQuoted .Description}}{{else}}{{.Name}} credential.{{end}}"
+{{- end}}
+{{- end}}
+{{- else}}
+{{- range .Auth.EnvVars}}
+      - name: {{.}}
+        required: true
+        description: "{{.}} credential."
+{{- end}}
+{{- end}}
+{{- end}}
     install:
       - kind: go
         bins: [{{.Name}}-pp-cli]
@@ -164,20 +196,21 @@ When you know what you want to do but not which command does it, ask the CLI dir
 {{- end}}
 
 ## Auth Setup
+{{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
 {{- if and .HasAuth .Narrative .Narrative.AuthNarrative}}
 
 {{.Narrative.AuthNarrative}}
 {{- else if eq .Auth.Type "api_key"}}
 
+{{- with $canonicalEnvVar}}
 Set your API key via environment variable:
-{{- if .Auth.EnvVars}}
 
 ```bash
-export {{index .Auth.EnvVars 0}}="<your-key>"
+export {{.Name}}="<your-key>"
 ```
-{{- end}}
 
-Or persist it in `{{.Config.Path}}`.
+Or persist it in `{{$.Config.Path}}`.
+{{- end}}
 {{- else if eq .Auth.Type "oauth2"}}
 
 Authenticate via the browser:
@@ -203,9 +236,9 @@ If authenticated commands start returning token errors after previously working,
 {{.Name}}-pp-cli refresh-bearer
 ```
 {{- end}}
-{{- if .Auth.EnvVars}}
+{{- with $canonicalEnvVar}}
 
-Or set `{{index .Auth.EnvVars 0}}` as an environment variable.
+Or set `{{.Name}}` as an environment variable.
 {{- end}}
 {{- else if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
 

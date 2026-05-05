@@ -14,106 +14,24 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"printing-press-golden-pp-cli/internal/cli"
-	"printing-press-golden-pp-cli/internal/cliutil"
-	"printing-press-golden-pp-cli/internal/client"
-	"printing-press-golden-pp-cli/internal/config"
-	"printing-press-golden-pp-cli/internal/mcp/cobratree"
-	"printing-press-golden-pp-cli/internal/store"
+	"printing-press-rich-pp-cli/internal/cli"
+	"printing-press-rich-pp-cli/internal/cliutil"
+	"printing-press-rich-pp-cli/internal/client"
+	"printing-press-rich-pp-cli/internal/config"
+	"printing-press-rich-pp-cli/internal/mcp/cobratree"
+	"printing-press-rich-pp-cli/internal/store"
 )
 
 // RegisterTools registers all API operations as MCP tools.
 func RegisterTools(s *server.MCPServer) {
 	s.AddTool(
-		mcplib.NewTool("currencies_list",
-			mcplib.WithDescription("List supported currencies. Returns array of Currency."),
+		mcplib.NewTool("items_list",
+			mcplib.WithDescription("List items. Returns array of Item."),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/currencies", []string{ }),
-	)
-	s.AddTool(
-		mcplib.NewTool("projects_create",
-			mcplib.WithDescription("Create project. Required: name, visibility. Optional: owner_email. Returns the new Project."),
-			mcplib.WithDestructiveHintAnnotation(false),
-			mcplib.WithOpenWorldHintAnnotation(true),
-		),
-		makeAPIHandler("POST", "/projects", []string{ }),
-	)
-	s.AddTool(
-		mcplib.NewTool("projects_get",
-			mcplib.WithDescription("Get project. Required: projectId."),
-			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
-			mcplib.WithReadOnlyHintAnnotation(true),
-			mcplib.WithDestructiveHintAnnotation(false),
-			mcplib.WithOpenWorldHintAnnotation(true),
-		),
-		makeAPIHandler("GET", "/projects/{projectId}", []string{"projectId", }),
-	)
-	s.AddTool(
-		mcplib.NewTool("projects_list",
-			mcplib.WithDescription("List projects. Optional: status, limit (default: 25), cursor. Returns array of Project."),
-			mcplib.WithString("status", mcplib.Description("Status")),
-			mcplib.WithString("limit", mcplib.Description("Limit")),
-			mcplib.WithString("cursor", mcplib.Description("Cursor")),
-			mcplib.WithReadOnlyHintAnnotation(true),
-			mcplib.WithDestructiveHintAnnotation(false),
-			mcplib.WithOpenWorldHintAnnotation(true),
-		),
-		makeAPIHandler("GET", "/projects", []string{ }),
-	)
-	s.AddTool(
-		mcplib.NewTool("projects_tasks_list-project",
-			mcplib.WithDescription("List project tasks. Required: projectId. Optional: priority, limit (default: 50), cursor. Returns array of Task."),
-			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
-			mcplib.WithString("priority", mcplib.Description("Priority")),
-			mcplib.WithString("limit", mcplib.Description("Limit")),
-			mcplib.WithString("cursor", mcplib.Description("Cursor")),
-			mcplib.WithReadOnlyHintAnnotation(true),
-			mcplib.WithDestructiveHintAnnotation(false),
-			mcplib.WithOpenWorldHintAnnotation(true),
-		),
-		makeAPIHandler("GET", "/projects/{projectId}/tasks", []string{"projectId", }),
-	)
-	s.AddTool(
-		mcplib.NewTool("projects_tasks_update-project",
-			mcplib.WithDescription("Update project task. Required: projectId, taskId. Optional: completed, priority, title. Partial update."),
-			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
-			mcplib.WithString("taskId", mcplib.Required(), mcplib.Description("Task id")),
-			mcplib.WithOpenWorldHintAnnotation(true),
-		),
-		makeAPIHandler("PATCH", "/projects/{projectId}/tasks/{taskId}", []string{"projectId","taskId", }),
-	)
-	s.AddTool(
-		mcplib.NewTool("public_get-status",
-			mcplib.WithDescription("Get public service status. (public)"),
-			mcplib.WithReadOnlyHintAnnotation(true),
-			mcplib.WithDestructiveHintAnnotation(false),
-			mcplib.WithOpenWorldHintAnnotation(true),
-		),
-		makeAPIHandler("GET", "/public/status", []string{ }),
-	)
-	s.AddTool(
-		mcplib.NewTool("reports_summary_get-report-year",
-			mcplib.WithDescription("Get a report summary for a year. Required: year."),
-			mcplib.WithString("year", mcplib.Required(), mcplib.Description("Year")),
-			mcplib.WithReadOnlyHintAnnotation(true),
-			mcplib.WithDestructiveHintAnnotation(false),
-			mcplib.WithOpenWorldHintAnnotation(true),
-		),
-		makeAPIHandler("GET", "/reports/{year}/summary", []string{"year", }),
-	)
-	// Search tool — faster than iterating list endpoints for finding specific items
-	s.AddTool(
-		mcplib.NewTool("search",
-			mcplib.WithDescription("Full-text search across all synced data. Faster than paginating list endpoints. Requires sync first."),
-			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query (supports FTS5 syntax: AND, OR, NOT, quotes for phrases)")),
-			mcplib.WithNumber("limit", mcplib.Description("Max results (default 25)")),
-			mcplib.WithReadOnlyHintAnnotation(true),
-			mcplib.WithDestructiveHintAnnotation(false),
-		),
-		handleSearch,
+		makeAPIHandler("GET", "/items", []string{ }),
 	)
 	// SQL tool — ad-hoc analysis on synced data without API calls
 	s.AddTool(
@@ -206,18 +124,18 @@ func makeAPIHandler(method, pathTemplate string, positionalParams []string) serv
 			case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
 				return mcplib.NewToolResultError("authentication error: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: the API rejected the request — this usually means auth is missing or invalid." +
-					"\n      Set your API key: export PRINTING_PRESS_GOLDEN_API_KEY=<your-key>" +
-					"\n      Run 'printing-press-golden-pp-cli doctor' to check auth status."), nil
+					"\n      Set your API key: export RICH_AUTH_API_KEY=<your-key>" +
+					"\n      Run 'printing-press-rich-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 401"):
 				return mcplib.NewToolResultError("authentication failed: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: check your API key." +
-					"\n      Set it with: export PRINTING_PRESS_GOLDEN_API_KEY=<your-key>" +
-					"\n      Run 'printing-press-golden-pp-cli doctor' to check auth status."), nil
+					"\n      Set it with: export RICH_AUTH_API_KEY=<your-key>" +
+					"\n      Run 'printing-press-rich-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 403"):
 				return mcplib.NewToolResultError("permission denied: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: your credentials are valid but lack access to this resource." +
-					"\n      Set it with: export PRINTING_PRESS_GOLDEN_API_KEY=<your-key>" +
-					"\n      Run 'printing-press-golden-pp-cli doctor' to check auth status."), nil
+					"\n      Set it with: export RICH_AUTH_API_KEY=<your-key>" +
+					"\n      Run 'printing-press-rich-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 404"):
 				if method == "DELETE" {
 					return mcplib.NewToolResultText("already deleted (no-op)"), nil
@@ -251,7 +169,7 @@ func makeAPIHandler(method, pathTemplate string, positionalParams []string) serv
 
 func newMCPClient() (*client.Client, error) {
 	home, _ := os.UserHomeDir()
-	cfgPath := filepath.Join(home, ".config", "printing-press-golden-pp-cli", "config.toml")
+	cfgPath := filepath.Join(home, ".config", "printing-press-rich-pp-cli", "config.toml")
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
@@ -268,37 +186,10 @@ func newMCPClient() (*client.Client, error) {
 
 func dbPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "printing-press-golden-pp-cli", "data.db")
+	return filepath.Join(home, ".local", "share", "printing-press-rich-pp-cli", "data.db")
 }
 // Note: MCP tools use their own dbPath() because they are in a separate package (main, not cli).
 // The CLI's defaultDBPath() in the cli package uses the same canonical path.
-
-func handleSearch(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	args := req.GetArguments()
-	query, ok := args["query"].(string)
-	if !ok || query == "" {
-		return mcplib.NewToolResultError("query is required"), nil
-	}
-
-	limit := 25
-	if v, ok := args["limit"].(float64); ok && v > 0 {
-		limit = int(v)
-	}
-
-	db, err := store.OpenWithContext(ctx, dbPath())
-	if err != nil {
-		return mcplib.NewToolResultError(fmt.Sprintf("opening database: %v", err)), nil
-	}
-	defer db.Close()
-
-	results, err := db.Search(query, limit)
-	if err != nil {
-		return mcplib.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
-	}
-
-	data, _ := json.MarshalIndent(results, "", "  ")
-	return mcplib.NewToolResultText(string(data)), nil
-}
 
 func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	args := req.GetArguments()
@@ -349,59 +240,74 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 
 func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	ctx := map[string]any{
-		"api":         "printing-press-golden",
-		"description": "Purpose-built fixture for golden generation coverage.",
-		"archetype":   "project-management",
-		"tool_count":  8,
+		"api":         "printing-press-rich",
+		"description": "Purpose-built fixture for rich auth env-var model coverage.",
+		"archetype":   "generic",
+		"tool_count":  1,
 		// tool_surface tells agents which surface a capability lives on.
-		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion printing-press-golden-pp-cli binary.",
+		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion printing-press-rich-pp-cli binary.",
 		"auth": map[string]any{
 			"type": "api_key",
 			"env_vars": []map[string]any{
 				{
-					"name": "PRINTING_PRESS_GOLDEN_API_KEY",
+					"name": "RICH_AUTH_API_KEY",
 					"kind": "per_call",
 					"required": true,
+					"sensitive": true,
+				},
+				{
+					"name": "RICH_AUTH_CLIENT_ID",
+					"kind": "auth_flow_input",
+					"required": false,
+					"sensitive": false,
+					"description": "OAuth application client identifier.",
+				},
+				{
+					"name": "RICH_AUTH_CLIENT_SECRET",
+					"kind": "auth_flow_input",
+					"required": false,
+					"sensitive": true,
+				},
+				{
+					"name": "RICH_AUTH_SESSION_COOKIE",
+					"kind": "harvested",
+					"required": false,
+					"sensitive": true,
+				},
+				{
+					"name": "RICH_AUTH_OPTIONAL_TOKEN",
+					"kind": "per_call",
+					"required": false,
+					"sensitive": true,
+				},
+				{
+					"name": "RICH_AUTH_BOT_TOKEN",
+					"kind": "per_call",
+					"required": false,
+					"sensitive": true,
+				},
+				{
+					"name": "RICH_AUTH_USER_TOKEN",
+					"kind": "per_call",
+					"required": false,
 					"sensitive": true,
 				},
 			},
 		},
 		"resources": []map[string]any{
 			{
-				"name": "currencies",
-				"description": "Manage currencies",
+				"name": "items",
+				"description": "Manage items",
 				"endpoints": []string{"list",  },
 				"syncable": true,
 			},
-			{
-				"name": "projects",
-				"description": "Manage projects",
-				"endpoints": []string{"create", "get", "list",  },
-				"syncable": true,
-				"searchable": true,
-			},
-			{
-				"name": "public",
-				"description": "Manage public",
-				"endpoints": []string{"get-status",  },
-			},
-			{
-				"name": "reports",
-				"description": "Manage reports",
-				"endpoints": []string{ },
-			},
 		},
 		"query_tips": []string{
-			"Pagination uses cursor-based paging. Pass cursor parameter for subsequent pages.",
+			"Pagination uses cursor-based paging. Pass after parameter for subsequent pages.",
 			"Control page size with the limit parameter (default 100).",
 			"Use the sql tool for ad-hoc analysis on synced data. Run sync first to populate the local database.",
 			"Use the search tool for full-text search across all synced resources. Faster than iterating list endpoints.",
 			"Prefer sql/search over repeated API calls when the data is already synced.",
-		},
-		"playbook": []map[string]string{
-			{"topic": "Finding stale work", "insight": "Use the stale command or sql query to find items not updated recently. More reliable than scanning list results manually."},
-			{"topic": "Load analysis", "insight": "When analyzing team workload, filter by assignee and status. Raw counts without status filtering are misleading."},
-			{"topic": "Bulk operations", "insight": "For bulk status changes, prefer update endpoints over delete+create. Most PM APIs track history on updates."},
 		},
 	}
 	data, _ := json.MarshalIndent(ctx, "", "  ")

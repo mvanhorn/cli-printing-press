@@ -1,0 +1,2 @@
+warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it
+Generated printing-press-rich at <ARTIFACT_DIR>/generate-golden-api-rich-auth/printing-press-rich-auth

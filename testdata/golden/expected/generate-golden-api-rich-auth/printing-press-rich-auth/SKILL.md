@@ -1,46 +1,55 @@
 ---
-name: pp-printing-press-golden
-description: "Printing Press CLI for Printing Press Golden. Purpose-built fixture for golden generation coverage."
+name: pp-printing-press-rich
+description: "Printing Press CLI for Printing Press Rich. Purpose-built fixture for rich auth env-var model coverage."
 argument-hint: "<command> [args] | install cli|mcp"
 allowed-tools: "Read Bash"
 metadata:
   openclaw:
     requires:
-      env: ["PRINTING_PRESS_GOLDEN_API_KEY"]
+      env: ["RICH_AUTH_API_KEY"]
       bins:
-        - printing-press-golden-pp-cli
+        - printing-press-rich-pp-cli
     envVars:
-      - name: PRINTING_PRESS_GOLDEN_API_KEY
+      - name: RICH_AUTH_API_KEY
         required: true
-        description: "PRINTING_PRESS_GOLDEN_API_KEY credential."
+        description: "Rich Auth API key."
+      - name: RICH_AUTH_CLIENT_ID
+        required: false
+        description: "Only needed during `auth login`; not required for normal use. OAuth application client identifier."
+      - name: RICH_AUTH_CLIENT_SECRET
+        required: false
+        description: "Set during application setup."
+      - name: RICH_AUTH_SESSION_COOKIE
+        required: false
+        description: "Populated automatically by `auth login`."
+      - name: RICH_AUTH_OPTIONAL_TOKEN
+        required: false
+        description: "Set this OR another listed env var. Optional token for elevated read limits."
+      - name: RICH_AUTH_BOT_TOKEN
+        required: false
+        description: "Set this OR another listed env var. Set this OR RICH_AUTH_USER_TOKEN for workspace access."
+      - name: RICH_AUTH_USER_TOKEN
+        required: false
+        description: "Set this OR another listed env var. Set this OR RICH_AUTH_BOT_TOKEN for workspace access."
     install:
       - kind: go
-        bins: [printing-press-golden-pp-cli]
-        module: github.com/mvanhorn/printing-press-library/library/other/printing-press-golden/cmd/printing-press-golden-pp-cli
+        bins: [printing-press-rich-pp-cli]
+        module: github.com/mvanhorn/printing-press-library/library/other/printing-press-rich/cmd/printing-press-rich-pp-cli
 ---
 
-# Printing Press Golden — Printing Press CLI
+# Printing Press Rich — Printing Press CLI
 
-Purpose-built fixture for golden generation coverage.
+Purpose-built fixture for rich auth env-var model coverage.
+
+## When Not to Use This CLI
+
+Do not activate this CLI for requests that require creating, updating, deleting, publishing, commenting, upvoting, inviting, ordering, sending messages, booking, purchasing, or changing remote state. This printed CLI exposes read-only commands for inspection, export, sync, and analysis.
 
 ## Command Reference
 
-**currencies** — Manage currencies
+**items** — Manage items
 
-- `printing-press-golden-pp-cli currencies` — List supported currencies
-
-**projects** — Manage projects
-
-- `printing-press-golden-pp-cli projects create` — Create project
-- `printing-press-golden-pp-cli projects get` — Get project
-- `printing-press-golden-pp-cli projects list` — List projects
-
-**public** — Manage public
-
-- `printing-press-golden-pp-cli public` — Get public service status
-
-**reports** — Manage reports
-
+- `printing-press-rich-pp-cli items` — List items
 
 
 ### Finding the right command
@@ -48,7 +57,7 @@ Purpose-built fixture for golden generation coverage.
 When you know what you want to do but not which command does it, ask the CLI directly:
 
 ```bash
-printing-press-golden-pp-cli which "<capability in your own words>"
+printing-press-rich-pp-cli which "<capability in your own words>"
 ```
 
 `which` resolves a natural-language capability query to the best matching command from this CLI's curated feature index. Exit code `0` means at least one match; exit code `2` means no confident match — fall back to `--help` or use a narrower query.
@@ -57,12 +66,12 @@ printing-press-golden-pp-cli which "<capability in your own words>"
 Set your API key via environment variable:
 
 ```bash
-export PRINTING_PRESS_GOLDEN_API_KEY="<your-key>"
+export RICH_AUTH_API_KEY="<your-key>"
 ```
 
-Or persist it in `~/.config/printing-press-golden-pp-cli/config.toml`.
+Or persist it in `~/.config/printing-press-rich-pp-cli/config.toml`.
 
-Run `printing-press-golden-pp-cli doctor` to verify setup.
+Run `printing-press-rich-pp-cli doctor` to verify setup.
 
 ## Agent Mode
 
@@ -72,11 +81,12 @@ Add `--agent` to any command. Expands to: `--json --compact --no-input --no-colo
 - **Filterable** — `--select` keeps a subset of fields. Dotted paths descend into nested structures; arrays traverse element-wise. Critical for keeping context small on verbose APIs:
 
   ```bash
-  printing-press-golden-pp-cli currencies --agent --select id,name,status
+  printing-press-rich-pp-cli items --agent --select id,name,status
   ```
 - **Previewable** — `--dry-run` shows the request without sending
 - **Offline-friendly** — sync/search commands can use the local SQLite store when available
 - **Non-interactive** — never prompts, every input is a flag
+- **Read-only** — do not use this CLI for create, update, delete, publish, comment, upvote, invite, order, send, or other mutating requests
 
 ### Response envelope
 
@@ -96,12 +106,12 @@ Parse `.results` for data and `.meta.source` to know whether it's live or local.
 When you (or the agent) notice something off about this CLI, record it:
 
 ```
-printing-press-golden-pp-cli feedback "the --since flag is inclusive but docs say exclusive"
-printing-press-golden-pp-cli feedback --stdin < notes.txt
-printing-press-golden-pp-cli feedback list --json --limit 10
+printing-press-rich-pp-cli feedback "the --since flag is inclusive but docs say exclusive"
+printing-press-rich-pp-cli feedback --stdin < notes.txt
+printing-press-rich-pp-cli feedback list --json --limit 10
 ```
 
-Entries are stored locally at `~/.printing-press-golden-pp-cli/feedback.jsonl`. They are never POSTed unless `PRINTING_PRESS_GOLDEN_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `PRINTING_PRESS_GOLDEN_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
+Entries are stored locally at `~/.printing-press-rich-pp-cli/feedback.jsonl`. They are never POSTed unless `PRINTING_PRESS_RICH_FEEDBACK_ENDPOINT` is set AND either `--send` is passed or `PRINTING_PRESS_RICH_FEEDBACK_AUTO_SEND=true`. Default behavior is local-only.
 
 Write what *surprised* you, not a bug report. Short, specific, one line: that is the part that compounds.
 
@@ -122,11 +132,11 @@ Unknown schemes are refused with a structured error naming the supported set. We
 A profile is a saved set of flag values, reused across invocations. Use it when a scheduled agent calls the same command every run with the same configuration - HeyGen's "Beacon" pattern.
 
 ```
-printing-press-golden-pp-cli profile save briefing --json
-printing-press-golden-pp-cli --profile briefing currencies
-printing-press-golden-pp-cli profile list --json
-printing-press-golden-pp-cli profile show briefing
-printing-press-golden-pp-cli profile delete briefing --yes
+printing-press-rich-pp-cli profile save briefing --json
+printing-press-rich-pp-cli --profile briefing items
+printing-press-rich-pp-cli profile list --json
+printing-press-rich-pp-cli profile show briefing
+printing-press-rich-pp-cli profile delete briefing --yes
 ```
 
 Explicit flags always win over profile values; profile values win over defaults. `agent-context` lists all available profiles under `available_profiles` so introspecting agents discover them at runtime.
@@ -147,7 +157,7 @@ Explicit flags always win over profile values; profile values win over defaults.
 
 Parse `$ARGUMENTS`:
 
-1. **Empty, `help`, or `--help`** → show `printing-press-golden-pp-cli --help` output
+1. **Empty, `help`, or `--help`** → show `printing-press-rich-pp-cli --help` output
 2. **Starts with `install`** → ends with `mcp` → MCP installation; otherwise → CLI installation
 3. **Anything else** → Direct Use (execute as CLI command with `--agent`)
 
@@ -156,30 +166,30 @@ Parse `$ARGUMENTS`:
 1. Check Go is installed: `go version` (requires Go 1.23+)
 2. Install:
    ```bash
-   go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden/cmd/printing-press-golden-pp-cli@latest
+   go install github.com/mvanhorn/printing-press-library/library/other/printing-press-rich/cmd/printing-press-rich-pp-cli@latest
    ```
-3. Verify: `printing-press-golden-pp-cli --version`
+3. Verify: `printing-press-rich-pp-cli --version`
 4. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
 
 ## MCP Server Installation
 
 1. Install the MCP server:
    ```bash
-   go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden/cmd/printing-press-golden-pp-mcp@latest
+   go install github.com/mvanhorn/printing-press-library/library/other/printing-press-rich/cmd/printing-press-rich-pp-mcp@latest
    ```
 2. Register with Claude Code:
    ```bash
-   claude mcp add printing-press-golden-pp-mcp -- printing-press-golden-pp-mcp
+   claude mcp add printing-press-rich-pp-mcp -- printing-press-rich-pp-mcp
    ```
 3. Verify: `claude mcp list`
 
 ## Direct Use
 
-1. Check if installed: `which printing-press-golden-pp-cli`
+1. Check if installed: `which printing-press-rich-pp-cli`
    If not found, offer to install (see CLI Installation above).
 2. Match the user query to the best command from the Unique Capabilities and Command Reference above.
 3. Execute with the `--agent` flag:
    ```bash
-   printing-press-golden-pp-cli <command> [subcommand] [args] --agent
+   printing-press-rich-pp-cli <command> [subcommand] [args] --agent
    ```
-4. If ambiguous, drill into subcommand help: `printing-press-golden-pp-cli <command> --help`.
+4. If ambiguous, drill into subcommand help: `printing-press-rich-pp-cli <command> --help`.

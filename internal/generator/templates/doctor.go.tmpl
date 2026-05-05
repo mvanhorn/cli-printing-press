@@ -25,7 +25,7 @@ import (
 {{- if .BearerRefresh.Enabled}}
 	"net/http"
 {{- end}}
-{{- if or .Auth.EnvVars .HasStore .Auth.RequiresBrowserSession .HasTierRouting}}
+{{- if or .Auth.EnvVarSpecs .Auth.EnvVars .HasStore .Auth.RequiresBrowserSession .HasTierRouting}}
 	"os"
 {{- end}}
 {{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
@@ -139,7 +139,9 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				header := cfg.AuthHeader()
 				if header == "" {
 					report["auth"] = "inferred (not configured)"
-					report["auth_hint"] = "export {{index .Auth.EnvVars 0}}=<your-key>"
+{{- with .Auth.CanonicalEnvVar}}
+					report["auth_hint"] = "export {{.Name}}=<your-key>"
+{{- end}}
 				} else {
 					report["auth"] = "inferred (configured — verify header and env var are correct)"
 					report["auth_source"] = cfg.AuthSource
@@ -193,8 +195,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- else}}
 					report["auth"] = "not configured"
 {{- end}}
-{{- if .Auth.EnvVars}}
-					report["auth_hint"] = "export {{index .Auth.EnvVars 0}}=<your-key>"
+{{- with .Auth.CanonicalEnvVar}}
+					report["auth_hint"] = "export {{.Name}}=<your-key>"
 {{- end}}
 {{- if .Auth.KeyURL}}
 					report["auth_key_url"] = "{{.Auth.KeyURL}}"
@@ -207,7 +209,58 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 
 			// Check auth environment variables
-{{- if .Auth.EnvVars}}
+{{- if .Auth.EnvVarSpecs}}
+			authEnvSet := []string{}
+			authEnvRequiredMissing := []string{}
+			authEnvInfo := []string{}
+			authEnvOptionalNames := []string{}
+			authEnvOptionalSatisfied := false
+{{- range .Auth.EnvVarSpecs}}
+{{- if eq .Kind "per_call"}}
+{{- if .Required}}
+			if os.Getenv("{{.Name}}") != "" {
+				authEnvSet = append(authEnvSet, "{{.Name}}")
+			} else {
+				authEnvRequiredMissing = append(authEnvRequiredMissing, "{{.Name}}")
+			}
+{{- else}}
+			if strings.Contains({{printf "%q" .Description}}, " OR ") {
+				authEnvOptionalNames = append(authEnvOptionalNames, "{{.Name}}")
+				if os.Getenv("{{.Name}}") != "" {
+					authEnvSet = append(authEnvSet, "{{.Name}}")
+					authEnvOptionalSatisfied = true
+				}
+			} else if os.Getenv("{{.Name}}") != "" {
+				authEnvSet = append(authEnvSet, "{{.Name}}")
+			} else {
+				authEnvInfo = append(authEnvInfo, "{{.Name}} optional")
+			}
+{{- end}}
+{{- else if eq .Kind "auth_flow_input"}}
+			if os.Getenv("{{.Name}}") != "" {
+				authEnvSet = append(authEnvSet, "{{.Name}}")
+			} else {
+				authEnvInfo = append(authEnvInfo, "{{.Name}} set during auth login")
+			}
+{{- else if eq .Kind "harvested"}}
+			if os.Getenv("{{.Name}}") != "" || (cfg != nil && cfg.AuthHeader() != "") {
+				authEnvSet = append(authEnvSet, "{{.Name}}")
+			} else {
+				authEnvInfo = append(authEnvInfo, "{{.Name}} populated automatically by auth login --chrome")
+			}
+{{- end}}
+{{- end}}
+			switch {
+			case len(authEnvRequiredMissing) > 0:
+				report["env_vars"] = "ERROR missing required: " + strings.Join(authEnvRequiredMissing, ", ")
+			case len(authEnvOptionalNames) > 1 && !authEnvOptionalSatisfied:
+				report["env_vars"] = "INFO set one of: " + strings.Join(authEnvOptionalNames, " or ")
+			case len(authEnvInfo) > 0:
+				report["env_vars"] = "INFO " + strings.Join(authEnvInfo, "; ")
+			default:
+				report["env_vars"] = fmt.Sprintf("OK %d/%d available", len(authEnvSet), {{len .Auth.EnvVarSpecs}})
+			}
+{{- else if .Auth.EnvVars}}
 			authEnvChecked := 0
 			authEnvSet := 0
 {{- range .Auth.EnvVars}}
@@ -225,7 +278,19 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- if .HasTierRouting}}
 			tierEnvStatus := map[string]string{}
 {{- range $tierName, $tier := .TierRouting.Tiers}}
-{{- if $tier.Auth.EnvVars}}
+{{- if $tier.Auth.EnvVarSpecs}}
+			{
+				checked := 0
+				set := 0
+{{- range $tier.Auth.EnvVarSpecs}}
+				checked++
+				if os.Getenv("{{.Name}}") != "" {
+					set++
+				}
+{{- end}}
+				tierEnvStatus["{{$tierName}}"] = fmt.Sprintf("%d/%d set", set, checked)
+			}
+{{- else if $tier.Auth.EnvVars}}
 			{
 				checked := 0
 				set := 0
@@ -382,6 +447,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			checkKeys := []struct{ key, label string }{
 				{"config", "Config"},
 				{"auth", "Auth"},
+				{"env_vars", "Env Vars"},
 {{- if .Auth.RequiresBrowserSession}}
 				{"browser_session_proof", "Browser Session Proof"},
 {{- end}}
@@ -396,6 +462,10 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				s := fmt.Sprintf("%v", v)
 				indicator := green("OK")
 				switch {
+				case strings.HasPrefix(s, "INFO"):
+					indicator = yellow("INFO")
+				case strings.HasPrefix(s, "ERROR"):
+					indicator = red("FAIL")
 				case strings.HasPrefix(s, "optional"):
 					// Optional-auth CLI with no key set — informational, not a failure.
 					indicator = yellow("INFO")
@@ -422,7 +492,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				}
 			}
 			// Print auth setup hints (indented under Auth line)
-{{- if .Auth.EnvVars}}
+{{- if .Auth.CanonicalEnvVar}}
 			if hint, ok := report["auth_hint"]; ok {
 				fmt.Fprintf(w, "  hint: %v\n", hint)
 			}

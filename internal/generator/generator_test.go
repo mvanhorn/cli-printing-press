@@ -487,7 +487,7 @@ func TestGenerateAgentContextCommand(t *testing.T) {
 
 	var payload map[string]any
 	require.NoError(t, json.Unmarshal(out, &payload), "agent-context must emit valid JSON")
-	assert.Equal(t, "2", payload["schema_version"], "schema_version must be present")
+	assert.Equal(t, "3", payload["schema_version"], "schema_version must be present")
 	assert.Contains(t, payload, "cli")
 	assert.Contains(t, payload, "auth")
 	assert.Contains(t, payload, "commands")

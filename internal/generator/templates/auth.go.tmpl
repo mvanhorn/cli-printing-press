@@ -25,11 +25,11 @@ import (
 func newAuthCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "auth",
-{{- if .Auth.EnvVars}}
-{{- if .Auth.Optional}}
-		Short: "Manage the optional {{index .Auth.EnvVars 0}} (enables features that require it; not needed for core commands)",
+{{- with .Auth.CanonicalEnvVar}}
+{{- if $.Auth.Optional}}
+		Short: "Manage the optional {{.Name}} (enables features that require it; not needed for core commands)",
 {{- else}}
-		Short: "Manage {{index .Auth.EnvVars 0}} credentials",
+		Short: "Manage {{.Name}} credentials",
 {{- end}}
 {{- else}}
 		Short: "Manage authentication",

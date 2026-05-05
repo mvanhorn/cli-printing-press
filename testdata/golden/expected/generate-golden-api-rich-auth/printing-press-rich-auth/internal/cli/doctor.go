@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"printing-press-golden-pp-cli/internal/client"
-	"printing-press-golden-pp-cli/internal/config"
-	"printing-press-golden-pp-cli/internal/store"
+	"printing-press-rich-pp-cli/internal/client"
+	"printing-press-rich-pp-cli/internal/config"
+	"printing-press-rich-pp-cli/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -68,9 +68,9 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check CLI health",
-		Example: `  printing-press-golden-pp-cli doctor
-  printing-press-golden-pp-cli doctor --json
-  printing-press-golden-pp-cli doctor --fail-on warn`,
+		Example: `  printing-press-rich-pp-cli doctor
+  printing-press-rich-pp-cli doctor --json
+  printing-press-rich-pp-cli doctor --fail-on warn`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report := map[string]any{}
 
@@ -89,7 +89,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				header := cfg.AuthHeader()
 				if header == "" {
 					report["auth"] = "not configured"
-					report["auth_hint"] = "export PRINTING_PRESS_GOLDEN_API_KEY=<your-key>"
+					report["auth_hint"] = "export RICH_AUTH_API_KEY=<your-key>"
 				} else {
 					report["auth"] = "configured"
 					report["auth_source"] = cfg.AuthSource
@@ -102,10 +102,58 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			authEnvInfo := []string{}
 			authEnvOptionalNames := []string{}
 			authEnvOptionalSatisfied := false
-			if os.Getenv("PRINTING_PRESS_GOLDEN_API_KEY") != "" {
-				authEnvSet = append(authEnvSet, "PRINTING_PRESS_GOLDEN_API_KEY")
+			if os.Getenv("RICH_AUTH_API_KEY") != "" {
+				authEnvSet = append(authEnvSet, "RICH_AUTH_API_KEY")
 			} else {
-				authEnvRequiredMissing = append(authEnvRequiredMissing, "PRINTING_PRESS_GOLDEN_API_KEY")
+				authEnvRequiredMissing = append(authEnvRequiredMissing, "RICH_AUTH_API_KEY")
+			}
+			if os.Getenv("RICH_AUTH_CLIENT_ID") != "" {
+				authEnvSet = append(authEnvSet, "RICH_AUTH_CLIENT_ID")
+			} else {
+				authEnvInfo = append(authEnvInfo, "RICH_AUTH_CLIENT_ID set during auth login")
+			}
+			if os.Getenv("RICH_AUTH_CLIENT_SECRET") != "" {
+				authEnvSet = append(authEnvSet, "RICH_AUTH_CLIENT_SECRET")
+			} else {
+				authEnvInfo = append(authEnvInfo, "RICH_AUTH_CLIENT_SECRET set during auth login")
+			}
+			if os.Getenv("RICH_AUTH_SESSION_COOKIE") != "" || (cfg != nil && cfg.AuthHeader() != "") {
+				authEnvSet = append(authEnvSet, "RICH_AUTH_SESSION_COOKIE")
+			} else {
+				authEnvInfo = append(authEnvInfo, "RICH_AUTH_SESSION_COOKIE populated automatically by auth login --chrome")
+			}
+			if strings.Contains("Optional token for elevated read limits.", " OR ") {
+				authEnvOptionalNames = append(authEnvOptionalNames, "RICH_AUTH_OPTIONAL_TOKEN")
+				if os.Getenv("RICH_AUTH_OPTIONAL_TOKEN") != "" {
+					authEnvSet = append(authEnvSet, "RICH_AUTH_OPTIONAL_TOKEN")
+					authEnvOptionalSatisfied = true
+				}
+			} else if os.Getenv("RICH_AUTH_OPTIONAL_TOKEN") != "" {
+				authEnvSet = append(authEnvSet, "RICH_AUTH_OPTIONAL_TOKEN")
+			} else {
+				authEnvInfo = append(authEnvInfo, "RICH_AUTH_OPTIONAL_TOKEN optional")
+			}
+			if strings.Contains("Set this OR RICH_AUTH_USER_TOKEN for workspace access.", " OR ") {
+				authEnvOptionalNames = append(authEnvOptionalNames, "RICH_AUTH_BOT_TOKEN")
+				if os.Getenv("RICH_AUTH_BOT_TOKEN") != "" {
+					authEnvSet = append(authEnvSet, "RICH_AUTH_BOT_TOKEN")
+					authEnvOptionalSatisfied = true
+				}
+			} else if os.Getenv("RICH_AUTH_BOT_TOKEN") != "" {
+				authEnvSet = append(authEnvSet, "RICH_AUTH_BOT_TOKEN")
+			} else {
+				authEnvInfo = append(authEnvInfo, "RICH_AUTH_BOT_TOKEN optional")
+			}
+			if strings.Contains("Set this OR RICH_AUTH_BOT_TOKEN for workspace access.", " OR ") {
+				authEnvOptionalNames = append(authEnvOptionalNames, "RICH_AUTH_USER_TOKEN")
+				if os.Getenv("RICH_AUTH_USER_TOKEN") != "" {
+					authEnvSet = append(authEnvSet, "RICH_AUTH_USER_TOKEN")
+					authEnvOptionalSatisfied = true
+				}
+			} else if os.Getenv("RICH_AUTH_USER_TOKEN") != "" {
+				authEnvSet = append(authEnvSet, "RICH_AUTH_USER_TOKEN")
+			} else {
+				authEnvInfo = append(authEnvInfo, "RICH_AUTH_USER_TOKEN optional")
 			}
 			switch {
 			case len(authEnvRequiredMissing) > 0:
@@ -115,7 +163,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			case len(authEnvInfo) > 0:
 				report["env_vars"] = "INFO " + strings.Join(authEnvInfo, "; ")
 			default:
-				report["env_vars"] = fmt.Sprintf("OK %d/%d available", len(authEnvSet), 1)
+				report["env_vars"] = fmt.Sprintf("OK %d/%d available", len(authEnvSet), 7)
 			}
 
 			// Check API connectivity and validate credentials.
@@ -174,9 +222,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 						verifyPath := "/"
 						authParams := map[string]string{}
 						authHeaders := map[string]string{}
-						authHeaders["X-API-Key"] = authHeader
-						authHeaders["X-Api-Version"] = "2026-04-01"
-						authHeaders["User-Agent"] = "printing-press-golden-pp-cli"
+						authHeaders["Authorization"] = authHeader
+						authHeaders["User-Agent"] = "printing-press-rich-pp-cli"
 						_, authErr := c.GetWithHeaders(verifyPath, authParams, authHeaders)
 						var authAPIErr *client.APIError
 						switch {
@@ -334,14 +381,14 @@ func doctorExitForFailOn(failOn string, report map[string]any) error {
 // because the alternative is no freshness story at all.
 func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]any {
 	report := map[string]any{}
-	dbPath := defaultDBPath("printing-press-golden-pp-cli")
+	dbPath := defaultDBPath("printing-press-rich-pp-cli")
 	report["db_path"] = dbPath
 
 	fi, err := os.Stat(dbPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			report["status"] = "unknown"
-			report["hint"] = "Database not created yet; run 'printing-press-golden-pp-cli sync' to hydrate."
+			report["hint"] = "Database not created yet; run 'printing-press-rich-pp-cli sync' to hydrate."
 			return report
 		}
 		report["status"] = "error"
@@ -374,7 +421,7 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 		// sync_state may not exist on a fresh DB that has migrated but not
 		// yet had any sync runs — treat as unknown rather than error.
 		report["status"] = "unknown"
-		report["hint"] = "No sync state recorded; run 'printing-press-golden-pp-cli sync' to populate."
+		report["hint"] = "No sync state recorded; run 'printing-press-rich-pp-cli sync' to populate."
 		return report
 	}
 	defer rows.Close()
@@ -414,13 +461,13 @@ func collectCacheReport(ctx context.Context, staleAfterSpec string) map[string]a
 	switch {
 	case !haveAny && len(resources) == 0:
 		report["status"] = "unknown"
-		report["hint"] = "sync_state is empty; run 'printing-press-golden-pp-cli sync' to hydrate."
+		report["hint"] = "sync_state is empty; run 'printing-press-rich-pp-cli sync' to hydrate."
 	case fresh:
 		report["status"] = "fresh"
 	default:
 		report["status"] = "stale"
 		report["oldest_age"] = oldest.Round(time.Minute).String()
-		report["hint"] = "Some resources are older than stale_after; run 'printing-press-golden-pp-cli sync' to refresh."
+		report["hint"] = "Some resources are older than stale_after; run 'printing-press-rich-pp-cli sync' to refresh."
 	}
 	return report
 }

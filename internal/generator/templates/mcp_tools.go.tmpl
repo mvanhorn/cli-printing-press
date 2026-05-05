@@ -228,8 +228,8 @@ func makeAPIHandler(method, pathTemplate string, positionalParams []string) serv
 			case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
 				return mcplib.NewToolResultError("authentication error: " + cliutil.SanitizeErrorBody(msg) +
 					"\nhint: the API rejected the request — this usually means auth is missing or invalid." +
-{{- if .Auth.EnvVars}}
-					{{printf "%q" (printf "\n      Set your API key: export %s=<your-key>" (index .Auth.EnvVars 0))}} +
+{{- with .Auth.CanonicalEnvVar}}
+					{{printf "%q" (printf "\n      Set your API key: export %s=<your-key>" .Name)}} +
 {{- end}}
 {{- if .Auth.KeyURL}}
 					{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}} +
@@ -247,8 +247,8 @@ func makeAPIHandler(method, pathTemplate string, positionalParams []string) serv
 {{- else}}
 					"\nhint: check your API credentials." +
 {{- end}}
-{{- if .Auth.EnvVars}}
-					{{printf "%q" (printf "\n      Set it with: export %s=<your-key>" (index .Auth.EnvVars 0))}} +
+{{- with .Auth.CanonicalEnvVar}}
+					{{printf "%q" (printf "\n      Set it with: export %s=<your-key>" .Name)}} +
 {{- end}}
 {{- if .Auth.KeyURL}}
 					{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}} +
@@ -261,8 +261,8 @@ func makeAPIHandler(method, pathTemplate string, positionalParams []string) serv
 {{- else}}
 					"\nhint: your credentials are valid but lack access to this resource." +
 {{- end}}
-{{- if .Auth.EnvVars}}
-					{{printf "%q" (printf "\n      Set it with: export %s=<your-key>" (index .Auth.EnvVars 0))}} +
+{{- with .Auth.CanonicalEnvVar}}
+					{{printf "%q" (printf "\n      Set it with: export %s=<your-key>" .Name)}} +
 {{- end}}
 {{- if .Auth.KeyURL}}
 					{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}} +
@@ -418,8 +418,26 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 		"auth": map[string]any{
 			"type": {{printf "%q" .Auth.Type}},
-{{- if .Auth.EnvVars}}
-			"env_vars": []string{ {{- range .Auth.EnvVars}}{{printf "%q" .}}, {{end}} },
+{{- if .Auth.EnvVarSpecs}}
+			"env_vars": []map[string]any{
+{{- range .Auth.EnvVarSpecs}}
+				{
+					"name": {{printf "%q" .Name}},
+					"kind": {{printf "%q" .Kind}},
+					"required": {{.Required}},
+					"sensitive": {{.Sensitive}},
+{{- if and (not .Sensitive) .Description}}
+					"description": {{printf "%q" .Description}},
+{{- end}}
+				},
+{{- end}}
+			},
+{{- else if .Auth.EnvVars}}
+			"env_vars": []map[string]any{
+{{- range .Auth.EnvVars}}
+				{"name": {{printf "%q" .}}, "kind": "per_call", "required": true, "sensitive": true},
+{{- end}}
+			},
 {{- end}}
 {{- if .Auth.KeyURL}}
 			"key_url": {{printf "%q" .Auth.KeyURL}},
@@ -436,8 +454,26 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 {{- if $tier.BaseURL}}
 					"base_url": {{printf "%q" $tier.BaseURL}},
 {{- end}}
-{{- if $tier.Auth.EnvVars}}
-					"env_vars": []string{ {{- range $tier.Auth.EnvVars}}{{printf "%q" .}}, {{end}} },
+{{- if $tier.Auth.EnvVarSpecs}}
+					"env_vars": []map[string]any{
+{{- range $tier.Auth.EnvVarSpecs}}
+						{
+							"name": {{printf "%q" .Name}},
+							"kind": {{printf "%q" .Kind}},
+							"required": {{.Required}},
+							"sensitive": {{.Sensitive}},
+{{- if and (not .Sensitive) .Description}}
+							"description": {{printf "%q" .Description}},
+{{- end}}
+						},
+{{- end}}
+					},
+{{- else if $tier.Auth.EnvVars}}
+					"env_vars": []map[string]any{
+{{- range $tier.Auth.EnvVars}}
+						{"name": {{printf "%q" .}}, "kind": "per_call", "required": true, "sensitive": true},
+{{- end}}
+					},
 {{- end}}
 				},
 {{- end}}

@@ -100,10 +100,10 @@ profile by name when the installed backend supports it.`,
 				return nil
 			}
 
-{{- if .Auth.EnvVars}}
+{{- with .Auth.CanonicalEnvVar}}
 			// Check if already authenticated via env var
-			if v := os.Getenv("{{index .Auth.EnvVars 0}}"); v != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Already authenticated via %s env var.\n", "{{index .Auth.EnvVars 0}}")
+			if v := os.Getenv("{{.Name}}"); v != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Already authenticated via %s env var.\n", "{{.Name}}")
 				return nil
 			}
 {{- end}}
@@ -303,7 +303,7 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 
 {{- if eq .Auth.Type "none"}}
 The captured API surface does not require credentials.
-{{- else if .Auth.EnvVars}}
+{{- else if .Auth.CanonicalEnvVar}}
 Configure credentials with the documented environment variable before making live calls.
 {{- else}}
 No interactive login flow is configured for this CLI.
@@ -316,8 +316,8 @@ Use auth refresh-queries when the site rotates GraphQL persisted-query hashes.
 			w := cmd.OutOrStdout()
 {{- if eq .Auth.Type "none"}}
 			fmt.Fprintln(w, green("Auth: not required"))
-{{- else if .Auth.EnvVars}}
-			fmt.Fprintf(w, "Set %s before making live calls.\n", "{{index .Auth.EnvVars 0}}")
+{{- else if .Auth.CanonicalEnvVar}}
+			fmt.Fprintf(w, "Set %s before making live calls.\n", "{{.Auth.CanonicalEnvVar.Name}}")
 {{- else}}
 			fmt.Fprintln(w, "No interactive login flow is configured for this CLI.")
 {{- end}}
@@ -824,10 +824,10 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintln(w, green("Auth: not required"))
 				return nil
 {{- else}}
-{{- if .Auth.EnvVars}}
-				if v := os.Getenv("{{index .Auth.EnvVars 0}}"); v != "" {
+{{- with .Auth.CanonicalEnvVar}}
+				if v := os.Getenv("{{.Name}}"); v != "" {
 					fmt.Fprintln(w, green("Authenticated"))
-					fmt.Fprintf(w, "  Source: %s env var\n", "{{index .Auth.EnvVars 0}}")
+					fmt.Fprintf(w, "  Source: %s env var\n", "{{.Name}}")
 					return nil
 				}
 {{- end}}
@@ -868,9 +868,9 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 			}
 {{- end}}
 
-{{- if .Auth.EnvVars}}
-			if os.Getenv("{{index .Auth.EnvVars 0}}") != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Config cleared. Note: %s env var is still set.\n", "{{index .Auth.EnvVars 0}}")
+{{- with .Auth.CanonicalEnvVar}}
+			if os.Getenv("{{.Name}}") != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Config cleared. Note: %s env var is still set.\n", "{{.Name}}")
 				return nil
 			}
 {{- end}}
