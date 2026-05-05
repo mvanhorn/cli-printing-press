@@ -1,6 +1,7 @@
 ---
 title: "Printing-press runstate and publish/archive layout contract"
 date: 2026-03-28
+last_updated: 2026-05-05
 category: best-practices
 module: printing-press output layout
 problem_type: best_practice
@@ -10,6 +11,7 @@ symptoms:
   - "Mutable run state collides across parallel workspaces or repeated runs"
   - "Runtime tooling breaks when a claimed output directory uses a suffix like -pp-cli-2"
   - "Research and proof artifacts leak into repo-local docs/plans or other source directories"
+  - "publish package returns a stale run_id when both API-slug and CLI-name manuscripts dirs exist"
 root_cause: config_error
 resolution_type: workflow_improvement
 severity: high
@@ -21,6 +23,7 @@ tags:
   - manuscripts
   - runstate
   - workspace-scope
+  - lookup-priority
 ---
 
 # Printing-press runstate and publish/archive layout contract
@@ -132,6 +135,8 @@ That removes the class of bugs where docs say one thing, skills do another, and 
 - Add tests whenever code infers API names or command directories from filesystem paths.
 - Treat published library CLIs as immutable outputs. Workflows like `emboss` should copy them into a new runstate working dir instead of mutating them in place.
 - Update README and onboarding docs whenever default output locations change. Path migrations that only touch code are incomplete by definition.
+- **Read-side lookup priority must match the write-side convention.** When a binary helper resolves a manuscripts directory (or any other archive path the SKILL writes), check the canonical SKILL key (`<api-slug>`) before any legacy or compatibility key (`<cli-name>`, `<api>-cli`). Label the branches with the convention owner (`SKILL convention` / `legacy binary convention`) — never with temporal adjectives like `new convention` / `old convention`, which invert silently when the convention shifts. Enforcement point in code: `resolveManuscripts` in `internal/cli/publish.go`.
+- **Test ordered lookups with a both-keys-present fixture.** Independent per-branch subtests cannot detect priority inversions — both branches resolve fine in isolation, and only the both-keys case exercises which one wins. For any helper that walks an ordered key list, add a fixture that populates every key simultaneously and asserts the canonical key wins. Reprints inevitably create both keys, so an inverted priority will silently publish stale artifacts until a both-keys test catches it. (See `TestManuscriptLookupPriority` in `internal/cli/publish_resolve_test.go` for the pattern.)
 
 Recommended verification for future changes:
 
@@ -142,3 +147,5 @@ Recommended verification for future changes:
 ## Related Issues
 
 - `docs/solutions/best-practices/steinberger-scorecard-scoring-architecture-2026-03-27.md` is related only in that both docs codify “shared rules that must stay in sync.” It does not cover path layout or output scoping.
+- [#597](https://github.com/mvanhorn/cli-printing-press/issues/597) — Cal.com retro that surfaced F2: `resolveManuscripts` lookup priority lagged the SKILL's API-slug archive convention.
+- [#598](https://github.com/mvanhorn/cli-printing-press/issues/598) / [PR #615](https://github.com/mvanhorn/cli-printing-press/pull/615) — fix that swapped the lookup order in `resolveManuscripts` (API-slug first, CLI-name as legacy fallback) and added the both-keys-present regression test that the prevention rule now requires.
