@@ -1,1 +1,2 @@
+warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it
 Generated tier-routing-golden at <ARTIFACT_DIR>/generate-tier-routing-api/tier-routing-golden
