@@ -141,7 +141,6 @@ func withManuscriptsRoot(t *testing.T) string {
 func TestManuscriptLookupPriority(t *testing.T) {
 	// Exercises resolveManuscripts directly: API-slug (SKILL convention)
 	// wins over CLI-name (legacy binary convention); fuzzy is the last resort.
-	// The both-keys-present case is the F2 regression from issue #598.
 
 	t.Run("prefers API name over CLI name when both exist", func(t *testing.T) {
 		msRoot := withManuscriptsRoot(t)
@@ -189,8 +188,8 @@ func TestManuscriptLookupPriority(t *testing.T) {
 		assert.Empty(t, runID)
 	})
 
-	t.Run("F2 regression: cal-com prefers API-slug recent run over stale CLI-name run", func(t *testing.T) {
-		// Pre-fix, resolveManuscripts returned the stale CLI-name run (issue #598).
+	t.Run("regression: cal-com prefers API-slug recent run over stale CLI-name run", func(t *testing.T) {
+		// Pre-fix, resolveManuscripts returned the stale CLI-name run instead.
 		msRoot := withManuscriptsRoot(t)
 		createRunDir(t, msRoot, "cal-com", "20260504-205634")
 		createRunDir(t, msRoot, "cal-com-pp-cli", "20260405-183800")
@@ -198,5 +197,22 @@ func TestManuscriptLookupPriority(t *testing.T) {
 		dir, runID := resolveManuscripts("cal-com-pp-cli", "cal-com")
 		assert.Equal(t, filepath.Join(msRoot, "cal-com"), dir)
 		assert.Equal(t, "20260504-205634", runID)
+	})
+
+	t.Run("empty apiName falls back to TrimCLISuffix(cliName)", func(t *testing.T) {
+		msRoot := withManuscriptsRoot(t)
+		createRunDir(t, msRoot, "steam-web", "run-derived")
+
+		dir, runID := resolveManuscripts("steam-web-pp-cli", "")
+		assert.Equal(t, filepath.Join(msRoot, "steam-web"), dir)
+		assert.Equal(t, "run-derived", runID)
+	})
+
+	t.Run("empty manuscripts root returns empty without erroring", func(t *testing.T) {
+		_ = withManuscriptsRoot(t)
+
+		dir, runID := resolveManuscripts("steam-web-pp-cli", "steam-web")
+		assert.Empty(t, dir)
+		assert.Empty(t, runID)
 	})
 }
