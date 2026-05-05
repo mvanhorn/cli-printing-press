@@ -929,6 +929,7 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 		Level:         report.Level,
 		MatrixSize:    report.MatrixSize,
 		TestsPassed:   report.Passed,
+		TestsSkipped:  report.Skipped,
 		TestsFailed:   report.Failed,
 		AuthContext: Phase5AuthContext{
 			Type:            authType,

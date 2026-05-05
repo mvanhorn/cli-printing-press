@@ -27,6 +27,7 @@ type Phase5GateMarker struct {
 	Level         string            `json:"level,omitempty"`
 	MatrixSize    int               `json:"matrix_size,omitempty"`
 	TestsPassed   int               `json:"tests_passed,omitempty"`
+	TestsSkipped  int               `json:"tests_skipped,omitempty"`
 	TestsFailed   int               `json:"tests_failed,omitempty"`
 	AuthContext   Phase5AuthContext `json:"auth_context,omitzero"`
 	SkipReason    string            `json:"skip_reason,omitempty"`
@@ -153,11 +154,17 @@ func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
 	level := phase5Level(marker)
 	switch level {
 	case "quick":
-		if marker.MatrixSize != 6 {
-			return false, fmt.Sprintf("phase5 quick acceptance expected matrix_size 6, got %d", marker.MatrixSize)
+		// Mirror finalizeLiveDogfoodReport's quick PASS condition exactly:
+		// MatrixSize >= 4 AND Passed+Skipped >= min(5, MatrixSize). The runner
+		// is the source of truth; this gate must accept any marker the runner
+		// would have accepted. Drift here was the original bug (#589/#590).
+		if marker.MatrixSize < 4 {
+			return false, fmt.Sprintf("phase5 quick acceptance requires matrix_size >= 4, got %d", marker.MatrixSize)
 		}
-		if marker.TestsPassed < 5 {
-			return false, fmt.Sprintf("phase5 quick acceptance requires at least 5/6 tests passed, got %d/6", marker.TestsPassed)
+		threshold := min(5, marker.MatrixSize)
+		passOrSkip := marker.TestsPassed + marker.TestsSkipped
+		if passOrSkip < threshold {
+			return false, fmt.Sprintf("phase5 quick acceptance requires at least %d/%d tests passed-or-skipped, got %d", threshold, marker.MatrixSize, passOrSkip)
 		}
 		return true, ""
 	case "full":
