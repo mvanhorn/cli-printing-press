@@ -1,7 +1,7 @@
 ---
 title: Auth env-var model widening + library remediation
 type: feat
-status: active
+status: completed
 date: 2026-05-05
 ---
 
