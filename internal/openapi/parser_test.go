@@ -1398,6 +1398,12 @@ paths:
 			parsed, err := Parse([]byte(tt.body))
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, parsed.Auth.EnvVarSpecs)
+			if parsed.Auth.OAuth2Grant == spec.OAuth2GrantClientCredentials {
+				require.Len(t, parsed.Auth.EnvVars, len(parsed.Auth.EnvVarSpecs))
+				for i, envVar := range parsed.Auth.EnvVarSpecs {
+					assert.Equal(t, envVar.Name, parsed.Auth.EnvVars[i])
+				}
+			}
 		})
 	}
 }

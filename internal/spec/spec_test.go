@@ -269,6 +269,23 @@ func TestAuthEnvVarSpecsRejectDuplicateNames(t *testing.T) {
 	require.ErrorContains(t, s.Validate(), `auth.env_var_specs contains duplicate name "TODOIST_API_KEY"`)
 }
 
+func TestNormalizeEnvVarSpecsEmptyNameIsIdempotent(t *testing.T) {
+	auth := AuthConfig{
+		Type:    "api_key",
+		EnvVars: []string{"TODOIST_API_KEY"},
+		EnvVarSpecs: []AuthEnvVar{
+			{Name: "TODOIST_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			{Name: "", Kind: AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+		},
+	}
+
+	auth.NormalizeEnvVarSpecs("")
+	once := append([]string(nil), auth.EnvVars...)
+	auth.NormalizeEnvVarSpecs("")
+
+	assert.Equal(t, once, auth.EnvVars)
+}
+
 func TestAuthEnvVarSpecsParseYAML(t *testing.T) {
 	parsed, err := ParseBytes([]byte(`
 name: todoist

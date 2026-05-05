@@ -198,7 +198,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 		}
 	}
 	authEnvVars := authEnvVarSpecNames(authEnvVarSpecs)
-	authEnvVarStatuses := summarizeAuthEnvVars(authEnvVarSpecs, cfg.APIKey, report.Mode)
+	authEnvVarStatuses := summarizeAuthEnvVars(authEnvVarSpecs, cfg.APIKey, cfg.EnvVar, report.Mode)
 	if shouldReportAuthEnvVarStatuses(authEnvVarStatuses) {
 		report.AuthEnvVars = authEnvVarStatuses
 	}
@@ -319,7 +319,7 @@ func authEnvVarSpecNames(envVarSpecs []apispec.AuthEnvVar) []string {
 	return names
 }
 
-func summarizeAuthEnvVars(envVarSpecs []apispec.AuthEnvVar, apiKey, mode string) []AuthEnvVarStatus {
+func summarizeAuthEnvVars(envVarSpecs []apispec.AuthEnvVar, apiKey, apiKeyEnvVar, mode string) []AuthEnvVarStatus {
 	statuses := make([]AuthEnvVarStatus, 0, len(envVarSpecs))
 	for _, envVar := range envVarSpecs {
 		name := strings.TrimSpace(envVar.Name)
@@ -336,7 +336,7 @@ func summarizeAuthEnvVars(envVarSpecs []apispec.AuthEnvVar, apiKey, mode string)
 			Required: envVar.Required,
 			Status:   AuthEnvVarStatusOK,
 		}
-		if os.Getenv(name) != "" || apiKey != "" || mode == "mock" {
+		if os.Getenv(name) != "" || (apiKey != "" && name == apiKeyEnvVar) || mode == "mock" {
 			statuses = append(statuses, status)
 			continue
 		}

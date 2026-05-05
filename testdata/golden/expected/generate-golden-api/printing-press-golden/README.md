@@ -190,9 +190,9 @@ Config file: `~/.config/printing-press-golden-pp-cli/config.toml`
 
 Environment variables:
 
-| Name | Kind |
-| --- | --- |
-| `PRINTING_PRESS_GOLDEN_API_KEY` | per_call |
+| Name | Kind | Required | Description |
+| --- | --- | --- | --- |
+| `PRINTING_PRESS_GOLDEN_API_KEY` | per_call | Yes |  |
 
 ## Troubleshooting
 **Authentication errors (exit code 4)**

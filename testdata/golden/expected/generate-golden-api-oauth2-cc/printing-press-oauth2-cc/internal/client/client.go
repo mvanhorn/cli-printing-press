@@ -377,7 +377,10 @@ func resolveClientCredentials(cfg *config.Config) (string, string) {
 	id := cfg.ClientID
 	secret := cfg.ClientSecret
 	if id == "" {
-		id = os.Getenv("PRINTING_PRESS_OAUTH2_OAUTH2_CC")
+		id = os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_ID")
+	}
+	if secret == "" {
+		secret = os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_SECRET")
 	}
 	return id, secret
 }

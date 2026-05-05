@@ -219,6 +219,15 @@ func TestClassifyMixedVersionManifestUsesEnvVarSpecsOnce(t *testing.T) {
 	}
 }
 
+func TestSameAuthEnvVarNamesIgnoresOrder(t *testing.T) {
+	if !sameAuthEnvVarNames([]string{"B", "A"}, []spec.AuthEnvVar{
+		{Name: "A"},
+		{Name: "B"},
+	}) {
+		t.Fatal("expected auth env var names with different order to match")
+	}
+}
+
 func TestClassifyEnvVarSpecsKindAwareReporting(t *testing.T) {
 	m := &pipeline.ToolsManifest{
 		Auth: pipeline.ManifestAuth{

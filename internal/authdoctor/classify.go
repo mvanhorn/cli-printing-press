@@ -104,10 +104,16 @@ func sameAuthEnvVarNames(envVars []string, envVarSpecs []spec.AuthEnvVar) bool {
 	if len(envVars) != len(envVarSpecs) {
 		return false
 	}
-	for i := range envVars {
-		if strings.TrimSpace(envVars[i]) != strings.TrimSpace(envVarSpecs[i].Name) {
+	counts := make(map[string]int, len(envVars))
+	for _, envVar := range envVars {
+		counts[strings.TrimSpace(envVar)]++
+	}
+	for _, envVarSpec := range envVarSpecs {
+		name := strings.TrimSpace(envVarSpec.Name)
+		if counts[name] == 0 {
 			return false
 		}
+		counts[name]--
 	}
 	return true
 }

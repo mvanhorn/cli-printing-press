@@ -25,7 +25,7 @@ import (
 func newAuthCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "auth",
-		Short: "Manage PRINTING_PRESS_OAUTH2_OAUTH2_CC credentials (login, status, logout)",
+		Short: "Manage PRINTING_PRESS_OAUTH2_CLIENT_ID credentials (login, status, logout)",
 	}
 
 	cmd.AddCommand(newAuthLoginCmd(flags))
@@ -50,7 +50,7 @@ Mint an OAuth2 bearer token via POST https://api.cc.example/oauth/token with
 grant_type=client_credentials and cache it on disk. Subsequent commands
 auto-refresh the token before expiry.
 
-Credentials default to PRINTING_PRESS_OAUTH2_OAUTH2_CC (Client ID) environment variables.
+Credentials default to PRINTING_PRESS_OAUTH2_CLIENT_ID (Client ID) and PRINTING_PRESS_OAUTH2_CLIENT_SECRET (Client Secret) environment variables.
 ` + "`" + `),
 		Example: strings.Trim(` + "`" + `
   # Use env vars
@@ -67,12 +67,13 @@ Credentials default to PRINTING_PRESS_OAUTH2_OAUTH2_CC (Client ID) environment v
 			}
 
 			if clientID == "" {
-				clientID = os.Getenv("PRINTING_PRESS_OAUTH2_OAUTH2_CC")
+				clientID = os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_ID")
 			}
 			if clientSecret == "" {
+				clientSecret = os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_SECRET")
 			}
 			if clientID == "" || clientSecret == "" {
-				return authErr(fmt.Errorf("client ID and secret required (set --client-id and --client-secret)"))
+				return authErr(fmt.Errorf("client ID and secret required (set --client-id/--client-secret or PRINTING_PRESS_OAUTH2_CLIENT_ID/PRINTING_PRESS_OAUTH2_CLIENT_SECRET)"))
 			}
 
 			tok, err := mintClientCredentialsToken(http.DefaultClient, "https://api.cc.example/oauth/token", clientID, clientSecret)
@@ -95,8 +96,8 @@ Credentials default to PRINTING_PRESS_OAUTH2_OAUTH2_CC (Client ID) environment v
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&clientID, "client-id", "", "OAuth2 Client ID; defaults to $PRINTING_PRESS_OAUTH2_OAUTH2_CC")
-	cmd.Flags().StringVar(&clientSecret, "client-secret", "", "OAuth2 Client Secret")
+	cmd.Flags().StringVar(&clientID, "client-id", "", "OAuth2 Client ID; defaults to $PRINTING_PRESS_OAUTH2_CLIENT_ID")
+	cmd.Flags().StringVar(&clientSecret, "client-secret", "", "OAuth2 Client Secret; defaults to $PRINTING_PRESS_OAUTH2_CLIENT_SECRET")
 
 	return cmd
 }
@@ -175,7 +176,8 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				fmt.Fprintln(w, red("Not authenticated"))
 				fmt.Fprintln(w, "")
 				fmt.Fprintln(w, "Mint a token:")
-				fmt.Fprintln(w, "  export PRINTING_PRESS_OAUTH2_OAUTH2_CC=\"<client-id>\"")
+				fmt.Fprintln(w, "  export PRINTING_PRESS_OAUTH2_CLIENT_ID=\"<client-id>\"")
+				fmt.Fprintln(w, "  export PRINTING_PRESS_OAUTH2_CLIENT_SECRET=\"<client-secret>\"")
 				fmt.Fprintf(w, "  printing-press-oauth2-pp-cli auth login\n")
 				return authErr(fmt.Errorf("no credentials configured"))
 			}
@@ -236,8 +238,11 @@ func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 			// Identify which (if any) auth env var is still exported so the
 			// JSON envelope and the human prose can both surface it.
 			envStillSet := ""
-			if envStillSet == "" && os.Getenv("PRINTING_PRESS_OAUTH2_OAUTH2_CC") != "" {
-				envStillSet = "PRINTING_PRESS_OAUTH2_OAUTH2_CC"
+			if envStillSet == "" && os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_ID") != "" {
+				envStillSet = "PRINTING_PRESS_OAUTH2_CLIENT_ID"
+			}
+			if envStillSet == "" && os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_SECRET") != "" {
+				envStillSet = "PRINTING_PRESS_OAUTH2_CLIENT_SECRET"
 			}
 
 			// JSON envelope: {cleared: true, note?: "<env_var> env var is still set"}.

@@ -169,15 +169,15 @@ Config file: `~/.config/printing-press-rich-pp-cli/config.toml`
 
 Environment variables:
 
-| Name | Kind |
-| --- | --- |
-| `RICH_AUTH_API_KEY` | per_call |
-| `RICH_AUTH_CLIENT_ID` | auth_flow_input |
-| `RICH_AUTH_CLIENT_SECRET` | auth_flow_input |
-| `RICH_AUTH_SESSION_COOKIE` | harvested |
-| `RICH_AUTH_OPTIONAL_TOKEN` | per_call |
-| `RICH_AUTH_BOT_TOKEN` | per_call |
-| `RICH_AUTH_USER_TOKEN` | per_call |
+| Name | Kind | Required | Description |
+| --- | --- | --- | --- |
+| `RICH_AUTH_API_KEY` | per_call | Yes | Rich Auth API key. |
+| `RICH_AUTH_CLIENT_ID` | auth_flow_input | No | OAuth application client identifier. |
+| `RICH_AUTH_CLIENT_SECRET` | auth_flow_input | No | OAuth application client secret. |
+| `RICH_AUTH_SESSION_COOKIE` | harvested | No | Browser session cookie captured by auth login. |
+| `RICH_AUTH_OPTIONAL_TOKEN` | per_call | No | Optional token for elevated read limits. |
+| `RICH_AUTH_BOT_TOKEN` | per_call | No | Set this OR RICH_AUTH_USER_TOKEN for workspace access. |
+| `RICH_AUTH_USER_TOKEN` | per_call | No | Set this OR RICH_AUTH_BOT_TOKEN for workspace access. |
 
 ## Troubleshooting
 **Authentication errors (exit code 4)**

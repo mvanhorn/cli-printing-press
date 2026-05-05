@@ -516,7 +516,13 @@ func (c *AuthConfig) NormalizeEnvVarSpecs(context string) {
 			}
 			canonicalNames = append(canonicalNames, name)
 		}
-		if canonical && sameStringSlice(c.EnvVars, canonicalNames) {
+		envVarNames := make([]string, 0, len(c.EnvVars))
+		for _, name := range c.EnvVars {
+			if name = strings.TrimSpace(name); name != "" {
+				envVarNames = append(envVarNames, name)
+			}
+		}
+		if canonical && sameStringSlice(envVarNames, canonicalNames) {
 			return
 		}
 	}

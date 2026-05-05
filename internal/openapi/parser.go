@@ -556,6 +556,7 @@ func applyAuthEnvVarDefaults(auth *spec.AuthConfig, envPrefix string) {
 				Inferred:  true,
 			},
 		}
+		auth.EnvVars = []string{auth.EnvVarSpecs[0].Name, auth.EnvVarSpecs[1].Name}
 		return
 	}
 	if len(auth.EnvVars) == 0 {

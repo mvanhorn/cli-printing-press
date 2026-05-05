@@ -437,18 +437,18 @@ Config file: `{{.Config.Path}}`
 
 Environment variables:
 
-| Name | Kind |
-| --- | --- |
+| Name | Kind | Required | Description |
+| --- | --- | --- | --- |
 {{- range .EndpointTemplateVars}}
-| `{{envName $.Name}}_{{upper .}}` | endpoint |
+| `{{envName $.Name}}_{{upper .}}` | endpoint | Yes |  |
 {{- end}}
 {{- if .Auth.EnvVarSpecs}}
 {{- range .Auth.EnvVarSpecs}}
-| `{{.Name}}` | {{.Kind}} |
+| `{{.Name}}` | {{.Kind}} | {{if .Required}}Yes{{else}}No{{end}} | {{.Description}} |
 {{- end}}
 {{- else}}
 {{- range .Auth.EnvVars}}
-| `{{.}}` | per_call |
+| `{{.}}` | per_call | Yes |  |
 {{- end}}
 {{- end}}
 {{- end}}

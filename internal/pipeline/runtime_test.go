@@ -936,7 +936,7 @@ func TestSummarizeAuthEnvVarsKindAware(t *testing.T) {
 		{Name: "OPTIONAL_TOKEN", Kind: apispec.AuthEnvVarKindPerCall, Required: false},
 		{Name: "SETUP_SECRET", Kind: apispec.AuthEnvVarKindAuthFlowInput, Required: false},
 		{Name: "SESSION_COOKIE", Kind: apispec.AuthEnvVarKindHarvested, Required: false},
-	}, "", "live")
+	}, "", "", "live")
 
 	require.Len(t, got, 4)
 	assert.Equal(t, AuthEnvVarStatusMissingRequired, got[0].Status)
@@ -947,9 +947,24 @@ func TestSummarizeAuthEnvVarsKindAware(t *testing.T) {
 
 	mock := summarizeAuthEnvVars([]apispec.AuthEnvVar{
 		{Name: "REQUIRED_TOKEN", Kind: apispec.AuthEnvVarKindPerCall, Required: true},
-	}, "", "mock")
+	}, "", "", "mock")
 	require.Len(t, mock, 1)
 	assert.Equal(t, AuthEnvVarStatusOK, mock[0].Status)
+}
+
+func TestSummarizeAuthEnvVarsAPIKeyOnlySatisfiesConfiguredEnvVar(t *testing.T) {
+	t.Setenv("PRIMARY_TOKEN", "")
+	t.Setenv("SECONDARY_TOKEN", "")
+
+	got := summarizeAuthEnvVars([]apispec.AuthEnvVar{
+		{Name: "PRIMARY_TOKEN", Kind: apispec.AuthEnvVarKindPerCall, Required: true},
+		{Name: "SECONDARY_TOKEN", Kind: apispec.AuthEnvVarKindPerCall, Required: true},
+	}, "secret", "PRIMARY_TOKEN", "live")
+
+	require.Len(t, got, 2)
+	assert.Equal(t, AuthEnvVarStatusOK, got[0].Status)
+	assert.Equal(t, AuthEnvVarStatusMissingRequired, got[1].Status)
+	assert.Equal(t, []AuthEnvVarStatus{got[1]}, missingRequiredAuthEnvVars(got))
 }
 
 // TestDiscoverCLIEnvVars_SkipsTemplateVarReads guards the verifier integration
