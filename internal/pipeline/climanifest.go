@@ -271,7 +271,7 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.AuthType = parsed.Auth.Type
 	m.AuthEnvVars = manifestAuthEnvVars(parsed)
 	envVarSpecs := manifestAuthEnvVarSpecs(parsed)
-	if hasConcreteAuthEnvVarSpec(envVarSpecs) {
+	if !spec.AllAuthEnvVarSpecsInferred(envVarSpecs) {
 		m.AuthEnvVarSpecs = envVarSpecs
 	}
 	m.EndpointTemplateVars = parsed.EndpointTemplateVars
@@ -301,11 +301,7 @@ func manifestAuthEnvVars(parsed *spec.APISpec) []string {
 	}
 	envVarSpecs := manifestAuthEnvVarSpecs(parsed)
 	if len(envVarSpecs) > 0 {
-		names := make([]string, 0, len(envVarSpecs))
-		for _, envVar := range envVarSpecs {
-			names = append(names, envVar.Name)
-		}
-		return names
+		return authEnvVarSpecNames(envVarSpecs)
 	}
 	seen := make(map[string]struct{})
 	var names []string
@@ -368,41 +364,6 @@ func manifestAuthEnvVarSpecs(parsed *spec.APISpec) []spec.AuthEnvVar {
 		add(tier.Auth.EnvVarSpecs)
 	}
 	return specs
-}
-
-func effectiveManifestAuthEnvVarSpecs(auth ManifestAuth) []spec.AuthEnvVar {
-	// rich model
-	if len(auth.EnvVarSpecs) > 0 {
-		return auth.EnvVarSpecs
-	}
-	// legacy fallback
-	if len(auth.EnvVars) == 0 {
-		return nil
-	}
-	envVarSpecs := make([]spec.AuthEnvVar, 0, len(auth.EnvVars))
-	for _, name := range auth.EnvVars {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		envVarSpecs = append(envVarSpecs, spec.AuthEnvVar{
-			Name:      name,
-			Kind:      spec.AuthEnvVarKindPerCall,
-			Required:  true,
-			Sensitive: true,
-			Inferred:  true,
-		})
-	}
-	return envVarSpecs
-}
-
-func hasConcreteAuthEnvVarSpec(envVarSpecs []spec.AuthEnvVar) bool {
-	for _, envVar := range envVarSpecs {
-		if !envVar.Inferred {
-			return true
-		}
-	}
-	return false
 }
 
 // GenerateManifestParams holds the information available at generate time

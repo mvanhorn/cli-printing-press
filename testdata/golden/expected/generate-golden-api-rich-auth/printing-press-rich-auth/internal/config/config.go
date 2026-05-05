@@ -23,7 +23,6 @@ type Config struct {
 	ClientID       string `toml:"client_id"`
 	ClientSecret   string `toml:"client_secret"`
 	Path           string `toml:"-"`
-	// canonical envVar
 	RichAuthApiKey string `toml:"auth_api_key"`
 	RichAuthClientId string `toml:"auth_client_id"`
 	RichAuthClientSecret string `toml:"auth_client_secret"`
@@ -58,7 +57,6 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Env var overrides
-	// canonical envVar
 	if v := os.Getenv("RICH_AUTH_API_KEY"); v != "" {
 		cfg.RichAuthApiKey = v
 		cfg.AuthSource = "env:RICH_AUTH_API_KEY"
@@ -99,12 +97,10 @@ func (c *Config) AuthHeader() string {
 	if c.AuthHeaderVal != "" {
 		return c.AuthHeaderVal
 	}
-	// canonical envVar
 	token := c.RichAuthApiKey
 	if token == "" {
 		return ""
 	}
-	// canonical envVar
 	if c.RichAuthApiKey == "" {
 		return ""
 	}

@@ -32,7 +32,6 @@ type Config struct {
 	ClientSecret   string `{{configTag .Config.Format}}:"client_secret"`
 	Path           string `{{configTag .Config.Format}}:"-"`
 {{- if .Auth.EnvVarSpecs}}
-	// canonical envVar
 {{- range .Auth.EnvVarSpecs}}
 {{- if not (envVarIsBuiltinField .Name)}}
 	{{envVarField .Name}} string `{{configTag $.Config.Format}}:"{{envVarPlaceholder .Name}}"`
@@ -95,7 +94,6 @@ func Load(configPath string) (*Config, error) {
 	// Auth inferred from API description — verify the env var below is correct
 {{- end}}
 {{- if .Auth.EnvVarSpecs}}
-	// canonical envVar
 {{- range .Auth.EnvVarSpecs}}
 	if v := os.Getenv("{{.Name}}"); v != "" {
 		cfg.{{resolveEnvVarField .Name}} = v
@@ -148,14 +146,12 @@ func (c *Config) AuthHeader() string {
 {{- end}}
 {{- if eq .Auth.Type "api_key"}}
 	{{- with $canonicalEnvVar}}
-	// canonical envVar
 	token := c.{{resolveEnvVarField .Name}}
 	if token == "" {
 		return ""
 	}
 	{{- end}}
 {{- if .Auth.EnvVarSpecs}}
-	// canonical envVar
 {{- range .Auth.EnvVarSpecs}}
 {{- if and (eq .Kind "per_call") .Required}}
 	if c.{{resolveEnvVarField .Name}} == "" {
@@ -175,7 +171,6 @@ func (c *Config) AuthHeader() string {
 	replacements := map[string]string{
 		"token": token,
 	{{- if .Auth.EnvVarSpecs}}
-	// canonical envVar
 	{{- range .Auth.EnvVarSpecs}}
 	{{- if eq .Kind "per_call"}}
 	{{- if ne (envVarPlaceholder .Name) "token"}}
@@ -217,7 +212,6 @@ func (c *Config) AuthHeader() string {
 		{{- end}}
 	}
 	{{- with $canonicalEnvVar}}
-	// canonical envVar
 	if c.{{resolveEnvVarField .Name}} != "" {
 		c.AuthSource = "env:{{.Name}}"
 		{{- if $.Auth.Format}}
@@ -248,7 +242,6 @@ func (c *Config) AuthHeader() string {
 	// Env-var token wins over file-stored AccessToken (env > config convention).
 {{- end}}
 	{{- with $canonicalEnvVar}}
-	// canonical envVar
 	if c.{{resolveEnvVarField .Name}} != "" {
 		c.AuthSource = "env:{{.Name}}"
 		{{- if $.Auth.Format}}
@@ -277,7 +270,6 @@ func (c *Config) AuthHeader() string {
 {{- else if eq .Auth.Type "cookie"}}
 	// Env-var token wins over file-stored AccessToken (env > config convention).
 	{{- with $canonicalEnvVar}}
-	// canonical envVar
 	if c.{{resolveEnvVarField .Name}} != "" {
 		c.AuthSource = "env:{{.Name}}"
 		return c.{{resolveEnvVarField .Name}}
@@ -291,7 +283,6 @@ func (c *Config) AuthHeader() string {
 {{- else if eq .Auth.Type "composed"}}
 	// Env-var token wins over file-stored AccessToken (env > config convention).
 	{{- with $canonicalEnvVar}}
-	// canonical envVar
 	if c.{{resolveEnvVarField .Name}} != "" {
 		c.AuthSource = "env:{{.Name}}"
 		return c.{{resolveEnvVarField .Name}}
@@ -336,7 +327,6 @@ func (c *Config) SaveBearerToken(accessToken string, refreshedAt time.Time) erro
 	c.RefreshToken = ""
 	c.TokenExpiry = time.Time{}
 {{- if .Auth.EnvVarSpecs}}
-	// canonical envVar
 {{- range .Auth.EnvVarSpecs}}
 {{- if not (envVarIsBuiltinField .Name)}}
 	c.{{envVarField .Name}} = ""

@@ -52,6 +52,33 @@ type ManifestAuth struct {
 	BrowserSessionValidationMethod string            `json:"browser_session_validation_method,omitempty"`
 }
 
+// EffectiveEnvVarSpecs returns the rich env-var spec list, preferring EnvVarSpecs
+// when present and falling back to legacy EnvVars synthesized as
+// per_call+required+sensitive+inferred.
+func (a ManifestAuth) EffectiveEnvVarSpecs() []spec.AuthEnvVar {
+	if len(a.EnvVarSpecs) > 0 {
+		return a.EnvVarSpecs
+	}
+	if len(a.EnvVars) == 0 {
+		return nil
+	}
+	envVarSpecs := make([]spec.AuthEnvVar, 0, len(a.EnvVars))
+	for _, name := range a.EnvVars {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		envVarSpecs = append(envVarSpecs, spec.AuthEnvVar{
+			Name:      name,
+			Kind:      spec.AuthEnvVarKindPerCall,
+			Required:  true,
+			Sensitive: true,
+			Inferred:  true,
+		})
+	}
+	return envVarSpecs
+}
+
 // ManifestTiers records per-tier routing and auth metadata so audit/doctor
 // consumers can reason about generated CLIs whose endpoint credentials differ
 // from the global auth block.

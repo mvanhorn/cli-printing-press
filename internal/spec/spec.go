@@ -465,8 +465,8 @@ type AuthConfig struct {
 }
 
 type AuthEnvVar struct {
-	Name        string         `yaml:"name" json:"name"`                     // canonical name
-	Kind        AuthEnvVarKind `yaml:"kind,omitempty" json:"kind,omitempty"` // per_call, auth_flow_input, harvested
+	Name        string         `yaml:"name" json:"name"`
+	Kind        AuthEnvVarKind `yaml:"kind,omitempty" json:"kind,omitempty"`
 	Required    bool           `yaml:"required" json:"required"`
 	Sensitive   bool           `yaml:"sensitive" json:"sensitive"` // orthogonal to Kind; drives redaction policy
 	Description string         `yaml:"description,omitempty" json:"description,omitempty"`
@@ -502,6 +502,24 @@ func (c *AuthConfig) NormalizeEnvVarSpecs(context string) {
 	if c == nil {
 		return
 	}
+	if len(c.EnvVarSpecs) > 0 {
+		canonicalNames := make([]string, 0, len(c.EnvVarSpecs))
+		canonical := true
+		for _, envVar := range c.EnvVarSpecs {
+			name := strings.TrimSpace(envVar.Name)
+			if name == "" {
+				continue
+			}
+			if envVar.Name != name || envVar.Kind == "" {
+				canonical = false
+				break
+			}
+			canonicalNames = append(canonicalNames, name)
+		}
+		if canonical && sameStringSlice(c.EnvVars, canonicalNames) {
+			return
+		}
+	}
 	if len(c.EnvVarSpecs) == 0 {
 		if len(c.EnvVars) == 0 {
 			return
@@ -532,7 +550,7 @@ func (c *AuthConfig) NormalizeEnvVarSpecs(context string) {
 		}
 		specNames = append(specNames, c.EnvVarSpecs[i].Name)
 	}
-	if len(c.EnvVars) > 0 && !sameStringSlice(c.EnvVars, specNames) && !allAuthEnvVarSpecsInferred(c.EnvVarSpecs) {
+	if len(c.EnvVars) > 0 && !sameStringSlice(c.EnvVars, specNames) && !AllAuthEnvVarSpecsInferred(c.EnvVarSpecs) {
 		if context == "" {
 			context = "auth"
 		}
@@ -545,7 +563,7 @@ func (c *AuthConfig) NormalizeEnvVarSpecs(context string) {
 	}
 }
 
-func allAuthEnvVarSpecsInferred(envVarSpecs []AuthEnvVar) bool {
+func AllAuthEnvVarSpecsInferred(envVarSpecs []AuthEnvVar) bool {
 	if len(envVarSpecs) == 0 {
 		return false
 	}

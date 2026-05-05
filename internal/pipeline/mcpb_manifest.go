@@ -333,22 +333,14 @@ func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
 }
 
 func mcpbUserConfigAuthEnvVars(m CLIManifest) []spec.AuthEnvVar {
-	envVarSpecs := m.AuthEnvVarSpecs
-	if len(envVarSpecs) == 0 && len(m.AuthEnvVars) > 0 {
+	envVarSpecs := (ManifestAuth{
+		EnvVars:     m.AuthEnvVars,
+		EnvVarSpecs: m.AuthEnvVarSpecs,
+	}).EffectiveEnvVarSpecs()
+	if len(m.AuthEnvVarSpecs) == 0 && len(m.AuthEnvVars) > 0 {
 		required := authRequiresCredential(m.AuthType)
-		envVarSpecs = make([]spec.AuthEnvVar, 0, len(m.AuthEnvVars))
-		for _, name := range m.AuthEnvVars {
-			name = strings.TrimSpace(name)
-			if name == "" {
-				continue
-			}
-			envVarSpecs = append(envVarSpecs, spec.AuthEnvVar{
-				Name:      name,
-				Kind:      spec.AuthEnvVarKindPerCall,
-				Required:  required,
-				Sensitive: true,
-				Inferred:  true,
-			})
+		for i := range envVarSpecs {
+			envVarSpecs[i].Required = required
 		}
 	}
 	if len(envVarSpecs) == 0 {
@@ -364,8 +356,6 @@ func mcpbUserConfigAuthEnvVars(m CLIManifest) []spec.AuthEnvVar {
 			envVar.Kind = spec.AuthEnvVarKindPerCall
 			filtered = append(filtered, envVar)
 		case spec.AuthEnvVarKindAuthFlowInput, spec.AuthEnvVarKindHarvested:
-			continue
-		default:
 			continue
 		}
 	}

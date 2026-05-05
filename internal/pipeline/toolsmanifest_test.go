@@ -414,10 +414,10 @@ func TestWriteToolsManifest_AuthConfigRoundTrip(t *testing.T) {
 }
 
 func TestManifestAuthEffectiveEnvVarSpecsLegacyFallback(t *testing.T) {
-	got := effectiveManifestAuthEnvVarSpecs(ManifestAuth{
+	got := (ManifestAuth{
 		Type:    "api_key",
 		EnvVars: []string{"LEGACY_TOKEN"},
-	})
+	}).EffectiveEnvVarSpecs()
 	assert.Equal(t, []spec.AuthEnvVar{{
 		Name:      "LEGACY_TOKEN",
 		Kind:      spec.AuthEnvVarKindPerCall,

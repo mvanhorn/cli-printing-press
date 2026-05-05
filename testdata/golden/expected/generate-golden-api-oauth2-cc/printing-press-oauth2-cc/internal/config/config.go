@@ -23,7 +23,6 @@ type Config struct {
 	ClientID       string `toml:"client_id"`
 	ClientSecret   string `toml:"client_secret"`
 	Path           string `toml:"-"`
-	// canonical envVar
 	PrintingPressOauth2ClientId string `toml:"press_oauth2_client_id"`
 	PrintingPressOauth2ClientSecret string `toml:"press_oauth2_client_secret"`
 }
@@ -53,7 +52,6 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// Env var overrides
-	// canonical envVar
 	if v := os.Getenv("PRINTING_PRESS_OAUTH2_CLIENT_ID"); v != "" {
 		cfg.PrintingPressOauth2ClientId = v
 		cfg.AuthSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_ID"
@@ -80,7 +78,6 @@ func (c *Config) AuthHeader() string {
 		c.AuthSource = "oauth2"
 		return "Bearer " + c.AccessToken
 	}
-	// canonical envVar
 	if c.PrintingPressOauth2ClientId != "" {
 		c.AuthSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_ID"
 		return "Bearer " + c.PrintingPressOauth2ClientId

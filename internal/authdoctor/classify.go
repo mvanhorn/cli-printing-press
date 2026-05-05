@@ -73,7 +73,10 @@ func classifyAuthBlock(slug string, auth pipeline.ManifestAuth, env getEnv, tier
 		return nil
 	}
 	displayAuthType := scopedAuthType(tierName, authType)
-	envVarSpecs := pipelineEffectiveManifestAuthEnvVarSpecs(auth)
+	if len(auth.EnvVarSpecs) > 0 && len(auth.EnvVars) > 0 && !sameAuthEnvVarNames(auth.EnvVars, auth.EnvVarSpecs) {
+		fmt.Fprintln(os.Stderr, "warning: tools-manifest auth env_vars disagree with env_var_specs; using env_var_specs")
+	}
+	envVarSpecs := auth.EffectiveEnvVarSpecs()
 	if len(envVarSpecs) == 0 {
 		findings := []Finding{{
 			API:    slug,
@@ -95,35 +98,6 @@ func classifyAuthBlock(slug string, auth pipeline.ManifestAuth, env getEnv, tier
 		findings = append(findings, browserSessionProofFinding(slug, displayAuthType))
 	}
 	return findings
-}
-
-func pipelineEffectiveManifestAuthEnvVarSpecs(auth pipeline.ManifestAuth) []spec.AuthEnvVar {
-	// rich model
-	if len(auth.EnvVarSpecs) > 0 {
-		if len(auth.EnvVars) > 0 && !sameAuthEnvVarNames(auth.EnvVars, auth.EnvVarSpecs) {
-			fmt.Fprintln(os.Stderr, "warning: tools-manifest auth env_vars disagree with env_var_specs; using env_var_specs")
-		}
-		return auth.EnvVarSpecs
-	}
-	// legacy fallback
-	if len(auth.EnvVars) == 0 {
-		return nil
-	}
-	envVarSpecs := make([]spec.AuthEnvVar, 0, len(auth.EnvVars))
-	for _, name := range auth.EnvVars {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		envVarSpecs = append(envVarSpecs, spec.AuthEnvVar{
-			Name:      name,
-			Kind:      spec.AuthEnvVarKindPerCall,
-			Required:  true,
-			Sensitive: true,
-			Inferred:  true,
-		})
-	}
-	return envVarSpecs
 }
 
 func sameAuthEnvVarNames(envVars []string, envVarSpecs []spec.AuthEnvVar) bool {

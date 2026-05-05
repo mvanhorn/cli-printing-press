@@ -48,12 +48,20 @@ type VerifyReport struct {
 }
 
 type AuthEnvVarStatus struct {
-	Name     string `json:"name"`
-	Kind     string `json:"kind"`
-	Required bool   `json:"required"`
-	Status   string `json:"status"`
-	Detail   string `json:"detail,omitempty"`
+	Name     string               `json:"name"`
+	Kind     string               `json:"kind"`
+	Required bool                 `json:"required"`
+	Status   AuthEnvVarStatusCode `json:"status"`
+	Detail   string               `json:"detail,omitempty"`
 }
+
+type AuthEnvVarStatusCode string
+
+const (
+	AuthEnvVarStatusOK              AuthEnvVarStatusCode = "ok"
+	AuthEnvVarStatusMissingRequired AuthEnvVarStatusCode = "missing_required"
+	AuthEnvVarStatusMissingInfo     AuthEnvVarStatusCode = "missing_info"
+)
 
 // CommandResult is the test result for a single command.
 type CommandResult struct {
@@ -155,11 +163,8 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 		classifyCommandKind(&commands[i], spec)
 	}
 
-	// Collect auth env var names. Priority:
-	// 1. Spec's declared rich env-var model (from securitySchemes or auth inference)
-	// 2. Legacy spec env vars
-	// 3. Env vars actually read by the CLI's config.go (ground truth)
-	// 4. Derived patterns from the API name (fallback)
+	// Collect auth env var names from the normalized spec model, then augment
+	// it with env vars actually read by the generated CLI's config.go.
 	authEnvVarSpecs := []apispec.AuthEnvVar{{
 		Name:      envVarName,
 		Kind:      apispec.AuthEnvVarKindPerCall,
@@ -329,17 +334,17 @@ func summarizeAuthEnvVars(envVarSpecs []apispec.AuthEnvVar, apiKey, mode string)
 			Name:     name,
 			Kind:     string(kind),
 			Required: envVar.Required,
-			Status:   "ok",
+			Status:   AuthEnvVarStatusOK,
 		}
 		if os.Getenv(name) != "" || apiKey != "" || mode == "mock" {
 			statuses = append(statuses, status)
 			continue
 		}
 		if kind == apispec.AuthEnvVarKindPerCall && envVar.Required {
-			status.Status = "missing_required"
+			status.Status = AuthEnvVarStatusMissingRequired
 			status.Detail = "required per-call auth env var is not set"
 		} else {
-			status.Status = "missing_info"
+			status.Status = AuthEnvVarStatusMissingInfo
 			status.Detail = "auth env var is not set but does not block verification"
 		}
 		statuses = append(statuses, status)
@@ -349,7 +354,7 @@ func summarizeAuthEnvVars(envVarSpecs []apispec.AuthEnvVar, apiKey, mode string)
 
 func shouldReportAuthEnvVarStatuses(statuses []AuthEnvVarStatus) bool {
 	for _, status := range statuses {
-		if status.Status != "ok" {
+		if status.Status != AuthEnvVarStatusOK {
 			return true
 		}
 	}
@@ -357,9 +362,9 @@ func shouldReportAuthEnvVarStatuses(statuses []AuthEnvVarStatus) bool {
 }
 
 func missingRequiredAuthEnvVars(statuses []AuthEnvVarStatus) []AuthEnvVarStatus {
-	missing := make([]AuthEnvVarStatus, 0)
+	missing := make([]AuthEnvVarStatus, 0, len(statuses))
 	for _, status := range statuses {
-		if status.Status == "missing_required" {
+		if status.Status == AuthEnvVarStatusMissingRequired {
 			missing = append(missing, status)
 		}
 	}

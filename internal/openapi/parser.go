@@ -629,11 +629,11 @@ func authVarsExtension(raw any) ([]spec.AuthEnvVar, error) {
 		default:
 			return nil, fmt.Errorf("item %d kind %q is not recognized", i, kindText)
 		}
-		required, ok := requiredBoolField(m, "required")
+		required, ok := boolExtension(m, "required")
 		if !ok {
 			return nil, fmt.Errorf("item %d missing boolean field %q", i, "required")
 		}
-		sensitive, ok := requiredBoolField(m, "sensitive")
+		sensitive, ok := boolExtension(m, "sensitive")
 		if !ok {
 			return nil, fmt.Errorf("item %d missing boolean field %q", i, "sensitive")
 		}
@@ -669,15 +669,6 @@ func requiredStringField(m map[string]any, name string) (string, bool) {
 		return "", false
 	}
 	return s, true
-}
-
-func requiredBoolField(m map[string]any, name string) (bool, bool) {
-	raw, ok := m[name]
-	if !ok {
-		return false, false
-	}
-	v, ok := raw.(bool)
-	return v, ok
 }
 
 func stringExtension(extensions map[string]any, name string) string {

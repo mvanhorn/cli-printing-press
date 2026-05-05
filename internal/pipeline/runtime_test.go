@@ -939,17 +939,17 @@ func TestSummarizeAuthEnvVarsKindAware(t *testing.T) {
 	}, "", "live")
 
 	require.Len(t, got, 4)
-	assert.Equal(t, "missing_required", got[0].Status)
+	assert.Equal(t, AuthEnvVarStatusMissingRequired, got[0].Status)
 	assert.Equal(t, []AuthEnvVarStatus{got[0]}, missingRequiredAuthEnvVars(got))
-	assert.Equal(t, "missing_info", got[1].Status)
-	assert.Equal(t, "missing_info", got[2].Status)
-	assert.Equal(t, "missing_info", got[3].Status)
+	assert.Equal(t, AuthEnvVarStatusMissingInfo, got[1].Status)
+	assert.Equal(t, AuthEnvVarStatusMissingInfo, got[2].Status)
+	assert.Equal(t, AuthEnvVarStatusMissingInfo, got[3].Status)
 
 	mock := summarizeAuthEnvVars([]apispec.AuthEnvVar{
 		{Name: "REQUIRED_TOKEN", Kind: apispec.AuthEnvVarKindPerCall, Required: true},
 	}, "", "mock")
 	require.Len(t, mock, 1)
-	assert.Equal(t, "ok", mock[0].Status)
+	assert.Equal(t, AuthEnvVarStatusOK, mock[0].Status)
 }
 
 // TestDiscoverCLIEnvVars_SkipsTemplateVarReads guards the verifier integration
