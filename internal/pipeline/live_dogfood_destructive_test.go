@@ -6,119 +6,84 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TestIsDestructiveAtAuthAnnotationPrimary covers the cal-com case from
-// #602: a promoted command with Use="api-keys" but pp:endpoint annotation
-// "api-keys.keys-refresh". Leaf-path matching alone misses this; the
-// classifier MUST read the annotation.
-func TestIsDestructiveAtAuthAnnotationPrimary(t *testing.T) {
+// TestIsDestructiveAtAuth covers the classifier's annotation-primary path,
+// Cobra-leaf-segment fallback, read-only exemption, and negative cases.
+// Cal.com's promoted command (Use="api-keys" with pp:endpoint=
+// "api-keys.keys-refresh") is the motivating example: leaf-only matching
+// misses it; the annotation lookup catches it.
+func TestIsDestructiveAtAuth(t *testing.T) {
 	t.Parallel()
 
-	got := isDestructiveAtAuth(
-		map[string]string{"pp:endpoint": "api-keys.keys-refresh"},
-		[]string{"cal-com-pp-cli", "api-keys"},
-	)
-	assert.True(t, got, "annotation pp:endpoint=api-keys.keys-refresh must classify as destructive-at-auth")
-}
-
-func TestIsDestructiveAtAuthAnnotationRotate(t *testing.T) {
-	t.Parallel()
-
-	got := isDestructiveAtAuth(
-		map[string]string{"pp:endpoint": "tokens.token-rotate"},
-		[]string{"my-cli", "tokens"},
-	)
-	assert.True(t, got)
-}
-
-func TestIsDestructiveAtAuthLeafFallbackNovelCommand(t *testing.T) {
-	t.Parallel()
-
-	// No annotation (novel hand-built command); leaf segment is `refresh`.
-	got := isDestructiveAtAuth(nil, []string{"my-cli", "auth", "refresh"})
-	assert.True(t, got, "annotation absent — leaf-segment match should fire")
-}
-
-func TestIsDestructiveAtAuthLeafFallbackCompoundName(t *testing.T) {
-	t.Parallel()
-
-	// Compound leaf name like cal-com's `oauth-client-force-refresh`. Substring
-	// match (not exact) catches it.
-	got := isDestructiveAtAuth(
-		nil,
-		[]string{"my-cli", "oauth-clients", "users", "oauth-client-force-refresh"},
-	)
-	assert.True(t, got)
-}
-
-func TestIsDestructiveAtAuthReadOnlyExempt(t *testing.T) {
-	t.Parallel()
-
-	// craigslist `catalog refresh` is annotated mcp:read-only=true. It cannot
-	// rotate auth regardless of name.
-	got := isDestructiveAtAuth(
-		map[string]string{
-			"mcp:read-only": "true",
-			"pp:endpoint":   "catalog.catalog-refresh",
+	cases := []struct {
+		name        string
+		annotations map[string]string
+		path        []string
+		want        bool
+	}{
+		{
+			name:        "annotation primary cal-com api-keys-refresh",
+			annotations: map[string]string{"pp:endpoint": "api-keys.keys-refresh"},
+			path:        []string{"cal-com-pp-cli", "api-keys"},
+			want:        true,
 		},
-		[]string{"craigslist-pp-cli", "catalog", "refresh"},
-	)
-	assert.False(t, got, "mcp:read-only=true must exempt regardless of name")
-}
+		{
+			name:        "annotation primary token rotate",
+			annotations: map[string]string{"pp:endpoint": "tokens.token-rotate"},
+			path:        []string{"my-cli", "tokens"},
+			want:        true,
+		},
+		{
+			name:        "annotation case-insensitive",
+			annotations: map[string]string{"pp:endpoint": "API-Keys.Refresh-Key"},
+			path:        []string{"my-cli", "API-Keys"},
+			want:        true,
+		},
+		{
+			name:        "annotation present without destructive term",
+			annotations: map[string]string{"pp:endpoint": "users.list-users"},
+			path:        []string{"my-cli", "users", "refresh-cache"},
+			want:        false,
+		},
+		{
+			name: "leaf fallback novel command",
+			path: []string{"my-cli", "auth", "refresh"},
+			want: true,
+		},
+		{
+			name: "leaf fallback compound name",
+			path: []string{"my-cli", "oauth-clients", "users", "oauth-client-force-refresh"},
+			want: true,
+		},
+		{
+			name: "leaf fallback no match",
+			path: []string{"my-cli", "users", "list"},
+			want: false,
+		},
+		{
+			name: "read-only exempt with pp:endpoint",
+			annotations: map[string]string{
+				"mcp:read-only": "true",
+				"pp:endpoint":   "catalog.catalog-refresh",
+			},
+			path: []string{"craigslist-pp-cli", "catalog", "refresh"},
+			want: false,
+		},
+		{
+			name:        "read-only exempt leaf only",
+			annotations: map[string]string{"mcp:read-only": "true"},
+			path:        []string{"my-cli", "store", "refresh"},
+			want:        false,
+		},
+		{
+			name: "empty inputs",
+			want: false,
+		},
+	}
 
-func TestIsDestructiveAtAuthReadOnlyExemptLeafOnly(t *testing.T) {
-	t.Parallel()
-
-	// Read-only annotation must also short-circuit the leaf-fallback path.
-	got := isDestructiveAtAuth(
-		map[string]string{"mcp:read-only": "true"},
-		[]string{"my-cli", "store", "refresh"},
-	)
-	assert.False(t, got)
-}
-
-func TestIsDestructiveAtAuthCaseInsensitive(t *testing.T) {
-	t.Parallel()
-
-	got := isDestructiveAtAuth(
-		map[string]string{"pp:endpoint": "API-Keys.Refresh-Key"},
-		[]string{"my-cli", "API-Keys"},
-	)
-	assert.True(t, got)
-}
-
-func TestIsDestructiveAtAuthAnnotationPresentNoSignal(t *testing.T) {
-	t.Parallel()
-
-	// Annotation present but doesn't contain destructive terms — and the
-	// leaf-fallback is intentionally suppressed when pp:endpoint is set
-	// (the annotation is authoritative for endpoint-mirror commands).
-	got := isDestructiveAtAuth(
-		map[string]string{"pp:endpoint": "users.list-users"},
-		[]string{"my-cli", "users", "refresh-cache"},
-	)
-	assert.False(t, got, "pp:endpoint without destructive term should not fall back to leaf — annotation is authoritative")
-}
-
-func TestIsDestructiveAtAuthNegativeNoSignal(t *testing.T) {
-	t.Parallel()
-
-	got := isDestructiveAtAuth(
-		map[string]string{"pp:endpoint": "users.list-users"},
-		[]string{"my-cli", "users"},
-	)
-	assert.False(t, got)
-}
-
-func TestIsDestructiveAtAuthNegativeNoAnnotationNoMatch(t *testing.T) {
-	t.Parallel()
-
-	got := isDestructiveAtAuth(nil, []string{"my-cli", "users", "list"})
-	assert.False(t, got)
-}
-
-func TestIsDestructiveAtAuthEmptyInputs(t *testing.T) {
-	t.Parallel()
-
-	assert.False(t, isDestructiveAtAuth(nil, nil))
-	assert.False(t, isDestructiveAtAuth(map[string]string{}, []string{}))
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isDestructiveAtAuth(tt.annotations, tt.path)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

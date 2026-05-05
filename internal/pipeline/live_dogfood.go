@@ -32,6 +32,11 @@ const (
 	LiveDogfoodTestError LiveDogfoodTestKind = "error_path"
 )
 
+// reasonDestructiveAtAuth is the Skip reason emitted for endpoints whose
+// path or pp:endpoint annotation matches refresh/rotate/revoke. Reused
+// across the matrix builder, the flag help text, and the test fixtures.
+const reasonDestructiveAtAuth = "destructive-at-auth"
+
 type LiveDogfoodOptions struct {
 	CLIDir              string
 	BinaryName          string
@@ -40,8 +45,8 @@ type LiveDogfoodOptions struct {
 	WriteAcceptancePath string
 	AuthEnv             string
 	// AllowDestructive re-enables testing of endpoints classified as
-	// destructive-at-auth (refresh/rotate/revoke/etc.). Default skips them
-	// to prevent runner-credential rotation. See #602.
+	// destructive-at-auth. Default skips them to prevent runner-credential
+	// rotation.
 	AllowDestructive bool
 }
 
@@ -586,16 +591,15 @@ func collectLiveDogfoodCommands(prefix []string, command dogfoodAgentCommand, cm
 func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDogfoodTestResult {
 	commandName := strings.Join(command.Path, " ")
 
-	// Destructive-at-auth short-circuit (#602): commands that rotate or
-	// revoke the runner's bearer would 401-cascade every subsequent test.
-	// finalizeLiveDogfoodReport excludes Skip from MatrixSize, so this is
-	// neutral on the verdict gate. Source of truth: see #602.
+	// Destructive-at-auth short-circuit: commands that rotate or revoke
+	// the runner's bearer would 401-cascade every subsequent test. Skips
+	// don't count toward MatrixSize (see finalizeLiveDogfoodReport).
 	if !ctx.allowDestructive && isDestructiveAtAuth(command.Annotations, command.Path) {
 		return []LiveDogfoodTestResult{
-			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHelp, "destructive-at-auth"),
-			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, "destructive-at-auth"),
-			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, "destructive-at-auth"),
-			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, "destructive-at-auth"),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHelp, reasonDestructiveAtAuth),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, reasonDestructiveAtAuth),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, reasonDestructiveAtAuth),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonDestructiveAtAuth),
 		}
 	}
 
@@ -845,45 +849,25 @@ func skippedLiveDogfoodResult(command string, kind LiveDogfoodTestKind, reason s
 	}
 }
 
-// destructiveAuthTerms are case-insensitive substrings that classify a
-// command as destructive-at-auth. Limited to the three terms #602's body
-// names; extension-by-discovery is the deferred-question hook for new
-// patterns surfaced during live runs.
+// destructiveAuthTerms are case-insensitive substrings classifying a
+// command as destructive-at-auth.
 var destructiveAuthTerms = []string{"refresh", "rotate", "revoke"}
 
 // isDestructiveAtAuth reports whether a command rotates or revokes the
-// bearer the live-dogfood runner is using. Annotation-primary: read
-// pp:endpoint (set by the generator on every endpoint mirror per
-// AGENTS.md "Endpoint mirrors") and substring-match against the
-// destructiveAuthTerms set. Cobra-leaf-segment fallback handles novel
-// hand-built commands that lack the annotation. Read-only commands
-// (mcp:read-only=true) are exempt regardless of name — read-only commands
-// cannot rotate auth. See #602.
+// bearer the live-dogfood runner is using. Reads pp:endpoint
+// (authoritative for endpoint-mirror commands) and falls back to
+// Cobra-leaf-segment matching for novel commands. Read-only commands
+// are exempt regardless of name.
 func isDestructiveAtAuth(annotations map[string]string, commandPath []string) bool {
 	if annotations["mcp:read-only"] == "true" {
 		return false
 	}
 	if endpoint := annotations["pp:endpoint"]; endpoint != "" {
-		lower := strings.ToLower(endpoint)
-		for _, term := range destructiveAuthTerms {
-			if strings.Contains(lower, term) {
-				return true
-			}
-		}
-		// pp:endpoint annotation is present and authoritative — no
-		// leaf-fallback for endpoint-mirror commands. Their pp:endpoint
-		// captures the destructive signal completely.
-		return false
+		return containsAnyOf(strings.ToLower(endpoint), destructiveAuthTerms)
 	}
-	// Annotation absent: novel hand-built command. Substring-match on
-	// each leaf-path segment, lowercase. Catches compound names like
-	// `oauth-client-force-refresh`.
 	for _, seg := range commandPath {
-		lower := strings.ToLower(seg)
-		for _, term := range destructiveAuthTerms {
-			if strings.Contains(lower, term) {
-				return true
-			}
+		if containsAnyOf(strings.ToLower(seg), destructiveAuthTerms) {
+			return true
 		}
 	}
 	return false
