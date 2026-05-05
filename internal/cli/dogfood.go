@@ -22,6 +22,7 @@ func newDogfoodCmd() *cobra.Command {
 	var timeout time.Duration
 	var writeAcceptance string
 	var authEnv string
+	var allowDestructive bool
 
 	cmd := &cobra.Command{
 		Use:   "dogfood",
@@ -40,6 +41,7 @@ func newDogfoodCmd() *cobra.Command {
 					Timeout:             timeout,
 					WriteAcceptancePath: writeAcceptance,
 					AuthEnv:             authEnv,
+					AllowDestructive:    allowDestructive,
 				})
 				if err != nil {
 					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("running live dogfood: %w", err)}
@@ -88,6 +90,7 @@ func newDogfoodCmd() *cobra.Command {
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Timeout for each live dogfood test")
 	cmd.Flags().StringVar(&writeAcceptance, "write-acceptance", "", "Write phase5-acceptance.json to this path when live dogfood passes")
 	cmd.Flags().StringVar(&authEnv, "auth-env", "", "Environment variable that proves an API credential was available for the acceptance marker")
+	cmd.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "Re-enable testing of endpoints classified as destructive-at-auth (path/annotation matches refresh/rotate/revoke). Default skips them to prevent runner-credential rotation.")
 	_ = cmd.MarkFlagRequired("dir")
 	return cmd
 }

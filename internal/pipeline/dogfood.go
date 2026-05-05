@@ -143,6 +143,7 @@ type dogfoodAgentContext struct {
 
 type dogfoodAgentCommand struct {
 	Name        string                `json:"name"`
+	Annotations map[string]string     `json:"annotations,omitempty"`
 	Subcommands []dogfoodAgentCommand `json:"subcommands,omitempty"`
 }
 

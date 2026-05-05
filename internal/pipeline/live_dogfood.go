@@ -39,6 +39,10 @@ type LiveDogfoodOptions struct {
 	Timeout             time.Duration
 	WriteAcceptancePath string
 	AuthEnv             string
+	// AllowDestructive re-enables testing of endpoints classified as
+	// destructive-at-auth (refresh/rotate/revoke/etc.). Default skips them
+	// to prevent runner-credential rotation. See #602.
+	AllowDestructive bool
 }
 
 type LiveDogfoodReport struct {
@@ -66,8 +70,9 @@ type LiveDogfoodTestResult struct {
 }
 
 type liveDogfoodCommand struct {
-	Path []string
-	Help string
+	Path        []string
+	Help        string
+	Annotations map[string]string
 }
 
 type liveDogfoodRun struct {
@@ -116,11 +121,12 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	}
 
 	ctx := resolveCtx{
-		binaryPath: binaryPath,
-		cliDir:     opts.CLIDir,
-		siblings:   buildSiblingMap(commands),
-		cache:      newCompanionCache(),
-		timeout:    timeout,
+		binaryPath:       binaryPath,
+		cliDir:           opts.CLIDir,
+		siblings:         buildSiblingMap(commands),
+		cache:            newCompanionCache(),
+		timeout:          timeout,
+		allowDestructive: opts.AllowDestructive,
 	}
 
 	for _, command := range commands {
@@ -163,18 +169,13 @@ func discoverLiveDogfoodCommands(binaryPath string) ([]liveDogfoodCommand, error
 		return nil, fmt.Errorf("parsing agent-context: %w", err)
 	}
 
-	var paths [][]string
+	var commands []liveDogfoodCommand
 	for _, command := range ctx.Commands {
-		collectLiveDogfoodCommandPaths(nil, command, &paths)
+		collectLiveDogfoodCommands(nil, command, &commands)
 	}
-	sort.Slice(paths, func(i, j int) bool {
-		return strings.Join(paths[i], " ") < strings.Join(paths[j], " ")
+	sort.Slice(commands, func(i, j int) bool {
+		return strings.Join(commands[i].Path, " ") < strings.Join(commands[j].Path, " ")
 	})
-
-	commands := make([]liveDogfoodCommand, 0, len(paths))
-	for _, path := range paths {
-		commands = append(commands, liveDogfoodCommand{Path: path})
-	}
 	return commands, nil
 }
 
@@ -235,11 +236,12 @@ type companionCache struct {
 // resolveCtx threads run-scoped state into the chained companion walk so
 // individual helpers don't need to take the same five parameters.
 type resolveCtx struct {
-	binaryPath string
-	cliDir     string
-	siblings   map[string][]liveDogfoodCommand
-	cache      *companionCache
-	timeout    time.Duration
+	binaryPath       string
+	cliDir           string
+	siblings         map[string][]liveDogfoodCommand
+	cache            *companionCache
+	timeout          time.Duration
+	allowDestructive bool
 }
 
 func newCompanionCache() *companionCache {
@@ -566,23 +568,36 @@ func idValueAsString(v any) (string, bool) {
 	}
 }
 
-func collectLiveDogfoodCommandPaths(prefix []string, command dogfoodAgentCommand, paths *[][]string) {
+func collectLiveDogfoodCommands(prefix []string, command dogfoodAgentCommand, cmds *[]liveDogfoodCommand) {
 	if command.Name == "" || liveDogfoodFrameworkSkip[command.Name] {
 		return
 	}
 
 	next := append(append([]string{}, prefix...), command.Name)
 	if len(command.Subcommands) == 0 {
-		*paths = append(*paths, next)
+		*cmds = append(*cmds, liveDogfoodCommand{Path: next, Annotations: command.Annotations})
 		return
 	}
 	for _, sub := range command.Subcommands {
-		collectLiveDogfoodCommandPaths(next, sub, paths)
+		collectLiveDogfoodCommands(next, sub, cmds)
 	}
 }
 
 func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDogfoodTestResult {
 	commandName := strings.Join(command.Path, " ")
+
+	// Destructive-at-auth short-circuit (#602): commands that rotate or
+	// revoke the runner's bearer would 401-cascade every subsequent test.
+	// finalizeLiveDogfoodReport excludes Skip from MatrixSize, so this is
+	// neutral on the verdict gate. Source of truth: see #602.
+	if !ctx.allowDestructive && isDestructiveAtAuth(command.Annotations, command.Path) {
+		return []LiveDogfoodTestResult{
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHelp, "destructive-at-auth"),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, "destructive-at-auth"),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, "destructive-at-auth"),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, "destructive-at-auth"),
+		}
+	}
 
 	helpArgs := append(append([]string{}, command.Path...), "--help")
 	helpRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, helpArgs, ctx.timeout)
@@ -828,6 +843,50 @@ func skippedLiveDogfoodResult(command string, kind LiveDogfoodTestKind, reason s
 		Status:  LiveDogfoodStatusSkip,
 		Reason:  reason,
 	}
+}
+
+// destructiveAuthTerms are case-insensitive substrings that classify a
+// command as destructive-at-auth. Limited to the three terms #602's body
+// names; extension-by-discovery is the deferred-question hook for new
+// patterns surfaced during live runs.
+var destructiveAuthTerms = []string{"refresh", "rotate", "revoke"}
+
+// isDestructiveAtAuth reports whether a command rotates or revokes the
+// bearer the live-dogfood runner is using. Annotation-primary: read
+// pp:endpoint (set by the generator on every endpoint mirror per
+// AGENTS.md "Endpoint mirrors") and substring-match against the
+// destructiveAuthTerms set. Cobra-leaf-segment fallback handles novel
+// hand-built commands that lack the annotation. Read-only commands
+// (mcp:read-only=true) are exempt regardless of name — read-only commands
+// cannot rotate auth. See #602.
+func isDestructiveAtAuth(annotations map[string]string, commandPath []string) bool {
+	if annotations["mcp:read-only"] == "true" {
+		return false
+	}
+	if endpoint := annotations["pp:endpoint"]; endpoint != "" {
+		lower := strings.ToLower(endpoint)
+		for _, term := range destructiveAuthTerms {
+			if strings.Contains(lower, term) {
+				return true
+			}
+		}
+		// pp:endpoint annotation is present and authoritative — no
+		// leaf-fallback for endpoint-mirror commands. Their pp:endpoint
+		// captures the destructive signal completely.
+		return false
+	}
+	// Annotation absent: novel hand-built command. Substring-match on
+	// each leaf-path segment, lowercase. Catches compound names like
+	// `oauth-client-force-refresh`.
+	for _, seg := range commandPath {
+		lower := strings.ToLower(seg)
+		for _, term := range destructiveAuthTerms {
+			if strings.Contains(lower, term) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func liveDogfoodHappyArgs(command liveDogfoodCommand) ([]string, bool) {
