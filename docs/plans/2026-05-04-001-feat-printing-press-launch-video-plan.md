@@ -1,7 +1,7 @@
 ---
 title: "feat: Killer 45-second launch video for The Printing Press (Remotion + HTML-in-canvas)"
 type: feat
-status: active
+status: completed
 date: 2026-05-04
 ---
 
