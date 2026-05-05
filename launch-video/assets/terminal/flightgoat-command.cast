@@ -1,0 +1,10 @@
+{"version": 2, "width": 120, "height": 24, "timestamp": 1714838400, "env": {"SHELL": "/bin/zsh", "TERM": "xterm-256color"}, "title": "flight-goat sea-jfk Dec 24"}
+[0.0, "o", "$ "]
+[0.05, "o", "flight-goat sea-jfk --pax 4 --depart 2026-12-24 --return 2027-01-01\r\n"]
+[0.4, "o", "# SEA -> JFK  4 pax  Dec 24 - Jan 1\r\n"]
+[0.6, "o", "  $612  AS 12  6h 02m  nonstop  [kayak]\r\n"]
+[0.8, "o", "  $619  DL  72  6h 11m  nonstop  [google]\r\n"]
+[1.0, "o", "  $635  B6 824  6h 18m  nonstop  [kayak]\r\n"]
+[1.2, "o", "  $681  UA 462  6h 04m  nonstop  [google]\r\n"]
+[1.4, "o", "# 2 sources, 1 query\r\n"]
+[1.6, "o", "$ "]
