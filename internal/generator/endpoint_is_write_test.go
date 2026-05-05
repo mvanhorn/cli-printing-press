@@ -331,6 +331,41 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 	}
 }
 
+func TestPromotedCommandSubstitutesFlagPathParams(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("promoted-path-param")
+	apiSpec.Resources = map[string]spec.Resource{
+		"followers": {
+			Description: "Followers",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/users/{userId}/followers",
+					Description: "List followers",
+					Params: []spec.Param{
+						{Name: "userId", Type: "string", PathParam: true, Default: "me", Description: "User ID"},
+						{Name: "limit", Type: "int", Description: "Page size"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "promoted-path-param-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	src := readPromotedCommandFile(t, outputDir)
+	assert.Contains(t, src, `path = replacePathParam(path, "userId", fmt.Sprintf("%v", flagUserId))`,
+		"promoted command must substitute flag-backed path params before making the request")
+	assert.Contains(t, src, `params["limit"] = fmt.Sprintf("%v", flagLimit)`,
+		"ordinary non-positional flags still belong in query params")
+	assert.NotContains(t, src, `params["userId"]`,
+		"path params must not also be sent as query params")
+	assert.NotContains(t, src, `"userId": fmt.Sprintf("%v", flagUserID)`,
+		"path params must not be passed to paginated query maps")
+}
+
 // readPromotedCommandFile finds the single promoted_*.go file the generator
 // emits for a fixture spec with one resource. Naming varies (resource name
 // vs. kebabed endpoint name vs. camelCase), so the lookup glob-matches.

@@ -19,6 +19,11 @@ import (
 	"fmt"
 {{- if .HasStore}}
 	"io"
+{{- else if .BearerRefresh.Enabled}}
+	"io"
+{{- end}}
+{{- if .BearerRefresh.Enabled}}
+	"net/http"
 {{- end}}
 {{- if or .Auth.EnvVars .HasStore .Auth.RequiresBrowserSession .HasTierRouting}}
 	"os"
@@ -29,8 +34,13 @@ import (
 {{- if .Auth.RequiresBrowserSession}}
 	"path/filepath"
 {{- end}}
+{{- if .BearerRefresh.Enabled}}
+	"regexp"
+{{- end}}
 	"strings"
 {{- if .HasStore}}
+	"time"
+{{- else if .BearerRefresh.Enabled}}
 	"time"
 {{- end}}
 
@@ -88,6 +98,11 @@ func looksLikeDoctorInterstitial(body []byte) string {
 
 func newDoctorCmd(flags *rootFlags) *cobra.Command {
 	var failOn string
+{{- if .BearerRefresh.Enabled}}
+	var refreshBearer bool
+	var refreshBearerBundleURL string
+	var refreshBearerPattern string
+{{- end}}
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check CLI health",
@@ -106,6 +121,14 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				report["config_path"] = cfg.Path
 				report["base_url"] = cfg.BaseURL
 			}
+{{- if .BearerRefresh.Enabled}}
+			if refreshBearer {
+				if cfg == nil {
+					return configErr(fmt.Errorf("config unavailable"))
+				}
+				return runBearerRefresh(cmd, cfg, refreshBearerBundleURL, refreshBearerPattern, flags)
+			}
+{{- end}}
 
 			// Check auth
 {{- if or (eq .Auth.Type "") (eq .Auth.Type "none")}}
@@ -422,8 +445,111 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&failOn, "fail-on", "", "Exit non-zero when a health level is reached: stale, error. Default is never.")
+{{- if .BearerRefresh.Enabled}}
+	cmd.Flags().BoolVar(&refreshBearer, "refresh-bearer", false, "Fetch and store the current public bearer token")
+	cmd.Flags().StringVar(&refreshBearerBundleURL, "bearer-bundle-url", {{printf "%q" .BearerRefresh.BundleURL}}, "Override the browser bundle URL used by --refresh-bearer")
+	cmd.Flags().StringVar(&refreshBearerPattern, "bearer-pattern", {{printf "%q" .BearerRefresh.Pattern}}, "Override the regexp used by --refresh-bearer")
+{{- end}}
 	return cmd
 }
+
+{{- if .BearerRefresh.Enabled}}
+func newRefreshBearerCmd(flags *rootFlags) *cobra.Command {
+	bundleURL := {{printf "%q" .BearerRefresh.BundleURL}}
+	pattern := {{printf "%q" .BearerRefresh.Pattern}}
+	cmd := &cobra.Command{
+		Use:   "refresh-bearer",
+		Short: "Fetch and store the current public bearer token",
+		Args:  cobra.NoArgs,
+		Example: `  {{.Name}}-pp-cli refresh-bearer
+  {{.Name}}-pp-cli refresh-bearer --json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(flags.configPath)
+			if err != nil {
+				return configErr(err)
+			}
+			return runBearerRefresh(cmd, cfg, bundleURL, pattern, flags)
+		},
+	}
+	cmd.Flags().StringVar(&bundleURL, "bearer-bundle-url", bundleURL, "Override the browser bundle URL used to refresh the bearer token")
+	cmd.Flags().StringVar(&pattern, "bearer-pattern", pattern, "Override the regexp used to refresh the bearer token")
+	return cmd
+}
+
+func runBearerRefresh(cmd *cobra.Command, cfg *config.Config, bundleURL, pattern string, flags *rootFlags) error {
+	if bundleURL == "" {
+		return configErr(fmt.Errorf("bearer refresh bundle URL is not configured"))
+	}
+	if pattern == "" {
+		return configErr(fmt.Errorf("bearer refresh pattern is not configured"))
+	}
+	req, err := http.NewRequestWithContext(cmd.Context(), http.MethodGet, bundleURL, nil)
+	if err != nil {
+		return configErr(fmt.Errorf("preparing bearer refresh request: %w", err))
+	}
+	req.Header.Set("User-Agent", "{{.Name}}-pp-cli")
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return apiErr(fmt.Errorf("fetching bearer bundle: %w", err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return apiErr(fmt.Errorf("fetching bearer bundle: HTTP %d", resp.StatusCode))
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil {
+		return apiErr(fmt.Errorf("reading bearer bundle: %w", err))
+	}
+	token, err := extractBearerToken(body, pattern)
+	if err != nil {
+		return apiErr(err)
+	}
+	if err := cfg.SaveBearerToken(token, time.Now().UTC()); err != nil {
+		return configErr(fmt.Errorf("saving bearer token: %w", err))
+	}
+
+	out := map[string]any{
+		"refreshed":   true,
+		"config_path": cfg.Path,
+		"source":      bundleURL,
+	}
+	if flags.asJSON {
+		return printJSONFiltered(cmd.OutOrStdout(), out, flags)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Bearer token refreshed and saved to %s\n", cfg.Path)
+	return nil
+}
+
+func extractBearerToken(body []byte, pattern string) (string, error) {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return "", fmt.Errorf("bearer refresh pattern is not a valid regexp: %w", err)
+	}
+	matches := re.FindSubmatch(body)
+	if len(matches) == 0 {
+		return "", fmt.Errorf("bearer token not found in bundle")
+	}
+	token := ""
+	for _, match := range matches[1:] {
+		if len(match) > 0 {
+			token = string(match)
+			break
+		}
+	}
+	if token == "" {
+		token = string(matches[0])
+	}
+	token = strings.Trim(token, " \t\r\n\"'`")
+	if token == "" {
+		return "", fmt.Errorf("bearer token match was empty")
+	}
+	return token, nil
+}
+
+{{- end}}
 
 {{- if .Auth.RequiresBrowserSession}}
 type doctorBrowserSessionProof struct {

@@ -249,6 +249,9 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 {{- end}}
 {{- end}}
 	rootCmd.AddCommand(newDoctorCmd(flags))
+{{- if .BearerRefresh.Enabled}}
+	rootCmd.AddCommand(newRefreshBearerCmd(flags))
+{{- end}}
 {{- if .HasAuthCommand}}
 	rootCmd.AddCommand(newAuthCmd(flags))
 {{- end}}

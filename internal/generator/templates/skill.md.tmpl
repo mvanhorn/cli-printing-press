@@ -186,6 +186,15 @@ Store your access token:
 ```bash
 {{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE
 ```
+{{- if .BearerRefresh.Enabled}}
+
+If authenticated commands start returning token errors after previously working, refresh the public client bearer token:
+
+```bash
+{{.Name}}-pp-cli doctor --refresh-bearer
+{{.Name}}-pp-cli refresh-bearer
+```
+{{- end}}
 {{- if .Auth.EnvVars}}
 
 Or set `{{index .Auth.EnvVars 0}}` as an environment variable.

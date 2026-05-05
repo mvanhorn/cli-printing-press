@@ -109,6 +109,11 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- end}}
+{{- range .Endpoint.Params}}
+{{- if and .PathParam (not .Positional)}}
+			path = replacePathParam(path, "{{.Name}}", fmt.Sprintf("%v", flag{{camel (paramIdent .)}}))
+{{- end}}
+{{- end}}
 
 {{- if .Endpoint.UsesHTMLResponse}}
 			htmlRequestParams := map[string]string{}
@@ -116,7 +121,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 			htmlRequestParams["{{.Name}}"] = args[{{$i}}]
 {{- end}}
-{{- if not .Positional}}
+{{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
 				htmlRequestParams["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
 			}
@@ -131,7 +136,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{.Name}}": args[{{$i}}],
 {{- end}}
-{{- if not .Positional}}
+{{- if and (not .Positional) (not .PathParam)}}
 				"{{.Name}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
@@ -142,7 +147,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{.Name}}": args[{{$i}}],
 {{- end}}
-{{- if not .Positional}}
+{{- if and (not .Positional) (not .PathParam)}}
 				"{{.Name}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
@@ -155,7 +160,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 			params["{{.Name}}"] = args[{{$i}}]
 {{- end}}
-{{- if not .Positional}}
+{{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
 				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
 			}

@@ -543,8 +543,10 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 			}
 			positionalCount := 0
 			for _, p := range e.Params {
-				if p.Positional {
+				if p.Positional || p.PathParam {
 					flags.HasPathParams = true
+				}
+				if p.Positional {
 					positionalCount++
 				}
 			}
@@ -562,8 +564,10 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				}
 				positionalCount := 0
 				for _, p := range e.Params {
-					if p.Positional {
+					if p.Positional || p.PathParam {
 						flags.HasPathParams = true
+					}
+					if p.Positional {
 						positionalCount++
 					}
 				}
@@ -3136,18 +3140,19 @@ type PromotedCommand struct {
 // builtinCommands lists command names that must not be used for promoted commands
 // because they collide with the CLI's own built-in commands.
 var builtinCommands = map[string]bool{
-	"version":    true,
-	"help":       true,
-	"doctor":     true,
-	"auth":       true,
-	"sync":       true,
-	"search":     true,
-	"export":     true,
-	"import":     true,
-	"completion": true,
-	"workflow":   true,
-	"tail":       true,
-	"analytics":  true,
+	"version":        true,
+	"help":           true,
+	"doctor":         true,
+	"auth":           true,
+	"sync":           true,
+	"search":         true,
+	"export":         true,
+	"import":         true,
+	"completion":     true,
+	"refresh-bearer": true,
+	"workflow":       true,
+	"tail":           true,
+	"analytics":      true,
 }
 
 // buildPromotedCommands scans spec resources and returns safe top-level shortcuts.

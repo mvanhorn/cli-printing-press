@@ -133,6 +133,29 @@ func TestValidateEntry(t *testing.T) {
 			},
 			wantErr: "http_transport must be one of",
 		},
+		{
+			name: "bearer refresh missing bundle URL",
+			mutate: func(e *Entry) {
+				e.BearerRefresh.Pattern = `AAAA[^"]+`
+			},
+			wantErr: "bearer_refresh.bundle_url is required",
+		},
+		{
+			name: "bearer refresh non https bundle URL",
+			mutate: func(e *Entry) {
+				e.BearerRefresh.BundleURL = "http://example.com/main.js"
+				e.BearerRefresh.Pattern = `AAAA[^"]+`
+			},
+			wantErr: `bearer_refresh.bundle_url must start with "https://"`,
+		},
+		{
+			name: "bearer refresh invalid pattern",
+			mutate: func(e *Entry) {
+				e.BearerRefresh.BundleURL = "https://example.com/main.js"
+				e.BearerRefresh.Pattern = `[`
+			},
+			wantErr: "bearer_refresh.pattern is not a valid regexp",
+		},
 	}
 
 	for _, tt := range tests {
@@ -269,6 +292,24 @@ func TestOptionalFieldsOmittedValid(t *testing.T) {
 	assert.Nil(t, entry.AuthRequired)
 	assert.Empty(t, entry.ClientPattern)
 	assert.Empty(t, entry.HTTPTransport)
+	assert.Empty(t, entry.BearerRefresh.BundleURL)
+}
+
+func TestBearerRefreshValid(t *testing.T) {
+	entry := Entry{
+		Name:        "browser-api",
+		DisplayName: "Browser API",
+		Description: "A browser-facing API with a rotating public bearer",
+		Category:    "social-and-messaging",
+		SpecURL:     "https://example.com/openapi.yaml",
+		SpecFormat:  "yaml",
+		Tier:        "community",
+		BearerRefresh: BearerRefresh{
+			BundleURL: "https://example.com/main.js",
+			Pattern:   `"(AAAAAAAA[^"]+)"`,
+		},
+	}
+	require.NoError(t, entry.Validate())
 }
 
 func TestWrapperOnlyEntryValid(t *testing.T) {

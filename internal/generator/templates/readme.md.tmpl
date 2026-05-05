@@ -97,6 +97,15 @@ Get your access token from your API provider's developer portal, then store it:
 ```bash
 {{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE
 ```
+{{- if .BearerRefresh.Enabled}}
+
+If commands start returning auth errors after working for a while, refresh the public client bearer token from the live web bundle:
+
+```bash
+{{.Name}}-pp-cli doctor --refresh-bearer
+{{.Name}}-pp-cli refresh-bearer
+```
+{{- end}}
 {{- if .Auth.EnvVars}}
 
 Or set it via environment variable:
@@ -439,6 +448,9 @@ Environment variables:
 {{- if .HasAuth}}
 **Authentication errors (exit code 4)**
 - Run `{{.Name}}-pp-cli doctor` to check credentials
+{{- if .BearerRefresh.Enabled}}
+- Run `{{.Name}}-pp-cli refresh-bearer` if a long-working public bearer token may have rotated
+{{- end}}
 {{- if .Auth.EnvVars}}
 - Verify the environment variable is set: `echo ${{index .Auth.EnvVars 0}}`
 {{- end}}

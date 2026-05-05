@@ -90,6 +90,15 @@ type WrapperLibrary struct {
 	Notes           string `yaml:"notes,omitempty"`
 }
 
+type BearerRefresh struct {
+	BundleURL string `yaml:"bundle_url,omitempty"`
+	Pattern   string `yaml:"pattern,omitempty"`
+}
+
+func (b BearerRefresh) enabled() bool {
+	return strings.TrimSpace(b.BundleURL) != "" || strings.TrimSpace(b.Pattern) != ""
+}
+
 var validIntegrationModes = map[string]struct{}{
 	"native":      {},
 	"subprocess":  {},
@@ -124,6 +133,9 @@ type Entry struct {
 	// ProxyRoutes maps path prefixes to backend service names for proxy-envelope APIs.
 	// Only relevant when ClientPattern is "proxy-envelope".
 	ProxyRoutes map[string]string `yaml:"proxy_routes,omitempty"`
+	// BearerRefresh describes how a printed CLI can fetch a rotating public
+	// client bearer token from the source site's browser bundle.
+	BearerRefresh BearerRefresh `yaml:"bearer_refresh,omitempty"`
 	// WrapperLibraries lists reverse-engineered community libraries the generator
 	// can use as implementation backing when no official spec exists. When this
 	// list is non-empty, spec_url and spec_format are optional.
@@ -279,7 +291,29 @@ func (e *Entry) Validate() error {
 			return fmt.Errorf("http_transport must be one of: standard, browser-chrome, browser-chrome-h3")
 		}
 	}
+	if err := validateBearerRefresh(e.BearerRefresh); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func validateBearerRefresh(cfg BearerRefresh) error {
+	if !cfg.enabled() {
+		return nil
+	}
+	if strings.TrimSpace(cfg.BundleURL) == "" {
+		return fmt.Errorf("bearer_refresh.bundle_url is required when bearer_refresh is declared")
+	}
+	if strings.TrimSpace(cfg.Pattern) == "" {
+		return fmt.Errorf("bearer_refresh.pattern is required when bearer_refresh is declared")
+	}
+	if !strings.HasPrefix(cfg.BundleURL, "https://") {
+		return fmt.Errorf(`bearer_refresh.bundle_url must start with "https://"`)
+	}
+	if _, err := regexp.Compile(cfg.Pattern); err != nil {
+		return fmt.Errorf("bearer_refresh.pattern is not a valid regexp: %w", err)
+	}
 	return nil
 }
 

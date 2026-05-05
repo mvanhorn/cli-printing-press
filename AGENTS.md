@@ -114,8 +114,9 @@ When adding or editing `catalog/*.yaml`, the entry must pass `internal/catalog` 
 - `spec_url`, when present, must use HTTPS.
 - `category` must be one of `ai`, `auth`, `cloud`, `commerce`, `developer-tools`, `devices`, `food-and-dining`, `marketing`, `media-and-entertainment`, `monitoring`, `payments`, `productivity`, `project-management`, `sales-and-crm`, `social-and-messaging`, `travel`, or `other`. The validator also accepts `example` as a test-only catch-all; do not use it for real catalog entries.
 - `tier` must be `official` or `community`.
+- `bearer_refresh`, when present, must include `bundle_url` and `pattern`; `bundle_url` must use HTTPS, and `pattern` must compile as a Go regexp.
 - Rebuild the binary after editing; `catalog.FS` is a Go embed.
-See [`docs/CATALOG.md`](docs/CATALOG.md) for validation rationale and the wrapper-only entry shape.
+See [`docs/CATALOG.md`](docs/CATALOG.md) for validation rationale, the wrapper-only entry shape, and bearer-refresh metadata.
 
 ## Testing
 When you change code, check for a `_test.go` file in the same package. If one exists, read it; your change likely requires a test update. If tests fail after your change, investigate whether it is a bug in your code or a stale test; do not just delete the test.

@@ -105,6 +105,7 @@ type APISpec struct {
 	ClientPattern        string              `yaml:"client_pattern,omitempty" json:"client_pattern,omitempty"` // rest (default), proxy-envelope — affects generated HTTP client
 	HTTPTransport        string              `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-chrome, or browser-chrome-h3
 	ProxyRoutes          map[string]string   `yaml:"proxy_routes,omitempty" json:"proxy_routes,omitempty"`     // path prefix → service name for proxy-envelope routing
+	BearerRefresh        BearerRefreshConfig `yaml:"bearer_refresh,omitempty" json:"bearer_refresh,omitzero"`  // live-source metadata for rotating public client bearer tokens
 	WebsiteURL           string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`       // product/company website (not the API base URL)
 	Category             string              `yaml:"category,omitempty" json:"category,omitempty"`             // catalog category (e.g., productivity, developer-tools) — used for library install path
 	Auth                 AuthConfig          `yaml:"auth" json:"auth"`
@@ -391,6 +392,15 @@ func resourceHasHTMLExtractMode(resource Resource, mode string) bool {
 type RequiredHeader struct {
 	Name  string `yaml:"name" json:"name"`
 	Value string `yaml:"value" json:"value"`
+}
+
+type BearerRefreshConfig struct {
+	BundleURL string `yaml:"bundle_url,omitempty" json:"bundle_url,omitempty"`
+	Pattern   string `yaml:"pattern,omitempty" json:"pattern,omitempty"`
+}
+
+func (c BearerRefreshConfig) Enabled() bool {
+	return strings.TrimSpace(c.BundleURL) != "" || strings.TrimSpace(c.Pattern) != ""
 }
 
 type AuthConfig struct {
@@ -888,6 +898,7 @@ var ReservedCLIResourceNames = map[string]struct{}{
 	"html_extract":     {},
 	"import":           {},
 	"profile":          {},
+	"refresh_bearer":   {},
 	"root":             {},
 	"search":           {},
 	"share_commands":   {},
@@ -906,32 +917,33 @@ var ReservedCLIResourceNames = map[string]struct{}{
 // cobra-Use shadowing (kebab-case). Hand-maintained; drift invariants
 // enforced by tests in reserved_drift_test.go.
 var ReservedCobraUseNames = map[string]struct{}{
-	"about":         {},
-	"agent-context": {},
-	"analytics":     {},
-	"api":           {},
-	"auth":          {},
-	"completion":    {},
-	"doctor":        {},
-	"export":        {},
-	"feedback":      {},
-	"health":        {},
-	"help":          {},
-	"import":        {},
-	"jobs":          {},
-	"load":          {},
-	"orphans":       {},
-	"profile":       {},
-	"search":        {},
-	"share":         {},
-	"similar":       {},
-	"sql":           {},
-	"stale":         {},
-	"sync":          {},
-	"tail":          {},
-	"version":       {},
-	"which":         {},
-	"workflow":      {},
+	"about":          {},
+	"agent-context":  {},
+	"analytics":      {},
+	"api":            {},
+	"auth":           {},
+	"completion":     {},
+	"doctor":         {},
+	"export":         {},
+	"feedback":       {},
+	"health":         {},
+	"help":           {},
+	"import":         {},
+	"jobs":           {},
+	"load":           {},
+	"orphans":        {},
+	"profile":        {},
+	"refresh-bearer": {},
+	"search":         {},
+	"share":          {},
+	"similar":        {},
+	"sql":            {},
+	"stale":          {},
+	"sync":           {},
+	"tail":           {},
+	"version":        {},
+	"which":          {},
+	"workflow":       {},
 }
 
 // validateReservedNames rejects specs whose top-level resource names would
@@ -1227,6 +1239,9 @@ func (s *APISpec) Validate() error {
 	if err := validateThrottling(s.Throttling); err != nil {
 		return err
 	}
+	if err := validateBearerRefresh(s); err != nil {
+		return err
+	}
 	if err := validateOAuth2Grant(s.Auth); err != nil {
 		return err
 	}
@@ -1270,6 +1285,35 @@ func (s *APISpec) Validate() error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+func validateBearerRefresh(s *APISpec) error {
+	cfg := s.BearerRefresh
+	if !cfg.Enabled() {
+		return nil
+	}
+	if s.Auth.Type != "bearer_token" {
+		return fmt.Errorf(`bearer_refresh requires auth.type "bearer_token"`)
+	}
+	if s.Auth.OAuth2Grant == OAuth2GrantClientCredentials {
+		return fmt.Errorf("bearer_refresh is incompatible with auth.oauth2_grant %q", OAuth2GrantClientCredentials)
+	}
+	if s.HasTierRouting() {
+		return fmt.Errorf("bearer_refresh is incompatible with tier_routing auth")
+	}
+	if strings.TrimSpace(cfg.BundleURL) == "" {
+		return fmt.Errorf("bearer_refresh.bundle_url is required when bearer_refresh is declared")
+	}
+	if strings.TrimSpace(cfg.Pattern) == "" {
+		return fmt.Errorf("bearer_refresh.pattern is required when bearer_refresh is declared")
+	}
+	if !strings.HasPrefix(cfg.BundleURL, "https://") {
+		return fmt.Errorf(`bearer_refresh.bundle_url must start with "https://"`)
+	}
+	if _, err := regexp.Compile(cfg.Pattern); err != nil {
+		return fmt.Errorf("bearer_refresh.pattern is not a valid regexp: %w", err)
 	}
 	return nil
 }

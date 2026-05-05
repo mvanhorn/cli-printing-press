@@ -97,6 +97,96 @@ func TestThrottleShapeShopifyValue(t *testing.T) {
 		"changing this value requires updating graphql_client.go.tmpl's gate to match")
 }
 
+func TestBearerRefreshValidate(t *testing.T) {
+	base := APISpec{
+		Name:    "browser-api",
+		BaseURL: "https://api.example.com",
+		Auth:    AuthConfig{Type: "bearer_token"},
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+	}
+
+	valid := base
+	valid.BearerRefresh = BearerRefreshConfig{
+		BundleURL: "https://example.com/main.js",
+		Pattern:   `"(AAAAAAAA[^"]+)"`,
+	}
+	require.NoError(t, valid.Validate())
+
+	missingPattern := base
+	missingPattern.BearerRefresh = BearerRefreshConfig{BundleURL: "https://example.com/main.js"}
+	require.ErrorContains(t, missingPattern.Validate(), "bearer_refresh.pattern is required")
+
+	invalidURL := base
+	invalidURL.BearerRefresh = BearerRefreshConfig{BundleURL: "http://example.com/main.js", Pattern: `AAAA`}
+	require.ErrorContains(t, invalidURL.Validate(), `bearer_refresh.bundle_url must start with "https://"`)
+
+	invalidPattern := base
+	invalidPattern.BearerRefresh = BearerRefreshConfig{BundleURL: "https://example.com/main.js", Pattern: `[`}
+	require.ErrorContains(t, invalidPattern.Validate(), "bearer_refresh.pattern is not a valid regexp")
+
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*APISpec)
+		wantErr string
+	}{
+		{
+			name: "api key auth",
+			mutate: func(s *APISpec) {
+				s.Auth.Type = "api_key"
+			},
+			wantErr: `bearer_refresh requires auth.type "bearer_token"`,
+		},
+		{
+			name: "no auth",
+			mutate: func(s *APISpec) {
+				s.Auth.Type = "none"
+			},
+			wantErr: `bearer_refresh requires auth.type "bearer_token"`,
+		},
+		{
+			name: "cookie auth",
+			mutate: func(s *APISpec) {
+				s.Auth.Type = "cookie"
+			},
+			wantErr: `bearer_refresh requires auth.type "bearer_token"`,
+		},
+		{
+			name: "composed auth",
+			mutate: func(s *APISpec) {
+				s.Auth.Type = "composed"
+			},
+			wantErr: `bearer_refresh requires auth.type "bearer_token"`,
+		},
+		{
+			name: "client credentials",
+			mutate: func(s *APISpec) {
+				s.Auth.OAuth2Grant = OAuth2GrantClientCredentials
+			},
+			wantErr: `bearer_refresh is incompatible with auth.oauth2_grant "client_credentials"`,
+		},
+		{
+			name: "tier routing",
+			mutate: func(s *APISpec) {
+				s.TierRouting = TierRoutingConfig{
+					DefaultTier: "free",
+					Tiers: map[string]TierConfig{
+						"free": {Auth: AuthConfig{Type: "none"}},
+					},
+				}
+			},
+			wantErr: "bearer_refresh is incompatible with tier_routing auth",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := valid
+			tc.mutate(&candidate)
+			require.ErrorContains(t, candidate.Validate(), tc.wantErr)
+		})
+	}
+}
+
 // TestThrottlingValidate guards the named-adapter contract: enabling
 // throttling without a Shape (or with an unrecognized one) must fail at
 // spec-load time, not silently emit Shopify-shape parser code for an API
@@ -2205,7 +2295,7 @@ resources:
 		// Pin a baseline. Removing any of these from ReservedCLIResourceNames
 		// without first removing the corresponding generator template is a
 		// regression that will reintroduce silent overwrites.
-		mustReserve := []string{"feedback", "doctor", "auth", "helpers", "agent_context", "profile", "deliver", "which", "sync", "tail", "search", "client", "cache", "export", "import"}
+		mustReserve := []string{"feedback", "doctor", "auth", "helpers", "agent_context", "profile", "deliver", "which", "sync", "tail", "search", "client", "cache", "export", "import", "refresh_bearer"}
 		for _, name := range mustReserve {
 			_, ok := ReservedCLIResourceNames[name]
 			assert.True(t, ok, "%q must remain in ReservedCLIResourceNames — losing it would reintroduce silent template overwrites", name)

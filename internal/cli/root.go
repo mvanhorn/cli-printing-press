@@ -1102,4 +1102,10 @@ func enrichSpecFromCatalog(apiSpec *spec.APISpec) {
 	if entry.HTTPTransport != "" && apiSpec.HTTPTransport == "" {
 		apiSpec.HTTPTransport = entry.HTTPTransport
 	}
+	if entry.BearerRefresh.BundleURL != "" && apiSpec.BearerRefresh.BundleURL == "" {
+		apiSpec.BearerRefresh.BundleURL = entry.BearerRefresh.BundleURL
+	}
+	if entry.BearerRefresh.Pattern != "" && apiSpec.BearerRefresh.Pattern == "" {
+		apiSpec.BearerRefresh.Pattern = entry.BearerRefresh.Pattern
+	}
 }

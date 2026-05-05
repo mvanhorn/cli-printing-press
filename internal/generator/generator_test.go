@@ -567,6 +567,112 @@ func TestGeneratedOutput_READMEBearerTokenMCPSetup(t *testing.T) {
 	assert.NotContains(t, content, "bearer-pp-cli auth login\n\nclaude mcp add bearer bearer-pp-mcp")
 }
 
+func TestGenerateBearerRefreshDoctorCommand(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "refreshbearer",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		BearerRefresh: spec.BearerRefreshConfig{
+			BundleURL: "https://cdn.example.com/main.js",
+			Pattern:   `"(AAAAAAAA[^"]+)"`,
+		},
+		Auth: spec.AuthConfig{
+			Type:    "bearer_token",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"REFRESHBEARER_PUBLIC_BEARER"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/refreshbearer-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/items",
+						Description: "List items",
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	doctorGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	doctor := string(doctorGo)
+	assert.Contains(t, doctor, `"refresh-bearer"`)
+	assert.Contains(t, doctor, `"https://cdn.example.com/main.js"`)
+	assert.Contains(t, doctor, "func newRefreshBearerCmd(")
+	assert.Contains(t, doctor, "func runBearerRefresh(")
+	assert.Contains(t, doctor, "func extractBearerToken(")
+
+	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(rootGo), "rootCmd.AddCommand(newRefreshBearerCmd(flags))",
+		"bearer refresh must be a non-framework command so the Cobra-tree MCP mirror exposes it")
+
+	configGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	configContent := string(configGo)
+	assert.Contains(t, configContent, "BearerTokenRefreshedAt time.Time")
+	assert.Contains(t, configContent, "func (c *Config) SaveBearerToken(")
+	assert.Contains(t, configContent, `c.AuthSource = "bearer_refresh"`)
+	assert.Contains(t, configContent, "c.RefreshbearerPublicBearer = \"\"")
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(readme), "refreshbearer-pp-cli doctor --refresh-bearer")
+	assert.Contains(t, string(readme), "refreshbearer-pp-cli refresh-bearer")
+
+	configTest := `package config
+
+import (
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestBearerRefreshSavedTokenWinsOverEnvBackedField(t *testing.T) {
+	cfg := &Config{AccessToken: "fresh-token", RefreshbearerPublicBearer: "stale-token"}
+	if got := cfg.AuthHeader(); got != "Bearer fresh-token" {
+		t.Fatalf("AuthHeader() = %q, want refreshed token", got)
+	}
+	if cfg.AuthSource != "bearer_refresh" {
+		t.Fatalf("AuthSource = %q, want bearer_refresh", cfg.AuthSource)
+	}
+}
+
+func TestSaveBearerTokenClearsEnvBackedField(t *testing.T) {
+	cfg := &Config{
+		Path:                filepath.Join(t.TempDir(), "config.toml"),
+		RefreshbearerPublicBearer: "stale-token",
+	}
+	if err := cfg.SaveBearerToken("fresh-token", time.Unix(123, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RefreshbearerPublicBearer != "" {
+		t.Fatalf("RefreshbearerPublicBearer = %q, want cleared", cfg.RefreshbearerPublicBearer)
+	}
+	if got := cfg.AuthHeader(); got != "Bearer fresh-token" {
+		t.Fatalf("AuthHeader() = %q, want refreshed token", got)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "bearer_refresh_test.go"), []byte(configTest), 0o644))
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestBearerRefresh")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 func TestGenerateOAuth2ClientCredentialsAuthTemplate(t *testing.T) {
 	t.Parallel()
 
@@ -5002,6 +5108,11 @@ func TestGenerateOperationRoutingPathParamDefault(t *testing.T) {
 	assert.Contains(t, cliContent,
 		`path = replacePathParam(path, "pathQueryId", fmt.Sprintf("%v", flagPathQueryId))`,
 		"generated command must substitute the path template before calling the API")
+
+	helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(helpersGo), "func replacePathParam(path, name, value string) string",
+		"helpers.go must emit replacePathParam for flag-shaped path params")
 
 	mcpGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)

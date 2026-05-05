@@ -25,6 +25,9 @@ type Config struct {
 	AccessToken    string `{{configTag .Config.Format}}:"access_token"`
 	RefreshToken   string `{{configTag .Config.Format}}:"refresh_token"`
 	TokenExpiry    time.Time `{{configTag .Config.Format}}:"token_expiry"`
+{{- if .BearerRefresh.Enabled}}
+	BearerTokenRefreshedAt time.Time `{{configTag .Config.Format}}:"bearer_token_refreshed_at"`
+{{- end}}
 	ClientID       string `{{configTag .Config.Format}}:"client_id"`
 	ClientSecret   string `{{configTag .Config.Format}}:"client_secret"`
 	Path           string `{{configTag .Config.Format}}:"-"`
@@ -112,9 +115,15 @@ func Load(configPath string) (*Config, error) {
 }
 
 func (c *Config) AuthHeader() string {
+{{- if and .BearerRefresh.Enabled (eq .Auth.Type "bearer_token") (ne .Auth.EffectiveOAuth2Grant "client_credentials")}}
+	if c.AuthHeaderVal != "" && c.AccessToken == "" {
+		return c.AuthHeaderVal
+	}
+{{- else}}
 	if c.AuthHeaderVal != "" {
 		return c.AuthHeaderVal
 	}
+{{- end}}
 {{- if eq .Auth.Type "api_key"}}
 	{{- if gt (len .Auth.EnvVars) 0}}
 	token := c.{{resolveEnvVarField (index .Auth.EnvVars 0)}}
@@ -173,7 +182,20 @@ func (c *Config) AuthHeader() string {
 	{{- end}}
 	return ""
 {{- else}}
+{{- if .BearerRefresh.Enabled}}
+	// Refreshed public bearer tokens must win over stale generated env-var
+	// fields so a successful refresh changes subsequent API calls.
+	if c.AccessToken != "" {
+		c.AuthSource = "bearer_refresh"
+		{{- if .Auth.Format}}
+		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
+		{{- else}}
+		return "Bearer " + c.AccessToken
+		{{- end}}
+	}
+{{- else}}
 	// Env-var token wins over file-stored AccessToken (env > config convention).
+{{- end}}
 	{{- if gt (len .Auth.EnvVars) 0}}
 	if c.{{resolveEnvVarField (index .Auth.EnvVars 0)}} != "" {
 		c.AuthSource = "env:{{index .Auth.EnvVars 0}}"
@@ -188,6 +210,7 @@ func (c *Config) AuthHeader() string {
 		{{- end}}
 	}
 	{{- end}}
+{{- if not .BearerRefresh.Enabled}}
 	if c.AccessToken != "" {
 		c.AuthSource = "oauth2"
 		{{- if .Auth.Format}}
@@ -196,6 +219,7 @@ func (c *Config) AuthHeader() string {
 		return "Bearer " + c.AccessToken
 		{{- end}}
 	}
+{{- end}}
 	return ""
 {{- end}}
 {{- else if eq .Auth.Type "cookie"}}
@@ -251,10 +275,30 @@ func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken st
 	return c.save()
 }
 
+{{- if .BearerRefresh.Enabled}}
+func (c *Config) SaveBearerToken(accessToken string, refreshedAt time.Time) error {
+	c.AuthHeaderVal = ""
+	c.AccessToken = accessToken
+	c.RefreshToken = ""
+	c.TokenExpiry = time.Time{}
+{{- range .Auth.EnvVars}}
+{{- if not (envVarIsBuiltinField .)}}
+	c.{{envVarField .}} = ""
+{{- end}}
+{{- end}}
+	c.BearerTokenRefreshedAt = refreshedAt
+	return c.save()
+}
+
+{{- end}}
+
 func (c *Config) ClearTokens() error {
 	c.AccessToken = ""
 	c.RefreshToken = ""
 	c.TokenExpiry = time.Time{}
+{{- if .BearerRefresh.Enabled}}
+	c.BearerTokenRefreshedAt = time.Time{}
+{{- end}}
 	return c.save()
 }
 

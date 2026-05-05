@@ -132,6 +132,9 @@ func newCatalogShowCmd() *cobra.Command {
 			if entry.AuthRequired != nil {
 				fmt.Printf("Auth Required:  %v\n", *entry.AuthRequired)
 			}
+			if entry.BearerRefresh.BundleURL != "" {
+				fmt.Printf("Bearer Refresh: %s\n", entry.BearerRefresh.BundleURL)
+			}
 			if entry.Notes != "" {
 				fmt.Printf("Notes:          %s\n", entry.Notes)
 			}
