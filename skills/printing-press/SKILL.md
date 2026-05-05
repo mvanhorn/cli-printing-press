@@ -1485,6 +1485,47 @@ auth:
     - <API_NAME>_TOKEN  # bearer_token → _TOKEN, api_key → _API_KEY
 ```
 
+For OpenAPI specs that need richer env-var metadata, use `x-auth-vars` on the
+security scheme. See `docs/SPEC-EXTENSIONS.md` for the canonical schema.
+
+```yaml
+components:
+  securitySchemes:
+    slackBot:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-vars:
+        - name: SLACK_BOT_TOKEN
+          kind: per_call
+          required: false
+          sensitive: true
+          description: Set this OR `SLACK_USER_TOKEN` for workspace API calls.
+        - name: SLACK_USER_TOKEN
+          kind: per_call
+          required: false
+          sensitive: true
+          description: Set this OR `SLACK_BOT_TOKEN` for user-scoped API calls.
+```
+
+`kind` controls who supplies the value:
+- `per_call` is the default user-supplied credential used by normal commands.
+- `auth_flow_input` is only needed during `auth login`.
+- `harvested` is populated by the auth login flow into local config.
+
+`sensitive: true` means credential material that must be redacted in logs and
+agent context. Use `sensitive: false` for public configuration, such as an OAuth
+`client_id`.
+
+Encode AND/OR relationships with each var's `required` flag plus `description`
+text. There is no first-class group syntax. For OR cases, mark each alternative
+`required: false` and name the other option in the description. For AND cases,
+mark each required member `required: true`.
+
+The parser auto-classifies cookie schemes as `harvested` and OAuth2
+`client_credentials` inputs as `auth_flow_input`. Add `x-auth-vars` only when
+overriding those defaults or resolving multi-scheme ambiguity.
+
 For OpenAPI specs, add an `info.description` mention if one doesn't exist — the
 parser's `inferDescriptionAuth` will detect it automatically.
 

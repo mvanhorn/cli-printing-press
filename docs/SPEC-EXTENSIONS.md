@@ -254,6 +254,8 @@ Rules:
 - `kind` must be one of `per_call`, `auth_flow_input`, or `harvested`.
 - `required` and `sensitive` must be booleans.
 - `description` is optional and must be a string when present.
+- Group IDs and legacy aliases are not parsed. Express OR relationships in
+  `description` text and by marking each alternative `required: false`.
 - Use either `x-auth-env-vars` for legacy name-only overrides or `x-auth-vars`
   for rich metadata. If both are present, `x-auth-vars` wins.
 - Malformed values are ignored with a warning, and the parser falls back to the
