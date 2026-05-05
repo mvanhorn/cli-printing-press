@@ -462,7 +462,8 @@ func removeStashedDirs(dirs []stashedDir) {
 }
 
 // resolveManuscripts finds the manuscripts directory and most recent run ID
-// for a CLI. Tries CLI name first (new convention), then API name, then fuzzy.
+// for a CLI. Tries API name first (SKILL convention), then CLI name (legacy
+// binary convention), then fuzzy resolve.
 func resolveManuscripts(cliName, apiName string) (msDir string, runID string) {
 	if apiName == "" {
 		apiName = naming.TrimCLISuffix(cliName)
@@ -470,15 +471,15 @@ func resolveManuscripts(cliName, apiName string) (msDir string, runID string) {
 
 	msRoot := pipeline.PublishedManuscriptsRoot()
 
-	// 1. Try CLI name (new convention: manuscripts/<cli-name>/<run>/)
-	cliMsDir := filepath.Join(msRoot, cliName)
-	if rid, err := findMostRecentRun(cliMsDir); err == nil && rid != "" {
-		return cliMsDir, rid
-	}
-	// 2. Try API name (old convention: manuscripts/<api-name>/<run>/)
+	// 1. Try API name (SKILL convention: manuscripts/<api-slug>/<run>/)
 	apiMsDir := filepath.Join(msRoot, apiName)
 	if rid, err := findMostRecentRun(apiMsDir); err == nil && rid != "" {
 		return apiMsDir, rid
+	}
+	// 2. Try CLI name (legacy binary convention: manuscripts/<cli-name>/<run>/)
+	cliMsDir := filepath.Join(msRoot, cliName)
+	if rid, err := findMostRecentRun(cliMsDir); err == nil && rid != "" {
+		return cliMsDir, rid
 	}
 	// 3. Fuzzy resolve (strip suffixes, prefix match)
 	return resolveManuscriptDir(msRoot, apiName)
