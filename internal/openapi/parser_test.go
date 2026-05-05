@@ -1169,6 +1169,328 @@ paths:
 	assert.Equal(t, "Optional FlightAware AeroAPI credential for enriched flight data.", parsed.Auth.Description)
 }
 
+func TestOpenAPIAuthEnvVarsPopulateRichDefaults(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Todoist
+  version: "1.0.0"
+servers:
+  - url: https://api.todoist.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-env-vars:
+        - TODOIST_API_KEY
+paths:
+  /tasks:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"TODOIST_API_KEY"}, parsed.Auth.EnvVars)
+	require.Len(t, parsed.Auth.EnvVarSpecs, 1)
+	assert.Equal(t, spec.AuthEnvVar{
+		Name:      "TODOIST_API_KEY",
+		Kind:      spec.AuthEnvVarKindPerCall,
+		Required:  true,
+		Sensitive: true,
+		Inferred:  true,
+	}, parsed.Auth.EnvVarSpecs[0])
+}
+
+func TestOpenAPIAuthVarsRichOverride(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Todoist
+  version: "1.0.0"
+servers:
+  - url: https://api.todoist.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-vars:
+        - name: TODOIST_API_KEY
+          kind: per_call
+          required: true
+          sensitive: true
+          description: Todoist API key.
+paths:
+  /tasks:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"TODOIST_API_KEY"}, parsed.Auth.EnvVars)
+	require.Len(t, parsed.Auth.EnvVarSpecs, 1)
+	assert.Equal(t, spec.AuthEnvVar{
+		Name:        "TODOIST_API_KEY",
+		Kind:        spec.AuthEnvVarKindPerCall,
+		Required:    true,
+		Sensitive:   true,
+		Description: "Todoist API key.",
+	}, parsed.Auth.EnvVarSpecs[0])
+}
+
+func TestOpenAPIAuthVarsPreservesExplicitSensitiveFalse(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Public Slug API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    AccountSlug:
+      type: apiKey
+      in: header
+      name: X-Account-Slug
+      x-auth-vars:
+        - name: PUBLIC_ACCOUNT_SLUG
+          kind: per_call
+          required: true
+          sensitive: false
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	require.Len(t, parsed.Auth.EnvVarSpecs, 1)
+	assert.False(t, parsed.Auth.EnvVarSpecs[0].Sensitive)
+}
+
+func TestOpenAPIAuthVarsMalformedFallsBackToDefaults(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Todoist
+  version: "1.0.0"
+servers:
+  - url: https://api.todoist.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-vars:
+        - name: TODOIST_API_KEY
+          kind: per_call
+paths:
+  /tasks:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = Parse(yamlSpec)
+	})
+	require.NoError(t, err)
+
+	assert.Contains(t, warnings, "components.securitySchemes.ApiKeyAuth.x-auth-vars is malformed")
+	assert.Equal(t, []string{"TODOIST_API_KEY"}, parsed.Auth.EnvVars)
+	require.Len(t, parsed.Auth.EnvVarSpecs, 1)
+	assert.Equal(t, spec.AuthEnvVarKindPerCall, parsed.Auth.EnvVarSpecs[0].Kind)
+	assert.True(t, parsed.Auth.EnvVarSpecs[0].Required)
+	assert.True(t, parsed.Auth.EnvVarSpecs[0].Sensitive)
+}
+
+func TestOpenAPIAuthClassifiesCookieAndOAuth2ClientCredentialsEnvVars(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want []spec.AuthEnvVar
+	}{
+		{
+			name: "cookie auth is harvested",
+			body: `openapi: "3.0.3"
+info:
+  title: Cookie API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: sessionid
+paths:
+  /me:
+    get:
+      responses:
+        "200":
+          description: OK
+`,
+			want: []spec.AuthEnvVar{{
+				Name:      "COOKIE_COOKIE_AUTH",
+				Kind:      spec.AuthEnvVarKindHarvested,
+				Required:  true,
+				Sensitive: true,
+				Inferred:  true,
+			}},
+		},
+		{
+			name: "oauth2 client credentials are auth flow inputs",
+			body: `openapi: "3.0.3"
+info:
+  title: Auth0Mgmt
+  version: "1.0"
+servers:
+  - url: https://example.auth0.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://example.auth0.com/oauth/token
+          scopes:
+            read:users: Read user profiles
+paths:
+  /api/v2/users:
+    get:
+      security:
+        - OAuth2: []
+      responses:
+        "200":
+          description: OK
+`,
+			want: []spec.AuthEnvVar{
+				{Name: "AUTH0MGMT_CLIENT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: true, Sensitive: false, Inferred: true},
+				{Name: "AUTH0MGMT_CLIENT_SECRET", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: true, Sensitive: true, Inferred: true},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			parsed, err := Parse([]byte(tt.body))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, parsed.Auth.EnvVarSpecs)
+		})
+	}
+}
+
+func TestOpenAPINoSecurityHasNoAuthEnvVars(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Public API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "none", parsed.Auth.Type)
+	assert.Empty(t, parsed.Auth.EnvVars)
+	assert.Empty(t, parsed.Auth.EnvVarSpecs)
+}
+
+func TestOpenAPIAuthVarsCanConsolidateLegacyMultipleEnvVars(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		extension string
+		want      []spec.AuthEnvVar
+	}{
+		{
+			name: "legacy override preserves multiple generated entries",
+			extension: `      x-auth-env-vars:
+        - TRIGGER_SECRET_KEY
+        - TRIGGER_DEV_API_KEY`,
+			want: []spec.AuthEnvVar{
+				{Name: "TRIGGER_SECRET_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
+				{Name: "TRIGGER_DEV_API_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
+			},
+		},
+		{
+			name: "rich override consolidates to declared credential",
+			extension: `      x-auth-env-vars:
+        - TRIGGER_SECRET_KEY
+        - TRIGGER_DEV_API_KEY
+      x-auth-vars:
+        - name: TRIGGER_SECRET_KEY
+          kind: per_call
+          required: true
+          sensitive: true`,
+			want: []spec.AuthEnvVar{
+				{Name: "TRIGGER_SECRET_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			yamlSpec := fmt.Appendf(nil, `openapi: "3.0.3"
+info:
+  title: Trigger Dev
+  version: "1.0.0"
+servers:
+  - url: https://api.trigger.dev
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+%s
+paths:
+  /runs:
+    get:
+      responses:
+        "200":
+          description: OK
+`, tt.extension)
+			parsed, err := Parse(yamlSpec)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, parsed.Auth.EnvVarSpecs)
+		})
+	}
+}
+
 func TestInferAuthHeaderParam(t *testing.T) {
 	t.Parallel()
 

@@ -1,12 +1,35 @@
 package spec
 
 import (
+	"bytes"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stderr = w
+	defer func() {
+		os.Stderr = old
+	}()
+
+	fn()
+	require.NoError(t, w.Close())
+
+	var buf bytes.Buffer
+	_, err = buf.ReadFrom(r)
+	require.NoError(t, err)
+	require.NoError(t, r.Close())
+	return buf.String()
+}
 
 func TestParseStytch(t *testing.T) {
 	s, err := Parse("../../testdata/stytch.yaml")
@@ -85,6 +108,270 @@ func TestValidation(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
+}
+
+func TestAuthEnvVarSpecsNormalizeAndValidate(t *testing.T) {
+	baseSpec := func(auth AuthConfig) APISpec {
+		return APISpec{
+			Name:    "auth-api",
+			BaseURL: "https://api.example.com",
+			Auth:    auth,
+			Resources: map[string]Resource{
+				"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+			},
+		}
+	}
+
+	tests := []struct {
+		name              string
+		auth              AuthConfig
+		wantEnvVars       []string
+		wantEnvVarSpecs   []AuthEnvVar
+		wantWarning       string
+		wantCanonicalName string
+	}{
+		{
+			name: "rich specs back-derive legacy env vars",
+			auth: AuthConfig{
+				Type: "api_key",
+				EnvVarSpecs: []AuthEnvVar{{
+					Name:        "TODOIST_API_KEY",
+					Kind:        AuthEnvVarKindPerCall,
+					Required:    true,
+					Sensitive:   true,
+					Description: "Todoist API key.",
+				}},
+			},
+			wantEnvVars: []string{"TODOIST_API_KEY"},
+			wantEnvVarSpecs: []AuthEnvVar{{
+				Name:        "TODOIST_API_KEY",
+				Kind:        AuthEnvVarKindPerCall,
+				Required:    true,
+				Sensitive:   true,
+				Description: "Todoist API key.",
+			}},
+			wantCanonicalName: "TODOIST_API_KEY",
+		},
+		{
+			name:        "legacy env vars lazily derive rich specs",
+			auth:        AuthConfig{Type: "api_key", EnvVars: []string{"TODOIST_API_KEY"}},
+			wantEnvVars: []string{"TODOIST_API_KEY"},
+			wantEnvVarSpecs: []AuthEnvVar{{
+				Name:      "TODOIST_API_KEY",
+				Kind:      AuthEnvVarKindPerCall,
+				Required:  true,
+				Sensitive: true,
+				Inferred:  true,
+			}},
+			wantCanonicalName: "TODOIST_API_KEY",
+		},
+		{
+			name: "consistent legacy and rich specs keep rich metadata",
+			auth: AuthConfig{
+				Type:    "api_key",
+				EnvVars: []string{"PUBLIC_ACCOUNT_SLUG"},
+				EnvVarSpecs: []AuthEnvVar{{
+					Name:      "PUBLIC_ACCOUNT_SLUG",
+					Kind:      AuthEnvVarKindPerCall,
+					Required:  false,
+					Sensitive: false,
+				}},
+			},
+			wantEnvVars: []string{"PUBLIC_ACCOUNT_SLUG"},
+			wantEnvVarSpecs: []AuthEnvVar{{
+				Name:      "PUBLIC_ACCOUNT_SLUG",
+				Kind:      AuthEnvVarKindPerCall,
+				Required:  false,
+				Sensitive: false,
+			}},
+			wantCanonicalName: "PUBLIC_ACCOUNT_SLUG",
+		},
+		{
+			name: "inconsistent legacy and rich specs warn and rich specs win",
+			auth: AuthConfig{
+				Type:    "api_key",
+				EnvVars: []string{"WRONG_API_KEY"},
+				EnvVarSpecs: []AuthEnvVar{{
+					Name:      "TODOIST_API_KEY",
+					Kind:      AuthEnvVarKindPerCall,
+					Required:  true,
+					Sensitive: true,
+				}},
+			},
+			wantEnvVars: []string{"TODOIST_API_KEY"},
+			wantEnvVarSpecs: []AuthEnvVar{{
+				Name:      "TODOIST_API_KEY",
+				Kind:      AuthEnvVarKindPerCall,
+				Required:  true,
+				Sensitive: true,
+			}},
+			wantWarning:       "warning: auth env_vars disagree with env_var_specs; using env_var_specs",
+			wantCanonicalName: "TODOIST_API_KEY",
+		},
+		{
+			name:              "no-auth empty env vars remains empty",
+			auth:              AuthConfig{Type: "none"},
+			wantCanonicalName: "",
+		},
+		{
+			name: "or case accepts optional described alternatives",
+			auth: AuthConfig{
+				Type: "bearer_token",
+				EnvVarSpecs: []AuthEnvVar{
+					{Name: "SLACK_BOT_TOKEN", Kind: AuthEnvVarKindPerCall, Sensitive: true, Description: "Set this OR SLACK_USER_TOKEN."},
+					{Name: "SLACK_USER_TOKEN", Kind: AuthEnvVarKindPerCall, Sensitive: true, Description: "Set this OR SLACK_BOT_TOKEN."},
+				},
+			},
+			wantEnvVars: []string{"SLACK_BOT_TOKEN", "SLACK_USER_TOKEN"},
+			wantEnvVarSpecs: []AuthEnvVar{
+				{Name: "SLACK_BOT_TOKEN", Kind: AuthEnvVarKindPerCall, Sensitive: true, Description: "Set this OR SLACK_USER_TOKEN."},
+				{Name: "SLACK_USER_TOKEN", Kind: AuthEnvVarKindPerCall, Sensitive: true, Description: "Set this OR SLACK_BOT_TOKEN."},
+			},
+			wantCanonicalName: "SLACK_BOT_TOKEN",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			candidate := baseSpec(tt.auth)
+			stderr := captureStderr(t, func() {
+				require.NoError(t, candidate.Validate())
+			})
+
+			assert.Contains(t, stderr, tt.wantWarning)
+			assert.Equal(t, tt.wantEnvVars, candidate.Auth.EnvVars)
+			assert.Equal(t, tt.wantEnvVarSpecs, candidate.Auth.EnvVarSpecs)
+			if tt.wantCanonicalName == "" {
+				assert.Nil(t, candidate.Auth.CanonicalEnvVar())
+			} else if assert.NotNil(t, candidate.Auth.CanonicalEnvVar()) {
+				assert.Equal(t, tt.wantCanonicalName, candidate.Auth.CanonicalEnvVar().Name)
+			}
+		})
+	}
+}
+
+func TestAuthEnvVarSpecsRejectDuplicateNames(t *testing.T) {
+	s := APISpec{
+		Name:    "auth-api",
+		BaseURL: "https://api.example.com",
+		Auth: AuthConfig{
+			Type: "api_key",
+			EnvVarSpecs: []AuthEnvVar{
+				{Name: "TODOIST_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+				{Name: "TODOIST_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+		},
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+	}
+
+	require.ErrorContains(t, s.Validate(), `auth.env_var_specs contains duplicate name "TODOIST_API_KEY"`)
+}
+
+func TestAuthEnvVarSpecsParseYAML(t *testing.T) {
+	parsed, err := ParseBytes([]byte(`
+name: todoist
+base_url: https://api.todoist.com
+auth:
+  type: api_key
+  header: Authorization
+  env_var_specs:
+    - name: TODOIST_API_KEY
+      kind: per_call
+      required: true
+      sensitive: true
+resources:
+  tasks:
+    endpoints:
+      list:
+        method: GET
+        path: /tasks
+`))
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"TODOIST_API_KEY"}, parsed.Auth.EnvVars)
+	require.Len(t, parsed.Auth.EnvVarSpecs, 1)
+	assert.Equal(t, AuthEnvVarKindPerCall, parsed.Auth.EnvVarSpecs[0].Kind)
+	assert.True(t, parsed.Auth.EnvVarSpecs[0].Required)
+	assert.True(t, parsed.Auth.EnvVarSpecs[0].Sensitive)
+}
+
+func TestCanonicalEnvVarSelection(t *testing.T) {
+	tests := []struct {
+		name string
+		auth AuthConfig
+		want string
+	}{
+		{
+			name: "prefers first required per-call entry over first harvested entry",
+			auth: AuthConfig{EnvVarSpecs: []AuthEnvVar{
+				{Name: "SESSION_COOKIE", Kind: AuthEnvVarKindHarvested, Required: true, Sensitive: true},
+				{Name: "TODOIST_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			}},
+			want: "TODOIST_API_KEY",
+		},
+		{
+			name: "uses first required per-call entry in source order",
+			auth: AuthConfig{EnvVarSpecs: []AuthEnvVar{
+				{Name: "FIRST_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+				{Name: "SECOND_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			}},
+			want: "FIRST_API_KEY",
+		},
+		{
+			name: "falls back to lazy-derived legacy env var",
+			auth: AuthConfig{EnvVars: []string{"LEGACY_API_KEY"}},
+			want: "LEGACY_API_KEY",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.auth.CanonicalEnvVar()
+			require.NotNil(t, got)
+			assert.Equal(t, tt.want, got.Name)
+		})
+	}
+}
+
+func TestTierAuthEnvVarSpecsNormalizeAndValidate(t *testing.T) {
+	s := APISpec{
+		Name:    "tier-api",
+		BaseURL: "https://api.example.com",
+		Auth: AuthConfig{
+			Type: "bearer_token",
+			EnvVarSpecs: []AuthEnvVar{{
+				Name:      "GLOBAL_TOKEN",
+				Kind:      AuthEnvVarKindPerCall,
+				Required:  true,
+				Sensitive: true,
+			}},
+		},
+		TierRouting: TierRoutingConfig{
+			DefaultTier: "paid",
+			Tiers: map[string]TierConfig{
+				"paid": {
+					BaseURL: "https://api.example.com/paid",
+					Auth: AuthConfig{
+						Type:    "api_key",
+						Header:  "x-api-key",
+						EnvVars: []string{"PAID_API_KEY"},
+					},
+				},
+			},
+		},
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items", Tier: "paid"}}},
+		},
+	}
+
+	require.NoError(t, s.Validate())
+	assert.Equal(t, []string{"GLOBAL_TOKEN"}, s.Auth.EnvVars)
+	assert.Equal(t, []string{"PAID_API_KEY"}, s.TierRouting.Tiers["paid"].Auth.EnvVars)
+	require.Len(t, s.TierRouting.Tiers["paid"].Auth.EnvVarSpecs, 1)
+	assert.Equal(t, AuthEnvVarKindPerCall, s.TierRouting.Tiers["paid"].Auth.EnvVarSpecs[0].Kind)
+	assert.True(t, s.TierRouting.Tiers["paid"].Auth.EnvVarSpecs[0].Required)
 }
 
 // TestThrottleShapeShopifyValue pins the wire value of ThrottleShapeShopify

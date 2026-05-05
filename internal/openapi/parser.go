@@ -28,6 +28,7 @@ var (
 
 const (
 	extensionAuthEnvVars     = "x-auth-env-vars"
+	extensionAuthVars        = "x-auth-vars"
 	extensionAuthOptional    = "x-auth-optional"
 	extensionAuthKeyURL      = "x-auth-key-url"
 	extensionAuthTitle       = "x-auth-title"
@@ -482,8 +483,9 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 			auth.EnvVars = []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
 		}
 	}
-
 	applyAuthOverrideExtensions(&auth, scheme.Extensions)
+	applyAuthEnvVarDefaults(&auth, envPrefix)
+	applyAuthVarsRichOverride(&auth, scheme.Extensions, fmt.Sprintf("components.securitySchemes.%s.%s", schemeName, extensionAuthVars))
 	return auth
 }
 
@@ -531,6 +533,151 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 	if description := stringExtension(extensions, extensionAuthDescription); description != "" {
 		auth.Description = description
 	}
+}
+
+func applyAuthEnvVarDefaults(auth *spec.AuthConfig, envPrefix string) {
+	if auth == nil {
+		return
+	}
+	if auth.OAuth2Grant == spec.OAuth2GrantClientCredentials {
+		auth.EnvVarSpecs = []spec.AuthEnvVar{
+			{
+				Name:      envPrefix + "_CLIENT_ID",
+				Kind:      spec.AuthEnvVarKindAuthFlowInput,
+				Required:  true,
+				Sensitive: false,
+				Inferred:  true,
+			},
+			{
+				Name:      envPrefix + "_CLIENT_SECRET",
+				Kind:      spec.AuthEnvVarKindAuthFlowInput,
+				Required:  true,
+				Sensitive: true,
+				Inferred:  true,
+			},
+		}
+		return
+	}
+	if len(auth.EnvVars) == 0 {
+		return
+	}
+	auth.EnvVarSpecs = make([]spec.AuthEnvVar, 0, len(auth.EnvVars))
+	for _, name := range auth.EnvVars {
+		if name = strings.TrimSpace(name); name == "" {
+			continue
+		}
+		envVar := spec.AuthEnvVar{
+			Name:      name,
+			Kind:      spec.AuthEnvVarKindPerCall,
+			Required:  true,
+			Sensitive: true,
+			Inferred:  true,
+		}
+		if auth.Type == "cookie" || strings.EqualFold(auth.In, "cookie") {
+			envVar.Kind = spec.AuthEnvVarKindHarvested
+		}
+		auth.EnvVarSpecs = append(auth.EnvVarSpecs, envVar)
+	}
+}
+
+func applyAuthVarsRichOverride(auth *spec.AuthConfig, extensions map[string]any, path string) {
+	if auth == nil || len(extensions) == 0 {
+		return
+	}
+	raw, ok := extensions[extensionAuthVars]
+	if !ok {
+		return
+	}
+	envVars, err := authVarsExtension(raw)
+	if err != nil {
+		warnf("%s is malformed: %v; falling back to generated auth env vars", path, err)
+		return
+	}
+	if len(envVars) == 0 {
+		warnf("%s is malformed: expected at least one auth var; falling back to generated auth env vars", path)
+		return
+	}
+	auth.EnvVarSpecs = envVars
+	auth.EnvVars = make([]string, 0, len(envVars))
+	for _, envVar := range envVars {
+		auth.EnvVars = append(auth.EnvVars, envVar.Name)
+	}
+}
+
+func authVarsExtension(raw any) ([]spec.AuthEnvVar, error) {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("expected a list of objects")
+	}
+	out := make([]spec.AuthEnvVar, 0, len(items))
+	for i, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("item %d must be an object", i)
+		}
+		name, ok := requiredStringField(m, "name")
+		if !ok {
+			return nil, fmt.Errorf("item %d missing string field %q", i, "name")
+		}
+		kindText, ok := requiredStringField(m, "kind")
+		if !ok {
+			return nil, fmt.Errorf("item %d missing string field %q", i, "kind")
+		}
+		kind := spec.AuthEnvVarKind(kindText)
+		switch kind {
+		case spec.AuthEnvVarKindPerCall, spec.AuthEnvVarKindAuthFlowInput, spec.AuthEnvVarKindHarvested:
+		default:
+			return nil, fmt.Errorf("item %d kind %q is not recognized", i, kindText)
+		}
+		required, ok := requiredBoolField(m, "required")
+		if !ok {
+			return nil, fmt.Errorf("item %d missing boolean field %q", i, "required")
+		}
+		sensitive, ok := requiredBoolField(m, "sensitive")
+		if !ok {
+			return nil, fmt.Errorf("item %d missing boolean field %q", i, "sensitive")
+		}
+		description := ""
+		if rawDescription, ok := m["description"]; ok {
+			if description, ok = rawDescription.(string); !ok {
+				return nil, fmt.Errorf("item %d field %q must be a string", i, "description")
+			}
+			description = strings.TrimSpace(description)
+		}
+		out = append(out, spec.AuthEnvVar{
+			Name:        name,
+			Kind:        kind,
+			Required:    required,
+			Sensitive:   sensitive,
+			Description: description,
+		})
+	}
+	return out, nil
+}
+
+func requiredStringField(m map[string]any, name string) (string, bool) {
+	raw, ok := m[name]
+	if !ok {
+		return "", false
+	}
+	s, ok := raw.(string)
+	if !ok {
+		return "", false
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", false
+	}
+	return s, true
+}
+
+func requiredBoolField(m map[string]any, name string) (bool, bool) {
+	raw, ok := m[name]
+	if !ok {
+		return false, false
+	}
+	v, ok := raw.(bool)
+	return v, ok
 }
 
 func stringExtension(extensions map[string]any, name string) string {

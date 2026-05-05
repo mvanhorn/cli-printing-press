@@ -20,6 +20,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
 | `x-prefix` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
 | `x-auth-env-vars` | `components.securitySchemes.<name>` | `APISpec.Auth.EnvVars` | No |
+| `x-auth-vars` | `components.securitySchemes.<name>` | `APISpec.Auth.EnvVarSpecs` | No |
 | `x-auth-optional` | `components.securitySchemes.<name>` | `APISpec.Auth.Optional` | No |
 | `x-auth-key-url` | `components.securitySchemes.<name>` | `APISpec.Auth.KeyURL` | No |
 | `x-auth-title` | `components.securitySchemes.<name>` | `APISpec.Auth.Title` | No |
@@ -238,6 +239,42 @@ Rules:
 - Empty and non-string list items are ignored.
 - When at least one non-empty item is present, the list replaces the parser's
   generated env var names.
+
+### `x-auth-vars`
+
+Overrides the generated credential environment variable metadata.
+
+Parsed field: `APISpec.Auth.EnvVarSpecs`
+
+Rules:
+- Optional.
+- Must be a list of objects.
+- Each object must include `name`, `kind`, `required`, and `sensitive`.
+- `name` must be a non-empty string.
+- `kind` must be one of `per_call`, `auth_flow_input`, or `harvested`.
+- `required` and `sensitive` must be booleans.
+- `description` is optional and must be a string when present.
+- Use either `x-auth-env-vars` for legacy name-only overrides or `x-auth-vars`
+  for rich metadata. If both are present, `x-auth-vars` wins.
+- Malformed values are ignored with a warning, and the parser falls back to the
+  generated auth env-var defaults.
+
+Example:
+
+```yaml
+components:
+  securitySchemes:
+    apiKey:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-auth-vars:
+        - name: TODOIST_API_KEY
+          kind: per_call
+          required: true
+          sensitive: true
+          description: Todoist API key.
+```
 
 ### `x-auth-optional`
 
