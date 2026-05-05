@@ -82,6 +82,7 @@ When adding a new deterministic CLI behavior or generated artifact contract, exp
 - `docs/CATALOG.md` - Catalog validation rationale and wrapper-only entry shape
 - `docs/ARTIFACTS.md` - Local library, manuscripts, and public-library flow
 - `docs/DOCS.md` - Doc-authoring rules, including pointer-rot prevention
+- `docs/solutions/` - Documented solutions to past problems (bugs, design patterns, best practices, conventions), organized by category subdir with YAML frontmatter (`module`, `tags`, `problem_type`). Relevant when implementing or debugging in documented areas.
 
 ## Naming and Disambiguation
 Use canonical terms in your responses so intent stays unambiguous. In skills and user-facing output (GitHub issues, retro documents, confirmation prompts), use **"the Printing Press"** as the system name, never "the machine." Subsystem names (generator, scorer, skills, binary) are fine alongside it. When user phrasing is ambiguous and the distinction affects what action to take, ask before acting.
