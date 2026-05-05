@@ -53,7 +53,7 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 				"cursor": fmt.Sprintf("%v", flagCursor),
 			}, nil, flagAll, "cursor", "", "")
 			if err != nil {
-				return classifyAPIError(err)
+				return classifyAPIError(err, flags)
 			}
 			// Print provenance to stderr for human-facing output
 			{

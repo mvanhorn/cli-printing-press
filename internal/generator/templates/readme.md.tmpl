@@ -246,7 +246,7 @@ This CLI is designed for AI agent consumption:
 - **Filterable** - `--select id,name` returns only fields you need
 - **Previewable** - `--dry-run` shows the request without sending
 {{- if .HasWriteCommands}}
-- **Retryable** - creates return "already exists" on retry, deletes return "already deleted"
+- **Explicit retries** - add `--idempotent` to create retries{{if .HasDelete}} and `--ignore-missing` to delete retries{{end}} when a no-op success is acceptable
 - **Confirmable** - `--yes` for explicit confirmation of destructive actions
 - **Piped input** - write commands can accept structured input when their help lists `--stdin`
 {{- else}}

@@ -141,7 +141,7 @@ In local mode: searches locally synced data only.`,
 				}
 				// Check if it's a network error for auto-mode fallback
 				if flags.dataSource == "live" || !isNetworkError(getErr) {
-					return classifyAPIError(getErr)
+					return classifyAPIError(getErr, flags)
 				}
 				// auto mode + network error: fall through to local FTS
 				fmt.Fprintf(cmd.ErrOrStderr(), "API unreachable, falling back to local search.\n")

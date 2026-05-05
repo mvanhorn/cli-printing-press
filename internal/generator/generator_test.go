@@ -2,6 +2,7 @@ package generator
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/parser"
 	"go/token"
@@ -2737,6 +2738,197 @@ func TestGeneratedHelpers_ConditionalClassifyDeleteError(t *testing.T) {
 		assert.Contains(t, content, "classifyDeleteError")
 		assert.Contains(t, content, "classifyAPIError")
 	})
+}
+
+func TestGeneratedHelpers_IdempotentNoopsRequireOptIn(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "testidempotent",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"teams": {
+				Description: "Manage teams",
+				Endpoints: map[string]spec.Endpoint{
+					"create": {Method: "POST", Path: "/teams", Description: "Create team"},
+					"delete": {Method: "DELETE", Path: "/teams/{id}", Description: "Delete team"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "testidempotent-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	testPath := filepath.Join(outputDir, "internal", "cli", "idempotent_helpers_test.go")
+	inlineTest := `package cli
+
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"testing"
+)
+
+func captureStdoutStderr(t *testing.T, fn func() error) (string, string, error) {
+	t.Helper()
+	oldOut := os.Stdout
+	oldErr := os.Stderr
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = outW
+	os.Stderr = errW
+	callErr := fn()
+	_ = outW.Close()
+	_ = errW.Close()
+	os.Stdout = oldOut
+	os.Stderr = oldErr
+	out, err := io.ReadAll(outR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errOut, err := io.ReadAll(errR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out), string(errOut), callErr
+}
+
+func requireNoopJSON(t *testing.T, body, reason string) {
+	t.Helper()
+	var got map[string]string
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("noop output must be JSON: %v; body=%q", err, body)
+	}
+	if got["status"] != "noop" || got["reason"] != reason {
+		t.Fatalf("unexpected noop envelope: %#v", got)
+	}
+}
+
+func TestClassifyAPIError409RequiresIdempotent(t *testing.T) {
+	err := classifyAPIError(errors.New("HTTP 409: conflict"), &rootFlags{})
+	if err == nil {
+		t.Fatal("409 without --idempotent must be an error")
+	}
+	if ExitCode(err) != 5 {
+		t.Fatalf("409 should classify as API error, got exit %d", ExitCode(err))
+	}
+
+	stdout, stderr, err := captureStdoutStderr(t, func() error {
+		return classifyAPIError(errors.New("HTTP 409: conflict"), &rootFlags{idempotent: true, asJSON: true})
+	})
+	if err != nil {
+		t.Fatalf("idempotent 409 returned error: %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("json noop should not write stderr, got %q", stderr)
+	}
+	requireNoopJSON(t, stdout, "already_exists")
+}
+
+func TestClassifyDeleteError404RequiresIgnoreMissing(t *testing.T) {
+	err := classifyDeleteError(errors.New("HTTP 404: not found"), &rootFlags{})
+	if err == nil {
+		t.Fatal("404 delete without --ignore-missing must be an error")
+	}
+	if ExitCode(err) != 3 {
+		t.Fatalf("404 should classify as not found, got exit %d", ExitCode(err))
+	}
+
+	stdout, stderr, err := captureStdoutStderr(t, func() error {
+		return classifyDeleteError(errors.New("HTTP 404: not found"), &rootFlags{ignoreMissing: true, asJSON: true})
+	})
+	if err != nil {
+		t.Fatalf("ignore-missing 404 returned error: %v", err)
+	}
+	if stderr != "" {
+		t.Fatalf("json noop should not write stderr, got %q", stderr)
+	}
+	requireNoopJSON(t, stdout, "already_deleted")
+}
+`
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/cli")
+}
+
+func TestGeneratedExport_ValidatesResourceArgument(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "testexport",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/testexport-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"stories": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/stories"}}},
+			"items":   {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/items"}}},
+			"users":   {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/users"}}},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "testexport-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(rootGo), "rootCmd.AddCommand(newExportCmd(flags))")
+
+	exportGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "export.go"))
+	require.NoError(t, err)
+	exportContent := string(exportGo)
+	assert.Contains(t, exportContent, `"items": true`)
+	assert.Contains(t, exportContent, `"stories": true`)
+	assert.Contains(t, exportContent, `"users": true`)
+	assert.Contains(t, exportContent, `unknown resource %q; valid: %s`)
+
+	runGoCommandRequired(t, outputDir, "build", "-o", "./testexport-pp-cli", "./cmd/testexport-pp-cli")
+	cmd := exec.Command(filepath.Join(outputDir, "testexport-pp-cli"), "export", "storiez")
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err)
+	assert.Contains(t, string(out), `unknown resource "storiez"; valid: items, stories, users`)
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		assert.Equal(t, 2, exitErr.ExitCode())
+	} else {
+		t.Fatalf("expected ExitError, got %T", err)
+	}
+}
+
+func TestGeneratedExport_OmittedWithoutBareCollectionEndpoint(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "testnoexport",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/testnoexport-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"stories": {Endpoints: map[string]spec.Endpoint{"get": {Method: "GET", Path: "/api/v1/stories/{id}"}}},
+			"items":   {Endpoints: map[string]spec.Endpoint{"get": {Method: "GET", Path: "/api/v1/items/{id}"}}},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "testnoexport-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Export: true}
+	require.NoError(t, gen.Generate())
+
+	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(rootGo), "newExportCmd")
+
+	_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "export.go"))
+	assert.True(t, errors.Is(err, os.ErrNotExist), "export.go should not be emitted for APIs without bare collection endpoints")
+
+	runGoCommandRequired(t, outputDir, "build", "./cmd/testnoexport-pp-cli")
 }
 
 func TestGeneratedHelpers_ConditionalDataLayerFunctions(t *testing.T) {

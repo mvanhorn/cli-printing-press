@@ -320,11 +320,11 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- if eq .Endpoint.Method "DELETE"}}
 			if err != nil {
-				return classifyDeleteError(err)
+				return classifyDeleteError(err, flags)
 			}
 {{- else}}
 			if err != nil {
-				return classifyAPIError(err)
+				return classifyAPIError(err, flags)
 			}
 {{- end}}
 {{- if endpointNeedsClientLimit .Endpoint}}

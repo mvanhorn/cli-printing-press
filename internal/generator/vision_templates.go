@@ -1,6 +1,10 @@
 package generator
 
 import (
+	"sort"
+	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/vision"
 )
 
@@ -155,6 +159,37 @@ func SelectVisionTemplates(plan *vision.VisionaryPlan) VisionTemplateSet {
 	}
 
 	return set
+}
+
+func constrainVisionTemplates(api *spec.APISpec, set VisionTemplateSet) VisionTemplateSet {
+	if set.Export && len(exportableResources(api)) == 0 {
+		set.Export = false
+	}
+	return set
+}
+
+func exportableResources(api *spec.APISpec) []string {
+	if api == nil {
+		return nil
+	}
+	names := make([]string, 0, len(api.Resources))
+	for name, resource := range api.Resources {
+		if hasBareCollectionEndpoint(name, resource) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func hasBareCollectionEndpoint(resourceName string, resource spec.Resource) bool {
+	wantPath := "/" + resourceName
+	for _, endpoint := range resource.Endpoints {
+		if strings.EqualFold(endpoint.Method, "GET") && endpoint.Path == wantPath {
+			return true
+		}
+	}
+	return false
 }
 
 func (s VisionTemplateSet) HasWorkflows() bool {

@@ -29,7 +29,7 @@ func newItemsEnterpriseCmd(flags *rootFlags) *cobra.Command {
 			params := map[string]string{}
 			data, prov, err := resolveRead(cmd.Context(), c, flags, "items", false, path, params, nil)
 			if err != nil {
-				return classifyAPIError(err)
+				return classifyAPIError(err, flags)
 			}
 			// Print provenance to stderr for human-facing output
 			{

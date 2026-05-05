@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
 
+{{- $exportableResources := exportableResources .}}
 func newExportCmd(flags *rootFlags) *cobra.Command {
 	var format string
 	var outputFile string
@@ -34,6 +36,21 @@ large datasets as it has no memory pressure.`,
   {{.Name}}-pp-cli export <resource> --format jsonl | jq '.id'`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			validResources := map[string]bool{
+{{- range $exportableResources}}
+				{{printf "%q" .}}: true,
+{{- end}}
+			}
+			validResourceList := []string{
+{{- range $exportableResources}}
+				{{printf "%q" .}},
+{{- end}}
+			}
+			resource := args[0]
+			if !validResources[resource] {
+				return usageErr(fmt.Errorf("unknown resource %q; valid: %s", resource, strings.Join(validResourceList, ", ")))
+			}
+
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -42,7 +59,6 @@ large datasets as it has no memory pressure.`,
 				c.NoCache = true
 			}
 
-			resource := args[0]
 			path := "/" + resource
 			if len(args) > 1 {
 				path += "/" + args[1]
@@ -64,7 +80,7 @@ large datasets as it has no memory pressure.`,
 
 			data, err := c.Get(path, nil)
 			if err != nil {
-				return classifyAPIError(err)
+				return classifyAPIError(err, flags)
 			}
 
 			switch format {
