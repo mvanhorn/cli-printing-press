@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"sort"
 	"strings"
 	"unicode"
 
@@ -36,7 +37,18 @@ type IndexDef struct {
 func BuildSchema(s *spec.APISpec) []TableDef {
 	var tables []TableDef
 
-	for name, resource := range s.Resources {
+	// Iterate resources in sorted order so generated output is deterministic
+	// across runs and platforms — Go map iteration is randomized, and the
+	// emitted switch statements in sync.go would otherwise drift between
+	// generations and break golden verification.
+	resourceNames := make([]string, 0, len(s.Resources))
+	for name := range s.Resources {
+		resourceNames = append(resourceNames, name)
+	}
+	sort.Strings(resourceNames)
+
+	for _, name := range resourceNames {
+		resource := s.Resources[name]
 		gravity := computeDataGravity(name, resource)
 		tableName := toSnakeCase(name)
 
@@ -90,7 +102,15 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 
 		tables = append(tables, table)
 
-		for subName, subResource := range resource.SubResources {
+		// Same determinism concern as the outer loop: sub-resources from the
+		// same parent need a stable ordering in generated output.
+		subNames := make([]string, 0, len(resource.SubResources))
+		for sn := range resource.SubResources {
+			subNames = append(subNames, sn)
+		}
+		sort.Strings(subNames)
+		for _, subName := range subNames {
+			subResource := resource.SubResources[subName]
 			subTable := buildSubResourceTable(subName, subResource, tableName)
 			tables = append(tables, subTable)
 		}
