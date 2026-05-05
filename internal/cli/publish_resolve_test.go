@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -126,15 +127,13 @@ func TestResolveManuscriptDir(t *testing.T) {
 	})
 }
 
-// withManuscriptsRoot sets PRINTING_PRESS_HOME to a temp dir and returns the
-// resulting <home>/manuscripts/ path. PublishedManuscriptsRoot() reads PressHome()
-// which honors the env override, so this gives the test deterministic control
-// over what resolveManuscripts sees on disk.
+// withManuscriptsRoot wires a temp dir as PRINTING_PRESS_HOME and returns the
+// manuscripts/ path, giving tests deterministic control over what
+// resolveManuscripts sees on disk.
 func withManuscriptsRoot(t *testing.T) string {
 	t.Helper()
-	pressHome := t.TempDir()
-	t.Setenv("PRINTING_PRESS_HOME", pressHome)
-	msRoot := filepath.Join(pressHome, "manuscripts")
+	t.Setenv("PRINTING_PRESS_HOME", t.TempDir())
+	msRoot := pipeline.PublishedManuscriptsRoot()
 	require.NoError(t, os.MkdirAll(msRoot, 0o755))
 	return msRoot
 }
@@ -148,7 +147,6 @@ func TestManuscriptLookupPriority(t *testing.T) {
 		msRoot := withManuscriptsRoot(t)
 		createRunDir(t, msRoot, "steam-web", "run-api-recent")
 		createRunDir(t, msRoot, "steam-web-pp-cli", "run-cli-old")
-		createRunDir(t, msRoot, "steam", "run-slug")
 
 		dir, runID := resolveManuscripts("steam-web-pp-cli", "steam-web")
 		assert.Equal(t, filepath.Join(msRoot, "steam-web"), dir)
@@ -192,10 +190,7 @@ func TestManuscriptLookupPriority(t *testing.T) {
 	})
 
 	t.Run("F2 regression: cal-com prefers API-slug recent run over stale CLI-name run", func(t *testing.T) {
-		// Mirrors the Cal.com retro scenario (issue #598): SKILL archived
-		// research under manuscripts/cal-com/<recent-run>/ while a stale
-		// run lingered under manuscripts/cal-com-pp-cli/<old-run>/. Pre-fix,
-		// resolveManuscripts returned the stale CLI-name run.
+		// Pre-fix, resolveManuscripts returned the stale CLI-name run (issue #598).
 		msRoot := withManuscriptsRoot(t)
 		createRunDir(t, msRoot, "cal-com", "20260504-205634")
 		createRunDir(t, msRoot, "cal-com-pp-cli", "20260405-183800")
