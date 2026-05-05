@@ -18,3 +18,8 @@ Config.setConcurrency(2);
 
 // Output directory - kept inside the project so render artefacts ship with the project root.
 Config.setOutputLocation("out/");
+
+// Static assets live under assets/ (not the Remotion default public/) so the
+// directory layout matches the launch-video plan. staticFile() in scenes
+// resolves against this directory.
+Config.setPublicDir("assets");
