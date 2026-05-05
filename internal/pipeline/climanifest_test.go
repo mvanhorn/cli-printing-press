@@ -474,6 +474,61 @@ func TestWriteManifestForGenerateNoSpec(t *testing.T) {
 	assert.Empty(t, got.SpecChecksum)
 }
 
+func TestWriteManifestForGenerateStampsRunID(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "runid-test",
+		RunID:     "20260504-190931",
+		OutputDir: dir,
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, "20260504-190931", got.RunID)
+}
+
+func TestWriteManifestForGenerateOmitsEmptyRunID(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "norunid-test",
+		OutputDir: dir,
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+	// run_id has the omitempty tag; empty value must not appear in serialized JSON.
+	assert.NotContains(t, string(data), `"run_id"`)
+}
+
+func TestDeriveRunIDFromResearchDir(t *testing.T) {
+	cases := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"canonical run_id basename", "/tmp/runs/20260504-190931", "20260504-190931"},
+		{"trailing slash", "/tmp/runs/20260504-190931/", "20260504-190931"},
+		{"basename only", "20260101-000000", "20260101-000000"},
+		{"empty input", "", ""},
+		{"non-matching basename", "/tmp/runs/research", ""},
+		{"partial match (date only)", "/tmp/runs/20260504", ""},
+		{"longer suffix", "/tmp/runs/20260504-190931-x", ""},
+		{"wrong shape (T separator)", "/tmp/runs/20260504T190931", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, DeriveRunIDFromResearchDir(tc.input))
+		})
+	}
+}
+
 func TestArchiveRunArtifactsCopiesDiscovery(t *testing.T) {
 	home := setPressTestEnv(t)
 

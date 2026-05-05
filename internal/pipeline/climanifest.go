@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -330,8 +331,30 @@ type GenerateManifestParams struct {
 	DocsURL       string   // --docs URL, if used
 	OutputDir     string
 	Owner         string                 // resolved owner attribution (manifest preserve > copyright parse > git config)
+	RunID         string                 // YYYYMMDD-HHMMSS, derived from --research-dir basename when empty
 	Spec          *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)
 	NovelFeatures []NovelFeatureManifest // transcendence features from research (nil if unavailable)
+}
+
+// runIDPattern matches the canonical pipeline run_id shape: YYYYMMDD-HHMMSS.
+// When an arbitrary path basename happens to match this pattern, treat it as
+// a real run_id; otherwise fall back to empty (and warn at the call site).
+var runIDPattern = regexp.MustCompile(`^\d{8}-\d{6}$`)
+
+// DeriveRunIDFromResearchDir extracts a canonical run_id from a research-dir
+// path, or returns "" when no valid run_id can be derived. The standalone
+// generate command does not load a PipelineState, so it cannot reach
+// state.RunID directly; the basename of --research-dir is the only structured
+// signal available without a state-loading refactor.
+func DeriveRunIDFromResearchDir(researchDir string) string {
+	if researchDir == "" {
+		return ""
+	}
+	base := filepath.Base(researchDir)
+	if runIDPattern.MatchString(base) {
+		return base
+	}
+	return ""
 }
 
 // WriteManifestForGenerate writes a .printing-press.json manifest into the
@@ -344,6 +367,7 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		PrintingPressVersion: version.Version,
 		APIName:              p.APIName,
 		CLIName:              naming.CLI(p.APIName),
+		RunID:                p.RunID,
 		Owner:                p.Owner,
 	}
 

@@ -158,11 +158,16 @@ func newGenerateCmd() *cobra.Command {
 					return err
 				}
 
+				runID := pipeline.DeriveRunIDFromResearchDir(researchDir)
+				if runID == "" {
+					fmt.Fprintln(os.Stderr, "warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it")
+				}
 				if err := pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
 					APIName:       parsed.Name,
 					DocsURL:       docsURL,
 					OutputDir:     absOut,
 					Owner:         parsed.Owner,
+					RunID:         runID,
 					Spec:          parsed,
 					NovelFeatures: novelFeatures,
 				}); err != nil {
@@ -318,12 +323,17 @@ func newGenerateCmd() *cobra.Command {
 				}
 			}
 
+			runID := pipeline.DeriveRunIDFromResearchDir(researchDir)
+			if runID == "" {
+				fmt.Fprintln(os.Stderr, "warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it")
+			}
 			if err := pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
 				APIName:       apiSpec.Name,
 				SpecSrcs:      specFiles,
 				SpecURL:       specURL,
 				OutputDir:     absOut,
 				Owner:         apiSpec.Owner,
+				RunID:         runID,
 				Spec:          apiSpec,
 				NovelFeatures: novelFeatures,
 			}); err != nil {

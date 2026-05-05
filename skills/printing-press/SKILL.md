@@ -406,11 +406,14 @@ Maintain a lightweight state file at `$STATE_FILE` so `/printing-press-score` ca
 ```json
 {
   "api_name": "<api>",
+  "run_id": "$RUN_ID",
   "working_dir": "$CLI_WORK_DIR",
   "output_dir": "$CLI_WORK_DIR",
   "spec_path": "<absolute spec path if known>"
 }
 ```
+
+`run_id` is the same `YYYYMMDD-HHMMSS` value computed earlier as `RUN_ID="$(date +%Y%m%d-%H%M%S)"`. The generator's manifest writer derives the same value from the `--research-dir` basename when generate is invoked through the canonical `$API_RUN_DIR` (whose basename equals `$RUN_ID`); persisting it in `state.json` here keeps `/printing-press-score` and any future state-loading consumer in sync. Without `run_id` in either path, `printing-press dogfood --live --write-acceptance` refuses to write the gate marker.
 
 Do not create a `go.work` file in `$CLI_WORK_DIR`. Generated modules must build and test as standalone modules; a mismatched workspace `go` directive can break Go 1.25+ toolchains and lefthook checks. Editor/gopls workspace noise is cosmetic and must not be traded for broken `go build` or `go test`.
 
