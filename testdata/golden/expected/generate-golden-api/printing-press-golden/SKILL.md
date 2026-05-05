@@ -3,7 +3,15 @@ name: pp-printing-press-golden
 description: "Printing Press CLI for Printing Press Golden. Purpose-built fixture for golden generation coverage."
 argument-hint: "<command> [args] | install cli|mcp"
 allowed-tools: "Read Bash"
-metadata: '{"openclaw":{"requires":{"bins":["printing-press-golden-pp-cli"]},"install":[{"id":"go","kind":"shell","command":"go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden-pp-cli/cmd/printing-press-golden-pp-cli@latest","bins":["printing-press-golden-pp-cli"],"label":"Install via go install"}]}}'
+metadata:
+  openclaw:
+    requires:
+      bins:
+        - printing-press-golden-pp-cli
+    install:
+      - kind: go
+        bins: [printing-press-golden-pp-cli]
+        module: github.com/mvanhorn/printing-press-library/library/other/printing-press-golden-pp-cli/cmd/printing-press-golden-pp-cli
 ---
 
 # Printing Press Golden — Printing Press CLI

@@ -337,6 +337,97 @@ func TestSkillRendersExtraCommands(t *testing.T) {
 		"extra command with multi-arg signature should render verbatim")
 }
 
+// TestSkillFrontmatterMetadataIsClawHubCompliantNestedYAML asserts that the
+// emitted metadata block parses as nested YAML conforming to ClawHub's
+// SkillInstallSpec schema (kind: go, module:, no kind: shell, no command:,
+// no id:, no label:). The shape was verified directly against
+// packages/schema/src/schemas.ts in the openclaw/clawhub repo.
+func TestSkillFrontmatterMetadataIsClawHubCompliantNestedYAML(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("widget")
+	apiSpec.Category = "commerce"
+	outputDir := filepath.Join(t.TempDir(), "widget-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	content := string(skill)
+
+	// Extract frontmatter and parse as YAML.
+	require.True(t, strings.HasPrefix(content, "---\n"))
+	end := strings.Index(content[4:], "\n---\n")
+	require.NotEqual(t, -1, end)
+	body := strings.TrimSuffix(strings.TrimPrefix(content[:4+end+5], "---\n"), "---\n")
+
+	var parsed struct {
+		Metadata struct {
+			Openclaw struct {
+				Requires struct {
+					Bins []string `yaml:"bins"`
+				} `yaml:"requires"`
+				Install []struct {
+					Kind   string   `yaml:"kind"`
+					Bins   []string `yaml:"bins"`
+					Module string   `yaml:"module"`
+					// Fields that MUST NOT appear:
+					Command string `yaml:"command"`
+					ID      string `yaml:"id"`
+					Label   string `yaml:"label"`
+				} `yaml:"install"`
+			} `yaml:"openclaw"`
+		} `yaml:"metadata"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(body), &parsed),
+		"frontmatter must parse as nested YAML; content was:\n%s", body)
+
+	// Schema-compliance assertions.
+	assert.Equal(t, []string{"widget-pp-cli"}, parsed.Metadata.Openclaw.Requires.Bins,
+		"requires.bins should carry the CLI binary name")
+	require.Len(t, parsed.Metadata.Openclaw.Install, 1, "exactly one install entry expected")
+	entry := parsed.Metadata.Openclaw.Install[0]
+	assert.Equal(t, "go", entry.Kind, "kind must be 'go' (ClawHub schema enum: brew|node|go|uv)")
+	assert.Equal(t, []string{"widget-pp-cli"}, entry.Bins)
+	assert.Equal(t,
+		"github.com/mvanhorn/printing-press-library/library/commerce/widget-pp-cli/cmd/widget-pp-cli",
+		entry.Module,
+		"module must be the Go package path with no @latest suffix")
+	assert.Empty(t, entry.Command, "command field must not be emitted (not in ClawHub schema)")
+	assert.Empty(t, entry.ID, "id field must not be emitted (optional, no semantic value here)")
+	assert.Empty(t, entry.Label, "label field must not be emitted (optional, no semantic value here)")
+
+	// Negative assertions on raw text — catch any regression to the old shape.
+	assert.NotContains(t, content, `kind: shell`,
+		"kind: shell is invalid per ClawHub schema; must never appear")
+	assert.NotContains(t, content, `kind: "shell"`,
+		"kind: shell is invalid per ClawHub schema; must never appear")
+	assert.NotContains(t, content, `"command":`,
+		"command field is not in ClawHub schema; must never appear in metadata")
+	assert.NotContains(t, content, `\"openclaw\":`,
+		"metadata must not be a JSON-string blob anymore")
+}
+
+// TestSkillFrontmatterMetadataDefaultsCategoryToOther asserts that when the
+// spec has no Category set, the install module path falls back to 'other'.
+func TestSkillFrontmatterMetadataDefaultsCategoryToOther(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("uncategorized")
+	apiSpec.Category = ""
+	outputDir := filepath.Join(t.TempDir(), "uncategorized-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	content := string(skill)
+
+	assert.Contains(t, content,
+		"module: github.com/mvanhorn/printing-press-library/library/other/uncategorized-pp-cli/cmd/uncategorized-pp-cli",
+		"empty Category should default to 'other' in install module path")
+}
+
 // TestSkillNoExtraCommandsIsBackwardCompatible asserts the template emits
 // no Hand-written commands subsection when ExtraCommands is absent. This
 // preserves the rendering of every existing CLI that has no extra_commands
