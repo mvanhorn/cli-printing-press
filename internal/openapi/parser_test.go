@@ -1096,6 +1096,7 @@ func TestGenericAPIKeySchemeNamesUseAPIKeyEnvVar(t *testing.T) {
 		"ApiKeyAuth",
 		"APIKey",
 		"ApiKeyAuth_v2",
+		"auth",
 	}
 
 	for _, schemeName := range tests {
@@ -1128,6 +1129,105 @@ paths:
 			assert.Equal(t, []string{"FLIGHTGOAT_API_KEY"}, parsed.Auth.EnvVars)
 		})
 	}
+}
+
+func TestSpeakeasyAuthExampleOverridesDerivedEnvVar(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Dub API
+  version: "1.0.0"
+servers:
+  - url: https://api.dub.co
+components:
+  securitySchemes:
+    token:
+      type: http
+      scheme: bearer
+      x-speakeasy-example: DUB_API_KEY
+paths:
+  /links:
+    get:
+      security:
+        - token: []
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Equal(t, []string{"DUB_API_KEY"}, parsed.Auth.EnvVars)
+}
+
+func TestSpeakeasyAuthExampleRemapsInferredFormatPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Discord
+  version: "1.0.0"
+servers:
+  - url: https://discord.com/api
+components:
+  securitySchemes:
+    BotToken:
+      type: apiKey
+      in: header
+      name: Authorization
+      x-speakeasy-example: DISCORD_TOKEN
+paths:
+  /users/@me:
+    get:
+      security:
+        - BotToken: []
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"DISCORD_TOKEN"}, parsed.Auth.EnvVars)
+	assert.Equal(t, "Bot {token}", parsed.Auth.Format)
+}
+
+func TestSpeakeasyAuthExampleDoesNotOverrideExplicitEnvVars(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: OAuth Client
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ClientCredentials:
+      type: oauth2
+      x-auth-env-vars:
+        - OAUTH_CLIENT_ID
+        - OAUTH_CLIENT_SECRET
+      x-speakeasy-example: OAUTH_TOKEN
+      flows:
+        clientCredentials:
+          tokenUrl: https://api.example.com/oauth/token
+          scopes: {}
+paths:
+  /widgets:
+    get:
+      security:
+        - ClientCredentials: []
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"OAUTH_CLIENT_ID", "OAUTH_CLIENT_SECRET"}, parsed.Auth.EnvVars)
 }
 
 func TestOpenAPIAuthOverrideExtensions(t *testing.T) {

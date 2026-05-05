@@ -1485,6 +1485,11 @@ auth:
     - <API_NAME>_TOKEN  # bearer_token → _TOKEN, api_key → _API_KEY
 ```
 
+When research or source metadata names a real env var, use only that canonical
+name in `env_vars`; do not add guessed slug-based aliases. For OpenAPI specs,
+prefer `x-auth-env-vars` on the selected security scheme when the wrapper slug
+differs from the underlying API brand.
+
 For OpenAPI specs, add an `info.description` mention if one doesn't exist — the
 parser's `inferDescriptionAuth` will detect it automatically.
 

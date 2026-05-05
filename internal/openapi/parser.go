@@ -27,17 +27,18 @@ var (
 )
 
 const (
-	extensionAuthEnvVars     = "x-auth-env-vars"
-	extensionAuthOptional    = "x-auth-optional"
-	extensionAuthKeyURL      = "x-auth-key-url"
-	extensionAuthTitle       = "x-auth-title"
-	extensionAuthDescription = "x-auth-description"
-	extensionTierRouting     = "x-tier-routing"
-	extensionTier            = "x-tier"
-	extensionAPIName         = "x-api-name"
-	extensionDisplayName     = "x-display-name"
-	extensionWebsite         = "x-website"
-	extensionProxyRoutes     = "x-proxy-routes"
+	extensionAuthEnvVars      = "x-auth-env-vars"
+	extensionAuthOptional     = "x-auth-optional"
+	extensionAuthKeyURL       = "x-auth-key-url"
+	extensionAuthTitle        = "x-auth-title"
+	extensionAuthDescription  = "x-auth-description"
+	extensionSpeakeasyExample = "x-speakeasy-example"
+	extensionTierRouting      = "x-tier-routing"
+	extensionTier             = "x-tier"
+	extensionAPIName          = "x-api-name"
+	extensionDisplayName      = "x-display-name"
+	extensionWebsite          = "x-website"
+	extensionProxyRoutes      = "x-proxy-routes"
 )
 
 // SetMaxResources overrides the default resource limit. When not called,
@@ -490,7 +491,7 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 func isGenericAPIKeySchemeSuffix(suffix string) bool {
 	normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(suffix)), "_", "")
 	switch normalized {
-	case "", "apikey", "apikeyauth":
+	case "", "auth", "authentication", "apikey", "apikeyauth", "default":
 		return true
 	}
 	for _, prefix := range []string{"apikeyv", "apikeyauthv"} {
@@ -517,7 +518,11 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 		return
 	}
 	if envVars := stringListExtension(extensions, extensionAuthEnvVars); len(envVars) > 0 {
-		auth.EnvVars = envVars
+		applyAuthEnvVars(auth, envVars)
+	} else if len(auth.EnvVars) == 1 {
+		if envVar := envVarExtension(extensions, extensionSpeakeasyExample); envVar != "" {
+			applyAuthEnvVars(auth, []string{envVar})
+		}
 	}
 	if optional, ok := boolExtension(extensions, extensionAuthOptional); ok {
 		auth.Optional = optional
@@ -531,6 +536,60 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 	if description := stringExtension(extensions, extensionAuthDescription); description != "" {
 		auth.Description = description
 	}
+}
+
+func applyAuthEnvVars(auth *spec.AuthConfig, envVars []string) {
+	oldEnvVars := append([]string(nil), auth.EnvVars...)
+	auth.EnvVars = envVars
+	remapAuthFormatForEnvOverride(auth, oldEnvVars, envVars)
+}
+
+func remapAuthFormatForEnvOverride(auth *spec.AuthConfig, oldEnvVars, newEnvVars []string) {
+	if auth.Format == "" || len(oldEnvVars) != 1 || len(newEnvVars) != 1 {
+		return
+	}
+	oldPlaceholder := naming.EnvVarPlaceholder(oldEnvVars[0])
+	newPlaceholder := naming.EnvVarPlaceholder(newEnvVars[0])
+	if oldPlaceholder == "" || newPlaceholder == "" {
+		return
+	}
+	auth.Format = strings.ReplaceAll(auth.Format, "{"+oldPlaceholder+"}", "{"+newPlaceholder+"}")
+	auth.Format = strings.ReplaceAll(auth.Format, "{"+oldEnvVars[0]+"}", "{"+newPlaceholder+"}")
+}
+
+func envVarExtension(extensions map[string]any, name string) string {
+	value, ok := extensions[name]
+	if !ok {
+		return ""
+	}
+	s, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	s = strings.TrimSpace(s)
+	if !isUpperEnvVarName(s) {
+		return ""
+	}
+	return s
+}
+
+func isUpperEnvVarName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if r == '_' || ('A' <= r && r <= 'Z') {
+			continue
+		}
+		if '0' <= r && r <= '9' {
+			if i == 0 {
+				return false
+			}
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func stringExtension(extensions map[string]any, name string) string {
