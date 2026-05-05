@@ -468,7 +468,23 @@ Record the after scores. If verify-skill still has any `severity=error` findings
 Compute the ship recommendation:
 
 - **`ship`**: verify >= 80%, scorecard >= 75, no critical failures, **AND** verify-skill exits 0 (no SKILL/CLI mismatches), **AND** workflow-verify is not `workflow-fail`, **AND** tools-audit shows zero pending findings (every finding fixed or explicitly accepted with rationale). The SKILL/workflow gates are hard requirements: a CLI that ships with a SKILL that lies about it (verify-skill findings) gives agents broken instructions; a CLI whose primary workflow fails verification has not actually shipped.
-- **`ship-with-gaps`**: verify >= 65%, scorecard >= 65, non-critical gaps remain, **AND** the SKILL/workflow gates above hold. Reserved for the rare case where a refactor or external-dependency blocker prevents a clean fix; the gap must be documented in the remaining issues.
+- **`ship-with-gaps`**: verify >= 65%, scorecard >= 65, non-critical gaps remain, **AND** the SKILL/workflow gates above hold, **AND** the README has a `## Known Gaps` block that lists the user-facing gaps. Reserved for the rare case where a refactor or external-dependency blocker prevents a clean fix.
+
+  **README Known Gaps is mandatory for ship-with-gaps.** The published library copy is what downstream users see; if the verdict claims gaps exist but the README hides them, downstream users meet a CLI that misbehaves with no disclosure. Before emitting `ship_recommendation: ship-with-gaps`:
+
+  1. Read the CLI's `README.md`. If a `## Known Gaps` section already exists (e.g., the main SKILL Phase 4 wrote it before polish ran), confirm it covers the user-facing items in `remaining_issues`. Add bullets for any newly surfaced user-facing gap polish discovered.
+  2. If `## Known Gaps` is missing, write it — placed after `## Quick Start` (or before `## Usage`) to mirror the `## Unique Features` placement convention. One bullet per user-facing item from `remaining_issues`. Phrase from the user's perspective: what command misbehaves, what the workaround is. Example:
+
+     ```markdown
+     ## Known Gaps
+
+     - **`analytics export --csv`** returns truncated rows on workspaces with >10k events. Use `--json` and pipe to `jq` as a workaround until the underlying export endpoint is paginated.
+     ```
+
+  3. Filter `remaining_issues` for user-facing entries when populating the section. Internal items (verify drift on a deprecated flag, MCP description tuning, polish-internal notes) do not belong in the public Known Gaps. If the agent cannot identify any user-facing gap from `remaining_issues`, the verdict is `ship`, not `ship-with-gaps`.
+  4. List each Known Gaps write/update in `fixes_applied` so the caller can surface that this happened.
+
+  If polish cannot responsibly populate Known Gaps from the available evidence (e.g., `remaining_issues` is all internal jargon with no user-facing reading), downgrade the verdict to `hold` rather than ship without disclosure.
 - **`hold`**: verify < 65% or scorecard < 65 or critical failures, **OR** verify-skill has unresolved findings, **OR** workflow-verify reports `workflow-fail` and the workflow is the CLI's primary value.
 
 ### Push higher without gaming
@@ -536,6 +552,8 @@ skipped_findings:
 remaining_issues:
 - <one-line description of each issue you tried to fix but couldn't>
 ship_recommendation: <ship|ship-with-gaps|hold>
+further_polish_recommended: <yes|no>
+further_polish_reasoning: <one sentence explaining the call>
 ---END-POLISH-RESULT---
 ```
 
@@ -544,19 +562,81 @@ The three lists serve different purposes:
 - **skipped_findings**: issues you found but deliberately did not fix, with reasoning (e.g., "verify classifies `stale` as read — scorer bug, not a CLI problem", "thin-short on `version` accepted as-is — accurate and brief"). The caller surfaces these so the user can decide whether to address them manually.
 - **remaining_issues**: issues you tried to fix but couldn't resolve.
 
+### Picking `further_polish_recommended`
+
+Your judgment, not a count of `remaining_issues`. Set `yes` when another polish invocation has a real chance of closing what's left:
+
+- `remaining_issues` includes verify or dogfood failures you ran out of time on and a fresh pass with more attention per failure could plausibly resolve.
+- The fixes you did land may have unblocked dependent issues you couldn't reach this pass.
+- A SKILL/CLI mismatch needs a second look after this pass changed the source tree.
+
+Set `no` when another invocation would re-tread the same ground:
+
+- `remaining_issues` are decisions only the user can make (rename a flagship command, choose a default behavior, accept a structural trade-off).
+- You already attempted the fix in two different ways this pass and both failed for the same reason.
+- The blocker is external (API changed shape, rate-limited, missing credential) and not something a fresh polish run sees differently.
+- `remaining_issues` is empty AND `skipped_findings` are all environmental or structural — there is nothing left for polish to do.
+
+`further_polish_reasoning` is one sentence the caller surfaces verbatim. Make it specific ("verify failures on `analytics export` and `report show` looked closable but I gave up too early") rather than generic ("more polish might help"). Callers use this signal to decide whether to offer "Polish again" in their next prompt; a vague reason makes their prompt vague.
+
 ## Publish Offer
+
+**Skip this entire section in mid-pipeline mode.** Detect from `$CLI_DIR`: if the path is under `.runstate/` (i.e., `$PRESS_RUNSTATE/<scope>/runs/.../working/<api>-pp-cli/`), polish is being called from main SKILL Phase 5.5 or hold-path "Polish to retry," and the working CLI has not been promoted to library yet. `/printing-press-publish <slug>` resolves to `$PRESS_LIBRARY/<slug>/`, which is either empty or holds a stale prior run — invoking publish here would either fail to resolve or ship the wrong copy. The parent skill owns the publish flow on that path; just emit the result block and return.
+
+A simple check:
+
+```bash
+case "$CLI_DIR" in
+  *.runstate/*) echo "mid-pipeline; skipping Publish Offer"; return ;;
+esac
+```
+
+For standalone invocations (`$CLI_DIR` under `$PRESS_LIBRARY/<slug>/`), continue with the offer below.
 
 If `ship` or `ship-with-gaps`:
 
-Present via `AskUserQuestion`:
+Construct the prompt from the result block. The shape is data-driven so the user is never asked to weigh "Polish again" against "Publish" when polish itself just decided another pass would not help.
 
-> "<CLI_NAME> polished: scorecard XX/100, verify XX%. Ready to publish?"
+### Recommendation
+
+Pick the recommended action from the polish result:
+
+- `ship` + `remaining_issues` empty → recommend **Publish**.
+- `ship` + `remaining_issues` non-empty + `further_polish_recommended: yes` → recommend **Polish again**.
+- `ship` + `remaining_issues` non-empty + `further_polish_recommended: no` → recommend **Publish** if the remaining issues do not touch the CLI's headline commands, otherwise surface the trade-off and let the user decide between **Publish** (as-is; README is not auto-updated for `ship` verdicts) and **Done**.
+- `ship-with-gaps` + `further_polish_recommended: yes` → recommend **Polish again**.
+- `ship-with-gaps` + `further_polish_recommended: no` → recommend **Publish** (the gap is already in README's `## Known Gaps` because polish's ship logic enforces that for `ship-with-gaps` — see "Ship logic" above) or **Done** if the gap is publish-blocking — agent judgment.
+
+### Menu
+
+Suppress the "Polish again" option entirely when `further_polish_recommended: no`. Keep "Publish" and "Done" always available.
+
+Surface `further_polish_reasoning` as context when polish opted out of recommending another pass — the user should see *why* polish is done.
+
+Present via `AskUserQuestion`. Two example shapes:
+
+**Polish converged clean** (`remaining_issues` empty, `further_polish_recommended: no`):
+
+> "<CLI_NAME> polished: scorecard XX/100, verify XX%. Polish ran cleanly — nothing more to fix.
 >
-> 1. **Publish now** — validate, package, and open a PR to printing-press-library
-> 2. **Polish again** — run another fix pass on remaining issues
-> 3. **Done for now** — CLI is at ~/printing-press/library/<cli-name>
+> Recommendation: Publish.
+>
+> 1. **Publish now** (recommended) — validate, package, and open a PR
+> 2. **Done for now** — CLI is at ~/printing-press/library/<cli-name>"
 
-If remaining issues exist, prepend: "Note: some issues remain (see above)."
+**Polish thinks another pass would help** (`remaining_issues` non-empty, `further_polish_recommended: yes`):
+
+> "<CLI_NAME> polished: scorecard XX/100, verify XX%. <N> issues remain.
+>
+> Polish notes: '<further_polish_reasoning>'
+>
+> Recommendation: Polish again before publishing.
+>
+> 1. **Polish again** (recommended) — close the remaining <N> issues
+> 2. **Publish now** — ship as-is
+> 3. **Done for now** — CLI is at ~/printing-press/library/<cli-name>"
+
+The recommended option leads, carries the `(recommended)` label, and the leading `Recommendation:` line states the agent's call explicitly. Three reinforcing channels so the user does not have to infer from ordering.
 
 ### If "Publish now"
 
@@ -566,6 +646,19 @@ gh pr list --repo mvanhorn/printing-press-library --head "feat/$CLI_NAME" --stat
 ```
 
 Then invoke `/printing-press-publish <cli-name>`.
+
+**After publish returns success**, offer retro as a soft tail. This mirrors the main `/printing-press` skill's Phase 6 behavior so users who reach publish through polish (mid-pipeline → polish-again → publish, or standalone polish → publish) get the same retro opportunity as users who reach publish directly through Phase 6.
+
+Present via `AskUserQuestion`:
+
+> "PR opened: <PR_URL>. Run a retro? It surfaces systemic gaps from this session (generator misses, scorer bugs, skill-doc drift) as a GitHub issue for the Printing Press maintainers. Every retro filed raises the floor for the next CLI — and your session context is freshest right now."
+>
+> 1. **No — I'm done** (default)
+> 2. **Yes — run retro now**
+
+If the user picks yes, invoke `/printing-press-retro`.
+
+(In mid-pipeline mode this whole section is unreachable — the Publish Offer guard at the top of this section returns early — so no extra check is needed here.)
 
 ### If "Polish again"
 
