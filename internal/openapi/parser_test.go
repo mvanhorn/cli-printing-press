@@ -1169,10 +1169,10 @@ paths:
 	assert.Equal(t, "Optional FlightAware AeroAPI credential for enriched flight data.", parsed.Auth.Description)
 }
 
-func TestInferAuthHeaderParam(t *testing.T) {
+func TestInferOperationLevelBearer(t *testing.T) {
 	t.Parallel()
 
-	t.Run("detects auth from required Authorization header params", func(t *testing.T) {
+	t.Run("detects bearer auth from required Authorization header params", func(t *testing.T) {
 		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "auth-header-param.yaml"))
 		require.NoError(t, err)
 
@@ -1187,7 +1187,7 @@ func TestInferAuthHeaderParam(t *testing.T) {
 	})
 
 	t.Run("does not trigger when Authorization params below threshold", func(t *testing.T) {
-		// 1 out of 5 operations = 20% < 30% threshold
+		// 1 out of 5 operations = 20% < 80% threshold
 		doc := &openapi3.T{
 			Info:  &openapi3.Info{Title: "test", Description: "no auth keywords"},
 			Paths: &openapi3.Paths{},
@@ -1199,9 +1199,77 @@ func TestInferAuthHeaderParam(t *testing.T) {
 			if i == 0 { // only first has Authorization param
 				pathItem.Get.Parameters = openapi3.Parameters{
 					&openapi3.ParameterRef{Value: &openapi3.Parameter{
-						Name: "Authorization", In: "header", Required: true,
+						Name: "Authorization", In: "header", Required: true, Description: "Bearer token credential",
 					}},
 				}
+			}
+			doc.Paths.Set(path, pathItem)
+		}
+		result := mapAuth(doc, "test-api")
+		assert.Equal(t, "none", result.Type)
+	})
+
+	t.Run("detects auth at exact eighty percent threshold", func(t *testing.T) {
+		doc := &openapi3.T{
+			Info:  &openapi3.Info{Title: "test", Description: "no auth keywords"},
+			Paths: &openapi3.Paths{},
+		}
+		for i, path := range []string{"/a", "/b", "/c", "/d", "/e"} {
+			pathItem := &openapi3.PathItem{
+				Get: &openapi3.Operation{Responses: openapi3.NewResponses()},
+			}
+			if i < 4 {
+				pathItem.Get.Parameters = openapi3.Parameters{
+					&openapi3.ParameterRef{Value: &openapi3.Parameter{
+						Name: "Authorization", In: "header", Required: true, Description: "Bearer token credential",
+					}},
+				}
+			}
+			doc.Paths.Set(path, pathItem)
+		}
+		result := mapAuth(doc, "test-api")
+		assert.Equal(t, "bearer_token", result.Type)
+		assert.Equal(t, []string{"TEST_API_TOKEN"}, result.EnvVars)
+		assert.True(t, result.Inferred)
+	})
+
+	t.Run("does not infer bearer without bearer signal", func(t *testing.T) {
+		doc := &openapi3.T{
+			Info:  &openapi3.Info{Title: "test", Description: "no auth keywords"},
+			Paths: &openapi3.Paths{},
+		}
+		for _, path := range []string{"/a", "/b", "/c", "/d", "/e"} {
+			pathItem := &openapi3.PathItem{
+				Get: &openapi3.Operation{
+					Responses: openapi3.NewResponses(),
+					Parameters: openapi3.Parameters{
+						&openapi3.ParameterRef{Value: &openapi3.Parameter{
+							Name: "Authorization", In: "header", Required: true,
+						}},
+					},
+				},
+			}
+			doc.Paths.Set(path, pathItem)
+		}
+		result := mapAuth(doc, "test-api")
+		assert.Equal(t, "none", result.Type)
+	})
+
+	t.Run("does not infer bearer from negated bearer signal", func(t *testing.T) {
+		doc := &openapi3.T{
+			Info:  &openapi3.Info{Title: "test", Description: "no auth keywords"},
+			Paths: &openapi3.Paths{},
+		}
+		for _, path := range []string{"/a", "/b", "/c", "/d", "/e"} {
+			pathItem := &openapi3.PathItem{
+				Get: &openapi3.Operation{
+					Responses: openapi3.NewResponses(),
+					Parameters: openapi3.Parameters{
+						&openapi3.ParameterRef{Value: &openapi3.Parameter{
+							Name: "Authorization", In: "header", Required: true, Description: "Do not use Bearer prefix.",
+						}},
+					},
+				},
 			}
 			doc.Paths.Set(path, pathItem)
 		}
@@ -1220,7 +1288,30 @@ func TestInferAuthHeaderParam(t *testing.T) {
 					Responses: openapi3.NewResponses(),
 					Parameters: openapi3.Parameters{
 						&openapi3.ParameterRef{Value: &openapi3.Parameter{
-							Name: "Authorization", In: "header", Required: false,
+							Name: "Authorization", In: "header", Required: false, Description: "Bearer token credential",
+						}},
+					},
+				},
+			}
+			doc.Paths.Set(path, pathItem)
+		}
+		result := mapAuth(doc, "test-api")
+		assert.Equal(t, "none", result.Type)
+	})
+
+	t.Run("top-level security declaration disables inline inference", func(t *testing.T) {
+		doc := &openapi3.T{
+			Info:     &openapi3.Info{Title: "test", Description: "no auth keywords"},
+			Paths:    &openapi3.Paths{},
+			Security: openapi3.SecurityRequirements{},
+		}
+		for _, path := range []string{"/a", "/b", "/c", "/d", "/e"} {
+			pathItem := &openapi3.PathItem{
+				Get: &openapi3.Operation{
+					Responses: openapi3.NewResponses(),
+					Parameters: openapi3.Parameters{
+						&openapi3.ParameterRef{Value: &openapi3.Parameter{
+							Name: "Authorization", In: "header", Required: true, Description: "Bearer token credential",
 						}},
 					},
 				},

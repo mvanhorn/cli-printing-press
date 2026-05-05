@@ -367,7 +367,7 @@ func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
 			result = inferDescriptionAuth(doc, name, result)
 		}
 		if result.Type == "none" {
-			result = inferAuthHeaderParam(doc, name, result)
+			result = inferOperationLevelBearer(doc, name, result)
 		}
 		return result
 	}
@@ -910,17 +910,20 @@ func inferDescriptionAuth(doc *openapi3.T, name string, fallback spec.AuthConfig
 	return fallback
 }
 
-// inferAuthHeaderParam scans all operations for required Authorization header
-// parameters. This is the fourth-tier auth fallback — it fires only when
-// securitySchemes, query-param inference, and description inference all fail.
-// APIs like Cal.com declare auth via individual header parameters instead of
-// securitySchemes or description text.
-func inferAuthHeaderParam(doc *openapi3.T, name string, fallback spec.AuthConfig) spec.AuthConfig {
+// inferOperationLevelBearer scans all operations for required Authorization
+// header parameters that identify themselves as Bearer tokens. This is the
+// fourth-tier auth fallback — it fires only when securitySchemes, query-param
+// inference, and description inference all fail.
+func inferOperationLevelBearer(doc *openapi3.T, name string, fallback spec.AuthConfig) spec.AuthConfig {
 	if doc == nil || doc.Paths == nil {
+		return fallback
+	}
+	if hasTopLevelSecurityDeclaration(doc) {
 		return fallback
 	}
 
 	authParamCount := 0
+	hasBearerSignal := false
 	totalOps := 0
 
 	for _, pathKey := range doc.Paths.InMatchingOrder() {
@@ -933,24 +936,16 @@ func inferAuthHeaderParam(doc *openapi3.T, name string, fallback spec.AuthConfig
 				continue
 			}
 			totalOps++
-			for _, params := range []openapi3.Parameters{pathItem.Parameters, op.Parameters} {
-				for _, pRef := range params {
-					if pRef == nil || pRef.Value == nil {
-						continue
-					}
-					p := pRef.Value
-					if p.In == openapi3.ParameterInHeader &&
-						strings.EqualFold(p.Name, "Authorization") &&
-						p.Required {
-						authParamCount++
-						break // count once per operation
-					}
+			if authParam, ok := requiredAuthorizationParam(pathItem, op); ok {
+				authParamCount++
+				if authorizationParamMentionsBearer(authParam) {
+					hasBearerSignal = true
 				}
 			}
 		}
 	}
 
-	if totalOps == 0 || float64(authParamCount)/float64(totalOps) <= 0.3 {
+	if totalOps == 0 || !hasBearerSignal || float64(authParamCount)/float64(totalOps) < 0.8 {
 		return fallback
 	}
 
@@ -962,6 +957,32 @@ func inferAuthHeaderParam(doc *openapi3.T, name string, fallback spec.AuthConfig
 		EnvVars:  []string{envPrefix + "_TOKEN"},
 		Inferred: true,
 	}
+}
+
+func hasTopLevelSecurityDeclaration(doc *openapi3.T) bool {
+	return (doc.Components != nil && len(doc.Components.SecuritySchemes) > 0) || doc.Security != nil
+}
+
+func requiredAuthorizationParam(pathItem *openapi3.PathItem, op *openapi3.Operation) (*openapi3.Parameter, bool) {
+	for _, p := range mergeParameters(pathItem, op) {
+		if p.In == openapi3.ParameterInHeader && strings.EqualFold(p.Name, "Authorization") && p.Required {
+			return p, true
+		}
+	}
+	return nil, false
+}
+
+func authorizationParamMentionsBearer(p *openapi3.Parameter) bool {
+	if p == nil {
+		return false
+	}
+	if findUnnegated(strings.ToLower(p.Description), "bearer") {
+		return true
+	}
+	if p.Schema != nil && p.Schema.Value != nil {
+		return findUnnegated(strings.ToLower(p.Schema.Value.Description), "bearer")
+	}
+	return false
 }
 
 // commonCustomHeaders are header names that APIs use instead of Authorization.
