@@ -333,6 +333,9 @@ func classifyAPIError(err error) error {
 			"\n      Get a key at: {{.Auth.KeyURL}}"+
 {{- end}}
 			"\n      Run '{{.Name}}-pp-cli doctor' to check auth status.", err))
+{{- else if or (eq .Auth.Type "") (eq .Auth.Type "none")}}
+		return authErr(fmt.Errorf("%w\nhint: permission denied. This API is configured without credentials, so the service may be blocking the request by rate limit, geography, bot protection, or endpoint policy."+
+			"\n      Run '{{.Name}}-pp-cli doctor' to check connectivity.", err))
 {{- else}}
 		return authErr(fmt.Errorf("%w\nhint: permission denied. Your credentials are valid but lack access to this resource."+
 			"\n      Check that your API key has the required permissions."+

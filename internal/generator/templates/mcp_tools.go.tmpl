@@ -258,6 +258,8 @@ func makeAPIHandler(method, pathTemplate string, positionalParams []string) serv
 				return mcplib.NewToolResultError("permission denied: " + {{if and .Auth.Type (ne .Auth.Type "none")}}cliutil.SanitizeErrorBody(msg){{else}}msg{{end}} +
 {{- if eq .Auth.Type "oauth2"}}
 					{{printf "%q" (printf "\nhint: your token may lack required scopes. Re-run '%s-pp-cli auth login' to re-authorize" .Name)}} +
+{{- else if or (eq .Auth.Type "") (eq .Auth.Type "none")}}
+					"\nhint: this API is configured without credentials; the service may be blocking the request by rate limit, geography, bot protection, or endpoint policy." +
 {{- else}}
 					"\nhint: your credentials are valid but lack access to this resource." +
 {{- end}}

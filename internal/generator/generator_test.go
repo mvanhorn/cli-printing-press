@@ -1004,6 +1004,110 @@ func TestGenerateWithNoAuth(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(outputDir, naming.ValidationBinary("noauth")))
 }
 
+func TestGenerate403HintsFollowAuthMode(t *testing.T) {
+	t.Parallel()
+
+	type snippetCheck struct {
+		want   []string
+		reject []string
+	}
+	assertSnippets := func(t *testing.T, body string, check snippetCheck) {
+		t.Helper()
+		for _, want := range check.want {
+			assert.Contains(t, body, want)
+		}
+		for _, reject := range check.reject {
+			assert.NotContains(t, body, reject)
+		}
+	}
+
+	tests := []struct {
+		name    string
+		auth    spec.AuthConfig
+		helpers snippetCheck
+		mcp     snippetCheck
+	}{
+		{
+			name: "no auth",
+			auth: spec.AuthConfig{Type: "none"},
+			helpers: snippetCheck{
+				want: []string{"This API is configured without credentials", "rate limit, geography, bot protection, or endpoint policy"},
+				reject: []string{
+					"Your credentials are valid but lack access",
+					"Check that your API key has the required permissions",
+				},
+			},
+			mcp: snippetCheck{
+				want:   []string{"this API is configured without credentials", "rate limit, geography, bot protection, or endpoint policy"},
+				reject: []string{"your credentials are valid but lack access"},
+			},
+		},
+		{
+			name: "api key",
+			auth: spec.AuthConfig{
+				Type:    "api_key",
+				Header:  "Authorization",
+				Format:  "Bearer {token}",
+				EnvVars: []string{"MYAPI_TOKEN"},
+			},
+			helpers: snippetCheck{
+				want: []string{
+					"Your credentials are valid but lack access",
+					"Check that your API key has the required permissions",
+					"Set it with: export MYAPI_TOKEN=<your-key>",
+				},
+				reject: []string{"This API is configured without credentials"},
+			},
+			mcp: snippetCheck{
+				want: []string{
+					"your credentials are valid but lack access",
+					"Set it with: export MYAPI_TOKEN=<your-key>",
+				},
+				reject: []string{"this API is configured without credentials"},
+			},
+		},
+		{
+			name: "oauth2",
+			auth: spec.AuthConfig{
+				Type:    "oauth2",
+				EnvVars: []string{"MYAPI_TOKEN"},
+			},
+			helpers: snippetCheck{
+				want: []string{"Your token may lack required scopes", "auth login"},
+				reject: []string{
+					"This API is configured without credentials",
+					"Check that your API key has the required permissions",
+				},
+			},
+			mcp: snippetCheck{
+				want: []string{"your token may lack required scopes", "auth login"},
+				reject: []string{
+					"this API is configured without credentials",
+					"your credentials are valid but lack access",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec("auth403" + strings.ReplaceAll(tt.name, " ", ""))
+			apiSpec.Auth = tt.auth
+
+			outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			helpers := readGeneratedFile(t, outputDir, "internal", "cli", "helpers.go")
+			assertSnippets(t, helpers, tt.helpers)
+
+			tools := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+			assertSnippets(t, tools, tt.mcp)
+		})
+	}
+}
+
 func TestGenerateBrowserChromeTransport(t *testing.T) {
 	apiSpec := &spec.APISpec{
 		Name:       "websurface",
