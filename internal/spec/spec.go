@@ -498,6 +498,19 @@ func (c *AuthConfig) CanonicalEnvVar() *AuthEnvVar {
 	return nil
 }
 
+// IsAuthEnvVarORCase reports whether all EnvVarSpecs are non-required per_call vars, the shape that triggers OR fan-out generation in config.go.tmpl.
+func (c *AuthConfig) IsAuthEnvVarORCase() bool {
+	if c == nil || len(c.EnvVarSpecs) < 2 {
+		return false
+	}
+	for _, ev := range c.EnvVarSpecs {
+		if ev.Kind != AuthEnvVarKindPerCall || ev.Required {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *AuthConfig) NormalizeEnvVarSpecs(context string) {
 	if c == nil {
 		return
@@ -516,14 +529,16 @@ func (c *AuthConfig) NormalizeEnvVarSpecs(context string) {
 			}
 			canonicalNames = append(canonicalNames, name)
 		}
-		envVarNames := make([]string, 0, len(c.EnvVars))
-		for _, name := range c.EnvVars {
-			if name = strings.TrimSpace(name); name != "" {
-				envVarNames = append(envVarNames, name)
+		if canonical {
+			envVarNames := make([]string, 0, len(c.EnvVars))
+			for _, name := range c.EnvVars {
+				if name = strings.TrimSpace(name); name != "" {
+					envVarNames = append(envVarNames, name)
+				}
 			}
-		}
-		if canonical && sameStringSlice(envVarNames, canonicalNames) {
-			return
+			if sameStringSlice(envVarNames, canonicalNames) {
+				return
+			}
 		}
 	}
 	if len(c.EnvVarSpecs) == 0 {
@@ -1138,6 +1153,8 @@ func snakeToPascal(s string) string {
 // fragments accidentally embedded in path strings.
 var pathParamRe = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
+var orGroupTokenRe = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
+
 // enrichPathParams walks every resource and sub-resource endpoint and ensures
 // each `{paramName}` placeholder in the endpoint path is represented in
 // Endpoint.Params with Positional: true, Required: true. The expandOperations
@@ -1463,14 +1480,12 @@ func validateAuthEnvVarSpecs(context string, auth AuthConfig) error {
 
 func independentAuthORGroupsExample(envVarSpecs []AuthEnvVar) (string, bool) {
 	members := make([]AuthEnvVar, 0, len(envVarSpecs))
-	memberNames := map[string]struct{}{}
 	for _, envVar := range envVarSpecs {
 		name := strings.TrimSpace(envVar.Name)
 		if name == "" || envVar.Kind != AuthEnvVarKindPerCall || envVar.Required || !strings.Contains(envVar.Description, " OR ") {
 			continue
 		}
 		members = append(members, envVar)
-		memberNames[name] = struct{}{}
 	}
 	if len(members) < 2 {
 		return "", false
@@ -1494,20 +1509,19 @@ func independentAuthORGroupsExample(envVarSpecs []AuthEnvVar) (string, bool) {
 		}
 	}
 
-	tokenPattern := regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
 	for _, member := range members {
-		for _, token := range tokenPattern.FindAllString(member.Description, -1) {
+		for _, token := range orGroupTokenRe.FindAllString(member.Description, -1) {
 			if token == member.Name {
 				continue
 			}
-			if _, ok := memberNames[token]; ok {
+			if _, inGroup := parent[token]; inGroup {
 				union(member.Name, token)
 			}
 		}
 	}
 
 	groups := map[string][]string{}
-	order := []string{}
+	order := make([]string, 0, len(members))
 	for _, member := range members {
 		root := find(member.Name)
 		if _, ok := groups[root]; !ok {

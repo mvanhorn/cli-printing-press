@@ -394,6 +394,57 @@ func TestCanonicalEnvVarSelection(t *testing.T) {
 	}
 }
 
+func TestIsAuthEnvVarORCase(t *testing.T) {
+	tests := []struct {
+		name string
+		auth AuthConfig
+		want bool
+	}{
+		{
+			name: "all required entries are not OR case",
+			auth: AuthConfig{EnvVarSpecs: []AuthEnvVar{
+				{Name: "FIRST_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true},
+				{Name: "SECOND_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true},
+			}},
+			want: false,
+		},
+		{
+			name: "all non-required per-call entries are OR case",
+			auth: AuthConfig{EnvVarSpecs: []AuthEnvVar{
+				{Name: "SLACK_BOT_TOKEN", Kind: AuthEnvVarKindPerCall},
+				{Name: "SLACK_USER_TOKEN", Kind: AuthEnvVarKindPerCall},
+			}},
+			want: true,
+		},
+		{
+			name: "mixed kinds are not OR case",
+			auth: AuthConfig{EnvVarSpecs: []AuthEnvVar{
+				{Name: "SESSION_COOKIE", Kind: AuthEnvVarKindHarvested},
+				{Name: "TODOIST_API_KEY", Kind: AuthEnvVarKindPerCall},
+			}},
+			want: false,
+		},
+		{
+			name: "single entry is not OR case",
+			auth: AuthConfig{EnvVarSpecs: []AuthEnvVar{
+				{Name: "TODOIST_API_KEY", Kind: AuthEnvVarKindPerCall},
+			}},
+			want: false,
+		},
+		{
+			name: "empty specs are not OR case",
+			auth: AuthConfig{},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.auth.IsAuthEnvVarORCase())
+		})
+	}
+}
+
 func TestTierAuthEnvVarSpecsNormalizeAndValidate(t *testing.T) {
 	s := APISpec{
 		Name:    "tier-api",

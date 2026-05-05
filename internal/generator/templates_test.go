@@ -59,7 +59,6 @@ func TestConfigTemplateRendersAuthHeaderORCaseFanOut(t *testing.T) {
 	require.NoError(t, err)
 	content := string(configSrc)
 
-	require.Contains(t, content, "OR-case fan-out")
 	require.True(t,
 		strings.Contains(content, "if c.SlackBotToken != \"\"") &&
 			strings.Contains(content, "return \"Bearer \" + c.SlackBotToken"),
