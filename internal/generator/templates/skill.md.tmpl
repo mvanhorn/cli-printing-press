@@ -11,7 +11,7 @@ metadata:
     install:
       - kind: go
         bins: [{{.Name}}-pp-cli]
-        module: github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}-pp-cli/cmd/{{.Name}}-pp-cli
+        module: github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}/cmd/{{.Name}}-pp-cli
 ---
 
 # {{.ProseName}} — Printing Press CLI
@@ -335,7 +335,7 @@ Parse `$ARGUMENTS`:
 1. Check Go is installed: `go version` (requires {{if .UsesBrowserHTTPTransport}}Go 1.25+{{else}}Go 1.23+{{end}})
 2. Install:
    ```bash
-   go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}-pp-cli/cmd/{{.Name}}-pp-cli@latest
+   go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}/cmd/{{.Name}}-pp-cli@latest
    ```
 3. Verify: `{{.Name}}-pp-cli --version`
 4. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
@@ -344,7 +344,7 @@ Parse `$ARGUMENTS`:
 
 1. Install the MCP server:
    ```bash
-   go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}-pp-cli/cmd/{{.Name}}-pp-mcp@latest
+   go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}/cmd/{{.Name}}-pp-mcp@latest
    ```
 2. Register with Claude Code:
    ```bash

@@ -54,8 +54,8 @@ func TestSkillRendersFrontmatterAndCapabilities(t *testing.T) {
 		"frontmatter description should incorporate headline")
 	assert.True(t, strings.Contains(content, "`quote AAPL`"),
 		"frontmatter description should list domain-specific trigger phrases verbatim (backtick-delimited)")
-	assert.True(t, strings.Contains(content, "library/commerce/finance-pp-cli"),
-		"openclaw install manifest should use the API's category")
+	assert.True(t, strings.Contains(content, "library/commerce/finance/cmd/finance-pp-cli"),
+		"openclaw install manifest should use the API's category and slug-only directory")
 
 	// Body
 	assert.True(t, strings.Contains(content, "## When to Use This CLI"),
@@ -390,9 +390,9 @@ func TestSkillFrontmatterMetadataIsClawHubCompliantNestedYAML(t *testing.T) {
 	assert.Equal(t, "go", entry.Kind, "kind must be 'go' (ClawHub schema enum: brew|node|go|uv)")
 	assert.Equal(t, []string{"widget-pp-cli"}, entry.Bins)
 	assert.Equal(t,
-		"github.com/mvanhorn/printing-press-library/library/commerce/widget-pp-cli/cmd/widget-pp-cli",
+		"github.com/mvanhorn/printing-press-library/library/commerce/widget/cmd/widget-pp-cli",
 		entry.Module,
-		"module must be the Go package path with no @latest suffix")
+		"module must be the slug-only directory path matching the published library convention; cmd subdir uses the binary name")
 	assert.Empty(t, entry.Command, "command field must not be emitted (not in ClawHub schema)")
 	assert.Empty(t, entry.ID, "id field must not be emitted (optional, no semantic value here)")
 	assert.Empty(t, entry.Label, "label field must not be emitted (optional, no semantic value here)")
@@ -424,7 +424,7 @@ func TestSkillFrontmatterMetadataDefaultsCategoryToOther(t *testing.T) {
 	content := string(skill)
 
 	assert.Contains(t, content,
-		"module: github.com/mvanhorn/printing-press-library/library/other/uncategorized-pp-cli/cmd/uncategorized-pp-cli",
+		"module: github.com/mvanhorn/printing-press-library/library/other/uncategorized/cmd/uncategorized-pp-cli",
 		"empty Category should default to 'other' in install module path")
 }
 
