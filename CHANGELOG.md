@@ -1,5 +1,20 @@
 # Changelog
 
+## [3.9.1](https://github.com/mvanhorn/cli-printing-press/compare/v3.9.0...v3.9.1) (2026-05-05)
+
+
+### Bug Fixes
+
+* **cli:** align phase5 quick gate with runner verdict ([#605](https://github.com/mvanhorn/cli-printing-press/issues/605)) ([7359a18](https://github.com/mvanhorn/cli-printing-press/commit/7359a18fcdd04dd26fd9a366837ded51ccfcfdd6))
+* **cli:** always derive install module from filesystem in migrate-skill-metadata ([#611](https://github.com/mvanhorn/cli-printing-press/issues/611)) ([1b0dc70](https://github.com/mvanhorn/cli-printing-press/commit/1b0dc70ac4d7e6f5992683c7fe8e5cfa5aa848a7))
+* **cli:** default live dogfood happy_path on mutators to --dry-run ([#614](https://github.com/mvanhorn/cli-printing-press/issues/614)) ([24e7e60](https://github.com/mvanhorn/cli-printing-press/commit/24e7e60f1b8d3b4f59119e65f3fcc7586d6ddbb9))
+* **cli:** emit ClawHub-compliant nested YAML for SKILL.md metadata ([#609](https://github.com/mvanhorn/cli-printing-press/issues/609)) ([4897c59](https://github.com/mvanhorn/cli-printing-press/commit/4897c593a34fd3cb6f155aad0aec3480e791b857))
+* **cli:** emit invalidateCache() in every printed client.go ([#612](https://github.com/mvanhorn/cli-printing-press/issues/612)) ([9c5b882](https://github.com/mvanhorn/cli-printing-press/commit/9c5b882afd42c7d9baf2654e0654005b0af11ec2))
+* **cli:** resolveManuscripts prefers API-slug keying over CLI-name ([#615](https://github.com/mvanhorn/cli-printing-press/issues/615)) ([700e467](https://github.com/mvanhorn/cli-printing-press/commit/700e4672f8ad937101cb21af893136badb2eb4e1))
+* **cli:** route sync --json events to stdout ([#608](https://github.com/mvanhorn/cli-printing-press/issues/608)) ([6281f2b](https://github.com/mvanhorn/cli-printing-press/commit/6281f2be60295c0f5fd9e3984b7c5ca169da6dd5))
+* **cli:** skip destructive-at-auth endpoints in live dogfood ([#613](https://github.com/mvanhorn/cli-printing-press/issues/613)) ([84b22d2](https://github.com/mvanhorn/cli-printing-press/commit/84b22d2817d60f40a5c37ba9486b76739b008d16))
+* **cli:** stamp run_id into manifest at generate time ([#606](https://github.com/mvanhorn/cli-printing-press/issues/606)) ([37ee7e3](https://github.com/mvanhorn/cli-printing-press/commit/37ee7e38b6b3b9f6b989fa8a52172cee8cb104c8))
+
 ## [3.9.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.8.0...v3.9.0) (2026-05-05)
 
 
