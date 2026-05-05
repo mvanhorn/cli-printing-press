@@ -29,7 +29,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 		Short: "{{oneline .Endpoint.Description}}",
 		Long:  "Shortcut for '{{.ResourceName}} {{.EndpointName}}'. {{oneline .Endpoint.Description}}",
 		Example: "  {{modulePath}} {{.PromotedName}}",
-		Annotations: map[string]string{"pp:endpoint": "{{.ResourceName}}.{{.EndpointName}}"{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}},
+		Annotations: map[string]string{"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, "pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}},
 		RunE: func(cmd *cobra.Command, args []string) error {
 {{- range .Endpoint.Params}}
 {{- if and .Required (not .Positional) (not .Default)}}

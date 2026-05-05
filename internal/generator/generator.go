@@ -617,6 +617,7 @@ type clientTemplateData struct {
 type endpointTemplateData struct {
 	ResourceName    string
 	ResourceBaseURL string
+	EffectivePath   string
 	EffectiveTier   string
 	FuncPrefix      string
 	CommandPath     string
@@ -1546,6 +1547,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			epData := endpointTemplateData{
 				ResourceName:    name,
 				ResourceBaseURL: strings.TrimRight(resource.BaseURL, "/"),
+				EffectivePath:   effectiveEndpointPath(resource, endpoint),
 				EffectiveTier:   g.Spec.EffectiveTier(resource, endpoint),
 				FuncPrefix:      name,
 				CommandPath:     name,
@@ -1612,6 +1614,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				epData := endpointTemplateData{
 					ResourceName:    subName,
 					ResourceBaseURL: subResourceBaseURL,
+					EffectivePath:   effectiveSubEndpointPath(resource, subResource, endpoint),
 					EffectiveTier:   g.Spec.EffectiveTier(effectiveResource, endpoint),
 					FuncPrefix:      name + "-" + subName,
 					CommandPath:     name + " " + subName,
@@ -2014,6 +2017,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			PromotedName  string
 			ResourceName  string
 			EndpointName  string
+			EffectivePath string
 			Endpoint      spec.Endpoint
 			EffectiveTier string
 			HasStore      bool
@@ -2025,6 +2029,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			PromotedName:  pc.PromotedName,
 			ResourceName:  pc.ResourceName,
 			EndpointName:  pc.EndpointName,
+			EffectivePath: effectiveEndpointPath(resource, pc.Endpoint),
 			Endpoint:      pc.Endpoint,
 			EffectiveTier: g.Spec.EffectiveTier(resource, pc.Endpoint),
 			HasStore:      g.VisionSet.Store,

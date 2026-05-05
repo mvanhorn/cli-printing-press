@@ -608,10 +608,11 @@ func newAuthRefreshQueriesCmd(flags *rootFlags) *cobra.Command {
 	var duration time.Duration
 	var outputPath string
 	cmd := &cobra.Command{
-		Use:     "refresh-queries",
-		Short:   "Refresh captured GraphQL persisted-query hashes",
-		Long:    "Refresh captured GraphQL persisted-query hashes for CLIs generated from browser traffic with the graphql_persisted_query hint.",
-		Example: "  {{.Name}}-pp-cli auth refresh-queries --duration 45s",
+		Use:         "refresh-queries",
+		Short:       "Refresh captured GraphQL persisted-query hashes",
+		Long:        "Refresh captured GraphQL persisted-query hashes for CLIs generated from browser traffic with the graphql_persisted_query hint.",
+		Example:     "  {{.Name}}-pp-cli auth refresh-queries --duration 45s",
+		Annotations: map[string]string{"pp:destructive-auth": "false"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {

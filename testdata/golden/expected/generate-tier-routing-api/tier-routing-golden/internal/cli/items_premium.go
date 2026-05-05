@@ -17,7 +17,7 @@ func newItemsPremiumCmd(flags *rootFlags) *cobra.Command {
 		Use:   "premium",
 		Short: "List paid items",
 		Example: "  tier-routing-golden-pp-cli items premium",
-		Annotations: map[string]string{"pp:endpoint": "items.premium", "mcp:read-only": "true"},
+		Annotations: map[string]string{"pp:endpoint": "items.premium", "pp:method": "GET", "pp:path": "/items/premium", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {

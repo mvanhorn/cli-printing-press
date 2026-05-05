@@ -491,6 +491,42 @@ func TestGenerateAgentContextCommand(t *testing.T) {
 	assert.Contains(t, payload, "cli")
 	assert.Contains(t, payload, "auth")
 	assert.Contains(t, payload, "commands")
+
+	annotatedEndpoint := findAgentContextCommand(payload["commands"], func(command map[string]any) bool {
+		annotations, ok := command["annotations"].(map[string]any)
+		if !ok {
+			return false
+		}
+		return annotations["pp:endpoint"] != "" && annotations["mcp:read-only"] == "true"
+	})
+	require.NotNil(t, annotatedEndpoint, "agent-context must surface endpoint and read-only annotations")
+
+	unannotatedParent := findAgentContextCommand(payload["commands"], func(command map[string]any) bool {
+		_, hasAnnotations := command["annotations"]
+		subcommands, hasSubcommands := command["subcommands"].([]any)
+		return !hasAnnotations && hasSubcommands && len(subcommands) > 0
+	})
+	require.NotNil(t, unannotatedParent, "agent-context must keep annotations omitted when absent")
+}
+
+func findAgentContextCommand(root any, match func(map[string]any) bool) map[string]any {
+	commands, ok := root.([]any)
+	if !ok {
+		return nil
+	}
+	for _, raw := range commands {
+		command, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if match(command) {
+			return command
+		}
+		if found := findAgentContextCommand(command["subcommands"], match); found != nil {
+			return found
+		}
+	}
+	return nil
 }
 
 func TestGenerateOAuth2AuthTemplateConditionally(t *testing.T) {

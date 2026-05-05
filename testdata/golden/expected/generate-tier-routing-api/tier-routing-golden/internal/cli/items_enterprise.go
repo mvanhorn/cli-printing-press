@@ -17,7 +17,7 @@ func newItemsEnterpriseCmd(flags *rootFlags) *cobra.Command {
 		Use:   "enterprise",
 		Short: "List enterprise items",
 		Example: "  tier-routing-golden-pp-cli items enterprise",
-		Annotations: map[string]string{"pp:endpoint": "items.enterprise", "mcp:read-only": "true"},
+		Annotations: map[string]string{"pp:endpoint": "items.enterprise", "pp:method": "GET", "pp:path": "/items/enterprise", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {

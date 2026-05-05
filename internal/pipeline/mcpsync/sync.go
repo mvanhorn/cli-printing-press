@@ -32,7 +32,8 @@ var (
 	errAnnotationSoftFail = errors.New("endpoint annotation skipped")
 )
 
-var endpointAnnotationLine = regexp.MustCompile(`(?m)^\s*Annotations: map\[string\]string\{"pp:endpoint": "[^"]+"(?:, "mcp:read-only": "true")?\},\s*$`)
+var endpointAnnotationLine = regexp.MustCompile(`(?m)^\s*Annotations: map\[string\]string\{"pp:endpoint": "[^"]+", "pp:method": "[^"]+", "pp:path": "[^"]+"(?:, "mcp:read-only": "true")?\},\s*$`)
+var staleEndpointAnnotationLine = regexp.MustCompile(`(?m)^\s*Annotations: map\[string\]string\{"pp:endpoint": "[^"]+"(?:, "mcp:read-only": "true")?\},\s*$`)
 
 type Result struct {
 	Changed bool
@@ -300,6 +301,14 @@ func ensureEndpointAnnotation(path, annotationLine string) error {
 		return fmt.Errorf("reading endpoint command %s: %w", path, err)
 	}
 	src := string(data)
+	if endpointAnnotationLine.MatchString(src) {
+		return nil
+	}
+	annotationLine = strings.TrimSuffix(annotationLine, "\n")
+	if staleEndpointAnnotationLine.MatchString(src) {
+		next := staleEndpointAnnotationLine.ReplaceAllString(src, annotationLine)
+		return writeFileAtomic(path, []byte(next))
+	}
 	if strings.Contains(src, `"pp:endpoint"`) {
 		return nil
 	}
@@ -320,9 +329,7 @@ func ensureEndpointAnnotation(path, annotationLine string) error {
 		return fmt.Errorf("%s does not match the generated endpoint command shape; cannot add endpoint MCP annotation", path)
 	}
 
-	if !strings.HasSuffix(annotationLine, "\n") {
-		annotationLine += "\n"
-	}
+	annotationLine += "\n"
 	next := src[:insertAt] + annotationLine + src[insertAt:]
 	return writeFileAtomic(path, []byte(next))
 }

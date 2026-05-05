@@ -108,6 +108,58 @@ func TestRunLiveDogfoodErrorPathAcceptsExpectedNonZeroExit(t *testing.T) {
 	assert.Equal(t, 2, errorPath.ExitCode)
 }
 
+func TestRunLiveDogfoodSkipsDestructiveByDefault(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodDestructiveFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	var destructiveSkips int
+	for _, result := range report.Tests {
+		if result.Command == "api-keys refresh" {
+			assert.Equal(t, LiveDogfoodStatusSkip, result.Status)
+			assert.Equal(t, reasonDestructiveAtAuth, result.Reason)
+			destructiveSkips++
+		}
+	}
+	assert.Equal(t, 4, destructiveSkips)
+
+	widgetsHelp := findResultByCommandKind(report, "widgets list", LiveDogfoodTestHelp)
+	require.NotNil(t, widgetsHelp)
+	assert.Equal(t, LiveDogfoodStatusPass, widgetsHelp.Status)
+}
+
+func TestRunLiveDogfoodAllowDestructiveBypass(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodDestructiveFixture(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:           dir,
+		BinaryName:       binaryName,
+		Level:            "full",
+		Timeout:          2 * time.Second,
+		AllowDestructive: true,
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, countResultsWithReason(report.Tests, reasonDestructiveAtAuth))
+	for _, kind := range []LiveDogfoodTestKind{LiveDogfoodTestHelp, LiveDogfoodTestHappy, LiveDogfoodTestJSON} {
+		result := findResultByCommandKind(report, "api-keys refresh", kind)
+		require.NotNil(t, result)
+		assert.Equal(t, LiveDogfoodStatusPass, result.Status, result.Reason)
+	}
+}
+
 func TestRunLiveDogfoodExplicitBinaryNameMustExist(t *testing.T) {
 	dir := t.TempDir()
 
@@ -215,6 +267,12 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 		{
 			name:    "quick all skip — MatrixSize 0",
 			level:   "quick",
+			results: []LiveDogfoodTestResult{mkResult(LiveDogfoodStatusSkip), mkResult(LiveDogfoodStatusSkip)},
+			want:    "PASS",
+		},
+		{
+			name:    "full all skip — MatrixSize 0 still blocks acceptance",
+			level:   "full",
 			results: []LiveDogfoodTestResult{mkResult(LiveDogfoodStatusSkip), mkResult(LiveDogfoodStatusSkip)},
 			want:    "FAIL",
 		},
@@ -778,6 +836,90 @@ if [ "$1" = "widgets" ] && [ "$2" = "broken" ]; then
     exit 0
   fi
   echo 'broken'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
+func writeLiveDogfoodDestructiveFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"api-keys","subcommands":[
+      {"name":"refresh","annotations":{"pp:endpoint":"api-keys.keys-refresh"}}
+    ]},
+    {"name":"widgets","subcommands":[
+      {"name":"list"}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "api-keys" ] && [ "$2" = "refresh" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Refresh the current API key.
+
+Usage:
+  fixture-pp-cli api-keys refresh [flags]
+
+Examples:
+  fixture-pp-cli api-keys refresh
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "api-keys" ] && [ "$2" = "refresh" ]; then
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"refreshed":true}'
+    exit 0
+  fi
+  echo 'refreshed'
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List widgets.
+
+Usage:
+  fixture-pp-cli widgets list [flags]
+
+Examples:
+  fixture-pp-cli widgets list
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "list" ]; then
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"results":[]}'
+    exit 0
+  fi
+  echo 'widgets'
   exit 0
 fi
 
@@ -1371,6 +1513,16 @@ func findResultByCommandKind(report *LiveDogfoodReport, command string, kind Liv
 		}
 	}
 	return nil
+}
+
+func countResultsWithReason(results []LiveDogfoodTestResult, reason string) int {
+	count := 0
+	for _, result := range results {
+		if result.Reason == reason {
+			count++
+		}
+	}
+	return count
 }
 
 // setupRichFixture is the shared preamble for U2/U3 tests: skip on Windows,

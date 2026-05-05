@@ -33,6 +33,73 @@ func TestIsDestructiveAtAuth(t *testing.T) {
 			want:        true,
 		},
 		{
+			name:        "annotation primary regenerate",
+			annotations: map[string]string{"pp:endpoint": "api-keys.regenerate-key"},
+			path:        []string{"my-cli", "api-keys"},
+			want:        true,
+		},
+		{
+			name:        "annotation primary reset",
+			annotations: map[string]string{"pp:endpoint": "passwords.reset-token"},
+			path:        []string{"my-cli", "passwords"},
+			want:        true,
+		},
+		{
+			name:        "annotation primary cycle",
+			annotations: map[string]string{"pp:endpoint": "tokens.cycle"},
+			path:        []string{"my-cli", "tokens"},
+			want:        true,
+		},
+		{
+			name: "delete api-keys endpoint by method and path",
+			annotations: map[string]string{
+				"pp:endpoint": "api-keys.delete-key",
+				"pp:method":   "DELETE",
+				"pp:path":     "/v1/api-keys/{id}",
+			},
+			path: []string{"my-cli", "api-keys"},
+			want: true,
+		},
+		{
+			name: "delete sessions endpoint by method and path",
+			annotations: map[string]string{
+				"pp:endpoint": "sessions.destroy",
+				"pp:method":   "DELETE",
+				"pp:path":     "/sessions/{session_id}",
+			},
+			path: []string{"my-cli", "sessions"},
+			want: true,
+		},
+		{
+			name: "delete tokens endpoint by method and endpoint resource fallback",
+			annotations: map[string]string{
+				"pp:endpoint": "tokens.delete",
+				"pp:method":   "DELETE",
+			},
+			path: []string{"my-cli", "tokens"},
+			want: true,
+		},
+		{
+			name: "delete ordinary resource is not destructive-at-auth",
+			annotations: map[string]string{
+				"pp:endpoint": "users.delete-user",
+				"pp:method":   "DELETE",
+				"pp:path":     "/users/{id}",
+			},
+			path: []string{"my-cli", "users"},
+			want: false,
+		},
+		{
+			name: "delete auth resource without DELETE method is not method-classified",
+			annotations: map[string]string{
+				"pp:endpoint": "api-keys.delete-preview",
+				"pp:method":   "GET",
+				"pp:path":     "/api-keys/{id}",
+			},
+			path: []string{"my-cli", "api-keys"},
+			want: false,
+		},
+		{
 			name:        "annotation case-insensitive",
 			annotations: map[string]string{"pp:endpoint": "API-Keys.Refresh-Key"},
 			path:        []string{"my-cli", "API-Keys"},
@@ -73,6 +140,18 @@ func TestIsDestructiveAtAuth(t *testing.T) {
 			annotations: map[string]string{"mcp:read-only": "true"},
 			path:        []string{"my-cli", "store", "refresh"},
 			want:        false,
+		},
+		{
+			name:        "destructive-auth false annotation exempts generated refresh helper",
+			annotations: map[string]string{"pp:destructive-auth": "false"},
+			path:        []string{"my-cli", "auth", "refresh-queries"},
+			want:        false,
+		},
+		{
+			name:        "destructive-auth true annotation opts in",
+			annotations: map[string]string{"pp:destructive-auth": "true"},
+			path:        []string{"my-cli", "auth", "metadata"},
+			want:        true,
 		},
 		{
 			name: "empty inputs",
