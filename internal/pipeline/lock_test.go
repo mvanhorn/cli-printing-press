@@ -557,6 +557,40 @@ func TestPromoteWorkingCLI_RequiresPhase5GateForRunstatePromote(t *testing.T) {
 	assert.ErrorIs(t, statErr, os.ErrNotExist)
 }
 
+func TestPromoteWorkingCLI_RejectsManualPhase5Marker(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+	state := NewStateWithRun("test", workDir, "run-manual-phase5", "test-scope")
+	writePhase5GateMarker(t, state.ProofsDir(), Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       state.APIName,
+		RunID:         state.RunID,
+		Status:        "pass",
+		Level:         "manual",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		TestsFailed:   0,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	err := PromoteWorkingCLI("test-pp-cli", workDir, state)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown phase5 acceptance level")
+	assert.Contains(t, err.Error(), "quick, full")
+	assert.Contains(t, err.Error(), "dogfood --live --write-acceptance")
+
+	_, statErr := os.Stat(filepath.Join(PublishedLibraryRoot(), "test"))
+	assert.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
 func TestPromoteWorkingCLI_MinimalStateNoRunstate(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)

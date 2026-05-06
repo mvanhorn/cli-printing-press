@@ -11,6 +11,8 @@ import (
 const (
 	Phase5AcceptanceFilename = "phase5-acceptance.json"
 	Phase5SkipFilename       = "phase5-skip.json"
+
+	phase5AcceptedAcceptanceLevels = "quick, full"
 )
 
 type Phase5AuthContext struct {
@@ -182,7 +184,7 @@ func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
 		}
 		return true, ""
 	default:
-		return false, fmt.Sprintf("unknown phase5 acceptance level %q", marker.Level)
+		return false, fmt.Sprintf("unknown phase5 acceptance level %q (accepted: %s; prefer `printing-press dogfood --live --write-acceptance` to generate %s)", marker.Level, phase5AcceptedAcceptanceLevels, Phase5AcceptanceFilename)
 	}
 }
 
