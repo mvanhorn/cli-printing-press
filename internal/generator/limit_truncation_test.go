@@ -1,10 +1,13 @@
 package generator
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestEndpointNeedsClientLimit verifies the gate that controls when
@@ -95,4 +98,41 @@ func TestEndpointNeedsClientLimit(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestClientLimitGenerationEmitsHelperAndBuilds(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("limit-truncate")
+	apiSpec.Resources = map[string]spec.Resource{
+		"orders": {
+			Description: "Manage orders",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:      "GET",
+					Path:        "/orders",
+					Description: "List orders",
+					Params: []spec.Param{{
+						Name:    "limit",
+						Type:    "integer",
+						Default: 5,
+					}},
+					Response: spec.ResponseDef{Type: "array", Item: "Order"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "limit-truncate-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(helpersSrc), "func truncateJSONArray(")
+
+	commandSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_orders.go")
+	require.Contains(t, commandSrc, "truncateJSONArray(data,",
+		"generated command should call truncateJSONArray for non-paginated limit endpoint")
+
+	runGoCommand(t, outputDir, "build", "./internal/cli")
 }
