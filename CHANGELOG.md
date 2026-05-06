@@ -1,5 +1,26 @@
 # Changelog
 
+## [3.10.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.9.1...v3.10.0) (2026-05-06)
+
+
+### Features
+
+* **cli:** widen auth env-var model with kind/required/sensitive metadata ([#632](https://github.com/mvanhorn/cli-printing-press/issues/632)) ([#639](https://github.com/mvanhorn/cli-printing-press/issues/639)) ([3bc1a23](https://github.com/mvanhorn/cli-printing-press/commit/3bc1a23a1a7108cf097c3b0c8fd184959f83e1e9))
+* **skills:** data-driven Phase 6 menu and hold-path support ([#637](https://github.com/mvanhorn/cli-printing-press/issues/637)) ([0310d3f](https://github.com/mvanhorn/cli-printing-press/commit/0310d3fbd4d3b4288685fc5a97d46824a7af478d))
+* **skills:** flatten retro issues and dedup against open issues ([#641](https://github.com/mvanhorn/cli-printing-press/issues/641)) ([7eb951e](https://github.com/mvanhorn/cli-printing-press/commit/7eb951e07f994c44846b5a7119b69527274201c9))
+
+
+### Bug Fixes
+
+* **cli:** correct no-auth 403 hints ([#629](https://github.com/mvanhorn/cli-printing-press/issues/629)) ([013f92a](https://github.com/mvanhorn/cli-printing-press/commit/013f92adc95676bed9d321e7f9d7758d43c52e11))
+* **cli:** generate usable oauth auth config ([#617](https://github.com/mvanhorn/cli-printing-press/issues/617)) ([5b489da](https://github.com/mvanhorn/cli-printing-press/commit/5b489da7bc09991d53251be1e847a348b408b016))
+* **cli:** harden destructive auth dogfood skips ([#628](https://github.com/mvanhorn/cli-printing-press/issues/628)) ([5004e4b](https://github.com/mvanhorn/cli-printing-press/commit/5004e4b0788dad5975eb07822417f06ca1e62957))
+* **cli:** infer bearer auth from inline params ([#634](https://github.com/mvanhorn/cli-printing-press/issues/634)) ([b4a95cb](https://github.com/mvanhorn/cli-printing-press/commit/b4a95cb7d9c803354741dc63ffcc051e4b82d2aa))
+* **cli:** kind-aware auth env-vars and promoted-command --limit ([#645](https://github.com/mvanhorn/cli-printing-press/issues/645)) ([0cf04f7](https://github.com/mvanhorn/cli-printing-press/commit/0cf04f73a03c16f87ca3c504bce7cceb3d8ed0e3))
+* **cli:** preserve canonical auth env hints ([#633](https://github.com/mvanhorn/cli-printing-press/issues/633)) ([6b5945f](https://github.com/mvanhorn/cli-printing-press/commit/6b5945fdec5af4255b655ebda6a20faf4305b990))
+* **cli:** require explicit retry no-ops ([#635](https://github.com/mvanhorn/cli-printing-press/issues/635)) ([cb3ef87](https://github.com/mvanhorn/cli-printing-press/commit/cb3ef87308c006da61b3b5e7305b0b2095540f15))
+* **cli:** score composed auth and shell continuations ([#636](https://github.com/mvanhorn/cli-printing-press/issues/636)) ([2035b27](https://github.com/mvanhorn/cli-printing-press/commit/2035b276df2ea411c39d2b36382a2a3c5153d4b8))
+
 ## [3.9.1](https://github.com/mvanhorn/cli-printing-press/compare/v3.9.0...v3.9.1) (2026-05-05)
 
 
