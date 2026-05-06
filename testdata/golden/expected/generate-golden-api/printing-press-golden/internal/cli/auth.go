@@ -14,7 +14,7 @@ import (
 func newAuthCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "auth",
-		Short: "Manage PRINTING_PRESS_GOLDEN_API_KEY credentials",
+		Short: "Manage authentication for Printing Press Studio",
 	}
 
 	cmd.AddCommand(newAuthStatusCmd(flags))

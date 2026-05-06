@@ -14,7 +14,7 @@ import (
 func newAuthCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "auth",
-		Short: "Manage RICH_AUTH_API_KEY credentials",
+		Short: "Manage authentication for Printing Press Rich",
 	}
 
 	cmd.AddCommand(newAuthStatusCmd(flags))

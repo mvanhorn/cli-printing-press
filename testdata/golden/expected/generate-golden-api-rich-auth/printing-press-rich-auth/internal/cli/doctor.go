@@ -121,7 +121,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			if os.Getenv("RICH_AUTH_SESSION_COOKIE") != "" || (cfg != nil && cfg.AuthHeader() != "") {
 				authEnvSet = append(authEnvSet, "RICH_AUTH_SESSION_COOKIE")
 			} else {
-				authEnvInfo = append(authEnvInfo, "RICH_AUTH_SESSION_COOKIE populated automatically by auth login --chrome")
+				authEnvInfo = append(authEnvInfo, "RICH_AUTH_SESSION_COOKIE set with auth set-token")
 			}
 			if strings.Contains("Optional token for elevated read limits.", " OR ") {
 				authEnvOptionalNames = append(authEnvOptionalNames, "RICH_AUTH_OPTIONAL_TOKEN")

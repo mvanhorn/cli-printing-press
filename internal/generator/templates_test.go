@@ -38,7 +38,8 @@ func TestDoctorTemplateRendersKindAwareAuthEnvPresence(t *testing.T) {
 
 	require.Contains(t, content, `report["env_vars"] = "ERROR missing required: " + strings.Join(authEnvRequiredMissing, ", ")`)
 	require.Contains(t, content, `authEnvInfo = append(authEnvInfo, "RICH_AUTH_CLIENT_ID set during auth login")`)
-	require.Contains(t, content, `authEnvInfo = append(authEnvInfo, "RICH_AUTH_COOKIES populated automatically by auth login --chrome")`)
+	require.Contains(t, content, `authEnvInfo = append(authEnvInfo, "RICH_AUTH_COOKIES set with auth set-token")`)
+	require.NotContains(t, content, `RICH_AUTH_COOKIES populated automatically by auth login --chrome`)
 	require.Contains(t, content, `report["env_vars"] = "INFO set one of: " + strings.Join(authEnvOptionalNames, " or ")`)
 }
 

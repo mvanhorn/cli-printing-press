@@ -248,7 +248,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			if os.Getenv("{{.Name}}") != "" || (cfg != nil && cfg.AuthHeader() != "") {
 				authEnvSet = append(authEnvSet, "{{.Name}}")
 			} else {
-				authEnvInfo = append(authEnvInfo, "{{.Name}} populated automatically by auth login --chrome")
+				authEnvInfo = append(authEnvInfo, {{printf "%q" (printf "%s %s" .Name (authHarvestedEnvHint $.Auth))}})
 			}
 {{- end}}
 {{- end}}

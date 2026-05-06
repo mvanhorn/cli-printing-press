@@ -50,10 +50,10 @@ func TestAuthNotOptional_DoctorReportsFailure(t *testing.T) {
 		"default spec must not emit the optional-prefixed status")
 }
 
-// TestAuthOptional_AuthCmdShortNamesEnvVar verifies the `auth` subcommand's
-// help Short description names the specific env var and flags the optionality
-// when auth.optional is set.
-func TestAuthOptional_AuthCmdShortNamesEnvVar(t *testing.T) {
+// TestAuthOptional_AuthCmdShortUsesProseName verifies the `auth` subcommand's
+// help Short description names the API, not a single env var, while preserving
+// optional-auth framing.
+func TestAuthOptional_AuthCmdShortUsesProseName(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("opt-auth-short")
@@ -65,13 +65,13 @@ func TestAuthOptional_AuthCmdShortNamesEnvVar(t *testing.T) {
 
 	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)
-	require.Contains(t, string(authSrc), `"Manage the optional OPT_AUTH_KEY`,
-		"auth parent command Short must name the env var and flag optionality")
+	require.Contains(t, string(authSrc), `"Manage optional authentication for Opt Auth Short"`,
+		"auth parent command Short must name the API and flag optionality")
 }
 
-// TestAuthRequired_AuthCmdShortNamesEnvVar verifies the default (required)
-// branch still names the env var — just without the "optional" flag.
-func TestAuthRequired_AuthCmdShortNamesEnvVar(t *testing.T) {
+// TestAuthRequired_AuthCmdShortUsesProseName verifies the default (required)
+// branch names the API instead of overfitting to one env var.
+func TestAuthRequired_AuthCmdShortUsesProseName(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("req-auth-short")
@@ -82,8 +82,8 @@ func TestAuthRequired_AuthCmdShortNamesEnvVar(t *testing.T) {
 
 	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 	require.NoError(t, err)
-	require.Contains(t, string(authSrc), `"Manage REQ_AUTH_KEY credentials"`,
-		"required-auth parent command Short names the env var without optional framing")
+	require.Contains(t, string(authSrc), `"Manage authentication for Req Auth Short"`,
+		"required-auth parent command Short names the API without optional framing")
 }
 
 // TestAuthOptional_ReadmeFramesAsOptional verifies the README template
