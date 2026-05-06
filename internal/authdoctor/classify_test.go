@@ -229,6 +229,8 @@ func TestSameAuthEnvVarNamesIgnoresOrder(t *testing.T) {
 }
 
 func TestClassifyEnvVarSpecsKindAwareReporting(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
 	m := &pipeline.ToolsManifest{
 		Auth: pipeline.ManifestAuth{
 			Type:    "composed",
@@ -253,6 +255,36 @@ func TestClassifyEnvVarSpecsKindAwareReporting(t *testing.T) {
 		if findings[idx].Status != StatusInfo {
 			t.Fatalf("finding %d should be informational, got %+v", idx, findings[idx])
 		}
+	}
+	if findings[3].Reason != "populated by auth login; run auth login --chrome" {
+		t.Fatalf("composed harvested env var should keep chrome login hint, got %q", findings[3].Reason)
+	}
+}
+
+func TestClassifyHarvestedBearerEnvVarDoesNotSuggestChrome(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	m := &pipeline.ToolsManifest{
+		Auth: pipeline.ManifestAuth{
+			Type: "bearer_token",
+			EnvVarSpecs: []spec.AuthEnvVar{{
+				Name:      "BEARER_ACCESS_TOKEN",
+				Kind:      spec.AuthEnvVarKindHarvested,
+				Required:  false,
+				Sensitive: true,
+			}},
+		},
+	}
+
+	findings := Classify("bearer-api", m, envFrom(nil))
+	if len(findings) != 1 {
+		t.Fatalf("want one finding, got %d", len(findings))
+	}
+	if findings[0].Status != StatusInfo {
+		t.Fatalf("want missing harvested bearer token to report info, got %+v", findings[0])
+	}
+	if findings[0].Reason != "populated by auth login; run the printed CLI's auth command" {
+		t.Fatalf("bearer harvested env var should not suggest chrome login, got %q", findings[0].Reason)
 	}
 }
 

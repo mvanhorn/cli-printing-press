@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 
@@ -178,23 +177,26 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 			authEnvVarSpecs = append([]apispec.AuthEnvVar(nil), spec.Auth.EnvVarSpecs...)
 		}
 	}
+	authEnvVarNameSet := make(map[string]struct{}, len(authEnvVarSpecs))
+	for _, envVar := range authEnvVarSpecs {
+		authEnvVarNameSet[envVar.Name] = struct{}{}
+	}
 	// Read the CLI's config.go to discover what env vars it actually reads.
 	// This catches cases where Claude wired a different env var name than
 	// what the spec declares or the API name implies.
 	if discovered := discoverCLIEnvVars(cfg.Dir); len(discovered) > 0 {
 		for _, ev := range discovered {
-			found := slices.ContainsFunc(authEnvVarSpecs, func(envVar apispec.AuthEnvVar) bool {
-				return envVar.Name == ev
-			})
-			if !found {
-				authEnvVarSpecs = append(authEnvVarSpecs, apispec.AuthEnvVar{
-					Name:      ev,
-					Kind:      apispec.AuthEnvVarKindPerCall,
-					Required:  true,
-					Sensitive: true,
-					Inferred:  true,
-				})
+			if _, found := authEnvVarNameSet[ev]; found {
+				continue
 			}
+			authEnvVarNameSet[ev] = struct{}{}
+			authEnvVarSpecs = append(authEnvVarSpecs, apispec.AuthEnvVar{
+				Name:      ev,
+				Kind:      apispec.AuthEnvVarKindPerCall,
+				Required:  true,
+				Sensitive: true,
+				Inferred:  true,
+			})
 		}
 	}
 	authEnvVars := authEnvVarSpecNames(authEnvVarSpecs)

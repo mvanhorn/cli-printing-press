@@ -91,13 +91,26 @@ func classifyAuthBlock(slug string, auth pipeline.ManifestAuth, env getEnv, tier
 	}
 
 	findings := make([]Finding, 0, len(envVarSpecs))
+	harvestedAuthFileExists := false
+	if hasHarvestedEnvVar(envVarSpecs) {
+		harvestedAuthFileExists = authFileExists(slug)
+	}
 	for _, envVar := range envVarSpecs {
-		findings = append(findings, classifyEnvSpec(slug, displayAuthType, envVar, env))
+		findings = append(findings, classifyEnvSpec(slug, displayAuthType, authType, envVar, env, harvestedAuthFileExists))
 	}
 	if auth.RequiresBrowserSession {
 		findings = append(findings, browserSessionProofFinding(slug, displayAuthType))
 	}
 	return findings
+}
+
+func hasHarvestedEnvVar(envVarSpecs []spec.AuthEnvVar) bool {
+	for _, envVar := range envVarSpecs {
+		if envVar.Kind == spec.AuthEnvVarKindHarvested {
+			return true
+		}
+	}
+	return false
 }
 
 func sameAuthEnvVarNames(envVars []string, envVarSpecs []spec.AuthEnvVar) bool {
@@ -161,22 +174,22 @@ func classifyEnv(slug, authType, envVar string, env getEnv) Finding {
 	return base
 }
 
-func classifyEnvSpec(slug, authType string, envVar spec.AuthEnvVar, env getEnv) Finding {
+func classifyEnvSpec(slug, displayAuthType, authType string, envVar spec.AuthEnvVar, env getEnv, harvestedAuthFileExists bool) Finding {
 	kind := envVar.Kind
 	if kind == "" {
 		kind = spec.AuthEnvVarKindPerCall
 	}
 	switch kind {
 	case spec.AuthEnvVarKindAuthFlowInput:
-		return classifyInfoEnv(slug, authType, envVar.Name, env, "only needed during auth login")
+		return classifyInfoEnv(slug, displayAuthType, envVar.Name, env, "only needed during auth login")
 	case spec.AuthEnvVarKindHarvested:
 		if env(envVar.Name) != "" {
-			return classifyEnv(slug, authType, envVar.Name, env)
+			return classifyEnv(slug, displayAuthType, envVar.Name, env)
 		}
-		if authFileExists(slug) {
+		if harvestedAuthFileExists {
 			return Finding{
 				API:    slug,
-				Type:   authType,
+				Type:   displayAuthType,
 				EnvVar: envVar.Name,
 				Status: StatusOK,
 				Reason: "auth file present",
@@ -184,16 +197,25 @@ func classifyEnvSpec(slug, authType string, envVar spec.AuthEnvVar, env getEnv) 
 		}
 		return Finding{
 			API:    slug,
-			Type:   authType,
+			Type:   displayAuthType,
 			EnvVar: envVar.Name,
 			Status: StatusInfo,
-			Reason: "populated by auth login; run auth login --chrome",
+			Reason: harvestedAuthReason(authType),
 		}
 	default:
 		if !envVar.Required && env(envVar.Name) == "" {
-			return classifyInfoEnv(slug, authType, envVar.Name, env, "optional auth env var is not set")
+			return classifyInfoEnv(slug, displayAuthType, envVar.Name, env, "optional auth env var is not set")
 		}
-		return classifyEnv(slug, authType, envVar.Name, env)
+		return classifyEnv(slug, displayAuthType, envVar.Name, env)
+	}
+}
+
+func harvestedAuthReason(authType string) string {
+	switch authType {
+	case "cookie", "composed":
+		return "populated by auth login; run auth login --chrome"
+	default:
+		return "populated by auth login; run the printed CLI's auth command"
 	}
 }
 

@@ -217,6 +217,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			authEnvOptionalNames := []string{}
 			// Validation rejects multi-OR-group specs upstream, so the single optional-satisfied state is sufficient at runtime.
 			authEnvOptionalSatisfied := false
+{{- if hasAuthEnvVarKind .Auth.EnvVarSpecs "harvested"}}
+			authHeader := ""
+			if cfg != nil {
+				authHeader = cfg.AuthHeader()
+			}
+{{- end}}
 {{- range .Auth.EnvVarSpecs}}
 {{- if eq .Kind "per_call"}}
 {{- if .Required}}
@@ -245,7 +251,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				authEnvInfo = append(authEnvInfo, "{{.Name}} set during auth login")
 			}
 {{- else if eq .Kind "harvested"}}
-			if os.Getenv("{{.Name}}") != "" || (cfg != nil && cfg.AuthHeader() != "") {
+			if os.Getenv("{{.Name}}") != "" || authHeader != "" {
 				authEnvSet = append(authEnvSet, "{{.Name}}")
 			} else {
 				authEnvInfo = append(authEnvInfo, {{printf "%q" (printf "%s %s" .Name (authHarvestedEnvHint $.Auth))}})

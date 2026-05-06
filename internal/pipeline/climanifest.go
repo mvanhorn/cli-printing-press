@@ -269,8 +269,8 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.MCPPublicToolCount = public
 	m.MCPReady = computeMCPReady(parsed.Auth.Type)
 	m.AuthType = parsed.Auth.Type
-	m.AuthEnvVars = manifestAuthEnvVars(parsed)
 	envVarSpecs := manifestAuthEnvVarSpecs(parsed)
+	m.AuthEnvVars = manifestAuthEnvVarNames(parsed, envVarSpecs)
 	if !spec.AllAuthEnvVarSpecsInferred(envVarSpecs) {
 		m.AuthEnvVarSpecs = envVarSpecs
 	}
@@ -300,6 +300,13 @@ func manifestAuthEnvVars(parsed *spec.APISpec) []string {
 		return nil
 	}
 	envVarSpecs := manifestAuthEnvVarSpecs(parsed)
+	return manifestAuthEnvVarNames(parsed, envVarSpecs)
+}
+
+func manifestAuthEnvVarNames(parsed *spec.APISpec, envVarSpecs []spec.AuthEnvVar) []string {
+	if parsed == nil {
+		return nil
+	}
 	if len(envVarSpecs) > 0 {
 		return authEnvVarSpecNames(envVarSpecs)
 	}

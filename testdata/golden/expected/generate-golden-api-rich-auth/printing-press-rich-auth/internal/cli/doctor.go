@@ -103,6 +103,10 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			authEnvOptionalNames := []string{}
 			// Validation rejects multi-OR-group specs upstream, so the single optional-satisfied state is sufficient at runtime.
 			authEnvOptionalSatisfied := false
+			authHeader := ""
+			if cfg != nil {
+				authHeader = cfg.AuthHeader()
+			}
 			if os.Getenv("RICH_AUTH_API_KEY") != "" {
 				authEnvSet = append(authEnvSet, "RICH_AUTH_API_KEY")
 			} else {
@@ -118,7 +122,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			} else {
 				authEnvInfo = append(authEnvInfo, "RICH_AUTH_CLIENT_SECRET set during auth login")
 			}
-			if os.Getenv("RICH_AUTH_SESSION_COOKIE") != "" || (cfg != nil && cfg.AuthHeader() != "") {
+			if os.Getenv("RICH_AUTH_SESSION_COOKIE") != "" || authHeader != "" {
 				authEnvSet = append(authEnvSet, "RICH_AUTH_SESSION_COOKIE")
 			} else {
 				authEnvInfo = append(authEnvInfo, "RICH_AUTH_SESSION_COOKIE set with auth set-token")

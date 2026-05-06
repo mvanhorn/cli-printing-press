@@ -308,9 +308,10 @@ func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
 		return nil
 	}
 	vars := make(map[string]MCPBVar, len(authEnvVarSpecs)+len(m.EndpointTemplateVars))
+	singleAuthEnvVar := len(authEnvVarSpecs) == 1
 	for _, envVar := range authEnvVarSpecs {
 		required := envVar.Required && !m.AuthOptional
-		title, description := authUserConfigText(m, envVar, required)
+		title, description := authUserConfigText(m, envVar, required, singleAuthEnvVar)
 		vars[userConfigKey(envVar.Name)] = MCPBVar{
 			Type:        mcpbVarTypeString,
 			Title:       title,
@@ -376,9 +377,9 @@ func endpointTemplateVarDescription(templateVar, envVar string) string {
 	return fmt.Sprintf("Sets %s for the endpoint template variable {%s}.", envVar, templateVar)
 }
 
-func authUserConfigText(m CLIManifest, envVar spec.AuthEnvVar, required bool) (string, string) {
+func authUserConfigText(m CLIManifest, envVar spec.AuthEnvVar, required bool, singleAuthEnvVar bool) (string, string) {
 	title := envVar.Name
-	if len(mcpbUserConfigAuthEnvVars(m)) == 1 {
+	if singleAuthEnvVar {
 		if override := strings.TrimSpace(m.AuthTitle); override != "" {
 			title = override
 		}
