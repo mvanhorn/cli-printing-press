@@ -19,9 +19,6 @@ metadata:
       - name: RICH_AUTH_CLIENT_SECRET
         required: false
         description: "Set during application setup."
-      - name: RICH_AUTH_SESSION_COOKIE
-        required: false
-        description: "Populated automatically by `auth login`."
       - name: RICH_AUTH_OPTIONAL_TOKEN
         required: false
         description: "Set this OR another listed env var. Optional token for elevated read limits."

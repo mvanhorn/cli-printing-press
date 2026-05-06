@@ -271,13 +271,6 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 					"description": "Set during initial auth setup.",
 				},
 				{
-					"name": "RICH_AUTH_SESSION_COOKIE",
-					"kind": "harvested",
-					"required": false,
-					"sensitive": true,
-					"description": "Populated automatically by auth login.",
-				},
-				{
 					"name": "RICH_AUTH_OPTIONAL_TOKEN",
 					"kind": "per_call",
 					"required": false,

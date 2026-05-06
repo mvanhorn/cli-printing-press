@@ -16,6 +16,7 @@ metadata:
     envVars:
 {{- if .Auth.EnvVarSpecs}}
 {{- range .Auth.EnvVarSpecs}}
+{{- if ne .Kind "harvested"}}
       - name: {{.Name}}
         required: {{.Required}}
 {{- if and (eq .Kind "per_call") .Required}}
@@ -30,6 +31,7 @@ metadata:
         description: "Populated automatically by `auth login`."
 {{- else}}
         description: "{{if .Description}}{{yamlDoubleQuoted .Description}}{{else}}{{.Name}} credential.{{end}}"
+{{- end}}
 {{- end}}
 {{- end}}
 {{- else}}

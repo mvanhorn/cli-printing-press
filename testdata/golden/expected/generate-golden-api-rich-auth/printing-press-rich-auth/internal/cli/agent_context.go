@@ -126,13 +126,6 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 			Description: "Set during initial auth setup.",
 		},
 		{
-			Name:      "RICH_AUTH_SESSION_COOKIE",
-			Kind:      "harvested",
-			Required:  false,
-			Sensitive: true,
-			Description: "Populated automatically by auth login.",
-		},
-		{
 			Name:      "RICH_AUTH_OPTIONAL_TOKEN",
 			Kind:      "per_call",
 			Required:  false,

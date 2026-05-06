@@ -408,6 +408,54 @@ func TestSkillFrontmatterMetadataIsClawHubCompliantNestedYAML(t *testing.T) {
 		"metadata must not be a JSON-string blob anymore")
 }
 
+func TestSkillFrontmatterEnvVarsOmitsHarvestedAuthEnvVars(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("clawauth")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:   "bearer_token",
+		Header: "Authorization",
+		Format: "Bearer {token}",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "CLAW_API_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true, Description: "API token."},
+			{Name: "CLAW_CLIENT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: false, Sensitive: false, Description: "OAuth client id."},
+			{Name: "CLAW_SESSION_COOKIE", Kind: spec.AuthEnvVarKindHarvested, Required: false, Sensitive: true, Description: "Harvested session cookie."},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), "clawauth-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	content := string(skill)
+
+	require.True(t, strings.HasPrefix(content, "---\n"))
+	end := strings.Index(content[4:], "\n---\n")
+	require.NotEqual(t, -1, end)
+	body := strings.TrimSuffix(strings.TrimPrefix(content[:4+end+5], "---\n"), "---\n")
+
+	var parsed struct {
+		Metadata struct {
+			Openclaw struct {
+				EnvVars []struct {
+					Name string `yaml:"name"`
+				} `yaml:"envVars"`
+			} `yaml:"openclaw"`
+		} `yaml:"metadata"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(body), &parsed),
+		"frontmatter must parse as nested YAML; content was:\n%s", body)
+
+	var names []string
+	for _, envVar := range parsed.Metadata.Openclaw.EnvVars {
+		names = append(names, envVar.Name)
+	}
+	assert.ElementsMatch(t, []string{"CLAW_API_TOKEN", "CLAW_CLIENT_ID"}, names)
+	assert.NotContains(t, body, "CLAW_SESSION_COOKIE",
+		"harvested env vars are populated by auth login and must not be user-facing OpenClaw envVars")
+}
+
 // TestSkillFrontmatterMetadataDefaultsCategoryToOther asserts that when the
 // spec has no Category set, the install module path falls back to 'other'.
 func TestSkillFrontmatterMetadataDefaultsCategoryToOther(t *testing.T) {

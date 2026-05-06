@@ -424,6 +424,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 {{- if .Auth.EnvVarSpecs}}
 			"env_vars": []map[string]any{
 {{- range .Auth.EnvVarSpecs}}
+{{- if ne .Kind "harvested"}}
 				{
 					"name": {{printf "%q" .Name}},
 					"kind": {{printf "%q" .Kind}},
@@ -435,6 +436,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 					"description": {{printf "%q" .Description}},
 {{- end}}
 				},
+{{- end}}
 {{- end}}
 			},
 {{- else if .Auth.EnvVars}}
@@ -462,6 +464,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 {{- if $tier.Auth.EnvVarSpecs}}
 					"env_vars": []map[string]any{
 {{- range $tier.Auth.EnvVarSpecs}}
+{{- if ne .Kind "harvested"}}
 						{
 							"name": {{printf "%q" .Name}},
 							"kind": {{printf "%q" .Kind}},
@@ -473,6 +476,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 							"description": {{printf "%q" .Description}},
 {{- end}}
 						},
+{{- end}}
 {{- end}}
 					},
 {{- else if $tier.Auth.EnvVars}}
