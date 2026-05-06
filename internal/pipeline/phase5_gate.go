@@ -154,7 +154,13 @@ func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
 	level := phase5Level(marker)
 	switch level {
 	case "quick":
-		// Mirror finalizeLiveDogfoodReport's quick PASS condition exactly:
+		if marker.TestsFailed != 0 {
+			return false, fmt.Sprintf("phase5 quick acceptance has %d failed tests", marker.TestsFailed)
+		}
+		if marker.TestsPassed != marker.MatrixSize {
+			return false, fmt.Sprintf("phase5 quick acceptance requires all %d counted tests passed, got %d", marker.MatrixSize, marker.TestsPassed)
+		}
+		// Mirror finalizeLiveDogfoodReport's quick PASS condition:
 		// MatrixSize >= 4 AND Passed+Skipped >= min(5, MatrixSize). The runner
 		// is the source of truth; this gate must accept any marker the runner
 		// would have accepted. Drift here was the original bug (#589/#590).

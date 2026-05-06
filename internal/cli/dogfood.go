@@ -100,7 +100,7 @@ func printLiveDogfoodReport(report *pipeline.LiveDogfoodReport) {
 	fmt.Println("================================")
 	fmt.Println()
 	fmt.Printf("Level:      %s\n", report.Level)
-	fmt.Printf("Verdict:    %s\n", report.Verdict)
+	fmt.Printf("Verdict:    %s%s\n", report.Verdict, liveDogfoodVerdictQualifier(report))
 	fmt.Printf("Commands:   %d\n", len(report.Commands))
 	fmt.Printf("Tests:      %d passed, %d failed, %d skipped\n", report.Passed, report.Failed, report.Skipped)
 	fmt.Println()
@@ -112,6 +112,16 @@ func printLiveDogfoodReport(report *pipeline.LiveDogfoodReport) {
 		}
 		fmt.Println()
 	}
+}
+
+func liveDogfoodVerdictQualifier(report *pipeline.LiveDogfoodReport) string {
+	if report == nil || report.Verdict != "PASS" {
+		return ""
+	}
+	if report.Skipped > 0 {
+		return " (with skips)"
+	}
+	return " (all tests run)"
 }
 
 func printDogfoodReport(report *pipeline.DogfoodReport) {

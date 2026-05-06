@@ -1019,18 +1019,11 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport) {
 			report.Skipped++
 		}
 	}
-	// Failed-or-empty wins: any real failure or a fully empty matrix is FAIL.
-	// Quick runs whose whole slice was explicitly skipped are no-signal, not
-	// a failing matrix: the classifier did its job and avoided live mutation.
-	// The quick-level PASS arm uses min(5, MatrixSize) for the threshold so
-	// single-command quick runs (~4 entries when all probes succeed) can
-	// PASS, while keeping a MatrixSize >= 4 floor that blocks pathological
-	// matrices where most entries skipped.
+	// Failed-or-empty wins. Skips are non-failures, but quick acceptance still
+	// needs enough counted signal before it can write an acceptance marker.
 	switch {
-	case report.Failed > 0 || (report.MatrixSize == 0 && (report.Level != "quick" || report.Skipped == 0)):
+	case report.Failed > 0 || report.MatrixSize == 0:
 		report.Verdict = "FAIL"
-	case report.Level == "quick" && report.MatrixSize == 0 && report.Skipped > 0:
-		report.Verdict = "PASS"
 	case report.Level == "quick" && report.MatrixSize >= 4 && report.Passed+report.Skipped >= min(5, report.MatrixSize):
 		report.Verdict = "PASS"
 	case report.Level == "quick":

@@ -82,6 +82,28 @@ func TestRunLiveDogfoodWritesAcceptanceMarkerOnPass(t *testing.T) {
 	assert.True(t, validation.Passed, validation.Detail)
 }
 
+func TestRunLiveDogfoodDoesNotWriteAcceptanceMarkerOnFail(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodFixture(t, false)
+	markerPath := filepath.Join(t.TempDir(), Phase5AcceptanceFilename)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:              dir,
+		BinaryName:          binaryName,
+		Level:               "full",
+		Timeout:             2 * time.Second,
+		WriteAcceptancePath: markerPath,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "FAIL", report.Verdict, report.Tests)
+	assert.Greater(t, report.Failed, 0)
+
+	_, statErr := os.Stat(markerPath)
+	assert.True(t, os.IsNotExist(statErr), "failed live dogfood must not write an acceptance marker")
+}
+
 func TestRunLiveDogfoodErrorPathAcceptsExpectedNonZeroExit(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
@@ -236,7 +258,7 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 			want: "PASS",
 		},
 		{
-			name:  "quick 3 pass + 3 skip — MatrixSize floor (3) below 4",
+			name:  "quick 3 pass + 3 skip - skips do not satisfy the signal floor",
 			level: "quick",
 			results: []LiveDogfoodTestResult{
 				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
@@ -268,7 +290,7 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 			name:    "quick all skip — MatrixSize 0",
 			level:   "quick",
 			results: []LiveDogfoodTestResult{mkResult(LiveDogfoodStatusSkip), mkResult(LiveDogfoodStatusSkip)},
-			want:    "PASS",
+			want:    "FAIL",
 		},
 		{
 			name:    "full all skip — MatrixSize 0 still blocks acceptance",

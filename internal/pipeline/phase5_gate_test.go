@@ -39,7 +39,7 @@ func TestValidatePhase5Gate_PassMarker(t *testing.T) {
 	assert.Equal(t, filepath.Join(proofsDir, Phase5AcceptanceFilename), result.MarkerPath)
 }
 
-func TestValidatePhase5Gate_QuickPassAllowsOneNonBlockingMiss(t *testing.T) {
+func TestValidatePhase5Gate_QuickPassRejectsFailures(t *testing.T) {
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
 	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
@@ -55,11 +55,11 @@ func TestValidatePhase5Gate_QuickPassAllowsOneNonBlockingMiss(t *testing.T) {
 	})
 
 	result := ValidatePhase5Gate(proofsDir, manifest)
-	require.True(t, result.Passed, result.Detail)
-	assert.Equal(t, "pass", result.Status)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "failed tests")
 }
 
-func TestValidatePhase5Gate_QuickPassRequiresFiveOfSix(t *testing.T) {
+func TestValidatePhase5Gate_QuickRejectsFailuresBeforeThreshold(t *testing.T) {
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
 	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
@@ -76,7 +76,7 @@ func TestValidatePhase5Gate_QuickPassRequiresFiveOfSix(t *testing.T) {
 
 	result := ValidatePhase5Gate(proofsDir, manifest)
 	require.False(t, result.Passed)
-	assert.Contains(t, result.Detail, "5/6")
+	assert.Contains(t, result.Detail, "failed tests")
 }
 
 func TestValidatePhase5Gate_QuickPassFiveOfFive(t *testing.T) {
@@ -140,6 +140,48 @@ func TestValidatePhase5Gate_QuickPassCountsSkippedTowardThreshold(t *testing.T) 
 	assert.Equal(t, "pass", result.Status)
 }
 
+func TestValidatePhase5Gate_QuickFailWithSkipsBelowMatrixFloor(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "pass",
+		Level:         "quick",
+		MatrixSize:    2,
+		TestsPassed:   2,
+		TestsSkipped:  2,
+		TestsFailed:   0,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "matrix_size >= 4")
+}
+
+func TestValidatePhase5Gate_QuickPassWithSkipsRequiresCountedTestsPassed(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "pass",
+		Level:         "quick",
+		MatrixSize:    4,
+		TestsPassed:   3,
+		TestsSkipped:  1,
+		TestsFailed:   0,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "counted tests passed")
+}
+
 func TestValidatePhase5Gate_QuickFailMatrixBelowFloor(t *testing.T) {
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
@@ -175,7 +217,7 @@ func TestValidatePhase5Gate_QuickFailBelowThresholdAtMatrixFour(t *testing.T) {
 
 	result := ValidatePhase5Gate(proofsDir, manifest)
 	require.False(t, result.Passed)
-	assert.Contains(t, result.Detail, "4/4")
+	assert.Contains(t, result.Detail, "counted tests passed")
 }
 
 func TestValidatePhase5Gate_FullPassRejectsFailures(t *testing.T) {
