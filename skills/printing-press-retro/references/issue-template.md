@@ -1,53 +1,58 @@
 # GitHub Issue Template
 
-Read this file during Phase 6 when creating GitHub issue(s) from retro findings.
+Read this file during Phase 6 when filing GitHub issues from retro findings.
 
-The shape depends on the work-unit count:
+Each work unit becomes one flat top-level issue. There is no parent, no
+sub-issue hierarchy. The "Findings absorbed" section inside each issue
+groups the 1+ findings that share a single fix.
 
-- **0 WUs** — Phase 5.6 already gated this out; no issue gets filed.
-- **1 WU** — single issue; the WU is inlined in the issue body, no parent/child
-  hierarchy. Labels are still applied so cross-retro filtering still works.
-- **2+ WUs** — **parent issue** (retro context, summary tables, artifact links) +
-  **one sub-issue per WU** (full WU details + absorbed findings + prior-retro
-  links). Sub-issues are linked to the parent via the GitHub sub-issues REST
-  API. This is the structural fix for "monster issues that are impossible to
-  track" — each WU gets its own open/closed/assignee state.
+This shape was chosen deliberately:
+
+- A retro of N work units produces N issues, each independently trackable —
+  open, close, assign, comment.
+- The default GitHub issue list is not duplicated; there is no parent to
+  mirror children, no progress bar to drift, no parent-not-auto-closing
+  bookkeeping.
+- Cross-retro discovery still works through labels: `comp:<slug>` surfaces
+  every retro WU touching one component; `priority:P1` surfaces high-priority
+  work across retros.
+- Inter-issue links inside the same retro are not auto-generated. They appear
+  only when an issue genuinely relates to another (a contradicting prior
+  retro, or a `related-area` open issue surfaced by the dedup scan).
 
 ## Formatting rules
 
-**Never use `#N` notation** for finding or work unit numbers in *summary* text where
-GitHub auto-linking would be confusing. Use the `F` prefix for findings (`F1`, `F3`)
-and `WU-` for work units. **Real GitHub issue references in the `Related prior retros`
-block and the parent's "Sub-issues" backfill table are intentional `#N`** — that's
-where we *want* GitHub to auto-link the timelines together.
+Use the `F` prefix for findings (`F1`, `F3`) and `WU-` for work units inside
+issue bodies. **Real GitHub issue references in the `Related issues` block
+are intentional `#N`** — that's where we *want* GitHub to auto-link the
+timelines together, because those references reach across retros and across
+filed work.
 
 ## Execution principles (read before running any step)
 
-The retro doc and the manuscript zip are the durable audit trail; the issue
-body is an action surface. Optimize the issue path for speed and signal:
+The retro doc and the manuscript zip are the durable audit trail; each
+issue is an action surface. Optimize the issue path for speed and signal:
 
-- **Issue body is a slim subset.** Per-finding fields in the issue templates
-  below are intentionally fewer than in the retro doc. Don't re-introduce the
-  triage-rationale fields (`Scorer correct?`, `Cross-API check`, `Worth a
-  fix?`, `Inherent or fixable?`, per-finding `Test`) — they live in the retro
-  doc, which the parent issue links via Artifacts. A maintainer reading the
-  issue wants the action; the audit trail is one click away.
-- **Generate bodies inline, never via the Write tool.** Use shell heredocs into
-  variables in a single `Bash` invocation. Writing each body to a file and
-  passing `--body-file` adds a tool round-trip per issue and is the single
-  largest source of perceived latency the skill historically had.
-- **One Bash call where the work allows it.** Phase 6 Step 4 should typically be
-  a single Bash invocation that defines all bodies via heredocs, creates the
-  parent, creates and links sub-issues in parallel, and edits the parent's
-  WU-table backfill — surface the produced URLs at the end.
-- **Use `gh api --method POST /repos/.../issues` instead of `gh issue create`
-  for sub-issues.** The REST endpoint returns `id`, `number`, and `html_url` in
-  one response, so the separate `gh api repos/.../issues/N` lookup for the
-  integer DB id is no longer needed (the sub-issues link API requires that DB
-  id, not the issue number).
-- **Run sub-issue creates in parallel.** Each WU is independent of every other
-  WU once the parent number is known. Background subshells writing to indexed
-  temp files, then `wait`, then read in order — the pattern is in Step P3.
+- **Issue body is self-contained for debugging.** An agent picking up an
+  issue should be able to start fixing it without opening the manuscripts
+  attachment. Concrete file paths, line numbers, command output, and spec
+  excerpts go in the body. The retro doc URL stays as a supplement, not a
+  required read.
+- **Don't manufacture confidence.** If the retro analyst can't confidently
+  isolate one root cause or one fix, the body should say so — list candidate
+  causes/fixes and how to disambiguate. Wrong-but-plausible prescriptions
+  are worse than honest uncertainty.
+- **Title is succinct and problem-stated.** Describes what's wrong, not how
+  to fix it. No priority prefix (`[P1]`), no WU ordinal (`WU-1`) — both
+  belong on labels and in the user-facing summary, not in the title that
+  someone scans across retros.
+- **Generate bodies inline, never via the Write tool.** Use shell heredocs
+  into variables in a single `Bash` invocation. Writing each body to a file
+  and passing `--body-file` adds a tool round-trip per issue and is the
+  single largest source of perceived latency the skill historically had.
+- **Run issue creates and comments in parallel.** Each WU's filing is
+  independent of every other WU. Background subshells writing to indexed
+  temp files, then `wait`, then read in order — the pattern is in Step 3.
 
 ## Step 1: Ensure labels exist (idempotent, create-only)
 
@@ -60,8 +65,8 @@ clobber them).
 ```bash
 REPO="mvanhorn/cli-printing-press"
 
-# Fast-path: list existing labels once. If all 11 canonical labels are already
-# present, skip the create loop entirely — saves up to 11 gh API calls per
+# Fast-path: list existing labels once. If all 10 canonical labels are already
+# present, skip the create loop entirely — saves up to 10 gh API calls per
 # retro on a repo where prior retros already provisioned the set.
 EXISTING_LABELS=$(gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name' 2>/dev/null || echo "")
 NEED_CREATE=false
@@ -69,7 +74,7 @@ for required in \
   "comp:generator" "comp:openapi-parser" "comp:spec-parser" \
   "comp:scorer" "comp:skill" "comp:catalog" \
   "priority:P1" "priority:P2" "priority:P3" \
-  "retro" "retro-parent"; do
+  "retro"; do
   if ! printf '%s\n' "$EXISTING_LABELS" | grep -qFx "$required"; then
     NEED_CREATE=true
     break
@@ -79,9 +84,6 @@ done
 if [ "$NEED_CREATE" = true ]; then
   ensure_label() {
     local name="$1" color="$2" desc="$3"
-    # Create only if missing; failure (label exists, no permissions, rate
-    # limit) is non-fatal — issue creation later will fail loudly if a
-    # required label is genuinely absent.
     gh label create "$name" --repo "$REPO" --color "$color" --description "$desc" 2>/dev/null || true
   }
 
@@ -93,500 +95,379 @@ if [ "$NEED_CREATE" = true ]; then
   ensure_label "comp:skill"          "5319e7" "skills/printing-press/SKILL.md and related skill instructions"
   ensure_label "comp:catalog"        "5319e7" "catalog/ entries"
 
-  # Priority labels (3) — duplicate the title prefix to enable label-based filtering.
+  # Priority labels (3) — drive priority-based filtering. The label is the
+  # primary carrier; titles do not duplicate the priority prefix.
   ensure_label "priority:P1" "b60205" "Retro priority P1 (high)"
   ensure_label "priority:P2" "d93f0b" "Retro priority P2 (medium)"
   ensure_label "priority:P3" "fbca04" "Retro priority P3 (low)"
 
-  # Marker labels
-  ensure_label "retro"        "0e8a16" "Issue produced by /printing-press-retro"
-  ensure_label "retro-parent" "0e8a16" "Parent retro issue with sub-issue WUs"
+  # Marker label
+  ensure_label "retro" "0e8a16" "Issue produced by /printing-press-retro"
 fi
 ```
 
-### Priority labels
+The `retro-parent` label is intentionally omitted — there are no parent
+issues. If the label exists from prior retros, leave it; the skill never
+creates new issues with it.
 
-Apply `priority:P<n>` matching the WU's internal priority. The label and the
-`[P<n>]` title prefix carry the same value — the label enables
-`gh issue list --label priority:P1` filtering across retros, the title prefix
-gives at-a-glance scanning in issue lists.
+## Step 2: Sort work units
 
-## Step 2: Resolve the work-unit count and dispatch
-
-```bash
-WU_COUNT="${#WORK_UNITS[@]}"  # populated from Phase 5.5
-
-if [ "$WU_COUNT" -eq 0 ]; then
-  echo "Phase 5.6 should have gated this out. Aborting."
-  exit 1
-elif [ "$WU_COUNT" -eq 1 ]; then
-  ISSUE_MODE="single"
-else
-  ISSUE_MODE="parent-with-subs"
-fi
-```
-
-## Single-issue mode (`WU_COUNT == 1`)
-
-### Title
-
-```
-Retro: <api-display-name> — 1 work unit (P<n>)
-```
-
-Example: `Retro: Cal.com — 1 work unit (P1)`
-
-### Body
-
-```markdown
-## Session Stats
-
-| Metric | Value |
-|--------|-------|
-| API | <api-display-name> |
-| Spec source | <catalog / browser-sniffed / docs / HAR> |
-| Scorecard | <score>/100 (<grade>) |
-| Verify pass rate | <X>% |
-| Fix loops | <N> |
-| Manual code edits | <N> |
-| Features built from scratch | <N> |
-| Triage | <K> candidates → 1 filed / <S> skipped / <X> dropped |
-
-## What the Printing Press Got Right
-
-- <pattern>
-- <pattern>
-
-## Work Unit
-
-### WU-1: <title>
-
-- **Priority:** P<n>
-- **Component:** <comp-slug>
-- **Complexity:** small / medium / large
-- **Goal:** <one sentence>
-- **Target:** <component and area>
-- **Acceptance criteria:**
-  - positive: ...
-  - negative: ...
-- **Scope boundary:** ...
-- **Dependencies:** <other WUs or "None">
-
-### Findings absorbed
-
-> Triage rationale (Scorer correct?, Cross-API check, Worth a fix?, Inherent or
-> fixable?) and the long-form root-cause prose live in the retro doc linked
-> under Artifacts. The bullets below are the action surface.
-
-#### F<n>: <title> (<category>)
-
-- **What happened:** <one-sentence symptom>
-- **Frequency:** every / most / subclass:<name>
-- **Durable fix:** <prescription, with code snippet if it clarifies the change>
-- **Evidence:** <session moment that surfaced this — file, line, command, or proof artifact>
-- **Related prior retros:**
-  - #<num> (`<api-slug>` retro, `aligned`/`contradicts`/`extends`) — <one-sentence note>
-  - *(or "None" if Phase 3 Step D found no matches)*
-
-*(Repeat for each absorbed finding. Per-finding positive/negative tests fold
-into the WU's Acceptance criteria above, prefixed `F<n>:` so each finding is
-verifiable.)*
-
-## Skipped
-
-| Finding | Title | Why it didn't make it (Step B / Step D / Step G) |
-|---------|-------|--------------------------------------------------|
-| F<n>    | ...   | ...                                              |
-
-*(Omit if no findings were skipped.)*
-
-## Artifacts
-
-| Artifact | Link |
-|----------|------|
-| Retro document | <$RETRO_DOC_URL or "Upload failed — see below"> |
-| Manuscripts (research + proofs) | <$MANUSCRIPTS_URL or "Upload failed — see below"> |
-| Generated CLI source code | <$CLI_SOURCE_URL or "Upload failed — see below"> |
-
----
-
-*Generated by `/printing-press-retro` · [CLI Printing Press](https://github.com/mvanhorn/cli-printing-press)*
-```
-
-### Create
+Sort WUs by priority: P1 first, then P2, then P3. Within a priority bucket,
+keep the order they appeared in Phase 5.5 (typically by ascending WU number,
+but the skill may have intentionally ordered them by dependency — preserve
+that).
 
 ```bash
-ISSUE_URL=$(gh issue create \
+# SORTED_WORK_UNITS is populated from $WORK_UNITS sorted P1 → P3.
+```
+
+## Step 2.5: Dedup against open issues
+
+Before filing, check whether any WUs match an issue that's already open.
+If they do, comment on the existing issue with new evidence rather than
+file a duplicate.
+
+This is a single `gh` call followed by per-WU agent reasoning over titles.
+**It does not need to be bulletproof** — false negatives (filing new when
+one exists) are recoverable; false positives (commenting on the wrong
+issue) are uglier. **Bias toward `file-new` when uncertain.**
+
+### Fetch open retro issues
+
+```bash
+EXISTING_OPEN_RETROS=$(gh issue list \
   --repo "$REPO" \
-  --title "$ISSUE_TITLE" \
-  --body "$BODY" \
   --label retro \
-  --label "priority:P${PRIORITY_NUM}" \
-  --label "comp:${COMPONENT_SLUG}")
+  --state open \
+  --limit 200 \
+  --json number,title,url 2>/dev/null \
+  || echo "[]")
 ```
 
-## Parent-with-sub-issues mode (`WU_COUNT >= 2`)
+A single call. No per-WU label filtering — the agent reasons over titles
+across the whole open-retro set so a related-area issue under a different
+component still surfaces.
 
-### Step P1: Build the WU bodies first (in priority order)
+### Classify each WU against the candidate set
 
-Sort WUs by priority: P1 first, then P2, then P3. Within a priority bucket, keep
-the order they appeared in Phase 5.5 (typically by ascending WU number, but the
-skill may have intentionally ordered them by dependency — preserve that).
+For each WU in `$SORTED_WORK_UNITS`, the skill executor (the agent running
+this skill) reads the WU's title and summary, then scans
+`$EXISTING_OPEN_RETROS` for matches. Per-candidate verdict:
 
-For each WU, build the sub-issue body:
+| Verdict | When | Effect |
+|---|---|---|
+| `same` | Title and summary describe the same root problem already filed (high confidence) | Marks WU for `comment` instead of create |
+| `related-area` | Different problem but in adjacent territory worth cross-referencing (cursor handling vs. cursor format on same template; auth refresh on different envelope) | Will be cited in the new issue's `Related issues` block via `#N` |
+| `unrelated` | No meaningful overlap | Ignored |
+
+Per WU, fold the per-candidate verdicts into a single `$WU_DEDUP[i]` slot:
+
+```
+$WU_DEDUP[i]:
+  "comment:NN"        — at least one candidate was `same`. Comment on NN.
+                        If multiple `same`, pick the most-recent and treat
+                        the rest as related (folded into $WU_RELATED).
+  "" (empty)          — no `same`. The agent will create a new issue.
+```
+
+And capture related issues separately:
+
+```
+$WU_RELATED[i]:
+  comma-separated list of issue numbers classified as `related-area`,
+  combined with prior-retro issue numbers from Phase 3 Step D.
+  Empty when neither scan surfaced anything.
+```
+
+The decisions feed forward into the Phase 6 Step 2 confirm summary so the
+user sees what will happen and can override before anything is filed.
+
+## Step 3: Build bodies and execute (in parallel)
+
+For each WU, build either an issue body or a comment body, then run `gh`
+in a background subshell. `wait`, then collect.
+
+### Issue title (for new issues)
+
+Succinct, problem-stated. Examples:
+
+- ✅ `Spec-declared version headers dropped during generation`
+- ❌ `Emit Stripe-Version header from spec` *(prescribes the fix)*
+- ✅ `Sync template misroutes cursor pagination`
+- ❌ `[P1] WU-1: Switch sync template to cursor-aware pagination` *(priority + WU number + prescription)*
+
+### Issue body (for new issues)
+
+The body must be self-contained — an agent should be able to act on it
+without opening the manuscripts attachment. Use the shape below.
 
 ```markdown
-**Parent retro:** #<PARENT_NUMBER>  *(backfilled after parent is created — see Step P3)*
-
-## Work Unit
-
-- **Priority:** P<n>
-- **Component:** <comp-slug>
-- **Complexity:** small / medium / large
-- **Goal:** <one sentence>
-- **Target:** <component and area>
-- **Acceptance criteria:**
-  - positive: ...
-  - negative: ...
-- **Scope boundary:** ...
-- **Dependencies:** <other WU sub-issue numbers, backfilled if known, otherwise "None">
-
-## Findings absorbed
-
-> Triage rationale (Scorer correct?, Cross-API check, Worth a fix?, Inherent or
-> fixable?) and the long-form root-cause prose live in the retro doc linked
-> from the parent issue under Artifacts. The bullets below are the action
-> surface.
-
-#### F<n>: <title> (<category>)
-
-- **What happened:** <one-sentence symptom>
-- **Frequency:** every / most / subclass:<name>
-- **Durable fix:** <prescription, with code snippet if it clarifies the change>
-- **Evidence:** <session moment — file, line, command, or proof artifact>
-- **Related prior retros:**
-  - #<num> (`<api-slug>` retro, `aligned`/`contradicts`/`extends`) — <one-sentence note>
-  - *(or "None")*
-
-*(Repeat for each absorbed finding. Per-finding positive/negative tests fold
-into the WU's Acceptance criteria above, prefixed `F<n>:` so each finding
-remains independently verifiable.)*
-
----
-
-*Sub-issue of the [<api-display-name> retro](#<PARENT_NUMBER>) · Generated by `/printing-press-retro`*
-```
-
-Sub-issue title:
-
-```
-[P<n>] WU-<m>: <title>
-```
-
-Examples: `[P1] WU-1: Emit Stripe-Version header from spec`, `[P2] WU-2: Default
-auth scaffold for cookie+CSRF APIs`.
-
-### Step P2: Create the parent issue
-
-Title:
-
-```
-Retro: <api-display-name> — <N> findings, <M> work units
-```
-
-Body — note the explicit placeholder `<!-- WU_TABLE -->`. This is replaced in
-Step P5 once sub-issue URLs are known.
-
-```markdown
-## Session Stats
-
-| Metric | Value |
-|--------|-------|
-| API | <api-display-name> |
-| Spec source | <catalog / browser-sniffed / docs / HAR> |
-| Scorecard | <score>/100 (<grade>) |
-| Verify pass rate | <X>% |
-| Fix loops | <N> |
-| Manual code edits | <N> |
-| Features built from scratch | <N> |
-| Triage | <K> candidates → <D> filed / <S> skipped / <X> dropped |
+> Filed by `/printing-press-retro` from a run of **<api-display-name>**
+> (scorecard <score>/100, <X>% verify pass).
 
 ## Summary
 
-<2-3 sentences that tell the maintainer what to do without making them open
-sub-issues: the headline pattern across findings (e.g., "framework command
-templates ship without `--json` or `Examples:` blocks"), the component(s)
-touched, and which WU is the highest-leverage fix. Skip if the WU table below
-already conveys this clearly — never restate it twice.>
+<2-4 sentences: what the problem is and why it matters. Stay
+problem-shaped, not solution-shaped. Someone reading this paragraph alone
+should understand what they're being asked to address.>
 
-## What the Printing Press Got Right
+## Where to look
 
-- <pattern>
-- <pattern>
+- **Component:** <comp-slug>
+- **Likely area:** <path or files in the printing-press repo, e.g. `internal/generator/templates/`>
+- **Triggered when:** <spec shape, API behavior, or runtime context that surfaces this>
 
-## Skipped
+## What we observed
 
-| Finding | Title | Why it didn't make it |
-|---------|-------|------------------------|
-| F<n> | ... | Step B / Step D / Step G: ... |
+<Concrete evidence usable to reproduce or locate the issue without opening
+attachments. This is the meat of the body — be specific.>
 
-*Omit if empty. Drops (rejected at Phase 2.5 triage) live in the full retro
-document linked under Artifacts — they're triage hygiene, not maintainer signal.*
+- File paths and line numbers (in the printed CLI or the printing-press repo)
+- Command + output snippet showing the failure
+- Spec snippet showing the trigger condition
+- Error messages, stack traces, or scorer output verbatim where relevant
 
-## Work Units
+## Suspected root cause
 
-Each WU is filed as a sub-issue for independent tracking. GitHub renders the
-sub-issue list above the comments; the table below mirrors it for at-a-glance
-reading and search.
+<Hypothesis with explicit confidence level. Don't manufacture certainty.>
 
-<!-- WU_TABLE -->
+- **If certain:** "The template at `internal/generator/templates/sync.go.tmpl`
+  hardcodes `pageToken` as the cursor param name."
+- **If uncertain:** "Likely the openapi-parser is dropping the version
+  header on parse, but the generator template could also be omitting the
+  emit. Either could be the root cause; verify by checking parser output
+  before pinning a fix."
+
+## Suggested direction
+
+<Proposed fix direction with explicit confidence level. Offer alternatives
+when reasonable doubts exist; always include a verification step.>
+
+- **If certain:** "Add a profiler check in `internal/openapi/parser.go`
+  that detects spec-declared version headers and writes them to the
+  generator config. Emit them in the client template alongside auth headers."
+- **If uncertain:** "Direction A: surface the field through the parser;
+  Direction B: post-process in the generator. A is more durable but
+  requires changes in two packages. Reproduce the failure with the
+  manuscripts evidence first, then choose."
+
+## Acceptance criteria
+
+- positive: <test that proves the fix works on the API class this targets>
+- negative: <test that proves the fix doesn't regress unaffected APIs>
+
+## Frequency
+
+every / most APIs / subclass:<name> / this API only
+
+## Complexity
+
+small / medium / large
+
+## Scope boundary
+
+<What this issue does NOT include. Helps prevent fix creep. Skip if not applicable.>
+
+## Dependencies
+
+<Free text — only if there's a real prerequisite. Most issues say "None.">
+
+## Findings absorbed
+
+*Omit if 1:1 (the body above is the finding).*
+
+#### F<n>: <title>
+
+- <one-sentence symptom>
+- Evidence: <where it showed up>
+
+#### F<n>: ...
+
+## Related issues
+
+<Combined output from Phase 3 Step D (prior-retro doc archaeology) and
+Step 2.5 (open-issue dedup `related-area` classification). Auto-cross-links
+via `#N`. Sibling WUs in this same retro do NOT appear here unless one is
+genuinely a prerequisite.>
+
+- #<num> — prior retro (`aligned`/`contradicts`/`extends`): <one-sentence note>
+- #<num> — open issue (`related-area`): <one-sentence note on the adjacency>
+- *(or "None" when neither scan surfaced anything)*
 
 ## Artifacts
 
 | Artifact | Link |
 |----------|------|
-| Retro document | <$RETRO_DOC_URL or "Upload failed — see below"> |
-| Manuscripts (research + proofs) | <$MANUSCRIPTS_URL or "Upload failed — see below"> |
-| Generated CLI source code | <$CLI_SOURCE_URL or "Upload failed — see below"> |
+| Retro document | <$RETRO_DOC_URL or "Upload failed — see local copy"> |
+| Manuscripts (research + proofs) | <$MANUSCRIPTS_URL or "Upload failed — see local copy"> |
+| Generated CLI source code | <$CLI_SOURCE_URL or "Upload failed — see local copy"> |
 
 ---
 
 *Generated by `/printing-press-retro` · [CLI Printing Press](https://github.com/mvanhorn/cli-printing-press)*
 ```
 
-Create the parent. The parent gets `retro` + `retro-parent` labels and **no
-priority/component labels** — those are per-WU concerns.
+What's *not* in the body, by design:
 
-```bash
-PARENT_URL=$(gh issue create \
-  --repo "$REPO" \
-  --title "$PARENT_TITLE" \
-  --body "$PARENT_BODY" \
-  --label retro \
-  --label retro-parent)
+- **Session Stats table** — collapsed into the one-line provenance header.
+  The retro doc has the full stats.
+- **What the Printing Press Got Right** — retro-wide; lives in the retro doc.
+- **Skipped table** — retro-wide triage record; lives in the retro doc.
+- **Auto-cross-references to sibling WUs in this same retro** — these are
+  noise unless one WU is genuinely a prerequisite for another (and that
+  goes in `Dependencies:` as free text, not as an auto-linked `#N`).
 
-if ! echo "$PARENT_URL" | grep -q '^https://'; then
-  echo "WARNING: parent issue creation failed. Falling back to manual filing instructions."
-  GH_AVAILABLE=false
-else
-  GH_AVAILABLE=true
-  PARENT_NUM=$(echo "$PARENT_URL" | grep -oE '[0-9]+$')
-  echo "Parent issue: $PARENT_URL"
-fi
+### Comment body (for `comment:#N` decisions)
+
+```markdown
+**Recurrence in <api-display-name> retro** *(<retro-date>)*
+
+Same problem surfaced again in this run. New observations:
+
+- <concrete observation 1: file:line, command output, etc.>
+- <concrete observation 2>
+
+Updated frequency estimate: <every / most / subclass:<name>>
+
+[Full retro doc](<$RETRO_DOC_URL>) · [Manuscripts](<$MANUSCRIPTS_URL>)
+
+---
+
+*Comment added by `/printing-press-retro` from the <api-display-name> retro.*
 ```
 
-If `GH_AVAILABLE=false`, skip Steps P3-P5 and continue with the graceful
-degradation path documented at the bottom of this file. Do not create WU issues
-without a parent issue number.
+The comment is intentionally short — it's recurrence evidence, not a
+re-statement of the original issue. The retro doc carries the full audit
+trail for anyone who wants more context.
 
-### Step P3: Create each WU sub-issue and link via the sub-issues API (parallel)
-
-Spawn one background subshell per WU. Each subshell:
-
-1. Creates the issue via `gh api --method POST /repos/.../issues` — the REST
-   endpoint returns `id`, `number`, and `html_url` in a single response, so
-   the legacy "`gh issue create` + `gh api repos/.../issues/N` to fetch the DB
-   id" pair collapses into one round trip per WU.
-2. Links the new issue under the parent via the sub-issues REST endpoint.
-3. Writes a fixed-shape result file to `$WU_TMPDIR/wu-$idx` (one field per
-   line — robust against tabs or other whitespace in titles).
-
-After `wait`, the parent shell collects results in original order so the WU
-table builds correctly. Per-WU work has no cross-WU dependency once
-`$PARENT_NUM` is known, so parallelism is safe and saves roughly `(N-1) ×
-round-trip-latency` on N WUs.
-
-The parent body's findings/WU tables reference `WU-N` by ordinal, so each WU
-contributes a row to the final WU table whether it succeeded or failed.
-Successful ones link to their sub-issue; failed ones surface as `FAILED —
-file manually` so the maintainer sees the gap.
+### Parallel execution
 
 ```bash
-declare -a WU_URLS WU_NUMS WU_TITLES WU_PRIORITIES WU_COMP_SLUGS WU_COMPLEXITIES WU_STATUSES
-declare -a FAILED_WUS  # human-readable failures for the final summary
-SUB_ISSUE_API_OK=true
+declare -a OUTCOME_KIND OUTCOME_URL OUTCOME_TITLE OUTCOME_PRIORITY OUTCOME_COMP OUTCOME_COMPLEXITY
+declare -a FAILED_ISSUES
 
-WU_TMPDIR=$(mktemp -d)
+ISSUE_TMPDIR=$(mktemp -d)
 
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   (
     WU="${SORTED_WORK_UNITS[$wu_idx]}"
-    # Each WU contributes: $WU_TITLE, $WU_BODY_TEMPLATE, $WU_PRIORITY_NUM,
-    # $WU_PRIORITY_LABEL, $WU_COMP_SLUG, and $WU_COMPLEXITY.
+    DEDUP="${WU_DEDUP[$wu_idx]}"  # "comment:NN" or empty
 
-    WU_BODY="${WU_BODY_TEMPLATE/<PARENT_NUMBER>/$PARENT_NUM}"
+    # Each WU contributes: $WU_TITLE, $WU_BODY, $WU_COMMENT_BODY,
+    # $WU_PRIORITY_NUM, $WU_PRIORITY_LABEL, $WU_COMP_SLUG, $WU_COMPLEXITY.
 
-    STATUS=""
-    WU_DB_ID=""
-    WU_NUM=""
-    WU_URL=""
+    KIND=""
+    URL=""
     FAIL_MSG=""
 
-    # Single-call create: returns id + number + html_url as a tab-separated
-    # triple. gh's bundled jq runs the filter against the response.
-    if WU_TSV=$(gh api --method POST "/repos/$REPO/issues" \
-        -f title="$WU_TITLE" \
-        -f body="$WU_BODY" \
-        -f "labels[]=retro" \
-        -f "labels[]=priority:P${WU_PRIORITY_NUM}" \
-        -f "labels[]=comp:${WU_COMP_SLUG}" \
-        --jq '"\(.id)\t\(.number)\t\(.html_url)"' 2>&1) \
-        && [ -n "$WU_TSV" ] && [[ "$WU_TSV" == *https://* ]]; then
-      IFS=$'\t' read -r WU_DB_ID WU_NUM WU_URL <<<"$WU_TSV"
-
-      # Link the new issue under the parent. The REST sub-issues endpoint
-      # exists on github.com and most GHES versions; older GHES instances
-      # return 404 here.
-      if LINK_OUT=$(gh api --method POST \
-          -H "Accept: application/vnd.github+json" \
-          -H "X-GitHub-Api-Version: 2022-11-28" \
-          "/repos/$REPO/issues/$PARENT_NUM/sub_issues" \
-          -F "sub_issue_id=$WU_DB_ID" \
-          --jq '.id // .number // empty' 2>&1) \
-          && [ -n "$LINK_OUT" ]; then
-        STATUS="ok"
+    if [[ "$DEDUP" == comment:* ]]; then
+      ISSUE_NUM="${DEDUP#comment:}"
+      if URL=$(gh issue comment "$ISSUE_NUM" \
+            --repo "$REPO" \
+            --body "$WU_COMMENT_BODY" 2>&1) \
+            && [[ "$URL" == https://* ]]; then
+        KIND="commented"
       else
-        STATUS="link-failed"
-        FAIL_MSG="WU-$((wu_idx+1)) (#$WU_NUM) — sub-issue link failed (cross-link in body remains)"
+        KIND="comment-failed"
+        FAIL_MSG="$WU_TITLE — comment on #$ISSUE_NUM failed: ${URL:-no-response}"
+        URL=""
       fi
     else
-      STATUS="create-failed"
-      FAIL_MSG="WU-$((wu_idx+1)) ($WU_TITLE) — issue creation failed: ${WU_TSV:-no-response}"
+      if URL=$(gh issue create \
+            --repo "$REPO" \
+            --title "$WU_TITLE" \
+            --body "$WU_BODY" \
+            --label retro \
+            --label "priority:P${WU_PRIORITY_NUM}" \
+            --label "comp:${WU_COMP_SLUG}" 2>&1) \
+            && [[ "$URL" == https://* ]]; then
+        KIND="created"
+      else
+        KIND="create-failed"
+        FAIL_MSG="$WU_TITLE — issue creation failed: ${URL:-no-response}"
+        URL=""
+      fi
     fi
 
-    # One field per line — survives tabs/spaces in titles.
     {
-      printf '%s\n' "$STATUS"
-      printf '%s\n' "$WU_URL"
-      printf '%s\n' "$WU_NUM"
+      printf '%s\n' "$KIND"
+      printf '%s\n' "$URL"
       printf '%s\n' "$WU_TITLE"
       printf '%s\n' "$WU_PRIORITY_LABEL"
       printf '%s\n' "$WU_COMP_SLUG"
       printf '%s\n' "$WU_COMPLEXITY"
       printf '%s\n' "$FAIL_MSG"
-    } > "$WU_TMPDIR/wu-$wu_idx"
+    } > "$ISSUE_TMPDIR/issue-$wu_idx"
   ) &
 done
 
 wait
 
-# Collect in original WU order so the table indexing (WU-1, WU-2, ...) matches
-# what the parent body's prose references.
 for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   {
-    IFS= read -r STATUS
+    IFS= read -r KIND
     IFS= read -r URL
-    IFS= read -r NUM
     IFS= read -r TITLE
     IFS= read -r PRIORITY
     IFS= read -r COMP
     IFS= read -r COMPLEXITY
     IFS= read -r FAIL_MSG
-  } < "$WU_TMPDIR/wu-$wu_idx"
+  } < "$ISSUE_TMPDIR/issue-$wu_idx"
 
-  WU_URLS+=("$URL")
-  WU_NUMS+=("$NUM")
-  WU_TITLES+=("$TITLE")
-  WU_PRIORITIES+=("$PRIORITY")
-  WU_COMP_SLUGS+=("$COMP")
-  WU_COMPLEXITIES+=("$COMPLEXITY")
-  WU_STATUSES+=("$STATUS")
+  OUTCOME_KIND+=("$KIND")
+  OUTCOME_URL+=("$URL")
+  OUTCOME_TITLE+=("$TITLE")
+  OUTCOME_PRIORITY+=("$PRIORITY")
+  OUTCOME_COMP+=("$COMP")
+  OUTCOME_COMPLEXITY+=("$COMPLEXITY")
 
-  case "$STATUS" in
-    ok)
-      echo "WU-$((wu_idx+1)) linked: $URL"
+  case "$KIND" in
+    created|commented)
+      echo "${KIND^}: $URL"
       ;;
-    create-failed)
+    create-failed|comment-failed)
       echo "WARNING: $FAIL_MSG"
-      FAILED_WUS+=("$FAIL_MSG")
-      ;;
-    link-failed)
-      echo "WARNING: $FAIL_MSG"
-      FAILED_WUS+=("$FAIL_MSG")
-      SUB_ISSUE_API_OK=false
+      FAILED_ISSUES+=("$FAIL_MSG")
       ;;
   esac
 done
 
-rm -rf "$WU_TMPDIR"
+rm -rf "$ISSUE_TMPDIR"
 ```
 
-Three distinct failure modes, three distinct outcomes:
+Failure modes:
 
-| Mode | What happened | What the parent shows | What the user sees in Phase 6 Step 6 |
-|------|---------------|----------------------|--------------------------------------|
-| `create-failed` | `gh api POST /repos/.../issues` for the WU returned no usable response | WU table row reads `FAILED — file manually` | `FAILED_WUS` summary names this WU |
-| `link-failed` | Issue created OK but sub-issues REST POST failed | WU table row links the issue normally; native sub-issue panel won't include it | `FAILED_WUS` notes the issue exists but isn't natively linked |
-| `ok` | Issue created and linked | WU table row links the issue; native sub-issue panel includes it | nothing |
-
-### Step P4: Build the sub-issue table
-
-The table iterates over **every** WU, including failed ones. A failed WU's row
-reads `FAILED — file manually` in the Sub-issue column so the parent doesn't
-silently advertise sub-issues that don't exist.
-
-```bash
-WU_TABLE=$'| WU | Title | Priority | Component | Complexity | Sub-issue |\n'
-WU_TABLE+=$'|----|-------|----------|-----------|------------|-----------|\n'
-
-for i in "${!WU_TITLES[@]}"; do
-  if [ "${WU_STATUSES[$i]}" = "create-failed" ]; then
-    SUB_CELL="**FAILED — file manually**"
-  else
-    SUB_CELL="#${WU_NUMS[$i]}"
-  fi
-  WU_TABLE+="| WU-$((i+1)) | ${WU_TITLES[$i]} | ${WU_PRIORITIES[$i]} | comp:${WU_COMP_SLUGS[$i]} | ${WU_COMPLEXITIES[$i]} | ${SUB_CELL} |"$'\n'
-done
-```
-
-### Step P5: Edit the parent body to backfill the WU table
-
-```bash
-PARENT_BODY_FINAL="${PARENT_BODY//<!-- WU_TABLE -->/$WU_TABLE}"
-
-gh issue edit "$PARENT_NUM" --repo "$REPO" --body "$PARENT_BODY_FINAL"
-```
-
-If the edit fails (rate limit, permissions), the parent stays with its placeholder
-visible — readable enough that the user understands what's missing, and GitHub's
-native sub-issue panel still shows the linked WUs.
-
-### Step P6: Cross-reference behavior
-
-If `SUB_ISSUE_API_OK=false` (sub-issues endpoint unavailable, e.g., older GHES,
-permissions, feature not enabled), the WUs still cross-link to the parent via
-the `**Parent retro:** #<PARENT_NUMBER>` line in their body. The parent's WU
-table also still shows `#<num>` references, which GitHub auto-links. This means
-even with the sub-issues API completely broken, the relationship between parent
-and WUs is preserved as ordinary issue cross-references — the only thing lost
-is GitHub's native sub-issue rendering and progress bar.
+| Mode | What happened | What the user sees in Phase 6 Step 6 |
+|---|---|---|
+| `created` | New issue filed with labels | Listed in success summary |
+| `commented` | Comment added to existing issue | Listed as "commented on #N" |
+| `create-failed` | `gh issue create` returned no usable URL | `$FAILED_ISSUES` summary; manual filing instructions |
+| `comment-failed` | `gh issue comment` failed | `$FAILED_ISSUES` summary; manual comment instructions |
 
 ## Variables expected
 
 | Variable | Set by | Contains |
-|----------|--------|----------|
+|---|---|---|
 | `$REPO` | This file Step 1 | Owner/repo string for `gh` |
 | `$RETRO_DOC_URL` | artifact-packaging.md | catbox URL for retro .md, or empty |
 | `$MANUSCRIPTS_URL` | artifact-packaging.md | catbox URL or empty |
 | `$CLI_SOURCE_URL` | artifact-packaging.md | catbox URL or empty |
 | `$RETRO_PROOF_PATH` | SKILL.md Phase 5 | Path to saved retro in manuscript proofs |
 | `$RETRO_SCRATCH_PATH` | SKILL.md Phase 5 | Path to temp retro copy under `/tmp/printing-press/retro/` |
-| `$WORK_UNITS` | SKILL.md Phase 5.5 | Array of WU records (title, priority, comp slug, complexity, body) |
-| `$SORTED_WORK_UNITS` | This file Step P1 | `$WORK_UNITS` sorted P1 → P3 |
-| All retro findings | SKILL.md Phase 4 | Used to populate the parent's Summary section and each WU sub-issue's "Findings absorbed" section |
+| `$WORK_UNITS` | SKILL.md Phase 5.5 | Array of WU records |
+| `$SORTED_WORK_UNITS` | This file Step 2 | `$WORK_UNITS` sorted P1 → P3 |
+| `$EXISTING_OPEN_RETROS` | This file Step 2.5 | JSON of open retro-tagged issues |
+| `$WU_DEDUP` | This file Step 2.5 | Per-WU dedup decision: `comment:NN` or empty |
+| `$WU_RELATED` | This file Step 2.5 + Phase 3 Step D | Per-WU comma-separated related-issue numbers (annotated for the body) |
+| All retro findings | SKILL.md Phase 4 | Used to populate each issue's "Findings absorbed" section |
 
 ## Variables produced
 
 | Variable | Contains |
-|----------|----------|
-| `$PARENT_URL` | Parent issue URL (only in `parent-with-subs` mode) |
-| `$PARENT_NUM` | Parent issue number (only in `parent-with-subs` mode) |
-| `$WU_URLS` | Array of WU sub-issue URLs (empty string for failed creations; only in `parent-with-subs` mode) |
-| `$WU_STATUSES` | Array, one per WU: `ok` / `create-failed` / `link-failed` (only in `parent-with-subs` mode) |
-| `$FAILED_WUS` | Array of human-readable failure descriptions; empty if every WU succeeded |
-| `$SUB_ISSUE_API_OK` | `false` if any sub-issue link failed; `true` otherwise |
-| `$ISSUE_URL` | Single issue URL (only in `single` mode) |
-| `$ISSUE_MODE` | `single` or `parent-with-subs` — used by Phase 6 Step 6 to format presentation |
+|---|---|
+| `$OUTCOME_KIND` | Array, one per WU: `created` / `commented` / `create-failed` / `comment-failed` |
+| `$OUTCOME_URL` | Array of issue/comment URLs (empty for failures) |
+| `$FAILED_ISSUES` | Array of human-readable failure descriptions; empty if every WU succeeded |
 
 ## Handling `gh` failure (graceful degradation)
 
@@ -594,31 +475,29 @@ Check `gh` auth at the start of Phase 6 Step 4:
 
 ```bash
 if ! gh auth status 2>/dev/null; then
-  echo "GitHub CLI is not authenticated. Cannot create issue(s)."
+  echo "GitHub CLI is not authenticated. Cannot create issues or comments."
   GH_AVAILABLE=false
 else
   GH_AVAILABLE=true
 fi
 ```
 
-If `GH_AVAILABLE=false`, or if any of the issue-creation commands fail with a
-network/permissions error that the per-step fallbacks didn't already absorb, fall
-back to printing manual filing instructions:
+If `GH_AVAILABLE=false`, or if every per-WU action failed, fall back to
+printing manual filing instructions:
 
 ```bash
-if [ "$GH_AVAILABLE" = false ]; then
+if [ "$GH_AVAILABLE" = false ] || [ "${#FAILED_ISSUES[@]}" -eq "${#SORTED_WORK_UNITS[@]}" ]; then
   echo ""
-  echo "Could not create GitHub issue(s) automatically."
+  echo "Could not create issues or comments automatically."
   echo ""
   echo "To file the retro manually:"
-  echo "  1. Go to: https://github.com/mvanhorn/cli-printing-press/issues/new"
-  echo "  2. Use the title and body from the retro document at:"
+  echo "  1. Go to: https://github.com/mvanhorn/cli-printing-press/issues"
+  echo "  2. Use the body templates from the retro document at:"
   echo "       $RETRO_PROOF_PATH"
   if [ -n "$RETRO_SCRATCH_PATH" ] && [ -f "$RETRO_SCRATCH_PATH" ]; then
     echo "       $RETRO_SCRATCH_PATH"
   fi
-  echo "  3. For the 2+ WU case, file one issue per WU and link them as sub-issues"
-  echo "     via the issue page's 'Sub-issues' panel after creation."
+  echo "  3. File one issue per work unit. Apply labels: retro, priority:P<n>, comp:<slug>."
   if [ -n "$MANUSCRIPTS_URL" ]; then
     echo "  4. Manuscripts: $MANUSCRIPTS_URL"
   fi
@@ -628,18 +507,20 @@ if [ "$GH_AVAILABLE" = false ]; then
 fi
 ```
 
+Per-WU partial failures (some succeed, some don't) are surfaced through
+`$FAILED_ISSUES` in Phase 6 Step 6 — the user sees both the successful
+URLs and the failed ones with manual filing instructions for just the
+missing ones.
+
 ## Handling body size
 
-GitHub issue bodies have a practical limit (~65KB). The breakout into sub-issues
-makes hitting this limit much less likely than the old monster-issue mode, but a
-single WU with many absorbed findings + long prior-retro chains could still
-approach it. If `gh issue create` rejects a body for size:
+GitHub issue bodies have a practical limit (~65KB). The flat-issue shape
+keeps each issue narrow, but a single WU with many absorbed findings +
+long related-issue chains could still approach it. If `gh issue create`
+rejects a body for size:
 
-1. Truncate the absorbed findings within the WU body to: title + one-sentence
-   summary + `Evidence:` link.
-2. Add: "Full finding analysis available in the manuscripts artifact linked
-   from the parent issue."
+1. Truncate "What we observed" and "Findings absorbed" to one bullet
+   per item, with a pointer to the retro doc.
+2. Add: "Full finding analysis available in the retro document linked
+   under Artifacts."
 3. Retry.
-
-For the parent: drop "What the Printing Press Got Right" and the Skipped table
-first; keep Session Stats, the Summary section, the WU table, and Artifacts.
