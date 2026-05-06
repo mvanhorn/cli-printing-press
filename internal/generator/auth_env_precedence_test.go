@@ -11,17 +11,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestAuthHeader_ClientCredentialsAccessTokenWinsOverEnv pins that under
-// OAuth2 client_credentials the cached AccessToken wins over the env-var
-// fallback. The env var is the Client ID, not a usable bearer JWT.
-func TestAuthHeader_ClientCredentialsAccessTokenWinsOverEnv(t *testing.T) {
+// TestAuthHeader_ClientCredentialsDoesNotUseSetupEnvVars pins that under
+// OAuth2 client_credentials the setup inputs are never emitted as bearer
+// headers. Only a minted AccessToken is usable for API requests.
+func TestAuthHeader_ClientCredentialsDoesNotUseSetupEnvVars(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("cc-precedence")
 	apiSpec.Auth = spec.AuthConfig{
-		Type:        "bearer_token",
-		Header:      "Authorization",
-		EnvVars:     []string{"CC_AUTH_TEST_CLIENT_ID"},
+		Type:   "bearer_token",
+		Header: "Authorization",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "CC_AUTH_TEST_CLIENT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: false, Sensitive: false},
+			{Name: "CC_AUTH_TEST_CLIENT_SECRET", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: false, Sensitive: true},
+		},
 		OAuth2Grant: spec.OAuth2GrantClientCredentials,
 		TokenURL:    "https://example.com/token",
 	}
@@ -34,18 +37,24 @@ func TestAuthHeader_ClientCredentialsAccessTokenWinsOverEnv(t *testing.T) {
 	content := string(cfgSrc)
 
 	envCheck := "if c." + resolveEnvVarField("CC_AUTH_TEST_CLIENT_ID") + ` != ""`
+	envSecretCheck := "if c." + resolveEnvVarField("CC_AUTH_TEST_CLIENT_SECRET") + ` != ""`
 	tokenCheck := `if c.AccessToken != ""`
 
-	require.Contains(t, content, envCheck, "AuthHeader must keep the env-var fallback")
 	require.Contains(t, content, tokenCheck, "AuthHeader must check AccessToken")
 
 	body := authHeaderBody(t, content)
-	envIdx := strings.Index(body, envCheck)
-	tokenIdx := strings.Index(body, tokenCheck)
-	require.NotEqual(t, -1, envIdx)
-	require.NotEqual(t, -1, tokenIdx)
-	assert.Less(t, tokenIdx, envIdx,
-		"AccessToken check must appear BEFORE env-var fallback under OAuth2 client_credentials")
+	require.Contains(t, body, tokenCheck)
+	require.NotContains(t, body, envCheck, "client ID must not be used as a bearer token")
+	require.NotContains(t, body, envSecretCheck, "client secret must not be used as a bearer token")
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientContent := string(clientSrc)
+	verifyIdx := strings.Index(clientContent, `cliutil.IsVerifyEnv()`)
+	mintIdx := strings.Index(clientContent, `c.mintClientCredentials(clientID, clientSecret)`)
+	require.NotEqual(t, -1, verifyIdx, "mock verification should short-circuit before token minting")
+	require.NotEqual(t, -1, mintIdx, "client_credentials mint path should still be emitted")
+	assert.Less(t, verifyIdx, mintIdx, "mock verification must not dial the real token endpoint")
 }
 
 func TestAuthHeader_OAuth2AuthorizationCodeUsesToken(t *testing.T) {

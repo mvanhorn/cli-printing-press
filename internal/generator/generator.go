@@ -215,6 +215,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"authCommandShort":       authCommandShort,
 		"authHarvestedEnvHint":   authHarvestedEnvHint,
 		"hasAuthEnvVarKind":      hasAuthEnvVarKind,
+		"isRequestAuthEnvVar":    isRequestAuthEnvVar,
 		"effectiveTier":          effectiveTier,
 		"effectiveSubTier":       effectiveSubTier,
 		"add":                    func(a, b int) int { return a + b },
@@ -832,6 +833,10 @@ func hasAuthEnvVarKind(envVarSpecs []spec.AuthEnvVar, kind string) bool {
 		}
 	}
 	return false
+}
+
+func isRequestAuthEnvVar(envVar spec.AuthEnvVar) bool {
+	return envVar.IsRequestCredential()
 }
 
 func effectiveTier(api *spec.APISpec, resource spec.Resource, endpoint spec.Endpoint) string {

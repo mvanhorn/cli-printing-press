@@ -200,6 +200,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 		}
 	}
 	authEnvVars := authEnvVarSpecNames(authEnvVarSpecs)
+	requestAuthEnvVars := requestAuthEnvVarNames(authEnvVarSpecs)
 	authEnvVarStatuses := summarizeAuthEnvVars(authEnvVarSpecs, cfg.APIKey, cfg.EnvVar, report.Mode)
 	if shouldReportAuthEnvVarStatuses(authEnvVarStatuses) {
 		report.AuthEnvVars = authEnvVarStatuses
@@ -231,16 +232,17 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 					env = append(env, ev+"="+val)
 				}
 			}
-			// Also pass the explicit --api-key under ALL auth env var names so the
-			// generated CLI finds it regardless of which env var it reads.
+			// Also pass the explicit --api-key under request credential env var
+			// names so the generated CLI finds it without rewriting setup-only
+			// OAuth inputs such as client IDs and client secrets.
 			if cfg.APIKey != "" {
-				for _, ev := range authEnvVars {
+				for _, ev := range requestAuthEnvVars {
 					env = append(env, ev+"="+cfg.APIKey)
 				}
 			}
 		} else {
 			env = append(env, baseURLEnvVar+"="+baseURLOverride)
-			for _, ev := range authEnvVars {
+			for _, ev := range requestAuthEnvVars {
 				env = append(env, ev+"=mock-token-for-testing")
 			}
 			// Templated URLs (e.g. /admin/api/{api_version}/graphql.json)
@@ -305,9 +307,24 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 }
 
 func authEnvVarSpecNames(envVarSpecs []apispec.AuthEnvVar) []string {
+	return authEnvVarNamesMatching(envVarSpecs, func(apispec.AuthEnvVar) bool {
+		return true
+	})
+}
+
+func requestAuthEnvVarNames(envVarSpecs []apispec.AuthEnvVar) []string {
+	return authEnvVarNamesMatching(envVarSpecs, func(envVar apispec.AuthEnvVar) bool {
+		return envVar.IsRequestCredential()
+	})
+}
+
+func authEnvVarNamesMatching(envVarSpecs []apispec.AuthEnvVar, matches func(apispec.AuthEnvVar) bool) []string {
 	names := make([]string, 0, len(envVarSpecs))
 	seen := make(map[string]struct{}, len(envVarSpecs))
 	for _, envVar := range envVarSpecs {
+		if !matches(envVar) {
+			continue
+		}
 		name := strings.TrimSpace(envVar.Name)
 		if name == "" {
 			continue
@@ -326,15 +343,14 @@ func summarizeAuthEnvVars(envVarSpecs []apispec.AuthEnvVar, apiKey, apiKeyEnvVar
 	if apiKey != "" && apiKeyEnvVar == "" {
 		for _, envVar := range envVarSpecs {
 			name := strings.TrimSpace(envVar.Name)
-			if name == "" {
+			if name == "" || !envVar.IsRequestCredential() {
 				continue
 			}
-			apiKeyEnvVar = name
-			kind := envVar.Kind
-			if kind == "" {
-				kind = apispec.AuthEnvVarKindPerCall
+			if apiKeyEnvVar == "" {
+				apiKeyEnvVar = name
 			}
-			if kind == apispec.AuthEnvVarKindPerCall && envVar.Required {
+			if envVar.Required {
+				apiKeyEnvVar = name
 				break
 			}
 		}
@@ -344,10 +360,7 @@ func summarizeAuthEnvVars(envVarSpecs []apispec.AuthEnvVar, apiKey, apiKeyEnvVar
 		if name == "" {
 			continue
 		}
-		kind := envVar.Kind
-		if kind == "" {
-			kind = apispec.AuthEnvVarKindPerCall
-		}
+		kind := envVar.EffectiveKind()
 		status := AuthEnvVarStatus{
 			Name:     name,
 			Kind:     string(kind),
@@ -358,7 +371,7 @@ func summarizeAuthEnvVars(envVarSpecs []apispec.AuthEnvVar, apiKey, apiKeyEnvVar
 			statuses = append(statuses, status)
 			continue
 		}
-		if kind == apispec.AuthEnvVarKindPerCall && envVar.Required {
+		if envVar.IsRequestCredential() && envVar.Required {
 			status.Status = AuthEnvVarStatusMissingRequired
 			status.Detail = "required per-call auth env var is not set"
 		} else {

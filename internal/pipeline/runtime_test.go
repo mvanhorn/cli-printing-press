@@ -952,6 +952,18 @@ func TestSummarizeAuthEnvVarsKindAware(t *testing.T) {
 	assert.Equal(t, AuthEnvVarStatusOK, mock[0].Status)
 }
 
+func TestRequestAuthEnvVarNamesOnlyIncludesPerCallCredentials(t *testing.T) {
+	got := requestAuthEnvVarNames([]apispec.AuthEnvVar{
+		{Name: "REQUIRED_TOKEN", Kind: apispec.AuthEnvVarKindPerCall, Required: true},
+		{Name: "LEGACY_EMPTY_KIND"},
+		{Name: "SETUP_CLIENT_ID", Kind: apispec.AuthEnvVarKindAuthFlowInput},
+		{Name: "SESSION_COOKIE", Kind: apispec.AuthEnvVarKindHarvested},
+		{Name: "REQUIRED_TOKEN", Kind: apispec.AuthEnvVarKindPerCall, Required: true},
+	})
+
+	assert.Equal(t, []string{"REQUIRED_TOKEN", "LEGACY_EMPTY_KIND"}, got)
+}
+
 func TestSummarizeAuthEnvVarsAPIKeyOnlySatisfiesConfiguredEnvVar(t *testing.T) {
 	t.Setenv("PRIMARY_TOKEN", "")
 	t.Setenv("SECONDARY_TOKEN", "")
@@ -971,11 +983,15 @@ func TestSummarizeAuthEnvVarsApiKeyWithoutCanonicalEnvVar(t *testing.T) {
 	t.Setenv("PRIMARY_TOKEN", "")
 
 	got := summarizeAuthEnvVars([]apispec.AuthEnvVar{
+		{Name: "SETUP_CLIENT_ID", Kind: apispec.AuthEnvVarKindAuthFlowInput},
 		{Name: "PRIMARY_TOKEN", Kind: apispec.AuthEnvVarKindPerCall, Required: true},
+		{Name: "SESSION_COOKIE", Kind: apispec.AuthEnvVarKindHarvested},
 	}, "secret", "", "live")
 
-	require.Len(t, got, 1)
-	assert.Equal(t, AuthEnvVarStatusOK, got[0].Status)
+	require.Len(t, got, 3)
+	assert.Equal(t, AuthEnvVarStatusMissingInfo, got[0].Status)
+	assert.Equal(t, AuthEnvVarStatusOK, got[1].Status)
+	assert.Equal(t, AuthEnvVarStatusMissingInfo, got[2].Status)
 	assert.Empty(t, missingRequiredAuthEnvVars(got))
 }
 

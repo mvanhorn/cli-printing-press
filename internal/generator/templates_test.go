@@ -43,6 +43,42 @@ func TestDoctorTemplateRendersKindAwareAuthEnvPresence(t *testing.T) {
 	require.Contains(t, content, `report["env_vars"] = "INFO set one of: " + strings.Join(authEnvOptionalNames, " or ")`)
 }
 
+func TestAuthStatusHintsOnlyRequestCredentialEnvVars(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("auth-status-rich-auth")
+	apiSpec.Auth = spec.AuthConfig{
+		Type: "api_key",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "STATUS_AUTH_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			{Name: "STATUS_AUTH_CLIENT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: false, Sensitive: false},
+			{Name: "STATUS_AUTH_CLIENT_SECRET", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: false, Sensitive: true},
+			{Name: "STATUS_AUTH_SESSION_COOKIE", Kind: spec.AuthEnvVarKindHarvested, Required: false, Sensitive: true},
+			{Name: "STATUS_AUTH_OPTIONAL_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "auth-status-rich-auth-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	content := string(authSrc)
+
+	start := strings.Index(content, `fmt.Fprintln(w, "Set your token:")`)
+	require.NotEqual(t, -1, start, "auth status hint block should be emitted:\n%s", content)
+	hintBlock := content[start:]
+	end := strings.Index(hintBlock, `auth set-token <token>`)
+	require.NotEqual(t, -1, end, "auth set-token fallback should terminate status hint block:\n%s", hintBlock)
+	hintBlock = hintBlock[:end]
+
+	require.Contains(t, hintBlock, `export STATUS_AUTH_TOKEN=\"your-token-here\"`)
+	require.Contains(t, hintBlock, `export STATUS_AUTH_OPTIONAL_TOKEN=\"your-token-here\"`)
+	require.NotContains(t, hintBlock, `STATUS_AUTH_CLIENT_ID`)
+	require.NotContains(t, hintBlock, `STATUS_AUTH_CLIENT_SECRET`)
+	require.NotContains(t, hintBlock, `STATUS_AUTH_SESSION_COOKIE`)
+}
+
 func TestMCPContextOmitsHarvestedAuthEnvVars(t *testing.T) {
 	t.Parallel()
 

@@ -229,20 +229,6 @@ func (c *Config) AuthHeader() string {
 		return "Bearer " + c.AccessToken
 		{{- end}}
 	}
-	{{- with $canonicalEnvVar}}
-	if c.{{resolveEnvVarField .Name}} != "" {
-		c.AuthSource = "env:{{.Name}}"
-		{{- if $.Auth.Format}}
-		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
-			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
-			"{{.Name}}": c.{{resolveEnvVarField .Name}},
-			"token": c.{{resolveEnvVarField .Name}},
-		})
-		{{- else}}
-		return "Bearer " + c.{{resolveEnvVarField .Name}}
-		{{- end}}
-	}
-	{{- end}}
 	return ""
 {{- else}}
 {{- if .BearerRefresh.Enabled}}

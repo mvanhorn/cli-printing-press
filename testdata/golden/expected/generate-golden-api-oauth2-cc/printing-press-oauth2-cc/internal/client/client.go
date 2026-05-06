@@ -339,6 +339,10 @@ func (c *Client) authHeader() (string, error) {
 	if c.Config == nil {
 		return "", nil
 	}
+	if c.Config.AccessToken == "" && cliutil.IsVerifyEnv() {
+		c.Config.AccessToken = "mock-token-for-testing"
+		return c.Config.AuthHeader(), nil
+	}
 	// 60s window avoids in-flight requests racing the expiry boundary.
 	// Double-checked lock so only one goroutine mints under contention.
 	if needsClientCredentialsMint(c.Config) {

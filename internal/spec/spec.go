@@ -481,6 +481,19 @@ const (
 	AuthEnvVarKindHarvested     AuthEnvVarKind = "harvested"
 )
 
+// EffectiveKind treats legacy empty kinds as per-call credentials.
+func (v AuthEnvVar) EffectiveKind() AuthEnvVarKind {
+	if v.Kind == "" {
+		return AuthEnvVarKindPerCall
+	}
+	return v.Kind
+}
+
+// IsRequestCredential reports whether this env var can satisfy request auth.
+func (v AuthEnvVar) IsRequestCredential() bool {
+	return v.EffectiveKind() == AuthEnvVarKindPerCall
+}
+
 func (k AuthEnvVarKind) SensitivePlaceholder() string {
 	switch k {
 	case AuthEnvVarKindPerCall:
@@ -511,7 +524,7 @@ func (c *AuthConfig) CanonicalEnvVar() *AuthEnvVar {
 	}
 	c.NormalizeEnvVarSpecs("")
 	for i := range c.EnvVarSpecs {
-		if c.EnvVarSpecs[i].Kind == AuthEnvVarKindPerCall && c.EnvVarSpecs[i].Required {
+		if c.EnvVarSpecs[i].IsRequestCredential() && c.EnvVarSpecs[i].Required {
 			return &c.EnvVarSpecs[i]
 		}
 	}
@@ -530,7 +543,7 @@ func (c *AuthConfig) IsAuthEnvVarORCase() bool {
 		return false
 	}
 	for _, ev := range c.EnvVarSpecs {
-		if ev.Kind != AuthEnvVarKindPerCall || ev.Required {
+		if !ev.IsRequestCredential() || ev.Required {
 			return false
 		}
 	}
@@ -1516,7 +1529,7 @@ func independentAuthORGroupsExample(envVarSpecs []AuthEnvVar) (string, bool) {
 	members := make([]AuthEnvVar, 0, len(envVarSpecs))
 	for _, envVar := range envVarSpecs {
 		name := strings.TrimSpace(envVar.Name)
-		if name == "" || envVar.Kind != AuthEnvVarKindPerCall || envVar.Required || !strings.Contains(envVar.Description, " OR ") {
+		if name == "" || !envVar.IsRequestCredential() || envVar.Required || !strings.Contains(envVar.Description, " OR ") {
 			continue
 		}
 		referencesSibling := false

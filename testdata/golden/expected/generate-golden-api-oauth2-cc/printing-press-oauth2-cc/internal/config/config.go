@@ -78,10 +78,6 @@ func (c *Config) AuthHeader() string {
 		c.AuthSource = "oauth2"
 		return "Bearer " + c.AccessToken
 	}
-	if c.PrintingPressOauth2ClientId != "" {
-		c.AuthSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_ID"
-		return "Bearer " + c.PrintingPressOauth2ClientId
-	}
 	return ""
 }
 
