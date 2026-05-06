@@ -20,14 +20,11 @@ Browse the full catalog of printed CLIs at [printingpress.dev](https://printingp
 
 ## Install
 
-The Printing Press has two parts, and you need both:
+You need both the **binary** and the **Claude Code skills**. The skills (`/printing-press <app>`) are the primary interface; they drive the binary behind the scenes.
 
-1. **The binary** (`printing-press`) — the engine. Does research, generation, verification, scoring.
-2. **The Claude Code plugin** — adds the `/printing-press` slash command. This is your primary interface; the skill drives the binary behind the scenes.
+The binary alone works (research, generation, verification, scoring) but skips the curated agent loop. The skills alone have nothing to call. Install both.
 
-The plugin alone has nothing to call; the binary alone works but skips the curated agent loop.
-
-**Prerequisites:** [Go 1.26+](https://go.dev/dl/) and [Claude Code](https://claude.ai/code).
+**Prerequisites:** [Go 1.26+](https://go.dev/dl/) and [Claude Code](https://claude.ai/code). The skills are tested with Claude Code; other harnesses like Codex may work but aren't tested. **Use Claude Code for the best experience.**
 
 ### 1. Install the binary
 
@@ -35,61 +32,71 @@ The plugin alone has nothing to call; the binary alone works but skips the curat
 go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest
 ```
 
-Verify: `printing-press --version`.
+Verify with `printing-press --version`. If `go install` fails with `410 Gone` or an auth error, see [Troubleshooting](#troubleshooting).
 
-If you skip this step, the plugin will run `go install` for you on first use (assuming Go is on your PATH). Doing it upfront avoids a slow first run. If `go install` fails with `410 Gone` or an auth error, see [Troubleshooting](#troubleshooting).
+### 2. Install the skills — pick one path
 
-### 2. Install the plugin — pick one path
-
-Both paths give you the `/printing-press` slash command. They differ in how skills are kept up to date and whether parallel runs are easy.
-
-#### Option A — Clone and run (recommended for active users)
-
-Loads the plugin directly from a local clone of this repo. `git pull` is your update mechanism, so you always have the latest skills with no plugin-marketplace lag. Add `-w` to start the session in a fresh git worktree — handy for printing multiple CLIs in parallel without runs stomping on each other.
+**Recommended: clone the repo.** Simplest, gets you the bleeding edge as it ships, and `git pull` is your update mechanism.
 
 ```bash
 git clone https://github.com/mvanhorn/cli-printing-press.git
-cd cli-printing-press
-claude --plugin-dir .          # load this repo's skills directly
-claude --plugin-dir . -w       # ...in a new worktree (parallel runs)
 ```
 
-Update with `git pull` whenever you want fresh skills. The binary from step 1 still does the heavy lifting; `--plugin-dir .` only changes where the plugin loads from.
+<details>
+<summary><b>Alternative: install just the skills (no clone)</b></summary>
 
-#### Option B — Plugin marketplace (one-shot, auto-updated by Claude)
+Use this if you don't want a local clone. You'll need to run an explicit `update` command to pull newer skills.
 
-Stable releases, kept up to date by Claude's plugin update mechanism. Run inside Claude Code:
-
-```text
-/plugin marketplace add mvanhorn/cli-printing-press
-/plugin install cli-printing-press@cli-printing-press
-```
-
-Verify (either path): type `/printing-press` in Claude Code and confirm the slash command appears.
-
-### Optional: pre-built CLI library
-
-To browse and install pre-built CLIs from the [Printing Press Library](https://github.com/mvanhorn/printing-press-library) catalog (24 CLIs across 17 categories), add a second plugin in Claude Code:
-
-```text
-/plugin marketplace add mvanhorn/printing-press-library
-/plugin install printing-press-library@printing-press-library
-```
-
-This adds the `/ppl` slash command for browsing and installing CLIs from the public catalog.
-
-## Quick start
+**With GitHub CLI (`gh` v2.90+):**
 
 ```bash
-/printing-press Notion                               # Print a CLI for an API by name
-/printing-press https://postman.com/explore         # ...or point it at a website (no spec needed)
+gh skill install mvanhorn/cli-printing-press --agent claude-code --scope user
+gh skill update                                # update later
 ```
 
-`/printing-press` is the slash command from the Claude Code plugin. It drives the `printing-press` binary you installed — research, generation, scoring, and shipcheck all run through the binary. Two parts, one workflow.
+**Without `gh` — use Vercel's [open-agent-skills](https://www.npmjs.com/package/skills):**
+
+```bash
+npx skills add mvanhorn/cli-printing-press/skills -g -a claude-code -y
+npx skills update                              # update later
+```
+
+Once installed, you can run `claude` from any folder.
+
+</details>
+
+### 3. Start a printing session
+
+If you cloned the repo, run from the repo root:
+
+```bash
+claude --plugin-dir .          # load this repo's skills directly
+claude --plugin-dir . -w       # ...in a new git worktree (parallel runs)
+```
+
+If you installed skills only, run `claude` from any folder.
+
+Then inside Claude Code:
+
+```text
+/printing-press <app-name>
+```
+
+For example:
+
+```text
+/printing-press Notion                       # Print a CLI for an API by name
+/printing-press https://postman.com/explore  # ...or point at a website (no spec needed)
+```
+
+`/printing-press` drives the `printing-press` binary you installed — research, generation, scoring, and shipcheck all run through it. Two parts, one workflow.
 
 One command. Lean loop. Produces a Go CLI plus an MCP server that absorbs every feature from every competing tool, then transcends with compound use cases only possible with local data. REST, GraphQL, or browser-sniffed traffic. No OpenAPI spec required.
 
 Each run produces two binaries (`<api>-pp-cli` plus `<api>-pp-mcp`), research documents, verification proofs, and a Quality Score.
+
+<details>
+<summary><b>Where output goes</b></summary>
 
 By default, active and published output are separated:
 
@@ -100,7 +107,10 @@ By default, active and published output are separated:
 
 `<scope>` is derived from the current git checkout path, so parallel worktrees do not stomp on each other. If you pass `--output`, that overrides the generated CLI location for that command.
 
-### Codex mode (60% fewer Opus tokens)
+</details>
+
+<details>
+<summary><b>Codex mode (60% fewer Opus tokens)</b></summary>
 
 ```bash
 /printing-press HubSpot codex    # Offload code generation to Codex CLI
@@ -109,7 +119,10 @@ By default, active and published output are separated:
 
 When you add `codex`, Phase 3's code generation tasks are delegated to Codex CLI. Claude stays the brain (research, planning, scoring, review). Codex does the hands (writing Go code from scoped prompts). Same quality, 60% fewer Opus tokens. If Codex fails 3 times in a row, the press falls back to doing it locally, no manual intervention needed.
 
-### Improve an existing CLI
+</details>
+
+<details>
+<summary><b>Improve an existing CLI (Polish &amp; Emboss)</b></summary>
 
 Two second-pass paths with different scopes.
 
@@ -122,18 +135,37 @@ Two second-pass paths with different scopes.
 **Emboss** — full second-pass cycle. Audits baseline, re-researches what's changed, identifies top 5 improvements, rebuilds, re-verifies, reports the delta. Use when you want significant additions, not just fixes:
 
 ```bash
-/printing-press emboss notion              # By API name
-/printing-press emboss notion-pp-cli       # By CLI name
+/printing-press emboss notion                                   # By API name
+/printing-press emboss notion-pp-cli                            # By CLI name
 /printing-press emboss ~/printing-press/library/notion          # By full path
 ```
 
-### Publish
+</details>
+
+<details>
+<summary><b>Publish a CLI to the library</b></summary>
 
 When you're happy with a CLI, publish it to the library:
 
 ```bash
-/printing-press-publish linear                       # Validates, packages, creates PR
+/printing-press-publish linear   # Validates, packages, creates PR
 ```
+
+</details>
+
+<details>
+<summary><b>Optional: install the pre-built CLI library</b></summary>
+
+To browse and install pre-built CLIs from the [Printing Press Library](https://github.com/mvanhorn/printing-press-library) catalog (24 CLIs across 17 categories), add a second plugin in Claude Code:
+
+```text
+/plugin marketplace add mvanhorn/printing-press-library
+/plugin install printing-press-library@printing-press-library
+```
+
+This adds the `/ppl` slash command for browsing and installing CLIs from the public catalog.
+
+</details>
 
 ## Why these CLIs win
 
@@ -269,7 +301,8 @@ Discovery provenance. When the press sniffs a website, it archives everything - 
 
 Full pipeline contract. The fast path above compresses a longer 9-phase managed pipeline: preflight, research, scaffold, enrich, regenerate, review, agent-readiness, comparative, ship. Inputs, outputs, gates, and artifacts for each phase are documented in [docs/PIPELINE.md](docs/PIPELINE.md). Use it when you want to stop at any phase, resume later, re-run one step, or port the flow to another tool.
 
-### MCP spec surface
+<details>
+<summary><b>MCP spec surface (advanced config)</b></summary>
 
 The generator ships three opt-in knobs on the spec's `mcp:` block, aligned with Anthropic's [production-agent MCP guidance](https://www.anthropic.com/news/building-agents-that-reach-production-systems-with-mcp):
 
@@ -295,6 +328,8 @@ mcp:
 ```
 
 Run `printing-press mcp-audit` after changes to see which library CLIs would benefit from the new surface.
+
+</details>
 
 ## What gets generated
 
@@ -459,7 +494,7 @@ GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-pres
 
 After the public launch, the plain command works for everyone.
 
-**`/printing-press` slash command doesn't appear in Claude Code.** Restart your Claude Code session after installing the plugin. For Option A, confirm `claude --plugin-dir .` was run from the cloned repo. For Option B, run `/plugin list` to verify the install.
+**`/printing-press` slash command doesn't appear in Claude Code.** Restart your Claude Code session after installing the skills. If you cloned the repo, confirm `claude --plugin-dir .` was run from the cloned repo root. If you installed skills only, run `gh skill list` (or `npx skills list`) to verify the install.
 
 **`printing-press: command not found` after a successful `go install`.** `$GOPATH/bin` (default `~/go/bin`) isn't on your `PATH`. Add it to your shell profile.
 
@@ -505,6 +540,9 @@ For larger changes, opening an issue first to align on scope is helpful.
 
 ## Development
 
+<details>
+<summary><b>Build, test, lint, and hooks</b></summary>
+
 ```bash
 go build -o ./printing-press ./cmd/printing-press
 go test ./...
@@ -523,9 +561,12 @@ lefthook install --reset-hooks-path
 
 Use `--reset-hooks-path` so stale local `core.hooksPath` settings do not block hook sync. Avoid `lefthook install --force` unless intentionally overriding a custom hooks path.
 
-If you installed via [Option A — Clone and run](#option-a--clone-and-run-recommended-for-active-users), `claude --plugin-dir .` already loads `/printing-press` from your working copy, so local skill edits take effect on the next session start. See [AGENTS.md](AGENTS.md) for full conventions, glossary, and release flow.
+If you cloned the repo (the recommended install path above), `claude --plugin-dir .` already loads `/printing-press` from your working copy, so local skill edits take effect on the next session start. See [AGENTS.md](AGENTS.md) for full conventions, glossary, and release flow.
 
-### Golden Output Harness
+</details>
+
+<details>
+<summary><b>Golden Output Harness</b></summary>
 
 Golden output checks compare deterministic, offline `printing-press` commands against committed stdout, stderr, exit-code, and selected artifact fixtures:
 
@@ -542,6 +583,8 @@ scripts/golden.sh update
 The harness rebuilds `./printing-press`, writes actual outputs under `.gotmp/golden/actual`, and compares them to `testdata/golden/expected`. Cases live under `testdata/golden/cases/<case-name>/`; `command.txt` defines the offline command, and `artifacts.txt` lists behaviorally important generated files to compare. Normalization is intentionally narrow: machine-specific paths, deterministic JSON formatting, and known provenance fields like generated timestamps. CI runs this as a separate `Golden` workflow, not inside `go test ./...`.
 
 The generated-CLI golden uses `testdata/golden/fixtures/golden-api.yaml`, a purpose-built OpenAPI fixture for the Printing Press. Extend that fixture when the machine gains new deterministic generation capabilities that should be protected by artifact goldens. Update mode refuses dirty worktrees unless `GOLDEN_ALLOW_DIRTY=1` is set, so fixture churn stays intentional.
+
+</details>
 
 ## Credits
 
