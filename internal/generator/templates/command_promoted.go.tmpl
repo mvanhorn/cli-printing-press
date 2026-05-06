@@ -300,17 +300,11 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- range $subName, $sub := .Resource.SubResources}}
-{{- if eq (len $sub.Endpoints) 1}}
-{{- range $eName, $_ := $sub.Endpoints}}
-	cmd.AddCommand(new{{camel $.FuncPrefix}}{{camel $subName}}{{camel $eName}}Cmd(flags))
-{{- end}}
-{{- else}}
 	{
 		sub := new{{camel $.FuncPrefix}}{{camel $subName}}Cmd(flags)
 		sub.Hidden = false // unhide: the raw parent is hidden but these are useful under the promoted command
 		cmd.AddCommand(sub)
 	}
-{{- end}}
 {{- end}}
 
 	return cmd

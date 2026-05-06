@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v3/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/llmpolish"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
 	"gopkg.in/yaml.v3"
@@ -305,6 +306,7 @@ func copySpecToOutput(specFlag, specURL, outputDir string) error {
 	if err != nil {
 		return fmt.Errorf("converting spec to JSON: %w", err)
 	}
+	data = artifacts.RedactArchivedSpecSecrets(data)
 	dst := filepath.Join(outputDir, "spec.json")
 	if err := os.WriteFile(dst, data, 0o644); err != nil {
 		return fmt.Errorf("writing %s: %w", dst, err)

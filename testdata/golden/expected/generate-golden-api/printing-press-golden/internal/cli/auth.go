@@ -76,7 +76,7 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "set-token <token>",
 		Short: "Save an API token to the config file",
-		Example: "  printing-press-golden-pp-cli auth set-token sk_live_abc123",
+		Example: "  printing-press-golden-pp-cli auth set-token YOUR_TOKEN_HERE",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(flags.configPath)

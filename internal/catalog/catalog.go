@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -117,6 +118,8 @@ type Entry struct {
 	VerifiedDate      string     `yaml:"verified_date"`
 	Homepage          string     `yaml:"homepage"`
 	Notes             string     `yaml:"notes"`
+	Owner             string     `yaml:"owner,omitempty"`
+	OwnerName         string     `yaml:"owner_name,omitempty"`
 	KnownAlternatives []KnownAlt `yaml:"known_alternatives,omitempty"`
 	SandboxEndpoint   string     `yaml:"sandbox_endpoint,omitempty"`
 	// SpecSource describes how the spec was obtained. Empty defaults to "official".
@@ -130,6 +133,9 @@ type Entry struct {
 	// HTTPTransport describes the runtime HTTP transport. Empty defaults by provenance:
 	// official uses standard; non-official web-discovered sources use browser-chrome.
 	HTTPTransport string `yaml:"http_transport,omitempty"`
+	// MCP describes generation-time MCP surface choices for catalog specs whose
+	// upstream OpenAPI documents do not carry Printing Press extensions.
+	MCP spec.MCPConfig `yaml:"mcp,omitempty"`
 	// ProxyRoutes maps path prefixes to backend service names for proxy-envelope APIs.
 	// Only relevant when ClientPattern is "proxy-envelope".
 	ProxyRoutes map[string]string `yaml:"proxy_routes,omitempty"`

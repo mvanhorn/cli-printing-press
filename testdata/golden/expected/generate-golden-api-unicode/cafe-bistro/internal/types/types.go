@@ -9,4 +9,3 @@ type CafeMenu struct {
 	Name string `json:"name"`
 	Specialite string `json:"specialite"`
 }
-

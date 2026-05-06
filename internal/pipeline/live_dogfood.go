@@ -37,6 +37,9 @@ const (
 // can invalidate the credential used by the live-dogfood runner. Reused
 // across the matrix builder, the flag help text, and the test fixtures.
 const reasonDestructiveAtAuth = "destructive-at-auth"
+const reasonMutatingDryRunOnly = "mutating command dry-run only"
+const reasonNoLiveSignal = "no live happy/json pass; credential-unavailable skips cannot certify acceptance"
+const reasonUnavailableRunnerCredentials = "unavailable for runner credentials"
 
 type LiveDogfoodOptions struct {
 	CLIDir              string
@@ -187,6 +190,7 @@ func discoverLiveDogfoodCommands(binaryPath string) ([]liveDogfoodCommand, error
 
 var liveDogfoodFrameworkSkip = map[string]bool{
 	"agent-context": true,
+	"auth":          true,
 	"completion":    true,
 	"help":          true,
 	"version":       true,
@@ -223,10 +227,36 @@ var mutatingVerbs = map[string]bool{
 	"create": true, "add": true, "new": true,
 	"update": true, "patch": true, "edit": true,
 	"set": true, "modify": true, "replace": true,
+	"post": true, "put": true, "send": true, "submit": true,
+	"transfer": true, "cancel": true, "freeze": true, "unfreeze": true,
 }
 
 func isMutatingLeaf(name string) bool {
-	return mutatingVerbs[name]
+	for _, token := range commandNameTokens(name) {
+		if mutatingVerbs[token] {
+			return true
+		}
+	}
+	return false
+}
+
+func liveDogfoodCommandMutates(command liveDogfoodCommand) bool {
+	if annotationIsTrueValue(command.Annotations[mcpReadOnlyAnnotation]) {
+		return false
+	}
+	if method := strings.ToUpper(strings.TrimSpace(command.Annotations[endpointMethodAnnotation])); method != "" {
+		return method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE"
+	}
+	if len(command.Path) == 0 {
+		return false
+	}
+	return isMutatingLeaf(command.Path[len(command.Path)-1])
+}
+
+func commandNameTokens(name string) []string {
+	return strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
+		return r < 'a' || r > 'z'
+	})
 }
 
 // companionCache is run-scoped: per-RunLiveDogfood maps keyed by the full
@@ -640,8 +670,8 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		return results
 	}
 
-	leaf := command.Path[len(command.Path)-1]
-	useDryRun := isMutatingLeaf(leaf) && commandSupportsDryRun(command.Help)
+	mutating := liveDogfoodCommandMutates(command)
+	useDryRun := mutating && commandSupportsDryRun(command.Help)
 
 	resolvedArgs, resolveSkipped, resolveReason := resolveCommandPositionals(command, happyArgs, ctx)
 	if resolveSkipped {
@@ -662,6 +692,9 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		if happyRun.exitCode == 0 {
 			happyResult.Status = LiveDogfoodStatusPass
 			happyResult.Reason = ""
+		} else if liveDogfoodUnavailableForRunner(happyRun) {
+			happyResult.Status = LiveDogfoodStatusSkip
+			happyResult.Reason = reasonUnavailableRunnerCredentials
 		}
 		results = append(results, happyResult)
 
@@ -670,13 +703,16 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 			jsonRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, jsonArgs, ctx.timeout)
 			jsonResult := liveDogfoodResult(commandName, LiveDogfoodTestJSON, jsonArgs, jsonRun)
 			if jsonRun.exitCode == 0 {
-				if !json.Valid([]byte(jsonRun.stdout)) {
+				if !validLiveDogfoodJSONOutput(jsonRun.stdout) {
 					jsonResult.Status = LiveDogfoodStatusFail
 					jsonResult.Reason = "invalid JSON"
 				} else {
 					jsonResult.Status = LiveDogfoodStatusPass
 					jsonResult.Reason = ""
 				}
+			} else if liveDogfoodUnavailableForRunner(jsonRun) {
+				jsonResult.Status = LiveDogfoodStatusSkip
+				jsonResult.Reason = reasonUnavailableRunnerCredentials
 			}
 			results = append(results, jsonResult)
 		} else {
@@ -690,7 +726,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		// Search-shape strategy is suppressed for mutating leaves so a
 		// `delete --query=...` mass-delete is never probed with the
 		// invalid-token sentinel against the live API.
-		isSearch := commandSupportsSearch(command.Help) && !isMutatingLeaf(leaf)
+		isSearch := commandSupportsSearch(command.Help) && !mutating
 		suppliedJSON := slices.Contains(flagNames, "json")
 
 		var errorArgs []string
@@ -745,16 +781,7 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		if resolveSkipped {
 			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestErrorReal, resolveReason))
 		} else {
-			errorRealRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, happyArgs, ctx.timeout)
-			errorRealResult := liveDogfoodResult(commandName, LiveDogfoodTestErrorReal, happyArgs, errorRealRun)
-			if errorRealRun.exitCode != 0 {
-				errorRealResult.Status = LiveDogfoodStatusPass
-				errorRealResult.Reason = ""
-			} else {
-				errorRealResult.Status = LiveDogfoodStatusFail
-				errorRealResult.Reason = "expected non-zero exit for placeholder body"
-			}
-			results = append(results, errorRealResult)
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestErrorReal, reasonMutatingDryRunOnly))
 		}
 	}
 
@@ -925,10 +952,7 @@ func isDestructiveAtAuth(annotations map[string]string, commandPath []string) bo
 }
 
 func containsDestructiveAuthTerm(s string) bool {
-	tokens := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
-		return r < 'a' || r > 'z'
-	})
-	return slices.ContainsFunc(tokens, func(token string) bool {
+	return slices.ContainsFunc(commandNameTokens(s), func(token string) bool {
 		return destructiveAuthTerms[token]
 	})
 }
@@ -962,6 +986,33 @@ func liveDogfoodHappyArgs(command liveDogfoodCommand) ([]string, bool) {
 
 func commandSupportsJSON(help string) bool {
 	return slices.Contains(extractFlagNames(help), "json")
+}
+
+func validLiveDogfoodJSONOutput(stdout string) bool {
+	trimmed := strings.TrimSpace(stdout)
+	if trimmed == "" {
+		return false
+	}
+	if json.Valid([]byte(trimmed)) {
+		return true
+	}
+	for line := range strings.SplitSeq(trimmed, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !json.Valid([]byte(line)) {
+			return false
+		}
+	}
+	return true
+}
+
+func liveDogfoodUnavailableForRunner(run liveDogfoodRun) bool {
+	output := strings.ToLower(run.stdout + run.stderr)
+	return strings.Contains(output, "http 403") ||
+		strings.Contains(output, "permission denied") ||
+		strings.Contains(output, "your credentials are valid but lack access")
 }
 
 func commandSupportsDryRun(help string) bool {
@@ -1007,17 +1058,35 @@ func liveDogfoodUsageSuffix(help string) string {
 }
 
 func finalizeLiveDogfoodReport(report *LiveDogfoodReport) {
+	hasUnavailableRunnerSkip := false
+	hasLiveHappyOrJSONPass := false
 	for _, result := range report.Tests {
 		switch result.Status {
 		case LiveDogfoodStatusPass:
 			report.Passed++
 			report.MatrixSize++
+			if (result.Kind == LiveDogfoodTestHappy || result.Kind == LiveDogfoodTestJSON) && !slices.Contains(result.Args, "--dry-run") {
+				hasLiveHappyOrJSONPass = true
+			}
 		case LiveDogfoodStatusFail:
 			report.Failed++
 			report.MatrixSize++
 		default:
 			report.Skipped++
+			if result.Reason == reasonUnavailableRunnerCredentials {
+				hasUnavailableRunnerSkip = true
+			}
 		}
+	}
+	if hasUnavailableRunnerSkip && !hasLiveHappyOrJSONPass {
+		report.Failed++
+		report.MatrixSize++
+		report.Tests = append(report.Tests, LiveDogfoodTestResult{
+			Command: "live-dogfood",
+			Kind:    LiveDogfoodTestHappy,
+			Status:  LiveDogfoodStatusFail,
+			Reason:  reasonNoLiveSignal,
+		})
 	}
 	// Failed-or-empty wins. Skips are non-failures, but quick acceptance still
 	// needs enough counted signal before it can write an acceptance marker.

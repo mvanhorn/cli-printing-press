@@ -1647,30 +1647,24 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 
 		// Sub-resource parent + endpoint files
 		for subName, subResource := range resource.SubResources {
-			// Skip single-endpoint sub-resource parents under promoted resources.
-			// The promoted command wires the endpoint directly, making the parent dead code.
-			// Multi-endpoint sub-resource parents are still needed (the promoted command uses them).
-			skipSubParent := promotedResourceNames[name] && len(subResource.Endpoints) == 1
-			if !skipSubParent {
-				subParentData := struct {
-					ResourceName string
-					FuncPrefix   string
-					CommandPath  string
-					Resource     spec.Resource
-					Hidden       bool
-					*spec.APISpec
-				}{
-					ResourceName: subName,
-					FuncPrefix:   name + "-" + subName,
-					CommandPath:  name + " " + subName,
-					Resource:     subResource,
-					Hidden:       false,
-					APISpec:      g.Spec,
-				}
-				subParentPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName)+".go")
-				if err := g.renderTemplate("command_parent.go.tmpl", subParentPath, subParentData); err != nil {
-					return fmt.Errorf("rendering sub-parent %s/%s: %w", name, subName, err)
-				}
+			subParentData := struct {
+				ResourceName string
+				FuncPrefix   string
+				CommandPath  string
+				Resource     spec.Resource
+				Hidden       bool
+				*spec.APISpec
+			}{
+				ResourceName: subName,
+				FuncPrefix:   name + "-" + subName,
+				CommandPath:  name + " " + subName,
+				Resource:     subResource,
+				Hidden:       false,
+				APISpec:      g.Spec,
+			}
+			subParentPath := filepath.Join("internal", "cli", safeResourceFileStem(name+"_"+subName)+".go")
+			if err := g.renderTemplate("command_parent.go.tmpl", subParentPath, subParentData); err != nil {
+				return fmt.Errorf("rendering sub-parent %s/%s: %w", name, subName, err)
 			}
 
 			// Sub-resources inherit the parent's BaseURL override; an
@@ -1910,6 +1904,7 @@ type visionRenderData struct {
 	SearchEndpointMethod   string
 	SearchBodyFields       []profiler.SearchBodyField
 	GraphQLFieldPaths      map[string]string
+	AgentMoneyWorkflow     AgentMoneyWorkflow
 }
 
 func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
@@ -1932,6 +1927,7 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 		SearchEndpointMethod:   g.profile.SearchEndpointMethod,
 		SearchBodyFields:       g.profile.SearchBodyFields,
 		GraphQLFieldPaths:      gqlFieldPaths,
+		AgentMoneyWorkflow:     detectAgentMoneyWorkflow(g.Spec, g.PromotedEndpointNames),
 	}
 }
 
@@ -1984,12 +1980,14 @@ func (g *Generator) renderWorkflowFiles(visionData visionRenderData) ([]string, 
 	if g.VisionSet.Store {
 		workflowData := struct {
 			*spec.APISpec
-			SyncableResources []profiler.SyncableResource
-			SearchableFields  map[string][]string
+			SyncableResources  []profiler.SyncableResource
+			SearchableFields   map[string][]string
+			AgentMoneyWorkflow AgentMoneyWorkflow
 		}{
-			APISpec:           g.Spec,
-			SyncableResources: g.profile.SyncableResources,
-			SearchableFields:  g.profile.SearchableFields,
+			APISpec:            g.Spec,
+			SyncableResources:  g.profile.SyncableResources,
+			SearchableFields:   g.profile.SearchableFields,
+			AgentMoneyWorkflow: visionData.AgentMoneyWorkflow,
 		}
 		if err := g.renderTemplate("channel_workflow.go.tmpl", filepath.Join("internal", "cli", "channel_workflow.go"), workflowData); err != nil {
 			return nil, fmt.Errorf("rendering workflow: %w", err)
@@ -2011,6 +2009,223 @@ func (g *Generator) renderWorkflowFiles(visionData visionRenderData) ([]string, 
 	}
 
 	return renderedWorkflowConstructors, nil
+}
+
+type AgentMoneyWorkflow struct {
+	Payment  *AgentMoneyCommand
+	Request  *AgentMoneyCommand
+	Transfer *AgentMoneyCommand
+}
+
+func (w AgentMoneyWorkflow) Enabled() bool {
+	return w.Payment != nil || w.Request != nil || w.Transfer != nil
+}
+
+func (w AgentMoneyWorkflow) complete() bool {
+	return w.Payment != nil && w.Request != nil && w.Transfer != nil
+}
+
+type AgentMoneyCommand struct {
+	CommandPath              []string
+	HasAccountIDPosition     bool
+	AmountFlag               string
+	AmountInteger            bool
+	RecipientIDFlag          string
+	PaymentMethodFlag        string
+	IdempotencyKeyFlag       string
+	SourceAccountIDFlag      string
+	DestinationAccountIDFlag string
+	NoteFlag                 string
+	ExternalMemoFlag         string
+	PurposeFlag              string
+}
+
+type agentMoneyKind string
+
+const (
+	agentMoneyKindNone     agentMoneyKind = ""
+	agentMoneyKindPayment  agentMoneyKind = "payment"
+	agentMoneyKindRequest  agentMoneyKind = "request"
+	agentMoneyKindTransfer agentMoneyKind = "transfer"
+)
+
+func detectAgentMoneyWorkflow(api *spec.APISpec, promotedEndpointNames map[string]string) AgentMoneyWorkflow {
+	var workflow AgentMoneyWorkflow
+	if api == nil {
+		return workflow
+	}
+
+	for _, resourceName := range sortedResourceNames(api.Resources) {
+		resource := api.Resources[resourceName]
+		for _, endpointName := range sortedEndpointNames(resource.Endpoints) {
+			endpoint := resource.Endpoints[endpointName]
+			class, cmd := agentMoneyCommandForEndpoint(endpoint, []string{toKebab(resourceName), toKebab(endpointName)}, promotedEndpointNames[resourceName] == endpointName)
+			assignAgentMoneyCommand(&workflow, class, cmd)
+			if workflow.complete() {
+				return workflow
+			}
+		}
+		for _, subName := range sortedResourceNames(resource.SubResources) {
+			sub := resource.SubResources[subName]
+			for _, endpointName := range sortedEndpointNames(sub.Endpoints) {
+				endpoint := sub.Endpoints[endpointName]
+				class, cmd := agentMoneyCommandForEndpoint(endpoint, []string{toKebab(resourceName), toKebab(subName), toKebab(endpointName)}, false)
+				assignAgentMoneyCommand(&workflow, class, cmd)
+				if workflow.complete() {
+					return workflow
+				}
+			}
+		}
+	}
+
+	return workflow
+}
+
+func assignAgentMoneyCommand(workflow *AgentMoneyWorkflow, class agentMoneyKind, cmd *AgentMoneyCommand) {
+	if workflow == nil || cmd == nil {
+		return
+	}
+	switch class {
+	case agentMoneyKindTransfer:
+		if workflow.Transfer == nil {
+			workflow.Transfer = cmd
+		}
+	case agentMoneyKindRequest:
+		if workflow.Request == nil {
+			workflow.Request = cmd
+		}
+	case agentMoneyKindPayment:
+		if workflow.Payment == nil {
+			workflow.Payment = cmd
+		}
+	}
+}
+
+func classifyAgentMoneyEndpoint(endpoint spec.Endpoint, body map[string]spec.Param) agentMoneyKind {
+	if !strings.EqualFold(endpoint.Method, "POST") {
+		return agentMoneyKindNone
+	}
+	has := func(name string) bool {
+		_, ok := body[strings.ToLower(name)]
+		return ok
+	}
+	if has("amount") && has("sourceAccountId") && has("destinationAccountId") && has("idempotencyKey") {
+		return agentMoneyKindTransfer
+	}
+	if has("amount") && has("recipientId") && has("paymentMethod") && has("idempotencyKey") {
+		if strings.Contains(strings.ToLower(endpoint.Path), "request") {
+			return agentMoneyKindRequest
+		}
+		return agentMoneyKindPayment
+	}
+	return agentMoneyKindNone
+}
+
+func agentMoneyCommandForEndpoint(endpoint spec.Endpoint, path []string, promoted bool) (agentMoneyKind, *AgentMoneyCommand) {
+	body := paramsByLowerName(endpoint.Body)
+	class := classifyAgentMoneyEndpoint(endpoint, body)
+	if class == agentMoneyKindNone {
+		return class, nil
+	}
+	if !agentMoneyEndpointHasSupportedPositionals(endpoint) || !agentMoneyEndpointHasSupportedRequiredBody(endpoint, class) {
+		return class, nil
+	}
+	if promoted && len(path) >= 1 {
+		path = path[:1]
+	} else if endpoint.Alias != "" && len(path) > 0 {
+		path[len(path)-1] = endpoint.Alias
+	}
+	cmd := &AgentMoneyCommand{CommandPath: path}
+	for _, param := range endpoint.Params {
+		if param.Positional && strings.EqualFold(param.Name, "accountId") {
+			cmd.HasAccountIDPosition = true
+			break
+		}
+	}
+	if p, ok := body["amount"]; ok {
+		cmd.AmountFlag = flagName(paramIdent(p))
+		cmd.AmountInteger = primitiveKind(p.Type) == "int"
+	}
+	if p, ok := body["recipientid"]; ok {
+		cmd.RecipientIDFlag = flagName(paramIdent(p))
+	}
+	if p, ok := body["paymentmethod"]; ok {
+		cmd.PaymentMethodFlag = flagName(paramIdent(p))
+	}
+	if p, ok := body["idempotencykey"]; ok {
+		cmd.IdempotencyKeyFlag = flagName(paramIdent(p))
+	}
+	if p, ok := body["sourceaccountid"]; ok {
+		cmd.SourceAccountIDFlag = flagName(paramIdent(p))
+	}
+	if p, ok := body["destinationaccountid"]; ok {
+		cmd.DestinationAccountIDFlag = flagName(paramIdent(p))
+	}
+	if p, ok := body["note"]; ok {
+		cmd.NoteFlag = flagName(paramIdent(p))
+	}
+	if p, ok := body["externalmemo"]; ok {
+		cmd.ExternalMemoFlag = flagName(paramIdent(p))
+	}
+	if p, ok := body["purpose"]; ok {
+		cmd.PurposeFlag = flagName(paramIdent(p))
+	}
+	return class, cmd
+}
+
+func agentMoneyEndpointHasSupportedPositionals(endpoint spec.Endpoint) bool {
+	for _, param := range endpoint.Params {
+		if !param.Positional || !param.Required {
+			continue
+		}
+		if !strings.EqualFold(param.Name, "accountId") {
+			return false
+		}
+	}
+	return true
+}
+
+func agentMoneyEndpointHasSupportedRequiredBody(endpoint spec.Endpoint, class agentMoneyKind) bool {
+	required := map[string]struct{}{}
+	switch class {
+	case agentMoneyKindTransfer:
+		for _, name := range []string{"amount", "sourceaccountid", "destinationaccountid", "idempotencykey"} {
+			required[name] = struct{}{}
+		}
+	case agentMoneyKindRequest, agentMoneyKindPayment:
+		for _, name := range []string{"amount", "recipientid", "paymentmethod", "idempotencykey"} {
+			required[name] = struct{}{}
+		}
+	default:
+		return false
+	}
+
+	for _, param := range endpoint.Body {
+		if !param.Required {
+			continue
+		}
+		if _, ok := required[strings.ToLower(param.Name)]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func paramsByLowerName(params []spec.Param) map[string]spec.Param {
+	out := make(map[string]spec.Param, len(params))
+	for _, param := range params {
+		out[strings.ToLower(param.Name)] = param
+	}
+	return out
+}
+
+func sortedResourceNames(resources map[string]spec.Resource) []string {
+	names := make([]string, 0, len(resources))
+	for name := range resources {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (g *Generator) renderInsightFiles() []string {
@@ -2284,7 +2499,9 @@ func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
 		return err
 	}
 
-	return os.WriteFile(fullPath, buf.Bytes(), 0o644)
+	rendered := bytes.TrimRight(buf.Bytes(), " \t\r\n")
+	rendered = append(rendered, '\n')
+	return os.WriteFile(fullPath, rendered, 0o644)
 }
 
 func validateRenderedArtifact(outPath, content string) error {
@@ -3129,7 +3346,7 @@ func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.
 	var parts []string
 	parts = append(parts, naming.CLI(g.Spec.Name))
 	parts = append(parts, strings.Fields(commandPath)...)
-	parts = append(parts, endpointName)
+	parts = append(parts, toKebab(endpointName))
 	parts = append(parts, commandExampleArgParts(endpoint)...)
 
 	return "  " + strings.Join(parts, " ")

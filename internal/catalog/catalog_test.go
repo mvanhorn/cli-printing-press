@@ -21,6 +21,12 @@ openapi_version: "3.0"
 tier: community
 verified_date: "2026-03-23"
 homepage: https://example.com
+owner: test-owner
+owner_name: Trevin Chow
+mcp:
+  transport: [stdio, http]
+  orchestration: code
+  endpoint_tools: hidden
 notes: Example fixture.
 `)
 
@@ -37,6 +43,11 @@ notes: Example fixture.
 	assert.Equal(t, "community", entry.Tier)
 	assert.Equal(t, "2026-03-23", entry.VerifiedDate)
 	assert.Equal(t, "https://example.com", entry.Homepage)
+	assert.Equal(t, "test-owner", entry.Owner)
+	assert.Equal(t, "Trevin Chow", entry.OwnerName)
+	assert.Equal(t, []string{"stdio", "http"}, entry.MCP.Transport)
+	assert.Equal(t, "code", entry.MCP.Orchestration)
+	assert.Equal(t, "hidden", entry.MCP.EndpointTools)
 	assert.Equal(t, "Example fixture.", entry.Notes)
 }
 
@@ -453,6 +464,15 @@ func TestLookupFSFindsProductHunt(t *testing.T) {
 	assert.Equal(t, "sniffed", entry.SpecSource)
 	require.NotNil(t, entry.AuthRequired)
 	assert.False(t, *entry.AuthRequired)
+}
+
+func TestLookupFSFindsMercuryCatalogGenerationMetadata(t *testing.T) {
+	entry, err := LookupFS(catalogfs.FS, "mercury")
+	require.NoError(t, err)
+	assert.NotEmpty(t, entry.OwnerName)
+	assert.Equal(t, []string{"stdio", "http"}, entry.MCP.Transport)
+	assert.Equal(t, "code", entry.MCP.Orchestration)
+	assert.Equal(t, "hidden", entry.MCP.EndpointTools)
 }
 
 func TestLookupFSNotFound(t *testing.T) {

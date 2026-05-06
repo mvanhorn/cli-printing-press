@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"regexp"
@@ -2250,39 +2251,138 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		}
 		seenCamelNames[camelName] = true
 		schema := schemaRefValue(properties[name])
-		if isComplexBodyFieldSchema(schema) {
-			warnf("skipping body field %q: complex type not supported as CLI flag", name)
-			continue
-		}
+		paramSchema := bodyParamSchema(schema)
 		description := schemaDescription(schema)
+		if description == "" {
+			description = schemaDescription(paramSchema)
+		}
 		if description == "" {
 			description = humanizeFieldName(name)
 		}
 		param := spec.Param{
 			Name:        name,
-			Type:        mapSchemaType(schema),
+			Type:        mapSchemaType(paramSchema),
 			Required:    isRequired(required, name),
 			Description: description,
-			Enum:        schemaEnum(schema),
-			Format:      schemaFormat(schema),
+			Fields:      mapBodyFields(paramSchema),
+			Enum:        schemaEnum(paramSchema),
+			Format:      schemaFormat(paramSchema),
 		}
-		if schema != nil && schema.Default != nil {
-			param.Default = schema.Default
+		if paramSchema != nil && paramSchema.Default != nil {
+			param.Default = paramSchema.Default
 		}
 		// For array types, propagate item-level enum as a Fields entry
 		// so downstream consumers (profiler) can access it.
-		if schema != nil && schema.Type != nil && schema.Type.Is(openapi3.TypeArray) &&
-			schema.Items != nil && schema.Items.Value != nil && len(schema.Items.Value.Enum) > 0 {
+		if paramSchema != nil && paramSchema.Type != nil && paramSchema.Type.Is(openapi3.TypeArray) &&
+			paramSchema.Items != nil && paramSchema.Items.Value != nil && len(paramSchema.Items.Value.Enum) > 0 {
 			param.Fields = []spec.Param{{
 				Name: "items",
 				Type: "string",
-				Enum: schemaEnum(schema.Items.Value),
+				Enum: schemaEnum(paramSchema.Items.Value),
 			}}
 		}
 		body = append(body, param)
 	}
 
 	return body
+}
+
+func bodyParamSchema(schema *openapi3.Schema) *openapi3.Schema {
+	if schema == nil || len(schema.AllOf) == 0 {
+		return schema
+	}
+	if schema.Type != nil || len(schema.Properties) > 0 || schema.Items != nil {
+		return schema
+	}
+
+	var mergedObject *openapi3.Schema
+	required := map[string]struct{}{}
+	for _, candidate := range schema.AllOf {
+		value := schemaRefValue(candidate)
+		if value == nil {
+			continue
+		}
+		if isObjectSchema(value) {
+			if mergedObject == nil {
+				mergedObject = &openapi3.Schema{
+					Type:       &openapi3.Types{openapi3.TypeObject},
+					Properties: map[string]*openapi3.SchemaRef{},
+				}
+			}
+			if mergedObject.Description == "" {
+				mergedObject.Description = value.Description
+			}
+			maps.Copy(mergedObject.Properties, value.Properties)
+			for _, name := range value.Required {
+				required[name] = struct{}{}
+			}
+			continue
+		}
+		if mergedObject == nil && (value.Type != nil || value.Items != nil) {
+			return value
+		}
+	}
+	if mergedObject != nil {
+		for name := range required {
+			mergedObject.Required = append(mergedObject.Required, name)
+		}
+		sort.Strings(mergedObject.Required)
+		return mergedObject
+	}
+	return schema
+}
+
+func mapBodyFields(schema *openapi3.Schema) []spec.Param {
+	return mapBodyFieldsDepth(schema, map[*openapi3.Schema]struct{}{}, 0)
+}
+
+const maxBodyFieldDepth = 8
+
+func mapBodyFieldsDepth(schema *openapi3.Schema, visited map[*openapi3.Schema]struct{}, depth int) []spec.Param {
+	if !isObjectSchema(schema) || len(schema.Properties) == 0 {
+		return nil
+	}
+	if depth >= maxBodyFieldDepth {
+		return nil
+	}
+	if _, ok := visited[schema]; ok {
+		return nil
+	}
+	visited[schema] = struct{}{}
+	defer delete(visited, schema)
+
+	names := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	required := map[string]struct{}{}
+	for _, name := range schema.Required {
+		required[name] = struct{}{}
+	}
+
+	fields := make([]spec.Param, 0, len(names))
+	for _, name := range names {
+		fieldSchema := bodyParamSchema(schemaRefValue(schema.Properties[name]))
+		description := schemaDescription(schemaRefValue(schema.Properties[name]))
+		if description == "" {
+			description = schemaDescription(fieldSchema)
+		}
+		if description == "" {
+			description = humanizeFieldName(name)
+		}
+		fields = append(fields, spec.Param{
+			Name:        name,
+			Type:        mapSchemaType(fieldSchema),
+			Required:    isRequired(required, name),
+			Description: description,
+			Fields:      mapBodyFieldsDepth(fieldSchema, visited, depth+1),
+			Enum:        schemaEnum(fieldSchema),
+			Format:      schemaFormat(fieldSchema),
+		})
+	}
+	return fields
 }
 
 func collectAllOfProperties(
@@ -2744,6 +2844,8 @@ func mapSchemaType(schema *openapi3.Schema) string {
 		return "float"
 	case schema.Type.Includes(openapi3.TypeArray):
 		return "array"
+	case schema.Type.Includes(openapi3.TypeObject):
+		return "object"
 	case schema.Type.Includes(openapi3.TypeString):
 		return "string"
 	default:
@@ -2861,25 +2963,6 @@ func jsonAPIFlattenInto(schema *openapi3.Schema, properties map[string]*openapi3
 		}
 		properties[name] = prop
 	}
-}
-
-func isComplexBodyFieldSchema(schema *openapi3.Schema) bool {
-	if isObjectSchema(schema) {
-		return true
-	}
-	if isArraySchema(schema) {
-		// Arrays with simple string/enum items are not truly complex —
-		// they can be represented as comma-separated flags and are needed
-		// by the profiler for search body construction.
-		if schema.Items != nil && schema.Items.Value != nil {
-			itemSchema := schema.Items.Value
-			if itemSchema.Type != nil && itemSchema.Type.Is(openapi3.TypeString) {
-				return false // simple string array, keep it
-			}
-		}
-		return true
-	}
-	return false
 }
 
 func schemaTypeName(schemaRef *openapi3.SchemaRef, fallback string) string {

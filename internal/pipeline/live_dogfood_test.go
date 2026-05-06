@@ -130,6 +130,59 @@ func TestRunLiveDogfoodErrorPathAcceptsExpectedNonZeroExit(t *testing.T) {
 	assert.Equal(t, 2, errorPath.ExitCode)
 }
 
+func TestLiveDogfoodMutatingLeafDetectionTokenizesCommandNames(t *testing.T) {
+	t.Parallel()
+
+	for _, name := range []string{
+		"create-customer",
+		"post-agent-ledger-templates",
+		"request-send-money",
+		"transfer",
+		"set-token",
+	} {
+		assert.True(t, isMutatingLeaf(name), "%s should be treated as mutating", name)
+	}
+	assert.False(t, isMutatingLeaf("get-agent-ledger-templates"))
+	assert.False(t, isMutatingLeaf("list"))
+}
+
+func TestLiveDogfoodCommandMutatesPrefersEndpointMethod(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, liveDogfoodCommandMutates(liveDogfoodCommand{
+		Path: []string{"search", "query"},
+		Annotations: map[string]string{
+			"pp:method":     "POST",
+			"mcp:read-only": "true",
+		},
+	}))
+	assert.False(t, liveDogfoodCommandMutates(liveDogfoodCommand{
+		Path:        []string{"request-send-money", "list-send-money-approval-requests"},
+		Annotations: map[string]string{"pp:method": "GET"},
+	}))
+	assert.True(t, liveDogfoodCommandMutates(liveDogfoodCommand{
+		Path:        []string{"accounts", "plain-name"},
+		Annotations: map[string]string{"pp:method": "POST"},
+	}))
+}
+
+func TestValidLiveDogfoodJSONOutputAcceptsNDJSON(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, validLiveDogfoodJSONOutput(`{"event":"start"}`))
+	assert.True(t, validLiveDogfoodJSONOutput("{\"event\":\"start\"}\n{\"event\":\"done\"}\n"))
+	assert.False(t, validLiveDogfoodJSONOutput("{\"event\":\"start\"}\nwarning: skipped\n"))
+	assert.False(t, validLiveDogfoodJSONOutput(""))
+}
+
+func TestLiveDogfoodUnavailableForRunnerDoesNotHideNotFound(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "HTTP 403 permission denied"}))
+	assert.True(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "your credentials are valid but lack access"}))
+	assert.False(t, liveDogfoodUnavailableForRunner(liveDogfoodRun{stderr: "HTTP 404 NotFound"}))
+}
+
 func TestRunLiveDogfoodSkipsDestructiveByDefault(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
@@ -304,6 +357,25 @@ func TestFinalizeLiveDogfoodReportVerdictGate(t *testing.T) {
 			results: []LiveDogfoodTestResult{
 				mkResult(LiveDogfoodStatusPass), mkResult(LiveDogfoodStatusPass),
 				mkResult(LiveDogfoodStatusPass),
+			},
+			want: "PASS",
+		},
+		{
+			name:  "full credential-unavailable skips need a live signal",
+			level: "full",
+			results: []LiveDogfoodTestResult{
+				mkResult(LiveDogfoodStatusPass),
+				mkResult(LiveDogfoodStatusPass),
+				{Status: LiveDogfoodStatusSkip, Reason: reasonUnavailableRunnerCredentials},
+			},
+			want: "FAIL",
+		},
+		{
+			name:  "full credential-unavailable skips pass with one real happy path",
+			level: "full",
+			results: []LiveDogfoodTestResult{
+				{Status: LiveDogfoodStatusPass, Kind: LiveDogfoodTestHappy, Args: []string{"widgets", "get"}},
+				{Status: LiveDogfoodStatusSkip, Reason: reasonUnavailableRunnerCredentials},
 			},
 			want: "PASS",
 		},
@@ -2105,7 +2177,7 @@ func TestRunLiveDogfoodSkipsDryRunInjectionForReadCommand(t *testing.T) {
 		"expected matrix to skip --dry-run injection on non-mutator read commands")
 }
 
-func TestRunLiveDogfoodEmitsErrorPathRealForMutatorWithDryRun(t *testing.T) {
+func TestRunLiveDogfoodSkipsErrorPathRealForMutatorWithDryRun(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
@@ -2114,25 +2186,9 @@ func TestRunLiveDogfoodEmitsErrorPathRealForMutatorWithDryRun(t *testing.T) {
 
 	got := findResultByCommandKind(report, "widgets create", LiveDogfoodTestErrorReal)
 	require.NotNil(t, got, "expected error_path_real entry for mutator advertising --dry-run")
-	// API rejection path: fixture exits 1 without --dry-run → Pass.
-	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
-	assert.NotContains(t, got.Args, "--dry-run",
-		"error_path_real must use the original (pre-injection) args to provoke API rejection")
-}
-
-func TestRunLiveDogfoodErrorPathRealFailsWhenAPIAcceptsPlaceholder(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("test uses a shell script as the fake binary; skip on Windows")
-	}
-	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
-	t.Setenv("PRINTING_PRESS_TEST_PERMISSIVE_API", "1")
-	report := runDryRunFixtureMatrix(t, dir, binaryName)
-
-	got := findResultByCommandKind(report, "widgets create", LiveDogfoodTestErrorReal)
-	require.NotNil(t, got)
-	assert.Equal(t, LiveDogfoodStatusFail, got.Status,
-		"over-permissive API quietly accepting placeholder body must surface as Fail")
-	assert.Equal(t, "expected non-zero exit for placeholder body", got.Reason)
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status, got.Reason)
+	assert.Equal(t, reasonMutatingDryRunOnly, got.Reason)
+	assert.Empty(t, got.Args, "skipped error_path_real must not include executable mutation args")
 }
 
 func TestRunLiveDogfoodSkipsErrorPathRealForReadCommand(t *testing.T) {

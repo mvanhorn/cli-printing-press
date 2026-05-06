@@ -120,6 +120,149 @@ components:
 	assert.Equal(t, []string{"workspace", "collection"}, typeField.Enum)
 }
 
+func TestParseMapsAllOfRequestBodyFields(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Banking API
+  version: 1.0.0
+paths:
+  /account/{accountId}/transactions:
+    post:
+      operationId: createTransaction
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, paymentMethod, recipientId, purpose]
+              properties:
+                amount:
+                  allOf:
+                    - $ref: "#/components/schemas/PositiveDollar"
+                  description: Amount of USD you want to send.
+                paymentMethod:
+                  allOf:
+                    - $ref: "#/components/schemas/PaymentMethod"
+                recipientId:
+                  allOf:
+                    - $ref: "#/components/schemas/RecipientId"
+                purpose:
+                  allOf:
+                    - $ref: "#/components/schemas/PaymentPurpose"
+                    - $ref: "#/components/schemas/PurposeMetadata"
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+components:
+  schemas:
+    PositiveDollar:
+      type: number
+      format: double
+      description: A positive dollar amount with at least 1 cent.
+    PaymentMethod:
+      type: string
+      enum: [ach, check, domesticWire]
+    RecipientId:
+      type: string
+      format: uuid
+    PaymentPurpose:
+      type: object
+      properties:
+        simple:
+          type: string
+    PurposeMetadata:
+      type: object
+      required: [memo]
+      properties:
+        memo:
+          type: string
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/account/{accountId}/transactions")
+	byName := map[string]spec.Param{}
+	for _, param := range endpoint.Body {
+		byName[param.Name] = param
+	}
+
+	assert.Equal(t, "float", byName["amount"].Type)
+	assert.Equal(t, "double", byName["amount"].Format)
+	assert.Equal(t, "string", byName["paymentMethod"].Type)
+	assert.Equal(t, []string{"ach", "check", "domesticWire"}, byName["paymentMethod"].Enum)
+	assert.Equal(t, "string", byName["recipientId"].Type)
+	assert.Equal(t, "uuid", byName["recipientId"].Format)
+	assert.Equal(t, "object", byName["purpose"].Type)
+	assert.Equal(t, []spec.Param{
+		{Name: "memo", Type: "string", Required: true, Description: "Memo"},
+		{Name: "simple", Type: "string", Description: "Simple"},
+	}, byName["purpose"].Fields)
+}
+
+func TestParseRecursiveRequestBodyFieldsStopsAtCycle(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Recursive API
+  version: 1.0.0
+paths:
+  /nodes:
+    post:
+      operationId: createNode
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [node]
+              properties:
+                node:
+                  $ref: "#/components/schemas/Node"
+      responses:
+        "200":
+          description: ok
+components:
+  schemas:
+    Node:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        child:
+          $ref: "#/components/schemas/Node"
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/nodes")
+	require.Len(t, endpoint.Body, 1)
+	require.Equal(t, "node", endpoint.Body[0].Name)
+	assert.Equal(t, "object", endpoint.Body[0].Type)
+
+	fieldsByName := map[string]spec.Param{}
+	for _, field := range endpoint.Body[0].Fields {
+		fieldsByName[field.Name] = field
+	}
+	assert.Equal(t, "string", fieldsByName["name"].Type)
+	assert.Equal(t, "object", fieldsByName["child"].Type)
+	assert.Empty(t, fieldsByName["child"].Fields)
+}
+
 func TestParseStytchOpenAPI(t *testing.T) {
 	t.Parallel()
 
@@ -2988,4 +3131,24 @@ paths:
 	parsed, err := Parse([]byte(specYAML))
 	require.NoError(t, err)
 	assert.Equal(t, "https://global.example.com", parsed.BaseURL)
+}
+
+func findParsedEndpointByPath(t *testing.T, parsed *spec.APISpec, method, path string) spec.Endpoint {
+	t.Helper()
+	for _, resource := range parsed.Resources {
+		for _, endpoint := range resource.Endpoints {
+			if endpoint.Method == method && endpoint.Path == path {
+				return endpoint
+			}
+		}
+		for _, sub := range resource.SubResources {
+			for _, endpoint := range sub.Endpoints {
+				if endpoint.Method == method && endpoint.Path == path {
+					return endpoint
+				}
+			}
+		}
+	}
+	t.Fatalf("endpoint %s %s not found", method, path)
+	return spec.Endpoint{}
 }

@@ -36,4 +36,3 @@ type UpdateTaskRequest struct {
 	Priority string `json:"priority"`
 	Title string `json:"title"`
 }
-

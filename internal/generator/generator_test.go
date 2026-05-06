@@ -3391,6 +3391,363 @@ func TestGeneratedOutput_PromotedCommandExists(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "users.go"))
 }
 
+func TestGeneratedOutput_PromotedCommandKeepsSubresourceParents(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "promsub",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"PROM_SUB_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/promsub-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"account": {
+				Description: "Manage accounts",
+				Endpoints: map[string]spec.Endpoint{
+					"get": {
+						Method:      "GET",
+						Path:        "/account/{accountId}",
+						Description: "Get account",
+						Params:      []spec.Param{{Name: "accountId", Type: "string", Required: true, Positional: true}},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"cards": {
+						Description: "Manage cards",
+						Endpoints: map[string]spec.Endpoint{
+							"get-account": {
+								Method:      "GET",
+								Path:        "/account/{accountId}/cards",
+								Description: "Get account cards",
+								Alias:       "get",
+								Params:      []spec.Param{{Name: "accountId", Type: "string", Required: true, Positional: true}},
+							},
+						},
+					},
+					"statements": {
+						Description: "Manage statements",
+						Endpoints: map[string]spec.Endpoint{
+							"get-account": {
+								Method:      "GET",
+								Path:        "/account/{accountId}/statements",
+								Description: "Get account statements",
+								Alias:       "get",
+								Params:      []spec.Param{{Name: "accountId", Type: "string", Required: true, Positional: true}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "promsub-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	promotedSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "promoted_account.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(promotedSrc), "newAccountCardsCmd(flags)")
+	assert.Contains(t, string(promotedSrc), "newAccountStatementsCmd(flags)")
+	assert.NotContains(t, string(promotedSrc), "newAccountCardsGetAccountCmd(flags)")
+	assert.NotContains(t, string(promotedSrc), "newAccountStatementsGetAccountCmd(flags)")
+
+	cardsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "account_cards_get-account.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(cardsSrc), `Example: "  promsub-pp-cli account cards get-account `)
+	assert.NotContains(t, string(cardsSrc), `Example: "  promsub-pp-cli account get-account `)
+}
+
+func TestExampleLineUsesRenderedCommandAndFlagNames(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("example-render")
+	g := New(apiSpec, t.TempDir())
+
+	endpoint := spec.Endpoint{
+		Method: "POST",
+		Path:   "/account/{accountId}/request-send-money",
+		Params: []spec.Param{
+			{Name: "accountId", Type: "string", Required: true, Positional: true},
+		},
+		Body: []spec.Param{
+			{Name: "idempotencyKey", Type: "string", Required: true},
+		},
+	}
+
+	got := g.exampleLine("account request-send-money", "request_send_money", endpoint)
+
+	assert.Contains(t, got, "example-render-pp-cli account request-send-money request-send-money")
+	assert.Contains(t, got, "--idempotency-key your-token-here")
+	assert.NotContains(t, got, "request_send_money")
+	assert.NotContains(t, got, "--idempotencyKey")
+}
+
+func TestDetectAgentMoneyWorkflowFromGenericMoneyMovementShape(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("treasury")
+	apiSpec.Resources = map[string]spec.Resource{
+		"account": {
+			Description: "Manage accounts",
+			Endpoints: map[string]spec.Endpoint{
+				"get": {
+					Method:      "GET",
+					Path:        "/account/{accountId}",
+					Description: "Get account",
+					Params:      []spec.Param{{Name: "accountId", Type: "string", Required: true, Positional: true}},
+				},
+			},
+			SubResources: map[string]spec.Resource{
+				"request-send-money": {
+					Description: "Manage send-money requests",
+					Endpoints: map[string]spec.Endpoint{
+						"request_send_money": {
+							Method:      "POST",
+							Path:        "/account/{accountId}/request-send-money",
+							Description: "Create send-money request",
+							Alias:       "create",
+							Params:      []spec.Param{{Name: "accountId", Type: "string", Required: true, Positional: true}},
+							Body: []spec.Param{
+								{Name: "amount", Type: "number", Required: true},
+								{Name: "recipientId", Type: "string", Required: true},
+								{Name: "paymentMethod", Type: "string", Required: true},
+								{Name: "idempotencyKey", Type: "string", Required: true},
+							},
+						},
+					},
+				},
+				"transactions": {
+					Description: "Manage transactions",
+					Endpoints: map[string]spec.Endpoint{
+						"create": {
+							Method:      "POST",
+							Path:        "/account/{accountId}/transactions",
+							Description: "Create transaction",
+							Params:      []spec.Param{{Name: "accountId", Type: "string", Required: true, Positional: true}},
+							Body: []spec.Param{
+								{Name: "amount", Type: "number", Required: true},
+								{Name: "recipientId", Type: "string", Required: true},
+								{Name: "paymentMethod", Type: "string", Required: true},
+								{Name: "idempotencyKey", Type: "string", Required: true},
+								{Name: "externalMemo", Type: "string"},
+								{Name: "purpose", Type: "object"},
+							},
+						},
+					},
+				},
+			},
+		},
+		"transfer": {
+			Description: "Move funds between accounts",
+			Endpoints: map[string]spec.Endpoint{
+				"create": {
+					Method:      "POST",
+					Path:        "/transfer",
+					Description: "Create transfer",
+					Body: []spec.Param{
+						{Name: "sourceAccountId", Type: "string", Required: true},
+						{Name: "destinationAccountId", Type: "string", Required: true},
+						{Name: "amount", Type: "number", Required: true},
+						{Name: "idempotencyKey", Type: "string", Required: true},
+					},
+				},
+			},
+		},
+	}
+
+	workflow := detectAgentMoneyWorkflow(apiSpec, map[string]string{"transfer": "create"})
+
+	require.NotNil(t, workflow.Payment)
+	assert.Equal(t, []string{"account", "transactions", "create"}, workflow.Payment.CommandPath)
+	assert.True(t, workflow.Payment.HasAccountIDPosition)
+	assert.Equal(t, "amount", workflow.Payment.AmountFlag)
+	assert.Equal(t, "recipient-id", workflow.Payment.RecipientIDFlag)
+	assert.Equal(t, "payment-method", workflow.Payment.PaymentMethodFlag)
+	assert.Equal(t, "idempotency-key", workflow.Payment.IdempotencyKeyFlag)
+	assert.Equal(t, "external-memo", workflow.Payment.ExternalMemoFlag)
+	assert.Equal(t, "purpose", workflow.Payment.PurposeFlag)
+
+	require.NotNil(t, workflow.Request)
+	assert.Equal(t, []string{"account", "request-send-money", "create"}, workflow.Request.CommandPath,
+		"workflow plans should use generated endpoint aliases when available")
+
+	require.NotNil(t, workflow.Transfer)
+	assert.Equal(t, []string{"transfer"}, workflow.Transfer.CommandPath,
+		"promoted single-endpoint resources must emit the actual registered command path")
+	assert.Equal(t, "source-account-id", workflow.Transfer.SourceAccountIDFlag)
+	assert.Equal(t, "destination-account-id", workflow.Transfer.DestinationAccountIDFlag)
+	assert.True(t, workflow.Enabled())
+}
+
+func TestDetectAgentMoneyWorkflowRejectsIncompleteExecutablePlans(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("treasury")
+	apiSpec.Resources = map[string]spec.Resource{
+		"organizations": {
+			Description: "Manage organization payments",
+			Endpoints: map[string]spec.Endpoint{
+				"create-payment": {
+					Method:      "POST",
+					Path:        "/organizations/{organizationId}/payments",
+					Description: "Create payment",
+					Params:      []spec.Param{{Name: "organizationId", Type: "string", Required: true, Positional: true}},
+					Body: []spec.Param{
+						{Name: "amount", Type: "number", Required: true},
+						{Name: "recipientId", Type: "string", Required: true},
+						{Name: "paymentMethod", Type: "string", Required: true},
+						{Name: "idempotencyKey", Type: "string", Required: true},
+					},
+				},
+			},
+		},
+		"payments": {
+			Description: "Manage payments",
+			Endpoints: map[string]spec.Endpoint{
+				"create": {
+					Method:      "POST",
+					Path:        "/payments",
+					Description: "Create payment",
+					Body: []spec.Param{
+						{Name: "amount", Type: "number", Required: true},
+						{Name: "recipientId", Type: "string", Required: true},
+						{Name: "paymentMethod", Type: "string", Required: true},
+						{Name: "idempotencyKey", Type: "string", Required: true},
+						{Name: "currency", Type: "string", Required: true},
+					},
+				},
+			},
+		},
+	}
+
+	workflow := detectAgentMoneyWorkflow(apiSpec, nil)
+
+	assert.False(t, workflow.Enabled(), "payment-plan must not emit execute commands that omit required positionals or body flags")
+}
+
+func TestDetectAgentMoneyWorkflowTracksTransferPositionalsAndIntegerAmounts(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("treasury")
+	apiSpec.Resources = map[string]spec.Resource{
+		"account": {
+			Description: "Manage accounts",
+			SubResources: map[string]spec.Resource{
+				"transfers": {
+					Description: "Move funds between account ledgers",
+					Endpoints: map[string]spec.Endpoint{
+						"create": {
+							Method: "POST",
+							Path:   "/account/{accountId}/transfers",
+							Params: []spec.Param{{Name: "accountId", Type: "string", Required: true, Positional: true}},
+							Body: []spec.Param{
+								{Name: "sourceAccountId", Type: "string", Required: true},
+								{Name: "destinationAccountId", Type: "string", Required: true},
+								{Name: "amount", Type: "integer", Required: true},
+								{Name: "idempotencyKey", Type: "string", Required: true},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	workflow := detectAgentMoneyWorkflow(apiSpec, nil)
+
+	require.NotNil(t, workflow.Transfer)
+	assert.True(t, workflow.Transfer.HasAccountIDPosition)
+	assert.True(t, workflow.Transfer.AmountInteger)
+}
+
+func TestGeneratedOutput_AgentMoneyWorkflowPaymentPlan(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("treasury")
+	apiSpec.Resources["account"] = spec.Resource{
+		Description: "Manage accounts",
+		Endpoints: map[string]spec.Endpoint{
+			"get": {
+				Method:      "GET",
+				Path:        "/account/{accountId}",
+				Description: "Get account",
+				Params:      []spec.Param{{Name: "accountId", Type: "string", Required: true, Positional: true}},
+			},
+		},
+		SubResources: map[string]spec.Resource{
+			"transactions": {
+				Description: "Manage transactions",
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method:      "POST",
+						Path:        "/account/{accountId}/transactions",
+						Description: "Create transaction",
+						Params:      []spec.Param{{Name: "accountId", Type: "string", Required: true, Positional: true}},
+						Body: []spec.Param{
+							{Name: "amount", Type: "number", Required: true},
+							{Name: "recipientId", Type: "string", Required: true},
+							{Name: "paymentMethod", Type: "string", Required: true},
+							{Name: "idempotencyKey", Type: "string", Required: true},
+							{Name: "purpose", Type: "object"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "treasury-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	workflowGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "channel_workflow.go"))
+	require.NoError(t, err)
+	workflowSrc := string(workflowGo)
+	assert.Contains(t, workflowSrc, "func newWorkflowPaymentPlanCmd(flags *rootFlags) *cobra.Command")
+	assert.Contains(t, workflowSrc, `Use:   "payment-plan"`)
+	assert.Contains(t, workflowSrc, `base = []string{"treasury-pp-cli", "account", "transactions", "create"}`)
+	assert.Contains(t, workflowSrc, `"dry_run_command": append(append([]string{}, base...), "--dry-run", "--agent")`)
+	assert.Contains(t, workflowSrc, `"execute_command": append([]string{}, base...)`)
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+
+	binaryPath := filepath.Join(outputDir, "treasury-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/treasury-pp-cli")
+
+	cmd := exec.Command(binaryPath, "workflow", "payment-plan",
+		"--kind", "payment",
+		"--account-id", "acct_123",
+		"--recipient-id", "rec_123",
+		"--amount", "25",
+		"--payment-method", "ach",
+		"--idempotency-key", "idem",
+		"--json",
+	)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	var plan map[string]any
+	require.NoError(t, json.Unmarshal(out, &plan))
+	assert.Equal(t, "payment", plan["kind"])
+	assert.Equal(t, true, plan["read_only"])
+	assert.Equal(t, true, plan["requires_approval"])
+	assert.Equal(t, []any{"treasury-pp-cli", "account", "transactions", "create", "acct_123", "--amount", "25.00", "--recipient-id", "rec_123", "--payment-method", "ach", "--idempotency-key", "idem", "--dry-run", "--agent"}, plan["dry_run_command"])
+	assert.Equal(t, []any{"treasury-pp-cli", "account", "transactions", "create", "acct_123", "--amount", "25.00", "--recipient-id", "rec_123", "--payment-method", "ach", "--idempotency-key", "idem"}, plan["execute_command"])
+
+	cmd = exec.Command(binaryPath, "workflow", "payment-plan",
+		"--kind", "payment",
+		"--account-id", "acct_123",
+		"--recipient-id", "rec_123",
+		"--amount", "25",
+		"--payment-method", "domesticWire",
+		"--idempotency-key", "idem",
+	)
+	out, err = cmd.CombinedOutput()
+	require.Error(t, err)
+	assert.Contains(t, string(out), "--purpose is required for domesticWire payment plans")
+}
+
 func TestGeneratedOutput_PromotedCommandCompiles(t *testing.T) {
 	t.Parallel()
 
@@ -6801,7 +7158,7 @@ func TestTemplatesEmitReadOnlyAnnotation(t *testing.T) {
 		{"api_discovery.go.tmpl", 1, "walks cobra tree, prints help"},
 		{"tail.go.tmpl", 1, "polls API GETs, NDJSON to stdout"},
 		{"jobs.go.tmpl", 2, "list and get; prune is omitted (mutates ledger)"},
-		{"channel_workflow.go.tmpl", 1, "status only; workflow parent and archive omitted"},
+		{"channel_workflow.go.tmpl", 2, "status and generated payment-plan are read-only; workflow parent and archive omitted"},
 	}
 
 	for _, tc := range cases {
