@@ -321,6 +321,22 @@ func authEnvVarSpecNames(envVarSpecs []apispec.AuthEnvVar) []string {
 
 func summarizeAuthEnvVars(envVarSpecs []apispec.AuthEnvVar, apiKey, apiKeyEnvVar, mode string) []AuthEnvVarStatus {
 	statuses := make([]AuthEnvVarStatus, 0, len(envVarSpecs))
+	if apiKey != "" && apiKeyEnvVar == "" {
+		for _, envVar := range envVarSpecs {
+			name := strings.TrimSpace(envVar.Name)
+			if name == "" {
+				continue
+			}
+			apiKeyEnvVar = name
+			kind := envVar.Kind
+			if kind == "" {
+				kind = apispec.AuthEnvVarKindPerCall
+			}
+			if kind == apispec.AuthEnvVarKindPerCall && envVar.Required {
+				break
+			}
+		}
+	}
 	for _, envVar := range envVarSpecs {
 		name := strings.TrimSpace(envVar.Name)
 		if name == "" {

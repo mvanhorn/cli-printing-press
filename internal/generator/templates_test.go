@@ -2,11 +2,13 @@ package generator
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,4 +69,41 @@ func TestConfigTemplateRendersAuthHeaderORCaseFanOut(t *testing.T) {
 		strings.Contains(content, "if c.SlackUserToken != \"\"") &&
 			strings.Contains(content, "return \"Bearer \" + c.SlackUserToken"),
 		"generated AuthHeader should fall back to SLACK_USER_TOKEN:\n%s", content)
+}
+
+func TestAuthHeaderBearerORCaseFallsThroughToAccessToken(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("slack-auth-token")
+	apiSpec.Auth = spec.AuthConfig{
+		Type: "bearer_token",
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "SLACK_BOT_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true, Description: "Set this OR SLACK_USER_TOKEN."},
+			{Name: "SLACK_USER_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true, Description: "Set this OR SLACK_BOT_TOKEN."},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "slack-auth-token-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	tidy := exec.Command("go", "mod", "tidy")
+	tidy.Dir = outputDir
+	out, err := tidy.CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = outputDir
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	configSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	content := string(configSrc)
+
+	fanOutIdx := strings.Index(content, `if c.SlackUserToken != ""`)
+	accessTokenIdx := strings.Index(content, `if c.AccessToken != ""`)
+	require.NotEqual(t, -1, fanOutIdx, "generated AuthHeader should include OR-case fan-out:\n%s", content)
+	require.NotEqual(t, -1, accessTokenIdx, "generated AuthHeader should include AccessToken fallback:\n%s", content)
+	assert.Less(t, fanOutIdx, accessTokenIdx, "AccessToken fallback should remain reachable after OR fan-out")
+	require.NotContains(t, content[fanOutIdx:accessTokenIdx], `return ""`)
 }

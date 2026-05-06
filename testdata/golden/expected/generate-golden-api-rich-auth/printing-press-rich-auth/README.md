@@ -171,13 +171,13 @@ Environment variables:
 
 | Name | Kind | Required | Description |
 | --- | --- | --- | --- |
-| `RICH_AUTH_API_KEY` | per_call | Yes | Rich Auth API key. |
+| `RICH_AUTH_API_KEY` | per_call | Yes | Set to your API credential. |
 | `RICH_AUTH_CLIENT_ID` | auth_flow_input | No | OAuth application client identifier. |
-| `RICH_AUTH_CLIENT_SECRET` | auth_flow_input | No | OAuth application client secret. |
-| `RICH_AUTH_SESSION_COOKIE` | harvested | No | Browser session cookie captured by auth login. |
-| `RICH_AUTH_OPTIONAL_TOKEN` | per_call | No | Optional token for elevated read limits. |
-| `RICH_AUTH_BOT_TOKEN` | per_call | No | Set this OR RICH_AUTH_USER_TOKEN for workspace access. |
-| `RICH_AUTH_USER_TOKEN` | per_call | No | Set this OR RICH_AUTH_BOT_TOKEN for workspace access. |
+| `RICH_AUTH_CLIENT_SECRET` | auth_flow_input | No | Set during initial auth setup. |
+| `RICH_AUTH_SESSION_COOKIE` | harvested | No | Populated automatically by auth login. |
+| `RICH_AUTH_OPTIONAL_TOKEN` | per_call | No | Set to your API credential. |
+| `RICH_AUTH_BOT_TOKEN` | per_call | No | Set to your API credential. |
+| `RICH_AUTH_USER_TOKEN` | per_call | No | Set to your API credential. |
 
 ## Troubleshooting
 **Authentication errors (exit code 4)**

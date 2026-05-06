@@ -967,6 +967,18 @@ func TestSummarizeAuthEnvVarsAPIKeyOnlySatisfiesConfiguredEnvVar(t *testing.T) {
 	assert.Equal(t, []AuthEnvVarStatus{got[1]}, missingRequiredAuthEnvVars(got))
 }
 
+func TestSummarizeAuthEnvVarsApiKeyWithoutCanonicalEnvVar(t *testing.T) {
+	t.Setenv("PRIMARY_TOKEN", "")
+
+	got := summarizeAuthEnvVars([]apispec.AuthEnvVar{
+		{Name: "PRIMARY_TOKEN", Kind: apispec.AuthEnvVarKindPerCall, Required: true},
+	}, "secret", "", "live")
+
+	require.Len(t, got, 1)
+	assert.Equal(t, AuthEnvVarStatusOK, got[0].Status)
+	assert.Empty(t, missingRequiredAuthEnvVars(got))
+}
+
 // TestDiscoverCLIEnvVars_SkipsTemplateVarReads guards the verifier integration
 // for endpoint template vars: the helper must NOT report env vars that feed
 // Config.TemplateVars (Shopify's SHOPIFY_SHOP / SHOPIFY_API_VERSION shape) as

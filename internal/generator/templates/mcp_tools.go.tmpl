@@ -428,13 +428,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 					"required": {{.Required}},
 					"sensitive": {{.Sensitive}},
 {{- if .Sensitive}}
-{{- if eq .Kind "per_call"}}
-					"description": "Set to your API credential.",
-{{- else if eq .Kind "auth_flow_input"}}
-					"description": "Set during initial auth setup.",
-{{- else if eq .Kind "harvested"}}
-					"description": "Populated automatically by auth login.",
-{{- end}}
+					"description": {{printf "%q" .Kind.SensitivePlaceholder}},
 {{- else if .Description}}
 					"description": {{printf "%q" .Description}},
 {{- end}}
@@ -472,13 +466,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 							"required": {{.Required}},
 							"sensitive": {{.Sensitive}},
 {{- if .Sensitive}}
-{{- if eq .Kind "per_call"}}
-							"description": "Set to your API credential.",
-{{- else if eq .Kind "auth_flow_input"}}
-							"description": "Set during initial auth setup.",
-{{- else if eq .Kind "harvested"}}
-							"description": "Populated automatically by auth login.",
-{{- end}}
+							"description": {{printf "%q" .Kind.SensitivePlaceholder}},
 {{- else if .Description}}
 							"description": {{printf "%q" .Description}},
 {{- end}}

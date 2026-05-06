@@ -290,6 +290,25 @@ func TestAuthEnvVarSpecsRejectIndependentORGroups(t *testing.T) {
 	require.ErrorContains(t, s.Validate(), "auth: detected 2+ independent OR-groups in EnvVarSpecs")
 }
 
+func TestAuthEnvVarSpecsAcceptNonCrossReferencingORDescriptions(t *testing.T) {
+	s := APISpec{
+		Name:    "auth-api",
+		BaseURL: "https://api.example.com",
+		Auth: AuthConfig{
+			Type: "bearer_token",
+			EnvVarSpecs: []AuthEnvVar{
+				{Name: "FIRST_TOKEN", Kind: AuthEnvVarKindPerCall, Sensitive: true, Description: "Set this OR use OAuth."},
+				{Name: "SECOND_TOKEN", Kind: AuthEnvVarKindPerCall, Sensitive: true, Description: "Set this OR use dashboard."},
+			},
+		},
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+	}
+
+	require.NoError(t, s.Validate())
+}
+
 func TestAuthEnvVarSpecsAcceptTransitiveORGroup(t *testing.T) {
 	s := APISpec{
 		Name:    "auth-api",

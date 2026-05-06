@@ -481,6 +481,29 @@ const (
 	AuthEnvVarKindHarvested     AuthEnvVarKind = "harvested"
 )
 
+func (k AuthEnvVarKind) SensitivePlaceholder() string {
+	switch k {
+	case AuthEnvVarKindPerCall:
+		return "Set to your API credential."
+	case AuthEnvVarKindAuthFlowInput:
+		return "Set during initial auth setup."
+	case AuthEnvVarKindHarvested:
+		return "Populated automatically by auth login."
+	default:
+		return ""
+	}
+}
+
+func (v AuthEnvVar) MarkdownDescription() string {
+	if v.Sensitive {
+		return v.Kind.SensitivePlaceholder()
+	}
+	description := strings.ReplaceAll(v.Description, "|", `\|`)
+	description = strings.ReplaceAll(description, "\r\n", " ")
+	description = strings.ReplaceAll(description, "\n", " ")
+	return strings.ReplaceAll(description, "\r", " ")
+}
+
 // CanonicalEnvVar returns the deterministic canonical entry for human-prose surfaces.
 func (c *AuthConfig) CanonicalEnvVar() *AuthEnvVar {
 	if c == nil {
@@ -498,7 +521,10 @@ func (c *AuthConfig) CanonicalEnvVar() *AuthEnvVar {
 	return nil
 }
 
-// IsAuthEnvVarORCase reports whether all EnvVarSpecs are non-required per_call vars, the shape that triggers OR fan-out generation in config.go.tmpl.
+// IsAuthEnvVarORCase reports whether all EnvVarSpecs are non-required per_call vars.
+// In this shape, no single var is the canonical credential; the runtime tries each
+// in turn and returns the first non-empty value. Returns false when EnvVarSpecs has
+// fewer than 2 entries, any entry is Required, or any entry is not Kind=per_call.
 func (c *AuthConfig) IsAuthEnvVarORCase() bool {
 	if c == nil || len(c.EnvVarSpecs) < 2 {
 		return false
@@ -1479,10 +1505,31 @@ func validateAuthEnvVarSpecs(context string, auth AuthConfig) error {
 }
 
 func independentAuthORGroupsExample(envVarSpecs []AuthEnvVar) (string, bool) {
+	names := make(map[string]struct{}, len(envVarSpecs))
+	for _, envVar := range envVarSpecs {
+		name := strings.TrimSpace(envVar.Name)
+		if name != "" {
+			names[name] = struct{}{}
+		}
+	}
+
 	members := make([]AuthEnvVar, 0, len(envVarSpecs))
 	for _, envVar := range envVarSpecs {
 		name := strings.TrimSpace(envVar.Name)
 		if name == "" || envVar.Kind != AuthEnvVarKindPerCall || envVar.Required || !strings.Contains(envVar.Description, " OR ") {
+			continue
+		}
+		referencesSibling := false
+		for _, token := range orGroupTokenRe.FindAllString(envVar.Description, -1) {
+			if token == name {
+				continue
+			}
+			if _, ok := names[token]; ok {
+				referencesSibling = true
+				break
+			}
+		}
+		if !referencesSibling {
 			continue
 		}
 		members = append(members, envVar)

@@ -444,7 +444,7 @@ Environment variables:
 {{- end}}
 {{- if .Auth.EnvVarSpecs}}
 {{- range .Auth.EnvVarSpecs}}
-| `{{.Name}}` | {{.Kind}} | {{if .Required}}Yes{{else}}No{{end}} | {{.Description}} |
+| `{{.Name}}` | {{.Kind}} | {{if .Required}}Yes{{else}}No{{end}} | {{.MarkdownDescription}} |
 {{- end}}
 {{- else}}
 {{- range .Auth.EnvVars}}

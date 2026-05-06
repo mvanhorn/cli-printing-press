@@ -274,7 +274,6 @@ func (c *Config) AuthHeader() string {
 		{{- end}}
 	}
 {{- end}}
-	return ""
 {{- else}}
 	{{- with $canonicalEnvVar}}
 	if c.{{resolveEnvVarField .Name}} != "" {
@@ -290,6 +289,7 @@ func (c *Config) AuthHeader() string {
 		{{- end}}
 	}
 	{{- end}}
+{{- end}}
 {{- if not .BearerRefresh.Enabled}}
 	if c.AccessToken != "" {
 		c.AuthSource = "oauth2"
@@ -301,7 +301,6 @@ func (c *Config) AuthHeader() string {
 	}
 {{- end}}
 	return ""
-{{- end}}
 {{- end}}
 {{- else if eq .Auth.Type "cookie"}}
 	// Env-var token wins over file-stored AccessToken (env > config convention).

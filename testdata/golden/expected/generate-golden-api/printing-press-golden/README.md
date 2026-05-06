@@ -192,7 +192,7 @@ Environment variables:
 
 | Name | Kind | Required | Description |
 | --- | --- | --- | --- |
-| `PRINTING_PRESS_GOLDEN_API_KEY` | per_call | Yes |  |
+| `PRINTING_PRESS_GOLDEN_API_KEY` | per_call | Yes | Set to your API credential. |
 
 ## Troubleshooting
 **Authentication errors (exit code 4)**
