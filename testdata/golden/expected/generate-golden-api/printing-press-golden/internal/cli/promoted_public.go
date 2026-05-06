@@ -18,7 +18,7 @@ func newPublicPromotedCmd(flags *rootFlags) *cobra.Command {
 		Short: "Get public service status",
 		Long:  "Shortcut for 'public get-status'. Get public service status",
 		Example: "  printing-press-golden-pp-cli public",
-		Annotations: map[string]string{"pp:endpoint": "public.get-status", "mcp:read-only": "true"},
+		Annotations: map[string]string{"pp:endpoint": "public.get-status", "pp:method": "GET", "pp:path": "/public/status", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {
@@ -29,7 +29,7 @@ func newPublicPromotedCmd(flags *rootFlags) *cobra.Command {
 			params := map[string]string{}
 			data, prov, err := resolveRead(cmd.Context(), c, flags, "public", false, path, params, nil)
 			if err != nil {
-				return classifyAPIError(err)
+				return classifyAPIError(err, flags)
 			}
 			// Unwrap API response envelopes (e.g. {"status":"success","data":[...]})
 			// so output helpers see the inner data, not the wrapper.

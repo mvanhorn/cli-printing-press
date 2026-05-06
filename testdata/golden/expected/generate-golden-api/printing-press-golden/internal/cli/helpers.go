@@ -194,14 +194,40 @@ func isSyncAccessWarning(err error) (*accessWarning, bool) {
 	return nil, false
 }
 
+type noopResult struct {
+	Status string `json:"status"`
+	Reason string `json:"reason"`
+}
+
+func writeNoop(flags *rootFlags, reason, prose string) error {
+	if flags != nil && flags.asJSON {
+		return json.NewEncoder(os.Stdout).Encode(noopResult{Status: "noop", Reason: reason})
+	}
+	fmt.Fprintln(os.Stderr, prose)
+	return nil
+}
+
+func writeAPIErrorEnvelope(flags *rootFlags, err error, code int) {
+	if flags == nil || !flags.asJSON {
+		return
+	}
+	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+		"error": err.Error(),
+		"code":  code,
+	})
+}
+
 // classifyAPIError maps API errors to structured exit codes with actionable hints.
-func classifyAPIError(err error) error {
+func classifyAPIError(err error, flags *rootFlags) error {
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "HTTP 409"):
-		// 409 Conflict = resource already exists. For agents retrying creates, this is success.
-		fmt.Fprintln(os.Stderr, "already exists (no-op)")
-		return nil
+		if flags != nil && flags.idempotent {
+			return writeNoop(flags, "already_exists", "already exists (no-op)")
+		}
+		classified := apiErr(err)
+		writeAPIErrorEnvelope(flags, classified, ExitCode(classified))
+		return classified
 	case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
 		return authErr(fmt.Errorf("%w\nhint: the API rejected the request — this usually means auth is missing or invalid."+
 			"\n      Set your API key: export PRINTING_PRESS_GOLDEN_API_KEY=<your-key>"+

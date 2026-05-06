@@ -21,6 +21,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-prefix` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
 | `x-auth-env-vars` | `components.securitySchemes.<name>` | `APISpec.Auth.EnvVars` | No |
 | `x-auth-vars` | `components.securitySchemes.<name>` | `APISpec.Auth.EnvVarSpecs` | No |
+| `x-speakeasy-example` | `components.securitySchemes.<name>` | `APISpec.Auth.EnvVars` | No |
 | `x-auth-optional` | `components.securitySchemes.<name>` | `APISpec.Auth.Optional` | No |
 | `x-auth-key-url` | `components.securitySchemes.<name>` | `APISpec.Auth.KeyURL` | No |
 | `x-auth-title` | `components.securitySchemes.<name>` | `APISpec.Auth.Title` | No |
@@ -277,6 +278,21 @@ components:
           sensitive: true
           description: Todoist API key.
 ```
+
+### `x-speakeasy-example`
+
+Uses a Speakeasy security-scheme example as the credential environment variable
+name when it is shaped like a shell env var.
+
+Parsed field: `APISpec.Auth.EnvVars`
+
+Rules:
+- Optional.
+- Must be a string shaped like an uppercase environment variable name, for
+  example `DUB_API_KEY`.
+- Ignored when `x-auth-env-vars` is present.
+- Ignored when the selected auth config has multiple env vars.
+- Ignored when the value looks like a token value instead of an env var name.
 
 ### `x-auth-optional`
 

@@ -419,6 +419,7 @@ func cobratreeCommandKind(cmd cobraCommandLiteral) mcpCobraCommandKind {
 }
 
 func annotationIsTrueValue(v string) bool {
+	v = strings.ToLower(strings.TrimSpace(v))
 	return v == "true" || v == "1" || v == "yes"
 }
 

@@ -52,7 +52,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 		Short: "{{oneline .Endpoint.Description}}",
 		Example: "{{exampleLine .CommandPath .EndpointName .Endpoint}}",
-		Annotations: map[string]string{"pp:endpoint": "{{.ResourceName}}.{{.EndpointName}}"{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}},
+		Annotations: map[string]string{"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, "pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}},
 		RunE: func(cmd *cobra.Command, args []string) error {
 {{- if positionalArgs .Endpoint}}
 			if len(args) == 0 {
@@ -320,11 +320,11 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- if eq .Endpoint.Method "DELETE"}}
 			if err != nil {
-				return classifyDeleteError(err)
+				return classifyDeleteError(err, flags)
 			}
 {{- else}}
 			if err != nil {
-				return classifyAPIError(err)
+				return classifyAPIError(err, flags)
 			}
 {{- end}}
 {{- if endpointNeedsClientLimit .Endpoint}}

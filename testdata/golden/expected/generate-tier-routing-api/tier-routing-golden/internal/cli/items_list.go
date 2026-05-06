@@ -18,7 +18,7 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 		Use:   "list",
 		Short: "List free items",
 		Example: "  tier-routing-golden-pp-cli items list",
-		Annotations: map[string]string{"pp:endpoint": "items.list", "mcp:read-only": "true"},
+		Annotations: map[string]string{"pp:endpoint": "items.list", "pp:method": "GET", "pp:path": "/items", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {
@@ -30,7 +30,7 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "items", path, map[string]string{
 			}, nil, flagAll, "cursor", "", "")
 			if err != nil {
-				return classifyAPIError(err)
+				return classifyAPIError(err, flags)
 			}
 			// Print provenance to stderr for human-facing output
 			{

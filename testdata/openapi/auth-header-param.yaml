@@ -14,6 +14,7 @@ paths:
         - name: Authorization
           in: header
           required: true
+          description: "Bearer token credential"
           schema:
             type: string
       responses:
@@ -32,6 +33,7 @@ paths:
         - name: Authorization
           in: header
           required: true
+          description: "Bearer token credential"
           schema:
             type: string
       responses:
@@ -45,6 +47,7 @@ paths:
         - name: Authorization
           in: header
           required: true
+          description: "Bearer token credential"
           schema:
             type: string
       responses:
@@ -53,7 +56,14 @@ paths:
   /v2/health:
     get:
       operationId: healthCheck
-      summary: Health check (no auth)
+      summary: Health check
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          description: "Bearer token credential"
+          schema:
+            type: string
       responses:
         "200":
           description: OK

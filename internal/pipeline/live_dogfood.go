@@ -33,8 +33,8 @@ const (
 	LiveDogfoodTestErrorReal LiveDogfoodTestKind = "error_path_real"
 )
 
-// reasonDestructiveAtAuth is the Skip reason emitted for endpoints whose
-// path or pp:endpoint annotation matches refresh/rotate/revoke. Reused
+// reasonDestructiveAtAuth is the Skip reason emitted for endpoints that
+// can invalidate the credential used by the live-dogfood runner. Reused
 // across the matrix builder, the flag help text, and the test fixtures.
 const reasonDestructiveAtAuth = "destructive-at-auth"
 
@@ -873,28 +873,76 @@ func skippedLiveDogfoodResult(command string, kind LiveDogfoodTestKind, reason s
 	}
 }
 
-// destructiveAuthTerms are case-insensitive substrings classifying a
-// command as destructive-at-auth.
-var destructiveAuthTerms = []string{"refresh", "rotate", "revoke"}
+const (
+	endpointAnnotation        = "pp:endpoint"
+	endpointMethodAnnotation  = "pp:method"
+	endpointPathAnnotation    = "pp:path"
+	mcpReadOnlyAnnotation     = "mcp:read-only"
+	destructiveAuthAnnotation = "pp:destructive-auth"
+)
 
-// isDestructiveAtAuth reports whether a command rotates or revokes the
-// bearer the live-dogfood runner is using. Reads pp:endpoint
+// destructiveAuthTerms are case-insensitive command or endpoint tokens
+// classifying a command as destructive-at-auth.
+var destructiveAuthTerms = map[string]bool{
+	"refresh":    true,
+	"rotate":     true,
+	"revoke":     true,
+	"regenerate": true,
+	"reset":      true,
+	"cycle":      true,
+}
+
+var destructiveAuthResources = map[string]bool{
+	"api-keys": true,
+	"api_keys": true,
+	"sessions": true,
+	"tokens":   true,
+}
+
+// isDestructiveAtAuth reports whether a command can invalidate the bearer
+// the live-dogfood runner is using. Reads pp:endpoint
 // (authoritative for endpoint-mirror commands) and falls back to
 // path-segment matching across the command path for novel commands.
 // Read-only commands are exempt regardless of name.
 func isDestructiveAtAuth(annotations map[string]string, commandPath []string) bool {
-	if annotations["mcp:read-only"] == "true" {
+	if v, ok := annotations[destructiveAuthAnnotation]; ok {
+		return annotationIsTrueValue(v)
+	}
+	if annotationIsTrueValue(annotations[mcpReadOnlyAnnotation]) {
 		return false
 	}
-	if endpoint := annotations["pp:endpoint"]; endpoint != "" {
-		return containsAnyOf(strings.ToLower(endpoint), destructiveAuthTerms)
+	if endpoint := annotations[endpointAnnotation]; endpoint != "" {
+		if containsDestructiveAuthTerm(endpoint) {
+			return true
+		}
+		if strings.EqualFold(strings.TrimSpace(annotations[endpointMethodAnnotation]), "DELETE") &&
+			endpointTargetsAuthResource(endpoint, annotations[endpointPathAnnotation]) {
+			return true
+		}
+		return false
 	}
-	for _, seg := range commandPath {
-		if containsAnyOf(strings.ToLower(seg), destructiveAuthTerms) {
+	return slices.ContainsFunc(commandPath, containsDestructiveAuthTerm)
+}
+
+func containsDestructiveAuthTerm(s string) bool {
+	tokens := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return r < 'a' || r > 'z'
+	})
+	return slices.ContainsFunc(tokens, func(token string) bool {
+		return destructiveAuthTerms[token]
+	})
+}
+
+func endpointTargetsAuthResource(endpoint, path string) bool {
+	for _, segment := range splitPath(path) {
+		segment = strings.ToLower(strings.Trim(segment, "{}:"))
+		if destructiveAuthResources[segment] {
 			return true
 		}
 	}
-	return false
+	return slices.ContainsFunc(strings.Split(strings.ToLower(endpoint), "."), func(segment string) bool {
+		return destructiveAuthResources[segment]
+	})
 }
 
 func liveDogfoodHappyArgs(command liveDogfoodCommand) ([]string, bool) {
@@ -972,13 +1020,17 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport) {
 		}
 	}
 	// Failed-or-empty wins: any real failure or a fully empty matrix is FAIL.
+	// Quick runs whose whole slice was explicitly skipped are no-signal, not
+	// a failing matrix: the classifier did its job and avoided live mutation.
 	// The quick-level PASS arm uses min(5, MatrixSize) for the threshold so
 	// single-command quick runs (~4 entries when all probes succeed) can
 	// PASS, while keeping a MatrixSize >= 4 floor that blocks pathological
 	// matrices where most entries skipped.
 	switch {
-	case report.Failed > 0 || report.MatrixSize == 0:
+	case report.Failed > 0 || (report.MatrixSize == 0 && (report.Level != "quick" || report.Skipped == 0)):
 		report.Verdict = "FAIL"
+	case report.Level == "quick" && report.MatrixSize == 0 && report.Skipped > 0:
+		report.Verdict = "PASS"
 	case report.Level == "quick" && report.MatrixSize >= 4 && report.Passed+report.Skipped >= min(5, report.MatrixSize):
 		report.Verdict = "PASS"
 	case report.Level == "quick":

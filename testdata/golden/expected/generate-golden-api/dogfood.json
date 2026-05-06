@@ -12,11 +12,11 @@
   },
   "dead_flags": {
     "dead": 0,
-    "total": 17
+    "total": 18
   },
   "dead_functions": {
     "dead": 0,
-    "total": 49
+    "total": 51
   },
   "dir": "<ARTIFACT_DIR>/generate-golden-api/printing-press-golden",
   "example_check": {

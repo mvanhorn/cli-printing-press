@@ -21,7 +21,7 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 		Use:   "list",
 		Short: "List projects",
 		Example: "  printing-press-golden-pp-cli projects list",
-		Annotations: map[string]string{"pp:endpoint": "projects.list", "mcp:read-only": "true"},
+		Annotations: map[string]string{"pp:endpoint": "projects.list", "pp:method": "GET", "pp:path": "/projects", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cmd.Flags().Changed("status") {
 				allowedStatus := []string{ "draft", "active", "archived" }
@@ -48,7 +48,7 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 				"cursor": fmt.Sprintf("%v", flagCursor),
 			}, nil, flagAll, "cursor", "", "")
 			if err != nil {
-				return classifyAPIError(err)
+				return classifyAPIError(err, flags)
 			}
 			// Print provenance to stderr for human-facing output
 			{

@@ -1,7 +1,7 @@
 ---
 title: "Steinberger scorecard scoring system: architecture, conventions, and modification rules"
 date: 2026-03-27
-last_updated: 2026-03-28
+last_updated: 2026-05-05
 category: best-practices
 module: internal/pipeline
 problem_type: best_practice
@@ -209,15 +209,18 @@ Six prefixes appear in both workflow and insight lists: `stale`, `conflicts`, `s
 
 9. **Unknown evidence must become `N/A`, not a midpoint.** If the spec or other authority lacks the data needed to evaluate a dimension, mark it unscored, expose it in `unscored_dimensions`, skip it in gap reports, and remove its max points from the tier denominator.
 
-10. **Update tier constants when adding dimensions.** Tier 1 constant is `120` (12 x 10). Tier 2 constant is `50`. Both live in the `RunScorecard` function. If dimensions can become unscored, adjust the runtime denominator too.
+10. **For AuthProtocol, score runtime emission after using the spec to identify the contract.** OpenAPI `securitySchemes` can model one composed header protocol as multiple same-prefix `apiKey` headers. Expand only signing-style companions, preserve explicit OR alternatives, and verify each required header is assigned in the generated client.
 
-11. **Test every scoring function independently.** Each `score*()` function should have fixture-based tests covering: high score, low score, dimension-specific edge cases, and unscored/unknown states for evidence-dependent dimensions.
+11. **Update tier constants when adding dimensions.** Tier 1 constant is `120` (12 x 10). Tier 2 constant is `50`. Both live in the `RunScorecard` function. If dimensions can become unscored, adjust the runtime denominator too.
+
+12. **Test every scoring function independently.** Each `score*()` function should have fixture-based tests covering: high score, low score, dimension-specific edge cases, and unscored/unknown states for evidence-dependent dimensions.
 
 For detailed examples of bugs caused by violating these rules, see `docs/solutions/logic-errors/scorecard-accuracy-broadened-pattern-matching-2026-03-27.md`.
 
 ## Related
 
 - `docs/solutions/logic-errors/scorecard-accuracy-broadened-pattern-matching-2026-03-27.md` -- bug-fix doc with before/after code for 10 specific scoring bugs
+- `docs/solutions/logic-errors/scorer-dogfood-composed-header-auth-and-example-continuations-2026-05-05.md` -- composed header-auth scoring and shell-style example-tokenizer bug fixes
 - `docs/plans/2026-03-25-feat-visionary-research-phase-plan.md` -- defines the Steinberger vision scoring and workflow/insight semantics
 - `docs/plans/2026-03-25-fix-scorecard-too-easy-real-quality-plan.md` -- predecessor plan that redesigned scoring from presence-only to quality-aware
 - `skills/printing-press/references/scorecard-patterns.md` -- **STALE**: documents only 9 of 18 dimensions, wrong total range, pre-broadening file assumptions. Needs full rewrite.
