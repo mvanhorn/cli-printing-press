@@ -295,14 +295,6 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	}
 }
 
-func manifestAuthEnvVars(parsed *spec.APISpec) []string {
-	if parsed == nil {
-		return nil
-	}
-	envVarSpecs := manifestAuthEnvVarSpecs(parsed)
-	return manifestAuthEnvVarNames(parsed, envVarSpecs)
-}
-
 func manifestAuthEnvVarNames(parsed *spec.APISpec, envVarSpecs []spec.AuthEnvVar) []string {
 	if parsed == nil {
 		return nil
