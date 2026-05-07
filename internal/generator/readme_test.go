@@ -273,6 +273,43 @@ func TestReadmeUsesExplicitDisplayNameForProse(t *testing.T) {
 	assert.NotContains(t, content, "# Producthunt CLI")
 }
 
+// TestReadmeEmitsHermesAndOpenClawInstallSections asserts the new install
+// sections render with the correct hardcoded mvanhorn paths and the
+// hermes-install anchor for sweep-tool idempotency. CLI form and chat form
+// both use mvanhorn/printing-press-library/cli-skills/pp-<api> (verified
+// against tested install behavior — earlier draft of the chat form used a
+// shorter mvanhorn/cli-skills path that doesn't resolve).
+func TestReadmeEmitsHermesAndOpenClawInstallSections(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("hermes-install")
+	outputDir := filepath.Join(t.TempDir(), "hermes-install-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	content := string(readme)
+
+	// Anchor enables the cross-repo sweep tool (U6) to insert sections
+	// idempotently into legacy READMEs that predate this template change.
+	assert.Contains(t, content, "<!-- pp-hermes-install-anchor -->",
+		"sweep-tool anchor must be present so retrofit can locate the insertion point")
+
+	// Hermes section: both forms (CLI + chat) use the full
+	// mvanhorn/printing-press-library/cli-skills path.
+	assert.Contains(t, content, "## Install via Hermes")
+	assert.Contains(t, content, "hermes skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
+		"Hermes CLI form must use mvanhorn/printing-press-library/cli-skills (the short mvanhorn/cli-skills form was wrong)")
+	assert.Contains(t, content, "/skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
+		"Hermes chat form must use mvanhorn/printing-press-library/cli-skills")
+
+	// OpenClaw section: copyable code-fenced agent instruction.
+	assert.Contains(t, content, "## Install via OpenClaw")
+	assert.Contains(t, content, "https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/pp-hermes-install",
+		"OpenClaw URL must point at the cli-skills directory")
+}
+
 // TestReadmeFallsBackWhenNarrativeAbsent asserts the generic description
 // is used when Narrative is nil — no breakage for specs without absorb data.
 func TestReadmeFallsBackWhenNarrativeAbsent(t *testing.T) {
