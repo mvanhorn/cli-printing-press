@@ -137,6 +137,21 @@ func TestPublishSkillTracksCanonicalUpstreamAndOverwriteFlow(t *testing.T) {
 	assert.Contains(t, skill, "git push --force-with-lease")
 }
 
+func TestPublishSkillSeedsRegistryBeforeCliSkillsMirror(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+
+	assert.Contains(t, skill, `REGISTRY_HAS_ENTRY=$(jq -r --arg name "<api-slug>" 'any(.entries[]?; .name == $name)'`)
+	assert.Contains(t, skill, `--slurpfile press "$PUBLISHED_CLI_DIR/.printing-press.json"`)
+	assert.Contains(t, skill, `| .entries = ((.entries | map(select(.name != $name))) + [$entry] | sort_by(.name))`)
+	assert.Contains(t, skill, "git add library/ cli-skills/ registry.json")
+
+	registrySeed := strings.Index(skill, "missing entry before mirror generation")
+	mirrorRun := strings.Index(skill, "go run ./tools/generate-skills/main.go")
+	require.NotEqual(t, -1, registrySeed)
+	require.NotEqual(t, -1, mirrorRun)
+	assert.Less(t, registrySeed, mirrorRun)
+}
+
 func TestREADMEOutputContract(t *testing.T) {
 	readme := readContractFile(t, filepath.Join("..", "..", "README.md"))
 
