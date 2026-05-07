@@ -687,6 +687,16 @@ func checkVerifySkill(dir string) CheckResult {
 		}
 		return CheckResult{Name: "verify-skill", Passed: false, Error: errMsg}
 	}
+	if run.ExitCode != 0 {
+		return CheckResult{Name: "verify-skill", Passed: false, Error: strings.TrimSpace(run.Stdout + "\n" + run.Stderr)}
+	}
+	finding, hasFinding, _, cErr := runCanonicalSectionsCheck(dir)
+	if cErr != nil {
+		return CheckResult{Name: "verify-skill", Passed: false, Error: cErr.Error()}
+	}
+	if hasFinding {
+		return CheckResult{Name: "verify-skill", Passed: false, Error: fmt.Sprintf("[%s] %s: %s", finding.Check, finding.Command, finding.Detail)}
+	}
 	return CheckResult{Name: "verify-skill", Passed: true}
 }
 

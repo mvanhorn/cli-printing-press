@@ -1,12 +1,14 @@
 package cli_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v3/internal/generator"
 	"github.com/stretchr/testify/require"
 )
 
@@ -274,6 +276,155 @@ func Execute() error {
 	out, err := exec.Command(bin, "verify-skill", "--dir", dir).CombinedOutput()
 	require.Error(t, err, "undeclared flag must still produce a finding")
 	require.Contains(t, string(out), "--pick")
+}
+
+// TestVerifySkill_IgnoresExternalToolFlags is the regression guard for
+// the trigger-dev / linear SKILL.md slip: the install instructions contain
+// `npx -y @mvanhorn/printing-press install <api> --cli-only`. --cli-only
+// belongs to the outer Printing Press installer, not to <api>-pp-cli, so
+// it must not be reported as an undeclared flag-names finding. Before the
+// scoping fix, flag-names regex-scanned the whole SKILL.md and fired on
+// every external-tool flag, which led an automation loop to strip the
+// flag (and in one case invent a fake /ppl install slash command) just
+// to make verify-skill exit 0.
+func TestVerifySkill_IgnoresExternalToolFlags(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	// SKILL.md uses --cli-only on an npx invocation (not on fixture-pp-cli)
+	// and uses only declared flags on its own binary's recipes.
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n## Prerequisites\n\n" +
+		"```bash\nnpx -y @mvanhorn/printing-press install fixture --cli-only\n```\n\n" +
+		"## Usage\n\n```bash\nfixture-pp-cli search --limit 5\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"search.go": `package cli
+import "github.com/spf13/cobra"
+func newSearchCmd() *cobra.Command {
+	var limit int
+	cmd := &cobra.Command{Use: "search"}
+	cmd.Flags().IntVar(&limit, "limit", 10, "Max results")
+	return cmd
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newSearchCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir).CombinedOutput()
+	require.NoError(t, err, "external-tool flags must not produce a flag-names finding: %s", string(out))
+	require.NotContains(t, string(out), "--cli-only", "verifier must not mention an external-tool flag")
+}
+
+// TestVerifySkill_CanonicalSectionsPassesOnFreshFixture confirms the
+// canonical-sections check exits 0 when a fixture's SKILL.md install
+// section matches what the generator would emit. The fixture is built
+// from CanonicalSkillInstallSection itself so a test failure here means
+// the runtime check disagrees with the function used to populate the
+// fixture — i.e. real drift, not test brittleness.
+func TestVerifySkill_CanonicalSectionsPassesOnFreshFixture(t *testing.T) {
+	t.Parallel()
+	bin := buildPrintingPressBinary(t)
+	dir := writeCanonicalFixture(t, "myapi", "productivity", false, "")
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "canonical-sections").CombinedOutput()
+	require.NoError(t, err, "fresh fixture must pass canonical-sections: %s", string(out))
+	require.Contains(t, string(out), "canonical-sections passed")
+}
+
+// TestVerifySkill_CanonicalSectionsCatchesFlagStrip is the regression
+// guard for the trigger-dev SKILL slip — an automation loop stripped
+// `--cli-only` from the npx installer line to silence a verify-skill
+// flag-names false positive. The canonical-sections check must catch
+// that edit independent of whether flag-names fires.
+func TestVerifySkill_CanonicalSectionsCatchesFlagStrip(t *testing.T) {
+	t.Parallel()
+	bin := buildPrintingPressBinary(t)
+	tampered := strings.Replace(
+		generator.CanonicalSkillInstallSection("myapi", "productivity", false),
+		" --cli-only", "", 1,
+	)
+	dir := writeCanonicalFixture(t, "myapi", "productivity", false, tampered)
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "canonical-sections").CombinedOutput()
+	require.Error(t, err, "stripping --cli-only must fail canonical-sections: %s", string(out))
+	require.Contains(t, string(out), "canonical-sections")
+	require.Contains(t, string(out), "drift")
+}
+
+// TestVerifySkill_CanonicalSectionsCatchesFabricatedInstall is the
+// regression guard for the linear SKILL slip — an automation loop
+// replaced the entire install instructions with a fabricated
+// `/ppl install linear` slash command that doesn't exist. The canonical
+// section's start-heading is still present but the body is wrong, so
+// the block-equality compare must fire.
+func TestVerifySkill_CanonicalSectionsCatchesFabricatedInstall(t *testing.T) {
+	t.Parallel()
+	bin := buildPrintingPressBinary(t)
+	fabricated := "## Prerequisites: Install the CLI\n\nInstall via the Printing Press Library plugin (`/ppl install myapi` from Claude Code).\n\nIf `--version` reports \"command not found\" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.\n"
+	dir := writeCanonicalFixture(t, "myapi", "productivity", false, fabricated)
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "canonical-sections").CombinedOutput()
+	require.Error(t, err, "fabricated install instructions must fail canonical-sections: %s", string(out))
+	require.Contains(t, string(out), "drift")
+}
+
+// TestVerifySkill_CanonicalSectionsSkipsWithoutManifest confirms the
+// canonical-sections check is a no-op when the fixture lacks
+// .printing-press.json's api_name or go.mod. Minimal verify-skill test
+// fixtures (writeVerifySkillFixture) are not full printed CLIs and must
+// not trigger spurious canonical-sections failures.
+func TestVerifySkill_CanonicalSectionsSkipsWithoutManifest(t *testing.T) {
+	t.Parallel()
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error { return (&cobra.Command{Use: "fixture-pp-cli"}).Execute() }
+`,
+	}, "---\nname: pp-fixture\n---\n\n# Fixture\n")
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "canonical-sections").CombinedOutput()
+	require.NoError(t, err, "fixture without manifest must skip silently: %s", string(out))
+	require.NotContains(t, string(out), "canonical-sections passed", "skipped check must produce no pass/fail line")
+}
+
+// writeCanonicalFixture writes a fully-formed fixture (manifest + go.mod +
+// SKILL.md with canonical install section + minimal cobra source) suitable
+// for exercising the canonical-sections check end-to-end. When skillBody is
+// "", the canonical install section is used verbatim; pass a tampered body
+// to simulate hand-editing of the install section.
+func writeCanonicalFixture(t *testing.T, name, category string, usesBrowserHTTP bool, skillBody string) string {
+	t.Helper()
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "root.go"), []byte(`package cli
+import "github.com/spf13/cobra"
+func Execute() error { return (&cobra.Command{Use: "`+name+`-pp-cli"}).Execute() }
+`), 0o644))
+
+	goVersion := "1.23"
+	if usesBrowserHTTP {
+		goVersion = "1.25"
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module github.com/example/"+name+"-pp-cli\n\ngo "+goVersion+"\n"), 0o644))
+
+	manifest := fmt.Sprintf(`{"api_name":%q,"cli_name":%q,"category":%q}`,
+		name, name+"-pp-cli", category)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(manifest), 0o644))
+
+	if skillBody == "" {
+		skillBody = generator.CanonicalSkillInstallSection(name, category, usesBrowserHTTP)
+	}
+	skill := "---\nname: pp-" + name + "\ndescription: \"fixture\"\n---\n\n# " + name + "\n\n" + skillBody + "\nFixture body.\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skill), 0o644))
+	return dir
 }
 
 // TestVerifySkill_RejectsMissingInputs confirms usage errors (code 2).

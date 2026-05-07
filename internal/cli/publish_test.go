@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v3/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
 	"github.com/stretchr/testify/assert"
@@ -854,7 +855,8 @@ func newInsightCmd() *cobra.Command {
 	return &cobra.Command{Use: "insight", Short: "Show test insight"}
 }
 `), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Test CLI\n\n## Command Reference\n\n- `test-pp-cli insight` — Show test insight\n\n## Usage\n\n```bash\ntest-pp-cli insight --agent\n```\n"), 0o644))
+	skillInstall := generator.CanonicalSkillInstallSection("test", "", false)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Test CLI\n\n"+skillInstall+"\n## Command Reference\n\n- `test-pp-cli insight` — Show test insight\n\n## Usage\n\n```bash\ntest-pp-cli insight --agent\n```\n"), 0o644))
 
 	writeTestManifest(t, dir, pipeline.CLIManifest{
 		SchemaVersion: 1,
