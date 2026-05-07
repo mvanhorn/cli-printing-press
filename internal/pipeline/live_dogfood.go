@@ -1088,9 +1088,9 @@ func normalizeLiveDogfoodLevel(level string) (string, error) {
 		return "full", nil
 	}
 	switch level {
-	case "quick", "full":
+	case phase5AcceptanceLevelQuick, phase5AcceptanceLevelFull:
 		return level, nil
 	default:
-		return "", fmt.Errorf("invalid live dogfood level %q (expected quick or full)", level)
+		return "", fmt.Errorf("invalid live dogfood level %q (expected %s)", level, strings.Join(phase5AcceptedAcceptanceLevels, " or "))
 	}
 }

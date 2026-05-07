@@ -12,8 +12,14 @@ const (
 	Phase5AcceptanceFilename = "phase5-acceptance.json"
 	Phase5SkipFilename       = "phase5-skip.json"
 
-	phase5AcceptedAcceptanceLevels = "quick, full"
+	phase5AcceptanceLevelQuick = "quick"
+	phase5AcceptanceLevelFull  = "full"
 )
+
+var phase5AcceptedAcceptanceLevels = []string{
+	phase5AcceptanceLevelQuick,
+	phase5AcceptanceLevelFull,
+}
 
 type Phase5AuthContext struct {
 	Type                    string `json:"type,omitempty"`
@@ -155,7 +161,7 @@ func validatePhase5PassMarker(marker Phase5GateMarker) string {
 func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
 	level := phase5Level(marker)
 	switch level {
-	case "quick":
+	case phase5AcceptanceLevelQuick:
 		if marker.TestsFailed != 0 {
 			return false, fmt.Sprintf("phase5 quick acceptance has %d failed tests", marker.TestsFailed)
 		}
@@ -175,7 +181,7 @@ func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
 			return false, fmt.Sprintf("phase5 quick acceptance requires at least %d/%d tests passed-or-skipped, got %d", threshold, marker.MatrixSize, passOrSkip)
 		}
 		return true, ""
-	case "full":
+	case phase5AcceptanceLevelFull:
 		if marker.TestsFailed != 0 {
 			return false, fmt.Sprintf("phase5 full acceptance has %d failed tests", marker.TestsFailed)
 		}
@@ -184,7 +190,7 @@ func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
 		}
 		return true, ""
 	default:
-		return false, fmt.Sprintf("unknown phase5 acceptance level %q (accepted: %s; prefer `printing-press dogfood --live --write-acceptance` to generate %s)", marker.Level, phase5AcceptedAcceptanceLevels, Phase5AcceptanceFilename)
+		return false, fmt.Sprintf("unknown phase5 acceptance level %q (accepted: %s; prefer `printing-press dogfood --live --write-acceptance` to generate %s)", marker.Level, strings.Join(phase5AcceptedAcceptanceLevels, ", "), Phase5AcceptanceFilename)
 	}
 }
 
