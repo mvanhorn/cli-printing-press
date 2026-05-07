@@ -921,13 +921,13 @@ paths:
         "200": {description: ok}
 `
 
-	parsed, err := Parse([]byte(fmt.Sprintf(base, "  x-providerName: googleapis.com\n")))
+	parsed, err := Parse(fmt.Appendf(nil, base, "  x-providerName: googleapis.com\n"))
 	require.NoError(t, err)
 	require.Contains(t, parsed.Resources, "tables")
 	assert.Contains(t, parsed.Resources["tables"].Endpoints, "get-iam-policy")
 	assert.NotContains(t, parsed.Resources, "resource-get-iam-policy")
 
-	parsed, err = Parse([]byte(fmt.Sprintf(base, "")))
+	parsed, err = Parse(fmt.Appendf(nil, base, ""))
 	require.NoError(t, err)
 	assert.NotContains(t, parsed.Resources, "tables")
 	assert.Contains(t, parsed.Resources, "resource-get-iam-policy")

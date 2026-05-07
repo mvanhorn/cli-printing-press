@@ -294,8 +294,8 @@ func injectAddCommands(hostPath string, calls []string) error {
 		// Insert before the last `return` statement, or at the end if no
 		// trailing return.
 		insertAt := len(fn.Body.List)
-		for i := len(fn.Body.List) - 1; i >= 0; i-- {
-			if _, isRet := fn.Body.List[i].(*dst.ReturnStmt); isRet {
+		for i, stmt := range slices.Backward(fn.Body.List) {
+			if _, isRet := stmt.(*dst.ReturnStmt); isRet {
 				insertAt = i
 				break
 			}

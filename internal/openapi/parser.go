@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -3394,10 +3395,8 @@ func googleOperationIDEndpointName(operationID, resourceName string) string {
 	if resource == "" {
 		return ""
 	}
-	for _, segment := range chain {
-		if segment == resource {
-			return strings.ReplaceAll(toSnakeCase(verb), "_", "-")
-		}
+	if slices.Contains(chain, resource) {
+		return strings.ReplaceAll(toSnakeCase(verb), "_", "-")
 	}
 	return ""
 }
@@ -3450,7 +3449,7 @@ func googleOperationIDResourceChain(operationID string, allowUnscoped, fallbackW
 }
 
 func googleOperationIDScopeStart(parts []string) (int, bool) {
-	for i := 0; i < len(parts); i++ {
+	for i := range len(parts) {
 		switch parts[i] {
 		case "projects", "organizations", "folders":
 			if i+1 < len(parts) && parts[i+1] == "locations" {
