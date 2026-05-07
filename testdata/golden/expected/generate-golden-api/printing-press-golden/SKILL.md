@@ -1,18 +1,16 @@
 ---
 name: pp-printing-press-golden
 description: "Printing Press CLI for Printing Press Golden. Purpose-built fixture for golden generation coverage."
+version: "3.10.0"
+author: "printing-press-golden"
+license: "Apache-2.0"
 argument-hint: "<command> [args] | install cli|mcp"
 allowed-tools: "Read Bash"
 metadata:
   openclaw:
     requires:
-      env: ["PRINTING_PRESS_GOLDEN_API_KEY"]
       bins:
         - printing-press-golden-pp-cli
-    envVars:
-      - name: PRINTING_PRESS_GOLDEN_API_KEY
-        required: true
-        description: "PRINTING_PRESS_GOLDEN_API_KEY credential."
     install:
       - kind: go
         bins: [printing-press-golden-pp-cli]
@@ -20,6 +18,20 @@ metadata:
 ---
 
 # Printing Press Golden — Printing Press CLI
+
+## Prerequisites: Install the CLI
+
+This skill drives the `printing-press-golden-pp-cli` binary. **You must verify the CLI is installed before invoking any command from this skill.** If it is missing, install it first:
+
+1. Check Go is installed: `go version` (requires Go 1.23+)
+2. Install:
+   ```bash
+   go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden/cmd/printing-press-golden-pp-cli@latest
+   ```
+3. Verify: `printing-press-golden-pp-cli --version`
+4. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
+
+If `--version` reports "command not found" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.
 
 Purpose-built fixture for golden generation coverage.
 
@@ -149,18 +161,8 @@ Explicit flags always win over profile values; profile values win over defaults.
 Parse `$ARGUMENTS`:
 
 1. **Empty, `help`, or `--help`** → show `printing-press-golden-pp-cli --help` output
-2. **Starts with `install`** → ends with `mcp` → MCP installation; otherwise → CLI installation
+2. **Starts with `install`** → ends with `mcp` → MCP installation; otherwise → see Prerequisites above
 3. **Anything else** → Direct Use (execute as CLI command with `--agent`)
-
-## CLI Installation
-
-1. Check Go is installed: `go version` (requires Go 1.23+)
-2. Install:
-   ```bash
-   go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden/cmd/printing-press-golden-pp-cli@latest
-   ```
-3. Verify: `printing-press-golden-pp-cli --version`
-4. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
 
 ## MCP Server Installation
 
@@ -177,7 +179,7 @@ Parse `$ARGUMENTS`:
 ## Direct Use
 
 1. Check if installed: `which printing-press-golden-pp-cli`
-   If not found, offer to install (see CLI Installation above).
+   If not found, offer to install (see Prerequisites at the top of this skill).
 2. Match the user query to the best command from the Unique Capabilities and Command Reference above.
 3. Execute with the `--agent` flag:
    ```bash

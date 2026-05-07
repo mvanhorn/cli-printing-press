@@ -150,6 +150,29 @@ To install:
 
 Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple Silicon (`darwin-arm64`) and Windows (`amd64`, `arm64`); for other platforms, use the manual config below.
 
+<!-- pp-hermes-install-anchor -->
+## Install via Hermes
+
+From the Hermes CLI:
+
+```bash
+hermes skills install mvanhorn/printing-press-library/cli-skills/pp-printing-press-golden --force
+```
+
+Inside a Hermes chat session:
+
+```bash
+/skills install mvanhorn/printing-press-library/cli-skills/pp-printing-press-golden --force
+```
+
+## Install via OpenClaw
+
+Tell your OpenClaw agent (copy this):
+
+```
+Install the pp-printing-press-golden skill from https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/pp-printing-press-golden. The skill defines how its required CLI can be installed.
+```
+
 <details>
 <summary>Manual JSON config (advanced)</summary>
 
