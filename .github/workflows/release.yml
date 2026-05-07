@@ -22,7 +22,7 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         id: release
         with:
           # Fall back to GITHUB_TOKEN when RELEASE_PLEASE_TOKEN is unset.
@@ -50,9 +50,11 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
+      - uses: sigstore/cosign-installer@v4.1.0
+
       - uses: goreleaser/goreleaser-action@v7
         with:
-          version: latest
+          version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

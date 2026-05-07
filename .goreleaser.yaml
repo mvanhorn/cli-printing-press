@@ -21,7 +21,7 @@ builds:
 
 archives:
   - id: printing-press
-    builds:
+    ids:
       - printing-press
     formats:
       - tar.gz
