@@ -1125,6 +1125,10 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	if entry.OwnerName != "" && apiSpec.OwnerName == "" {
 		apiSpec.OwnerName = entry.OwnerName
 	}
+	if entry.DisplayName != "" && (apiSpec.DisplayName == "" || apiSpec.DisplayNameDerivedFromTitle) {
+		apiSpec.DisplayName = entry.DisplayName
+		apiSpec.DisplayNameDerivedFromTitle = false
+	}
 	if entry.HTTPTransport != "" && apiSpec.HTTPTransport == "" {
 		apiSpec.HTTPTransport = entry.HTTPTransport
 	}

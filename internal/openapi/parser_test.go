@@ -531,6 +531,7 @@ paths:
 	parsed, err := Parse(spec)
 	require.NoError(t, err)
 	assert.Equal(t, "Cal.com", parsed.DisplayName)
+	assert.False(t, parsed.DisplayNameDerivedFromTitle)
 }
 
 func TestParseTrimsWhitespaceFromXDisplayName(t *testing.T) {
@@ -553,6 +554,7 @@ paths:
 	parsed, err := Parse(spec)
 	require.NoError(t, err)
 	assert.Equal(t, "Brand Name", parsed.DisplayName)
+	assert.False(t, parsed.DisplayNameDerivedFromTitle)
 }
 
 // TestParseDerivesDisplayNameFromTitle locks the dual contract when no
@@ -593,6 +595,7 @@ paths:
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantSlug, parsed.Name)
 			assert.Equal(t, tc.wantDisplay, parsed.DisplayName)
+			assert.True(t, parsed.DisplayNameDerivedFromTitle)
 		})
 	}
 }

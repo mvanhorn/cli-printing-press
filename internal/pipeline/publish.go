@@ -222,6 +222,18 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		}
 	}
 
+	// Catalog metadata must be present before parsing refreshes display_name:
+	// explicit spec display_name wins, but OpenAPI info.title-derived fallback
+	// should not clobber curated catalog display_name.
+	if entry, err := catalogpkg.LookupFS(catalog.FS, state.APIName); err == nil {
+		m.CatalogEntry = entry.Name
+		m.Category = entry.Category
+		m.Description = entry.Description
+		if entry.DisplayName != "" {
+			m.DisplayName = entry.DisplayName
+		}
+	}
+
 	// Detect spec format and compute checksum from the spec file archived
 	// alongside the CLI. generate writes spec.json for JSON inputs and
 	// spec.yaml for YAML inputs; --docs / --plan runs leave no archive and
@@ -259,13 +271,6 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 				fmt.Fprintf(os.Stderr, "warning: could not write tools manifest: %v\n", tmErr)
 			}
 		}
-	}
-
-	// Look up catalog entry by API name; empty string if not found.
-	if entry, err := catalogpkg.LookupFS(catalog.FS, state.APIName); err == nil {
-		m.CatalogEntry = entry.Name
-		m.Category = entry.Category
-		m.Description = entry.Description
 	}
 
 	// Load novel features from research.json if available, populating the

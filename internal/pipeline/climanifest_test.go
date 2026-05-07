@@ -433,6 +433,25 @@ func TestWriteManifestForGenerateWithLocalSpec(t *testing.T) {
 	assert.Equal(t, "/tmp/my-spec.yaml", got.SpecPath)
 }
 
+func TestWriteManifestForGenerateKeepsCatalogDisplayNameOverTitleFallback(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "producthunt",
+		OutputDir: dir,
+		Spec: &spec.APISpec{
+			Name:                        "producthunt",
+			DisplayName:                 "Producthunt",
+			DisplayNameDerivedFromTitle: true,
+			Auth:                        spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, "Product Hunt", got.DisplayName)
+}
+
 func TestWriteManifestForGenerateWithDocsURL(t *testing.T) {
 	dir := t.TempDir()
 
@@ -1262,6 +1281,17 @@ func TestPopulateMCPMetadataDisplayNamePrecedence(t *testing.T) {
 		populateMCPMetadata(&m, &spec.APISpec{
 			Name: "twoword",
 			Auth: spec.AuthConfig{Type: "none"},
+		})
+		assert.Equal(t, "Catalog Name", m.DisplayName)
+	})
+
+	t.Run("existing catalog value preserved over title-derived fallback", func(t *testing.T) {
+		m := CLIManifest{DisplayName: "Catalog Name"}
+		populateMCPMetadata(&m, &spec.APISpec{
+			Name:                        "catalog-name",
+			DisplayName:                 "Catalog Name API",
+			DisplayNameDerivedFromTitle: true,
+			Auth:                        spec.AuthConfig{Type: "none"},
 		})
 		assert.Equal(t, "Catalog Name", m.DisplayName)
 	})

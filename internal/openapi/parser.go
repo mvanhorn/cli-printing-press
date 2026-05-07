@@ -205,6 +205,7 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	// don't get flattened by EffectiveDisplayName's HumanName(slug)
 	// fallback (the slug is ASCII-folded for filesystem safety).
 	var displayName string
+	displayNameDerivedFromTitle := false
 	if raw, ok := lookupOpenAPIInfoExtension(doc, extensionDisplayName); ok {
 		if s, ok := raw.(string); ok {
 			displayName = strings.TrimSpace(s)
@@ -213,6 +214,7 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	if displayName == "" && doc.Info != nil {
 		if derived := cleanSpecNameUnicode(doc.Info.Title); derived != "" && derived != "api" {
 			displayName = naming.HumanName(derived)
+			displayNameDerivedFromTitle = true
 		}
 	}
 
@@ -279,16 +281,17 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	}
 
 	result := &spec.APISpec{
-		Name:        name,
-		DisplayName: displayName,
-		Description: description,
-		Version:     version,
-		BaseURL:     baseURL,
-		BasePath:    basePath,
-		WebsiteURL:  websiteURL,
-		ProxyRoutes: proxyRoutes,
-		Auth:        auth,
-		TierRouting: tierRouting,
+		Name:                        name,
+		DisplayName:                 displayName,
+		DisplayNameDerivedFromTitle: displayNameDerivedFromTitle,
+		Description:                 description,
+		Version:                     version,
+		BaseURL:                     baseURL,
+		BasePath:                    basePath,
+		WebsiteURL:                  websiteURL,
+		ProxyRoutes:                 proxyRoutes,
+		Auth:                        auth,
+		TierRouting:                 tierRouting,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),

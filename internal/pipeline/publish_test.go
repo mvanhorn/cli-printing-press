@@ -175,6 +175,28 @@ func TestWriteCLIManifestForPublish_NovelFeaturesFromSkillFlowResearch(t *testin
 	assert.Equal(t, "today", m.NovelFeatures[1].Command)
 }
 
+func TestWriteCLIManifestForPublishKeepsCatalogDisplayNameOverTitleFallback(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	state := NewStateWithRun("producthunt", filepath.Join(tmp, "working", "producthunt-pp-cli"), "20260507-display-name", "test-scope")
+	require.NoError(t, os.MkdirAll(state.WorkingDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(state.WorkingDir, "spec.yaml"), []byte(`
+openapi: "3.0.0"
+info:
+  title: Producthunt API
+  version: "1.0"
+paths: {}
+`), 0o644))
+
+	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+
+	m := readPublishedManifest(t, state.WorkingDir)
+	assert.Equal(t, "Product Hunt", m.DisplayName)
+}
+
 // TestWriteCLIManifestForPublish_NovelFeaturesFromPrintFlowResearch covers the
 // printing-press print flow: research.json lives at <RunRoot>/pipeline/research.json
 // alongside phase artifacts. The fallback path keeps print-flow CLIs working.

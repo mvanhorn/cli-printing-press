@@ -71,6 +71,10 @@ type APISpec struct {
 	// Name as a fallback. The generate command also fills this from a
 	// matching catalog entry's display_name when available.
 	DisplayName string `yaml:"display_name,omitempty" json:"display_name,omitempty"`
+	// DisplayNameDerivedFromTitle marks OpenAPI parser fallbacks from
+	// info.title. Catalog enrichment may replace that fallback, but must not
+	// replace explicit display_name / x-display-name values.
+	DisplayNameDerivedFromTitle bool `yaml:"-" json:"-"`
 	// Description describes the API itself ("REST API for ordering pizza").
 	// It flows into generated docs and SKILL.md but is intentionally NOT used
 	// as the printed CLI's --help text; that's CLIDescription's job.

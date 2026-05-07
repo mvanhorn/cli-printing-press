@@ -280,9 +280,12 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.AuthDescription = parsed.Auth.Description
 	m.AuthOptional = parsed.Auth.Optional
 	// DisplayName precedence: explicit spec field > catalog-set existing
-	// value > slug-derived fallback. Unconditional fallback would clobber a
-	// curated catalog value when the spec is silent.
-	if parsed.DisplayName != "" {
+	// value > spec/title-derived fallback > slug-derived fallback.
+	// OpenAPI info.title is useful as a fallback, but it is not explicit
+	// enough to clobber a curated catalog value.
+	if parsed.DisplayName != "" && !parsed.DisplayNameDerivedFromTitle {
+		m.DisplayName = parsed.DisplayName
+	} else if m.DisplayName == "" && parsed.DisplayName != "" {
 		m.DisplayName = parsed.DisplayName
 	} else if m.DisplayName == "" {
 		m.DisplayName = parsed.EffectiveDisplayName()
@@ -455,14 +458,13 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		}
 	}
 
-	// Look up catalog entry for category/description enrichment.
+	// Look up catalog entry for category/description/display-name enrichment.
 	if entry, err := catalogpkg.LookupFS(catalog.FS, p.APIName); err == nil {
 		m.CatalogEntry = entry.Name
 		m.Category = entry.Category
 		m.Description = entry.Description
-		// Catalog's display_name wins over spec/title-case fallback when both
-		// are present. Spec authors and catalog curators sometimes both set
-		// it; the catalog is the curated cross-CLI source of truth.
+		// Catalog's display_name wins over spec/title fallback, while explicit
+		// spec display_name / x-display-name still wins in populateMCPMetadata.
 		if entry.DisplayName != "" {
 			m.DisplayName = entry.DisplayName
 		}

@@ -771,7 +771,8 @@ func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {
 	apiSpec := &spec.APISpec{Name: "test-api"}
 
 	enrichSpecFromCatalogEntry(apiSpec, &catalog.Entry{
-		OwnerName: "Trevin Chow",
+		DisplayName: "Test.API",
+		OwnerName:   "Trevin Chow",
 		MCP: spec.MCPConfig{
 			Transport:     []string{"stdio", "http"},
 			Orchestration: "code",
@@ -779,8 +780,37 @@ func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {
 		},
 	})
 
+	assert.Equal(t, "Test.API", apiSpec.DisplayName)
 	assert.Equal(t, "Trevin Chow", apiSpec.OwnerName)
 	assert.Equal(t, []string{"stdio", "http"}, apiSpec.MCP.Transport)
 	assert.Equal(t, "code", apiSpec.MCP.Orchestration)
 	assert.Equal(t, "hidden", apiSpec.MCP.EndpointTools)
+}
+
+func TestEnrichSpecFromCatalogReplacesTitleDerivedDisplayName(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Name:                        "trigger-dev",
+		DisplayName:                 "Trigger Dev",
+		DisplayNameDerivedFromTitle: true,
+	}
+
+	enrichSpecFromCatalogEntry(apiSpec, &catalog.Entry{
+		DisplayName: "Trigger.dev",
+	})
+
+	assert.Equal(t, "Trigger.dev", apiSpec.DisplayName)
+	assert.False(t, apiSpec.DisplayNameDerivedFromTitle)
+}
+
+func TestEnrichSpecFromCatalogKeepsExplicitDisplayName(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Name:        "trigger-dev",
+		DisplayName: "Spec.dev",
+	}
+
+	enrichSpecFromCatalogEntry(apiSpec, &catalog.Entry{
+		DisplayName: "Trigger.dev",
+	})
+
+	assert.Equal(t, "Spec.dev", apiSpec.DisplayName)
 }
