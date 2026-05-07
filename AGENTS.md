@@ -95,13 +95,33 @@ See [`docs/GLOSSARY.md`](docs/GLOSSARY.md) for the full term table and disambigu
 **`Owner` (slug) vs `OwnerName` (display) — keep them straight.** `APISpec` carries two related but semantically distinct fields. `Owner` is path-safe (e.g. `trevin-chow`) and drives Go module paths and `// Copyright YYYY <slug>.` headers — sanitized in `New()`. `OwnerName` is prose-shaped (e.g. `Trevin Chow`) and flows into Hermes `author:`, README byline, and other human-facing surfaces — preserved verbatim, YAML-escaped at template emission. Resolution paths are deliberately different: `OwnerName` reads raw `git config user.name` only (no `github.user` fallback, no slug sanitization, no `"USER"` default). When `OwnerName` is unset at `Generate()` time, the generator emits a stderr warning and falls back to the slug — non-fatal so the package stays reusable by tests and `mcp-sync`/`regen-merge`. The library-wide sweep tool overrides this code path with its own per-CLI authorship mapping. Don't conflate the two fields when authoring helpers, templates, or test fixtures.
 
 ## Commit Style
-Format: `type(scope): description`. Scope is always required.
+Format: `type(scope): description`. Both type and scope are required.
+
+**Allowed scopes:**
 - `cli` covers the Go binary, commands, flags, embedded catalog, and docs.
 - `skills` covers skill definitions (`SKILL.md`), references, and setup contract.
 - `ci` covers workflows, release config, and goreleaser.
 - `main` is reserved for release-please generated release PRs targeting `main`.
-Breaking changes use `!` after the scope: `feat(cli)!: rename catalog command to registry`.
-Version bump rules: `fix(scope):` -> patch; `feat(scope):` -> minor; `feat(scope)!:` or `BREAKING CHANGE:` -> major; `refactor(scope):` is included in the next release PR but does not trigger a bump alone; `docs:`, `chore:`, and `test:` do not trigger a bump alone and stay out of release notes by default.
+
+**Allowed types:**
+- `feat` — new functionality, capability, command, or flag (a user can do something they couldn't before).
+- `fix` — corrects incorrect behavior in code that's already shipping.
+- `docs` — documentation changes including AGENTS.md, README, doc comments, **and template wording changes that don't alter generator behavior** (e.g., reword an install instruction in `readme.md.tmpl` or `skill.md.tmpl`).
+- `refactor` — internal restructuring with no observable behavior change.
+- `chore` — build, tooling, dependency, or housekeeping work outside production code.
+- `test` — test-only additions or corrections.
+
+**Breaking changes** use `!` after the scope: `feat(cli)!: rename catalog command to registry`. The `!` triggers a major version bump through release-please, so reserve it for changes that *break a downstream contract* — a renamed/removed command, a renamed/removed flag, a removed manifest field, an incompatible config-file shape. **What isn't breaking:** template wording changes, README updates, and generator-output diffs that don't remove or rename a documented surface are `docs(...)` or `fix(...)` — not `feat(...)!`. Even if every printed CLI's output changes on next regen, that alone doesn't qualify as breaking unless something downstream breaks too. The release-versioning consequence of `!` is intentional; if you're unsure, ask before adding it.
+
+**Examples:**
+- `feat(cli): add --select flag to all read commands`
+- `feat(cli)!: rename catalog command to registry`
+- `fix(cli): correct trailing newline in skill.md.tmpl`
+- `docs(cli): clarify install instructions in generated README`
+- `chore(ci): bump goreleaser to v2.5`
+
+**Version bump rules:** `fix(scope):` -> patch; `feat(scope):` -> minor; `feat(scope)!:` or `BREAKING CHANGE:` -> major; `refactor(scope):` is included in the next release PR but does not trigger a bump alone; `docs:`, `chore:`, and `test:` do not trigger a bump alone and stay out of release notes by default.
+
 Every commit and PR title must include one of the allowed scopes. GitHub squash-and-merge uses the PR title as the squash commit message, and `.github/workflows/pr-title.yml` enforces the format.
 
 ## Versioning
