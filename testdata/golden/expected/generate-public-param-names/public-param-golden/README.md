@@ -31,7 +31,7 @@ This checks your configuration.
 ### 3. Try Your First Command
 
 ```bash
-public-param-golden-pp-cli stores create
+public-param-golden-pp-cli stores create --store-code example-value
 ```
 
 ## Usage
@@ -52,19 +52,19 @@ Store lookup operations
 
 ```bash
 # Human-readable table (default in terminal, JSON when piped)
-public-param-golden-pp-cli stores create
+public-param-golden-pp-cli stores create --store-code example-value
 
 # JSON for scripting and agents
-public-param-golden-pp-cli stores create --json
+public-param-golden-pp-cli stores create --store-code example-value --json
 
 # Filter to specific fields
-public-param-golden-pp-cli stores create --json --select id,name,status
+public-param-golden-pp-cli stores create --store-code example-value --json --select id,name,status
 
 # Dry run — show the request without sending
-public-param-golden-pp-cli stores create --dry-run
+public-param-golden-pp-cli stores create --store-code example-value --dry-run
 
 # Agent mode — JSON + compact + no prompts in one flag
-public-param-golden-pp-cli stores create --agent
+public-param-golden-pp-cli stores create --store-code example-value --agent
 ```
 
 ## Agent Usage

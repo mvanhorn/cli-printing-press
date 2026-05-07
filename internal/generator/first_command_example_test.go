@@ -188,10 +188,9 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 			want: "articles list mock-vertical weeknight",
 		},
 		{
-			// items has two endpoints — no promotion. No positional
-			// params on the chosen endpoint, so the helper emits the
-			// bare path; non-positional flag params don't appear.
-			name: "non-positional params do not pollute the example",
+			// items has two endpoints — no promotion. Optional
+			// non-positional flag params don't appear.
+			name: "optional non-positional params do not pollute the example",
 			resources: map[string]spec.Resource{
 				"items": {
 					Endpoints: map[string]spec.Endpoint{
@@ -208,6 +207,61 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 				},
 			},
 			want: "items list",
+		},
+		{
+			name: "required non-positional params use public flag names",
+			resources: map[string]spec.Resource{
+				"stores": {
+					Endpoints: map[string]spec.Endpoint{
+						"find": {
+							Method: "GET",
+							Path:   "/stores",
+							Params: []spec.Param{
+								{Name: "s", FlagName: "address", Required: true, Type: "string"},
+								{Name: "c", FlagName: "city", Required: true, Type: "string"},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/stores/refresh"},
+					},
+				},
+			},
+			want: "stores find --address example-value --city example-value",
+		},
+		{
+			name: "required non-positional params without public names use derived flag names",
+			resources: map[string]spec.Resource{
+				"search": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/search",
+							Params: []spec.Param{
+								{Name: "search_query", Required: true, Type: "string"},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/search/refresh"},
+					},
+				},
+			},
+			want: "search list --search-query example-value",
+		},
+		{
+			name: "required body field uses public flag name",
+			resources: map[string]spec.Resource{
+				"stores": {
+					Endpoints: map[string]spec.Endpoint{
+						"create": {
+							Method: "POST",
+							Path:   "/stores",
+							Body: []spec.Param{
+								{Name: "store_code", FlagName: "store-code", Required: true, Type: "string"},
+							},
+						},
+						"refresh": {Method: "POST", Path: "/stores/refresh"},
+					},
+				},
+			},
+			want: "stores create --store-code example-value",
 		},
 		{
 			name: "promoted single-endpoint resource keeps positionals",

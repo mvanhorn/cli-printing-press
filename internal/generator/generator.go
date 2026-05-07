@@ -246,8 +246,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return false
 		},
-		"exampleLine": g.exampleLine,
-		"currentYear": func() string { return strconv.Itoa(time.Now().Year()) },
+		"exampleLine":        g.exampleLine,
+		"commandExampleArgs": commandExampleArgs,
+		"currentYear":        func() string { return strconv.Itoa(time.Now().Year()) },
 		"modulePath": func() string {
 			if g.ModulePath != "" {
 				return g.ModulePath
@@ -2655,14 +2656,14 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 			loc = "path"
 		}
 		bindings = append(bindings, mcpParamBinding{
-			PublicName: mcpInputName(p),
+			PublicName: p.PublicInputName(),
 			WireName:   p.Name,
 			Location:   loc,
 		})
 	}
 	for _, p := range endpoint.Body {
 		bindings = append(bindings, mcpParamBinding{
-			PublicName: mcpInputName(p),
+			PublicName: p.PublicInputName(),
 			WireName:   p.Name,
 			Location:   "body",
 		})
@@ -2671,10 +2672,7 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 }
 
 func mcpInputName(p spec.Param) string {
-	if p.FlagName != "" {
-		return p.FlagName
-	}
-	return p.Name
+	return p.PublicInputName()
 }
 
 // endpointNeedsClientLimit reports whether a list endpoint needs
@@ -3132,43 +3130,7 @@ func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.
 	parts = append(parts, naming.CLI(g.Spec.Name))
 	parts = append(parts, strings.Fields(commandPath)...)
 	parts = append(parts, endpointName)
-
-	// Add positional arg placeholders with realistic values
-	for _, p := range endpoint.Params {
-		if p.Positional {
-			val := exampleValue(p)
-			if val == "" {
-				val = "<" + p.Name + ">"
-			}
-			parts = append(parts, val)
-		}
-	}
-
-	for _, p := range endpoint.Params {
-		if p.Positional || !p.Required {
-			continue
-		}
-		val := exampleValue(p)
-		if val == "" {
-			val = "value"
-		}
-		parts = append(parts, "--"+publicFlagName(p), val)
-	}
-
-	// Add a sample flag for POST/PUT/PATCH with realistic values
-	switch endpoint.Method {
-	case "POST", "PUT", "PATCH":
-		for _, p := range endpoint.Body {
-			if p.Required && p.Type == "string" {
-				val := exampleValue(p)
-				if val == "" {
-					val = "value"
-				}
-				parts = append(parts, "--"+publicFlagName(p), val)
-				break
-			}
-		}
-	}
+	parts = append(parts, commandExampleArgParts(endpoint)...)
 
 	return "  " + strings.Join(parts, " ")
 }

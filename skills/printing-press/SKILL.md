@@ -1560,6 +1560,27 @@ The Printing Press CLI validates and propagates that authored data through Cobra
 flags, generated examples, typed MCP schemas, and `tools-manifest.json`; it must
 not guess that a cryptic key always means the same thing across APIs.
 
+Run the deterministic inventory before generation when a spec may contain
+cryptic wire names:
+
+```bash
+printing-press public-param-audit --spec <spec-or-overlay-output> --ledger <runstate>/public-param-audit.json --strict
+```
+
+The command does not decide that every finding needs a public flag. It identifies
+parameters that need an agent decision. For each pending finding, either:
+
+- Author `flag_name` and compatibility `aliases` in the spec or overlay, then rerun
+  the audit so the finding becomes resolved from the spec itself.
+- Record `decision: "skip"` in the ledger with `source_evidence` and `skip_reason`
+  when source material shows no public rename is warranted.
+
+A ledger entry with `decision: "flag_name"` or `proposed_flag_name` is only a note
+to the agent; it is not complete until the spec or overlay actually contains the
+public name. Strict mode fails on unreviewed findings, not on evidence-backed
+skips. A one-letter wire name alone is enough to enter the inventory, but not
+enough to author a rename.
+
 Good evidence:
 - Explicit parameter descriptions, vendor docs, or SDK argument names.
 - Browser-sniff form/input labels and the interaction that produced the request.
@@ -1589,9 +1610,10 @@ params:
 ```
 
 The upstream wire keys remain `s` and `c`; generated users and agents see
-`address` and `city`. If the evidence is unclear, leave `flag_name` unset and
-preserve the evidence gap in the manuscript rather than inventing a friendly
-name.
+`address` and `city`. If the evidence is unclear after research, leave
+`flag_name` unset, record the reviewed source material and evidence gap in the
+audit ledger, and preserve the gap in the manuscript rather than inventing a
+friendly name.
 
 #### Free/Paid Tier Routing Enrichment
 

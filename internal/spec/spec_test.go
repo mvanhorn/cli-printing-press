@@ -125,6 +125,11 @@ resources:
 	assert.Equal(t, []string{"c"}, param.Aliases)
 }
 
+func TestParamPublicInputName(t *testing.T) {
+	assert.Equal(t, "address", Param{Name: "s", FlagName: "address"}.PublicInputName())
+	assert.Equal(t, "store_code", Param{Name: "store_code"}.PublicInputName())
+}
+
 func TestValidatePublicParamNames(t *testing.T) {
 	cases := []struct {
 		name    string

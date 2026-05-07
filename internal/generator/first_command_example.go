@@ -10,8 +10,10 @@ import (
 )
 
 // firstCommandExample returns a runnable "resource [endpoint] <pos1> <pos2>..."
-// invocation for docs that need a concrete example. Read-only verbs (list,
-// get, search, query) are preferred to keep examples non-destructive.
+// invocation for docs that need a concrete example. Required public flags are
+// included so generated docs do not advertise commands that fail immediately.
+// Read-only verbs (list, get, search, query) are preferred to keep examples
+// non-destructive.
 // Returns empty when the spec has no endpoints, so callers can skip the
 // block rather than render nonsense.
 //
@@ -38,14 +40,12 @@ func firstCommandExample(resources map[string]spec.Resource) string {
 	preferredVerbs := []string{"list", "get", "search", "query"}
 
 	pathFor := func(rName string, r spec.Resource, eName string, ep spec.Endpoint) string {
-		base := rName
+		parts := []string{rName}
 		if !isPromotableSingleEndpoint(rName, r) {
-			base = rName + " " + eName
+			parts = append(parts, eName)
 		}
-		if args := positionalArgsForExample(ep); args != "" {
-			return base + " " + args
-		}
-		return base
+		parts = append(parts, readmeExampleArgs(ep)...)
+		return strings.Join(parts, " ")
 	}
 
 	for _, rName := range resNames {
@@ -66,21 +66,62 @@ func firstCommandExample(resources map[string]spec.Resource) string {
 	return ""
 }
 
-// positionalArgsForExample joins the endpoint's required positional
-// arguments into a single space-separated string suitable for splicing
-// into a docs example. Each value comes from skillExamplePositionalValue
-// (spec.Param.Default → canonicalargs → "mock-value"). Returns empty
-// when the endpoint declares no positional params, so the caller can
-// emit the bare command path.
-func positionalArgsForExample(ep spec.Endpoint) string {
+func commandExampleArgs(ep spec.Endpoint) string {
+	return strings.Join(commandExampleArgParts(ep), " ")
+}
+
+func commandExampleArgParts(ep spec.Endpoint) []string {
 	var parts []string
 	for _, p := range ep.Params {
 		if !p.Positional {
 			continue
 		}
-		parts = append(parts, skillExamplePositionalValue(p))
+		val := exampleValue(p)
+		if val == "" {
+			val = "<" + p.Name + ">"
+		}
+		parts = append(parts, val)
 	}
-	return strings.Join(parts, " ")
+	return append(parts, requiredFlagExampleParts(ep)...)
+}
+
+func readmeExampleArgs(ep spec.Endpoint) []string {
+	var parts []string
+	for _, p := range ep.Params {
+		if p.Positional {
+			parts = append(parts, skillExamplePositionalValue(p))
+		}
+	}
+	return append(parts, requiredFlagExampleParts(ep)...)
+}
+
+func requiredFlagExampleParts(ep spec.Endpoint) []string {
+	var parts []string
+	for _, p := range ep.Params {
+		if p.Positional || !p.Required {
+			continue
+		}
+		val := exampleValue(p)
+		if val == "" {
+			val = "value"
+		}
+		parts = append(parts, "--"+publicFlagName(p), val)
+	}
+
+	switch strings.ToUpper(ep.Method) {
+	case "POST", "PUT", "PATCH":
+		for _, p := range ep.Body {
+			if p.Required && p.Type == "string" {
+				val := exampleValue(p)
+				if val == "" {
+					val = "value"
+				}
+				parts = append(parts, "--"+publicFlagName(p), val)
+				break
+			}
+		}
+	}
+	return parts
 }
 
 // skillExamplePositionalValue resolves one positional param to the value

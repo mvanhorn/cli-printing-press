@@ -169,4 +169,4 @@ The "Code & Comment Hygiene" rules apply here too. Keep inline `AGENTS.md` rules
 See [`docs/DOCS.md`](docs/DOCS.md) for the full doc-authoring rules.
 
 ## Patterns
-Cross-cutting design patterns are documented in [`docs/PATTERNS.md`](docs/PATTERNS.md). Notably **Deterministic Inventory + Agent-Marked Ledger** — the shape used by `printing-press tools-audit` for workflows that combine mechanical detection with per-item agent judgment.
+Cross-cutting design patterns are documented in [`docs/PATTERNS.md`](docs/PATTERNS.md). Notably **Deterministic Inventory + Agent-Marked Ledger** — the shape used by `printing-press tools-audit` and `printing-press public-param-audit` for workflows that combine mechanical detection with per-item agent judgment.

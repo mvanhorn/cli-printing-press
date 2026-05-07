@@ -6466,6 +6466,7 @@ func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("public-params")
+	delete(apiSpec.Resources, "items")
 	apiSpec.Resources["stores"] = spec.Resource{
 		Description: "Stores",
 		Endpoints: map[string]spec.Endpoint{
@@ -6502,6 +6503,7 @@ func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	assert.NotContains(t, findSource, `required flag "s" not set`)
 
 	createSource := readGeneratedFile(t, outputDir, "internal", "cli", "stores_create.go")
+	assert.Contains(t, createSource, `public-params-pp-cli stores create --store-code example-value`)
 	assert.Contains(t, createSource, `StringVar(&bodyStoreCode, "store-code", "", "Store code")`)
 	assert.Contains(t, createSource, `body["store_code"] = bodyStoreCode`)
 
@@ -6512,6 +6514,37 @@ func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	assert.Contains(t, mcpSource, `mcplib.WithString("store-code", mcplib.Required(), mcplib.Description("Store code"))`)
 	assert.Contains(t, mcpSource, `PublicName: "store-code", WireName: "store_code", Location: "body"`)
 	assert.Contains(t, mcpSource, `bodyArgs[binding.WireName] = v`)
+
+	readme := readGeneratedFile(t, outputDir, "README.md")
+	assert.Contains(t, readme, `public-params-pp-cli stores create --store-code example-value`)
+
+	skill := readGeneratedFile(t, outputDir, "SKILL.md")
+	assert.Contains(t, skill, `public-params-pp-cli stores create --store-code example-value`)
+}
+
+func TestGeneratePublicParamNamesInPromotedExamples(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("promoted-public-params")
+	apiSpec.Resources["checkout"] = spec.Resource{
+		Description: "Checkout",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/checkout",
+				Description: "Create a checkout",
+				Body: []spec.Param{
+					{Name: "store_code", FlagName: "store-code", Type: "string", Required: true, Description: "Store code"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	promotedSource := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_checkout.go")
+	assert.Contains(t, promotedSource, `Example: "  promoted-public-params-pp-cli checkout --store-code example-value"`)
 }
 
 // TestGenerateMCPCodeOrchKeywordsHasStopwordFilter proves the keyword

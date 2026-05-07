@@ -979,6 +979,13 @@ type Param struct {
 	FlagNameSet bool `yaml:"-" json:"-"`
 }
 
+func (p Param) PublicInputName() string {
+	if p.FlagName != "" {
+		return p.FlagName
+	}
+	return p.Name
+}
+
 func (p *Param) UnmarshalYAML(value *yaml.Node) error {
 	type paramAlias Param
 	var out paramAlias

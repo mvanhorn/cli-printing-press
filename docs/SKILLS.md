@@ -16,8 +16,10 @@ Decide responsibility explicitly:
 
 Public parameter names follow the "Both" pattern. The agent uses evidence to
 author semantic `flag_name` and compatibility `aliases`; the Printing Press CLI
-validates and propagates those fields through generated CLI, docs, MCP, and
-manifest surfaces without inferring names itself.
+inventories suspicious wire names with `public-param-audit`, preserves
+evidence-backed skip decisions in a ledger, and propagates authored fields
+through generated CLI, docs, MCP, and manifest surfaces without inferring names
+itself.
 
 For any SKILL.md update, search for the old concept across the skill file, not just the paragraph closest to the code change. Agentic review prompts often duplicate workflow assumptions from earlier phase instructions.
 
