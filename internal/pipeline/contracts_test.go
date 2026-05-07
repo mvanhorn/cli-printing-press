@@ -137,19 +137,22 @@ func TestPublishSkillTracksCanonicalUpstreamAndOverwriteFlow(t *testing.T) {
 	assert.Contains(t, skill, "git push --force-with-lease")
 }
 
-func TestPublishSkillSeedsRegistryBeforeCliSkillsMirror(t *testing.T) {
+func TestPublishSkillUsesLibraryTreeForCliSkillsMirror(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
 
-	assert.Contains(t, skill, `REGISTRY_HAS_ENTRY=$(jq -r --arg name "<api-slug>" 'any(.entries[]?; .name == $name)'`)
-	assert.Contains(t, skill, `--slurpfile press "$PUBLISHED_CLI_DIR/.printing-press.json"`)
-	assert.Contains(t, skill, `| .entries = ((.entries | map(select(.name != $name))) + [$entry] | sort_by(.name))`)
-	assert.Contains(t, skill, "git add library/ cli-skills/ registry.json")
+	assert.Contains(t, skill, "Do not\nedit `registry.json`")
+	assert.Contains(t, skill, "fix the\nlibrary mirror generator to discover from `library/`")
+	assert.Contains(t, skill, "# Regenerate the flat cli-skills mirror from the library tree")
+	assert.Contains(t, skill, "git add library/ cli-skills/")
+	assert.NotContains(t, skill, "git add library/ cli-skills/ registry.json")
+	assert.NotContains(t, skill, "REGISTRY_HAS_ENTRY")
+	assert.NotContains(t, skill, "seed one registry")
 
-	registrySeed := strings.Index(skill, "missing entry before mirror generation")
+	copyIntoLibrary := strings.Index(skill, `cp -r "$STAGING_DIR/library/<category>/<cli-name>"`)
 	mirrorRun := strings.Index(skill, "go run ./tools/generate-skills/main.go")
-	require.NotEqual(t, -1, registrySeed)
+	require.NotEqual(t, -1, copyIntoLibrary)
 	require.NotEqual(t, -1, mirrorRun)
-	assert.Less(t, registrySeed, mirrorRun)
+	assert.Less(t, copyIntoLibrary, mirrorRun)
 }
 
 func TestREADMEOutputContract(t *testing.T) {

@@ -25,13 +25,13 @@ Publish a generated CLI from your local library to the [printing-press-library](
 
 The public library treats `library/<category>/<api-slug>/.printing-press.json`
 and `manifest.json` as the source of truth for registry-display fields. Do not
-hand-edit existing `registry.json` entries or README catalog cells in publish
-PRs; the library's post-merge workflow refreshes them from the CLI tree. For a
-brand-new CLI whose slug is missing from `registry.json`, seed one registry
-entry from the packaged CLI manifest before regenerating `cli-skills/` so PR CI
-does not prune the new mirror as an orphan. Do regenerate and commit the
-`cli-skills/pp-<api-slug>/SKILL.md` mirror because PR CI verifies it against
-`library/<category>/<api-slug>/SKILL.md`.
+edit `registry.json` or README catalog cells in publish PRs; the library's
+post-merge workflow refreshes them from the CLI tree. Do regenerate and commit
+the `cli-skills/pp-<api-slug>/SKILL.md` mirror from
+`library/<category>/<api-slug>/SKILL.md` because PR CI verifies mirror parity.
+If a brand-new CLI's mirror is pruned because `registry.json` is behind, fix the
+library mirror generator to discover from `library/`; do not add a registry
+entry solely to satisfy mirror parity.
 
 ## Setup
 
@@ -384,11 +384,6 @@ Parse the JSON result. Note the `staged_dir`, `module_path`, `manuscripts_includ
 Then copy the staged CLI into the publish repo, replacing any existing version:
 
 ```bash
-REGISTRY_HAS_ENTRY=false
-if [ -f "$PUBLISH_REPO_DIR/registry.json" ]; then
-  REGISTRY_HAS_ENTRY=$(jq -r --arg name "<api-slug>" 'any(.entries[]?; .name == $name)' "$PUBLISH_REPO_DIR/registry.json")
-fi
-
 # Remove existing version (handles category changes)
 rm -rf "$PUBLISH_REPO_DIR/library"/*/"<api-slug>"
 
@@ -398,49 +393,7 @@ cp -r "$STAGING_DIR/library/<category>/<cli-name>" "$PUBLISH_REPO_DIR/library/<c
 # Remove binaries (should not be committed)
 rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>"
 
-# The library mirror generator reads registry.json to decide which cli-skills
-# entries are real. Brand-new CLIs are not in registry.json yet, so seed the
-# missing entry before mirror generation or CI will show:
-# " D cli-skills/pp-<api-slug>/SKILL.md".
-if [ "$REGISTRY_HAS_ENTRY" != "true" ]; then
-  PUBLISHED_CLI_DIR="$PUBLISH_REPO_DIR/library/<category>/<api-slug>"
-  REGISTRY_TMP="$(mktemp)"
-  jq \
-    --arg name "<api-slug>" \
-    --arg category "<category>" \
-    --arg path "library/<category>/<api-slug>" \
-    --slurpfile press "$PUBLISHED_CLI_DIR/.printing-press.json" \
-    --slurpfile plugin "$PUBLISHED_CLI_DIR/manifest.json" '
-      def present($v): $v != null and $v != "";
-      def fallback($primary; $secondary): if present($primary) then $primary else $secondary end;
-
-      (.schema_version //= 1)
-      | (.entries //= [])
-      | ($press[0] // {}) as $p
-      | ($plugin[0] // {}) as $plugin
-      | {
-          name: $name,
-          category: $category,
-          api: fallback($p.display_name; fallback($plugin.display_name; $p.api_name)),
-          description: fallback($p.description; fallback($plugin.description; "")),
-          path: $path,
-          mcp: {
-            binary: fallback($p.mcp_binary; ($name + "-pp-mcp")),
-            transports: ["stdio", "http"],
-            tool_count: ($p.mcp_tool_count // 0),
-            public_tool_count: ($p.mcp_public_tool_count // 0),
-            auth_type: fallback($p.auth_type; "none"),
-            env_vars: ($p.auth_env_vars // []),
-            mcp_ready: fallback($p.mcp_ready; "unknown"),
-            spec_format: fallback($p.spec_format; "unknown")
-          }
-        } as $entry
-      | .entries = ((.entries | map(select(.name != $name))) + [$entry] | sort_by(.name))
-    ' "$PUBLISH_REPO_DIR/registry.json" > "$REGISTRY_TMP"
-  mv "$REGISTRY_TMP" "$PUBLISH_REPO_DIR/registry.json"
-fi
-
-# Regenerate the flat cli-skills mirror so library PR CI passes mirror parity.
+# Regenerate the flat cli-skills mirror from the library tree so library PR CI passes mirror parity.
 if [ -f "$PUBLISH_REPO_DIR/tools/generate-skills/main.go" ]; then
   (cd "$PUBLISH_REPO_DIR" && go run ./tools/generate-skills/main.go)
 fi
@@ -700,7 +653,7 @@ git checkout -B feat/<api-slug>
 
 ```bash
 cd "$PUBLISH_REPO_DIR"
-git add library/ cli-skills/ registry.json
+git add library/ cli-skills/
 git commit -m "feat(<api-slug>): add <api-slug>"
 ```
 
