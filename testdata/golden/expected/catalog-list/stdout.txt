@@ -3,6 +3,7 @@ auth:
 
 cloud:
   digitalocean         Cloud infrastructure and developer platform API
+  google-cloud-run     Cloud Run Admin API for deploying and managing serverless container services, revisions, jobs, and executions
 
 developer-tools:
   github               Software development platform API

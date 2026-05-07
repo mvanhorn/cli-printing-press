@@ -452,6 +452,28 @@ func TestWriteManifestForGenerateKeepsCatalogDisplayNameOverTitleFallback(t *tes
 	assert.Equal(t, "Product Hunt", got.DisplayName)
 }
 
+func TestWriteManifestForGenerateMatchesCatalogBySpecURLWhenSlugDiffers(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "cloud-run-admin",
+		SpecURL:   "https://api.apis.guru/v2/specs/googleapis.com/run/v2/openapi.yaml",
+		OutputDir: dir,
+		Spec: &spec.APISpec{
+			Name:                        "cloud-run-admin",
+			DisplayName:                 "Cloud Run Admin",
+			DisplayNameDerivedFromTitle: true,
+			Auth:                        spec.AuthConfig{Type: "bearer_token"},
+		},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, "google-cloud-run", got.CatalogEntry)
+	assert.Equal(t, "Google Cloud Run", got.DisplayName)
+	assert.Equal(t, "cloud", got.Category)
+}
+
 func TestWriteManifestForGenerateWithDocsURL(t *testing.T) {
 	dir := t.TempDir()
 

@@ -3,6 +3,9 @@ package pipeline
 import (
 	"fmt"
 	"strings"
+
+	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 )
 
 // KnownSpec holds metadata about a known API spec.
@@ -133,7 +136,14 @@ func ApisGuruPattern(provider, version string) string {
 func DiscoverSpec(apiName string) (string, string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(apiName))
 
-	// Check known specs first
+	if entry, err := catalog.LookupFS(catalogfs.FS, normalized); err == nil {
+		if entry.SpecURL == "" {
+			return "", "", fmt.Errorf("catalog entry %q does not define spec_url - try providing a URL with --spec", apiName)
+		}
+		return entry.SpecURL, catalogSpecSource(entry), nil
+	}
+
+	// Check known specs for aliases that do not have catalog entries.
 	if spec, ok := KnownSpecs[normalized]; ok {
 		return spec.URL, "known-specs registry", nil
 	}
@@ -147,6 +157,16 @@ func DiscoverSpec(apiName string) (string, string, error) {
 	}
 
 	return "", "", fmt.Errorf("could not find OpenAPI spec for %q - try providing a URL with --spec", apiName)
+}
+
+func catalogSpecSource(entry *catalog.Entry) string {
+	if source := strings.TrimSpace(entry.SpecSource); source != "" {
+		return "catalog entry (" + source + ")"
+	}
+	if tier := strings.TrimSpace(entry.Tier); tier != "" {
+		return "catalog entry (" + tier + ")"
+	}
+	return "catalog entry"
 }
 
 // IsSandboxSafe returns true if the API is known to have a safe test/sandbox environment.

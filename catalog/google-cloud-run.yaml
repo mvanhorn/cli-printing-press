@@ -6,6 +6,7 @@ spec_url: https://api.apis.guru/v2/specs/googleapis.com/run/v2/openapi.yaml
 spec_format: yaml
 openapi_version: "3.0"
 tier: community
+spec_source: community
 verified_date: "2026-05-06"
 homepage: https://cloud.google.com/run/docs/reference/rest
 notes: |
@@ -16,5 +17,5 @@ notes: |
 
   Spec quirk: paths use the Google convention `/v2/{name}` with the resource
   hierarchy encoded in operationIds (e.g. run.projects.locations.services.revisions.delete)
-  rather than in the path. Resource derivation may need to key off operationId tags
-  instead of the path segments.
+  rather than in the path. The OpenAPI parser derives resources from those
+  Google Discovery operationIds when path segments are generic.

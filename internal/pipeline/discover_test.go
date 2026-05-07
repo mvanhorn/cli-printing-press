@@ -14,6 +14,13 @@ func TestDiscoverSpec_KnownAPI(t *testing.T) {
 	assert.Contains(t, url, "petstore")
 }
 
+func TestDiscoverSpec_CatalogEntryWins(t *testing.T) {
+	url, source, err := DiscoverSpec("google-cloud-run")
+	require.NoError(t, err)
+	assert.Equal(t, "https://api.apis.guru/v2/specs/googleapis.com/run/v2/openapi.yaml", url)
+	assert.Equal(t, "catalog entry (community)", source)
+}
+
 func TestDiscoverSpec_UnknownAPI(t *testing.T) {
 	// Unknown APIs still return a url via apis-guru fallback, so check that it works
 	url, source, err := DiscoverSpec("zzz-nonexistent-api-zzz")

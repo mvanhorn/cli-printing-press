@@ -459,7 +459,7 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	}
 
 	// Look up catalog entry for category/description/display-name enrichment.
-	if entry, err := catalogpkg.LookupFS(catalog.FS, p.APIName); err == nil {
+	if entry := lookupCatalogEntryForGenerate(p.APIName, m.SpecURL); entry != nil {
 		m.CatalogEntry = entry.Name
 		m.Category = entry.Category
 		m.Description = entry.Description
@@ -489,6 +489,25 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	// Emit MCPB manifest.json next to .printing-press.json. Pass the
 	// in-memory struct so we don't re-read the file we just wrote.
 	return WriteMCPBManifestFromStruct(p.OutputDir, m)
+}
+
+func lookupCatalogEntryForGenerate(apiName, specURL string) *catalogpkg.Entry {
+	if entry, err := catalogpkg.LookupFS(catalog.FS, apiName); err == nil {
+		return entry
+	}
+	if specURL == "" {
+		return nil
+	}
+	entries, err := catalogpkg.ParseFS(catalog.FS)
+	if err != nil {
+		return nil
+	}
+	for i := range entries {
+		if entries[i].SpecURL == specURL {
+			return &entries[i]
+		}
+	}
+	return nil
 }
 
 // detectSpecFormat examines the raw spec bytes and returns a format
