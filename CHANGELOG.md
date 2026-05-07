@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.3](https://github.com/mvanhorn/cli-printing-press/compare/v4.0.2...v4.0.3) (2026-05-07)
+
+
+### Bug Fixes
+
+* **cli:** derive Google Discovery resources from operationIds ([#680](https://github.com/mvanhorn/cli-printing-press/issues/680)) ([39cbc18](https://github.com/mvanhorn/cli-printing-press/commit/39cbc18971a10aba41bbc56a68e1710a03bb063d))
+
 ## [4.0.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.0.1...v4.0.2) (2026-05-07)
 
 
