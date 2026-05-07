@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 )
 
 // MCPTokenEstimate reports the approximate token weight of a generated MCP

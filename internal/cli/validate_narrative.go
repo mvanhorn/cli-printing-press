@@ -9,7 +9,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/narrativecheck"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/narrativecheck"
 	"github.com/spf13/cobra"
 )
 

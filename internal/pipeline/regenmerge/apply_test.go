@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 )
 
 // TestApplyPostmanExploreFixture exercises the full Apply flow against the

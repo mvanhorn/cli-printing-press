@@ -20,7 +20,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/shellargs"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
 )
 
 // Section names the narrative section a command lives in. Matches the

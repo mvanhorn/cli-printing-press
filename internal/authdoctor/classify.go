@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 // minLengthByType gives the minimum expected length of a well-formed

@@ -31,7 +31,7 @@ Then ask the user via `AskUserQuestion` before continuing setup:
 If the user picks **Yes**, run:
 
 ```bash
-GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest
+GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest
 ```
 
 After it completes, confirm with `printing-press version --json` and tell the user `"Upgraded to v<new>."` Then continue setup.
@@ -46,6 +46,6 @@ Check binary version compatibility against the skill's declared minimum. Read th
 
 If the installed binary is older than the minimum, warn the user:
 
-> "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest` to update."
+> "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest` to update."
 
 Continue anyway but surface the warning prominently. (Note: if the user just declined the optional upgrade in section 2, they may still pass min-version compatibility here — that's fine. The two checks have different bars.)

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline/mcpsync"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline/mcpsync"
 	"github.com/spf13/cobra"
 )
 

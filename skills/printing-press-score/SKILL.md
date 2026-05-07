@@ -27,7 +27,7 @@ Score generated CLIs against the Steinberger bar. Supports rescoring, scoring by
 ## Prerequisites
 
 - Go 1.21+ installed
-- `printing-press` binary on PATH (install with `go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest`)
+- `printing-press` binary on PATH (install with `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest`)
 
 ## Step 0: Setup
 
@@ -51,7 +51,7 @@ elif ! command -v printing-press >/dev/null 2>&1; then
     echo "Add GOPATH/bin to your PATH:  export PATH=\"\$HOME/go/bin:\$PATH\""
   else
     echo "printing-press binary not found."
-    echo "Install with:  go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest"
+    echo "Install with:  go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest"
   fi
   return 1 2>/dev/null || exit 1
 fi
@@ -72,7 +72,7 @@ mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-After running the setup contract, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, warn the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest` to update." Continue anyway but surface the warning prominently.
+After running the setup contract, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, warn the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest` to update." Continue anyway but surface the warning prominently.
 
 Current-run state is resolved from `$PRESS_RUNSTATE`. Published CLIs are resolved from `$PRESS_LIBRARY`. Archived manuscripts are resolved from `$PRESS_MANUSCRIPTS`.
 
@@ -271,7 +271,7 @@ Domain Correctness (Tier 2)
 
 ## Error Handling
 
-- If the printing-press binary is not on PATH → show install instructions: `go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest`
+- If the printing-press binary is not on PATH → show install instructions: `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest`
 - If the scorecard command fails → report the error with the full stderr output
 - If a CLI directory doesn't exist → report which name couldn't be resolved
 - If JSON parsing fails → show the raw output and report the parsing error

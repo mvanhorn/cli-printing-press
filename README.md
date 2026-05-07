@@ -29,7 +29,7 @@ The binary alone works (research, generation, verification, scoring) but skips t
 ### 1. Install the binary
 
 ```bash
-go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest
+go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest
 ```
 
 Verify with `printing-press --version`. If `go install` fails with `410 Gone` or an auth error, see [Troubleshooting](#troubleshooting).
@@ -466,7 +466,7 @@ Each published CLI ships a research manuscript, verification proofs, and a `.pri
 **`go install` returns `410 Gone` or an auth error.** The repo is currently private. Set `GOPRIVATE` so Go fetches directly from GitHub instead of the public module proxy, and ensure you have GitHub access (SSH key or `gh auth login`):
 
 ```bash
-GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest
+GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest
 ```
 
 After the public launch, the plain command works for everyone.

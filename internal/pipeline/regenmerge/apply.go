@@ -15,7 +15,7 @@ import (
 	"github.com/dave/dst/decorator"
 	"golang.org/x/mod/modfile"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 )
 
 // Apply executes a MergeReport's plan against the published CLI directory,

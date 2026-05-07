@@ -143,12 +143,12 @@ elif ! command -v printing-press >/dev/null 2>&1; then
     echo ""
     if command -v go >/dev/null 2>&1; then
       echo "Install it in your terminal:"
-      echo "  GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest"
+      echo "  GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest"
       echo ""
       echo "(GOPRIVATE is required while the repo is private. The plain command works after the public launch.)"
     else
       echo "Go 1.22+ is also not installed. Install Go from https://go.dev/dl/, then:"
-      echo "  GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest"
+      echo "  GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest"
     fi
     echo ""
     echo "Verify with: printing-press --version"
@@ -190,7 +190,7 @@ fi
 
 if [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
   _installed=$(printing-press version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
-  _latest=$(GOPRIVATE=github.com/mvanhorn/* go list -m -versions github.com/mvanhorn/cli-printing-press/v3 2>/dev/null | awk '{print $NF}' | sed 's/^v//')
+  _latest=$(GOPRIVATE=github.com/mvanhorn/* go list -m -versions github.com/mvanhorn/cli-printing-press/v4 2>/dev/null | awk '{print $NF}' | sed 's/^v//')
 
   if [ -n "$_installed" ] && [ -n "$_latest" ] && [ "$_installed" != "$_latest" ]; then
     # sort -V is not fully semver-aware: it ranks "3.0.0-rc1" above "3.0.0" instead of below.

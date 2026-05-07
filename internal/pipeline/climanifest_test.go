@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/version"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

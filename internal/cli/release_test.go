@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/version"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/mod/modfile"
@@ -39,7 +39,7 @@ func TestGoreleaserLdflagsTargetMatchesVersionVar(t *testing.T) {
 
 	ldflags := strings.Join(config.Builds[0].Ldflags, " ")
 	assert.Contains(t, ldflags,
-		"github.com/mvanhorn/cli-printing-press/v3/internal/version.Version",
+		"github.com/mvanhorn/cli-printing-press/v4/internal/version.Version",
 		"goreleaser ldflags must target internal/version.Version")
 }
 

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	catalogfs "github.com/mvanhorn/cli-printing-press/v3/catalog"
+	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

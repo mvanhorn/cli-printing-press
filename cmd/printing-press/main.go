@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/cli"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/cli"
 )
 
 func main() {

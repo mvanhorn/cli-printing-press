@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 )
 
 // Thresholds for the tool-design dimension. Intent-grouping is only worth

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/enetx/surf"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/version"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 )
 
 const (

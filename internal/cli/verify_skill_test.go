@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/stretchr/testify/require"
 )
 

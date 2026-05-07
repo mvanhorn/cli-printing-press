@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/cli"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/cli"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 )
 
 // TestPrintCmd_AlreadyExists_ExitCode verifies that the "already exists"

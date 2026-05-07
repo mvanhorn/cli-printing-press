@@ -16,11 +16,11 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/browsersniff"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/mcpdesc"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/profiler"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpdesc"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
