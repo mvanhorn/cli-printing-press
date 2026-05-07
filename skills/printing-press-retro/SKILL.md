@@ -731,8 +731,7 @@ template gap that would help every future CLI *is* worth filing.
 
 If filing is skipped, still save the retro locally (manuscript proofs +
 `/tmp/printing-press/retro/`), present the findings to the user, then jump
-directly to Phase 6 Step 6 (present results — adjusted to show local-only paths)
-and Step 8 (offer next steps).
+directly to Phase 6 Step 6 (present results — adjusted to show local-only paths).
 
 ## Phase 6: Package, upload, and present
 
@@ -912,28 +911,6 @@ the issue-template fallback path.
 ### Step 7: Clean up staging folder
 
 Run artifact-packaging.md Step 7 to delete `$STAGING_DIR`.
-
-### Step 8: Offer next steps
-
-Use `AskUserQuestion`:
-
-**If `IN_REPO=true`:**
-
-> 1. **Plan work units** — invoke `/compound-engineering:ce-plan` to plan top-priority WUs
-> 2. **Plan a specific work unit** — pick one WU to plan
-> 3. **Done for now**
-
-If the user picks option 1 or 2, try to invoke `compound-engineering:ce-plan`. If
-it's not available, fall back to printing the prompt the user would run manually.
-
-**If `IN_REPO=false`:**
-
-> The Printing Press maintainers will review your findings.
->
-> 1. **Done**
-
-Do not offer to plan work units when `IN_REPO=false` — the user is not in the
-Printing Press repo and cannot act on the findings directly.
 
 ## Rules
 

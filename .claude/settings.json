@@ -1,7 +1,4 @@
 {
-  "enabledPlugins": {
-    "compound-engineering@every-marketplace": true
-  },
   "permissions": {
     "deny": [
       "Bash(git commit --no-verify:*)",
