@@ -16,7 +16,7 @@ Three CLIs printed by the press, installable today:
 - flight-goat (Kayak nonstop search plus sniffed Google Flights). _"Non-stop flights over 8 hours from Seattle for 4 people, Dec 24 to Jan 1, cheapest first."_ Two sources stitched into one query.
 - linear-pp-cli (50ms against a local SQLite mirror). _"Every blocked issue whose blocker has been stuck for a week."_ Compound queries the API can't answer.
 
-Browse the full catalog of printed CLIs at [printingpress.dev](https://printingpress.dev) or in the [Printing Press Library](https://github.com/mvanhorn/printing-press-library). 24 CLIs across 17 categories, 17 with full MCP servers.
+Browse the full catalog of printed CLIs at [printingpress.dev](https://printingpress.dev) or in the [Printing Press Library](https://github.com/mvanhorn/printing-press-library), organized by category, most with full MCP servers.
 
 ## Install
 
@@ -87,6 +87,7 @@ For example:
 ```text
 /printing-press Notion                       # Print a CLI for an API by name
 /printing-press https://postman.com/explore  # ...or point at a website (no spec needed)
+/printing-press-reprint notion               # Reprint an existing CLI under the latest machine
 ```
 
 `/printing-press` drives the `printing-press` binary you installed — research, generation, scoring, and shipcheck all run through it. Two parts, one workflow.
@@ -122,22 +123,12 @@ When you add `codex`, Phase 3's code generation tasks are delegated to Codex CLI
 </details>
 
 <details>
-<summary><b>Improve an existing CLI (Polish &amp; Emboss)</b></summary>
+<summary><b>Improve an existing CLI (Polish)</b></summary>
 
-Two second-pass paths with different scopes.
-
-**Polish** — targeted fix-up. Diagnostics (dogfood, verify, scorecard, output review), fixes verify failures, removes dead code, cleans descriptions and READMEs, offers to publish. Auto-runs as Phase 5.5 of every generation; can also run standalone:
+Targeted fix-up. Diagnostics (dogfood, verify, scorecard, output review), fixes verify failures, removes dead code, cleans descriptions and READMEs, offers to publish. Auto-runs as Phase 5.5 of every generation; can also run standalone:
 
 ```bash
 /printing-press-polish notion
-```
-
-**Emboss** — full second-pass cycle. Audits baseline, re-researches what's changed, identifies top 5 improvements, rebuilds, re-verifies, reports the delta. Use when you want significant additions, not just fixes:
-
-```bash
-/printing-press emboss notion                                   # By API name
-/printing-press emboss notion-pp-cli                            # By CLI name
-/printing-press emboss ~/printing-press/library/notion          # By full path
 ```
 
 </details>
@@ -150,20 +141,6 @@ When you're happy with a CLI, publish it to the library:
 ```bash
 /printing-press-publish linear   # Validates, packages, creates PR
 ```
-
-</details>
-
-<details>
-<summary><b>Optional: install the pre-built CLI library</b></summary>
-
-To browse and install pre-built CLIs from the [Printing Press Library](https://github.com/mvanhorn/printing-press-library) catalog (24 CLIs across 17 categories), add a second plugin in Claude Code:
-
-```text
-/plugin marketplace add mvanhorn/printing-press-library
-/plugin install printing-press-library@printing-press-library
-```
-
-This adds the `/ppl` slash command for browsing and installing CLIs from the public catalog.
 
 </details>
 
@@ -295,7 +272,7 @@ Phase 5     Live Smoke (optional)     (2-5 min)    Read-only API smoke + data-fl
 
 Three entry paths. Got an OpenAPI spec? Use `--spec`. Got a URL to a website with no docs? The browser-sniff gate launches a browser, captures traffic, and generates the spec. Got a HAR file from DevTools? Pass `--har`. The press handles all three.
 
-19 APIs in the catalog. Asana, DigitalOcean, Discord, Front, GitHub, HubSpot, LaunchDarkly, Pipedrive, Plaid, Postman, Product Hunt, SendGrid, Sentry, Square, Stripe, Stytch, Telegram, Twilio, plus Petstore for testing. Each pre-verified with spec URL, auth type, and category.
+19 APIs in the catalog. Asana, DigitalOcean, Discord, Front, GitHub, Google Flights, HubSpot, Kayak, LaunchDarkly, Mercury, Pipedrive, Plaid, Postman Explore, Product Hunt, Sentry, Stripe, Stytch, Telegram, Twilio, plus Petstore for testing. Each pre-verified with spec URL, auth type, and category.
 
 Discovery provenance. When the press sniffs a website, it archives everything - pages visited, endpoints discovered, response samples, rate limiting events, and `traffic-analysis.json` with protocol/auth/protection signals and discovery warnings - into a `discovery/` manuscript alongside the research and proofs. Full audit trail.
 
@@ -470,9 +447,9 @@ Useful when an agent hits a 401 on a printed CLI: one command shows whether the 
 
 ## Library
 
-Published CLIs live in the [Printing Press Library](https://github.com/mvanhorn/printing-press-library), organized by category. 24 CLIs across 17 categories, 17 with full MCP servers. Browse at [printingpress.dev](https://printingpress.dev) or run `/ppl` after installing the Library plugin.
+Published CLIs live in the [Printing Press Library](https://github.com/mvanhorn/printing-press-library), organized by category, most with full MCP servers. Browse at [printingpress.dev](https://printingpress.dev).
 
-A small sample, see the [full catalog](https://github.com/mvanhorn/printing-press-library#catalog) for all 24:
+A small sample, see the [full catalog](https://github.com/mvanhorn/printing-press-library#catalog) for the rest:
 
 | CLI | Category | What it does |
 |-----|----------|--------------|
