@@ -334,10 +334,29 @@ README.** Never guess flag names, argument formats, or valid values. If you
 write `--start-time` but the flag is `--start`, the README is wrong and
 users will get errors on their first try.
 
-#### Inject novel features from research
+#### Source-of-truth files for rendered sections
 
-If the README lacks a `## Unique Features` section, check whether the
-manuscript archive has novel features to surface:
+Before editing README.md, SKILL.md, or `.printing-press.json`, identify whether
+the section is rendered from a source file. Dogfood and regeneration overwrite
+these rendered sections, so direct edits there are temporary and should be used
+only to inspect the current output.
+
+| Rendered section or field | Source-of-truth file::field | Polish workflow |
+| --- | --- | --- |
+| README `## Unique Features` | `research.json::novel_features_built[]` | Edit the underlying `research.json` feature description/example, then re-run dogfood with `--research-dir`. |
+| SKILL `## Unique Capabilities` | `research.json::novel_features_built[]` | Edit the underlying `research.json` feature description/example, then re-run dogfood with `--research-dir`. |
+| README Quick Start | `research.json::narrative.quickstart[]` | Edit the command/comment in `research.json`, then regenerate or re-run the dogfood/rendering step. |
+| SKILL Recipes | `research.json::narrative.recipes[]` | Edit the recipe title, command, or explanation in `research.json`, then regenerate or re-run the dogfood/rendering step. |
+| README/SKILL Troubleshooting | `research.json::narrative.troubleshoots[]` | Edit the symptom/fix pair in `research.json`, then regenerate or re-run the dogfood/rendering step. |
+| `.printing-press.json` `display_name`, `description`, `mcp_*` | `WriteManifestForGenerate`; for description/display-name overrides, edit the spec (`info.title`, `info.x-display-name`, `info.description`) | Edit the spec or rerun the manifest writer. Do not hand-edit generated manifest metadata unless you are doing temporary diagnosis. |
+
+Recommended loop for these rendered sections: edit the source field, re-run
+dogfood with `--research-dir "$RESEARCH_DIR"` or regenerate the CLI as
+appropriate, then run a second pass to confirm the rendered README/SKILL text
+stays fixed. If you edit README.md or SKILL.md directly in one of these
+sections, expect the next dogfood resync or regeneration to clobber the change.
+
+To find the manuscript source:
 
 ```bash
 PRESS_HOME="$HOME/printing-press"
@@ -349,25 +368,12 @@ for f in "$PRESS_HOME/manuscripts/$CLI_NAME"/*/research.json \
 done
 ```
 
-If `RESEARCH_JSON` exists, read it and check for a `novel_features` array.
-If that array is non-empty and the README has no `## Unique Features`
-heading, inject the section **after `## Quick Start`** (or before
-`## Usage` if Quick Start doesn't exist).
-
-Format each feature exactly as the generator template does:
-
-```markdown
-## Unique Features
-
-These capabilities aren't available in any other tool for this API.
-
-- **`<command>`** — <description>
-```
-
-Before injecting, verify each feature's `command` actually exists in the
-built CLI by running `./$CLI_NAME <command> --help 2>/dev/null`. Skip any
-feature whose command does not exist — it may have been renamed or dropped
-during generation.
+If `RESEARCH_JSON` exists and a rendered section has bad prose, examples, or
+flag references, fix the corresponding field in that file first. For novel
+features, dogfood verifies `research.json::novel_features[]`, writes the
+surviving set to `research.json::novel_features_built[]`, and syncs README
+`## Unique Features`, SKILL `## Unique Capabilities`, `.printing-press.json`
+`novel_features`, and root help Highlights from that verified set.
 
 #### Required sections (must be present and correct)
 
