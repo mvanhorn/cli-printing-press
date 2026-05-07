@@ -1478,12 +1478,21 @@ func (g *Generator) renderOptionalSupportFiles() error {
 func (g *Generator) Generate() error {
 	warnUnenrichedLargeMCPSurface(g.Spec, os.Stderr)
 	if g.Spec.OwnerName == "" {
-		// OwnerName is the prose-shaped display name flowing into
-		// Hermes author: and other human-facing surfaces. An empty
-		// value here would publish a SKILL.md with `author: ""` to the
-		// public library — visibly broken and hard to retract once
-		// mirrored. Fail before any file writes.
-		return fmt.Errorf("spec.OwnerName is empty: set `git config user.name` (display name, e.g. \"Trevin Chow\") so the generator can populate the Hermes `author:` field; or set `owner_name` in the spec / .printing-press.json explicitly")
+		// OwnerName flows into Hermes `author:` and other prose
+		// surfaces. We don't hard-fail on an empty value because the
+		// generator package is reused by many callers (tests, mcp-sync,
+		// regen-merge) where setting it is awkward. Instead, fall back
+		// to the slug-shaped Owner so emission is non-empty, and warn
+		// loudly so a real-print operator catches the misconfiguration.
+		// The library-wide sweep tool overrides this via its own per-CLI
+		// authorship mapping, so this fallback only ever lands on fresh
+		// prints by users who haven't set `git config user.name`.
+		fmt.Fprintf(os.Stderr,
+			"WARNING: spec.OwnerName is empty; falling back to slug-shaped Owner (%q) for `author:` field. "+
+				"Set `git config user.name` (display name, e.g. \"Trevin Chow\") to populate this correctly.\n",
+			g.Spec.Owner,
+		)
+		g.Spec.OwnerName = g.Spec.Owner
 	}
 	if err := g.prepareOutput(); err != nil {
 		return err
