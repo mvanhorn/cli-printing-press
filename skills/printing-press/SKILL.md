@@ -2444,13 +2444,13 @@ A template-level check would require every possible semantic mismatch to be patt
 
 The agent can't verify runtime behavior without running commands; stick to help-text and source-based claims. For runtime-behavior claims (e.g., "returns 5 matching recipes"), Phase 5 dogfood is the right gate.
 
-## Phase 4.9: README/SKILL Correctness Audit
+## Phase 4.9: README/SKILL/AGENTS Correctness Audit
 
-**Runs after Phase 4.8, before Phase 5.** Phase 4.8 reviews whether the SKILL's trigger phrases and major claims match shipped behavior. Phase 4.9 reviews the two user-facing artifacts as documents: README.md and SKILL.md must not contain boilerplate that does not apply to this CLI.
+**Runs after Phase 4.8, before Phase 5.** Phase 4.8 reviews whether the SKILL's trigger phrases and major claims match shipped behavior. Phase 4.9 reviews the user-facing artifacts as documents: README.md, SKILL.md, and AGENTS.md must not contain boilerplate that does not apply to this CLI.
 
 Use the Agent tool or review directly with this prompt contract:
 
-> Audit `$CLI_WORK_DIR/README.md` and `$CLI_WORK_DIR/SKILL.md` for factual correctness against the shipped CLI. Ground truth is `<cli> --help` recursively, `$CLI_WORK_DIR/internal/cli/*.go`, `$RESEARCH_DIR/research.json`, and the absorb manifest.
+> Audit `$CLI_WORK_DIR/README.md`, `$CLI_WORK_DIR/SKILL.md`, and `$CLI_WORK_DIR/AGENTS.md` for factual correctness against the shipped CLI. Ground truth is `<cli> --help` recursively, `$CLI_WORK_DIR/internal/cli/*.go`, `$RESEARCH_DIR/research.json`, and the absorb manifest.
 >
 > Check:
 > - Every command, subcommand, flag, exit code, config path, and example resolves to the printed CLI.

@@ -1,6 +1,7 @@
 # Locks rich AuthEnvVar template consumption across machine and prose surfaces.
 printing-press-rich-auth/SKILL.md
 printing-press-rich-auth/README.md
+printing-press-rich-auth/AGENTS.md
 printing-press-rich-auth/internal/cli/agent_context.go
 printing-press-rich-auth/internal/cli/auth.go
 printing-press-rich-auth/internal/cli/doctor.go

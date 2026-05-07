@@ -99,6 +99,7 @@ Inputs:
 
 Outputs:
 - Generated CLI source tree under the API's output directory
+- Root `AGENTS.md` operating guide for shell agents working inside the generated CLI tree
 - Working CLI binary for the target API
 
 Freshness ownership:

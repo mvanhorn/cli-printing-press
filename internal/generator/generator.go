@@ -1360,6 +1360,7 @@ func (g *Generator) renderSingleFiles() error {
 		"types.go.tmpl":              filepath.Join("internal", "types", "types.go"),
 		"golangci.yml.tmpl":          ".golangci.yml",
 		"readme.md.tmpl":             "README.md",
+		"agents.md.tmpl":             "AGENTS.md",
 		"skill.md.tmpl":              "SKILL.md",
 		"LICENSE.tmpl":               "LICENSE",
 		"NOTICE.tmpl":                "NOTICE",
@@ -1368,7 +1369,7 @@ func (g *Generator) renderSingleFiles() error {
 	for tmplName, outPath := range singleFiles {
 		var data any
 		switch tmplName {
-		case "readme.md.tmpl", "skill.md.tmpl", "which.go.tmpl", "which_test.go.tmpl":
+		case "readme.md.tmpl", "agents.md.tmpl", "skill.md.tmpl", "which.go.tmpl", "which_test.go.tmpl":
 			data = g.readmeData()
 		case "helpers.go.tmpl":
 			hFlags := computeHelperFlags(g.Spec)

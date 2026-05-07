@@ -43,6 +43,7 @@ func TestGenerateProjectsCompile(t *testing.T) {
 	mustInclude := []string{
 		"go.mod",
 		"Makefile",
+		"AGENTS.md",
 		"README.md",
 		"SKILL.md",
 		"internal/cli/root.go",
