@@ -2574,6 +2574,18 @@ Acceptance Report: <api>
   Gate: PASS / FAIL
 ```
 
+**Redact PII while authoring the report.** When live API responses include an
+organization or workspace name, user email, assignee/collaborator name, or any
+other human-identifying string, describe the result generically instead of
+quoting the literal value:
+- organization or workspace name -> "the test workspace"
+- authenticated user email/name -> "the authenticated viewer"
+- assignees or collaborators -> "the highest-loaded assignee" / "the project lead"
+- team identifiers such as `ENG` or `T2` are OK when they are structural keys
+
+The Phase 5.6 manuscript scan and publish-skill PII scan are defense in depth;
+keep PII out of the acceptance report from the moment you write it.
+
 **Acceptance threshold:**
 - Quick Check: 5/6 core tests must pass. Auth (`doctor`) or sync failure is automatic FAIL.
 - Full Dogfood: every mandatory test in the matrix must pass. A single broken flagship feature is automatic FAIL. Auth/sync failures are automatic FAIL.
