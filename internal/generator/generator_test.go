@@ -7159,6 +7159,9 @@ func TestTemplatesEmitReadOnlyAnnotation(t *testing.T) {
 		{"tail.go.tmpl", 1, "polls API GETs, NDJSON to stdout"},
 		{"jobs.go.tmpl", 2, "list and get; prune is omitted (mutates ledger)"},
 		{"channel_workflow.go.tmpl", 2, "status and generated payment-plan are read-only; workflow parent and archive omitted"},
+		{"workflows/pm_stale.go.tmpl", 1, "queries the local store for stale items"},
+		{"workflows/pm_orphans.go.tmpl", 1, "queries the local store for missing fields"},
+		{"workflows/pm_load.go.tmpl", 1, "queries the local store for workload distribution"},
 	}
 
 	for _, tc := range cases {
@@ -7171,6 +7174,32 @@ func TestTemplatesEmitReadOnlyAnnotation(t *testing.T) {
 				"%s should carry exactly %d mcp:read-only annotation(s) — %s",
 				tc.template, tc.minMatches, tc.why)
 		})
+	}
+}
+
+func TestProjectManagementWorkflowsEmitReadOnlyAnnotations(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("pmworkflows")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{
+		Store: true,
+		Sync:  true,
+		Workflows: []string{
+			"workflows/pm_stale.go.tmpl",
+			"workflows/pm_orphans.go.tmpl",
+			"workflows/pm_load.go.tmpl",
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	annotationRE := regexp.MustCompile(`Annotations:\s+map\[string\]string\{"mcp:read-only":\s*"true"\}`)
+	for _, file := range []string{"pm_stale.go", "pm_orphans.go", "pm_load.go"} {
+		data, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", file))
+		require.NoError(t, err)
+		assert.Len(t, annotationRE.FindAllString(string(data), -1), 1,
+			"%s should emit exactly one mcp:read-only annotation", file)
 	}
 }
 
