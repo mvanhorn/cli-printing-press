@@ -15,6 +15,8 @@ Generated endpoint commands currently use one value, `spec.Param.Name`, for two 
 
 Add an explicit public parameter name model so the Printing Press agent can choose semantic names during spec enrichment while the generator keeps requests wired to the original API keys. The machine owns validation and rendering consistency; the agent owns the semantic naming judgment.
 
+The feature is the handoff between those two halves, not just a new field. The Printing Press skill must teach an agent how to decide that a cryptic wire key like `s` means `address` for one endpoint, while the Printing Press CLI must make that agent-authored decision durable and carry it through every generated surface without guessing the meaning itself.
+
 ---
 
 ## Problem Frame
@@ -40,6 +42,7 @@ Choosing `address` is not deterministic string cleanup. It depends on endpoint c
 - R5. Validation rejects invalid public names and collisions across public names, aliases, body flags, endpoint params, and generator-reserved flags.
 - R6. The Printing Press skill guides the agent to author `flag_name` from evidence during spec enrichment; the machine does not auto-infer semantic names.
 - R7. Tests prove both public and alias flags route to the same wire key, and MCP/public manifests expose the public name while remapping back to the wire key.
+- R8. Verification covers the full skill-to-generator loop: a skill-style enriched spec or overlay containing agent-authored `flag_name` values produces friendly CLI flags, generated README/SKILL examples, typed MCP inputs, and manifest metadata while preserving wire keys.
 
 ---
 
@@ -90,6 +93,39 @@ Domino's is the canonical real-world affected CLI:
 - `internal/mcp/tools.go` still exposes typed MCP inputs named `s` and `c`, and the tool description says `Required: s, c`. This proves a Cobra-only alias implementation is insufficient; the generator must propagate public names through typed MCP schemas and remap those public inputs back to wire keys.
 - No checked-in `tools-manifest.json` exists in that Domino's directory, but the same manifest drift would occur today because `internal/pipeline/toolsmanifest.go` writes params from the single raw `Name` field.
 
+### Skill / Generator Contract
+
+The intended loop is:
+
+1. The Printing Press skill gathers evidence during research, browser-sniff, crowd-sniff, SDK/source inspection, and endpoint workflow review.
+2. The agent uses that evidence to author semantic public names into the enrichment artifact: `flag_name` for the preferred public name, and `aliases` only for compatibility spellings.
+3. The Printing Press CLI validates that authored data and rejects invalid or colliding public surfaces. It must not infer semantic names from descriptions, examples, or global dictionaries.
+4. The generator renders the authored public names through CLI help, generated README/SKILL examples, typed MCP schemas, and `tools-manifest.json`.
+5. Runtime request construction continues to use the original wire key from `name`.
+
+The Domino's store-locator example shows the reasoning path the skill should teach. The agent does not choose `address` and `city` because `s` and `c` have universal meanings. It chooses them from endpoint-local evidence:
+
+- The endpoint path is `/power/store-locator`, and the endpoint description is "Find nearby Domino's stores by address", so the params are part of a location-search workflow.
+- The `s` parameter description is `Street address (e.g., "350 5th Ave")`, which disambiguates `s` from search, state, status, sort, or start.
+- The `c` parameter description is `City, state, zip (e.g., "New York NY 10118")`, which disambiguates `c` from category, country, count, or currency.
+- README/SKILL examples and the hand-patched CLI already express the user workflow as `stores find --address ... --city ...`, confirming that concise task-level names fit the surface better than literal names like `street-address` or `city-state-zip`.
+
+From that evidence, the target shape is:
+
+```yaml
+params:
+  - name: s
+    flag_name: address
+    aliases: [s]
+    description: Street address
+  - name: c
+    flag_name: city
+    aliases: [c]
+    description: City, state, zip
+```
+
+The agent-authored improvement is `flag_name: address` and `flag_name: city`. The `aliases` entries are compatibility only. If evidence is unclear, the skill must leave `flag_name` unset rather than letting the generator invent a friendly name.
+
 ### External References
 
 - No external research needed. This is repo-local generator behavior and Printing Press workflow design.
@@ -132,8 +168,9 @@ Domino's is the canonical real-world affected CLI:
 ```mermaid
 flowchart LR
   A[Research / spec / sniff evidence] --> B[Printing Press agent review]
-  B -->|authors flag_name + aliases| C[Internal spec or overlay]
-  C --> D[Spec validation]
+  B -->|semantic judgment: authors flag_name| C[Internal spec or overlay]
+  B -->|compatibility judgment: authors aliases| C
+  C --> D[Printing Press CLI validation]
   D --> E[Generator templates]
   E --> F[Cobra flags and help]
   E --> G[README and SKILL examples]
@@ -349,7 +386,7 @@ params:
 
 - U5. **Teach the Printing Press skill to author public names from evidence**
 
-**Goal:** Make the agent workflow responsible for semantic naming decisions during spec enrichment, with clear evidence rules and no deterministic guessing.
+**Goal:** Make the agent workflow the source of semantic public-name decisions during spec enrichment, with clear evidence rules, clear handoff into the Printing Press CLI, and no deterministic guessing by the generator.
 
 **Requirements:** R6
 
@@ -365,11 +402,15 @@ params:
 - Test: `internal/cli/verify_skill_test.go`
 
 **Approach:**
-- Add a spec-enrichment instruction: inspect cryptic params and add `flag_name` only when source evidence makes the meaning clear.
+- Add a required spec-enrichment checkpoint: inspect cryptic params and add `flag_name` only when source evidence makes the meaning clear.
+- State the handoff explicitly: the skill authors `flag_name` / `aliases` in the internal spec or overlay; the Printing Press CLI validates and propagates those fields. The generator must not choose semantic names itself.
+- Clarify terminology in the skill: `flag_name` is the semantic improvement agents and users should see; `aliases` are accepted compatibility spellings and are not the main friendly name.
 - Define good evidence: explicit parameter descriptions, vendor docs, SDK argument names, browser-sniff form/input context, traffic-analysis labels, or endpoint-specific user workflow evidence.
 - Define bad evidence: one-letter name alone, generic "query parameter" descriptions, ambiguous sample values, or global assumptions such as "s always means search."
 - Encourage concise task-level names agents naturally use. Example: `Street address` on a store locator should usually become `address`, not `street-address`, because the command's task is finding by address.
 - Add a brief checklist to the browser-sniff and crowd-sniff references so captured form labels and SDK parameter names are preserved as evidence for public names.
+- Preserve evidence in the manuscript, overlay notes, or generated review report so a later maintainer can tell why a `flag_name` was authored.
+- Add the Domino's store-locator example as the canonical walkthrough: evidence says `s` means street address and `c` means city/state/zip; the skill authors `flag_name: address`, `flag_name: city`, and optional compatibility aliases `[s]` / `[c]`; the Printing Press CLI then emits public `address` / `city` surfaces while sending `s` / `c` upstream.
 - Keep deterministic tooling as a review aid only: if added later, it should report cryptic params needing review, not fill names automatically.
 
 **Patterns to follow:**
@@ -379,12 +420,13 @@ params:
 
 **Test scenarios:**
 - Happy path: bundled skill verification accepts the new `flag_name` guidance and spec-format documentation.
+- Happy path: skill guidance includes the Domino's-style enrichment flow and distinguishes `flag_name` from compatibility `aliases`.
 - Happy path: a generated skill for a CLI with public param names references public flags through generated examples/help.
 - Edge case: guidance explicitly says to leave ambiguous cryptic params unchanged.
 - Error path: verify-skill catches stale examples if generated SKILL.md still references raw `--s` after `flag_name: address` is present.
 
 **Verification:**
-- The Printing Press skill tells agents how to create the field and when not to create it.
+- The Printing Press skill tells agents how to create the field, when not to create it, where the authored data is handed to the Printing Press CLI, and how the generated surfaces should reflect the decision.
 
 ---
 
@@ -392,7 +434,7 @@ params:
 
 **Goal:** Lock the cross-surface contract so future generator changes cannot regress public-name behavior.
 
-**Requirements:** R1, R2, R3, R4, R5, R7
+**Requirements:** R1, R2, R3, R4, R5, R7, R8
 
 **Dependencies:** U1, U2, U3, U4, U5
 
@@ -411,6 +453,7 @@ params:
   - `name: c`, `flag_name: city`, `aliases: [c]`
 - Assert generated CLI command source, help examples, MCP source, and tools manifest all use `address`/`city` publicly.
 - Assert request-building code still uses wire keys `s`/`c`.
+- Add one end-to-end fixture or focused integration test that starts from a skill-style enriched spec or overlay and proves the agent-authored `flag_name` survives through CLI, generated README/SKILL examples, MCP, and manifest output.
 - Run golden verification because command output, generated source, MCP surface, and docs may change.
 
 **Patterns to follow:**
@@ -423,6 +466,7 @@ params:
 - Happy path: alias `--s` remains accepted where declared.
 - Happy path: README/SKILL generated examples that include endpoint flags use public names.
 - Happy path: `tools-manifest.json` lists public names and wire metadata.
+- Happy path: a skill-authored `flag_name` in an overlay is the source of the generated public surfaces, proving the skill-to-generator handoff.
 - Error path: a fixture with alias collisions fails validation with actionable text.
 - Regression: a spec without public names does not receive invented names.
 
@@ -435,6 +479,7 @@ params:
 ## System-Wide Impact
 
 - **Interaction graph:** The change crosses spec parsing, overlays, endpoint command templates, promoted command templates, MCP templates, tools manifest generation, generated README/SKILL output, and the Printing Press skill.
+- **Skill/generator handoff:** The Printing Press skill owns semantic public-name authorship; the Printing Press CLI owns validation, storage, and deterministic propagation. A working implementation must prove both halves together.
 - **Error propagation:** Invalid public names must fail early with actionable validation errors. Runtime request errors should continue through existing API error classification.
 - **State lifecycle risks:** No persistent runtime state changes. Generated artifacts and manifest schema change deterministically.
 - **API surface parity:** CLI and typed MCP must agree on public names. Cobra aliases are CLI-only compatibility; MCP exposes one preferred input name.
