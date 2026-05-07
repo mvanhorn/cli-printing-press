@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.0.0...v4.0.1) (2026-05-07)
+
+
+### Bug Fixes
+
+* **cli:** sync module path with v4 release ([#677](https://github.com/mvanhorn/cli-printing-press/issues/677)) ([4832173](https://github.com/mvanhorn/cli-printing-press/commit/4832173d18b9a20468f2180731f69b1870b4048b))
+
 ## [4.0.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.10.0...v4.0.0) (2026-05-07)
 
 
