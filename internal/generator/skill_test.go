@@ -79,11 +79,22 @@ func TestSkillRendersFrontmatterAndCapabilities(t *testing.T) {
 	assert.True(t, strings.Contains(content, "finance-pp-cli digest --watchlist tech"),
 		"Recipes should include runnable commands")
 
-	// Installation
-	assert.True(t, strings.Contains(content, "## CLI Installation"),
-		"SKILL should include CLI install instructions")
+	// Installation — CLI install lives at the top under Prerequisites
+	// (post-U2) so agents read it before deciding to run a command.
+	// MCP install stays in its existing location.
+	assert.True(t, strings.Contains(content, "## Prerequisites: Install the CLI"),
+		"SKILL should include Prerequisites section near the top so agents install the CLI before invoking commands")
 	assert.True(t, strings.Contains(content, "## MCP Server Installation"),
 		"SKILL should include MCP install instructions")
+	// Sanity: Prerequisites must precede first command-reference section,
+	// not be buried near the bottom (where the previous "## CLI Installation"
+	// section lived — too far down for agents to read top-down).
+	prereqIdx := strings.Index(content, "## Prerequisites: Install the CLI")
+	cmdRefIdx := strings.Index(content, "## Command Reference")
+	require.GreaterOrEqual(t, prereqIdx, 0)
+	require.GreaterOrEqual(t, cmdRefIdx, 0)
+	assert.Less(t, prereqIdx, cmdRefIdx,
+		"Prerequisites must appear before Command Reference so agents read install instructions before deciding to run a command")
 	assert.True(t, strings.Contains(content, "| 10 | Config error"),
 		"Exit codes table should render")
 }
