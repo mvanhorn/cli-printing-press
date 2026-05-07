@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.0.1...v4.0.2) (2026-05-07)
+
+
+### Bug Fixes
+
+* **skills:** align publish with library-backed skill mirror ([#683](https://github.com/mvanhorn/cli-printing-press/issues/683)) ([9642032](https://github.com/mvanhorn/cli-printing-press/commit/964203239d54f342d108df9218908d6bef574ee5))
+
 ## [4.0.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.0.0...v4.0.1) (2026-05-07)
 
 
