@@ -18,15 +18,31 @@ Learn more at [{{.ProseName}}]({{.WebsiteURL}}).
 
 ## Install
 
-### Binary
+The recommended path installs both the `{{.Name}}-pp-cli` binary and the `pp-{{.Name}}` agent skill in one shot:
 
-Download a pre-built binary for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/{{.Name}}-current). On macOS, clear the Gatekeeper quarantine: `xattr -d com.apple.quarantine <binary>`. On Unix, mark it executable: `chmod +x <binary>`.
-
-### Go
-
+```bash
+npx -y @mvanhorn/printing-press install {{.Name}}
 ```
+
+For CLI only (no skill):
+
+```bash
+npx -y @mvanhorn/printing-press install {{.Name}} --cli-only
+```
+
+### Without Node (Go fallback)
+
+If `npx` isn't available (no Node, offline), install the CLI directly via Go (requires {{if .UsesBrowserHTTPTransport}}Go 1.25+{{else}}Go 1.23+{{end}}):
+
+```bash
 go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}/cmd/{{.Name}}-pp-cli@latest
 ```
+
+This installs the CLI only — no skill.
+
+### Pre-built binary
+
+Download a pre-built binary for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/{{.Name}}-current). On macOS, clear the Gatekeeper quarantine: `xattr -d com.apple.quarantine <binary>`. On Unix, mark it executable: `chmod +x <binary>`.
 {{- if and .Narrative .Narrative.AuthNarrative}}
 
 {{if .Auth.Optional}}## Optional: API Key{{else}}## Authentication{{end}}
