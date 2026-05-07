@@ -1,7 +1,7 @@
 ---
 title: "feat(cli): Agent-authored public names for API parameters"
 type: feat
-status: active
+status: completed
 date: 2026-05-06
 related:
   - cli-printing-press#642
