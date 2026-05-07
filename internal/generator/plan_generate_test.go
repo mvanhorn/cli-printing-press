@@ -198,36 +198,6 @@ func TestReadManifestOwnerName(t *testing.T) {
 	})
 }
 
-func TestReadManifestPressVersion(t *testing.T) {
-	t.Parallel()
-
-	t.Run("returns version when manifest present", func(t *testing.T) {
-		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(
-			filepath.Join(dir, ".printing-press.json"),
-			[]byte(`{"printing_press_version":"3.10.0"}`),
-			0o644,
-		))
-		assert.Equal(t, "3.10.0", readManifestPressVersion(dir))
-	})
-
-	t.Run("returns empty on fresh-print path (no manifest yet)", func(t *testing.T) {
-		// Manifest is written by the publish step, after templates render.
-		// Fresh-print render must fall back to version.Version, not error.
-		assert.Equal(t, "", readManifestPressVersion(t.TempDir()))
-	})
-
-	t.Run("returns empty when field missing", func(t *testing.T) {
-		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(
-			filepath.Join(dir, ".printing-press.json"),
-			[]byte(`{"owner":"x"}`),
-			0o644,
-		))
-		assert.Equal(t, "", readManifestPressVersion(dir))
-	})
-}
-
 func TestResolveOwnerNameForExisting(t *testing.T) {
 	t.Parallel()
 

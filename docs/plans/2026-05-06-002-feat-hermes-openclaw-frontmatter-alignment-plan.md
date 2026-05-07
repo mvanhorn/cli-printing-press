@@ -30,7 +30,7 @@ A separate experience report: a Hermes session loaded a printed-CLI skill and di
 - R2. Add Hermes-recognized top-level fields to `skill.md.tmpl` frontmatter: `version`, `author`, `license`. (Note: `metadata.hermes.tags` is not added — most printed-CLI specs lack a populated catalog category and the field would emit `[other]` for the majority. Defer until catalog enrichment work makes it useful.)
 - R3. Move the existing `## CLI Installation` section in `skill.md.tmpl` (currently around line 379) to immediately after the H1 title and rewrite it with direct imperative wording so any host's LLM-driven agent reads it as instruction: "**You must verify the CLI is installed before invoking any command.**" Failure mode explicit ("do not proceed with skill commands until verification succeeds"). Title becomes `## Prerequisites: Install the CLI` to signal precondition rather than reference. No duplication — the existing section is moved, not copied.
 - R4. Add `## Install via Hermes` and `## Install via OpenClaw` sections to `readme.md.tmpl`. Hermes section emits both CLI form and chat form in code fences. OpenClaw section emits the operator-copyable instruction in a code fence.
-- R5. `version` sources via two-tier resolution: read `.printing-press.json`'s `printing_press_version` if the manifest exists at template-render time (regen / sweep paths); fall back to `version.Version` otherwise (fresh-print path, where the manifest hasn't been written yet — `.printing-press.json` is written during publish, after templates render). The value tracks regenerations of the CLI; on Press releases that don't touch a given CLI, the field stays stable.
+- R5. ~~`version` sources via two-tier resolution from the Press's `printing_press_version`.~~ **Superseded by `fix/skill-md-omit-version`**: the SKILL.md `version:` field is intentionally omitted. The Press version describes the generator, not the CLI; emitting it as `version:` actively misleads consumers about what changed. Hermes lists `version` as optional; OpenClaw isn't launched. CI-time stamping from goreleaser tags in `printing-press-library` is a possible future addition.
 - R6. `author` reads from `git config user.name` at template-render time via a new `resolveOwnerNameForRender()` helper (NOT a reuse of `resolveOwnerForNew`, which sanitizes to slug form, prefers `github.user`, and falls back to `"USER"` — wrong shape for a display name). YAML-escaped via the existing `yamlDoubleQuoted` helper. No manifest decouple, no flag, no userconfig package, no authors lookup file.
 - R7. `printing-press-library`'s `.github/workflows/generate-skills.yml` triggers on `library/**/SKILL.md` and `library/**/README.md` changes so future hand-edits auto-mirror to `cli-skills/`.
 - R8. A one-time sweep tool in `printing-press-library/tools/` line-targets the same shape onto every existing `library/<cat>/<api>/SKILL.md` and `library/<cat>/<api>/README.md`. Idempotent, snapshot-restore safe, follows the `tools/migrate-skill-metadata/main.go` precedent. Sweep covers all 49 CLIs (including the 5 from issue #654 — Phase 3 reprints supersede the sweep's edits for those 5). Sweep derives `<category>` for any URL-templated string from the directory path (`filepath.Base(filepath.Dir(skillMdPath))`), NOT from `.printing-press.json`'s `category` field (which is `omitempty` and present in only ~22% of legacy manifests).
@@ -97,7 +97,7 @@ All file paths in the plan are repo-relative to the unit's labeled repo.
 - **Coexistence**: Hermes top-level fields and OpenClaw nested block live in the same frontmatter. Hermes ignores unknown keys per its docs; one SKILL.md serves both hosts.
 - **No env-var declarations in either format**: false-positive on harvested vars is asymmetrically worse than no declaration. The existing `readme.md.tmpl` already branches its install instructions by `auth.Type` (api_key emits "set the env var" with the canonical name; cookie/composed/oauth2 emit "run `auth login` (variant)"; bearer_token similar). That branching IS the conservative classification we want — applied at the install-instruction level instead of the metadata level. The plan must not break this existing logic, and does not add a new generic "Authentication" section that would risk re-introducing the harvested-vs-user-set classification problem at a different surface.
 - **Prerequisites section is plain markdown, not host-specific metadata**: any LLM-driven agent reads it regardless of frontmatter format support. Direct imperative ("you must verify") and explicit failure mode ("do not proceed") signal it as instruction.
-- **`version` tracks Press version that produced the current SKILL.md**: two-tier resolution (manifest if present, else `version.Version`). Bumps on regen, stable on Press releases that don't touch a given CLI. Honest framing — it doesn't promise more than that.
+- **`version` field omitted from SKILL.md frontmatter** (superseded decision; original plan tracked the Press version, removed in `fix/skill-md-omit-version` follow-up). The Press version describes the generator, not the CLI being described, and the printed CLI's release version is independent and not known at template-render time. Hermes lists `version` as optional. Possible future enhancement: library CI stamps `version:` from per-CLI goreleaser tags.
 - **`author` reads git config at render time via a new helper**: not a reuse of `resolveOwnerForNew`, which sanitizes to slug form. New helper reads raw `git config user.name`, no sanitization. Empty value falls back to the slug-shaped `Owner` with a loud stderr warning rather than hard-failing — the generator package is reused by tests, mcp-sync, and regen-merge where setting `OwnerName` is awkward, so a hard error was over-strict. The sweep tool's per-CLI authorship mapping overrides this code path entirely; the soft-fallback only fires for fresh prints by users who haven't set `git config user.name`.
 - **Library publish path hardcoded `mvanhorn/printing-press-library`** in templates. Single constant; no abstraction layer.
 - **Sweep is line-targeted, not template re-rendering**: follows `tools/migrate-skill-metadata/main.go` precedent. Frontmatter region replaced surgically; Prerequisites section inserted via anchor; README sections inserted via anchor. Body content untouched.
@@ -126,7 +126,7 @@ All file paths in the plan are repo-relative to the unit's labeled repo.
 
 **Approach:**
 - Remove the `requires.env` line, the entire `envVars:` block, and any `primaryEnv:` line (legacy synthesized CLIs may have it; the live template doesn't emit it but the canonical post-strip shape needs to be unambiguous about absence). Lines 9-44 of the current template are the relevant region.
-- Add top-level `version: "{{.PressVersion}}"`, `author: "{{yamlDoubleQuoted .OwnerName}}"`, `license: "Apache-2.0"` after the existing `description:` field. License is a literal string, no helper needed.
+- Add top-level `author: "{{yamlDoubleQuoted .OwnerName}}"`, `license: "Apache-2.0"` after the existing `description:` field. License is a literal string, no helper needed. (Original plan also added `version: "{{pressVersion}}"`; that decision was superseded — see Key Technical Decisions and `fix/skill-md-omit-version` follow-up.)
 - Keep `metadata.openclaw.requires.bins` and `metadata.openclaw.install`.
 
 **Test scenarios:**
@@ -240,11 +240,11 @@ Install the pp-{{.Name}} skill from https://github.com/mvanhorn/printing-press-l
 
 ---
 
-### U4. Plumbing: `pressVersion` helper and `OwnerName` field
+### U4. Plumbing: `OwnerName` field
 
 **Repo:** `cli-printing-press`
 
-**Goal:** Register the template helper and field that U1 consumes. License is a literal `"Apache-2.0"` in the template, no helper needed (zero variability).
+**Goal:** Register the `OwnerName` field that U1 consumes. License is a literal `"Apache-2.0"` in the template, no helper needed (zero variability). (Original plan also added a `pressVersion` template helper; the `version:` field it served was removed in `fix/skill-md-omit-version` follow-up, taking the helper with it.)
 
 **Requirements:** R5, R6
 

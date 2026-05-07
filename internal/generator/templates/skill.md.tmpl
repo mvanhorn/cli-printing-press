@@ -1,7 +1,6 @@
 ---
 name: pp-{{.Name}}
 description: "{{if and .Narrative .Narrative.Headline}}{{yamlDoubleQuoted .Narrative.Headline}}{{else}}Printing Press CLI for {{yamlDoubleQuoted .ProseName}}. {{yamlDoubleQuoted (oneline .Description)}}{{end}}{{if and .Narrative .Narrative.TriggerPhrases}} Trigger phrases: {{range $i, $p := .Narrative.TriggerPhrases}}{{if $i}}, {{end}}`{{yamlDoubleQuoted $p}}`{{end}}.{{end}}"
-version: "{{pressVersion}}"
 author: "{{yamlDoubleQuoted .OwnerName}}"
 license: "Apache-2.0"
 argument-hint: "<command> [args] | install cli|mcp"

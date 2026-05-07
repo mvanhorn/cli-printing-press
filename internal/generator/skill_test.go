@@ -485,7 +485,6 @@ func TestSkillFrontmatterEmitsHermesTopLevelFields(t *testing.T) {
 	var parsed struct {
 		Name        string `yaml:"name"`
 		Description string `yaml:"description"`
-		Version     string `yaml:"version"`
 		Author      string `yaml:"author"`
 		License     string `yaml:"license"`
 	}
@@ -496,8 +495,16 @@ func TestSkillFrontmatterEmitsHermesTopLevelFields(t *testing.T) {
 		"author must be the prose-shaped OwnerName, not the slug — yamlDoubleQuoted preserves spaces and casing")
 	assert.Equal(t, "Apache-2.0", parsed.License,
 		"license is a constant for printed CLIs (LICENSE.tmpl is Apache 2.0)")
-	assert.NotEmpty(t, parsed.Version,
-		"version must be populated from .printing-press.json or version.Version fallback")
+
+	// version field is intentionally omitted — Hermes lists `version`
+	// as optional (https://hermes-agent.nousresearch.com/docs/developer-guide/creating-skills),
+	// the printed CLI's release version is independent of the Press
+	// version that produced this SKILL.md, and emitting the Press
+	// version would actively mislead consumers about what changed.
+	// CI-time stamping from goreleaser tags is a possible future addition
+	// in printing-press-library; for now, no version field is honest.
+	assert.NotContains(t, body, "version:",
+		"version field should be omitted — see learning docs in docs/solutions/")
 }
 
 // TestSkillFrontmatterOmitsAllEnvVarDeclarations asserts the post-Hermes-

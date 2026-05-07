@@ -400,12 +400,6 @@ func resolveOwnerNameForNew() string {
 	return strings.TrimSpace(string(out))
 }
 
-// readManifestPressVersion returns the `printing_press_version` field
-// from the manifest.
-func readManifestPressVersion(outputDir string) string {
-	return readManifestField(outputDir, "printing_press_version")
-}
-
 // sanitizeOwner cleans up an owner string for use in Go module paths.
 func sanitizeOwner(s string) string {
 	s = strings.ToLower(s)

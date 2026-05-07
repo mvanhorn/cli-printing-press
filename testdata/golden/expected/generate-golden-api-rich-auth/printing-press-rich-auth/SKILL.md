@@ -1,7 +1,6 @@
 ---
 name: pp-printing-press-rich
 description: "Printing Press CLI for Printing Press Rich. Purpose-built fixture for rich auth env-var model coverage."
-version: "3.10.0"
 author: "printing-press-golden"
 license: "Apache-2.0"
 argument-hint: "<command> [args] | install cli|mcp"
