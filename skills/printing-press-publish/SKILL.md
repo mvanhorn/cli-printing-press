@@ -23,6 +23,13 @@ Publish a generated CLI from your local library to the [printing-press-library](
 /printing-press publish
 ```
 
+The public library treats `library/<category>/<api-slug>/.printing-press.json`
+and `manifest.json` as the source of truth for registry-display fields. Do not
+edit `registry.json` or README catalog cells in publish PRs; the library's
+post-merge workflow regenerates them. Do regenerate and commit the
+`cli-skills/pp-<api-slug>/SKILL.md` mirror because PR CI verifies it against
+`library/<category>/<api-slug>/SKILL.md`.
+
 ## Setup
 
 Before doing anything else:
@@ -72,8 +79,8 @@ After running the setup contract, check binary version compatibility. Read the `
 
 ```
 PUBLISH_REPO_URL="https://github.com/mvanhorn/printing-press-library"
-PUBLISH_REPO_DIR="$PRESS_HOME/.publish-repo"
-PUBLISH_CONFIG="$PRESS_HOME/.publish-config.json"
+PUBLISH_REPO_DIR="$PRESS_HOME/.publish-repo-$PRESS_SCOPE"
+PUBLISH_CONFIG="$PRESS_HOME/.publish-config-$PRESS_SCOPE.json"
 ```
 
 ### Publish config
@@ -82,15 +89,45 @@ PUBLISH_CONFIG="$PRESS_HOME/.publish-config.json"
 
 ```json
 {
+  "managed_by": "printing-press-publish",
   "repo_url": "https://github.com/mvanhorn/printing-press-library",
   "access": "push",
   "protocol": "ssh",
-  "clone_path": "~/printing-press/.publish-repo",
+  "clone_path": "<home>/printing-press/.publish-repo-<scope>",
+  "scope_dir": "/absolute/path/to/source/worktree",
   "module_path_base": "github.com/mvanhorn/printing-press-library/library"
 }
 ```
 
 The `module_path_base` field sets the Go module path prefix for published CLIs. During packaging, the full module path is constructed as `<module_path_base>/<category>/<api-slug>`. If the user wants CLIs published to a different repo or path, they edit this field.
+Store expanded absolute paths for `clone_path` and `scope_dir` so cleanup can
+check them without relying on shell-specific `~` expansion. The `managed_by`
+field is required before cleanup may delete anything.
+
+### Scoped clone cleanup
+
+Before creating or reusing `$PUBLISH_REPO_DIR`, prune scoped publish clones whose
+source worktree no longer exists. This keeps concurrent worktrees isolated
+without accumulating one library clone forever per short-lived worktree.
+
+```bash
+find "$PRESS_HOME" -maxdepth 1 -name '.publish-config-*.json' -type f | while read -r cfg; do
+  [ "$cfg" = "$PUBLISH_CONFIG" ] && continue
+  managed_by=$(jq -r '.managed_by // empty' "$cfg" 2>/dev/null || true)
+  scope_dir=$(jq -r '.scope_dir // empty' "$cfg" 2>/dev/null || true)
+  clone_path=$(jq -r '.clone_path // empty' "$cfg" 2>/dev/null || true)
+  [ "$managed_by" = "printing-press-publish" ] || continue
+  [ -z "$scope_dir" ] && continue
+  [ -e "$scope_dir" ] && continue
+  [ -d "$clone_path/.git" ] || continue
+  case "$clone_path" in "$PRESS_HOME"/.publish-repo-*) ;; *) continue ;; esac
+  origin=$(git -C "$clone_path" remote get-url origin 2>/dev/null || true)
+  case "$origin" in *mvanhorn/printing-press-library*|*/*/printing-press-library*) ;; *) continue ;; esac
+  [ -z "$(git -C "$clone_path" status --porcelain)" ] || continue
+  [ "$(git -C "$clone_path" rev-parse --abbrev-ref HEAD 2>/dev/null || true)" = "main" ] || continue
+  rm -rf "$clone_path" "$cfg"
+done
+```
 
 ## Step 1: Prerequisites
 
@@ -236,11 +273,13 @@ If `$PUBLISH_REPO_DIR` does not exist:
 4. **Cache the config:**
    ```json
    {
+     "managed_by": "printing-press-publish",
      "repo_url": "https://github.com/mvanhorn/printing-press-library",
      "access": "push or fork",
      "gh_user": "<gh username>",
      "protocol": "ssh or https",
-     "clone_path": "~/printing-press/.publish-repo",
+     "clone_path": "<expanded $PUBLISH_REPO_DIR>",
+     "scope_dir": "<absolute source worktree path>",
      "module_path_base": "github.com/mvanhorn/printing-press-library/library"
    }
    ```
@@ -290,6 +329,7 @@ Verify the clone is healthy:
 
 ```bash
 git rev-parse --is-inside-work-tree
+test "$(git rev-parse --abbrev-ref HEAD)" = "main"
 ```
 
 If this fails, the clone is corrupt. Remove `$PUBLISH_REPO_DIR` and re-run first-time setup.
@@ -349,6 +389,11 @@ cp -r "$STAGING_DIR/library/<category>/<cli-name>" "$PUBLISH_REPO_DIR/library/<c
 
 # Remove binaries (should not be committed)
 rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>"
+
+# Regenerate the flat cli-skills mirror so library PR CI passes mirror parity.
+if [ -f "$PUBLISH_REPO_DIR/tools/generate-skills/main.go" ]; then
+  (cd "$PUBLISH_REPO_DIR" && go run ./tools/generate-skills/main.go)
+fi
 
 # Verify it builds from the publish repo
 cd "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" && go build ./...
@@ -601,56 +646,11 @@ git checkout -b feat/<api-slug>
 git checkout -B feat/<api-slug>
 ```
 
-### Update registry.json
-
-The registry file has this structure:
-
-```json
-{
-  "schema_version": 1,
-  "entries": [
-    {
-      "name": "<api-slug>",
-      "category": "<category>",
-      "api": "<api-display-name>",
-      "description": "<from manifest or README>",
-      "path": "library/<category>/<api-slug>",
-      "mcp": {
-        "binary": "<name>-pp-mcp",
-        "transport": "stdio",
-        "tool_count": 42,
-        "public_tool_count": 7,
-        "auth_type": "<api_key|none|bearer_token|cookie|composed>",
-        "env_vars": ["<ENV_VAR_NAME>"],
-        "mcp_ready": "<full|partial>",
-        "spec_format": "<openapi3|graphql|internal>"
-      }
-    }
-  ]
-}
-```
-
-Read `$PUBLISH_REPO_DIR/registry.json`, parse the `entries` array (not the top-level object), add or update the entry for this CLI. Match on `name` field. Preserve `schema_version` and any other top-level fields. After adding or updating the entry, sort the `entries` array alphabetically by `name` field to prevent merge conflicts and keep the file reviewable.
-
-**MCP metadata:** If the CLI's `.printing-press.json` manifest has MCP fields (`mcp_binary` is non-empty), populate the `mcp` block in the registry entry:
-- `binary`: from manifest `mcp_binary`
-- `transport`: always `"stdio"`
-- `tool_count`: from manifest `mcp_tool_count`
-- `public_tool_count`: from manifest `mcp_public_tool_count`
-- `auth_type`: from manifest `auth_type`
-- `env_vars`: from manifest `auth_env_vars`
-- `mcp_ready`: from manifest `mcp_ready`
-- `spec_format`: from manifest `spec_format` (e.g., `openapi3`, `graphql`, `internal`). Omit if empty.
-
-If the manifest has no MCP fields (empty `mcp_binary`), omit the `mcp` block entirely.
-
-Write back with `jq` or via the Write tool.
-
 ### Commit and push
 
 ```bash
 cd "$PUBLISH_REPO_DIR"
-git add library/ registry.json
+git add library/ cli-skills/
 git commit -m "feat(<api-slug>): add <api-slug>"
 ```
 
