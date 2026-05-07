@@ -408,7 +408,55 @@ func TestSkillFrontmatterMetadataIsClawHubCompliantNestedYAML(t *testing.T) {
 		"metadata must not be a JSON-string blob anymore")
 }
 
-func TestSkillFrontmatterEnvVarsOmitsHarvestedAuthEnvVars(t *testing.T) {
+// TestSkillFrontmatterEmitsHermesTopLevelFields asserts the post-alignment
+// frontmatter carries the Hermes-recognized top-level fields (`version`,
+// `author`, `license`) so Hermes can install the skill. The OpenClaw block
+// continues to coexist alongside; Hermes ignores unknown keys per its docs.
+func TestSkillFrontmatterEmitsHermesTopLevelFields(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("hermes-test")
+	apiSpec.OwnerName = "Trevin Chow"
+	outputDir := filepath.Join(t.TempDir(), "hermes-test-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	content := string(skill)
+
+	require.True(t, strings.HasPrefix(content, "---\n"))
+	end := strings.Index(content[4:], "\n---\n")
+	require.NotEqual(t, -1, end)
+	body := strings.TrimSuffix(strings.TrimPrefix(content[:4+end+5], "---\n"), "---\n")
+
+	var parsed struct {
+		Name        string `yaml:"name"`
+		Description string `yaml:"description"`
+		Version     string `yaml:"version"`
+		Author      string `yaml:"author"`
+		License     string `yaml:"license"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(body), &parsed),
+		"frontmatter must parse as nested YAML; content was:\n%s", body)
+
+	assert.Equal(t, "Trevin Chow", parsed.Author,
+		"author must be the prose-shaped OwnerName, not the slug — yamlDoubleQuoted preserves spaces and casing")
+	assert.Equal(t, "Apache-2.0", parsed.License,
+		"license is a constant for printed CLIs (LICENSE.tmpl is Apache 2.0)")
+	assert.NotEmpty(t, parsed.Version,
+		"version must be populated from .printing-press.json or version.Version fallback")
+}
+
+// TestSkillFrontmatterOmitsAllEnvVarDeclarations asserts the post-Hermes-
+// alignment shape: neither OpenClaw `requires.env` nor `envVars`, nor the
+// legacy `primaryEnv`, appears in printed-CLI SKILL.md frontmatter. The
+// classification problem (user-set vs harvested) is asymmetric on failure
+// — a false-positive on a harvested var (e.g., a session cookie) prompts
+// the user for a value the CLI can't accept. v1 ships no env-var
+// declarations in either format; the existing auth.Type-branched README
+// content carries credential UX.
+func TestSkillFrontmatterOmitsAllEnvVarDeclarations(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("clawauth")
@@ -435,25 +483,18 @@ func TestSkillFrontmatterEnvVarsOmitsHarvestedAuthEnvVars(t *testing.T) {
 	require.NotEqual(t, -1, end)
 	body := strings.TrimSuffix(strings.TrimPrefix(content[:4+end+5], "---\n"), "---\n")
 
-	var parsed struct {
-		Metadata struct {
-			Openclaw struct {
-				EnvVars []struct {
-					Name string `yaml:"name"`
-				} `yaml:"envVars"`
-			} `yaml:"openclaw"`
-		} `yaml:"metadata"`
-	}
-	require.NoError(t, yaml.Unmarshal([]byte(body), &parsed),
-		"frontmatter must parse as nested YAML; content was:\n%s", body)
+	// None of the env-var declaration shapes should appear anywhere in
+	// the frontmatter — neither the canonical nor the legacy forms.
+	assert.NotContains(t, body, "envVars:", "envVars block must not appear in v1 frontmatter")
+	assert.NotContains(t, body, "      env:", "requires.env line must not appear in v1 frontmatter")
+	assert.NotContains(t, body, "primaryEnv", "primaryEnv (legacy synthesis-shape) must not appear")
 
-	var names []string
-	for _, envVar := range parsed.Metadata.Openclaw.EnvVars {
-		names = append(names, envVar.Name)
+	// And specifically: no env-var name from the spec leaks into the
+	// frontmatter even when EnvVarSpecs is fully populated.
+	for _, name := range []string{"CLAW_API_TOKEN", "CLAW_CLIENT_ID", "CLAW_SESSION_COOKIE"} {
+		assert.NotContains(t, body, name,
+			"env var %q must not appear in v1 frontmatter (no env-var hoisting)", name)
 	}
-	assert.ElementsMatch(t, []string{"CLAW_API_TOKEN", "CLAW_CLIENT_ID"}, names)
-	assert.NotContains(t, body, "CLAW_SESSION_COOKIE",
-		"harvested env vars are populated by auth login and must not be user-facing OpenClaw envVars")
 }
 
 // TestSkillFrontmatterMetadataDefaultsCategoryToOther asserts that when the

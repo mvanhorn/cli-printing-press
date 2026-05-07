@@ -205,9 +205,11 @@ func TestReadmeHandlesMarkdownUnsafeNarrativeFields(t *testing.T) {
 
 func minimalSpec(name string) *spec.APISpec {
 	return &spec.APISpec{
-		Name:    name,
-		Version: "0.1.0",
-		BaseURL: "https://api.example.com",
+		Name:      name,
+		Version:   "0.1.0",
+		BaseURL:   "https://api.example.com",
+		Owner:     "test-owner",
+		OwnerName: "Test Author",
 		Auth: spec.AuthConfig{
 			Type:    "api_key",
 			Header:  "Authorization",
