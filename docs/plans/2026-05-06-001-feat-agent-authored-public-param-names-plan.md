@@ -80,6 +80,16 @@ Choosing `address` is not deterministic string cleanup. It depends on endpoint c
 - `docs/solutions/design-patterns/auth-envvar-rich-model-2026-05-05.md` is the closest design pattern: widen a legacy scalar/list into a richer model, centralize precedence, and stop downstream surfaces from re-deriving semantics independently.
 - Prior generator plans around MCP parity and param handling show that deterministic generated surface changes need focused unit tests plus golden verification when output changes.
 
+### Affected Printed CLI Evidence
+
+Domino's is the canonical real-world affected CLI:
+
+- `~/Code/printing-press-library/library/food-and-dining/dominos/spec.yaml` keeps the store-locator wire params as `s` and `c`, with descriptions that clearly identify them as street address and city/state/zip.
+- `internal/cli/stores_find.go` was manually back-patched after generation to expose public `--address` / `--city` flags, keep hidden `--s` / `--c` compatibility aliases, and still send `params["s"]` / `params["c"]` upstream.
+- `README.md` and `SKILL.md` examples already teach users and agents to call `dominos-pp-cli stores find --address ... --city ...`.
+- `internal/mcp/tools.go` still exposes typed MCP inputs named `s` and `c`, and the tool description says `Required: s, c`. This proves a Cobra-only alias implementation is insufficient; the generator must propagate public names through typed MCP schemas and remap those public inputs back to wire keys.
+- No checked-in `tools-manifest.json` exists in that Domino's directory, but the same manifest drift would occur today because `internal/pipeline/toolsmanifest.go` writes params from the single raw `Name` field.
+
 ### External References
 
 - No external research needed. This is repo-local generator behavior and Printing Press workflow design.
@@ -254,7 +264,7 @@ params:
 **Approach:**
 - Add central helpers for public flag resolution, alias lists, and "any registered flag changed" checks.
 - Register the preferred public flag first, using the shared backing variable.
-- Register aliases against the same backing variable. Prefer hiding aliases from help if pflag supports that cleanly; otherwise make help wording clearly secondary.
+- Register aliases against the same backing variable. Prefer hiding aliases from help when they preserve cryptic wire keys, matching the Domino's `stores find` back-patch where `--address` / `--city` are visible and `--s` / `--c` still work but are hidden.
 - Update required checks to accept any registered name, not just the preferred public flag.
 - Update enum warnings, JSON-string validation errors, and "Did you mean" suggestions to use public flag names.
 - Update request construction to keep serializing query/path/body keys with `Param.Name`.
@@ -302,6 +312,7 @@ params:
 - For path params where public names are present, replace `{wireName}` placeholders from public input values.
 - Update `tools-manifest.json` params so `name` is the public name, with an added `wire_name` field when it differs from the public name and `aliases` when present.
 - Keep MCP alias support out of scope: MCP exposes one schema name per input.
+- Domino's shows the failure mode to prevent: CLI/docs say `address` and `city`, but typed MCP currently requires `s` and `c`. The generated MCP tool for the same spec must instead require `address` and `city`, then send `s` and `c` to `/power/store-locator`.
 
 **Patterns to follow:**
 - Current `makeAPIHandler` path/query split in `internal/generator/templates/mcp_tools.go.tmpl`.
