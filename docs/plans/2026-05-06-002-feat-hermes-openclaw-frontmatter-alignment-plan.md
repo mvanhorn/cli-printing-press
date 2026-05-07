@@ -79,7 +79,7 @@ All file paths in the plan are repo-relative to the unit's labeled repo.
 - **README template**: `internal/generator/templates/readme.md.tmpl` — `Use with Claude Code` section near line 297 is the existing install-section pattern. R4 slots two new sections alongside.
 - **Generator helpers**: `internal/generator/generator.go:240` is where helpers register (`currentYear`, `modulePath`). R5, R6 add `licenseSPDX`, `pressVersion`, plus the `OwnerName` field exposure.
 - **Existing escape helper**: `yamlDoubleQuoted` (already registered) — apply to `OwnerName` at template emission.
-- **Sweep precedent**: `tools/migrate-skill-metadata/main.go` (in this repo, dormant). Line-targeted, idempotent transform pattern. R8's sweep tool follows the same shape.
+- **Sweep precedent**: `tools/migrate-skill-metadata/main.go` (formerly in this repo; retired in U7 of this same plan). Line-targeted, idempotent transform pattern. R8's sweep tool followed the same shape; git history is the canonical reference for the precedent.
 - **Public library workflow**: `printing-press-library/.github/workflows/generate-skills.yml` — currently triggers on `registry.json`, `library/**/.printing-press.json`, `tools/generate-skills/**`. R7 adds two more paths.
 - **Manifest source**: `.printing-press.json` carries `cli_name`, `category`, `printing_press_version`. Sweep + template both read from here. All 49 library CLIs have this file.
 
@@ -98,7 +98,7 @@ All file paths in the plan are repo-relative to the unit's labeled repo.
 - **No env-var declarations in either format**: false-positive on harvested vars is asymmetrically worse than no declaration. The existing `readme.md.tmpl` already branches its install instructions by `auth.Type` (api_key emits "set the env var" with the canonical name; cookie/composed/oauth2 emit "run `auth login` (variant)"; bearer_token similar). That branching IS the conservative classification we want — applied at the install-instruction level instead of the metadata level. The plan must not break this existing logic, and does not add a new generic "Authentication" section that would risk re-introducing the harvested-vs-user-set classification problem at a different surface.
 - **Prerequisites section is plain markdown, not host-specific metadata**: any LLM-driven agent reads it regardless of frontmatter format support. Direct imperative ("you must verify") and explicit failure mode ("do not proceed") signal it as instruction.
 - **`version` tracks Press version that produced the current SKILL.md**: two-tier resolution (manifest if present, else `version.Version`). Bumps on regen, stable on Press releases that don't touch a given CLI. Honest framing — it doesn't promise more than that.
-- **`author` reads git config at render time via a new helper**: not a reuse of `resolveOwnerForNew`, which sanitizes to slug form. New helper reads raw `git config user.name`, no sanitization. Empty value fails generation early with a clear error. Sweep over legacy CLIs uses the operator's git config (acceptable since most legacy CLIs were printed by the same operator running the sweep; the few exceptions get a manual touch-up if needed).
+- **`author` reads git config at render time via a new helper**: not a reuse of `resolveOwnerForNew`, which sanitizes to slug form. New helper reads raw `git config user.name`, no sanitization. Empty value falls back to the slug-shaped `Owner` with a loud stderr warning rather than hard-failing — the generator package is reused by tests, mcp-sync, and regen-merge where setting `OwnerName` is awkward, so a hard error was over-strict. The sweep tool's per-CLI authorship mapping overrides this code path entirely; the soft-fallback only fires for fresh prints by users who haven't set `git config user.name`.
 - **Library publish path hardcoded `mvanhorn/printing-press-library`** in templates. Single constant; no abstraction layer.
 - **Sweep is line-targeted, not template re-rendering**: follows `tools/migrate-skill-metadata/main.go` precedent. Frontmatter region replaced surgically; Prerequisites section inserted via anchor; README sections inserted via anchor. Body content untouched.
 - **Sweep covers all 49 CLIs** including the 5 from #654: Phase 3 reprints supersede the sweep's edits for those 5 with full regenerated content. Phases 3 and 4 are independent and can run in parallel.
@@ -133,7 +133,7 @@ All file paths in the plan are repo-relative to the unit's labeled repo.
 - Happy path: rendered frontmatter has `version`, `author`, `license` populated correctly for an api_key CLI (Shopify-shape); no `requires.env`, no `envVars`, no `primaryEnv` anywhere.
 - Happy path: rendered frontmatter for a no-auth CLI (Wikipedia-shape) emits Hermes fields, no env-var blocks of any kind.
 - Edge case: `OwnerName` containing YAML special characters (colon, quote) survives `yamlDoubleQuoted` round-trip.
-- Edge case: `OwnerName` empty (no git config) fails generation early with clear error mentioning git config.
+- Edge case: `OwnerName` empty (no git config) falls back to the slug-shaped `Owner` and emits a loud stderr warning. Generation does not fail.
 - Edge case: regenerating a CLI that previously had `primaryEnv` in its template output produces output without `primaryEnv`.
 - Integration: rendered frontmatter parses as valid YAML via `gopkg.in/yaml.v3`.
 
@@ -264,7 +264,7 @@ Install the pp-{{.Name}} skill from https://github.com/mvanhorn/printing-press-l
 - `OwnerName`: new helper `resolveOwnerNameForRender()` in `plan_generate.go`.
   - Reads raw `git config user.name`.
   - Does NOT fall back to `github.user`, does NOT sanitize via `sanitizeOwner` (which would mangle "Trevin Chow" → "trevin-chow"), does NOT default to `"USER"`.
-  - If empty: generation errors clearly mentioning git config.
+  - If empty: `Generate()` falls back to the slug-shaped `Owner` and emits a stderr warning. Soft-fallback (not a hard failure) so the generator package stays reusable by tests, mcp-sync, and regen-merge without forcing them to plumb `OwnerName`.
   - Exposed as `.OwnerName` field on the spec (set during resolution, before template render).
 - `OwnerSlug` plumbing stays unchanged — the existing `Owner` field continues to drive copyright headers and module paths via the existing `resolveOwnerForNew`.
 
@@ -374,7 +374,7 @@ Install the pp-{{.Name}} skill from https://github.com/mvanhorn/printing-press-l
 ## System-Wide Impact
 
 - **Interaction graph:** No runtime callbacks change. Generator templates gain content; emission paths unchanged.
-- **Error propagation:** New empty-`OwnerName` check fails generation early. Sweep rolls back per-CLI file sets via snapshot-restore on failure.
+- **Error propagation:** Empty `OwnerName` triggers a stderr warning + slug-shaped fallback (loud but non-fatal). Sweep rolls back per-CLI file sets via snapshot-restore on failure.
 - **State lifecycle:** The four-file mutation per CLI in U6 is the highest-risk path. Snapshot-restore + idempotency test cover partial-failure and re-run cases.
 - **API surface parity:** SKILL.md and `cli-skills/pp-<api>/SKILL.md` stay byte-identical via the workflow mirror (after U5 lands the trigger fix).
 - **Unchanged invariants:**
@@ -427,5 +427,5 @@ Each phase ships as its own PR; nothing batched.
 - Hermes documentation: `https://hermes-agent.nousresearch.com/docs/developer-guide/creating-skills`
 - Public library verbatim-mirror PR: [`mvanhorn/printing-press-library#266`](https://github.com/mvanhorn/printing-press-library/pull/266) (merged)
 - Phase 3 reprint tracking: [`mvanhorn/cli-printing-press#654`](https://github.com/mvanhorn/cli-printing-press/issues/654)
-- Sweep precedent (line-targeted edits): `tools/migrate-skill-metadata/main.go`
+- Sweep precedent (line-targeted edits): `tools/migrate-skill-metadata/main.go` (retired in U7 of this plan; see git history for the source)
 - Round-2 superseded plan: `docs/plans/2026-05-06-001-feat-hermes-agent-compatibility-plan.md` (status: superseded)

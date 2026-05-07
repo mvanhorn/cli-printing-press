@@ -92,6 +92,8 @@ Use canonical terms in your responses so intent stays unambiguous. In skills and
 - "catalog" -> embedded `catalog/` unless "public library catalog" is stated
 See [`docs/GLOSSARY.md`](docs/GLOSSARY.md) for the full term table and disambiguation cases.
 
+**`Owner` (slug) vs `OwnerName` (display) — keep them straight.** `APISpec` carries two related but semantically distinct fields. `Owner` is path-safe (e.g. `trevin-chow`) and drives Go module paths and `// Copyright YYYY <slug>.` headers — sanitized in `New()`. `OwnerName` is prose-shaped (e.g. `Trevin Chow`) and flows into Hermes `author:`, README byline, and other human-facing surfaces — preserved verbatim, YAML-escaped at template emission. Resolution paths are deliberately different: `OwnerName` reads raw `git config user.name` only (no `github.user` fallback, no slug sanitization, no `"USER"` default). When `OwnerName` is unset at `Generate()` time, the generator emits a stderr warning and falls back to the slug — non-fatal so the package stays reusable by tests and `mcp-sync`/`regen-merge`. The library-wide sweep tool overrides this code path with its own per-CLI authorship mapping. Don't conflate the two fields when authoring helpers, templates, or test fixtures.
+
 ## Commit Style
 Format: `type(scope): description`. Scope is always required.
 - `cli` covers the Go binary, commands, flags, embedded catalog, and docs.

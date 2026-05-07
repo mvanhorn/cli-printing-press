@@ -419,6 +419,47 @@ func TestSkillFrontmatterMetadataIsClawHubCompliantNestedYAML(t *testing.T) {
 		"metadata must not be a JSON-string blob anymore")
 }
 
+// TestGenerateSoftFallsBackOnEmptyOwnerName asserts the empty-OwnerName
+// path doesn't fail generation. When OwnerName is unset and the resolution
+// chain returns empty (e.g., CI without git config), Generate() falls back
+// to the slug-shaped Owner — non-fatal so the generator package stays
+// reusable by tests, mcp-sync, and regen-merge. The library-wide sweep
+// tool overrides this code path with its own per-CLI authorship mapping;
+// this fallback only fires for fresh prints by users who haven't set git
+// config user.name.
+func TestGenerateSoftFallsBackOnEmptyOwnerName(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("ownerless")
+	apiSpec.Owner = "trevin-chow"
+	apiSpec.OwnerName = ""
+	outputDir := filepath.Join(t.TempDir(), "ownerless-pp-cli")
+	gen := New(apiSpec, outputDir)
+
+	// Stub the resolution path's git config lookup by ensuring the
+	// outputDir has no .printing-press.json — readManifestOwnerName
+	// returns "", and resolveOwnerNameForNew runs `git config user.name`.
+	// In the test environment this may resolve to whatever the runner
+	// has set, so we re-clear the field after New() to deterministically
+	// hit the fallback path.
+	apiSpec.OwnerName = ""
+
+	// Generation must not error on the empty-OwnerName path.
+	require.NoError(t, gen.Generate())
+
+	// After Generate(), the soft-fallback should have populated
+	// OwnerName from the slug.
+	assert.Equal(t, "trevin-chow", apiSpec.OwnerName,
+		"soft-fallback should set OwnerName to the slug-shaped Owner when empty")
+
+	// And the rendered SKILL.md should reflect that — author lands as
+	// the slug, ugly but visible (vs. a hard-error blocking generation).
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(skill), `author: "trevin-chow"`,
+		"author field should fall back to the slug rather than be empty")
+}
+
 // TestSkillFrontmatterEmitsHermesTopLevelFields asserts the post-alignment
 // frontmatter carries the Hermes-recognized top-level fields (`version`,
 // `author`, `license`) so Hermes can install the skill. The OpenClaw block
