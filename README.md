@@ -459,7 +459,7 @@ A small sample, see the [full catalog](https://github.com/mvanhorn/printing-pres
 | `kalshi-pp-cli` | Payments | Trade prediction markets from the terminal. |
 | `recipe-goat-pp-cli` | Food and Dining | Trust-aware ranking across 37 recipe sites. |
 
-Each published CLI ships a research manuscript, verification proofs, and a `.printing-press.json` provenance manifest.
+Each newly published CLI ships a root `AGENTS.md` operating guide, a research manuscript, verification proofs, and a `.printing-press.json` provenance manifest.
 
 ## Troubleshooting
 

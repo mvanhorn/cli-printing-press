@@ -1,6 +1,6 @@
 # CLI Printing Press Onboarding Guide
 
-You give the printing press an API spec. It gives you back a Go CLI, an MCP server, and the few artifacts needed to keep the next step grounded. It handles REST (OpenAPI) and GraphQL. One command, a lean fast path, two binaries.
+You give the printing press an API spec. It gives you back a Go CLI, an MCP server, a root `AGENTS.md` operating guide, and the few artifacts needed to keep the next step grounded. It handles REST (OpenAPI) and GraphQL. One command, a lean fast path, two binaries.
 
 The key idea: most API CLI generators stop at wrapping endpoints. The printing press goes further -- it profiles each API, detects its domain archetype (communication, project management, payments, etc.), and generates domain-specific "power user" commands like `sync`, `search`, `stale`, `health`, and `similar` on top of the standard CRUD wrappers.
 
