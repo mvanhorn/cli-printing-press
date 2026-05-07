@@ -40,6 +40,8 @@ const (
 	extensionDisplayName      = "x-display-name"
 	extensionWebsite          = "x-website"
 	extensionProxyRoutes      = "x-proxy-routes"
+	extensionOrigin           = "x-origin"
+	extensionProviderName     = "x-providerName"
 )
 
 // SetMaxResources overrides the default resource limit. When not called,
@@ -1386,6 +1388,8 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 		return pathKeys[i] < pathKeys[j]
 	})
 	commonPrefix := detectCommonPrefix(pathKeys, basePath)
+	frameworkRenames := map[string]string{}
+	googleDiscovery := isGoogleDiscoverySpec(doc)
 
 	// Auto-calibrate endpoint limit unless the user explicitly set it.
 	// Pre-scans the spec to find the largest resource or sub-resource,
@@ -1396,13 +1400,16 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 		type resourceKey struct{ primary, sub string }
 		endpointCounts := map[resourceKey]int{}
 		for _, path := range pathKeys {
-			primaryName, subName := resourceAndSubFromPath(path, basePath, commonPrefix)
-			if primaryName == "" {
+			pathItem := doc.Paths.Value(path)
+			if pathItem == nil {
 				continue
 			}
-			pathItem := doc.Paths.Value(path)
-			if pathItem != nil {
-				endpointCounts[resourceKey{primaryName, subName}] += len(pathItem.Operations())
+			for _, op := range pathItem.Operations() {
+				primaryName, subName := resourceAndSubForOperation(path, basePath, commonPrefix, op, googleDiscovery)
+				if primaryName == "" {
+					continue
+				}
+				endpointCounts[resourceKey{primaryName, subName}]++
 			}
 		}
 		for _, count := range endpointCounts {
@@ -1433,53 +1440,6 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 		pathCritical := readPathItemCritical(pathItem, path)
 		pathTier := readTierExtension(pathItem.Extensions, fmt.Sprintf("path %q", path))
 
-		primaryName, subName := resourceAndSubFromPath(path, basePath, commonPrefix)
-		if primaryName == "" {
-			warnf("skipping path %q: could not derive resource name", path)
-			continue
-		}
-
-		// Framework cobra collision check — only for top-level resources
-		// (subName == ""). Sub-resources register under a parent prefix and
-		// don't shadow framework commands. If primaryName matches a reserved
-		// cobra Use literal, rename to <api-slug>-<resource> and warn so
-		// the operator sees it. Self-collision (the renamed name already
-		// exists in out.Resources) bumps a numeric suffix until unique.
-		if subName == "" {
-			if _, reserved := spec.ReservedCobraUseNames[primaryName]; reserved {
-				primaryName = renameForFrameworkCollision(out, primaryName, path)
-			}
-		}
-
-		resource, ok := out.Resources[primaryName]
-		if !ok {
-			if len(out.Resources) >= maxResources {
-				warnf("skipping path %q: resource limit (%d) reached", path, maxResources)
-				continue
-			}
-			resource = spec.Resource{
-				Description:  tagDescriptions[primaryName],
-				Endpoints:    map[string]spec.Endpoint{},
-				SubResources: map[string]spec.Resource{},
-			}
-		}
-
-		// Determine the target: direct resource endpoints or sub-resource endpoints
-		var targetEndpoints map[string]spec.Endpoint
-		targetResourceName := primaryName
-		if subName != "" {
-			if _, ok := resource.SubResources[subName]; !ok {
-				resource.SubResources[subName] = spec.Resource{
-					Description: tagDescriptions[subName],
-					Endpoints:   map[string]spec.Endpoint{},
-				}
-			}
-			targetEndpoints = resource.SubResources[subName].Endpoints
-			targetResourceName = subName
-		} else {
-			targetEndpoints = resource.Endpoints
-		}
-
 		methods := make([]string, 0, len(operations))
 		for method := range operations {
 			methods = append(methods, method)
@@ -1493,12 +1453,63 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				continue
 			}
 
+			primaryName, subName := resourceAndSubForOperation(path, basePath, commonPrefix, op, googleDiscovery)
+			if primaryName == "" {
+				warnf("skipping %s %q: could not derive resource name", method, path)
+				continue
+			}
+			endpointResourceName := primaryName
+			if subName != "" {
+				endpointResourceName = subName
+			}
+
+			// Framework cobra collision check. Sub-resource names do not shadow
+			// framework commands, but every primary resource becomes a top-level
+			// Cobra command, even when the current endpoint lands under a
+			// sub-resource.
+			if renamed, ok := frameworkRenames[primaryName]; ok {
+				primaryName = renamed
+			} else if _, reserved := spec.ReservedCobraUseNames[primaryName]; reserved {
+				originalName := primaryName
+				primaryName = renameForFrameworkCollision(out, primaryName, path)
+				frameworkRenames[originalName] = primaryName
+			}
+
+			resource, ok := out.Resources[primaryName]
+			if !ok {
+				if len(out.Resources) >= maxResources {
+					warnf("skipping path %q: resource limit (%d) reached", path, maxResources)
+					continue
+				}
+				resource = spec.Resource{
+					Description:  tagDescriptions[primaryName],
+					Endpoints:    map[string]spec.Endpoint{},
+					SubResources: map[string]spec.Resource{},
+				}
+			}
+
+			// Determine the target: direct resource endpoints or sub-resource endpoints
+			var targetEndpoints map[string]spec.Endpoint
+			targetResourceName := primaryName
+			if subName != "" {
+				if _, ok := resource.SubResources[subName]; !ok {
+					resource.SubResources[subName] = spec.Resource{
+						Description: tagDescriptions[subName],
+						Endpoints:   map[string]spec.Endpoint{},
+					}
+				}
+				targetEndpoints = resource.SubResources[subName].Endpoints
+				targetResourceName = subName
+			} else {
+				targetEndpoints = resource.Endpoints
+			}
+
 			if len(targetEndpoints) >= maxEndpointsPerResource {
 				warnf("skipping %s %q: endpoint limit (%d) reached for resource %q.%s", method, path, maxEndpointsPerResource, primaryName, targetResourceName)
 				continue
 			}
 
-			endpointName := resolveEndpointName(method, path, op, targetEndpoints, targetResourceName, basePath, commonPrefix)
+			endpointName := resolveEndpointName(method, path, op, targetEndpoints, endpointResourceName, basePath, commonPrefix)
 			summary := strings.TrimSpace(op.Summary)
 			desc := strings.TrimSpace(op.Description)
 			description := selectDescription(summary, desc)
@@ -1555,20 +1566,20 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			endpoint.Critical = pathCritical
 
 			targetEndpoints[endpointName] = endpoint
-		}
 
-		// Update descriptions
-		if subName != "" {
-			sub := resource.SubResources[subName]
-			if sub.Description == "" {
-				sub.Description = humanizeResourceName(subName)
+			// Update descriptions
+			if subName != "" {
+				sub := resource.SubResources[subName]
+				if sub.Description == "" {
+					sub.Description = humanizeResourceName(subName)
+				}
+				resource.SubResources[subName] = sub
 			}
-			resource.SubResources[subName] = sub
+			if resource.Description == "" {
+				resource.Description = humanizeResourceName(primaryName)
+			}
+			out.Resources[primaryName] = resource
 		}
-		if resource.Description == "" {
-			resource.Description = humanizeResourceName(primaryName)
-		}
-		out.Resources[primaryName] = resource
 	}
 
 	assignEndpointAliases(out.Resources)
@@ -2963,6 +2974,26 @@ func resourceAndSubFromPath(path, basePath string, commonPrefix []string) (strin
 	return resourceAndSubFromSegments(segments)
 }
 
+func resourceAndSubForOperation(path, basePath string, commonPrefix []string, op *openapi3.Operation, googleDiscovery bool) (string, string) {
+	primary, sub := resourceAndSubFromPath(path, basePath, commonPrefix)
+	if primary != "" && !pathStartsWithCustomVerbParam(path, basePath, commonPrefix) {
+		return primary, sub
+	}
+	if googleDiscovery {
+		opPrimary, opSub := resourceAndSubFromGoogleOperationID(operationID(op), true)
+		if opPrimary != "" {
+			return opPrimary, opSub
+		}
+		if pathPrimary := resourceFromGooglePathAfterLeadingParams(path, basePath, commonPrefix); pathPrimary != "" {
+			return pathPrimary, ""
+		}
+	}
+	if opPrimary, opSub := resourceAndSubFromGoogleOperationID(operationID(op), false); opPrimary != "" {
+		return opPrimary, opSub
+	}
+	return primary, sub
+}
+
 func resourceAndSubFromSegments(segments []string) (string, string) {
 	if len(segments) == 0 {
 		return "", ""
@@ -2990,6 +3021,34 @@ func resourceAndSubFromSegments(segments []string) (string, string) {
 	// The first non-param segment after the path param is the sub-resource
 	sub := sanitizeResourceName(strings.ReplaceAll(toSnakeCase(rest[0]), "_", "-"))
 	return primary, sub
+}
+
+func pathStartsWithCustomVerbParam(path, basePath string, commonPrefix []string) bool {
+	segments := pathSegmentsAfterBase(path, basePath)
+	if len(commonPrefix) > 0 && hasSegmentPrefix(segments, commonPrefix) {
+		segments = segments[len(commonPrefix):]
+	}
+	return len(segments) > 0 && isPathParamCustomVerbSegment(segments[0])
+}
+
+func resourceFromGooglePathAfterLeadingParams(path, basePath string, commonPrefix []string) string {
+	segments := pathSegmentsAfterBase(path, basePath)
+	if len(commonPrefix) > 0 && hasSegmentPrefix(segments, commonPrefix) {
+		segments = segments[len(commonPrefix):]
+	}
+	if len(segments) == 0 || !isPathParamSegment(segments[0]) {
+		return ""
+	}
+	for _, segment := range segments {
+		if isPathParamSegment(segment) {
+			continue
+		}
+		if isPathParamCustomVerbSegment(segment) {
+			continue
+		}
+		return sanitizeResourceName(strings.ReplaceAll(toSnakeCase(segment), "_", "-"))
+	}
+	return ""
 }
 
 func detectCommonPrefix(paths []string, basePath string) []string {
@@ -3176,8 +3235,7 @@ func isVersionSegment(segment string) bool {
 		return false
 	}
 	if segment[0] == 'v' && len(segment) >= 2 {
-		_, err := strconv.Atoi(segment[1:])
-		return err == nil
+		return versionSegmentPattern.MatchString(segment)
 	}
 	_, err := strconv.Atoi(segment)
 	return err == nil
@@ -3185,6 +3243,11 @@ func isVersionSegment(segment string) bool {
 
 func isPathParamSegment(segment string) bool {
 	return strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}")
+}
+
+func isPathParamCustomVerbSegment(segment string) bool {
+	close := strings.Index(segment, "}:")
+	return strings.HasPrefix(segment, "{") && close > 0 && close+2 < len(segment)
 }
 
 func baseURLPath(baseURL string) string {
@@ -3201,6 +3264,9 @@ func baseURLPath(baseURL string) string {
 func operationIDToName(operationID, resourceName string, commonPrefix []string) string {
 	if strings.TrimSpace(operationID) == "" {
 		return ""
+	}
+	if name := googleOperationIDEndpointName(operationID, resourceName); name != "" {
+		return name
 	}
 	original := toSnakeCase(operationID)
 	if original == "" {
@@ -3231,6 +3297,116 @@ func operationIDToName(operationID, resourceName string, commonPrefix []string) 
 	}
 
 	return strings.ReplaceAll(name, "_", "-")
+}
+
+func googleOperationIDEndpointName(operationID, resourceName string) string {
+	chain, verb, ok := googleOperationIDResourceChain(operationID, true, true)
+	if !ok {
+		return ""
+	}
+	resource := sanitizeResourceName(strings.ReplaceAll(toSnakeCase(resourceName), "_", "-"))
+	if resource == "" {
+		return ""
+	}
+	for _, segment := range chain {
+		if segment == resource {
+			return strings.ReplaceAll(toSnakeCase(verb), "_", "-")
+		}
+	}
+	return ""
+}
+
+func resourceAndSubFromGoogleOperationID(operationID string, allowUnscoped bool) (string, string) {
+	chain, _, ok := googleOperationIDResourceChain(operationID, allowUnscoped, false)
+	if !ok {
+		return "", ""
+	}
+	switch len(chain) {
+	case 0:
+		return "", ""
+	case 1:
+		return chain[0], ""
+	case 2:
+		return chain[0], chain[1]
+	default:
+		return chain[len(chain)-2], chain[len(chain)-1]
+	}
+}
+
+func googleOperationIDResourceChain(operationID string, allowUnscoped, fallbackWhenScopedEmpty bool) ([]string, string, bool) {
+	parts := strings.Split(strings.TrimSpace(operationID), ".")
+	if len(parts) < 3 {
+		return nil, "", false
+	}
+	start, ok := googleOperationIDScopeStart(parts)
+	if !ok && allowUnscoped {
+		start = 1
+		ok = true
+	}
+	if ok && allowUnscoped && fallbackWhenScopedEmpty && len(parts[start:]) < 2 {
+		start = 1
+	}
+	if !ok || len(parts[start:]) < 2 {
+		return nil, "", false
+	}
+
+	verb := parts[len(parts)-1]
+	rawChain := parts[start : len(parts)-1]
+	chain := make([]string, 0, len(rawChain))
+	for _, segment := range rawChain {
+		resource := sanitizeResourceName(strings.ReplaceAll(toSnakeCase(segment), "_", "-"))
+		if resource == "" {
+			return nil, "", false
+		}
+		chain = append(chain, resource)
+	}
+	return chain, verb, true
+}
+
+func googleOperationIDScopeStart(parts []string) (int, bool) {
+	for i := 0; i < len(parts); i++ {
+		switch parts[i] {
+		case "projects", "organizations", "folders":
+			if i+1 < len(parts) && parts[i+1] == "locations" {
+				return i + 2, true
+			}
+		case "billingAccounts":
+			if i+1 < len(parts) && parts[i+1] == "locations" {
+				return i + 2, true
+			}
+			return i + 1, true
+		}
+	}
+	return 0, false
+}
+
+func isGoogleDiscoverySpec(doc *openapi3.T) bool {
+	if raw, ok := lookupOpenAPIInfoExtension(doc, extensionProviderName); ok {
+		if provider, ok := raw.(string); ok && strings.EqualFold(strings.TrimSpace(provider), "googleapis.com") {
+			return true
+		}
+	}
+	raw, ok := lookupOpenAPIInfoExtension(doc, extensionOrigin)
+	if !ok {
+		return false
+	}
+	origins, ok := raw.([]any)
+	if !ok {
+		return false
+	}
+	for _, origin := range origins {
+		entry, ok := origin.(map[string]any)
+		if !ok {
+			continue
+		}
+		if format, ok := entry["format"].(string); ok && strings.EqualFold(strings.TrimSpace(format), "google") {
+			return true
+		}
+		if originURL, ok := entry["url"].(string); ok && strings.Contains(originURL, "googleapis.com/$discovery") {
+			return true
+		}
+	}
+	return false
 }
 
 func operationIDResourceVariants(resourceName string) []string {
@@ -3286,6 +3462,8 @@ func stripOperationIDVersionPrefix(name string) string {
 // operationIDDatePattern matches embedded version dates (YYYY_MM_DD) in snake_case operationIDs.
 // These appear in specs like Cal.com: BookingsController_2024-08-13_getBooking → 2024_08_13
 var operationIDDatePattern = regexp.MustCompile(`_\d{4}_\d{2}_\d{2}_?`)
+
+var versionSegmentPattern = regexp.MustCompile(`^v[0-9]+((alpha|beta|p[0-9]+)[0-9]*)*$`)
 
 // stripOperationIDControllerAndDate removes controller class names and embedded
 // version dates from operationIDs. APIs auto-generated from NestJS, FastAPI, or

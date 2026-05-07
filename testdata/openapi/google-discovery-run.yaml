@@ -1,0 +1,212 @@
+openapi: 3.0.3
+info:
+  title: Google Cloud Run API
+  version: v2
+  x-origin:
+    - format: google
+      url: https://run.googleapis.com/$discovery/rest?version=v2
+      version: v2
+  x-providerName: googleapis.com
+servers:
+  - url: https://run.googleapis.com/
+paths:
+  /v2/{name}:
+    delete:
+      operationId: run.projects.locations.services.revisions.delete
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+    get:
+      operationId: run.projects.locations.services.revisions.get
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+    patch:
+      operationId: run.projects.locations.services.patch
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /v2/{name}/operations:
+    get:
+      operationId: run.projects.locations.operations.list
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /v2/{name}/locations:
+    get:
+      operationId: run.projects.locations.list
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /v2/{name}:run:
+    post:
+      operationId: run.projects.locations.jobs.run
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /v2/{name}:wait:
+    post:
+      operationId: run.projects.locations.operations.wait
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /v2/{parent}/executions:
+    get:
+      operationId: run.projects.locations.jobs.executions.list
+      parameters:
+        - name: parent
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /v2/{parent}/jobs:
+    get:
+      operationId: run.projects.locations.jobs.list
+      parameters:
+        - name: parent
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+    post:
+      operationId: run.projects.locations.jobs.create
+      parameters:
+        - name: parent
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /v2/{parent}/revisions:
+    get:
+      operationId: run.projects.locations.services.revisions.list
+      parameters:
+        - name: parent
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /v2/{parent}/services:
+    get:
+      operationId: run.projects.locations.services.list
+      parameters:
+        - name: parent
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+    post:
+      operationId: run.projects.locations.services.create
+      parameters:
+        - name: parent
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /v2/{parent}/tasks:
+    get:
+      operationId: run.projects.locations.jobs.executions.tasks.list
+      parameters:
+        - name: parent
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /v2/{resource}:getIamPolicy:
+    get:
+      operationId: run.projects.locations.services.getIamPolicy
+      parameters:
+        - name: resource
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /v2/{resource}:setIamPolicy:
+    post:
+      operationId: run.projects.locations.services.setIamPolicy
+      parameters:
+        - name: resource
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /v2/{resource}:testIamPermissions:
+    post:
+      operationId: run.projects.locations.services.testIamPermissions
+      parameters:
+        - name: resource
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok

@@ -576,6 +576,9 @@ func TestPathSegmentsStripsGenericAPIPrefix(t *testing.T) {
 		{"strips api then version", "/api/v2/pokemon", "", "pokemon"},
 		{"strips version then api then version", "/v2/api/v1/pokemon", "", "pokemon"},
 		{"strips api then numeric version", "/api/0/organizations", "", "organizations"},
+		{"strips beta version", "/v1beta2/{parent}/repositories", "", "{parent}"},
+		{"strips alpha version", "/v1alpha1/{parent}/services", "", "{parent}"},
+		{"strips p beta version", "/v1p1beta1/{parent}/sessions", "", "{parent}"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -620,6 +623,8 @@ func TestOperationIDToName(t *testing.T) {
 		{operationID: "OrganizationsController_getOrg", resourceName: "organizations", want: "get-org"},
 		// No controller/version pattern — should be unchanged
 		{operationID: "getBookingByUid", resourceName: "bookings", want: "get-by-uid"},
+		{operationID: "run.projects.locations.services.revisions.delete", resourceName: "revisions", want: "delete"},
+		{operationID: "run.projects.locations.services.getIamPolicy", resourceName: "services", want: "get-iam-policy"},
 	}
 
 	for _, tt := range tests {
@@ -628,6 +633,158 @@ func TestOperationIDToName(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestResourceAndSubFromGoogleOperationID(t *testing.T) {
+	tests := []struct {
+		name         string
+		operationID  string
+		wantPrimary  string
+		wantSub      string
+		wantName     string
+		nameResource string
+	}{
+		{
+			name:         "project location resource",
+			operationID:  "run.projects.locations.services.create",
+			wantPrimary:  "services",
+			nameResource: "services",
+			wantName:     "create",
+		},
+		{
+			name:         "nested subresource keeps owning parent",
+			operationID:  "run.projects.locations.services.revisions.delete",
+			wantPrimary:  "services",
+			wantSub:      "revisions",
+			nameResource: "revisions",
+			wantName:     "delete",
+		},
+		{
+			name:         "deep chain uses immediate parent",
+			operationID:  "run.projects.locations.jobs.executions.tasks.list",
+			wantPrimary:  "executions",
+			wantSub:      "tasks",
+			nameResource: "tasks",
+			wantName:     "list",
+		},
+		{
+			name:         "organization location scope",
+			operationID:  "example.organizations.locations.widgets.get",
+			wantPrimary:  "widgets",
+			nameResource: "widgets",
+			wantName:     "get",
+		},
+		{
+			name:         "billing account scope",
+			operationID:  "example.billingAccounts.invoices.list",
+			wantPrimary:  "invoices",
+			nameResource: "invoices",
+			wantName:     "list",
+		},
+		{
+			name:        "non Google scope ignored",
+			operationID: "gmail.users.messages.list",
+		},
+		{
+			name:         "unscoped Google Discovery operation",
+			operationID:  "bigquery.tables.getIamPolicy",
+			wantPrimary:  "tables",
+			nameResource: "tables",
+			wantName:     "get-iam-policy",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotPrimary, gotSub := resourceAndSubFromGoogleOperationID(tt.operationID, false)
+			if tt.name == "unscoped Google Discovery operation" {
+				gotPrimary, gotSub = resourceAndSubFromGoogleOperationID(tt.operationID, true)
+			}
+			assert.Equal(t, tt.wantPrimary, gotPrimary)
+			assert.Equal(t, tt.wantSub, gotSub)
+			assert.Equal(t, tt.wantName, googleOperationIDEndpointName(tt.operationID, tt.nameResource))
+		})
+	}
+}
+
+func TestParseGoogleDiscoveryResourceFallback(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "google-discovery-run.yaml"))
+	require.NoError(t, err)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	assert.NotContains(t, parsed.Resources, "name-run")
+	assert.NotContains(t, parsed.Resources, "name-wait")
+	assert.NotContains(t, parsed.Resources, "resource-get-iam-policy")
+	assert.NotContains(t, parsed.Resources, "resource-set-iam-policy")
+	assert.NotContains(t, parsed.Resources, "resource-test-iam-permissions")
+
+	services := parsed.Resources["services"]
+	require.Contains(t, services.Endpoints, "create")
+	require.Contains(t, services.Endpoints, "patch")
+	require.Contains(t, services.Endpoints, "list")
+	require.Contains(t, services.Endpoints, "get-iam-policy")
+	require.Contains(t, services.Endpoints, "set-iam-policy")
+	require.Contains(t, services.Endpoints, "test-iam-permissions")
+	require.Contains(t, services.SubResources, "revisions")
+	assert.Contains(t, services.SubResources["revisions"].Endpoints, "delete")
+	assert.Contains(t, services.SubResources["revisions"].Endpoints, "get")
+	assert.Contains(t, services.SubResources["revisions"].Endpoints, "list")
+
+	assert.NotContains(t, parsed.Resources, "jobs")
+	jobs := parsed.Resources["google-cloud-run-jobs"]
+	require.Contains(t, jobs.Endpoints, "create")
+	require.Contains(t, jobs.Endpoints, "list")
+	require.Contains(t, jobs.Endpoints, "run")
+	require.Contains(t, jobs.SubResources, "executions")
+	assert.Contains(t, jobs.SubResources["executions"].Endpoints, "list")
+
+	executions := parsed.Resources["executions"]
+	require.Contains(t, executions.SubResources, "tasks")
+	assert.Contains(t, executions.SubResources["tasks"].Endpoints, "list")
+
+	operations := parsed.Resources["operations"]
+	assert.Contains(t, operations.Endpoints, "list")
+	assert.Contains(t, operations.Endpoints, "wait")
+
+	locations := parsed.Resources["locations"]
+	assert.Contains(t, locations.Endpoints, "list")
+}
+
+func TestParseGoogleDiscoveryUnscopedOperationIDFallbackRequiresGoogleOrigin(t *testing.T) {
+	t.Parallel()
+
+	base := `openapi: 3.0.3
+info:
+  title: BigQuery API
+  version: v2
+%s
+paths:
+  /{resource}:getIamPolicy:
+    get:
+      operationId: bigquery.tables.getIamPolicy
+      parameters:
+        - name: resource
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`
+
+	parsed, err := Parse([]byte(fmt.Sprintf(base, "  x-providerName: googleapis.com\n")))
+	require.NoError(t, err)
+	require.Contains(t, parsed.Resources, "tables")
+	assert.Contains(t, parsed.Resources["tables"].Endpoints, "get-iam-policy")
+	assert.NotContains(t, parsed.Resources, "resource-get-iam-policy")
+
+	parsed, err = Parse([]byte(fmt.Sprintf(base, "")))
+	require.NoError(t, err)
+	assert.NotContains(t, parsed.Resources, "tables")
+	assert.Contains(t, parsed.Resources, "resource-get-iam-policy")
 }
 
 func TestReclassifyPathParamModifiers(t *testing.T) {

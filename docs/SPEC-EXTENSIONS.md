@@ -15,6 +15,8 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-display-name` | `info` | `APISpec.DisplayName` | No |
 | `x-website` | `info` | `APISpec.WebsiteURL` | No |
 | `x-proxy-routes` | `info` | `APISpec.ProxyRoutes` | No |
+| `x-origin` | `info` | Google Discovery resource fallback | No |
+| `x-providerName` | `info` | Google Discovery resource fallback | No |
 | `x-tier-routing` | root or `info` | `APISpec.TierRouting` | No |
 | `x-auth-type` | `components.securitySchemes.<name>` | `APISpec.Auth.Type` | No |
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
@@ -130,6 +132,19 @@ info:
     /v1/search: search
     /v1/publish: publishing
 ```
+
+### `x-origin` / `x-providerName`
+
+Recognized on Google Discovery specs converted by apis.guru. These extensions do
+not populate an `APISpec` field; they gate the parser's operationId-based
+resource fallback for paths such as `/v2/{name}` and `/{resource}:getIamPolicy`.
+
+Rules:
+- Optional.
+- `x-providerName: googleapis.com` enables Google Discovery resource fallback.
+- `x-origin` enables the fallback when any entry has `format: google` or a
+  Discovery URL under `googleapis.com/$discovery`.
+- Ignored for non-Google specs.
 
 ### `x-tier-routing`
 
