@@ -291,6 +291,42 @@ func TestWriteToolsManifest_PublicParamNames(t *testing.T) {
 	assert.Equal(t, []string{"code"}, create.Params[0].Aliases)
 }
 
+func TestWriteToolsManifest_IdentNamePublicParamName(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "deduped-params",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"posts": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method: "POST",
+						Path:   "/posts",
+						Params: []spec.Param{
+							{Name: "id", Type: "string", Description: "Query ID"},
+						},
+						Body: []spec.Param{
+							{Name: "id", IdentName: "id_2", Type: "string", Description: "Body ID"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+
+	require.Len(t, got.Tools, 1)
+	require.Len(t, got.Tools[0].Params, 2)
+	assert.Equal(t, "id", got.Tools[0].Params[0].Name)
+	assert.Empty(t, got.Tools[0].Params[0].WireName)
+	assert.Equal(t, "id-2", got.Tools[0].Params[1].Name)
+	assert.Equal(t, "id", got.Tools[0].Params[1].WireName)
+}
+
 // TestWriteToolsManifest_ReclassifiedPathParamKeepsPathLocation pins
 // the path location for path params that reclassifyPathParamModifiers
 // converted from positional args to flags (e.g., enum-typed path

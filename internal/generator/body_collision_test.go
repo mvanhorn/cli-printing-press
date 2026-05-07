@@ -100,6 +100,16 @@ func TestGenerateRenamesBodyFieldCollidingWithQueryParam(t *testing.T) {
 		"--tags from a body field must not collide with --tags from a query param")
 	assert.Contains(t, flagBindings, "tags",
 		"the first registrant keeps the canonical flag name")
+	assert.Contains(t, flagBindings, "tags-2",
+		"the colliding body field gets the deduped public flag name")
+
+	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpSource := string(mcpTools)
+	assert.Contains(t, mcpSource, `mcplib.WithString("tags"`)
+	assert.Contains(t, mcpSource, `mcplib.WithString("tags-2"`)
+	assert.Contains(t, mcpSource, `PublicName: "tags", WireName: "tags", Location: "query"`)
+	assert.Contains(t, mcpSource, `PublicName: "tags-2", WireName: "tags", Location: "body"`)
 }
 
 // TestGenerateRenamesBodyFieldCollidingWithStdin guards against a body field

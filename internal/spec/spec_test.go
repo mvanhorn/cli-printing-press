@@ -128,6 +128,8 @@ resources:
 func TestParamPublicInputName(t *testing.T) {
 	assert.Equal(t, "address", Param{Name: "s", FlagName: "address"}.PublicInputName())
 	assert.Equal(t, "store_code", Param{Name: "store_code"}.PublicInputName())
+	assert.Equal(t, "id-2", Param{Name: "id", IdentName: "id_2"}.PublicInputName())
+	assert.Equal(t, "start-time-2", Param{Name: "StartTime>", IdentName: "StartTime>_2"}.PublicInputName())
 }
 
 func TestValidatePublicParamNames(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
 	"gopkg.in/yaml.v3"
@@ -983,7 +984,38 @@ func (p Param) PublicInputName() string {
 	if p.FlagName != "" {
 		return p.FlagName
 	}
+	if p.IdentName != "" {
+		return publicInputNameFromIdent(p.IdentName)
+	}
 	return p.Name
+}
+
+func publicInputNameFromIdent(name string) string {
+	name = strings.TrimLeft(name, "$")
+	var b strings.Builder
+	runes := []rune(name)
+	for i, r := range runes {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			if b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			continue
+		}
+		if i > 0 && unicode.IsUpper(r) {
+			prev := runes[i-1]
+			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
+				b.WriteByte('-')
+			} else if unicode.IsUpper(prev) && i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
+				b.WriteByte('-')
+			}
+		}
+		b.WriteRune(unicode.ToLower(r))
+	}
+	result := b.String()
+	for strings.Contains(result, "--") {
+		result = strings.ReplaceAll(result, "--", "-")
+	}
+	return strings.Trim(result, "-")
 }
 
 func (p *Param) UnmarshalYAML(value *yaml.Node) error {
