@@ -787,6 +787,21 @@ func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {
 	assert.Equal(t, "hidden", apiSpec.MCP.EndpointTools)
 }
 
+func TestEnrichSpecFromCatalogMatchesSpecURLWhenSlugDiffers(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Name:                        "cloud-run-admin",
+		DisplayName:                 "Cloud Run Admin",
+		DisplayNameDerivedFromTitle: true,
+	}
+
+	enrichSpecFromCatalog(apiSpec, "https://api.apis.guru/v2/specs/googleapis.com/run/v2/openapi.yaml")
+
+	assert.Equal(t, "Google Cloud Run", apiSpec.DisplayName)
+	assert.False(t, apiSpec.DisplayNameDerivedFromTitle)
+	assert.Equal(t, "cloud", apiSpec.Category)
+	assert.Equal(t, "https://cloud.google.com/run/docs/reference/rest", apiSpec.WebsiteURL)
+}
+
 func TestEnrichSpecFromCatalogReplacesTitleDerivedDisplayName(t *testing.T) {
 	apiSpec := &spec.APISpec{
 		Name:                        "trigger-dev",

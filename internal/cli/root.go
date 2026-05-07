@@ -303,7 +303,7 @@ func newGenerateCmd() *cobra.Command {
 				return printDryRun(apiSpec, absOut, specFiles)
 			}
 
-			novelFeatures, polished, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, rejectUnshippablePageContextTraffic: true})
+			novelFeatures, polished, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, specURL: specURL, rejectUnshippablePageContextTraffic: true})
 			if err != nil {
 				return err
 			}
@@ -428,11 +428,12 @@ type generateProjectOptions struct {
 	researchDir                         string
 	trafficAnalysisPath                 string
 	specFiles                           []string
+	specURL                             string
 	rejectUnshippablePageContextTraffic bool
 }
 
 func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProjectOptions) ([]pipeline.NovelFeatureManifest, bool, error) {
-	enrichSpecFromCatalog(apiSpec)
+	enrichSpecFromCatalog(apiSpec, catalogSpecLookupRefs(opts.specFiles, opts.specURL)...)
 	gen := generator.New(apiSpec, absOut)
 	novelFeatures := loadResearchSources(gen, opts.researchDir)
 	trafficAnalysis, err := loadTrafficAnalysisForGenerate(opts.trafficAnalysisPath, opts.specFiles, apiSpec.SpecSource)
@@ -1093,17 +1094,51 @@ func translateNarrative(n *pipeline.ReadmeNarrative) *generator.ReadmeNarrative 
 }
 
 // enrichSpecFromCatalog looks up the API in the embedded catalog and copies
-// ProxyRoutes into the spec if present. This allows catalog entries to declare
-// service routing for proxy-envelope APIs without requiring CLI flags.
-func enrichSpecFromCatalog(apiSpec *spec.APISpec) {
+// generation metadata into the spec if present.
+func enrichSpecFromCatalog(apiSpec *spec.APISpec, specRefs ...string) {
 	if apiSpec == nil || apiSpec.Name == "" {
 		return
 	}
-	entry, err := catalog.LookupFS(catalogfs.FS, apiSpec.Name)
-	if err != nil {
+	entry := lookupCatalogEntryForGenerateSpec(apiSpec.Name, specRefs)
+	if entry == nil {
 		return
 	}
 	enrichSpecFromCatalogEntry(apiSpec, entry)
+}
+
+func catalogSpecLookupRefs(specFiles []string, specURL string) []string {
+	refs := make([]string, 0, len(specFiles)+1)
+	if specURL != "" {
+		refs = append(refs, specURL)
+	}
+	refs = append(refs, specFiles...)
+	return refs
+}
+
+func lookupCatalogEntryForGenerateSpec(apiName string, specRefs []string) *catalog.Entry {
+	if entry, err := catalog.LookupFS(catalogfs.FS, apiName); err == nil {
+		return entry
+	}
+	specURLs := make(map[string]struct{}, len(specRefs))
+	for _, ref := range specRefs {
+		ref = strings.TrimSpace(ref)
+		if strings.HasPrefix(ref, "https://") || strings.HasPrefix(ref, "http://") {
+			specURLs[ref] = struct{}{}
+		}
+	}
+	if len(specURLs) == 0 {
+		return nil
+	}
+	entries, err := catalog.ParseFS(catalogfs.FS)
+	if err != nil {
+		return nil
+	}
+	for i := range entries {
+		if _, ok := specURLs[entries[i].SpecURL]; ok {
+			return &entries[i]
+		}
+	}
+	return nil
 }
 
 func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
