@@ -953,6 +953,8 @@ func (h *HTMLExtract) EffectiveScriptSelector() string {
 
 type Param struct {
 	Name        string   `yaml:"name" json:"name"`
+	FlagName    string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
+	Aliases     []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
 	Type        string   `yaml:"type" json:"type"`
 	Required    bool     `yaml:"required" json:"required"`
 	Positional  bool     `yaml:"positional" json:"positional"`
@@ -971,6 +973,47 @@ type Param struct {
 	// collapsing to "StartTime" through camelization. Most params leave this
 	// empty and template helpers fall back to Name.
 	IdentName string `yaml:"-" json:"-"`
+	// FlagNameSet is true when the spec explicitly contained flag_name.
+	// It lets validation distinguish an omitted public name from invalid
+	// `flag_name: ""` while still allowing overlays to clear FlagName.
+	FlagNameSet bool `yaml:"-" json:"-"`
+}
+
+func (p *Param) UnmarshalYAML(value *yaml.Node) error {
+	type paramAlias Param
+	var out paramAlias
+	if err := value.Decode(&out); err != nil {
+		return err
+	}
+	*p = Param(out)
+	p.FlagNameSet = yamlMappingHasKey(value, "flag_name")
+	return nil
+}
+
+func (p *Param) UnmarshalJSON(data []byte) error {
+	type paramAlias Param
+	var out paramAlias
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	*p = Param(out)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err == nil {
+		_, p.FlagNameSet = raw["flag_name"]
+	}
+	return nil
+}
+
+func yamlMappingHasKey(value *yaml.Node, key string) bool {
+	if value == nil || value.Kind != yaml.MappingNode {
+		return false
+	}
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		if value.Content[i].Value == key {
+			return true
+		}
+	}
+	return false
 }
 
 type ResponseDef struct {
@@ -1456,6 +1499,9 @@ func (s *APISpec) Validate() error {
 			if e.Path == "" {
 				return fmt.Errorf("resource %q endpoint %q: path is required", name, eName)
 			}
+			if err := validateEndpointPublicParamNames(e); err != nil {
+				return fmt.Errorf("resource %q endpoint %q: %w", name, eName, err)
+			}
 			if err := validateEndpointResponseFormat(e); err != nil {
 				return fmt.Errorf("resource %q endpoint %q: %w", name, eName, err)
 			}
@@ -1470,6 +1516,9 @@ func (s *APISpec) Validate() error {
 				}
 				if e.Path == "" {
 					return fmt.Errorf("resource %q sub-resource %q endpoint %q: path is required", name, subName, eName)
+				}
+				if err := validateEndpointPublicParamNames(e); err != nil {
+					return fmt.Errorf("resource %q sub-resource %q endpoint %q: %w", name, subName, eName, err)
 				}
 				if err := validateEndpointResponseFormat(e); err != nil {
 					return fmt.Errorf("resource %q sub-resource %q endpoint %q: %w", name, subName, eName, err)
@@ -1492,6 +1541,58 @@ func (s *APISpec) NormalizeAuthEnvVarSpecs() {
 		tier.Auth.NormalizeEnvVarSpecs(fmt.Sprintf("tier_routing.tiers.%s.auth", name))
 		s.TierRouting.Tiers[name] = tier
 	}
+}
+
+var publicParamNameRe = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
+
+func validateEndpointPublicParamNames(endpoint Endpoint) error {
+	if err := validatePublicParamNameList("params", endpoint.Params); err != nil {
+		return err
+	}
+	if err := validatePublicParamNameList("body", endpoint.Body); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validatePublicParamNameList(context string, params []Param) error {
+	seen := map[string]string{}
+	for i, p := range params {
+		label := fmt.Sprintf("%s[%d] (%s)", context, i, p.Name)
+		if p.FlagNameSet && p.FlagName == "" {
+			return fmt.Errorf("%s: flag_name must not be empty", label)
+		}
+		if p.FlagName != "" {
+			if !publicParamNameRe.MatchString(p.FlagName) {
+				return fmt.Errorf("%s: flag_name %q must be lowercase kebab-case", label, p.FlagName)
+			}
+			if previous, ok := seen[p.FlagName]; ok {
+				return fmt.Errorf("%s: flag_name %q collides with %s", label, p.FlagName, previous)
+			}
+			seen[p.FlagName] = label + " flag_name"
+		}
+		publicName := p.FlagName
+		if publicName == "" && publicParamNameRe.MatchString(p.Name) {
+			publicName = p.Name
+		}
+		for ai, alias := range p.Aliases {
+			aliasLabel := fmt.Sprintf("%s aliases[%d]", label, ai)
+			if alias == "" {
+				return fmt.Errorf("%s: alias must not be empty", aliasLabel)
+			}
+			if !publicParamNameRe.MatchString(alias) {
+				return fmt.Errorf("%s: alias %q must be lowercase kebab-case", aliasLabel, alias)
+			}
+			if publicName != "" && alias == publicName {
+				return fmt.Errorf("%s: alias %q duplicates its public name", aliasLabel, alias)
+			}
+			if previous, ok := seen[alias]; ok {
+				return fmt.Errorf("%s: alias %q collides with %s", aliasLabel, alias, previous)
+			}
+			seen[alias] = aliasLabel
+		}
+	}
+	return nil
 }
 
 func validateAuthEnvVarSpecs(context string, auth AuthConfig) error {

@@ -2,6 +2,7 @@ package generator
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
 )
@@ -22,13 +23,17 @@ import (
 // and body fields that share names produce duplicate `var flagX` / `var
 // bodyX` declarations and refuse to compile, or register the same cobra
 // flag twice and fail at runtime.
-func (g *Generator) dedupeFlagIdentifiers() {
+func (g *Generator) dedupeFlagIdentifiers() error {
 	if g.Spec == nil {
-		return
+		return nil
 	}
 	for resName, res := range g.Spec.Resources {
 		for epName, ep := range res.Endpoints {
-			res.Endpoints[epName] = dedupeEndpointIdentifiers(resName, epName, ep, g.AsyncJobs)
+			deduped, err := dedupeEndpointIdentifiers(resName, epName, ep, g.AsyncJobs)
+			if err != nil {
+				return err
+			}
+			res.Endpoints[epName] = deduped
 		}
 		for subName, sub := range res.SubResources {
 			// Sub-resource async lookups elsewhere in the generator (see
@@ -38,12 +43,17 @@ func (g *Generator) dedupeFlagIdentifiers() {
 			// correctly. DetectAsyncJobs does not currently walk
 			// sub-resources, so this lookup is a no-op today.
 			for epName, ep := range sub.Endpoints {
-				sub.Endpoints[epName] = dedupeEndpointIdentifiers(subName, epName, ep, g.AsyncJobs)
+				deduped, err := dedupeEndpointIdentifiers(subName, epName, ep, g.AsyncJobs)
+				if err != nil {
+					return err
+				}
+				sub.Endpoints[epName] = deduped
 			}
 			res.SubResources[subName] = sub
 		}
 		g.Spec.Resources[resName] = res
 	}
+	return nil
 }
 
 // dedupeEndpointIdentifiers runs the param-then-body uniquification for one
@@ -51,8 +61,11 @@ func (g *Generator) dedupeFlagIdentifiers() {
 // fields and query/path params each emit `cmd.Flags().*Var(..., flagName, ...)`
 // against the same cobra command, so collisions across the two lists must be
 // detected together.
-func dedupeEndpointIdentifiers(resKey, epName string, ep spec.Endpoint, asyncJobs map[string]AsyncJobInfo) spec.Endpoint {
+func dedupeEndpointIdentifiers(resKey, epName string, ep spec.Endpoint, asyncJobs map[string]AsyncJobInfo) (spec.Endpoint, error) {
 	flagIdents, flagNames := reservedFlagNamesForEndpoint(resKey, epName, ep, asyncJobs)
+	if err := validateAuthoredPublicFlags(resKey, epName, ep, flagNames); err != nil {
+		return ep, err
+	}
 
 	// Pass 1: query/path params populate the flag<Camel> namespace.
 	ep.Params = uniquifyIdentifiers(ep.Params, "flag", flagIdents, flagNames)
@@ -65,12 +78,12 @@ func dedupeEndpointIdentifiers(resKey, epName string, ep spec.Endpoint, asyncJob
 	}
 	for _, p := range ep.Params {
 		if !p.Positional {
-			bodyFlagNames[flagName(paramIdent(p))] = struct{}{}
+			bodyFlagNames[publicFlagName(p)] = struct{}{}
 		}
 	}
 	ep.Body = uniquifyIdentifiers(ep.Body, "body", nil, bodyFlagNames)
 
-	return ep
+	return ep, nil
 }
 
 // reservedFlagNamesForEndpoint returns identifiers and cobra flag names that
@@ -139,7 +152,7 @@ func uniquifyIdentifiers(params []spec.Param, identPrefix string, reservedIdents
 			continue
 		}
 		ident := identPrefix + toCamel(p.Name)
-		flag := flagName(p.Name)
+		flag := publicFlagName(p)
 		if _, identTaken := usedIdents[ident]; !identTaken {
 			if _, flagTaken := usedFlags[flag]; !flagTaken {
 				usedIdents[ident] = struct{}{}
@@ -166,6 +179,68 @@ func uniquifyIdentifiers(params []spec.Param, identPrefix string, reservedIdents
 	return out
 }
 
+func validateAuthoredPublicFlags(resKey, epName string, ep spec.Endpoint, reservedFlags map[string]struct{}) error {
+	seen := map[string]publicFlagUse{}
+	for _, entry := range publicFlagEntries(ep.Params, "param") {
+		if err := validatePublicFlagEntry(resKey, epName, entry, reservedFlags, seen); err != nil {
+			return err
+		}
+	}
+	for _, entry := range publicFlagEntries(ep.Body, "body") {
+		if err := validatePublicFlagEntry(resKey, epName, entry, reservedFlags, seen); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type publicFlagUse struct {
+	label    string
+	explicit bool
+}
+
+type publicFlagEntry struct {
+	name     string
+	label    string
+	explicit bool
+}
+
+func publicFlagEntries(params []spec.Param, kind string) []publicFlagEntry {
+	entries := []publicFlagEntry{}
+	for _, p := range params {
+		public := publicFlagName(p)
+		nameExplicit := strings.TrimSpace(p.FlagName) != ""
+		entries = append(entries, publicFlagEntry{
+			name:     public,
+			label:    fmt.Sprintf("%s %q public name", kind, p.Name),
+			explicit: nameExplicit,
+		})
+		for _, alias := range p.Aliases {
+			entries = append(entries, publicFlagEntry{
+				name:     alias,
+				label:    fmt.Sprintf("%s %q alias", kind, p.Name),
+				explicit: true,
+			})
+		}
+	}
+	return entries
+}
+
+func validatePublicFlagEntry(resKey, epName string, entry publicFlagEntry, reservedFlags map[string]struct{}, seen map[string]publicFlagUse) error {
+	if entry.explicit {
+		if _, ok := reservedFlags[entry.name]; ok {
+			return fmt.Errorf("resource %q endpoint %q: %s %q collides with reserved flag --%s", resKey, epName, entry.label, entry.name, entry.name)
+		}
+	}
+	if previous, ok := seen[entry.name]; ok {
+		if entry.explicit || previous.explicit {
+			return fmt.Errorf("resource %q endpoint %q: %s %q collides with %s", resKey, epName, entry.label, entry.name, previous.label)
+		}
+	}
+	seen[entry.name] = publicFlagUse{label: entry.label, explicit: entry.explicit}
+	return nil
+}
+
 // paramIdent returns the name a Param should use when deriving Go
 // identifiers (via camel) or cobra flag names (via flagName). It is
 // IdentName when populated by the dedup pass and Name otherwise. The
@@ -177,4 +252,15 @@ func paramIdent(p spec.Param) string {
 		return p.IdentName
 	}
 	return p.Name
+}
+
+func publicFlagName(p spec.Param) string {
+	if p.FlagName != "" {
+		return p.FlagName
+	}
+	return flagName(paramIdent(p))
+}
+
+func publicFlagAliases(p spec.Param) []string {
+	return p.Aliases
 }

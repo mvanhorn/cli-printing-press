@@ -61,14 +61,14 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- range .Endpoint.Params}}
 {{- if and .Required (not .Positional) (not .Default)}}
-			if !cmd.Flags().Changed("{{flagName (paramIdent .)}}") && !flags.dryRun {
-				return fmt.Errorf("required flag \"%s\" not set", "{{flagName (paramIdent .)}}")
+			if !{{flagChangedExpr .}} && !flags.dryRun {
+				return fmt.Errorf("required flag \"%s\" not set", "{{publicFlagName .}}")
 			}
 {{- end}}
 {{- end}}
 {{- range .Endpoint.Params}}
 {{- if and .Enum (not .Positional) (eq .Type "string")}}
-			if cmd.Flags().Changed("{{flagName (paramIdent .)}}") {
+			if {{flagChangedExpr .}} {
 				allowed{{camel (paramIdent .)}} := []string{ {{enumLiteral .Enum}} }
 				valid{{camel (paramIdent .)}} := false
 				for _, v := range allowed{{camel (paramIdent .)}} {
@@ -78,7 +78,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 					}
 				}
 				if !valid{{camel (paramIdent .)}} {
-					fmt.Fprintf(os.Stderr, "warning: --%s %q not in allowed set %v\n", "{{flagName (paramIdent .)}}", flag{{camel (paramIdent .)}}, allowed{{camel (paramIdent .)}})
+					fmt.Fprintf(os.Stderr, "warning: --%s %q not in allowed set %v\n", "{{publicFlagName .}}", flag{{camel (paramIdent .)}}, allowed{{camel (paramIdent .)}})
 				}
 			}
 {{- end}}
@@ -86,17 +86,17 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- range .Endpoint.Params}}
 {{- if and (not .Positional) (jsonStringParam .)}}
 {{- $param := .}}
-			if cmd.Flags().Changed("{{flagName (paramIdent $param)}}") {
+			if {{flagChangedExpr $param}} {
 				var parsed{{camel (paramIdent $param)}} any
 				if err := json.Unmarshal([]byte(flag{{camel (paramIdent $param)}}), &parsed{{camel (paramIdent $param)}}); err != nil {
 {{- with jsonEnumSuggestion $param $.Endpoint.Params}}
 					for _, v := range []string{ {{enumLiteral .Values}} } {
 						if flag{{camel (paramIdent $param)}} == v {
-							return fmt.Errorf("--{{flagName (paramIdent $param)}} must be valid JSON. Did you mean --{{.FlagName}} %s?", flag{{camel (paramIdent $param)}})
+							return fmt.Errorf("--{{publicFlagName $param}} must be valid JSON. Did you mean --{{.FlagName}} %s?", flag{{camel (paramIdent $param)}})
 						}
 					}
 {{- end}}
-					return fmt.Errorf("--{{flagName (paramIdent $param)}} must be valid JSON: %w", err)
+					return fmt.Errorf("--{{publicFlagName $param}} must be valid JSON: %w", err)
 				}
 			}
 {{- end}}
@@ -105,8 +105,8 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			if !stdinBody {
 {{- range .Endpoint.Body}}
 {{- if and .Required (not .Default)}}
-				if !cmd.Flags().Changed("{{flagName (paramIdent .)}}") && !flags.dryRun {
-					return fmt.Errorf("required flag \"%s\" not set", "{{flagName (paramIdent .)}}")
+				if !{{flagChangedExpr .}} && !flags.dryRun {
+					return fmt.Errorf("required flag \"%s\" not set", "{{publicFlagName .}}")
 				}
 {{- end}}
 {{- end}}
@@ -503,11 +503,21 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 
 {{- range .Endpoint.Params}}
 {{- if not .Positional}}
-	cmd.Flags().{{cobraFlagFuncForParam .Name .Type}}(&flag{{camel (paramIdent .)}}, "{{flagName (paramIdent .)}}", {{defaultValForParam .}}, "{{oneline .Description}}{{enumDescriptionHint .Enum}}")
+{{- $param := .}}
+	cmd.Flags().{{cobraFlagFuncForParam .Name .Type}}(&flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", {{defaultValForParam .}}, "{{oneline .Description}}{{enumDescriptionHint .Enum}}")
+{{- range publicFlagAliases $param}}
+	cmd.Flags().{{cobraFlagFuncForParam $param.Name $param.Type}}(&flag{{camel (paramIdent $param)}}, "{{.}}", {{defaultValForParam $param}}, "{{oneline $param.Description}}{{enumDescriptionHint $param.Enum}}")
+	_ = cmd.Flags().MarkHidden("{{.}}")
+{{- end}}
 {{- end}}
 {{- end}}
 {{- range .Endpoint.Body}}
-	cmd.Flags().{{cobraFlagFunc .Type}}(&body{{camel (paramIdent .)}}, "{{flagName (paramIdent .)}}", {{defaultVal .}}, "{{oneline .Description}}")
+{{- $param := .}}
+	cmd.Flags().{{cobraFlagFunc .Type}}(&body{{camel (paramIdent .)}}, "{{publicFlagName .}}", {{defaultVal .}}, "{{oneline .Description}}")
+{{- range publicFlagAliases $param}}
+	cmd.Flags().{{cobraFlagFunc $param.Type}}(&body{{camel (paramIdent $param)}}, "{{.}}", {{defaultVal $param}}, "{{oneline $param.Description}}")
+	_ = cmd.Flags().MarkHidden("{{.}}")
+{{- end}}
 {{- end}}
 {{- if .Endpoint.Pagination}}
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Fetch all pages")

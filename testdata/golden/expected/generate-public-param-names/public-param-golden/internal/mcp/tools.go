@@ -14,34 +14,33 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"printing-press-rich-pp-cli/internal/cli"
-	"printing-press-rich-pp-cli/internal/cliutil"
-	"printing-press-rich-pp-cli/internal/client"
-	"printing-press-rich-pp-cli/internal/config"
-	"printing-press-rich-pp-cli/internal/mcp/cobratree"
-	"printing-press-rich-pp-cli/internal/store"
+	"public-param-golden-pp-cli/internal/cli"
+	"public-param-golden-pp-cli/internal/client"
+	"public-param-golden-pp-cli/internal/config"
+	"public-param-golden-pp-cli/internal/mcp/cobratree"
 )
 
 // RegisterTools registers all API operations as MCP tools.
 func RegisterTools(s *server.MCPServer) {
 	s.AddTool(
-		mcplib.NewTool("items_list",
-			mcplib.WithDescription("List items. Returns array of Item."),
+		mcplib.NewTool("stores_create",
+			mcplib.WithDescription("Create a store record. Required: store-code. Returns the new Store."),
+			mcplib.WithString("store-code", mcplib.Required(), mcplib.Description("Store code")),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
+		),
+		makeAPIHandler("POST", "/stores", []mcpParamBinding{{PublicName: "store-code", WireName: "store_code", Location: "body"}, }, []string{ }),
+	)
+	s.AddTool(
+		mcplib.NewTool("stores_find",
+			mcplib.WithDescription("Find nearby stores by address. Required: address, city. Returns array of Store."),
+			mcplib.WithString("address", mcplib.Required(), mcplib.Description("Street address")),
+			mcplib.WithString("city", mcplib.Required(), mcplib.Description("City, state, zip")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/items", []mcpParamBinding{ }, []string{ }),
-	)
-	// SQL tool — ad-hoc analysis on synced data without API calls
-	s.AddTool(
-		mcplib.NewTool("sql",
-			mcplib.WithDescription("Run read-only SQL against local database. Use for ad-hoc analysis, aggregations, and joins across synced resources. Requires sync first."),
-			mcplib.WithString("query", mcplib.Required(), mcplib.Description("SQL query (SELECT only). Tables match resource names.")),
-			mcplib.WithReadOnlyHintAnnotation(true),
-			mcplib.WithDestructiveHintAnnotation(false),
-		),
-		handleSQL,
+		makeAPIHandler("GET", "/power/store-locator", []mcpParamBinding{{PublicName: "address", WireName: "s", Location: "query"},{PublicName: "city", WireName: "c", Location: "query"}, }, []string{ }),
 	)
 
 	// Context tool — front-loaded domain knowledge for agents.
@@ -151,21 +150,14 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 			switch {
 			case strings.Contains(msg, "HTTP 409"):
 				return mcplib.NewToolResultText("already exists (no-op)"), nil
-			case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
-				return mcplib.NewToolResultError("authentication error: " + cliutil.SanitizeErrorBody(msg) +
-					"\nhint: the API rejected the request — this usually means auth is missing or invalid." +
-					"\n      Set your API key: export RICH_AUTH_API_KEY=<your-key>" +
-					"\n      Run 'printing-press-rich-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 401"):
-				return mcplib.NewToolResultError("authentication failed: " + cliutil.SanitizeErrorBody(msg) +
-					"\nhint: check your API key." +
-					"\n      Set it with: export RICH_AUTH_API_KEY=<your-key>" +
-					"\n      Run 'printing-press-rich-pp-cli doctor' to check auth status."), nil
+				return mcplib.NewToolResultError("authentication failed: " + msg +
+					"\nhint: check your API credentials." +
+					"\n      Run 'public-param-golden-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 403"):
-				return mcplib.NewToolResultError("permission denied: " + cliutil.SanitizeErrorBody(msg) +
-					"\nhint: your credentials are valid but lack access to this resource." +
-					"\n      Set it with: export RICH_AUTH_API_KEY=<your-key>" +
-					"\n      Run 'printing-press-rich-pp-cli doctor' to check auth status."), nil
+				return mcplib.NewToolResultError("permission denied: " + msg +
+					"\nhint: this API is configured without credentials; the service may be blocking the request by rate limit, geography, bot protection, or endpoint policy." +
+					"\n      Run 'public-param-golden-pp-cli doctor' to check auth status."), nil
 			case strings.Contains(msg, "HTTP 404"):
 				if method == "DELETE" {
 					return mcplib.NewToolResultText("already deleted (no-op)"), nil
@@ -199,7 +191,7 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 
 func newMCPClient() (*client.Client, error) {
 	home, _ := os.UserHomeDir()
-	cfgPath := filepath.Join(home, ".config", "printing-press-rich-pp-cli", "config.toml")
+	cfgPath := filepath.Join(home, ".config", "public-param-golden-pp-cli", "config.toml")
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
@@ -216,127 +208,30 @@ func newMCPClient() (*client.Client, error) {
 
 func dbPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "printing-press-rich-pp-cli", "data.db")
+	return filepath.Join(home, ".local", "share", "public-param-golden-pp-cli", "data.db")
 }
 // Note: MCP tools use their own dbPath() because they are in a separate package (main, not cli).
 // The CLI's defaultDBPath() in the cli package uses the same canonical path.
 
-func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
-	args := req.GetArguments()
-	query, ok := args["query"].(string)
-	if !ok || query == "" {
-		return mcplib.NewToolResultError("query is required"), nil
-	}
-
-	// Block write operations
-	upper := strings.ToUpper(strings.TrimSpace(query))
-	for _, prefix := range []string{"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE"} {
-		if strings.HasPrefix(upper, prefix) {
-			return mcplib.NewToolResultError("only SELECT queries are allowed"), nil
-		}
-	}
-
-	db, err := store.OpenWithContext(ctx, dbPath())
-	if err != nil {
-		return mcplib.NewToolResultError(fmt.Sprintf("opening database: %v", err)), nil
-	}
-	defer db.Close()
-
-	rows, err := db.Query(query)
-	if err != nil {
-		return mcplib.NewToolResultError(fmt.Sprintf("query failed: %v", err)), nil
-	}
-	defer rows.Close()
-
-	cols, _ := rows.Columns()
-	var results []map[string]any
-	for rows.Next() {
-		values := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range values {
-			ptrs[i] = &values[i]
-		}
-		rows.Scan(ptrs...)
-		row := make(map[string]any)
-		for i, col := range cols {
-			row[col] = values[i]
-		}
-		results = append(results, row)
-	}
-
-	data, _ := json.MarshalIndent(results, "", "  ")
-	return mcplib.NewToolResultText(string(data)), nil
-}
-
 func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	ctx := map[string]any{
-		"api":         "printing-press-rich",
-		"description": "Purpose-built fixture for rich auth env-var model coverage.",
+		"api":         "public-param-golden",
+		"description": "Public parameter name golden fixture",
 		"archetype":   "generic",
-		"tool_count":  1,
+		"tool_count":  2,
 		// tool_surface tells agents which surface a capability lives on.
-		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion printing-press-rich-pp-cli binary.",
-		"auth": map[string]any{
-			"type": "api_key",
-			"env_vars": []map[string]any{
-				{
-					"name": "RICH_AUTH_API_KEY",
-					"kind": "per_call",
-					"required": true,
-					"sensitive": true,
-					"description": "Set to your API credential.",
-				},
-				{
-					"name": "RICH_AUTH_CLIENT_ID",
-					"kind": "auth_flow_input",
-					"required": false,
-					"sensitive": false,
-					"description": "OAuth application client identifier.",
-				},
-				{
-					"name": "RICH_AUTH_CLIENT_SECRET",
-					"kind": "auth_flow_input",
-					"required": false,
-					"sensitive": true,
-					"description": "Set during initial auth setup.",
-				},
-				{
-					"name": "RICH_AUTH_OPTIONAL_TOKEN",
-					"kind": "per_call",
-					"required": false,
-					"sensitive": true,
-					"description": "Set to your API credential.",
-				},
-				{
-					"name": "RICH_AUTH_BOT_TOKEN",
-					"kind": "per_call",
-					"required": false,
-					"sensitive": true,
-					"description": "Set to your API credential.",
-				},
-				{
-					"name": "RICH_AUTH_USER_TOKEN",
-					"kind": "per_call",
-					"required": false,
-					"sensitive": true,
-					"description": "Set to your API credential.",
-				},
-			},
-		},
+		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion public-param-golden-pp-cli binary.",
 		"resources": []map[string]any{
 			{
-				"name": "items",
-				"description": "Manage items",
-				"endpoints": []string{"list",  },
-				"syncable": true,
+				"name": "stores",
+				"description": "Store lookup operations",
+				"endpoints": []string{"create", "find",  },
+				"searchable": true,
 			},
 		},
 		"query_tips": []string{
 			"Pagination uses cursor-based paging. Pass after parameter for subsequent pages.",
 			"Control page size with the limit parameter (default 100).",
-			"Use the sql tool for ad-hoc analysis on synced data. Run sync first to populate the local database.",
-			"Use the search tool for full-text search across all synced resources. Faster than iterating list endpoints.",
-			"Prefer sql/search over repeated API calls when the data is already synced.",
 		},
 	}
 	data, _ := json.MarshalIndent(ctx, "", "  ")

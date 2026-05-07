@@ -235,6 +235,62 @@ func TestWriteToolsManifest_ParamLocationClassification(t *testing.T) {
 	assert.False(t, tool.Params[3].Required)
 }
 
+func TestWriteToolsManifest_PublicParamNames(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "public-params",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"stores": {
+				Description: "Stores",
+				Endpoints: map[string]spec.Endpoint{
+					"find": {
+						Method:      "GET",
+						Path:        "/stores",
+						Description: "Find stores",
+						Params: []spec.Param{
+							{Name: "s", FlagName: "address", Aliases: []string{"s"}, Type: "string", Required: true, Description: "Street address"},
+						},
+					},
+					"create": {
+						Method:      "POST",
+						Path:        "/stores",
+						Description: "Create store",
+						Body: []spec.Param{
+							{Name: "store_code", FlagName: "store-code", Aliases: []string{"code"}, Type: "string", Required: true, Description: "Store code"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+
+	require.Len(t, got.Tools, 2)
+	var find, create ManifestTool
+	for _, tool := range got.Tools {
+		switch tool.Name {
+		case "stores_find":
+			find = tool
+		case "stores_create":
+			create = tool
+		}
+	}
+	require.Len(t, find.Params, 1)
+	assert.Equal(t, "address", find.Params[0].Name)
+	assert.Equal(t, "s", find.Params[0].WireName)
+	assert.Equal(t, []string{"s"}, find.Params[0].Aliases)
+
+	require.Len(t, create.Params, 1)
+	assert.Equal(t, "store-code", create.Params[0].Name)
+	assert.Equal(t, "store_code", create.Params[0].WireName)
+	assert.Equal(t, []string{"code"}, create.Params[0].Aliases)
+}
+
 // TestWriteToolsManifest_ReclassifiedPathParamKeepsPathLocation pins
 // the path location for path params that reclassifyPathParamModifiers
 // converted from positional args to flags (e.g., enum-typed path

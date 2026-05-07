@@ -5449,7 +5449,7 @@ func TestGenerateOperationRoutingPathParamDefault(t *testing.T) {
 	mcpGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
 	assert.Regexp(t,
-		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/graphql/\{pathQueryId\}/Followers",\s*\[]string\{[^}]*"pathQueryId"`),
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/graphql/\{pathQueryId\}/Followers",\s*\[]mcpParamBinding\{.*WireName: "pathQueryId".*\},\s*\[]string\{[^}]*"pathQueryId"`),
 		string(mcpGo),
 		"MCP handler must receive the routing path param so it can substitute the URL")
 }
@@ -6442,11 +6442,11 @@ func TestGenerateMCPHandlerPreservesQueryPositionals(t *testing.T) {
 	// Call sites still pass both names — the upstream emit is unchanged;
 	// the fix lives entirely inside the handler body.
 	assert.Regexp(t,
-		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/search/movie",\s*\[]string\{[^}]*"query"`),
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/search/movie",\s*\[]mcpParamBinding\{.*WireName: "query".*\},\s*\[]string\{[^}]*"query"`),
 		tools,
 		"search call site must still pass `query` in positionalParams (handler decides path vs query at runtime)")
 	assert.Regexp(t,
-		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/movie/\{movieId\}",\s*\[]string\{[^}]*"movieId"`),
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/movie/\{movieId\}",\s*\[]mcpParamBinding\{.*WireName: "movieId".*\},\s*\[]string\{[^}]*"movieId"`),
 		tools,
 		"get-by-id call site must pass `movieId` in positionalParams")
 
@@ -6460,6 +6460,58 @@ func TestGenerateMCPHandlerPreservesQueryPositionals(t *testing.T) {
 	// Generated CLI must still compile.
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("public-params")
+	apiSpec.Resources["stores"] = spec.Resource{
+		Description: "Stores",
+		Endpoints: map[string]spec.Endpoint{
+			"find": {
+				Method:      "GET",
+				Path:        "/power/store-locator",
+				Description: "Find nearby stores by address",
+				Params: []spec.Param{
+					{Name: "s", FlagName: "address", Aliases: []string{"s"}, Type: "string", Required: true, Description: "Street address"},
+					{Name: "c", FlagName: "city", Aliases: []string{"c"}, Type: "string", Required: true, Description: "City, state, zip"},
+				},
+			},
+			"create": {
+				Method:      "POST",
+				Path:        "/stores",
+				Description: "Create a store",
+				Body: []spec.Param{
+					{Name: "store_code", FlagName: "store-code", Type: "string", Required: true, Description: "Store code"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	findSource := readGeneratedFile(t, outputDir, "internal", "cli", "stores_find.go")
+	assert.Contains(t, findSource, `public-params-pp-cli stores find --address example-value --city example-value`)
+	assert.Contains(t, findSource, `StringVar(&flagS, "address", "", "Street address")`)
+	assert.Contains(t, findSource, `StringVar(&flagS, "s", "", "Street address")`)
+	assert.Contains(t, findSource, `_ = cmd.Flags().MarkHidden("s")`)
+	assert.Contains(t, findSource, `if !(cmd.Flags().Changed("address") || cmd.Flags().Changed("s")) && !flags.dryRun`)
+	assert.Contains(t, findSource, `params["s"] = fmt.Sprintf("%v", flagS)`)
+	assert.NotContains(t, findSource, `required flag "s" not set`)
+
+	createSource := readGeneratedFile(t, outputDir, "internal", "cli", "stores_create.go")
+	assert.Contains(t, createSource, `StringVar(&bodyStoreCode, "store-code", "", "Store code")`)
+	assert.Contains(t, createSource, `body["store_code"] = bodyStoreCode`)
+
+	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+	assert.Contains(t, mcpSource, `mcplib.WithString("address", mcplib.Required(), mcplib.Description("Street address"))`)
+	assert.Contains(t, mcpSource, `PublicName: "address", WireName: "s", Location: "query"`)
+	assert.Contains(t, mcpSource, `params[binding.WireName] = fmt.Sprintf("%v", v)`)
+	assert.Contains(t, mcpSource, `mcplib.WithString("store-code", mcplib.Required(), mcplib.Description("Store code"))`)
+	assert.Contains(t, mcpSource, `PublicName: "store-code", WireName: "store_code", Location: "body"`)
+	assert.Contains(t, mcpSource, `bodyArgs[binding.WireName] = v`)
 }
 
 // TestGenerateMCPCodeOrchKeywordsHasStopwordFilter proves the keyword

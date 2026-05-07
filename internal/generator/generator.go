@@ -295,6 +295,11 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"jsonStringParam":    isJSONStringParam,
 		"jsonEnumSuggestion": jsonEnumSuggestion,
 		"bodyMap":            bodyMap,
+		"publicFlagName":     publicFlagName,
+		"publicFlagAliases":  publicFlagAliases,
+		"flagChangedExpr":    flagChangedExpr,
+		"mcpInputName":       mcpInputName,
+		"mcpParamBindings":   mcpParamBindings,
 		// endpointNeedsClientLimit reports whether a list endpoint needs
 		// client-side truncation. True when the endpoint has a `limit`-named
 		// param AND no Pagination block — the spec author asked for a
@@ -1269,7 +1274,9 @@ func (g *Generator) prepareOutput() error {
 	// with another param on the same endpoint or with a generator-introduced
 	// reserved name (pagination's flagAll, async's flagWait*). Must run after
 	// AsyncJobs detection so async endpoints reserve the wait identifiers.
-	g.dedupeFlagIdentifiers()
+	if err := g.dedupeFlagIdentifiers(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -2622,6 +2629,54 @@ type jsonFlagSuggestion struct {
 	Values   []string
 }
 
+type mcpParamBinding struct {
+	PublicName string
+	WireName   string
+	Location   string
+}
+
+func flagChangedExpr(p spec.Param) string {
+	names := append([]string{publicFlagName(p)}, publicFlagAliases(p)...)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("cmd.Flags().Changed(%q)", name))
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return "(" + strings.Join(parts, " || ") + ")"
+}
+
+func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBinding {
+	bindings := make([]mcpParamBinding, 0, len(endpoint.Params)+len(endpoint.Body))
+	for _, p := range endpoint.Params {
+		loc := "query"
+		if strings.Contains(pathTemplate, "{"+p.Name+"}") {
+			loc = "path"
+		}
+		bindings = append(bindings, mcpParamBinding{
+			PublicName: mcpInputName(p),
+			WireName:   p.Name,
+			Location:   loc,
+		})
+	}
+	for _, p := range endpoint.Body {
+		bindings = append(bindings, mcpParamBinding{
+			PublicName: mcpInputName(p),
+			WireName:   p.Name,
+			Location:   "body",
+		})
+	}
+	return bindings
+}
+
+func mcpInputName(p spec.Param) string {
+	if p.FlagName != "" {
+		return p.FlagName
+	}
+	return p.Name
+}
+
 // endpointNeedsClientLimit reports whether a list endpoint needs
 // client-side response truncation. True when:
 //   - method is GET (only read endpoints need truncation)
@@ -2668,7 +2723,7 @@ func bodyMap(body []spec.Param, indent string) string {
 	for _, p := range body {
 		id := paramIdent(p)
 		ident := toCamel(id)
-		flag := flagName(id)
+		flag := publicFlagName(p)
 		isComplex := p.Type == "object" || p.Type == "array"
 		if isComplex || isJSONStringParam(p) {
 			// object/array: store the parsed value (so the API receives
@@ -2740,7 +2795,7 @@ func jsonEnumSuggestion(p spec.Param, params []spec.Param) *jsonFlagSuggestion {
 			continue
 		}
 		return &jsonFlagSuggestion{
-			FlagName: flagName(other.Name),
+			FlagName: publicFlagName(other),
 			Values:   other.Enum,
 		}
 	}
@@ -3089,6 +3144,17 @@ func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.
 		}
 	}
 
+	for _, p := range endpoint.Params {
+		if p.Positional || !p.Required {
+			continue
+		}
+		val := exampleValue(p)
+		if val == "" {
+			val = "value"
+		}
+		parts = append(parts, "--"+publicFlagName(p), val)
+	}
+
 	// Add a sample flag for POST/PUT/PATCH with realistic values
 	switch endpoint.Method {
 	case "POST", "PUT", "PATCH":
@@ -3098,7 +3164,7 @@ func (g *Generator) exampleLine(commandPath, endpointName string, endpoint spec.
 				if val == "" {
 					val = "value"
 				}
-				parts = append(parts, "--"+strings.ReplaceAll(p.Name, "_", "-"), val)
+				parts = append(parts, "--"+publicFlagName(p), val)
 				break
 			}
 		}

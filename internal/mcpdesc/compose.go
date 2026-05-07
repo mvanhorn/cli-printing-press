@@ -245,13 +245,20 @@ func appendMethodMarker(desc, method string) string {
 
 func formatParam(p spec.Param) string {
 	if p.Default == nil {
-		return p.Name
+		return paramDisplayName(p)
 	}
 	val, ok := formatDefault(p.Default)
 	if !ok {
-		return p.Name
+		return paramDisplayName(p)
 	}
-	return p.Name + " (default: " + val + ")"
+	return paramDisplayName(p) + " (default: " + val + ")"
+}
+
+func paramDisplayName(p spec.Param) string {
+	if p.FlagName != "" {
+		return p.FlagName
+	}
+	return p.Name
 }
 
 // formatDefault returns the value and true when usable inline, or

@@ -106,13 +106,16 @@ type ManifestTool struct {
 }
 
 // ManifestParam describes a tool parameter with an explicit location
-// (path, query, or body).
+// (path, query, or body). Name is the public CLI/MCP input name; WireName is
+// set only when the upstream API key differs from that public name.
 type ManifestParam struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Location    string `json:"location"`
-	Description string `json:"description,omitempty"`
-	Required    bool   `json:"required,omitempty"`
+	Name        string   `json:"name"`
+	WireName    string   `json:"wire_name,omitempty"`
+	Type        string   `json:"type"`
+	Location    string   `json:"location"`
+	Description string   `json:"description,omitempty"`
+	Required    bool     `json:"required,omitempty"`
+	Aliases     []string `json:"aliases,omitempty"`
 }
 
 // ManifestHeader represents a header name/value pair used for both
@@ -338,23 +341,29 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 		if p.Positional || p.PathParam {
 			loc = "path"
 		}
+		name := manifestParamName(p)
 		tool.Params = append(tool.Params, ManifestParam{
-			Name:        p.Name,
+			Name:        name,
+			WireName:    manifestWireName(name, p.Name),
 			Type:        normalizeParamType(p.Type),
 			Location:    loc,
 			Description: describeParam(p),
 			Required:    p.Required,
+			Aliases:     append([]string(nil), p.Aliases...),
 		})
 	}
 
 	// Body params → body.
 	for _, p := range ep.Body {
+		name := manifestParamName(p)
 		tool.Params = append(tool.Params, ManifestParam{
-			Name:        p.Name,
+			Name:        name,
+			WireName:    manifestWireName(name, p.Name),
 			Type:        normalizeParamType(p.Type),
 			Location:    "body",
 			Description: describeParam(p),
 			Required:    p.Required,
+			Aliases:     append([]string(nil), p.Aliases...),
 		})
 	}
 
@@ -370,6 +379,20 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 	}
 
 	return tool
+}
+
+func manifestParamName(p spec.Param) string {
+	if p.FlagName != "" {
+		return p.FlagName
+	}
+	return p.Name
+}
+
+func manifestWireName(publicName, wireName string) string {
+	if publicName == wireName {
+		return ""
+	}
+	return wireName
 }
 
 func manifestEndpoints(records []manifestEndpointRecord) []spec.Endpoint {

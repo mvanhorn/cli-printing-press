@@ -46,6 +46,24 @@ func TestCompose_ListGETArrayResponse(t *testing.T) {
 	assert.Equal(t, "List projects. Optional: status, limit, cursor. Returns array of Project.", got)
 }
 
+func TestCompose_UsesPublicParamNames(t *testing.T) {
+	in := Input{
+		Endpoint: spec.Endpoint{
+			Method:      "GET",
+			Path:        "/power/store-locator",
+			Description: "Find nearby stores by address",
+			Params: []spec.Param{
+				{Name: "s", FlagName: "address", Required: true},
+				{Name: "c", FlagName: "city", Required: true},
+			},
+			Response: spec.ResponseDef{Type: "array", Item: "Store"},
+		},
+		AuthType: "none",
+	}
+	got := Compose(in)
+	assert.Equal(t, "Find nearby stores by address. Required: address, city. Returns array of Store.", got)
+}
+
 func TestCompose_PatchUPDATEWithPathParams(t *testing.T) {
 	in := Input{
 		Endpoint: spec.Endpoint{

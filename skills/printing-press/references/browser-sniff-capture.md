@@ -996,6 +996,7 @@ The report must contain these sections:
 5. **Traffic Analysis** — Summarize `$DISCOVERY_DIR/traffic-analysis.json`:
    - Protocols observed (labels + confidence, e.g., `rest_json`, `graphql`, `google_batchexecute`, `ssr_embedded_data`)
    - Auth signals (candidate types, header/query/cookie names only -- never values)
+   - Parameter-name evidence from forms, input labels, placeholder text, SDK/source names, and request context. Preserve enough detail to justify any later `flag_name` enrichment.
    - Protection signals (Cloudflare/CAPTCHA/login redirects/protected-web hints)
    - Generation hints (e.g., `requires_browser_auth`, `requires_js_rendering`, `requires_protected_client`, `has_rpc_envelope`)
    - Candidate commands worth considering

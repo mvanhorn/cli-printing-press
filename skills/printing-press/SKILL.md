@@ -1545,6 +1545,54 @@ template produces correct auth from the start.
 APIs, public data feeds), don't invent auth. The signal must come from research — not
 from guessing. No research mention of auth = no enrichment.
 
+#### Public Parameter Name Enrichment
+
+Before generating, inspect endpoint params and body fields whose API names would
+make poor CLI or MCP inputs, especially one-letter keys, punctuation-heavy keys,
+or names that only make sense inside the upstream protocol. When clear evidence
+shows the user-facing meaning, author `flag_name` in the internal spec or overlay
+and add `aliases` only for compatibility spellings.
+
+This is an agent judgment step, not a generator inference step. The skill uses
+research, docs, SDK/source names, browser-sniff form labels, traffic-analysis
+request context, and endpoint workflow evidence to decide the semantic name.
+The Printing Press CLI validates and propagates that authored data through Cobra
+flags, generated examples, typed MCP schemas, and `tools-manifest.json`; it must
+not guess that a cryptic key always means the same thing across APIs.
+
+Good evidence:
+- Explicit parameter descriptions, vendor docs, or SDK argument names.
+- Browser-sniff form/input labels and the interaction that produced the request.
+- Traffic-analysis context tying the parameter to a specific endpoint workflow.
+- Existing manuscript notes or reviewed examples that use the same task-level term.
+
+Bad evidence:
+- A one-letter name alone.
+- Generic descriptions such as "query parameter" or "string value".
+- Ambiguous sample values with no endpoint context.
+- Global assumptions such as "`s` means search" or "`c` means city".
+
+Prefer concise task-level names an agent would naturally use on that command. For
+a store-locator endpoint with `s` described as `Street address` and `c` described
+as `City, state, zip`, author:
+
+```yaml
+params:
+  - name: s
+    flag_name: address
+    aliases: [s]
+    description: Street address
+  - name: c
+    flag_name: city
+    aliases: [c]
+    description: City, state, zip
+```
+
+The upstream wire keys remain `s` and `c`; generated users and agents see
+`address` and `city`. If the evidence is unclear, leave `flag_name` unset and
+preserve the evidence gap in the manuscript rather than inventing a friendly
+name.
+
 #### Free/Paid Tier Routing Enrichment
 
 If Phase 1 finds that the headline commands should stay free but secondary
