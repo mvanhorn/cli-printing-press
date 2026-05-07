@@ -36,7 +36,7 @@ Choosing `address` is not deterministic string cleanup. It depends on endpoint c
 - R1. Specs can express a public parameter name without changing the upstream wire key.
 - R2. Cobra flags, generated help, examples, README/SKILL surfaces, typed MCP schemas, and `tools-manifest.json` prefer the public name when present.
 - R3. Request construction still uses the original wire `Param.Name` for query/path/body keys.
-- R4. Optional aliases bind to the same Cobra backing variable as the public flag, with the raw wire key available as an alias when the agent chooses to preserve it.
+- R4. Optional aliases bind to the same Cobra backing variable as the public flag. Aliases are public CLI spellings; a raw wire key may be used as an alias only when it is already a valid public flag name.
 - R5. Validation rejects invalid public names and collisions across public names, aliases, body flags, endpoint params, and generator-reserved flags.
 - R6. The Printing Press skill guides the agent to author `flag_name` from evidence during spec enrichment; the machine does not auto-infer semantic names.
 - R7. Tests prove both public and alias flags route to the same wire key, and MCP/public manifests expose the public name while remapping back to the wire key.
@@ -114,7 +114,7 @@ Domino's is the canonical real-world affected CLI:
 
 - **Should `aliases` alone solve this?** No. Aliases alone leave the canonical agent-facing surfaces as cryptic wire names.
 - **Should the machine infer `flag_name` from descriptions?** No. It may detect cryptic candidates, but final naming is agent-authored semantic judgment.
-- **Should raw wire keys be aliases by default?** No. The agent should add `aliases: [s]` when preserving raw spelling is useful. Defaulting all wire keys into aliases can clutter help and preserve bad UX indefinitely.
+- **Should raw wire keys be aliases by default?** No. The agent should add `aliases: [s]` when a raw spelling is useful and already valid as a CLI flag. Raw API names that are not valid lowercase kebab-case flags need an explicit public compatibility spelling or no alias.
 - **Should this apply to body fields too?** Yes for the model and generator plumbing, because body fields are also Cobra flags and MCP inputs. The Printing Press skill can initially focus review on query params surfaced by issue #642.
 
 ### Deferred to Implementation
@@ -180,7 +180,13 @@ params:
 
 **Approach:**
 - Add `FlagName` and `Aliases` fields to `spec.Param` with `flag_name` / `aliases` YAML and JSON keys.
-- Extend `pipeline.ParamPatch` with `FlagName *string` and `Aliases *[]string` so enrichment overlays can set or clear public names without changing upstream spec artifacts.
+- Extend `pipeline.ParamPatch` with `FlagName *string`, `ClearFlagName bool`, and `Aliases *[]string` so enrichment overlays can set or clear public names without changing upstream spec artifacts. Tri-state semantics are explicit:
+  - omitted `flag_name` with no `clear_flag_name` leaves the existing public name unchanged
+  - `clear_flag_name: true` removes the existing public name
+  - `flag_name: ""` is invalid, even in overlays
+  - a non-empty `flag_name` sets the public name and must pass final public-name validation
+  - omitted `aliases` preserves existing aliases; explicit `aliases: []` clears them
+- Extend `EndpointOverlay` with a separate `body` patch list, or another collision-safe body-field patch shape, so body fields can receive `flag_name` and `aliases` through the same enrichment path as endpoint params.
 - Preserve `Name` as the only wire key. Do not repurpose `IdentName`; leave it internal and unmarshal-disabled.
 - Document the internal YAML fields with the explicit rule: the agent chooses `flag_name` only when source evidence makes the user-facing meaning clear.
 
@@ -193,8 +199,10 @@ params:
 - Happy path: YAML with `name: s`, `flag_name: address`, `aliases: [s]` parses and preserves all fields.
 - Happy path: JSON with the same fields parses and preserves all fields.
 - Happy path: overlay patch sets `flag_name` and `aliases` for an existing param without changing `Name`.
+- Happy path: overlay patch sets and clears `flag_name` / `aliases` for an existing body field without changing its body key.
+- Edge case: overlay patch with omitted `flag_name` preserves the existing public name; `clear_flag_name: true` clears it; `flag_name: ""` is rejected.
 - Edge case: overlay patch for an unknown param leaves the spec unchanged.
-- Edge case: overlay patch with omitted `aliases` preserves existing aliases; explicit empty aliases clears them if the chosen representation supports clear semantics.
+- Edge case: overlay patch with omitted `aliases` preserves existing aliases; explicit `aliases: []` clears them.
 
 **Verification:**
 - Parsed specs and overlays can carry public names through to generator input without changing wire names.
@@ -221,6 +229,7 @@ params:
 - Put full command-context validation in the generator layer, where pagination, mutating method, body-field, and async-job context is available.
 - Reject aliases equal to another param/body public name, aliases equal to another alias, and public names/aliases that collide with body-field flags on the same command.
 - Reject public names/aliases that collide with generator-reserved flags on that command, including pagination `all`, mutating `stdin`, and async `wait`, `wait-timeout`, `wait-interval`.
+- Treat aliases as public CLI flag spellings, not guaranteed literal wire keys. Do not auto-normalize invalid raw names into aliases; the agent must author a valid compatibility spelling when compatibility is needed.
 - Keep the existing generated dedup path for un-authored collisions, but do not silently rename explicit public names or aliases.
 
 **Patterns to follow:**
@@ -236,6 +245,7 @@ params:
 - Error path: `flag_name: all` is rejected on a paginated endpoint.
 - Error path: `flag_name: stdin` is rejected on a POST/PUT/PATCH endpoint.
 - Error path: uppercase, spaces, underscores, and empty public names are rejected.
+- Error path: a raw wire key such as `StartTime>` or `foo_bar` is rejected when copied literally into `aliases`; use an authored public CLI spelling such as `start-time-after` or `foo-bar` instead.
 - Edge case: a cryptic `name: s` with no `flag_name` continues to generate as today.
 
 **Verification:**
@@ -306,11 +316,13 @@ params:
 
 **Approach:**
 - Typed MCP tool schemas should use `flag_name` when present.
+- Typed MCP tool schemas should include body fields as inputs for POST/PUT/PATCH endpoints, using body-field `flag_name` values when present.
 - Add a generated mapping from public input name to wire `Param.Name` in `makeAPIHandler`, including path/body/query location awareness.
 - For GET/HEAD query params, remap public input names into `params[wireName]`.
 - For POST/PUT/PATCH bodies, remap public body field names into wire body keys before marshaling.
 - For path params where public names are present, replace `{wireName}` placeholders from public input values.
 - Update `tools-manifest.json` params so `name` is the public name, with an added `wire_name` field when it differs from the public name and `aliases` when present.
+- Inventory every in-repo `tools-manifest.json` consumer before changing the manifest writer. Update required readers in the same change, or document an explicit compatibility strategy such as schema versioning, dual-field migration, or keeping `name` as the stable wire identity and adding `public_name`.
 - Keep MCP alias support out of scope: MCP exposes one schema name per input.
 - Domino's shows the failure mode to prevent: CLI/docs say `address` and `city`, but typed MCP currently requires `s` and `c`. The generated MCP tool for the same spec must instead require `address` and `city`, then send `s` and `c` to `/power/store-locator`.
 
@@ -322,8 +334,10 @@ params:
 **Test scenarios:**
 - Happy path: generated MCP tool for `name: s`, `flag_name: address` exposes input `address`, not `s`.
 - Happy path: MCP handler called with `{"address":"350 5th Ave"}` sends query key `s`.
+- Happy path: generated MCP tool for a body field with `flag_name` exposes the public input and marshals the original body key.
 - Happy path: tools manifest param has `name: "address"` and `wire_name: "s"`.
 - Happy path: alias metadata appears in the manifest when aliases are declared.
+- Happy path: known manifest consumers either read `wire_name` when they need the upstream key or continue to work under the chosen compatibility strategy.
 - Edge case: params without public names have no redundant `wire_name`.
 - Error path: handler ignores unknown public args the same way current handler treats unknown raw args, or returns the existing error shape if validation already rejects them.
 - Integration: `mcp-sync` regenerates a manifest with public param names after reading a spec containing `flag_name`.
@@ -339,7 +353,7 @@ params:
 
 **Requirements:** R6
 
-**Dependencies:** U1
+**Dependencies:** U1, U3
 
 **Files:**
 - Modify: `skills/printing-press/SKILL.md`
@@ -436,7 +450,7 @@ params:
 | Wrong public names are worse than terse names because they mislead every agent-facing surface | The skill authors names only from clear evidence; the machine never auto-infers names |
 | Public name and alias collision logic duplicates existing dedup behavior | Explicit authored names are validated and rejected; existing dedup remains for generated fallback names only |
 | MCP remapping accidentally sends public names upstream | Add focused tests for GET query, path replacement, and POST body remapping |
-| Manifest consumers break if `name` changes from wire to public | Add `wire_name` when different and update tests/docs for consumers that need wire metadata |
+| Manifest consumers break if `name` changes from wire to public | Inventory known consumers first, update required readers in the same change, and document the chosen schema/version compatibility strategy |
 | Hidden alias behavior may not be supported cleanly by pflag | Defer exact help-hide choice to implementation, but require public help to prefer `flag_name` |
 | Scope expands into a broad spec annotation system | Keep first implementation to `flag_name` and `aliases` on `Param`, plus overlay support |
 
