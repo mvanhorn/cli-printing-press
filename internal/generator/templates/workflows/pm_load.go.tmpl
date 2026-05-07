@@ -29,6 +29,7 @@ person. Helps identify overloaded team members and unbalanced workload.`,
 
   # Output as JSON
   {{.Name}}-pp-cli load --json`,
+		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dbPath == "" {
 				dbPath = defaultDBPath("{{.Name}}-pp-cli")

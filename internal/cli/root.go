@@ -14,19 +14,20 @@ import (
 	"strings"
 	"time"
 
-	catalogfs "github.com/mvanhorn/cli-printing-press/v3/catalog"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/browsersniff"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/catalog"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/docspec"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/generator"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/graphql"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/llm"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/llmpolish"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/openapi"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/version"
+	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/docspec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/llm"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/llmpolish"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -64,6 +65,7 @@ func Execute() error {
 	rootCmd.AddCommand(newLockCmd())
 	rootCmd.AddCommand(newMCPAuditCmd())
 	rootCmd.AddCommand(newToolsAuditCmd())
+	rootCmd.AddCommand(newPublicParamAuditCmd())
 	rootCmd.AddCommand(newProbeReachabilityCmd())
 	rootCmd.AddCommand(newSchemaCmd())
 	rootCmd.AddCommand(newBundleCmd())
@@ -348,7 +350,8 @@ func newGenerateCmd() *cobra.Command {
 				if json.Valid(specRawBytes[0]) {
 					archiveName = "spec.json"
 				}
-				if err := os.WriteFile(filepath.Join(absOut, archiveName), specRawBytes[0], 0o644); err != nil {
+				data := artifacts.RedactArchivedSpecSecrets(specRawBytes[0])
+				if err := os.WriteFile(filepath.Join(absOut, archiveName), data, 0o644); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not archive spec: %v\n", err)
 				}
 			}
@@ -1100,6 +1103,13 @@ func enrichSpecFromCatalog(apiSpec *spec.APISpec) {
 	if err != nil {
 		return
 	}
+	enrichSpecFromCatalogEntry(apiSpec, entry)
+}
+
+func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
+	if apiSpec == nil || entry == nil {
+		return
+	}
 	if len(entry.ProxyRoutes) > 0 && len(apiSpec.ProxyRoutes) == 0 {
 		apiSpec.ProxyRoutes = entry.ProxyRoutes
 	}
@@ -1109,8 +1119,21 @@ func enrichSpecFromCatalog(apiSpec *spec.APISpec) {
 	if entry.Category != "" && apiSpec.Category == "" {
 		apiSpec.Category = entry.Category
 	}
+	if entry.Owner != "" && apiSpec.Owner == "" {
+		apiSpec.Owner = entry.Owner
+	}
+	if entry.OwnerName != "" && apiSpec.OwnerName == "" {
+		apiSpec.OwnerName = entry.OwnerName
+	}
+	if entry.DisplayName != "" && (apiSpec.DisplayName == "" || apiSpec.DisplayNameDerivedFromTitle) {
+		apiSpec.DisplayName = entry.DisplayName
+		apiSpec.DisplayNameDerivedFromTitle = false
+	}
 	if entry.HTTPTransport != "" && apiSpec.HTTPTransport == "" {
 		apiSpec.HTTPTransport = entry.HTTPTransport
+	}
+	if mcpConfigured(entry.MCP) && !mcpConfigured(apiSpec.MCP) {
+		apiSpec.MCP = entry.MCP
 	}
 	if entry.BearerRefresh.BundleURL != "" && apiSpec.BearerRefresh.BundleURL == "" {
 		apiSpec.BearerRefresh.BundleURL = entry.BearerRefresh.BundleURL
@@ -1118,4 +1141,13 @@ func enrichSpecFromCatalog(apiSpec *spec.APISpec) {
 	if entry.BearerRefresh.Pattern != "" && apiSpec.BearerRefresh.Pattern == "" {
 		apiSpec.BearerRefresh.Pattern = entry.BearerRefresh.Pattern
 	}
+}
+
+func mcpConfigured(m spec.MCPConfig) bool {
+	return len(m.Transport) > 0 ||
+		m.Addr != "" ||
+		len(m.Intents) > 0 ||
+		m.EndpointTools != "" ||
+		m.Orchestration != "" ||
+		m.OrchestrationThreshold != 0
 }

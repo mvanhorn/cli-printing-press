@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -233,6 +233,98 @@ func TestWriteToolsManifest_ParamLocationClassification(t *testing.T) {
 	assert.Equal(t, "tags", tool.Params[3].Name)
 	assert.Equal(t, "body", tool.Params[3].Location)
 	assert.False(t, tool.Params[3].Required)
+}
+
+func TestWriteToolsManifest_PublicParamNames(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "public-params",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"stores": {
+				Description: "Stores",
+				Endpoints: map[string]spec.Endpoint{
+					"find": {
+						Method:      "GET",
+						Path:        "/stores",
+						Description: "Find stores",
+						Params: []spec.Param{
+							{Name: "s", FlagName: "address", Aliases: []string{"s"}, Type: "string", Required: true, Description: "Street address"},
+						},
+					},
+					"create": {
+						Method:      "POST",
+						Path:        "/stores",
+						Description: "Create store",
+						Body: []spec.Param{
+							{Name: "store_code", FlagName: "store-code", Aliases: []string{"code"}, Type: "string", Required: true, Description: "Store code"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+
+	require.Len(t, got.Tools, 2)
+	var find, create ManifestTool
+	for _, tool := range got.Tools {
+		switch tool.Name {
+		case "stores_find":
+			find = tool
+		case "stores_create":
+			create = tool
+		}
+	}
+	require.Len(t, find.Params, 1)
+	assert.Equal(t, "address", find.Params[0].Name)
+	assert.Equal(t, "s", find.Params[0].WireName)
+	assert.Equal(t, []string{"s"}, find.Params[0].Aliases)
+
+	require.Len(t, create.Params, 1)
+	assert.Equal(t, "store-code", create.Params[0].Name)
+	assert.Equal(t, "store_code", create.Params[0].WireName)
+	assert.Equal(t, []string{"code"}, create.Params[0].Aliases)
+}
+
+func TestWriteToolsManifest_IdentNamePublicParamName(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "deduped-params",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"posts": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method: "POST",
+						Path:   "/posts",
+						Params: []spec.Param{
+							{Name: "id", Type: "string", Description: "Query ID"},
+						},
+						Body: []spec.Param{
+							{Name: "id", IdentName: "id_2", Type: "string", Description: "Body ID"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+
+	require.Len(t, got.Tools, 1)
+	require.Len(t, got.Tools[0].Params, 2)
+	assert.Equal(t, "id", got.Tools[0].Params[0].Name)
+	assert.Empty(t, got.Tools[0].Params[0].WireName)
+	assert.Equal(t, "id-2", got.Tools[0].Params[1].Name)
+	assert.Equal(t, "id", got.Tools[0].Params[1].WireName)
 }
 
 // TestWriteToolsManifest_ReclassifiedPathParamKeepsPathLocation pins

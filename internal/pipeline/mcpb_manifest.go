@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/version"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 )
 
 // MCPB-bundle constants. Promoted from string literals so a typo here can't

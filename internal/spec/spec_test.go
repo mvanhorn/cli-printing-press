@@ -73,6 +73,151 @@ func TestParseStytch(t *testing.T) {
 	assert.Len(t, s.Types["Session"].Fields, 4)
 }
 
+func TestParsePublicParamNames(t *testing.T) {
+	yamlSpec := []byte(`
+name: public-params
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  stores:
+    endpoints:
+      find:
+        method: GET
+        path: /stores
+        params:
+          - name: s
+            flag_name: address
+            aliases: [s]
+            type: string
+            description: Street address
+`)
+	s, err := ParseBytes(yamlSpec)
+	require.NoError(t, err)
+	param := s.Resources["stores"].Endpoints["find"].Params[0]
+	assert.Equal(t, "s", param.Name)
+	assert.Equal(t, "address", param.FlagName)
+	assert.Equal(t, []string{"s"}, param.Aliases)
+
+	jsonSpec := []byte(`{
+  "name": "public-params-json",
+  "base_url": "https://api.example.com",
+  "auth": {"type": "none"},
+  "resources": {
+    "stores": {
+      "endpoints": {
+        "find": {
+          "method": "GET",
+          "path": "/stores",
+          "params": [
+            {"name": "c", "flag_name": "city", "aliases": ["c"], "type": "string"}
+          ]
+        }
+      }
+    }
+  }
+}`)
+	s, err = ParseBytes(jsonSpec)
+	require.NoError(t, err)
+	param = s.Resources["stores"].Endpoints["find"].Params[0]
+	assert.Equal(t, "c", param.Name)
+	assert.Equal(t, "city", param.FlagName)
+	assert.Equal(t, []string{"c"}, param.Aliases)
+}
+
+func TestParamPublicInputName(t *testing.T) {
+	assert.Equal(t, "address", Param{Name: "s", FlagName: "address"}.PublicInputName())
+	assert.Equal(t, "store_code", Param{Name: "store_code"}.PublicInputName())
+	assert.Equal(t, "id-2", Param{Name: "id", IdentName: "id_2"}.PublicInputName())
+	assert.Equal(t, "start-time-2", Param{Name: "StartTime>", IdentName: "StartTime>_2"}.PublicInputName())
+}
+
+func TestValidatePublicParamNames(t *testing.T) {
+	cases := []struct {
+		name    string
+		param   Param
+		wantErr string
+	}{
+		{
+			name:    "uppercase flag name",
+			param:   Param{Name: "s", FlagName: "Street", Type: "string"},
+			wantErr: `flag_name "Street" must be lowercase kebab-case`,
+		},
+		{
+			name:    "underscore alias",
+			param:   Param{Name: "s", FlagName: "address", Aliases: []string{"street_address"}, Type: "string"},
+			wantErr: `alias "street_address" must be lowercase kebab-case`,
+		},
+		{
+			name:    "alias duplicates public name",
+			param:   Param{Name: "s", FlagName: "address", Aliases: []string{"address"}, Type: "string"},
+			wantErr: `alias "address" duplicates its public name`,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			s := APISpec{
+				Name:    "public-params",
+				BaseURL: "https://api.example.com",
+				Auth:    AuthConfig{Type: "none"},
+				Resources: map[string]Resource{
+					"stores": {
+						Endpoints: map[string]Endpoint{
+							"find": {Method: "GET", Path: "/stores", Params: []Param{tt.param}},
+						},
+					},
+				},
+			}
+			err := s.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestParseRejectsExplicitEmptyFlagName(t *testing.T) {
+	yamlSpec := []byte(`
+name: public-params
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  stores:
+    endpoints:
+      find:
+        method: GET
+        path: /stores
+        params:
+          - name: s
+            flag_name: ""
+            type: string
+`)
+	_, err := ParseBytes(yamlSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "flag_name must not be empty")
+
+	jsonSpec := []byte(`{
+  "name": "public-params-json",
+  "base_url": "https://api.example.com",
+  "auth": {"type": "none"},
+  "resources": {
+    "stores": {
+      "endpoints": {
+        "find": {
+          "method": "GET",
+          "path": "/stores",
+          "params": [{"name": "s", "flag_name": "", "type": "string"}]
+        }
+      }
+    }
+  }
+}`)
+	_, err = ParseBytes(jsonSpec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "flag_name must not be empty")
+}
+
 func TestValidation(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -58,6 +58,87 @@ func TestGenerateDeduplicatesCamelCollidingParams(t *testing.T) {
 		"each param must register a distinct cobra flag name")
 	require.Len(t, flagVars, 3,
 		"all three params must still be represented after dedup")
+}
+
+func TestGenerateRejectsAuthoredPublicFlagCollisions(t *testing.T) {
+	cases := []struct {
+		name    string
+		params  []spec.Param
+		body    []spec.Param
+		paging  *spec.Pagination
+		method  string
+		wantErr string
+	}{
+		{
+			name: "alias equals fallback public name",
+			params: []spec.Param{
+				{Name: "s", Type: "string", FlagName: "address", Aliases: []string{"city"}},
+				{Name: "city", Type: "string"},
+			},
+			method:  "GET",
+			wantErr: `public name "city" collides with param "s" alias`,
+		},
+		{
+			name: "duplicate authored flag name",
+			params: []spec.Param{
+				{Name: "s", Type: "string", FlagName: "address"},
+				{Name: "street", Type: "string", FlagName: "address"},
+			},
+			method:  "GET",
+			wantErr: `public name "address" collides with param "s" public name`,
+		},
+		{
+			name: "body collision",
+			params: []spec.Param{
+				{Name: "s", Type: "string", FlagName: "address"},
+			},
+			body: []spec.Param{
+				{Name: "address", Type: "string"},
+			},
+			method:  "POST",
+			wantErr: `body "address" public name "address" collides with param "s" public name`,
+		},
+		{
+			name: "reserved pagination flag",
+			params: []spec.Param{
+				{Name: "includeAll", Type: "boolean", FlagName: "all"},
+			},
+			paging:  &spec.Pagination{Type: "cursor"},
+			method:  "GET",
+			wantErr: `collides with reserved flag --all`,
+		},
+		{
+			name: "reserved mutating stdin flag",
+			params: []spec.Param{
+				{Name: "source", Type: "string", FlagName: "stdin"},
+			},
+			method:  "POST",
+			wantErr: `collides with reserved flag --stdin`,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			apiSpec := minimalSpec("public-collisions")
+			apiSpec.Resources["stores"] = spec.Resource{
+				Description: "Stores",
+				Endpoints: map[string]spec.Endpoint{
+					"find": {
+						Method:      tt.method,
+						Path:        "/stores",
+						Description: "Find stores",
+						Params:      tt.params,
+						Body:        tt.body,
+						Pagination:  tt.paging,
+					},
+				},
+			}
+
+			err := New(apiSpec, filepath.Join(t.TempDir(), "out")).Generate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }
 
 // TestGenerateRenamesParamCollidingWithPaginationAll covers Case B from issue #275 F-2.

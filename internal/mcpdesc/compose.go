@@ -17,8 +17,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 // optionalListMax caps how many optional params Compose lists inline
@@ -245,13 +245,13 @@ func appendMethodMarker(desc, method string) string {
 
 func formatParam(p spec.Param) string {
 	if p.Default == nil {
-		return p.Name
+		return p.PublicInputName()
 	}
 	val, ok := formatDefault(p.Default)
 	if !ok {
-		return p.Name
+		return p.PublicInputName()
 	}
-	return p.Name + " (default: " + val + ")"
+	return p.PublicInputName() + " (default: " + val + ")"
 }
 
 // formatDefault returns the value and true when usable inline, or

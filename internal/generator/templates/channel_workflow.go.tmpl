@@ -4,8 +4,15 @@
 package cli
 
 import (
+{{- if .AgentMoneyWorkflow.Enabled}}
+	"crypto/rand"
+	"encoding/hex"
+{{- end}}
 	"encoding/json"
 	"fmt"
+{{- if .AgentMoneyWorkflow.Enabled}}
+	"strings"
+{{- end}}
 	"time"
 
 	"{{modulePath}}/internal/store"
@@ -20,9 +27,217 @@ func newWorkflowCmd(flags *rootFlags) *cobra.Command {
 
 	cmd.AddCommand(newWorkflowArchiveCmd(flags))
 	cmd.AddCommand(newWorkflowStatusCmd(flags))
+{{- if .AgentMoneyWorkflow.Enabled}}
+	cmd.AddCommand(newWorkflowPaymentPlanCmd(flags))
+{{- end}}
 
 	return cmd
 }
+
+{{- if .AgentMoneyWorkflow.Enabled}}
+func newWorkflowPaymentPlanCmd(flags *rootFlags) *cobra.Command {
+	var kind string
+	var accountID string
+	var recipientID string
+	var sourceAccountID string
+	var destinationAccountID string
+	var amount float64
+	var paymentMethod string
+	var idempotencyKey string
+	var note string
+	var externalMemo string
+	var purpose string
+
+	cmd := &cobra.Command{
+		Use:   "payment-plan",
+		Short: "Build a safe, executable money-movement plan without sending it",
+		Long: `Build a structured money-movement plan for agents. The command never calls
+the API and never moves money. It emits a dry-run command plus the separate
+execute command an operator can approve later.`,
+		Example: `  {{.Name}}-pp-cli workflow payment-plan --kind payment --account-id acct_123 --recipient-id rec_123 --amount 25 --payment-method ach --agent
+  {{.Name}}-pp-cli workflow payment-plan --kind transfer --source-account-id acct_src --destination-account-id acct_dst --amount 25 --agent`,
+		Annotations: map[string]string{"mcp:read-only": "true"},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			kind = strings.ToLower(strings.TrimSpace(kind))
+			if idempotencyKey == "" {
+				idempotencyKey = "agent-" + randomHex(12)
+			}
+			if amount <= 0 {
+				return fmt.Errorf("--amount must be greater than 0")
+			}
+
+			var base []string
+			body := map[string]any{
+				"amount": amount,
+				"idempotencyKey": idempotencyKey,
+			}
+			if note != "" {
+				body["note"] = note
+			}
+
+			switch kind {
+{{- with .AgentMoneyWorkflow.Payment}}
+			case "payment", "send":
+				if accountID == "" || recipientID == "" || paymentMethod == "" {
+					return fmt.Errorf("--account-id, --recipient-id, and --payment-method are required for --kind payment")
+				}
+				if strings.EqualFold(paymentMethod, "domesticWire") && purpose == "" {
+					return fmt.Errorf("--purpose is required for domesticWire payment plans")
+				}
+				amountArg, err := workflowAmountArg(amount, {{.AmountInteger}})
+				if err != nil {
+					return err
+				}
+				body["recipientId"] = recipientID
+				body["paymentMethod"] = paymentMethod
+				if externalMemo != "" {
+					body["externalMemo"] = externalMemo
+				}
+				if purpose != "" {
+					body["purpose"] = map[string]any{"simple": purpose}
+				}
+				base = []string{"{{$.Name}}-pp-cli"{{range .CommandPath}}, "{{.}}"{{end}}}
+{{- if .HasAccountIDPosition}}
+				base = append(base, accountID)
+{{- end}}
+				base = append(base,
+					"--{{.AmountFlag}}", amountArg,
+					"--{{.RecipientIDFlag}}", recipientID,
+					"--{{.PaymentMethodFlag}}", paymentMethod,
+					"--{{.IdempotencyKeyFlag}}", idempotencyKey,
+				)
+{{- if .NoteFlag}}
+				if note != "" {
+					base = append(base, "--{{.NoteFlag}}", note)
+				}
+{{- end}}
+{{- if .ExternalMemoFlag}}
+				if externalMemo != "" {
+					base = append(base, "--{{.ExternalMemoFlag}}", externalMemo)
+				}
+{{- end}}
+{{- if .PurposeFlag}}
+				if purpose != "" {
+					base = append(base, "--{{.PurposeFlag}}", fmt.Sprintf(`{"simple":%q}`, purpose))
+				}
+{{- end}}
+{{- end}}
+{{- with .AgentMoneyWorkflow.Request}}
+			case "request":
+				if accountID == "" || recipientID == "" || paymentMethod == "" {
+					return fmt.Errorf("--account-id, --recipient-id, and --payment-method are required for --kind request")
+				}
+				amountArg, err := workflowAmountArg(amount, {{.AmountInteger}})
+				if err != nil {
+					return err
+				}
+				body["recipientId"] = recipientID
+				body["paymentMethod"] = paymentMethod
+				if externalMemo != "" {
+					body["externalMemo"] = externalMemo
+				}
+				base = []string{"{{$.Name}}-pp-cli"{{range .CommandPath}}, "{{.}}"{{end}}}
+{{- if .HasAccountIDPosition}}
+				base = append(base, accountID)
+{{- end}}
+				base = append(base,
+					"--{{.AmountFlag}}", amountArg,
+					"--{{.RecipientIDFlag}}", recipientID,
+					"--{{.PaymentMethodFlag}}", paymentMethod,
+					"--{{.IdempotencyKeyFlag}}", idempotencyKey,
+				)
+{{- if .NoteFlag}}
+				if note != "" {
+					base = append(base, "--{{.NoteFlag}}", note)
+				}
+{{- end}}
+{{- if .ExternalMemoFlag}}
+				if externalMemo != "" {
+					base = append(base, "--{{.ExternalMemoFlag}}", externalMemo)
+				}
+{{- end}}
+{{- end}}
+{{- with .AgentMoneyWorkflow.Transfer}}
+			case "transfer":
+				if sourceAccountID == "" || destinationAccountID == "" {
+					return fmt.Errorf("--source-account-id and --destination-account-id are required for --kind transfer")
+				}
+{{- if .HasAccountIDPosition}}
+				if accountID == "" {
+					return fmt.Errorf("--account-id is required for --kind transfer")
+				}
+{{- end}}
+				amountArg, err := workflowAmountArg(amount, {{.AmountInteger}})
+				if err != nil {
+					return err
+				}
+				body["sourceAccountId"] = sourceAccountID
+				body["destinationAccountId"] = destinationAccountID
+				base = []string{"{{$.Name}}-pp-cli"{{range .CommandPath}}, "{{.}}"{{end}}}
+{{- if .HasAccountIDPosition}}
+				base = append(base, accountID)
+{{- end}}
+				base = append(base,
+					"--{{.SourceAccountIDFlag}}", sourceAccountID,
+					"--{{.DestinationAccountIDFlag}}", destinationAccountID,
+					"--{{.AmountFlag}}", amountArg,
+					"--{{.IdempotencyKeyFlag}}", idempotencyKey,
+				)
+{{- if .NoteFlag}}
+				if note != "" {
+					base = append(base, "--{{.NoteFlag}}", note)
+				}
+{{- end}}
+{{- end}}
+			default:
+				return fmt.Errorf("--kind must be one of:{{if .AgentMoneyWorkflow.Payment}} payment{{end}}{{if .AgentMoneyWorkflow.Request}} request{{end}}{{if .AgentMoneyWorkflow.Transfer}} transfer{{end}}")
+			}
+
+			return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+				"kind": kind,
+				"body": body,
+				"dry_run_command": append(append([]string{}, base...), "--dry-run", "--agent"),
+				"execute_command": append([]string{}, base...),
+				"idempotency_key": idempotencyKey,
+				"requires_approval": true,
+				"read_only": true,
+				"created_at": time.Now().UTC().Format(time.RFC3339),
+			}, flags)
+		},
+	}
+
+	cmd.Flags().StringVar(&kind, "kind", "{{if .AgentMoneyWorkflow.Payment}}payment{{else if .AgentMoneyWorkflow.Request}}request{{else}}transfer{{end}}", "Money movement kind: payment, request, or transfer")
+	cmd.Flags().StringVar(&accountID, "account-id", "", "Account ID for account-scoped payment/request flows")
+	cmd.Flags().StringVar(&recipientID, "recipient-id", "", "Recipient ID for payment/request flows")
+	cmd.Flags().StringVar(&sourceAccountID, "source-account-id", "", "Source account ID for transfer flows")
+	cmd.Flags().StringVar(&destinationAccountID, "destination-account-id", "", "Destination account ID for transfer flows")
+	cmd.Flags().Float64Var(&amount, "amount", 0, "Dollar amount")
+	cmd.Flags().StringVar(&paymentMethod, "payment-method", "", "Payment method for payment/request flows")
+	cmd.Flags().StringVar(&idempotencyKey, "idempotency-key", "", "Idempotency key; generated when omitted")
+	cmd.Flags().StringVar(&note, "note", "", "Internal note")
+	cmd.Flags().StringVar(&externalMemo, "external-memo", "", "External memo")
+	cmd.Flags().StringVar(&purpose, "purpose", "", "Simple purpose text for domestic wires when supported")
+	return cmd
+}
+
+func randomHex(n int) string {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
+}
+
+func workflowAmountArg(amount float64, integer bool) (string, error) {
+	if !integer {
+		return fmt.Sprintf("%.2f", amount), nil
+	}
+	if amount != float64(int64(amount)) {
+		return "", fmt.Errorf("--amount must be a whole number for this payment endpoint")
+	}
+	return fmt.Sprintf("%.0f", amount), nil
+}
+{{- end}}
 
 func newWorkflowArchiveCmd(flags *rootFlags) *cobra.Command {
 	var dbPath string

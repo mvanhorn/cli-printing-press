@@ -15,7 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 )
 
 // Scan inspects every installed printed CLI under the published library

@@ -120,6 +120,10 @@ run_case() {
   mkdir -p "$out_dir"
   command_text="$(cat "$case_dir/command.txt")"
 
+  # Both git config keys use the same slug-shaped fixture value so goldens
+  # are deterministic. In production, `user.name` resolves to a prose
+  # display name (e.g. "Trevin Chow"); golden output's slug-shaped
+  # `author:` field is a fixture artifact, not the production shape.
   BINARY="$binary" CASE_ACTUAL_DIR="$out_dir" REPO_ROOT="$repo_root" \
     GIT_CONFIG_COUNT=2 \
     GIT_CONFIG_KEY_0=github.user \

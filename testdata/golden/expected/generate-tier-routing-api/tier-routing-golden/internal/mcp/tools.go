@@ -31,7 +31,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/items/enterprise", "enterprise", []string{ }),
+		makeAPIHandler("GET", "/items/enterprise", "enterprise", []mcpParamBinding{ }, []string{ }),
 	)
 	s.AddTool(
 		mcplib.NewTool("items_list",
@@ -40,7 +40,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/items", "free", []string{ }),
+		makeAPIHandler("GET", "/items", "free", []mcpParamBinding{ }, []string{ }),
 	)
 	s.AddTool(
 		mcplib.NewTool("items_premium",
@@ -49,7 +49,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/items/premium", "paid", []string{ }),
+		makeAPIHandler("GET", "/items/premium", "paid", []mcpParamBinding{ }, []string{ }),
 	)
 	// SQL tool — ad-hoc analysis on synced data without API calls
 	s.AddTool(
@@ -78,8 +78,14 @@ func RegisterTools(s *server.MCPServer) {
 	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
 }
 
+type mcpParamBinding struct {
+	PublicName string
+	WireName   string
+	Location   string
+}
+
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
-func makeAPIHandler(method, pathTemplate, tier string, positionalParams []string) server.ToolHandlerFunc {
+func makeAPIHandler(method, pathTemplate, tier string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		c, err := newMCPClient()
 		if err != nil {
@@ -96,7 +102,27 @@ func makeAPIHandler(method, pathTemplate, tier string, positionalParams []string
 		// args that map to query params (e.g. `search <query>` -> ?query=);
 		// the placeholder check below disambiguates them at runtime.
 		path := pathTemplate
+		knownArgs := make(map[string]bool, len(bindings))
 		pathParams := make(map[string]bool, len(positionalParams))
+		params := make(map[string]string)
+		bodyArgs := make(map[string]any)
+		for _, binding := range bindings {
+			knownArgs[binding.PublicName] = true
+			v, ok := args[binding.PublicName]
+			if !ok {
+				continue
+			}
+			switch binding.Location {
+			case "path":
+				placeholder := "{" + binding.WireName + "}"
+				pathParams[binding.PublicName] = true
+				path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)
+			case "body":
+				bodyArgs[binding.WireName] = v
+			default:
+				params[binding.WireName] = fmt.Sprintf("%v", v)
+			}
+		}
 		for _, p := range positionalParams {
 			placeholder := "{" + p + "}"
 			if !strings.Contains(pathTemplate, placeholder) {
@@ -108,12 +134,16 @@ func makeAPIHandler(method, pathTemplate, tier string, positionalParams []string
 			}
 		}
 
-		params := make(map[string]string)
 		for k, v := range args {
-			if pathParams[k] {
+			if pathParams[k] || knownArgs[k] {
 				continue
 			}
-			params[k] = fmt.Sprintf("%v", v)
+			switch method {
+			case "POST", "PUT", "PATCH":
+				bodyArgs[k] = v
+			default:
+				params[k] = fmt.Sprintf("%v", v)
+			}
 		}
 
 		var data json.RawMessage
@@ -121,13 +151,13 @@ func makeAPIHandler(method, pathTemplate, tier string, positionalParams []string
 		case "GET":
 			data, err = c.Get(path, params)
 		case "POST":
-			body, _ := json.Marshal(args)
+			body, _ := json.Marshal(bodyArgs)
 			data, _, err = c.Post(path, body)
 		case "PUT":
-			body, _ := json.Marshal(args)
+			body, _ := json.Marshal(bodyArgs)
 			data, _, err = c.Put(path, body)
 		case "PATCH":
-			body, _ := json.Marshal(args)
+			body, _ := json.Marshal(bodyArgs)
 			data, _, err = c.Patch(path, body)
 		case "DELETE":
 			data, _, err = c.Delete(path)

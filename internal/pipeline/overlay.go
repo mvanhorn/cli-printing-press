@@ -16,10 +16,14 @@ type ResourceOverlay struct {
 type EndpointOverlay struct {
 	Description *string      `yaml:"description,omitempty"`
 	Params      []ParamPatch `yaml:"params,omitempty"`
+	Body        []ParamPatch `yaml:"body,omitempty"`
 }
 
 // ParamPatch modifies a single parameter.
 type ParamPatch struct {
-	Name    string  `yaml:"name"`
-	Default *string `yaml:"default,omitempty"`
+	Name          string    `yaml:"name"`
+	Default       *string   `yaml:"default,omitempty"`
+	FlagName      *string   `yaml:"flag_name,omitempty"`
+	ClearFlagName bool      `yaml:"clear_flag_name,omitempty"`
+	Aliases       *[]string `yaml:"aliases,omitempty"`
 }

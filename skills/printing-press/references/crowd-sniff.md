@@ -45,4 +45,6 @@ The report must contain these sections:
 
 5. **Auth Patterns Detected** — Authentication patterns found in SDK code (API key headers, bearer tokens, OAuth flows). Include the header name or env variable convention when visible.
 
-6. **Coverage Summary** — Total endpoints found, breakdown by source tier, and any gaps compared to the Phase 1 research brief (e.g., "Brief mentions webhooks but no webhook endpoints found in community code").
+6. **Parameter Name Evidence** — SDK argument names, wrapper function names, examples, form labels, or source comments that clarify cryptic wire keys. Preserve endpoint-local evidence so spec enrichment can author `flag_name` without guessing.
+
+7. **Coverage Summary** — Total endpoints found, breakdown by source tier, and any gaps compared to the Phase 1 research brief (e.g., "Brief mentions webhooks but no webhook endpoints found in community code").

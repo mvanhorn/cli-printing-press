@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/public-param-names.yaml --output "$CASE_ACTUAL_DIR/public-param-golden" --force --validate=false

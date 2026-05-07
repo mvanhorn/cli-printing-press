@@ -34,7 +34,9 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
         path: "/users"           # string (REQUIRED) API path; supports {param} placeholders
         description: "List users" # string endpoint help text
         params:                   # []Param query/path parameters
-          - name: limit           # string param name; flag is --limit unless positional=true
+          - name: limit           # string upstream wire key; request serialization always uses this value
+            flag_name: page-size  # string optional public CLI/MCP/docs name; agent-authored from evidence
+            aliases: []           # []string optional hidden compatibility flag spellings
             type: int             # string type: string | int | bool | float
             required: false       # bool whether Cobra marks the flag required
             positional: false     # bool true => consumes positional CLI arg and fills {name} in path
@@ -45,6 +47,7 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
             format: ""           # string optional format hint (date-time, email, uri, etc.)
         body:                     # []Param request body fields (primarily for POST/PUT)
           - name: email
+            # flag_name and aliases are optional here too; omit unless evidence supports them
             type: string
             required: true
             positional: false
@@ -204,7 +207,43 @@ types:
         type: string
 ```
 
-## 3. Validation Rules
+## 3. Public Parameter Names
+
+`name` is the upstream wire key. The generator uses it for query strings, path
+substitution, and JSON body keys. Do not change `name` just to make a prettier
+CLI.
+
+`flag_name` is the preferred public name shown in generated CLI flags, examples,
+typed MCP schemas, and `tools-manifest.json`. Add it only when source evidence
+makes the meaning clear. Valid values are lowercase kebab-case.
+
+`aliases` are accepted Cobra flag spellings for compatibility. They bind to the
+same backing variable as `flag_name` and are hidden from generated help. Do not
+copy raw wire keys into `aliases` unless they are already valid lowercase
+kebab-case public flags.
+
+Example:
+
+```yaml
+params:
+  - name: s
+    flag_name: address
+    aliases: [s]
+    type: string
+    required: true
+    description: Street address
+  - name: c
+    flag_name: city
+    aliases: [c]
+    type: string
+    required: true
+    description: City, state, zip
+```
+
+Here `--address` and `--city` are the generated public names, `--s` and `--c`
+remain compatibility aliases, and requests still send upstream keys `s` and `c`.
+
+## 4. Validation Rules
 
 Validation in `spec.Validate()` enforces:
 
@@ -215,8 +254,9 @@ Validation in `spec.Validate()` enforces:
 - every endpoint must have both `method` and `path`
 - `resources.<name>.base_url` is allowed for resources that live on another host; sub-resources inherit the parent override unless they set their own `base_url`
 - resource `base_url` overrides cannot be combined with `client_pattern: proxy-envelope`, because proxy-envelope clients POST every request to the root `base_url`
+- `flag_name` and `aliases` must be lowercase kebab-case, non-empty when present, and collision-free within their command surface
 
-## 4. Common Mistakes
+## 5. Common Mistakes
 
 These commonly cause generation/build failures or incorrect CLI behavior:
 

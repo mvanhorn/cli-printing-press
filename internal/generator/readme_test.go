@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -205,9 +205,11 @@ func TestReadmeHandlesMarkdownUnsafeNarrativeFields(t *testing.T) {
 
 func minimalSpec(name string) *spec.APISpec {
 	return &spec.APISpec{
-		Name:    name,
-		Version: "0.1.0",
-		BaseURL: "https://api.example.com",
+		Name:      name,
+		Version:   "0.1.0",
+		BaseURL:   "https://api.example.com",
+		Owner:     "test-owner",
+		OwnerName: "Test Author",
 		Auth: spec.AuthConfig{
 			Type:    "api_key",
 			Header:  "Authorization",
@@ -269,6 +271,43 @@ func TestReadmeUsesExplicitDisplayNameForProse(t *testing.T) {
 
 	assert.Contains(t, content, "# Product Hunt CLI")
 	assert.NotContains(t, content, "# Producthunt CLI")
+}
+
+// TestReadmeEmitsHermesAndOpenClawInstallSections asserts the new install
+// sections render with the correct hardcoded mvanhorn paths and the
+// hermes-install anchor for sweep-tool idempotency. CLI form and chat form
+// both use mvanhorn/printing-press-library/cli-skills/pp-<api> (verified
+// against tested install behavior — earlier draft of the chat form used a
+// shorter mvanhorn/cli-skills path that doesn't resolve).
+func TestReadmeEmitsHermesAndOpenClawInstallSections(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("hermes-install")
+	outputDir := filepath.Join(t.TempDir(), "hermes-install-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	content := string(readme)
+
+	// Anchor enables the cross-repo sweep tool to insert sections
+	// idempotently into legacy READMEs that predate this template change.
+	assert.Contains(t, content, "<!-- pp-hermes-install-anchor -->",
+		"sweep-tool anchor must be present so retrofit can locate the insertion point")
+
+	// Hermes section: both forms (CLI + chat) use the full
+	// mvanhorn/printing-press-library/cli-skills path.
+	assert.Contains(t, content, "## Install for Hermes")
+	assert.Contains(t, content, "hermes skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
+		"Hermes CLI form must use mvanhorn/printing-press-library/cli-skills (the short mvanhorn/cli-skills form was wrong)")
+	assert.Contains(t, content, "/skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
+		"Hermes chat form must use mvanhorn/printing-press-library/cli-skills")
+
+	// OpenClaw section: copyable code-fenced agent instruction.
+	assert.Contains(t, content, "## Install for OpenClaw")
+	assert.Contains(t, content, "https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/pp-hermes-install",
+		"OpenClaw URL must point at the cli-skills directory")
 }
 
 // TestReadmeFallsBackWhenNarrativeAbsent asserts the generic description

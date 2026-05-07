@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 func ApplyReachabilityDefaults(apiSpec *spec.APISpec, analysis *TrafficAnalysis) {

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/browsersniff"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/crowdsniff"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/crowdsniff"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 )

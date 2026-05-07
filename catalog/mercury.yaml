@@ -1,0 +1,27 @@
+name: mercury
+display_name: Mercury
+description: Business banking API for accounts, transactions, payments, recipients, cards, invoices, treasury, and webhooks
+category: payments
+spec_url: https://dash.readme.com/api/v1/api-registry/ilz81omom1n4vx
+spec_format: json
+openapi_version: "3.0"
+tier: official
+verified_date: "2026-05-06"
+homepage: https://docs.mercury.com/reference
+owner_name: Cathryn Lavery
+mcp:
+  transport: [stdio, http]
+  orchestration: code
+  endpoint_tools: hidden
+notes: |
+  Official Mercury API spec hosted through ReadMe's public API registry. Mercury
+  also ships an official Go CLI; the Printing Press value is the generated MCP
+  surface, local store/search/SQL workflows, and agent safety annotations.
+
+  Treat money-moving operations as high-risk during dogfood. The current parser
+  preserves complex request body fields so generated dry-run and agent-plan
+  commands can show the exact payload before any write call is sent.
+known_alternatives:
+  - name: mercury-cli
+    url: https://github.com/MercuryTechnologies/mercury-cli
+    language: go

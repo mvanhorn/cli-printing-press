@@ -6,7 +6,7 @@ import (
 	"io"
 	"path/filepath"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline/regenmerge"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline/regenmerge"
 	"github.com/spf13/cobra"
 )
 

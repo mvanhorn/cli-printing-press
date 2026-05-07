@@ -13,7 +13,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -307,21 +307,30 @@ func resolveOwnerForExisting(outputDir string) string {
 	return resolveOwnerForNew()
 }
 
-// readManifestOwner returns the `owner` field from
-// outputDir/.printing-press.json, or "" if the file is absent, malformed,
-// or the field is empty/whitespace.
-func readManifestOwner(outputDir string) string {
+// readManifestField returns the trimmed string value at key from
+// outputDir/.printing-press.json, or "" when the file is absent,
+// malformed, the key is missing, or the value is empty/whitespace.
+//
+// Reads the manifest directly rather than calling
+// pipeline.ReadCLIManifest because the pipeline package already
+// imports generator — adding the reverse direction would create a
+// cycle.
+func readManifestField(outputDir, key string) string {
 	data, err := os.ReadFile(filepath.Join(outputDir, ".printing-press.json"))
 	if err != nil {
 		return ""
 	}
-	var m struct {
-		Owner string `json:"owner"`
-	}
+	var m map[string]any
 	if err := json.Unmarshal(data, &m); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(m.Owner)
+	s, _ := m[key].(string)
+	return strings.TrimSpace(s)
+}
+
+// readManifestOwner returns the `owner` slug from the manifest.
+func readManifestOwner(outputDir string) string {
+	return readManifestField(outputDir, "owner")
 }
 
 // resolveOwnerForNew returns the owner attribution for a brand-new project
@@ -355,6 +364,40 @@ func parseCopyrightOwner(outputDir string) string {
 		return string(m[1])
 	}
 	return ""
+}
+
+// resolveOwnerNameForExisting returns the human-readable owner display
+// name for a regen against an existing tree. Tiered:
+//  1. .printing-press.json's `owner_name` field, if present and non-empty
+//  2. resolveOwnerNameForNew() (raw `git config user.name`)
+//
+// Distinct from resolveOwnerForExisting, which returns a slug-shaped string
+// for module paths and copyright headers. OwnerName flows into prose
+// surfaces (Hermes author:, README byline) and must not be sanitized.
+func resolveOwnerNameForExisting(outputDir string) string {
+	if name := readManifestOwnerName(outputDir); name != "" {
+		return name
+	}
+	return resolveOwnerNameForNew()
+}
+
+// readManifestOwnerName returns the `owner_name` display-name field
+// from the manifest.
+func readManifestOwnerName(outputDir string) string {
+	return readManifestField(outputDir, "owner_name")
+}
+
+// resolveOwnerNameForNew returns the raw `git config user.name` for a fresh
+// print. Returns "" when the value is unset — the caller is responsible for
+// erroring on that case so the empty value never reaches a published
+// SKILL.md or README. No sanitization (display-name shape preserved); no
+// fallback to "USER" (would publish an obviously-wrong author).
+func resolveOwnerNameForNew() string {
+	out, err := exec.Command("git", "config", "user.name").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // sanitizeOwner cleans up an owner string for use in Go module paths.

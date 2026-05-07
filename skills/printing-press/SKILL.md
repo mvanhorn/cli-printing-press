@@ -143,12 +143,12 @@ elif ! command -v printing-press >/dev/null 2>&1; then
     echo ""
     if command -v go >/dev/null 2>&1; then
       echo "Install it in your terminal:"
-      echo "  GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest"
+      echo "  GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest"
       echo ""
       echo "(GOPRIVATE is required while the repo is private. The plain command works after the public launch.)"
     else
       echo "Go 1.22+ is also not installed. Install Go from https://go.dev/dl/, then:"
-      echo "  GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v3/cmd/printing-press@latest"
+      echo "  GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest"
     fi
     echo ""
     echo "Verify with: printing-press --version"
@@ -190,7 +190,7 @@ fi
 
 if [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
   _installed=$(printing-press version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
-  _latest=$(GOPRIVATE=github.com/mvanhorn/* go list -m -versions github.com/mvanhorn/cli-printing-press/v3 2>/dev/null | awk '{print $NF}' | sed 's/^v//')
+  _latest=$(GOPRIVATE=github.com/mvanhorn/* go list -m -versions github.com/mvanhorn/cli-printing-press/v4 2>/dev/null | awk '{print $NF}' | sed 's/^v//')
 
   if [ -n "$_installed" ] && [ -n "$_latest" ] && [ "$_installed" != "$_latest" ]; then
     # sort -V is not fully semver-aware: it ranks "3.0.0-rc1" above "3.0.0" instead of below.
@@ -1545,6 +1545,76 @@ template produces correct auth from the start.
 APIs, public data feeds), don't invent auth. The signal must come from research — not
 from guessing. No research mention of auth = no enrichment.
 
+#### Public Parameter Name Enrichment
+
+Before generating, inspect endpoint params and body fields whose API names would
+make poor CLI or MCP inputs, especially one-letter keys, punctuation-heavy keys,
+or names that only make sense inside the upstream protocol. When clear evidence
+shows the user-facing meaning, author `flag_name` in the internal spec or overlay
+and add `aliases` only for compatibility spellings.
+
+This is an agent judgment step, not a generator inference step. The skill uses
+research, docs, SDK/source names, browser-sniff form labels, traffic-analysis
+request context, and endpoint workflow evidence to decide the semantic name.
+The Printing Press CLI validates and propagates that authored data through Cobra
+flags, generated examples, typed MCP schemas, and `tools-manifest.json`; it must
+not guess that a cryptic key always means the same thing across APIs.
+
+Run the deterministic inventory before generation when a spec may contain
+cryptic wire names:
+
+```bash
+printing-press public-param-audit --spec <spec-or-overlay-output> --ledger <runstate>/public-param-audit.json --strict
+```
+
+The command does not decide that every finding needs a public flag. It identifies
+parameters that need an agent decision. For each pending finding, either:
+
+- Author `flag_name` and compatibility `aliases` in the spec or overlay, then rerun
+  the audit so the finding becomes resolved from the spec itself.
+- Record `decision: "skip"` in the ledger with `source_evidence` and `skip_reason`
+  when source material shows no public rename is warranted.
+
+A ledger entry with `decision: "flag_name"` or `proposed_flag_name` is only a note
+to the agent; it is not complete until the spec or overlay actually contains the
+public name. Strict mode fails on unreviewed findings, not on evidence-backed
+skips. A one-letter wire name alone is enough to enter the inventory, but not
+enough to author a rename.
+
+Good evidence:
+- Explicit parameter descriptions, vendor docs, or SDK argument names.
+- Browser-sniff form/input labels and the interaction that produced the request.
+- Traffic-analysis context tying the parameter to a specific endpoint workflow.
+- Existing manuscript notes or reviewed examples that use the same task-level term.
+
+Bad evidence:
+- A one-letter name alone.
+- Generic descriptions such as "query parameter" or "string value".
+- Ambiguous sample values with no endpoint context.
+- Global assumptions such as "`s` means search" or "`c` means city".
+
+Prefer concise task-level names an agent would naturally use on that command. For
+a store-locator endpoint with `s` described as `Street address` and `c` described
+as `City, state, zip`, author:
+
+```yaml
+params:
+  - name: s
+    flag_name: address
+    aliases: [s]
+    description: Street address
+  - name: c
+    flag_name: city
+    aliases: [c]
+    description: City, state, zip
+```
+
+The upstream wire keys remain `s` and `c`; generated users and agents see
+`address` and `city`. If the evidence is unclear after research, leave
+`flag_name` unset, record the reviewed source material and evidence gap in the
+audit ledger, and preserve the gap in the manuscript rather than inventing a
+friendly name.
+
 #### Free/Paid Tier Routing Enrichment
 
 If Phase 1 finds that the headline commands should stay free but secondary
@@ -2503,6 +2573,18 @@ Acceptance Report: <api>
     - [each issue for retro]
   Gate: PASS / FAIL
 ```
+
+**Redact PII while authoring the report.** When live API responses include an
+organization or workspace name, user email, assignee/collaborator name, or any
+other human-identifying string, describe the result generically instead of
+quoting the literal value:
+- organization or workspace name -> "the test workspace"
+- authenticated user email/name -> "the authenticated viewer"
+- assignees or collaborators -> "the highest-loaded assignee" / "the project lead"
+- team identifiers such as `ENG` or `T2` are OK when they are structural keys
+
+The Phase 5.6 manuscript scan and publish-skill PII scan are defense in depth;
+keep PII out of the acceptance report from the moment you write it.
 
 **Acceptance threshold:**
 - Quick Check: 5/6 core tests must pass. Auth (`doctor`) or sync failure is automatic FAIL.

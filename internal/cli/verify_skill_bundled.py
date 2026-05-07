@@ -3,8 +3,10 @@
 
 Four checks run in sequence:
 
-  1. flag-names — every `--flag` in SKILL.md is declared as a cobra flag
-     somewhere in internal/cli/*.go.
+  1. flag-names — every `--flag` used on a `<cli_binary> ...` invocation in
+     SKILL.md is declared as a cobra flag somewhere in internal/cli/*.go.
+     Flags on lines that invoke other tools (npx installers, gh, go,
+     curl, etc.) are out of scope and ignored.
   2. flag-commands — every `--flag` used on a specific command is declared
      on that command (or as a persistent/root flag).
   3. positional-args — positional args in bash recipes match the command's
@@ -82,9 +84,6 @@ FLAG_DECL_RE = re.compile(
     r'StringSliceVar|StringArrayVar|UintVar|Uint64Var)P?\('
     r'&[^,]+,\s*"([a-z][a-z0-9-]*)"'
 )
-FLAG_TOKEN_RE = re.compile(r"(?:^|\s)(--[a-z][a-z0-9-]*)")
-
-
 @dataclass
 class Finding:
     check: str
@@ -596,12 +595,6 @@ def persistent_flag_declared(cli_dir: Path, flag_name: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def extract_all_flags(skill: Path) -> set[str]:
-    """Return every `--flag-name` token (without `--`) used anywhere in SKILL.md."""
-    text = skill.read_text()
-    return {t.lstrip("-") for t in FLAG_TOKEN_RE.findall(text)}
-
-
 def extract_recipes(skill: Path, cli_binary: str, cli_dir: Path | None = None) -> list[tuple[list[str], list[str], list[str]]]:
     """Return list of (cmd_path, positional_args, flags) tuples from bash blocks.
 
@@ -710,16 +703,28 @@ def extract_recipes(skill: Path, cli_binary: str, cli_dir: Path | None = None) -
 # ---------------------------------------------------------------------------
 
 
-def check_flag_names(cli_dir: Path, skill: Path, report: Report) -> None:
+def check_flag_names(cli_dir: Path, skill: Path, cli_binary: str, report: Report) -> None:
+    # Scoped to recipes so flags belonging to other tools invoked from
+    # SKILL.md (npx installers, gh, go, curl, ...) don't get reported as
+    # missing declarations on the printed CLI. extract_recipes already
+    # filters to lines starting with `cli_binary + " "`.
     all_files = list((cli_dir / "internal/cli").glob("*.go"))
-    flags = extract_all_flags(skill) - COMMON_FLAGS
-    for flag in sorted(flags):
-        if not flag_declared_in(all_files, flag):
+    recipes = extract_recipes(skill, cli_binary, cli_dir)
+    seen: set[str] = set()
+    for cmd_path, _positional, flags in recipes:
+        for raw_flag in flags:
+            flag = raw_flag.lstrip("-")
+            if flag in COMMON_FLAGS or flag in seen:
+                continue
+            if flag_declared_in(all_files, flag):
+                continue
+            seen.add(flag)
+            path_str = " ".join(cmd_path)
             report.findings.append(
                 Finding(
                     check="flag-names",
                     severity="error",
-                    command="(any)",
+                    command=f"{cli_binary} {path_str}",
                     detail=f"--{flag} is referenced in SKILL.md but not declared in any internal/cli/*.go",
                 )
             )
@@ -957,7 +962,7 @@ def run_checks(cli_dir: Path, only: set[str] | None) -> Report:
     checks = only or {"flag-names", "flag-commands", "positional-args", "unknown-command"}
     if "flag-names" in checks:
         report.checks_run.append("flag-names")
-        check_flag_names(cli_dir, skill, report)
+        check_flag_names(cli_dir, skill, cli_binary, report)
     if "flag-commands" in checks:
         report.checks_run.append("flag-commands")
         check_flag_commands(cli_dir, skill, cli_binary, report)

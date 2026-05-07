@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/shellargs"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
 )
 
 // LiveStatus is the outcome of one feature's live check.

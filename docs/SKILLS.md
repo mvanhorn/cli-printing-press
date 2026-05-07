@@ -14,6 +14,13 @@ Decide responsibility explicitly:
 - **SKILL.md / agent capability:** judgment calls, product tradeoffs, semantic honesty, whether prose overpromises, whether output is plausible, whether a feature is worth building, or workflows that require user/API context not available to the binary. Keep these as clear agent instructions and reviewer prompt contracts.
 - **Both:** the machine should produce or verify the deterministic substrate, then SKILL.md should direct the agent to inspect the remaining semantic layer. Example pattern: dogfood syncs README/SKILL feature blocks from `novel_features_built`; the skill tells the agent to audit surrounding prose, recipes, trigger phrases, and examples for indirect claims.
 
+Public parameter names follow the "Both" pattern. The agent uses evidence to
+author semantic `flag_name` and compatibility `aliases`; the Printing Press CLI
+inventories suspicious wire names with `public-param-audit`, preserves
+evidence-backed skip decisions in a ledger, and propagates authored fields
+through generated CLI, docs, MCP, and manifest surfaces without inferring names
+itself.
+
 For any SKILL.md update, search for the old concept across the skill file, not just the paragraph closest to the code change. Agentic review prompts often duplicate workflow assumptions from earlier phase instructions.
 
 ## Reference File Pattern

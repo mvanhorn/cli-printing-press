@@ -240,6 +240,51 @@ func TestValidatePhase5Gate_FullPassRejectsFailures(t *testing.T) {
 	assert.Contains(t, result.Detail, "full")
 }
 
+func TestValidatePhase5Gate_ManualLevelDocumentsAcceptedValues(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "pass",
+		Level:         "manual",
+		MatrixSize:    2,
+		TestsPassed:   2,
+		TestsFailed:   0,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, `"manual"`)
+	assert.Contains(t, result.Detail, "accepted: quick, full")
+	assert.Contains(t, result.Detail, "dogfood --live --write-acceptance")
+}
+
+func TestValidatePhase5Gate_UnknownLevelDocumentsAcceptedValues(t *testing.T) {
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "test",
+		RunID:         "run-1",
+		Status:        "pass",
+		Level:         "smoke",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		TestsFailed:   0,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, `"smoke"`)
+	assert.Contains(t, result.Detail, "accepted: quick, full")
+	assert.NotContains(t, result.Detail, "manual")
+	assert.Contains(t, result.Detail, "dogfood --live --write-acceptance")
+}
+
 func TestValidatePhase5Gate_NoAuthRequiresPassMarker(t *testing.T) {
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}

@@ -8,8 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -764,4 +765,52 @@ resources:
 		"generated files should land at the user-supplied --output path")
 	assert.NoDirExists(t, derivedDir,
 		"the spec-derived directory must not be created when --output is explicit")
+}
+
+func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {
+	apiSpec := &spec.APISpec{Name: "test-api"}
+
+	enrichSpecFromCatalogEntry(apiSpec, &catalog.Entry{
+		DisplayName: "Test.API",
+		OwnerName:   "Trevin Chow",
+		MCP: spec.MCPConfig{
+			Transport:     []string{"stdio", "http"},
+			Orchestration: "code",
+			EndpointTools: "hidden",
+		},
+	})
+
+	assert.Equal(t, "Test.API", apiSpec.DisplayName)
+	assert.Equal(t, "Trevin Chow", apiSpec.OwnerName)
+	assert.Equal(t, []string{"stdio", "http"}, apiSpec.MCP.Transport)
+	assert.Equal(t, "code", apiSpec.MCP.Orchestration)
+	assert.Equal(t, "hidden", apiSpec.MCP.EndpointTools)
+}
+
+func TestEnrichSpecFromCatalogReplacesTitleDerivedDisplayName(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Name:                        "trigger-dev",
+		DisplayName:                 "Trigger Dev",
+		DisplayNameDerivedFromTitle: true,
+	}
+
+	enrichSpecFromCatalogEntry(apiSpec, &catalog.Entry{
+		DisplayName: "Trigger.dev",
+	})
+
+	assert.Equal(t, "Trigger.dev", apiSpec.DisplayName)
+	assert.False(t, apiSpec.DisplayNameDerivedFromTitle)
+}
+
+func TestEnrichSpecFromCatalogKeepsExplicitDisplayName(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Name:        "trigger-dev",
+		DisplayName: "Spec.dev",
+	}
+
+	enrichSpecFromCatalogEntry(apiSpec, &catalog.Entry{
+		DisplayName: "Trigger.dev",
+	})
+
+	assert.Equal(t, "Spec.dev", apiSpec.DisplayName)
 }

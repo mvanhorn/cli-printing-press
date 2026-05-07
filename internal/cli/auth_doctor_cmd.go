@@ -3,7 +3,7 @@ package cli
 import (
 	"fmt"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/authdoctor"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/authdoctor"
 	"github.com/spf13/cobra"
 )
 

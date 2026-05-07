@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 const largeMCPSurfaceWarning = `warning: spec exposes %d MCP endpoint tools (>%d threshold). The default

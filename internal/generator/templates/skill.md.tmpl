@@ -1,47 +1,15 @@
 ---
 name: pp-{{.Name}}
 description: "{{if and .Narrative .Narrative.Headline}}{{yamlDoubleQuoted .Narrative.Headline}}{{else}}Printing Press CLI for {{yamlDoubleQuoted .ProseName}}. {{yamlDoubleQuoted (oneline .Description)}}{{end}}{{if and .Narrative .Narrative.TriggerPhrases}} Trigger phrases: {{range $i, $p := .Narrative.TriggerPhrases}}{{if $i}}, {{end}}`{{yamlDoubleQuoted $p}}`{{end}}.{{end}}"
+author: "{{yamlDoubleQuoted .OwnerName}}"
+license: "Apache-2.0"
 argument-hint: "<command> [args] | install cli|mcp"
 allowed-tools: "Read Bash"
 metadata:
   openclaw:
     requires:
-{{- if and (ne .Auth.Type "none") (or .Auth.EnvVarSpecs .Auth.EnvVars)}}
-{{- $wroteRequiredEnv := false}}
-      env: [{{- if .Auth.EnvVarSpecs}}{{range .Auth.EnvVarSpecs}}{{if and (eq .Kind "per_call") .Required}}{{if $wroteRequiredEnv}}, {{end}}{{printf "%q" .Name}}{{- $wroteRequiredEnv = true}}{{end}}{{end}}{{else}}{{range .Auth.EnvVars}}{{if $wroteRequiredEnv}}, {{end}}{{printf "%q" .}}{{- $wroteRequiredEnv = true}}{{end}}{{end}}]
-{{- end}}
       bins:
         - {{.Name}}-pp-cli
-{{- if and (ne .Auth.Type "none") (or .Auth.EnvVarSpecs .Auth.EnvVars)}}
-    envVars:
-{{- if .Auth.EnvVarSpecs}}
-{{- range .Auth.EnvVarSpecs}}
-{{- if ne .Kind "harvested"}}
-      - name: {{.Name}}
-        required: {{.Required}}
-{{- if and (eq .Kind "per_call") .Required}}
-        description: "{{if .Description}}{{yamlDoubleQuoted .Description}}{{else}}{{.Name}} credential.{{end}}"
-{{- else if and (eq .Kind "per_call") (not .Required)}}
-        description: "{{yamlDoubleQuoted (printf "Set this OR another listed env var. %s" .Description)}}"
-{{- else if and (eq .Kind "auth_flow_input") (not .Sensitive)}}
-        description: "{{yamlDoubleQuoted (printf "Only needed during `auth login`; not required for normal use. %s" .Description)}}"
-{{- else if and (eq .Kind "auth_flow_input") .Sensitive}}
-        description: "Set during application setup."
-{{- else if eq .Kind "harvested"}}
-        description: "Populated automatically by `auth login`."
-{{- else}}
-        description: "{{if .Description}}{{yamlDoubleQuoted .Description}}{{else}}{{.Name}} credential.{{end}}"
-{{- end}}
-{{- end}}
-{{- end}}
-{{- else}}
-{{- range .Auth.EnvVars}}
-      - name: {{.}}
-        required: true
-        description: "{{.}} credential."
-{{- end}}
-{{- end}}
-{{- end}}
     install:
       - kind: go
         bins: [{{.Name}}-pp-cli]
@@ -49,6 +17,25 @@ metadata:
 ---
 
 # {{.ProseName}} — Printing Press CLI
+
+## Prerequisites: Install the CLI
+
+This skill drives the `{{.Name}}-pp-cli` binary. **You must verify the CLI is installed before invoking any command from this skill.** If it is missing, install it first:
+
+1. Install via the Printing Press installer:
+   ```bash
+   npx -y @mvanhorn/printing-press install {{.Name}} --cli-only
+   ```
+2. Verify: `{{.Name}}-pp-cli --version`
+3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
+
+If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires {{if .UsesBrowserHTTPTransport}}Go 1.25+{{else}}Go 1.23+{{end}}):
+
+```bash
+go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}/cmd/{{.Name}}-pp-cli@latest
+```
+
+If `--version` reports "command not found" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.
 {{- if and .Narrative .Narrative.ValueProp}}
 
 {{.Narrative.ValueProp}}
@@ -373,18 +360,8 @@ Use async submission without `--wait` when you want to fire-and-forget; use `--w
 Parse `$ARGUMENTS`:
 
 1. **Empty, `help`, or `--help`** → show `{{.Name}}-pp-cli --help` output
-2. **Starts with `install`** → ends with `mcp` → MCP installation; otherwise → CLI installation
+2. **Starts with `install`** → ends with `mcp` → MCP installation; otherwise → see Prerequisites above
 3. **Anything else** → Direct Use (execute as CLI command with `--agent`)
-
-## CLI Installation
-
-1. Check Go is installed: `go version` (requires {{if .UsesBrowserHTTPTransport}}Go 1.25+{{else}}Go 1.23+{{end}})
-2. Install:
-   ```bash
-   go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}/cmd/{{.Name}}-pp-cli@latest
-   ```
-3. Verify: `{{.Name}}-pp-cli --version`
-4. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
 
 ## MCP Server Installation
 
@@ -401,7 +378,7 @@ Parse `$ARGUMENTS`:
 ## Direct Use
 
 1. Check if installed: `which {{.Name}}-pp-cli`
-   If not found, offer to install (see CLI Installation above).
+   If not found, offer to install (see Prerequisites at the top of this skill).
 2. Match the user query to the best command from the Unique Capabilities and Command Reference above.
 3. Execute with the `--agent` flag:
    ```bash

@@ -26,6 +26,7 @@ such as assignee, project, priority, or labels. Useful for triaging unowned work
 
   # Output as JSON
   {{.Name}}-pp-cli orphans --json`,
+		Annotations: map[string]string{"mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dbPath == "" {
 				dbPath = defaultDBPath("{{.Name}}-pp-cli")

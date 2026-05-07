@@ -16,12 +16,12 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X github.com/mvanhorn/cli-printing-press/v3/internal/version.Version={{.Version}}
+      - -s -w -X github.com/mvanhorn/cli-printing-press/v4/internal/version.Version={{.Version}}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:
   - id: printing-press
-    builds:
+    ids:
       - printing-press
     formats:
       - tar.gz

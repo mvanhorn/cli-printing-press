@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/llm"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/llm"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 var (

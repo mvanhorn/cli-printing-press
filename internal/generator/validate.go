@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/artifacts"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 )
 
 type validationGate struct {

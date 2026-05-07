@@ -10,10 +10,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/mcpdesc"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/mcpoverrides"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpdesc"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpoverrides"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 // ToolsManifestFilename is the name of the tools manifest file written to each
@@ -106,13 +106,16 @@ type ManifestTool struct {
 }
 
 // ManifestParam describes a tool parameter with an explicit location
-// (path, query, or body).
+// (path, query, or body). Name is the public CLI/MCP input name; WireName is
+// set only when the upstream API key differs from that public name.
 type ManifestParam struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Location    string `json:"location"`
-	Description string `json:"description,omitempty"`
-	Required    bool   `json:"required,omitempty"`
+	Name        string   `json:"name"`
+	WireName    string   `json:"wire_name,omitempty"`
+	Type        string   `json:"type"`
+	Location    string   `json:"location"`
+	Description string   `json:"description,omitempty"`
+	Required    bool     `json:"required,omitempty"`
+	Aliases     []string `json:"aliases,omitempty"`
 }
 
 // ManifestHeader represents a header name/value pair used for both
@@ -338,23 +341,29 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 		if p.Positional || p.PathParam {
 			loc = "path"
 		}
+		name := p.PublicInputName()
 		tool.Params = append(tool.Params, ManifestParam{
-			Name:        p.Name,
+			Name:        name,
+			WireName:    manifestWireName(name, p.Name),
 			Type:        normalizeParamType(p.Type),
 			Location:    loc,
 			Description: describeParam(p),
 			Required:    p.Required,
+			Aliases:     append([]string(nil), p.Aliases...),
 		})
 	}
 
 	// Body params → body.
 	for _, p := range ep.Body {
+		name := p.PublicInputName()
 		tool.Params = append(tool.Params, ManifestParam{
-			Name:        p.Name,
+			Name:        name,
+			WireName:    manifestWireName(name, p.Name),
 			Type:        normalizeParamType(p.Type),
 			Location:    "body",
 			Description: describeParam(p),
 			Required:    p.Required,
+			Aliases:     append([]string(nil), p.Aliases...),
 		})
 	}
 
@@ -370,6 +379,13 @@ func buildManifestTool(name, description string, ep spec.Endpoint, describeParam
 	}
 
 	return tool
+}
+
+func manifestWireName(publicName, wireName string) string {
+	if publicName == wireName {
+		return ""
+	}
+	return wireName
 }
 
 func manifestEndpoints(records []manifestEndpointRecord) []spec.Endpoint {

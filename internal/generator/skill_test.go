@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mvanhorn/cli-printing-press/v3/internal/spec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -79,11 +79,22 @@ func TestSkillRendersFrontmatterAndCapabilities(t *testing.T) {
 	assert.True(t, strings.Contains(content, "finance-pp-cli digest --watchlist tech"),
 		"Recipes should include runnable commands")
 
-	// Installation
-	assert.True(t, strings.Contains(content, "## CLI Installation"),
-		"SKILL should include CLI install instructions")
+	// Installation — CLI install lives at the top under Prerequisites
+	// so agents read it before deciding to run a command. MCP install
+	// stays in its existing location.
+	assert.True(t, strings.Contains(content, "## Prerequisites: Install the CLI"),
+		"SKILL should include Prerequisites section near the top so agents install the CLI before invoking commands")
 	assert.True(t, strings.Contains(content, "## MCP Server Installation"),
 		"SKILL should include MCP install instructions")
+	// Sanity: Prerequisites must precede first command-reference section,
+	// not be buried near the bottom (where the previous "## CLI Installation"
+	// section lived — too far down for agents to read top-down).
+	prereqIdx := strings.Index(content, "## Prerequisites: Install the CLI")
+	cmdRefIdx := strings.Index(content, "## Command Reference")
+	require.GreaterOrEqual(t, prereqIdx, 0)
+	require.GreaterOrEqual(t, cmdRefIdx, 0)
+	assert.Less(t, prereqIdx, cmdRefIdx,
+		"Prerequisites must appear before Command Reference so agents read install instructions before deciding to run a command")
 	assert.True(t, strings.Contains(content, "| 10 | Config error"),
 		"Exit codes table should render")
 }
@@ -408,7 +419,103 @@ func TestSkillFrontmatterMetadataIsClawHubCompliantNestedYAML(t *testing.T) {
 		"metadata must not be a JSON-string blob anymore")
 }
 
-func TestSkillFrontmatterEnvVarsOmitsHarvestedAuthEnvVars(t *testing.T) {
+// TestGenerateSoftFallsBackOnEmptyOwnerName asserts the empty-OwnerName
+// path doesn't fail generation. When OwnerName is unset and the resolution
+// chain returns empty (e.g., CI without git config), Generate() falls back
+// to the slug-shaped Owner — non-fatal so the generator package stays
+// reusable by tests, mcp-sync, and regen-merge. The library-wide sweep
+// tool overrides this code path with its own per-CLI authorship mapping;
+// this fallback only fires for fresh prints by users who haven't set git
+// config user.name.
+func TestGenerateSoftFallsBackOnEmptyOwnerName(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("ownerless")
+	apiSpec.Owner = "trevin-chow"
+	apiSpec.OwnerName = ""
+	outputDir := filepath.Join(t.TempDir(), "ownerless-pp-cli")
+	gen := New(apiSpec, outputDir)
+
+	// Stub the resolution path's git config lookup by ensuring the
+	// outputDir has no .printing-press.json — readManifestOwnerName
+	// returns "", and resolveOwnerNameForNew runs `git config user.name`.
+	// In the test environment this may resolve to whatever the runner
+	// has set, so we re-clear the field after New() to deterministically
+	// hit the fallback path.
+	apiSpec.OwnerName = ""
+
+	// Generation must not error on the empty-OwnerName path.
+	require.NoError(t, gen.Generate())
+
+	// After Generate(), the soft-fallback should have populated
+	// OwnerName from the slug.
+	assert.Equal(t, "trevin-chow", apiSpec.OwnerName,
+		"soft-fallback should set OwnerName to the slug-shaped Owner when empty")
+
+	// And the rendered SKILL.md should reflect that — author lands as
+	// the slug, ugly but visible (vs. a hard-error blocking generation).
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(skill), `author: "trevin-chow"`,
+		"author field should fall back to the slug rather than be empty")
+}
+
+// TestSkillFrontmatterEmitsHermesTopLevelFields asserts the post-alignment
+// frontmatter carries the Hermes-recognized top-level fields (`version`,
+// `author`, `license`) so Hermes can install the skill. The OpenClaw block
+// continues to coexist alongside; Hermes ignores unknown keys per its docs.
+func TestSkillFrontmatterEmitsHermesTopLevelFields(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("hermes-test")
+	apiSpec.OwnerName = "Trevin Chow"
+	outputDir := filepath.Join(t.TempDir(), "hermes-test-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	content := string(skill)
+
+	require.True(t, strings.HasPrefix(content, "---\n"))
+	end := strings.Index(content[4:], "\n---\n")
+	require.NotEqual(t, -1, end)
+	body := strings.TrimSuffix(strings.TrimPrefix(content[:4+end+5], "---\n"), "---\n")
+
+	var parsed struct {
+		Name        string `yaml:"name"`
+		Description string `yaml:"description"`
+		Author      string `yaml:"author"`
+		License     string `yaml:"license"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(body), &parsed),
+		"frontmatter must parse as nested YAML; content was:\n%s", body)
+
+	assert.Equal(t, "Trevin Chow", parsed.Author,
+		"author must be the prose-shaped OwnerName, not the slug — yamlDoubleQuoted preserves spaces and casing")
+	assert.Equal(t, "Apache-2.0", parsed.License,
+		"license is a constant for printed CLIs (LICENSE.tmpl is Apache 2.0)")
+
+	// version field is intentionally omitted — Hermes lists `version`
+	// as optional (https://hermes-agent.nousresearch.com/docs/developer-guide/creating-skills),
+	// the printed CLI's release version is independent of the Press
+	// version that produced this SKILL.md, and emitting the Press
+	// version would actively mislead consumers about what changed.
+	// CI-time stamping from goreleaser tags is a possible future addition
+	// in printing-press-library; for now, no version field is honest.
+	assert.NotContains(t, body, "version:",
+		"version field should be omitted — see learning docs in docs/solutions/")
+}
+
+// TestSkillFrontmatterOmitsAllEnvVarDeclarations asserts the post-Hermes-
+// alignment shape: neither OpenClaw `requires.env` nor `envVars`, nor the
+// legacy `primaryEnv`, appears in printed-CLI SKILL.md frontmatter. The
+// classification problem (user-set vs harvested) is asymmetric on failure
+// — a false-positive on a harvested var (e.g., a session cookie) prompts
+// the user for a value the CLI can't accept. v1 ships no env-var
+// declarations in either format; the existing auth.Type-branched README
+// content carries credential UX.
+func TestSkillFrontmatterOmitsAllEnvVarDeclarations(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("clawauth")
@@ -435,25 +542,18 @@ func TestSkillFrontmatterEnvVarsOmitsHarvestedAuthEnvVars(t *testing.T) {
 	require.NotEqual(t, -1, end)
 	body := strings.TrimSuffix(strings.TrimPrefix(content[:4+end+5], "---\n"), "---\n")
 
-	var parsed struct {
-		Metadata struct {
-			Openclaw struct {
-				EnvVars []struct {
-					Name string `yaml:"name"`
-				} `yaml:"envVars"`
-			} `yaml:"openclaw"`
-		} `yaml:"metadata"`
-	}
-	require.NoError(t, yaml.Unmarshal([]byte(body), &parsed),
-		"frontmatter must parse as nested YAML; content was:\n%s", body)
+	// None of the env-var declaration shapes should appear anywhere in
+	// the frontmatter — neither the canonical nor the legacy forms.
+	assert.NotContains(t, body, "envVars:", "envVars block must not appear in v1 frontmatter")
+	assert.NotContains(t, body, "      env:", "requires.env line must not appear in v1 frontmatter")
+	assert.NotContains(t, body, "primaryEnv", "primaryEnv (legacy synthesis-shape) must not appear")
 
-	var names []string
-	for _, envVar := range parsed.Metadata.Openclaw.EnvVars {
-		names = append(names, envVar.Name)
+	// And specifically: no env-var name from the spec leaks into the
+	// frontmatter even when EnvVarSpecs is fully populated.
+	for _, name := range []string{"CLAW_API_TOKEN", "CLAW_CLIENT_ID", "CLAW_SESSION_COOKIE"} {
+		assert.NotContains(t, body, name,
+			"env var %q must not appear in v1 frontmatter (no env-var hoisting)", name)
 	}
-	assert.ElementsMatch(t, []string{"CLAW_API_TOKEN", "CLAW_CLIENT_ID"}, names)
-	assert.NotContains(t, body, "CLAW_SESSION_COOKIE",
-		"harvested env vars are populated by auth login and must not be user-facing OpenClaw envVars")
 }
 
 // TestSkillFrontmatterMetadataDefaultsCategoryToOther asserts that when the

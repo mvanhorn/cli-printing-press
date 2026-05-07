@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	catalogpkg "github.com/mvanhorn/cli-printing-press/v3/internal/catalog"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/naming"
-	"github.com/mvanhorn/cli-printing-press/v3/internal/pipeline"
+	catalogpkg "github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/spf13/cobra"
 )
 
@@ -686,6 +686,16 @@ func checkVerifySkill(dir string) CheckResult {
 			errMsg = err.Error()
 		}
 		return CheckResult{Name: "verify-skill", Passed: false, Error: errMsg}
+	}
+	if run.ExitCode != 0 {
+		return CheckResult{Name: "verify-skill", Passed: false, Error: strings.TrimSpace(run.Stdout + "\n" + run.Stderr)}
+	}
+	finding, hasFinding, _, cErr := runCanonicalSectionsCheck(dir)
+	if cErr != nil {
+		return CheckResult{Name: "verify-skill", Passed: false, Error: cErr.Error()}
+	}
+	if hasFinding {
+		return CheckResult{Name: "verify-skill", Passed: false, Error: fmt.Sprintf("[%s] %s: %s", finding.Check, finding.Command, finding.Detail)}
 	}
 	return CheckResult{Name: "verify-skill", Passed: true}
 }

@@ -8,7 +8,6 @@ catalog/specs/*.graphql
 /refactor/artifacts/
 /tests/artifacts/perf/
 /printing-press
-/migrate-skill-metadata
 library/
 dist/
 claude-upgrade-progress.json

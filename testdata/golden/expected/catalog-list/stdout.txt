@@ -23,6 +23,7 @@ other:
   kayak                Flight, hotel, and car rental aggregator. No public API and no maintained community wrappers — reached by scraping embedded JSON from server-rendered pages.
 
 payments:
+  mercury              Business banking API for accounts, transactions, payments, recipients, cards, invoices, treasury, and webhooks
   plaid                Banking API for account linking, transactions, identity verification, and income
   stripe               Payment processing and financial infrastructure API
 

@@ -1,0 +1,51 @@
+name: public-param-golden
+description: Public parameter name golden fixture
+version: "0.1.0"
+base_url: https://api.public-param.example/v1
+auth:
+  type: none
+resources:
+  stores:
+    description: Store lookup operations
+    endpoints:
+      find:
+        method: GET
+        path: /power/store-locator
+        description: Find nearby stores by address
+        params:
+          - name: s
+            flag_name: address
+            aliases: [s]
+            type: string
+            required: true
+            description: Street address
+          - name: c
+            flag_name: city
+            aliases: [c]
+            type: string
+            required: true
+            description: City, state, zip
+        response:
+          type: array
+          item: Store
+      create:
+        method: POST
+        path: /stores
+        description: Create a store record
+        body:
+          - name: store_code
+            flag_name: store-code
+            aliases: [code]
+            type: string
+            required: true
+            description: Store code
+        response:
+          type: object
+          item: Store
+types:
+  Store:
+    fields:
+      - name: id
+        type: string
+      - name: name
+        type: string
