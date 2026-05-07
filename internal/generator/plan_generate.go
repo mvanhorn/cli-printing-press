@@ -357,6 +357,68 @@ func parseCopyrightOwner(outputDir string) string {
 	return ""
 }
 
+// resolveOwnerNameForExisting returns the human-readable owner display
+// name for a regen against an existing tree. Tiered:
+//  1. .printing-press.json's `owner_name` field, if present and non-empty
+//  2. resolveOwnerNameForNew() (raw `git config user.name`)
+//
+// Distinct from resolveOwnerForExisting, which returns a slug-shaped string
+// for module paths and copyright headers. OwnerName flows into prose
+// surfaces (Hermes author:, README byline) and must not be sanitized.
+func resolveOwnerNameForExisting(outputDir string) string {
+	if name := readManifestOwnerName(outputDir); name != "" {
+		return name
+	}
+	return resolveOwnerNameForNew()
+}
+
+// readManifestOwnerName returns the `owner_name` field from
+// outputDir/.printing-press.json, or "" when absent.
+func readManifestOwnerName(outputDir string) string {
+	data, err := os.ReadFile(filepath.Join(outputDir, ".printing-press.json"))
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		OwnerName string `json:"owner_name"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(m.OwnerName)
+}
+
+// resolveOwnerNameForNew returns the raw `git config user.name` for a fresh
+// print. Returns "" when the value is unset — the caller is responsible for
+// erroring on that case so the empty value never reaches a published
+// SKILL.md or README. No sanitization (display-name shape preserved); no
+// fallback to "USER" (would publish an obviously-wrong author).
+func resolveOwnerNameForNew() string {
+	out, err := exec.Command("git", "config", "user.name").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// readManifestPressVersion returns the `printing_press_version` field from
+// outputDir/.printing-press.json, or "" when absent. Mirrors
+// readManifestOwner's shape — the pipeline package already imports
+// generator, so this stays in plan_generate.go to avoid the reverse cycle.
+func readManifestPressVersion(outputDir string) string {
+	data, err := os.ReadFile(filepath.Join(outputDir, ".printing-press.json"))
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		PrintingPressVersion string `json:"printing_press_version"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(m.PrintingPressVersion)
+}
+
 // sanitizeOwner cleans up an owner string for use in Go module paths.
 func sanitizeOwner(s string) string {
 	s = strings.ToLower(s)

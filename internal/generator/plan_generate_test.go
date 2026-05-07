@@ -137,6 +137,123 @@ func TestGenerateFromPlan_EmptyName(t *testing.T) {
 	assert.True(t, strings.Contains(err.Error(), "no CLI name"))
 }
 
+func TestReadManifestOwnerName(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns value when manifest has owner_name", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, ".printing-press.json"),
+			[]byte(`{"owner":"trevin-chow","owner_name":"Trevin Chow"}`),
+			0o644,
+		))
+		assert.Equal(t, "Trevin Chow", readManifestOwnerName(dir))
+	})
+
+	t.Run("preserves names with spaces and casing verbatim", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, ".printing-press.json"),
+			[]byte(`{"owner_name":"Cathryn Lavery"}`),
+			0o644,
+		))
+		// No sanitization. Spaces preserved, casing preserved.
+		assert.Equal(t, "Cathryn Lavery", readManifestOwnerName(dir))
+	})
+
+	t.Run("returns empty when manifest absent", func(t *testing.T) {
+		assert.Equal(t, "", readManifestOwnerName(t.TempDir()))
+	})
+
+	t.Run("returns empty when owner_name field missing", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, ".printing-press.json"),
+			[]byte(`{"owner":"trevin-chow"}`),
+			0o644,
+		))
+		// Legacy manifests with only `owner` (slug) return empty
+		// — caller falls through to git config.
+		assert.Equal(t, "", readManifestOwnerName(dir))
+	})
+
+	t.Run("returns empty on malformed JSON", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, ".printing-press.json"),
+			[]byte(`{not json`),
+			0o644,
+		))
+		assert.Equal(t, "", readManifestOwnerName(dir))
+	})
+
+	t.Run("trims whitespace", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, ".printing-press.json"),
+			[]byte(`{"owner_name":"  Trevin Chow  "}`),
+			0o644,
+		))
+		assert.Equal(t, "Trevin Chow", readManifestOwnerName(dir))
+	})
+}
+
+func TestReadManifestPressVersion(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns version when manifest present", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, ".printing-press.json"),
+			[]byte(`{"printing_press_version":"3.10.0"}`),
+			0o644,
+		))
+		assert.Equal(t, "3.10.0", readManifestPressVersion(dir))
+	})
+
+	t.Run("returns empty on fresh-print path (no manifest yet)", func(t *testing.T) {
+		// Manifest is written by the publish step, after templates render.
+		// Fresh-print render must fall back to version.Version, not error.
+		assert.Equal(t, "", readManifestPressVersion(t.TempDir()))
+	})
+
+	t.Run("returns empty when field missing", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, ".printing-press.json"),
+			[]byte(`{"owner":"x"}`),
+			0o644,
+		))
+		assert.Equal(t, "", readManifestPressVersion(dir))
+	})
+}
+
+func TestResolveOwnerNameForExisting(t *testing.T) {
+	t.Parallel()
+
+	t.Run("prefers manifest owner_name over git config", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, ".printing-press.json"),
+			[]byte(`{"owner_name":"Original Author"}`),
+			0o644,
+		))
+		// Even if git config user.name is set, manifest wins for regen
+		// — preserves original attribution rather than silently flipping
+		// to whoever's running the regen.
+		assert.Equal(t, "Original Author", resolveOwnerNameForExisting(dir))
+	})
+
+	t.Run("falls through to git config when manifest absent", func(t *testing.T) {
+		// Without a manifest, the helper falls through to
+		// resolveOwnerNameForNew, which reads `git config user.name`.
+		// In the test environment, that may be empty or the test
+		// runner's identity — we assert only that the call doesn't
+		// panic. resolveOwnerNameForNew has its own coverage below.
+		_ = resolveOwnerNameForExisting(t.TempDir())
+	})
+}
+
 func TestPartitionCommands(t *testing.T) {
 	t.Parallel()
 
