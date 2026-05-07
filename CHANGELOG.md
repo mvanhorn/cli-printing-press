@@ -1,5 +1,27 @@
 # Changelog
 
+## [4.0.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.10.0...v4.0.0) (2026-05-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** SKILL.md frontmatter shape changes for every printed CLI on next regen. The library-wide sweep that lands the same shape into already-published library entries is U6 (forthcoming, in printing-press-library).
+
+### Features
+
+* **cli:** add public parameter names ([#648](https://github.com/mvanhorn/cli-printing-press/issues/648)) ([cf91eab](https://github.com/mvanhorn/cli-printing-press/commit/cf91eab3bbbd748107bd31618ef357c3a93c592e))
+* **cli:** Hermes/OpenClaw frontmatter alignment for printed CLIs ([#655](https://github.com/mvanhorn/cli-printing-press/issues/655)) ([fd7fa6e](https://github.com/mvanhorn/cli-printing-press/commit/fd7fa6eaec3cd5dfa5fbd1fc357def843b356125))
+* **cli:** improve generated money workflows and artifact safety ([#653](https://github.com/mvanhorn/cli-printing-press/issues/653)) ([6d9ab66](https://github.com/mvanhorn/cli-printing-press/commit/6d9ab664b06e1a1c24c0014af14cae4bd40cb0f1))
+* **cli:** scope verify-skill flag-names; add canonical-sections check ([#665](https://github.com/mvanhorn/cli-printing-press/issues/665)) ([c69e77c](https://github.com/mvanhorn/cli-printing-press/commit/c69e77c8109b5feec36ed4e17a94ac3eb11237dd))
+
+
+### Bug Fixes
+
+* **cli:** omit version field from SKILL.md frontmatter ([#656](https://github.com/mvanhorn/cli-printing-press/issues/656)) ([e6aa032](https://github.com/mvanhorn/cli-printing-press/commit/e6aa0326871498719683f74b22389faf3abd70d5))
+* **dogfood:** accept quick live passes with skips ([#646](https://github.com/mvanhorn/cli-printing-press/issues/646)) ([c7574bd](https://github.com/mvanhorn/cli-printing-press/commit/c7574bd478eb14e1e26d2421a224bb2be8f0a214))
+* **phase5:** explain accepted marker levels ([#647](https://github.com/mvanhorn/cli-printing-press/issues/647)) ([d4d10a8](https://github.com/mvanhorn/cli-printing-press/commit/d4d10a8a5fbf90ed90f9eb60613288d8bd13d7cc))
+* **skills:** repair publish generated-artifact flow ([#672](https://github.com/mvanhorn/cli-printing-press/issues/672)) ([d2eca30](https://github.com/mvanhorn/cli-printing-press/commit/d2eca30552147646a520553bcccf42c80c1ebe54))
+
 ## [3.10.0](https://github.com/mvanhorn/cli-printing-press/compare/v3.9.1...v3.10.0) (2026-05-06)
 
 
