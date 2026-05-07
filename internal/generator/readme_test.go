@@ -298,14 +298,14 @@ func TestReadmeEmitsHermesAndOpenClawInstallSections(t *testing.T) {
 
 	// Hermes section: both forms (CLI + chat) use the full
 	// mvanhorn/printing-press-library/cli-skills path.
-	assert.Contains(t, content, "## Install via Hermes")
+	assert.Contains(t, content, "## Install for Hermes")
 	assert.Contains(t, content, "hermes skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
 		"Hermes CLI form must use mvanhorn/printing-press-library/cli-skills (the short mvanhorn/cli-skills form was wrong)")
 	assert.Contains(t, content, "/skills install mvanhorn/printing-press-library/cli-skills/pp-hermes-install --force",
 		"Hermes chat form must use mvanhorn/printing-press-library/cli-skills")
 
 	// OpenClaw section: copyable code-fenced agent instruction.
-	assert.Contains(t, content, "## Install via OpenClaw")
+	assert.Contains(t, content, "## Install for OpenClaw")
 	assert.Contains(t, content, "https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/pp-hermes-install",
 		"OpenClaw URL must point at the cli-skills directory")
 }

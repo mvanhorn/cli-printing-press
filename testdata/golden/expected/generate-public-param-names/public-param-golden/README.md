@@ -30,6 +30,29 @@ This installs the CLI only — no skill.
 
 Download a pre-built binary for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/public-param-golden-current). On macOS, clear the Gatekeeper quarantine: `xattr -d com.apple.quarantine <binary>`. On Unix, mark it executable: `chmod +x <binary>`.
 
+<!-- pp-hermes-install-anchor -->
+## Install for Hermes
+
+From the Hermes CLI:
+
+```bash
+hermes skills install mvanhorn/printing-press-library/cli-skills/pp-public-param-golden --force
+```
+
+Inside a Hermes chat session:
+
+```bash
+/skills install mvanhorn/printing-press-library/cli-skills/pp-public-param-golden --force
+```
+
+## Install for OpenClaw
+
+Tell your OpenClaw agent (copy this):
+
+```
+Install the pp-public-param-golden skill from https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/pp-public-param-golden. The skill defines how its required CLI can be installed.
+```
+
 ## Quick Start
 
 ### 1. Install
@@ -135,29 +158,6 @@ To install:
 2. Double-click the `.mcpb` file. Claude Desktop opens and walks you through the install.
 
 Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple Silicon (`darwin-arm64`) and Windows (`amd64`, `arm64`); for other platforms, use the manual config below.
-
-<!-- pp-hermes-install-anchor -->
-## Install via Hermes
-
-From the Hermes CLI:
-
-```bash
-hermes skills install mvanhorn/printing-press-library/cli-skills/pp-public-param-golden --force
-```
-
-Inside a Hermes chat session:
-
-```bash
-/skills install mvanhorn/printing-press-library/cli-skills/pp-public-param-golden --force
-```
-
-## Install via OpenClaw
-
-Tell your OpenClaw agent (copy this):
-
-```
-Install the pp-public-param-golden skill from https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/pp-public-param-golden. The skill defines how its required CLI can be installed.
-```
 
 <details>
 <summary>Manual JSON config (advanced)</summary>
