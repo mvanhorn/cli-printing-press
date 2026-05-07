@@ -291,7 +291,7 @@ func TestReadmeEmitsHermesAndOpenClawInstallSections(t *testing.T) {
 	require.NoError(t, err)
 	content := string(readme)
 
-	// Anchor enables the cross-repo sweep tool (U6) to insert sections
+	// Anchor enables the cross-repo sweep tool to insert sections
 	// idempotently into legacy READMEs that predate this template change.
 	assert.Contains(t, content, "<!-- pp-hermes-install-anchor -->",
 		"sweep-tool anchor must be present so retrofit can locate the insertion point")

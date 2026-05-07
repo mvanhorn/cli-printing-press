@@ -307,21 +307,30 @@ func resolveOwnerForExisting(outputDir string) string {
 	return resolveOwnerForNew()
 }
 
-// readManifestOwner returns the `owner` field from
-// outputDir/.printing-press.json, or "" if the file is absent, malformed,
-// or the field is empty/whitespace.
-func readManifestOwner(outputDir string) string {
+// readManifestField returns the trimmed string value at key from
+// outputDir/.printing-press.json, or "" when the file is absent,
+// malformed, the key is missing, or the value is empty/whitespace.
+//
+// Reads the manifest directly rather than calling
+// pipeline.ReadCLIManifest because the pipeline package already
+// imports generator — adding the reverse direction would create a
+// cycle.
+func readManifestField(outputDir, key string) string {
 	data, err := os.ReadFile(filepath.Join(outputDir, ".printing-press.json"))
 	if err != nil {
 		return ""
 	}
-	var m struct {
-		Owner string `json:"owner"`
-	}
+	var m map[string]any
 	if err := json.Unmarshal(data, &m); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(m.Owner)
+	s, _ := m[key].(string)
+	return strings.TrimSpace(s)
+}
+
+// readManifestOwner returns the `owner` slug from the manifest.
+func readManifestOwner(outputDir string) string {
+	return readManifestField(outputDir, "owner")
 }
 
 // resolveOwnerForNew returns the owner attribution for a brand-new project
@@ -372,20 +381,10 @@ func resolveOwnerNameForExisting(outputDir string) string {
 	return resolveOwnerNameForNew()
 }
 
-// readManifestOwnerName returns the `owner_name` field from
-// outputDir/.printing-press.json, or "" when absent.
+// readManifestOwnerName returns the `owner_name` display-name field
+// from the manifest.
 func readManifestOwnerName(outputDir string) string {
-	data, err := os.ReadFile(filepath.Join(outputDir, ".printing-press.json"))
-	if err != nil {
-		return ""
-	}
-	var m struct {
-		OwnerName string `json:"owner_name"`
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(m.OwnerName)
+	return readManifestField(outputDir, "owner_name")
 }
 
 // resolveOwnerNameForNew returns the raw `git config user.name` for a fresh
@@ -401,22 +400,10 @@ func resolveOwnerNameForNew() string {
 	return strings.TrimSpace(string(out))
 }
 
-// readManifestPressVersion returns the `printing_press_version` field from
-// outputDir/.printing-press.json, or "" when absent. Mirrors
-// readManifestOwner's shape — the pipeline package already imports
-// generator, so this stays in plan_generate.go to avoid the reverse cycle.
+// readManifestPressVersion returns the `printing_press_version` field
+// from the manifest.
 func readManifestPressVersion(outputDir string) string {
-	data, err := os.ReadFile(filepath.Join(outputDir, ".printing-press.json"))
-	if err != nil {
-		return ""
-	}
-	var m struct {
-		PrintingPressVersion string `json:"printing_press_version"`
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(m.PrintingPressVersion)
+	return readManifestField(outputDir, "printing_press_version")
 }
 
 // sanitizeOwner cleans up an owner string for use in Go module paths.

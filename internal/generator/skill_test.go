@@ -80,8 +80,8 @@ func TestSkillRendersFrontmatterAndCapabilities(t *testing.T) {
 		"Recipes should include runnable commands")
 
 	// Installation — CLI install lives at the top under Prerequisites
-	// (post-U2) so agents read it before deciding to run a command.
-	// MCP install stays in its existing location.
+	// so agents read it before deciding to run a command. MCP install
+	// stays in its existing location.
 	assert.True(t, strings.Contains(content, "## Prerequisites: Install the CLI"),
 		"SKILL should include Prerequisites section near the top so agents install the CLI before invoking commands")
 	assert.True(t, strings.Contains(content, "## MCP Server Installation"),
