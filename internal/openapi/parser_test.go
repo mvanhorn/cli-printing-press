@@ -18,6 +18,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestParseHonorsRootXMCPConfig(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Agent Native API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+x-mcp:
+  transport: [stdio, http]
+  addr: :8787
+  endpoint_tools: hidden
+  orchestration: code
+  orchestration_threshold: 25
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: ok
+`))
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"stdio", "http"}, parsed.MCP.Transport)
+	assert.Equal(t, ":8787", parsed.MCP.Addr)
+	assert.Equal(t, "hidden", parsed.MCP.EndpointTools)
+	assert.Equal(t, "code", parsed.MCP.Orchestration)
+	assert.Equal(t, 25, parsed.MCP.OrchestrationThreshold)
+}
+
 func TestParsePetstore(t *testing.T) {
 	t.Parallel()
 

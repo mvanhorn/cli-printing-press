@@ -18,6 +18,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-origin` | `info` | Google Discovery resource fallback | No |
 | `x-providerName` | `info` | Google Discovery resource fallback | No |
 | `x-tier-routing` | root or `info` | `APISpec.TierRouting` | No |
+| `x-mcp` | root or `info` | `APISpec.MCP` | No |
 | `x-auth-type` | `components.securitySchemes.<name>` | `APISpec.Auth.Type` | No |
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
 | `x-prefix` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
@@ -184,6 +185,34 @@ x-tier-routing:
         in: query
         header: api_key
         env_vars: [EXAMPLE_PAID_KEY]
+```
+
+### `x-mcp`
+
+Declares MCP server shape directly in an OpenAPI document. This mirrors the
+Printing Press spec-level `mcp:` block so OpenAPI-only sources can opt into
+agent-native surfaces without a separate hand-authored spec file.
+
+Parsed field: `APISpec.MCP`
+
+Rules:
+- Optional.
+- May be declared at the OpenAPI root or under `info`.
+- Uses the same fields and validation as `mcp:` in Printing Press specs:
+  `transport`, `addr`, `intents`, `endpoint_tools`, `orchestration`, and
+  `orchestration_threshold`.
+- Unknown or invalid MCP values fail parse during normal `APISpec` validation.
+- Root-level `x-mcp` wins when both root and `info` declarations are present.
+
+Example:
+
+```yaml
+x-mcp:
+  transport: [stdio, http]
+  addr: :8787
+  endpoint_tools: hidden
+  orchestration: code
+  orchestration_threshold: 25
 ```
 
 ## Security Scheme Extensions

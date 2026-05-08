@@ -37,6 +37,7 @@ const (
 	extensionAuthDescription  = "x-auth-description"
 	extensionSpeakeasyExample = "x-speakeasy-example"
 	extensionTierRouting      = "x-tier-routing"
+	extensionMCP              = "x-mcp"
 	extensionTier             = "x-tier"
 	extensionAPIName          = "x-api-name"
 	extensionDisplayName      = "x-display-name"
@@ -282,6 +283,10 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	if err != nil {
 		return nil, err
 	}
+	mcp, err := parseMCPExtension(doc)
+	if err != nil {
+		return nil, err
+	}
 
 	result := &spec.APISpec{
 		Name:                        name,
@@ -295,6 +300,7 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 		ProxyRoutes:                 proxyRoutes,
 		Auth:                        auth,
 		TierRouting:                 tierRouting,
+		MCP:                         mcp,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -327,6 +333,22 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	}
 
 	return result, nil
+}
+
+func parseMCPExtension(doc *openapi3.T) (spec.MCPConfig, error) {
+	raw, ok := lookupOpenAPIExtension(doc, extensionMCP)
+	if !ok {
+		return spec.MCPConfig{}, nil
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return spec.MCPConfig{}, fmt.Errorf("marshaling %s: %w", extensionMCP, err)
+	}
+	var cfg spec.MCPConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return spec.MCPConfig{}, fmt.Errorf("parsing %s: %w", extensionMCP, err)
+	}
+	return cfg, nil
 }
 
 func parseTierRoutingExtension(doc *openapi3.T) (spec.TierRoutingConfig, error) {
