@@ -3,6 +3,7 @@ package openapi
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"gopkg.in/yaml.v3"
 )
@@ -35,6 +36,7 @@ func normalizeSpecData(data []byte) ([]byte, error) {
 	}
 	root = convertToStringKeyed(root)
 	flattenObjectDescriptions(root, "")
+	normalizeSchemaExamples(root)
 	out, err := json.Marshal(root)
 	if err != nil {
 		return nil, fmt.Errorf("normalize spec: json marshal: %w", err)
@@ -102,6 +104,57 @@ func flattenObjectDescriptions(node any, parentKey string) {
 			flattenObjectDescriptions(item, "")
 		}
 	}
+}
+
+func normalizeSchemaExamples(node any) {
+	switch v := node.(type) {
+	case map[string]any:
+		if isSchemaLikeObject(v) {
+			if examples, ok := v["examples"]; ok {
+				v["examples"] = normalizeExamplesValue(examples)
+			}
+		}
+		for _, value := range v {
+			normalizeSchemaExamples(value)
+		}
+	case []any:
+		for _, item := range v {
+			normalizeSchemaExamples(item)
+		}
+	}
+}
+
+func normalizeExamplesValue(examples any) any {
+	switch v := examples.(type) {
+	case []any:
+		return v
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for key := range v {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		out := make([]any, 0, len(keys))
+		for _, key := range keys {
+			out = append(out, v[key])
+		}
+		return out
+	default:
+		return []any{v}
+	}
+}
+
+func isSchemaLikeObject(node map[string]any) bool {
+	for _, key := range []string{
+		"$ref", "type", "properties", "items", "allOf", "oneOf", "anyOf",
+		"enum", "format", "additionalProperties", "nullable", "required",
+		"default", "minimum", "maximum",
+	} {
+		if _, ok := node[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // isNameKeyedParent reports whether children of the given parent key are

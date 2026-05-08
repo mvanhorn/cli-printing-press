@@ -50,6 +50,65 @@ func TestParsePetstore(t *testing.T) {
 	assert.Contains(t, parsed.Types, "Pet")
 }
 
+func TestParseFileResolvesLocalRefsRelativeToSpecDir(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	appsDir := filepath.Join(dir, "apps")
+	commonDir := filepath.Join(dir, "common")
+	require.NoError(t, os.MkdirAll(appsDir, 0o755))
+	require.NoError(t, os.MkdirAll(commonDir, 0o755))
+
+	require.NoError(t, os.WriteFile(filepath.Join(commonDir, "schemas.json"), []byte(`{
+  "components": {
+    "schemas": {
+      "Widget": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string"}
+        }
+      }
+    }
+  }
+}`), 0o644))
+
+	specPath := filepath.Join(appsDir, "openapi.yaml")
+	require.NoError(t, os.WriteFile(specPath, []byte(`
+openapi: 3.0.3
+info:
+  title: Modular Widgets
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "../common/schemas.json#/components/schemas/Widget"
+`), 0o644))
+
+	parsed, err := ParseFile(specPath)
+	require.NoError(t, err)
+
+	var foundWidgetID bool
+	for _, typ := range parsed.Types {
+		for _, field := range typ.Fields {
+			if field.Name == "id" && field.Type == "string" {
+				foundWidgetID = true
+			}
+		}
+	}
+	assert.True(t, foundWidgetID, "external schema fields must be available after local ref resolution")
+}
+
 func TestParsePreservesResponseDiscriminatorAndEnumFields(t *testing.T) {
 	t.Parallel()
 

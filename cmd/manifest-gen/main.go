@@ -56,7 +56,11 @@ func main() {
 	var parsed *spec.APISpec
 	switch format {
 	case "openapi":
-		parsed, err = openapi.ParseLenient(data)
+		if isRemoteSpec(*specFlag) {
+			parsed, err = openapi.ParseLenient(data)
+		} else {
+			parsed, err = openapi.ParseFileLenient(*specFlag)
+		}
 	case "internal":
 		parsed, err = spec.ParseBytes(data)
 	case "graphql":
@@ -107,7 +111,7 @@ func main() {
 }
 
 func loadSpec(source string) ([]byte, error) {
-	if strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://") {
+	if isRemoteSpec(source) {
 		resp, err := http.Get(source)
 		if err != nil {
 			return nil, fmt.Errorf("fetching %s: %w", source, err)
@@ -119,6 +123,10 @@ func loadSpec(source string) ([]byte, error) {
 		return io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
 	}
 	return os.ReadFile(source)
+}
+
+func isRemoteSpec(source string) bool {
+	return strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
 }
 
 func detectFormat(data []byte, path string) string {

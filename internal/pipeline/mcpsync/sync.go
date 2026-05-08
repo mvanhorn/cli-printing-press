@@ -210,7 +210,7 @@ func loadArchivedSpec(cliDir string) (*spec.APISpec, error) {
 			return nil, fmt.Errorf("reading %s: %w", path, err)
 		}
 		if openapi.IsOpenAPI(data) {
-			return openapi.ParseLenient(data)
+			return openapi.ParseFileLenient(path)
 		}
 		if graphql.IsGraphQLSDL(data) {
 			return graphql.ParseSDLBytes(path, data)

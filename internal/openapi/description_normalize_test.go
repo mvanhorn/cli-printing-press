@@ -1,6 +1,7 @@
 package openapi
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -145,4 +146,67 @@ paths:
 	parsed, err := Parse(data)
 	require.NoError(t, err, "spec with object-shaped descriptions at info and operation levels must parse")
 	assert.Equal(t, "nestedapi", parsed.Name)
+}
+
+func TestNormalizeSpecDataConvertsSchemaExamplesMap(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`
+openapi: "3.0.0"
+info:
+  title: Legacy Examples
+  version: "0.1.0"
+paths:
+  /actions:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                actionParameters:
+                  type: object
+                  examples:
+                    first:
+                      value: one
+                    second:
+                      value: two
+            examples:
+              named:
+                value:
+                  actionParameters:
+                    value: preserved
+      responses:
+        '200':
+          description: ok
+components:
+  schemas:
+    Action:
+      type: object
+      examples:
+        named:
+          actionParameters:
+            value: preserved
+`)
+
+	normalized, err := normalizeSpecData(data)
+	require.NoError(t, err)
+
+	var root map[string]any
+	require.NoError(t, json.Unmarshal(normalized, &root))
+
+	actionParameters := root["paths"].(map[string]any)["/actions"].(map[string]any)["post"].(map[string]any)["requestBody"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)["properties"].(map[string]any)["actionParameters"].(map[string]any)
+	require.IsType(t, []any{}, actionParameters["examples"])
+	assert.Len(t, actionParameters["examples"], 2)
+
+	mediaType := root["paths"].(map[string]any)["/actions"].(map[string]any)["post"].(map[string]any)["requestBody"].(map[string]any)["content"].(map[string]any)["application/json"].(map[string]any)
+	require.IsType(t, map[string]any{}, mediaType["examples"])
+
+	component := root["components"].(map[string]any)["schemas"].(map[string]any)["Action"].(map[string]any)
+	require.IsType(t, []any{}, component["examples"])
+	assert.Len(t, component["examples"], 1)
+
+	_, err = Parse(data)
+	require.NoError(t, err, "schema examples in map form must parse after normalization")
 }

@@ -615,12 +615,7 @@ func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
 		return internalSpecToDogfoodSpec(internal), nil
 	}
 
-	data, err := os.ReadFile(specPath)
-	if err != nil {
-		return nil, fmt.Errorf("reading spec: %w", err)
-	}
-
-	parsed, parseErr := openapiparser.ParseLenient(data)
+	parsed, parseErr := openapiparser.ParseFileLenient(specPath)
 	if parseErr == nil {
 		return &openAPISpec{
 			Paths: collectDogfoodSpecPaths(parsed.Resources),
