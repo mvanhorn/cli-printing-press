@@ -337,33 +337,30 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 }
 
 func parseTierRoutingExtension(doc *openapi3.T) (spec.TierRoutingConfig, error) {
-	raw, ok := lookupOpenAPIExtension(doc, extensionTierRouting)
-	if !ok {
-		return spec.TierRoutingConfig{}, nil
-	}
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return spec.TierRoutingConfig{}, fmt.Errorf("marshaling %s: %w", extensionTierRouting, err)
-	}
-	var cfg spec.TierRoutingConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return spec.TierRoutingConfig{}, fmt.Errorf("parsing %s: %w", extensionTierRouting, err)
-	}
-	return cfg, nil
+	return parseTypedExtension[spec.TierRoutingConfig](doc, extensionTierRouting)
 }
 
 func parseMCPExtension(doc *openapi3.T) (spec.MCPConfig, error) {
-	raw, ok := lookupOpenAPIExtension(doc, extensionMCP)
+	return parseTypedExtension[spec.MCPConfig](doc, extensionMCP)
+}
+
+// parseTypedExtension reads an OpenAPI x-* extension (root or info) and
+// decodes it into T via a JSON marshal/unmarshal roundtrip. The roundtrip
+// is what bridges kin-openapi's untyped any-tree to a typed config struct;
+// callers rely on T's json tags for field mapping.
+func parseTypedExtension[T any](doc *openapi3.T, key string) (T, error) {
+	var zero T
+	raw, ok := lookupOpenAPIExtension(doc, key)
 	if !ok {
-		return spec.MCPConfig{}, nil
+		return zero, nil
 	}
 	data, err := json.Marshal(raw)
 	if err != nil {
-		return spec.MCPConfig{}, fmt.Errorf("marshaling %s: %w", extensionMCP, err)
+		return zero, fmt.Errorf("marshaling %s: %w", key, err)
 	}
-	var cfg spec.MCPConfig
+	var cfg T
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return spec.MCPConfig{}, fmt.Errorf("parsing %s: %w", extensionMCP, err)
+		return zero, fmt.Errorf("parsing %s: %w", key, err)
 	}
 	return cfg, nil
 }
