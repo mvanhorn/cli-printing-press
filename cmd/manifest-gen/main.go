@@ -56,10 +56,10 @@ func main() {
 	var parsed *spec.APISpec
 	switch format {
 	case "openapi":
-		if isRemoteSpec(*specFlag) {
+		if openapi.IsRemoteSpecSource(*specFlag) {
 			parsed, err = openapi.ParseLenient(data)
 		} else {
-			parsed, err = openapi.ParseFileLenient(*specFlag)
+			parsed, err = openapi.ParseWithPathLenient(data, *specFlag)
 		}
 	case "internal":
 		parsed, err = spec.ParseBytes(data)
@@ -111,7 +111,7 @@ func main() {
 }
 
 func loadSpec(source string) ([]byte, error) {
-	if isRemoteSpec(source) {
+	if openapi.IsRemoteSpecSource(source) {
 		resp, err := http.Get(source)
 		if err != nil {
 			return nil, fmt.Errorf("fetching %s: %w", source, err)
@@ -123,10 +123,6 @@ func loadSpec(source string) ([]byte, error) {
 		return io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
 	}
 	return os.ReadFile(source)
-}
-
-func isRemoteSpec(source string) bool {
-	return strings.HasPrefix(source, "http://") || strings.HasPrefix(source, "https://")
 }
 
 func detectFormat(data []byte, path string) string {

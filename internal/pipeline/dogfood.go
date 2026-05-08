@@ -608,14 +608,20 @@ func writeDogfoodResults(report *DogfoodReport, dir string) error {
 }
 
 func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
-	// Try internal YAML spec format first (starts with "name:" + "resources:").
-	if internal, err := tryLoadInternalYAMLSpec(specPath); err != nil {
-		return nil, err
-	} else if internal != nil {
+	data, err := os.ReadFile(specPath)
+	if err != nil {
+		return nil, fmt.Errorf("reading spec: %w", err)
+	}
+
+	if isInternalYAMLSpec(data) {
+		internal, err := apispec.ParseBytes(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing internal YAML spec: %w", err)
+		}
 		return internalSpecToDogfoodSpec(internal), nil
 	}
 
-	parsed, parseErr := openapiparser.ParseFileLenient(specPath)
+	parsed, parseErr := openapiparser.ParseWithPathLenient(data, specPath)
 	if parseErr == nil {
 		return &openAPISpec{
 			Paths: collectDogfoodSpecPaths(parsed.Resources),

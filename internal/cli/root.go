@@ -640,7 +640,7 @@ func inferTrafficAnalysisPath(specFiles []string, specSource string) string {
 		return ""
 	}
 	specPath := specFiles[0]
-	if strings.HasPrefix(specPath, "http://") || strings.HasPrefix(specPath, "https://") {
+	if openapi.IsRemoteSpecSource(specPath) {
 		return ""
 	}
 	candidate := browsersniff.DefaultTrafficAnalysisPath(specPath)
@@ -653,7 +653,7 @@ func inferTrafficAnalysisPath(specFiles []string, specSource string) string {
 func readSpec(specFile string, refresh bool, skipCache bool) ([]byte, error) {
 	var data []byte
 	var err error
-	if isRemoteSpec(specFile) {
+	if openapi.IsRemoteSpecSource(specFile) {
 		data, err = fetchOrCacheSpec(specFile, refresh, skipCache)
 	} else {
 		data, err = os.ReadFile(specFile)
@@ -668,20 +668,16 @@ func readSpec(specFile string, refresh bool, skipCache bool) ([]byte, error) {
 }
 
 func parseOpenAPISpec(specFile string, data []byte, lenient bool) (*spec.APISpec, error) {
-	if isRemoteSpec(specFile) {
+	if openapi.IsRemoteSpecSource(specFile) {
 		if lenient {
 			return openapi.ParseLenient(data)
 		}
 		return openapi.Parse(data)
 	}
 	if lenient {
-		return openapi.ParseFileLenient(specFile)
+		return openapi.ParseWithPathLenient(data, specFile)
 	}
-	return openapi.ParseFile(specFile)
-}
-
-func isRemoteSpec(specFile string) bool {
-	return strings.HasPrefix(specFile, "http://") || strings.HasPrefix(specFile, "https://")
+	return openapi.ParseWithPath(data, specFile)
 }
 
 func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {

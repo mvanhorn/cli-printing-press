@@ -188,6 +188,10 @@ components:
         named:
           actionParameters:
             value: preserved
+    OnlyExamples:
+      examples:
+        first:
+          value: structurally schema
 `)
 
 	normalized, err := normalizeSpecData(data)
@@ -206,6 +210,10 @@ components:
 	component := root["components"].(map[string]any)["schemas"].(map[string]any)["Action"].(map[string]any)
 	require.IsType(t, []any{}, component["examples"])
 	assert.Len(t, component["examples"], 1)
+
+	onlyExamples := root["components"].(map[string]any)["schemas"].(map[string]any)["OnlyExamples"].(map[string]any)
+	require.IsType(t, []any{}, onlyExamples["examples"])
+	assert.Len(t, onlyExamples["examples"], 1)
 
 	_, err = Parse(data)
 	require.NoError(t, err, "schema examples in map form must parse after normalization")

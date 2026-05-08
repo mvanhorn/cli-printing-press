@@ -3,7 +3,6 @@ package pipeline
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 
@@ -178,23 +177,4 @@ func collectInternalResourcePaths(r apispec.Resource, paths *[]string) {
 	for _, sub := range r.SubResources {
 		collectInternalResourcePaths(sub, paths)
 	}
-}
-
-// tryLoadInternalYAMLSpec reads specPath and, if it's an internal YAML spec,
-// parses it and returns the APISpec. Returns nil, nil if not internal YAML.
-func tryLoadInternalYAMLSpec(specPath string) (*apispec.APISpec, error) {
-	data, err := os.ReadFile(specPath)
-	if err != nil {
-		return nil, fmt.Errorf("reading spec: %w", err)
-	}
-
-	if !isInternalYAMLSpec(data) {
-		return nil, nil
-	}
-
-	parsed, err := apispec.ParseBytes(data)
-	if err != nil {
-		return nil, fmt.Errorf("parsing internal YAML spec: %w", err)
-	}
-	return parsed, nil
 }

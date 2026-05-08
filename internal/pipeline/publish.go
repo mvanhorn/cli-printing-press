@@ -253,7 +253,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		)
 		switch m.SpecFormat {
 		case "openapi3":
-			parsed, parseErr = openapi.ParseFile(specFile)
+			parsed, parseErr = openapi.ParseWithPath(data, specFile)
 		case "graphql":
 			parsed, parseErr = graphql.ParseSDLBytes(specFile, data)
 		case "internal":
