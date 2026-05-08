@@ -55,13 +55,7 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 	}
 	sort.Strings(resourceNames)
 
-	// Pre-scan: identify sub-resource leaf names that need parent-prefixed
-	// table names. A sub-resource shards when its leaf appears under multiple
-	// parents (e.g. /repos/.../commits and /gists/.../commits) OR collides
-	// with a top-level resource of the same name (e.g. Stytch's top-level
-	// connected_apps and users.connected_apps sub-resource). The profiler
-	// consults the same helper when emitting DependentResource.Name so the
-	// table name and the runtime resource_type agree.
+	// Sharded names must agree with the profiler; both call SubResourceShardedNames.
 	subResourceShards := spec.SubResourceShardedNames(s)
 
 	for _, name := range resourceNames {
@@ -134,13 +128,10 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 		sort.Strings(subNames)
 		for _, subName := range subNames {
 			subResource := resource.SubResources[subName]
-			// Shard the table name when the leaf has a known collision (see
-			// pre-scan above). Otherwise keep the bare leaf name so existing
-			// CLIs without collisions stay byte-identical. Look up by the
-			// snake-cased leaf so SubResourceShardedNames' canonical keys
-			// match camelCase or kebab-case spec inputs.
+			// effectiveName is sharded only when the leaf collides; bare
+			// otherwise keeps existing CLIs byte-identical.
 			effectiveName := subName
-			if subResourceShards[toSnakeCase(subName)] {
+			if subResourceShards.IsSharded(subName) {
 				effectiveName = spec.ShardedSubResourceTableName(name, subName)
 			}
 			subTable := buildSubResourceTable(effectiveName, subResource, tableName)
@@ -148,14 +139,11 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 		}
 	}
 
-	// Defensive dedup. Sharding handles the common collision (multi-parent
-	// or top-level/sub-resource leaf collision), but a spec author can still
-	// produce a residual collision by naming a top-level resource the same
-	// thing the shard logic synthesizes (e.g. top-level "gists_commits" plus
-	// a multi-parent "commits" sub-resource under "gists"). Drop the second
-	// occurrence rather than letting two CREATE TABLE statements (and two
-	// duplicate Upsert<X>Tx methods) reach the generator output, which would
-	// surface as a build failure on regen.
+	// Defensive dedup. Sharding handles the common collisions, but a spec
+	// author naming a top-level resource the same thing the shard synthesizes
+	// (e.g. top-level "gists_commits" plus a multi-parent "commits" under
+	// "gists") would otherwise emit two CREATE TABLE statements and two
+	// duplicate Upsert<X>Tx methods, breaking the build on regen.
 	seen := make(map[string]bool)
 	deduped := make([]TableDef, 0, len(tables))
 	for _, t := range tables {
@@ -448,10 +436,7 @@ func sqlStringLiteral(s string) string {
 	return `'` + strings.ReplaceAll(s, `'`, `''`) + `'`
 }
 
-// toSnakeCase aliases spec.ToSnakeCase so the generator's many call sites
-// stay short. The shared implementation lives in internal/spec so the
-// profiler and the schema builder produce byte-identical sub-resource shard
-// names.
+// toSnakeCase aliases spec.ToSnakeCase; shared so profiler/schema agree.
 func toSnakeCase(s string) string {
 	return spec.ToSnakeCase(s)
 }

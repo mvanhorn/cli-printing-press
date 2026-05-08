@@ -28,20 +28,34 @@ func ToSnakeCase(s string) string {
 	return result.String()
 }
 
-// SubResourceShardedNames returns the set of sub-resource leaf names that
-// require parent-prefixed table naming. A leaf shards when it appears under
-// multiple parents OR when it collides with a top-level resource of the same
-// name. Keys are snake-cased so callers that have already normalized their
-// candidate (the profiler lowercases, the schema builder snake-cases) all
-// see the same shape. Top-level collisions match by snake-cased identity
-// too — a top-level resource named "loginEvents" collides with a sub-resource
-// named "login_events".
-func SubResourceShardedNames(s *APISpec) map[string]bool {
+// SubResourceShards is a lookup that flags sub-resource leaves needing
+// parent-prefixed table names. Callers ask `IsSharded(leaf)` without
+// knowing the underlying key shape (snake_case), which keeps the schema
+// builder and the profiler from reimplementing the normalization.
+type SubResourceShards struct {
+	keys map[string]bool
+}
+
+// IsSharded reports whether the given leaf name requires parent-prefixed
+// table naming. Snake-cases internally so camelCase, kebab-case, and
+// already-snake-cased inputs all resolve to the same canonical key.
+func (s SubResourceShards) IsSharded(leaf string) bool {
+	return s.keys[ToSnakeCase(leaf)]
+}
+
+// SubResourceShardedNames returns the lookup for sub-resource leaves that
+// require parent-prefixed table naming. A leaf shards when it appears
+// under multiple parents OR when it collides with a top-level resource of
+// the same name (e.g. a top-level "loginEvents" collides with a
+// sub-resource "login_events").
+func SubResourceShardedNames(s *APISpec) SubResourceShards {
 	if s == nil {
-		return nil
+		return SubResourceShards{}
 	}
 	parents := make(map[string]map[string]bool)
+	topLevelKeys := make(map[string]bool, len(s.Resources))
 	for parentName, parent := range s.Resources {
+		topLevelKeys[ToSnakeCase(parentName)] = true
 		for subName := range parent.SubResources {
 			key := ToSnakeCase(subName)
 			if parents[key] == nil {
@@ -50,21 +64,13 @@ func SubResourceShardedNames(s *APISpec) map[string]bool {
 			parents[key][ToSnakeCase(parentName)] = true
 		}
 	}
-	topLevelKeys := make(map[string]bool, len(s.Resources))
-	for name := range s.Resources {
-		topLevelKeys[ToSnakeCase(name)] = true
-	}
 	shards := make(map[string]bool, len(parents))
 	for subKey, parentSet := range parents {
-		if len(parentSet) > 1 {
-			shards[subKey] = true
-			continue
-		}
-		if topLevelKeys[subKey] {
+		if len(parentSet) > 1 || topLevelKeys[subKey] {
 			shards[subKey] = true
 		}
 	}
-	return shards
+	return SubResourceShards{keys: shards}
 }
 
 // ShardedSubResourceTableName returns the snake-cased per-parent table name

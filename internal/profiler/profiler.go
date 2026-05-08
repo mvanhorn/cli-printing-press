@@ -168,16 +168,11 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 	resourceNames, resourceNameIndex := collectResourceNameMetadata(s.Resources)
 	syncable := make(map[string]syncableMeta) // resource name -> chosen list endpoint metadata
-	// parameterized records each parameterized list endpoint with its walk
-	// context (parent resource name). Keyed by "<parent>/<leaf>" so the same
-	// leaf name under multiple parents (e.g. gists.commits and repos.commits
-	// in the GitHub spec) is preserved instead of silently first-seen-wins.
+	// Keyed by "<parent>/<leaf>" so the same leaf under multiple parents
+	// survives instead of first-seen-wins.
 	parameterized := make(map[string]parameterizedEntry)
-	// shardedSubResources mirrors the generator's table-naming decisions so
-	// DependentResource.Name lines up byte-for-byte with the sharded table
-	// schema_builder.go emits. Computed once from the spec tree because both
-	// triggers (multi-parent leaf, top-level/sub-resource collision) are
-	// driven by the spec, not by the profiler's syncability filters.
+	// Mirrors the schema builder's table-naming so DependentResource.Name
+	// lines up byte-for-byte.
 	shardedSubResources := spec.SubResourceShardedNames(s)
 	searchable := make(map[string]map[string]struct{})
 	listResources := make(map[string]struct{})
@@ -343,13 +338,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 						// them for dependent-resource detection below. Carry the
 						// endpoint's metadata so x-resource-id and x-critical
 						// annotations on a child path-item flow into the override
-						// and critical-resource maps.
-						//
-						// Key by (parent, leaf) so a sub-resource leaf appearing
-						// under multiple parents is preserved per parent. Store
-						// the raw resource and parent names so detectDependent-
-						// Resources can snake-case them downstream — matching
-						// the schema builder's table-naming pipeline byte-for-byte.
+						// and critical-resource maps. Store raw names so
+						// detectDependentResources can snake-case downstream.
 						key := parentName + "/" + name
 						if _, ok := parameterized[key]; !ok {
 							parameterized[key] = parameterizedEntry{
@@ -948,67 +938,26 @@ func sortedKeys[V any](m map[string]V) []string {
 // detectDependentResources examines parameterized paths and identifies
 // parent-child relationships. For example, /channels/{channel_id}/messages
 // becomes a dependent resource of "channels" (only one level of nesting).
-//
-// When the same sub-resource leaf name appears under multiple parents in the
-// spec tree (e.g. /repos/{owner}/{repo}/commits and /gists/{gist_id}/commits
-// in the GitHub spec), each parent emits its own DependentResource with a
-// sharded Name ("repos_commits", "gists_commits") so each shard syncs to its
-// own table. shardedSubResources mirrors the schema builder's decision so
-// the runtime resource_type matches the table name byte-for-byte.
-func detectDependentResources(parameterized map[string]parameterizedEntry, syncable map[string]syncableMeta, shardedSubResources map[string]bool) []DependentResource {
+// When the same leaf appears under multiple parents (or collides with a
+// top-level resource), each parent emits a sharded Name so its shard syncs
+// to its own table.
+func detectDependentResources(parameterized map[string]parameterizedEntry, syncable map[string]syncableMeta, shardedSubResources spec.SubResourceShards) []DependentResource {
 	var deps []DependentResource
 	for _, entry := range parameterized {
-		path := entry.meta.Path
-		// Extract the first {param} from the path
-		start := strings.Index(path, "{")
-		end := strings.Index(path, "}")
-		if start < 0 || end < 0 || end <= start {
+		paramName, ok := firstPathParam(entry.meta.Path)
+		if !ok {
 			continue
 		}
-		paramName := path[start+1 : end]
-
-		// Identify the parent resource. Prefer the walk-context parent (from
-		// the spec's SubResources tree) over the path-param heuristic, since
-		// the heuristic mishandles multi-param paths like
-		// /repos/{owner}/{repo}/commits where the first param is "owner",
-		// not "repos". Lowercase the lookup since `syncable` is keyed on the
-		// lowercased resource name.
-		parentResource := ""
-		if entry.parentName != "" {
-			candidate := strings.ToLower(entry.parentName)
-			if _, ok := syncable[candidate]; ok {
-				parentResource = candidate
-			}
-		}
-		if parentResource == "" {
-			// Fallback: derive from path param by stripping Id/_id.
-			parentCandidate := paramName
-			parentCandidate = strings.TrimSuffix(parentCandidate, "_id")
-			parentCandidate = strings.TrimSuffix(parentCandidate, "Id")
-			parentCandidate = strings.TrimSuffix(parentCandidate, "ID")
-			parentCandidate = strings.ToLower(parentCandidate)
-			for _, candidate := range []string{parentCandidate, parentCandidate + "s", parentCandidate + "es"} {
-				if _, ok := syncable[candidate]; ok {
-					parentResource = candidate
-					break
-				}
-			}
-		}
+		parentResource := resolveParentResource(entry.parentName, paramName, syncable)
 		if parentResource == "" {
 			continue
 		}
 
-		// Snake-case the leaf so the bare emitted name matches the schema
-		// builder's table-naming pipeline (buildSubResourceTable runs the
-		// table name through toSnakeCase). Sharded names go through the
-		// shared helper, which handles snake-casing itself.
-		leafKey := spec.ToSnakeCase(entry.name)
-		emittedName := leafKey
-		if shardedSubResources[leafKey] {
-			// Use the spec-walk parent when available so multi-param paths
-			// (e.g. /repos/{owner}/{repo}/commits) still pick the right
-			// shard prefix. The path-param-only fallback would derive
-			// "owner" instead.
+		emittedName := spec.ToSnakeCase(entry.name)
+		if shardedSubResources.IsSharded(entry.name) {
+			// Prefer the spec-walk parent so multi-param paths
+			// (e.g. /repos/{owner}/{repo}/commits) pick the right shard
+			// prefix; the path-param fallback would derive "owner".
 			shardParent := parentResource
 			if entry.parentName != "" {
 				shardParent = entry.parentName
@@ -1020,7 +969,7 @@ func detectDependentResources(parameterized map[string]parameterizedEntry, synca
 			Name:           emittedName,
 			ParentResource: parentResource,
 			ParentIDParam:  paramName,
-			Path:           path,
+			Path:           entry.meta.Path,
 			Tier:           entry.meta.Tier,
 			IDField:        entry.meta.IDField,
 			Critical:       entry.meta.Critical,
@@ -1032,6 +981,40 @@ func detectDependentResources(parameterized map[string]parameterizedEntry, synca
 		return deps[i].Name < deps[j].Name
 	})
 	return deps
+}
+
+// firstPathParam returns the name of the first {param} in a path template.
+func firstPathParam(path string) (string, bool) {
+	start := strings.Index(path, "{")
+	end := strings.Index(path, "}")
+	if start < 0 || end < 0 || end <= start {
+		return "", false
+	}
+	return path[start+1 : end], true
+}
+
+// resolveParentResource picks a parent name that matches a syncable resource.
+// Prefers the spec-walk parent (correct for multi-param paths like
+// /repos/{owner}/{repo}/commits) and falls back to stripping Id/_id from the
+// path param. Returns "" when no candidate matches.
+func resolveParentResource(walkParent, paramName string, syncable map[string]syncableMeta) string {
+	if walkParent != "" {
+		candidate := strings.ToLower(walkParent)
+		if _, ok := syncable[candidate]; ok {
+			return candidate
+		}
+	}
+	stem := paramName
+	stem = strings.TrimSuffix(stem, "_id")
+	stem = strings.TrimSuffix(stem, "Id")
+	stem = strings.TrimSuffix(stem, "ID")
+	stem = strings.ToLower(stem)
+	for _, candidate := range []string{stem, stem + "s", stem + "es"} {
+		if _, ok := syncable[candidate]; ok {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // syncableMeta carries the chosen list endpoint's metadata while the profiler
@@ -1046,11 +1029,9 @@ type syncableMeta struct {
 }
 
 // parameterizedEntry pairs a parameterized list endpoint with the parent
-// resource it was discovered under during the spec walk. ParentName is
-// non-empty only for sub-resources reached through a SubResources map; for
-// top-level resources whose paths happen to be parameterized, ParentName is
-// empty and detectDependentResources falls back to the path-param heuristic
-// to identify the parent.
+// resource it was discovered under during the spec walk. parentName is
+// empty for top-level resources whose paths happen to be parameterized;
+// detectDependentResources then falls back to the path-param heuristic.
 type parameterizedEntry struct {
 	name       string
 	parentName string
