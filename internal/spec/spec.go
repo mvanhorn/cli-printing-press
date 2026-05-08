@@ -25,6 +25,7 @@ const (
 
 const (
 	HTTPTransportStandard        = "standard"          // default for official API clients
+	HTTPTransportBrowserHTTP     = "browser-http"      // stdlib transport with HTTP/2 disabled for browser-facing web surfaces
 	HTTPTransportBrowserChrome   = "browser-chrome"    // Chrome-impersonated transport for browser-facing web surfaces
 	HTTPTransportBrowserChromeH3 = "browser-chrome-h3" // Chrome-impersonated transport forced through HTTP/3 for stricter bot screens
 )
@@ -109,11 +110,12 @@ type APISpec struct {
 	Kind                 string              `yaml:"kind,omitempty" json:"kind,omitempty"`                     // "rest" (default) or "synthetic" — synthetic CLIs aggregate multiple sources beyond the spec; dogfood's path-validity check is relaxed accordingly
 	SpecSource           string              `yaml:"spec_source,omitempty" json:"spec_source,omitempty"`       // official, community, sniffed, docs — affects generated client defaults
 	ClientPattern        string              `yaml:"client_pattern,omitempty" json:"client_pattern,omitempty"` // rest (default), proxy-envelope — affects generated HTTP client
-	HTTPTransport        string              `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-chrome, or browser-chrome-h3
-	ProxyRoutes          map[string]string   `yaml:"proxy_routes,omitempty" json:"proxy_routes,omitempty"`     // path prefix → service name for proxy-envelope routing
-	BearerRefresh        BearerRefreshConfig `yaml:"bearer_refresh,omitempty" json:"bearer_refresh,omitzero"`  // live-source metadata for rotating public client bearer tokens
-	WebsiteURL           string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`       // product/company website (not the API base URL)
-	Category             string              `yaml:"category,omitempty" json:"category,omitempty"`             // catalog category (e.g., productivity, developer-tools) — used for library install path
+	HTTPTransport        string              `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-http, browser-chrome, or browser-chrome-h3
+	HealthCheckPath      string              `yaml:"health_check_path,omitempty" json:"health_check_path,omitempty"`
+	ProxyRoutes          map[string]string   `yaml:"proxy_routes,omitempty" json:"proxy_routes,omitempty"`    // path prefix → service name for proxy-envelope routing
+	BearerRefresh        BearerRefreshConfig `yaml:"bearer_refresh,omitempty" json:"bearer_refresh,omitzero"` // live-source metadata for rotating public client bearer tokens
+	WebsiteURL           string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`      // product/company website (not the API base URL)
+	Category             string              `yaml:"category,omitempty" json:"category,omitempty"`            // catalog category (e.g., productivity, developer-tools) — used for library install path
 	Auth                 AuthConfig          `yaml:"auth" json:"auth"`
 	TierRouting          TierRoutingConfig   `yaml:"tier_routing,omitempty" json:"tier_routing,omitzero"`
 	RequiredHeaders      []RequiredHeader    `yaml:"required_headers,omitempty" json:"required_headers,omitempty"`
@@ -290,7 +292,7 @@ func (s *APISpec) EffectiveHTTPTransport() string {
 		return HTTPTransportStandard
 	}
 	switch s.HTTPTransport {
-	case HTTPTransportStandard, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
+	case HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
 		return s.HTTPTransport
 	}
 	switch s.SpecSource {
@@ -314,6 +316,10 @@ func (s *APISpec) UsesBrowserHTTP3Transport() bool {
 	return s.EffectiveHTTPTransport() == HTTPTransportBrowserChromeH3
 }
 
+func (s *APISpec) UsesHTTP2DisabledTransport() bool {
+	return s.EffectiveHTTPTransport() == HTTPTransportBrowserHTTP
+}
+
 func (s *APISpec) UsesBrowserManagedUserAgent() bool {
 	switch s.EffectiveHTTPTransport() {
 	case HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
@@ -321,6 +327,18 @@ func (s *APISpec) UsesBrowserManagedUserAgent() bool {
 	default:
 		return false
 	}
+}
+
+func (s *APISpec) HasRequiredHeader(name string) bool {
+	if s == nil {
+		return false
+	}
+	for _, header := range s.RequiredHeaders {
+		if strings.EqualFold(strings.TrimSpace(header.Name), name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *APISpec) HasHTMLExtraction() bool {
@@ -1514,9 +1532,9 @@ func (s *APISpec) Validate() error {
 		return fmt.Errorf("at least one resource is required")
 	}
 	switch s.HTTPTransport {
-	case "", HTTPTransportStandard, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
+	case "", HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
 	default:
-		return fmt.Errorf("http_transport must be one of: standard, browser-chrome, browser-chrome-h3")
+		return fmt.Errorf("http_transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h3")
 	}
 	if err := validateExtraCommands(s.ExtraCommands); err != nil {
 		return err

@@ -5,6 +5,9 @@ package client
 
 import (
 	"bytes"
+{{- if .UsesHTTP2DisabledTransport}}
+	"crypto/tls"
+{{- end}}
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -259,7 +262,11 @@ func (e *APIError) Error() string {
 }
 
 func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
-{{- if .UsesBrowserHTTPTransport}}
+{{- if .UsesHTTP2DisabledTransport}}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
+	return &http.Client{Timeout: timeout, Jar: jar, Transport: transport}
+{{- else if .UsesBrowserHTTPTransport}}
 	builder := surf.NewClient().
 		Builder().
 		Impersonate().
@@ -668,7 +675,9 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 			req.Header.Set(k, v)
 		}
 {{- if not .UsesBrowserManagedUserAgent}}
-		req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+		if req.Header.Get("User-Agent") == "" {
+			req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+		}
 {{- end}}
 
 		resp, err := c.HTTPClient.Do(req)

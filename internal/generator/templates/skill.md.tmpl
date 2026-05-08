@@ -95,7 +95,12 @@ These capabilities aren't available in any other tool for this API.
 {{- end}}
 {{- end}}
 {{- end}}
-{{- if .UsesBrowserHTTPTransport}}
+{{- if .UsesHTTP2DisabledTransport}}
+
+## HTTP Transport
+
+This CLI uses standard HTTP transport with HTTP/2 disabled for browser-facing endpoints. It does not require a resident browser process for normal API calls.
+{{- else if .UsesBrowserHTTPTransport}}
 
 ## HTTP Transport
 

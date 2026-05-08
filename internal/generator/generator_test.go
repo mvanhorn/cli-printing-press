@@ -1295,6 +1295,47 @@ func TestGenerateBrowserChromeH3Transport(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/client")
 }
 
+func TestGenerateBrowserHTTPTransportDisablesHTTP2(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:          "websurfacehttp",
+		Version:       "0.1.0",
+		BaseURL:       "https://www.example.com",
+		HTTPTransport: spec.HTTPTransportBrowserHTTP,
+		Auth:          spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/websurfacehttp-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"posts": {
+				Description: "Browse posts",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/",
+						Description: "List posts",
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "websurfacehttp-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientGo := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	assert.Contains(t, clientGo, `"crypto/tls"`)
+	assert.Contains(t, clientGo, `transport := http.DefaultTransport.(*http.Transport).Clone()`)
+	assert.Contains(t, clientGo, `transport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)`)
+	assert.NotContains(t, clientGo, `"github.com/enetx/surf"`)
+	assert.NotContains(t, clientGo, `Impersonate()`)
+
+	gomod := readGeneratedFile(t, outputDir, "go.mod")
+	assert.NotContains(t, gomod, "github.com/enetx/surf")
+}
+
 func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -4333,6 +4374,22 @@ func TestGeneratedDoctor_AuthVerifyPathProbesEndpoint(t *testing.T) {
 	assert.NotContains(t, content, "inconclusive (HTTP %d from base URL")
 }
 
+func TestGeneratedDoctor_HealthCheckPathProbesEndpoint(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("healthdoc")
+	apiSpec.HealthCheckPath = "api/marketStatus"
+
+	outputDir := filepath.Join(t.TempDir(), "healthdoc-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	doctorSrc := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
+	assert.Contains(t, doctorSrc, `healthPath := "api/marketStatus"`)
+	assert.Contains(t, doctorSrc, `if !strings.HasPrefix(healthPath, "/") {`)
+	assert.Contains(t, doctorSrc, `reachBody, reachErr := c.Get(healthPath, nil)`)
+	assert.NotContains(t, doctorSrc, `reachBody, reachErr := c.Get("/", nil)`)
+}
+
 func TestGeneratedDoctor_InterstitialMarkersAreTitleAnchored(t *testing.T) {
 	t.Parallel()
 
@@ -4637,6 +4694,29 @@ func TestGenerate_UserAgentOverrideGatedByBrowserTransport(t *testing.T) {
 	// no auth.go at all for no-auth CLIs.
 	_, err = os.Stat(filepath.Join(browserDir, "internal", "cli", "auth.go"))
 	assert.True(t, os.IsNotExist(err), "auth.go should not be emitted for auth.type:none specs")
+}
+
+func TestGenerateRequiredUserAgentHeaderBeatsDefaultUserAgent(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("browserheaders")
+	apiSpec.RequiredHeaders = []spec.RequiredHeader{
+		{Name: "User-Agent", Value: "Mozilla/5.0 Browser Sniff"},
+		{Name: "Referer", Value: "https://www.example.com/"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "browserheaders-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	require.Contains(t, clientSrc, `req.Header.Set("User-Agent", "Mozilla/5.0 Browser Sniff")`)
+	require.Contains(t, clientSrc, `req.Header.Set("Referer", "https://www.example.com/")`)
+	assert.Contains(t, clientSrc, `if req.Header.Get("User-Agent") == "" {`)
+	assert.Contains(t, clientSrc, `req.Header.Set("User-Agent", "browserheaders-pp-cli/0.1.0")`)
+
+	doctorSrc := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
+	require.Contains(t, doctorSrc, `authHeaders["User-Agent"] = "Mozilla/5.0 Browser Sniff"`)
+	assert.NotContains(t, doctorSrc, `authHeaders["User-Agent"] = "browserheaders-pp-cli"`)
 }
 
 func TestGenerateObjectBodyDefaultsAreParsedAsJSON(t *testing.T) {

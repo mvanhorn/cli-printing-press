@@ -1282,7 +1282,9 @@ func validateComposedAuth(authHeader string) error {
 	req.Header.Set("{{.Name}}", "{{.Value}}")
 {{- end}}
 {{- if not .UsesBrowserManagedUserAgent}}
-	req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+	}
 {{- end}}
 
 	client := &http.Client{Timeout: 5 * time.Second}

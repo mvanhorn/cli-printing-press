@@ -64,6 +64,7 @@ var validClientPatterns = map[string]struct{}{
 
 var validHTTPTransports = map[string]struct{}{
 	"standard":          {}, // Plain net/http, default for official APIs
+	"browser-http":      {}, // Plain net/http with HTTP/2 disabled for browser-facing websites
 	"browser-chrome":    {}, // Browser-compatible transport for web-discovered/non-official APIs
 	"browser-chrome-h3": {}, // Chrome-compatible HTTP transport forced through HTTP/3
 }
@@ -294,7 +295,7 @@ func (e *Entry) Validate() error {
 	}
 	if e.HTTPTransport != "" {
 		if _, ok := validHTTPTransports[e.HTTPTransport]; !ok {
-			return fmt.Errorf("http_transport must be one of: standard, browser-chrome, browser-chrome-h3")
+			return fmt.Errorf("http_transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h3")
 		}
 	}
 	if err := validateBearerRefresh(e.BearerRefresh); err != nil {

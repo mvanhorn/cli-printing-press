@@ -2454,6 +2454,14 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 	assert.Equal(t, HTTPTransportBrowserChrome, sniffed.EffectiveHTTPTransport())
 	require.NoError(t, sniffed.Validate())
 
+	browserHTTP := base
+	browserHTTP.HTTPTransport = HTTPTransportBrowserHTTP
+	assert.Equal(t, HTTPTransportBrowserHTTP, browserHTTP.EffectiveHTTPTransport())
+	assert.False(t, browserHTTP.UsesBrowserHTTPTransport())
+	assert.True(t, browserHTTP.UsesHTTP2DisabledTransport())
+	assert.False(t, browserHTTP.UsesBrowserManagedUserAgent())
+	require.NoError(t, browserHTTP.Validate())
+
 	community := base
 	community.SpecSource = "community"
 	assert.Equal(t, HTTPTransportBrowserChrome, community.EffectiveHTTPTransport())
@@ -2476,6 +2484,11 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 	assert.Equal(t, HTTPTransportStandard, runtime.EffectiveHTTPTransport())
 	assert.False(t, runtime.UsesBrowserManagedUserAgent())
 	require.ErrorContains(t, runtime.Validate(), "http_transport must be one of")
+
+	requiredUA := base
+	requiredUA.RequiredHeaders = []RequiredHeader{{Name: "user-agent", Value: "Mozilla/5.0"}}
+	assert.True(t, requiredUA.HasRequiredHeader("User-Agent"))
+	assert.False(t, requiredUA.HasRequiredHeader("Referer"))
 
 	invalid := base
 	invalid.HTTPTransport = "lynx"

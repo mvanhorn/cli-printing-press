@@ -10,6 +10,11 @@ name: my-api                     # string (REQUIRED) CLI binary prefix, e.g. "my
 description: "My API CLI"       # string shown in command help
 version: "0.1.0"                # string baked into generated binary
 base_url: "https://api.example.com/v1" # string (REQUIRED) default base API URL
+http_transport: standard          # string optional: standard | browser-http | browser-chrome | browser-chrome-h3
+health_check_path: "/health"      # string optional doctor reachability path; defaults to /
+required_headers:                 # []RequiredHeader optional headers sent on every request
+  - name: User-Agent
+    value: "Mozilla/5.0 ..."
 
 auth:                             # object (AuthConfig)
   type: api_key                   # string: api_key | oauth2 | bearer_token | none
@@ -79,6 +84,7 @@ name: stytch # CLI binary prefix => stytch-cli
 description: "Stytch authentication API CLI" # Root help text and README summary
 version: "0.1.0" # Printed by `stytch-cli version`
 base_url: "https://api.stytch.com/v1" # Default base URL endpoint paths are joined against
+health_check_path: "/sessions" # Optional doctor reachability path; omit to probe /
 
 auth:
   type: api_key # Uses API key style auth
