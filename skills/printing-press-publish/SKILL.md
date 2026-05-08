@@ -400,6 +400,28 @@ cp -r "$STAGING_DIR/library/<category>/<cli-name>" "$PUBLISH_REPO_DIR/library/<c
 # Remove binaries (should not be committed)
 rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>"
 
+# Strict-validate printer attribution in the staged manifest. The printer
+# field surfaces in the per-CLI README byline and (once the library-side
+# generate-registry tool reads it) the library catalog row. A wrong value
+# here would publish broken attribution to every reader of the catalog,
+# so the publish step is the right gate. The generator emits a stderr
+# warning when it falls back to a slug-shaped value, but the warning is
+# advisory; this check is enforcing.
+PRINTER=$(jq -r '.printer // ""' "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press.json")
+OWNER=$(jq -r '.owner // ""' "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press.json")
+if [ -z "$PRINTER" ]; then
+  echo "ERROR: manifest .printer is empty. Set 'git config --global github.user <your-handle>' and re-print before publishing."
+  exit 1
+fi
+if [ "$PRINTER" = "USER" ] || [ "$PRINTER" = "user" ]; then
+  echo "ERROR: manifest .printer is the literal sentinel \"$PRINTER\" (git config github.user was unset at print time). Set it and re-print before publishing."
+  exit 1
+fi
+if [ "$PRINTER" = "$OWNER" ]; then
+  echo "ERROR: manifest .printer ($PRINTER) equals manifest .owner — the generator's slug-fallback fired because git config github.user was unset at print time. The printer field carries the API-spec slug, not a real GitHub handle, and would render as a broken attribution row in the catalog. Set 'git config --global github.user <your-handle>' and re-print, or manually correct .printer in .printing-press.json before re-running publish."
+  exit 1
+fi
+
 # Regenerate the flat cli-skills mirror from the library tree so library PR CI passes mirror parity.
 if [ -f "$PUBLISH_REPO_DIR/tools/generate-skills/main.go" ]; then
   (cd "$PUBLISH_REPO_DIR" && go run ./tools/generate-skills/main.go)
