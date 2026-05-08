@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.0.5](https://github.com/mvanhorn/cli-printing-press/compare/v4.0.4...v4.0.5) (2026-05-08)
+
+
+### Bug Fixes
+
+* **cli:** add scoped govulncheck gates ([#699](https://github.com/mvanhorn/cli-printing-press/issues/699)) ([ac75b83](https://github.com/mvanhorn/cli-printing-press/commit/ac75b83ccb7804433579d163d0798774c1c7051b))
+
 ## [4.0.4](https://github.com/mvanhorn/cli-printing-press/compare/v4.0.3...v4.0.4) (2026-05-08)
 
 
