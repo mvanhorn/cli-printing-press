@@ -1350,3 +1350,76 @@ func TestPopulateMCPMetadataCLIDescription(t *testing.T) {
 		assert.Equal(t, "Catalog description.", m.Description)
 	})
 }
+
+// TestWriteManifestForGeneratePopulatesCategoryFromSpec pins the fallback
+// that lets synthetic CLIs (not in the embedded catalog) carry their
+// spec.Category through to .printing-press.json. Without this fallback,
+// verify-skill's canonical-sections check expects the install URL to use
+// "other" while the rendered SKILL (which reads category from the spec
+// via the template's .Category) uses the real category — a structural
+// drift that breaks publish for any synthetic-CLI category.
+func TestWriteManifestForGeneratePopulatesCategoryFromSpec(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		// "synthetic-travel-cli" is not in the embedded catalog; the
+		// catalog lookup will fail and the spec.Category fallback fires.
+		APIName:   "synthetic-travel-cli",
+		OutputDir: dir,
+		Spec: &spec.APISpec{
+			Name:     "synthetic-travel-cli",
+			Category: "travel",
+			Auth:     spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, "travel", got.Category, "spec.Category should populate manifest.Category for synthetic CLIs")
+}
+
+// TestWriteManifestForGenerateCatalogCategoryWinsOverSpec pins precedence:
+// when an API IS in the embedded catalog, the catalog's category wins.
+// The spec.Category fallback only fires when the catalog lookup misses.
+// Important because catalog-listed APIs may have richer category metadata
+// (e.g., curated overrides) the spec doesn't reflect.
+func TestWriteManifestForGenerateCatalogCategoryWinsOverSpec(t *testing.T) {
+	dir := t.TempDir()
+
+	// asana is in the embedded catalog with category=project-management.
+	// The spec carries a different category to confirm the catalog wins.
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "asana",
+		OutputDir: dir,
+		Spec: &spec.APISpec{
+			Name:     "asana",
+			Category: "developer-tools", // would-be override
+			Auth:     spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, "project-management", got.Category, "catalog category must win over spec category")
+}
+
+// TestWriteManifestForGenerateNoCategoryAnywhere pins that the manifest's
+// category stays empty when neither the catalog nor the spec carries one.
+// (verify-skill / install_section.go then default to "other" downstream;
+// that fallback is the intended behavior for un-categorized CLIs.)
+func TestWriteManifestForGenerateNoCategoryAnywhere(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "synthetic-uncategorized",
+		OutputDir: dir,
+		Spec: &spec.APISpec{
+			Name: "synthetic-uncategorized",
+			Auth: spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Empty(t, got.Category, "manifest.Category should stay empty when no source provides one")
+}

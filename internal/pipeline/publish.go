@@ -290,6 +290,16 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			populateMCPMetadata(&m, parsed)
 		}
 
+		// Fall back to spec.Category for synthetic CLIs not in the embedded
+		// catalog (mirrors the same fallback in WriteManifestForGenerate).
+		// The catalog lookup earlier in this function only fires for
+		// catalog-listed APIs; synthetic CLIs would otherwise lose the
+		// spec's category at publish time and break verify-skill's
+		// canonical-sections check.
+		if m.Category == "" && parsed != nil && parsed.Category != "" {
+			m.Category = parsed.Category
+		}
+
 		// Generate tools-manifest.json for diagnostic commands
 		// (auth-doctor, mcp-audit). Non-blocking: log warning on error
 		// but don't fail the publish.

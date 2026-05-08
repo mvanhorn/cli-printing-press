@@ -469,6 +469,17 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 			m.DisplayName = entry.DisplayName
 		}
 	}
+	// Fall back to spec.Category for synthetic CLIs that aren't in the
+	// embedded catalog. Without this, manifest.Category stays empty even
+	// when the spec sets `category: travel`, and verify-skill's canonical-
+	// sections check then expects the install URL to use "other" — putting
+	// the rendered SKILL (which read category from the spec via the
+	// template's .Category) and the manifest-derived expected SKILL out of
+	// sync. The README/SKILL templates already resolve category through the
+	// spec; the manifest writer was the lone holdout.
+	if m.Category == "" && p.Spec != nil && p.Spec.Category != "" {
+		m.Category = p.Spec.Category
+	}
 
 	// Record the API version from the spec for provenance (not the CLI version).
 	if p.Spec != nil && p.Spec.Version != "" {
