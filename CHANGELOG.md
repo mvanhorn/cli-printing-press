@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.0.6](https://github.com/mvanhorn/cli-printing-press/compare/v4.0.5...v4.0.6) (2026-05-08)
+
+
+### Bug Fixes
+
+* **cli:** close MCP sql tool exfiltration vector with allowlist + read-only handle ([#709](https://github.com/mvanhorn/cli-printing-press/issues/709)) ([b196bd8](https://github.com/mvanhorn/cli-printing-press/commit/b196bd813a0a4eb58f763b7d4d38563208c1a5d0))
+* **cli:** correct named-array envelope detection and api_key set-token slot ([#706](https://github.com/mvanhorn/cli-printing-press/issues/706)) ([c46cf01](https://github.com/mvanhorn/cli-printing-press/commit/c46cf0157409949d46b958836aadafa8fa281913))
+* **cli:** dedupe TypeField identifiers in same struct ([#705](https://github.com/mvanhorn/cli-printing-press/issues/705)) ([d1c3371](https://github.com/mvanhorn/cli-printing-press/commit/d1c3371e13f9f558ff359d3d320a80ebef46d77f)), closes [#697](https://github.com/mvanhorn/cli-printing-press/issues/697)
+* **cli:** gate orphan token scaffolding on auth surface ([#704](https://github.com/mvanhorn/cli-printing-press/issues/704)) ([35d7e84](https://github.com/mvanhorn/cli-printing-press/commit/35d7e842f618b0abcaa7127960344267e9f79c71))
+* **cli:** parse x-mcp extension in OpenAPI parser ([#702](https://github.com/mvanhorn/cli-printing-press/issues/702)) ([41c87cf](https://github.com/mvanhorn/cli-printing-press/commit/41c87cf866eaff009988036b73dc62a30b9d0738))
+* **cli:** shard sub-resource tables per parent on collision ([#707](https://github.com/mvanhorn/cli-printing-press/issues/707)) ([1023054](https://github.com/mvanhorn/cli-printing-press/commit/102305421d740138e3e5a740af3b47a5bc32b7b1))
+* **cli:** source store columns from response schema, not query params ([#708](https://github.com/mvanhorn/cli-printing-press/issues/708)) ([9e039c0](https://github.com/mvanhorn/cli-printing-press/commit/9e039c0be787abf49242b668397155f6940525f7))
+
 ## [4.0.5](https://github.com/mvanhorn/cli-printing-press/compare/v4.0.4...v4.0.5) (2026-05-08)
 
 
