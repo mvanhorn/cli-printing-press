@@ -437,6 +437,8 @@ func TestGenerateAgentContextCommand(t *testing.T) {
 
 	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "stytch.yaml"))
 	require.NoError(t, err)
+	apiSpec.Description = "# Introduction\nAPI reference prose that should stay out of compact agent copy."
+	apiSpec.CLIDescription = "Manage Stytch users and sessions from the terminal."
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
@@ -462,6 +464,8 @@ func TestGenerateAgentContextCommand(t *testing.T) {
 	// (which shifts when the longest field name in the literal grows)
 	// doesn't break the assertion.
 	assert.Regexp(t, `Use:\s+"agent-context"`, src, `agent_context.go missing Use: "agent-context"`)
+	assert.Contains(t, src, `Description: "Manage Stytch users and sessions from the terminal."`)
+	assert.NotContains(t, src, "# Introduction")
 	// agent-context only reads CLI tree state and emits JSON to stdout.
 	// The runtime walker uses this annotation to set readOnlyHint on
 	// the resulting MCP tool so hosts skip the per-call permission prompt.
@@ -4894,6 +4898,7 @@ func TestGenerateMCPContextEscapesDomainStrings(t *testing.T) {
 	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "stytch.yaml"))
 	require.NoError(t, err)
 	apiSpec.Description = `Stytch "quoted" API \ context`
+	apiSpec.CLIDescription = `Manage "quoted" Stytch sessions from C:\tmp.`
 	apiSpec.Auth.KeyURL = `https://example.test/keys?label="quoted"&path=\demo`
 
 	users := apiSpec.Resources["users"]
@@ -4921,6 +4926,7 @@ func TestGenerateMCPContextEscapesDomainStrings(t *testing.T) {
 	require.NoError(t, err, "MCP tools source must remain valid Go when context strings contain quotes and backslashes")
 
 	src := string(data)
+	assert.Contains(t, src, `Manage \"quoted\" Stytch sessions from C:\\tmp.`)
 	assert.Contains(t, src, `label=\"quoted\"&path=\\demo`)
 	assert.Contains(t, src, `Quote \"dashboard\"`)
 	assert.Contains(t, src, `filter=\"active\"`)

@@ -47,7 +47,7 @@ brews:
       owner: {{.Owner}}
       name: homebrew-tap
     homepage: "https://github.com/{{.Owner}}/{{.Name}}-pp-cli"
-    description: "{{.Description}}"
+    description: "{{yamlDoubleQuoted .CompactDescription}}"
     install: |
       bin.install "{{.Name}}-pp-cli"
 {{- if .VisionSet.MCP}}

@@ -658,18 +658,20 @@ type endpointTemplateData struct {
 // readmeTemplateData wraps APISpec with additional fields for README rendering.
 type readmeTemplateData struct {
 	*spec.APISpec
-	Sources           []ReadmeSource
-	DiscoveryPages    []string
-	NovelFeatures     []NovelFeature
-	Narrative         *ReadmeNarrative
-	ProseName         string
-	HasDataLayer      bool
-	HasAsyncJobs      bool
-	HasWriteCommands  bool
-	HasDelete         bool
-	HasAuth           bool
-	FreshnessCommands []string
-	TrafficAnalysis   *trafficAnalysisTemplateData
+	Sources            []ReadmeSource
+	DiscoveryPages     []string
+	NovelFeatures      []NovelFeature
+	Narrative          *ReadmeNarrative
+	ProseName          string
+	CompactDescription string
+	SkillDescription   string
+	HasDataLayer       bool
+	HasAsyncJobs       bool
+	HasWriteCommands   bool
+	HasDelete          bool
+	HasAuth            bool
+	FreshnessCommands  []string
+	TrafficAnalysis    *trafficAnalysisTemplateData
 	// PromotedResourceNames maps a resource name to true when the generator
 	// collapsed that single-endpoint resource into a leaf command. Templates
 	// (notably skill.md.tmpl's Command Reference) use this to emit `<cli>
@@ -686,7 +688,8 @@ type readmeTemplateData struct {
 
 type generatorTemplateData struct {
 	*spec.APISpec
-	TrafficAnalysis *trafficAnalysisTemplateData
+	CompactDescription string
+	TrafficAnalysis    *trafficAnalysisTemplateData
 }
 
 type trafficAnalysisTemplateData struct {
@@ -718,6 +721,8 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		NovelFeatures:         g.NovelFeatures,
 		Narrative:             g.Narrative,
 		ProseName:             g.proseName(),
+		CompactDescription:    g.compactDescription(),
+		SkillDescription:      g.skillDescription(),
 		HasDataLayer:          g.VisionSet.Store,
 		HasAsyncJobs:          len(g.AsyncJobs) > 0,
 		HasWriteCommands:      hasWriteCommands(g.Spec.Resources),
@@ -727,6 +732,35 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		TrafficAnalysis:       g.trafficAnalysisData(),
 		PromotedResourceNames: g.PromotedResourceNames,
 		PromotedEndpointNames: g.PromotedEndpointNames,
+	}
+}
+
+func (g *Generator) compactDescription() string {
+	candidates := []string{}
+	if g.Narrative != nil {
+		candidates = append(candidates, g.Narrative.Headline)
+	}
+	if g.Spec != nil {
+		candidates = append(candidates, g.Spec.CLIDescription, g.Spec.Description)
+	}
+	for _, candidate := range candidates {
+		if desc := naming.CompactDescription(candidate); desc != "" {
+			return desc
+		}
+	}
+	return fmt.Sprintf("Printing Press CLI for %s.", g.proseName())
+}
+
+func (g *Generator) skillDescription() string {
+	switch {
+	case g.Narrative != nil && strings.TrimSpace(g.Narrative.Headline) != "":
+		return naming.CompactDescription(g.Narrative.Headline)
+	case g.Spec != nil && strings.TrimSpace(g.Spec.CLIDescription) != "":
+		return naming.CompactDescription(g.Spec.CLIDescription)
+	case g.Spec != nil && strings.TrimSpace(g.Spec.Description) != "":
+		return fmt.Sprintf("Printing Press CLI for %s. %s", g.proseName(), naming.CompactDescription(g.Spec.Description))
+	default:
+		return fmt.Sprintf("Printing Press CLI for %s.", g.proseName())
 	}
 }
 
@@ -1034,8 +1068,9 @@ func bodyIsAllFilterShape(body []spec.Param) bool {
 
 func (g *Generator) templateData() *generatorTemplateData {
 	return &generatorTemplateData{
-		APISpec:         g.Spec,
-		TrafficAnalysis: g.trafficAnalysisData(),
+		APISpec:            g.Spec,
+		CompactDescription: g.compactDescription(),
+		TrafficAnalysis:    g.trafficAnalysisData(),
 	}
 }
 
@@ -1127,7 +1162,7 @@ func safeDisplayURL(value string) string {
 func (g *Generator) buildDomainContext() DomainContext {
 	ctx := DomainContext{
 		APIName:     g.Spec.Name,
-		Description: naming.OneLine(g.Spec.Description),
+		Description: g.compactDescription(),
 		Archetype:   string(profiler.ArchetypeGeneric),
 	}
 
@@ -2382,6 +2417,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		AsyncJobCount         int
 		HasAuthCommand        bool
 		HasDelete             bool
+		CompactDescription    string
 	}{
 		APISpec:               g.Spec,
 		VisionSet:             g.VisionSet,
@@ -2397,6 +2433,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		AsyncJobCount:         len(g.AsyncJobs),
 		HasAuthCommand:        hasAuthCommand,
 		HasDelete:             helperFlags.HasDelete,
+		CompactDescription:    g.compactDescription(),
 	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
 		return fmt.Errorf("rendering root: %w", err)

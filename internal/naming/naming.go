@@ -10,6 +10,8 @@ import (
 	"golang.org/x/text/language"
 )
 
+var leadingMarkdownHeadingRE = regexp.MustCompile(`^#{1,6}\s+(.+)$`)
+
 // ASCIIFold transliterates Unicode to ASCII via Unidecode tables (the
 // same ones Django's slugify and Rails use). Apply at every chokepoint
 // that turns user-supplied spec strings (titles, resource names,
@@ -160,7 +162,47 @@ func EnvVarPlaceholder(envVar string) string {
 // including hand-authored mcp-descriptions.json overrides — use OneLineNormalize
 // instead, which does the same normalization without the length cap.
 func OneLine(s string) string {
-	s = OneLineNormalize(s)
+	return truncateOneLine(OneLineNormalize(s))
+}
+
+// OneLineNormalize collapses whitespace, newlines, and quotes into a
+// single-line safe form without imposing a length cap. Use for content
+// that's already curated for length (MCP tool descriptions, agent-authored
+// overrides) where truncating would defeat the purpose.
+func OneLineNormalize(s string) string {
+	s = stripLeadingMarkdownHeading(s)
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, `"`, `'`)
+	s = strings.ReplaceAll(s, "\\", "")
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	return strings.TrimSpace(s)
+}
+
+// CompactDescription produces compact human-facing copy for catalog, skill,
+// Homebrew, and agent-context descriptions. Unlike OneLine, it preserves
+// quotes and backslashes because callers are responsible for escaping in their
+// target format.
+func CompactDescription(s string) string {
+	s = stripLeadingMarkdownHeading(s)
+	s = collapseWhitespace(s)
+	return truncateOneLine(s)
+}
+
+func collapseWhitespace(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	for strings.Contains(s, "  ") {
+		s = strings.ReplaceAll(s, "  ", " ")
+	}
+	return strings.TrimSpace(s)
+}
+
+func truncateOneLine(s string) string {
 	if len(s) > 120 {
 		cut := s[:117]
 		if idx := strings.LastIndex(cut, " "); idx > 60 {
@@ -172,20 +214,44 @@ func OneLine(s string) string {
 	return s
 }
 
-// OneLineNormalize collapses whitespace, newlines, and quotes into a
-// single-line safe form without imposing a length cap. Use for content
-// that's already curated for length (MCP tool descriptions, agent-authored
-// overrides) where truncating would defeat the purpose.
-func OneLineNormalize(s string) string {
-	s = strings.ReplaceAll(s, "\r\n", " ")
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\r", " ")
-	s = strings.ReplaceAll(s, `"`, `'`)
-	s = strings.ReplaceAll(s, "\\", "")
-	for strings.Contains(s, "  ") {
-		s = strings.ReplaceAll(s, "  ", " ")
+func stripLeadingMarkdownHeading(s string) string {
+	normalized := strings.ReplaceAll(s, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	lines := strings.Split(normalized, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		m := leadingMarkdownHeadingRE.FindStringSubmatch(trimmed)
+		if m == nil {
+			return s
+		}
+		rest := firstParagraphAfter(lines[i+1:])
+		if rest != "" {
+			return rest
+		}
+		return strings.TrimSpace(m[1])
 	}
-	return strings.TrimSpace(s)
+	return s
+}
+
+func firstParagraphAfter(lines []string) string {
+	var paragraph []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			if len(paragraph) > 0 {
+				break
+			}
+			continue
+		}
+		if len(paragraph) > 0 && leadingMarkdownHeadingRE.MatchString(trimmed) {
+			break
+		}
+		paragraph = append(paragraph, line)
+	}
+	return strings.TrimSpace(strings.Join(paragraph, "\n"))
 }
 
 // MCPDescription builds an MCP tool description with optional minority-side

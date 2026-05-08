@@ -160,6 +160,8 @@ func TestOneLine(t *testing.T) {
 		"too  many   spaces": "too many spaces",
 		`say "hello"`:        "say 'hello'",
 		"  spaces  ":         "spaces",
+		"# Introduction\nAeroAPI delivers flight data.": "AeroAPI delivers flight data.",
+		"## Overview": "Overview",
 	}
 
 	for input, want := range tests {
@@ -170,6 +172,14 @@ func TestOneLine(t *testing.T) {
 
 	if got := OneLine(string(make([]byte, 200))); len(got) > 120 {
 		t.Fatalf("OneLine(long string) length = %d, want <= 120", len(got))
+	}
+}
+
+func TestCompactDescriptionPreservesHumanText(t *testing.T) {
+	input := "# Introduction\nAn \"agent-native\" CLI with C:\\tmp paths."
+	want := `An "agent-native" CLI with C:\tmp paths.`
+	if got := CompactDescription(input); got != want {
+		t.Fatalf("CompactDescription(%q) = %q, want %q", input, got, want)
 	}
 }
 

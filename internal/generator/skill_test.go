@@ -245,13 +245,13 @@ func TestSkillUsesExplicitDisplayNameForProse(t *testing.T) {
 }
 
 // TestSkillFrontmatterFallbackHandlesMultilineSpecDescription asserts that
-// OpenAPI specs with multi-line info.description values don't break the
-// YAML frontmatter in the narrative-absent fallback path.
+// OpenAPI specs with multi-line, heading-led info.description values don't
+// break the YAML frontmatter or leak a Markdown heading into compact copy.
 func TestSkillFrontmatterFallbackHandlesMultilineSpecDescription(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("multiline")
-	apiSpec.Description = "Line one of the description.\nLine two has more detail.\nLine three."
+	apiSpec.Description = "# Introduction\nLine one of the description.\nLine two has more detail.\nLine three."
 	outputDir := filepath.Join(t.TempDir(), "multiline-pp-cli")
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
@@ -270,9 +270,53 @@ func TestSkillFrontmatterFallbackHandlesMultilineSpecDescription(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal([]byte(body), &parsed),
 		"frontmatter must be valid YAML even with multi-line spec description")
 	assert.True(t, strings.HasPrefix(parsed.Description, "Printing Press CLI for Multiline"))
+	assert.False(t, strings.Contains(parsed.Description, "# Introduction"),
+		"description should not retain leading Markdown headings")
 	// Multi-line description should be flattened by oneline helper.
 	assert.False(t, strings.Contains(parsed.Description, "\n"),
 		"description should not contain raw newlines after oneline flattening")
+}
+
+func TestGoreleaserDescriptionUsesCompactMarkdownFreeDescription(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("brewdesc")
+	apiSpec.Description = "# Introduction\nAeroAPI gives developers access to current and historical flight data.\n\n## Details\nMore verbose content."
+	outputDir := filepath.Join(t.TempDir(), "brewdesc-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	goreleaser, err := os.ReadFile(filepath.Join(outputDir, ".goreleaser.yaml"))
+	require.NoError(t, err)
+	content := string(goreleaser)
+
+	assert.Contains(t, content, `description: "AeroAPI gives developers access to current and historical flight data."`)
+	assert.NotContains(t, content, "# Introduction")
+	assert.NotContains(t, content, "## Details")
+}
+
+func TestCompactDescriptionPrefersCLIShapedCopy(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("cliproduct")
+	apiSpec.Description = "# Introduction\nAPI-shaped docs that should not become product copy."
+	apiSpec.CLIDescription = "Search routes, compare prices, and track reliability from the terminal."
+	outputDir := filepath.Join(t.TempDir(), "cliproduct-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	skill, err := os.ReadFile(filepath.Join(outputDir, "SKILL.md"))
+	require.NoError(t, err)
+	end := strings.Index(string(skill[4:]), "\n---\n")
+	require.NotEqual(t, -1, end)
+	frontmatter := string(skill[:4+end+5])
+	goreleaser, err := os.ReadFile(filepath.Join(outputDir, ".goreleaser.yaml"))
+	require.NoError(t, err)
+
+	assert.Contains(t, frontmatter, `description: "Search routes, compare prices, and track reliability from the terminal."`)
+	assert.Contains(t, string(goreleaser), `description: "Search routes, compare prices, and track reliability from the terminal."`)
+	assert.NotContains(t, frontmatter, "# Introduction")
+	assert.NotContains(t, string(goreleaser), "# Introduction")
 }
 
 // TestSkillRendersAuthBranchPerType asserts the deterministic Auth Setup

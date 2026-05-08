@@ -143,7 +143,7 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 		SchemaVersion: agentContextSchemaVersion,
 		CLI: agentContextCLI{
 			Name:        {{printf "%q" (printf "%s-pp-cli" .Name)}},
-			Description: {{printf "%q" (oneline .Description)}},
+			Description: {{printf "%q" .CompactDescription}},
 			Version:     rootCmd.Version,
 		},
 		Auth: agentContextAuth{
