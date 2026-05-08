@@ -168,6 +168,17 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 	resourceNames, resourceNameIndex := collectResourceNameMetadata(s.Resources)
 	syncable := make(map[string]syncableMeta) // resource name -> chosen list endpoint metadata
+	syncCandidates := make(map[string][]syncableCandidate)
+	addSyncCandidate := func(resourceName string, meta syncableMeta) {
+		for _, candidate := range syncCandidates[resourceName] {
+			if candidate.meta.Path == meta.Path {
+				return
+			}
+		}
+		syncCandidates[resourceName] = append(syncCandidates[resourceName], syncableCandidate{
+			meta: meta,
+		})
+	}
 	// Keyed by "<parent>/<leaf>" so the same leaf under multiple parents
 	// survives instead of first-seen-wins.
 	parameterized := make(map[string]parameterizedEntry)
@@ -304,15 +315,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 				listCapableGETs++
 				listResources[resourceName] = struct{}{}
 
-				// Add to syncable if the endpoint can be fetched without runtime context.
-				// Exclude: (a) paths with unfilled params like {steamid}
-				// (b) endpoints with required non-pagination query params (scoped lists
-				//     like GetFriendList?steamid=REQUIRED that need a parent ID)
-				if !strings.Contains(endpoint.Path, "{") && !hasRequiredScopeParams(endpoint) {
-					if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing.Path) {
-						syncable[resourceName] = metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex)
-					}
-				}
+				standaloneList := !strings.Contains(endpoint.Path, "{") && !hasRequiredScopeParams(endpoint)
 
 				if endpoint.Pagination != nil {
 					p.ListEndpoints++
@@ -323,6 +326,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 					// GET /v1/api/networkentity?entityType=collection|workspace|api|flow
 					// → sync resources: collection, workspace, api, flow
 					if enumParam := findEntityTypeEnum(endpoint); enumParam != nil && len(enumParam.Enum) >= 2 {
+						addSyncCandidate(resourceName, metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex))
 						for _, val := range enumParam.Enum {
 							expandedName := strings.ToLower(val)
 							expandedPath := endpoint.Path + "?" + enumParam.Name + "=" + val
@@ -348,13 +352,11 @@ func Profile(s *spec.APISpec) *APIProfile {
 								meta:       metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex),
 							}
 						}
-					} else {
-						// Paginated endpoints override the path set above — they have
-						// richer pagination support for full data retrieval.
-						if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing.Path) {
-							syncable[resourceName] = metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex)
-						}
+					} else if standaloneList {
+						addSyncCandidate(resourceName, metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex))
 					}
+				} else if standaloneList {
+					addSyncCandidate(resourceName, metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex))
 				}
 			} else if method == "GET" && !strings.Contains(endpoint.Path, "{") && !hasRequiredScopeParams(endpoint) && looksLikeCollectionEndpoint(endpointNameLower) {
 				// Catch-all for simple GET collection endpoints that isListEndpoint
@@ -362,9 +364,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 				// wrapper field defined in the spec's types map).
 				// Only include endpoints whose name suggests a collection (list, all,
 				// index, etc.) — exclude singular getters like "get" or "show".
-				if existing, ok := syncable[resourceName]; !ok || len(endpoint.Path) < len(existing.Path) {
-					syncable[resourceName] = metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex)
-				}
+				addSyncCandidate(resourceName, metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex))
 			}
 
 			if endpoint.Pagination != nil {
@@ -431,6 +431,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 	for name, resource := range s.Resources {
 		walk(name, resource, "", "")
 	}
+	applySyncCandidates(syncable, syncCandidates)
 
 	if p.TotalEndpoints > 0 {
 		p.ReadRatio = float64(getEndpoints) / float64(p.TotalEndpoints)
@@ -757,8 +758,10 @@ func findEntityTypeEnum(endpoint spec.Endpoint) *spec.Param {
 // the catch-all syncable-resource heuristic so that singleton getters like
 // "get" or "show" are excluded.
 func looksLikeCollectionEndpoint(nameLower string) bool {
-	return containsAny(nameLower, []string{"list", "all", "index", "search", "query", "browse", "find"})
+	return containsAny(nameLower, collectionEndpointTerms)
 }
+
+var collectionEndpointTerms = []string{"list", "all", "index", "search", "query", "browse", "find"}
 
 func hasLifecycleField(params []spec.Param) bool {
 	for _, param := range params {
@@ -1028,6 +1031,10 @@ type syncableMeta struct {
 	Discriminator DiscriminatorDispatch
 }
 
+type syncableCandidate struct {
+	meta syncableMeta
+}
+
 // parameterizedEntry pairs a parameterized list endpoint with the parent
 // resource it was discovered under during the spec walk. parentName is
 // empty for top-level resources whose paths happen to be parameterized;
@@ -1049,6 +1056,88 @@ func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, 
 		IDField:       e.IDField,
 		Critical:      e.Critical,
 		Discriminator: discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
+	}
+}
+
+func applySyncCandidates(syncable map[string]syncableMeta, candidates map[string][]syncableCandidate) {
+	resourceNames := sortedKeys(candidates)
+	for _, resourceName := range resourceNames {
+		entries := candidates[resourceName]
+		sort.SliceStable(entries, func(i, j int) bool {
+			if len(entries[i].meta.Path) != len(entries[j].meta.Path) {
+				return len(entries[i].meta.Path) < len(entries[j].meta.Path)
+			}
+			return entries[i].meta.Path < entries[j].meta.Path
+		})
+		if len(entries) == 0 {
+			continue
+		}
+
+		if _, ok := syncable[resourceName]; !ok {
+			syncable[resourceName] = entries[0].meta
+		}
+		canonicalPath := syncable[resourceName].Path
+		for _, entry := range entries {
+			if entry.meta.Path == canonicalPath {
+				continue
+			}
+			name := siblingSyncResourceName(resourceName, entry)
+			if name == "" || name == resourceName {
+				continue
+			}
+			addSyncableIfUnique(syncable, name, entry.meta)
+		}
+	}
+}
+
+func siblingSyncResourceName(resourceName string, candidate syncableCandidate) string {
+	suffix := siblingSyncResourceSuffix(resourceName, candidate.meta.Path)
+	if len(suffix) == 0 || isGenericCollectionSegment(suffix[len(suffix)-1]) {
+		return resourceName
+	}
+	return resourceName + "-" + strings.Join(suffix, "-")
+}
+
+func isGenericCollectionSegment(segment string) bool {
+	return slices.Contains(collectionEndpointTerms, segment)
+}
+
+func siblingSyncResourceSuffix(resourceName, path string) []string {
+	segments := staticPathSegments(path)
+	for i, segment := range segments {
+		if segment == resourceName {
+			return segments[i+1:]
+		}
+	}
+	if len(segments) == 0 {
+		return nil
+	}
+	return segments[len(segments)-1:]
+}
+
+func staticPathSegments(path string) []string {
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	out := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		segment := strings.TrimSpace(segment)
+		if segment == "" || strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") {
+			continue
+		}
+		if normalized := normalizeSyncResourceSegment(segment); normalized != "" {
+			out = append(out, normalized)
+		}
+	}
+	return out
+}
+
+func normalizeSyncResourceSegment(value string) string {
+	segment := strings.ReplaceAll(spec.ToSnakeCase(value), "_", "-")
+	return strings.Trim(segment, "-")
+}
+
+func addSyncableIfUnique(syncable map[string]syncableMeta, name string, meta syncableMeta) {
+	if existing, ok := syncable[name]; !ok || existing.Path == meta.Path {
+		syncable[name] = meta
 	}
 }
 
