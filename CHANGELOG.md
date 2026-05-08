@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.0.4](https://github.com/mvanhorn/cli-printing-press/compare/v4.0.3...v4.0.4) (2026-05-08)
+
+
+### Bug Fixes
+
+* **cli:** dedupe regen-merge registrations by command use ([#690](https://github.com/mvanhorn/cli-printing-press/issues/690)) ([fe625c6](https://github.com/mvanhorn/cli-printing-press/commit/fe625c6bd9b0641401165a0f5659f92edf3737da))
+* **cli:** strip leading Markdown headings from CLI descriptions ([#691](https://github.com/mvanhorn/cli-printing-press/issues/691)) ([b188dc2](https://github.com/mvanhorn/cli-printing-press/commit/b188dc2d607e41abb63c104be512607cf4e3436b))
+
 ## [4.0.3](https://github.com/mvanhorn/cli-printing-press/compare/v4.0.2...v4.0.3) (2026-05-07)
 
 
