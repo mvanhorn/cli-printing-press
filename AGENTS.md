@@ -96,6 +96,9 @@ See [`docs/GLOSSARY.md`](docs/GLOSSARY.md) for the full term table and disambigu
 
 **`Printer` (slug @handle) vs `PrinterName` (display) — parallel pair, distinct from Owner/OwnerName.** `APISpec` and `CLIManifest` carry a second slug-vs-display pair for printer attribution. `Printer` is the GitHub @handle of the human who originally ran the press (e.g. `mvanhorn`), drives the per-CLI README byline link and the library-side registry attribution, and reads `git config github.user`. `PrinterName` is the prose-shaped display name (e.g. `Matt Van Horn`), rendered as the README byline parenthetical, and reads raw `git config user.name`. Resolution is tiered for both: the existing manifest wins over git config, so regens by other contributors do not overwrite the original printer (mirrors `resolveOwnerForExisting`'s preserve-on-regen guarantee). When `Printer` is unset at `Generate()` time, the generator emits a stderr warning and leaves it empty; the publish skill (Step 6) refuses to publish empty or literal `"USER"`/`"user"` sentinel values. Distinct from `Owner`/`OwnerName` (which carry the API-spec / wrapper-author identity); the printer is the human, the owner is the API vendor or wrapper author.
 
+## Issue Work Ownership
+When starting work from a GitHub issue, claim the issue before implementation: assign it to yourself, or to the GitHub user you are explicitly working on behalf of. If the issue already has an assignee, treat that as active ownership until you can determine otherwise from recent activity or direct confirmation. For a plausibly stale assignment, ask the current assignee by tagging them in an issue comment before taking over or reassigning the issue.
+
 ## Commit Style
 Format: `type(scope): description`. Both type and scope are required.
 
