@@ -16,15 +16,10 @@ For CLI only (no skill):
 npx -y @mvanhorn/printing-press install printing-press-golden --cli-only
 ```
 
-### Without Node (Go fallback)
 
-If `npx` isn't available (no Node, offline), install the CLI directly via Go (requires Go 1.26.3 or newer):
+### Without Node
 
-```bash
-go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden/cmd/printing-press-golden-pp-cli@latest
-```
-
-This installs the CLI only — no skill.
+The generated install path is category-agnostic until this CLI is published. If `npx` is not available before publish, install Node or use the category-specific Go fallback from the public-library entry after publish.
 
 ### Pre-built binary
 
@@ -165,9 +160,8 @@ Then invoke `/pp-printing-press-golden <query>` in Claude Code. The skill is the
 
 If you'd rather register this CLI as an MCP server in Claude Code, install the MCP binary first:
 
-```bash
-go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden/cmd/printing-press-golden-pp-mcp@latest
-```
+
+Install the MCP binary from this CLI's published public-library entry or pre-built release.
 
 Then register it:
 
@@ -194,9 +188,8 @@ Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple S
 
 If you can't use the MCPB bundle (older Claude Desktop, unsupported platform), install the MCP binary and configure it manually.
 
-```bash
-go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden/cmd/printing-press-golden-pp-mcp@latest
-```
+
+Install the MCP binary from this CLI's published public-library entry or pre-built release.
 
 Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 

@@ -64,6 +64,29 @@ func TestCanonicalSkillInstallSectionMatchesTemplate(t *testing.T) {
 	}
 }
 
+func TestCategorylessInstallSectionsAvoidOtherLibraryPath(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("gohighlevel")
+	outputDir := filepath.Join(t.TempDir(), "gohighlevel-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	for _, filename := range []string{"SKILL.md", "README.md"} {
+		t.Run(filename, func(t *testing.T) {
+			t.Parallel()
+
+			rendered, err := os.ReadFile(filepath.Join(outputDir, filename))
+			require.NoError(t, err)
+
+			content := string(rendered)
+			require.NotContains(t, content, "library/other/gohighlevel",
+				"category-less generation must not bake in a publish-time placeholder category")
+			require.Contains(t, content, "npx -y @mvanhorn/printing-press install gohighlevel",
+				"category-less generation should keep the category-agnostic installer path")
+		})
+	}
+}
+
 // TestExtractSkillInstallSectionMissingStart confirms the extractor
 // reports ok=false when the canonical heading is missing — the case
 // where an agent has rewritten the section into something unrecognizable.

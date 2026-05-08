@@ -600,9 +600,9 @@ func TestSkillFrontmatterOmitsAllEnvVarDeclarations(t *testing.T) {
 	}
 }
 
-// TestSkillFrontmatterMetadataDefaultsCategoryToOther asserts that when the
-// spec has no Category set, the install module path falls back to 'other'.
-func TestSkillFrontmatterMetadataDefaultsCategoryToOther(t *testing.T) {
+// TestSkillFrontmatterMetadataOmitsUnknownCategoryInstall asserts that when the
+// spec has no Category set, generated install metadata stays category-agnostic.
+func TestSkillFrontmatterMetadataOmitsUnknownCategoryInstall(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := minimalSpec("uncategorized")
@@ -615,9 +615,10 @@ func TestSkillFrontmatterMetadataDefaultsCategoryToOther(t *testing.T) {
 	require.NoError(t, err)
 	content := string(skill)
 
-	assert.Contains(t, content,
-		"module: github.com/mvanhorn/printing-press-library/library/other/uncategorized/cmd/uncategorized-pp-cli",
-		"empty Category should default to 'other' in install module path")
+	assert.NotContains(t, content, "library/other/uncategorized",
+		"empty Category should not bake a placeholder category into install metadata")
+	assert.Contains(t, content, "npx -y @mvanhorn/printing-press install uncategorized --cli-only",
+		"empty Category should keep the category-agnostic installer path")
 }
 
 // TestSkillNoExtraCommandsIsBackwardCompatible asserts the template emits

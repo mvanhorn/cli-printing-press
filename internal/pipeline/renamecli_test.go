@@ -111,6 +111,29 @@ CLI for the `+apiName+` API.
 `+"```"+`
 claude mcp add `+apiName+` `+mcpName+`
 `+"```"+`
+
+Install the skill from `+"`cli-skills/pp-"+apiName+"`"+` and install with:
+
+`+"```"+`
+go install github.com/mvanhorn/printing-press-library/library/other/`+apiName+`/cmd/`+cliName+`@latest
+`+"```"+`
+`), 0o644))
+
+	// SKILL.md
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(`---
+name: pp-`+apiName+`
+metadata:
+  openclaw:
+    install:
+      - kind: go
+        module: github.com/mvanhorn/printing-press-library/library/other/`+apiName+`/cmd/`+cliName+`
+---
+
+# `+apiName+`
+
+`+"```bash"+`
+go install github.com/mvanhorn/printing-press-library/library/other/`+apiName+`/cmd/`+cliName+`@latest
+`+"```"+`
 `), 0o644))
 
 	// go.mod (module path uses bare CLI name, as generated CLIs do)
@@ -134,6 +157,39 @@ go 1.24
 	}
 	data, _ := json.MarshalIndent(m, "", "  ")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+
+	mcpb := MCPBManifest{
+		ManifestVersion: MCPBManifestVersion,
+		Name:            mcpName,
+		Version:         "1.0.0",
+		Description:     apiName + " API surface as MCP tools.",
+		Author:          MCPBAuthor{Name: "CLI Printing Press"},
+		Server: MCPBServer{
+			Type:       "binary",
+			EntryPoint: "bin/" + mcpName,
+			MCPConfig: MCPBLaunchSpec{
+				Command: "${__dirname}/bin/" + mcpName,
+				Args:    []string{},
+			},
+		},
+	}
+	mcpbData, err := json.MarshalIndent(mcpb, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, MCPBManifestFilename), mcpbData, 0o644))
+
+	toolsManifest := ToolsManifest{
+		APIName:     apiName,
+		BaseURL:     "https://example.com",
+		Description: "tools for " + apiName,
+		MCPReady:    "full",
+		Auth:        ManifestAuth{Type: "none"},
+		Tools:       []ManifestTool{},
+	}
+	toolsData, err := json.MarshalIndent(toolsManifest, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ToolsManifestFilename), toolsData, 0o644))
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(cliName+"\n"+mcpName+"\n"), 0o644))
 }
 
 func TestRenameCLI(t *testing.T) {
@@ -212,15 +268,52 @@ func TestRenameCLI(t *testing.T) {
 		assert.NotContains(t, string(readme), oldName)
 		assert.Contains(t, string(readme), newMCPName)
 		assert.NotContains(t, string(readme), oldMCPName)
+		assert.Contains(t, string(readme), "cli-skills/pp-"+naming.TrimCLISuffix(newName))
+		assert.NotContains(t, string(readme), "`cli-skills/pp-"+apiName+"`")
+		assert.Contains(t, string(readme), "library/other/"+naming.TrimCLISuffix(newName)+"/cmd/"+newName)
+		assert.NotContains(t, string(readme), "library/other/"+apiName+"/cmd/"+newName)
 
-		// Manifest should have new cli_name, original api_name, and new MCP binary
+		// SKILL should have new skill identity, install metadata, and Go fallback path.
+		skill, err := os.ReadFile(filepath.Join(newDir, "SKILL.md"))
+		require.NoError(t, err)
+		assert.Contains(t, string(skill), "name: pp-"+naming.TrimCLISuffix(newName))
+		assert.NotContains(t, string(skill), "name: pp-"+apiName+"\n")
+		assert.Contains(t, string(skill), "library/other/"+naming.TrimCLISuffix(newName)+"/cmd/"+newName)
+		assert.NotContains(t, string(skill), "library/other/"+apiName+"/cmd/"+newName)
+
+		// Manifest should have the final public slug, CLI name, and MCP binary.
 		mData, err := os.ReadFile(filepath.Join(newDir, CLIManifestFilename))
 		require.NoError(t, err)
 		var m CLIManifest
 		require.NoError(t, json.Unmarshal(mData, &m))
 		assert.Equal(t, newName, m.CLIName)
-		assert.Equal(t, apiName, m.APIName)
+		assert.Equal(t, naming.TrimCLISuffix(newName), m.APIName)
 		assert.Equal(t, newMCPName, m.MCPBinary)
+
+		// MCPB manifest should launch the renamed MCP binary.
+		mcpbData, err := os.ReadFile(filepath.Join(newDir, MCPBManifestFilename))
+		require.NoError(t, err)
+		var mcpb MCPBManifest
+		require.NoError(t, json.Unmarshal(mcpbData, &mcpb))
+		assert.Equal(t, newMCPName, mcpb.Name)
+		assert.Equal(t, "bin/"+newMCPName, mcpb.Server.EntryPoint)
+		assert.Equal(t, "${__dirname}/bin/"+newMCPName, mcpb.Server.MCPConfig.Command)
+		assert.NotContains(t, string(mcpbData), oldMCPName)
+
+		// Tools manifest should use the post-rename public API slug.
+		toolsData, err := os.ReadFile(filepath.Join(newDir, ToolsManifestFilename))
+		require.NoError(t, err)
+		var tools ToolsManifest
+		require.NoError(t, json.Unmarshal(toolsData, &tools))
+		assert.Equal(t, naming.TrimCLISuffix(newName), tools.APIName)
+
+		// Bare binary ignore patterns must be root-anchored so cmd/<binary> is tracked.
+		gitignore, err := os.ReadFile(filepath.Join(newDir, ".gitignore"))
+		require.NoError(t, err)
+		assert.Contains(t, string(gitignore), "/"+newName)
+		assert.Contains(t, string(gitignore), "/"+newMCPName)
+		assert.NotContains(t, string(gitignore), "\n"+newName+"\n")
+		assert.NotContains(t, string(gitignore), "\n"+newMCPName+"\n")
 	})
 
 	t.Run("numeric qualifier renames correctly", func(t *testing.T) {
@@ -386,13 +479,13 @@ func main() {}
 		assert.Contains(t, string(rootGo), `Use:   "`+newName+`"`)
 		assert.NotContains(t, string(rootGo), oldName)
 
-		// Manifest should have new cli_name, original api_name
+		// Manifest should have the final public slug and CLI name.
 		mData, err := os.ReadFile(filepath.Join(newDir, CLIManifestFilename))
 		require.NoError(t, err)
 		var m CLIManifest
 		require.NoError(t, json.Unmarshal(mData, &m))
 		assert.Equal(t, newName, m.CLIName)
-		assert.Equal(t, apiName, m.APIName)
+		assert.Equal(t, naming.TrimCLISuffix(newName), m.APIName)
 	})
 
 	t.Run("skips non-target file extensions", func(t *testing.T) {

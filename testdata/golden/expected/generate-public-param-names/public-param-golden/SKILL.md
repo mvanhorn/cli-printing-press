@@ -10,10 +10,6 @@ metadata:
     requires:
       bins:
         - public-param-golden-pp-cli
-    install:
-      - kind: go
-        bins: [public-param-golden-pp-cli]
-        module: github.com/mvanhorn/printing-press-library/library/other/public-param-golden/cmd/public-param-golden-pp-cli
 ---
 
 # Public Param Golden — Printing Press CLI
@@ -29,11 +25,7 @@ This skill drives the `public-param-golden-pp-cli` binary. **You must verify the
 2. Verify: `public-param-golden-pp-cli --version`
 3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
 
-If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.3 or newer):
-
-```bash
-go install github.com/mvanhorn/printing-press-library/library/other/public-param-golden/cmd/public-param-golden-pp-cli@latest
-```
+If the `npx` install fails before this CLI has a public-library category, install Node or use the category-specific Go fallback after publish.
 
 If `--version` reports "command not found" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.
 
@@ -138,15 +130,13 @@ Parse `$ARGUMENTS`:
 
 ## MCP Server Installation
 
-1. Install the MCP server:
-   ```bash
-   go install github.com/mvanhorn/printing-press-library/library/other/public-param-golden/cmd/public-param-golden-pp-mcp@latest
-   ```
-2. Register with Claude Code:
-   ```bash
-   claude mcp add public-param-golden-pp-mcp -- public-param-golden-pp-mcp
-   ```
-3. Verify: `claude mcp list`
+Install the MCP binary from this CLI's published public-library entry or pre-built release, then register it:
+
+```bash
+claude mcp add public-param-golden-pp-mcp -- public-param-golden-pp-mcp
+```
+
+Verify: `claude mcp list`
 
 ## Direct Use
 

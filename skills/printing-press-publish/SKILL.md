@@ -581,7 +581,6 @@ printing-press publish rename \
   --dir "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" \
   --old-name <old-cli-name> \
   --new-name "$NEW_CLI_NAME" \
-  --api-name "$ORIGINAL_API_SLUG" \
   --json
 ```
 

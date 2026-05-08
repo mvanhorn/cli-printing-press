@@ -16,15 +16,14 @@ const SkillInstallSectionStartHeading = "## Prerequisites: Install the CLI"
 // the template and is not enforced by the canonical-sections check.
 const SkillInstallSectionEndSubstr = "Do not proceed with skill commands until verification succeeds."
 
-// canonicalSkillInstallSectionFormat is the literal text the generator
-// emits into a printed CLI's SKILL.md install section. Indexed verbs:
+// canonicalSkillInstallSectionStartFormat is the literal text the generator
+// emits at the start of a printed CLI's SKILL.md install section. Indexed verb:
 //
 //	%[1]s — CLI slug (e.g. "linear" — produces linear-pp-cli)
-//	%[2]s — catalog category (or "other" when empty)
 //
 // Stays in lockstep with internal/generator/templates/skill.md.tmpl via
 // TestCanonicalSkillInstallSectionMatchesTemplate.
-const canonicalSkillInstallSectionFormat = "## Prerequisites: Install the CLI\n" +
+const canonicalSkillInstallSectionStartFormat = "## Prerequisites: Install the CLI\n" +
 	"\n" +
 	"This skill drives the `%[1]s-pp-cli` binary. **You must verify the CLI is installed before invoking any command from this skill.** If it is missing, install it first:\n" +
 	"\n" +
@@ -34,28 +33,42 @@ const canonicalSkillInstallSectionFormat = "## Prerequisites: Install the CLI\n"
 	"   ```\n" +
 	"2. Verify: `%[1]s-pp-cli --version`\n" +
 	"3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.\n" +
-	"\n" +
-	"If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.3 or newer):\n" +
+	"\n"
+
+// canonicalSkillInstallSectionGoFallbackFormat is appended only once the
+// catalog category is known. Before publish, the category-agnostic installer is
+// the only canonical path; emitting library/other/<slug> creates drift.
+const canonicalSkillInstallSectionGoFallbackFormat = "If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.3 or newer):\n" +
 	"\n" +
 	"```bash\n" +
 	"go install github.com/mvanhorn/printing-press-library/library/%[2]s/%[1]s/cmd/%[1]s-pp-cli@latest\n" +
 	"```\n" +
-	"\n" +
-	"If `--version` reports \"command not found\" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.\n"
+	"\n"
+
+const canonicalSkillInstallSectionPrepublishFallback = "If the `npx` install fails before this CLI has a public-library category, install Node or use the category-specific Go fallback after publish.\n" +
+	"\n"
+
+const canonicalSkillInstallSectionEnd = "If `--version` reports \"command not found\" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.\n"
 
 // CanonicalSkillInstallSection returns the exact text of the install/
 // prerequisites section that the generator emits into a printed CLI's
-// SKILL.md, given the CLI slug and catalog category (empty -> "other").
+// SKILL.md, given the CLI slug and catalog category. A blank category emits
+// only the category-agnostic installer path so generate-time output does not
+// bake in the publish-time placeholder category.
 //
 // The verify-skill canonical-sections check uses this function to detect
 // post-publish edits to the install instructions. The function is the
 // authoritative source post-generation; the template stays in sync via
 // TestCanonicalSkillInstallSectionMatchesTemplate.
 func CanonicalSkillInstallSection(name, category string) string {
-	if category == "" {
-		category = "other"
+	section := fmt.Sprintf(canonicalSkillInstallSectionStartFormat, name)
+	if category != "" {
+		section += fmt.Sprintf(canonicalSkillInstallSectionGoFallbackFormat, name, category)
+	} else {
+		section += canonicalSkillInstallSectionPrepublishFallback
 	}
-	return fmt.Sprintf(canonicalSkillInstallSectionFormat, name, category)
+	section += canonicalSkillInstallSectionEnd
+	return section
 }
 
 // ExtractSkillInstallSection slices the install/prerequisites block out of

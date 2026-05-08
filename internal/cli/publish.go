@@ -84,14 +84,13 @@ func newPublishRenameCmd() *cobra.Command {
 	var dir string
 	var oldName string
 	var newName string
-	var apiName string
+	var legacyAPIName string
 	var asJSON bool
 
 	cmd := &cobra.Command{
-		Use:   "rename",
-		Short: "Rename a staged CLI (for name collision resolution)",
-		Example: `  printing-press publish rename --dir /tmp/staging/library/ai/notion --old-name notion-pp-cli --new-name notion-alt-pp-cli --json
-  printing-press publish rename --dir /tmp/staging/library/ai/notion --old-name notion-pp-cli --new-name notion-2-pp-cli --api-name notion --json`,
+		Use:     "rename",
+		Short:   "Rename a staged CLI (for name collision resolution)",
+		Example: `  printing-press publish rename --dir /tmp/staging/library/ai/notion --old-name notion-pp-cli --new-name notion-alt-pp-cli --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
@@ -102,11 +101,7 @@ func newPublishRenameCmd() *cobra.Command {
 			if newName == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--new-name is required")}
 			}
-			if apiName == "" {
-				apiName = naming.TrimCLISuffix(oldName)
-			}
-
-			filesModified, err := pipeline.RenameCLI(dir, oldName, newName, apiName)
+			filesModified, err := pipeline.RenameCLI(dir, oldName, newName, legacyAPIName)
 
 			if asJSON {
 				result := RenameResult{
@@ -144,7 +139,7 @@ func newPublishRenameCmd() *cobra.Command {
 	cmd.Flags().StringVar(&dir, "dir", "", "Staged CLI directory to rename (required)")
 	cmd.Flags().StringVar(&oldName, "old-name", "", "Current CLI name (required)")
 	cmd.Flags().StringVar(&newName, "new-name", "", "New CLI name (required)")
-	cmd.Flags().StringVar(&apiName, "api-name", "", "Original API name (defaults to TrimCLISuffix of old-name)")
+	cmd.Flags().StringVar(&legacyAPIName, "api-name", "", "Deprecated no-op; api_name now follows --new-name")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd

@@ -780,7 +780,7 @@ func main() {}
 	assert.Greater(t, result.FilesModified, 0)
 }
 
-func TestPublishRenameAPINameFallback(t *testing.T) {
+func TestPublishRenameAPINameTracksNewName(t *testing.T) {
 	root := t.TempDir()
 	oldName := "test-pp-cli"
 	newName := "test-alt-pp-cli"
@@ -794,8 +794,9 @@ func TestPublishRenameAPINameFallback(t *testing.T) {
 	})
 
 	cmd := newPublishCmd()
-	// No --api-name flag — should fall back to TrimCLISuffix("test-pp-cli") = "test"
-	cmd.SetArgs([]string{"rename", "--dir", cliDir, "--old-name", oldName, "--new-name", newName, "--json"})
+	// The legacy flag is accepted for old callers but no longer controls
+	// metadata; the final public slug follows --new-name.
+	cmd.SetArgs([]string{"rename", "--dir", cliDir, "--old-name", oldName, "--new-name", newName, "--api-name", "test", "--json"})
 
 	output, err := runWithCapturedStdout(t, cmd.Execute)
 	require.NoError(t, err)
@@ -804,13 +805,13 @@ func TestPublishRenameAPINameFallback(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(output), &result))
 	assert.True(t, result.Success)
 
-	// Verify manifest has correct api_name from fallback
+	// Verify manifest has the final public API slug after rename.
 	newDir := filepath.Join(root, naming.LibraryDirName(newName))
 	mData, err := os.ReadFile(filepath.Join(newDir, pipeline.CLIManifestFilename))
 	require.NoError(t, err)
 	var m pipeline.CLIManifest
 	require.NoError(t, json.Unmarshal(mData, &m))
-	assert.Equal(t, "test", m.APIName, "api_name should come from TrimCLISuffix fallback")
+	assert.Equal(t, "test-alt", m.APIName, "api_name should track the final public slug")
 	assert.Equal(t, newName, m.CLIName)
 }
 

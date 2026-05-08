@@ -10,10 +10,12 @@ metadata:
     requires:
       bins:
         - {{.Name}}-pp-cli
+{{- if .Category}}
     install:
       - kind: go
         bins: [{{.Name}}-pp-cli]
-        module: github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}/cmd/{{.Name}}-pp-cli
+        module: github.com/mvanhorn/printing-press-library/library/{{.Category}}/{{.Name}}/cmd/{{.Name}}-pp-cli
+{{- end}}
 ---
 
 # {{.ProseName}} — Printing Press CLI
@@ -28,13 +30,15 @@ This skill drives the `{{.Name}}-pp-cli` binary. **You must verify the CLI is in
    ```
 2. Verify: `{{.Name}}-pp-cli --version`
 3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
-
+{{ if .Category}}
 If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.3 or newer):
 
 ```bash
-go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}/cmd/{{.Name}}-pp-cli@latest
+go install github.com/mvanhorn/printing-press-library/library/{{.Category}}/{{.Name}}/cmd/{{.Name}}-pp-cli@latest
 ```
-
+{{ else}}
+If the `npx` install fails before this CLI has a public-library category, install Node or use the category-specific Go fallback after publish.
+{{ end}}
 If `--version` reports "command not found" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.
 {{- if and .Narrative .Narrative.ValueProp}}
 
@@ -369,16 +373,25 @@ Parse `$ARGUMENTS`:
 3. **Anything else** → Direct Use (execute as CLI command with `--agent`)
 
 ## MCP Server Installation
-
+{{ if .Category}}
 1. Install the MCP server:
    ```bash
-   go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}/cmd/{{.Name}}-pp-mcp@latest
+   go install github.com/mvanhorn/printing-press-library/library/{{.Category}}/{{.Name}}/cmd/{{.Name}}-pp-mcp@latest
    ```
 2. Register with Claude Code:
    ```bash
    claude mcp add {{.Name}}-pp-mcp -- {{.Name}}-pp-mcp
    ```
 3. Verify: `claude mcp list`
+{{- else}}
+Install the MCP binary from this CLI's published public-library entry or pre-built release, then register it:
+
+```bash
+claude mcp add {{.Name}}-pp-mcp -- {{.Name}}-pp-mcp
+```
+
+Verify: `claude mcp list`
+{{- end}}
 
 ## Direct Use
 
