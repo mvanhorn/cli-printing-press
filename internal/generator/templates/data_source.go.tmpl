@@ -187,25 +187,16 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 			}
 			// Single object with an id field (e.g., detail response)
 			if items == nil {
-				if idRaw, ok := envelope["id"]; ok {
-					id := strings.Trim(string(idRaw), "\"")
-					_ = db.Upsert(resourceType, id, data)
+				if _, ok := envelope["id"]; ok {
+					_, _, _ = db.UpsertBatch(resourceType, []json.RawMessage{data})
 					return
 				}
 			}
 		}
 	}
 
-	// Upsert each item individually
-	for _, item := range items {
-		var obj map[string]json.RawMessage
-		if json.Unmarshal(item, &obj) != nil {
-			continue
-		}
-		if idRaw, ok := obj["id"]; ok {
-			id := strings.Trim(string(idRaw), "\"")
-			_ = db.Upsert(resourceType, id, item)
-		}
+	if len(items) > 0 {
+		_, _, _ = db.UpsertBatch(resourceType, items)
 	}
 }
 

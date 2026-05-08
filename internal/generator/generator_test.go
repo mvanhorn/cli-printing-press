@@ -2364,10 +2364,8 @@ func TestExtractPageItemsNoCursor(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractPageItems", "./internal/cli")
 }
 
-func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := &spec.APISpec{
+func adsCampaignSpec() *spec.APISpec {
+	return &spec.APISpec{
 		Name:    "ads",
 		Version: "0.1.0",
 		BaseURL: "https://api.example.com",
@@ -2403,7 +2401,12 @@ func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
 			},
 		},
 	}
+}
 
+func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := adsCampaignSpec()
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
 	gen.VisionSet = VisionTemplateSet{Store: true}
@@ -2424,6 +2427,67 @@ func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/store")
+}
+
+func TestLiveFetchWriteThroughCachePopulatesTypedTable(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := adsCampaignSpec()
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	inlineTest := `package cli
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+func TestWriteThroughCachePopulatesTypedTable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeThroughCache(context.Background(), "campaigns", json.RawMessage(` + "`" + `[
+		{"id":"camp_1","name":"Launch","status":"active","account_id":"acct_1"}
+	]` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("ads-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var typedCount int
+	var accountID string
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*), COALESCE(MAX(account_id), '') FROM campaigns` + "`" + `).Scan(&typedCount, &accountID); err != nil {
+		t.Fatalf("query campaigns: %v", err)
+	}
+	if typedCount != 1 || accountID != "acct_1" {
+		t.Fatalf("typed campaigns = %d/%q, want 1/acct_1", typedCount, accountID)
+	}
+
+	writeThroughCache(context.Background(), "events", json.RawMessage(` + "`" + `[
+		{"id":"evt_1","name":"Seen"}
+	]` + "`" + `))
+
+	var genericCount int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM resources WHERE resource_type = 'events'` + "`" + `).Scan(&genericCount); err != nil {
+		t.Fatalf("query generic resources: %v", err)
+	}
+	if genericCount != 1 {
+		t.Fatalf("generic events count = %d, want 1", genericCount)
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "write_through_cache_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCachePopulatesTypedTable", "./internal/cli")
 }
 
 func TestSyncDiscriminatorDispatchRoutesMixedItemsToTypedTables(t *testing.T) {
