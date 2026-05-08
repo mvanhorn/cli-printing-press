@@ -12,7 +12,9 @@ import (
 	"io"
 	"math"
 	"net/http"
+{{- if .HasAuthSurface}}
 	"net/url"
+{{- end}}
 	"os"
 	"path/filepath"
 {{- if ne .ClientPattern "proxy-envelope"}}
@@ -1019,7 +1021,7 @@ func (c *Client) authHeader() (string, error) {
 		}
 		c.ccMu.Unlock()
 	}
-{{- else}}
+{{- else if .HasAuthSurface}}
 	if c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" {
 		if err := c.refreshAccessToken(); err != nil {
 			return "", err
@@ -1103,6 +1105,8 @@ func (c *Client) mintClientCredentials(clientID, clientSecret string) error {
 }
 {{- end}}
 
+{{- if .HasAuthSurface}}
+
 func (c *Client) refreshAccessToken() error {
 	if c.Config == nil {
 		return nil
@@ -1164,6 +1168,7 @@ func (c *Client) refreshAccessToken() error {
 
 	return nil
 }
+{{- end}}
 
 {{if .HasResourceBaseURLOverride -}}
 // isAbsoluteURL reports whether path is already a full URL (per-resource
