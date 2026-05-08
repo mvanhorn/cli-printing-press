@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -45,6 +46,14 @@ func extractLostRegistrations(publishedDir, freshDir string, pubVerdicts map[str
 	freshCalls, _, err := collectAddCommandCalls(freshCLIDir)
 	if err != nil {
 		return nil, fmt.Errorf("scanning fresh internal/cli: %w", err)
+	}
+	pubCommandUses, err := collectCommandUses(pubCLIDir)
+	if err != nil {
+		return nil, fmt.Errorf("collecting published command uses: %w", err)
+	}
+	freshCommandUses, err := collectCommandUses(freshCLIDir)
+	if err != nil {
+		return nil, fmt.Errorf("collecting fresh command uses: %w", err)
 	}
 
 	// Apply only overwrites host files that exist in fresh (TEMPLATED-CLEAN +
@@ -81,6 +90,9 @@ func extractLostRegistrations(publishedDir, freshDir string, pubVerdicts map[str
 	for _, calls := range freshCalls {
 		for _, c := range calls {
 			freshCallSet[c.normalized] = struct{}{}
+			if key := commandUseRegistrationKey(c, freshCommandUses); key != "" {
+				freshCallSet[key] = struct{}{}
+			}
 		}
 	}
 
@@ -102,6 +114,11 @@ func extractLostRegistrations(publishedDir, freshDir string, pubVerdicts map[str
 		for _, call := range pubCalls[host] {
 			if _, present := freshCallSet[call.normalized]; present {
 				continue
+			}
+			if key := commandUseRegistrationKey(call, pubCommandUses); key != "" {
+				if _, present := freshCallSet[key]; present {
+					continue
+				}
 			}
 			// Referent check.
 			if call.constructorName != "" {
@@ -130,6 +147,7 @@ func extractLostRegistrations(publishedDir, freshDir string, pubVerdicts map[str
 type addCommandCall struct {
 	source          string // pretty-printed call expression
 	normalized      string // identical-ish form for diffing across files
+	parentName      string // e.g. "rootCmd"; empty when receiver shape is unrecognized
 	constructorName string // e.g. "newCanonicalCmd"; empty when arg shape is unrecognized
 }
 
@@ -255,7 +273,114 @@ func formatCallExpr(fset *token.FileSet, ce *ast.CallExpr) (addCommandCall, erro
 		normalized = strings.Join(strings.Fields(src), " ")
 	}
 
-	return addCommandCall{source: src, normalized: normalized, constructorName: ctor}, nil
+	return addCommandCall{source: src, normalized: normalized, parentName: parent, constructorName: ctor}, nil
+}
+
+func commandUseRegistrationKey(call addCommandCall, commandUses map[string]string) string {
+	if call.parentName == "" || call.constructorName == "" {
+		return ""
+	}
+	use := commandUses[call.constructorName]
+	if use == "" {
+		return ""
+	}
+	return call.parentName + ".AddCommand(use:" + use + ")"
+}
+
+func collectCommandUses(dir string) (map[string]string, error) {
+	uses := map[string]string{}
+	entries, err := readDirAllowMissing(dir)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		fset := token.NewFileSet()
+		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "regen-merge: warning: skipping unparseable file %s while collecting command uses: %v\n", path, err)
+			continue
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name == nil || fn.Body == nil {
+				continue
+			}
+			if use := firstCobraUse(fn.Body); use != "" {
+				uses[fn.Name.Name] = use
+			}
+		}
+	}
+	return uses, nil
+}
+
+func firstCobraUse(body *ast.BlockStmt) string {
+	var out string
+	ast.Inspect(body, func(n ast.Node) bool {
+		if out != "" {
+			return false
+		}
+		lit, ok := n.(*ast.CompositeLit)
+		if !ok || !isCobraCommandComposite(lit) {
+			return true
+		}
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			key, ok := kv.Key.(*ast.Ident)
+			if !ok || key.Name != "Use" {
+				continue
+			}
+			if value, ok := stringLiteralValue(kv.Value); ok {
+				out = commandUseToken(value)
+				return false
+			}
+		}
+		return true
+	})
+	return out
+}
+
+func isCobraCommandComposite(lit *ast.CompositeLit) bool {
+	star, ok := lit.Type.(*ast.StarExpr)
+	if ok {
+		return isCobraCommandType(star.X)
+	}
+	return isCobraCommandType(lit.Type)
+}
+
+func isCobraCommandType(expr ast.Expr) bool {
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok || sel.Sel == nil || sel.Sel.Name != "Command" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == "cobra"
+}
+
+func stringLiteralValue(expr ast.Expr) (string, bool) {
+	lit, ok := expr.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return "", false
+	}
+	value, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func commandUseToken(use string) string {
+	fields := strings.Fields(use)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }
 
 // collectDeclsFromDir walks dir's .go files (non-recursive) and returns the

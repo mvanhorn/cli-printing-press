@@ -84,6 +84,42 @@ func TestExtractLostRegistrationsReferentCheck(t *testing.T) {
 	t.Skip("after the fresh-or-novels referent-check fix")
 }
 
+func TestExtractLostRegistrationsCommandUseNoFalsePositive(t *testing.T) {
+	t.Parallel()
+
+	pubCLI := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newListingsCmd())
+	_ = rootCmd.Execute()
+}
+
+func newListingsCmd() *cobra.Command { return &cobra.Command{Use: "listings"} }
+`
+	freshCLI := `package cli
+
+import "github.com/spf13/cobra"
+
+func Execute() {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newHomesCmd())
+	_ = rootCmd.Execute()
+}
+
+func newHomesCmd() *cobra.Command { return &cobra.Command{Use: "listings"} }
+`
+	pubDir, freshDir := buildSyntheticFixture(t,
+		map[string]string{"internal/cli/root.go": pubCLI},
+		map[string]string{"internal/cli/root.go": freshCLI})
+
+	regs, err := extractLostRegistrations(pubDir, freshDir, nil)
+	require.NoError(t, err)
+	assert.Empty(t, regs, "same parent + same Cobra Use should not produce a lost registration even when constructor names differ")
+}
+
 func containsConstructor(callSrc, ctorName string) bool {
 	// Hacky but adequate for tests — calls look like
 	// "rootCmd.AddCommand(newCanonicalCmd(flags))"; check the constructor
