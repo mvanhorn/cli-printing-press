@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   lint:
+    name: go-lint
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

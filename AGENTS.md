@@ -139,6 +139,9 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the human-facing contributor guide 
 
 ## Versioning
 Releases are automated by release-please. Never manually edit version numbers.
+- Normal feature/fix PRs land through the Mergify queue: add the `ready-to-merge` label when the PR is ready to merge, and let Mergify rebase/test/merge it. Do not use the GitHub merge button for normal PRs once `Mergify Merge Protections` is required on `main`.
+- release-please PRs are the release control point. They collect already-merged conventional commits; merge the release PR only when you intend to cut a release. The Mergify config allows release-please PRs to satisfy merge protection without `ready-to-merge`, so maintainers can still merge the release PR manually after CI passes.
+- When enabling branch protection for the Mergify queue, require the `Mergify Merge Protections` status check and set `required_status_checks.strict=false`; Mergify owns latest-`main` validation through the queue, and GitHub's strict up-to-date requirement recreates the manual rebase loop.
 - The plugin version lives in exactly two places and must stay in sync: `.claude-plugin/plugin.json` -> `version`, and `internal/version/version.go` -> `var Version` (annotated `x-release-please-version`; goreleaser injects via ldflags).
 - `TestVersionConsistencyAcrossFiles` in [`internal/cli/release_test.go`](internal/cli/release_test.go#L57) fails if those two versions drift.
 - Do not add a `version` field to `.claude-plugin/marketplace.json` plugin entries. `TestMarketplaceJSONHasNoPluginVersion` in [`internal/cli/release_test.go`](internal/cli/release_test.go#L81) fails if a reviewer re-adds one.
