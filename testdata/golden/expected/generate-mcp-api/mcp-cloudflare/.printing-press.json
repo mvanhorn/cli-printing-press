@@ -1,0 +1,21 @@
+{
+  "api_name": "mcp-cloudflare",
+  "api_version": "1.0.0",
+  "auth_env_vars": [
+    "MCP_CLOUDFLARE_API_KEY"
+  ],
+  "auth_type": "api_key",
+  "cli_name": "mcp-cloudflare-pp-cli",
+  "display_name": "Mcp Cloudflare",
+  "generated_at": "<GENERATED_AT>",
+  "mcp_binary": "mcp-cloudflare-pp-mcp",
+  "mcp_ready": "full",
+  "mcp_tool_count": 1,
+  "owner": "printing-press-golden",
+  "printing_press_version": "<PRINTING_PRESS_VERSION>",
+  "schema_version": 1,
+  "spec_checksum": "sha256:46c60ba489f2e138ffe6ab01531f2ed550369299820342a7f0093b94d0fc17b4",
+  "spec_format": "openapi3",
+  "spec_path": "testdata/golden/fixtures/mcp-api.yaml",
+  "spec_url": "file://testdata/golden/fixtures/mcp-api.yaml"
+}

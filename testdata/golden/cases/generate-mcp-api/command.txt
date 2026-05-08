@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/mcp-api.yaml --output "$CASE_ACTUAL_DIR/mcp-cloudflare" --force --spec-url file://testdata/golden/fixtures/mcp-api.yaml --validate=false

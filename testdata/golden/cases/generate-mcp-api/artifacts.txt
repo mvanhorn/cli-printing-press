@@ -1,0 +1,19 @@
+# Locks the OpenAPI x-mcp extension contract end-to-end through generation.
+# The fixture sets x-mcp at the root with the Cloudflare pattern
+# (transport: [stdio, http], orchestration: code, endpoint_tools: hidden).
+# Without OpenAPI parser support for x-mcp, all three artifacts below would
+# revert to the stdio-only endpoint-mirror defaults, regressing #696.
+
+# Provenance manifest: slug, mcp binary name, declared transports.
+mcp-cloudflare/.printing-press.json
+
+# Code-orchestration mode: tools.go must call RegisterCodeOrchestrationTools
+# instead of registering per-endpoint mirror tools. If endpoint_tools=hidden
+# stops being honored, this file would re-emit per-endpoint registrations.
+mcp-cloudflare/internal/mcp/tools.go
+
+# HTTP transport opt-in: the mcp binary's main.go must compile both stdio
+# and http transports and expose the --transport / --addr flags. If
+# transport: [stdio, http] stops being honored, this file would revert to
+# stdio-only without the flag surface.
+mcp-cloudflare/cmd/mcp-cloudflare-pp-mcp/main.go
