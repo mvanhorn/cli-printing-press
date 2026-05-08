@@ -3,6 +3,7 @@ package pipeline
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -35,6 +36,52 @@ func writeMCPCLISource(t *testing.T, dir, name, content string) {
 	cliDir := filepath.Join(dir, "internal", "cli")
 	require.NoError(t, os.MkdirAll(cliDir, 0o755))
 	writeFile(t, filepath.Join(cliDir, name), content)
+}
+
+func writeCodeOrchSurface(t *testing.T, endpointCount int) string {
+	t.Helper()
+	dir := t.TempDir()
+	mcpDir := filepath.Join(dir, "internal", "mcp")
+	require.NoError(t, os.MkdirAll(mcpDir, 0o755))
+
+	toolsBody := `package mcp
+
+func RegisterTools(s *server.MCPServer) {
+	RegisterCodeOrchestrationTools(s)
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(mcpDir, "tools.go"), []byte(toolsBody), 0o644))
+
+	var endpoints strings.Builder
+	for i := range endpointCount {
+		endpoints.WriteString(`
+	{ID: "items.endpoint_`)
+		endpoints.WriteString(strconv.Itoa(i))
+		endpoints.WriteString(`", Method: "GET", Path: "/items", Summary: "`)
+		endpoints.WriteString(strings.Repeat("x", 40))
+		endpoints.WriteString(`"},
+`)
+	}
+	codeOrchBody := `package mcp
+
+import mcplib "github.com/mark3labs/mcp-go/mcp"
+
+type codeOrchEndpoint struct {
+	ID      string
+	Method  string
+	Path    string
+	Summary string
+}
+
+var codeOrchEndpoints = []codeOrchEndpoint{` + endpoints.String() + `}
+
+func RegisterCodeOrchestrationTools(s *server.MCPServer) {
+	s.AddTool(mcplib.NewTool("demo_search", mcplib.WithDescription("Search the API.")), nil)
+	s.AddTool(mcplib.NewTool("demo_execute", mcplib.WithDescription("Execute one endpoint.")), nil)
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(mcpDir, "code_orch.go"), []byte(codeOrchBody), 0o644))
+	return dir
 }
 
 func TestEstimateMCPTokens_NoMCPSurface(t *testing.T) {
@@ -197,6 +244,36 @@ func TestScoreMCPTokenEfficiency_PartialCreditMedium(t *testing.T) {
 	score, scored := scoreMCPTokenEfficiency(dir)
 	assert.True(t, scored)
 	assert.Equal(t, 7, score)
+}
+
+func TestScoreMCPTokenEfficiency_UnscoredForLargeCodeOrchCatalog(t *testing.T) {
+	dir := writeCodeOrchSurface(t, 200)
+
+	score, scored := scoreMCPTokenEfficiency(dir)
+	assert.False(t, scored, "large code-orchestrated catalogs should be unscored instead of zero-scored")
+	assert.Equal(t, 0, score)
+
+	sc := &Scorecard{}
+	scoreInfrastructureDimensions(sc, dir)
+	assert.Contains(t, sc.UnscoredDimensions, DimMCPTokenEfficiency)
+}
+
+func TestScoreMCPTokenEfficiency_ScoresSmallCodeOrchCatalog(t *testing.T) {
+	dir := writeCodeOrchSurface(t, 20)
+
+	score, scored := scoreMCPTokenEfficiency(dir)
+	assert.True(t, scored, "small code-orchestrated catalogs should still use the scoring bands")
+	assert.Greater(t, score, 0)
+}
+
+func TestScoreMCPTokenEfficiency_EndpointMirrorBehaviorUnchanged(t *testing.T) {
+	dir := writeMCPTools(t, `
+	s.AddTool(mcplib.NewTool("bloated", mcplib.WithDescription("`+strings.Repeat("x", 1600)+`")), nil)
+`)
+
+	score, scored := scoreMCPTokenEfficiency(dir)
+	assert.True(t, scored)
+	assert.Equal(t, 0, score)
 }
 
 // TestEstimateMCPTokens_RuntimeSurfaceSelection captures WU-A4 from
