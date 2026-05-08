@@ -19,6 +19,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/docspec"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generatedmarker"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llm"
@@ -765,16 +766,23 @@ func httpTransportPriority(value string) int {
 
 // claimOrForce resolves the output directory based on --force and --output flags.
 //
-//   - force=true:  RemoveAll the target, then create it fresh (claims exact slot)
+//   - force=true:  RemoveAll the target, then create it fresh (claims exact slot), preserving hand-authored internal/cli/*.go files
 //   - explicit output (--output set) without force: error if exists and non-empty
 //   - default (no --output, no --force): auto-increment via ClaimOutputDir
 func claimOrForce(absOut string, force bool, explicitOutput bool) (string, error) {
 	if force {
+		preserved, err := preserveHandAuthoredInternalCLIFiles(absOut)
+		if err != nil {
+			return "", err
+		}
 		if err := os.RemoveAll(absOut); err != nil {
 			return "", fmt.Errorf("removing existing output dir: %w", err)
 		}
 		if err := os.MkdirAll(absOut, 0o755); err != nil {
 			return "", fmt.Errorf("creating output dir: %w", err)
+		}
+		if err := restorePreservedFiles(absOut, preserved); err != nil {
+			return "", err
 		}
 		return absOut, nil
 	}
@@ -793,6 +801,61 @@ func claimOrForce(absOut string, force bool, explicitOutput bool) (string, error
 	}
 
 	return pipeline.ClaimOutputDir(absOut)
+}
+
+type preservedFile struct {
+	relPath string
+	data    []byte
+	mode    os.FileMode
+}
+
+func preserveHandAuthoredInternalCLIFiles(absOut string) ([]preservedFile, error) {
+	cliDir := filepath.Join(absOut, "internal", "cli")
+	entries, err := os.ReadDir(cliDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading internal/cli for hand-authored files: %w", err)
+	}
+
+	var preserved []preservedFile
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".go" {
+			continue
+		}
+		path := filepath.Join(cliDir, entry.Name())
+		if generatedmarker.HasInFile(path) {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("reading hand-authored candidate %s: %w", path, err)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, fmt.Errorf("statting hand-authored candidate %s: %w", path, err)
+		}
+		preserved = append(preserved, preservedFile{
+			relPath: filepath.Join("internal", "cli", entry.Name()),
+			data:    data,
+			mode:    info.Mode().Perm(),
+		})
+	}
+	return preserved, nil
+}
+
+func restorePreservedFiles(absOut string, files []preservedFile) error {
+	for _, file := range files {
+		path := filepath.Join(absOut, file.relPath)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return fmt.Errorf("creating preserved file parent: %w", err)
+		}
+		if err := os.WriteFile(path, file.data, file.mode); err != nil {
+			return fmt.Errorf("restoring preserved file %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 func fetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, error) {
