@@ -1913,7 +1913,7 @@ After generation:
 **Verify the CLI description across every surface.** A single curated one-liner is
 rendered into five files: `internal/cli/root.go` (`Short:`), `SKILL.md` frontmatter
 (`description:`), `.goreleaser.yaml` (`brews:` description), `internal/cli/agent_context.go`
-(`Description:`), and `internal/mcp/tools.go` (mcp_context `Description`). Each resolves
+(`Description:`), and `internal/mcp/tools.go` (the `handleContext` response's `"description"` key). Each resolves
 from the authored sources (`narrative.headline` in `research.json`, or `cli_description:`
 in the spec) when set. `root.go`'s `Short:` has a safe generic fallback (`"Manage <api>
 resources via the <api> API"`); the other four fall through to the spec's raw
