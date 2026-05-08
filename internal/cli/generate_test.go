@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"go/parser"
 	"go/token"
@@ -85,6 +86,120 @@ func staleGeneratedCommand() {}
 
 	runGoCommandForCLITest(t, outputDir, "mod", "tidy")
 	runGoCommandForCLITest(t, outputDir, "build", "./cmd/regenapp-pp-cli")
+}
+
+func TestGenerateCmdHelpDescribesForceAsGeneratedOverwrite(t *testing.T) {
+	t.Parallel()
+
+	cmd := newGenerateCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"--help"})
+
+	require.NoError(t, cmd.Execute())
+	assert.Contains(t, out.String(), "Recreate the base output directory while preserving hand-authored internal/cli/*.go files")
+}
+
+func TestGenerateCmdForceRefusesSymlinkedInternalCliPreservation(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "symlinkapp")
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: symlinkapp
+description: Symlink app API
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/symlinkapp-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+
+	runGenerate := func() error {
+		cmd := newGenerateCmd()
+		cmd.SetArgs([]string{
+			"--spec", specPath,
+			"--output", outputDir,
+			"--validate=false",
+			"--force",
+		})
+		return cmd.Execute()
+	}
+
+	require.NoError(t, runGenerate())
+
+	externalTarget := filepath.Join(dir, "outside.go")
+	require.NoError(t, os.WriteFile(externalTarget, []byte("package cli\n"), 0o644))
+	linkPath := filepath.Join(outputDir, "internal", "cli", "novel_link.go")
+	if err := os.Symlink(externalTarget, linkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := runGenerate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing to preserve symlinked internal/cli file")
+}
+
+func TestGenerateCmdForceRefusesSymlinkedInternalAncestor(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "symlinkparentapp")
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: symlinkparentapp
+description: Symlink parent app API
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/symlinkparentapp-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+
+	runGenerate := func() error {
+		cmd := newGenerateCmd()
+		cmd.SetArgs([]string{
+			"--spec", specPath,
+			"--output", outputDir,
+			"--validate=false",
+			"--force",
+		})
+		return cmd.Execute()
+	}
+
+	require.NoError(t, runGenerate())
+
+	externalInternal := filepath.Join(dir, "external-internal")
+	require.NoError(t, os.MkdirAll(filepath.Join(externalInternal, "cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(externalInternal, "cli", "novel.go"), []byte("package cli\n"), 0o644))
+	require.NoError(t, os.RemoveAll(filepath.Join(outputDir, "internal")))
+	if err := os.Symlink(externalInternal, filepath.Join(outputDir, "internal")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := runGenerate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing to preserve hand-authored files through symlinked internal")
 }
 
 func TestGenerateCmdConsumesTrafficAnalysis(t *testing.T) {

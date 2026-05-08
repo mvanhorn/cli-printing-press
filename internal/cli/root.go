@@ -104,7 +104,7 @@ func newGenerateCmd() *cobra.Command {
 		Example: `  # Generate from a local OpenAPI spec
   printing-press generate --spec ./openapi.yaml
 
-  # Generate from a URL with force overwrite
+  # Generate from a URL and recreate output while preserving hand-authored CLI files
   printing-press generate --spec https://api.example.com/openapi.json --force
 
   # Generate from API documentation
@@ -380,7 +380,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: ~/printing-press/library/<name>)")
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
-	cmd.Flags().BoolVar(&force, "force", false, "Overwrite the base output directory (e.g. ~/printing-press/library/notion) instead of auto-incrementing")
+	cmd.Flags().BoolVar(&force, "force", false, "Recreate the base output directory while preserving hand-authored internal/cli/*.go files")
 	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
 	cmd.Flags().StringVar(&docsURL, "docs", "", "API documentation URL to generate spec from")
 	cmd.Flags().BoolVar(&polish, "polish", false, "Run LLM polish pass on generated CLI (requires claude or codex CLI)")
@@ -814,6 +814,20 @@ type preservedFile struct {
 }
 
 func preserveHandAuthoredInternalCLIFiles(absOut string) ([]preservedFile, error) {
+	for _, rel := range []string{"internal", filepath.Join("internal", "cli")} {
+		path := filepath.Join(absOut, rel)
+		info, err := os.Lstat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("statting %s for hand-authored files: %w", rel, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("refusing to preserve hand-authored files through symlinked %s: %s", rel, path)
+		}
+	}
+
 	cliDir := filepath.Join(absOut, "internal", "cli")
 	entries, err := os.ReadDir(cliDir)
 	if err != nil {
@@ -827,6 +841,9 @@ func preserveHandAuthoredInternalCLIFiles(absOut string) ([]preservedFile, error
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".go" {
 			continue
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("refusing to preserve symlinked internal/cli file: %s", filepath.Join(cliDir, entry.Name()))
 		}
 		path := filepath.Join(cliDir, entry.Name())
 		if generatedmarker.HasInFile(path) {
