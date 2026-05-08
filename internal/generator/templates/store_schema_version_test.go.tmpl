@@ -253,6 +253,61 @@ func TestSchemaVersion_ReopenIsIdempotent(t *testing.T) {
 		t.Fatalf("reopened version = %d, want %d", v, StoreSchemaVersion)
 	}
 }
+
+// TestOpenReadOnly_RejectsWrites pins the contract: direct and CTE-wrapped
+// writes against the main DB fail under mode=ro. Deliberately does not
+// assert VACUUM INTO and ATTACH DATABASE — modernc.org/sqlite allows both
+// under mode=ro, so those defenses live in the handleSQL keyword blocklist.
+func TestOpenReadOnly_RejectsWrites(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+
+	rw, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("seed open: %v", err)
+	}
+	if _, err := rw.DB().Exec(`INSERT INTO resources (id, resource_type, data) VALUES ('seed', 'thing', '{}')`); err != nil {
+		t.Fatalf("seed insert: %v", err)
+	}
+	rw.Close()
+
+	ro, err := OpenReadOnly(dbPath)
+	if err != nil {
+		t.Fatalf("open read-only: %v", err)
+	}
+	defer ro.Close()
+
+	writes := []struct {
+		name string
+		stmt string
+	}{
+		{"insert", `INSERT INTO resources (id, resource_type, data) VALUES ('x', 'y', '{}')`},
+		{"update", `UPDATE resources SET resource_type = 'hijacked' WHERE id = 'seed'`},
+		{"delete", `DELETE FROM resources WHERE id = 'seed'`},
+		{"replace", `REPLACE INTO resources (id, resource_type, data) VALUES ('seed', 'evil', '{}')`},
+		// CTE-wrapped INSERT is load-bearing: it justifies leaving WITH
+		// out of the handleSQL blocklist so SELECT-form CTEs work.
+		{"cte_insert", `WITH stale AS (SELECT id FROM resources) INSERT INTO resources (id, resource_type, data) SELECT id || '-evil', 'thing', '{}' FROM stale`},
+	}
+	for _, w := range writes {
+		if _, err := ro.DB().Exec(w.stmt); err == nil {
+			t.Errorf("%s succeeded under mode=ro; expected rejection. stmt=%q", w.name, w.stmt)
+		}
+	}
+
+	var count int
+	if err := ro.DB().QueryRow(`SELECT COUNT(*) FROM resources`).Scan(&count); err != nil {
+		t.Fatalf("read-only SELECT failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("SELECT returned %d rows, want 1 (only the seed should remain)", count)
+	}
+	if err := ro.DB().QueryRow(`WITH r AS (SELECT id FROM resources WHERE id = 'seed') SELECT COUNT(*) FROM r`).Scan(&count); err != nil {
+		t.Fatalf("read-only WITH...SELECT CTE failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("CTE SELECT returned %d rows, want 1", count)
+	}
+}
 {{- range $table := .Tables}}
 {{- if hasBackfillColumns $table}}
 

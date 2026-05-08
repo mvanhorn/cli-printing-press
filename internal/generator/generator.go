@@ -2311,6 +2311,11 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 		if err := g.renderTemplate("mcp_tools.go.tmpl", filepath.Join("internal", "mcp", "tools.go"), mcpData); err != nil {
 			return fmt.Errorf("rendering MCP tools: %w", err)
 		}
+		if g.VisionSet.Store {
+			if err := g.renderTemplate("mcp_tools_test.go.tmpl", filepath.Join("internal", "mcp", "tools_test.go"), mcpData); err != nil {
+				return fmt.Errorf("rendering MCP tools tests: %w", err)
+			}
+		}
 		if len(g.Spec.MCP.Intents) > 0 {
 			if err := g.renderTemplate("mcp_intents.go.tmpl", filepath.Join("internal", "mcp", "intents.go"), mcpData); err != nil {
 				return fmt.Errorf("rendering MCP intents: %w", err)

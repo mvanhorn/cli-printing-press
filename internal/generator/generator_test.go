@@ -75,9 +75,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 53},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 58},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 55},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 54},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 59},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 56},
 	}
 
 	for _, tt := range tests {
@@ -1906,6 +1906,78 @@ func TestGenerateStoreMigrateUsesBeginImmediate(t *testing.T) {
 	// without waiting out migrationLockTimeout.
 	assert.Regexp(t, `(?s)func \(s \*Store\) migrate\(ctx context\.Context\) error \{.*PRAGMA user_version.*withMigrationLock`, codeOnly,
 		"migrate must read PRAGMA user_version BEFORE entering withMigrationLock so newer-DB rejection happens before lock acquisition")
+}
+
+// TestGenerateMCPSQLToolUsesReadOnlyStore guards the agent-native security
+// model. The MCP sql and search tools advertise readOnlyHint=true to MCP
+// hosts so the host auto-approves invocations; a false readOnlyHint on a
+// mutating tool lets prompt-injected synced data exfiltrate the local
+// database without a permission prompt. Two layers must both be present:
+// (1) handleSQL gates the query through validateReadOnlyQuery — an
+// allowlist of SELECT/WITH applied AFTER stripping leading SQL comments
+// and semicolons that SQLite skips before parsing — and (2) the store
+// handle is OpenReadOnly, whose mode=ro driver flag rejects direct and
+// CTE-wrapped writes. Re-wiring these handlers to OpenWithContext, or
+// reverting to a HasPrefix-on-blocklist gate that misses comment-prefixed
+// bypasses, silently re-opens the exfiltration vector. Behavioral
+// coverage (the stripper and allowlist functioning end-to-end on attack
+// inputs) lives in the emitted tools_test.go; this test pins the
+// machine-level emission shape so a regression fails fast.
+func TestGenerateMCPSQLToolUsesReadOnlyStore(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("ro-canary")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Search: true, MCP: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	storeCode := stripGoComments(string(storeSrc))
+	assert.Contains(t, storeCode, `func OpenReadOnly(`,
+		"store package must expose OpenReadOnly so MCP read tools open a write-rejecting connection")
+	// modernc.org/sqlite only honors SQLite URI query parameters when
+	// the DSN starts with "file:". Without the prefix, ?mode=ro is
+	// silently dropped and writes succeed against the supposedly
+	// read-only handle.
+	assert.Contains(t, storeCode, `"file:"+dbPath+"?mode=ro`,
+		"OpenReadOnly DSN must use the file: URI prefix with mode=ro")
+
+	mcpSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpCode := stripGoComments(string(mcpSrc))
+
+	assert.NotRegexp(t, `(?s)func handleSQL\(.*store\.OpenWithContext\(`, mcpCode,
+		"handleSQL must use store.OpenReadOnly, not OpenWithContext")
+	assert.NotRegexp(t, `(?s)func handleSearch\(.*store\.OpenWithContext\(`, mcpCode,
+		"handleSearch must use store.OpenReadOnly, not OpenWithContext")
+	assert.Regexp(t, `(?s)func handleSQL\(.*store\.OpenReadOnly\(`, mcpCode,
+		"handleSQL must open the store via OpenReadOnly")
+	assert.Regexp(t, `(?s)func handleSearch\(.*store\.OpenReadOnly\(`, mcpCode,
+		"handleSearch must open the store via OpenReadOnly")
+
+	assert.Contains(t, mcpCode, `func validateReadOnlyQuery(`,
+		"mcp package must expose validateReadOnlyQuery — the gate that handleSQL must call before opening the store")
+	assert.Contains(t, mcpCode, `func stripLeadingSQLNoise(`,
+		"mcp package must expose stripLeadingSQLNoise — without it the gate's HasPrefix check is bypassable by SQL comments and semicolons that SQLite skips before parsing")
+	// handleSQL must dispatch through validateReadOnlyQuery; a regression
+	// to inline HasPrefix-on-blocklist would silently restore the
+	// comment-prefix bypass.
+	assert.Regexp(t, `(?s)func handleSQL\(.*validateReadOnlyQuery\(`, mcpCode,
+		"handleSQL must call validateReadOnlyQuery before opening the store")
+	// Allowlist: SELECT and WITH only. WITH supports SELECT-form CTEs;
+	// CTE-wrapped writes are caught one layer down by mode=ro.
+	assert.Contains(t, mcpCode, `"SELECT"`,
+		"validateReadOnlyQuery allowlist must include SELECT")
+	assert.Contains(t, mcpCode, `"WITH"`,
+		"validateReadOnlyQuery allowlist must include WITH for SELECT-form CTEs")
+
+	mcpTestSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools_test.go"))
+	require.NoError(t, err)
+	mcpTestCode := string(mcpTestSrc)
+	assert.Contains(t, mcpTestCode, "TestValidateReadOnlyQuery_RejectsBypassVectors",
+		"behavioral coverage of comment-prefix and statement-separator bypass vectors must ship into every printed CLI's mcp package")
 }
 
 // stripGoComments removes // line comments and /* ... */ block comments from
