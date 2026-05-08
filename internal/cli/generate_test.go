@@ -471,12 +471,39 @@ func TestMergeSpecsPrefersReplayableBrowserTransportOverUnshippablePageContext(t
 
 	mergedRuntimeLast := mergeSpecs([]*spec.APISpec{chromeSpec, runtimeSpec}, "merged")
 	assert.Equal(t, spec.HTTPTransportBrowserChrome, mergedRuntimeLast.HTTPTransport)
+
+	httpSpec := &spec.APISpec{
+		Name:          "http",
+		Version:       "0.1.0",
+		BaseURL:       "https://http.example.com",
+		HTTPTransport: spec.HTTPTransportBrowserHTTP,
+		Resources:     map[string]spec.Resource{},
+		Types:         map[string]spec.TypeDef{},
+	}
+	standardSpec := &spec.APISpec{
+		Name:          "standard",
+		Version:       "0.1.0",
+		BaseURL:       "https://standard.example.com",
+		HTTPTransport: spec.HTTPTransportStandard,
+		Resources:     map[string]spec.Resource{},
+		Types:         map[string]spec.TypeDef{},
+	}
+
+	mergedHTTP := mergeSpecs([]*spec.APISpec{standardSpec, httpSpec}, "merged")
+	assert.Equal(t, spec.HTTPTransportBrowserHTTP, mergedHTTP.HTTPTransport)
+
+	mergedChrome := mergeSpecs([]*spec.APISpec{httpSpec, chromeSpec}, "merged")
+	assert.Equal(t, spec.HTTPTransportBrowserChrome, mergedChrome.HTTPTransport)
 }
 
 func TestNormalizeHTTPTransportAllowsBrowserChromeH3(t *testing.T) {
 	t.Parallel()
 
-	got, err := normalizeHTTPTransport(spec.HTTPTransportBrowserChromeH3)
+	got, err := normalizeHTTPTransport(spec.HTTPTransportBrowserHTTP)
+	require.NoError(t, err)
+	assert.Equal(t, spec.HTTPTransportBrowserHTTP, got)
+
+	got, err = normalizeHTTPTransport(spec.HTTPTransportBrowserChromeH3)
 	require.NoError(t, err)
 	assert.Equal(t, spec.HTTPTransportBrowserChromeH3, got)
 

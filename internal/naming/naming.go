@@ -65,6 +65,31 @@ func HumanName(slug string) string {
 	return cases.Title(language.English).String(strings.ReplaceAll(slug, "-", " "))
 }
 
+// Slug normalizes display-ish input into the slug grammar used for API names.
+func Slug(s string) string {
+	s = strings.ToLower(strings.TrimSpace(ASCIIFold(s)))
+	var b strings.Builder
+	lastHyphen := true
+	for _, r := range s {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			lastHyphen = false
+		default:
+			if !lastHyphen && b.Len() > 0 {
+				b.WriteByte('-')
+				lastHyphen = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// IsSlug reports whether s matches the API slug grammar.
+func IsSlug(s string) bool {
+	return apiSlugRe.MatchString(s)
+}
+
 // SnakeIdentifier collapses a free-form command spec into a snake_case Go
 // identifier safe to use as an MCP tool name. "funding --who" → "funding_who",
 // "FUNDING-TREND" → "funding_trend". Used by the generator's mcpToolName
@@ -327,9 +352,12 @@ func LibraryDirName(name string) string {
 	}
 }
 
-// slugRe matches the slug grammar: lowercase alphanumeric + hyphens, must start
-// with an alphanumeric character. Accepts rerun suffixes like "dub-2".
+// slugRe is the legacy library-dir compatibility grammar: lowercase
+// alphanumeric + hyphens, must start with an alphanumeric character.
 var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+
+// apiSlugRe is stricter: hyphens must separate non-empty segments.
+var apiSlugRe = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // IsValidLibraryDirName returns true if name is a valid library directory name.
 // It accepts both legacy CLI directory names (e.g. "dub-pp-cli", "dub-pp-cli-2")

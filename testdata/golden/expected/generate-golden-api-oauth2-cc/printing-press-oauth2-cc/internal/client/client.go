@@ -231,7 +231,9 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		for k, v := range headerOverrides {
 			req.Header.Set(k, v)
 		}
-		req.Header.Set("User-Agent", "printing-press-oauth2-pp-cli/1.0.0")
+		if req.Header.Get("User-Agent") == "" {
+			req.Header.Set("User-Agent", "printing-press-oauth2-pp-cli/1.0.0")
+		}
 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {

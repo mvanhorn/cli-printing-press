@@ -310,12 +310,14 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		// `?limit=N` query param without honoring it; truncating client-
 		// side means the user-facing --limit flag works regardless.
 		// Surfaced by hackernews retro #350 finding F6.
-		"endpointNeedsClientLimit": endpointNeedsClientLimit,
-		"envName":                  naming.EnvPrefix,
-		"safeName":                 safeSQLName,
-		"isBackfillColumn":         isStoreBackfillColumn,
-		"hasBackfillColumns":       hasStoreBackfillColumns,
-		"backfillDecl":             storeBackfillDecl,
+		"endpointNeedsClientLimit":       endpointNeedsClientLimit,
+		"envName":                        naming.EnvPrefix,
+		"safeName":                       safeSQLName,
+		"resourceIDFieldOverrideEntries": resourceIDFieldOverrideEntries,
+		"criticalResourceEntries":        criticalResourceEntries,
+		"isBackfillColumn":               isStoreBackfillColumn,
+		"hasBackfillColumns":             hasStoreBackfillColumns,
+		"backfillDecl":                   storeBackfillDecl,
 		"safeNameSuffix": func(name, suffix string) string {
 			return safeSQLName(name + suffix)
 		},
@@ -1961,6 +1963,67 @@ type visionRenderData struct {
 	SearchBodyFields       []profiler.SearchBodyField
 	GraphQLFieldPaths      map[string]string
 	AgentMoneyWorkflow     AgentMoneyWorkflow
+}
+
+type resourceIDFieldOverrideEntry struct {
+	Name  string
+	Value string
+}
+
+type criticalResourceEntry struct {
+	Name string
+}
+
+func resourceIDFieldOverrideEntries(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []resourceIDFieldOverrideEntry {
+	overrides := map[string]string{}
+	for _, resource := range syncable {
+		if resource.IDField != "" {
+			overrides[resource.Name] = resource.IDField
+		}
+	}
+	for _, resource := range dependent {
+		if resource.IDField != "" {
+			overrides[resource.Name] = resource.IDField
+		}
+	}
+
+	names := make([]string, 0, len(overrides))
+	for name := range overrides {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	entries := make([]resourceIDFieldOverrideEntry, len(names))
+	for i, name := range names {
+		entries[i] = resourceIDFieldOverrideEntry{Name: name, Value: overrides[name]}
+	}
+	return entries
+}
+
+func criticalResourceEntries(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []criticalResourceEntry {
+	critical := map[string]bool{}
+	for _, resource := range syncable {
+		if resource.Critical {
+			critical[resource.Name] = true
+		}
+	}
+	for _, resource := range dependent {
+		if resource.Critical {
+			critical[resource.Name] = true
+		}
+	}
+
+	names := make([]string, 0, len(critical))
+	for name := range critical {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	entries := make([]criticalResourceEntry, len(names))
+	for i, name := range names {
+		entries[i] = criticalResourceEntry{Name: name}
+	}
+	return entries
 }
 
 func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {

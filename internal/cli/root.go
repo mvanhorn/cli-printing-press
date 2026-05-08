@@ -383,7 +383,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Parse spec and show what would be generated without writing files (remote specs are still fetched)")
 	cmd.Flags().StringVar(&specSource, "spec-source", "", "Spec provenance: official, community, sniffed/browser-sniffed, docs (affects generated client defaults like rate limiting)")
 	cmd.Flags().StringVar(&clientPattern, "client-pattern", "", "HTTP client pattern: rest (default), proxy-envelope (wraps requests in POST envelope)")
-	cmd.Flags().StringVar(&httpTransport, "transport", "", "HTTP transport: standard, browser-chrome, or browser-chrome-h3 (defaults based on spec provenance and reachability)")
+	cmd.Flags().StringVar(&httpTransport, "transport", "", "HTTP transport: standard, browser-http, browser-chrome, or browser-chrome-h3 (defaults based on spec provenance and reachability)")
 	cmd.Flags().StringVar(&researchDir, "research-dir", "", "Pipeline directory containing research.json and discovery/ for README source credits")
 	cmd.Flags().IntVar(&maxResources, "max-resources", 0, "Maximum resource groups to generate (default 500, raise for enormous APIs)")
 	cmd.Flags().IntVar(&maxEndpointsPerResource, "max-endpoints-per-resource", 0, "Maximum endpoints per resource (default 50, raise for large APIs)")
@@ -505,10 +505,10 @@ func normalizeClientPattern(value string) (string, error) {
 
 func normalizeHTTPTransport(value string) (string, error) {
 	switch value {
-	case "", spec.HTTPTransportStandard, spec.HTTPTransportBrowserChrome, spec.HTTPTransportBrowserChromeH3:
+	case "", spec.HTTPTransportStandard, spec.HTTPTransportBrowserHTTP, spec.HTTPTransportBrowserChrome, spec.HTTPTransportBrowserChromeH3:
 		return value, nil
 	default:
-		return "", fmt.Errorf("--transport must be one of: standard, browser-chrome, browser-chrome-h3 (got %q)", value)
+		return "", fmt.Errorf("--transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h3 (got %q)", value)
 	}
 }
 
@@ -751,8 +751,10 @@ func strongerHTTPTransport(current, candidate string) string {
 func httpTransportPriority(value string) int {
 	switch value {
 	case spec.HTTPTransportBrowserChromeH3:
-		return 3
+		return 4
 	case spec.HTTPTransportBrowserChrome:
+		return 3
+	case spec.HTTPTransportBrowserHTTP:
 		return 2
 	case spec.HTTPTransportStandard:
 		return 1

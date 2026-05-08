@@ -333,7 +333,15 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					report["api"] = fmt.Sprintf("client init error: %s", clientErr)
 				} else {
 					// Step 1: Basic reachability via the configured transport.
+{{- if .HealthCheckPath}}
+					healthPath := "{{.HealthCheckPath}}"
+					if !strings.HasPrefix(healthPath, "/") {
+						healthPath = "/" + healthPath
+					}
+					reachBody, reachErr := c.Get(healthPath, nil)
+{{- else}}
 					reachBody, reachErr := c.Get("/", nil)
+{{- end}}
 					var reachAPIErr *client.APIError
 					switch {
 					case reachErr == nil:
@@ -396,7 +404,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- range .RequiredHeaders}}
 						authHeaders["{{.Name}}"] = "{{.Value}}"
 {{- end}}
-{{- if not .UsesBrowserManagedUserAgent}}
+{{- if and (not .UsesBrowserManagedUserAgent) (not (.HasRequiredHeader "User-Agent"))}}
 						authHeaders["User-Agent"] = "{{.Name}}-pp-cli"
 {{- end}}
 						_, authErr := c.GetWithHeaders(verifyPath, authParams, authHeaders)

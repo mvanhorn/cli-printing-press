@@ -1311,6 +1311,9 @@ func TestBuildSpec_WithAuth(t *testing.T) {
 		apiSpec, err := BuildSpec("cal.com", "https://api.cal.com", endpoints, auth)
 		require.NoError(t, err)
 
+		assert.Equal(t, "cal-com", apiSpec.Name)
+		assert.Equal(t, "cal.com", apiSpec.DisplayName)
+		assert.Equal(t, "~/.config/cal-com-pp-cli/config.toml", apiSpec.Config.Path)
 		assert.Equal(t, []string{"CAL_COM_API_KEY"}, apiSpec.Auth.EnvVars)
 	})
 }

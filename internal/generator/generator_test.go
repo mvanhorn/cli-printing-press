@@ -210,6 +210,63 @@ func TestGenerateNoUnscopedStoreOpen(t *testing.T) {
 	require.NoError(t, err, "walking generated CLI tree")
 }
 
+func TestGenerateDedupesResourceRegistryMapEntries(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("resource-registry-dedupe")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"locations": {
+			Description: "Manage locations",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:     "GET",
+					Path:       "/locations",
+					Response:   spec.ResponseDef{Type: "array"},
+					Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					IDField:    "id",
+				},
+			},
+		},
+		"contacts": {
+			Description: "Manage contacts",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:     "GET",
+					Path:       "/contacts",
+					Response:   spec.ResponseDef{Type: "array"},
+					Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					IDField:    "id",
+					Critical:   true,
+				},
+				"list_by_location": {
+					Method:     "GET",
+					Path:       "/locations/{locationId}/contacts",
+					Response:   spec.ResponseDef{Type: "array"},
+					Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					IDField:    "id",
+					Critical:   true,
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, strings.Count(string(storeSrc), `"contacts": "id",`), "store.go should emit one ID override per resource")
+	assert.Equal(t, 1, strings.Count(string(syncSrc), `"contacts": "id",`), "sync.go should emit one ID override per resource")
+	assert.Equal(t, 1, strings.Count(string(syncSrc), `"contacts": true,`), "sync.go should emit one critical flag per resource")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "./internal/store")
+}
+
 // TestGenerateFreshnessHelperEmitted verifies that the cliutil freshness
 // helper and auto-refresh wrapper are emitted when the spec opts into
 // cache, and that the resulting CLI compiles end-to-end and its cliutil
@@ -1236,6 +1293,47 @@ func TestGenerateBrowserChromeH3Transport(t *testing.T) {
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/client")
+}
+
+func TestGenerateBrowserHTTPTransportDisablesHTTP2(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:          "websurfacehttp",
+		Version:       "0.1.0",
+		BaseURL:       "https://www.example.com",
+		HTTPTransport: spec.HTTPTransportBrowserHTTP,
+		Auth:          spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/websurfacehttp-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"posts": {
+				Description: "Browse posts",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/",
+						Description: "List posts",
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "websurfacehttp-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientGo := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	assert.Contains(t, clientGo, `"crypto/tls"`)
+	assert.Contains(t, clientGo, `transport := http.DefaultTransport.(*http.Transport).Clone()`)
+	assert.Contains(t, clientGo, `transport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)`)
+	assert.NotContains(t, clientGo, `"github.com/enetx/surf"`)
+	assert.NotContains(t, clientGo, `Impersonate()`)
+
+	gomod := readGeneratedFile(t, outputDir, "go.mod")
+	assert.NotContains(t, gomod, "github.com/enetx/surf")
 }
 
 func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
@@ -4276,6 +4374,22 @@ func TestGeneratedDoctor_AuthVerifyPathProbesEndpoint(t *testing.T) {
 	assert.NotContains(t, content, "inconclusive (HTTP %d from base URL")
 }
 
+func TestGeneratedDoctor_HealthCheckPathProbesEndpoint(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("healthdoc")
+	apiSpec.HealthCheckPath = "api/marketStatus"
+
+	outputDir := filepath.Join(t.TempDir(), "healthdoc-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	doctorSrc := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
+	assert.Contains(t, doctorSrc, `healthPath := "api/marketStatus"`)
+	assert.Contains(t, doctorSrc, `if !strings.HasPrefix(healthPath, "/") {`)
+	assert.Contains(t, doctorSrc, `reachBody, reachErr := c.Get(healthPath, nil)`)
+	assert.NotContains(t, doctorSrc, `reachBody, reachErr := c.Get("/", nil)`)
+}
+
 func TestGeneratedDoctor_InterstitialMarkersAreTitleAnchored(t *testing.T) {
 	t.Parallel()
 
@@ -4580,6 +4694,29 @@ func TestGenerate_UserAgentOverrideGatedByBrowserTransport(t *testing.T) {
 	// no auth.go at all for no-auth CLIs.
 	_, err = os.Stat(filepath.Join(browserDir, "internal", "cli", "auth.go"))
 	assert.True(t, os.IsNotExist(err), "auth.go should not be emitted for auth.type:none specs")
+}
+
+func TestGenerateRequiredUserAgentHeaderBeatsDefaultUserAgent(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("browserheaders")
+	apiSpec.RequiredHeaders = []spec.RequiredHeader{
+		{Name: "User-Agent", Value: "Mozilla/5.0 Browser Sniff"},
+		{Name: "Referer", Value: "https://www.example.com/"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "browserheaders-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	require.Contains(t, clientSrc, `req.Header.Set("User-Agent", "Mozilla/5.0 Browser Sniff")`)
+	require.Contains(t, clientSrc, `req.Header.Set("Referer", "https://www.example.com/")`)
+	assert.Contains(t, clientSrc, `if req.Header.Get("User-Agent") == "" {`)
+	assert.Contains(t, clientSrc, `req.Header.Set("User-Agent", "browserheaders-pp-cli/0.1.0")`)
+
+	doctorSrc := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
+	require.Contains(t, doctorSrc, `authHeaders["User-Agent"] = "Mozilla/5.0 Browser Sniff"`)
+	assert.NotContains(t, doctorSrc, `authHeaders["User-Agent"] = "browserheaders-pp-cli"`)
 }
 
 func TestGenerateObjectBodyDefaultsAreParsedAsJSON(t *testing.T) {
