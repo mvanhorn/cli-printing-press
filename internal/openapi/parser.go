@@ -737,8 +737,14 @@ func authVarsExtension(raw any) ([]spec.AuthEnvVar, error) {
 func loadOpenAPIDoc(data []byte, lenient bool, location *url.URL) (*openapi3.T, error) {
 	loader := openapi3.NewLoader()
 	loader.IsExternalRefsAllowed = lenient || location != nil
-	loader.ReadFromURIFunc = func(loader *openapi3.Loader, location *url.URL) ([]byte, error) {
-		data, err := openapi3.DefaultReadFromURI(loader, location)
+	allowLocalExternalRefs := location != nil
+	loader.ReadFromURIFunc = func(loader *openapi3.Loader, refLocation *url.URL) ([]byte, error) {
+		if !lenient {
+			if !allowLocalExternalRefs || !isFileURI(refLocation) {
+				return nil, fmt.Errorf("encountered disallowed external reference: %q", refLocation.String())
+			}
+		}
+		data, err := openapi3.DefaultReadFromURI(loader, refLocation)
 		if err != nil {
 			return nil, err
 		}
@@ -751,6 +757,11 @@ func loadOpenAPIDoc(data []byte, lenient bool, location *url.URL) (*openapi3.T, 
 		return loader.LoadFromDataWithPath(data, location)
 	}
 	return loader.LoadFromData(data)
+}
+
+func isFileURI(location *url.URL) bool {
+	return location != nil && location.Path != "" && location.Host == "" &&
+		(location.Scheme == "" || location.Scheme == "file")
 }
 
 func fileLocation(path string) (*url.URL, error) {

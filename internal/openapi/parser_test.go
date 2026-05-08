@@ -109,6 +109,31 @@ paths:
 	assert.True(t, foundWidgetID, "external schema fields must be available after local ref resolution")
 }
 
+func TestParseWithPathRejectsRemoteRefsInStrictMode(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Remote Ref
+  version: 1.0.0
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "https://example.com/schemas.json#/components/schemas/Widget"
+`)
+
+	_, err := ParseWithPath(data, filepath.Join(t.TempDir(), "openapi.yaml"))
+	require.ErrorContains(t, err, "encountered disallowed external reference")
+}
+
 func TestParsePreservesResponseDiscriminatorAndEnumFields(t *testing.T) {
 	t.Parallel()
 
