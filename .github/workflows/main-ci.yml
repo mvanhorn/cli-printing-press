@@ -2,13 +2,13 @@ name: Main CI
 
 # Runs the full unit-test + golden-verify suite against main and against PRs
 # targeting main. The push trigger is the post-merge alarm; the pull_request
-# trigger lets a branch protection rule require this exact check, so the
-# Release PR (and any other PR) cannot merge with a stale view of main.
+# trigger lets a branch protection rule require the stable build-and-test check
+# with "Require branches to be up to date before merging" enabled.
 #
 # The existing CI in lint.yml runs sharded, change-gated tests to keep PR
-# turnaround fast. This workflow is intentionally redundant: it reruns the
-# whole suite from scratch as a single load-bearing signal a branch protection
-# rule can pin against.
+# turnaround fast. This workflow is intentionally redundant as a single
+# load-bearing signal branch protection can pin against. Its expensive work is
+# split across parallel jobs, then folded into the stable build-and-test check.
 on:
   push:
     branches: [main]
@@ -16,9 +16,8 @@ on:
     branches: [main]
 
 # cancel-in-progress so a batch of rapid merges only burns CI for the final
-# state. The question this workflow answers is "is main green right now?" —
-# only the latest run matters. Per-merge attribution can be recovered with
-# git bisect if a regression slips through.
+# state. The question this workflow answers is "is this PR up to date with main
+# and does the full suite pass?" Only the latest run for a ref matters.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -27,7 +26,8 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
+  full-build:
+    name: full-build
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -44,8 +44,65 @@ jobs:
       - name: Build
         run: go build ./...
 
+  full-test:
+    name: full-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
       - name: Test
         run: go test -timeout 15m ./...
 
+  full-golden:
+    name: full-golden
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
       - name: Verify golden fixtures
         run: bash scripts/golden.sh verify
+
+  build-and-test:
+    runs-on: ubuntu-latest
+    needs:
+      - full-build
+      - full-test
+      - full-golden
+    if: ${{ always() }}
+    timeout-minutes: 5
+    steps:
+      - name: Check full-suite jobs
+        shell: bash
+        run: |
+          if [[ "${{ needs.full-build.result }}" != "success" ]]; then
+            echo "full-build failed or was cancelled."
+            exit 1
+          fi
+          if [[ "${{ needs.full-test.result }}" != "success" ]]; then
+            echo "full-test failed or was cancelled."
+            exit 1
+          fi
+          if [[ "${{ needs.full-golden.result }}" != "success" ]]; then
+            echo "full-golden failed or was cancelled."
+            exit 1
+          fi
+
+          echo "Full build, test, and golden verification passed."
