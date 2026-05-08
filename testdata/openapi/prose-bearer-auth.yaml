@@ -1,0 +1,15 @@
+openapi: "3.0.3"
+info:
+  title: GitHub
+  version: "1.0.0"
+  description: Authenticate requests with a fine-grained PAT or OAuth app token.
+components:
+  schemas:
+    Repository:
+      type: object
+paths:
+  /repos:
+    get:
+      responses:
+        "200":
+          description: OK
