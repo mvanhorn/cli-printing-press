@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,17 +31,23 @@ var (
 	}
 )
 
-// TestTokenScaffoldingFollowsAuthSurface pins both directions: no-auth specs
-// drop the OAuth-shape token scaffolding entirely (otherwise the symbols are
-// dead code), and api_key (or any non-none) specs keep it (the auth
-// subcommand templates depend on SaveTokens / AccessToken).
+// TestTokenScaffoldingFollowsAuthSurface pins all three branches of
+// shouldEmitAuth(): Auth.Type != "none", Auth.AuthorizationURL != "", and a
+// graphql_persisted_query traffic-analysis hint each independently keep the
+// OAuth-shape token scaffolding emitting; only when all three are absent do
+// the symbols disappear (otherwise they would be dead code with no caller on
+// the CLI surface). The cases also verify that the generated CLI still
+// compiles with the gating in place — gated imports falling out of sync with
+// gated function bodies would otherwise pass the symbol-absence assertions
+// but ship a non-buildable CLI.
 func TestTokenScaffoldingFollowsAuthSurface(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		auth   spec.AuthConfig
-		expect func(t *testing.T, src, sym string)
+		name                 string
+		auth                 spec.AuthConfig
+		trafficAnalysisHints []string
+		expect               func(t *testing.T, src, sym string)
 	}{
 		{
 			name:   "no_auth_omits_scaffolding",
@@ -48,9 +55,28 @@ func TestTokenScaffoldingFollowsAuthSurface(t *testing.T) {
 			expect: func(t *testing.T, src, sym string) { assert.NotContains(t, src, sym) },
 		},
 		{
-			name:   "api_key_keeps_scaffolding",
-			auth:   spec.AuthConfig{}, // minimalSpec defaults to api_key
+			name: "api_key_keeps_scaffolding",
+			auth: spec.AuthConfig{
+				Type:    "api_key",
+				Header:  "Authorization",
+				Format:  "Bearer {token}",
+				EnvVars: []string{"MYAPI_TOKEN"},
+			},
 			expect: func(t *testing.T, src, sym string) { assert.Contains(t, src, sym) },
+		},
+		{
+			name: "none_with_authorization_url_keeps_scaffolding",
+			auth: spec.AuthConfig{
+				Type:             "none",
+				AuthorizationURL: "https://example.com/oauth/authorize",
+			},
+			expect: func(t *testing.T, src, sym string) { assert.Contains(t, src, sym) },
+		},
+		{
+			name:                 "none_with_graphql_persisted_query_keeps_scaffolding",
+			auth:                 spec.AuthConfig{Type: "none"},
+			trafficAnalysisHints: []string{"graphql_persisted_query"},
+			expect:               func(t *testing.T, src, sym string) { assert.Contains(t, src, sym) },
 		},
 	}
 
@@ -59,12 +85,14 @@ func TestTokenScaffoldingFollowsAuthSurface(t *testing.T) {
 			t.Parallel()
 
 			apiSpec := minimalSpec(tt.name)
-			if tt.auth.Type != "" {
-				apiSpec.Auth = tt.auth
-			}
+			apiSpec.Auth = tt.auth
 
 			outputDir := filepath.Join(t.TempDir(), tt.name+"-pp-cli")
-			require.NoError(t, New(apiSpec, outputDir).Generate())
+			gen := New(apiSpec, outputDir)
+			if len(tt.trafficAnalysisHints) > 0 {
+				gen.TrafficAnalysis = &browsersniff.TrafficAnalysis{GenerationHints: tt.trafficAnalysisHints}
+			}
+			require.NoError(t, gen.Generate())
 
 			configSrc := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
 			for _, sym := range configTokenScaffolding {
@@ -75,6 +103,13 @@ func TestTokenScaffoldingFollowsAuthSurface(t *testing.T) {
 			for _, sym := range clientTokenScaffolding {
 				tt.expect(t, clientSrc, sym)
 			}
+
+			// Catch import-gating mistakes: an orphan reference to a gated
+			// symbol (e.g., a stray time.Time{} after TokenExpiry is removed)
+			// would pass the substring asserts but produce non-buildable
+			// generated source. Skipped under -short / unit lane via runGoCommand.
+			runGoCommand(t, outputDir, "mod", "tidy")
+			runGoCommand(t, outputDir, "build", "./...")
 		})
 	}
 }

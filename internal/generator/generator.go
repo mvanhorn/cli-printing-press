@@ -628,8 +628,8 @@ type authTemplateData struct {
 type clientTemplateData struct {
 	*spec.APISpec
 	HasGraphQLPersistedQueries bool
-	// HasAuthCommand mirrors Generator.shouldEmitAuth(); see the doc on
-	// shouldEmitAuth for the full list of co-gated call sites.
+	// Populated by Generator.shouldEmitAuth() so this template gate stays in
+	// sync with auth.go emission, root.go registration, and scoreAuth.
 	HasAuthCommand bool
 }
 
