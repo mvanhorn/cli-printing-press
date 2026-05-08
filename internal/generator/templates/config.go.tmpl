@@ -122,7 +122,7 @@ func Load(configPath string) (*Config, error) {
 	// config file path is exposed separately as report["config_path"], and
 	// embedding it in auth_source leaks the user's home directory through
 	// doctor's JSON envelope.
-	if cfg.AuthSource == "" && (cfg.AuthHeaderVal != "" || cfg.AccessToken != "") {
+	if cfg.AuthSource == "" && (cfg.AuthHeaderVal != ""{{- if .HasAuthCommand}} || cfg.AccessToken != ""{{- end}}) {
 		cfg.AuthSource = "config"
 	}
 {{- if .Auth.EnvVarSpecs}}
