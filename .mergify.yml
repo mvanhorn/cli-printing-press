@@ -1,0 +1,41 @@
+queue_rules:
+  - name: default
+    queue_conditions:
+      - base = main
+    merge_conditions:
+      - check-success = build-and-test
+      - check-success = generated-test
+      - check-success = go-lint
+      - check-success = golden
+      - check-success = pr-title
+      - check-success = test
+    merge_method: squash
+    update_method: rebase
+    batch_size: 1
+
+merge_queue:
+  queued_label: queued
+  dequeued_label: dequeued
+  status_comments: outcomes
+
+merge_protections_settings:
+  reporting_method: check-runs
+  auto_merge_conditions:
+    - label = ready-to-merge
+
+merge_protections:
+  - name: require-ready-label-and-ci
+    if:
+      - base = main
+    success_conditions:
+      - or:
+        - label = ready-to-merge
+        - and:
+          - head = release-please--branches--main
+          - "title ~= ^chore\\(main\\): release"
+      - check-success = build-and-test
+      - check-success = generated-test
+      - check-success = go-lint
+      - check-success = golden
+      - check-success = pr-title
+      - check-success = test

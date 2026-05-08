@@ -201,8 +201,10 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 }
 
 func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APISpec, error) {
-	if normalized, err := normalizeSpecData(data); err == nil {
+	var metadata specDataMetadata
+	if normalized, meta, err := normalizeSpecDataWithMetadata(data); err == nil {
 		data = normalized
+		metadata = meta
 	}
 	doc, err := loadOpenAPIDoc(data, lenient, location)
 	if err != nil {
@@ -319,7 +321,7 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 		baseURL = "https://api.example.com"
 	}
 
-	auth := mapAuth(doc, name)
+	auth := mapAuthWithDescriptionInference(doc, name, !metadata.explicitEmptySecuritySchemes)
 	if auth.Type != "none" && allOperationsAllowAnonymous(doc) {
 		auth = spec.AuthConfig{Type: "none"}
 	}
@@ -431,11 +433,15 @@ func lookupOpenAPIInfoExtension(doc *openapi3.T, key string) (any, bool) {
 }
 
 func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
+	return mapAuthWithDescriptionInference(doc, name, true)
+}
+
+func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescriptionInference bool) spec.AuthConfig {
 	auth := spec.AuthConfig{Type: "none"}
 	schemeName, scheme := selectSecurityScheme(doc)
 	if scheme == nil {
 		result := inferQueryParamAuth(doc, name, auth)
-		if result.Type == "none" {
+		if result.Type == "none" && allowDescriptionInference {
 			result = inferDescriptionAuth(doc, name, result)
 		}
 		if result.Type == "none" {
@@ -1161,6 +1167,10 @@ var bearerKeywords = []string{
 	"bearer",
 	"access token",
 	"auth token",
+	"app installation token",
+	"fine-grained pat",
+	"oauth app token",
+	"personal access token",
 }
 
 // apiKeyKeywords indicate API-key auth when found in info.description.

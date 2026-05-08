@@ -622,6 +622,34 @@ func TestGenerateOAuth2AuthTemplateConditionally(t *testing.T) {
 		_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "auth.go"))
 		require.NoError(t, err)
 	})
+
+	t.Run("OpenAPI prose-inferred bearer spec generates simple auth command", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "prose-bearer-auth.yaml"))
+		require.NoError(t, err)
+
+		apiSpec, err := openapi.Parse(data)
+		require.NoError(t, err)
+		require.Equal(t, "bearer_token", apiSpec.Auth.Type)
+
+		// Existing golden fixtures pin simple-auth template output; this test
+		// covers the new OpenAPI inference path into that generated surface.
+		outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		_, err = os.Stat(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+		require.NoError(t, err)
+		configGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+		require.NoError(t, err)
+		assert.Contains(t, string(configGo), "GITHUB_TOKEN")
+
+		binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+		runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
+		helpOut, err := exec.Command(binaryPath, "auth", "--help").CombinedOutput()
+		require.NoError(t, err, string(helpOut))
+		assert.Contains(t, string(helpOut), "status")
+		assert.Contains(t, string(helpOut), "set-token")
+		assert.Contains(t, string(helpOut), "logout")
+	})
 }
 
 func TestGeneratedOutput_READMEBearerTokenMCPSetup(t *testing.T) {

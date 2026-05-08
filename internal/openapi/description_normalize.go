@@ -30,17 +30,53 @@ import (
 // error and callers fall back to the original bytes — which preserves
 // kin-openapi's existing error reporting for genuinely malformed input.
 func normalizeSpecData(data []byte) ([]byte, error) {
+	normalized, _, err := normalizeSpecDataWithMetadata(data)
+	return normalized, err
+}
+
+type specDataMetadata struct {
+	explicitEmptySecuritySchemes bool
+}
+
+func normalizeSpecDataWithMetadata(data []byte) ([]byte, specDataMetadata, error) {
+	root, err := decodeSpecTree(data)
+	if err != nil {
+		return nil, specDataMetadata{}, err
+	}
+	metadata := specDataMetadata{
+		explicitEmptySecuritySchemes: treeHasExplicitEmptySecuritySchemes(root),
+	}
+	normalizeSpecTree(root, "", false)
+	out, err := json.Marshal(root)
+	if err != nil {
+		return nil, specDataMetadata{}, fmt.Errorf("normalize spec: json marshal: %w", err)
+	}
+	return out, metadata, nil
+}
+
+func decodeSpecTree(data []byte) (any, error) {
 	var root any
 	if err := yaml.Unmarshal(data, &root); err != nil {
 		return nil, fmt.Errorf("normalize spec: yaml unmarshal: %w", err)
 	}
-	root = convertToStringKeyed(root)
-	normalizeSpecTree(root, "", false)
-	out, err := json.Marshal(root)
-	if err != nil {
-		return nil, fmt.Errorf("normalize spec: json marshal: %w", err)
+	return convertToStringKeyed(root), nil
+}
+
+func treeHasExplicitEmptySecuritySchemes(root any) bool {
+	rootMap, ok := root.(map[string]any)
+	if !ok {
+		return false
 	}
-	return out, nil
+	components, ok := rootMap["components"].(map[string]any)
+	if !ok {
+		return false
+	}
+	raw, ok := components["securitySchemes"]
+	if !ok {
+		return false
+	}
+	schemes, ok := raw.(map[string]any)
+	return ok && len(schemes) == 0
 }
 
 // convertToStringKeyed walks a value decoded by gopkg.in/yaml.v3 and rewrites
