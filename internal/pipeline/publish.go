@@ -221,6 +221,12 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			if existing.Owner != "" {
 				m.Owner = existing.Owner
 			}
+			if existing.Printer != "" {
+				m.Printer = existing.Printer
+			}
+			if existing.PrinterName != "" {
+				m.PrinterName = existing.PrinterName
+			}
 			if existing.CatalogEntry != "" {
 				m.CatalogEntry = existing.CatalogEntry
 			}

@@ -177,6 +177,23 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 	if s.OwnerName == "" {
 		s.OwnerName = resolveOwnerNameForExisting(outputDir)
 	}
+
+	// Printer is the GitHub @handle of the human who ran the press.
+	// Tiered resolver mirrors Owner: existing-manifest first so regens
+	// preserve original attribution. The slug fallback (when neither
+	// manifest nor git config has a value) fires in Generate() so its
+	// stderr warning sits alongside the OwnerName empty warning.
+	if s.Printer == "" {
+		s.Printer = resolvePrinterForExisting(outputDir)
+	}
+	// PrinterName is the prose-shaped display name of the printer (e.g.
+	// "Matt Van Horn"), used only in the README byline parenthetical.
+	// Empty values render as a byline without the parenthetical, so no
+	// slug fallback is required (unlike OwnerName, which feeds the
+	// SKILL.md author: field).
+	if s.PrinterName == "" {
+		s.PrinterName = resolvePrinterNameForExisting(outputDir)
+	}
 	g := &Generator{
 		Spec:      s,
 		OutputDir: outputDir,
@@ -1543,6 +1560,21 @@ func (g *Generator) Generate() error {
 			g.Spec.Owner,
 		)
 		g.Spec.OwnerName = g.Spec.Owner
+	}
+	if g.Spec.Printer == "" {
+		// Printer flows into the per-CLI README byline and the
+		// registry catalog row. Same non-fatal reasoning as OwnerName:
+		// fall back to the slug-shaped Owner so emission is non-empty
+		// and warn so the operator catches the misconfiguration. The
+		// publish-side strict check (in printing-press-publish skill)
+		// rejects this fallback at publish time, so a wrong-but-set
+		// value can never reach the library catalog.
+		fmt.Fprintf(os.Stderr,
+			"WARNING: spec.Printer is empty; falling back to slug-shaped Owner (%q) for printer attribution. "+
+				"Set `git config github.user` (your GitHub @handle) to populate this correctly.\n",
+			g.Spec.Owner,
+		)
+		g.Spec.Printer = g.Spec.Owner
 	}
 	if err := g.prepareOutput(); err != nil {
 		return err

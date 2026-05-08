@@ -411,3 +411,75 @@ func sanitizeOwner(s string) string {
 		return -1
 	}, s)
 }
+
+// resolvePrinterForExisting returns the GitHub @handle of the original
+// printer for a regen against an existing tree at outputDir. Tiered so
+// regens preserve the original printer instead of silently flipping
+// attribution to whoever's running the regenerator:
+//  1. .printing-press.json's `printer` field, if present and non-empty
+//  2. resolvePrinterForNew() (git config github.user, otherwise empty)
+//
+// Distinct from resolveOwnerForExisting (Owner is the API-spec / wrapper
+// author identity; Printer is the human who ran the press). Tier 3
+// fallback to the API-spec Owner slug is deliberately deferred to
+// Generate() so a stderr warning can fire there alongside the existing
+// OwnerName-empty warning.
+func resolvePrinterForExisting(outputDir string) string {
+	if p := readManifestPrinter(outputDir); p != "" {
+		return p
+	}
+	return resolvePrinterForNew()
+}
+
+// readManifestPrinter returns the `printer` @handle from the manifest.
+func readManifestPrinter(outputDir string) string {
+	return readManifestField(outputDir, "printer")
+}
+
+// resolvePrinterForNew returns the printer @handle for a brand-new
+// project (no existing tree to read from). Reads `git config
+// github.user`. Returns "" when the value is unset — Generate() falls
+// back to the slug-shaped Owner with a stderr warning. Deliberately
+// does NOT fall back to the literal "USER" sentinel that
+// resolveOwnerForNew uses; the printer field publishes to the per-CLI
+// README byline and the registry catalog, where a sentinel value would
+// surface as a broken attribution row.
+func resolvePrinterForNew() string {
+	if out, err := exec.Command("git", "config", "github.user").Output(); err == nil && len(out) > 0 {
+		return strings.TrimSpace(string(out))
+	}
+	return ""
+}
+
+// resolvePrinterNameForExisting returns the human-readable printer
+// display name for a regen against an existing tree. Tiered:
+//  1. .printing-press.json's `printer_name` field, if present and non-empty
+//  2. resolvePrinterNameForNew() (raw `git config user.name`)
+//
+// Mirrors resolveOwnerNameForExisting's shape. The display name flows
+// into the README byline parenthetical; empty values render as a
+// byline without the parenthetical (template handles via {{if
+// .PrinterName}}), so no slug fallback is required.
+func resolvePrinterNameForExisting(outputDir string) string {
+	if name := readManifestPrinterName(outputDir); name != "" {
+		return name
+	}
+	return resolvePrinterNameForNew()
+}
+
+// readManifestPrinterName returns the `printer_name` display-name field
+// from the manifest.
+func readManifestPrinterName(outputDir string) string {
+	return readManifestField(outputDir, "printer_name")
+}
+
+// resolvePrinterNameForNew returns the raw `git config user.name` for a
+// fresh print. Returns "" when the value is unset; the caller decides
+// whether to render the byline parenthetical or skip it.
+func resolvePrinterNameForNew() string {
+	out, err := exec.Command("git", "config", "user.name").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
