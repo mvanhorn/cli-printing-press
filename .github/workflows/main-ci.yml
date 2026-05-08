@@ -1,0 +1,51 @@
+name: Main CI
+
+# Runs the full unit-test + golden-verify suite against main and against PRs
+# targeting main. The push trigger is the post-merge alarm; the pull_request
+# trigger lets a branch protection rule require this exact check, so the
+# Release PR (and any other PR) cannot merge with a stale view of main.
+#
+# The existing CI in lint.yml runs sharded, change-gated tests to keep PR
+# turnaround fast. This workflow is intentionally redundant: it reruns the
+# whole suite from scratch as a single load-bearing signal a branch protection
+# rule can pin against.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# cancel-in-progress so a batch of rapid merges only burns CI for the final
+# state. The question this workflow answers is "is main green right now?" —
+# only the latest run matters. Per-merge attribution can be recovered with
+# git bisect if a regression slips through.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -timeout 15m ./...
+
+      - name: Verify golden fixtures
+        run: bash scripts/golden.sh verify
