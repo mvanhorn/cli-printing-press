@@ -300,9 +300,142 @@ func runSync(store interface {
 	paginatedGet(path, cursor)
 	store.SaveSyncState("messages", "next")
 }
+
+func paginatedGet(path, cursor string) error {
+	for {
+		params := map[string]string{}
+		if cursor != "" {
+			params["after"] = cursor
+		}
+		_, nextCursor, hasMore := fetchPage(path, params)
+		if !hasMore || nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
+	}
+	return nil
+}
 `)
 
 		assert.Equal(t, 10, scoreSyncCorrectness(dir))
+	})
+
+	t.Run("scores structural pagination without canonical helper name", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/sync.go", `
+package cli
+
+func defaultSyncResources() []string {
+	return []string{"channels", "messages"}
+}
+
+func runSync(store interface {
+	GetSyncState(string) string
+	SaveSyncState(string, string)
+}, client interface {
+	Get(string, map[string]string) ([]byte, error)
+}) error {
+	path := "/guilds/{guild_id}/messages"
+	cursor := store.GetSyncState("messages")
+	for {
+		params := map[string]string{}
+		if cursor != "" {
+			params["after"] = cursor
+		}
+		data, err := client.Get(path, params)
+		if err != nil {
+			return err
+		}
+		nextCursor, hasMore := extractNextCursor(data)
+		store.SaveSyncState("messages", nextCursor)
+		if !hasMore || nextCursor == "" {
+			break
+		}
+		cursor = nextCursor
+	}
+	return nil
+}
+`)
+
+		assert.Equal(t, 10, scoreSyncCorrectness(dir))
+	})
+
+	t.Run("does not score a named pagination stub as real pagination", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/sync.go", `
+package cli
+
+func defaultSyncResources() []string {
+	return []string{"messages"}
+}
+
+func runSync(store interface {
+	GetSyncState(string) string
+	SaveSyncState(string, string)
+}) {
+	path := "/guilds/{guild_id}/messages"
+	cursor := store.GetSyncState("messages")
+	paginatedGet(path, cursor)
+	store.SaveSyncState("messages", "next")
+}
+
+func paginatedGet(path, cursor string) error {
+	return nil
+}
+`)
+
+		assert.Less(t, scoreSyncCorrectness(dir), 10)
+	})
+}
+
+func TestScoreOutputModes(t *testing.T) {
+	t.Run("scores structural page progress without page_fetch literal", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/cli/root.go", `
+package cli
+
+func init() {
+	rootCmd.PersistentFlags().Bool("json", false, "JSON")
+	rootCmd.PersistentFlags().Bool("plain", false, "Plain")
+	rootCmd.PersistentFlags().String("select", "", "Select")
+	rootCmd.PersistentFlags().Bool("csv", false, "CSV")
+	rootCmd.PersistentFlags().Bool("quiet", false, "Quiet")
+}
+`)
+		writeScorecardFixture(t, dir, "internal/cli/helpers.go", `
+package cli
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"text/tabwriter"
+)
+
+func filterFields(data json.RawMessage, fields string) json.RawMessage {
+	var v any
+	_ = json.Unmarshal(data, &v)
+	return data
+}
+
+func fetchEveryPage() {
+	page := 0
+	for {
+		page++
+		fmt.Fprintf(os.Stderr, "fetching page %d...\n", page)
+		break
+	}
+}
+
+func newTabWriter() *tabwriter.Writer {
+	return tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
+}
+`)
+
+		assert.Equal(t, 10, scoreOutputModes(dir))
 	})
 }
 

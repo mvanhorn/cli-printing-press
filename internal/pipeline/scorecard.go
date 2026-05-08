@@ -308,7 +308,7 @@ func scoreOutputModes(dir string) int {
 		score += 2
 	}
 	// Quality tier: pagination progress events
-	if strings.Contains(helpersContent, "page_fetch") || strings.Contains(helpersContent, "ndjson") {
+	if strings.Contains(helpersContent, "page_fetch") || strings.Contains(helpersContent, "ndjson") || hasPageProgressStructure(filepath.Join(dir, "internal", "cli")) {
 		score += 1
 	}
 	// Quality tier: tabwriter for aligned output
@@ -2161,7 +2161,7 @@ func scoreSyncCorrectness(dir string) int {
 	if strings.Contains(content, "SaveSyncState") {
 		score++
 	}
-	if strings.Contains(content, "paginatedGet") || strings.Contains(content, "hasNextPage") || strings.Contains(content, "endCursor") || strings.Contains(content, "cursor") {
+	if hasSyncPaginationStructure(cliDir) {
 		score += 2
 	}
 	// URL path parameters only count when other sync signals are present,

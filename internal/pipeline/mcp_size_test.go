@@ -206,6 +206,60 @@ func TestScoreMCPTokenEfficiency_PartialCreditMedium(t *testing.T) {
 // endpoint-mirror in tools.go. The token-efficiency score must reflect
 // the actual default surface, not the static tools.go.
 func TestEstimateMCPTokens_RuntimeSurfaceSelection(t *testing.T) {
+	t.Run("code orchestration delegation selects code_orch.go", func(t *testing.T) {
+		dir := t.TempDir()
+		mcpDir := filepath.Join(dir, "internal", "mcp")
+		require.NoError(t, os.MkdirAll(mcpDir, 0o755))
+
+		toolsBody := `package mcp
+
+import mcplib "github.com/mark3labs/mcp-go/mcp"
+
+func RegisterTools(s *server.MCPServer) {
+	RegisterCodeOrchestrationTools(s)
+}
+
+func helperOne() string { return "` + strings.Repeat("x", 900) + `" }
+func helperTwo() string { return "` + strings.Repeat("y", 900) + `" }
+`
+		require.NoError(t, os.WriteFile(filepath.Join(mcpDir, "tools.go"), []byte(toolsBody), 0o644))
+
+		codeOrchBody := `package mcp
+
+import mcplib "github.com/mark3labs/mcp-go/mcp"
+
+func RegisterCodeOrchestrationTools(s *server.MCPServer) {
+	s.AddTool(mcplib.NewTool("gohighlevel_search", mcplib.WithDescription("Search the API.")), nil)
+	s.AddTool(mcplib.NewTool("gohighlevel_execute", mcplib.WithDescription("Execute one endpoint.")), nil)
+}
+`
+		require.NoError(t, os.WriteFile(filepath.Join(mcpDir, "code_orch.go"), []byte(codeOrchBody), 0o644))
+
+		cmdDir := filepath.Join(dir, "cmd", "gohighlevel-pp-mcp")
+		require.NoError(t, os.MkdirAll(cmdDir, 0o755))
+		mainBody := `package main
+
+import (
+	"os"
+	mcptools "demo-pp-cli/internal/mcp"
+	"github.com/mark3labs/mcp-go/server"
+)
+
+func main() {
+	s := server.NewMCPServer("Demo", "1.0.0")
+	mcptools.RegisterTools(s)
+	_ = os.Getenv("PP_MCP_TRANSPORT")
+}
+`
+		require.NoError(t, os.WriteFile(filepath.Join(cmdDir, "main.go"), []byte(mainBody), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"),
+			[]byte(`{"cli_name":"gohighlevel-pp-cli"}`), 0o644))
+
+		est := estimateMCPTokens(dir)
+		require.Equal(t, 2, est.ToolCount, "current code-orch CLIs delegate from RegisterTools into code_orch.go")
+		assert.Less(t, est.TotalTokens, 100)
+	})
+
 	t.Run("thin default selects code_orch.go for token counting", func(t *testing.T) {
 		dir := t.TempDir()
 		mcpDir := filepath.Join(dir, "internal", "mcp")

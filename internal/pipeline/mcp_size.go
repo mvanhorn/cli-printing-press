@@ -79,6 +79,9 @@ func canonicalMCPSurfacePath(dir string) string {
 	if _, err := os.Stat(codeOrchPath); err != nil {
 		return toolsPath
 	}
+	if codeOrchDelegatedFromRegisterTools(dir) {
+		return codeOrchPath
+	}
 	mainPath := mcpMainPath(dir)
 	if mainPath == "" {
 		return toolsPath
