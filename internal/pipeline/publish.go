@@ -211,6 +211,28 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 	if existingData, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename)); err == nil {
 		var existing CLIManifest
 		if json.Unmarshal(existingData, &existing) == nil {
+			if state.RunID == "" && existing.RunID != "" {
+				state.RunID = existing.RunID
+				m.RunID = existing.RunID
+			}
+			if existing.DisplayName != "" {
+				m.DisplayName = existing.DisplayName
+			}
+			if existing.Owner != "" {
+				m.Owner = existing.Owner
+			}
+			if existing.CatalogEntry != "" {
+				m.CatalogEntry = existing.CatalogEntry
+			}
+			if existing.Category != "" {
+				m.Category = existing.Category
+			}
+			if existing.Description != "" {
+				m.Description = existing.Description
+			}
+			if existing.APIVersion != "" {
+				m.APIVersion = existing.APIVersion
+			}
 			m.MCPBinary = existing.MCPBinary
 			m.MCPToolCount = existing.MCPToolCount
 			m.MCPPublicToolCount = existing.MCPPublicToolCount
@@ -218,6 +240,11 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			m.AuthType = existing.AuthType
 			m.AuthEnvVars = existing.AuthEnvVars
 			m.AuthEnvVarSpecs = existing.AuthEnvVarSpecs
+			m.EndpointTemplateVars = existing.EndpointTemplateVars
+			m.AuthKeyURL = existing.AuthKeyURL
+			m.AuthTitle = existing.AuthTitle
+			m.AuthDescription = existing.AuthDescription
+			m.AuthOptional = existing.AuthOptional
 			m.NovelFeatures = existing.NovelFeatures
 		}
 	}
@@ -304,7 +331,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		if len(nfs) > 0 {
 			m.NovelFeatures = novelFeaturesToManifest(nfs)
 		}
-		if len(m.NovelFeatures) > 0 && source != "" && source != state.PipelineDir() && source != RunRoot(state.RunID) {
+		if len(m.NovelFeatures) > 0 && source != "" && source != state.PipelineDir() && source != state.RunRoot() {
 			// Visibility for non-canonical sources — a one-line stderr
 			// note keeps promote silent on the happy path but tells the
 			// user when novel_features came from the glob fallback.
@@ -320,7 +347,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		fmt.Fprintf(os.Stderr,
 			"debug: research.json not found at %s or %s; skipping novel_features enrichment "+
 				"(state.RunID=%q)\n",
-			filepath.Join(RunRoot(state.RunID), "research.json"),
+			filepath.Join(state.RunRoot(), "research.json"),
 			filepath.Join(state.PipelineDir(), "research.json"),
 			state.RunID)
 	}
@@ -349,8 +376,8 @@ func loadResearchForPromote(state *PipelineState) (*ResearchResult, string) {
 		// caller's "is this a non-canonical source?" check compares
 		// against state.PipelineDir() and RunRoot(state.RunID).
 		if state.RunID != "" {
-			if _, statErr := os.Stat(filepath.Join(RunRoot(state.RunID), "research.json")); statErr == nil {
-				return r, RunRoot(state.RunID)
+			if _, statErr := os.Stat(filepath.Join(state.RunRoot(), "research.json")); statErr == nil {
+				return r, state.RunRoot()
 			}
 			return r, state.PipelineDir()
 		}
@@ -358,9 +385,7 @@ func loadResearchForPromote(state *PipelineState) (*ResearchResult, string) {
 	}
 
 	if state.RunID != "" {
-		// loadResearchForState already covered both canonical paths
-		// for a populated state — no further fallback to try.
-		return nil, ""
+		return loadMatchingResearch(globResearchCandidatesForRunID(state.RunID), state.APIName)
 	}
 
 	// Minimal-state fallback: empty RunID and the canonical loader
@@ -373,17 +398,60 @@ func loadResearchForPromote(state *PipelineState) (*ResearchResult, string) {
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].mtime.After(candidates[j].mtime)
 	})
+	return loadMatchingResearch(candidates, state.APIName)
+}
+
+func loadMatchingResearch(candidates []researchCandidate, apiName string) (*ResearchResult, string) {
 	for _, c := range candidates {
 		r, err := LoadResearch(filepath.Dir(c.path))
 		if err != nil {
 			continue
 		}
-		if state.APIName != "" && r.APIName != "" && r.APIName != state.APIName {
+		if apiName != "" && r.APIName != "" && r.APIName != apiName {
 			continue
 		}
 		return r, c.path
 	}
 	return nil, ""
+}
+
+func globResearchCandidatesForRunID(runID string) []researchCandidate {
+	if runID == "" {
+		return nil
+	}
+	var out []researchCandidate
+	seen := make(map[string]bool)
+	add := func(path string) {
+		if seen[path] {
+			return
+		}
+		seen[path] = true
+		info, err := os.Stat(path)
+		if err != nil {
+			return
+		}
+		out = append(out, researchCandidate{path: path, mtime: info.ModTime()})
+	}
+
+	add(filepath.Join(RunRoot(runID), "research.json"))
+	add(filepath.Join(RunRoot(runID), "pipeline", "research.json"))
+
+	scopeEntries, err := os.ReadDir(RunstateRoot())
+	if err != nil {
+		return out
+	}
+	for _, entry := range scopeEntries {
+		if !entry.IsDir() {
+			continue
+		}
+		runRoot := runRootForScope(entry.Name(), runID)
+		add(filepath.Join(runRoot, "research.json"))
+		add(filepath.Join(runRoot, "pipeline", "research.json"))
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].mtime.After(out[j].mtime)
+	})
+	return out
 }
 
 // researchCandidate is a path + mtime for sorting glob results.

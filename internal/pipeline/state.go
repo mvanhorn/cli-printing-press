@@ -179,7 +179,7 @@ func writeCurrentRunPointer(state *PipelineState) error {
 		UpdatedAt:  time.Now(),
 	}
 
-	if err := os.MkdirAll(CurrentRunDir(), 0o755); err != nil {
+	if err := os.MkdirAll(currentRunDirForScope(state.Scope), 0o755); err != nil {
 		return fmt.Errorf("creating current run dir: %w", err)
 	}
 
@@ -188,7 +188,7 @@ func writeCurrentRunPointer(state *PipelineState) error {
 		return fmt.Errorf("marshaling current run pointer: %w", err)
 	}
 
-	return os.WriteFile(CurrentRunPointerPath(state.APIName), data, 0o644)
+	return os.WriteFile(currentRunPointerPathForScope(state.Scope, state.APIName), data, 0o644)
 }
 
 func findRunstateStatePath(apiName string) (string, bool) {
@@ -272,13 +272,7 @@ func FindStateByWorkingDir(dir string) (*PipelineState, error) {
 		return nil, fmt.Errorf("resolving working dir: %w", err)
 	}
 
-	pattern := filepath.Join(ScopedRunstateRoot(), "runs", "*", "state.json")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return nil, fmt.Errorf("scanning runstate: %w", err)
-	}
-
-	for _, candidate := range matches {
+	for _, candidate := range runstateStatePathCandidates() {
 		data, err := os.ReadFile(candidate)
 		if err != nil {
 			continue
@@ -293,13 +287,46 @@ func FindStateByWorkingDir(dir string) (*PipelineState, error) {
 				state.RunID = filepath.Base(filepath.Dir(candidate))
 			}
 			if state.Scope == "" {
-				state.Scope = WorkspaceScope()
+				state.Scope = scopeFromStatePath(candidate)
 			}
 			return &state, nil
 		}
 	}
 
 	return nil, fmt.Errorf("no runstate entry for working dir %s", absDir)
+}
+
+func runstateStatePathCandidates() []string {
+	seen := make(map[string]bool)
+	var out []string
+	addMatches := func(pattern string) {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			return
+		}
+		for _, match := range matches {
+			if !seen[match] {
+				seen[match] = true
+				out = append(out, match)
+			}
+		}
+	}
+	addMatches(filepath.Join(ScopedRunstateRoot(), "runs", "*", "state.json"))
+	addMatches(filepath.Join(RunstateRoot(), "*", "runs", "*", "state.json"))
+	return out
+}
+
+func scopeFromStatePath(path string) string {
+	runsDir := filepath.Dir(filepath.Dir(path))
+	scopeDir := filepath.Dir(runsDir)
+	if filepath.Base(runsDir) != "runs" {
+		return WorkspaceScope()
+	}
+	scope := filepath.Base(scopeDir)
+	if scope == "." || scope == string(filepath.Separator) || scope == "" {
+		return WorkspaceScope()
+	}
+	return scope
 }
 
 // NewMinimalState creates a lightweight state for CLIs that skipped the
@@ -597,27 +624,31 @@ func (s *PipelineState) EffectiveWorkingDir() string {
 }
 
 func (s *PipelineState) StatePath() string {
-	return RunStatePath(s.RunID)
+	return filepath.Join(s.RunRoot(), "state.json")
 }
 
 func (s *PipelineState) PipelineDir() string {
-	return RunPipelineDir(s.RunID)
+	return filepath.Join(s.RunRoot(), "pipeline")
 }
 
 func (s *PipelineState) ResearchDir() string {
-	return RunResearchDir(s.RunID)
+	return filepath.Join(s.RunRoot(), "research")
 }
 
 func (s *PipelineState) ProofsDir() string {
-	return RunProofsDir(s.RunID)
+	return filepath.Join(s.RunRoot(), "proofs")
 }
 
 func (s *PipelineState) DiscoveryDir() string {
-	return RunDiscoveryDir(s.RunID)
+	return filepath.Join(s.RunRoot(), "discovery")
 }
 
 func (s *PipelineState) ManifestPath() string {
-	return RunManifestPath(s.RunID)
+	return filepath.Join(s.RunRoot(), "manifest.json")
+}
+
+func (s *PipelineState) RunRoot() string {
+	return runRootForScope(s.Scope, s.RunID)
 }
 
 // NextPhase returns the name of the next incomplete phase, or "".

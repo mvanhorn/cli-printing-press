@@ -279,7 +279,7 @@ func LoadResearch(pipelineDir string) (*ResearchResult, error) {
 // Without this fallback the publish-time read silently misses skill-flow runs
 // and ships manifests with empty novel_features (cal-com retro #334 F2).
 func loadResearchForState(state *PipelineState) (*ResearchResult, error) {
-	if r, err := LoadResearch(RunRoot(state.RunID)); err == nil {
+	if r, err := LoadResearch(state.RunRoot()); err == nil {
 		return r, nil
 	}
 	return LoadResearch(state.PipelineDir())

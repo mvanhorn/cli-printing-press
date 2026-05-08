@@ -46,19 +46,38 @@ func RunstateRoot() string {
 }
 
 func ScopedRunstateRoot() string {
-	return filepath.Join(RunstateRoot(), WorkspaceScope())
+	return scopedRunstateRoot(WorkspaceScope())
+}
+
+func scopedRunstateRoot(scope string) string {
+	if scope == "" {
+		scope = WorkspaceScope()
+	}
+	return filepath.Join(RunstateRoot(), scope)
+}
+
+func currentRunDirForScope(scope string) string {
+	return filepath.Join(scopedRunstateRoot(scope), "current")
+}
+
+func currentRunPointerPathForScope(scope, apiName string) string {
+	return filepath.Join(currentRunDirForScope(scope), apiName+".json")
+}
+
+func runRootForScope(scope, runID string) string {
+	return filepath.Join(scopedRunstateRoot(scope), "runs", runID)
 }
 
 func CurrentRunDir() string {
-	return filepath.Join(ScopedRunstateRoot(), "current")
+	return currentRunDirForScope(WorkspaceScope())
 }
 
 func CurrentRunPointerPath(apiName string) string {
-	return filepath.Join(CurrentRunDir(), apiName+".json")
+	return currentRunPointerPathForScope(WorkspaceScope(), apiName)
 }
 
 func RunRoot(runID string) string {
-	return filepath.Join(ScopedRunstateRoot(), "runs", runID)
+	return runRootForScope(WorkspaceScope(), runID)
 }
 
 func RunStatePath(runID string) string {

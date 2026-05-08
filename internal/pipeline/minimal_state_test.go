@@ -3,6 +3,7 @@
 package pipeline
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -103,4 +104,22 @@ func TestNewMinimalState_PreservesScopeFromRecoveredState(t *testing.T) {
 
 	state := NewMinimalState("scope-test-pp-cli", "/tmp/different")
 	assert.Equal(t, "test-scope", state.Scope, "Scope must be borrowed from the recovered state")
+}
+
+func TestFindStateByWorkingDirFindsRunFromDifferentCurrentScope(t *testing.T) {
+	home := setPressTestEnv(t)
+	workingDir := filepath.Join(home, "work", "cross-scope-pp-cli")
+	prior := NewState("cross-scope", workingDir)
+	require.NoError(t, prior.Save())
+
+	t.Setenv("PRINTING_PRESS_SCOPE", "fresh-publish-scope")
+
+	state, err := FindStateByWorkingDir(workingDir)
+	require.NoError(t, err)
+	assert.Equal(t, prior.RunID, state.RunID)
+	assert.Equal(t, "test-scope", state.Scope)
+	assert.Equal(t,
+		filepath.Join(home, ".runstate", "test-scope", "runs", prior.RunID, "pipeline"),
+		state.PipelineDir(),
+		"state path helpers should honor the recovered state's scope, not the current shell scope")
 }

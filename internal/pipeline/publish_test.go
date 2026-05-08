@@ -219,6 +219,46 @@ func TestWriteCLIManifestForPublish_NovelFeaturesFromPrintFlowResearch(t *testin
 	assert.Equal(t, "conflicts", m.NovelFeatures[0].Command)
 }
 
+// TestWriteCLIManifestForPublish_HydratesFromManifestRunIDAcrossScopes covers
+// the deferred-publish flow: generate wrote a manifest with run_id under one
+// PRESS_SCOPE, then promote runs from a different shell/cwd with a different
+// scope. The source manifest's run_id must still let promote find research.json.
+func TestWriteCLIManifestForPublish_HydratesFromManifestRunIDAcrossScopes(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "publish-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	runID := "20260508-070627"
+	workingDir := filepath.Join(tmp, "working", "test-api-pp-cli")
+	require.NoError(t, os.MkdirAll(workingDir, 0o755))
+	require.NoError(t, WriteCLIManifest(workingDir, CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "test-api",
+		CLIName:       "test-api-pp-cli",
+		RunID:         runID,
+	}))
+
+	built := []NovelFeature{
+		{Name: "Cross-scope feature", Command: "feature", Description: "Loaded from the original run scope."},
+	}
+	originalRunRoot := filepath.Join(RunstateRoot(), "generate-scope", "runs", runID)
+	writeResearchAt(t, originalRunRoot, &ResearchResult{
+		APIName:            "test-api",
+		NovelFeaturesBuilt: &built,
+	})
+
+	state := NewMinimalState("test-api-pp-cli", workingDir)
+	require.Empty(t, state.RunID, "current scope has no registry entry")
+
+	require.NoError(t, writeCLIManifestForPublish(state, workingDir))
+
+	m := readPublishedManifest(t, workingDir)
+	assert.Equal(t, runID, m.RunID)
+	require.Len(t, m.NovelFeatures, 1)
+	assert.Equal(t, "feature", m.NovelFeatures[0].Command)
+}
+
 // TestWriteCLIManifestForPublish_NovelFeaturesPreservedFromCarryForward covers
 // the defense-in-depth path: research.json missing (deleted, not yet written),
 // but the existing manifest in the staging dir already has novel_features from
