@@ -197,6 +197,37 @@ paths: {}
 	assert.Equal(t, "Product Hunt", m.DisplayName)
 }
 
+func TestWriteCLIManifestForPublishPopulatesCategoryFromSpec(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	state := NewStateWithRun("synthetic-travel-cli", filepath.Join(tmp, "working", "synthetic-travel-cli-pp-cli"), "20260508-category", "test-scope")
+	require.NoError(t, os.MkdirAll(state.WorkingDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(state.WorkingDir, "spec.yaml"), []byte(`
+name: synthetic-travel-cli
+description: Synthetic travel CLI
+version: "1.0"
+base_url: https://api.example.com
+category: travel
+auth:
+  type: none
+resources:
+  trips:
+    description: Trips
+    endpoints:
+      list:
+        method: GET
+        path: /trips
+`), 0o644))
+
+	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+
+	m := readPublishedManifest(t, state.WorkingDir)
+	assert.Equal(t, "travel", m.Category)
+}
+
 // TestWriteCLIManifestForPublish_NovelFeaturesFromPrintFlowResearch covers the
 // printing-press print flow: research.json lives at <RunRoot>/pipeline/research.json
 // alongside phase artifacts. The fallback path keeps print-flow CLIs working.
