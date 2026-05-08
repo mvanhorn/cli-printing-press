@@ -2,6 +2,8 @@
 
 Purpose-built fixture for golden generation coverage.
 
+Printed by [@printing-press-golden](https://github.com/printing-press-golden) (printing-press-golden).
+
 ## Install
 
 The recommended path installs both the `printing-press-golden-pp-cli` binary and the `pp-printing-press-golden` agent skill in one shot:

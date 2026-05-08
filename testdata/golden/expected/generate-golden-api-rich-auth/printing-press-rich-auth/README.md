@@ -2,6 +2,8 @@
 
 Purpose-built fixture for rich auth env-var model coverage.
 
+Printed by [@printing-press-golden](https://github.com/printing-press-golden) (printing-press-golden).
+
 ## Install
 
 The recommended path installs both the `printing-press-rich-pp-cli` binary and the `pp-printing-press-rich` agent skill in one shot:

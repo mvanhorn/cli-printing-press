@@ -2,6 +2,8 @@
 
 Public parameter name golden fixture
 
+Printed by [@printing-press-golden](https://github.com/printing-press-golden) (printing-press-golden).
+
 ## Install
 
 The recommended path installs both the `public-param-golden-pp-cli` binary and the `pp-public-param-golden` agent skill in one shot:

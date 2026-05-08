@@ -12,6 +12,8 @@
   "mcp_ready": "full",
   "mcp_tool_count": 1,
   "owner": "printing-press-golden",
+  "printer": "printing-press-golden",
+  "printer_name": "printing-press-golden",
   "printing_press_version": "<PRINTING_PRESS_VERSION>",
   "schema_version": 1,
   "spec_checksum": "sha256:8cfba131c384836e8dde461511c9fd63cf2cbab7793553067765d515f2007aa1",

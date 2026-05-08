@@ -15,6 +15,10 @@
 
 Learn more at [{{.ProseName}}]({{.WebsiteURL}}).
 {{- end}}
+{{- if .Printer}}
+
+Printed by [@{{.Printer}}](https://github.com/{{.Printer}}){{if .PrinterName}} ({{.PrinterName}}){{end}}.
+{{- end}}
 
 ## Install
 
