@@ -125,6 +125,66 @@ resources:
 	assert.Equal(t, []string{"c"}, param.Aliases)
 }
 
+func TestValidateNameRequiresKebabSlug(t *testing.T) {
+	baseSpec := func(name string) []byte {
+		return []byte(`
+name: ` + name + `
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  items:
+    endpoints:
+      list:
+        method: GET
+        path: /items
+`)
+	}
+
+	tests := []struct {
+		name    string
+		spec    []byte
+		wantErr string
+	}{
+		{
+			name:    "spaces",
+			spec:    baseSpec("NSE India"),
+			wantErr: `spec name must be a kebab-case slug (got "NSE India"); try "nse-india"`,
+		},
+		{
+			name:    "multi-word brand",
+			spec:    baseSpec("Google Flights"),
+			wantErr: `spec name must be a kebab-case slug (got "Google Flights"); try "google-flights"`,
+		},
+		{
+			name:    "trailing hyphen",
+			spec:    baseSpec("google-flights-"),
+			wantErr: `spec name must be a kebab-case slug (got "google-flights-"); try "google-flights"`,
+		},
+		{
+			name:    "doubled hyphen",
+			spec:    baseSpec("google--flights"),
+			wantErr: `spec name must be a kebab-case slug (got "google--flights"); try "google-flights"`,
+		},
+		{
+			name: "valid slug",
+			spec: baseSpec("nse-india"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseBytes(tt.spec)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestParamPublicInputName(t *testing.T) {
 	assert.Equal(t, "address", Param{Name: "s", FlagName: "address"}.PublicInputName())
 	assert.Equal(t, "store_code", Param{Name: "store_code"}.PublicInputName())

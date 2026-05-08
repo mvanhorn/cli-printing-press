@@ -1496,6 +1496,13 @@ func (s *APISpec) Validate() error {
 	if s.Name == "" {
 		return fmt.Errorf("name is required")
 	}
+	if !naming.IsSlug(s.Name) {
+		suggestion := naming.Slug(s.Name)
+		if suggestion == "" {
+			return fmt.Errorf("spec name must be a kebab-case slug (got %q)", s.Name)
+		}
+		return fmt.Errorf("spec name must be a kebab-case slug (got %q); try %q", s.Name, suggestion)
+	}
 	// Note: s.Version holds the API version from the spec (for provenance).
 	// The CLI version is always hardcoded to "1.0.0" in the generated root.go
 	// template — it is independent of the API version.

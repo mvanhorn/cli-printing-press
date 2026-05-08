@@ -723,15 +723,8 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 // child path-item annotated with x-resource-id resolves the same as a flat
 // path-item.
 var resourceIDFieldOverrides = map[string]string{
-{{- range .SyncableResources}}
-{{- if .IDField}}
-	{{printf "%q" .Name}}: {{printf "%q" .IDField}},
-{{- end}}
-{{- end}}
-{{- range .DependentSyncResources}}
-{{- if .IDField}}
-	{{printf "%q" .Name}}: {{printf "%q" .IDField}},
-{{- end}}
+{{- range resourceIDFieldOverrideEntries .SyncableResources .DependentSyncResources}}
+	{{printf "%q" .Name}}: {{printf "%q" .Value}},
 {{- end}}
 }
 

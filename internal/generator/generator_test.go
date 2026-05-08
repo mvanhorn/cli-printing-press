@@ -210,6 +210,63 @@ func TestGenerateNoUnscopedStoreOpen(t *testing.T) {
 	require.NoError(t, err, "walking generated CLI tree")
 }
 
+func TestGenerateDedupesResourceRegistryMapEntries(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("resource-registry-dedupe")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"locations": {
+			Description: "Manage locations",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:     "GET",
+					Path:       "/locations",
+					Response:   spec.ResponseDef{Type: "array"},
+					Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					IDField:    "id",
+				},
+			},
+		},
+		"contacts": {
+			Description: "Manage contacts",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {
+					Method:     "GET",
+					Path:       "/contacts",
+					Response:   spec.ResponseDef{Type: "array"},
+					Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					IDField:    "id",
+					Critical:   true,
+				},
+				"list_by_location": {
+					Method:     "GET",
+					Path:       "/locations/{locationId}/contacts",
+					Response:   spec.ResponseDef{Type: "array"},
+					Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					IDField:    "id",
+					Critical:   true,
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, strings.Count(string(storeSrc), `"contacts": "id",`), "store.go should emit one ID override per resource")
+	assert.Equal(t, 1, strings.Count(string(syncSrc), `"contacts": "id",`), "sync.go should emit one ID override per resource")
+	assert.Equal(t, 1, strings.Count(string(syncSrc), `"contacts": true,`), "sync.go should emit one critical flag per resource")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "./internal/store")
+}
+
 // TestGenerateFreshnessHelperEmitted verifies that the cliutil freshness
 // helper and auto-refresh wrapper are emitted when the spec opts into
 // cache, and that the resulting CLI compiles end-to-end and its cliutil

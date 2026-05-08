@@ -1159,15 +1159,8 @@ func syncDependentResource(c interface {
 // annotations on a child path-item are honored at runtime, not just on
 // flat paths.
 var resourceIDFieldOverrides = map[string]string{
-{{- range .SyncableResources}}
-{{- if .IDField}}
-	{{printf "%q" .Name}}: {{printf "%q" .IDField}},
-{{- end}}
-{{- end}}
-{{- range .DependentSyncResources}}
-{{- if .IDField}}
-	{{printf "%q" .Name}}: {{printf "%q" .IDField}},
-{{- end}}
+{{- range resourceIDFieldOverrideEntries .SyncableResources .DependentSyncResources}}
+	{{printf "%q" .Name}}: {{printf "%q" .Value}},
 {{- end}}
 }
 
@@ -1185,15 +1178,8 @@ var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key"
 // failed child sync flagged x-critical: true exits non-zero just like a
 // flat-resource critical failure.
 var criticalResources = map[string]bool{
-{{- range .SyncableResources}}
-{{- if .Critical}}
+{{- range criticalResourceEntries .SyncableResources .DependentSyncResources}}
 	{{printf "%q" .Name}}: true,
-{{- end}}
-{{- end}}
-{{- range .DependentSyncResources}}
-{{- if .Critical}}
-	{{printf "%q" .Name}}: true,
-{{- end}}
 {{- end}}
 }
 

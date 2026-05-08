@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/discovery"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
@@ -21,6 +22,14 @@ func BuildSpec(name, baseURL string, endpoints []AggregatedEndpoint, auth *Disco
 	}
 	if baseURL == "" {
 		return nil, fmt.Errorf("base_url is required")
+	}
+	displayName := strings.TrimSpace(name)
+	apiName := naming.Slug(displayName)
+	if apiName == "" {
+		return nil, fmt.Errorf("name must contain at least one letter or digit")
+	}
+	if apiName == displayName {
+		displayName = ""
 	}
 
 	resources := make(map[string]spec.Resource)
@@ -79,18 +88,19 @@ func BuildSpec(name, baseURL string, endpoints []AggregatedEndpoint, auth *Disco
 
 	authConfig := spec.AuthConfig{Type: "none"}
 	if auth != nil {
-		authConfig = buildAuthConfig(name, auth)
+		authConfig = buildAuthConfig(apiName, auth)
 	}
 
 	apiSpec := &spec.APISpec{
-		Name:        name,
+		Name:        apiName,
+		DisplayName: displayName,
 		Description: fmt.Sprintf("Discovered API spec for %s (crowd-sniff)", name),
 		Version:     "0.1.0",
 		BaseURL:     baseURL,
 		Auth:        authConfig,
 		Config: spec.ConfigSpec{
 			Format: "toml",
-			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
+			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", apiName),
 		},
 		Resources: resources,
 		Types:     map[string]spec.TypeDef{},
