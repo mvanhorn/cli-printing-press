@@ -14,7 +14,7 @@ import (
 
 // TestGenerateEmitsInvalidateCacheSymmetry guards #603's two-prong fix:
 // the generated client.go must contain BOTH the invalidateCache method
-// definition AND a c.invalidateCache() call inside do()'s body.
+// definition AND a c.invalidateCache() call inside the request helper's body.
 // Method-presence alone is not enough — a future refactor that drops
 // the call but keeps the method would silently re-introduce the
 // stale-list-after-mutation bug. See
@@ -38,22 +38,29 @@ func TestGenerateEmitsInvalidateCacheSymmetry(t *testing.T) {
 	assert.Contains(t, clientGo, "func (c *Client) invalidateCache()",
 		"client.go must define invalidateCache method (R1)")
 
-	// Prong 2: do() must call invalidateCache. Locate do() and verify the
-	// call is in its body — not just anywhere in the file. The do
+	// Prong 2: the request helper must call invalidateCache. Specs with raw
+	// binary downloads emit doRequest(); otherwise the traditional do() remains.
+	// Locate the active helper and verify the call is in its body — not just
+	// anywhere in the file. The helper
 	// function spans from its declaration to the next package-level
-	// `func ` or end of file. A call site OUTSIDE do() would not protect
+	// `func ` or end of file. A call site OUTSIDE the helper would not protect
 	// against the stale-list-after-mutation regression.
-	doStart := strings.Index(clientGo, "func (c *Client) do(")
-	require.NotEqual(t, -1, doStart, "client.go must contain Client.do function")
-	doRest := clientGo[doStart:]
-	// Find the next top-level func declaration to bound do()'s body.
-	nextFunc := strings.Index(doRest[1:], "\nfunc ")
-	doBody := doRest
-	if nextFunc != -1 {
-		doBody = doRest[:nextFunc+1]
+	helperName := "doRequest"
+	helperStart := strings.Index(clientGo, "func (c *Client) doRequest(")
+	if helperStart == -1 {
+		helperName = "do"
+		helperStart = strings.Index(clientGo, "func (c *Client) do(")
 	}
-	assert.Contains(t, doBody, "c.invalidateCache()",
-		"Client.do must call c.invalidateCache() in its success branch (R2)")
+	require.NotEqual(t, -1, helperStart, "client.go must contain Client.do or Client.doRequest function")
+	helperRest := clientGo[helperStart:]
+	// Find the next top-level func declaration to bound the helper's body.
+	nextFunc := strings.Index(helperRest[1:], "\nfunc ")
+	helperBody := helperRest
+	if nextFunc != -1 {
+		helperBody = helperRest[:nextFunc+1]
+	}
+	assert.Contains(t, helperBody, "c.invalidateCache()",
+		"Client.%s must call c.invalidateCache() in its success branch (R2)", helperName)
 
 	// Prong 3: writeCache must still be present (asymmetry diagnostic
 	// from the design-pattern doc — writeCache without invalidateCache

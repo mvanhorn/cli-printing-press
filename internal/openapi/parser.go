@@ -45,6 +45,7 @@ const (
 	extensionProxyRoutes      = "x-proxy-routes"
 	extensionOrigin           = "x-origin"
 	extensionProviderName     = "x-providerName"
+	extensionPPProduces       = "x-pp-produces"
 )
 
 // SetMaxResources overrides the default resource limit. When not called,
@@ -297,6 +298,7 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 		Version:                     version,
 		BaseURL:                     baseURL,
 		BasePath:                    basePath,
+		OData:                       spec.DetectOData(&spec.APISpec{BaseURL: baseURL, BasePath: basePath}, data),
 		WebsiteURL:                  websiteURL,
 		ProxyRoutes:                 proxyRoutes,
 		Auth:                        auth,
@@ -320,6 +322,12 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	// collisions; inline schemas only fill genuine gaps.
 	mapTypes(doc, result)
 	mapResources(doc, result, resourceBasePath)
+	if !result.OData {
+		result.OData = spec.DetectOData(result, data)
+	}
+	if result.OData {
+		spec.ApplyODataConventions(result)
+	}
 
 	// Post-parse sweep: if the spec has no authentication at all (not inferred
 	// from description keywords), mark every endpoint as NoAuth. The per-operation
@@ -1566,6 +1574,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				Params:      params,
 				Body:        body,
 			}
+			endpoint.ResponseContentTypes = responseContentTypes(op)
 			endpoint.Tier = readTierExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 			if endpoint.Tier == "" {
 				endpoint.Tier = pathTier
@@ -2125,6 +2134,7 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 			Required:    parameter.Required,
 			Positional:  parameter.In == openapi3.ParameterInPath,
 			Description: description,
+			Fields:      mapBodyFields(schema),
 			Enum:        schemaEnum(schema),
 			Format:      schemaFormat(schema),
 		}
@@ -2487,6 +2497,16 @@ func mapResponse(op *openapi3.Operation, fallbackName string, out *spec.APISpec)
 				Discriminator: mapResponseDiscriminator(itemRef),
 			}, "data"
 		}
+		if valueRef := schema.Properties["value"]; valueRef != nil && isArraySchema(schemaRefValue(valueRef)) {
+			itemRef := schemaRefValue(valueRef).Items
+			itemFallback := fallbackName + "Item"
+			registerInlineSchemaType(out, itemRef, itemFallback)
+			return spec.ResponseDef{
+				Type:          "array",
+				Item:          schemaTypeName(itemRef, itemFallback),
+				Discriminator: mapResponseDiscriminator(itemRef),
+			}, "value"
+		}
 	}
 
 	if isArraySchema(schema) {
@@ -2510,6 +2530,76 @@ func mapResponse(op *openapi3.Operation, fallbackName string, out *spec.APISpec)
 	}
 
 	return spec.ResponseDef{}, ""
+}
+
+func responseContentTypes(op *openapi3.Operation) []string {
+	if op == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	addContentTypes(seen, stringSliceExtension(op.Extensions, extensionPPProduces))
+
+	if op.Responses != nil {
+		if success := selectSuccessResponse(op.Responses); success != nil && success.Value != nil {
+			for contentType := range success.Value.Content {
+				addContentType(seen, contentType)
+			}
+		}
+	}
+
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for contentType := range seen {
+		out = append(out, contentType)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func addContentTypes(seen map[string]struct{}, contentTypes []string) {
+	for _, contentType := range contentTypes {
+		addContentType(seen, contentType)
+	}
+}
+
+func addContentType(seen map[string]struct{}, contentType string) {
+	contentType = strings.TrimSpace(strings.ToLower(contentType))
+	if i := strings.Index(contentType, ";"); i >= 0 {
+		contentType = strings.TrimSpace(contentType[:i])
+	}
+	if contentType == "" {
+		return
+	}
+	seen[contentType] = struct{}{}
+}
+
+func stringSliceExtension(extensions map[string]any, key string) []string {
+	if extensions == nil {
+		return nil
+	}
+	raw, ok := extensions[key]
+	if !ok {
+		return nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s := strings.TrimSpace(fmt.Sprint(item)); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		if s := strings.TrimSpace(fmt.Sprint(v)); s != "" {
+			return []string{s}
+		}
+		return nil
+	}
 }
 
 func selectSuccessResponse(responses *openapi3.Responses) *openapi3.ResponseRef {

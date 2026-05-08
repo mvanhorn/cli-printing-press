@@ -9,6 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+{{- if .OData}}
+	"net/url"
+{{- end}}
 	"os"
 {{- if .HasDataLayer}}
 	"path/filepath"
@@ -428,6 +431,58 @@ func replacePathParam(path, name, value string) string {
 }
 {{- end}}
 
+{{- if .OData}}
+type odataFunctionParam struct {
+	Name   string
+	Value  any
+	Type   string
+	Format string
+	Set    bool
+}
+
+func appendODataFunctionCall(path string, params []odataFunctionParam) string {
+	parts := make([]string, 0, len(params))
+	for _, param := range params {
+		if !param.Set {
+			continue
+		}
+		parts = append(parts, param.Name+"="+formatODataFunctionValue(param.Value, param.Type, param.Format))
+	}
+	if odataLastSegmentHasCall(path) {
+		if strings.HasSuffix(path, "()") && len(parts) > 0 {
+			return strings.TrimSuffix(path, "()") + "(" + strings.Join(parts, ",") + ")"
+		}
+		return path
+	}
+	return path + "(" + strings.Join(parts, ",") + ")"
+}
+
+func odataLastSegmentHasCall(path string) bool {
+	idx := strings.LastIndex(path, "/")
+	segment := path
+	if idx >= 0 {
+		segment = path[idx+1:]
+	}
+	return strings.Contains(segment, "(") && strings.HasSuffix(segment, ")")
+}
+
+func formatODataFunctionValue(value any, typ, format string) string {
+	raw := fmt.Sprintf("%v", value)
+	switch strings.ToLower(strings.TrimSpace(typ)) {
+	case "integer", "int", "int32", "int64", "number", "float", "double", "decimal":
+		return raw
+	case "boolean", "bool":
+		return strings.ToLower(raw)
+	}
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "uuid", "guid":
+		return url.PathEscape(raw)
+	}
+	escaped := strings.ReplaceAll(raw, "'", "''")
+	return "'" + url.PathEscape(escaped) + "'"
+}
+{{- end}}
+
 // paginatedGet fetches pages and concatenates array results. The headers
 // argument carries per-endpoint required headers (e.g. cal-api-version) that
 // must be sent on every page request, including the first; pass nil when the
@@ -654,6 +709,19 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 	return printOutput(w, data, flags.asJSON)
 }
 
+{{- if .HasBinaryResponses}}
+func writeBinaryOutput(w io.Writer, data []byte, outputPath string) error {
+	if outputPath != "" {
+		return os.WriteFile(outputPath, data, 0o644)
+	}
+	if isTerminal(w) {
+		return fmt.Errorf("binary content; use --output FILE to save")
+	}
+	_, err := w.Write(data)
+	return err
+}
+{{- end}}
+
 // extractResponseData unwraps common API response envelopes for display.
 // Many APIs return {"status":"success","data":[...]} instead of a bare array.
 // This extracts the inner data for output helpers (filterFields, compactFields,
@@ -664,6 +732,11 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 // returns {"data":[...],"has_more":true} where "data" is the list, not an
 // envelope wrapper).
 func extractResponseData(data json.RawMessage) json.RawMessage {
+{{- if .OData}}
+	if unwrapped := extractODataValue(data); string(unwrapped) != string(data) {
+		return unwrapped
+	}
+{{- end}}
 	var envelope struct {
 		Status string          `json:"status"`
 		Data   json.RawMessage `json:"data"`
@@ -681,6 +754,18 @@ func extractResponseData(data json.RawMessage) json.RawMessage {
 		return data
 	}
 }
+
+{{- if .OData}}
+func extractODataValue(data json.RawMessage) json.RawMessage {
+	var envelope struct {
+		Value json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil || envelope.Value == nil {
+		return data
+	}
+	return envelope.Value
+}
+{{- end}}
 
 // compactFields keeps only the most important fields for agent consumption.
 // For arrays: allowlist of high-gravity fields (no descriptions).

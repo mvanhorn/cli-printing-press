@@ -24,6 +24,11 @@ const (
 )
 
 const (
+	ODataOperationFunction = "function"
+	ODataOperationAction   = "action"
+)
+
+const (
 	HTTPTransportStandard        = "standard"          // default for official API clients
 	HTTPTransportBrowserChrome   = "browser-chrome"    // Chrome-impersonated transport for browser-facing web surfaces
 	HTTPTransportBrowserChromeH3 = "browser-chrome-h3" // Chrome-impersonated transport forced through HTTP/3 for stricter bot screens
@@ -90,6 +95,11 @@ type APISpec struct {
 	Version        string `yaml:"version" json:"version"`
 	BaseURL        string `yaml:"base_url" json:"base_url"`
 	BasePath       string `yaml:"base_path,omitempty" json:"base_path,omitempty"`
+	// OData enables OData v4 request semantics in generated endpoint mirrors:
+	// function parameters are encoded into the path call expression, action
+	// parameters are sent in JSON bodies, and read endpoints expose OData query
+	// option flags.
+	OData bool `yaml:"odata,omitempty" json:"odata,omitempty"`
 	// GraphQLEndpointPath is the path appended to BaseURL for GraphQL POSTs.
 	// REST specs leave it empty; GraphQL specs default it to "/graphql" but
 	// can override (e.g., Shopify's "/admin/api/{version}/graphql.json").
@@ -880,20 +890,22 @@ func resourceHasBaseURLOverride(resource Resource) bool {
 }
 
 type Endpoint struct {
-	Method          string            `yaml:"method" json:"method"`
-	Path            string            `yaml:"path" json:"path"`
-	Description     string            `yaml:"description" json:"description"`
-	Params          []Param           `yaml:"params" json:"params"`
-	Body            []Param           `yaml:"body" json:"body"`
-	Response        ResponseDef       `yaml:"response" json:"response"`
-	ResponseFormat  string            `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
-	HTMLExtract     *HTMLExtract      `yaml:"html_extract,omitempty" json:"html_extract,omitempty"`       // extraction options when response_format is html
-	Pagination      *Pagination       `yaml:"pagination" json:"pagination"`
-	ResponsePath    string            `yaml:"response_path,omitempty" json:"response_path,omitempty"`       // path to extract data array from response (e.g., "data", "results.items")
-	Meta            map[string]string `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
-	HeaderOverrides []RequiredHeader  `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
-	NoAuth          bool              `yaml:"no_auth,omitempty" json:"no_auth,omitempty"`                   // true when the endpoint does not require authentication
-	Tier            string            `yaml:"tier,omitempty" json:"tier,omitempty"`
+	Method               string            `yaml:"method" json:"method"`
+	Path                 string            `yaml:"path" json:"path"`
+	Description          string            `yaml:"description" json:"description"`
+	ODataOperation       string            `yaml:"odata_operation,omitempty" json:"odata_operation,omitempty"` // "function" or "action" when OData semantics override REST query/body placement.
+	Params               []Param           `yaml:"params" json:"params"`
+	Body                 []Param           `yaml:"body" json:"body"`
+	Response             ResponseDef       `yaml:"response" json:"response"`
+	ResponseContentTypes []string          `yaml:"response_content_types,omitempty" json:"response_content_types,omitempty"`
+	ResponseFormat       string            `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
+	HTMLExtract          *HTMLExtract      `yaml:"html_extract,omitempty" json:"html_extract,omitempty"`       // extraction options when response_format is html
+	Pagination           *Pagination       `yaml:"pagination" json:"pagination"`
+	ResponsePath         string            `yaml:"response_path,omitempty" json:"response_path,omitempty"`       // path to extract data array from response (e.g., "data", "results.items")
+	Meta                 map[string]string `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
+	HeaderOverrides      []RequiredHeader  `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
+	NoAuth               bool              `yaml:"no_auth,omitempty" json:"no_auth,omitempty"`                   // true when the endpoint does not require authentication
+	Tier                 string            `yaml:"tier,omitempty" json:"tier,omitempty"`
 	// IDField is the resolved primary-key field name for items returned by this
 	// endpoint, populated either by a path-item-level `x-resource-id` extension
 	// or, for OpenAPI specs, by walking the response schema (id → name → first

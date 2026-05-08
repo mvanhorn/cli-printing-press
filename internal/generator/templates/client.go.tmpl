@@ -452,9 +452,26 @@ func (c *Client) PatchWithHeaders(path string, body any, headers map[string]stri
 	return c.do("PATCH", path, nil, body, headers)
 }
 
+{{ if .HasBinaryResponses}}
+func (c *Client) Raw(method, path string, params map[string]string, body any, headers map[string]string, accept string) ([]byte, int, error) {
+	return c.doRequest(method, path, params, body, headers, accept, false)
+}
+
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+	data, status, err := c.doRequest(method, path, params, body, headerOverrides, "", true)
+	return json.RawMessage(data), status, err
+}
+
+// doRequest executes an HTTP request. When sanitizeJSON is false, response
+// bytes are returned exactly as received for binary/download commands.
+func (c *Client) doRequest(method, path string, params map[string]string, body any, headerOverrides map[string]string, accept string, sanitizeJSON bool) ([]byte, int, error) {
+{{ else -}}
+// do executes an HTTP request. headerOverrides, when non-nil, override global
+// RequiredHeaders for this specific request (used for per-endpoint API versioning).
+func (c *Client) do(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+{{- end}}
 {{- if .EndpointTemplateVars}}
 	// EndpointTemplateVars are declared in the spec — resolve {placeholder}
 	// markers in BaseURL (and, for non-proxy clients, the request path)
@@ -564,7 +581,12 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 
 	// Build the request for dry-run display or actual execution
 	if c.DryRun {
+{{- if .HasBinaryResponses}}
+		data, status, err := c.dryRun(method, targetURL, path, params, bodyBytes, headerOverrides, authHeader)
+		return []byte(data), status, err
+{{- else}}
 		return c.dryRun(method, targetURL, path, params, bodyBytes, headerOverrides, authHeader)
+{{- end}}
 	}
 
 	const maxRetries = 3
@@ -667,6 +689,11 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		for k, v := range headerOverrides {
 			req.Header.Set(k, v)
 		}
+{{- if .HasBinaryResponses}}
+		if accept != "" {
+			req.Header.Set("Accept", accept)
+		}
+{{- end}}
 {{- if not .UsesBrowserManagedUserAgent}}
 		req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
 {{- end}}
@@ -682,7 +709,13 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		if err != nil {
 			return nil, 0, fmt.Errorf("reading response: %w", err)
 		}
+{{- if .HasBinaryResponses}}
+		if sanitizeJSON {
+			respBody = sanitizeJSONResponse(respBody)
+		}
+{{- else}}
 		respBody = sanitizeJSONResponse(respBody)
+{{- end}}
 
 		// Success
 		if resp.StatusCode < 400 {
@@ -690,7 +723,11 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 			if method != http.MethodGet && !c.DryRun {
 				c.invalidateCache()
 			}
+{{- if .HasBinaryResponses}}
+			return respBody, resp.StatusCode, nil
+{{- else}}
 			return json.RawMessage(respBody), resp.StatusCode, nil
+{{- end}}
 		}
 
 		apiErr := &APIError{

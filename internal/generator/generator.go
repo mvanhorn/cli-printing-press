@@ -183,32 +183,23 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		templates: make(map[string]*template.Template),
 	}
 	g.funcs = template.FuncMap{
-		"title":                 cases.Title(language.English).String,
-		"lower":                 strings.ToLower,
-		"upper":                 strings.ToUpper,
-		"join":                  strings.Join,
-		"camel":                 toCamel,
-		"snake":                 naming.Snake,
-		"pascal":                toPascal,
-		"goType":                goType,
-		"goStructType":          goStructType,
-		"goTypeForParam":        goTypeForParam,
-		"goStoreType":           goStoreType,
-		"cobraFlagFunc":         cobraFlagFunc,
-		"cobraFlagFuncForParam": cobraFlagFuncForParam,
-		"defaultVal":            defaultVal,
-		"defaultValForParam":    defaultValForParam,
-		"zeroVal":               zeroVal,
-		"zeroValForParam": func(name, t string) string {
-			kind := primitiveKind(t)
-			if isIDParam(name) && kind == "int" {
-				return `""`
-			}
-			if isCursorParam(name) && (kind == "int" || kind == "float") {
-				return `""`
-			}
-			return zeroVal(t)
-		},
+		"title":                  cases.Title(language.English).String,
+		"lower":                  strings.ToLower,
+		"upper":                  strings.ToUpper,
+		"join":                   strings.Join,
+		"camel":                  toCamel,
+		"snake":                  naming.Snake,
+		"pascal":                 toPascal,
+		"goType":                 goType,
+		"goStructType":           goStructType,
+		"goTypeForParam":         goTypeForParam,
+		"goStoreType":            goStoreType,
+		"cobraFlagFunc":          cobraFlagFunc,
+		"cobraFlagFuncForParam":  cobraFlagFuncForParam,
+		"defaultVal":             defaultVal,
+		"defaultValForParam":     defaultValForParam,
+		"zeroVal":                zeroVal,
+		"zeroValForParam":        zeroValForParam,
 		"positionalArgs":         positionalArgs,
 		"configTag":              configTag,
 		"camelToJSON":            camelToJSON,
@@ -300,8 +291,21 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"publicFlagName":     publicFlagName,
 		"publicFlagAliases":  publicFlagAliases,
 		"flagChangedExpr":    flagChangedExpr,
-		"mcpInputName":       mcpInputName,
-		"mcpParamBindings":   mcpParamBindings,
+		"flagValueSetExpr":   flagValueSetExpr,
+		"isODataFunction":    isODataFunctionEndpoint,
+		"endpointHasBinaryResponse": func(endpoint spec.Endpoint) bool {
+			return endpoint.HasBinaryResponse()
+		},
+		"endpointNeedsAcceptFlag": func(endpoint spec.Endpoint) bool {
+			return endpoint.NeedsAcceptFlag()
+		},
+		"defaultBinaryAccept": func(endpoint spec.Endpoint) string {
+			return endpoint.DefaultBinaryAccept()
+		},
+		"binaryEndpointNeedsJSONImport": binaryEndpointNeedsJSONImport,
+		"binaryEndpointNeedsOSImport":   binaryEndpointNeedsOSImport,
+		"mcpInputName":                  mcpInputName,
+		"mcpParamBindings":              mcpParamBindings,
 		// endpointNeedsClientLimit reports whether a list endpoint needs
 		// client-side truncation. True when the endpoint has a `limit`-named
 		// param AND no Pagination block — the spec author asked for a
@@ -1523,6 +1527,9 @@ func (g *Generator) renderOptionalSupportFiles() error {
 }
 
 func (g *Generator) Generate() error {
+	if g.Spec != nil && g.Spec.OData {
+		spec.ApplyODataConventions(g.Spec)
+	}
 	warnUnenrichedLargeMCPSurface(g.Spec, os.Stderr)
 	if g.Spec.OwnerName == "" {
 		// OwnerName flows into Hermes `author:` and other prose
@@ -2904,6 +2911,17 @@ func defaultValForParam(p spec.Param) string {
 	return defaultVal(p)
 }
 
+func zeroValForParam(name, t string) string {
+	kind := primitiveKind(t)
+	if isIDParam(name) && kind == "int" {
+		return `""`
+	}
+	if isCursorParam(name) && (kind == "int" || kind == "float") {
+		return `""`
+	}
+	return zeroVal(t)
+}
+
 type jsonFlagSuggestion struct {
 	FlagName string
 	Values   []string
@@ -2925,6 +2943,53 @@ func flagChangedExpr(p spec.Param) string {
 		return parts[0]
 	}
 	return "(" + strings.Join(parts, " || ") + ")"
+}
+
+func flagValueSetExpr(prefix string, p spec.Param) string {
+	ident := prefix + toCamel(paramIdent(p))
+	return fmt.Sprintf("%s || %s != %s", flagChangedExpr(p), ident, zeroValForParam(p.Name, p.Type))
+}
+
+func isODataFunctionEndpoint(endpoint spec.Endpoint) bool {
+	return endpoint.ODataOperation == spec.ODataOperationFunction
+}
+
+func binaryEndpointNeedsJSONImport(endpoint spec.Endpoint, stdinBody bool) bool {
+	for _, p := range endpoint.Params {
+		if !p.Positional && isJSONStringParam(p) {
+			return true
+		}
+	}
+	if stdinBody && isBodyMethod(endpoint.Method) {
+		return true
+	}
+	for _, p := range endpoint.Body {
+		if p.Type == "object" || p.Type == "array" || isJSONStringParam(p) {
+			return true
+		}
+	}
+	return false
+}
+
+func binaryEndpointNeedsOSImport(endpoint spec.Endpoint, stdinBody bool) bool {
+	if stdinBody && isBodyMethod(endpoint.Method) {
+		return true
+	}
+	for _, p := range endpoint.Params {
+		if !p.Positional && len(p.Enum) > 0 && p.Type == "string" {
+			return true
+		}
+	}
+	return false
+}
+
+func isBodyMethod(method string) bool {
+	switch strings.ToUpper(method) {
+	case "POST", "PUT", "PATCH":
+		return true
+	default:
+		return false
+	}
 }
 
 func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBinding {
@@ -3010,7 +3075,7 @@ func bodyMap(body []spec.Param, indent string) string {
 			if isComplex {
 				rhs = "parsed" + ident
 			}
-			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%sif %s || body%s != \"\" {\n", indent, flagChangedExpr(p), ident)
 			fmt.Fprintf(&b, "%s\tvar parsed%s any\n", indent, ident)
 			fmt.Fprintf(&b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
 			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
@@ -3019,7 +3084,7 @@ func bodyMap(body []spec.Param, indent string) string {
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
-		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
+		fmt.Fprintf(&b, "%sif %s || body%s != %s {\n", indent, flagChangedExpr(p), ident, zeroVal(p.Type))
 		fmt.Fprintf(&b, "%s\tbody[%q] = body%s\n", indent, p.Name, ident)
 		fmt.Fprintf(&b, "%s}\n", indent)
 	}

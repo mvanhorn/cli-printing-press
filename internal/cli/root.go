@@ -96,6 +96,7 @@ func newGenerateCmd() *cobra.Command {
 	var specURL string
 	var planFile string
 	var trafficAnalysisPath string
+	var forceOData bool
 
 	cmd := &cobra.Command{
 		Use:   "generate",
@@ -146,7 +147,7 @@ func newGenerateCmd() *cobra.Command {
 				if err != nil {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing generated spec: %w", err)}
 				}
-				if err := applyGenerateSpecFlags(parsed, specSource, "docs", clientPattern, httpTransport, owner); err != nil {
+				if err := applyGenerateSpecFlags(parsed, specSource, "docs", clientPattern, httpTransport, owner, forceOData); err != nil {
 					return err
 				}
 
@@ -291,7 +292,7 @@ func newGenerateCmd() *cobra.Command {
 				apiSpec = mergeSpecs(specs, cliName)
 			}
 
-			if err := applyGenerateSpecFlags(apiSpec, specSource, "", clientPattern, httpTransport, owner); err != nil {
+			if err := applyGenerateSpecFlags(apiSpec, specSource, "", clientPattern, httpTransport, owner, forceOData); err != nil {
 				return err
 			}
 
@@ -394,6 +395,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&specURL, "spec-url", "", "Original spec URL for provenance (use when --spec is a local file downloaded from a URL)")
 	cmd.Flags().StringVar(&planFile, "plan", "", "Path to a markdown plan document for plan-driven generation (instead of --spec)")
 	cmd.Flags().StringVar(&trafficAnalysisPath, "traffic-analysis", "", "Path to browser-sniff traffic-analysis.json for advisory generation context")
+	cmd.Flags().BoolVar(&forceOData, "odata", false, "Force OData v4 generation semantics for function calls, actions, and query options")
 
 	return cmd
 }
@@ -457,7 +459,7 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	return novelFeatures, runGeneratePolishPass(opts.polish, apiSpec.Name, absOut), nil
 }
 
-func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource, clientPattern, httpTransport, owner string) error {
+func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource, clientPattern, httpTransport, owner string, forceOData bool) error {
 	if specSource != "" {
 		normalized, err := normalizeSpecSource(specSource)
 		if err != nil {
@@ -483,6 +485,12 @@ func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource
 	}
 	if owner != "" {
 		apiSpec.Owner = owner
+	}
+	if forceOData {
+		apiSpec.OData = true
+	}
+	if apiSpec.OData {
+		spec.ApplyODataConventions(apiSpec)
 	}
 	return nil
 }
@@ -683,6 +691,7 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 		BaseURL:     specs[0].BaseURL,
 		BasePath:    specs[0].BasePath,
 		Auth:        specs[0].Auth,
+		OData:       specs[0].OData,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -692,6 +701,9 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 	}
 
 	for _, s := range specs {
+		if s.OData {
+			merged.OData = true
+		}
 		if merged.SpecSource == "" || merged.SpecSource == "official" {
 			switch s.SpecSource {
 			case "sniffed":

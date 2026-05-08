@@ -524,6 +524,8 @@ func TestPromotedCommandPlumbsBodyFields(t *testing.T) {
 					Description: "Create a widget",
 					Body: []spec.Param{
 						{Name: "name", Type: "string", Required: true},
+						{Name: "quantity", Type: "integer", Required: true},
+						{Name: "active", Type: "boolean"},
 						{Name: "color", Type: "string"},
 						{Name: "tags", Type: "array"},
 					},
@@ -540,27 +542,42 @@ func TestPromotedCommandPlumbsBodyFields(t *testing.T) {
 	// 1. Each body field declares a body* var.
 	require.Contains(t, src, "var bodyName string",
 		"promoted command must declare a body var for each body param")
+	require.Contains(t, src, "var bodyQuantity int")
+	require.Contains(t, src, "var bodyActive bool")
 	require.Contains(t, src, "var bodyColor string")
 	require.Contains(t, src, "var bodyTags string")
+	require.Contains(t, src, "var stdinBody bool")
 
 	// 2. Each body field registers a --flag.
 	require.Contains(t, src, `cmd.Flags().StringVar(&bodyName, "name"`,
 		"promoted command must register a flag per body param")
+	require.Contains(t, src, `cmd.Flags().IntVar(&bodyQuantity, "quantity"`)
+	require.Contains(t, src, `cmd.Flags().BoolVar(&bodyActive, "active"`)
 	require.Contains(t, src, `cmd.Flags().StringVar(&bodyColor, "color"`)
 	require.Contains(t, src, `cmd.Flags().StringVar(&bodyTags, "tags"`)
+	require.Contains(t, src, `cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin")`)
 
 	// 3. Required body field is enforced (not via cobra's MarkFlagRequired,
 	// which breaks --dry-run probes — the verify-friendly RunE pattern
 	// uses an in-RunE check instead).
+	require.Contains(t, src, `if !stdinBody {`,
+		"required body flag checks must be skipped when --stdin supplies the whole request body")
 	require.Contains(t, src, `cmd.Flags().Changed("name")`,
 		"required body field must be checked in RunE, not via MarkFlagRequired")
+	require.Contains(t, src, `cmd.Flags().Changed("quantity")`)
 
 	// 4. The RunE builds a body map from the body* vars and passes it
 	// to c.Post — not `params`, which is what the OLD template did.
-	require.Contains(t, src, `body := map[string]any{}`,
+	require.Contains(t, src, `io.ReadAll(os.Stdin)`,
+		"promoted body commands must support stdin body override")
+	require.Contains(t, src, `body = jsonBody`,
+		"--stdin must replace the flag-built body map")
+	require.Contains(t, src, `body = map[string]any{}`,
 		"promoted command must build a body map from body flags")
 	require.Contains(t, src, `body["name"] = bodyName`,
 		"body map must use the spec-declared field name, not the camelCased flag var")
+	require.Contains(t, src, `body["quantity"] = bodyQuantity`)
+	require.Contains(t, src, `body["active"] = bodyActive`)
 	require.Contains(t, src, `c.Post(path, body)`,
 		"promoted command must pass the body map to c.Post, not the params map")
 	require.NotContains(t, src, `c.Post(path, params)`,

@@ -24,7 +24,7 @@ func TestBodyMap(t *testing.T) {
 			name:   "scalar string",
 			body:   []spec.Param{{Name: "name", Type: "string"}},
 			indent: "\t\t\t\t",
-			want: "\t\t\t\tif bodyName != \"\" {\n" +
+			want: "\t\t\t\tif cmd.Flags().Changed(\"name\") || bodyName != \"\" {\n" +
 				"\t\t\t\t\tbody[\"name\"] = bodyName\n" +
 				"\t\t\t\t}\n",
 		},
@@ -32,7 +32,7 @@ func TestBodyMap(t *testing.T) {
 			name:   "scalar int",
 			body:   []spec.Param{{Name: "count", Type: "int"}},
 			indent: "\t\t\t",
-			want: "\t\t\tif bodyCount != 0 {\n" +
+			want: "\t\t\tif cmd.Flags().Changed(\"count\") || bodyCount != 0 {\n" +
 				"\t\t\t\tbody[\"count\"] = bodyCount\n" +
 				"\t\t\t}\n",
 		},
@@ -40,7 +40,7 @@ func TestBodyMap(t *testing.T) {
 			name:   "object branch parses JSON and stores parsed value",
 			body:   []spec.Param{{Name: "metadata", Type: "object"}},
 			indent: "\t\t\t",
-			want: "\t\t\tif bodyMetadata != \"\" {\n" +
+			want: "\t\t\tif cmd.Flags().Changed(\"metadata\") || bodyMetadata != \"\" {\n" +
 				"\t\t\t\tvar parsedMetadata any\n" +
 				"\t\t\t\tif err := json.Unmarshal([]byte(bodyMetadata), &parsedMetadata); err != nil {\n" +
 				"\t\t\t\t\treturn fmt.Errorf(\"parsing --metadata JSON: %w\", err)\n" +
@@ -52,7 +52,7 @@ func TestBodyMap(t *testing.T) {
 			name:   "array branch matches object branch shape",
 			body:   []spec.Param{{Name: "tags", Type: "array"}},
 			indent: "\t\t\t",
-			want: "\t\t\tif bodyTags != \"\" {\n" +
+			want: "\t\t\tif cmd.Flags().Changed(\"tags\") || bodyTags != \"\" {\n" +
 				"\t\t\t\tvar parsedTags any\n" +
 				"\t\t\t\tif err := json.Unmarshal([]byte(bodyTags), &parsedTags); err != nil {\n" +
 				"\t\t\t\t\treturn fmt.Errorf(\"parsing --tags JSON: %w\", err)\n" +
@@ -68,7 +68,7 @@ func TestBodyMap(t *testing.T) {
 			name:   "jsonString branch validates but stores raw",
 			body:   []spec.Param{{Name: "config", Type: "string", Format: "json"}},
 			indent: "\t\t\t",
-			want: "\t\t\tif bodyConfig != \"\" {\n" +
+			want: "\t\t\tif cmd.Flags().Changed(\"config\") || bodyConfig != \"\" {\n" +
 				"\t\t\t\tvar parsedConfig any\n" +
 				"\t\t\t\tif err := json.Unmarshal([]byte(bodyConfig), &parsedConfig); err != nil {\n" +
 				"\t\t\t\t\treturn fmt.Errorf(\"parsing --config JSON: %w\", err)\n" +
@@ -83,10 +83,10 @@ func TestBodyMap(t *testing.T) {
 				{Name: "tags", Type: "array"},
 			},
 			indent: "\t",
-			want: "\tif bodyName != \"\" {\n" +
+			want: "\tif cmd.Flags().Changed(\"name\") || bodyName != \"\" {\n" +
 				"\t\tbody[\"name\"] = bodyName\n" +
 				"\t}\n" +
-				"\tif bodyTags != \"\" {\n" +
+				"\tif cmd.Flags().Changed(\"tags\") || bodyTags != \"\" {\n" +
 				"\t\tvar parsedTags any\n" +
 				"\t\tif err := json.Unmarshal([]byte(bodyTags), &parsedTags); err != nil {\n" +
 				"\t\t\treturn fmt.Errorf(\"parsing --tags JSON: %w\", err)\n" +

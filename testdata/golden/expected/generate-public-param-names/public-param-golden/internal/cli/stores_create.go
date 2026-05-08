@@ -46,7 +46,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 				body = jsonBody
 			} else {
 				body = map[string]any{}
-				if bodyStoreCode != "" {
+				if (cmd.Flags().Changed("store-code") || cmd.Flags().Changed("code")) || bodyStoreCode != "" {
 					body["store_code"] = bodyStoreCode
 				}
 			}

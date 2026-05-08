@@ -3,6 +3,7 @@ package openapi
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -35,11 +36,267 @@ func normalizeSpecData(data []byte) ([]byte, error) {
 	}
 	root = convertToStringKeyed(root)
 	flattenObjectDescriptions(root, "")
+	normalizeSwagger2Shape(root)
 	out, err := json.Marshal(root)
 	if err != nil {
 		return nil, fmt.Errorf("normalize spec: json marshal: %w", err)
 	}
 	return out, nil
+}
+
+func normalizeSwagger2Shape(root any) {
+	doc, ok := root.(map[string]any)
+	if !ok {
+		return
+	}
+	if fmt.Sprint(doc["swagger"]) != "2.0" {
+		return
+	}
+	normalizeSwagger2Servers(doc)
+	docProduces := swagger2Produces(doc)
+	docConsumes := swagger2Consumes(doc)
+	paths, _ := doc["paths"].(map[string]any)
+	for _, pathItemRaw := range paths {
+		pathItem, ok := pathItemRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		normalizeSwagger2ParameterList(pathItem["parameters"])
+		for _, method := range []string{"get", "put", "post", "delete", "patch", "head", "options"} {
+			op, ok := pathItem[method].(map[string]any)
+			if !ok {
+				continue
+			}
+			normalizeSwagger2ParameterList(op["parameters"])
+			consumes := swagger2Consumes(op)
+			if len(consumes) == 0 {
+				consumes = docConsumes
+			}
+			normalizeSwagger2RequestBody(op, consumes)
+			produces := swagger2Produces(op)
+			if len(produces) == 0 {
+				produces = docProduces
+			}
+			if len(produces) > 0 {
+				op[extensionPPProduces] = produces
+			}
+			normalizeSwagger2Responses(op["responses"], produces)
+		}
+	}
+}
+
+func normalizeSwagger2Servers(doc map[string]any) {
+	if _, ok := doc["servers"]; ok {
+		return
+	}
+	host, _ := doc["host"].(string)
+	if host == "" {
+		return
+	}
+	scheme := "https"
+	if schemes, ok := doc["schemes"].([]any); ok {
+		for _, candidate := range schemes {
+			if fmt.Sprint(candidate) == "https" {
+				scheme = "https"
+				break
+			}
+			if fmt.Sprint(candidate) == "http" {
+				scheme = "http"
+			}
+		}
+	}
+	basePath, _ := doc["basePath"].(string)
+	doc["servers"] = []any{map[string]any{"url": scheme + "://" + host + basePath}}
+}
+
+func normalizeSwagger2ParameterList(raw any) {
+	params, ok := raw.([]any)
+	if !ok {
+		return
+	}
+	for _, paramRaw := range params {
+		param, ok := paramRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, hasSchema := param["schema"]; hasSchema {
+			continue
+		}
+		typ, _ := param["type"].(string)
+		if typ == "" {
+			continue
+		}
+		schema := map[string]any{"type": typ}
+		for _, key := range []string{"format", "items", "enum", "default"} {
+			if value, ok := param[key]; ok {
+				schema[key] = value
+			}
+		}
+		param["schema"] = schema
+	}
+}
+
+func normalizeSwagger2RequestBody(op map[string]any, consumes []string) {
+	if _, ok := op["requestBody"]; ok {
+		return
+	}
+	params, ok := op["parameters"].([]any)
+	if !ok {
+		return
+	}
+
+	filtered := make([]any, 0, len(params))
+	var bodyParam map[string]any
+	for _, paramRaw := range params {
+		param, ok := paramRaw.(map[string]any)
+		if !ok || fmt.Sprint(param["in"]) != "body" {
+			filtered = append(filtered, paramRaw)
+			continue
+		}
+		if bodyParam == nil {
+			bodyParam = param
+		}
+	}
+	if bodyParam == nil {
+		return
+	}
+	if len(filtered) == 0 {
+		delete(op, "parameters")
+	} else {
+		op["parameters"] = filtered
+	}
+
+	schema, ok := bodyParam["schema"]
+	if !ok {
+		return
+	}
+	contentTypes := firstJSONConsumes(consumes)
+	if len(contentTypes) == 0 {
+		contentTypes = []string{"application/json"}
+	}
+	content := make(map[string]any, len(contentTypes))
+	for _, contentType := range contentTypes {
+		content[contentType] = map[string]any{"schema": schema}
+	}
+	requestBody := map[string]any{"content": content}
+	if required, ok := bodyParam["required"].(bool); ok {
+		requestBody["required"] = required
+	}
+	if description := fmt.Sprint(bodyParam["description"]); description != "" && description != "<nil>" {
+		requestBody["description"] = description
+	}
+	op["requestBody"] = requestBody
+}
+
+func normalizeSwagger2Responses(raw any, produces []string) {
+	responses, ok := raw.(map[string]any)
+	if !ok {
+		return
+	}
+	for _, responseRaw := range responses {
+		response, ok := responseRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, hasContent := response["content"]; hasContent {
+			continue
+		}
+		schema, hasSchema := response["schema"]
+		contentTypes := produces
+		if len(contentTypes) == 0 && hasSchema {
+			contentTypes = []string{"application/json"}
+		}
+		if len(contentTypes) == 0 {
+			continue
+		}
+		content := make(map[string]any, len(contentTypes))
+		for _, contentType := range contentTypes {
+			contentType = fmt.Sprint(contentType)
+			if contentType == "" {
+				continue
+			}
+			mediaType := map[string]any{}
+			if hasSchema {
+				mediaType["schema"] = normalizeSwagger2ResponseSchema(schema)
+			}
+			content[contentType] = mediaType
+		}
+		if len(content) > 0 {
+			response["content"] = content
+		}
+	}
+}
+
+func swagger2Produces(obj map[string]any) []string {
+	raw, ok := obj["produces"]
+	if !ok {
+		return nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if s := fmt.Sprint(item); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func swagger2Consumes(obj map[string]any) []string {
+	raw, ok := obj["consumes"]
+	if !ok {
+		return nil
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if s := fmt.Sprint(item); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func firstJSONConsumes(consumes []string) []string {
+	if len(consumes) == 0 {
+		return nil
+	}
+	for _, consumesType := range consumes {
+		if isJSONMediaType(consumesType) {
+			return []string{consumesType}
+		}
+	}
+	return nil
+}
+
+func isJSONMediaType(mediaType string) bool {
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	if i := strings.Index(mediaType, ";"); i >= 0 {
+		mediaType = strings.TrimSpace(mediaType[:i])
+	}
+	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
+}
+
+func normalizeSwagger2ResponseSchema(schema any) any {
+	m, ok := schema.(map[string]any)
+	if !ok || fmt.Sprint(m["type"]) != "file" {
+		return schema
+	}
+	out := make(map[string]any, len(m)+1)
+	for k, v := range m {
+		out[k] = v
+	}
+	out["type"] = "string"
+	if _, ok := out["format"]; !ok {
+		out["format"] = "binary"
+	}
+	return out
 }
 
 // convertToStringKeyed walks a value decoded by gopkg.in/yaml.v3 and rewrites
