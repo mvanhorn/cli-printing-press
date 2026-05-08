@@ -1910,15 +1910,26 @@ GraphQL-only APIs:
 
 After generation:
 
-**Verify the CLI description.** The root cobra command's `Short:` text comes from
-the spec's `cli_description` field when set, then falls back to `narrative.headline`
-in `research.json`, then to a generic `"Manage <api> resources via the <api> API"`.
-The first two phrasings describe what the *CLI does* ("Manage payments, subscriptions,
-and invoices via the Stripe API"); the generic fallback often does too but reads as
-template filler. Open `$CLI_WORK_DIR/internal/cli/root.go`, find the `Short:` field,
-and confirm it reads as user-facing CLI purpose rather than API description. If it
-needs a rewrite, prefer adding a `cli_description:` line to the spec and regenerating
-over hand-editing the generated file.
+**Verify the CLI description across every surface.** A single curated one-liner is
+rendered into five files: `internal/cli/root.go` (`Short:`), `SKILL.md` frontmatter
+(`description:`), `.goreleaser.yaml` (`brews:` description), `internal/cli/agent_context.go`
+(`Description:`), and `internal/mcp/tools.go` (mcp_context `Description`). Each resolves
+from the authored sources (`narrative.headline` in `research.json`, or `cli_description:`
+in the spec) when set. `root.go`'s `Short:` has a safe generic fallback (`"Manage <api>
+resources via the <api> API"`); the other four fall through to the spec's raw
+`info.description` — which is often the upstream OpenAPI blob leading with a Markdown
+heading like `# Introduction` followed by API-shaped paragraphs. Eyeballing only `root.go`
+will miss the failure mode because `root.go` is the only surface that's structurally
+immune.
+
+Open at least the `SKILL.md` frontmatter `description:` and the `.goreleaser.yaml` `brews:`
+block in addition to `root.go`'s `Short:`. If any reads as API documentation rather than
+user-facing CLI purpose ("AeroAPI is a simple, query-based API…"), or contains a bare
+Markdown heading, the authored sources are missing. Fix at the source: set
+`narrative.headline` in `research.json` to a single-sentence differentiator (name what
+makes this CLI worth using, don't restate the API), or add a `cli_description:` line to
+the spec. Then regenerate. Do not hand-edit the printed files — they revert on the next
+regen.
 
 **REQUIRED: Preserve README sections.** The generated README contains 5 standard sections
 that the scorecard checks for: Quick Start, Agent Usage, Health Check, Troubleshooting, and
