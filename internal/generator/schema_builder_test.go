@@ -5,6 +5,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestToSnakeCase(t *testing.T) {
@@ -289,6 +290,256 @@ func TestBuildSchema_NoResponseTypeFallback(t *testing.T) {
 				"unresolved response type must yield only the base columns; got %v", names)
 		})
 	}
+}
+
+// TestBuildSchema_SubResourceCollisionShardsByParent pins the fix for issue
+// #694. When the same sub-resource leaf name appears under multiple parents
+// (e.g. /repos/{owner}/{repo}/commits and /gists/{gist_id}/commits in the
+// GitHub spec), each shard becomes its own table named "<parent>_<sub>" so
+// data from one parent does not silently overwrite the other.
+func TestBuildSchema_SubResourceCollisionShardsByParent(t *testing.T) {
+	s := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"gists": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/gists"},
+				},
+				SubResources: map[string]spec.Resource{
+					"commits": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {Method: "GET", Path: "/gists/{gist_id}/commits"},
+						},
+					},
+				},
+			},
+			"repos": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/repos"},
+				},
+				SubResources: map[string]spec.Resource{
+					"commits": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {Method: "GET", Path: "/repos/{owner}/{repo}/commits"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tables := BuildSchema(s)
+
+	names := make([]string, 0, len(tables))
+	byName := make(map[string]TableDef, len(tables))
+	for _, t := range tables {
+		names = append(names, t.Name)
+		byName[t.Name] = t
+	}
+
+	assert.Contains(t, names, "gists_commits", "collision should produce a sharded gists_commits table")
+	assert.Contains(t, names, "repos_commits", "collision should produce a sharded repos_commits table")
+	assert.NotContains(t, names, "commits", "bare commits table is silent data loss when both parents collide")
+
+	gistsCommits := byName["gists_commits"]
+	require.Greater(t, len(gistsCommits.Columns), 1, "sharded table must have FK column")
+	assert.Equal(t, "gists_id", gistsCommits.Columns[1].Name, "gists_commits FK column is gists_id")
+
+	reposCommits := byName["repos_commits"]
+	require.Greater(t, len(reposCommits.Columns), 1, "sharded table must have FK column")
+	assert.Equal(t, "repos_id", reposCommits.Columns[1].Name, "repos_commits FK column is repos_id")
+}
+
+// TestBuildSchema_SubResourceCollidesWithTopLevel verifies the second
+// sharding trigger: when a sub-resource leaf collides with a top-level
+// resource of the same name (e.g. Stytch's top-level connected_apps and
+// users.connected_apps sub-resource), the sub-resource shards while the
+// top-level keeps its bare name.
+func TestBuildSchema_SubResourceCollidesWithTopLevel(t *testing.T) {
+	s := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"connected_apps": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/connected_apps/clients"},
+				},
+			},
+			"users": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/users"},
+				},
+				SubResources: map[string]spec.Resource{
+					"connected_apps": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {Method: "GET", Path: "/users/{user_id}/connected_apps"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tables := BuildSchema(s)
+	names := make(map[string]TableDef, len(tables))
+	for _, t := range tables {
+		names[t.Name] = t
+	}
+
+	require.Contains(t, names, "connected_apps", "top-level keeps its bare name")
+	require.Contains(t, names, "users_connected_apps", "sub-resource shards on top-level collision")
+	assert.NotContains(t, names, "connected_apps_users")
+
+	// Top-level table has no FK column; sharded sub-resource's FK column
+	// points to its parent.
+	topLevel := names["connected_apps"]
+	for _, col := range topLevel.Columns {
+		assert.NotEqual(t, "users_id", col.Name, "top-level connected_apps must not carry a users_id FK")
+	}
+	usersConnected := names["users_connected_apps"]
+	require.Greater(t, len(usersConnected.Columns), 1)
+	assert.Equal(t, "users_id", usersConnected.Columns[1].Name)
+}
+
+// TestBuildSchema_TopLevelOnlySharedNameNotSyncable pins the predicate
+// alignment between the schema builder and the profiler. A top-level
+// resource without a flat list endpoint (e.g. POST-only) still triggers
+// sharding for any sub-resource that shares its name, otherwise the
+// generator emits two unrelated tables that the runtime conflates.
+func TestBuildSchema_TopLevelOnlySharedNameNotSyncable(t *testing.T) {
+	s := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			// POST-only top-level — not in syncable, but still a top-level
+			// resource that the schema builder emits a table for.
+			"audits": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {Method: "POST", Path: "/audits"},
+				},
+			},
+			"users": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/users"},
+				},
+				SubResources: map[string]spec.Resource{
+					"audits": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {Method: "GET", Path: "/users/{user_id}/audits"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tables := BuildSchema(s)
+	names := make([]string, 0, len(tables))
+	for _, t := range tables {
+		names = append(names, t.Name)
+	}
+	assert.Contains(t, names, "audits", "top-level audits keeps its bare table")
+	assert.Contains(t, names, "users_audits", "sub-resource shards even when top-level is POST-only")
+}
+
+// TestBuildSchema_ThreeWayCollision verifies the multi-parent shard predicate
+// emits a per-parent table for every parent, not only the first two.
+func TestBuildSchema_ThreeWayCollision(t *testing.T) {
+	s := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Endpoints:    map[string]spec.Endpoint{"list": {Method: "GET", Path: "/channels"}},
+				SubResources: map[string]spec.Resource{"members": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/channels/{channel_id}/members"}}}},
+			},
+			"groups": {
+				Endpoints:    map[string]spec.Endpoint{"list": {Method: "GET", Path: "/groups"}},
+				SubResources: map[string]spec.Resource{"members": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/groups/{group_id}/members"}}}},
+			},
+			"teams": {
+				Endpoints:    map[string]spec.Endpoint{"list": {Method: "GET", Path: "/teams"}},
+				SubResources: map[string]spec.Resource{"members": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/teams/{team_id}/members"}}}},
+			},
+		},
+	}
+
+	tables := BuildSchema(s)
+	names := make(map[string]bool, len(tables))
+	for _, t := range tables {
+		names[t.Name] = true
+	}
+	assert.True(t, names["channels_members"])
+	assert.True(t, names["groups_members"])
+	assert.True(t, names["teams_members"])
+	assert.False(t, names["members"], "no bare members table when the leaf collides under three parents")
+}
+
+// TestBuildSchema_CamelCaseShardName verifies the shard helper snake-cases
+// its inputs so a profiler-emitted DependentResource.Name and a schema-builder
+// table name agree byte-for-byte even when the parent resource key is
+// camelCase (common in Google Discovery specs).
+func TestBuildSchema_CamelCaseShardName(t *testing.T) {
+	s := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"userData": {
+				Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/userData"}},
+				SubResources: map[string]spec.Resource{
+					"loginEvents": {
+						Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/userData/{user_id}/loginEvents"}},
+					},
+				},
+			},
+			"adminData": {
+				Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/adminData"}},
+				SubResources: map[string]spec.Resource{
+					"loginEvents": {
+						Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/adminData/{admin_id}/loginEvents"}},
+					},
+				},
+			},
+		},
+	}
+
+	tables := BuildSchema(s)
+	names := make(map[string]bool, len(tables))
+	for _, t := range tables {
+		names[t.Name] = true
+	}
+	assert.True(t, names["user_data_login_events"], "camelCase parent + sub snake-cases through the shard helper")
+	assert.True(t, names["admin_data_login_events"])
+}
+
+// TestBuildSchema_SubResourceUniqueKeepsBareName verifies the fix for #694
+// does not regress the common case: a sub-resource that appears under exactly
+// one parent (e.g. /channels/{channel_id}/messages with no other parent for
+// "messages") keeps its bare name "messages" and existing FK column.
+func TestBuildSchema_SubResourceUniqueKeepsBareName(t *testing.T) {
+	s := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/channels"},
+				},
+				SubResources: map[string]spec.Resource{
+					"messages": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {Method: "GET", Path: "/channels/{channel_id}/messages"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	tables := BuildSchema(s)
+
+	names := make([]string, 0, len(tables))
+	byName := make(map[string]TableDef, len(tables))
+	for _, t := range tables {
+		names = append(names, t.Name)
+		byName[t.Name] = t
+	}
+
+	assert.Contains(t, names, "messages", "unique sub-resource keeps bare name")
+	assert.NotContains(t, names, "channels_messages", "no shard prefix when leaf name is unique")
+
+	messages := byName["messages"]
+	require.Greater(t, len(messages.Columns), 1)
+	assert.Equal(t, "channels_id", messages.Columns[1].Name, "FK column matches sole parent")
 }
 
 // findTable returns nil when no match exists so callers can render

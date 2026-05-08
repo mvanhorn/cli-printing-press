@@ -773,6 +773,269 @@ func TestProfileDependentResources(t *testing.T) {
 	assert.Equal(t, "/channels/{channelId}/messages", dep.Path)
 }
 
+// TestProfileDependentResources_SharedSubResourceShardsByParent pins the
+// fix for issue #694. When the same sub-resource leaf name (e.g. "commits")
+// appears under multiple parents (e.g. /gists/{gist_id}/commits and
+// /repos/{owner}/{repo}/commits), each parent must produce its own
+// DependentResource with a sharded Name so sync writes to the correct
+// per-parent table instead of the first-seen parent silently winning.
+func TestProfileDependentResources_SharedSubResourceShardsByParent(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "github",
+		Resources: map[string]spec.Resource{
+			"gists": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/gists",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "per_page"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"commits": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/gists/{gist_id}/commits",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "per_page"},
+							},
+						},
+					},
+				},
+			},
+			"repos": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/repos",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "per_page"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"commits": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/repos/{repo_id}/commits",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "per_page"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	depsByName := make(map[string]DependentResource)
+	for _, dep := range profile.DependentSyncResources {
+		depsByName[dep.Name] = dep
+	}
+
+	require.Contains(t, depsByName, "gists_commits", "gists.commits should shard to gists_commits")
+	require.Contains(t, depsByName, "repos_commits", "repos.commits should shard to repos_commits")
+	assert.NotContains(t, depsByName, "commits", "bare commits would silently merge two parents")
+
+	gistsDep := depsByName["gists_commits"]
+	assert.Equal(t, "gists", gistsDep.ParentResource)
+	assert.Equal(t, "/gists/{gist_id}/commits", gistsDep.Path)
+
+	reposDep := depsByName["repos_commits"]
+	assert.Equal(t, "repos", reposDep.ParentResource)
+	assert.Equal(t, "/repos/{repo_id}/commits", reposDep.Path)
+}
+
+// TestProfileDependentResources_MultiParamParentPath confirms the walk-context
+// parent (from the SubResources tree) wins over the path-param heuristic when
+// the path has multiple params and the first one does not match a syncable
+// resource. This is the GitHub /repos/{owner}/{repo}/commits shape that the
+// path-param-only heuristic mishandles by deriving "owner" as the parent.
+func TestProfileDependentResources_MultiParamParentPath(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "github",
+		Resources: map[string]spec.Resource{
+			"gists": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/gists",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "per_page"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"commits": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/gists/{gist_id}/commits",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "per_page"},
+							},
+						},
+					},
+				},
+			},
+			"repos": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/repos",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "per_page"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"commits": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/repos/{owner}/{repo}/commits",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "per_page"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	depsByName := make(map[string]DependentResource)
+	for _, dep := range profile.DependentSyncResources {
+		depsByName[dep.Name] = dep
+	}
+
+	require.Contains(t, depsByName, "repos_commits", "walk-context parent wins over /repos/{owner}/...'s leading param")
+	assert.Equal(t, "repos", depsByName["repos_commits"].ParentResource)
+}
+
+// TestProfileDependentResources_TopLevelCollisionShards mirrors the schema
+// builder's top-level/sub-resource collision case. When the leaf name matches
+// a top-level resource, the dependent resource emits a sharded Name so it
+// lines up with the sharded sub-resource table.
+func TestProfileDependentResources_TopLevelCollisionShards(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "stytch",
+		Resources: map[string]spec.Resource{
+			"connected_apps": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/connected_apps/clients",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+			"users": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/users",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"connected_apps": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/users/{user_id}/connected_apps",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	depsByName := make(map[string]DependentResource)
+	for _, dep := range profile.DependentSyncResources {
+		depsByName[dep.Name] = dep
+	}
+
+	require.Contains(t, depsByName, "users_connected_apps", "sub-resource shards when leaf collides with a top-level resource")
+	assert.NotContains(t, depsByName, "connected_apps")
+}
+
+// TestProfileDependentResources_CamelCaseShardSnakeCased pins the snake-case
+// step in the shared shard helper. A profiler-emitted DependentResource.Name
+// must match the schema builder's table name byte-for-byte even when the
+// parent map key is camelCase.
+func TestProfileDependentResources_CamelCaseShardSnakeCased(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "discovery",
+		Resources: map[string]spec.Resource{
+			"userData": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/userData",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"loginEvents": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/userData/{user_id}/loginEvents",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+							},
+						},
+					},
+				},
+			},
+			"adminData": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/adminData",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"loginEvents": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:     "GET",
+								Path:       "/adminData/{admin_id}/loginEvents",
+								Response:   spec.ResponseDef{Type: "array"},
+								Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	names := make(map[string]bool)
+	for _, dep := range profile.DependentSyncResources {
+		names[dep.Name] = true
+	}
+	assert.True(t, names["user_data_login_events"], "DependentResource.Name snake-cases through the shard helper")
+	assert.True(t, names["admin_data_login_events"])
+}
+
 func TestProfileDependentResources_NoParentNoDependent(t *testing.T) {
 	// If the parent resource doesn't exist as a flat syncable, no dependent is created.
 	s := &spec.APISpec{
