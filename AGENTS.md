@@ -124,6 +124,14 @@ Format: `type(scope): description`. Both type and scope are required.
 
 Every commit and PR title must include one of the allowed scopes. GitHub squash-and-merge uses the PR title as the squash commit message, and `.github/workflows/pr-title.yml` enforces the format.
 
+## Pull Requests
+- Community PRs must keep and complete `.github/pull_request_template.md`.
+- Maintainer-owned PRs may use a shorter body and omit the community template sections.
+- A maintainer-owned PR is one opened by, or explicitly on behalf of, a trusted maintainer account with write/admin access to this repository.
+- Do not treat GitHub's `CONTRIBUTOR` author association as exempt; repeat external contributors still use the community PR template unless a maintainer says otherwise.
+- If unsure whether a PR is exempt, keep the template.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the human-facing contributor guide and AI / automation disclosure definitions.
+
 ## Versioning
 Releases are automated by release-please. Never manually edit version numbers.
 - The plugin version lives in exactly two places and must stay in sync: `.claude-plugin/plugin.json` -> `version`, and `internal/version/version.go` -> `var Version` (annotated `x-release-please-version`; goreleaser injects via ldflags).

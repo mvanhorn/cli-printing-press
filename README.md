@@ -498,14 +498,7 @@ Each newly published CLI ships a root `AGENTS.md` operating guide, a research ma
 
 ## Contributing
 
-Bug reports, feature requests, and PRs are welcome. A few conventions to know before opening a PR:
-
-- **Conventional commits + scopes.** PR titles follow `type(scope): description` with `cli`, `skills`, or `ci` as the scope. The `PR Title` GitHub Action enforces this. See [AGENTS.md](AGENTS.md) for the full rule set.
-- **Releases are automated.** release-please opens release PRs as conventional commits accumulate. Don't manually edit version numbers — three files stay in sync via release-please annotations.
-- **Pre-commit and pre-push hooks.** `lefthook install --reset-hooks-path` wires up `gofmt` (pre-commit) and `golangci-lint` (pre-push). The same lint config runs in CI.
-- **Conventions and glossary live in [AGENTS.md](AGENTS.md).** Read it before larger changes — terminology like "machine vs printed CLI", "absorb gate", and "shipcheck" is documented there.
-
-For larger changes, opening an issue first to align on scope is helpful.
+Bug reports, feature requests, and PRs are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR; it explains the PR template, AI / automation disclosure, and the repo boundary between the Printing Press and printed CLIs. [AGENTS.md](AGENTS.md) carries the full developer conventions, glossary, commit style, and verification rules.
 
 ## Development
 
