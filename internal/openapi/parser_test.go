@@ -3293,6 +3293,115 @@ paths:
 	assert.Equal(t, "https://global.example.com", parsed.BaseURL)
 }
 
+func TestParseMCPExtensionFromRoot(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Large API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+x-mcp:
+  transport: [stdio, http]
+  orchestration: code
+  endpoint_tools: hidden
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.True(t, parsed.MCP.HasTransport("http"), "expected http transport from x-mcp")
+	assert.True(t, parsed.MCP.HasTransport("stdio"), "expected stdio transport from x-mcp")
+	assert.True(t, parsed.MCP.IsCodeOrchestration(), "expected code orchestration from x-mcp")
+	assert.Equal(t, "hidden", parsed.MCP.EndpointTools)
+}
+
+func TestParseMCPExtensionFromInfo(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Large API
+  version: 1.0.0
+  x-mcp:
+    transport: [stdio, http]
+    orchestration: code
+    endpoint_tools: hidden
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.True(t, parsed.MCP.HasTransport("http"), "expected http transport from info.x-mcp")
+	assert.True(t, parsed.MCP.IsCodeOrchestration(), "expected code orchestration from info.x-mcp")
+	assert.Equal(t, "hidden", parsed.MCP.EndpointTools)
+}
+
+func TestParseMCPExtensionAbsentLeavesZeroValue(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Plain API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.Empty(t, parsed.MCP.Transport)
+	assert.Empty(t, parsed.MCP.Orchestration)
+	assert.Empty(t, parsed.MCP.EndpointTools)
+}
+
+func TestParseMCPExtensionRejectsUnknownTransport(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Bad MCP API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+x-mcp:
+  transport: [grpc]
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	_, err := Parse(data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "transport")
+}
+
 func findParsedEndpointByPath(t *testing.T, parsed *spec.APISpec, method, path string) spec.Endpoint {
 	t.Helper()
 	for _, resource := range parsed.Resources {

@@ -18,6 +18,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-origin` | `info` | Google Discovery resource fallback | No |
 | `x-providerName` | `info` | Google Discovery resource fallback | No |
 | `x-tier-routing` | root or `info` | `APISpec.TierRouting` | No |
+| `x-mcp` | root or `info` | `APISpec.MCP` | No |
 | `x-auth-type` | `components.securitySchemes.<name>` | `APISpec.Auth.Type` | No |
 | `x-auth-format` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
 | `x-prefix` | `components.securitySchemes.<name>` | `APISpec.Auth.Format` | No |
@@ -184,6 +185,36 @@ x-tier-routing:
         in: query
         header: api_key
         env_vars: [EXAMPLE_PAID_KEY]
+```
+
+### `x-mcp`
+
+Declares MCP server shape for the generated CLI. Mirrors the internal YAML
+spec's top-level `mcp:` block so OpenAPI specs can opt into the same
+pre-generation MCP enrichment recipe (notably the Cloudflare pattern for
+large surfaces: `transport: [stdio, http]` + `orchestration: code` +
+`endpoint_tools: hidden`).
+
+Parsed field: `APISpec.MCP` (`spec.MCPConfig`)
+
+Rules:
+- Optional. Specs without `x-mcp` keep today's stdio-only endpoint-mirror
+  behavior.
+- May be declared at the OpenAPI root or under `info`. Root takes precedence
+  when both are present.
+- Shape mirrors the internal YAML `mcp:` block field-for-field: `transport`,
+  `addr`, `intents`, `endpoint_tools`, `orchestration`,
+  `orchestration_threshold`.
+- Validated by `validateMCP` at spec load (same allowlist as internal YAML):
+  unknown transports and malformed addresses are rejected.
+
+Example:
+
+```yaml
+x-mcp:
+  transport: [stdio, http]
+  orchestration: code
+  endpoint_tools: hidden
 ```
 
 ## Security Scheme Extensions
