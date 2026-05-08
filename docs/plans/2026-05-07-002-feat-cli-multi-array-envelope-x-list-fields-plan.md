@@ -44,7 +44,7 @@ Three signals point at "explicit declaration" as the right contract, not "smarte
 
 1. **Two arrays sharing an envelope are usually deliberate.** When an API author bundles `event_positions` and `market_positions` together, they're saying these are facets of one logical resource (positions). A heuristic that picks the longer one or picks alphabetically would be wrong half the time.
 2. **The `kind` discriminator must be deterministic and queryable.** Novel-feature SQL like `WHERE kind = 'market_position'` needs a stable name. The array key is the natural choice; that requires preserving it.
-3. **Spec authors don't author extensions.** `x-resource-id` is mostly emitted by our absorb step or is in vendor specs we control. Same model applies here: the *machine* sets `x-list-fields`, not humans.
+3. **Spec authors don't author extensions.** `x-resource-id` is mostly emitted by our absorb step or is in vendor specs we control. Same model applies here: the Printing Press sets `x-list-fields`, not humans.
 
 The trio of changes — extension contract + parser surface + template emission — is small. The auto-emission step is the one with design weight, because it sits in the absorb pipeline where multiple agents author overlay deltas.
 
@@ -84,11 +84,11 @@ The trio of changes — extension contract + parser surface + template emission 
 
 ### Relevant Code and Patterns
 
-- `internal/generator/templates/sync.go.tmpl:606-620` — the array extractor that currently bails. The Phase 3 template change replaces this block with a per-resource `listFields` lookup that, when populated, drains the named fields; otherwise falls through to today's single-array path.
-- `internal/openapi/parser.go:2540-2557` — `readPathItemResourceID`. Mirror pattern for `readPathItemListFields`: read `x-list-fields`, validate, return `[]string`.
-- `internal/openapi/parser.go:1444` — where `pathResourceIDOverride` is read. Add a parallel `pathListFields := readPathItemListFields(...)` and assign it to each endpoint built under that path.
-- `internal/spec/spec.go:882` — the `Endpoint` struct. Add `ListFields []string` with YAML/JSON tags.
-- `docs/SPEC-EXTENSIONS.md:427` — `x-resource-id` reference. Insert `x-list-fields` immediately above or below it; same shape.
+- `internal/generator/templates/sync.go.tmpl::extractPageItems` (the array extractor that currently bails on `arrayCount != 1`). The Phase 3 template change replaces that block with a per-resource `listFields` lookup that, when populated, drains the named fields; otherwise falls through to today's single-array path.
+- `internal/openapi/parser.go::readPathItemResourceID` — mirror pattern for `readPathItemListFields`: read `x-list-fields`, validate, return `[]string`.
+- The `pathResourceIDOverride` read site in `internal/openapi/parser.go::mapResources` — add a parallel `pathListFields := readPathItemListFields(...)` and assign it to each endpoint built under that path.
+- `internal/spec/spec.go::Endpoint` — add `ListFields []string` with YAML/JSON tags.
+- `docs/SPEC-EXTENSIONS.md::x-resource-id` — insert `x-list-fields` immediately above or below it; same shape.
 - `internal/generator/templates/store.go.tmpl` — owns the store schema. Add `kind TEXT` to the resources table DDL and to the upsert path.
 - `internal/pipeline/` — owns the pre-generation enrichment hooks the auto-emitter sits in. The closest existing pattern is the auth-enrichment Phase 2 step referenced in `skills/printing-press/SKILL.md:1937` ("pre-generation auth enrichment ran correctly"). The list-fields auto-emitter lives in the same orchestration layer.
 
@@ -121,14 +121,14 @@ Field name → snake_case → trim `_positions` / `_list` / `_items` / etc. suff
 ### Phase 1: Extension contract and parser surface
 
 - Add `readPathItemListFields(pathItem, path) []string` in `internal/openapi/parser.go`. Validate: must be a YAML sequence of non-empty strings; reject other shapes with `warnf` and return nil.
-- Read the extension at the same place `readPathItemResourceID` is called (line 1444). Pass through to each endpoint built under the path.
+- Read the extension at the same place `readPathItemResourceID` is called inside `mapResources`. Pass through to each endpoint built under the path.
 - Add `ListFields []string` to `internal/spec/spec.go::Endpoint` with `yaml:"list_fields,omitempty"` and `json:"list_fields,omitempty"`.
 - Cross-validate against the response schema: every name in `x-list-fields` must appear as a property on the envelope schema. Names that don't appear emit a warning and are dropped from the resolved list.
 - Unit tests in `internal/openapi/parser_test.go`: valid two-name list passes through; non-array value rejected; empty strings rejected; names absent from schema dropped with warning; missing extension leaves field empty.
 
 ### Phase 2: Sync template
 
-- Replace `sync.go.tmpl:606-620` with: if `Endpoint.ListFields` is non-empty, iterate the named fields in order, accumulate rows, and tag each row with `kind` derived from the field name. Fall through to the existing single-array path when `ListFields` is empty.
+- Replace the existing `arrayCount`-based fallback block in `sync.go.tmpl::extractPageItems` with: if `Endpoint.ListFields` is non-empty, iterate the named fields in order, accumulate rows, and tag each row with `kind` derived from the field name. Fall through to the existing single-array path when `ListFields` is empty.
 - Update `extractID` and the row write path to include `kind` in the row metadata.
 - Update `internal/generator/templates/store.go.tmpl` to declare `kind TEXT` in the resources table DDL and accept it in the upsert. Existing rows without `kind` carry an empty string — backwards-compatible since old queries don't filter on it.
 - Goldens: add a fixture spec under `testdata/golden/fixtures/multi-array-envelope.yaml` whose `/positions` endpoint returns `{event_positions: [...], market_positions: [...], cursor}` with `x-list-fields: [event_positions, market_positions]`. Golden case under `testdata/golden/cases/generate-multi-array-envelope/`.
