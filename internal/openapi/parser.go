@@ -336,10 +336,12 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	return result, nil
 }
 
-// parseTypedExtension reads an OpenAPI x-* extension (root or info) and
-// decodes it into T via a JSON marshal/unmarshal roundtrip. The roundtrip
-// is what bridges kin-openapi's untyped any-tree to a typed config struct;
-// callers rely on T's json tags for field mapping.
+// parseTypedExtension bridges kin-openapi's untyped any-tree to a typed
+// config struct via a JSON marshal/unmarshal roundtrip; callers rely on
+// T's json tags for field mapping. Reach for it when the extension's
+// value is a YAML/JSON object that maps to a Go struct (x-tier-routing,
+// x-mcp). Use direct lookupOpenAPIExtension + type assertion for scalar
+// extensions (string, bool, []string) where the roundtrip would be waste.
 func parseTypedExtension[T any](doc *openapi3.T, key string) (T, error) {
 	var zero T
 	raw, ok := lookupOpenAPIExtension(doc, key)

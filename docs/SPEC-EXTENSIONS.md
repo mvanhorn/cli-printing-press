@@ -191,8 +191,8 @@ x-tier-routing:
 
 Declares MCP server shape for the generated CLI. Mirrors the internal YAML
 spec's top-level `mcp:` block so OpenAPI specs can opt into the same
-pre-generation MCP enrichment recipe (notably the Cloudflare pattern for
-large surfaces: `transport: [stdio, http]` + `orchestration: code` +
+pre-generation MCP enrichment recipe (notably the code-orchestration pattern
+for large surfaces: `transport: [stdio, http]` + `orchestration: code` +
 `endpoint_tools: hidden`).
 
 Parsed field: `APISpec.MCP` (`spec.MCPConfig`)
