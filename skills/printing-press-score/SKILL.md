@@ -26,7 +26,7 @@ Score generated CLIs against the Steinberger bar. Supports rescoring, scoring by
 
 ## Prerequisites
 
-- Go 1.21+ installed
+- Go 1.26.3 or newer installed
 - `printing-press` binary on PATH (install with `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest`)
 
 ## Step 0: Setup

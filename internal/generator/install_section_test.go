@@ -15,7 +15,7 @@ import (
 // CanonicalSkillInstallSection and skill.md.tmpl. The two are parallel
 // renderings of the same canonical install block — one Go literal, one
 // Go template — and they must produce byte-identical output for any
-// (name, category, usesBrowserHTTP) tuple. If either drifts, this test
+// (name, category) tuple. If either drifts, this test
 // fails before any printed CLI ships with a desynced install section.
 //
 // The verify-skill canonical-sections check enforces this contract at
@@ -33,7 +33,7 @@ func TestCanonicalSkillInstallSectionMatchesTemplate(t *testing.T) {
 	}{
 		{"empty category and standard transport", "myapi", "", false},
 		{"explicit category", "myapi", "productivity", false},
-		{"browser transport raises Go floor", "myapi", "productivity", true},
+		{"browser transport uses same Go floor", "myapi", "productivity", true},
 		{"slug with hyphens", "trigger-dev", "developer-tools", false},
 	}
 
@@ -57,7 +57,7 @@ func TestCanonicalSkillInstallSectionMatchesTemplate(t *testing.T) {
 			extracted, ok := ExtractSkillInstallSection(string(rendered))
 			require.True(t, ok, "extractor must find the install section in a freshly-rendered SKILL.md")
 
-			expected := CanonicalSkillInstallSection(tc.apiName, tc.category, tc.usesBrowserHTTP)
+			expected := CanonicalSkillInstallSection(tc.apiName, tc.category)
 			require.Equal(t, expected, extracted,
 				"template-rendered install section must equal CanonicalSkillInstallSection output for %s", tc.label)
 		})

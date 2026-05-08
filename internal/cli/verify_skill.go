@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
@@ -116,9 +115,6 @@ type pythonReport struct {
 	Findings       []canonicalFinding `json:"findings"`
 }
 
-// goModVersionRE matches the `go X.Y` directive at the top of go.mod.
-var goModVersionRE = regexp.MustCompile(`(?m)^go\s+(\d+)\.(\d+)`)
-
 // runCanonicalSectionsCheck verifies that the install/prerequisites section
 // of dir/SKILL.md matches what the generator would emit for this CLI today.
 // Detects post-publish edits to a generator-owned section (the failure mode
@@ -140,18 +136,8 @@ func runCanonicalSectionsCheck(dir string) (finding canonicalFinding, hasFinding
 		return canonicalFinding{}, false, true, nil
 	}
 
-	goModBytes, gErr := os.ReadFile(filepath.Join(dir, "go.mod"))
-	if gErr != nil {
+	if _, gErr := os.Stat(filepath.Join(dir, "go.mod")); gErr != nil {
 		return canonicalFinding{}, false, true, nil
-	}
-	usesBrowserHTTP := false
-	if m := goModVersionRE.FindSubmatch(goModBytes); m != nil {
-		// browser-HTTP transport raises the floor to 1.25; treat any
-		// 1.25+ go directive as the browser-HTTP signal. CLIs not on
-		// browser-HTTP stay on 1.23.
-		if string(m[1]) == "1" && string(m[2]) >= "25" {
-			usesBrowserHTTP = true
-		}
 	}
 
 	skillBytes, sErr := os.ReadFile(filepath.Join(dir, "SKILL.md"))
@@ -160,7 +146,7 @@ func runCanonicalSectionsCheck(dir string) (finding canonicalFinding, hasFinding
 	}
 	skill := string(skillBytes)
 
-	expected := generator.CanonicalSkillInstallSection(name, manifest.Category, usesBrowserHTTP)
+	expected := generator.CanonicalSkillInstallSection(name, manifest.Category)
 	got, ok := ExtractInstallSectionForTest(skill)
 	if !ok {
 		return canonicalFinding{

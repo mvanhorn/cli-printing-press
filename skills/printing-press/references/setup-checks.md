@@ -8,9 +8,9 @@ Apply these in order. Each section is conditional — do nothing if its trigger 
 
 If the setup contract output contains a line starting with `[setup-error]`, the printing-press binary is not installed and the contract has already exited non-zero.
 
-**Stop the skill immediately.** Do not proceed to research, generation, or any other work. Surface the message the contract printed (it includes the exact `go install` command and `GOPRIVATE` guidance) verbatim to the user.
+**Stop the skill immediately.** Do not proceed to research, generation, or any other work. Surface the message the contract printed (it includes the exact `go install` command) verbatim to the user.
 
-The user must install the binary in their terminal before re-running. Do not offer to auto-install — the README's two-step install is the source of truth, and silent auto-install hides failure modes (GOPRIVATE auth, network, wrong GOPATH) inside an opaque skill invocation.
+The user must install the binary in their terminal before re-running. Do not offer to auto-install — the README's two-step install is the source of truth, and silent auto-install hides failure modes (network, wrong GOPATH) inside an opaque skill invocation.
 
 ## 2. Interactive upgrade prompt
 
@@ -31,7 +31,7 @@ Then ask the user via `AskUserQuestion` before continuing setup:
 If the user picks **Yes**, run:
 
 ```bash
-GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest
+go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest
 ```
 
 After it completes, confirm with `printing-press version --json` and tell the user `"Upgraded to v<new>."` Then continue setup.

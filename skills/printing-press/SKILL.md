@@ -136,19 +136,17 @@ elif ! command -v printing-press >/dev/null 2>&1; then
   else
     # Refuse: the printing-press binary is required and we will not auto-install
     # it. The README's two-step install (binary + plugin) is the source of truth;
-    # silent auto-install hides failure modes (GOPRIVATE auth, network, wrong
-    # GOPATH) inside an opaque skill invocation.
+    # silent auto-install hides failure modes (network, wrong GOPATH) inside an
+    # opaque skill invocation.
     echo ""
     echo "[setup-error] printing-press binary not found."
     echo ""
     if command -v go >/dev/null 2>&1; then
       echo "Install it in your terminal:"
-      echo "  GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest"
-      echo ""
-      echo "(GOPRIVATE is required while the repo is private. The plain command works after the public launch.)"
+      echo "  go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest"
     else
-      echo "Go 1.22+ is also not installed. Install Go from https://go.dev/dl/, then:"
-      echo "  GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest"
+      echo "Go 1.26.3 or newer is also not installed. Install Go from https://go.dev/dl/, then:"
+      echo "  go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest"
     fi
     echo ""
     echo "Verify with: printing-press --version"
@@ -173,10 +171,9 @@ mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT
 
 # --- Latest-version advisory (throttled, fail-open) ---
 # Once per 24h, check whether a newer printing-press release exists and print a
-# one-line notice if so. Uses `go list` so it works for private modules via
-# GOPRIVATE and public modules via the proxy. Runs in every context — devs
-# ahead of latest stay silent (comparison handles it), devs behind latest get
-# the same nudge anyone else does.
+# one-line notice if so. Uses `go list` through the public module proxy. Runs in
+# every context — devs ahead of latest stay silent (comparison handles it), devs
+# behind latest get the same nudge anyone else does.
 PRESS_VERCHECK_FILE="$PRESS_HOME/.version-check"
 PRESS_VERCHECK_TTL=86400
 _now_ts=$(date +%s)
@@ -190,7 +187,7 @@ fi
 
 if [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
   _installed=$(printing-press version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
-  _latest=$(GOPRIVATE=github.com/mvanhorn/* go list -m -versions github.com/mvanhorn/cli-printing-press/v4 2>/dev/null | awk '{print $NF}' | sed 's/^v//')
+  _latest=$(go list -m -versions github.com/mvanhorn/cli-printing-press/v4 2>/dev/null | awk '{print $NF}' | sed 's/^v//')
 
   if [ -n "$_installed" ] && [ -n "$_latest" ] && [ "$_installed" != "$_latest" ]; then
     # sort -V is not fully semver-aware: it ranks "3.0.0-rc1" above "3.0.0" instead of below.

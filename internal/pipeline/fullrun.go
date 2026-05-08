@@ -17,6 +17,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const fullRunQualityGateCount = 8
+
 // FullRunResult holds everything the press produced for one API.
 type FullRunResult struct {
 	APIName string
@@ -421,7 +423,7 @@ func PrintComparisonTable(results []*FullRunResult) string {
 
 	writeComparisonRows(&b, results, []comparisonRow{
 		{"Quality Gates", func(r *FullRunResult) string {
-			return fmt.Sprintf("%d/7 PASS", r.GatesPassed)
+			return fmt.Sprintf("%d/%d PASS", r.GatesPassed, fullRunQualityGateCount)
 		}},
 		{"Commands", func(r *FullRunResult) string {
 			return fmt.Sprintf("%d", r.CommandCount)
@@ -570,8 +572,8 @@ func GenerateLearningsPlan(results []*FullRunResult, outputPath string) error {
 		if len(r.Errors) > 0 {
 			status = fmt.Sprintf("%d errors", len(r.Errors))
 		}
-		fmt.Fprintf(&b, "- **%s** (%s) - Gates %d/7, Duration %s, Status: %s\n",
-			r.APIName, r.Level, r.GatesPassed, r.Duration.Round(time.Second), status)
+		fmt.Fprintf(&b, "- **%s** (%s) - Gates %d/%d, Duration %s, Status: %s\n",
+			r.APIName, r.Level, r.GatesPassed, fullRunQualityGateCount, r.Duration.Round(time.Second), status)
 	}
 	b.WriteString("\n")
 

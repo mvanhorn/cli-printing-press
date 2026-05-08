@@ -332,7 +332,7 @@ func Execute() error {
 func TestVerifySkill_CanonicalSectionsPassesOnFreshFixture(t *testing.T) {
 	t.Parallel()
 	bin := buildPrintingPressBinary(t)
-	dir := writeCanonicalFixture(t, "myapi", "productivity", false, "")
+	dir := writeCanonicalFixture(t, "myapi", "productivity", "")
 	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "canonical-sections").CombinedOutput()
 	require.NoError(t, err, "fresh fixture must pass canonical-sections: %s", string(out))
 	require.Contains(t, string(out), "canonical-sections passed")
@@ -347,10 +347,10 @@ func TestVerifySkill_CanonicalSectionsCatchesFlagStrip(t *testing.T) {
 	t.Parallel()
 	bin := buildPrintingPressBinary(t)
 	tampered := strings.Replace(
-		generator.CanonicalSkillInstallSection("myapi", "productivity", false),
+		generator.CanonicalSkillInstallSection("myapi", "productivity"),
 		" --cli-only", "", 1,
 	)
-	dir := writeCanonicalFixture(t, "myapi", "productivity", false, tampered)
+	dir := writeCanonicalFixture(t, "myapi", "productivity", tampered)
 	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "canonical-sections").CombinedOutput()
 	require.Error(t, err, "stripping --cli-only must fail canonical-sections: %s", string(out))
 	require.Contains(t, string(out), "canonical-sections")
@@ -367,7 +367,7 @@ func TestVerifySkill_CanonicalSectionsCatchesFabricatedInstall(t *testing.T) {
 	t.Parallel()
 	bin := buildPrintingPressBinary(t)
 	fabricated := "## Prerequisites: Install the CLI\n\nInstall via the Printing Press Library plugin (`/ppl install myapi` from Claude Code).\n\nIf `--version` reports \"command not found\" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.\n"
-	dir := writeCanonicalFixture(t, "myapi", "productivity", false, fabricated)
+	dir := writeCanonicalFixture(t, "myapi", "productivity", fabricated)
 	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--only", "canonical-sections").CombinedOutput()
 	require.Error(t, err, "fabricated install instructions must fail canonical-sections: %s", string(out))
 	require.Contains(t, string(out), "drift")
@@ -398,7 +398,7 @@ func Execute() error { return (&cobra.Command{Use: "fixture-pp-cli"}).Execute() 
 // for exercising the canonical-sections check end-to-end. When skillBody is
 // "", the canonical install section is used verbatim; pass a tampered body
 // to simulate hand-editing of the install section.
-func writeCanonicalFixture(t *testing.T, name, category string, usesBrowserHTTP bool, skillBody string) string {
+func writeCanonicalFixture(t *testing.T, name, category, skillBody string) string {
 	t.Helper()
 	dir := t.TempDir()
 	cliDir := filepath.Join(dir, "internal", "cli")
@@ -408,19 +408,15 @@ import "github.com/spf13/cobra"
 func Execute() error { return (&cobra.Command{Use: "`+name+`-pp-cli"}).Execute() }
 `), 0o644))
 
-	goVersion := "1.23"
-	if usesBrowserHTTP {
-		goVersion = "1.25"
-	}
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
-		[]byte("module github.com/example/"+name+"-pp-cli\n\ngo "+goVersion+"\n"), 0o644))
+		[]byte("module github.com/example/"+name+"-pp-cli\n\ngo 1.26.3\n"), 0o644))
 
 	manifest := fmt.Sprintf(`{"api_name":%q,"cli_name":%q,"category":%q}`,
 		name, name+"-pp-cli", category)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(manifest), 0o644))
 
 	if skillBody == "" {
-		skillBody = generator.CanonicalSkillInstallSection(name, category, usesBrowserHTTP)
+		skillBody = generator.CanonicalSkillInstallSection(name, category)
 	}
 	skill := "---\nname: pp-" + name + "\ndescription: \"fixture\"\n---\n\n# " + name + "\n\n" + skillBody + "\nFixture body.\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skill), 0o644))

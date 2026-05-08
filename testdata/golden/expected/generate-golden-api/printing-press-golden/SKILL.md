@@ -29,7 +29,7 @@ This skill drives the `printing-press-golden-pp-cli` binary. **You must verify t
 2. Verify: `printing-press-golden-pp-cli --version`
 3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
 
-If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.23+):
+If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.3 or newer):
 
 ```bash
 go install github.com/mvanhorn/printing-press-library/library/other/printing-press-golden/cmd/printing-press-golden-pp-cli@latest

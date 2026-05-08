@@ -175,7 +175,7 @@ Generate the first working {{.APIName}} CLI from the validated OpenAPI spec.
 ## What This Phase Must Produce
 
 - Generated CLI source tree in {{.OutputDir}}
-- All seven generator quality gates passing
+- All eight generator quality gates passing, including default-mode govulncheck
 - Working CLI binary for {{.APIName}}
 
 ## Prior Phase Outputs
@@ -250,7 +250,7 @@ Merge the enrichments into the source spec and regenerate the CLI without losing
 
 - Re-generated CLI in {{.OutputDir}} using the merged overlay
 - Merged spec artifact suitable for regeneration
-- All seven quality gates still passing after regeneration
+- All eight quality gates still passing after regeneration, including default-mode govulncheck
 
 ## Prior Phase Outputs
 

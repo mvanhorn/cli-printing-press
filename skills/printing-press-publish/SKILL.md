@@ -194,6 +194,12 @@ Run:
 printing-press publish validate --dir <cli-dir> --json
 ```
 
+`govulncheck` in this step is intentionally scoped to `<cli-dir>` only. It
+uses the default `govulncheck ./...` mode so reachable symbol findings block
+publish, while merely-required vulnerable modules without a call path do not
+become release blockers. Do not replace this with a full public-library scan or
+`govulncheck -show verbose`.
+
 Parse the JSON result. Display each check result to the user:
 
 ```
@@ -201,6 +207,7 @@ Validating <api-slug>...
   manifest        PASS
   phase5          PASS
   go mod tidy     PASS
+  govulncheck     PASS
   go vet          PASS
   go build        PASS
   --help          PASS
@@ -398,9 +405,17 @@ if [ -f "$PUBLISH_REPO_DIR/tools/generate-skills/main.go" ]; then
   (cd "$PUBLISH_REPO_DIR" && go run ./tools/generate-skills/main.go)
 fi
 
-# Verify it builds from the publish repo
-cd "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" && go build ./...
+# Verify this changed/new CLI builds and has no reachable Go vulnerabilities from the publish repo
+cd "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" \
+  && go build ./... \
+  && go run golang.org/x/vuln/cmd/govulncheck@v1.3.0 ./...
 ```
+
+Keep vulnerability verification scoped to `library/<category>/<api-slug>` in
+publish PRs. The public library is a historical collection and cannot be kept
+fully current on every unrelated PR; whole-library govulncheck sweeps belong in
+a scheduled/reporting workflow, while blocking CI should scan only added or
+changed CLI modules.
 
 After the publish repo copy and build verification are complete, remove the staging
 directory:
@@ -735,6 +750,7 @@ $ <cli-name> --help
 | Manifest | PASS/FAIL |
 | Phase 5 | PASS/FAIL |
 | go mod tidy | PASS/FAIL |
+| govulncheck (this CLI only, reachable findings) | PASS/FAIL |
 | go vet | PASS/FAIL |
 | go build | PASS/FAIL |
 | --help | PASS/FAIL |

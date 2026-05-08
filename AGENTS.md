@@ -147,7 +147,8 @@ Add tests for new non-trivial logic. Match the package's existing style (typical
 Run `go test ./...` before considering your work done.
 
 ## Quality Gates
-Generated CLIs must pass 7 gates: `go mod tidy`, `go vet`, `go build`, binary build, `--help`, `version`, and `doctor`.
+Generated CLIs must pass 8 gates: `go mod tidy`, `govulncheck`, `go vet`, `go build`, binary build, `--help`, `version`, and `doctor`.
+Run `govulncheck` in default mode only, scoped to the generated or publishing CLI module (`./...` from that CLI directory). Do not use `-show verbose` or a whole public-library scan as a blocking gate; the public library is a historical collection, so its blocking CI should scan only added or changed CLI modules and leave whole-library sweeps to scheduled/reporting workflows.
 
 ## Local Artifacts
 Generated artifacts live under `~/printing-press/`, not in this repo: `library/<api-slug>/`, `manuscripts/<api-slug>/`, and `.runstate/<scope>/`. The API slug is derived by the generator from the spec title (`cleanSpecName`), and the binary name is `<api-slug>-pp-cli`. Never hardcode an API slug when the generator can derive it. See [`docs/ARTIFACTS.md`](docs/ARTIFACTS.md) for local-vs-public flow and divergence rules.

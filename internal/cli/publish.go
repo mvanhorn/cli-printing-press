@@ -12,6 +12,7 @@ import (
 	"time"
 
 	catalogpkg "github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/govulncheck"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/spf13/cobra"
@@ -19,6 +20,7 @@ import (
 
 const (
 	goCommandTimeout   = 2 * time.Minute
+	vulnCheckTimeout   = 5 * time.Minute
 	binaryCheckTimeout = 15 * time.Second
 )
 
@@ -546,21 +548,31 @@ func runValidation(dir string) ValidateResult {
 	}
 	result.Checks = append(result.Checks, tidyCheck)
 
-	// 4. go vet check
+	// 4. govulncheck catches reachable vulnerable code in this one CLI module
+	// before publish. Keep this scoped to dir; the public library may contain
+	// stale historical CLIs, and whole-library vulnerability enforcement
+	// belongs in changed-module CI or a report-only scheduled sweep.
+	vulnCheck := runGoVulnCheck(dir)
+	if !vulnCheck.Passed {
+		allPassed = false
+	}
+	result.Checks = append(result.Checks, vulnCheck)
+
+	// 5. go vet check
 	vetCheck := runGoCheck(dir, "vet", "./...")
 	if !vetCheck.Passed {
 		allPassed = false
 	}
 	result.Checks = append(result.Checks, vetCheck)
 
-	// 5. go build check
+	// 6. go build check
 	buildCheck := runGoCheck(dir, "build", "./...")
 	if !buildCheck.Passed {
 		allPassed = false
 	}
 	result.Checks = append(result.Checks, buildCheck)
 
-	// 6. --help / --version checks use a dedicated temp binary so validation
+	// 7. --help / --version checks use a dedicated temp binary so validation
 	// exercises current source without depending on or mutating source-tree artifacts.
 	binaryPath, cleanupBinary, err := buildValidationBinary(dir, cliName)
 	if cleanupBinary != nil {
@@ -588,7 +600,7 @@ func runValidation(dir string) ValidateResult {
 			result.HelpOutput = string(helpOut)
 		}
 
-		// 7. --version check
+		// 8. --version check
 		verCtx, verCancel := context.WithTimeout(context.Background(), binaryCheckTimeout)
 		defer verCancel()
 		versionCmd := exec.CommandContext(verCtx, binaryPath, "--version")
@@ -605,7 +617,7 @@ func runValidation(dir string) ValidateResult {
 		}
 	}
 
-	// 8. SKILL.md verification — fail if the agent-facing skill advertises
+	// 9. SKILL.md verification — fail if the agent-facing skill advertises
 	// commands, flags, or arguments the shipped CLI source does not provide.
 	skillCheck := checkVerifySkill(dir)
 	if !skillCheck.Passed {
@@ -613,7 +625,7 @@ func runValidation(dir string) ValidateResult {
 	}
 	result.Checks = append(result.Checks, skillCheck)
 
-	// 9. Manuscripts check (warn-only)
+	// 10. Manuscripts check (warn-only)
 	// Try CLI name first (new convention), then API name, then fuzzy resolve
 	apiName := result.APIName
 	if apiName == "" {
@@ -701,8 +713,11 @@ func checkVerifySkill(dir string) CheckResult {
 }
 
 func runGoCheck(dir string, args ...string) CheckResult {
-	name := "go " + args[0]
-	ctx, cancel := context.WithTimeout(context.Background(), goCommandTimeout)
+	return runGoCommandCheck(dir, "go "+args[0], goCommandTimeout, args...)
+}
+
+func runGoCommandCheck(dir, name string, timeout time.Duration, args ...string) CheckResult {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
@@ -710,13 +725,20 @@ func runGoCheck(dir string, args ...string) CheckResult {
 	if err != nil {
 		errMsg := strings.TrimSpace(string(output))
 		if ctx.Err() == context.DeadlineExceeded {
-			errMsg = fmt.Sprintf("timed out after %s", goCommandTimeout)
+			errMsg = fmt.Sprintf("timed out after %s", timeout)
 		} else if errMsg == "" {
 			errMsg = err.Error()
 		}
 		return CheckResult{Name: name, Passed: false, Error: errMsg}
 	}
 	return CheckResult{Name: name, Passed: true}
+}
+
+func runGoVulnCheck(dir string) CheckResult {
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
+		return CheckResult{Name: govulncheck.Name, Passed: false, Error: "go.mod not found"}
+	}
+	return runGoCommandCheck(dir, govulncheck.Name, vulnCheckTimeout, govulncheck.GoRunArgs("./...")...)
 }
 
 func checkGoModTidy(dir string) CheckResult {

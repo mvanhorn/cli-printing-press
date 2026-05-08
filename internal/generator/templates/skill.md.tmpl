@@ -29,7 +29,7 @@ This skill drives the `{{.Name}}-pp-cli` binary. **You must verify the CLI is in
 2. Verify: `{{.Name}}-pp-cli --version`
 3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
 
-If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires {{if .UsesBrowserHTTPTransport}}Go 1.25+{{else}}Go 1.23+{{end}}):
+If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.3 or newer):
 
 ```bash
 go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}/cmd/{{.Name}}-pp-cli@latest

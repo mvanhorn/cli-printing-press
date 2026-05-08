@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/govulncheck"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/stretchr/testify/assert"
@@ -151,7 +153,7 @@ func TestPublishValidateJSONHasAllChecks(t *testing.T) {
 	}
 
 	// All checks should be present (they may fail in test env, but must exist)
-	expectedChecks := []string{"manifest", "transcendence", "phase5", "go mod tidy", "go vet", "go build", "--help", "--version", "verify-skill", "manuscripts"}
+	expectedChecks := []string{"manifest", "transcendence", "phase5", "go mod tidy", "govulncheck", "go vet", "go build", "--help", "--version", "verify-skill", "manuscripts"}
 	for _, name := range expectedChecks {
 		assert.True(t, checkNames[name], "should have %q check", name)
 	}
@@ -242,6 +244,43 @@ func TestPublishValidateExitCode(t *testing.T) {
 	var exitErr *ExitError
 	require.ErrorAs(t, err, &exitErr)
 	assert.Equal(t, ExitPublishError, exitErr.Code, "should use ExitPublishError exit code")
+}
+
+func TestRunGoVulnCheckRequiresGoMod(t *testing.T) {
+	result := runGoVulnCheck(t.TempDir())
+	assert.False(t, result.Passed)
+	assert.Equal(t, govulncheck.Name, result.Name)
+	assert.Equal(t, "go.mod not found", result.Error)
+}
+
+func TestRunGoVulnCheckUsesPinnedDefaultCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell go binary is Unix-only")
+	}
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n\ngo 1.26.3\n"), 0o644))
+
+	fakeBin := t.TempDir()
+	callsPath := filepath.Join(t.TempDir(), "go-calls.txt")
+	fakeGo := filepath.Join(fakeBin, "go")
+	require.NoError(t, os.WriteFile(fakeGo, []byte(`#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_GO_CALLS"
+echo "fake govulncheck failure" >&2
+exit 42
+`), 0o755))
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_GO_CALLS", callsPath)
+
+	result := runGoVulnCheck(dir)
+	assert.False(t, result.Passed)
+	assert.Equal(t, govulncheck.Name, result.Name)
+	assert.Contains(t, result.Error, "fake govulncheck failure")
+
+	calls, err := os.ReadFile(callsPath)
+	require.NoError(t, err)
+	assert.Equal(t, "run "+govulncheck.ToolModule+" ./...\n", string(calls))
+	assert.NotContains(t, string(calls), "-show")
+	assert.NotContains(t, string(calls), "verbose")
 }
 
 func TestPublishPackageMissingDirFlag(t *testing.T) {
@@ -855,7 +894,7 @@ func newInsightCmd() *cobra.Command {
 	return &cobra.Command{Use: "insight", Short: "Show test insight"}
 }
 `), 0o644))
-	skillInstall := generator.CanonicalSkillInstallSection("test", "", false)
+	skillInstall := generator.CanonicalSkillInstallSection("test", "")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Test CLI\n\n"+skillInstall+"\n## Command Reference\n\n- `test-pp-cli insight` — Show test insight\n\n## Usage\n\n```bash\ntest-pp-cli insight --agent\n```\n"), 0o644))
 
 	writeTestManifest(t, dir, pipeline.CLIManifest{

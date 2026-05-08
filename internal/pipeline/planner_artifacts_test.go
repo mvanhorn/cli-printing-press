@@ -42,6 +42,8 @@ func TestGenerateNextPlanLoadsArtifactsFromRunstateDirs(t *testing.T) {
 	scaffoldPlan, err := GenerateNextPlan(state, PhaseScaffold)
 	require.NoError(t, err)
 	assert.Contains(t, scaffoldPlan, "Novelty score:** 8/10 (proceed)")
+	assert.Contains(t, scaffoldPlan, "All eight")
+	assert.Contains(t, scaffoldPlan, "govulncheck")
 
 	comparativePlan, err := GenerateNextPlan(state, PhaseComparative)
 	require.NoError(t, err)

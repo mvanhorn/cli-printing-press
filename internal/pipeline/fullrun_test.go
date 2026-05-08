@@ -44,7 +44,7 @@ func TestFullRun(t *testing.T) {
 			result := MakeBestCLI(api.name, api.level, api.flag, api.url, outputDir, pressBinary)
 			results = append(results, result)
 
-			assert.Equal(t, 7, result.GatesPassed, "%s: all 7 gates should pass", api.name)
+			assert.Equal(t, fullRunQualityGateCount, result.GatesPassed, "%s: all quality gates should pass", api.name)
 			assert.True(t, result.CommandCount > 0, "%s: should have commands", api.name)
 			assert.NotNil(t, result.Scorecard, "%s: should have scorecard", api.name)
 		})
@@ -69,6 +69,22 @@ func TestFullRunQualitySpecPath(t *testing.T) {
 
 	assert.Equal(t, "https://example.com/openapi.yaml", fullRunQualitySpecPath("--spec", "https://example.com/openapi.yaml"))
 	assert.Equal(t, "", fullRunQualitySpecPath("--docs", "https://example.com/docs"))
+}
+
+func TestGenerateLearningsPlanUsesQualityGateCount(t *testing.T) {
+	t.Parallel()
+
+	outputPath := filepath.Join(t.TempDir(), "learnings.md")
+	require.NoError(t, GenerateLearningsPlan([]*FullRunResult{{
+		APIName:     "demo",
+		Level:       "EASY",
+		GatesPassed: 6,
+	}}, outputPath))
+
+	content, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "Gates 6/8")
+	assert.NotContains(t, string(content), "Gates 6/7")
 }
 
 func TestPrintComparisonTableRows(t *testing.T) {
@@ -113,7 +129,7 @@ func TestPrintComparisonTableRows(t *testing.T) {
 		last = idx
 	}
 
-	assert.Contains(t, table, "6/7 PASS")
+	assert.Contains(t, table, "6/8 PASS")
 	assert.Contains(t, table, "72/80 (72%)")
 	assert.Contains(t, table, "1/2")
 	assert.Contains(t, table, "PASS 100%")

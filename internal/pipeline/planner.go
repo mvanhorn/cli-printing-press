@@ -104,7 +104,7 @@ func generateScaffoldPlan(ctx PlanContext) (string, error) {
 
 	b.WriteString("## What This Phase Must Produce\n\n")
 	fmt.Fprintf(&b, "- Generated CLI source tree in %s\n", ctx.SeedData.OutputDir)
-	b.WriteString("- All seven generator quality gates passing\n")
+	b.WriteString("- All eight generator quality gates passing, including default-mode govulncheck\n")
 	fmt.Fprintf(&b, "- Working CLI binary for %s\n\n", ctx.SeedData.APIName)
 
 	b.WriteString("## Codebase Pointers\n\n")

@@ -32,7 +32,7 @@ npx -y @mvanhorn/printing-press install {{.Name}} --cli-only
 
 ### Without Node (Go fallback)
 
-If `npx` isn't available (no Node, offline), install the CLI directly via Go (requires {{if .UsesBrowserHTTPTransport}}Go 1.25+{{else}}Go 1.23+{{end}}):
+If `npx` isn't available (no Node, offline), install the CLI directly via Go (requires Go 1.26.3 or newer):
 
 ```bash
 go install github.com/mvanhorn/printing-press-library/library/{{if .Category}}{{.Category}}{{else}}other{{end}}/{{.Name}}/cmd/{{.Name}}-pp-cli@latest

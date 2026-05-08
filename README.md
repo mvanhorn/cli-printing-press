@@ -24,7 +24,7 @@ You need both the **binary** and the **Claude Code skills**. The skills (`/print
 
 The binary alone works (research, generation, verification, scoring) but skips the curated agent loop. The skills alone have nothing to call. Install both.
 
-**Prerequisites:** [Go 1.26+](https://go.dev/dl/) and [Claude Code](https://claude.ai/code). The skills are tested with Claude Code; other harnesses like Codex may work but aren't tested. **Use Claude Code for the best experience.**
+**Prerequisites:** [Go 1.26.3 or newer](https://go.dev/dl/) and [Claude Code](https://claude.ai/code). The skills are tested with Claude Code; other harnesses like Codex may work but aren't tested. **Use Claude Code for the best experience.**
 
 ### 1. Install the binary
 
@@ -32,7 +32,7 @@ The binary alone works (research, generation, verification, scoring) but skips t
 go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest
 ```
 
-Verify with `printing-press --version`. If `go install` fails with `410 Gone` or an auth error, see [Troubleshooting](#troubleshooting).
+Verify with `printing-press --version`. If `go install` fails, confirm Go 1.26.3 or newer is installed and `$GOPATH/bin` is on your `PATH`.
 
 ### 2. Install the skills — pick one path
 
@@ -463,14 +463,6 @@ Each published CLI ships a research manuscript, verification proofs, and a `.pri
 
 ## Troubleshooting
 
-**`go install` returns `410 Gone` or an auth error.** The repo is currently private. Set `GOPRIVATE` so Go fetches directly from GitHub instead of the public module proxy, and ensure you have GitHub access (SSH key or `gh auth login`):
-
-```bash
-GOPRIVATE=github.com/mvanhorn/* go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest
-```
-
-After the public launch, the plain command works for everyone.
-
 **`/printing-press` slash command doesn't appear in Claude Code.** Restart your Claude Code session after installing the skills. If you cloned the repo, confirm `claude --plugin-dir .` was run from the cloned repo root. If you installed skills only, run `gh skill list` (or `npx skills list`) to verify the install.
 
 **`printing-press: command not found` after a successful `go install`.** `$GOPATH/bin` (default `~/go/bin`) isn't on your `PATH`. Add it to your shell profile.
@@ -483,7 +475,7 @@ After the public launch, the plain command works for everyone.
 
 ## Limitations
 
-- **Requires Go 1.26+ and Claude Code.** No standalone distribution today; the slash command is the supported entry point.
+- **Requires Go 1.26.3 or newer and Claude Code.** No standalone distribution today; the slash command is the supported entry point.
 - **Generated CLIs are domain-shaped, not vendor-replacements.** A `<api>-pp-cli` covers the agent power-user surface, not every back-office knob a vendor's official CLI ships.
 - **Browser-sniff requires manual capture.** You point a browser at the site (or import a HAR); the press doesn't crawl autonomously.
 - **Live verify is read-only.** Phase 5 runs GET only and never mutates. Real write-path coverage lives in unit tests and the dogfood structural checks.

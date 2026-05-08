@@ -1,6 +1,6 @@
 module {{modulePath}}
 
-go {{if .UsesBrowserHTTPTransport}}1.25{{else}}1.23{{end}}
+go 1.26.3
 
 require (
 {{- if .UsesBrowserHTTPTransport}}
@@ -8,7 +8,7 @@ require (
 {{- end}}
 	github.com/spf13/cobra v1.9.1
 {{- if .HasHTMLExtraction}}
-	golang.org/x/net v0.43.0
+	golang.org/x/net v0.53.0
 {{- end}}
 {{- if eq .Config.Format "toml"}}
 	github.com/pelletier/go-toml/v2 v2.2.4

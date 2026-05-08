@@ -20,8 +20,7 @@ const SkillInstallSectionEndSubstr = "Do not proceed with skill commands until v
 // emits into a printed CLI's SKILL.md install section. Indexed verbs:
 //
 //	%[1]s — CLI slug (e.g. "linear" — produces linear-pp-cli)
-//	%[2]s — Go-fallback floor ("Go 1.23+" or "Go 1.25+")
-//	%[3]s — catalog category (or "other" when empty)
+//	%[2]s — catalog category (or "other" when empty)
 //
 // Stays in lockstep with internal/generator/templates/skill.md.tmpl via
 // TestCanonicalSkillInstallSectionMatchesTemplate.
@@ -36,33 +35,27 @@ const canonicalSkillInstallSectionFormat = "## Prerequisites: Install the CLI\n"
 	"2. Verify: `%[1]s-pp-cli --version`\n" +
 	"3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.\n" +
 	"\n" +
-	"If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires %[2]s):\n" +
+	"If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.3 or newer):\n" +
 	"\n" +
 	"```bash\n" +
-	"go install github.com/mvanhorn/printing-press-library/library/%[3]s/%[1]s/cmd/%[1]s-pp-cli@latest\n" +
+	"go install github.com/mvanhorn/printing-press-library/library/%[2]s/%[1]s/cmd/%[1]s-pp-cli@latest\n" +
 	"```\n" +
 	"\n" +
 	"If `--version` reports \"command not found\" after install, the install step did not put the binary on `$PATH`. Do not proceed with skill commands until verification succeeds.\n"
 
 // CanonicalSkillInstallSection returns the exact text of the install/
 // prerequisites section that the generator emits into a printed CLI's
-// SKILL.md, given the CLI slug, the catalog category (empty -> "other"),
-// and whether the CLI uses the browser HTTP transport (raises the Go-
-// fallback floor from 1.23 to 1.25).
+// SKILL.md, given the CLI slug and catalog category (empty -> "other").
 //
 // The verify-skill canonical-sections check uses this function to detect
 // post-publish edits to the install instructions. The function is the
 // authoritative source post-generation; the template stays in sync via
 // TestCanonicalSkillInstallSectionMatchesTemplate.
-func CanonicalSkillInstallSection(name, category string, usesBrowserHTTP bool) string {
+func CanonicalSkillInstallSection(name, category string) string {
 	if category == "" {
 		category = "other"
 	}
-	goFloor := "Go 1.23+"
-	if usesBrowserHTTP {
-		goFloor = "Go 1.25+"
-	}
-	return fmt.Sprintf(canonicalSkillInstallSectionFormat, name, goFloor, category)
+	return fmt.Sprintf(canonicalSkillInstallSectionFormat, name, category)
 }
 
 // ExtractSkillInstallSection slices the install/prerequisites block out of

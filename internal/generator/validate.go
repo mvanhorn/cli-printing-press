@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/govulncheck"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 )
 
@@ -43,6 +44,13 @@ func (g *Generator) Validate() error {
 			name: "go mod tidy",
 			run: func() error {
 				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "mod", "tidy")
+				return err
+			},
+		},
+		{
+			name: "govulncheck ./...",
+			run: func() error {
+				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", govulncheck.GoRunArgs("./...")...)
 				return err
 			},
 		},

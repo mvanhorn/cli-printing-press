@@ -30,7 +30,7 @@ Browse and install pre-built Go CLIs for popular APIs.
 
 ## Prerequisites
 
-- Go 1.21+ installed
+- Go 1.26.3 or newer installed
 - `printing-press` binary on PATH (install with `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest`)
 
 ## Setup

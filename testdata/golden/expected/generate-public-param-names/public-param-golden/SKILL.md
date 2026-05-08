@@ -29,7 +29,7 @@ This skill drives the `public-param-golden-pp-cli` binary. **You must verify the
 2. Verify: `public-param-golden-pp-cli --version`
 3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.
 
-If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.23+):
+If the `npx` install fails (no Node, offline, etc.), fall back to a direct Go install (requires Go 1.26.3 or newer):
 
 ```bash
 go install github.com/mvanhorn/printing-press-library/library/other/public-param-golden/cmd/public-param-golden-pp-cli@latest
