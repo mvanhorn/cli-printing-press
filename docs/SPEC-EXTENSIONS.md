@@ -224,6 +224,16 @@ Security scheme extensions are read from
 auth or override install/config metadata when the API spec's service identity
 differs from the product identity exposed by the printed CLI.
 
+When `components.securitySchemes` is absent, the parser may infer simple
+bearer auth from clear API-wide prose such as `Authorization: Bearer`,
+`personal access token`, `fine-grained PAT`, `app installation token`, or
+`OAuth app token`. An explicitly empty block disables that prose fallback:
+
+```yaml
+components:
+  securitySchemes: {}
+```
+
 ### `x-auth-type`
 
 Marks an API key scheme as composed auth.

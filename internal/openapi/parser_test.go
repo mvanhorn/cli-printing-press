@@ -1657,6 +1657,206 @@ func TestInferDescriptionAuth(t *testing.T) {
 		assert.Contains(t, parsed.Auth.EnvVars[0], "_TOKEN")
 	})
 
+	t.Run("GitHub-style token prose infers bearer auth", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "prose-bearer-auth.yaml"))
+		require.NoError(t, err)
+
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+
+		assert.Equal(t, "bearer_token", parsed.Auth.Type)
+		assert.Equal(t, "Authorization", parsed.Auth.Header)
+		assert.Equal(t, []string{"GITHUB_TOKEN"}, parsed.Auth.EnvVars)
+		assert.True(t, parsed.Auth.Inferred)
+	})
+
+	t.Run("specific bearer prose signals infer bearer auth independently", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			description string
+		}{
+			{name: "personal access token", description: "Authenticate with a personal access token."},
+			{name: "fine-grained PAT", description: "Authenticate with a fine-grained PAT."},
+			{name: "app installation token", description: "Authenticate with an app installation token."},
+			{name: "OAuth app token", description: "Authenticate with an OAuth app token."},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				result := inferDescriptionAuth(&openapi3.T{
+					Info: &openapi3.Info{Description: tt.description},
+				}, "github", spec.AuthConfig{Type: "none"})
+
+				assert.Equal(t, "bearer_token", result.Type)
+				assert.Equal(t, []string{"GITHUB_TOKEN"}, result.EnvVars)
+				assert.True(t, result.Inferred)
+			})
+		}
+	})
+
+	t.Run("explicit empty securitySchemes opts out of prose inference", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: GitHub
+  version: "1.0.0"
+  description: "Authenticate requests with Authorization: Bearer TOKEN."
+components:
+  securitySchemes: {}
+  schemas:
+    Repository:
+      type: object
+paths:
+  /repos:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+
+		assert.Equal(t, "none", parsed.Auth.Type)
+		assert.False(t, parsed.Auth.Inferred)
+	})
+
+	t.Run("explicit empty securitySchemes keeps query-param inference", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+components:
+  securitySchemes: {}
+paths:
+  /a:
+    get:
+      parameters:
+        - name: api_key
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /b:
+    get:
+      parameters:
+        - name: api_key
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /c:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+
+		assert.Equal(t, "api_key", parsed.Auth.Type)
+		assert.Equal(t, "query", parsed.Auth.In)
+		assert.Equal(t, []string{"EXAMPLE_API_KEY"}, parsed.Auth.EnvVars)
+	})
+
+	t.Run("explicit empty securitySchemes keeps operation-level bearer inference", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+components:
+  securitySchemes: {}
+paths:
+  /a:
+    get:
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          description: Bearer token credential.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /b:
+    get:
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          description: Bearer token credential.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /c:
+    get:
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          description: Bearer token credential.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /d:
+    get:
+      parameters:
+        - name: Authorization
+          in: header
+          required: true
+          description: Bearer token credential.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /e:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+
+		assert.Equal(t, "bearer_token", parsed.Auth.Type)
+		assert.Equal(t, "Authorization", parsed.Auth.Header)
+		assert.Equal(t, []string{"EXAMPLE_TOKEN"}, parsed.Auth.EnvVars)
+		assert.True(t, parsed.Auth.Inferred)
+	})
+
+	t.Run("components without securitySchemes still allows prose inference", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: GitHub
+  version: "1.0.0"
+  description: "Authenticate requests with Authorization: Bearer TOKEN."
+components:
+  schemas:
+    Repository:
+      type: object
+paths:
+  /repos:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+
+		assert.Equal(t, "bearer_token", parsed.Auth.Type)
+		assert.Equal(t, []string{"GITHUB_TOKEN"}, parsed.Auth.EnvVars)
+		assert.True(t, parsed.Auth.Inferred)
+	})
+
 	t.Run("petstore has explicit auth, not inferred", func(t *testing.T) {
 		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "petstore.yaml"))
 		require.NoError(t, err)
