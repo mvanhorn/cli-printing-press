@@ -45,20 +45,20 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Mint an OAuth2 bearer token via the client_credentials grant",
-		Long: strings.TrimSpace(` + "`" + `
+		Long: strings.TrimSpace(`
 Mint an OAuth2 bearer token via POST https://api.cc.example/oauth/token with
 grant_type=client_credentials and cache it on disk. Subsequent commands
 auto-refresh the token before expiry.
 
 Credentials default to PRINTING_PRESS_OAUTH2_CLIENT_ID (Client ID) and PRINTING_PRESS_OAUTH2_CLIENT_SECRET (Client Secret) environment variables.
-` + "`" + `),
-		Example: strings.Trim(` + "`" + `
+`),
+		Example: strings.Trim(`
   # Use env vars
   printing-press-oauth2-pp-cli auth login
 
   # Explicit credentials
   printing-press-oauth2-pp-cli auth login --client-id <id> --client-secret <secret>
-` + "`" + `, "\n"),
+`, "\n"),
 		Annotations: map[string]string{"mcp:hidden": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cliutil.IsVerifyEnv() {
@@ -103,8 +103,8 @@ Credentials default to PRINTING_PRESS_OAUTH2_CLIENT_ID (Client ID) and PRINTING_
 }
 
 type tokenResponse struct {
-	AccessToken string ` + "`" + `json:"access_token"` + "`" + `
-	ExpiresIn   int    ` + "`" + `json:"expires_in"` + "`" + `
+	AccessToken string `json:"access_token"`
+	ExpiresIn   int    `json:"expires_in"`
 }
 
 // mintClientCredentialsToken POSTs grant_type=client_credentials to the
