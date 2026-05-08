@@ -178,19 +178,11 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		s.OwnerName = resolveOwnerNameForExisting(outputDir)
 	}
 
-	// Printer is the GitHub @handle of the human who ran the press.
-	// Tiered resolver mirrors Owner: existing-manifest first so regens
-	// preserve original attribution. The slug fallback (when neither
-	// manifest nor git config has a value) fires in Generate() so its
-	// stderr warning sits alongside the OwnerName empty warning.
+	// Preserve printer attribution from the manifest before consulting git config.
 	if s.Printer == "" {
 		s.Printer = resolvePrinterForExisting(outputDir)
 	}
-	// PrinterName is the prose-shaped display name of the printer (e.g.
-	// "Matt Van Horn"), used only in the README byline parenthetical.
-	// Empty values render as a byline without the parenthetical, so no
-	// slug fallback is required (unlike OwnerName, which feeds the
-	// SKILL.md author: field).
+	// Preserve the prose-shaped printer display name when regenerating a CLI.
 	if s.PrinterName == "" {
 		s.PrinterName = resolvePrinterNameForExisting(outputDir)
 	}
@@ -1562,19 +1554,11 @@ func (g *Generator) Generate() error {
 		g.Spec.OwnerName = g.Spec.Owner
 	}
 	if g.Spec.Printer == "" {
-		// Printer flows into the per-CLI README byline and the
-		// registry catalog row. Same non-fatal reasoning as OwnerName:
-		// fall back to the slug-shaped Owner so emission is non-empty
-		// and warn so the operator catches the misconfiguration. The
-		// publish-side strict check (in printing-press-publish skill)
-		// rejects this fallback at publish time, so a wrong-but-set
-		// value can never reach the library catalog.
+		// Publish enforces this so self-owned CLIs can still use matching owner/printer slugs.
 		fmt.Fprintf(os.Stderr,
-			"WARNING: spec.Printer is empty; falling back to slug-shaped Owner (%q) for printer attribution. "+
-				"Set `git config github.user` (your GitHub @handle) to populate this correctly.\n",
-			g.Spec.Owner,
+			"WARNING: spec.Printer is empty; README printer attribution will be omitted. "+
+				"Set `git config github.user` (your GitHub @handle) to populate this correctly before publishing.\n",
 		)
-		g.Spec.Printer = g.Spec.Owner
 	}
 	if err := g.prepareOutput(); err != nil {
 		return err

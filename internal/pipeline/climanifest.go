@@ -50,20 +50,9 @@ type CLIManifest struct {
 	// (for example "hiten-shah"). Persisted here so subsequent regens
 	// preserve attribution regardless of who's running the generator.
 	Owner string `json:"owner,omitempty"`
-	// Printer is the GitHub @handle of the human who originally ran the
-	// press for this CLI (for example "mvanhorn"). Persisted so the
-	// per-CLI README byline and registry-side attribution survive beyond
-	// git history. Distinct from Owner (the API-spec owner / wrapper-author
-	// identity); the printer is the human, the owner is the API vendor or
-	// wrapper author. First print wins: subsequent regens read this field
-	// before falling back to git config so attribution does not flip on
-	// re-runs by other contributors.
+	// Printer is the original printer's GitHub handle, preserved across regens.
 	Printer string `json:"printer,omitempty"`
-	// PrinterName is the prose-shaped display name of the printer (for
-	// example "Matt Van Horn"), rendered in the per-CLI README byline
-	// parenthetical. Mirrors OwnerName's read path: raw git config
-	// user.name, no slug fallback, no "USER" sentinel. Empty when the
-	// operator has not set user.name.
+	// PrinterName is the optional display name rendered beside the printer handle.
 	PrinterName          string            `json:"printer_name,omitempty"`
 	SpecURL              string            `json:"spec_url,omitempty"`
 	SpecPath             string            `json:"spec_path,omitempty"`
@@ -394,7 +383,7 @@ type GenerateManifestParams struct {
 	DocsURL       string   // --docs URL, if used
 	OutputDir     string
 	Owner         string                 // resolved owner attribution (manifest preserve > copyright parse > git config)
-	Printer       string                 // resolved printer @handle (manifest preserve > git config github.user > Owner slug fallback)
+	Printer       string                 // resolved printer @handle (manifest preserve > git config github.user > empty)
 	PrinterName   string                 // resolved printer display name (manifest preserve > git config user.name > empty)
 	RunID         string                 // YYYYMMDD-HHMMSS, derived from --research-dir basename when empty
 	Spec          *spec.APISpec          // parsed spec for MCP metadata (nil if unavailable)

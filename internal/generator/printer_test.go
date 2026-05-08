@@ -9,11 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestResolvePrinterForExistingManifestWins pins tier 1: a manifest
-// with a `printer` field is the highest-priority signal. This is the
-// regen-preservation guarantee — once a CLI is printed, subsequent
-// regens by other contributors do not overwrite the original printer
-// attribution.
+// TestResolvePrinterForExistingManifestWins pins the regen-preservation tier.
 func TestResolvePrinterForExistingManifestWins(t *testing.T) {
 	dir := t.TempDir()
 	manifest := `{"schema_version":1,"printer":"mvanhorn","cli_name":"foo-pp-cli","api_name":"foo"}`
@@ -22,10 +18,7 @@ func TestResolvePrinterForExistingManifestWins(t *testing.T) {
 	assert.Equal(t, "mvanhorn", resolvePrinterForExisting(dir))
 }
 
-// TestResolvePrinterForExistingFallsThroughOnAbsentPrinter pins that a
-// manifest without a `printer` field falls through to the git-config
-// tier (resolvePrinterForNew). The actual returned value depends on
-// the runner's git config; we just check the call does not panic.
+// TestResolvePrinterForExistingFallsThroughOnAbsentPrinter exercises the git-config tier.
 func TestResolvePrinterForExistingFallsThroughOnAbsentPrinter(t *testing.T) {
 	dir := t.TempDir()
 	manifest := `{"schema_version":1,"cli_name":"foo-pp-cli","api_name":"foo"}`
@@ -36,10 +29,7 @@ func TestResolvePrinterForExistingFallsThroughOnAbsentPrinter(t *testing.T) {
 	_ = resolvePrinterForExisting(dir)
 }
 
-// TestResolvePrinterForExistingFallsThroughOnEmptyPrinter pins the
-// explicit empty-string case: `{"printer":""}` is treated identically
-// to the absent-field case. Without this, a corrupted manifest would
-// short-circuit the chain to an empty printer string.
+// TestResolvePrinterForExistingFallsThroughOnEmptyPrinter treats empty as absent.
 func TestResolvePrinterForExistingFallsThroughOnEmptyPrinter(t *testing.T) {
 	dir := t.TempDir()
 	manifest := `{"schema_version":1,"printer":"","cli_name":"foo-pp-cli","api_name":"foo"}`
@@ -48,22 +38,19 @@ func TestResolvePrinterForExistingFallsThroughOnEmptyPrinter(t *testing.T) {
 	_ = resolvePrinterForExisting(dir)
 }
 
-// TestReadManifestPrinterHandlesMissingFile confirms the reader returns
-// "" rather than panicking when the manifest isn't there.
+// TestReadManifestPrinterHandlesMissingFile keeps missing manifests non-fatal.
 func TestReadManifestPrinterHandlesMissingFile(t *testing.T) {
 	assert.Equal(t, "", readManifestPrinter(t.TempDir()))
 }
 
-// TestReadManifestPrinterHandlesMalformed confirms invalid JSON returns
-// "" rather than propagating an error.
+// TestReadManifestPrinterHandlesMalformed keeps invalid JSON non-fatal.
 func TestReadManifestPrinterHandlesMalformed(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte("not json"), 0o644))
 	assert.Equal(t, "", readManifestPrinter(dir))
 }
 
-// TestReadManifestPrinterHandlesNonStringValue confirms a non-string
-// `printer` value is treated as missing rather than panicking.
+// TestReadManifestPrinterHandlesNonStringValue treats non-string values as missing.
 func TestReadManifestPrinterHandlesNonStringValue(t *testing.T) {
 	dir := t.TempDir()
 	manifest := `{"schema_version":1,"printer":42,"cli_name":"foo-pp-cli","api_name":"foo"}`
@@ -71,9 +58,7 @@ func TestReadManifestPrinterHandlesNonStringValue(t *testing.T) {
 	assert.Equal(t, "", readManifestPrinter(dir))
 }
 
-// TestResolvePrinterNameForExistingManifestWins pins tier 1 for the
-// display name: a manifest with a `printer_name` field wins over git
-// config. Mirrors resolveOwnerNameForExisting's shape.
+// TestResolvePrinterNameForExistingManifestWins pins display-name preservation.
 func TestResolvePrinterNameForExistingManifestWins(t *testing.T) {
 	dir := t.TempDir()
 	manifest := `{"schema_version":1,"printer_name":"Matt Van Horn","cli_name":"foo-pp-cli","api_name":"foo"}`
@@ -82,8 +67,7 @@ func TestResolvePrinterNameForExistingManifestWins(t *testing.T) {
 	assert.Equal(t, "Matt Van Horn", resolvePrinterNameForExisting(dir))
 }
 
-// TestResolvePrinterNameForExistingFallsThroughOnAbsentName confirms
-// that an absent `printer_name` field falls through to git config.
+// TestResolvePrinterNameForExistingFallsThroughOnAbsentName exercises git config.
 func TestResolvePrinterNameForExistingFallsThroughOnAbsentName(t *testing.T) {
 	dir := t.TempDir()
 	manifest := `{"schema_version":1,"cli_name":"foo-pp-cli","api_name":"foo"}`
@@ -93,8 +77,21 @@ func TestResolvePrinterNameForExistingFallsThroughOnAbsentName(t *testing.T) {
 	_ = resolvePrinterNameForExisting(dir)
 }
 
-// TestReadManifestPrinterNameHandlesMissingFile confirms the reader
-// returns "" rather than panicking when the manifest isn't there.
+// TestReadManifestPrinterNameHandlesMissingFile keeps missing manifests non-fatal.
 func TestReadManifestPrinterNameHandlesMissingFile(t *testing.T) {
 	assert.Equal(t, "", readManifestPrinterName(t.TempDir()))
+}
+
+// TestGenerateLeavesPrinterEmptyWhenGitHandleUnset prevents owner-slug false positives.
+func TestGenerateLeavesPrinterEmptyWhenGitHandleUnset(t *testing.T) {
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "github.user")
+	t.Setenv("GIT_CONFIG_VALUE_0", "")
+
+	apiSpec := minimalSpec("self-owned")
+	outputDir := filepath.Join(t.TempDir(), "self-owned-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	assert.Empty(t, gen.Spec.Printer)
 }
