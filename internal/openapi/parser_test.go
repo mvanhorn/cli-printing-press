@@ -2854,6 +2854,137 @@ paths:
 	}
 }
 
+// TestParseIDFieldEnvelopeUnwrapping covers list responses whose payload is an
+// object envelope wrapping a single named array (e.g. {events: [...],
+// cursor: "..."}; many list APIs use this shape with the resource name as the
+// array key). The profiler must descend into the array's item schema and pick
+// the item's PK, not a scalar sibling on the wrapper.
+func TestParseIDFieldEnvelopeUnwrapping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		schemaYAML string
+		wantID     string
+	}{
+		{
+			name: "named-array envelope with cursor sibling: descends into items",
+			schemaYAML: `              schema:
+                type: object
+                required: [events, cursor]
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      required: [event_ticker]
+                      properties:
+                        event_ticker: {type: string}
+                        title: {type: string}
+                  cursor: {type: string}
+`,
+			wantID: "event_ticker",
+		},
+		{
+			name: "named-array envelope with object-typed sibling: still descends",
+			schemaYAML: `              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [sku]
+                      properties:
+                        sku: {type: string}
+                  pagination:
+                    type: object
+                    properties:
+                      next: {type: string}
+`,
+			wantID: "sku",
+		},
+		{
+			name: "data-wrapper envelope still works (preserved fast path)",
+			schemaYAML: `              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: {type: string}
+                  cursor: {type: string}
+`,
+			wantID: "id",
+		},
+		{
+			name: "two top-level arrays: ambiguous, falls back to wrapper",
+			schemaYAML: `              schema:
+                type: object
+                properties:
+                  event_positions:
+                    type: array
+                    items: {type: object}
+                  market_positions:
+                    type: array
+                    items: {type: object}
+`,
+			wantID: "",
+		},
+		{
+			// A malformed array property (no items) sits alongside a
+			// well-formed one. singleArrayProperty must skip the malformed
+			// entry without it counting toward the "exactly one" cap, so the
+			// well-formed sibling still wins and PK detection succeeds.
+			name: "named-array envelope with one malformed sibling: well-formed array still wins",
+			schemaYAML: `              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      required: [event_ticker]
+                      properties:
+                        event_ticker: {type: string}
+                  legacy:
+                    type: array
+                  cursor: {type: string}
+`,
+			wantID: "event_ticker",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /things:
+    get:
+      operationId: listThings
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+` + tt.schemaYAML)
+			parsed, err := Parse(yamlSpec)
+			require.NoError(t, err)
+
+			ep := findEndpoint(t, parsed, "/things")
+			assert.Equal(t, tt.wantID, ep.IDField)
+		})
+	}
+}
+
 // TestParseXResourceIDAppliesToEveryOperationOnPath exercises the "extensions
 // live on the path item" rule — both GET and POST operations under /widgets
 // inherit the x-resource-id and x-critical values, even though x-critical is

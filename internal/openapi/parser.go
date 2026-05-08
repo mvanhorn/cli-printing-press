@@ -2658,9 +2658,17 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation) string {
 }
 
 // unwrapItemSchema returns the schema of items inside a list response. Handles
-// three shapes: bare object (no array, treat as a single-item resource and
-// inspect its fields), bare array (return Items.Value), or {data: [...]}
-// wrapper (mirroring mapResponse's handling).
+// four shapes: bare array (return Items.Value), {data: [...]} wrapper (fast
+// path; mirrors mapResponse's handling), single-named-array envelope where the
+// resource is wrapped under its own key alongside scalar/object metadata
+// siblings (e.g. Kalshi's {events: [...], cursor: "..."}), and bare object
+// (no array, treat as a single-item resource and inspect its fields).
+//
+// The single-named-array envelope detection is deliberately strict: it
+// requires *exactly one* array-typed property at the top level. Multi-array
+// envelopes (e.g. /portfolio/positions returning event_positions and
+// market_positions) fall through to the bare-object path; they need explicit
+// per-resource declaration since picking one would lose data.
 func unwrapItemSchema(schema *openapi3.Schema) *openapi3.Schema {
 	if schema == nil {
 		return nil
@@ -2668,14 +2676,47 @@ func unwrapItemSchema(schema *openapi3.Schema) *openapi3.Schema {
 	if isArraySchema(schema) && schema.Items != nil {
 		return schemaRefValue(schema.Items)
 	}
-	if isObjectSchema(schema) {
-		// {data: [...]} wrapper convention
-		if dataRef, ok := schema.Properties["data"]; ok {
-			if data := schemaRefValue(dataRef); isArraySchema(data) && data.Items != nil {
-				return schemaRefValue(data.Items)
-			}
+	if !isObjectSchema(schema) {
+		return nil
+	}
+	// {data: [...]} wrapper convention — fast path, preserved verbatim.
+	if dataRef, ok := schema.Properties["data"]; ok {
+		if data := schemaRefValue(dataRef); isArraySchema(data) && data.Items != nil {
+			return schemaRefValue(data.Items)
 		}
-		return schema
+	}
+	// Single-named-array envelope: object whose only array-typed property is
+	// the resource list, with the rest being pagination/metadata fields. This
+	// catches API patterns like {events: [...], cursor: "..."} where the
+	// wrapper key matches the resource name. Without this, the PK profiler
+	// would walk the wrapper itself and pick a scalar sibling (cursor,
+	// has_more) as the resource ID.
+	if items := singleArrayProperty(schema); items != nil {
+		return items
+	}
+	return schema
+}
+
+// singleArrayProperty returns the items schema of an object's sole
+// array-typed property, or nil if zero or multiple array properties exist.
+// Non-array siblings (scalars, objects) are ignored — they're typically
+// pagination metadata.
+func singleArrayProperty(schema *openapi3.Schema) *openapi3.Schema {
+	var items *openapi3.Schema
+	count := 0
+	for _, propRef := range schema.Properties {
+		prop := schemaRefValue(propRef)
+		if !isArraySchema(prop) || prop.Items == nil {
+			continue
+		}
+		count++
+		if count > 1 {
+			return nil
+		}
+		items = schemaRefValue(prop.Items)
+	}
+	if count == 1 {
+		return items
 	}
 	return nil
 }

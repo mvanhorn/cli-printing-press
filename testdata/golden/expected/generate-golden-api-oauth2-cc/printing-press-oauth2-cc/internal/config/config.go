@@ -61,6 +61,24 @@ func Load(configPath string) (*Config, error) {
 		cfg.AuthSource = "env:PRINTING_PRESS_OAUTH2_CLIENT_SECRET"
 	}
 
+	// Label config-file-derived credentials so doctor can distinguish
+	// "credentials persisted on disk" from "no credentials at all" — without
+	// this, users who saved via set-token without an env var see a blank
+	// auth_source and can't tell whether their config is being picked up.
+	// The label is the literal "config" rather than "config:<path>"; the
+	// config file path is exposed separately as report["config_path"], and
+	// embedding it in auth_source leaks the user's home directory through
+	// doctor's JSON envelope.
+	if cfg.AuthSource == "" && (cfg.AuthHeaderVal != "" || cfg.AccessToken != "") {
+		cfg.AuthSource = "config"
+	}
+	if cfg.AuthSource == "" && cfg.PrintingPressOauth2ClientId != "" {
+		cfg.AuthSource = "config"
+	}
+	if cfg.AuthSource == "" && cfg.PrintingPressOauth2ClientSecret != "" {
+		cfg.AuthSource = "config"
+	}
+
 	// Base URL override (used by printing-press verify to point at mock/test servers)
 	if v := os.Getenv("PRINTING_PRESS_OAUTH2_BASE_URL"); v != "" {
 		cfg.BaseURL = v

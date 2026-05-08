@@ -97,17 +97,26 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			// Clear any legacy auth_header so AuthHeader() falls through to
-			// "Bearer " + AccessToken with the new token. Without this, a
-			// pre-existing auth_header value (common after regenerate) shadows
-			// the newly-saved access_token and set-token silently has no effect.
-			// Silent clear (no log line): a masked-tail variant could leak
-			// token bytes through scripted dogfood that captures stderr.
+			// the newly-saved credential. Without this, a pre-existing
+			// auth_header value (common after regenerate) shadows the saved
+			// token and set-token silently has no effect. Silent clear (no
+			// log line): a masked-tail variant could leak token bytes through
+			// scripted dogfood that captures stderr.
 			cfg.AuthHeaderVal = ""
 
-			// Save the token directly via the config's save mechanism
+{{- if and (eq .Auth.Type "api_key") .Auth.CanonicalEnvVar}}
+			// api_key auth: AuthHeader() reads the env-var-derived field, not
+			// AccessToken. Writing the token to AccessToken via SaveTokens
+			// would persist the bytes but leave doctor reporting "not
+			// configured" — the slot the header builder consults stays empty.
+			if err := cfg.SaveCredential(args[0]); err != nil {
+				return configErr(fmt.Errorf("saving token: %w", err))
+			}
+{{- else}}
 			if err := cfg.SaveTokens("", "", args[0], "", cfg.TokenExpiry); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
+{{- end}}
 
 			// JSON envelope: {saved, config_path}.
 			if flags.asJSON {

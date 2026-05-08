@@ -86,6 +86,39 @@ func Load(configPath string) (*Config, error) {
 		cfg.AuthSource = "env:RICH_AUTH_USER_TOKEN"
 	}
 
+	// Label config-file-derived credentials so doctor can distinguish
+	// "credentials persisted on disk" from "no credentials at all" — without
+	// this, users who saved via set-token without an env var see a blank
+	// auth_source and can't tell whether their config is being picked up.
+	// The label is the literal "config" rather than "config:<path>"; the
+	// config file path is exposed separately as report["config_path"], and
+	// embedding it in auth_source leaks the user's home directory through
+	// doctor's JSON envelope.
+	if cfg.AuthSource == "" && (cfg.AuthHeaderVal != "" || cfg.AccessToken != "") {
+		cfg.AuthSource = "config"
+	}
+	if cfg.AuthSource == "" && cfg.RichAuthApiKey != "" {
+		cfg.AuthSource = "config"
+	}
+	if cfg.AuthSource == "" && cfg.RichAuthClientId != "" {
+		cfg.AuthSource = "config"
+	}
+	if cfg.AuthSource == "" && cfg.RichAuthClientSecret != "" {
+		cfg.AuthSource = "config"
+	}
+	if cfg.AuthSource == "" && cfg.RichAuthSessionCookie != "" {
+		cfg.AuthSource = "config"
+	}
+	if cfg.AuthSource == "" && cfg.RichAuthOptionalToken != "" {
+		cfg.AuthSource = "config"
+	}
+	if cfg.AuthSource == "" && cfg.RichAuthBotToken != "" {
+		cfg.AuthSource = "config"
+	}
+	if cfg.AuthSource == "" && cfg.RichAuthUserToken != "" {
+		cfg.AuthSource = "config"
+	}
+
 	// Base URL override (used by printing-press verify to point at mock/test servers)
 	if v := os.Getenv("PRINTING_PRESS_RICH_BASE_URL"); v != "" {
 		cfg.BaseURL = v
@@ -126,6 +159,21 @@ func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken st
 	c.AccessToken = accessToken
 	c.RefreshToken = refreshToken
 	c.TokenExpiry = expiry
+	return c.save()
+}
+
+// SaveCredential persists a single API credential to the field that
+// AuthHeader() consults for api_key auth. Writing to AccessToken (the
+// bearer slot) would silently no-op since AuthHeader() reads the env-var-
+// derived field, not AccessToken, when Auth.Type == "api_key".
+//
+// The clears precede the assignment so a canonical env-var whose placeholder
+// collides with a builtin tag (e.g. an env var named XXX_ACCESS_TOKEN
+// resolving to the AccessToken field) ends up holding the new token.
+func (c *Config) SaveCredential(token string) error {
+	c.AuthHeaderVal = ""
+	c.AccessToken = ""
+	c.RichAuthApiKey = token
 	return c.save()
 }
 
