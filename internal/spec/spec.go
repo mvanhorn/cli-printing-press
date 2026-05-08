@@ -1091,6 +1091,10 @@ type TypeField struct {
 	// field simple (for example, totalPriceSet as json.RawMessage) while still
 	// issuing valid nested GraphQL selections.
 	Selection string `yaml:"selection,omitempty" json:"selection,omitempty"`
+	// IdentName overrides Name for Go-identifier derivation when two field
+	// names in the same struct sanitize to the same identifier through
+	// camel-casing. Wire-side serialization always reads Name.
+	IdentName string `yaml:"-" json:"-"`
 }
 
 func Parse(path string) (*APISpec, error) {

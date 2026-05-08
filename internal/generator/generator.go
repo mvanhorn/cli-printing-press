@@ -235,6 +235,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"mcpParamDesc":           g.mcpParamDescription,
 		"flagName":               flagName,
 		"paramIdent":             paramIdent,
+		"typeFieldIdent":         typeFieldIdent,
 		"safeTypeName":           safeTypeName,
 		"hasNonScalarType": func(types map[string]spec.TypeDef) bool {
 			for _, td := range types {
@@ -1313,6 +1314,8 @@ func (g *Generator) prepareOutput() error {
 	if err := g.dedupeFlagIdentifiers(); err != nil {
 		return err
 	}
+
+	g.dedupeTypeFieldIdentifiers()
 
 	return nil
 }
