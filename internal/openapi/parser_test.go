@@ -3379,6 +3379,9 @@ paths:
 
 func TestParseMCPExtensionRootBeatsInfo(t *testing.T) {
 	t.Parallel()
+	// Root and info declare mutually exclusive transports so the test
+	// distinguishes root-wins from a hypothetical merge that would satisfy
+	// both transports simultaneously.
 	data := []byte(`
 openapi: 3.0.3
 info:
@@ -3389,7 +3392,7 @@ info:
 servers:
   - url: https://api.example.com
 x-mcp:
-  transport: [stdio, http]
+  transport: [http]
 paths:
   /items:
     get:
@@ -3402,6 +3405,7 @@ paths:
 	parsed, err := Parse(data)
 	require.NoError(t, err)
 	assert.True(t, parsed.MCP.HasTransport("http"), "root x-mcp must take precedence over info.x-mcp")
+	assert.False(t, parsed.MCP.HasTransport("stdio"), "info.x-mcp transport must not leak through when root x-mcp is set")
 }
 
 func TestParseMCPExtensionRoundTripsAddrAndThreshold(t *testing.T) {
