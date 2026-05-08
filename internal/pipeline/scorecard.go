@@ -2161,7 +2161,7 @@ func scoreSyncCorrectness(dir string) int {
 	if strings.Contains(content, "SaveSyncState") {
 		score++
 	}
-	if strings.Contains(content, "paginatedGet") || strings.Contains(content, "hasNextPage") || strings.Contains(content, "endCursor") || strings.Contains(content, "cursor") {
+	if funcIsCalled(content, "paginatedGet") || strings.Contains(content, "hasNextPage") || strings.Contains(content, "endCursor") || strings.Contains(content, "cursor") {
 		score += 2
 	}
 	// URL path parameters only count when other sync signals are present,
@@ -2543,6 +2543,22 @@ func readFileContent(path string) string {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// funcIsCalled reports whether content references a Go function name in a
+// way that's not just its own definition. The bare-token check (used by
+// some scorers as a behavior signal) rewards a CLI that *defines* a helper
+// regardless of whether anything calls it — so polish removing a genuinely
+// dead helper would regress the score even though the CLI's pagination
+// behavior didn't change. Counting non-definition occurrences ties the
+// signal to actual use. See cli-printing-press#717.
+func funcIsCalled(content, name string) bool {
+	total := strings.Count(content, name)
+	if total == 0 {
+		return false
+	}
+	defs := strings.Count(content, "func "+name+"(")
+	return total > defs
 }
 
 func computeGrade(percentage int) string {
