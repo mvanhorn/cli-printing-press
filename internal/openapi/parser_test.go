@@ -3377,6 +3377,61 @@ paths:
 	assert.Empty(t, parsed.MCP.EndpointTools)
 }
 
+func TestParseMCPExtensionRootBeatsInfo(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Both-Levels API
+  version: 1.0.0
+  x-mcp:
+    transport: [stdio]
+servers:
+  - url: https://api.example.com
+x-mcp:
+  transport: [stdio, http]
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.True(t, parsed.MCP.HasTransport("http"), "root x-mcp must take precedence over info.x-mcp")
+}
+
+func TestParseMCPExtensionRoundTripsAddrAndThreshold(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Full MCP API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+x-mcp:
+  transport: [stdio, http]
+  addr: ":9090"
+  orchestration_threshold: 25
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	assert.Equal(t, ":9090", parsed.MCP.Addr)
+	assert.Equal(t, 25, parsed.MCP.OrchestrationThreshold)
+}
+
 func TestParseMCPExtensionRejectsUnknownTransport(t *testing.T) {
 	t.Parallel()
 	data := []byte(`
