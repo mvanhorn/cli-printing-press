@@ -4,13 +4,20 @@
 # Without OpenAPI parser support for x-mcp, all three artifacts below would
 # revert to the stdio-only endpoint-mirror defaults, regressing #696.
 
-# Provenance manifest: slug, mcp binary name, declared transports.
+# Provenance manifest: slug, mcp binary name, mcp tool counts. (CLIManifest
+# does not carry the transport list -- transport regressions surface in the
+# tools.go and main.go snapshots below.)
 mcp-cloudflare/.printing-press.json
 
 # Code-orchestration mode: tools.go must call RegisterCodeOrchestrationTools
 # instead of registering per-endpoint mirror tools. If endpoint_tools=hidden
 # stops being honored, this file would re-emit per-endpoint registrations.
 mcp-cloudflare/internal/mcp/tools.go
+
+# Code-orchestration tool bodies: tools.go calls RegisterCodeOrchestrationTools,
+# but the actual <api>_search + <api>_execute implementations live here.
+# Locking tools.go alone would miss regressions in this file's content.
+mcp-cloudflare/internal/mcp/code_orch.go
 
 # HTTP transport opt-in: the mcp binary's main.go must compile both stdio
 # and http transports and expose the --transport / --addr flags. If

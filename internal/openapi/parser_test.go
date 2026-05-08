@@ -3436,6 +3436,60 @@ paths:
 	assert.Equal(t, 25, parsed.MCP.OrchestrationThreshold)
 }
 
+func TestParseMCPExtensionRoundTripsIntents(t *testing.T) {
+	t.Parallel()
+	// Intents is the most structurally complex MCPConfig field
+	// (nested []Intent -> []IntentParam + []IntentStep with map[string]string Bind).
+	// This test catches a bad json tag anywhere in that tree by asserting the
+	// whole shape parses cleanly through the JSON marshal/unmarshal roundtrip,
+	// then validates against the spec's resources.
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Intent API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+x-mcp:
+  intents:
+    - name: list_all_items
+      description: Fetch every item
+      params:
+        - name: limit
+          type: integer
+          required: false
+          description: Cap on items returned
+      steps:
+        - endpoint: items.list
+          bind:
+            limit: ${input.limit}
+          capture: items
+      returns: items
+paths:
+  /items:
+    get:
+      operationId: listItems
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+	require.Len(t, parsed.MCP.Intents, 1)
+	intent := parsed.MCP.Intents[0]
+	assert.Equal(t, "list_all_items", intent.Name)
+	require.Len(t, intent.Params, 1)
+	assert.Equal(t, "limit", intent.Params[0].Name)
+	assert.Equal(t, "integer", intent.Params[0].Type)
+	require.Len(t, intent.Steps, 1)
+	assert.Equal(t, "items.list", intent.Steps[0].Endpoint)
+	assert.Equal(t, "${input.limit}", intent.Steps[0].Bind["limit"])
+	assert.Equal(t, "items", intent.Steps[0].Capture)
+	assert.Equal(t, "items", intent.Returns)
+}
+
 func TestParseMCPExtensionRejectsUnknownTransport(t *testing.T) {
 	t.Parallel()
 	data := []byte(`
