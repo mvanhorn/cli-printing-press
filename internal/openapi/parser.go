@@ -307,8 +307,12 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	if baseURL != "" {
 		resourceBasePath = baseURLPath(baseURL)
 	}
-	mapResources(doc, result, resourceBasePath)
+	// mapTypes runs before mapResources so Components.Schemas types are
+	// registered first. registerInlineSchemaType (called from mapResponse)
+	// has an exists-check, so Components-defined types win on name
+	// collisions; inline schemas only fill genuine gaps.
 	mapTypes(doc, result)
+	mapResources(doc, result, resourceBasePath)
 
 	// Post-parse sweep: if the spec has no authentication at all (not inferred
 	// from description keywords), mark every endpoint as NoAuth. The per-operation
@@ -1553,7 +1557,11 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				endpoint.Tier = pathTier
 			}
 
-			endpoint.Response, endpoint.ResponsePath = mapResponse(op, endpointName)
+			// Namespace the inline-item synthetic name with the resource so
+			// two resources whose default GET endpoints both compute the
+			// same endpointName ("list") don't collide on a shared
+			// "ListItem" Types entry.
+			endpoint.Response, endpoint.ResponsePath = mapResponse(op, targetResourceName+"_"+endpointName, out)
 			if strings.ToUpper(method) == "GET" {
 				endpoint.Pagination = detectPagination(endpoint.Params, op)
 			}
@@ -2438,7 +2446,7 @@ func collectAllOfProperties(
 	return false
 }
 
-func mapResponse(op *openapi3.Operation, fallbackName string) (spec.ResponseDef, string) {
+func mapResponse(op *openapi3.Operation, fallbackName string, out *spec.APISpec) (spec.ResponseDef, string) {
 	if op == nil || op.Responses == nil {
 		return spec.ResponseDef{}, ""
 	}
@@ -2457,26 +2465,32 @@ func mapResponse(op *openapi3.Operation, fallbackName string) (spec.ResponseDef,
 	if isObjectSchema(schema) {
 		if dataRef := schema.Properties["data"]; dataRef != nil && isArraySchema(schemaRefValue(dataRef)) {
 			itemRef := schemaRefValue(dataRef).Items
+			itemFallback := fallbackName + "Item"
+			registerInlineSchemaType(out, itemRef, itemFallback)
 			return spec.ResponseDef{
 				Type:          "array",
-				Item:          schemaTypeName(itemRef, fallbackName+"Item"),
+				Item:          schemaTypeName(itemRef, itemFallback),
 				Discriminator: mapResponseDiscriminator(itemRef),
 			}, "data"
 		}
 	}
 
 	if isArraySchema(schema) {
+		itemFallback := fallbackName + "Item"
+		registerInlineSchemaType(out, schema.Items, itemFallback)
 		return spec.ResponseDef{
 			Type:          "array",
-			Item:          schemaTypeName(schema.Items, fallbackName+"Item"),
+			Item:          schemaTypeName(schema.Items, itemFallback),
 			Discriminator: mapResponseDiscriminator(schema.Items),
 		}, ""
 	}
 
 	if isObjectSchema(schema) {
+		objFallback := fallbackName + "Response"
+		registerInlineSchemaType(out, schemaRef, objFallback)
 		return spec.ResponseDef{
 			Type:          "object",
-			Item:          schemaTypeName(schemaRef, fallbackName+"Response"),
+			Item:          schemaTypeName(schemaRef, objFallback),
 			Discriminator: mapResponseDiscriminator(schemaRef),
 		}, ""
 	}
@@ -2737,40 +2751,81 @@ func mapTypes(doc *openapi3.T, out *spec.APISpec) {
 			continue
 		}
 
-		properties := map[string]*openapi3.SchemaRef{}
-		if isJSONAPIResourceSchema(schema) {
-			jsonAPIFlattenInto(schema, properties)
-		} else {
-			collectTypeProperties(schemaRef, properties, map[*openapi3.Schema]struct{}{})
-		}
-
-		fieldNames := make([]string, 0, len(properties))
-		for fieldName := range properties {
-			fieldNames = append(fieldNames, fieldName)
-		}
-		sort.Strings(fieldNames)
-
-		fields := make([]spec.TypeField, 0, len(fieldNames))
-		seenGoNames := map[string]bool{}
-		for _, fieldName := range fieldNames {
-			if strings.HasPrefix(fieldName, "_") {
-				continue
-			}
-			goFieldName := toCamelCase(fieldName)
-			if seenGoNames[goFieldName] {
-				continue
-			}
-			seenGoNames[goFieldName] = true
-			fieldSchema := schemaRefValue(properties[fieldName])
-			fields = append(fields, spec.TypeField{
-				Name: fieldName,
-				Type: mapSchemaType(fieldSchema),
-				Enum: schemaEnum(fieldSchema),
-			})
-		}
-
-		out.Types[goName] = spec.TypeDef{Fields: fields}
+		out.Types[goName] = spec.TypeDef{Fields: buildTypeFields(schemaRef)}
 	}
+}
+
+// buildTypeFields walks an object schema's properties (flattening JSON:API
+// resource shapes the same way mapTypes/mapResponse do elsewhere) and
+// returns the spec.TypeField list used by both Components.Schemas type
+// registration and inline-response item registration. Underscore-prefixed
+// property names and Go-name collisions are filtered out so the same field
+// set drives generated Go structs and SQLite column derivation.
+func buildTypeFields(schemaRef *openapi3.SchemaRef) []spec.TypeField {
+	schema := schemaRefValue(schemaRef)
+	if schema == nil {
+		return nil
+	}
+	properties := map[string]*openapi3.SchemaRef{}
+	if isJSONAPIResourceSchema(schema) {
+		jsonAPIFlattenInto(schema, properties)
+	} else {
+		collectTypeProperties(schemaRef, properties, map[*openapi3.Schema]struct{}{})
+	}
+
+	fieldNames := make([]string, 0, len(properties))
+	for fieldName := range properties {
+		fieldNames = append(fieldNames, fieldName)
+	}
+	sort.Strings(fieldNames)
+
+	fields := make([]spec.TypeField, 0, len(fieldNames))
+	seenGoNames := map[string]bool{}
+	for _, fieldName := range fieldNames {
+		if strings.HasPrefix(fieldName, "_") {
+			continue
+		}
+		goFieldName := toCamelCase(fieldName)
+		if seenGoNames[goFieldName] {
+			continue
+		}
+		seenGoNames[goFieldName] = true
+		fieldSchema := schemaRefValue(properties[fieldName])
+		fields = append(fields, spec.TypeField{
+			Name:   fieldName,
+			Type:   mapSchemaType(fieldSchema),
+			Enum:   schemaEnum(fieldSchema),
+			Format: schemaFormat(fieldSchema),
+		})
+	}
+	return fields
+}
+
+// registerInlineSchemaType registers an inline response schema (item type
+// for list responses or full object type for single-object responses) into
+// out.Types under the synthetic name mapResponse uses for
+// endpoint.Response.Item. $ref-shaped schemas already land in Types via
+// mapTypes; this only fires when the schema is inline and the slot is
+// empty. No-op when out is nil (test-only callers).
+func registerInlineSchemaType(out *spec.APISpec, itemRef *openapi3.SchemaRef, fallbackName string) {
+	if out == nil || itemRef == nil || refComponentName(itemRef.Ref) != "" {
+		return
+	}
+	itemSchema := schemaRefValue(itemRef)
+	if itemSchema == nil || !isObjectSchema(itemSchema) {
+		return
+	}
+	typeName := schemaTypeName(itemRef, fallbackName)
+	if typeName == "" {
+		return
+	}
+	if out.Types == nil {
+		out.Types = map[string]spec.TypeDef{}
+	}
+	if _, exists := out.Types[typeName]; exists {
+		return
+	}
+	out.Types[typeName] = spec.TypeDef{Fields: buildTypeFields(itemRef)}
 }
 
 func mapResponseDiscriminator(schemaRef *openapi3.SchemaRef) *spec.ResponseDiscriminator {

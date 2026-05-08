@@ -2212,14 +2212,21 @@ func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
 						Method:      "GET",
 						Path:        "/campaigns",
 						Description: "List campaigns",
-						Response:    spec.ResponseDef{Type: "array"},
-						Params: []spec.Param{
-							{Name: "id", Type: "string"},
-							{Name: "name", Type: "string"},
-							{Name: "status", Type: "string"},
-							{Name: "account_id", Type: "string"},
-						},
+						// Column derivation reads the response shape (Types
+						// entry below), not request Params, so the fixture
+						// must declare Response.Item.
+						Response: spec.ResponseDef{Type: "array", Item: "Campaign"},
 					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Campaign": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "name", Type: "string"},
+					{Name: "status", Type: "string"},
+					{Name: "account_id", Type: "string"},
 				},
 			},
 		},
@@ -2251,17 +2258,15 @@ func TestSyncDiscriminatorDispatchRoutesMixedItemsToTypedTables(t *testing.T) {
 	t.Parallel()
 
 	typedListEndpoint := func(path string) spec.Endpoint {
+		// Response.Item drives typed-column emission via the TypedEntity
+		// Types entry below. Without it the discriminator-routed tables
+		// would degrade to id/data/synced_at and the dispatch test would
+		// have nowhere to write rows.
 		return spec.Endpoint{
 			Method:      "GET",
 			Path:        path,
 			Description: "List typed entities",
-			Response:    spec.ResponseDef{Type: "array"},
-			Params: []spec.Param{
-				{Name: "id", Type: "string"},
-				{Name: "type", Type: "string"},
-				{Name: "name", Type: "string"},
-				{Name: "created_at", Type: "string", Format: "date-time"},
-			},
+			Response:    spec.ResponseDef{Type: "array", Item: "TypedEntity"},
 		}
 	}
 
@@ -2306,6 +2311,14 @@ func TestSyncDiscriminatorDispatchRoutesMixedItemsToTypedTables(t *testing.T) {
 				Fields: []spec.TypeField{
 					{Name: "type", Type: "string", Enum: []string{"workspace", "collection", "team"}},
 					{Name: "id", Type: "string"},
+				},
+			},
+			"TypedEntity": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "type", Type: "string"},
+					{Name: "name", Type: "string"},
+					{Name: "created_at", Type: "string", Format: "date-time"},
 				},
 			},
 		},
@@ -2389,15 +2402,19 @@ func TestGenerateStoreBackfillsIndexedColumnsOnUpgrade(t *testing.T) {
 						Method:      "GET",
 						Path:        "/emails",
 						Description: "List emails",
-						Response:    spec.ResponseDef{Type: "array"},
-						Params: []spec.Param{
-							{Name: "id", Type: "string"},
-							{Name: "email_id", Type: "string"},
-							{Name: "name", Type: "string"},
-							{Name: "description", Type: "string"},
-							{Name: "created_at", Type: "string", Format: "date-time"},
-						},
+						Response:    spec.ResponseDef{Type: "array", Item: "Email"},
 					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Email": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "email_id", Type: "string"},
+					{Name: "name", Type: "string"},
+					{Name: "description", Type: "string"},
+					{Name: "created_at", Type: "string", Format: "date-time"},
 				},
 			},
 		},
@@ -2438,16 +2455,20 @@ func TestGenerateStoreQuotesNumericTableAndDerivedIdentifiers(t *testing.T) {
 						Method:      "GET",
 						Path:        "/0",
 						Description: "List numeric resources",
-						Response:    spec.ResponseDef{Type: "array"},
-						Params: []spec.Param{
-							{Name: "id", Type: "string"},
-							{Name: "replay_id", Type: "string"},
-							{Name: "name", Type: "string"},
-							{Name: "description", Type: "string"},
-							{Name: "message", Type: "string"},
-							{Name: "created_at", Type: "string", Format: "date-time"},
-						},
+						Response:    spec.ResponseDef{Type: "array", Item: "Numeric"},
 					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Numeric": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "replay_id", Type: "string"},
+					{Name: "name", Type: "string"},
+					{Name: "description", Type: "string"},
+					{Name: "message", Type: "string"},
+					{Name: "created_at", Type: "string", Format: "date-time"},
 				},
 			},
 		},
@@ -7263,13 +7284,18 @@ func TestStoreSkipsDeadTablesForResourcesWithoutTypedUpsert(t *testing.T) {
 						Method:      "GET",
 						Path:        "/items",
 						Description: "List items",
-						Params: []spec.Param{
-							{Name: "id", Type: "string"},
-							{Name: "name", Type: "string"},
-							{Name: "status", Type: "string"},
-							{Name: "created_at", Type: "string", Format: "date-time"},
-						},
+						Response:    spec.ResponseDef{Type: "array", Item: "Item"},
 					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Item": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "name", Type: "string"},
+					{Name: "status", Type: "string"},
+					{Name: "created_at", Type: "string", Format: "date-time"},
 				},
 			},
 		},

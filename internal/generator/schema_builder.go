@@ -31,6 +31,15 @@ type IndexDef struct {
 	Unique    bool
 }
 
+// baseTableColumns are the three columns every domain table starts with.
+// Used both as the initial column set and as the "already emitted" guard
+// when extending the table with response-derived columns.
+var baseTableColumns = []ColumnDef{
+	{Name: "id", Type: "TEXT", PrimaryKey: true},
+	{Name: "data", Type: "JSON", NotNull: true},
+	{Name: "synced_at", Type: "DATETIME DEFAULT CURRENT_TIMESTAMP"},
+}
+
 // BuildSchema generates domain-specific table definitions from the API spec.
 // High-gravity entities (many endpoints, text fields, temporal fields) get
 // full column extraction. Low-gravity entities get simple id+data tables.
@@ -49,38 +58,44 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 
 	for _, name := range resourceNames {
 		resource := s.Resources[name]
-		gravity := computeDataGravity(name, resource)
+		fields := collectResponseFields(s, resource)
+		gravity := computeDataGravity(resource, fields)
 		tableName := toSnakeCase(name)
 
 		table := TableDef{
-			Name: tableName,
-			Columns: []ColumnDef{
-				{Name: "id", Type: "TEXT", PrimaryKey: true},
-				{Name: "data", Type: "JSON", NotNull: true},
-				{Name: "synced_at", Type: "DATETIME DEFAULT CURRENT_TIMESTAMP"},
-			},
+			Name:    tableName,
+			Columns: append([]ColumnDef(nil), baseTableColumns...),
 		}
 
 		if gravity >= 2 {
-			fields := collectResponseFields(resource)
+			seenColumns := map[string]bool{}
+			for _, c := range baseTableColumns {
+				seenColumns[c.Name] = true
+			}
+			seenIndexes := map[string]bool{}
 			for _, f := range fields {
-				if isScalarField(f) && f.Name != "id" {
-					col := ColumnDef{
-						Name: toSnakeCase(f.Name),
+				colName := toSnakeCase(f.Name)
+				if isScalarTypeField(f) && !seenColumns[colName] {
+					seenColumns[colName] = true
+					table.Columns = append(table.Columns, ColumnDef{
+						Name: colName,
 						Type: sqliteType(f.Type, f.Format),
-					}
-					table.Columns = append(table.Columns, col)
+					})
 				}
 				if strings.HasSuffix(strings.ToLower(f.Name), "_id") {
-					table.Indexes = append(table.Indexes, IndexDef{
-						Name:      "idx_" + tableName + "_" + toSnakeCase(f.Name),
-						TableName: tableName,
-						Columns:   toSnakeCase(f.Name),
-					})
+					idxName := "idx_" + tableName + "_" + colName
+					if !seenIndexes[idxName] {
+						seenIndexes[idxName] = true
+						table.Indexes = append(table.Indexes, IndexDef{
+							Name:      idxName,
+							TableName: tableName,
+							Columns:   colName,
+						})
+					}
 				}
 			}
 			for _, temporal := range []string{"created_at", "updated_at"} {
-				if hasField(fields, temporal) {
+				if hasTypeField(fields, temporal) {
 					table.Indexes = append(table.Indexes, IndexDef{
 						Name:      "idx_" + tableName + "_" + temporal,
 						TableName: tableName,
@@ -90,7 +105,7 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 			}
 		}
 
-		textFields := collectTextFieldNames(resource)
+		textFields := collectTextFieldNamesFromFields(fields)
 		if len(textFields) >= 2 && gravity >= 2 {
 			table.FTS5 = true
 			table.FTS5Fields = textFields
@@ -140,12 +155,14 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 	return tables
 }
 
-// computeDataGravity scores 0-12 based on endpoint count, field count,
-// text fields, temporal fields, and FK references.
-func computeDataGravity(name string, r spec.Resource) int {
+// computeDataGravity scores 0-12 based on endpoint count, response field
+// count, text fields, temporal fields, and FK references. Caller passes
+// the resolved response fields (collectResponseFields) so the function
+// doesn't re-walk the spec; gravity scoring uses the same response shape
+// the rest of BuildSchema relies on.
+func computeDataGravity(r spec.Resource, fields []spec.TypeField) int {
 	score := 0
 
-	// Endpoint count: 1pt per endpoint, max 4
 	epCount := len(r.Endpoints)
 	if epCount >= 4 {
 		score += 4
@@ -153,46 +170,34 @@ func computeDataGravity(name string, r spec.Resource) int {
 		score += epCount
 	}
 
-	// Field count from all params/body across endpoints
-	totalFields := 0
-	for _, ep := range r.Endpoints {
-		totalFields += len(ep.Params) + len(ep.Body)
-	}
-	if totalFields >= 10 {
+	if len(fields) >= 10 {
 		score += 2
-	} else if totalFields >= 5 {
+	} else if len(fields) >= 5 {
 		score += 1
 	}
 
-	// Text fields bonus
-	textFields := collectTextFieldNames(r)
+	textFields := collectTextFieldNamesFromFields(fields)
 	if len(textFields) >= 3 {
 		score += 2
 	} else if len(textFields) >= 1 {
 		score += 1
 	}
 
-	// Temporal fields bonus
-	allFields := collectResponseFields(r)
 	temporalCount := 0
-	for _, f := range allFields {
+	fkCount := 0
+	for _, f := range fields {
 		lower := strings.ToLower(f.Name)
 		if strings.HasSuffix(lower, "_at") || strings.Contains(lower, "date") || f.Format == "date-time" {
 			temporalCount++
+		}
+		if strings.HasSuffix(lower, "_id") {
+			fkCount++
 		}
 	}
 	if temporalCount >= 2 {
 		score += 2
 	} else if temporalCount >= 1 {
 		score += 1
-	}
-
-	// FK references bonus
-	fkCount := 0
-	for _, f := range allFields {
-		if strings.HasSuffix(strings.ToLower(f.Name), "_id") {
-			fkCount++
-		}
 	}
 	if fkCount >= 2 {
 		score += 2
@@ -206,48 +211,75 @@ func computeDataGravity(name string, r spec.Resource) int {
 	return score
 }
 
-// collectResponseFields gathers all field specs from GET endpoints.
-func collectResponseFields(r spec.Resource) []spec.Param {
-	seen := make(map[string]bool)
-	var fields []spec.Param
+// collectResponseFields gathers per-item response fields for a resource's
+// endpoints, resolved via s.Types[endpoint.Response.Item]. Fields are
+// returned in the order they appear in the response type, deduplicated
+// across endpoints (list and detail share an item shape).
+//
+// Why response Types and not request Params/Body: query/path/body fields
+// are inputs sent to the API; sync stores what the API returns. Sourcing
+// columns from request-side fields means sync can never populate them.
+// When the response type is not registered in s.Types the resource yields
+// no fields and the caller leaves the table at id/data/synced_at —
+// falling back to request fields would re-emit columns sync can't fill.
+//
+// GET endpoints are walked first; non-GET (POST/PUT/PATCH) endpoints are
+// walked only if no GET endpoint contributed any fields. This handles
+// write-only resources (event-emit, webhook ingestion) whose POST/PUT
+// response is the canonical record shape, without letting wrapper-shaped
+// create-responses pollute typed columns when a GET endpoint exists.
+//
+// On dedup, an entry without a Format hint is upgraded if a later
+// endpoint declares the same field with a non-empty Format. Otherwise
+// list-vs-detail Format drift could downgrade a DATETIME column to TEXT
+// based on alphabetic endpoint-key order.
+func collectResponseFields(s *spec.APISpec, r spec.Resource) []spec.TypeField {
+	endpointKeys := make([]string, 0, len(r.Endpoints))
+	for k := range r.Endpoints {
+		endpointKeys = append(endpointKeys, k)
+	}
+	sort.Strings(endpointKeys)
 
-	for _, ep := range r.Endpoints {
-		if ep.Method != "GET" {
-			continue
-		}
-		for _, p := range ep.Params {
-			if !seen[p.Name] {
-				seen[p.Name] = true
-				fields = append(fields, p)
+	collect := func(predicate func(method string) bool) []spec.TypeField {
+		seenIdx := make(map[string]int)
+		var fields []spec.TypeField
+		for _, key := range endpointKeys {
+			ep := r.Endpoints[key]
+			if !predicate(ep.Method) {
+				continue
+			}
+			typeName := ep.Response.Item
+			if typeName == "" {
+				continue
+			}
+			typeDef, ok := s.Types[typeName]
+			if !ok {
+				continue
+			}
+			for _, f := range typeDef.Fields {
+				if existing, ok := seenIdx[f.Name]; ok {
+					if fields[existing].Format == "" && f.Format != "" {
+						fields[existing].Format = f.Format
+					}
+					continue
+				}
+				seenIdx[f.Name] = len(fields)
+				fields = append(fields, f)
 			}
 		}
-		for _, p := range ep.Body {
-			if !seen[p.Name] {
-				seen[p.Name] = true
-				fields = append(fields, p)
-			}
-		}
+		return fields
 	}
 
-	// Also include body fields from POST/PUT as they often mirror response shape
-	for _, ep := range r.Endpoints {
-		if ep.Method == "GET" {
-			continue
-		}
-		for _, p := range ep.Body {
-			if !seen[p.Name] {
-				seen[p.Name] = true
-				fields = append(fields, p)
-			}
-		}
+	if got := collect(func(m string) bool { return m == "GET" }); len(got) > 0 {
+		return got
 	}
-
-	return fields
+	return collect(func(m string) bool { return m != "GET" })
 }
 
-// isScalarField returns true for string/int/bool/number fields (not objects/arrays).
-func isScalarField(p spec.Param) bool {
-	switch strings.ToLower(p.Type) {
+// isScalarTypeField returns true for string/int/bool/number TypeFields
+// (not objects/arrays).
+func isScalarTypeField(f spec.TypeField) bool {
+	switch strings.ToLower(f.Type) {
 	case "string", "integer", "int", "boolean", "bool", "number", "float":
 		return true
 	default:
@@ -274,35 +306,38 @@ func sqliteType(goType, format string) string {
 	}
 }
 
-// collectTextFieldNames finds fields likely to contain searchable text.
-func collectTextFieldNames(r spec.Resource) []string {
-	textKeywords := map[string]bool{
-		"title": true, "name": true, "description": true,
-		"body": true, "content": true, "summary": true, "subject": true,
-		"text": true, "message": true, "comment": true, "note": true,
-		"notes": true, "tag": true, "tags": true, "label": true, "labels": true,
-		"category": true, "categories": true, "metadata": true,
-	}
+// textFieldKeywords flags response field names that should feed the FTS5
+// index. Defined at package scope so callers don't reallocate per call.
+var textFieldKeywords = map[string]bool{
+	"title": true, "name": true, "description": true,
+	"body": true, "content": true, "summary": true, "subject": true,
+	"text": true, "message": true, "comment": true, "note": true,
+	"notes": true, "tag": true, "tags": true, "label": true, "labels": true,
+	"category": true, "categories": true, "metadata": true,
+}
 
+// collectTextFieldNamesFromFields picks searchable scalar string fields
+// out of an already-resolved response field list. Keeps the FTS index
+// pinned to fields sync actually stores — request-side filter knobs like
+// `tags` or `labels` never appear here because they aren't in the
+// response schema.
+func collectTextFieldNamesFromFields(fields []spec.TypeField) []string {
 	seen := make(map[string]bool)
 	var result []string
-
-	for _, ep := range r.Endpoints {
-		allParams := append(ep.Params, ep.Body...)
-		for _, p := range allParams {
-			lower := strings.ToLower(p.Name)
-			if textKeywords[lower] && !seen[lower] && isScalarField(p) {
-				seen[lower] = true
-				result = append(result, toSnakeCase(p.Name))
-			}
+	for _, f := range fields {
+		lower := strings.ToLower(f.Name)
+		if !textFieldKeywords[lower] || seen[lower] || !isScalarTypeField(f) {
+			continue
 		}
+		seen[lower] = true
+		result = append(result, toSnakeCase(f.Name))
 	}
-
 	return result
 }
 
-// hasField checks if a field with the given name exists in the list.
-func hasField(fields []spec.Param, name string) bool {
+// hasTypeField reports whether fields contains an entry whose name matches
+// the given snake_cased-or-lowered key.
+func hasTypeField(fields []spec.TypeField, name string) bool {
 	for _, f := range fields {
 		if toSnakeCase(f.Name) == name || strings.ToLower(f.Name) == name {
 			return true
@@ -312,28 +347,29 @@ func hasField(fields []spec.Param, name string) bool {
 }
 
 // buildSubResourceTable creates a table definition for a sub-resource with
-// a foreign key column referencing the parent table.
+// a foreign key column referencing the parent table. Sub-resources share
+// the base id/data/synced_at shape with top-level tables and add a
+// parent_id column between id and data.
 func buildSubResourceTable(name string, r spec.Resource, parentTable string) TableDef {
 	tableName := toSnakeCase(name)
+	parentCol := parentTable + "_id"
 
-	table := TableDef{
-		Name: tableName,
-		Columns: []ColumnDef{
-			{Name: "id", Type: "TEXT", PrimaryKey: true},
-			{Name: parentTable + "_id", Type: "TEXT", NotNull: true},
-			{Name: "data", Type: "JSON", NotNull: true},
-			{Name: "synced_at", Type: "DATETIME DEFAULT CURRENT_TIMESTAMP"},
-		},
+	columns := make([]ColumnDef, 0, len(baseTableColumns)+1)
+	columns = append(columns, baseTableColumns[0]) // id
+	columns = append(columns, ColumnDef{Name: parentCol, Type: "TEXT", NotNull: true})
+	columns = append(columns, baseTableColumns[1:]...) // data, synced_at
+
+	return TableDef{
+		Name:    tableName,
+		Columns: columns,
 		Indexes: []IndexDef{
 			{
-				Name:      "idx_" + tableName + "_" + parentTable + "_id",
+				Name:      "idx_" + tableName + "_" + parentCol,
 				TableName: tableName,
-				Columns:   parentTable + "_id",
+				Columns:   parentCol,
 			},
 		},
 	}
-
-	return table
 }
 
 // sqlReservedWords is the set of SQL keywords that must be quoted when used

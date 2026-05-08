@@ -1086,6 +1086,12 @@ type TypeField struct {
 	Name string   `yaml:"name" json:"name"`
 	Type string   `yaml:"type" json:"type"`
 	Enum []string `yaml:"enum,omitempty" json:"enum,omitempty"`
+	// Format mirrors the OpenAPI `format` hint for the field (date-time,
+	// date, email, uri, …). Carried through so SQLite column derivation
+	// can map date/date-time response fields to DATETIME instead of TEXT.
+	// Empty for fields with no format declared and for internal YAML specs
+	// that never set it.
+	Format string `yaml:"format,omitempty" json:"format,omitempty"`
 	// Selection is an optional GraphQL sub-selection rendered when this field
 	// is used in a generated GraphQL query. It lets wrapper specs keep the Go
 	// field simple (for example, totalPriceSet as json.RawMessage) while still

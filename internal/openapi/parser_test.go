@@ -120,6 +120,310 @@ components:
 	assert.Equal(t, []string{"workspace", "collection"}, typeField.Enum)
 }
 
+// TestParseRegistersInlineListResponseItemTypes pins that inline list-
+// response item schemas land in APISpec.Types under the synthetic name
+// mapResponse stores in endpoint.Response.Item. Without this, a list
+// endpoint whose item schema is declared inline produces a Types miss and
+// the generated store table degrades to id/data/synced_at, losing every
+// typed column for that resource.
+func TestParseRegistersInlineListResponseItemTypes(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Inline Issues API
+  version: 1.0.0
+paths:
+  /issues:
+    get:
+      operationId: listIssues
+      parameters:
+        - name: filter
+          in: query
+          schema:
+            type: string
+        - name: state
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: integer
+                    title:
+                      type: string
+                    state:
+                      type: string
+                    created_at:
+                      type: string
+                      format: date-time
+`))
+	require.NoError(t, err)
+
+	endpoint := parsed.Resources["issues"].Endpoints["list"]
+	require.NotEmpty(t, endpoint.Response.Item, "list endpoint should resolve a response item type name")
+
+	typeDef, ok := parsed.Types[endpoint.Response.Item]
+	require.True(t, ok, "inline response item schema must register into Types under %q",
+		endpoint.Response.Item)
+
+	fieldsByName := map[string]spec.TypeField{}
+	for _, f := range typeDef.Fields {
+		fieldsByName[f.Name] = f
+	}
+
+	for _, want := range []string{"id", "title", "state", "created_at"} {
+		_, ok := fieldsByName[want]
+		assert.True(t, ok, "expected response field %q registered under inline item type", want)
+	}
+
+	// Format hint must propagate so DATETIME columns survive end-to-end.
+	assert.Equal(t, "date-time", fieldsByName["created_at"].Format,
+		"created_at format must be carried through TypeField for DATETIME mapping")
+
+	// Request-side query parameters must NOT bleed into the response type.
+	for _, leak := range []string{"filter"} {
+		_, leaked := fieldsByName[leak]
+		assert.False(t, leaked, "request parameter %q must not appear in response Type", leak)
+	}
+}
+
+// TestParseInlineItemTypesNamespacedByResource pins that two resources
+// whose default GET endpoints share an endpointName ("list") and both
+// declare inline (no-$ref, no-title) array-item schemas get distinct
+// Types entries. Without resource-namespacing, both registrations would
+// land on the same synthetic name and the second resource would silently
+// inherit the first's response shape — re-introducing the wrong-columns
+// bug class for cross-resource cases.
+func TestParseInlineItemTypesNamespacedByResource(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Two Resources
+  version: 1.0.0
+paths:
+  /issues:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    issue_field:
+                      type: string
+  /users:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    user_field:
+                      type: string
+`))
+	require.NoError(t, err)
+
+	issuesItem := parsed.Resources["issues"].Endpoints["list"].Response.Item
+	usersItem := parsed.Resources["users"].Endpoints["list"].Response.Item
+	require.NotEmpty(t, issuesItem)
+	require.NotEmpty(t, usersItem)
+	assert.NotEqual(t, issuesItem, usersItem,
+		"two resources with default-named GET endpoints must produce distinct synthetic item type names")
+
+	issuesType, ok := parsed.Types[issuesItem]
+	require.True(t, ok)
+	usersType, ok := parsed.Types[usersItem]
+	require.True(t, ok)
+
+	issuesNames := []string{}
+	for _, f := range issuesType.Fields {
+		issuesNames = append(issuesNames, f.Name)
+	}
+	usersNames := []string{}
+	for _, f := range usersType.Fields {
+		usersNames = append(usersNames, f.Name)
+	}
+	assert.Contains(t, issuesNames, "issue_field")
+	assert.NotContains(t, issuesNames, "user_field",
+		"issues item type must not contain users' fields")
+	assert.Contains(t, usersNames, "user_field")
+	assert.NotContains(t, usersNames, "issue_field",
+		"users item type must not contain issues' fields")
+}
+
+// TestParseRegistersInlineSingleObjectResponseTypes pins that detail-only
+// resources (GET /x/{id} with a single-object inline response) get their
+// per-item schema registered into Types. Without registration, BuildSchema
+// would degrade these tables to id/data/synced_at and lose typed columns
+// for any API that exposes only a detail endpoint.
+func TestParseRegistersInlineSingleObjectResponseTypes(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Detail Only
+  version: 1.0.0
+paths:
+  /widgets/{id}:
+    get:
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  name:
+                    type: string
+                  created_at:
+                    type: string
+                    format: date-time
+`))
+	require.NoError(t, err)
+
+	endpoint := parsed.Resources["widgets"].Endpoints["get"]
+	require.NotEmpty(t, endpoint.Response.Item)
+
+	typeDef, ok := parsed.Types[endpoint.Response.Item]
+	require.True(t, ok, "single-object inline response should register a Types entry under %q", endpoint.Response.Item)
+
+	names := []string{}
+	for _, f := range typeDef.Fields {
+		names = append(names, f.Name)
+	}
+	assert.Contains(t, names, "name")
+	assert.Contains(t, names, "created_at")
+}
+
+// TestParseAndBuildSchemaSourcesColumnsFromResponse is the end-to-end
+// regression for the OpenAPI parser → BuildSchema seam. A list endpoint
+// with filter/sort/pagination query parameters must produce a SQLite
+// table whose columns mirror the response item schema, not the request-
+// side parameters — otherwise sync stores nothing in those columns and
+// SQL queries silently return NULL.
+func TestParseAndBuildSchemaSourcesColumnsFromResponse(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Issues
+  version: 1.0.0
+paths:
+  /issues:
+    get:
+      operationId: listIssues
+      parameters:
+        - name: filter
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema: { type: string }
+        - name: labels
+          in: query
+          schema: { type: string }
+        - name: sort
+          in: query
+          schema: { type: string }
+        - name: per_page
+          in: query
+          schema: { type: integer }
+        - name: page
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Issue"
+components:
+  schemas:
+    Issue:
+      type: object
+      properties:
+        id:
+          type: integer
+        number:
+          type: integer
+        title:
+          type: string
+        body:
+          type: string
+        state:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+`))
+	require.NoError(t, err)
+
+	tables := generator.BuildSchema(parsed)
+	var issues *generator.TableDef
+	for i := range tables {
+		if tables[i].Name == "issues" {
+			issues = &tables[i]
+			break
+		}
+	}
+	require.NotNil(t, issues, "issues table should be emitted from the parsed spec")
+
+	cols := map[string]string{}
+	for _, c := range issues.Columns {
+		cols[c.Name] = c.Type
+	}
+
+	// Response-derived columns must be present.
+	for _, want := range []string{"number", "title", "body", "state", "created_at", "updated_at"} {
+		assert.Contains(t, cols, want, "expected column %q sourced from Issue schema", want)
+	}
+
+	// Query-param leaks the bug used to cause:
+	for _, leak := range []string{"filter", "labels", "sort", "per_page", "page"} {
+		assert.NotContains(t, cols, leak, "request param %q must not appear as a column", leak)
+	}
+
+	// Format hint flows through OpenAPI parser → TypeField → sqliteType.
+	assert.Equal(t, "DATETIME", cols["created_at"], "date-time format must map to DATETIME column")
+}
+
 func TestParseMapsAllOfRequestBodyFields(t *testing.T) {
 	t.Parallel()
 
