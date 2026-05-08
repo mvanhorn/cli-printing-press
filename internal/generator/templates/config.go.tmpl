@@ -11,7 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-{{- if .HasAuthSurface}}
+{{- if .HasAuthCommand}}
 	"time"
 {{- end}}
 {{- if eq .Config.Format "toml"}}
@@ -24,7 +24,7 @@ type Config struct {
 	BaseURL        string `{{configTag .Config.Format}}:"base_url"`
 	AuthHeaderVal  string `{{configTag .Config.Format}}:"auth_header"`
 	AuthSource     string `{{configTag .Config.Format}}:"-"`
-{{- if .HasAuthSurface}}
+{{- if .HasAuthCommand}}
 	AccessToken    string `{{configTag .Config.Format}}:"access_token"`
 	RefreshToken   string `{{configTag .Config.Format}}:"refresh_token"`
 	TokenExpiry    time.Time `{{configTag .Config.Format}}:"token_expiry"`
@@ -354,7 +354,7 @@ func applyAuthFormat(format string, replacements map[string]string) string {
 	return format
 }
 
-{{- if .HasAuthSurface}}
+{{- if .HasAuthCommand}}
 
 func (c *Config) SaveTokens(clientID, clientSecret, accessToken, refreshToken string, expiry time.Time) error {
 	c.ClientID = clientID

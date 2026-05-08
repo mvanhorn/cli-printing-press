@@ -12,7 +12,7 @@ import (
 	"io"
 	"math"
 	"net/http"
-{{- if .HasAuthSurface}}
+{{- if .HasAuthCommand}}
 	"net/url"
 {{- end}}
 	"os"
@@ -1021,7 +1021,7 @@ func (c *Client) authHeader() (string, error) {
 		}
 		c.ccMu.Unlock()
 	}
-{{- else if .HasAuthSurface}}
+{{- else if .HasAuthCommand}}
 	if c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" {
 		if err := c.refreshAccessToken(); err != nil {
 			return "", err
@@ -1105,7 +1105,7 @@ func (c *Client) mintClientCredentials(clientID, clientSecret string) error {
 }
 {{- end}}
 
-{{- if .HasAuthSurface}}
+{{- if .HasAuthCommand}}
 
 func (c *Client) refreshAccessToken() error {
 	if c.Config == nil {
