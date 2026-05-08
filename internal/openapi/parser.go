@@ -279,12 +279,12 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 		auth = spec.AuthConfig{Type: "none"}
 	}
 
-	tierRouting, err := parseTierRoutingExtension(doc)
+	tierRouting, err := parseTypedExtension[spec.TierRoutingConfig](doc, extensionTierRouting)
 	if err != nil {
 		return nil, err
 	}
 
-	mcpConfig, err := parseMCPExtension(doc)
+	mcpConfig, err := parseTypedExtension[spec.MCPConfig](doc, extensionMCP)
 	if err != nil {
 		return nil, err
 	}
@@ -334,14 +334,6 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	}
 
 	return result, nil
-}
-
-func parseTierRoutingExtension(doc *openapi3.T) (spec.TierRoutingConfig, error) {
-	return parseTypedExtension[spec.TierRoutingConfig](doc, extensionTierRouting)
-}
-
-func parseMCPExtension(doc *openapi3.T) (spec.MCPConfig, error) {
-	return parseTypedExtension[spec.MCPConfig](doc, extensionMCP)
 }
 
 // parseTypedExtension reads an OpenAPI x-* extension (root or info) and
