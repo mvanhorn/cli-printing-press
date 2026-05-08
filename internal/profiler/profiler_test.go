@@ -134,6 +134,47 @@ func TestProfileEnumExpansion(t *testing.T) {
 	assert.Equal(t, "/v1/api/team", syncPaths["team"])
 }
 
+func TestProfileSiblingListEndpoints(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "trading",
+		Resources: map[string]spec.Resource{
+			"portfolio": {
+				Endpoints: map[string]spec.Endpoint{
+					"fills": {
+						Method:     "GET",
+						Path:       "/portfolio/fills",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+					"orders": {
+						Method:     "GET",
+						Path:       "/portfolio/orders",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+					"settlements": {
+						Method:     "GET",
+						Path:       "/portfolio/settlements",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncPaths := make(map[string]string)
+	for _, resource := range profile.SyncableResources {
+		syncPaths[resource.Name] = resource.Path
+	}
+
+	assert.Equal(t, "/portfolio/fills", syncPaths["portfolio"])
+	assert.Equal(t, "/portfolio/orders", syncPaths["portfolio-orders"])
+	assert.Equal(t, "/portfolio/settlements", syncPaths["portfolio-settlements"])
+}
+
 func TestProfileDiscriminatorDispatchFromResponseTypeEnum(t *testing.T) {
 	s := &spec.APISpec{
 		Name: "mixed-network",
