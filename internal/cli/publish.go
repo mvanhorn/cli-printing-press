@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	catalogpkg "github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/govulncheck"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
@@ -376,6 +377,19 @@ func newPublishPackageCmd() *cobra.Command {
 				}
 			} else {
 				fmt.Fprintln(os.Stderr, "warning: no manuscripts found, packaging without them")
+			}
+
+			findings, err := artifacts.FindVendorPrefixSecrets(outCLIDir)
+			if err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for vendor-prefix tokens: %w", err)}
+			}
+			if len(findings) > 0 {
+				cleanupOnFailure()
+				return &ExitError{
+					Code: ExitPublishError,
+					Err:  fmt.Errorf("vendor-prefix tokens detected in staged package:\n%s", artifacts.FormatVendorPrefixSecretFindings(findings)),
+				}
 			}
 
 			// Success — remove stashed old CLI dirs

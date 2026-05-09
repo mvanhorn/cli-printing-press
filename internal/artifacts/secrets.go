@@ -1,6 +1,16 @@
 package artifacts
 
-import "regexp"
+import (
+	"bufio"
+	"bytes"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+)
 
 type secretReplacement struct {
 	pattern     *regexp.Regexp
@@ -17,7 +27,11 @@ var archivedSpecSecretPatterns = []secretReplacement{
 		replacement: `Bearer <REDACTED_STRIPE_TOKEN_EXAMPLE>`,
 	},
 	{
-		pattern:     regexp.MustCompile(`Bearer (?:ghp|gho)_[A-Za-z0-9]{20,}`),
+		pattern:     regexp.MustCompile(`sk-or-v1-[A-Za-z0-9_-]{24,}`),
+		replacement: `<REDACTED_OPENROUTER_TOKEN_EXAMPLE>`,
+	},
+	{
+		pattern:     regexp.MustCompile(`Bearer (?:ghp|gho|ghs)_[A-Za-z0-9]{20,}`),
 		replacement: `Bearer <REDACTED_GITHUB_TOKEN_EXAMPLE>`,
 	},
 	{
@@ -50,4 +64,117 @@ func RedactArchivedSpecSecrets(data []byte) []byte {
 		out = rule.pattern.ReplaceAll(out, []byte(rule.replacement))
 	}
 	return out
+}
+
+type VendorPrefixSecretFinding struct {
+	Path string
+	Line int
+	Kind string
+}
+
+type vendorPrefixSecretPattern struct {
+	kind    string
+	pattern *regexp.Regexp
+}
+
+var vendorPrefixSecretPatterns = []vendorPrefixSecretPattern{
+	{kind: "openrouter-api-key", pattern: regexp.MustCompile(`sk-or-v1-[A-Za-z0-9_-]{24,}`)},
+	{kind: "stripe-secret-key", pattern: regexp.MustCompile(`sk_(?:live|test)_[A-Za-z0-9]{16,}`)},
+	{kind: "calcom-api-key", pattern: regexp.MustCompile(`cal_(?:live|test)_[A-Za-z0-9]{16,}`)},
+	{kind: "github-token", pattern: regexp.MustCompile(`(?:ghp|gho|ghs)_[A-Za-z0-9]{36,}`)},
+	{kind: "github-fine-grained-token", pattern: regexp.MustCompile(`github_pat_[A-Za-z0-9_]{60,}`)},
+	{kind: "slack-token", pattern: regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]{32,}`)},
+	{kind: "slack-app-token", pattern: regexp.MustCompile(`xapp-[A-Za-z0-9-]{32,}`)},
+	{kind: "google-api-key", pattern: regexp.MustCompile(`AIza[A-Za-z0-9_-]{20,}`)},
+	{kind: "aws-access-key", pattern: regexp.MustCompile(`AKIA[0-9A-Z]{16}`)},
+}
+
+func FindVendorPrefixSecrets(root string) ([]VendorPrefixSecretFinding, error) {
+	var findings []VendorPrefixSecretFinding
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		isText, err := isTextFile(path)
+		if err != nil {
+			return err
+		}
+		if !isText {
+			return nil
+		}
+		fileFindings, err := scanVendorPrefixSecretFile(root, path)
+		if err != nil {
+			return err
+		}
+		findings = append(findings, fileFindings...)
+		return nil
+	})
+	return findings, err
+}
+
+func FormatVendorPrefixSecretFindings(findings []VendorPrefixSecretFinding) string {
+	lines := make([]string, 0, len(findings))
+	for _, finding := range findings {
+		lines = append(lines, fmt.Sprintf("%s:%d %s", finding.Path, finding.Line, finding.Kind))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func scanVendorPrefixSecretFile(root, path string) ([]VendorPrefixSecretFinding, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return nil, err
+	}
+	rel = filepath.ToSlash(rel)
+
+	var findings []VendorPrefixSecretFinding
+	reader := bufio.NewReader(file)
+	lineNumber := 0
+	for {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil && readErr != io.EOF {
+			return nil, readErr
+		}
+		if line == "" && readErr == io.EOF {
+			break
+		}
+		lineNumber++
+		for _, pattern := range vendorPrefixSecretPatterns {
+			if pattern.pattern.MatchString(line) {
+				findings = append(findings, VendorPrefixSecretFinding{
+					Path: rel,
+					Line: lineNumber,
+					Kind: pattern.kind,
+				})
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+	}
+	return findings, nil
+}
+
+func isTextFile(path string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = file.Close() }()
+
+	buf := make([]byte, 8192)
+	n, err := file.Read(buf)
+	if err != nil && err != io.EOF {
+		return false, err
+	}
+	return !bytes.Contains(buf[:n], []byte{0}), nil
 }
