@@ -40,12 +40,13 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			w := cmd.OutOrStdout()
 			header := cfg.AuthHeader()
 			authed := header != ""
-			// JSON envelope: {authenticated, source, config}. When not
+			// JSON envelope: {authenticated, verified, source, config}. When not
 			// authenticated, write the envelope first then return authErr
 			// so exit code carries the auth-failure signal.
 			if flags.asJSON {
 				out := map[string]any{
 					"authenticated": authed,
+					"verified":      false,
 					"source":        cfg.AuthSource,
 					"config":        cfg.Path,
 				}
@@ -76,7 +77,7 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 				return authErr(fmt.Errorf("no credentials configured"))
 			}
 
-			fmt.Fprintln(w, green("Authenticated"))
+			fmt.Fprintln(w, green("Credentials present (not verified)"))
 			fmt.Fprintf(w, "  Source: %s\n", cfg.AuthSource)
 			fmt.Fprintf(w, "  Config: %s\n", cfg.Path)
 			return nil

@@ -193,10 +193,11 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 
 			w := cmd.OutOrStdout()
 			authed := cfg.AccessToken != ""
-			// JSON envelope: {authenticated, source, config}.
+			// JSON envelope: {authenticated, verified, source, config}.
 			if flags.asJSON {
 				out := map[string]any{
 					"authenticated": authed,
+					"verified":      false,
 					"source":        cfg.AuthSource,
 					"config":        cfg.Path,
 				}
@@ -209,9 +210,9 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			if cfg.TokenExpiry.IsZero() {
-				fmt.Fprintf(w, "  %s Authenticated (no expiry info)\n", green("OK"))
+				fmt.Fprintf(w, "  %s Credentials present (not verified; no expiry info)\n", green("OK"))
 			} else if time.Now().Before(cfg.TokenExpiry) {
-				fmt.Fprintf(w, "  %s Authenticated (expires %s)\n", green("OK"), cfg.TokenExpiry.Format(time.RFC3339))
+				fmt.Fprintf(w, "  %s Credentials present (not verified; expires %s)\n", green("OK"), cfg.TokenExpiry.Format(time.RFC3339))
 			} else {
 				if cfg.RefreshToken != "" {
 					fmt.Fprintf(w, "  %s Token expired (will auto-refresh on next request)\n", yellow("WARN"))
