@@ -1,0 +1,90 @@
+name: Verify Skill Drift
+
+on:
+  schedule:
+    - cron: '23 12 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/verify-skill/verify_skill.py'
+      - '.github/workflows/verify-skill-drift-check.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  compare-library-copy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      LIBRARY_VERIFY_SKILL_URL: https://raw.githubusercontent.com/mvanhorn/printing-press-library/main/.github/scripts/verify-skill/verify_skill.py
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compare verify-skill scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          local_script="scripts/verify-skill/verify_skill.py"
+          library_script="${RUNNER_TEMP:-/tmp}/library-verify_skill.py"
+
+          curl -fsSL --retry 3 --retry-delay 2 "$LIBRARY_VERIFY_SKILL_URL" -o "$library_script"
+
+          local_hash="$(sha256sum "$local_script" | awk '{print $1}')"
+          library_hash="$(sha256sum "$library_script" | awk '{print $1}')"
+
+          {
+            echo "### verify-skill drift check"
+            echo
+            echo "- Printing Press canonical: \`$local_hash\`"
+            echo "- printing-press-library copy: \`$library_hash\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if ! cmp -s "$local_script" "$library_script"; then
+            cat <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+
+          The canonical verify-skill script and the printing-press-library CI copy have drifted.
+
+          From a workspace containing sibling checkouts of both repositories, update the library copy with:
+
+          ```bash
+          cp scripts/verify-skill/verify_skill.py ../printing-press-library/.github/scripts/verify-skill/verify_skill.py
+          ```
+          EOF
+
+            issue_title="verify-skill drift detected with printing-press-library"
+            existing_issue="$(gh issue list --state open --search "$issue_title in:title" --json number --jq '.[0].number // empty')"
+            if [[ -z "$existing_issue" ]]; then
+              issue_body="${RUNNER_TEMP:-/tmp}/verify-skill-drift-issue.md"
+              cat > "$issue_body" <<EOF
+          The canonical verify-skill script in cli-printing-press no longer matches the printing-press-library CI copy.
+
+          - Printing Press canonical: \`$local_hash\`
+          - printing-press-library copy: \`$library_hash\`
+          - Library source: $LIBRARY_VERIFY_SKILL_URL
+
+          From a workspace containing sibling checkouts of both repositories, update the library copy with:
+
+          \`\`\`bash
+          cp scripts/verify-skill/verify_skill.py ../printing-press-library/.github/scripts/verify-skill/verify_skill.py
+          \`\`\`
+          EOF
+
+              gh issue create --title "$issue_title" --body-file "$issue_body"
+            else
+              echo "Existing open drift issue: #$existing_issue" >> "$GITHUB_STEP_SUMMARY"
+            fi
+
+            echo "::error::verify-skill drift detected between cli-printing-press and printing-press-library"
+            exit 1
+          fi
+
+          echo "verify-skill scripts are in sync."

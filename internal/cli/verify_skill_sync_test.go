@@ -8,7 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // TestVerifySkillScriptInSync ensures the script embedded into the binary
@@ -61,6 +64,47 @@ func TestVerifySkillScriptInSync(t *testing.T) {
 			hex.EncodeToString(canonicalHash[:]), len(canonicalBytes),
 			hex.EncodeToString(bundledHash[:]), len(bundledBytes),
 		)
+	}
+}
+
+func TestVerifySkillDriftWorkflowGuardsLibraryCopy(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := findRepoRoot(t)
+	workflowPath := filepath.Join(repoRoot, ".github", "workflows", "verify-skill-drift-check.yml")
+	data, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatalf("read verify-skill drift workflow %s: %v", workflowPath, err)
+	}
+
+	var workflow map[string]any
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatalf("parse verify-skill drift workflow YAML: %v", err)
+	}
+
+	content := string(data)
+	required := []string{
+		"name: Verify Skill Drift",
+		"schedule:",
+		"cron:",
+		"push:",
+		"branches: [main]",
+		"scripts/verify-skill/verify_skill.py",
+		".github/workflows/verify-skill-drift-check.yml",
+		"issues: write",
+		"https://raw.githubusercontent.com/mvanhorn/printing-press-library/main/.github/scripts/verify-skill/verify_skill.py",
+		"GH_TOKEN: ${{ github.token }}",
+		"sha256sum",
+		"cmp -s",
+		"gh issue list",
+		"gh issue create",
+		"exit 1",
+		"cp scripts/verify-skill/verify_skill.py ../printing-press-library/.github/scripts/verify-skill/verify_skill.py",
+	}
+	for _, want := range required {
+		if !strings.Contains(content, want) {
+			t.Fatalf("verify-skill drift workflow should contain %q", want)
+		}
 	}
 }
 
