@@ -20,7 +20,6 @@ monitoring:
   sentry               Error tracking and performance monitoring - projects, issues, events, releases
 
 other:
-  google-flights       Flight search via Google Flights. No public API — reached through community-maintained reverse-engineered wrappers.
   kayak                Flight, hotel, and car rental aggregator. No public API and no maintained community wrappers — reached by scraping embedded JSON from server-rendered pages.
 
 payments:
@@ -40,4 +39,7 @@ social-and-messaging:
   front                Customer communication platform API
   telegram             Telegram Bot API for building bots - send messages, manage chats, webhooks, stickers
   twilio               Communication APIs for SMS, voice, and messaging
+
+travel:
+  google-flights       Flight search via Google Flights. No public API — reached through a community-maintained reverse-engineered wrapper.
 
