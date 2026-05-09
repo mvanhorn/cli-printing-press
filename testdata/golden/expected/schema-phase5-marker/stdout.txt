@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mvanhorn/cli-printing-press/schemas/phase5-acceptance.schema.json",
+  "title": "CLI Printing Press phase5-acceptance.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "api_name", "run_id", "status", "level", "matrix_size", "tests_passed"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "api_name": {"type": "string", "minLength": 1},
+    "cli_name": {"type": "string"},
+    "run_id": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "enum": ["pass", "fail"]},
+    "level": {"type": "string", "enum": ["quick", "full"]},
+    "matrix_size": {"type": "integer", "minimum": 1},
+    "tests_total": {"type": "integer", "minimum": 0},
+    "tests_passed": {"type": "integer", "minimum": 1},
+    "tests_skipped": {"type": "integer", "minimum": 0},
+    "tests_failed": {"type": "integer", "minimum": 0},
+    "completed_at": {"type": "string", "format": "date-time"},
+    "summary": {"type": "string"},
+    "auth_context": {"$ref": "#/$defs/auth_context"}
+  },
+  "$defs": {
+    "auth_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {"type": "string"},
+        "api_key_available": {"type": "boolean"},
+        "browser_session_available": {"type": "boolean"}
+      }
+    }
+  }
+}

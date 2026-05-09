@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mvanhorn/cli-printing-press/schemas/phase5-skip.schema.json",
+  "title": "CLI Printing Press phase5-skip.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "api_name", "run_id", "status", "skip_reason"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "api_name": {"type": "string", "minLength": 1},
+    "cli_name": {"type": "string"},
+    "run_id": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "const": "skip"},
+    "skip_reason": {"type": "string", "minLength": 1},
+    "auth_context": {"$ref": "#/$defs/auth_context"}
+  },
+  "$defs": {
+    "auth_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {"type": "string"},
+        "api_key_available": {"type": "boolean"},
+        "browser_session_available": {"type": "boolean"}
+      }
+    }
+  }
+}

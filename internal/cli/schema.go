@@ -192,18 +192,92 @@ const trafficAnalysisSchemaJSON = `{
   }
 }`
 
+const phase5MarkerSchemaJSON = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mvanhorn/cli-printing-press/schemas/phase5-acceptance.schema.json",
+  "title": "CLI Printing Press phase5-acceptance.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "api_name", "run_id", "status", "level", "matrix_size", "tests_passed"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "api_name": {"type": "string", "minLength": 1},
+    "cli_name": {"type": "string"},
+    "run_id": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "enum": ["pass", "fail"]},
+    "level": {"type": "string", "enum": ["quick", "full"]},
+    "matrix_size": {"type": "integer", "minimum": 1},
+    "tests_total": {"type": "integer", "minimum": 0},
+    "tests_passed": {"type": "integer", "minimum": 1},
+    "tests_skipped": {"type": "integer", "minimum": 0},
+    "tests_failed": {"type": "integer", "minimum": 0},
+    "completed_at": {"type": "string", "format": "date-time"},
+    "summary": {"type": "string"},
+    "auth_context": {"$ref": "#/$defs/auth_context"}
+  },
+  "$defs": {
+    "auth_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {"type": "string"},
+        "api_key_available": {"type": "boolean"},
+        "browser_session_available": {"type": "boolean"}
+      }
+    }
+  }
+}`
+
+const phase5SkipSchemaJSON = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mvanhorn/cli-printing-press/schemas/phase5-skip.schema.json",
+  "title": "CLI Printing Press phase5-skip.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "api_name", "run_id", "status", "skip_reason"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "api_name": {"type": "string", "minLength": 1},
+    "cli_name": {"type": "string"},
+    "run_id": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "const": "skip"},
+    "skip_reason": {"type": "string", "minLength": 1},
+    "auth_context": {"$ref": "#/$defs/auth_context"}
+  },
+  "$defs": {
+    "auth_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {"type": "string"},
+        "api_key_available": {"type": "boolean"},
+        "browser_session_available": {"type": "boolean"}
+      }
+    }
+  }
+}`
+
 func newSchemaCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "schema",
 		Short: "Print machine-readable schemas for Printing Press artifacts",
 	}
-	cmd.AddCommand(&cobra.Command{
-		Use:   "traffic-analysis",
-		Short: "Print the traffic-analysis.json schema",
+	cmd.AddCommand(newSchemaPrintCmd("traffic-analysis", "Print the traffic-analysis.json schema", trafficAnalysisSchemaJSON))
+	cmd.AddCommand(newSchemaPrintCmd("phase5-marker", "Print the phase5-acceptance.json schema", phase5MarkerSchemaJSON))
+	cmd.AddCommand(newSchemaPrintCmd("phase5-skip", "Print the phase5-skip.json schema", phase5SkipSchemaJSON))
+	return cmd
+}
+
+func newSchemaPrintCmd(use, short, schema string) *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintln(cmd.OutOrStdout(), trafficAnalysisSchemaJSON)
+			fmt.Fprintln(cmd.OutOrStdout(), schema)
 			return nil
 		},
-	})
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit JSON schema (default; accepted for command symmetry)")
 	return cmd
 }
