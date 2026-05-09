@@ -2479,6 +2479,31 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 	assert.Equal(t, HTTPTransportStandard, override.EffectiveHTTPTransport())
 	require.NoError(t, override.Validate())
 
+	cookieHTML := base
+	cookieHTML.Auth.Type = "cookie"
+	cookieHTML.Resources = map[string]Resource{
+		"pages": {
+			Endpoints: map[string]Endpoint{
+				"show": {Method: "GET", Path: "/page", ResponseFormat: ResponseFormatHTML},
+			},
+		},
+	}
+	assert.Equal(t, HTTPTransportBrowserChrome, cookieHTML.EffectiveHTTPTransport())
+
+	composedHTML := cookieHTML
+	composedHTML.Auth.Type = "composed"
+	assert.Equal(t, HTTPTransportBrowserChrome, composedHTML.EffectiveHTTPTransport())
+
+	jsonCookie := cookieHTML
+	jsonCookie.Resources = map[string]Resource{
+		"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+	}
+	assert.Equal(t, HTTPTransportStandard, jsonCookie.EffectiveHTTPTransport())
+
+	cookieHTMLOverride := cookieHTML
+	cookieHTMLOverride.HTTPTransport = HTTPTransportStandard
+	assert.Equal(t, HTTPTransportStandard, cookieHTMLOverride.EffectiveHTTPTransport())
+
 	runtime := base
 	runtime.HTTPTransport = "browser-runtime"
 	assert.Equal(t, HTTPTransportStandard, runtime.EffectiveHTTPTransport())
