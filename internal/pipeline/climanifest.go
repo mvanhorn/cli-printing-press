@@ -26,6 +26,9 @@ import (
 // published CLI directory.
 const CLIManifestFilename = ".printing-press.json"
 
+// CurrentCLIManifestSchemaVersion is the public-library provenance contract.
+const CurrentCLIManifestSchemaVersion = 1
+
 // CLIManifest captures provenance metadata for a generated CLI.
 // It is written to the root of each published CLI directory so the
 // folder is self-describing even in isolation.
@@ -416,7 +419,7 @@ func DeriveRunIDFromResearchDir(researchDir string) string {
 // writeCLIManifestForPublish (which operates on PipelineState).
 func WriteManifestForGenerate(p GenerateManifestParams) error {
 	m := CLIManifest{
-		SchemaVersion:        1,
+		SchemaVersion:        CurrentCLIManifestSchemaVersion,
 		GeneratedAt:          time.Now().UTC(),
 		PrintingPressVersion: version.Version,
 		APIName:              p.APIName,

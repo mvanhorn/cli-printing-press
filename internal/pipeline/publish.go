@@ -193,7 +193,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 	}
 
 	m := CLIManifest{
-		SchemaVersion:        1,
+		SchemaVersion:        CurrentCLIManifestSchemaVersion,
 		GeneratedAt:          time.Now().UTC(),
 		PrintingPressVersion: version.Version,
 		APIName:              state.APIName,

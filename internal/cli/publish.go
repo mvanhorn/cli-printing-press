@@ -499,13 +499,13 @@ func runValidation(dir string) ValidateResult {
 			result.Checks = append(result.Checks, CheckResult{Name: "manifest", Passed: false, Error: fmt.Sprintf("invalid JSON: %v", err)})
 			allPassed = false
 		} else {
-			if manifest.APIName == "" || manifest.CLIName == "" {
-				result.Checks = append(result.Checks, CheckResult{Name: "manifest", Passed: false, Error: "missing required fields (api_name, cli_name)"})
+			result.CLIName = manifest.CLIName
+			result.APIName = manifest.APIName
+			if issues := validatePublishManifestContract(dir, manifest); len(issues) > 0 {
+				result.Checks = append(result.Checks, CheckResult{Name: "manifest", Passed: false, Error: strings.Join(issues, "; ")})
 				allPassed = false
 			} else {
 				result.Checks = append(result.Checks, CheckResult{Name: "manifest", Passed: true})
-				result.CLIName = manifest.CLIName
-				result.APIName = manifest.APIName
 			}
 		}
 	}
@@ -648,6 +648,56 @@ func runValidation(dir string) ValidateResult {
 
 	result.Passed = allPassed
 	return result
+}
+
+func validatePublishManifestContract(dir string, manifest pipeline.CLIManifest) []string {
+	var issues []string
+	if manifest.SchemaVersion != pipeline.CurrentCLIManifestSchemaVersion {
+		issues = append(issues, fmt.Sprintf("schema_version must be %d (found %d)", pipeline.CurrentCLIManifestSchemaVersion, manifest.SchemaVersion))
+	}
+
+	var missing []string
+	required := []struct {
+		name  string
+		value string
+	}{
+		{name: "api_name", value: manifest.APIName},
+		{name: "cli_name", value: manifest.CLIName},
+		{name: "run_id", value: manifest.RunID},
+		{name: "printing_press_version", value: manifest.PrintingPressVersion},
+		{name: "printer", value: manifest.Printer},
+		{name: "printer_name", value: manifest.PrinterName},
+	}
+	for _, field := range required {
+		if strings.TrimSpace(field.value) == "" {
+			missing = append(missing, field.name)
+		}
+	}
+	if len(missing) > 0 {
+		issues = append(issues, "missing required manifest fields: "+strings.Join(missing, ", "))
+	}
+	if isPublishPrinterSentinel(manifest.Printer) {
+		issues = append(issues, fmt.Sprintf("printer must not be the literal sentinel %q", manifest.Printer))
+	}
+
+	if manifestAdvertisesMCP(manifest) {
+		for _, filename := range []string{pipeline.MCPBManifestFilename, pipeline.ToolsManifestFilename} {
+			path := filepath.Join(dir, filename)
+			if info, err := os.Stat(path); err != nil || info.IsDir() {
+				issues = append(issues, fmt.Sprintf("MCP package metadata missing %s", filename))
+			}
+		}
+	}
+
+	return issues
+}
+
+func isPublishPrinterSentinel(printer string) bool {
+	return printer == "USER" || printer == "user"
+}
+
+func manifestAdvertisesMCP(manifest pipeline.CLIManifest) bool {
+	return strings.TrimSpace(manifest.MCPBinary) != "" || manifest.MCPReady != "" || manifest.MCPToolCount > 0 || manifest.MCPPublicToolCount > 0
 }
 
 func checkPhase5Gate(dir string, manifest pipeline.CLIManifest) CheckResult {
