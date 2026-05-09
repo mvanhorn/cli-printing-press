@@ -9,6 +9,7 @@ description: >
   phrases: "polish", "improve the CLI", "fix verify", "make it publish-ready",
   "clean up the CLI", "get this ready to ship".
 context: fork
+min-binary-version: "4.0.0"
 allowed-tools:
   - Bash
   - Read
@@ -44,9 +45,19 @@ Can also be run standalone on any CLI in `~/printing-press/library/`.
 ## Setup
 
 ```bash
+# min-binary-version: 4.0.0
+
 PRESS_HOME="$HOME/printing-press"
 PRESS_LIBRARY="$PRESS_HOME/library"
+
+if ! command -v printing-press >/dev/null 2>&1; then
+  echo "printing-press binary not found."
+  echo "Install with:  go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest"
+  return 1 2>/dev/null || exit 1
+fi
 ```
+
+After setup, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest` to update."
 
 ### Public-library hint
 

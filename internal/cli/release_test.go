@@ -78,6 +78,38 @@ func TestVersionConsistencyAcrossFiles(t *testing.T) {
 		"plugin.json and version.go hardcoded version must match")
 }
 
+func TestInternalSkillMinimumBinaryVersionsTrackMajor(t *testing.T) {
+	// Skill frontmatter `version` values are not release-managed. The
+	// executable compatibility contract is `min-binary-version`; keep the
+	// frontmatter and the duplicated setup-contract comment in sync.
+	want := fmt.Sprintf("%d.0.0", majorVersion(t, version.Version))
+	paths := []string{
+		"../../skills/printing-press/SKILL.md",
+		"../../skills/printing-press-catalog/SKILL.md",
+		"../../skills/printing-press-polish/SKILL.md",
+		"../../skills/printing-press-publish/SKILL.md",
+		"../../skills/printing-press-score/SKILL.md",
+	}
+
+	frontmatterRe := regexp.MustCompile(`(?m)^min-binary-version:\s*"?([^"\n]+)"?\s*$`)
+	commentRe := regexp.MustCompile(`(?m)^# min-binary-version:\s*([^\s]+)\s*$`)
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			content := string(data)
+
+			frontmatter := frontmatterRe.FindStringSubmatch(content)
+			require.Len(t, frontmatter, 2, "skill must declare min-binary-version frontmatter")
+			assert.Equal(t, want, frontmatter[1])
+
+			comment := commentRe.FindStringSubmatch(content)
+			require.Len(t, comment, 2, "setup contract must duplicate min-binary-version")
+			assert.Equal(t, frontmatter[1], comment[1])
+		})
+	}
+}
+
 func TestMarketplaceJSONHasNoPluginVersion(t *testing.T) {
 	// Guard against a reviewer (or release-please misconfiguration) re-adding
 	// a per-plugin version field to marketplace.json. Plugin versions live
