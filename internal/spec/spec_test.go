@@ -2435,6 +2435,65 @@ func TestMCPConfigAcceptsValidShapes(t *testing.T) {
 	}
 }
 
+func TestMCPTDSTransportAccepted(t *testing.T) {
+	t.Parallel()
+	s := APISpec{
+		Name:    "demo",
+		BaseURL: "http://x",
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+		MCP: MCPConfig{
+			Transport: []string{"tds"},
+			DSN:       "sqlserver://sa:pass@localhost:1433?database=mydb",
+		},
+	}
+	require.NoError(t, s.Validate())
+	assert.True(t, s.MCP.HasTransport("tds"))
+	assert.True(t, s.MCP.HasTransport("TDS"), "HasTransport is case-insensitive")
+	assert.False(t, s.MCP.HasTransport("http"))
+}
+
+func TestMCPTDSTransportRequiresDSN(t *testing.T) {
+	t.Parallel()
+	s := APISpec{
+		Name:    "demo",
+		BaseURL: "http://x",
+		Resources: map[string]Resource{
+			"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+		},
+		MCP: MCPConfig{Transport: []string{"tds"}},
+	}
+	err := s.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mcp.dsn")
+}
+
+func TestMCPTDSTransportConfigParses(t *testing.T) {
+	t.Parallel()
+	input := `
+name: demo
+base_url: http://x
+auth:
+  type: none
+mcp:
+  transport: [tds]
+  dsn: "sqlserver://sa:pass@localhost:1433?database=mydb"
+resources:
+  items:
+    endpoints:
+      list:
+        method: GET
+        path: /items
+`
+	s, err := ParseBytes([]byte(input))
+	require.NoError(t, err)
+	require.NoError(t, s.Validate())
+	assert.Equal(t, []string{"tds"}, s.MCP.Transport)
+	assert.Equal(t, "sqlserver://sa:pass@localhost:1433?database=mydb", s.MCP.DSN)
+	assert.True(t, s.MCP.HasTransport("tds"))
+}
+
 func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 	t.Parallel()
 

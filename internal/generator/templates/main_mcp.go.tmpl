@@ -68,6 +68,61 @@ func defaultTransport() string {
 	return "stdio"
 }
 
+{{- else if .MCP.HasTransport "tds"}}
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"os"
+
+	// Register the MS-SQL Server (TDS) driver for use with database/sql.
+	_ "github.com/microsoft/go-mssqldb"
+	"github.com/mark3labs/mcp-go/server"
+	mcptools "{{modulePath}}/internal/mcp"
+)
+
+// defaultTDSDSN returns the runtime DSN for the MS-SQL Server connection.
+// PP_TDS_DSN env overrides the spec-level default so container deployments
+// can inject credentials without rebuilding the binary.
+func defaultTDSDSN() string {
+	if dsn := os.Getenv("PP_TDS_DSN"); dsn != "" {
+		return dsn
+	}
+	return "{{.MCP.DSN}}"
+}
+
+func main() {
+	dsn := defaultTDSDSN()
+	if dsn == "" {
+		fmt.Fprintf(os.Stderr, "TDS transport requires a DSN: set PP_TDS_DSN env or declare mcp.dsn in the spec\n")
+		os.Exit(1)
+	}
+	db, err := sql.Open("sqlserver", dsn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "TDS open: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+	if err := db.PingContext(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "TDS ping: %v\n", err)
+		os.Exit(1)
+	}
+
+	s := server.NewMCPServer(
+		"{{.EffectiveDisplayName}}",
+		"1.0.0",
+		server.WithToolCapabilities(false),
+	)
+
+	mcptools.RegisterTools(s)
+
+	if err := server.ServeStdio(s); err != nil {
+		fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 {{- else}}
 
 import (

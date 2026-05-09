@@ -1421,6 +1421,38 @@ func TestGenerateBrowserHTTPTransportDisablesHTTP2(t *testing.T) {
 	assert.NotContains(t, gomod, "github.com/enetx/surf")
 }
 
+func TestGenerateTDSTransport(t *testing.T) {
+	t.Parallel()
+	apiSpec := &spec.APISpec{
+		Name:    "erp-tds",
+		Version: "0.1.0",
+		BaseURL: "http://ignored-for-tds",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/erp-tds-pp-cli/config.toml"},
+		MCP: spec.MCPConfig{
+			Transport: []string{"tds"},
+			DSN:       "sqlserver://sa:pass@localhost:1433?database=mydb",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "ERP items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), "erp-tds-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	gomod := readGeneratedFile(t, outputDir, "go.mod")
+	assert.Contains(t, gomod, "github.com/microsoft/go-mssqldb", "go.mod must declare go-mssqldb when transport: tds is set")
+
+	mainMCP := readGeneratedFile(t, outputDir, "cmd", "erp-tds-pp-mcp", "main.go")
+	assert.Contains(t, mainMCP, "go-mssqldb", "main_mcp must import go-mssqldb")
+	assert.Contains(t, mainMCP, `"sqlserver"`, "main_mcp must open a sqlserver connection")
+}
+
 func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
