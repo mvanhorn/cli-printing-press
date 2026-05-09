@@ -1,0 +1,40 @@
+name: mcdonalds
+display_name: McDonald's
+description: Restaurant lookup, menu browsing, and Deals/MyMcDonald's Rewards offers. No public API — reached through reverse-engineered JSON endpoints powering the McDonald's mobile app and mcdonalds.com.
+category: food-and-dining
+tier: community
+verified_date: "2026-05-09"
+homepage: https://www.mcdonalds.com
+notes: |
+  McDonald's does not publish an API. The internal endpoints under
+  `https://www.mcdonalds.com/googleapps/` and the GMA (Global Mobile App)
+  hosts (`https://gmqsrmobile.mcd.com/`, `https://api.mcdonalds.com/`) return
+  JSON and are the same surface the web restaurant locator and the iOS/Android
+  apps consume. The mobile-app endpoints require an OAuth2 client credential
+  pair scoped to the GMA tenant; the public web locator endpoints are
+  anonymous.
+
+  Treat this as html/json-sniff implementation backing. The generator should
+  emit a thin HTTP client targeting the locator and menu endpoints rather than
+  searching for an OpenAPI spec. Browse-only flows (find a restaurant, read
+  hours, list current Deals for a store) are anonymous; placing mobile orders
+  or redeeming MyMcDonald's Rewards requires a real signed-in account and is
+  out of scope for the printed CLI's default surface.
+
+  Suggested compound queries the printed CLI should make easy:
+    - "nearest open McDonald's to <address> with drive-thru and McDelivery"
+    - "current Deals available at restaurant <id>, cheapest breakfast combo"
+    - "menu + nutrition for restaurant <id>, items under <calories>"
+wrapper_libraries:
+  - name: gma-endpoint-client
+    url: https://www.mcdonalds.com/googleapps/
+    language: go
+    integration_mode: html-scrape
+    notes: |
+      Synthetic wrapper entry — there is no Go library to import. Reimplement
+      the McDonald's locator and GMA JSON endpoints (restaurant-locator,
+      restaurant-details, menu, deals, nutrition) as a thin Go HTTP client.
+      Use the long-running community references at
+      https://github.com/kbabuadze/mcdonalds-api and
+      https://github.com/sojaboi/mcdonalds-deals for endpoint shapes and
+      payload schemas — do not ship them as runtime dependencies.
