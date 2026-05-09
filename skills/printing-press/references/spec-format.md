@@ -37,6 +37,7 @@ resources:                        # map[string]Resource (REQUIRED: at least one 
       list:                       # endpoint key becomes subcommand: users list
         method: GET               # string (REQUIRED) must be one of GET | POST | PUT | DELETE
         path: "/users"           # string (REQUIRED) API path; supports {param} placeholders
+        base_url: "https://search.example.com/v1" # string optional override for this endpoint only
         description: "List users" # string endpoint help text
         params:                   # []Param query/path parameters
           - name: limit           # string upstream wire key; request serialization always uses this value
@@ -259,7 +260,8 @@ Validation in `spec.Validate()` enforces:
 - every resource must have at least one endpoint
 - every endpoint must have both `method` and `path`
 - `resources.<name>.base_url` is allowed for resources that live on another host; sub-resources inherit the parent override unless they set their own `base_url`
-- resource `base_url` overrides cannot be combined with `client_pattern: proxy-envelope`, because proxy-envelope clients POST every request to the root `base_url`
+- `resources.<name>.endpoints.<name>.base_url` is allowed for a single endpoint that lives on another host; it wins over resource and sub-resource overrides
+- resource or endpoint `base_url` overrides cannot be combined with `client_pattern: proxy-envelope`, because proxy-envelope clients POST every request to the root `base_url`
 - `flag_name` and `aliases` must be lowercase kebab-case, non-empty when present, and collision-free within their command surface
 
 ## 5. Common Mistakes
@@ -272,7 +274,7 @@ These commonly cause generation/build failures or incorrect CLI behavior:
 - Defining `body` params on `GET` endpoints (allowed in YAML, but ignored by GET command generation)
 - Forgetting `positional: true` for params used in `/{path_placeholders}`
 - Using parameter types outside supported scalar set: `string`, `int`, `bool`, `float`
-- Putting a website/feed host in the root `base_url` just to make one resource work; keep the root API host as the default and use a resource `base_url` override for the outlier surface
+- Putting a website/feed host in the root `base_url` just to make one endpoint work; keep the root API host as the default and use a resource or endpoint `base_url` override for the outlier surface
 
 ## 5. Type Mapping
 

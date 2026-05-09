@@ -1671,6 +1671,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			endpoint := spec.Endpoint{
 				Method:      strings.ToUpper(method),
 				Path:        path,
+				BaseURL:     operationServerBaseURL(out.BaseURL, pathItem, op),
 				Description: description,
 				Params:      params,
 				Body:        body,
@@ -1720,6 +1721,24 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 
 	assignEndpointAliases(out.Resources)
 	filterGlobalParams(out.Resources)
+}
+
+func operationServerBaseURL(specBaseURL string, pathItem *openapi3.PathItem, op *openapi3.Operation) string {
+	var servers openapi3.Servers
+	if pathItem != nil {
+		servers = pathItem.Servers
+	}
+	if op != nil && op.Servers != nil {
+		servers = *op.Servers
+	}
+	if len(servers) == 0 || servers[0] == nil {
+		return ""
+	}
+	baseURL, _ := resolveServerURL(servers[0])
+	if baseURL == "" || baseURL == strings.TrimRight(specBaseURL, "/") {
+		return ""
+	}
+	return baseURL
 }
 
 // operationAllowsAnonymous checks whether an operation can be called without

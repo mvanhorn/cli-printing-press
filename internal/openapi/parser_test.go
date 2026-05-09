@@ -4100,6 +4100,47 @@ paths:
 	assert.Equal(t, "https://global.example.com", parsed.BaseURL)
 }
 
+func TestParseOperationServersBecomeEndpointBaseURLOverrides(t *testing.T) {
+	t.Parallel()
+
+	specYAML := `openapi: "3.0.3"
+info:
+  title: Multi Host Test
+  version: "1.0"
+servers:
+  - url: https://api.open-meteo.com/v1
+paths:
+  /forecast:
+    get:
+      operationId: forecast
+      responses:
+        '200': {description: OK}
+  /search:
+    get:
+      operationId: geocoding
+      servers:
+        - url: https://geocoding-api.open-meteo.com/v1
+      responses:
+        '200': {description: OK}
+`
+	parsed, err := Parse([]byte(specYAML))
+	require.NoError(t, err)
+	assert.Equal(t, "https://api.open-meteo.com/v1", parsed.BaseURL)
+
+	var search spec.Endpoint
+	found := false
+	for _, resource := range parsed.Resources {
+		for _, endpoint := range resource.Endpoints {
+			if endpoint.Path == "/search" {
+				search = endpoint
+				found = true
+			}
+		}
+	}
+	require.True(t, found, "expected /search endpoint to be parsed")
+	assert.Equal(t, "https://geocoding-api.open-meteo.com/v1", search.BaseURL)
+}
+
 func TestParseMCPExtensionFromRoot(t *testing.T) {
 	t.Parallel()
 	data := []byte(`

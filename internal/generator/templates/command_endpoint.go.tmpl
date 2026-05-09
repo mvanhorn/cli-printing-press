@@ -120,7 +120,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			c = c.WithTier({{printf "%q" .EffectiveTier}})
 {{- end}}
 
-			path := "{{.ResourceBaseURL}}{{.Endpoint.Path}}"{{/* ResourceBaseURL is empty unless the resource declares an override; when set it makes path absolute and the client skips the c.BaseURL concat. */}}
+			path := "{{.ResourceBaseURL}}{{.Endpoint.Path}}"{{/* ResourceBaseURL is empty unless the resource or endpoint declares an override; when set it makes path absolute and the client skips the c.BaseURL concat. */}}
 {{- range $i, $p := .Endpoint.Params}}
 {{- if .Positional}}
 {{- if gt $i 0}}
