@@ -165,6 +165,30 @@ func TestPolishSkillHardGatesPublishValidate(t *testing.T) {
 	assert.Contains(t, skill, "ship cannot fire while publish validate fails")
 }
 
+func TestPublishSkillPRBodyIncludesStableNovelCommands(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
+
+	snapshotState := strings.Index(skill, "PREEXISTING_MERGED_PATHS=$(ls")
+	packageCopy := strings.Index(skill, `cp -r "$STAGING_DIR/library/<category>/<cli-name>"`)
+	require.NotEqual(t, -1, snapshotState)
+	require.NotEqual(t, -1, packageCopy)
+	assert.Less(t, snapshotState, packageCopy)
+
+	assert.Contains(t, skill, "The manifest's `novel_features` array from the packaged CLI after Step 6")
+	assert.Contains(t, skill, "Do not derive\nthis section from README prose, SKILL prose, root help, or memory of the run")
+	assert.Contains(t, skill, "Step 6 has already copied the\nnew package into that path")
+	assert.Contains(t, skill, "PREEXISTING_MERGED_COLLISION=true")
+	assert.Contains(t, skill, "### Publication Path")
+	assert.Contains(t, skill, "### Novel Commands")
+	assert.Contains(t, skill, "| Command | Name | Description |")
+	assert.Contains(t, skill, "`New print`")
+	assert.Contains(t, skill, "`Update existing PR #<N>`")
+	assert.Contains(t, skill, "`Reprint/replace`")
+	assert.Contains(t, skill, "`Alongside print`")
+	assert.Contains(t, skill, "--body-file \"$PR_BODY_FILE\"")
+	assert.NotContains(t, skill, "--body \"<constructed PR body>\"")
+}
+
 func TestREADMEOutputContract(t *testing.T) {
 	readme := readContractFile(t, filepath.Join("..", "..", "README.md"))
 
