@@ -52,6 +52,18 @@ func useShipcheckStub(t *testing.T) {
 	t.Cleanup(withStubBinary(t, stub))
 }
 
+func TestShipcheckCLIPathForGOOS(t *testing.T) {
+	t.Parallel()
+
+	opts := &shipcheckOpts{dir: filepath.Join("tmp", "sample-cli")}
+	if got, want := shipcheckCLIPathForGOOS(opts, "windows"), filepath.Join("tmp", "sample-cli", "sample-cli.exe"); got != want {
+		t.Fatalf("windows path = %q, want %q", got, want)
+	}
+	if got, want := shipcheckCLIPathForGOOS(opts, "linux"), filepath.Join("tmp", "sample-cli", "sample-cli"); got != want {
+		t.Fatalf("linux path = %q, want %q", got, want)
+	}
+}
+
 type shipcheckHarness struct {
 	dir     string
 	logFile string

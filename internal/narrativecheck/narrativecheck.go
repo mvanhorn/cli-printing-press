@@ -72,6 +72,10 @@ type Report struct {
 	// omitted both sections by mistake; the caller's --strict flag
 	// can decide whether that's an error.
 	ResearchEmpty bool `json:"research_empty,omitempty"`
+	// ResearchNotApplicable is true when the caller pointed at an
+	// absent research.json, which is valid for hand-built specs that did
+	// not run the Printing Press research pipeline.
+	ResearchNotApplicable bool `json:"research_not_applicable,omitempty"`
 }
 
 // Options controls optional narrative validation checks.
@@ -137,7 +141,7 @@ func loadCommands(researchPath string) ([]sectionCommand, error) {
 	data, err := os.ReadFile(researchPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("research file %s not found; cannot validate narrative commands", researchPath)
+			return nil, fmt.Errorf("research file %s not found: %w", researchPath, err)
 		}
 		return nil, fmt.Errorf("reading %s: %w", researchPath, err)
 	}

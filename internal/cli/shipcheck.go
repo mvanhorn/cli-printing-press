@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/spf13/cobra"
 )
 
@@ -156,7 +157,11 @@ func shipcheckResearchPath(o *shipcheckOpts) string {
 }
 
 func shipcheckCLIPath(o *shipcheckOpts) string {
-	return filepath.Join(o.dir, filepath.Base(o.dir))
+	return platform.ExecutablePath(filepath.Join(o.dir, filepath.Base(o.dir)))
+}
+
+func shipcheckCLIPathForGOOS(o *shipcheckOpts, goos string) string {
+	return platform.ExecutablePathForGOOS(filepath.Join(o.dir, filepath.Base(o.dir)), goos)
 }
 
 // shipcheckLegResult is the per-leg outcome of one umbrella run.
