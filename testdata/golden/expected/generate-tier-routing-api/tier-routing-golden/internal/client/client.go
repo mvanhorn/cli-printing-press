@@ -325,6 +325,11 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 				req.Header.Set(authInfo.Name, authHeader)
 			}
 		}
+		if c.Config != nil {
+			for k, v := range c.Config.Headers {
+				req.Header.Set(k, v)
+			}
+		}
 		// Per-endpoint header overrides (e.g., different API version per resource)
 		for k, v := range headerOverrides {
 			req.Header.Set(k, v)
