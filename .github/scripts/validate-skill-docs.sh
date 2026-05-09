@@ -18,13 +18,28 @@ for skill in skills/*/SKILL.md; do
     continue
   fi
 
-  frontmatter="$(sed -n "2,$((end_line - 1))p" "$skill")"
-  if ! grep -Eq '^name:[[:space:]]+[^[:space:]]' <<<"$frontmatter"; then
-    echo "::error file=$skill::SKILL.md frontmatter must include name"
-    status=1
-  fi
-  if ! grep -Eq '^description:[[:space:]]+.' <<<"$frontmatter"; then
-    echo "::error file=$skill::SKILL.md frontmatter must include description"
+  if ! sed -n "2,$((end_line - 1))p" "$skill" | ruby -ryaml -e '
+    begin
+      frontmatter = YAML.safe_load($stdin.read, permitted_classes: [Symbol], aliases: false)
+    rescue Psych::Exception => e
+      warn "invalid YAML frontmatter: #{e.message}"
+      exit 2
+    end
+
+    unless frontmatter.is_a?(Hash)
+      warn "frontmatter must be a YAML mapping"
+      exit 2
+    end
+
+    %w[name description].each do |field|
+      value = frontmatter[field]
+      if value.nil? || value.to_s.strip.empty?
+        warn "frontmatter must include #{field}"
+        exit 2
+      end
+    end
+  '; then
+    echo "::error file=$skill::SKILL.md frontmatter must be valid YAML with name and description"
     status=1
   fi
 done
