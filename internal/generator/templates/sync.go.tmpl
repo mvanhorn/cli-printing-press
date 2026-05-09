@@ -1167,7 +1167,11 @@ var resourceIDFieldOverrides = map[string]string{
 // genericIDFieldFallbacks is the runtime safety net for resources that did
 // NOT receive a templated IDField. API-specific names belong in spec
 // annotations (x-resource-id), not this list.
+{{- if eq .FieldNaming "salesforce"}}
+var genericIDFieldFallbacks = []string{"id", "Id", "ID", "name", "DeveloperName", "uuid", "slug", "key", "code", "uid"}
+{{- else}}
 var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}
+{{- end}}
 
 // criticalResources is the template-time projection of per-resource Critical
 // (set by the profiler from the spec's path-item x-critical extension). It
