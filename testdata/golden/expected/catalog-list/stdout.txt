@@ -29,6 +29,7 @@ payments:
 
 project-management:
   asana                Work management and project tracking API
+  jira                 Issue tracking and project management API for Jira Cloud
 
 sales-and-crm:
   hubspot              CRM contacts API

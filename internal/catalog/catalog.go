@@ -160,6 +160,13 @@ type Entry struct {
 	// can use as implementation backing when no official spec exists. When this
 	// list is non-empty, spec_url and spec_format are optional.
 	WrapperLibraries []WrapperLibrary `yaml:"wrapper_libraries,omitempty"`
+	// AuthPreference is the securityScheme name from the upstream spec the
+	// generator should pick when multiple schemes are advertised. Without it
+	// the parser's default selection wins (which favors OAuth2 with a full
+	// authorization-code flow). Set this to a simpler scheme (e.g. "basicAuth")
+	// when the API supports both OAuth2 and HTTP Basic and the printed CLI is
+	// meant for personal API-token use rather than a 3LO web flow.
+	AuthPreference string `yaml:"auth_preference,omitempty"`
 }
 
 // IsWrapperOnly reports whether this entry represents an API reached through

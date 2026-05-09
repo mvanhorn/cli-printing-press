@@ -99,6 +99,7 @@ func newGenerateCmd() *cobra.Command {
 	var specURL string
 	var planFile string
 	var trafficAnalysisPath string
+	var authPreference string
 
 	cmd := &cobra.Command{
 		Use:   "generate",
@@ -284,7 +285,7 @@ func newGenerateCmd() *cobra.Command {
 
 				var apiSpec *spec.APISpec
 				if openapi.IsOpenAPI(data) {
-					apiSpec, err = parseOpenAPISpec(specFile, data, lenient)
+					apiSpec, err = parseOpenAPISpec(specFile, data, lenient, authPreference)
 				} else if graphql.IsGraphQLSDL(data) {
 					apiSpec, err = graphql.ParseSDLBytes(specFile, data)
 				} else {
@@ -435,6 +436,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&specURL, "spec-url", "", "Original spec URL for provenance (use when --spec is a local file downloaded from a URL)")
 	cmd.Flags().StringVar(&planFile, "plan", "", "Path to a markdown plan document for plan-driven generation (instead of --spec)")
 	cmd.Flags().StringVar(&trafficAnalysisPath, "traffic-analysis", "", "Path to browser-sniff traffic-analysis.json for advisory generation context")
+	cmd.Flags().StringVar(&authPreference, "auth-preference", "", "Preferred securityScheme name from the spec (overrides default selection; useful when a spec advertises multiple schemes such as OAuth2 + HTTP Basic and you want the simpler one)")
 
 	return cmd
 }
@@ -697,17 +699,12 @@ func readSpec(specFile string, refresh bool, skipCache bool) ([]byte, error) {
 	return data, nil
 }
 
-func parseOpenAPISpec(specFile string, data []byte, lenient bool) (*spec.APISpec, error) {
-	if openapi.IsRemoteSpecSource(specFile) {
-		if lenient {
-			return openapi.ParseLenient(data)
-		}
-		return openapi.Parse(data)
+func parseOpenAPISpec(specFile string, data []byte, lenient bool, authPreference string) (*spec.APISpec, error) {
+	opts := openapi.ParseOptions{Lenient: lenient, AuthPreference: authPreference}
+	if !openapi.IsRemoteSpecSource(specFile) {
+		opts.Path = specFile
 	}
-	if lenient {
-		return openapi.ParseWithPathLenient(data, specFile)
-	}
-	return openapi.ParseWithPath(data, specFile)
+	return openapi.ParseWithOptions(data, opts)
 }
 
 func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
