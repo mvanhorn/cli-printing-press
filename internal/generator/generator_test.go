@@ -4535,13 +4535,11 @@ func TestGeneratedDoctor_InterstitialMarkersAreTitleAnchored(t *testing.T) {
 		"DataDome marker should require a context word (blocked/captcha/challenge) alongside the vendor name")
 }
 
-func TestGeneratedDoctor_NoVerifyPathSoftens401(t *testing.T) {
+func TestGeneratedDoctor_NoVerifyPathReportsCredentialsPresent(t *testing.T) {
 	t.Parallel()
 
-	// Without auth.verify_path, the doctor probe falls back to the bare base
-	// URL. 401/403 from the base URL must be reported as "inconclusive", not
-	// "invalid", because many APIs return 401 from un-routed roots regardless
-	// of token validity.
+	// Without auth.verify_path, doctor still checks API reachability, but it
+	// must not turn any bare base URL response into a credential-validity claim.
 	apiSpec := &spec.APISpec{
 		Name:    "softdoc",
 		Version: "0.1.0",
@@ -4573,19 +4571,14 @@ func TestGeneratedDoctor_NoVerifyPathSoftens401(t *testing.T) {
 	require.NoError(t, err)
 	content := string(doctorGo)
 
-	// Without spec verify_path, the doctor probes "/" via the configured
-	// client. The client is the same Surf-aware *client.Client used by
-	// regular commands -- not a fresh stdlib http.Client.
-	assert.Contains(t, content, `verifyPath := "/"`)
-	assert.Contains(t, content, `c.GetWithHeaders(verifyPath`)
+	// Without spec verify_path, doctor reports local credential presence
+	// without pretending the API accepted the key.
+	assert.NotContains(t, content, `verifyPath := "/"`)
+	assert.NotContains(t, content, `c.GetWithHeaders(verifyPath`)
 	assert.NotContains(t, content, `&http.Client{`)
-	// 401/403 fallback must be the soft "inconclusive" verdict
-	assert.Contains(t, content, `"inconclusive (HTTP %d from base URL — set auth.verify_path in spec for a definitive probe)"`)
-	// And must NOT use the strict "invalid" wording
+	assert.Contains(t, content, `"present (not verified — set auth.verify_path in spec for an API acceptance check)"`)
+	assert.NotContains(t, content, `"inconclusive (HTTP %d from base URL — set auth.verify_path in spec for a definitive probe)"`)
 	assert.NotContains(t, content, `"invalid (HTTP %d) — check your credentials"`)
-	// Renderer must classify "inconclusive" as WARN before the FAIL clause
-	assert.Contains(t, content, `case strings.HasPrefix(s, "inconclusive"):`)
-	assert.Contains(t, content, `indicator = yellow("WARN")`)
 }
 
 func TestGeneratedDoctor_NoAuthShowsNotRequired(t *testing.T) {
@@ -4797,6 +4790,7 @@ func TestGenerateRequiredUserAgentHeaderBeatsDefaultUserAgent(t *testing.T) {
 		{Name: "User-Agent", Value: "Mozilla/5.0 Browser Sniff"},
 		{Name: "Referer", Value: "https://www.example.com/"},
 	}
+	apiSpec.Auth.VerifyPath = "/items"
 
 	outputDir := filepath.Join(t.TempDir(), "browserheaders-pp-cli")
 	require.NoError(t, New(apiSpec, outputDir).Generate())
