@@ -104,7 +104,7 @@ func runShipcheckCmd(t *testing.T, args ...string) error {
 }
 
 // TestShipcheck_AllLegsPass: every leg exits 0, umbrella returns nil.
-// All five legs must be invoked in canonical order with correct argv.
+// All six legs must be invoked in canonical order with correct argv.
 func TestShipcheck_AllLegsPass(t *testing.T) {
 	h := newShipcheckHarness(t)
 
@@ -117,8 +117,8 @@ func TestShipcheck_AllLegsPass(t *testing.T) {
 		t.Fatalf("expected %d leg invocations; got %d: %v", len(shipcheckLegs), len(invocations), invocations)
 	}
 
-	// Confirm canonical order: dogfood, verify, workflow-verify, verify-skill, scorecard.
-	wantOrder := []string{"dogfood", "verify", "workflow-verify", "verify-skill", "scorecard"}
+	// Confirm canonical order: dogfood, verify, workflow-verify, verify-skill, validate-narrative, scorecard.
+	wantOrder := []string{"dogfood", "verify", "workflow-verify", "verify-skill", "validate-narrative", "scorecard"}
 	for i, want := range wantOrder {
 		// argv[0] is the stub binary path; argv[1] is the leg name.
 		if len(invocations[i]) < 2 {
@@ -131,7 +131,7 @@ func TestShipcheck_AllLegsPass(t *testing.T) {
 }
 
 // TestShipcheck_OneLegFails: verify-skill exits 1, umbrella returns
-// ExitError with code 1; all five legs still ran (no fail-fast).
+// ExitError with code 1; all six legs still ran (no fail-fast).
 func TestShipcheck_OneLegFails(t *testing.T) {
 	h := newShipcheckHarness(t)
 	t.Setenv("STUB_EXIT_VERIFY_SKILL", "1")
@@ -232,15 +232,34 @@ func TestShipcheck_PassesSpecAndResearchDir(t *testing.T) {
 		t.Errorf("scorecard argv missing --research-dir: %v", scorecardArgs)
 	}
 
-	// workflow-verify and verify-skill don't take --spec or --research-dir;
+	// workflow-verify, verify-skill, and validate-narrative don't take --spec or --research-dir;
 	// confirm they don't get them.
-	wfArgs := findInvocation(invocations, "workflow-verify")
-	if argvHas(wfArgs, "--spec") {
-		t.Errorf("workflow-verify should not receive --spec; got %v", wfArgs)
+	for _, leg := range []string{"workflow-verify", "verify-skill", "validate-narrative"} {
+		args := findInvocation(invocations, leg)
+		if argvHas(args, "--spec") {
+			t.Errorf("%s should not receive --spec; got %v", leg, args)
+		}
+		if argvHas(args, "--research-dir") {
+			t.Errorf("%s should not receive --research-dir; got %v", leg, args)
+		}
 	}
-	vsArgs := findInvocation(invocations, "verify-skill")
-	if argvHas(vsArgs, "--spec") {
-		t.Errorf("verify-skill should not receive --spec; got %v", vsArgs)
+}
+
+func TestShipcheck_ValidateNarrativeUsesResearchAndBuiltBinary(t *testing.T) {
+	h := newShipcheckHarness(t)
+	researchDir := t.TempDir()
+
+	if err := runShipcheckCmd(t, "--dir", h.dir, "--research-dir", researchDir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	args := findInvocation(readStubLog(t, h.logFile), "validate-narrative")
+	wantResearch := filepath.Join(researchDir, "research.json")
+	wantBinary := filepath.Join(h.dir, filepath.Base(h.dir))
+	for _, want := range []string{"--strict", "--full-examples", "--research", wantResearch, "--binary", wantBinary} {
+		if !argvHas(args, want) {
+			t.Errorf("validate-narrative argv missing %q: %v", want, args)
+		}
 	}
 }
 

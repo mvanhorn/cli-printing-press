@@ -1942,7 +1942,7 @@ Phase 1 research brief for auth requirements and manually add env var support to
 `config.go` using the pattern: add `APIKey`/`APIKeySource` fields to the Config struct,
 and `os.Getenv("<API>_API_KEY")` in the Load function.
 
-**REQUIRED: Validate narrative `command` strings before saving/publishing examples.**
+**Validate narrative `command` strings before publishing examples.**
 The LLM (or human) authoring `research.json` can name commands that don't actually
 exist in the generated CLI — `<cli> stats` when the real shape is `<cli> reports stats`,
 or a command that was dropped because its endpoint had a complex body. It can also
@@ -1951,12 +1951,14 @@ broken commands ship to the README's Quick Start (`narrative.quickstart`) and th
 SKILL's recipes (`narrative.recipes`); users copy-paste them and hit failures on the
 very first invocation.
 
-Build the CLI binary, then run `printing-press validate-narrative` against it. The
-subcommand walks every `narrative.quickstart[].command` and `narrative.recipes[].command`,
-strips the binary name and trailing arguments, and runs `<binary> <words> --help` for
-each. With `--full-examples`, it also runs the complete example under
-`PRINTING_PRESS_VERIFY=1`, appending `--dry-run` when the command advertises it. This
-catches bad flags and argument shapes without making live API calls.
+`printing-press shipcheck` now runs `validate-narrative --strict --full-examples`
+automatically after `verify` builds the CLI binary. The standalone command is still
+useful immediately after editing `research.json`: it walks every
+`narrative.quickstart[].command` and `narrative.recipes[].command`, strips the binary
+name and trailing arguments, and runs `<binary> <words> --help` for each. With
+`--full-examples`, it also runs the complete example under `PRINTING_PRESS_VERIFY=1`,
+appending `--dry-run` when the command advertises it. This catches bad flags and
+argument shapes without making live API calls.
 
 ```bash
 QUICKSTART_BINARY="$CLI_WORK_DIR/<api>-pp-cli"
@@ -2299,7 +2301,7 @@ Do not rationalize skipping transcendence features because "the CLI already work
 
 ## Phase 4: Shipcheck
 
-Run one combined verification block via the `shipcheck` umbrella, which runs all five legs (dogfood, verify, workflow-verify, verify-skill, scorecard) in canonical order, propagates exit codes, and prints a per-leg verdict summary. The umbrella is the canonical Phase 4 invocation; running the legs individually is supported but not recommended (operators have skipped legs that way and shipped broken CLIs).
+Run one combined verification block via the `shipcheck` umbrella, which runs all six legs (dogfood, verify, workflow-verify, verify-skill, validate-narrative, scorecard) in canonical order, propagates exit codes, and prints a per-leg verdict summary. The umbrella is the canonical Phase 4 invocation; running the legs individually is supported but not recommended (operators have skipped legs that way and shipped broken CLIs).
 
 Before running shipcheck, update the lock heartbeat:
 ```bash
@@ -2313,7 +2315,7 @@ printing-press shipcheck \
   --research-dir "$API_RUN_DIR"
 ```
 
-The umbrella defaults to `verify --fix` (auto-repair common failures) and `scorecard --live-check` (sample novel-feature output against real targets). Use `--no-fix` for a read-only pass, `--no-live-check` to skip live sampling, or `--json` for a structured envelope (suppresses per-leg output for clean piping). Pass `--api-key` / `--env-var` through to verify when live testing needs a credential, or `--strict` to make verify-skill treat likely-false-positive findings as failures.
+The umbrella defaults to `verify --fix` (auto-repair common failures), `validate-narrative --strict --full-examples` (README/SKILL narrative command validation), and `scorecard --live-check` (sample novel-feature output against real targets). Use `--no-fix` for a read-only pass, `--no-live-check` to skip live sampling, or `--json` for a structured envelope (suppresses per-leg output for clean piping). Pass `--api-key` / `--env-var` through to verify when live testing needs a credential, or `--strict` to make verify-skill treat likely-false-positive findings as failures.
 
 If a leg fails, re-run that one leg standalone (e.g., `printing-press verify-skill --dir <CLI_WORK_DIR>`) for focused iteration; once it passes, re-run the full `shipcheck` umbrella to confirm no regression in the others.
 
@@ -2322,6 +2324,7 @@ Interpretation:
 - `verify` catches runtime breakage and runs the auto-fix loop for common failures
 - `workflow-verify` tests the primary workflow end-to-end using the verification manifest (workflow_verify.yaml). Three verdicts: workflow-pass, workflow-fail, unverified-needs-auth
 - `verify-skill` checks that every `--flag` and command path in SKILL.md actually exists in the shipped CLI source. Catches bogus examples invented by the absorb LLM (e.g., `search --max-time` when `--max-time` is a `tonight` flag). Exit 1 = findings to fix; exit 0 = SKILL is honest.
+- `validate-narrative` checks that every README/SKILL narrative command path, flag, and argument shape in research.json resolves against the built CLI under `PRINTING_PRESS_VERIFY=1`
 - `scorecard` is the structural quality snapshot, not the source of truth by itself
 
 Fix order (update heartbeat between each fix category to prevent stale lock during long fix loops):

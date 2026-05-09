@@ -15,7 +15,7 @@ import (
 )
 
 // shipcheck is the canonical Phase 4 verification umbrella. It runs each
-// of the five legs as a subprocess of the same printing-press binary,
+// of the six legs as a subprocess of the same printing-press binary,
 // aggregates exit codes, and prints a per-leg summary. Legs remain
 // callable standalone — this command is purely additive orchestration.
 //
@@ -64,11 +64,10 @@ type shipcheckLeg struct {
 	args func(*shipcheckOpts) []string
 }
 
-// shipcheckLegs enumerates the five legs in canonical execution order.
+// shipcheckLegs enumerates the six legs in canonical execution order.
 // Order matters: dogfood writes research.json updates that scorecard
-// later consumes, so dogfood must run before scorecard. workflow-verify
-// and verify-skill have no inter-leg dependencies; their position is
-// driven by the canonical Phase 4 sequence in the /printing-press skill.
+// later consumes, verify builds the CLI binary validate-narrative uses,
+// and scorecard should see all earlier validation failures first.
 var shipcheckLegs = []shipcheckLeg{
 	{
 		name: "dogfood",
@@ -119,6 +118,18 @@ var shipcheckLegs = []shipcheckLeg{
 		},
 	},
 	{
+		name: "validate-narrative",
+		args: func(o *shipcheckOpts) []string {
+			return []string{
+				"validate-narrative",
+				"--strict",
+				"--full-examples",
+				"--research", shipcheckResearchPath(o),
+				"--binary", shipcheckCLIPath(o),
+			}
+		},
+	},
+	{
 		name: "scorecard",
 		args: func(o *shipcheckOpts) []string {
 			a := []string{"scorecard", "--dir", o.dir}
@@ -134,6 +145,18 @@ var shipcheckLegs = []shipcheckLeg{
 			return a
 		},
 	},
+}
+
+func shipcheckResearchPath(o *shipcheckOpts) string {
+	dir := o.researchDir
+	if dir == "" {
+		dir = o.dir
+	}
+	return filepath.Join(dir, "research.json")
+}
+
+func shipcheckCLIPath(o *shipcheckOpts) string {
+	return filepath.Join(o.dir, filepath.Base(o.dir))
 }
 
 // shipcheckLegResult is the per-leg outcome of one umbrella run.
@@ -341,7 +364,7 @@ func newShipcheckCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "shipcheck",
-		Short: "Run all five verification legs (dogfood, verify, workflow-verify, verify-skill, scorecard) as one canonical Phase 4 sweep",
+		Short: "Run all six verification legs (dogfood, verify, workflow-verify, verify-skill, validate-narrative, scorecard) as one canonical Phase 4 sweep",
 		Long: `shipcheck runs every Phase 4 verification leg in sequence and aggregates their
 exit codes into a single verdict. It is the canonical local invocation that
 matches what the public-library CI runs.
@@ -351,6 +374,7 @@ Legs (in canonical order):
   verify           — runtime command testing (with --fix to auto-repair common breakage)
   workflow-verify  — primary workflow end-to-end against the verification manifest
   verify-skill     — SKILL.md flag/positional/command consistency with the shipped CLI
+  validate-narrative — README/SKILL narrative commands against the built CLI
   scorecard        — Steinberger quality bar (with --live-check sampled output probes)
 
 In default mode, every leg streams its full output to the terminal as it runs

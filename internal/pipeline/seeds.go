@@ -274,7 +274,7 @@ date: {{now}}
 
 # Phase Goal
 
-Evaluate the generated CLI with one shipcheck block: dogfood, runtime verification, and scorecard evidence.
+Evaluate the generated CLI with one shipcheck block: dogfood, runtime verification, workflow verification, skill verification, narrative validation, and scorecard evidence.
 
 ## Context
 
@@ -299,6 +299,9 @@ Evaluate the generated CLI with one shipcheck block: dogfood, runtime verificati
 
 - printing-press dogfood --dir {{.OutputDir}} --spec <spec>
 - printing-press verify --dir {{.OutputDir}} --spec <spec> --fix
+- printing-press workflow-verify --dir {{.OutputDir}}
+- printing-press verify-skill --dir {{.OutputDir}}
+- printing-press validate-narrative --strict --full-examples --research {{.PipelineDir}}/research.json --binary {{.OutputDir}}/<cli-binary>
 - printing-press scorecard --dir {{.OutputDir}} --spec <spec>
 - Generated CLI binary and help surfaces in {{.OutputDir}}
 `,
