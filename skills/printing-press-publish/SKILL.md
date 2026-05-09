@@ -359,6 +359,21 @@ If there are uncommitted changes, ask the user via AskUserQuestion:
 
 If reset, run `git checkout -- . && git clean -fd`.
 
+### Pre-package publication-state snapshot
+
+Before Step 6 mutates the managed clone, record whether this API slug already
+exists in the public library tree. Step 6 removes and replaces
+`library/*/<api-slug>`, so any collision or publication-path decision made
+after packaging must use this pre-package snapshot, not a fresh `ls`.
+
+```bash
+PREEXISTING_MERGED_PATHS=$(ls "$PUBLISH_REPO_DIR/library"/*/"<api-slug>" 2>/dev/null || true)
+PREEXISTING_MERGED_COLLISION=false
+if [ -n "$PREEXISTING_MERGED_PATHS" ]; then
+  PREEXISTING_MERGED_COLLISION=true
+fi
+```
+
 ## Step 6: Package
 
 Read `$PUBLISH_CONFIG` to get `module_path_base`. Construct the full module path using the API slug (not the CLI name):
@@ -448,10 +463,15 @@ Run these checks in sequence:
 **1. Check merged CLIs in managed clone:**
 
 ```bash
-ls "$PUBLISH_REPO_DIR/library"/*/"<api-slug>" 2>/dev/null
+MERGED_COLLISION="$PREEXISTING_MERGED_COLLISION"
+MERGED_PATHS="$PREEXISTING_MERGED_PATHS"
 ```
 
-If found, record `MERGED_COLLISION=true` and note the category path.
+Use the pre-package snapshot from Step 5. Do not re-run `ls
+"$PUBLISH_REPO_DIR/library"/*/"<api-slug>"` here: Step 6 has already copied the
+new package into that path, so a fresh `ls` would make every new print look like
+a merged collision. If `MERGED_COLLISION=true`, note the category path from
+`MERGED_PATHS`.
 
 **2. Check all open PRs (any author):**
 
@@ -712,11 +732,35 @@ Read `access` and `gh_user` from `$PUBLISH_CONFIG`. These determine how `gh pr c
 
 Build the PR description from:
 - The manifest (`description`, `api_name`, `category`, `printing_press_version`, `spec_url`)
+- The manifest's `novel_features` array from the packaged CLI after Step 6
 - The `help_output` captured in Step 4
 - The CLI's README (first 2-3 paragraphs, or note that README is missing)
 - Links to `.manuscripts/<run-id>/research/` and `.manuscripts/<run-id>/proofs/` within the PR branch
 - The validation results from Step 4
 - A Gaps section listing any missing manifest fields
+
+Read `novel_features` from
+`$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press.json` after
+packaging and mirror regeneration. Preserve the manifest order. Do not derive
+this section from README prose, SKILL prose, root help, or memory of the run:
+those surfaces may be summarized or hand-edited, while the packaged manifest is
+the publish-time source of truth. For each entry, include the command, name, and
+description. If the array is empty, write `No novel commands recorded in
+.printing-press.json.` and include the missing field in **Gaps**; do not omit the
+section.
+
+Also include a publication-path line so new prints, reprints, PR updates, and
+collision renames are distinguishable:
+- `New print` — no merged CLI and no existing PR matched this slug.
+- `Update existing PR #<N>` — this publish refreshes an open PR.
+- `Reprint/replace` — a merged library CLI existed before this publish and the
+  selected path replaces it. This must be based on
+  `PREEXISTING_MERGED_COLLISION=true`, not on the post-package tree.
+- `Alongside print` — this publish renamed the API slug to avoid a collision;
+  include the original slug.
+If `/printing-press-reprint` handed off a degraded reprint with no prior
+public-library source, use `New print` and add the degraded-reprint note only if
+that context is available from the handoff.
 
 **MANDATORY: Before constructing the PR body, scrub all workspace PII.** The library
 repo is public. Scan any live test results, acceptance data, or manuscript excerpts
@@ -724,6 +768,11 @@ for organization names, team member names, and email addresses. Replace with gen
 descriptions ("the workspace", "5 team members", "12 users"). Team keys (e.g., "ESP")
 are OK but org names (e.g., "Acme Corp") are not. See `references/secret-protection.md`
 in the printing-press skill for the full policy.
+
+Write the constructed PR body to a temporary Markdown file and pass it with
+`--body-file`. Do this for both PR creation and PR updates. Do not inline the
+body in a shell argument; large fenced help output, Markdown tables, and
+backticks are too easy to mangle.
 
 **PR description template:**
 
@@ -737,12 +786,22 @@ in the printing-press skill for the full policy.
 **API:** <api_name> | **Category:** <category> | **Press version:** <printing_press_version>
 **Spec:** <spec_url or "Not specified">
 
+### Publication Path
+
+<New print | Update existing PR #N | Reprint/replace | Alongside print from <original-api-slug>>
+
 ### CLI Shape
 
 \`\`\`bash
 $ <cli-name> --help
 <help_output from validation>
 \`\`\`
+
+### Novel Commands
+
+| Command | Name | Description |
+|---------|------|-------------|
+| `<command>` | <name> | <description> |
 
 ### What This CLI Does
 
@@ -776,9 +835,12 @@ $ <cli-name> --help
 
 ```bash
 cd "$PUBLISH_REPO_DIR"
+PR_BODY_FILE="$(mktemp)"
+# Write the constructed PR body Markdown to "$PR_BODY_FILE".
 gh pr edit "$EXISTING_PR_NUMBER" \
   --repo mvanhorn/printing-press-library \
-  --body "<constructed PR body>"
+  --body-file "$PR_BODY_FILE"
+rm -f "$PR_BODY_FILE"
 ```
 
 Display the full PR URL: "Updated PR: <EXISTING_PR_URL>" (use the full `https://` URL, not shorthand).
@@ -798,12 +860,17 @@ else
   PR_HEAD_REF="feat/<api-slug>"
 fi
 
+PR_BODY_FILE="$(mktemp)"
+# Write the constructed PR body Markdown to "$PR_BODY_FILE".
+
 gh pr create \
   --repo mvanhorn/printing-press-library \
   --head "$PR_HEAD_REF" \
   --base main \
   --title "feat(<api-slug>): add <api-slug>" \
-  --body "<constructed PR body>"
+  --body-file "$PR_BODY_FILE"
+
+rm -f "$PR_BODY_FILE"
 ```
 
 Display the full PR URL (e.g., `https://github.com/mvanhorn/printing-press-library/pull/10`), not the shorthand `org/repo#N` format. The full URL is clickable in all terminals and contexts.
