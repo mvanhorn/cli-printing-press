@@ -1111,6 +1111,12 @@ func TestNormalizeAuthFormat(t *testing.T) {
 			want:    "Basic {STYTCH_PROJECT_ID}:{STYTCH_SECRET}",
 		},
 		{
+			name:    "basic username password placeholders",
+			format:  "Basic {username}:{password}",
+			envVars: []string{"TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"},
+			want:    "Basic {TWILIO_ACCOUNT_SID}:{TWILIO_AUTH_TOKEN}",
+		},
+		{
 			name:    "empty format stays empty",
 			format:  "",
 			envVars: []string{"TOKEN"},

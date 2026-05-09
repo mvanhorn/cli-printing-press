@@ -2198,6 +2198,94 @@ paths:
 	}, parsed.Auth.EnvVarSpecs[0])
 }
 
+func TestOpenAPIHTTPBasicAuthDefaultsToUsernamePasswordEnvVars(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Twilio
+  version: "1.0.0"
+servers:
+  - url: https://api.twilio.com
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+security:
+  - basicAuth: []
+paths:
+  /Accounts:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, "Authorization", parsed.Auth.Header)
+	assert.Equal(t, "Basic {username}:{password}", parsed.Auth.Format)
+	assert.Equal(t, []string{"TWILIO_USERNAME", "TWILIO_PASSWORD"}, parsed.Auth.EnvVars)
+	require.Len(t, parsed.Auth.EnvVarSpecs, 2)
+	assert.Equal(t, spec.AuthEnvVar{
+		Name:      "TWILIO_USERNAME",
+		Kind:      spec.AuthEnvVarKindPerCall,
+		Required:  true,
+		Sensitive: false,
+		Inferred:  true,
+	}, parsed.Auth.EnvVarSpecs[0])
+	assert.Equal(t, spec.AuthEnvVar{
+		Name:      "TWILIO_PASSWORD",
+		Kind:      spec.AuthEnvVarKindPerCall,
+		Required:  true,
+		Sensitive: true,
+		Inferred:  true,
+	}, parsed.Auth.EnvVarSpecs[1])
+}
+
+func TestOpenAPIHTTPBasicAuthHonorsAuthVarsOverride(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Twilio
+  version: "1.0.0"
+servers:
+  - url: https://api.twilio.com
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      x-auth-vars:
+        - name: TWILIO_ACCOUNT_SID
+          kind: per_call
+          required: true
+          sensitive: false
+        - name: TWILIO_AUTH_TOKEN
+          kind: per_call
+          required: true
+          sensitive: true
+security:
+  - basicAuth: []
+paths:
+  /Accounts:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"}, parsed.Auth.EnvVars)
+	require.Len(t, parsed.Auth.EnvVarSpecs, 2)
+	assert.False(t, parsed.Auth.EnvVarSpecs[0].Sensitive)
+	assert.True(t, parsed.Auth.EnvVarSpecs[1].Sensitive)
+}
+
 func TestOpenAPIAuthVarsRichOverride(t *testing.T) {
 	t.Parallel()
 

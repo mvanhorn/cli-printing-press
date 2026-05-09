@@ -544,12 +544,16 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	envPrefix := naming.EnvPrefix(name)
 	switch auth.Type {
 	case "api_key":
-		// Use scheme name for more specific env var (e.g. BotToken -> DISCORD_BOT_TOKEN)
-		schemeEnvSuffix := toSnakeCase(schemeName)
-		if schemeEnvSuffix != "" && !isGenericAPIKeySchemeSuffix(schemeEnvSuffix) {
-			auth.EnvVars = []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
+		if authFormatIsBasic(auth.Format) {
+			auth.EnvVars = []string{envPrefix + "_USERNAME", envPrefix + "_PASSWORD"}
 		} else {
-			auth.EnvVars = []string{envPrefix + "_API_KEY"}
+			// Use scheme name for more specific env var (e.g. BotToken -> DISCORD_BOT_TOKEN)
+			schemeEnvSuffix := toSnakeCase(schemeName)
+			if schemeEnvSuffix != "" && !isGenericAPIKeySchemeSuffix(schemeEnvSuffix) {
+				auth.EnvVars = []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
+			} else {
+				auth.EnvVars = []string{envPrefix + "_API_KEY"}
+			}
 		}
 	case "bearer_token":
 		schemeEnvSuffix := toSnakeCase(schemeName)
@@ -647,7 +651,7 @@ func applyAuthEnvVarDefaults(auth *spec.AuthConfig, envPrefix string) {
 		return
 	}
 	auth.EnvVarSpecs = make([]spec.AuthEnvVar, 0, len(auth.EnvVars))
-	for _, name := range auth.EnvVars {
+	for i, name := range auth.EnvVars {
 		if name = strings.TrimSpace(name); name == "" {
 			continue
 		}
@@ -661,8 +665,15 @@ func applyAuthEnvVarDefaults(auth *spec.AuthConfig, envPrefix string) {
 		if auth.Type == "cookie" || strings.EqualFold(auth.In, "cookie") {
 			envVar.Kind = spec.AuthEnvVarKindHarvested
 		}
+		if authFormatIsBasic(auth.Format) && i == 0 {
+			envVar.Sensitive = false
+		}
 		auth.EnvVarSpecs = append(auth.EnvVarSpecs, envVar)
 	}
+}
+
+func authFormatIsBasic(format string) bool {
+	return strings.Contains(strings.ToLower(format), "basic ")
 }
 
 func applyAuthVarsRichOverride(auth *spec.AuthConfig, extensions map[string]any, path string) {
