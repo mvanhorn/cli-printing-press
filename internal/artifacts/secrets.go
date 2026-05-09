@@ -75,6 +75,7 @@ type VendorPrefixSecretFinding struct {
 type vendorPrefixSecretPattern struct {
 	kind    string
 	pattern *regexp.Regexp
+	accept  func(string) bool
 }
 
 var vendorPrefixSecretPatterns = []vendorPrefixSecretPattern{
@@ -86,7 +87,13 @@ var vendorPrefixSecretPatterns = []vendorPrefixSecretPattern{
 	{kind: "slack-token", pattern: regexp.MustCompile(`xox[abprs]-[A-Za-z0-9-]{32,}`)},
 	{kind: "slack-app-token", pattern: regexp.MustCompile(`xapp-[A-Za-z0-9-]{32,}`)},
 	{kind: "google-api-key", pattern: regexp.MustCompile(`AIza[A-Za-z0-9_-]{20,}`)},
-	{kind: "aws-access-key", pattern: regexp.MustCompile(`AKIA[0-9A-Z]{16}`)},
+	{
+		kind:    "aws-access-key",
+		pattern: regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
+		accept: func(candidate string) bool {
+			return !strings.Contains(candidate, "EXAMPLE")
+		},
+	},
 }
 
 func FindVendorPrefixSecrets(root string) ([]VendorPrefixSecretFinding, error) {
@@ -96,13 +103,6 @@ func FindVendorPrefixSecrets(root string) ([]VendorPrefixSecretFinding, error) {
 			return walkErr
 		}
 		if entry.IsDir() {
-			return nil
-		}
-		isText, err := isTextFile(path)
-		if err != nil {
-			return err
-		}
-		if !isText {
 			return nil
 		}
 		fileFindings, err := scanVendorPrefixSecretFile(root, path)
@@ -130,6 +130,15 @@ func scanVendorPrefixSecretFile(root, path string) ([]VendorPrefixSecretFinding,
 	}
 	defer func() { _ = file.Close() }()
 
+	reader := bufio.NewReaderSize(file, 8192)
+	probe, err := reader.Peek(8192)
+	if err != nil && err != io.EOF && err != bufio.ErrBufferFull {
+		return nil, err
+	}
+	if bytes.Contains(probe, []byte{0}) {
+		return nil, nil
+	}
+
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return nil, err
@@ -137,7 +146,6 @@ func scanVendorPrefixSecretFile(root, path string) ([]VendorPrefixSecretFinding,
 	rel = filepath.ToSlash(rel)
 
 	var findings []VendorPrefixSecretFinding
-	reader := bufio.NewReader(file)
 	lineNumber := 0
 	for {
 		line, readErr := reader.ReadString('\n')
@@ -149,7 +157,7 @@ func scanVendorPrefixSecretFile(root, path string) ([]VendorPrefixSecretFinding,
 		}
 		lineNumber++
 		for _, pattern := range vendorPrefixSecretPatterns {
-			if pattern.pattern.MatchString(line) {
+			if vendorPrefixSecretLineMatch(pattern, line) {
 				findings = append(findings, VendorPrefixSecretFinding{
 					Path: rel,
 					Line: lineNumber,
@@ -164,17 +172,11 @@ func scanVendorPrefixSecretFile(root, path string) ([]VendorPrefixSecretFinding,
 	return findings, nil
 }
 
-func isTextFile(path string) (bool, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return false, err
+func vendorPrefixSecretLineMatch(pattern vendorPrefixSecretPattern, line string) bool {
+	for _, candidate := range pattern.pattern.FindAllString(line, -1) {
+		if pattern.accept == nil || pattern.accept(candidate) {
+			return true
+		}
 	}
-	defer func() { _ = file.Close() }()
-
-	buf := make([]byte, 8192)
-	n, err := file.Read(buf)
-	if err != nil && err != io.EOF {
-		return false, err
-	}
-	return !bytes.Contains(buf[:n], []byte{0}), nil
+	return false
 }

@@ -152,7 +152,6 @@ PII_AUTO_REDACT=(
   'slack-bot-token|xoxb-[A-Za-z0-9-]{40,}|<REDACTED:slack-bot-token>'
   'slack-app-token|xapp-[A-Za-z0-9-]{32,}|<REDACTED:slack-app-token>'
   'google-api-key|AIza[A-Za-z0-9_-]{20,}|<REDACTED:google-api-key>'
-  'aws-access-key|AKIA[0-9A-Z]{16}|<REDACTED:aws-access-key>'
 )
 
 for entry in "${PII_AUTO_REDACT[@]}"; do
@@ -166,6 +165,10 @@ for entry in "${PII_AUTO_REDACT[@]}"; do
   done
 done
 ```
+
+Do not add a simple `AKIA[0-9A-Z]{16}` shell auto-redaction rule here. AWS
+access keys have the same shape as AWS's canonical documentation placeholder,
+so the binary publish scan handles them with a placeholder allowlist instead.
 
 These patterns are vendor-anchored and the prefix character class is restrictive
 enough that the false-positive rate is effectively zero. Adding a new vendor

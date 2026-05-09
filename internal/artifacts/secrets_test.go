@@ -53,15 +53,18 @@ func TestFindVendorPrefixSecretsReportsFileAndLine(t *testing.T) {
 	root := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(root, ".manuscripts", "run-1", "research"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "spec.json"), []byte("{\n  \"token\": \""+testSecret("sk", "-or-v1-", "abcdefghijklmnopqrstuvwxyz1234567890")+"\"\n}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "aws.txt"), []byte("key="+testSecret("AK", "IA", "1234567890ABCDEF")+"\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(root, ".manuscripts", "run-1", "research", "openapi.json"), []byte("Authorization: Bearer "+testSecret("sk", "_live_", "1234567890abcdefghijklmnop")+"\n"), 0o644))
 
 	findings, err := FindVendorPrefixSecrets(root)
 	require.NoError(t, err)
-	require.Len(t, findings, 2)
+	require.Len(t, findings, 3)
 	byPath := map[string]VendorPrefixSecretFinding{}
 	for _, finding := range findings {
 		byPath[finding.Path] = finding
 	}
+	require.Equal(t, 1, byPath["aws.txt"].Line)
+	require.Equal(t, "aws-access-key", byPath["aws.txt"].Kind)
 	require.Equal(t, 2, byPath["spec.json"].Line)
 	require.Equal(t, "openrouter-api-key", byPath["spec.json"].Kind)
 	require.Equal(t, 1, byPath[".manuscripts/run-1/research/openapi.json"].Line)
@@ -70,7 +73,8 @@ func TestFindVendorPrefixSecretsReportsFileAndLine(t *testing.T) {
 
 func TestFindVendorPrefixSecretsIgnoresPlaceholdersAndBinaryFiles(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(root, "README.md"), []byte("Use sk-EXAMPLE-KEY or your-key-here for setup.\n"), 0o644))
+	readme := "Use sk-EXAMPLE-KEY, " + testSecret("AK", "IA", "IOSFODNN7EXAMPLE") + ", or your-key-here for setup.\n"
+	require.NoError(t, os.WriteFile(filepath.Join(root, "README.md"), []byte(readme), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "blob.bin"), []byte{0, 's', 'k', '_', 'l', 'i', 'v', 'e', '_', '1', '2', '3'}, 0o644))
 
 	findings, err := FindVendorPrefixSecrets(root)
