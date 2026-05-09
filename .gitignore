@@ -4,6 +4,7 @@
 catalog/specs/*.graphql
 .cache/
 .gotmp/
+.omx/
 .claude/worktrees/
 /refactor/artifacts/
 /tests/artifacts/perf/
