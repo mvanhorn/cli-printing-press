@@ -11,10 +11,12 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import verify_skill  # noqa: E402
 from verify_skill import (  # noqa: E402
     collect_command_constructors,
     find_root_children,
@@ -236,6 +238,25 @@ func newSearchCmd() *cobra.Command {
             # Legacy fallback returns the file; not empty
             self.assertEqual([f.name for f in files], ["search.go"])
             self.assertEqual(use, "search <query>")
+
+
+class UTF8ReadTest(unittest.TestCase):
+    def test_read_text_uses_explicit_utf8_encoding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "SKILL.md"
+            path.write_text("# 한국어 테스트\n", encoding="utf-8")
+
+            seen = []
+            original = Path.read_text
+
+            def spy(self, *args, **kwargs):
+                seen.append(kwargs.get("encoding"))
+                return original(self, *args, **kwargs)
+
+            with patch.object(Path, "read_text", spy):
+                self.assertIn("한국어", verify_skill.read_utf8(path))
+
+            self.assertEqual(seen, ["utf-8"])
 
 
 if __name__ == "__main__":

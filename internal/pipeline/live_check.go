@@ -11,11 +11,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
 )
 
@@ -205,16 +207,8 @@ func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 // is non-empty it's used verbatim; otherwise RunLiveCheck tries the common
 // `<base>-pp-cli` naming convention and falls back to `<base>`.
 func resolveBinaryPath(cliDir, name string) (string, error) {
-	candidates := []string{name}
-	if name == "" {
-		base := filepath.Base(cliDir)
-		candidates = []string{base + "-pp-cli", base}
-	}
-	for _, candidate := range candidates {
-		if candidate == "" {
-			continue
-		}
-		path := filepath.Join(cliDir, candidate)
+	candidates := liveCheckBinaryCandidates(cliDir, name)
+	for _, path := range candidates {
 		info, err := os.Stat(path)
 		if err != nil {
 			continue
@@ -225,6 +219,36 @@ func resolveBinaryPath(cliDir, name string) (string, error) {
 		return path, nil
 	}
 	return "", fmt.Errorf("no runnable binary found in %q (tried %v)", cliDir, candidates)
+}
+
+func liveCheckBinaryCandidates(cliDir, name string) []string {
+	return liveCheckBinaryCandidatesForGOOS(cliDir, name, runtime.GOOS)
+}
+
+func liveCheckBinaryCandidatesForGOOS(cliDir, name, goos string) []string {
+	names := []string{name}
+	if name == "" {
+		base := filepath.Base(cliDir)
+		names = []string{base + "-pp-cli", base}
+	}
+	candidates := make([]string, 0, len(names)*2)
+	seen := map[string]struct{}{}
+	for _, candidate := range names {
+		if candidate == "" {
+			continue
+		}
+		for _, path := range []string{
+			filepath.Join(cliDir, candidate),
+			platform.ExecutablePathForGOOS(filepath.Join(cliDir, candidate), goos),
+		} {
+			if _, ok := seen[path]; ok {
+				continue
+			}
+			seen[path] = struct{}{}
+			candidates = append(candidates, path)
+		}
+	}
+	return candidates
 }
 
 // runFeaturesConcurrent distributes the per-feature checks across a worker

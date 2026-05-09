@@ -16,6 +16,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	openapiparser "github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"gopkg.in/yaml.v3"
 )
@@ -1705,6 +1706,7 @@ func buildDogfoodBinary(dir, cliName string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving dogfood binary path: %w", err)
 	}
+	buildPath = platform.ExecutablePath(buildPath)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", buildPath, "./cmd/"+cliName)

@@ -15,6 +15,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/govulncheck"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/spf13/cobra"
 )
 
@@ -801,7 +802,7 @@ func buildValidationBinary(dir, cliName string) (path string, cleanup func(), er
 		_ = os.RemoveAll(tempDir)
 	}
 
-	outPath := filepath.Join(tempDir, cliName)
+	outPath := platform.ExecutablePath(filepath.Join(tempDir, cliName))
 	if err := buildBinaryAtPath(dir, outPath, "./cmd/"+cliName); err == nil {
 		return outPath, cleanup, nil
 	}

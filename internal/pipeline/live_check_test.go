@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -439,6 +441,15 @@ func TestLiveCheck_BinaryAutoDerivation(t *testing.T) {
 	require.False(t, result.Unable, "should have found a binary: %s", result.Reason)
 	require.Equal(t, 1, result.Passed)
 	require.Contains(t, result.Features[0].Example, "stub x matched")
+}
+
+func TestLiveCheckBinaryCandidatesIncludeHostExecutableName(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join("tmp", "sample-cli")
+	assert.Contains(t, liveCheckBinaryCandidatesForGOOS(dir, "", "windows"), filepath.Join("tmp", "sample-cli", "sample-cli.exe"))
+	assert.Contains(t, liveCheckBinaryCandidatesForGOOS(dir, "custom-cli", "windows"), filepath.Join("tmp", "sample-cli", "custom-cli"))
+	assert.Contains(t, liveCheckBinaryCandidatesForGOOS(dir, "custom-cli", "windows"), platform.ExecutablePathForGOOS(filepath.Join("tmp", "sample-cli", "custom-cli"), "windows"))
 }
 
 // TestChecked_DerivedFromCounters ensures the Checked() method is a pure

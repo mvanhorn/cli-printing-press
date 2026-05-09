@@ -56,6 +56,10 @@ from pathlib import Path
 from typing import Iterable
 
 
+def read_utf8(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
 COMMON_FLAGS = {
     "help", "version", "json", "csv", "plain", "quiet", "agent",
     "select", "compact", "dry-run", "no-cache", "yes", "no-input",
@@ -241,7 +245,7 @@ def collect_command_constructors(cli_dir: Path) -> dict[str, CommandConstructor]
         if go_file.name.endswith("_test.go"):
             continue
         try:
-            text = go_file.read_text()
+            text = read_utf8(go_file)
         except Exception:
             continue
         for m in CONSTRUCTOR_RE.finditer(text):
@@ -283,7 +287,7 @@ def find_root_children(cli_dir: Path) -> list[str]:
         if go_file.name.endswith("_test.go"):
             continue
         try:
-            text = go_file.read_text()
+            text = read_utf8(go_file)
         except Exception:
             continue
         for m in ROOT_ADDCMD_RE.finditer(text):
@@ -395,7 +399,7 @@ def _legacy_find_command_source(cli_dir: Path, cmd_path: list[str]):
         if go_file.name.endswith("_test.go"):
             continue
         try:
-            text = go_file.read_text()
+            text = read_utf8(go_file)
         except Exception:
             continue
         for m in USE_RE.finditer(text):
@@ -428,7 +432,7 @@ def _legacy_find_command_source(cli_dir: Path, cmd_path: list[str]):
 def flag_declared_in(files: Iterable[Path], flag_name: str) -> bool:
     for f in files:
         try:
-            text = f.read_text()
+            text = read_utf8(f)
         except Exception:
             continue
         for m in FLAG_DECL_RE.finditer(text):
@@ -540,7 +544,7 @@ def flag_declared_via_helper(cli_dir: Path, cmd_files: Iterable[Path], flag_name
     helper_names: set[str] = set()
     for f in cmd_files:
         try:
-            text = f.read_text()
+            text = read_utf8(f)
         except Exception:
             continue
         for m in HELPER_CALL_RE.finditer(text):
@@ -563,7 +567,7 @@ def flag_declared_via_helper(cli_dir: Path, cmd_files: Iterable[Path], flag_name
         if go_file.name.endswith("_test.go"):
             continue
         try:
-            text = go_file.read_text()
+            text = read_utf8(go_file)
         except Exception:
             continue
         for m in func_re.finditer(text):
@@ -580,7 +584,7 @@ def persistent_flag_declared(cli_dir: Path, flag_name: str) -> bool:
         return False
     for go_file in src.glob("*.go"):
         try:
-            text = go_file.read_text()
+            text = read_utf8(go_file)
         except Exception:
             continue
         for m in FLAG_DECL_RE.finditer(text):
@@ -602,7 +606,7 @@ def extract_recipes(skill: Path, cli_binary: str, cli_dir: Path | None = None) -
     positional_args: non-flag tokens after cmd_path (shell-quoted strings preserved)
     flags: --flag tokens (with their -- prefix)
     """
-    text = skill.read_text()
+    text = read_utf8(skill)
     blocks = CODEBLOCK_BASH.findall(text)
     results = []
     for block in blocks:
@@ -877,7 +881,7 @@ def check_unknown_commands(cli_dir: Path, skill: Path, cli_binary: str, report: 
     graph and resolves multi-level command paths (e.g., `links stale` vs
     `profile save`) without false-positive collisions on shared leaf names.
     """
-    skill_text = skill.read_text()
+    skill_text = read_utf8(skill)
     seen: set[tuple[str, ...]] = set()
     sources: list[tuple[list[str], str]] = []
 
@@ -938,7 +942,7 @@ def derive_cli_binary(cli_dir: Path) -> str:
     manifest = cli_dir / ".printing-press.json"
     if manifest.exists():
         try:
-            data = json.loads(manifest.read_text())
+            data = json.loads(read_utf8(manifest))
             if data.get("cli_name"):
                 return data["cli_name"]
         except Exception:
