@@ -629,6 +629,47 @@ func TestPublishPackageIncludesManuscripts(t *testing.T) {
 	assert.NoError(t, err, "shipcheck proofs should be in staged package")
 }
 
+func TestPublishPackageRejectsVendorPrefixSecretsInStagedCLI(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.json"), []byte("{\n  \"token\": \""+testSecret("sk", "-or-v1-", "abcdefghijklmnopqrstuvwxyz1234567890")+"\"\n}\n"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vendor-prefix tokens detected")
+	assert.Contains(t, err.Error(), "spec.json:2 openrouter-api-key")
+
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
+}
+
+func TestPublishPackageRejectsVendorPrefixSecretsInManuscripts(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	runID := "20260329-100000"
+	researchFile := filepath.Join(home, "manuscripts", "test", runID, "research", "openapi.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(researchFile), 0o755))
+	require.NoError(t, os.WriteFile(researchFile, []byte("Authorization: Bearer "+testSecret("sk", "_live_", "1234567890abcdefghijklmnop")+"\n"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vendor-prefix tokens detected")
+	assert.Contains(t, err.Error(), ".manuscripts/20260329-100000/research/openapi.json:1 stripe-secret-key")
+
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
+}
+
 func TestFindMostRecentRun(t *testing.T) {
 	dir := t.TempDir()
 
@@ -1013,4 +1054,8 @@ func writePublishablePhase5Pass(t *testing.T) {
 		TestsFailed:   0,
 		AuthContext:   pipeline.Phase5AuthContext{Type: "none"},
 	})
+}
+
+func testSecret(parts ...string) string {
+	return strings.Join(parts, "")
 }
