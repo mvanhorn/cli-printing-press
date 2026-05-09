@@ -129,6 +129,7 @@ type APISpec struct {
 	Share                ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
 	MCP                  MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, the emitted MCP binary is stdio-only (today's default). Opting into http adds a --transport/--addr flag surface so the same binary can serve cloud-hosted agents.
 	Throttling           ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
+	FieldNaming          string              `yaml:"field_naming,omitempty" json:"field_naming,omitempty"` // field_naming controls API-specific identifier conventions. Use "salesforce" to include "Id" and "DeveloperName" in genericIDFieldFallbacks.
 }
 
 type TierRoutingConfig struct {
@@ -216,6 +217,10 @@ const (
 	// field rather than a response extension).
 	ThrottleShapeShopify ThrottleShape = "shopify"
 )
+
+// FieldNamingSalesforce opts a spec into Salesforce-specific identifier conventions.
+// Generated sync and store files include "Id" and "DeveloperName" in genericIDFieldFallbacks.
+const FieldNamingSalesforce = "salesforce"
 
 // ThrottlingConfig opts a printed CLI into the cost-based throttling
 // primitives. Enabled turns the surface on (--throttle-mode flag,
@@ -430,7 +435,7 @@ func (c BearerRefreshConfig) Enabled() bool {
 }
 
 type AuthConfig struct {
-	Type             string       `yaml:"type" json:"type"` // api_key, oauth2, bearer_token, cookie, composed, session_handshake, none
+	Type             string       `yaml:"type" json:"type"` // api_key, oauth2, bearer_token, cookie, composed, session_handshake, oauth1_tba, none
 	Header           string       `yaml:"header" json:"header"`
 	Format           string       `yaml:"format" json:"format"`
 	EnvVars          []string     `yaml:"env_vars" json:"env_vars"`

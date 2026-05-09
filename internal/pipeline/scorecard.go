@@ -1936,6 +1936,12 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 		if authPrefixLiteralPresent("Bearer", clientContent, configContent, authContent) {
 			authHeaderMatched = true
 		}
+	case strings.EqualFold(scheme.Type, "oauth1_tba"):
+		scoreable = true
+		// oauth1_tba uses "OAuth " prefix per RFC 5849 §3.5.1
+		if authPrefixLiteralPresent("OAuth", clientContent, configContent, authContent) {
+			authHeaderMatched = true
+		}
 	}
 	if !scoreable {
 		return 0, false
