@@ -1,0 +1,19 @@
+name: quo
+display_name: Quo
+description: Business phone system API for contacts, SMS messaging, call transcripts, and inbox management (formerly OpenPhone)
+category: social-and-messaging
+spec_url: https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/catalog/specs/quo-spec.yaml
+spec_format: yaml
+openapi_version: "3.0"
+tier: official
+spec_source: docs
+auth_required: true
+client_pattern: rest
+http_transport: standard
+verified_date: "2026-05-09"
+homepage: https://www.quo.com/docs/mdx/api-reference/introduction
+notes: >
+  Quo (formerly OpenPhone) business phone system. API lives at api.openphone.com/v1
+  (legacy domain). Auth via plain API key in Authorization header (not Bearer).
+  Spec built from official docs + MCP tool schemas. Transcripts require Business plan.
+  No MMS support via API. Credit-based pricing for API messaging.

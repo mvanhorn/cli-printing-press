@@ -38,6 +38,7 @@ sales-and-crm:
 social-and-messaging:
   discord              Chat and community platform API
   front                Customer communication platform API
+  quo                  Business phone system API for contacts, SMS messaging, call transcripts, and inbox management (formerly OpenPhone)
   telegram             Telegram Bot API for building bots - send messages, manage chats, webhooks, stickers
   twilio               Communication APIs for SMS, voice, and messaging
 
