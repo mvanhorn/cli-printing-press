@@ -1,0 +1,34 @@
+name: x
+display_name: X (Twitter)
+description: X v2 API mirror with first-class Articles support — tweets, users, lists, spaces, bookmarks, likes via the official OpenAPI; long-form Articles authoring via browser-sniffed editor endpoints (GraphQL with rotating operation hashes).
+category: social-and-messaging
+spec_url: https://api.x.com/2/openapi.json
+spec_format: custom
+tier: community
+verified_date: "2026-05-08"
+homepage: https://docs.x.com/x-api
+notes: |
+  Hybrid spec. The catalog points at the official v2 OpenAPI for provenance, but
+  generation feeds `printing-press generate` two specs simultaneously
+  (`--spec official.yaml --spec sniffed.yaml --name x`).
+
+  Auth is split: OAuth 2.0 PKCE for v2 endpoints (Source A), browser session
+  cookies for the sniffed Articles GraphQL endpoints (Source B). The CLI
+  selects auth per-host. See the pp-x plan's "Articles auth design" section.
+
+  X Articles is GraphQL with rotating operation hashes — captured at sniff time,
+  refreshed when X redeploys the web app. Treat hashes as runtime config in
+  ~/.config/x-pp-cli/article-ops.json, not compile-time constants.
+
+  Pro-tier-only endpoints (filtered stream, full-archive search) are excluded
+  from v1. Free/Basic tier limits apply.
+known_alternatives:
+  - name: twurl
+    url: https://github.com/twitterdev/twurl
+    language: ruby
+  - name: rettiwt-api
+    url: https://github.com/Rishikant181/Rettiwt-API
+    language: typescript
+  - name: twscrape
+    url: https://github.com/vladkens/twscrape
+    language: python
