@@ -16,6 +16,7 @@ import (
 type Config struct {
 	BaseURL        string `toml:"base_url"`
 	AuthHeaderVal  string `toml:"auth_header"`
+	Headers        map[string]string `toml:"headers,omitempty"`
 	AuthSource     string `toml:"-"`
 	AccessToken    string `toml:"access_token"`
 	RefreshToken   string `toml:"refresh_token"`

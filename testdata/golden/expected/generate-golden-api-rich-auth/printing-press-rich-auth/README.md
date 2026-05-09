@@ -201,6 +201,8 @@ Verifies configuration, credentials, and connectivity to the API.
 
 Config file: `~/.config/printing-press-rich-pp-cli/config.toml`
 
+Static request headers can be configured under `headers`; per-command header overrides take precedence.
+
 Environment variables:
 
 | Name | Kind | Required | Description |

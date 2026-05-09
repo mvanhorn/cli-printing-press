@@ -490,6 +490,8 @@ Verifies configuration{{if and (ne .Auth.Type "") (ne .Auth.Type "none")}}, cred
 ## Configuration
 
 Config file: `{{.Config.Path}}`
+
+Static request headers can be configured under `headers`; per-command header overrides take precedence.
 {{- if or .Auth.EnvVarSpecs .Auth.EnvVars}}
 
 Environment variables:
