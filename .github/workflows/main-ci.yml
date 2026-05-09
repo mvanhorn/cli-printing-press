@@ -26,9 +26,88 @@ permissions:
   contents: read
 
 jobs:
+  classify:
+    name: classify full-suite scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      needs_build: ${{ steps.changes.outputs.needs_build }}
+      needs_tests: ${{ steps.changes.outputs.needs_tests }}
+      needs_golden: ${{ steps.changes.outputs.needs_golden }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Classify changed files
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          needs_build=false
+          needs_tests=false
+          needs_golden=false
+
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            # Keep the post-merge alarm full-strength on main. PRs get the
+            # scoped path below so docs-only changes do not burn the suite.
+            needs_build=true
+            needs_tests=true
+            needs_golden=true
+          else
+            git fetch --no-tags --prune origin "${{ github.base_ref }}"
+            mapfile -t changed < <(git diff --name-only --diff-filter=ACMR "origin/${{ github.base_ref }}...HEAD")
+
+            echo "Changed files:"
+            printf '  %s\n' "${changed[@]}"
+
+            for file in "${changed[@]}"; do
+              case "$file" in
+                .github/workflows/main-ci.yml)
+                  needs_build=true
+                  needs_tests=true
+                  needs_golden=true
+                  ;;
+                *.go|go.mod|go.sum|cmd/*|catalog/*|internal/*)
+                  needs_build=true
+                  needs_tests=true
+                  ;;
+              esac
+
+              case "$file" in
+                .github/workflows/main-ci.yml|.github/workflows/lint.yml|scripts/*|testdata/*)
+                  needs_tests=true
+                  ;;
+              esac
+
+              case "$file" in
+                .github/workflows/main-ci.yml|.github/workflows/golden.yml|cmd/*|internal/*|catalog/*|testdata/golden/*|scripts/golden.sh|go.mod|go.sum)
+                  needs_golden=true
+                  ;;
+              esac
+            done
+          fi
+
+          {
+            echo "needs_build=$needs_build"
+            echo "needs_tests=$needs_tests"
+            echo "needs_golden=$needs_golden"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Full-suite scope"
+            echo
+            echo "- build: \`$needs_build\`"
+            echo "- tests: \`$needs_tests\`"
+            echo "- golden: \`$needs_golden\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   full-build:
     name: full-build
     runs-on: ubuntu-latest
+    needs: classify
+    if: needs.classify.outputs.needs_build == 'true'
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -47,6 +126,8 @@ jobs:
   full-test:
     name: full-test
     runs-on: ubuntu-latest
+    needs: classify
+    if: needs.classify.outputs.needs_tests == 'true'
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -65,6 +146,8 @@ jobs:
   full-golden:
     name: full-golden
     runs-on: ubuntu-latest
+    needs: classify
+    if: needs.classify.outputs.needs_golden == 'true'
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -83,6 +166,7 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     needs:
+      - classify
       - full-build
       - full-test
       - full-golden
@@ -92,17 +176,24 @@ jobs:
       - name: Check full-suite jobs
         shell: bash
         run: |
-          if [[ "${{ needs.full-build.result }}" != "success" ]]; then
+          if [[ "${{ needs.classify.result }}" != "success" ]]; then
+            echo "change classification failed or was cancelled."
+            exit 1
+          fi
+          if [[ "${{ needs.classify.outputs.needs_build }}" == "true" && "${{ needs.full-build.result }}" != "success" ]]; then
             echo "full-build failed or was cancelled."
             exit 1
           fi
-          if [[ "${{ needs.full-test.result }}" != "success" ]]; then
+          if [[ "${{ needs.classify.outputs.needs_tests }}" == "true" && "${{ needs.full-test.result }}" != "success" ]]; then
             echo "full-test failed or was cancelled."
             exit 1
           fi
-          if [[ "${{ needs.full-golden.result }}" != "success" ]]; then
+          if [[ "${{ needs.classify.outputs.needs_golden }}" == "true" && "${{ needs.full-golden.result }}" != "success" ]]; then
             echo "full-golden failed or was cancelled."
             exit 1
           fi
 
-          echo "Full build, test, and golden verification passed."
+          echo "Full-suite scope:"
+          echo "  build=${{ needs.classify.outputs.needs_build }} result=${{ needs.full-build.result }}"
+          echo "  tests=${{ needs.classify.outputs.needs_tests }} result=${{ needs.full-test.result }}"
+          echo "  golden=${{ needs.classify.outputs.needs_golden }} result=${{ needs.full-golden.result }}"
