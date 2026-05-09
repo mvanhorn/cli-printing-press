@@ -164,8 +164,8 @@ Rules:
 - Credential-bearing tier `base_url` values must be HTTPS and cannot point at
   loopback, private, link-local, or unrelated hosts unless
   `allow_cross_host_auth: true` documents explicit review.
-- Incompatible with `client_pattern: proxy-envelope` and with resource-level
-  `base_url` overrides when any tier declares its own `base_url`.
+- Incompatible with `client_pattern: proxy-envelope` and with resource- or
+  endpoint-level `base_url` overrides when any tier declares its own `base_url`.
 - Tier credential env vars are read from the environment at request time; they
   are not serialized into generated config files.
 

@@ -657,9 +657,9 @@ type configTemplateData struct {
 
 // endpointTemplateData is the data passed to command_endpoint.go.tmpl
 // for both top-level resource endpoints and sub-resource endpoints.
-// ResourceBaseURL carries the resource's BaseURL override (or its
-// inherited parent override for sub-resources); the template prepends
-// it to Endpoint.Path so per-resource hosts produce absolute URLs.
+// ResourceBaseURL carries the endpoint's effective BaseURL override. The
+// template prepends it to Endpoint.Path so per-request hosts produce absolute
+// URLs.
 type endpointTemplateData struct {
 	ResourceName    string
 	ResourceBaseURL string
@@ -1732,7 +1732,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			asyncInfo, isAsync := g.AsyncJobs[name+"/"+eName]
 			epData := endpointTemplateData{
 				ResourceName:    name,
-				ResourceBaseURL: strings.TrimRight(resource.BaseURL, "/"),
+				ResourceBaseURL: effectiveEndpointBaseURL(resource, endpoint),
 				EffectivePath:   effectiveEndpointPath(resource, endpoint),
 				EffectiveTier:   g.Spec.EffectiveTier(resource, endpoint),
 				FuncPrefix:      name,
@@ -1773,17 +1773,6 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				return fmt.Errorf("rendering sub-parent %s/%s: %w", name, subName, err)
 			}
 
-			// Sub-resources inherit the parent's BaseURL override; an
-			// explicit sub_resource.base_url wins. Falls through to the
-			// spec-level BaseURL when both are empty. Trailing slash is
-			// trimmed so the template's `path := <base><endpoint.path>`
-			// concat doesn't produce `https://x.com/v1//search` when the
-			// override and endpoint path both carry slashes.
-			subResourceBaseURL := subResource.BaseURL
-			if subResourceBaseURL == "" {
-				subResourceBaseURL = resource.BaseURL
-			}
-			subResourceBaseURL = strings.TrimRight(subResourceBaseURL, "/")
 			for eName, endpoint := range subResource.Endpoints {
 				subKey := subName + "/" + eName
 				asyncInfo, isAsync := g.AsyncJobs[subKey]
@@ -1793,7 +1782,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				}
 				epData := endpointTemplateData{
 					ResourceName:    subName,
-					ResourceBaseURL: subResourceBaseURL,
+					ResourceBaseURL: effectiveSubEndpointBaseURL(resource, subResource, endpoint),
 					EffectivePath:   effectiveSubEndpointPath(resource, subResource, endpoint),
 					EffectiveTier:   g.Spec.EffectiveTier(effectiveResource, endpoint),
 					FuncPrefix:      name + "-" + subName,
@@ -2476,34 +2465,36 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 	for _, pc := range promotedCommands {
 		// Look up the full resource to pass sibling endpoints/sub-resources.
 		// Trim trailing slash on BaseURL so the promoted handler's
-		// `path := <Resource.BaseURL><Endpoint.Path>` concat doesn't
+		// `path := <ResourceBaseURL><Endpoint.Path>` concat doesn't
 		// produce `https://x.com/v1//search`.
 		resource := g.Spec.Resources[pc.ResourceName]
-		resource.BaseURL = strings.TrimRight(resource.BaseURL, "/")
+		resourceBaseURL := effectiveEndpointBaseURL(resource, pc.Endpoint)
 		promotedData := struct {
-			PromotedName  string
-			ResourceName  string
-			EndpointName  string
-			EffectivePath string
-			Endpoint      spec.Endpoint
-			EffectiveTier string
-			HasStore      bool
-			Resource      spec.Resource
-			FuncPrefix    string
-			IsReadOnly    bool
+			PromotedName    string
+			ResourceName    string
+			EndpointName    string
+			ResourceBaseURL string
+			EffectivePath   string
+			Endpoint        spec.Endpoint
+			EffectiveTier   string
+			HasStore        bool
+			Resource        spec.Resource
+			FuncPrefix      string
+			IsReadOnly      bool
 			*spec.APISpec
 		}{
-			PromotedName:  pc.PromotedName,
-			ResourceName:  pc.ResourceName,
-			EndpointName:  pc.EndpointName,
-			EffectivePath: effectiveEndpointPath(resource, pc.Endpoint),
-			Endpoint:      pc.Endpoint,
-			EffectiveTier: g.Spec.EffectiveTier(resource, pc.Endpoint),
-			HasStore:      g.VisionSet.Store,
-			Resource:      resource,
-			FuncPrefix:    pc.ResourceName,
-			IsReadOnly:    endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
-			APISpec:       g.Spec,
+			PromotedName:    pc.PromotedName,
+			ResourceName:    pc.ResourceName,
+			EndpointName:    pc.EndpointName,
+			ResourceBaseURL: resourceBaseURL,
+			EffectivePath:   effectiveEndpointPath(resource, pc.Endpoint),
+			Endpoint:        pc.Endpoint,
+			EffectiveTier:   g.Spec.EffectiveTier(resource, pc.Endpoint),
+			HasStore:        g.VisionSet.Store,
+			Resource:        resource,
+			FuncPrefix:      pc.ResourceName,
+			IsReadOnly:      endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
+			APISpec:         g.Spec,
 		}
 		promotedPath := filepath.Join("internal", "cli", "promoted_"+pc.PromotedName+".go")
 		if err := g.renderTemplate("command_promoted.go.tmpl", promotedPath, promotedData); err != nil {
@@ -3843,15 +3834,30 @@ func lookupEndpointForTemplate(api *spec.APISpec, ref string) (templateEndpoint,
 }
 
 func effectiveEndpointPath(resource spec.Resource, endpoint spec.Endpoint) string {
-	return endpointPathWithBase(resource.BaseURL, endpoint.Path)
+	return endpointPathWithBase(effectiveEndpointBaseURL(resource, endpoint), endpoint.Path)
 }
 
 func effectiveSubEndpointPath(parent spec.Resource, sub spec.Resource, endpoint spec.Endpoint) string {
-	baseURL := sub.BaseURL
+	return endpointPathWithBase(effectiveSubEndpointBaseURL(parent, sub, endpoint), endpoint.Path)
+}
+
+func effectiveEndpointBaseURL(resource spec.Resource, endpoint spec.Endpoint) string {
+	baseURL := endpoint.BaseURL
+	if baseURL == "" {
+		baseURL = resource.BaseURL
+	}
+	return strings.TrimRight(baseURL, "/")
+}
+
+func effectiveSubEndpointBaseURL(parent spec.Resource, sub spec.Resource, endpoint spec.Endpoint) string {
+	baseURL := endpoint.BaseURL
+	if baseURL == "" {
+		baseURL = sub.BaseURL
+	}
 	if baseURL == "" {
 		baseURL = parent.BaseURL
 	}
-	return endpointPathWithBase(baseURL, endpoint.Path)
+	return strings.TrimRight(baseURL, "/")
 }
 
 func endpointPathWithBase(baseURL, path string) string {

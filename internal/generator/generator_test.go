@@ -6869,6 +6869,43 @@ func TestGenerateSubResourceInheritsParentBaseURL(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGenerateEndpointBaseURLOverrideRoutesToOverrideHost(t *testing.T) {
+	t.Parallel()
+	apiSpec := minimalSpec("endpoint-multihost")
+	apiSpec.BaseURL = "https://api.example.com/v1"
+	apiSpec.Resources["forecast"] = spec.Resource{
+		Description: "Weather forecast",
+		Endpoints: map[string]spec.Endpoint{
+			"now": {Method: "GET", Path: "/forecast", Description: "Current"},
+			"geocode": {
+				Method:      "GET",
+				Path:        "/search",
+				BaseURL:     "https://geocoding-api.example.com/v1",
+				Description: "Geocode",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	geoHandler, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "forecast_geocode.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(geoHandler), `path := "https://geocoding-api.example.com/v1/search"`,
+		"endpoint override must emit the absolute URL into path")
+
+	fcHandler, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "forecast_now.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(fcHandler), `path := "/forecast"`,
+		"sibling endpoint without override must keep the relative path")
+
+	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(mcpTools), `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search"`,
+		"typed MCP endpoint tool must use the endpoint override URL")
+}
+
 // TestGenerateNoResourceBaseURLOverrideByteCompat — specs without any
 // per-resource BaseURL override must regenerate without the
 // isAbsoluteURL helper or the absolute-URL branch in client.do().

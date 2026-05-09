@@ -489,7 +489,7 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 {{- else}}
 {{- if .EndpointTemplateVars}}
 {{- if .HasResourceBaseURLOverride}}
-	// Per-resource BaseURL overrides flow through as absolute paths
+	// Resource and endpoint BaseURL overrides flow through as absolute paths
 	// (https:// or http://); buildURL still substitutes any
 	// {placeholder} markers, but the relative-path concat with
 	// c.BaseURL must be skipped for absolute paths.
@@ -511,7 +511,7 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 {{- end}}
 {{- else}}
 {{- if .HasResourceBaseURLOverride}}
-	// Per-resource BaseURL overrides flow through as absolute paths
+	// Resource and endpoint BaseURL overrides flow through as absolute paths
 	// (https:// or http://); the resource template emits the full URL
 	// in `path` and we skip the c.BaseURL concat for those.
 	var targetURL string
@@ -1185,8 +1185,8 @@ func (c *Client) refreshAccessToken() error {
 {{- end}}
 
 {{if .HasResourceBaseURLOverride -}}
-// isAbsoluteURL reports whether path is already a full URL (per-resource
-// BaseURL override emits the full URL into path; the relative-path
+// isAbsoluteURL reports whether path is already a full URL (resource or
+// endpoint BaseURL override emits the full URL into path; the relative-path
 // concat with c.BaseURL must be skipped for those calls).
 func isAbsoluteURL(path string) bool {
 	return strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://")
