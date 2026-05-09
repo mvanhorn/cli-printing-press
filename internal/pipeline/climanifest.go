@@ -1,11 +1,13 @@
 package pipeline
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -213,7 +215,130 @@ func SyncCLIManifestNovelFeatures(dir string, features []NovelFeature) (bool, er
 	}
 	m.NovelFeatures = updated
 
-	return true, WriteCLIManifest(dir, m)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false, fmt.Errorf("parsing CLI manifest for raw update: %w", err)
+	}
+	if raw == nil {
+		return false, fmt.Errorf("parsing CLI manifest for raw update: expected JSON object")
+	}
+	known, err := marshalCLIManifestFields(m)
+	if err != nil {
+		return false, err
+	}
+	maps.Copy(raw, known)
+	rendered, err := marshalCLIManifestObject(raw)
+	if err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(manifestPath, rendered, 0o644); err != nil {
+		return false, fmt.Errorf("writing CLI manifest: %w", err)
+	}
+
+	return true, nil
+}
+
+func marshalCLIManifestFields(m CLIManifest) (map[string]json.RawMessage, error) {
+	data, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling CLI manifest fields: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parsing CLI manifest fields: %w", err)
+	}
+	return raw, nil
+}
+
+func marshalCLIManifestObject(raw map[string]json.RawMessage) ([]byte, error) {
+	keys := orderedCLIManifestKeys(raw)
+	var b strings.Builder
+	b.WriteString("{\n")
+	for i, key := range keys {
+		name, err := json.Marshal(key)
+		if err != nil {
+			return nil, fmt.Errorf("marshaling CLI manifest key: %w", err)
+		}
+		value, err := formatRawJSONValue(raw[key])
+		if err != nil {
+			return nil, fmt.Errorf("formatting CLI manifest field %q: %w", key, err)
+		}
+		b.WriteString("  ")
+		b.WriteString(string(name))
+		b.WriteString(": ")
+		b.WriteString(value)
+		if i < len(keys)-1 {
+			b.WriteByte(',')
+		}
+		b.WriteByte('\n')
+	}
+	b.WriteString("}\n")
+	return []byte(b.String()), nil
+}
+
+func orderedCLIManifestKeys(raw map[string]json.RawMessage) []string {
+	known := []string{
+		"schema_version",
+		"generated_at",
+		"printing_press_version",
+		"api_name",
+		"display_name",
+		"cli_name",
+		"owner",
+		"printer",
+		"printer_name",
+		"spec_url",
+		"spec_path",
+		"spec_format",
+		"spec_checksum",
+		"run_id",
+		"catalog_entry",
+		"category",
+		"description",
+		"mcp_binary",
+		"mcp_tool_count",
+		"mcp_public_tool_count",
+		"mcp_ready",
+		"api_version",
+		"auth_type",
+		"auth_env_vars",
+		"auth_env_var_specs",
+		"endpoint_template_vars",
+		"auth_key_url",
+		"auth_title",
+		"auth_description",
+		"auth_optional",
+		"novel_features",
+	}
+
+	keys := make([]string, 0, len(raw))
+	seen := make(map[string]bool, len(raw))
+	for _, key := range known {
+		if _, ok := raw[key]; ok {
+			keys = append(keys, key)
+			seen[key] = true
+		}
+	}
+	var unknown []string
+	for key := range raw {
+		if !seen[key] {
+			unknown = append(unknown, key)
+		}
+	}
+	sort.Strings(unknown)
+	return append(keys, unknown...)
+}
+
+func formatRawJSONValue(raw json.RawMessage) (string, error) {
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, raw, "", "  "); err != nil {
+		return "", err
+	}
+	lines := strings.Split(buf.String(), "\n")
+	for i := 1; i < len(lines); i++ {
+		lines[i] = "  " + lines[i]
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 // findArchivedSpec looks for a spec file archived alongside a generated CLI.
