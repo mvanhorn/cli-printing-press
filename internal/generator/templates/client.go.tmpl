@@ -8,20 +8,30 @@ import (
 {{- if .UsesHTTP2DisabledTransport}}
 	"crypto/tls"
 {{- end}}
+{{- if .Auth.IsOAuth1TBA}}
+	"crypto/hmac"
+	"crypto/rand"
+{{- end}}
 	"crypto/sha256"
 	"encoding/hex"
+{{- if .Auth.IsOAuth1TBA}}
+	"encoding/base64"
+{{- end}}
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
-{{- if .HasAuthCommand}}
+{{- if or .HasAuthCommand .Auth.IsOAuth1TBA}}
 	"net/url"
 {{- end}}
 	"os"
 	"path/filepath"
-{{- if ne .ClientPattern "proxy-envelope"}}
+{{- if or (ne .ClientPattern "proxy-envelope") .Auth.IsOAuth1TBA}}
 	"sort"
+{{- end}}
+{{- if .Auth.IsOAuth1TBA}}
+	"strconv"
 {{- end}}
 	"strings"
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
