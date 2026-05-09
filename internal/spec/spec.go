@@ -691,6 +691,12 @@ func (c AuthConfig) EffectiveOAuth2Grant() string {
 	return c.OAuth2Grant
 }
 
+// IsOAuth1TBA reports whether this auth configuration uses OAuth 1.0a
+// Token-Based Authentication (TBA), as declared with auth.type: oauth1_tba.
+func (c AuthConfig) IsOAuth1TBA() bool {
+	return strings.TrimSpace(c.Type) == "oauth1_tba"
+}
+
 // validateOAuth2Grant ensures OAuth2Grant is empty or one of the supported
 // values. Empty is accepted (treated as the default). Cross-checking against
 // AuthConfig.Type is intentionally skipped: the field is ignored for
