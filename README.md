@@ -18,7 +18,7 @@ Three CLIs printed by the press, installable today:
 
 Browse the full catalog of printed CLIs at [printingpress.dev](https://printingpress.dev) or in the [Printing Press Library](https://github.com/mvanhorn/printing-press-library), organized by category, most with full MCP servers.
 
-**Cursor users:** see [docs/cursor.md](docs/cursor.md) for how to install a printed CLI, attach the matching skill, handle auth, and choose CLI vs MCP when your repo does not already document a workflow.
+**Cursor users:** see [docs/CURSOR.md](docs/CURSOR.md) for how to install a printed CLI, attach the matching skill, handle auth, and choose CLI vs MCP when your repo does not already document a workflow.
 
 ## Install
 
