@@ -85,12 +85,14 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			// Check auth
+			authConfigured := false
 			if cfg != nil {
 				header := cfg.AuthHeader()
 				if header == "" {
 					report["auth"] = "not configured"
 					report["auth_hint"] = "export PRINTING_PRESS_GOLDEN_API_KEY=<your-key>"
 				} else {
+					authConfigured = true
 					report["auth"] = "configured"
 					report["auth_source"] = cfg.AuthSource
 				}
@@ -105,6 +107,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			authEnvOptionalSatisfied := false
 			if os.Getenv("PRINTING_PRESS_GOLDEN_API_KEY") != "" {
 				authEnvSet = append(authEnvSet, "PRINTING_PRESS_GOLDEN_API_KEY")
+			} else if authConfigured {
+				authSource, _ := report["auth_source"].(string)
+				if authSource == "" {
+					authSource = "config"
+				}
+				authEnvInfo = append(authEnvInfo, "credentials available from "+authSource)
 			} else {
 				authEnvRequiredMissing = append(authEnvRequiredMissing, "PRINTING_PRESS_GOLDEN_API_KEY")
 			}
@@ -113,6 +121,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				report["env_vars"] = "ERROR missing required: " + strings.Join(authEnvRequiredMissing, ", ")
 			case len(authEnvOptionalNames) > 1 && !authEnvOptionalSatisfied:
 				report["env_vars"] = "INFO set one of: " + strings.Join(authEnvOptionalNames, " or ")
+			case len(authEnvInfo) > 0 && authConfigured:
+				report["env_vars"] = "OK " + strings.Join(authEnvInfo, "; ")
 			case len(authEnvInfo) > 0:
 				report["env_vars"] = "INFO " + strings.Join(authEnvInfo, "; ")
 			default:

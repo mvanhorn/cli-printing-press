@@ -99,8 +99,24 @@ func (c *Client) ProbeGet(path string) (int, error) {
 
 func (c *Client) cacheKey(path string, params map[string]string) string {
 	key := path
-	for k, v := range params {
-		key += k + "=" + v
+	key += "|base_url=" + c.BaseURL
+	if c.Config != nil {
+		key += "|auth_source=" + c.Config.AuthSource
+		if authHeader := c.Config.AuthHeader(); authHeader != "" {
+			authHash := sha256.Sum256([]byte(c.Config.AuthHeader()))
+			key += "|auth=" + hex.EncodeToString(authHash[:8])
+		}
+		if c.Config.Path != "" {
+			key += "|config_path=" + c.Config.Path
+		}
+	}
+	paramKeys := make([]string, 0, len(params))
+	for k := range params {
+		paramKeys = append(paramKeys, k)
+	}
+	sort.Strings(paramKeys)
+	for _, k := range paramKeys {
+		key += k + "=" + params[k]
 	}
 	h := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(h[:8])

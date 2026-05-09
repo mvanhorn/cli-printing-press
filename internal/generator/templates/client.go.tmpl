@@ -20,9 +20,7 @@ import (
 {{- end}}
 	"os"
 	"path/filepath"
-{{- if ne .ClientPattern "proxy-envelope"}}
 	"sort"
-{{- end}}
 	"strings"
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 	"sync"
@@ -375,11 +373,27 @@ func (c *Client) ProbeGet(path string) (int, error) {
 
 func (c *Client) cacheKey(path string, params map[string]string) string {
 	key := path
+	key += "|base_url=" + c.BaseURL
 {{- if .HasTierRouting}}
-	key += "|tier=" + c.requestTier + "|base_url=" + c.baseURLForRequest()
+	key += "|tier=" + c.requestTier + "|tier_base_url=" + c.baseURLForRequest()
 {{- end}}
-	for k, v := range params {
-		key += k + "=" + v
+	if c.Config != nil {
+		key += "|auth_source=" + c.Config.AuthSource
+		if authHeader := c.Config.AuthHeader(); authHeader != "" {
+			authHash := sha256.Sum256([]byte(c.Config.AuthHeader()))
+			key += "|auth=" + hex.EncodeToString(authHash[:8])
+		}
+		if c.Config.Path != "" {
+			key += "|config_path=" + c.Config.Path
+		}
+	}
+	paramKeys := make([]string, 0, len(params))
+	for k := range params {
+		paramKeys = append(paramKeys, k)
+	}
+	sort.Strings(paramKeys)
+	for _, k := range paramKeys {
+		key += k + "=" + params[k]
 	}
 {{- if .EndpointTemplateVars}}
 	// Include resolved template-var values in the cache identity so two
