@@ -6186,6 +6186,59 @@ func TestGenerateSyncRejectsUnknownResourcePath(t *testing.T) {
 		"sync must not request fake /<resource> paths")
 }
 
+func TestGenerateSyncIncludesSiblingListResources(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "trading",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/trading-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"portfolio": {
+				Description: "Portfolio",
+				Endpoints: map[string]spec.Endpoint{
+					"fills": {
+						Method:      "GET",
+						Path:        "/portfolio/fills",
+						Description: "List fills",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+					"orders": {
+						Method:      "GET",
+						Path:        "/portfolio/orders",
+						Description: "List orders",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+					"settlements": {
+						Method:      "GET",
+						Path:        "/portfolio/settlements",
+						Description: "List settlements",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+	assert.Contains(t, syncContent, `"portfolio": "/portfolio/fills"`)
+	assert.Contains(t, syncContent, `"portfolio-orders": "/portfolio/orders"`)
+	assert.Contains(t, syncContent, `"portfolio-settlements": "/portfolio/settlements"`)
+}
+
 func TestGenerateGraphQLCompiles(t *testing.T) {
 	t.Parallel()
 
