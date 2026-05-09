@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.2.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.2.1...v4.2.2) (2026-05-09)
+
+
+### Bug Fixes
+
+* **cli:** default Surf browser transport to h2 ([#850](https://github.com/mvanhorn/cli-printing-press/issues/850)) ([9f2a4ef](https://github.com/mvanhorn/cli-printing-press/commit/9f2a4efef0c6d912d726d348ebc06af5c63c11f3))
+* **cli:** preserve manifest fields during dogfood sync ([#844](https://github.com/mvanhorn/cli-printing-press/issues/844)) ([2d9a304](https://github.com/mvanhorn/cli-printing-press/commit/2d9a304a509f427226d08cbf567f0a7aea5c5df3))
+* **cli:** preserve operation server host overrides ([#834](https://github.com/mvanhorn/cli-printing-press/issues/834)) ([1c0d110](https://github.com/mvanhorn/cli-printing-press/commit/1c0d110bb6ef79822ed226d6e961682d27b03c0a))
+* **generator:** scope caches by auth identity ([#853](https://github.com/mvanhorn/cli-printing-press/issues/853)) ([1a8f68e](https://github.com/mvanhorn/cli-printing-press/commit/1a8f68eeb91a433554c3ef781de4382ee3d82671))
+* **skills:** correct update preflight compatibility ([#854](https://github.com/mvanhorn/cli-printing-press/issues/854)) ([4b29a63](https://github.com/mvanhorn/cli-printing-press/commit/4b29a634250a80f9c80bc2d91a69d72dd71291cd))
+
 ## [4.2.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.2.0...v4.2.1) (2026-05-09)
 
 
