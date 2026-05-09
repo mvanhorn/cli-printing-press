@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -90,7 +91,7 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 	}
 
 	render := func(tmplName, outPath string, data any) error {
-		content, err := templateFS.ReadFile(filepath.Join("templates", tmplName))
+		content, err := templateFS.ReadFile(path.Join("templates", tmplName))
 		if err != nil {
 			return fmt.Errorf("reading template %s: %w", tmplName, err)
 		}
