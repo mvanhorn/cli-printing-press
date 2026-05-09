@@ -221,6 +221,93 @@ type Thing {
 	assert.Contains(t, fieldNames, "first")
 }
 
+func TestParseSDLMondayFlatSnakeCase(t *testing.T) {
+	// Monday-style flat snake_case mutations (create_board, move_item_to_group, etc.)
+	// must cluster into resources the same way PascalCase xxxCreate/xxxUpdate do.
+	// Before the fix this returns 0 resources because classifyMutation only recognises
+	// PascalCase verbs (create/update/delete substring match) but not verb-prefix style.
+	sdl := `
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+type Query {
+  boards(ids: [ID!], limit: Int = 25): [Board]
+  items(ids: [ID!], limit: Int = 25): [Item]
+  updates(ids: [ID!], limit: Int = 25): [Update]
+}
+
+type Mutation {
+  create_board(board_name: String!, board_kind: BoardKind!): Board
+  archive_board(board_id: ID!): Board
+  delete_board(board_id: ID!): Board
+  create_item(board_id: ID!, item_name: String!): Item
+  delete_item(item_id: ID): Item
+  move_item_to_group(item_id: ID, group_id: String!): Item
+  change_column_value(board_id: ID!, item_id: ID, column_id: String!, value: JSON!): Item
+  create_update(item_id: ID, body: String!): Update
+  delete_update(id: ID!): Update
+}
+
+type Board {
+  id: ID!
+  name: String!
+  description: String
+}
+
+type Item {
+  id: ID!
+  name: String!
+  board: Board
+}
+
+type Update {
+  id: ID!
+  body: String
+  item_id: ID
+}
+
+enum BoardKind {
+  public
+  private
+}
+
+scalar JSON
+`
+
+	parsed, err := ParseSDLBytes("monday-schema.graphql", []byte(sdl))
+	require.NoError(t, err)
+
+	// Must produce at least 3 resources: boards, items, updates
+	require.GreaterOrEqual(t, len(parsed.Resources), 3,
+		"flat snake_case mutations must cluster into ≥3 resources; got %d: %v",
+		len(parsed.Resources), resourceKeys(parsed.Resources))
+
+	boards := parsed.Resources["boards"]
+	require.NotNil(t, boards.Endpoints, "boards resource must have endpoints")
+	assert.Contains(t, boards.Endpoints, "create", "boards must have create endpoint from create_board")
+	assert.Contains(t, boards.Endpoints, "delete", "boards must have delete endpoint from delete_board/archive_board")
+
+	items := parsed.Resources["items"]
+	require.NotNil(t, items.Endpoints, "items resource must have endpoints")
+	assert.Contains(t, items.Endpoints, "create", "items must have create endpoint from create_item")
+	assert.Contains(t, items.Endpoints, "delete", "items must have delete endpoint from delete_item")
+
+	updates := parsed.Resources["updates"]
+	require.NotNil(t, updates.Endpoints, "updates resource must have endpoints")
+	assert.Contains(t, updates.Endpoints, "create", "updates must have create endpoint from create_update")
+	assert.Contains(t, updates.Endpoints, "delete", "updates must have delete endpoint from delete_update")
+}
+
+func resourceKeys(m map[string]spec.Resource) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func paramNames(params []spec.Param) []string {
 	names := make([]string, 0, len(params))
 	for _, param := range params {

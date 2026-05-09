@@ -16,11 +16,16 @@ import (
 )
 
 var (
-	docBlockRE = regexp.MustCompile(`(?s)""".*?"""`)
-	commentRE  = regexp.MustCompile(`(?m)#.*$`)
-	blockRE    = regexp.MustCompile(`(?s)\b(type|input|enum)\s+([A-Za-z_][A-Za-z0-9_]*)[^{=]*\{(.*?)\}`)
-	fieldRE    = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\((.*)\))?\s*:\s*([A-Za-z0-9_\[\]!]+)`)
-	scalarRE   = regexp.MustCompile(`(?m)^\s*scalar\s+([A-Za-z_][A-Za-z0-9_]*)\s*$`)
+	docBlockRE  = regexp.MustCompile(`(?s)""".*?"""`)
+	commentRE   = regexp.MustCompile(`(?m)#.*$`)
+	// descLineRE strips standalone single-quoted GraphQL description strings
+	// (Monday/SDL style: `"Some description"` on its own line before a type/field).
+	// Without this, `"Root query type for the Dependencies service"` followed by
+	// `type Query {` causes blockRE to match `type ... for ... { <Query body> }`.
+	descLineRE  = regexp.MustCompile(`(?m)^\s*"[^"]*"\s*$`)
+	blockRE     = regexp.MustCompile(`(?s)\b(type|input|enum)\s+([A-Za-z_][A-Za-z0-9_]*)[^{=]*\{(.*?)\}`)
+	fieldRE     = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\((.*)\))?\s*:\s*([A-Za-z0-9_\[\]!]+)`)
+	scalarRE    = regexp.MustCompile(`(?m)^\s*scalar\s+([A-Za-z_][A-Za-z0-9_]*)\s*$`)
 )
 
 type gqlType struct {
@@ -180,6 +185,10 @@ func parseSDLContent(source, raw string) (*spec.APISpec, error) {
 func stripSDLComments(s string) string {
 	s = docBlockRE.ReplaceAllString(s, "")
 	s = commentRE.ReplaceAllString(s, "")
+	// Strip standalone single-quoted description strings (Monday/SDL style).
+	// These must be removed AFTER triple-quoted blocks so we don't strip content
+	// inside """...""" that happens to contain a `"..."` on its own line.
+	s = descLineRE.ReplaceAllString(s, "")
 	return s
 }
 
@@ -503,16 +512,78 @@ func mapGraphQLType(typeRef string) (paramType string, required bool, format str
 	}
 }
 
+// snakeCaseVerbPrefixes is ordered longest-match first so "change_" doesn't
+// shadow a hypothetical "change_and_delete_" variant, and so that "delete"
+// is always checked before "update" (preventing delete_update → "update").
+var snakeCaseVerbPrefixes = []struct {
+	prefix string
+	action string
+}{
+	{"create_", "create"},
+	{"delete_", "delete"},
+	{"archive_", "delete"},
+	{"remove_", "delete"},
+	{"update_", "update"},
+	{"change_", "update"},
+	{"move_", "update"},
+	{"add_", "update"},
+}
+
+// classifyMutation returns (action, entityName) for a mutation field.
+// It handles two naming conventions:
+//   - PascalCase suffix style: issueCreate, issueUpdate, issueArchive (Linear-style)
+//   - flat snake_case prefix style: create_board, move_item_to_group (Monday-style)
+//
+// For snake_case, the verb prefix is matched first (longest-prefix wins) and the
+// entity is derived from the remaining tokens or from the return type.
+// For PascalCase, the original substring match is used but delete/archive are
+// tested before update to avoid "delete_update" → "update" misclassification.
 func classifyMutation(field gqlField, types map[string]gqlType) (string, string) {
-	nameLower := strings.ToLower(field.Name)
+	name := field.Name
+
+	// --- snake_case prefix style (Monday / old-school GraphQL) ---
+	if strings.Contains(name, "_") {
+		nameLower := strings.ToLower(name)
+		for _, vp := range snakeCaseVerbPrefixes {
+			if strings.HasPrefix(nameLower, vp.prefix) {
+				// For flat snake_case the return type is almost always the entity itself
+				// (e.g. create_item → Item). Check the direct return type BEFORE walking
+				// its fields, because entityFromReturnType walks fields and may return a
+				// nested entity (e.g. Item.board → Board) instead of Item itself.
+				entityName := entityFromDirectReturnType(field.Type, types)
+				if entityName == "" {
+					entityName = entityFromMutationInput(field, types)
+				}
+				if entityName == "" {
+					entityName = entityFromReturnType(field.Type, types)
+				}
+				if entityName == "" {
+					// Derive entity from first noun token after the verb prefix.
+					rest := name[len(vp.prefix):]
+					// e.g. "item_to_group" → first token is "item"
+					tokens := strings.SplitN(rest, "_", 2)
+					entityName = entityFromTokenHint(tokens[0], types)
+				}
+				if entityName == "" {
+					return "", ""
+				}
+				return vp.action, entityName
+			}
+		}
+		// Unknown snake_case verb prefix → fall through to PascalCase check.
+	}
+
+	// --- PascalCase suffix style (Linear-style) ---
+	// Check delete/archive before update to avoid "delete_update" false match.
+	nameLower := strings.ToLower(name)
 	action := ""
 	switch {
 	case strings.Contains(nameLower, "create"):
 		action = "create"
-	case strings.Contains(nameLower, "update"):
-		action = "update"
 	case strings.Contains(nameLower, "delete"), strings.Contains(nameLower, "archive"):
 		action = "delete"
+	case strings.Contains(nameLower, "update"):
+		action = "update"
 	default:
 		return "", ""
 	}
@@ -522,6 +593,30 @@ func classifyMutation(field gqlField, types map[string]gqlType) (string, string)
 		entityName = entityFromReturnType(field.Type, types)
 	}
 	return action, entityName
+}
+
+// entityFromTokenHint looks up a lowercase token as a type name (case-insensitive).
+// Used for flat snake_case mutations where the entity name is the first noun after
+// the verb prefix, e.g. "move_item_to_group" → token "item" → type "Item".
+func entityFromTokenHint(token string, types map[string]gqlType) string {
+	tokenLower := strings.ToLower(token)
+	for typeName := range types {
+		if strings.ToLower(typeName) == tokenLower && isEntityType(typeName, types) {
+			return typeName
+		}
+	}
+	return ""
+}
+
+// entityFromDirectReturnType returns the entity name if the mutation return
+// type itself is a known entity, without walking its fields.  This is the
+// correct behaviour for flat snake_case mutations (create_item → Item).
+func entityFromDirectReturnType(typeRef string, types map[string]gqlType) string {
+	name := unwrapType(typeRef)
+	if isEntityType(name, types) {
+		return name
+	}
+	return ""
 }
 
 func entityFromMutationInput(field gqlField, types map[string]gqlType) string {

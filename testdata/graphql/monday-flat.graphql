@@ -1,0 +1,211 @@
+# Minimal Monday.com GraphQL fixture — flat snake_case mutations
+# Used by parser_test.go TestParseSDLMondayFlatSnakeCase
+# Subset of Monday API SDL, sufficient to test resource clustering.
+
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+type Query {
+  "Get a collection of boards."
+  boards(ids: [ID!], limit: Int = 25, page: Int = 1): [Board]
+  "Get a collection of items."
+  items(ids: [ID!], limit: Int = 25, page: Int = 1): [Item]
+  "Get updates."
+  updates(limit: Int = 25, page: Int = 1, ids: [ID!]): [Update]
+}
+
+type Mutation {
+  "Create a new board."
+  create_board(board_kind: BoardKind!, board_name: String!, workspace_id: ID, folder_id: ID, description: String): Board
+  "Archive a board."
+  archive_board(board_id: ID!): Board
+  "Delete a board."
+  delete_board(board_id: ID!): Board
+  "Update board subscribers."
+  update_board(board_id: ID!, board_attribute: BoardAttributes!, new_value: String!): JSON
+  "Create a new item in a board."
+  create_item(board_id: ID!, item_name: String!, group_id: String, column_values: JSON): Item
+  "Delete an item."
+  delete_item(item_id: ID): Item
+  "Archive an item."
+  archive_item(item_id: ID!): Item
+  "Move an item to a different group."
+  move_item_to_group(item_id: ID, group_id: String!): Item
+  "Move an item to a board."
+  move_item_to_board(board_id: ID!, group_id: ID!, item_id: ID!, columns_mapping: [ColumnMappingInput], subitems_columns_mapping: [ColumnMappingInput]): Item
+  "Change a column value of an item."
+  change_column_value(board_id: ID!, item_id: ID, column_id: String!, value: JSON!, create_labels_if_missing: Boolean): Item
+  "Change multiple column values at once."
+  change_multiple_column_values(board_id: ID!, item_id: ID!, column_values: JSON!, create_labels_if_missing: Boolean): Item
+  "Create a new update."
+  create_update(item_id: ID, body: String!, parent_id: ID): Update
+  "Delete an update."
+  delete_update(id: ID!): Update
+  "Edit an update."
+  edit_update(id: ID!, body: String!): Update
+}
+
+"A board in Monday.com."
+type Board {
+  id: ID!
+  name: String!
+  description: String
+  board_kind: BoardKind
+  state: State
+  workspace_id: ID
+  items_count: Int
+  owner: User
+  groups: [Group]
+  columns: [Column]
+  created_at: String
+  updated_at: String
+}
+
+"An item (row) on a board."
+type Item {
+  id: ID!
+  name: String!
+  board: Board
+  group: Group
+  column_values: [ColumnValue]
+  created_at: String
+  updated_at: String
+  creator: User
+  state: String
+}
+
+"An update (comment) on an item."
+type Update {
+  id: ID!
+  body: String
+  text_body: String
+  item_id: ID
+  creator: User
+  created_at: String
+  updated_at: String
+}
+
+"A group of items on a board."
+type Group {
+  id: ID!
+  title: String!
+  color: String
+  position: String
+  archived: Boolean
+  deleted: Boolean
+}
+
+"A column definition on a board."
+type Column {
+  id: ID!
+  title: String!
+  type: ColumnType
+  description: String
+  settings_str: String
+}
+
+"A column value for an item."
+type ColumnValue {
+  id: ID!
+  column: Column
+  value: String
+  text: String
+  type: ColumnType
+}
+
+"A Monday user."
+type User {
+  id: ID!
+  name: String!
+  email: String
+  account: Account
+  photo_thumb: String
+  is_admin: Boolean
+  is_guest: Boolean
+  created_at: String
+}
+
+"A Monday account."
+type Account {
+  id: ID!
+  name: String!
+  plan: Plan
+  logo: String
+  country_code: String
+}
+
+"A Monday plan."
+type Plan {
+  version: Int
+  max_users: Int
+  period: String
+  tier: String
+}
+
+input ColumnMappingInput {
+  source: ID!
+  target: ID!
+}
+
+enum BoardKind {
+  public
+  private
+  share
+}
+
+enum ColumnType {
+  auto_number
+  boolean
+  button
+  checkbox
+  color_picker
+  country
+  date
+  dependency
+  doc
+  dropdown
+  email
+  file
+  formula
+  hour
+  item_assignees
+  item_id
+  last_updated
+  link
+  location
+  long_text
+  mirror
+  name
+  numbers
+  people
+  phone
+  progress
+  rating
+  status
+  subtasks
+  tags
+  team
+  text
+  timeline
+  time_tracking
+  vote
+  week
+  world_clock
+}
+
+enum State {
+  active
+  archived
+  deleted
+  all
+}
+
+enum BoardAttributes {
+  communication
+  description
+  name
+}
+
+scalar JSON
