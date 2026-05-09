@@ -553,15 +553,21 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 	// exactly what would be sent. Uses only cached credentials; a token that
 	// requires a network refresh will be re-fetched on the live request path,
 	// not during dry-run.
-{{- if .HasTierRouting}}
+{{- if .Auth.IsOAuth1TBA}}
+	// oauth1_tba: per-request signatures are computed inside the retry loop;
+	// no static auth header to pre-resolve here.
+	var authHeader string
+{{- else if .HasTierRouting}}
 	authInfo, err := c.authForRequest()
 	authHeader := authInfo.Value
 {{- else}}
 	authHeader, err := c.authHeader()
 {{- end}}
+{{- if not .Auth.IsOAuth1TBA}}
 	if err != nil {
 		return nil, 0, err
 	}
+{{- end}}
 {{- if eq .Auth.Type "session_handshake"}}
 	// For session-handshake auth, authHeader() only returns the cached token
 	// (or empty). On the live path, ensure a fresh token if none is cached.
@@ -651,6 +657,13 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		}
 {{- end}}
 
+{{- if .Auth.IsOAuth1TBA}}
+		oauth1Auth, oauth1Err := c.oauth1Header(method, req.URL.String())
+		if oauth1Err != nil {
+			return nil, 0, oauth1Err
+		}
+		req.Header.Set("Authorization", oauth1Auth)
+{{- else}}
 		if authHeader != "" {
 {{- if .HasTierRouting}}
 			if authInfo.In == "query" {
@@ -677,6 +690,7 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 			req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
 {{- end}}
 		}
+{{- end}}
 {{- range .RequiredHeaders}}
 		req.Header.Set("{{.Name}}", "{{.Value}}")
 {{- end}}
@@ -1054,6 +1068,101 @@ func (c *Client) authHeader() (string, error) {
 {{- end}}
 	return c.Config.AuthHeader(), nil
 }
+
+{{- if .Auth.IsOAuth1TBA}}
+
+// oauth1Header builds an OAuth 1.0a Token-Based Authentication (TBA)
+// Authorization header value per RFC 5849 §3.4 using HMAC-SHA256.
+//
+// It is called once per HTTP attempt inside the retry loop so the timestamp
+// and nonce are always fresh (signatures are one-time-use in TBA).
+func (c *Client) oauth1Header(method, rawURL string) (string, error) {
+	consumerKey    := os.Getenv("{{index .Auth.EnvVars 0}}")
+	consumerSecret := os.Getenv("{{index .Auth.EnvVars 1}}")
+	tokenID        := os.Getenv("{{index .Auth.EnvVars 2}}")
+	tokenSecret    := os.Getenv("{{index .Auth.EnvVars 3}}")
+
+	if consumerKey == "" || consumerSecret == "" || tokenID == "" || tokenSecret == "" {
+		return "", fmt.Errorf("oauth1_tba: required credentials not set (check env vars)")
+	}
+
+	// Generate nonce: 24 random bytes base64url-encoded (no padding)
+	nonceBytes := make([]byte, 24)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return "", fmt.Errorf("oauth1_tba: nonce generation failed: %w", err)
+	}
+	nonce     := base64.RawURLEncoding.EncodeToString(nonceBytes)
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+
+	// OAuth protocol parameters (RFC 5849 §3.1)
+	oauthParams := map[string]string{
+		"oauth_consumer_key":     consumerKey,
+		"oauth_nonce":            nonce,
+		"oauth_signature_method": "HMAC-SHA256",
+		"oauth_timestamp":        timestamp,
+		"oauth_token":            tokenID,
+		"oauth_version":          "1.0",
+	}
+
+	// Parse base URI and collect query parameters (RFC 5849 §3.4.1.2)
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("oauth1_tba: invalid request URL: %w", err)
+	}
+	baseURI := fmt.Sprintf("%s://%s%s", parsedURL.Scheme, parsedURL.Host, parsedURL.Path)
+
+	// Merge all parameters for normalization (RFC 5849 §3.4.1.3)
+	allParams := make(map[string]string)
+	for k, v := range oauthParams {
+		allParams[k] = v
+	}
+	for k, vs := range parsedURL.Query() {
+		if len(vs) > 0 {
+			allParams[k] = vs[0]
+		}
+	}
+
+	// Sort parameter keys (RFC 5849 §3.4.1.3.2)
+	paramKeys := make([]string, 0, len(allParams))
+	for k := range allParams {
+		paramKeys = append(paramKeys, k)
+	}
+	sort.Strings(paramKeys)
+
+	// Percent-encode and join (RFC 5849 §3.4.1.3.2)
+	normalizedParts := make([]string, 0, len(paramKeys))
+	for _, k := range paramKeys {
+		normalizedParts = append(normalizedParts, url.QueryEscape(k)+"="+url.QueryEscape(allParams[k]))
+	}
+	normalizedParams := strings.Join(normalizedParts, "&")
+
+	// Signature base string (RFC 5849 §3.4.1.1)
+	signatureBase := strings.ToUpper(method) + "&" +
+		url.QueryEscape(baseURI) + "&" +
+		url.QueryEscape(normalizedParams)
+
+	// Signing key (RFC 5849 §3.4.2)
+	signingKey := url.QueryEscape(consumerSecret) + "&" + url.QueryEscape(tokenSecret)
+
+	// HMAC-SHA256 (RFC 5849 §3.4.3 extended to SHA256 per TBA spec)
+	mac := hmac.New(sha256.New, []byte(signingKey))
+	mac.Write([]byte(signatureBase))
+	signature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
+	// Build Authorization header (RFC 5849 §3.5.1)
+	oauthParams["oauth_signature"] = signature
+	headerKeys := make([]string, 0, len(oauthParams))
+	for k := range oauthParams {
+		headerKeys = append(headerKeys, k)
+	}
+	sort.Strings(headerKeys)
+	headerParts := make([]string, 0, len(headerKeys))
+	for _, k := range headerKeys {
+		headerParts = append(headerParts, url.QueryEscape(k)+`="`+url.QueryEscape(oauthParams[k])+`"`)
+	}
+	return "OAuth " + strings.Join(headerParts, ", "), nil
+}
+{{- end}}
 
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 
