@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.2.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.2.0...v4.2.1) (2026-05-09)
+
+
+### Bug Fixes
+
+* **catalog:** Align Google Flights catalog with Flight Goat's current wrapper ([#821](https://github.com/mvanhorn/cli-printing-press/issues/821)) ([1970210](https://github.com/mvanhorn/cli-printing-press/commit/19702102e9e0f7306c406a4519b76d280ef514c1))
+* **cli:** correct HTTP Basic auth env vars ([#810](https://github.com/mvanhorn/cli-printing-press/issues/810)) ([9bb46da](https://github.com/mvanhorn/cli-printing-press/commit/9bb46da6972900e63e7a954609bc37a87570a63e))
+* **cli:** default cookie HTML scrapes to browser transport ([#822](https://github.com/mvanhorn/cli-printing-press/issues/822)) ([7a1d83a](https://github.com/mvanhorn/cli-printing-press/commit/7a1d83ad26f96b81e877831f0a43000eaa37a85c))
+* **cli:** handle Windows shipcheck paths ([#783](https://github.com/mvanhorn/cli-printing-press/issues/783)) ([d0086ff](https://github.com/mvanhorn/cli-printing-press/commit/d0086ffe385de40e6d5cbb34c75bdb880abadf04))
+* **cli:** stop credential status overclaims ([#779](https://github.com/mvanhorn/cli-printing-press/issues/779)) ([2ff069e](https://github.com/mvanhorn/cli-printing-press/commit/2ff069e0335b4057b480a057a95ca839c20ccb30))
+* **cli:** use slash paths for embedded templates ([#794](https://github.com/mvanhorn/cli-printing-press/issues/794)) ([0020b78](https://github.com/mvanhorn/cli-printing-press/commit/0020b78a30b6bf5daa478377c6c26e5f2442987f))
+* **skills:** gate polish ship verdict on publish validate ([#789](https://github.com/mvanhorn/cli-printing-press/issues/789)) ([5e04776](https://github.com/mvanhorn/cli-printing-press/commit/5e04776b8b0e943a1b30461884d339ee5e7e67ba))
+
 ## [4.2.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.1.0...v4.2.0) (2026-05-09)
 
 
