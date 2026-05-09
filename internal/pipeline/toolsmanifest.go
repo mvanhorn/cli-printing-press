@@ -413,6 +413,10 @@ func normalizeAuthFormat(format string, envVars []string) string {
 			result = strings.ReplaceAll(result, "{"+derived+"}", "{"+envVar+"}")
 		}
 	}
+	if strings.Contains(strings.ToLower(format), "basic ") && len(envVars) >= 2 {
+		result = strings.ReplaceAll(result, "{username}", "{"+envVars[0]+"}")
+		result = strings.ReplaceAll(result, "{password}", "{"+envVars[1]+"}")
+	}
 	// Also replace common semantic aliases with the first env var.
 	first := envVars[0]
 	for _, alias := range []string{"token", "access_token", "api_key"} {

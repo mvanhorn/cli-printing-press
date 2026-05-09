@@ -234,6 +234,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"authParameterName":      authParameterName,
 		"authCommandShort":       authCommandShort,
 		"authHarvestedEnvHint":   authHarvestedEnvHint,
+		"basicAuthEnvVars":       basicAuthEnvVars,
 		"hasAuthEnvVarKind":      hasAuthEnvVarKind,
 		"isRequestAuthEnvVar":    isRequestAuthEnvVar,
 		"effectiveTier":          effectiveTier,
@@ -898,6 +899,36 @@ func authHarvestedEnvHint(auth spec.AuthConfig) string {
 	default:
 		return "set with auth set-token"
 	}
+}
+
+func authFormatIsBasic(auth spec.AuthConfig) bool {
+	return strings.Contains(strings.ToLower(auth.Format), "basic ")
+}
+
+func basicAuthEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
+	if !authFormatIsBasic(auth) {
+		return nil
+	}
+	var envVars []spec.AuthEnvVar
+	if len(auth.EnvVarSpecs) > 0 {
+		for _, envVar := range auth.EnvVarSpecs {
+			if envVar.IsRequestCredential() {
+				envVars = append(envVars, envVar)
+			}
+		}
+	} else {
+		for _, name := range auth.EnvVars {
+			envVars = append(envVars, spec.AuthEnvVar{
+				Name:     name,
+				Kind:     spec.AuthEnvVarKindPerCall,
+				Required: true,
+			})
+		}
+	}
+	if len(envVars) < 2 {
+		return nil
+	}
+	return envVars[:2]
 }
 
 func hasAuthEnvVarKind(envVarSpecs []spec.AuthEnvVar, kind string) bool {

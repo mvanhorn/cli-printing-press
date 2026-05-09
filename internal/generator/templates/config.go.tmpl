@@ -4,6 +4,9 @@
 package config
 
 import (
+{{- if basicAuthEnvVars .Auth}}
+	"encoding/base64"
+{{- end}}
 {{- if ne .Config.Format "toml"}}
 	"encoding/json"
 {{- end}}
@@ -170,6 +173,7 @@ func Load(configPath string) (*Config, error) {
 func (c *Config) AuthHeader() string {
 {{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
 {{- $isAuthEnvVarORCase := .Auth.IsAuthEnvVarORCase}}
+{{- $basicAuthEnvVars := basicAuthEnvVars .Auth}}
 {{- if and .BearerRefresh.Enabled (eq .Auth.Type "bearer_token") (ne .Auth.EffectiveOAuth2Grant "client_credentials")}}
 	if c.AuthHeaderVal != "" && c.AccessToken == "" {
 		return c.AuthHeaderVal
@@ -180,7 +184,13 @@ func (c *Config) AuthHeader() string {
 	}
 {{- end}}
 {{- if eq .Auth.Type "api_key"}}
-{{- if $isAuthEnvVarORCase}}
+{{- if $basicAuthEnvVars}}
+	if c.{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}} == "" || c.{{resolveEnvVarField (index $basicAuthEnvVars 1).Name}} == "" {
+		return ""
+	}
+	credentials := c.{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}} + ":" + c.{{resolveEnvVarField (index $basicAuthEnvVars 1).Name}}
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(credentials))
+{{- else if $isAuthEnvVarORCase}}
 {{- range .Auth.EnvVarSpecs}}
 	if c.{{resolveEnvVarField .Name}} != "" {
 		{{- if $.Auth.Format}}

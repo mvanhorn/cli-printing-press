@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -587,6 +588,26 @@ func authHeader(token string) string {
 	assert.True(t, report.WiringCheck.ConfigConsist.Consistent)
 	assert.True(t, report.WiringCheck.WorkflowComplete.Skipped)
 	assert.Equal(t, 0, report.WiringCheck.CommandTree.Defined)
+}
+
+func TestCheckAuthRecognizesBasicPrefix(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return "Basic " + encode(c.Username+":"+c.Password)
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "api_key", Format: "Basic {username}:{password}"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Basic ", result.GeneratedFmt)
 }
 
 func TestDeriveDogfoodVerdict_WiringChecks(t *testing.T) {
