@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -2703,7 +2704,7 @@ func (g *Generator) template(tmplName string) (*template.Template, error) {
 		return tmpl, nil
 	}
 
-	content, err := templateFS.ReadFile(filepath.Join("templates", tmplName))
+	content, err := templateFS.ReadFile(path.Join("templates", tmplName))
 	if err != nil {
 		return nil, fmt.Errorf("reading template %s: %w", tmplName, err)
 	}
