@@ -1,40 +1,59 @@
 name: mcdonalds
 display_name: McDonald's
-description: Restaurant lookup, menu browsing, and Deals/MyMcDonald's Rewards offers. No public API — reached through reverse-engineered JSON endpoints powering the McDonald's mobile app and mcdonalds.com.
+description: Restaurant lookup, menu browsing, per-item nutrition and allergens, and current deals. No public API — reached by extracting the public mcdonalds.com SSR HTML and sitemap. Mobile-app endpoints (ordering, MyMcDonald's Rewards) are intentionally out of scope.
 category: food-and-dining
 tier: community
 verified_date: "2026-05-09"
 homepage: https://www.mcdonalds.com
 notes: |
-  McDonald's does not publish an API. The internal endpoints under
-  `https://www.mcdonalds.com/googleapps/` and the GMA (Global Mobile App)
-  hosts (`https://gmqsrmobile.mcd.com/`, `https://api.mcdonalds.com/`) return
-  JSON and are the same surface the web restaurant locator and the iOS/Android
-  apps consume. The mobile-app endpoints require an OAuth2 client credential
-  pair scoped to the GMA tenant; the public web locator endpoints are
-  anonymous.
+  McDonald's does not publish an API. As of 2026-05, the legacy JSON locator
+  at `https://www.mcdonalds.com/googleapps/GoogleRestaurantLocAction.do`
+  returns 404 (deprecated and removed), and `https://api.mcd.com/` returns
+  503 without an `mcd_apikey` extracted from the mobile app. Every
+  community wrapper that targeted those endpoints (asopinka/mcdonalds-api,
+  reteps/mcdonalds-api-wrapper, 4Kaylum/PyDonalds, etc.) is dead today.
 
-  Treat this as html/json-sniff implementation backing. The generator should
-  emit a thin HTTP client targeting the locator and menu endpoints rather than
-  searching for an OpenAPI spec. Browse-only flows (find a restaurant, read
-  hours, list current Deals for a store) are anonymous; placing mobile orders
-  or redeeming MyMcDonald's Rewards requires a real signed-in account and is
-  out of scope for the printed CLI's default surface.
+  The shippable surface is the public SSR HTML on `https://www.mcdonalds.com`:
+
+    - `/us/en-us/restaurant-sitemap.xml` — enumerate every US restaurant URL
+    - `/us/en-us/location/{state}/{city}/{address}/{store_id}.html`
+      — per-store detail page (hours, services, address)
+    - `/us/en-us/full-menu.html` — menu category index
+    - `/us/en-us/product/{slug}.html` — per-item page (calories, macros,
+      allergens, ingredients)
+    - `/us/en-us/deals.html` — active deals page
+    - International equivalents under `/ca/en-ca/`, `/gb/en-gb/`, etc.
+
+  Treat this as an html-extraction (not html/json-sniff) integration. The
+  generator should emit endpoints with `response_format: html` (modes
+  `links` for the sitemap and full-menu, `page` for per-store and per-item
+  pages) targeting plain stdlib HTTP. Headless Chromium trips Akamai HTTP/2
+  fingerprint protection, but stdlib HTTP with a normal Chrome desktop
+  User-Agent works fine — `runtime: standard_http`, no clearance cookie.
+
+  Browse-only flows (locator, menu, nutrition, public deals) are anonymous.
+  Mobile ordering, MyMcDonald's Rewards, and personalized offers require
+  an extracted `mcd_apikey` plus a user JWT from the GMA `/v3/customer/...`
+  flow — out of scope for the printed CLI.
 
   Suggested compound queries the printed CLI should make easy:
-    - "nearest open McDonald's to <address> with drive-thru and McDelivery"
-    - "current Deals available at restaurant <id>, cheapest breakfast combo"
-    - "menu + nutrition for restaurant <id>, items under <calories>"
+    - "nearest 24-hr drive-thru with Mobile Order to <address>"
+    - "highest-protein sandwich under 600 cal in the breakfast menu"
+    - "menu items safe for a dairy + egg allergy"
+    - "what changed on the deals page in the last 7 days"
 wrapper_libraries:
-  - name: gma-endpoint-client
-    url: https://www.mcdonalds.com/googleapps/
+  - name: html-sitemap-extractor
+    url: https://www.mcdonalds.com/us/en-us/restaurant-sitemap.xml
     language: go
     integration_mode: html-scrape
     notes: |
-      Synthetic wrapper entry — there is no Go library to import. Reimplement
-      the McDonald's locator and GMA JSON endpoints (restaurant-locator,
-      restaurant-details, menu, deals, nutrition) as a thin Go HTTP client.
-      Use the long-running community references at
-      https://github.com/kbabuadze/mcdonalds-api and
-      https://github.com/sojaboi/mcdonalds-deals for endpoint shapes and
-      payload schemas — do not ship them as runtime dependencies.
+      Synthetic wrapper entry — there is no Go library to import. The
+      generator emits a thin stdlib-HTTP client that fetches mcdonalds.com
+      pages, extracts page metadata + structured data via the framework's
+      `response_format: html` modes (`links`, `page`, `embedded-json`),
+      and persists the parsed shape to a local SQLite store. Community
+      references for shape and selectors:
+        - https://github.com/asopinka/mcdonalds-api (npm, locator, dead)
+        - https://github.com/reteps/mcdonalds-api-wrapper (Python, deprecated)
+        - https://github.com/4Kaylum/PyDonalds (research notes only)
+      Do not ship any of them as runtime dependencies.
