@@ -1049,6 +1049,63 @@ func TestAPIKeyFormatTokenPlaceholder(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "./internal/config")
 }
 
+func TestGenerateHTTPBasicAuthHeaderEncodesUsernamePassword(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "twilio",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			In:      "header",
+			Header:  "Authorization",
+			Format:  "Basic {username}:{password}",
+			EnvVars: []string{"TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"},
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "TWILIO_ACCOUNT_SID", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: false},
+				{Name: "TWILIO_AUTH_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/twilio-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Description: "Manage accounts",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/Accounts",
+						Description: "List accounts",
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	const inlineTest = `package config
+
+import "testing"
+
+func TestBasicAuthHeader(t *testing.T) {
+	cfg := &Config{TwilioAccountSid: "AC123", TwilioAuthToken: "secret"}
+	if got := cfg.AuthHeader(); got != "Basic QUMxMjM6c2VjcmV0" {
+		t.Fatalf("AuthHeader() = %q", got)
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "config", "basic_auth_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/config")
+}
+
 func countFiles(t *testing.T, root string) int {
 	t.Helper()
 
