@@ -155,6 +155,16 @@ func TestPublishSkillUsesLibraryTreeForCliSkillsMirror(t *testing.T) {
 	assert.Less(t, copyIntoLibrary, mirrorRun)
 }
 
+func TestPolishSkillHardGatesPublishValidate(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
+
+	assert.Contains(t, skill, `printing-press publish validate --dir "$CLI_DIR" --json`)
+	assert.Contains(t, skill, "Publish validation failures")
+	assert.Contains(t, skill, "The publish-validate leg is a hard ship-gate")
+	assert.Contains(t, skill, "phase5 acceptance")
+	assert.Contains(t, skill, "ship cannot fire while publish validate fails")
+}
+
 func TestREADMEOutputContract(t *testing.T) {
 	readme := readContractFile(t, filepath.Join("..", "..", "README.md"))
 

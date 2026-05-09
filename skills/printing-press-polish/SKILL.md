@@ -205,6 +205,7 @@ printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG $RESEARCH_FLAG 2>&1
 printing-press verify --dir "$CLI_DIR" $SPEC_FLAG --json 2>&1
 printing-press workflow-verify --dir "$CLI_DIR" --json > /tmp/polish-workflow-verify.json 2>&1 || true
 printing-press verify-skill --dir "$CLI_DIR" --json > /tmp/polish-verify-skill.json 2>&1 || true
+printing-press publish validate --dir "$CLI_DIR" --json > /tmp/polish-publish-validate.json 2>&1 || true
 # --live-check samples novel-feature outputs and populates
 # live_check.features[].warnings (Wave B entity detection) — required for
 # the "Output entity warnings" row below to have data to read.
@@ -214,7 +215,7 @@ printing-press tools-audit "$CLI_DIR" --json > /tmp/polish-tools-audit-before.js
 go vet ./... 2>&1
 ```
 
-verify-skill and workflow-verify run alongside dogfood/verify/scorecard so polish catches the same class of failures the public-library CI catches. Polish hard-gates `ship` on `verify-skill` exit 0 (see ship logic at the end).
+verify-skill, workflow-verify, and publish-validate run alongside dogfood/verify/scorecard so polish catches the same class of failures the public-library CI catches. The publish-validate leg is a hard ship-gate: polish cannot recommend `ship` or `ship-with-gaps` while `printing-press publish validate` reports `passed: false`.
 
 **If Phase 1 baseline reveals the underlying CLI needs re-discovery** — broken HTML/SSR extraction, sparse capture (fewer than 5 unique endpoints in the source manuscript), wrong endpoint shapes, missing GraphQL operation hashes, or any signal that the CLI was generated from incomplete capture — polish does not normally do browser capture itself, but the shared playbook at `skills/printing-press/references/browser-sniff-capture.md` covers all available capture backends including the Claude chrome-MCP (`mcp__claude-in-chrome__*`) and computer-use (`mcp__computer-use__*`) when the runtime exposes them. Read Step 1 (tool detection), Step 2c.5 (failure-recovery menu), and Step 2e (chrome-MCP capture playbook) of that reference before improvising. Re-discovery from polish is rare but real; when it happens, use the shared backends — do not invent a new capture flow.
 
@@ -225,6 +226,7 @@ Parse findings into categories:
 | Verify failures | verify --json | Commands with score < 3 |
 | SKILL static-check failures | verify-skill --json | Any `findings[]` with `severity=error` (flag-names, flag-commands, positional-args, unknown-command, canonical-sections). Hard ship-gate: ship cannot fire while these exist. |
 | Workflow gaps | workflow-verify --json | Verdict `workflow-fail`. Soft gate: surface in `remaining_issues` and downgrade to `hold` when the workflow is the CLI's primary value. |
+| Publish validation failures | publish validate --json | `passed: false`. Hard ship-gate: ship cannot fire while publish validate fails. If the only failing check is missing phase5 acceptance, report `phase5 acceptance required` with the next-step command: authenticate, then run `printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG --live --level quick --write-acceptance <proofs-dir>/phase5-acceptance.json`. Use the proofs directory from the validate error when present. |
 | Dead code | dogfood | Dead functions, dead flags |
 | Stale files | dogfood | Unregistered commands |
 | Description issues | dogfood | Boilerplate root Short |
@@ -465,19 +467,20 @@ printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG 2>&1
 printing-press verify --dir "$CLI_DIR" $SPEC_FLAG --json 2>&1
 printing-press workflow-verify --dir "$CLI_DIR" --json 2>&1
 printing-press verify-skill --dir "$CLI_DIR" --json 2>&1
+printing-press publish validate --dir "$CLI_DIR" --json 2>&1
 printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
 printing-press tools-audit "$CLI_DIR" 2>&1
 go vet ./... 2>&1
 ```
 
-Record the after scores. If verify-skill still has any `severity=error` findings or workflow-verify still reports `workflow-fail`, ship cannot fire (see ship logic below).
+Record the after scores. If verify-skill still has any `severity=error` findings, workflow-verify still reports `workflow-fail`, or publish-validate still reports `passed: false`, ship cannot fire (see ship logic below).
 
 ## Ship logic
 
 Compute the ship recommendation:
 
-- **`ship`**: verify >= 80%, scorecard >= 75, no critical failures, **AND** verify-skill exits 0 (no SKILL/CLI mismatches), **AND** workflow-verify is not `workflow-fail`, **AND** tools-audit shows zero pending findings (every finding fixed or explicitly accepted with rationale). The SKILL/workflow gates are hard requirements: a CLI that ships with a SKILL that lies about it (verify-skill findings) gives agents broken instructions; a CLI whose primary workflow fails verification has not actually shipped.
-- **`ship-with-gaps`**: verify >= 65%, scorecard >= 65, non-critical gaps remain, **AND** the SKILL/workflow gates above hold, **AND** the README has a `## Known Gaps` block that lists the user-facing gaps. Reserved for the rare case where a refactor or external-dependency blocker prevents a clean fix.
+- **`ship`**: verify >= 80%, scorecard >= 75, no critical failures, **AND** verify-skill exits 0 (no SKILL/CLI mismatches), **AND** workflow-verify is not `workflow-fail`, **AND** publish-validate reports `passed: true`, **AND** tools-audit shows zero pending findings (every finding fixed or explicitly accepted with rationale). The SKILL/workflow/publish gates are hard requirements: a CLI that ships with a SKILL that lies about it (verify-skill findings) gives agents broken instructions; a CLI whose primary workflow fails verification has not actually shipped; a CLI that publish-validate rejects is not publishable.
+- **`ship-with-gaps`**: verify >= 65%, scorecard >= 65, non-critical gaps remain, **AND** the SKILL/workflow/publish gates above hold, **AND** the README has a `## Known Gaps` block that lists the user-facing gaps. Reserved for the rare case where a refactor or external-dependency blocker prevents a clean fix.
 
   **README Known Gaps is mandatory for ship-with-gaps.** The published library copy is what downstream users see; if the verdict claims gaps exist but the README hides them, downstream users meet a CLI that misbehaves with no disclosure. Before emitting `ship_recommendation: ship-with-gaps`:
 
@@ -554,6 +557,8 @@ govet_before: <N>
 govet_after: <N>
 tools_audit_before: <N pending>
 tools_audit_after: <N pending>
+publish_validate_before: <PASS|FAIL>
+publish_validate_after: <PASS|FAIL>
 fixes_applied:
 - <one-line description of each fix>
 skipped_findings:
