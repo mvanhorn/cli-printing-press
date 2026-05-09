@@ -114,6 +114,69 @@ func TestWriteCLIManifestNonexistentDir(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestSyncCLIManifestNovelFeaturesPreservesManifestContract(t *testing.T) {
+	dir := t.TempDir()
+	manifest := []byte(`{
+  "schema_version": 1,
+  "generated_at": "2026-05-09T17:28:02Z",
+  "printing_press_version": "4.2.0",
+  "api_name": "openrouter",
+  "display_name": "OpenRouter",
+  "cli_name": "openrouter-pp-cli",
+  "printer": "rvdlaar",
+  "printer_name": "Rick van de Laar",
+  "spec_url": "https://example.com/openapi.json",
+  "category": "ai",
+  "description": "Access OpenRouter models.",
+  "x_future_manifest_field": {
+    "keep": true
+  },
+  "novel_features": [
+    {
+      "name": "Old",
+      "command": "old",
+      "description": "Old feature."
+    }
+  ]
+}
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), manifest, 0o644))
+
+	changed, err := SyncCLIManifestNovelFeatures(dir, []NovelFeature{
+		{Name: "Model finder", Command: "models find", Description: "Find a model for a prompt."},
+	})
+	require.NoError(t, err)
+	assert.True(t, changed)
+
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	require.NoError(t, err)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, float64(1), got["schema_version"])
+	assert.Equal(t, "4.2.0", got["printing_press_version"])
+	assert.Equal(t, "openrouter", got["api_name"])
+	assert.Equal(t, "openrouter-pp-cli", got["cli_name"])
+	assert.Equal(t, "rvdlaar", got["printer"])
+	assert.Equal(t, "Rick van de Laar", got["printer_name"])
+	assert.Equal(t, "https://example.com/openapi.json", got["spec_url"])
+	assert.Equal(t, "ai", got["category"])
+	assert.Equal(t, "Access OpenRouter models.", got["description"])
+
+	future, ok := got["x_future_manifest_field"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, future["keep"])
+
+	features, ok := got["novel_features"].([]any)
+	require.True(t, ok)
+	require.Len(t, features, 1)
+	feature, ok := features[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "Model finder", feature["name"])
+	assert.Equal(t, "models find", feature["command"])
+	assert.Equal(t, "Find a model for a prompt.", feature["description"])
+}
+
 func TestSpecChecksum(t *testing.T) {
 	dir := t.TempDir()
 	content := []byte(`{"openapi": "3.0.0"}`)
