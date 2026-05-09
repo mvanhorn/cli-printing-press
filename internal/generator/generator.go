@@ -2703,7 +2703,9 @@ func (g *Generator) template(tmplName string) (*template.Template, error) {
 		return tmpl, nil
 	}
 
-	content, err := templateFS.ReadFile(filepath.Join("templates", tmplName))
+	// embed.FS uses forward-slash paths regardless of OS; filepath.Join here
+	// breaks on Windows (yields "templates\foo" which embed.FS rejects).
+	content, err := templateFS.ReadFile("templates/" + tmplName)
 	if err != nil {
 		return nil, fmt.Errorf("reading template %s: %w", tmplName, err)
 	}

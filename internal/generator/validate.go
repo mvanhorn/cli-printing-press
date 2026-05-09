@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -24,6 +25,12 @@ const qualityGateTimeout = 5 * time.Minute
 
 func (g *Generator) Validate() error {
 	binPath := filepath.Join(g.OutputDir, naming.ValidationBinary(g.Spec.Name))
+	if runtime.GOOS == "windows" && !strings.HasSuffix(binPath, ".exe") {
+		// `go build -o <path>` appends `.exe` on Windows; the validation
+		// gate must invoke the real filename (path is absolute, so exec
+		// does not search PATH and does not auto-append).
+		binPath += ".exe"
+	}
 	if err := artifacts.CleanupGeneratedCLI(g.OutputDir, artifacts.CleanupOptions{
 		RemoveValidationBinaries: true,
 		RemoveRecursiveCopies:    true,
