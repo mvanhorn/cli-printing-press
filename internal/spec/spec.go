@@ -1323,6 +1323,7 @@ func ParseBytes(data []byte) (*APISpec, error) {
 	}
 	s.expandOperations()
 	s.enrichPathParams()
+	s.promoteParamsToBodyForWriteEndpoints()
 	if err := s.validateReservedNames(); err != nil {
 		return nil, err
 	}
@@ -1566,6 +1567,60 @@ func enrichEndpointPathParams(e *Endpoint) {
 			Description: name,
 		})
 	}
+}
+
+// promoteParamsToBodyForWriteEndpoints fills Endpoint.Body for POST/PUT/PATCH
+// endpoints whose Body is empty by relocating non-path, non-positional Params
+// there. Internal YAML specs commonly list write-endpoint payload fields under
+// `params:` instead of `body:`. Without this promotion, the generator declares
+// flags and required-flag validation for those params, but the body-assembly
+// branch in command_endpoint.go.tmpl iterates only Endpoint.Body — so the
+// values never reach the request body and the API rejects the call with
+// "missing required field". An explicit `body:` block on the endpoint is
+// preserved verbatim; this function only fills in the gap.
+func (s *APISpec) promoteParamsToBodyForWriteEndpoints() {
+	for resourceName, r := range s.Resources {
+		s.promoteResourceParamsToBody(&r)
+		s.Resources[resourceName] = r
+	}
+}
+
+func (s *APISpec) promoteResourceParamsToBody(r *Resource) {
+	if r.Endpoints != nil {
+		for endpointName, e := range r.Endpoints {
+			promoteEndpointParamsToBody(&e)
+			r.Endpoints[endpointName] = e
+		}
+	}
+	for subName, sub := range r.SubResources {
+		s.promoteResourceParamsToBody(&sub)
+		r.SubResources[subName] = sub
+	}
+}
+
+func promoteEndpointParamsToBody(e *Endpoint) {
+	switch strings.ToUpper(e.Method) {
+	case "POST", "PUT", "PATCH":
+	default:
+		return
+	}
+	if len(e.Body) > 0 || len(e.Params) == 0 {
+		return
+	}
+	keep := make([]Param, 0, len(e.Params))
+	promote := make([]Param, 0, len(e.Params))
+	for _, p := range e.Params {
+		if p.PathParam || p.Positional {
+			keep = append(keep, p)
+			continue
+		}
+		promote = append(promote, p)
+	}
+	if len(promote) == 0 {
+		return
+	}
+	e.Params = keep
+	e.Body = promote
 }
 
 // expandOperations converts operations shorthand (e.g., [list, get, create])
