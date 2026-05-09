@@ -409,7 +409,10 @@ func TestEmbeddedCatalogParsesWrapperOnlyEntries(t *testing.T) {
 	entry, err := LookupFS(catalogfs.FS, "google-flights")
 	require.NoError(t, err)
 	assert.True(t, entry.IsWrapperOnly())
-	assert.NotEmpty(t, entry.WrapperLibraries)
+	assert.Equal(t, "travel", entry.Category)
+	require.Len(t, entry.WrapperLibraries, 1)
+	assert.Equal(t, "krisukox/google-flights-api", entry.WrapperLibraries[0].Name)
+	assert.Equal(t, "native", entry.WrapperLibraries[0].IntegrationMode)
 }
 
 func TestPublicCategoriesExcludeExample(t *testing.T) {
