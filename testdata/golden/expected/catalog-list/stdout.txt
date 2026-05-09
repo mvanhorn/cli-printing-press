@@ -39,6 +39,7 @@ social-and-messaging:
   front                Customer communication platform API
   telegram             Telegram Bot API for building bots - send messages, manage chats, webhooks, stickers
   twilio               Communication APIs for SMS, voice, and messaging
+  x                    X v2 API mirror with first-class Articles support — tweets, users, lists, spaces, bookmarks, likes via the official OpenAPI; long-form Articles authoring via browser-sniffed editor endpoints (GraphQL with rotating operation hashes).
 
 travel:
   google-flights       Flight search via Google Flights. No public API — reached through a community-maintained reverse-engineered wrapper.

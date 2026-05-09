@@ -1,0 +1,879 @@
+name: x-articles
+description: Discovered API spec for x
+version: 0.1.0
+base_url: https://x.com
+spec_source: sniffed
+http_transport: browser-chrome
+auth:
+  type: none
+  header: ''
+  format: ''
+  env_vars: []
+config:
+  format: toml
+  path: ~/.config/x-articles-pp-cli/config.toml
+resources:
+  articles:
+    description: X Articles (long-form posts) authoring + media upload
+    endpoints:
+      delete:
+        method: POST
+        path: /i/api/graphql/e4lWqB6m2TA8Fn_j9L9xEA/ArticleEntityDelete
+        description: POST /i/api/graphql/e4lWqB6m2TA8Fn_j9L9xEA/ArticleEntityDelete
+        params:
+        - name: data
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: articleentity_delete
+            type: string
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+        body:
+        - name: queryId
+          type: string
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields: []
+        - name: variables
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: articleEntityId
+            type: string
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+        response:
+          type: object
+          item: ArticleEntityDelete
+        pagination: null
+      create_draft:
+        method: POST
+        path: /i/api/graphql/g1l5N8BxGewYuCy5USe_bQ/ArticleEntityDraftCreate
+        description: POST /i/api/graphql/g1l5N8BxGewYuCy5USe_bQ/ArticleEntityDraftCreate
+        params:
+        - name: data
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: articleentity_create_draft
+            type: object
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields:
+            - name: article_entity_results
+              type: object
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+        body:
+        - name: features
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: profile_label_improvements_pcf_label_in_post_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: responsive_web_graphql_skip_user_profile_image_extensions_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: responsive_web_graphql_timeline_navigation_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: responsive_web_profile_redirect_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: rweb_tipjar_consumption_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: verified_phone_label_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+        - name: queryId
+          type: string
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields: []
+        - name: variables
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: content_state
+            type: object
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields:
+            - name: blocks
+              type: array
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: entity_map
+              type: array
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+          - name: title
+            type: string
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+        response:
+          type: object
+          item: ArticleEntityDraftCreate
+        pagination: null
+      publish:
+        method: POST
+        path: /i/api/graphql/m4SHicYMoWO_qkLvjhDk7Q/ArticleEntityPublish
+        description: POST /i/api/graphql/m4SHicYMoWO_qkLvjhDk7Q/ArticleEntityPublish
+        params:
+        - name: data
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: articleentity_publish
+            type: object
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields:
+            - name: article_entity_results
+              type: object
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+        body:
+        - name: features
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: profile_label_improvements_pcf_label_in_post_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: responsive_web_graphql_skip_user_profile_image_extensions_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: responsive_web_graphql_timeline_navigation_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: responsive_web_profile_redirect_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: rweb_tipjar_consumption_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: verified_phone_label_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+        - name: queryId
+          type: string
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields: []
+        - name: variables
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: articleEntityId
+            type: string
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: visibilitySetting
+            type: string
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+        response:
+          type: object
+          item: ArticleEntityPublish
+        pagination: null
+      update_content:
+        method: POST
+        path: /i/api/graphql/M7N2FrPrlOmu-YrVIBxFnQ/ArticleEntityUpdateContent
+        description: POST /i/api/graphql/M7N2FrPrlOmu-YrVIBxFnQ/ArticleEntityUpdateContent
+        params:
+        - name: data
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: articleentity_update_content_state
+            type: object
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields:
+            - name: content_state
+              type: object
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: cover_media
+              type: object
+              required: false
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: id
+              type: string
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: lifecycle_state
+              type: object
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: media_entities
+              type: array
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: metadata
+              type: object
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: preview_text
+              type: string
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: rest_id
+              type: string
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: title
+              type: string
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+        body:
+        - name: features
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: profile_label_improvements_pcf_label_in_post_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: responsive_web_graphql_skip_user_profile_image_extensions_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: responsive_web_graphql_timeline_navigation_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: responsive_web_profile_redirect_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: rweb_tipjar_consumption_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: verified_phone_label_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+        - name: queryId
+          type: string
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields: []
+        - name: variables
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: article_entity
+            type: string
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: content_state
+            type: object
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields:
+            - name: blocks
+              type: array
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: entity_map
+              type: array
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+        response:
+          type: object
+          item: ArticleEntityUpdateContent
+        pagination: null
+      update_cover_media:
+        method: POST
+        path: /i/api/graphql/Es8InPh7mEkK9PxclxFAVQ/ArticleEntityUpdateCoverMedia
+        description: POST /i/api/graphql/Es8InPh7mEkK9PxclxFAVQ/ArticleEntityUpdateCoverMedia
+        params:
+        - name: data
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: articleentity_update_cover_media
+            type: object
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields:
+            - name: content_state
+              type: object
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: cover_media
+              type: object
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: id
+              type: string
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: lifecycle_state
+              type: object
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: media_entities
+              type: array
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: metadata
+              type: object
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: preview_text
+              type: string
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: rest_id
+              type: string
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: title
+              type: string
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+        body:
+        - name: features
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: profile_label_improvements_pcf_label_in_post_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: responsive_web_graphql_skip_user_profile_image_extensions_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: responsive_web_graphql_timeline_navigation_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: responsive_web_profile_redirect_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: rweb_tipjar_consumption_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: verified_phone_label_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+        - name: queryId
+          type: string
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields: []
+        - name: variables
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: articleEntityId
+            type: string
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: coverMedia
+            type: object
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields:
+            - name: media_category
+              type: string
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: media_id
+              type: string
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+        response:
+          type: object
+          item: ArticleEntityUpdateCoverMedia
+        pagination: null
+      update_title:
+        method: POST
+        path: /i/api/graphql/x75E2ABzm8_mGTg1bz8hcA/ArticleEntityUpdateTitle
+        description: POST /i/api/graphql/x75E2ABzm8_mGTg1bz8hcA/ArticleEntityUpdateTitle
+        params:
+        - name: data
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: articleentity_update_title
+            type: object
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields:
+            - name: content_state
+              type: object
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: id
+              type: string
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: lifecycle_state
+              type: object
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: metadata
+              type: object
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: preview_text
+              type: string
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: rest_id
+              type: string
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+            - name: title
+              type: string
+              required: true
+              positional: false
+              default: null
+              description: ''
+              fields: []
+        body:
+        - name: features
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: profile_label_improvements_pcf_label_in_post_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: responsive_web_graphql_skip_user_profile_image_extensions_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: responsive_web_graphql_timeline_navigation_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: responsive_web_profile_redirect_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: rweb_tipjar_consumption_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: verified_phone_label_enabled
+            type: boolean
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+        - name: queryId
+          type: string
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields: []
+        - name: variables
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: ''
+          fields:
+          - name: articleEntityId
+            type: string
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+          - name: title
+            type: string
+            required: true
+            positional: false
+            default: null
+            description: ''
+            fields: []
+        response:
+          type: object
+          item: ArticleEntityUpdateTitle
+        pagination: null
+      upload_media:
+        method: POST
+        path: /i/media/upload.json
+        description: POST /i/media/upload.json
+        params:
+        - name: command
+          type: string
+          required: false
+          positional: false
+          default: null
+          description: ''
+          fields: []
+        - name: media_category
+          type: string
+          required: false
+          positional: false
+          default: null
+          description: ''
+          fields: []
+        - name: media_id
+          type: integer
+          required: false
+          positional: false
+          default: null
+          description: ''
+          fields: []
+        - name: media_type
+          type: string
+          required: false
+          positional: false
+          default: null
+          description: ''
+          fields: []
+        - name: original_md5
+          type: string
+          required: false
+          positional: false
+          default: null
+          description: ''
+          fields: []
+        - name: total_bytes
+          type: integer
+          required: false
+          positional: false
+          default: null
+          description: ''
+          fields: []
+        body: []
+        response:
+          type: object
+          item: upload.json
+        pagination: null
+      list:
+        method: GET
+        path: /i/api/graphql/N1zzFzRPspT-sP9Q42n_bg/ArticleEntitiesSlice
+        description: GET /i/api/graphql/N1zzFzRPspT-sP9Q42n_bg/ArticleEntitiesSlice
+        params:
+        - name: features
+          type: string
+          required: false
+          positional: false
+          default: null
+          description: ''
+          fields: []
+        - name: variables
+          type: string
+          required: false
+          positional: false
+          default: null
+          description: ''
+          fields: []
+        body: []
+        response:
+          type: object
+          item: ArticleEntitiesSlice
+        pagination: null
+types: {}
+notes: Media upload endpoint (upload_media) hits https://upload.x.com, not the base_url. The generated client must route /i/media/upload.json
+  to upload.x.com. GraphQL Article ops carry their operation hash in the URL path; treat as runtime config (see ~/.config/x-pp-cli/article-ops.json
+  in the plan).
