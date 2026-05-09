@@ -29,8 +29,10 @@ export LINEAR_API_KEY="lin_api_..."
 or persist (writes `~/.config/linear-pp-cli/config.toml`):
 
 ```bash
-linear-pp-cli auth set-token "lin_api_..."
+linear-pp-cli auth set-api-key "lin_api_..."
 ```
+
+(`auth set-token` is for OAuth access tokens, not personal API keys.)
 
 Then:
 
