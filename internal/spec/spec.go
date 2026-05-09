@@ -883,10 +883,9 @@ type Resource struct {
 	SubResources map[string]Resource `yaml:"sub_resources,omitempty" json:"sub_resources,omitempty"`
 }
 
-// HasResourceBaseURLOverride reports whether any resource (top-level or
-// nested sub-resource) declares a BaseURL override. Used by the client
-// template to gate the absolute-URL detection branch — specs that don't
-// opt in regenerate byte-identically.
+// HasResourceBaseURLOverride reports whether any resource or endpoint declares
+// a BaseURL override. Used by the client template to gate the absolute-URL
+// detection branch — specs that don't opt in regenerate byte-identically.
 func (s *APISpec) HasResourceBaseURLOverride() bool {
 	if s == nil {
 		return false
@@ -903,6 +902,11 @@ func resourceHasBaseURLOverride(resource Resource) bool {
 	if resource.BaseURL != "" {
 		return true
 	}
+	for _, endpoint := range resource.Endpoints {
+		if endpoint.BaseURL != "" {
+			return true
+		}
+	}
 	for _, sub := range resource.SubResources {
 		if resourceHasBaseURLOverride(sub) {
 			return true
@@ -914,6 +918,7 @@ func resourceHasBaseURLOverride(resource Resource) bool {
 type Endpoint struct {
 	Method          string            `yaml:"method" json:"method"`
 	Path            string            `yaml:"path" json:"path"`
+	BaseURL         string            `yaml:"base_url,omitempty" json:"base_url,omitempty"`
 	Description     string            `yaml:"description" json:"description"`
 	Params          []Param           `yaml:"params" json:"params"`
 	Body            []Param           `yaml:"body" json:"body"`
@@ -1578,7 +1583,7 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if s.ClientPattern == "proxy-envelope" && s.HasResourceBaseURLOverride() {
-		return fmt.Errorf("resource base_url overrides are incompatible with client_pattern=proxy-envelope; the proxy POSTs every request to the spec-level BaseURL, so per-resource overrides would be silently ignored")
+		return fmt.Errorf("resource or endpoint base_url overrides are incompatible with client_pattern=proxy-envelope; the proxy POSTs every request to the spec-level BaseURL, so per-request overrides would be silently ignored")
 	}
 	for name, r := range s.Resources {
 		if len(r.Endpoints) == 0 && len(r.SubResources) == 0 {
@@ -1854,7 +1859,7 @@ func validateTierRouting(s *APISpec) error {
 		}
 	}
 	if anyTierBaseURL && s.HasResourceBaseURLOverride() {
-		return fmt.Errorf("resource base_url overrides are incompatible with tier_routing tier base_url overrides; choose one routing source")
+		return fmt.Errorf("resource or endpoint base_url overrides are incompatible with tier_routing tier base_url overrides; choose one routing source")
 	}
 	for name, resource := range s.Resources {
 		if err := validateTierRoutingResource(s, name, resource, "", ""); err != nil {
@@ -2026,6 +2031,10 @@ func validateTierRoutingResource(s *APISpec, resourcePath string, resource Resou
 	effectiveResource := resource
 	effectiveResource.Tier = resourceTier
 	for endpointName, endpoint := range resource.Endpoints {
+		endpointBaseURL := strings.TrimSpace(endpoint.BaseURL)
+		if endpointBaseURL == "" {
+			endpointBaseURL = resourceBaseURL
+		}
 		tierName, tier, ok := s.EffectiveTierConfig(effectiveResource, endpoint)
 		if tierName == "" {
 			continue
@@ -2036,9 +2045,9 @@ func validateTierRoutingResource(s *APISpec, resourcePath string, resource Resou
 		if endpoint.NoAuth && tierAuthRequiresCredential(tier.Auth) {
 			return fmt.Errorf("resource %q endpoint %q declares no_auth but tier %q requires credentials", resourcePath, endpointName, tierName)
 		}
-		if tierAuthRequiresCredential(tier.Auth) && strings.TrimSpace(tier.BaseURL) == "" && resourceBaseURL != "" {
+		if tierAuthRequiresCredential(tier.Auth) && strings.TrimSpace(tier.BaseURL) == "" && endpointBaseURL != "" {
 			resourceTier := tier
-			resourceTier.BaseURL = resourceBaseURL
+			resourceTier.BaseURL = endpointBaseURL
 			if err := validateCredentialTierBaseURL(tierName, resourceTier, s.BaseURL); err != nil {
 				return fmt.Errorf("resource %q endpoint %q: %w", resourcePath, endpointName, err)
 			}
