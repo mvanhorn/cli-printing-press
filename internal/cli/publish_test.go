@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
@@ -24,6 +25,17 @@ func skipIfRootCannotSimulateUnreadable(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root; chmod 0 does not block reads — cannot simulate an unreadable-file failure")
 	}
+}
+
+func publishCheckByName(t *testing.T, result ValidateResult, name string) CheckResult {
+	t.Helper()
+	for _, check := range result.Checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	t.Fatalf("missing %q check in %#v", name, result.Checks)
+	return CheckResult{}
 }
 
 func TestPublishValidateMissingManifest(t *testing.T) {
@@ -82,7 +94,68 @@ func TestPublishValidateManifestMissingFields(t *testing.T) {
 	}
 	require.NotNil(t, manifestCheck)
 	assert.False(t, manifestCheck.Passed)
-	assert.Contains(t, manifestCheck.Error, "required fields")
+	assert.Contains(t, manifestCheck.Error, "missing required manifest fields")
+}
+
+func TestPublishValidateRejectsStaleAttributionManifest(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "openrouter-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+
+	writeTestManifest(t, cliDir, pipeline.CLIManifest{
+		SchemaVersion:        0,
+		PrintingPressVersion: "4.2.0",
+		APIName:              "openrouter",
+		CLIName:              "openrouter-pp-cli",
+		RunID:                "20260509-165428",
+		Printer:              "rvdlaar",
+	})
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"validate", "--dir", cliDir, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.Error(t, err)
+
+	var result ValidateResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.False(t, result.Passed)
+
+	manifestCheck := publishCheckByName(t, result, "manifest")
+	assert.False(t, manifestCheck.Passed)
+	assert.Contains(t, manifestCheck.Error, "schema_version must be 1")
+	assert.Contains(t, manifestCheck.Error, "printer_name")
+}
+
+func TestPublishManifestContractRejectsPrinterSentinel(t *testing.T) {
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+		Printer:              "USER",
+		PrinterName:          "Test User",
+	})
+
+	require.Len(t, issues, 1)
+	assert.Contains(t, issues[0], "literal sentinel")
+}
+
+func TestPublishManifestContractRequiresMCPMetadataFiles(t *testing.T) {
+	issues := validatePublishManifestContract(t.TempDir(), pipeline.CLIManifest{
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "4.2.1",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260509-000000",
+		Printer:              "tmchow",
+		PrinterName:          "Trevin Chow",
+		MCPBinary:            "test-pp-mcp",
+	})
+
+	assert.Contains(t, strings.Join(issues, "\n"), "manifest.json")
+	assert.Contains(t, strings.Join(issues, "\n"), "tools-manifest.json")
 }
 
 func TestPublishValidateMissingDirFlag(t *testing.T) {
@@ -165,11 +238,17 @@ func TestPublishValidateFailsWithoutPhase5Marker(t *testing.T) {
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
 	writePublishableTestCLI(t, cliDir)
 	writeTestManifest(t, cliDir, pipeline.CLIManifest{
-		SchemaVersion: 1,
-		APIName:       "test",
-		CLIName:       "test-pp-cli",
-		RunID:         "run-missing-phase5",
-		AuthType:      "api_key",
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "test-version",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "run-missing-phase5",
+		Printer:              "tmchow",
+		PrinterName:          "Trevin Chow",
+		AuthType:             "api_key",
+		NovelFeatures: []pipeline.NovelFeatureManifest{
+			{Name: "Insight", Command: "insight", Description: "Show test insight."},
+		},
 	})
 
 	cmd := newPublishCmd()
@@ -200,9 +279,13 @@ func TestPublishValidateRequiresTranscendenceFeatures(t *testing.T) {
 	require.NoError(t, os.MkdirAll(cliDir, 0o755))
 
 	data, err := json.MarshalIndent(pipeline.CLIManifest{
-		SchemaVersion: 1,
-		APIName:       "test",
-		CLIName:       "test-pp-cli",
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "test-version",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260301-000000",
+		Printer:              "tmchow",
+		PrinterName:          "Trevin Chow",
 	}, "", "  ")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(cliDir, pipeline.CLIManifestFilename), data, 0o644))
@@ -899,11 +982,17 @@ func newInsightCmd() *cobra.Command {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# Test CLI\n\n"+skillInstall+"\n## Command Reference\n\n- `test-pp-cli insight` — Show test insight\n\n## Usage\n\n```bash\ntest-pp-cli insight --agent\n```\n"), 0o644))
 
 	writeTestManifest(t, dir, pipeline.CLIManifest{
-		SchemaVersion: 1,
-		APIName:       "test",
-		CLIName:       "test-pp-cli",
-		RunID:         "20260301-000000",
-		AuthType:      "none",
+		SchemaVersion:        pipeline.CurrentCLIManifestSchemaVersion,
+		PrintingPressVersion: "test-version",
+		APIName:              "test",
+		CLIName:              "test-pp-cli",
+		RunID:                "20260301-000000",
+		Printer:              "tmchow",
+		PrinterName:          "Trevin Chow",
+		AuthType:             "none",
+		NovelFeatures: []pipeline.NovelFeatureManifest{
+			{Name: "Insight", Command: "insight", Description: "Show test insight."},
+		},
 	})
 	writePublishablePhase5Pass(t)
 }

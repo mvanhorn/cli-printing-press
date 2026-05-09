@@ -216,6 +216,11 @@ Validating <api-slug>...
 ```
 
 If `"passed": false`, report the failing checks and **stop**. Do not create a partial PR.
+The `manifest` check is authoritative for the public-library provenance
+contract: current `schema_version`, `run_id`, `printing_press_version`,
+`printer`, `printer_name`, and MCP metadata files when MCP is advertised. If it
+fails, tell the user to re-print or re-package with current Printing Press
+metadata before opening the library PR.
 
 Save the `help_output` field from the result — it's used in the PR description.
 
@@ -415,14 +420,19 @@ cp -r "$STAGING_DIR/library/<category>/<cli-name>" "$PUBLISH_REPO_DIR/library/<c
 # Remove binaries (should not be committed)
 rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>"
 
-# Strict-validate printer attribution before it reaches README and registry surfaces.
+# Defense-in-depth: validate printer attribution before README and registry surfaces.
 PRINTER=$(jq -r '.printer // ""' "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press.json")
+PRINTER_NAME=$(jq -r '.printer_name // ""' "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press.json")
 if [ -z "$PRINTER" ]; then
   echo "ERROR: manifest .printer is empty. Set 'git config --global github.user <your-handle>' and re-print before publishing."
   exit 1
 fi
 if [ "$PRINTER" = "USER" ] || [ "$PRINTER" = "user" ]; then
   echo "ERROR: manifest .printer is the literal sentinel \"$PRINTER\" (git config github.user was unset at print time). Set it and re-print before publishing."
+  exit 1
+fi
+if [ -z "$PRINTER_NAME" ]; then
+  echo "ERROR: manifest .printer_name is empty. Set 'git config --global user.name <your display name>' and re-print before publishing."
   exit 1
 fi
 
