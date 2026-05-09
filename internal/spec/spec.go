@@ -787,6 +787,7 @@ type ShareConfig struct {
 type MCPConfig struct {
 	Transport              []string `yaml:"transport,omitempty" json:"transport,omitempty"`                             // allowed transports the generated binary compiles support for; empty == [stdio]. Runtime transport is chosen via the --transport flag and PP_MCP_TRANSPORT env.
 	Addr                   string   `yaml:"addr,omitempty" json:"addr,omitempty"`                                       // default bind address for the http transport (e.g., ":7777"). Blank means runtime default (":7777"). Ignored unless http is in Transport.
+	DSN                    string   `yaml:"dsn,omitempty" json:"dsn,omitempty"`                                         // MS-SQL Server connection string for the tds transport (e.g., "sqlserver://user:pass@host:1433?database=db"). Required when tds is in Transport. At runtime the generated binary reads PP_TDS_DSN env, which overrides this default.
 	Intents                []Intent `yaml:"intents,omitempty" json:"intents,omitempty"`                                 // higher-level MCP tools that compose multiple endpoint calls. The agent sees one intent tool; the generator emits a handler that fans out to the declared endpoints sequentially. Anti-pattern to fight: one-tool-per-endpoint mirrors that force agents to stitch primitives.
 	EndpointTools          string   `yaml:"endpoint_tools,omitempty" json:"endpoint_tools,omitempty"`                   // "visible" (default) keeps the per-endpoint MCP tools; "hidden" suppresses them so only intents + generator-emitted tools appear. Use "hidden" when intents fully cover the surface and raw endpoints would be noise.
 	Orchestration          string   `yaml:"orchestration,omitempty" json:"orchestration,omitempty"`                     // "endpoint-mirror" (default), "intent", or "code". Code-orchestration emits a thin <api>_search + <api>_execute pair covering the full surface in ~1K tokens; used for very large APIs where even intent-grouped tools would overflow context. Mutually exclusive with endpoint-mirror at emission time.
@@ -1002,6 +1003,17 @@ type Param struct {
 	// It lets validation distinguish an omitted public name from invalid
 	// `flag_name: ""` while still allowing overlays to clear FlagName.
 	FlagNameSet bool `yaml:"-" json:"-"`
+	// WireName, when set, is the exact JSON key sent in the request body.
+	// Overrides Name for body-key generation only; CLI flag and Go variable
+	// names still derive from Name/IdentName. Used for Salesforce SObject APIs
+	// whose fields are PascalCase (DeveloperName, MasterLabel) while CLI flags
+	// use snake_case (--developer-name). Set via `wire_name: DeveloperName`.
+	WireName string `yaml:"wire_name,omitempty" json:"wire_name,omitempty"`
+	// InlineAtRoot, when true on an object body param, causes bodyMap to merge
+	// the parsed object's keys directly into the request body at root level
+	// rather than nesting under body[Name]. Matches Salesforce SObject PATCH
+	// shape: `inline_at_root: true` sends fields unwrapped.
+	InlineAtRoot bool `yaml:"inline_at_root,omitempty" json:"inline_at_root,omitempty"`
 }
 
 func (p Param) PublicInputName() string {
@@ -2206,6 +2218,7 @@ func validateCacheShare(cache CacheConfig, share ShareConfig, resources map[stri
 var allowedMCPTransports = map[string]struct{}{
 	"stdio": {},
 	"http":  {},
+	"tds":   {}, // MS-SQL Server / TDS; requires mcp.dsn
 }
 
 // addrLikeRe accepts a ":port" or "host:port" form for the optional MCP http
@@ -2225,7 +2238,7 @@ func validateMCP(m MCPConfig, resources map[string]Resource) error {
 			return fmt.Errorf("mcp.transport[%d]: value must not be empty", i)
 		}
 		if _, ok := allowedMCPTransports[normalized]; !ok {
-			return fmt.Errorf("mcp.transport[%d]: %q is not a supported transport (allowed: stdio, http)", i, t)
+			return fmt.Errorf("mcp.transport[%d]: %q is not a supported transport (allowed: stdio, http, tds)", i, t)
 		}
 		if _, dup := seen[normalized]; dup {
 			return fmt.Errorf("mcp.transport[%d]: %q appears more than once", i, t)
@@ -2238,6 +2251,16 @@ func validateMCP(m MCPConfig, resources map[string]Resource) error {
 		}
 		if !addrLikeRe.MatchString(m.Addr) {
 			return fmt.Errorf("mcp.addr %q is not a valid bind address (expect \":port\" or \"host:port\")", m.Addr)
+		}
+	}
+	if _, tdsEnabled := seen["tds"]; tdsEnabled {
+		if m.DSN == "" {
+			return fmt.Errorf("mcp.dsn is required when mcp.transport includes tds; provide a sqlserver:// connection string or use PP_TDS_DSN env at runtime")
+		}
+	}
+	if m.DSN != "" {
+		if _, tdsEnabled := seen["tds"]; !tdsEnabled {
+			return fmt.Errorf("mcp.dsn is set but mcp.transport does not include tds; either add tds or remove dsn")
 		}
 	}
 	if m.EndpointTools != "" && m.EndpointTools != "visible" && m.EndpointTools != "hidden" {
