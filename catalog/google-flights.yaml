@@ -1,15 +1,14 @@
 name: google-flights
 display_name: Google Flights
-description: Flight search via Google Flights. No public API — reached through community-maintained reverse-engineered wrappers.
-category: other
+description: Flight search via Google Flights. No public API — reached through a community-maintained reverse-engineered wrapper.
+category: travel
 tier: community
-verified_date: "2026-04-11"
+verified_date: "2026-05-09"
 homepage: https://www.google.com/travel/flights
 notes: |
-  Google does not publish a Flights API. The wrapper libraries below reverse-engineer
+  Google does not publish a Flights API. The wrapper library below reverse-engineers
   the internal protobuf protocol that powers the website. Prefer the native Go wrapper
-  for printed CLIs so the resulting binary has no Python runtime dependency. Fall back
-  to the subprocess option when the Go wrapper is missing coverage the user needs.
+  for printed CLIs so the resulting binary has no Python runtime dependency.
 
   When this entry is returned for a combo-CLI source, the skill should surface the
   wrapper options to the user rather than searching for an OpenAPI spec.
@@ -19,10 +18,4 @@ wrapper_libraries:
     language: go
     license: MIT
     integration_mode: native
-    notes: Pure Go, importable. Preferred default — produces a single-binary CLI with no runtime deps.
-  - name: punitarani/fli
-    url: https://github.com/punitarani/fli
-    language: python
-    license: MIT
-    integration_mode: subprocess
-    notes: Python library with broader feature coverage (multi-leg, cabin class filters). Invoke as a subprocess and parse JSON output. Requires Python 3.10+ at runtime.
+    notes: Pure Go, importable. Produces a single-binary CLI with no Python runtime dependency.

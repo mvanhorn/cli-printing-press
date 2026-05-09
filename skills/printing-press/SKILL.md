@@ -637,7 +637,6 @@ If the catalog has an entry for this API, branch on the entry type:
 
 Present each `wrapper_libraries` entry as a selectable option with language, integration mode, and notes. Example for `google-flights`:
 - **krisukox/google-flights-api** (Go, native, MIT) — Pure Go, importable; single-binary CLI with no runtime deps.
-- **punitarani/fli** (Python, subprocess, MIT) — broader feature coverage (multi-leg, cabin class); requires Python 3.10+ at runtime.
 
 Capture the user's choice and record it in `$API_RUN_DIR/state.json` under an `implementation` field: `{ "library": "<name>", "url": "<url>", "integration_mode": "native|subprocess|html-scrape" }`. Phase 3 generation reads this to decide whether to `go get` a wrapper, emit a subprocess shell-out, or emit HTML-scrape code. Skip the spec-analysis step entirely — there is no spec.
 
@@ -853,7 +852,7 @@ For each named source, run the "When to offer browser-sniff" decision matrix ind
 | Source | Spec state | Expected decision |
 |--------|------------|-------------------|
 | `flightaware` | Documented OpenAPI spec found (53 endpoints, appears complete) | `skip-silent` with reason `spec-complete` |
-| `google-flights` | No official spec, but community wrapper exists (`fli`) | Ask via `AskUserQuestion` → record user's answer |
+| `google-flights` | No official spec, but community wrapper exists (`krisukox/google-flights-api`) | Ask via `AskUserQuestion` → record user's answer |
 | `kayak-direct` | No spec, no wrapper, user named this as a key feature | Ask via `AskUserQuestion` → record user's answer |
 
 The marker file for this run would contain three entries. Phase 1.5 would HALT if any were missing.
