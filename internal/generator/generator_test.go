@@ -1331,6 +1331,7 @@ func TestGenerateBrowserChromeTransport(t *testing.T) {
 	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
 	assert.Contains(t, string(clientGo), "Impersonate()")
 	assert.Contains(t, string(clientGo), "Chrome()")
+	assert.Contains(t, string(clientGo), "ForceHTTP2()")
 	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
 
 	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))

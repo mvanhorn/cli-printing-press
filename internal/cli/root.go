@@ -540,7 +540,7 @@ func applyHTTPTransportDefault(apiSpec *spec.APISpec, analysis *browsersniff.Tra
 	if apiSpec == nil || apiSpec.HTTPTransport != "" {
 		return
 	}
-	if trafficAnalysisRecommendsBrowserHTTP3Transport(analysis) {
+	if trafficAnalysisExplicitlyRecommendsBrowserHTTP3Transport(analysis) {
 		apiSpec.HTTPTransport = spec.HTTPTransportBrowserChromeH3
 		return
 	}
@@ -603,18 +603,9 @@ func trafficAnalysisRecommendsBrowserTransport(analysis *browsersniff.TrafficAna
 	return false
 }
 
-func trafficAnalysisRecommendsBrowserHTTP3Transport(analysis *browsersniff.TrafficAnalysis) bool {
+func trafficAnalysisExplicitlyRecommendsBrowserHTTP3Transport(analysis *browsersniff.TrafficAnalysis) bool {
 	if analysis == nil {
 		return false
-	}
-	if analysis.Reachability != nil && analysis.Reachability.Mode == "browser_clearance_http" {
-		return true
-	}
-	for _, protection := range analysis.Protections {
-		switch strings.ToLower(protection.Label) {
-		case "cloudflare", "bot_challenge", "aws_waf", "datadome", "akamai", "perimeterx":
-			return true
-		}
 	}
 	for _, hint := range analysis.GenerationHints {
 		hint = strings.ToLower(hint)
