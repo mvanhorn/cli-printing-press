@@ -100,12 +100,12 @@ jobs:
 
             # Forward auth_preference when the entry sets one so the generated
             # CLI matches what `printing-press generate <name>` would produce.
+            # Use yq so quoted values, trailing comments, and indentation are
+            # handled correctly (grep+sed silently mangled those).
             AUTH_PREFERENCE_ARG=()
-            if grep -q '^auth_preference:' "$file"; then
-              AUTH_PREF=$(grep '^auth_preference:' "$file" | head -1 | sed 's/auth_preference: *//')
-              if [ -n "$AUTH_PREF" ]; then
-                AUTH_PREFERENCE_ARG=(--auth-preference "$AUTH_PREF")
-              fi
+            AUTH_PREF=$(yq e '.auth_preference // ""' "$file")
+            if [ -n "$AUTH_PREF" ]; then
+              AUTH_PREFERENCE_ARG=(--auth-preference "$AUTH_PREF")
             fi
 
             ./printing-press generate \
