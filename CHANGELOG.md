@@ -1,5 +1,34 @@
 # Changelog
 
+## [4.1.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.0.6...v4.1.0) (2026-05-09)
+
+
+### Features
+
+* **ci:** add verify-skill drift check ([#766](https://github.com/mvanhorn/cli-printing-press/issues/766)) ([1af0f27](https://github.com/mvanhorn/cli-printing-press/commit/1af0f275a4cc20026e29c8e3d18563759d3764d7))
+* **cli:** credit original printer in per-CLI README (closes [#745](https://github.com/mvanhorn/cli-printing-press/issues/745)) ([#748](https://github.com/mvanhorn/cli-printing-press/issues/748)) ([ee8f6ad](https://github.com/mvanhorn/cli-printing-press/commit/ee8f6ad99ce0dd4b6400785a69b014a508534862))
+* **cli:** emit AGENTS.md for printed CLIs (fast-track of [#681](https://github.com/mvanhorn/cli-printing-press/issues/681)) ([#728](https://github.com/mvanhorn/cli-printing-press/issues/728)) ([a9b9aa6](https://github.com/mvanhorn/cli-printing-press/commit/a9b9aa659a84a877f42e21bb91167707bb5e46b9))
+
+
+### Bug Fixes
+
+* **cli:** align generated install and rename metadata ([#749](https://github.com/mvanhorn/cli-printing-press/issues/749)) ([ca580ef](https://github.com/mvanhorn/cli-printing-press/commit/ca580efc6ad47f0f4678b9a54fb1773c7efb33b7))
+* **cli:** anchor openapi loader normalization ([#730](https://github.com/mvanhorn/cli-printing-press/issues/730)) ([a4b0eb3](https://github.com/mvanhorn/cli-printing-press/commit/a4b0eb30590d1d322d6895072aa709db5ed46d78))
+* **cli:** close redfin retro verification gaps ([#762](https://github.com/mvanhorn/cli-printing-press/issues/762)) ([172c6c2](https://github.com/mvanhorn/cli-printing-press/commit/172c6c299ef48f278faadfa0fbdcef4a39a7c2ec))
+* **cli:** guard generated CLI build safety ([#736](https://github.com/mvanhorn/cli-printing-press/issues/736)) ([1d26ae7](https://github.com/mvanhorn/cli-printing-press/commit/1d26ae77985ef52df240018ad23913cb2602acc0))
+* **cli:** handle wrapped paginated responses ([#731](https://github.com/mvanhorn/cli-printing-press/issues/731)) ([b4bdcf6](https://github.com/mvanhorn/cli-printing-press/commit/b4bdcf68bc621c3a77e022b54f5ab43c6515a49f))
+* **cli:** harden force-generate preservation ([#750](https://github.com/mvanhorn/cli-printing-press/issues/750)) ([c397021](https://github.com/mvanhorn/cli-printing-press/commit/c397021fccf0c31d7e8ed39736bae3e613bb95d5))
+* **cli:** hydrate promote state across scopes ([#738](https://github.com/mvanhorn/cli-printing-press/issues/738)) ([dfdf183](https://github.com/mvanhorn/cli-printing-press/commit/dfdf183139a2ae36b2c2750f9f7b0e80f15326c5))
+* **cli:** infer bearer auth from prose-only specs ([#753](https://github.com/mvanhorn/cli-printing-press/issues/753)) ([92d303a](https://github.com/mvanhorn/cli-printing-press/commit/92d303ac75d26944c91ffa8a21eb09d05cb909f3))
+* **cli:** populate manifest.Category from spec when catalog misses ([#735](https://github.com/mvanhorn/cli-printing-press/issues/735)) ([a00e97b](https://github.com/mvanhorn/cli-printing-press/commit/a00e97b198eec5fc5f53b8877439b2462602e39d))
+* **cli:** preserve browser-sniffed request defaults ([#737](https://github.com/mvanhorn/cli-printing-press/issues/737)) ([8721df4](https://github.com/mvanhorn/cli-printing-press/commit/8721df4bf310cac7b0619747af9db366508583c3))
+* **cli:** preserve novel cli files on force generate ([#747](https://github.com/mvanhorn/cli-printing-press/issues/747)) ([9675f8b](https://github.com/mvanhorn/cli-printing-press/commit/9675f8b2b39be4639a7bdd2e34cc8fcd7e6b00f7))
+* **cli:** route live cache through typed upserts ([#751](https://github.com/mvanhorn/cli-printing-press/issues/751)) ([c332b53](https://github.com/mvanhorn/cli-printing-press/commit/c332b534e59ac6e4d786c48924be81457c85f1a1))
+* **cli:** score structural scorer behavior ([#732](https://github.com/mvanhorn/cli-printing-press/issues/732)) ([979510c](https://github.com/mvanhorn/cli-printing-press/commit/979510c21b29be9e93fda3321e60154d2eb5233c))
+* **cli:** sync sibling list endpoints ([#756](https://github.com/mvanhorn/cli-printing-press/issues/756)) ([745f2e7](https://github.com/mvanhorn/cli-printing-press/commit/745f2e75f2bc9aff5079ca6de3f232930341c28e))
+* **cli:** unscore large code-orch token catalogs ([#755](https://github.com/mvanhorn/cli-printing-press/issues/755)) ([6348c9f](https://github.com/mvanhorn/cli-printing-press/commit/6348c9f25b32a535cbbbd0dd5196bfa843338d55))
+* **generator:** use simple backticks in auth_client_credentials.go.tmpl ([#734](https://github.com/mvanhorn/cli-printing-press/issues/734)) ([6436392](https://github.com/mvanhorn/cli-printing-press/commit/6436392108844edace2390b7680eaaf9b4c56a44))
+
 ## [4.0.6](https://github.com/mvanhorn/cli-printing-press/compare/v4.0.5...v4.0.6) (2026-05-08)
 
 
