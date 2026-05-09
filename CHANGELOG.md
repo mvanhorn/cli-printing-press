@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.2.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.1.0...v4.2.0) (2026-05-09)
+
+
+### Features
+
+* **cli:** support static config headers ([#769](https://github.com/mvanhorn/cli-printing-press/issues/769)) ([838f5a4](https://github.com/mvanhorn/cli-printing-press/commit/838f5a497975aad11e7c938f982f7a64d96d9a15))
+
+
+### Bug Fixes
+
+* **cli:** avoid duplicate token auth map keys ([#775](https://github.com/mvanhorn/cli-printing-press/issues/775)) ([de34ec0](https://github.com/mvanhorn/cli-printing-press/commit/de34ec0ecd8ff1d807b049556f138b1131fd081b))
+
 ## [4.1.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.0.6...v4.1.0) (2026-05-09)
 
 

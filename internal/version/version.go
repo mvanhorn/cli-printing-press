@@ -8,7 +8,7 @@ import (
 
 // Version is the current printing-press version. It is set at build time
 // via ldflags for tagged releases, or falls back to the hardcoded value.
-var Version = "4.1.0" // x-release-please-version
+var Version = "4.2.0" // x-release-please-version
 
 // pseudoVersionSuffix matches the trailing `yyyymmddhhmmss-abcdefabcdef`
 // (14-digit timestamp + 12-char commit hash) shared by every Go pseudo-version
