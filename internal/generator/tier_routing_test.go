@@ -93,7 +93,8 @@ func TestTierRoutingEmitsTierAwareClientAndCommands(t *testing.T) {
 	require.Contains(t, clientSrc, `os.Getenv("TIERED_PAID_KEY")`)
 	require.Contains(t, clientSrc, `"access_token": tierValue0`)
 	require.Contains(t, clientSrc, `q.Set(authInfo.Name, authHeader)`)
-	require.Contains(t, clientSrc, `key += "|tier=" + c.requestTier + "|base_url=" + c.baseURLForRequest()`)
+	require.Contains(t, clientSrc, `key += "|base_url=" + c.BaseURL`)
+	require.Contains(t, clientSrc, `key += "|tier=" + c.requestTier + "|tier_base_url=" + c.baseURLForRequest()`)
 
 	freeCmd := readGeneratedFile(t, outputDir, "internal", "cli", "items_list.go")
 	require.Contains(t, freeCmd, `c = c.WithTier("free")`)

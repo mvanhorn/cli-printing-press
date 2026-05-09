@@ -134,7 +134,9 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// Check auth
 {{- if or (eq .Auth.Type "") (eq .Auth.Type "none")}}
 			report["auth"] = "not required"
-{{- else if .Auth.Inferred}}
+{{- else}}
+			authConfigured := false
+{{- if .Auth.Inferred}}
 			// Auth was inferred from spec description — warn the user to verify
 			if cfg != nil {
 				header := cfg.AuthHeader()
@@ -144,6 +146,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					report["auth_hint"] = "export {{.Name}}=<your-key>"
 {{- end}}
 				} else {
+					authConfigured = true
 					report["auth"] = "inferred (configured — verify header and env var are correct)"
 					report["auth_source"] = cfg.AuthSource
 				}
@@ -157,6 +160,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					report["auth"] = "not configured"
 					report["auth_hint"] = "{{.Name}}-pp-cli auth login --chrome"
 				} else {
+					authConfigured = true
 					report["auth"] = "configured (browser session)"
 					report["auth_source"] = cfg.AuthSource
 					report["auth_domain"] = "{{.Auth.CookieDomain}}"
@@ -203,10 +207,15 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					report["auth_key_url"] = "{{.Auth.KeyURL}}"
 {{- end}}
 				} else {
+					authConfigured = true
 					report["auth"] = "configured"
 					report["auth_source"] = cfg.AuthSource
 				}
 			}
+{{- end}}
+{{- if not (or .Auth.EnvVarSpecs .Auth.EnvVars)}}
+			_ = authConfigured
+{{- end}}
 {{- end}}
 
 			// Check auth environment variables
@@ -228,6 +237,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- if .Required}}
 			if os.Getenv("{{.Name}}") != "" {
 				authEnvSet = append(authEnvSet, "{{.Name}}")
+			} else if authConfigured {
+				authSource, _ := report["auth_source"].(string)
+				if authSource == "" {
+					authSource = "config"
+				}
+				authEnvInfo = append(authEnvInfo, "credentials available from "+authSource)
 			} else {
 				authEnvRequiredMissing = append(authEnvRequiredMissing, "{{.Name}}")
 			}
@@ -263,6 +278,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				report["env_vars"] = "ERROR missing required: " + strings.Join(authEnvRequiredMissing, ", ")
 			case len(authEnvOptionalNames) > 1 && !authEnvOptionalSatisfied:
 				report["env_vars"] = "INFO set one of: " + strings.Join(authEnvOptionalNames, " or ")
+			case len(authEnvInfo) > 0 && authConfigured:
+				report["env_vars"] = "OK " + strings.Join(authEnvInfo, "; ")
 			case len(authEnvInfo) > 0:
 				report["env_vars"] = "INFO " + strings.Join(authEnvInfo, "; ")
 			default:
@@ -277,7 +294,13 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				authEnvSet++
 			}
 {{- end}}
-			if authEnvSet == 0 {
+			if authEnvSet == 0 && authConfigured {
+				authSource, _ := report["auth_source"].(string)
+				if authSource == "" {
+					authSource = "config"
+				}
+				report["env_vars"] = "OK credentials available from " + authSource
+			} else if authEnvSet == 0 {
 				report["env_vars"] = fmt.Sprintf("none set (checked %d)", authEnvChecked)
 			} else {
 				report["env_vars"] = fmt.Sprintf("%d/%d set", authEnvSet, authEnvChecked)
