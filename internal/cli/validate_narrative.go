@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/signal"
 
@@ -70,6 +71,17 @@ the SKILL's recipes; users hit "unknown command" on copy-paste.`,
 				FullExamples: fullExamples,
 			})
 			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					if asJSON {
+						report := &narrativecheck.Report{ResearchNotApplicable: true}
+						if err := json.NewEncoder(cmd.OutOrStdout()).Encode(report); err != nil {
+							return err
+						}
+					} else {
+						fmt.Fprintf(cmd.OutOrStderr(), "N/A: research.json not found at %s; narrative validation skipped\n", researchPath)
+					}
+					return nil
+				}
 				return &ExitError{Code: ExitInputError, Err: err}
 			}
 

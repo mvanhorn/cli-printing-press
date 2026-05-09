@@ -68,3 +68,25 @@ func TestValidateNarrativeCmd_StrictExitCode(t *testing.T) {
 		t.Errorf("Code = %d, want ExitInputError (%d)", exitErr.Code, ExitInputError)
 	}
 }
+
+func TestValidateNarrativeCmd_MissingResearchIsNotApplicable(t *testing.T) {
+	t.Parallel()
+
+	missingResearch := filepath.Join(t.TempDir(), "missing", "research.json")
+	cmd := newValidateNarrativeCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetArgs([]string{
+		"--strict",
+		"--research", missingResearch,
+		"--binary", "/nonexistent-but-not-invoked",
+	})
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("missing research.json should be treated as not applicable, got %v", err)
+	}
+	if got := stdout.String() + stderr.String(); !strings.Contains(got, "N/A: research.json not found") {
+		t.Fatalf("stderr = %q, want N/A skip message", got)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 )
 
 func buildCLI(dir string) (string, error) {
@@ -17,6 +18,7 @@ func buildCLI(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving binary path: %w", err)
 	}
+	binaryPath = platform.ExecutablePath(binaryPath)
 	cmdDir, err := findCLICommandDir(dir)
 	if err != nil {
 		return "", err

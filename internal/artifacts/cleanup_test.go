@@ -16,8 +16,11 @@ func TestCleanupGeneratedCLI(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "nested"), 0o755))
 
 	writeArtifactFile(t, filepath.Join(dir, "sample-cli"))
+	writeArtifactFile(t, filepath.Join(dir, "sample-cli.exe"))
 	writeArtifactFile(t, filepath.Join(dir, "sample-cli-validation"))
+	writeArtifactFile(t, filepath.Join(dir, "sample-cli-validation.exe"))
 	writeArtifactFile(t, filepath.Join(dir, "sample-cli-dogfood"))
+	writeArtifactFile(t, filepath.Join(dir, "sample-cli-dogfood.exe"))
 	writeArtifactFile(t, filepath.Join(dir, ".DS_Store"))
 	writeArtifactFile(t, filepath.Join(dir, "nested", ".DS_Store"))
 	writeArtifactFile(t, filepath.Join(dir, ".cache", "go-build", "index"))
@@ -33,8 +36,11 @@ func TestCleanupGeneratedCLI(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NoFileExists(t, filepath.Join(dir, "sample-cli"))
+	assert.NoFileExists(t, filepath.Join(dir, "sample-cli.exe"))
 	assert.NoFileExists(t, filepath.Join(dir, "sample-cli-validation"))
+	assert.NoFileExists(t, filepath.Join(dir, "sample-cli-validation.exe"))
 	assert.NoFileExists(t, filepath.Join(dir, "sample-cli-dogfood"))
+	assert.NoFileExists(t, filepath.Join(dir, "sample-cli-dogfood.exe"))
 	assert.NoFileExists(t, filepath.Join(dir, ".DS_Store"))
 	assert.NoFileExists(t, filepath.Join(dir, "nested", ".DS_Store"))
 	assert.NoDirExists(t, filepath.Join(dir, "cmd", "library"))
