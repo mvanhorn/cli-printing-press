@@ -297,11 +297,23 @@ func (s *APISpec) EffectiveHTTPTransport() string {
 	case HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
 		return s.HTTPTransport
 	}
+	if s.usesBrowserAuthForHTML() {
+		return HTTPTransportBrowserChrome
+	}
 	switch s.SpecSource {
 	case "community", "sniffed":
 		return HTTPTransportBrowserChrome
 	default:
 		return HTTPTransportStandard
+	}
+}
+
+func (s *APISpec) usesBrowserAuthForHTML() bool {
+	switch strings.ToLower(strings.TrimSpace(s.Auth.Type)) {
+	case "cookie", "composed":
+		return s.HasHTMLExtraction()
+	default:
+		return false
 	}
 }
 

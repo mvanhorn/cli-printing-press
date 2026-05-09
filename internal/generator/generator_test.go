@@ -1421,6 +1421,48 @@ func TestGenerateBrowserHTTPTransportDisablesHTTP2(t *testing.T) {
 	assert.NotContains(t, gomod, "github.com/enetx/surf")
 }
 
+func TestGenerateCookieHTMLDefaultsBrowserChromeTransport(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("cookiehtml")
+	apiSpec.BaseURL = "https://www.example.com"
+	apiSpec.Auth = spec.AuthConfig{
+		Type:         "cookie",
+		Header:       "Cookie",
+		In:           "cookie",
+		CookieDomain: ".example.com",
+		EnvVars:      []string{"COOKIEHTML_COOKIES"},
+	}
+	apiSpec.Resources = map[string]spec.Resource{
+		"diary": {
+			Description: "Read diary pages",
+			Endpoints: map[string]spec.Endpoint{
+				"get_day": {
+					Method:         "GET",
+					Path:           "/food/diary",
+					Description:    "Read a diary page",
+					ResponseFormat: spec.ResponseFormatHTML,
+					HTMLExtract: &spec.HTMLExtract{
+						Mode: spec.HTMLExtractModePage,
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "cookiehtml-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	gomod := readGeneratedFile(t, outputDir, "go.mod")
+	assert.Contains(t, gomod, "github.com/enetx/surf")
+
+	clientGo := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
+	assert.Contains(t, clientGo, `"github.com/enetx/surf"`)
+	assert.Contains(t, clientGo, "Impersonate()")
+	assert.Contains(t, clientGo, "Chrome()")
+	assert.NotContains(t, clientGo, `req.Header.Set("User-Agent", "cookiehtml-pp-cli/0.1.0")`)
+}
+
 func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

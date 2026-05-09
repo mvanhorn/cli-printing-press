@@ -1731,6 +1731,21 @@ resources:
         # no_auth defaults to false — placing an order needs auth
 ```
 
+#### Cookie/composed HTML transport
+
+For specs with `auth.type: cookie` or `auth.type: composed` and any
+`response_format: html` endpoint, treat browser fingerprint compatibility as
+the safe default. The generator emits Surf-backed Chrome transport for that
+shape unless the spec explicitly says `http_transport: standard`.
+
+Before setting an explicit standard opt-out, run
+`printing-press probe-reachability` against a representative HTML GET endpoint.
+If the probe returns `standard_http`, record `http_transport: standard` in the
+spec. If it returns `browser_http`, leave the default or set `http_transport:
+browser-chrome`. If it returns `browser_clearance_http`, return to the
+browser-clearance flow above so the generated CLI has both browser-compatible
+HTTP and reusable browser auth proof.
+
 ### Pre-Generation MCP Enrichment
 
 Before generating, count the spec's MCP tool surface and decide whether to opt
