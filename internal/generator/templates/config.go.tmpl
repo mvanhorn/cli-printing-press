@@ -187,7 +187,9 @@ func (c *Config) AuthHeader() string {
 		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
 			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
 			"{{.Name}}": c.{{resolveEnvVarField .Name}},
+			{{- if ne (envVarPlaceholder .Name) "token"}}
 			"token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
 		})
 		{{- else}}
 		return c.{{resolveEnvVarField .Name}}
@@ -287,7 +289,9 @@ func (c *Config) AuthHeader() string {
 		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
 			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
 			"{{.Name}}": c.{{resolveEnvVarField .Name}},
+			{{- if ne (envVarPlaceholder .Name) "token"}}
 			"token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
 		})
 		{{- else}}
 		return "Bearer " + c.{{resolveEnvVarField .Name}}
@@ -302,7 +306,9 @@ func (c *Config) AuthHeader() string {
 		return applyAuthFormat("{{$.Auth.Format}}", map[string]string{
 			"{{envVarPlaceholder .Name}}": c.{{resolveEnvVarField .Name}},
 			"{{.Name}}": c.{{resolveEnvVarField .Name}},
+			{{- if ne (envVarPlaceholder .Name) "token"}}
 			"token": c.{{resolveEnvVarField .Name}},
+			{{- end}}
 		})
 		{{- else}}
 		return "Bearer " + c.{{resolveEnvVarField .Name}}

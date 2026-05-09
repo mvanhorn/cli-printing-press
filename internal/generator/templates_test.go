@@ -194,3 +194,58 @@ func TestAuthHeaderBearerORCaseFallsThroughToAccessToken(t *testing.T) {
 	assert.Less(t, fanOutIdx, accessTokenIdx, "AccessToken fallback should remain reachable after OR fan-out")
 	require.NotContains(t, content[fanOutIdx:accessTokenIdx], `return ""`)
 }
+
+func TestAuthHeaderTokenEnvVarsDoNotEmitDuplicateMapKeys(t *testing.T) {
+	t.Parallel()
+
+	orTokenEnvVars := []spec.AuthEnvVar{
+		{Name: "PRIMARY_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true, Description: "Set this OR SECONDARY_TOKEN."},
+		{Name: "SECONDARY_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: false, Sensitive: true, Description: "Set this OR PRIMARY_TOKEN."},
+	}
+
+	tests := []struct {
+		name string
+		auth spec.AuthConfig
+	}{
+		{
+			name: "bearer-canonical-token",
+			auth: spec.AuthConfig{
+				Type:    "bearer_token",
+				Header:  "Authorization",
+				Format:  "Bearer {token}",
+				EnvVars: []string{"CANONICAL_TOKEN"},
+			},
+		},
+		{
+			name: "bearer-or-token",
+			auth: spec.AuthConfig{
+				Type:        "bearer_token",
+				Header:      "Authorization",
+				Format:      "Bearer {token}",
+				EnvVarSpecs: orTokenEnvVars,
+			},
+		},
+		{
+			name: "api-key-or-token",
+			auth: spec.AuthConfig{
+				Type:        "api_key",
+				Header:      "Authorization",
+				Format:      "Bearer {token}",
+				EnvVarSpecs: orTokenEnvVars,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec(tt.name)
+			apiSpec.Auth = tt.auth
+
+			outputDir := filepath.Join(t.TempDir(), tt.name+"-pp-cli")
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+			runGoCommand(t, outputDir, "test", "./internal/config")
+		})
+	}
+}
