@@ -18,6 +18,8 @@ Three CLIs printed by the press, installable today:
 
 Browse the full catalog of printed CLIs at [printingpress.dev](https://printingpress.dev) or in the [Printing Press Library](https://github.com/mvanhorn/printing-press-library), organized by category, most with full MCP servers.
 
+**Cursor users** wiring up **Linear** (`pp-linear` / `linear-pp-cli`): see [docs/cursor-linear.md](docs/cursor-linear.md) for API key location (`Security & access`), `LINEAR_API_KEY` / `auth set-token`, and links to the full library guide.
+
 ## Install
 
 You need both the **binary** and the **Claude Code skills**. The skills (`/printing-press <app>`) are the primary interface; they drive the binary behind the scenes.
