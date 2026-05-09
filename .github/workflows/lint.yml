@@ -87,7 +87,7 @@ jobs:
           needs_tests=false
           for file in "${changed[@]}"; do
             case "$file" in
-              .github/workflows/lint.yml|go.mod|go.sum|cmd/*|catalog/*|internal/*|scripts/*|skills/*|docs/SKILLS.md|testdata/*)
+              .github/workflows/lint.yml|go.mod|go.sum|cmd/*|catalog/*|internal/*|scripts/*|testdata/*)
                 needs_tests=true
                 break
                 ;;
@@ -181,7 +181,7 @@ jobs:
       - name: Skip Go tests
         if: needs.test-changes.outputs.needs_tests != 'true'
         run: |
-          echo "Skipping Go tests: no Go, module, CI workflow, catalog, script, skill, or testdata changes."
+          echo "Skipping Go tests: no Go, module, CI workflow, catalog, script, or testdata changes."
 
       - name: Check test shards
         if: needs.test-changes.outputs.needs_tests == 'true'
@@ -320,3 +320,45 @@ jobs:
           fi
 
           echo "All generated compile shards passed."
+
+  skill-docs:
+    name: skill-docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check whether skill docs validation is needed
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags --prune origin "${{ github.base_ref }}"
+          mapfile -t changed < <(git diff --name-only --diff-filter=ACMR "origin/${{ github.base_ref }}...HEAD")
+
+          echo "Changed files:"
+          printf '  %s\n' "${changed[@]}"
+
+          needs_skill_docs=false
+          for file in "${changed[@]}"; do
+            case "$file" in
+              skills/*|docs/SKILLS.md|.github/scripts/validate-skill-docs.sh|.github/workflows/lint.yml)
+                needs_skill_docs=true
+                break
+                ;;
+            esac
+          done
+
+          echo "needs_skill_docs=$needs_skill_docs" >> "$GITHUB_OUTPUT"
+
+      - name: Skip skill docs validation
+        if: steps.changes.outputs.needs_skill_docs != 'true'
+        run: |
+          echo "Skipping skill docs validation: no skill docs, skill guidance, or skill-doc workflow files changed."
+
+      - name: Validate skill docs
+        if: steps.changes.outputs.needs_skill_docs == 'true'
+        run: bash .github/scripts/validate-skill-docs.sh

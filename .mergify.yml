@@ -8,6 +8,7 @@ queue_rules:
       - check-success = go-lint
       - check-success = golden
       - check-success = pr-title
+      - check-success = skill-docs
       - check-success = test
     merge_method: squash
     update_method: rebase
@@ -38,4 +39,5 @@ merge_protections:
       - check-success = go-lint
       - check-success = golden
       - check-success = pr-title
+      - check-success = skill-docs
       - check-success = test
