@@ -1,0 +1,36 @@
+name: dominos
+display_name: Domino's
+description: Pizza ordering, store lookup, and order tracking. No public API — reached through reverse-engineered JSON endpoints powering the order.dominos.com web flow.
+category: food-and-dining
+tier: community
+verified_date: "2026-05-09"
+homepage: https://www.dominos.com
+notes: |
+  Domino's does not publish an API. The internal endpoints under
+  `https://order.dominos.com/power/` (store-locator, store-profile, menu,
+  validate-order, price-order, place-order, track) return JSON and are the same
+  surface the web and mobile apps consume. They've been stable enough that
+  community wrappers have tracked them for years.
+
+  Treat this as html/json-sniff implementation backing. The generator should
+  emit a thin HTTP client targeting the `power` endpoints rather than searching
+  for an OpenAPI spec. Auth is anonymous for browse/track flows; placing real
+  orders requires a Domino's account and is out of scope for the printed CLI's
+  default surface.
+
+  Suggested compound queries the printed CLI should make easy:
+    - "nearest open delivery store to <address> with current wait time"
+    - "full menu + active coupons for store <id>, cheapest large pepperoni"
+    - "track order <phone or order key> until delivered"
+wrapper_libraries:
+  - name: power-endpoint-client
+    url: https://order.dominos.com/power/
+    language: go
+    integration_mode: html-scrape
+    notes: |
+      Synthetic wrapper entry — there is no Go library to import. Reimplement
+      the `power/*` JSON endpoints (store-locator, store-profile, menu,
+      validate-order, price-order, track) as a thin Go HTTP client. Use the
+      long-running JS reference at
+      https://github.com/RIAEvangelist/node-dominos-pizza-api for endpoint
+      shapes and payload schemas — do not ship it as a runtime dependency.
