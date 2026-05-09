@@ -23,6 +23,7 @@ import (
 type Config struct {
 	BaseURL        string `{{configTag .Config.Format}}:"base_url"`
 	AuthHeaderVal  string `{{configTag .Config.Format}}:"auth_header"`
+	Headers        map[string]string `{{configTag .Config.Format}}:"headers,omitempty"`
 	AuthSource     string `{{configTag .Config.Format}}:"-"`
 {{- if .HasAuthCommand}}
 	AccessToken    string `{{configTag .Config.Format}}:"access_token"`

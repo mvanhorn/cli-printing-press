@@ -189,6 +189,8 @@ Verifies configuration and connectivity to the API.
 
 Config file: ``
 
+Static request headers can be configured under `headers`; per-command header overrides take precedence.
+
 ## Troubleshooting
 **Not found errors (exit code 3)**
 - Check the resource ID is correct
