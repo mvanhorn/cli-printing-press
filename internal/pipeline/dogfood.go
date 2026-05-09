@@ -836,12 +836,14 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 		result.GeneratedFmt = "Bot "
 	case strings.Contains(combinedSource, `"Bearer "`):
 		result.GeneratedFmt = "Bearer "
+	case strings.Contains(combinedSource, `"Basic "`):
+		result.GeneratedFmt = "Basic "
 	default:
 		result.GeneratedFmt = "unknown"
 	}
 
 	if expectedPrefix == "" {
-		result.Detail = "spec not provided or no bot/bearer scheme detected"
+		result.Detail = "spec not provided or no bot/bearer/basic scheme detected"
 		return result
 	}
 
