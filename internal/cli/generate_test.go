@@ -635,6 +635,43 @@ resources:
 	assert.Contains(t, err.Error(), "not a shippable printed CLI runtime")
 }
 
+func TestMergeSpecsPreservesPerSpecBaseURLPrefixes(t *testing.T) {
+	t.Parallel()
+
+	rootSpec := &spec.APISpec{
+		Name:    "core",
+		Version: "0.1.0",
+		BaseURL: "https://tenant.example.com",
+		Resources: map[string]spec.Resource{
+			"projects": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/projects"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	wikiSpec := &spec.APISpec{
+		Name:    "wiki",
+		Version: "0.1.0",
+		BaseURL: "https://tenant.example.com/wiki/api/v2",
+		Resources: map[string]spec.Resource{
+			"pages": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/pages"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{rootSpec, wikiSpec}, "combo")
+
+	assert.Equal(t, "https://tenant.example.com", merged.BaseURL)
+	assert.Empty(t, merged.Resources["projects"].BaseURL)
+	assert.Equal(t, "https://tenant.example.com/wiki/api/v2", merged.Resources["pages"].BaseURL)
+}
+
 func TestMergeSpecsPrefersReplayableBrowserTransportOverUnshippablePageContext(t *testing.T) {
 	t.Parallel()
 

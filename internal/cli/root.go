@@ -718,7 +718,7 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 			if _, exists := merged.Resources[key]; exists {
 				key = s.Name + "-" + resourceName
 			}
-			merged.Resources[key] = resource
+			merged.Resources[key] = resourceWithMergedSpecBaseURL(resource, s.BaseURL, merged.BaseURL)
 		}
 
 		for typeName, typeDef := range s.Types {
@@ -735,6 +735,22 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 	}
 
 	return merged
+}
+
+func resourceWithMergedSpecBaseURL(resource spec.Resource, sourceBaseURL, mergedBaseURL string) spec.Resource {
+	sourceBaseURL = strings.TrimRight(strings.TrimSpace(sourceBaseURL), "/")
+	mergedBaseURL = strings.TrimRight(strings.TrimSpace(mergedBaseURL), "/")
+	if sourceBaseURL != "" && sourceBaseURL != mergedBaseURL && strings.TrimSpace(resource.BaseURL) == "" {
+		resource.BaseURL = sourceBaseURL
+	}
+	if len(resource.SubResources) > 0 {
+		subResources := make(map[string]spec.Resource, len(resource.SubResources))
+		for name, sub := range resource.SubResources {
+			subResources[name] = resourceWithMergedSpecBaseURL(sub, sourceBaseURL, mergedBaseURL)
+		}
+		resource.SubResources = subResources
+	}
+	return resource
 }
 
 func strongerHTTPTransport(current, candidate string) string {
