@@ -143,3 +143,53 @@ func TestBodyMap_IdentName(t *testing.T) {
 		t.Errorf("expected wire key to use Name (not IdentName), got: %s", got)
 	}
 }
+
+// TestBodyMap_WireName verifies that when a Param declares WireName the
+// generated body key uses WireName (the Salesforce SObject field name) not
+// the snake_case CLI flag Name. Go variable name still derives from Name.
+// This is Patch 3: salesforce-wire-names.
+func TestBodyMap_WireName(t *testing.T) {
+	t.Parallel()
+	// developer_name flag → DeveloperName SObject key
+	got := bodyMap([]spec.Param{{Name: "developer_name", WireName: "DeveloperName", Type: "string"}}, "\t")
+	if !strings.Contains(got, "bodyDeveloperName") {
+		t.Errorf("expected Go var to camelCase Name, got: %s", got)
+	}
+	if !strings.Contains(got, `body["DeveloperName"]`) {
+		t.Errorf("expected wire key DeveloperName, got: %s", got)
+	}
+	if strings.Contains(got, `body["developer_name"]`) {
+		t.Errorf("must NOT use snake_case key when WireName set, got: %s", got)
+	}
+}
+
+// TestBodyMap_WireName_FallsBackToName verifies no regression: params without
+// WireName still use Name as the body key.
+func TestBodyMap_WireName_FallsBackToName(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{Name: "description", Type: "string"}}, "\t")
+	if !strings.Contains(got, `body["description"]`) {
+		t.Errorf("expected body key to be Name when no WireName, got: %s", got)
+	}
+}
+
+// TestBodyMap_InlineAtRoot verifies that a Param with InlineAtRoot:true and
+// Type:"object" generates code that merges parsed fields directly into body
+// (not wrapped under body["name"] = parsed). This is Patch 4:
+// salesforce-fields-inline — Salesforce SObject PATCH expects fields at root.
+func TestBodyMap_InlineAtRoot(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{Name: "fields", Type: "object", InlineAtRoot: true}}, "\t")
+	// Must parse JSON into a typed map for iteration
+	if !strings.Contains(got, "parsedFields") {
+		t.Errorf("expected parsedFields variable, got: %s", got)
+	}
+	// Must merge each key from parsedFields into body, not assign whole blob
+	if !strings.Contains(got, "body[k] = v") {
+		t.Errorf("expected inline merge body[k]=v, got: %s", got)
+	}
+	// Must NOT assign body["fields"] = parsedFields (that wraps, breaks Salesforce)
+	if strings.Contains(got, `body["fields"]`) {
+		t.Errorf("must NOT wrap under body[\"fields\"] when InlineAtRoot=true, got: %s", got)
+	}
+}

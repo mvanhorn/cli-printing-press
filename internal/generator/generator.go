@@ -3114,6 +3114,25 @@ func bodyMap(body []spec.Param, indent string) string {
 		ident := toCamel(id)
 		flag := publicFlagName(p)
 		isComplex := p.Type == "object" || p.Type == "array"
+		// InlineAtRoot: object param whose parsed fields are merged directly
+		// into the request body (no wrapping key). Salesforce SObject PATCH.
+		if p.InlineAtRoot && p.Type == "object" {
+			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\tvar parsed%s map[string]any\n", indent, ident)
+			fmt.Fprintf(&b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
+			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
+			fmt.Fprintf(&b, "%s\t}\n", indent)
+			fmt.Fprintf(&b, "%s\tfor k, v := range parsed%s {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\t\tbody[k] = v\n", indent)
+			fmt.Fprintf(&b, "%s\t}\n", indent)
+			fmt.Fprintf(&b, "%s}\n", indent)
+			continue
+		}
+		// wireKey is the JSON body key: WireName when declared, else Name.
+		wireKey := p.Name
+		if p.WireName != "" {
+			wireKey = p.WireName
+		}
 		if isComplex || isJSONStringParam(p) {
 			// object/array: store the parsed value (so the API receives
 			// real JSON). jsonStringParam: validate then store the raw
@@ -3127,12 +3146,12 @@ func bodyMap(body []spec.Param, indent string) string {
 			fmt.Fprintf(&b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
 			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
 			fmt.Fprintf(&b, "%s\t}\n", indent)
-			fmt.Fprintf(&b, "%s\tbody[%q] = %s\n", indent, p.Name, rhs)
+			fmt.Fprintf(&b, "%s\tbody[%q] = %s\n", indent, wireKey, rhs)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
 		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
-		fmt.Fprintf(&b, "%s\tbody[%q] = body%s\n", indent, p.Name, ident)
+		fmt.Fprintf(&b, "%s\tbody[%q] = body%s\n", indent, wireKey, ident)
 		fmt.Fprintf(&b, "%s}\n", indent)
 	}
 	return b.String()
