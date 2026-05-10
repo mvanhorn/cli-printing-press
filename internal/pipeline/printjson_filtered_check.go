@@ -34,14 +34,3 @@ func checkPrintJSONFiltered(cliDir string) PrintJSONFilteredCheckResult {
 	}
 	return result
 }
-
-// truncateSnippet caps s at maxRunes runes (UTF-8 safe — splitting
-// mid-rune would corrupt the dogfood.json output) and appends an
-// ellipsis when truncation occurred.
-func truncateSnippet(s string, maxRunes int) string {
-	r := []rune(s)
-	if len(r) <= maxRunes {
-		return s
-	}
-	return string(r[:maxRunes]) + "…"
-}
