@@ -3161,7 +3161,7 @@ func multipartBodyMaps(body []spec.Param, indent string) string {
 		id := paramIdent(p)
 		ident := toCamel(id)
 		flag := publicFlagName(p)
-		if isComplexMultipartField(p) || isJSONStringParam(p) {
+		if isComplexBodyField(p) || isJSONStringParam(p) {
 			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
 			fmt.Fprintf(&b, "%s\tif !json.Valid([]byte(body%s)) {\n", indent, ident)
 			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: invalid JSON\")\n", indent, flag)
@@ -3237,7 +3237,7 @@ func formBodyMaps(body []spec.Param, indent string) string {
 		id := paramIdent(p)
 		ident := toCamel(id)
 		flag := publicFlagName(p)
-		if isComplexMultipartField(p) || isJSONStringParam(p) {
+		if isComplexBodyField(p) || isJSONStringParam(p) {
 			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
 			fmt.Fprintf(&b, "%s\tif !json.Valid([]byte(body%s)) {\n", indent, ident)
 			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: invalid JSON\")\n", indent, flag)
@@ -3263,7 +3263,7 @@ func isBinaryParam(p spec.Param) bool {
 	return strings.EqualFold(strings.TrimSpace(p.Format), "binary")
 }
 
-func isComplexMultipartField(p spec.Param) bool {
+func isComplexBodyField(p spec.Param) bool {
 	return p.Type == "object" || p.Type == "array"
 }
 
