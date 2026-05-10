@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
@@ -163,6 +164,56 @@ resources:
 	assert.Contains(t, err.Error(), "refusing to preserve symlinked internal/cli file")
 }
 
+func TestGenerateCmdForceRefusesSymlinkedInternalSiblingPackage(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "symlinksiblingapp")
+	require.NoError(t, os.WriteFile(specPath, []byte(`name: symlinksiblingapp
+description: Symlink sibling app API
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: none
+config:
+  format: toml
+  path: ~/.config/symlinksiblingapp-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+
+	runGenerate := func() error {
+		cmd := newGenerateCmd()
+		cmd.SetArgs([]string{
+			"--spec", specPath,
+			"--output", outputDir,
+			"--validate=false",
+			"--force",
+		})
+		return cmd.Execute()
+	}
+
+	require.NoError(t, runGenerate())
+
+	externalSibling := filepath.Join(dir, "external-source")
+	require.NoError(t, os.MkdirAll(externalSibling, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(externalSibling, "client.go"), []byte("package source\n"), 0o644))
+	if err := os.Symlink(externalSibling, filepath.Join(outputDir, "internal", "source")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := runGenerate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing to preserve symlinked internal sibling package")
+}
+
 func TestGenerateCmdForceRefusesSymlinkedInternalAncestor(t *testing.T) {
 	t.Parallel()
 
@@ -212,6 +263,23 @@ resources:
 	err := runGenerate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "refusing to preserve hand-authored files through symlinked internal")
+}
+
+func TestMovePreservedDirFallsBackWhenRenameCrossesDevices(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "staged")
+	dst := filepath.Join(dir, "restored")
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "nested"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "nested", "client.go"), []byte("package nested\n"), 0o644))
+
+	err := movePreservedDir(src, dst, func(_, _ string) error {
+		return &os.LinkError{Op: "rename", Old: src, New: dst, Err: syscall.EXDEV}
+	})
+	require.NoError(t, err)
+	assert.NoDirExists(t, src)
+	assert.FileExists(t, filepath.Join(dst, "nested", "client.go"))
 }
 
 func TestGenerateCmdConsumesTrafficAnalysis(t *testing.T) {

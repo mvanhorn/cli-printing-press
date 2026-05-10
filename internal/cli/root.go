@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
@@ -895,11 +897,11 @@ func preserveHandAuthoredInternalSiblingDirs(absOut string) ([]preservedDir, err
 	var preserved []preservedDir
 	var stagingRoot string
 	for _, entry := range entries {
-		if !entry.IsDir() || generatorOwnsInternalDir(internalDir, entry.Name()) {
-			continue
-		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return nil, fmt.Errorf("refusing to preserve symlinked internal sibling package: %s", filepath.Join(internalDir, entry.Name()))
+		}
+		if !entry.IsDir() || generatorOwnsInternalDir(internalDir, entry.Name()) {
+			continue
 		}
 		if stagingRoot == "" {
 			stagingRoot, err = os.MkdirTemp("", "printing-press-preserved-internal-*")
@@ -970,7 +972,7 @@ func restorePreservedDirs(absOut string, dirs []preservedDir) error {
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return fmt.Errorf("creating preserved sibling parent: %w", err)
 		}
-		if err := os.Rename(dir.staged, dst); err != nil {
+		if err := movePreservedDir(dir.staged, dst, os.Rename); err != nil {
 			return fmt.Errorf("restoring preserved sibling package %s: %w", dst, err)
 		}
 	}
@@ -981,6 +983,19 @@ func cleanupPreservedDirs(dirs []preservedDir) {
 	for _, dir := range dirs {
 		_ = os.RemoveAll(filepath.Dir(dir.staged))
 	}
+}
+
+func movePreservedDir(src, dst string, rename func(string, string) error) error {
+	if err := rename(src, dst); err != nil {
+		if !errors.Is(err, syscall.EXDEV) {
+			return err
+		}
+		if err := copyPreservedDir(src, dst); err != nil {
+			return err
+		}
+		return os.RemoveAll(src)
+	}
+	return nil
 }
 
 func copyPreservedDir(src, dst string) error {
