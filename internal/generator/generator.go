@@ -3158,9 +3158,8 @@ func multipartBodyMaps(body []spec.Param, indent string) string {
 		flag := publicFlagName(p)
 		if isComplexMultipartField(p) || isJSONStringParam(p) {
 			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
-			fmt.Fprintf(&b, "%s\tvar parsed%s any\n", indent, ident)
-			fmt.Fprintf(&b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
-			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
+			fmt.Fprintf(&b, "%s\tif !json.Valid([]byte(body%s)) {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: invalid JSON\")\n", indent, flag)
 			fmt.Fprintf(&b, "%s\t}\n", indent)
 			fmt.Fprintf(&b, "%s\tfields[%q] = body%s\n", indent, p.Name, ident)
 			fmt.Fprintf(&b, "%s}\n", indent)

@@ -527,22 +527,22 @@ func encodeMultipartBody(body multipartRequestBody) ([]byte, string, error) {
 		file, err := os.Open(filePath)
 		if err != nil {
 			_ = writer.Close()
-			return nil, "", fmt.Errorf("opening multipart file %q: %w", fieldName, err)
+			return nil, "", fmt.Errorf("opening multipart file field %q (%q): %w", fieldName, filePath, err)
 		}
 		part, err := writer.CreateFormFile(fieldName, filepath.Base(filePath))
 		if err != nil {
 			_ = file.Close()
 			_ = writer.Close()
-			return nil, "", fmt.Errorf("creating multipart file field %q: %w", fieldName, err)
+			return nil, "", fmt.Errorf("creating multipart file field %q (%q): %w", fieldName, filePath, err)
 		}
 		if _, err := io.Copy(part, file); err != nil {
 			_ = file.Close()
 			_ = writer.Close()
-			return nil, "", fmt.Errorf("copying multipart file %q: %w", fieldName, err)
+			return nil, "", fmt.Errorf("copying multipart file field %q (%q): %w", fieldName, filePath, err)
 		}
 		if err := file.Close(); err != nil {
 			_ = writer.Close()
-			return nil, "", fmt.Errorf("closing multipart file %q: %w", fieldName, err)
+			return nil, "", fmt.Errorf("closing multipart file field %q (%q): %w", fieldName, filePath, err)
 		}
 	}
 	if err := writer.Close(); err != nil {
