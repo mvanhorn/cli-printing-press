@@ -233,30 +233,36 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 	// with '#'). The Render Public API spec has 314 cross-referenced schemas;
 	// kin-openapi's DefaultRefNameResolver-driven recursion runs > 10 minutes
 	// on it. Lazy ref resolution still works for in-document refs during access.
+	//
+	// Format-agnostic scan: matches both JSON (`"$ref": "..."`) and YAML
+	// (`$ref: '...'` or unquoted `$ref: ./schemas/foo.yaml`). A `$ref` whose
+	// value's first non-quote character is anything but '#' is external, and
+	// we must call InternalizeRefs to resolve it.
 	hasExternalRef := false
 	for off := 0; off < len(data); {
-		idx := bytes.Index(data[off:], []byte("\"$ref\""))
+		idx := bytes.Index(data[off:], []byte("$ref"))
 		if idx < 0 {
 			break
 		}
-		off += idx + len("\"$ref\"")
-		colon := bytes.IndexByte(data[off:], ':')
-		if colon < 0 {
+		off += idx + len("$ref")
+		// Skip optional closing quote (JSON `"$ref"`) and whitespace before the colon.
+		for off < len(data) && (data[off] == '"' || data[off] == '\'' || data[off] == ' ' || data[off] == '\t') {
+			off++
+		}
+		if off >= len(data) || data[off] != ':' {
+			continue
+		}
+		off++
+		for off < len(data) && (data[off] == ' ' || data[off] == '\t') {
+			off++
+		}
+		if off < len(data) && (data[off] == '"' || data[off] == '\'') {
+			off++
+		}
+		if off >= len(data) {
 			break
 		}
-		off += colon + 1
-		q1 := bytes.IndexByte(data[off:], '"')
-		if q1 < 0 {
-			break
-		}
-		off += q1 + 1
-		q2 := bytes.IndexByte(data[off:], '"')
-		if q2 < 0 {
-			break
-		}
-		val := data[off : off+q2]
-		off += q2 + 1
-		if len(val) > 0 && val[0] != '#' {
+		if data[off] != '#' {
 			hasExternalRef = true
 			break
 		}

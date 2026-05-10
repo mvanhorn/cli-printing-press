@@ -32,7 +32,7 @@ Catalog entries may declare `auth_key_url:` — an HTTPS page where the user can
 Precedence:
 - Catalog `auth_key_url` overrides any URL from the spec.
 - Otherwise, an OpenAPI spec's [`x-auth-key-url`](SPEC-EXTENSIONS.md#x-auth-key-url) is used.
-- Otherwise, the parser infers a URL from the security scheme description, `info.description` (with auth cues), `externalDocs.url`, and `info.contact.url`, in that order.
+- Otherwise, the parser infers a URL from the selected security scheme's `description`, then from `info.description` when the surrounding text mentions credential cues. `externalDocs.url` and `info.contact.url` are intentionally **not** fallbacks — those typically point at the docs landing page or company homepage, not the keys UI. When `KeyURL` is empty, the printed CLI surfaces those URLs under a separate `See API docs:` line instead. See [`SPEC-EXTENSIONS.md`](SPEC-EXTENSIONS.md#x-auth-key-url) for details.
 
 Set `auth_key_url:` when the inference would land on a generic homepage and you know the specific token-acquisition page. The validator only checks that the URL starts with `https://`; it does not probe reachability.
 
