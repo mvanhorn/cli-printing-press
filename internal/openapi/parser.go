@@ -636,12 +636,14 @@ func allDigits(s string) bool {
 //  2. URL embedded in info.description, but only when the surrounding text
 //     mentions auth/credential cues (so we don't pick a URL describing an
 //     unrelated feature)
-//  3. externalDocs.url, when HTTPS
-//  4. info.contact.url, when HTTPS
 //
-// Returns "" when no plausible URL is found. The result is surfaced by the
-// printed CLI's auth prompts as "Get a key at: <URL>", so a wrong URL here is
-// worse than no URL — every step is intentionally conservative.
+// Returns "" when no plausible URL is found. The printed CLI surfaces the
+// result as "Get a key at: <URL>", so a wrong URL here is worse than no URL.
+// We deliberately do NOT fall back to externalDocs.url or info.contact.url —
+// those almost always point at the API's docs landing page or the company
+// homepage, neither of which is where users actually create a token. When this
+// returns "", the printed CLI falls back to a separate "See API docs: <URL>"
+// line driven by WebsiteURL, which is honest framing for those URLs.
 func inferAuthKeyURL(doc *openapi3.T, schemeName string) string {
 	if doc == nil {
 		return ""
@@ -657,16 +659,6 @@ func inferAuthKeyURL(doc *openapi3.T, schemeName string) string {
 	}
 	if doc.Info != nil {
 		if u := firstAuthRelatedURL(doc.Info.Description); u != "" {
-			return u
-		}
-	}
-	if doc.ExternalDocs != nil {
-		if u := normalizeHTTPSURL(doc.ExternalDocs.URL); u != "" {
-			return u
-		}
-	}
-	if doc.Info != nil && doc.Info.Contact != nil {
-		if u := normalizeHTTPSURL(doc.Info.Contact.URL); u != "" {
 			return u
 		}
 	}
@@ -709,18 +701,6 @@ func firstAuthRelatedURL(s string) string {
 		return ""
 	}
 	return firstHTTPSURL(s)
-}
-
-// normalizeHTTPSURL trims s and returns it only if it parses as an HTTPS URL.
-func normalizeHTTPSURL(s string) string {
-	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(s, "https://") {
-		return ""
-	}
-	if _, err := url.Parse(s); err != nil {
-		return ""
-	}
-	return s
 }
 
 func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]any) {

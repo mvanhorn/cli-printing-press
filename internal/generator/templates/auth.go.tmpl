@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-{{- if .Auth.KeyURL}}
+{{- if or .Auth.KeyURL .WebsiteURL}}
 	"{{modulePath}}/internal/cliutil"
 {{- end}}
 	"{{modulePath}}/internal/config"
@@ -52,6 +52,8 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			w := cmd.OutOrStdout()
 {{- if .Auth.KeyURL}}
 			fmt.Fprintln(w, "Register an app and copy your credentials at: {{.Auth.KeyURL}}")
+{{- else if .WebsiteURL}}
+			fmt.Fprintln(w, "See API docs for OAuth app registration: {{.WebsiteURL}}")
 {{- else}}
 			fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
 {{- end}}
@@ -64,12 +66,13 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			if !launch {
 				return nil
 			}
-{{- if .Auth.KeyURL}}
+{{- if or .Auth.KeyURL .WebsiteURL}}
+			launchURL := {{if .Auth.KeyURL}}"{{.Auth.KeyURL}}"{{else}}"{{.WebsiteURL}}"{{end}}
 			if cliutil.IsVerifyEnv() {
-				fmt.Fprintln(w, "would launch: {{.Auth.KeyURL}}")
+				fmt.Fprintf(w, "would launch: %s\n", launchURL)
 				return nil
 			}
-			openBrowser("{{.Auth.KeyURL}}")
+			openBrowser(launchURL)
 {{- else}}
 			fmt.Fprintln(cmd.ErrOrStderr(), "no setup URL configured; cannot launch")
 {{- end}}

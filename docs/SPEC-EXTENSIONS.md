@@ -381,8 +381,13 @@ through the following sources in order and uses the first plausible HTTPS URL:
 2. `info.description`, but only when the surrounding text mentions
    credential-related cues (`token`, `api key`, `credential`, `register`,
    `sign up`, etc.) so an unrelated URL doesn't get picked.
-3. `externalDocs.url`.
-4. `info.contact.url`.
+
+`externalDocs.url` and `info.contact.url` are intentionally **not** fallbacks
+for `KeyURL`. Those almost always point at the API's docs landing page or the
+company homepage, neither of which is where users actually create a token.
+When `KeyURL` ends up empty, the printed CLI uses `WebsiteURL` (already
+populated from `externalDocs.url`, `info.contact.url`, and `x-website`) under
+a separate `See API docs: <URL>` line — honest framing for those URLs.
 
 Catalog YAML's `auth_key_url:` (see [`CATALOG.md`](CATALOG.md)) overrides the
 inference. The result drives the printed CLI's `Get a key at: <URL>` output in

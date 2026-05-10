@@ -2222,7 +2222,7 @@ paths:
 			expected: "https://example.com/account/api-keys",
 		},
 		{
-			name: "fallback to externalDocs.url when scheme has no description",
+			name: "no inference when only externalDocs.url is set (docs URL is not a credentials page)",
 			yaml: `openapi: "3.0.3"
 info:
   title: Figma API
@@ -2243,10 +2243,10 @@ paths:
       responses:
         "200": { description: OK }
 `,
-			expected: "https://developers.figma.com/docs/rest-api/",
+			expected: "",
 		},
 		{
-			name: "fallback to info.contact.url when externalDocs missing",
+			name: "no inference when only info.contact.url is set (homepage is not a credentials page)",
 			yaml: `openapi: "3.0.3"
 info:
   title: Example
@@ -2267,7 +2267,7 @@ paths:
       responses:
         "200": { description: OK }
 `,
-			expected: "https://example.com/developers",
+			expected: "",
 		},
 		{
 			name: "info.description URL only used when auth-related cues present",
@@ -2315,7 +2315,7 @@ paths:
       responses:
         "200": { description: OK }
 `,
-			expected: "https://example.com/developers",
+			expected: "",
 		},
 		{
 			name: "no inference when auth.type is none",

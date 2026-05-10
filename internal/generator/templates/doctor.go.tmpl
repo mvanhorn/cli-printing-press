@@ -201,6 +201,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- if .Auth.KeyURL}}
 					report["auth_key_url"] = "{{.Auth.KeyURL}}"
+{{- else if .WebsiteURL}}
+					report["auth_docs_url"] = "{{.WebsiteURL}}"
 {{- end}}
 {{- if .Auth.Instructions}}
 					report["auth_instructions"] = {{printf "%q" .Auth.Instructions}}
@@ -519,6 +521,10 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- if .Auth.KeyURL}}
 			if keyURL, ok := report["auth_key_url"]; ok {
 				fmt.Fprintf(w, "  Get a key at: %v\n", keyURL)
+			}
+{{- else if .WebsiteURL}}
+			if docsURL, ok := report["auth_docs_url"]; ok {
+				fmt.Fprintf(w, "  See API docs: %v\n", docsURL)
 			}
 {{- end}}
 {{- if .Auth.Instructions}}

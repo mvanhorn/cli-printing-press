@@ -5,7 +5,7 @@ package cli
 
 import (
 	"fmt"
-{{- if .Auth.KeyURL}}
+{{- if or .Auth.KeyURL .WebsiteURL}}
 	"os/exec"
 	"runtime"
 {{- end}}
@@ -13,7 +13,7 @@ import (
 	"os"
 {{- end}}
 
-{{- if .Auth.KeyURL}}
+{{- if or .Auth.KeyURL .WebsiteURL}}
 	"{{modulePath}}/internal/cliutil"
 {{- end}}
 	"{{modulePath}}/internal/config"
@@ -47,6 +47,8 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			w := cmd.OutOrStdout()
 {{- if .Auth.KeyURL}}
 			fmt.Fprintln(w, "Get a key at: {{.Auth.KeyURL}}")
+{{- else if .WebsiteURL}}
+			fmt.Fprintln(w, "See API docs: {{.WebsiteURL}}")
 {{- else}}
 			fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
 {{- end}}
@@ -73,13 +75,14 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 			if !launch {
 				return nil
 			}
-{{- if .Auth.KeyURL}}
+{{- if or .Auth.KeyURL .WebsiteURL}}
+			launchURL := {{if .Auth.KeyURL}}"{{.Auth.KeyURL}}"{{else}}"{{.WebsiteURL}}"{{end}}
 			if cliutil.IsVerifyEnv() {
-				fmt.Fprintln(w, "would launch: {{.Auth.KeyURL}}")
+				fmt.Fprintf(w, "would launch: %s\n", launchURL)
 				return nil
 			}
-			if err := openSetupURL("{{.Auth.KeyURL}}"); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "could not open browser automatically: %v\nopen this URL manually: {{.Auth.KeyURL}}\n", err)
+			if err := openSetupURL(launchURL); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "could not open browser automatically: %v\nopen this URL manually: %s\n", err, launchURL)
 			}
 {{- else}}
 			fmt.Fprintln(cmd.ErrOrStderr(), "no setup URL configured; cannot launch")
@@ -91,7 +94,7 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 	return cmd
 }
 
-{{- if .Auth.KeyURL}}
+{{- if or .Auth.KeyURL .WebsiteURL}}
 
 // openSetupURL opens url in the OS default browser. Per the side-effect rule,
 // the caller short-circuits with cliutil.IsVerifyEnv() before this is reached.

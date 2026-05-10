@@ -310,6 +310,8 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- end}}
 {{- if .Auth.KeyURL}}
 			"\n      Get a key at: {{.Auth.KeyURL}}"+
+{{- else if .WebsiteURL}}
+			"\n      See API docs: {{.WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
 			"\n      {{.Auth.Instructions}}"+
@@ -327,6 +329,8 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- end}}
 {{- if .Auth.KeyURL}}
 			"\n      Get a key at: {{.Auth.KeyURL}}"+
+{{- else if .WebsiteURL}}
+			"\n      See API docs: {{.WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
 			"\n      {{.Auth.Instructions}}"+
@@ -341,6 +345,8 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- end}}
 {{- if .Auth.KeyURL}}
 			"\n      Get a key at: {{.Auth.KeyURL}}"+
+{{- else if .WebsiteURL}}
+			"\n      See API docs: {{.WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
 			"\n      {{.Auth.Instructions}}"+
@@ -355,6 +361,8 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- end}}
 {{- if .Auth.KeyURL}}
 			"\n      Get a key at: {{.Auth.KeyURL}}"+
+{{- else if .WebsiteURL}}
+			"\n      See API docs: {{.WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
 			"\n      {{.Auth.Instructions}}"+
@@ -369,6 +377,8 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- end}}
 {{- if .Auth.KeyURL}}
 			"\n      Get a key at: {{.Auth.KeyURL}}"+
+{{- else if .WebsiteURL}}
+			"\n      See API docs: {{.WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
 			"\n      {{.Auth.Instructions}}"+
@@ -385,6 +395,8 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- end}}
 {{- if .Auth.KeyURL}}
 			"\n      Get a key at: {{.Auth.KeyURL}}"+
+{{- else if .WebsiteURL}}
+			"\n      See API docs: {{.WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
 			"\n      {{.Auth.Instructions}}"+
@@ -403,6 +415,8 @@ func classifyAPIError(err error, flags *rootFlags) error {
 {{- end}}
 {{- if .Auth.KeyURL}}
 			"\n      Get a key at: {{.Auth.KeyURL}}"+
+{{- else if .WebsiteURL}}
+			"\n      See API docs: {{.WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
 			"\n      {{.Auth.Instructions}}"+
