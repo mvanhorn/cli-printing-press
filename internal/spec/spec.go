@@ -916,21 +916,22 @@ func resourceHasBaseURLOverride(resource Resource) bool {
 }
 
 type Endpoint struct {
-	Method          string            `yaml:"method" json:"method"`
-	Path            string            `yaml:"path" json:"path"`
-	BaseURL         string            `yaml:"base_url,omitempty" json:"base_url,omitempty"`
-	Description     string            `yaml:"description" json:"description"`
-	Params          []Param           `yaml:"params" json:"params"`
-	Body            []Param           `yaml:"body" json:"body"`
-	Response        ResponseDef       `yaml:"response" json:"response"`
-	ResponseFormat  string            `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
-	HTMLExtract     *HTMLExtract      `yaml:"html_extract,omitempty" json:"html_extract,omitempty"`       // extraction options when response_format is html
-	Pagination      *Pagination       `yaml:"pagination" json:"pagination"`
-	ResponsePath    string            `yaml:"response_path,omitempty" json:"response_path,omitempty"`       // path to extract data array from response (e.g., "data", "results.items")
-	Meta            map[string]string `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
-	HeaderOverrides []RequiredHeader  `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
-	NoAuth          bool              `yaml:"no_auth,omitempty" json:"no_auth,omitempty"`                   // true when the endpoint does not require authentication
-	Tier            string            `yaml:"tier,omitempty" json:"tier,omitempty"`
+	Method             string            `yaml:"method" json:"method"`
+	Path               string            `yaml:"path" json:"path"`
+	BaseURL            string            `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+	Description        string            `yaml:"description" json:"description"`
+	Params             []Param           `yaml:"params" json:"params"`
+	Body               []Param           `yaml:"body" json:"body"`
+	RequestContentType string            `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
+	Response           ResponseDef       `yaml:"response" json:"response"`
+	ResponseFormat     string            `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
+	HTMLExtract        *HTMLExtract      `yaml:"html_extract,omitempty" json:"html_extract,omitempty"`       // extraction options when response_format is html
+	Pagination         *Pagination       `yaml:"pagination" json:"pagination"`
+	ResponsePath       string            `yaml:"response_path,omitempty" json:"response_path,omitempty"`       // path to extract data array from response (e.g., "data", "results.items")
+	Meta               map[string]string `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
+	HeaderOverrides    []RequiredHeader  `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
+	NoAuth             bool              `yaml:"no_auth,omitempty" json:"no_auth,omitempty"`                   // true when the endpoint does not require authentication
+	Tier               string            `yaml:"tier,omitempty" json:"tier,omitempty"`
 	// IDField is the resolved primary-key field name for items returned by this
 	// endpoint, populated either by a path-item-level `x-resource-id` extension
 	// or, for OpenAPI specs, by walking the response schema (id → name → first
