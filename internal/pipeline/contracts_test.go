@@ -96,6 +96,20 @@ func TestPrintingPressSkillUsesRunRootStateFile(t *testing.T) {
 	assert.Contains(t, skill, `"working_dir": "$CLI_WORK_DIR"`)
 }
 
+func TestPrintingPressSkillPreflightChecksGoToolchain(t *testing.T) {
+	skillPath := filepath.Join("..", "..", "skills", "printing-press", "SKILL.md")
+	full := readContractFile(t, skillPath)
+	block := extractContractBlock(t, full)
+
+	// The Go-toolchain presence check fires after the binary detection block
+	// exits cleanly (binary found or PATH-augmented). It catches binary-present
+	// + Go-absent and fails fast instead of crashing 5+ minutes later in the
+	// post-generation `go mod tidy` quality gate.
+	assert.Contains(t, block, `if ! command -v go >/dev/null 2>&1; then`)
+	assert.Contains(t, block, `[setup-error] Go toolchain not found.`)
+	assert.Contains(t, block, `https://go.dev/dl/`)
+}
+
 func TestPrintingPressSkillUsesRunstateForBuilds(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 

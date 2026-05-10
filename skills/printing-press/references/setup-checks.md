@@ -4,13 +4,13 @@ Post-contract checks the skill must run after executing the bash setup contract 
 
 Apply these in order. Each section is conditional — do nothing if its trigger isn't present.
 
-## 1. Refusal: missing binary
+## 1. Refusal: missing prerequisite
 
-If the setup contract output contains a line starting with `[setup-error]`, the printing-press binary is not installed and the contract has already exited non-zero.
+If the setup contract output contains a line starting with `[setup-error]`, a required prerequisite is missing (the printing-press binary or the Go toolchain) and the contract has already exited non-zero.
 
-**Stop the skill immediately.** Do not proceed to research, generation, or any other work. Surface the message the contract printed (it includes the exact `go install` command) verbatim to the user.
+**Stop the skill immediately.** Do not proceed to research, generation, or any other work. Surface the message the contract printed (it includes the exact install command or download URL) verbatim to the user.
 
-The user must install the binary in their terminal before re-running. Do not offer to auto-install — the README's two-step install is the source of truth, and silent auto-install hides failure modes (network, wrong GOPATH) inside an opaque skill invocation.
+The user must install the missing prerequisite in their terminal before re-running. Do not offer to auto-install — the README's two-step install is the source of truth for the binary, and silent auto-install hides failure modes (network, wrong GOPATH, no Go toolchain) inside an opaque skill invocation.
 
 ## 2. Interactive repo upgrade prompt
 
