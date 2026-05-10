@@ -397,6 +397,9 @@ func syncResource(c interface {
 		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
 
 		if len(items) == 0 {
+			if isEmptyPageResponse(data) {
+				break
+			}
 			// Single object response - try to store as-is
 			if err := upsertSingleObject(db, resource, data); err != nil {
 				if !humanFriendly {
@@ -589,8 +592,7 @@ func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessa
 	}
 
 	// Try common item keys first (fast path)
-	itemKeys := []string{"data", "results", "items", "records", "nodes", "entries"}
-	for _, key := range itemKeys {
+	for _, key := range pageItemKeys {
 		if raw, ok := envelope[key]; ok {
 			if err := json.Unmarshal(raw, &items); err == nil && len(items) > 0 {
 				nextCursor, hasMore := extractPaginationFromEnvelope(envelope, cursorParam)
@@ -620,6 +622,40 @@ func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessa
 	}
 
 	return nil, "", false
+}
+
+func isEmptyPageResponse(data json.RawMessage) bool {
+	var direct []json.RawMessage
+	if err := json.Unmarshal(data, &direct); err == nil && !isJSONNull(data) {
+		return len(direct) == 0
+	}
+
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return false
+	}
+
+	for _, key := range pageItemKeys {
+		if raw, ok := envelope[key]; ok {
+			var items []json.RawMessage
+			if err := json.Unmarshal(raw, &items); err == nil && !isJSONNull(raw) {
+				return len(items) == 0
+			}
+		}
+	}
+
+	arrayCount := 0
+	for _, raw := range envelope {
+		var candidate []json.RawMessage
+		if err := json.Unmarshal(raw, &candidate); err == nil && len(candidate) == 0 && !isJSONNull(raw) {
+			arrayCount++
+		}
+	}
+	return arrayCount == 1
+}
+
+func isJSONNull(raw json.RawMessage) bool {
+	return strings.TrimSpace(string(raw)) == "null"
 }
 
 // extractPaginationFromEnvelope extracts cursor and has_more from a response envelope.
@@ -1168,6 +1204,8 @@ var resourceIDFieldOverrides = map[string]string{
 // NOT receive a templated IDField. API-specific names belong in spec
 // annotations (x-resource-id), not this list.
 var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}
+
+var pageItemKeys = []string{"data", "results", "items", "records", "nodes", "entries"}
 
 // criticalResources is the template-time projection of per-resource Critical
 // (set by the profiler from the spec's path-item x-critical extension). It
