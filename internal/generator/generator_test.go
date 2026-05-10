@@ -3195,8 +3195,10 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, `"resource":`)
 	assert.Contains(t, content, `"status":   statusCode`)
 	assert.Contains(t, content, `"success":  statusCode >= 200 && statusCode < 300`)
-	// Envelope fires on both --json and auto-JSON (piped/non-TTY)
-	assert.Contains(t, content, `flags.asJSON || !isTerminal(cmd.OutOrStdout())`)
+	// Envelope fires on --json and on piped output, but explicit format flags
+	// (--csv, --quiet, --plain) opt out of the auto-JSON path so piped agents
+	// that asked for a non-JSON format actually get it.
+	assert.Contains(t, content, `flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain)`)
 
 	// --quiet is respected before envelope output
 	assert.Contains(t, content, "if flags.quiet {")
@@ -3215,6 +3217,41 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, `envelope["dry_run"] = true`)
 	assert.Contains(t, content, `envelope["status"] = 0`)
 	assert.Contains(t, content, `envelope["success"] = false`)
+}
+
+// TestPipedJsonGateRespectsExplicitFormatFlags pins the contract: the
+// piped-output auto-JSON gate must defer to explicit --csv / --quiet /
+// --plain flags so piped consumers that asked for a non-JSON format
+// actually get it. Before the fix, the gate read
+// `flags.asJSON || !isTerminal(...)` and emitted JSON whenever stdout was
+// piped, which is the common case for agents and shell pipelines, so
+// `--csv | head` produced JSON instead of CSV. The fix adds the
+// `&& !flags.csv && !flags.quiet && !flags.plain` clause so an explicit
+// format choice opts out of the auto-JSON path.
+//
+// Read the templates directly to pin every gate site at once: the
+// command_endpoint and command_promoted templates emit into hundreds of
+// generated files (pet_add.go, pet_list.go, every promoted command), and
+// a per-file assertion would miss any new gate copies that drift in.
+func TestPipedJsonGateRespectsExplicitFormatFlags(t *testing.T) {
+	t.Parallel()
+
+	expected := `flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain)`
+	stale := `flags.asJSON || !isTerminal(cmd.OutOrStdout())`
+
+	for _, path := range []string{
+		filepath.Join("templates", "command_endpoint.go.tmpl"),
+		filepath.Join("templates", "command_promoted.go.tmpl"),
+	} {
+		data, err := os.ReadFile(path)
+		require.NoError(t, err, "template must exist: %s", path)
+		body := string(data)
+
+		assert.Contains(t, body, expected,
+			"%s must gate auto-JSON behind format-flag escape hatch so piped --csv/--quiet/--plain reach the standard pipeline", path)
+		assert.NotContains(t, body, stale,
+			"%s still contains the bare piped-pipe gate; every site must include the format-flag escape hatch", path)
+	}
 }
 
 func TestGeneratedOutput_GetCommandsLackMutationEnvelope(t *testing.T) {
