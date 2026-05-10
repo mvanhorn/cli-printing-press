@@ -101,10 +101,10 @@ func TestPrintingPressSkillPreflightChecksGoToolchain(t *testing.T) {
 	full := readContractFile(t, skillPath)
 	block := extractContractBlock(t, full)
 
-	// Unconditional Go-toolchain presence check fires regardless of whether the
-	// printing-press binary is found, so binary-present + Go-absent fails fast
-	// instead of crashing 5+ minutes later in the post-generation `go mod tidy`
-	// quality gate.
+	// The Go-toolchain presence check fires after the binary detection block
+	// exits cleanly (binary found or PATH-augmented). It catches binary-present
+	// + Go-absent and fails fast instead of crashing 5+ minutes later in the
+	// post-generation `go mod tidy` quality gate.
 	assert.Contains(t, block, `if ! command -v go >/dev/null 2>&1; then`)
 	assert.Contains(t, block, `[setup-error] Go toolchain not found.`)
 	assert.Contains(t, block, `https://go.dev/dl/`)
