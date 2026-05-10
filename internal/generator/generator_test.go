@@ -5848,6 +5848,93 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGeneratedSyncTreatsEmptyWrappedPageAsSuccessfulZeroRecords(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/empty-records":
+			_, _ = w.Write([]byte(`{"results":[]}`))
+		case "/records":
+			_, _ = w.Write([]byte(`{"results":[{"id":"rec_1","name":"One"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	apiSpec := &spec.APISpec{
+		Name:    "emptywrapsync",
+		Version: "0.1.0",
+		BaseURL: server.URL,
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/emptywrapsync-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"empty_records": {
+				Description: "Manage empty records",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/empty-records",
+						Description: "List empty records",
+						Response:    spec.ResponseDef{Type: "array", Item: "Record"},
+						Pagination:  &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+			"records": {
+				Description: "Manage records",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/records",
+						Description: "List records",
+						Response:    spec.ResponseDef{Type: "array", Item: "Record"},
+						Pagination:  &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Record": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "name", Type: "string"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	binaryPath := filepath.Join(outputDir, "emptywrapsync-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/emptywrapsync-pp-cli")
+
+	emptyDB := filepath.Join(t.TempDir(), "empty.db")
+	cmd := exec.Command(binaryPath, "--json", "sync", "--resources", "empty_records", "--db", emptyDB, "--max-pages", "1")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	output := string(out)
+	assert.NotContains(t, output, `"event":"sync_error"`)
+	assert.Contains(t, output, `{"event":"sync_complete","resource":"empty_records","total":0`)
+	assert.Contains(t, output, `{"event":"sync_summary","total_records":0,"resources":1,"success":1,"warned":0,"errored":0`)
+
+	recordsDB := filepath.Join(t.TempDir(), "records.db")
+	cmd = exec.Command(binaryPath, "--json", "sync", "--resources", "records", "--db", recordsDB, "--max-pages", "1")
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	output = string(out)
+	assert.NotContains(t, output, `"event":"sync_error"`)
+	assert.Contains(t, output, `{"event":"sync_complete","resource":"records","total":1`)
+	assert.Contains(t, output, `{"event":"sync_summary","total_records":1,"resources":1,"success":1,"warned":0,"errored":0`)
+}
+
 // TestGeneratedSyncExitPolicy pins the generated sync command's exit-code
 // contract: (a) a --strict flag for callers that want any per-resource
 // failure to exit non-zero, (b) a `criticalResources` map literal at the
