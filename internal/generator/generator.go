@@ -2820,10 +2820,7 @@ func pruneUnusedClientImport(src []byte) []byte {
 	// Body is everything after the closing `)` of the import block.
 	body := src[importEnd:]
 	// A `client.X` reference is the only way the import is used inside the
-	// rendered body. The literal qualifier shows up exactly as `client.`
-	// in current branches; if a future branch needs the import for a
-	// different reason it can use `client.` too or the helper can be
-	// extended.
+	// rendered body.
 	if bytes.Contains(body, []byte("client.")) {
 		return src
 	}
