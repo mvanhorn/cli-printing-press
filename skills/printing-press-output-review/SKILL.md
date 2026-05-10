@@ -39,7 +39,21 @@ Bugs that rule-based checks miss, typically surfaced by 5 minutes of hands-on te
 ### Step 1: Gather sample data
 
 ```bash
-printing-press scorecard --dir "$CLI_DIR" --live-check --json > /tmp/output-review-livecheck.json 2>&1 || true
+# Locate research.json. Adjacent to the binary covers the post-promote
+# layout (standalone polish, shipcheck against the library copy). The
+# grandparent fallback covers mid-pipeline invocations where $CLI_DIR is
+# $PRESS_RUNSTATE/runs/<id>/working/<cli> and research.json lives at
+# $PRESS_RUNSTATE/runs/<id>/research.json. Without the fallback, scorecard
+# reports `unable: true` mid-pipeline and we SKIP the most informative review.
+RESEARCH_FLAG=""
+if [ ! -f "$CLI_DIR/research.json" ]; then
+  _grandparent="$(dirname "$(dirname "$CLI_DIR")")"
+  if [ -f "$_grandparent/research.json" ]; then
+    RESEARCH_FLAG="--research-dir $_grandparent"
+  fi
+fi
+
+printing-press scorecard --dir "$CLI_DIR" $RESEARCH_FLAG --live-check --json > /tmp/output-review-livecheck.json 2>&1 || true
 ```
 
 If the scorecard call fails or `/tmp/output-review-livecheck.json` is empty, return the SKIP result (Step 3) without dispatching the reviewer.
