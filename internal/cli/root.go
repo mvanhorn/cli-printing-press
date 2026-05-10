@@ -931,16 +931,20 @@ func retidyAfterMerge(dir string) {
 }
 
 // forceRegenSpecHashMatches reports whether the snapshot's recorded spec
-// checksum matches a sha256 over the current spec bytes. Returns true
-// when:
+// checksum matches a sha256 over the current spec bytes. Returns true when:
 //   - the snapshot manifest is missing (defensive — old binary or partial
 //     state from a CLI generated before SpecChecksum was populated),
-//   - the snapshot manifest has an empty SpecChecksum (older format),
+//   - the snapshot manifest has an empty SpecChecksum (plan-generated, old
+//     format, or docs source without a stored hash),
 //   - or the snapshot checksum equals the current spec hash.
 //
-// Returns false only when both sides have a checksum and they differ, OR
-// when the manifest exists but cannot be decoded (corrupt JSON — treat as
-// unknown lineage and fall back to NOVEL-only preservation).
+// Returns false when:
+//   - the manifest exists but cannot be decoded (corrupt JSON — treat as
+//     unknown lineage and fall back to NOVEL-only preservation),
+//   - the snapshot has a checksum but the caller has no current bytes to
+//     compare (e.g., a --plan --force run over a spec-generated tree;
+//     lineage differs by construction so NOVEL-only is the safe fallback),
+//   - or both sides have a checksum and they differ.
 //
 // The hash matches climanifest.go's storage convention (sha256 over the
 // raw input spec bytes, "sha256:" + hex), so a same-spec regen produces a
@@ -955,8 +959,11 @@ func forceRegenSpecHashMatches(snapshotDir string, currentSpecBytes []byte) bool
 		fmt.Fprintf(os.Stderr, "warning: could not decode snapshot manifest at %s: %v; falling back to novel-only preservation\n", manifestPath, err)
 		return false
 	}
-	if manifest.SpecChecksum == "" || len(currentSpecBytes) == 0 {
+	if manifest.SpecChecksum == "" {
 		return true
+	}
+	if len(currentSpecBytes) == 0 {
+		return false
 	}
 	return manifest.SpecChecksum == currentSpecChecksum(currentSpecBytes)
 }
