@@ -1651,7 +1651,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			}
 
 			params := mapParameters(pathItem, op)
-			body := mapRequestBody(op.RequestBody, method, path)
+			body, requestContentType := mapRequestBody(op.RequestBody, method, path)
 
 			// Deduplicate body params that collide with query/path params by flag name
 			if len(body) > 0 && len(params) > 0 {
@@ -1669,12 +1669,13 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			}
 
 			endpoint := spec.Endpoint{
-				Method:      strings.ToUpper(method),
-				Path:        path,
-				BaseURL:     operationServerBaseURL(out.BaseURL, pathItem, op),
-				Description: description,
-				Params:      params,
-				Body:        body,
+				Method:             strings.ToUpper(method),
+				Path:               path,
+				BaseURL:            operationServerBaseURL(out.BaseURL, pathItem, op),
+				Description:        description,
+				Params:             params,
+				Body:               body,
+				RequestContentType: requestContentType,
 			}
 			endpoint.Tier = readTierExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 			if endpoint.Tier == "" {
@@ -2376,29 +2377,26 @@ func mergeParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []*ope
 	return merged
 }
 
-func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string) []spec.Param {
+func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string) ([]spec.Param, string) {
 	requestBody := requestBodyValue(requestBodyRef)
 	if requestBody == nil || requestBody.Content == nil {
-		return nil
+		return nil, ""
 	}
 
-	media := requestBody.Content.Get("application/json")
-	if media == nil {
-		media = firstJSONMediaType(requestBody.Content)
-	}
+	requestContentType, media := requestBodyMediaType(requestBody.Content)
 	if media == nil || media.Schema == nil || media.Schema.Value == nil {
-		return nil
+		return nil, ""
 	}
 
 	properties := map[string]*openapi3.SchemaRef{}
 	required := map[string]struct{}{}
 	if collectAllOfProperties(media.Schema, properties, required, map[*openapi3.Schema]struct{}{}) {
 		warnf("skipping request body for %s %q: contains oneOf/anyOf", strings.ToUpper(method), path)
-		return nil
+		return nil, ""
 	}
 
 	if len(properties) == 0 {
-		return nil
+		return nil, ""
 	}
 
 	names := make([]string, 0, len(properties))
@@ -2449,7 +2447,36 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		body = append(body, param)
 	}
 
-	return body
+	return body, requestContentType
+}
+
+func requestBodyMediaType(content openapi3.Content) (string, *openapi3.MediaType) {
+	if content == nil {
+		return "", nil
+	}
+	if media := content.Get("application/json"); media != nil {
+		return "application/json", media
+	}
+
+	contentTypes := sortedContentTypes(content)
+	for _, contentType := range contentTypes {
+		if strings.Contains(strings.ToLower(contentType), "json") {
+			return contentType, content[contentType]
+		}
+	}
+	for _, contentType := range contentTypes {
+		if strings.EqualFold(contentType, "multipart/form-data") {
+			return contentType, content[contentType]
+		}
+	}
+	for _, contentType := range contentTypes {
+		media := content[contentType]
+		if media != nil && media.Schema != nil {
+			return contentType, media
+		}
+	}
+
+	return "", nil
 }
 
 func bodyParamSchema(schema *openapi3.Schema) *openapi3.Schema {
@@ -3262,31 +3289,13 @@ func refComponentName(ref string) string {
 	return ref[i+1:]
 }
 
-func firstJSONMediaType(content openapi3.Content) *openapi3.MediaType {
-	if content == nil {
-		return nil
-	}
-
+func sortedContentTypes(content openapi3.Content) []string {
 	contentTypes := make([]string, 0, len(content))
 	for contentType := range content {
 		contentTypes = append(contentTypes, contentType)
 	}
 	sort.Strings(contentTypes)
-
-	for _, contentType := range contentTypes {
-		if strings.Contains(strings.ToLower(contentType), "json") {
-			return content[contentType]
-		}
-	}
-
-	for _, contentType := range contentTypes {
-		media := content[contentType]
-		if media != nil && media.Schema != nil {
-			return media
-		}
-	}
-
-	return nil
+	return contentTypes
 }
 
 func resourceAndSubFromPath(path, basePath string, commonPrefix []string) (string, string) {

@@ -4363,6 +4363,55 @@ paths:
 	assert.Contains(t, err.Error(), "transport")
 }
 
+func TestParseMultipartRequestBodyPreservesContentType(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Upload API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /assets:
+    post:
+      operationId: uploadAsset
+      summary: Upload asset
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [assetData, filename]
+              properties:
+                assetData:
+                  type: string
+                  format: binary
+                  description: Asset file
+                filename:
+                  type: string
+                  description: File name
+      responses:
+        "201":
+          description: created
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/assets")
+	assert.Equal(t, "multipart/form-data", endpoint.RequestContentType)
+	require.Len(t, endpoint.Body, 2)
+	byName := map[string]spec.Param{}
+	for _, param := range endpoint.Body {
+		byName[param.Name] = param
+	}
+	assert.Equal(t, "binary", byName["assetData"].Format)
+	assert.True(t, byName["assetData"].Required)
+	assert.True(t, byName["filename"].Required)
+}
+
 func findParsedEndpointByPath(t *testing.T, parsed *spec.APISpec, method, path string) spec.Endpoint {
 	t.Helper()
 	for _, resource := range parsed.Resources {

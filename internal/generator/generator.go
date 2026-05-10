@@ -305,14 +305,17 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return " (one of: " + strings.Join(values, ", ") + ")"
 		},
-		"jsonStringParam":    isJSONStringParam,
-		"jsonEnumSuggestion": jsonEnumSuggestion,
-		"bodyMap":            bodyMap,
-		"publicFlagName":     publicFlagName,
-		"publicFlagAliases":  publicFlagAliases,
-		"flagChangedExpr":    flagChangedExpr,
-		"mcpInputName":       mcpInputName,
-		"mcpParamBindings":   mcpParamBindings,
+		"jsonStringParam":       isJSONStringParam,
+		"jsonEnumSuggestion":    jsonEnumSuggestion,
+		"bodyMap":               bodyMap,
+		"multipartBodyMaps":     multipartBodyMaps,
+		"endpointUsesMultipart": endpointUsesMultipart,
+		"hasMultipartRequest":   hasMultipartRequest,
+		"publicFlagName":        publicFlagName,
+		"publicFlagAliases":     publicFlagAliases,
+		"flagChangedExpr":       flagChangedExpr,
+		"mcpInputName":          mcpInputName,
+		"mcpParamBindings":      mcpParamBindings,
 		// endpointNeedsClientLimit reports whether a list endpoint needs
 		// client-side truncation. True when the endpoint has a `limit`-named
 		// param AND no Pagination block — the spec author asked for a
@@ -642,6 +645,7 @@ type authTemplateData struct {
 type clientTemplateData struct {
 	*spec.APISpec
 	HasGraphQLPersistedQueries bool
+	HasMultipartRequest        bool
 	// Populated by Generator.shouldEmitAuth() so this template gate stays in
 	// sync with auth.go emission, root.go registration, and scoreAuth.
 	HasAuthCommand bool
@@ -1430,6 +1434,7 @@ func (g *Generator) renderSingleFiles() error {
 			data = &clientTemplateData{
 				APISpec:                    g.Spec,
 				HasGraphQLPersistedQueries: g.hasTrafficAnalysisHint("graphql_persisted_query"),
+				HasMultipartRequest:        hasMultipartRequest(g.Spec),
 				HasAuthCommand:             g.shouldEmitAuth(),
 			}
 		case "config.go.tmpl":
@@ -3013,9 +3018,11 @@ type jsonFlagSuggestion struct {
 }
 
 type mcpParamBinding struct {
-	PublicName string
-	WireName   string
-	Location   string
+	PublicName         string
+	WireName           string
+	Location           string
+	Format             string
+	RequestContentType string
 }
 
 func flagChangedExpr(p spec.Param) string {
@@ -3032,25 +3039,39 @@ func flagChangedExpr(p spec.Param) string {
 
 func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBinding {
 	bindings := make([]mcpParamBinding, 0, len(endpoint.Params)+len(endpoint.Body))
+	requestContentType := ""
+	if endpointUsesMultipart(endpoint) {
+		requestContentType = endpoint.RequestContentType
+	}
 	for _, p := range endpoint.Params {
 		loc := "query"
 		if strings.Contains(pathTemplate, "{"+p.Name+"}") {
 			loc = "path"
 		}
 		bindings = append(bindings, mcpParamBinding{
-			PublicName: p.PublicInputName(),
-			WireName:   p.Name,
-			Location:   loc,
+			PublicName:         p.PublicInputName(),
+			WireName:           p.Name,
+			Location:           loc,
+			RequestContentType: requestContentType,
 		})
 	}
 	for _, p := range endpoint.Body {
 		bindings = append(bindings, mcpParamBinding{
-			PublicName: p.PublicInputName(),
-			WireName:   p.Name,
-			Location:   "body",
+			PublicName:         p.PublicInputName(),
+			WireName:           p.Name,
+			Location:           "body",
+			Format:             multipartBindingFormat(endpoint, p),
+			RequestContentType: requestContentType,
 		})
 	}
 	return bindings
+}
+
+func multipartBindingFormat(endpoint spec.Endpoint, p spec.Param) string {
+	if !endpointUsesMultipart(endpoint) {
+		return ""
+	}
+	return p.Format
 }
 
 func mcpInputName(p spec.Param) string {
@@ -3127,6 +3148,73 @@ func bodyMap(body []spec.Param, indent string) string {
 		fmt.Fprintf(&b, "%s}\n", indent)
 	}
 	return b.String()
+}
+
+func multipartBodyMaps(body []spec.Param, indent string) string {
+	var b strings.Builder
+	for _, p := range body {
+		id := paramIdent(p)
+		ident := toCamel(id)
+		flag := publicFlagName(p)
+		if isComplexMultipartField(p) || isJSONStringParam(p) {
+			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\tif !json.Valid([]byte(body%s)) {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: invalid JSON\")\n", indent, flag)
+			fmt.Fprintf(&b, "%s\t}\n", indent)
+			fmt.Fprintf(&b, "%s\tfields[%q] = body%s\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s}\n", indent)
+			continue
+		}
+		if isBinaryParam(p) {
+			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\tfileFields[%q] = body%s\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s}\n", indent)
+			continue
+		}
+		if p.Type == "string" {
+			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\tfields[%q] = body%s\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s}\n", indent)
+			continue
+		}
+		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
+		fmt.Fprintf(&b, "%s\tfields[%q] = fmt.Sprintf(\"%%v\", body%s)\n", indent, p.Name, ident)
+		fmt.Fprintf(&b, "%s}\n", indent)
+	}
+	return b.String()
+}
+
+func endpointUsesMultipart(endpoint spec.Endpoint) bool {
+	return strings.EqualFold(strings.TrimSpace(endpoint.RequestContentType), "multipart/form-data")
+}
+
+func hasMultipartRequest(apiSpec *spec.APISpec) bool {
+	if apiSpec == nil {
+		return false
+	}
+	var walk func(resources map[string]spec.Resource) bool
+	walk = func(resources map[string]spec.Resource) bool {
+		for _, resource := range resources {
+			for _, endpoint := range resource.Endpoints {
+				if endpointUsesMultipart(endpoint) {
+					return true
+				}
+			}
+			if walk(resource.SubResources) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(apiSpec.Resources)
+}
+
+func isBinaryParam(p spec.Param) bool {
+	return strings.EqualFold(strings.TrimSpace(p.Format), "binary")
+}
+
+func isComplexMultipartField(p spec.Param) bool {
+	return p.Type == "object" || p.Type == "array"
 }
 
 func isJSONStringParam(p spec.Param) bool {
