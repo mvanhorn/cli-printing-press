@@ -590,7 +590,7 @@ func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessa
 
 func isEmptyPageResponse(data json.RawMessage) bool {
 	var direct []json.RawMessage
-	if err := json.Unmarshal(data, &direct); err == nil {
+	if err := json.Unmarshal(data, &direct); err == nil && !isJSONNull(data) {
 		return len(direct) == 0
 	}
 
@@ -602,7 +602,7 @@ func isEmptyPageResponse(data json.RawMessage) bool {
 	for _, key := range pageItemKeys {
 		if raw, ok := envelope[key]; ok {
 			var items []json.RawMessage
-			if err := json.Unmarshal(raw, &items); err == nil {
+			if err := json.Unmarshal(raw, &items); err == nil && !isJSONNull(raw) {
 				return len(items) == 0
 			}
 		}
@@ -611,11 +611,15 @@ func isEmptyPageResponse(data json.RawMessage) bool {
 	arrayCount := 0
 	for _, raw := range envelope {
 		var candidate []json.RawMessage
-		if err := json.Unmarshal(raw, &candidate); err == nil && len(candidate) == 0 && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &candidate); err == nil && len(candidate) == 0 && !isJSONNull(raw) {
 			arrayCount++
 		}
 	}
 	return arrayCount == 1
+}
+
+func isJSONNull(raw json.RawMessage) bool {
+	return strings.TrimSpace(string(raw)) == "null"
 }
 
 // extractPaginationFromEnvelope extracts cursor and has_more from a response envelope.

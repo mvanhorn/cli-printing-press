@@ -5928,6 +5928,9 @@ func TestIsEmptyPageResponseRejectsNullSingletonFields(t *testing.T) {
 	}{
 		{"known wrapper empty array", ` + "`" + `{"results":[]}` + "`" + `, true},
 		{"unknown wrapper empty array", ` + "`" + `{"empty":[]}` + "`" + `, true},
+		{"top-level null is not an empty page", ` + "`" + `null` + "`" + `, false},
+		{"known wrapper null is not an empty page", ` + "`" + `{"results":null}` + "`" + `, false},
+		{"known data wrapper null is not an empty page", ` + "`" + `{"data":null}` + "`" + `, false},
 		{"single null field is not an empty page", ` + "`" + `{"user":null}` + "`" + `, false},
 		{"singleton object with null field is not an empty page", ` + "`" + `{"id":"rec_1","user":null}` + "`" + `, false},
 	}
