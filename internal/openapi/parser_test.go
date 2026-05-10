@@ -3776,6 +3776,18 @@ func TestParseIDFieldResourcePrefixedHeuristic(t *testing.T) {
 `,
 			wantID: "name",
 		},
+		{
+			// Without the irregulars override, `movies` would singularize
+			// via the `ies → y` rule to `movy`, missing `movie_id`.
+			name: "ie-ending stem keeps singular form (movies → movie)",
+			path: "/movies",
+			schemaYAML: `                  type: object
+                  properties:
+                    movie_id: {type: string}
+                    title: {type: string}
+`,
+			wantID: "movie_id",
+		},
 	}
 
 	for _, tt := range tests {

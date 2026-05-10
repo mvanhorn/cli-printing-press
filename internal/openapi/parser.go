@@ -2865,17 +2865,16 @@ func resourcePrefixedIDField(schema *openapi3.Schema, resourceName string) strin
 	if singular == "" {
 		return ""
 	}
-	suffixes := []string{"_id", "_uuid", "_guid"}
-	for _, suffix := range suffixes {
+	// Sort property names so behavior is deterministic across Go map
+	// iteration order; this only matters when a schema declares multiple
+	// keys that snake-case to the same target, which is unusual.
+	propNames := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		propNames = append(propNames, name)
+	}
+	sort.Strings(propNames)
+	for _, suffix := range []string{"_id", "_uuid", "_guid"} {
 		target := singular + suffix
-		// Sort property names so behavior is deterministic across Go map
-		// iteration order; this only matters when a schema declares multiple
-		// keys that snake-case to the same target, which is unusual.
-		propNames := make([]string, 0, len(schema.Properties))
-		for name := range schema.Properties {
-			propNames = append(propNames, name)
-		}
-		sort.Strings(propNames)
 		for _, propName := range propNames {
 			if toSnakeCase(propName) == target {
 				return propName
@@ -2906,6 +2905,13 @@ func singularizeIdentifier(s string) string {
 		"statuses":   "status",
 		"addresses":  "address",
 		"analyses":   "analysis",
+		// `<stem>+s` plurals on `ie`/`ix`-ending stems that the generic
+		// `ies → y` rule would otherwise mangle (`movies → movy`).
+		"movies":   "movie",
+		"series":   "series",
+		"matrices": "matrix",
+		"indices":  "index",
+		"vertices": "vertex",
 	}
 	if singular, ok := irregulars[last]; ok {
 		return prefix + singular
