@@ -136,3 +136,58 @@ func TestClientLimitGenerationEmitsHelperAndBuilds(t *testing.T) {
 
 	runGoCommand(t, outputDir, "build", "./internal/cli")
 }
+
+// TestClientLimitGenerationWithoutDataLayer covers the dominos-shape spec:
+// a GET endpoint with a non-positional `limit` param and no Pagination
+// block, in a CLI whose profiler computes VisionSet.Store=false.
+// Before the helpers.go.tmpl conditional fix, truncateJSONArray was nested
+// inside the {{- if .HasDataLayer}} block, so the call site was emitted
+// (gated only by endpointNeedsClientLimit) but the helper definition was
+// not — producing `undefined: truncateJSONArray` at compile time.
+//
+// The spec shape here mirrors TestGeneratedHelpers_ConditionalDataLayerFunctions
+// (single small resource, simple auth, no rich data profile) so the profiler
+// keeps Store=false; the only addition is a non-positional limit param to
+// trigger HasClientLimit=true.
+func TestClientLimitGenerationWithoutDataLayer(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "limitnostore",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"LIMITNOSTORE_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/limitnostore-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/items",
+						Description: "List items",
+						Params:      []spec.Param{{Name: "limit", Type: "integer", Default: 5}},
+						Response:    spec.ResponseDef{Type: "array", Item: "Item"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "limitnostore-pp-cli")
+	g := New(apiSpec, outputDir)
+	// Force VisionSet.Store=false so HasDataLayer is false at template
+	// render time. Pre-setting VisionSet to a non-zero value short-circuits
+	// the profiler-driven SelectVisionTemplates call in Generate(), which
+	// would otherwise auto-enable Store for any spec with a list endpoint.
+	g.VisionSet = VisionTemplateSet{Export: true}
+	require.NoError(t, g.Generate())
+	require.False(t, g.VisionSet.Store, "this regression test only covers the no-data-layer path")
+
+	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(helpersSrc), "func truncateJSONArray(",
+		"truncateJSONArray must be emitted whenever HasClientLimit is true, even when HasDataLayer is false")
+
+	runGoCommand(t, outputDir, "build", "./internal/cli")
+}
