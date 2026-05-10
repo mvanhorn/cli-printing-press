@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
@@ -380,7 +382,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: ~/printing-press/library/<name>)")
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
-	cmd.Flags().BoolVar(&force, "force", false, "Recreate the base output directory while preserving hand-authored internal/cli/*.go files")
+	cmd.Flags().BoolVar(&force, "force", false, "Recreate the base output directory while preserving hand-authored internal/cli/*.go files and internal sibling packages")
 	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
 	cmd.Flags().StringVar(&docsURL, "docs", "", "API documentation URL to generate spec from")
 	cmd.Flags().BoolVar(&polish, "polish", false, "Run LLM polish pass on generated CLI (requires claude or codex CLI)")
@@ -761,7 +763,7 @@ func httpTransportPriority(value string) int {
 
 // claimOrForce resolves the output directory based on --force and --output flags.
 //
-//   - force=true:  RemoveAll the target, then create it fresh (claims exact slot), preserving hand-authored internal/cli/*.go files
+//   - force=true:  RemoveAll the target, then create it fresh (claims exact slot), preserving hand-authored internal/cli/*.go files and internal sibling packages
 //   - explicit output (--output set) without force: error if exists and non-empty
 //   - default (no --output, no --force): auto-increment via ClaimOutputDir
 func claimOrForce(absOut string, force bool, explicitOutput bool) (string, error) {
@@ -770,11 +772,19 @@ func claimOrForce(absOut string, force bool, explicitOutput bool) (string, error
 		if err != nil {
 			return "", err
 		}
+		preservedDirs, err := preserveHandAuthoredInternalSiblingDirs(absOut)
+		if err != nil {
+			return "", err
+		}
+		defer cleanupPreservedDirs(preservedDirs)
 		if err := os.RemoveAll(absOut); err != nil {
 			return "", fmt.Errorf("removing existing output dir: %w", err)
 		}
 		if err := os.MkdirAll(absOut, 0o755); err != nil {
 			return "", fmt.Errorf("creating output dir: %w", err)
+		}
+		if err := restorePreservedDirs(absOut, preservedDirs); err != nil {
+			return "", err
 		}
 		if err := restorePreservedFiles(absOut, preserved); err != nil {
 			return "", err
@@ -802,6 +812,23 @@ type preservedFile struct {
 	relPath string
 	data    []byte
 	mode    os.FileMode
+}
+
+type preservedDir struct {
+	relPath string
+	staged  string
+}
+
+var generatorOwnedInternalDirs = map[string]bool{
+	"cache":   true,
+	"cli":     true,
+	"client":  true,
+	"cliutil": true,
+	"config":  true,
+	"mcp":     true,
+	"share":   true,
+	"store":   true,
+	"types":   true,
 }
 
 func preserveHandAuthoredInternalCLIFiles(absOut string) ([]preservedFile, error) {
@@ -857,6 +884,70 @@ func preserveHandAuthoredInternalCLIFiles(absOut string) ([]preservedFile, error
 	return preserved, nil
 }
 
+func preserveHandAuthoredInternalSiblingDirs(absOut string) ([]preservedDir, error) {
+	internalDir := filepath.Join(absOut, "internal")
+	entries, err := os.ReadDir(internalDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading internal for hand-authored sibling packages: %w", err)
+	}
+
+	var preserved []preservedDir
+	var stagingRoot string
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("refusing to preserve symlinked internal sibling package: %s", filepath.Join(internalDir, entry.Name()))
+		}
+		if !entry.IsDir() || generatorOwnsInternalDir(internalDir, entry.Name()) {
+			continue
+		}
+		if stagingRoot == "" {
+			stagingRoot, err = os.MkdirTemp("", "printing-press-preserved-internal-*")
+			if err != nil {
+				return nil, fmt.Errorf("creating preservation staging dir: %w", err)
+			}
+		}
+		src := filepath.Join(internalDir, entry.Name())
+		staged := filepath.Join(stagingRoot, entry.Name())
+		if err := copyPreservedDir(src, staged); err != nil {
+			cleanupPreservedDirs(preserved)
+			_ = os.RemoveAll(stagingRoot)
+			return nil, err
+		}
+		preserved = append(preserved, preservedDir{
+			relPath: filepath.Join("internal", entry.Name()),
+			staged:  staged,
+		})
+	}
+	return preserved, nil
+}
+
+func generatorOwnsInternalDir(internalDir, name string) bool {
+	if name == "cli" {
+		return true
+	}
+	if !generatorOwnedInternalDirs[name] {
+		return false
+	}
+	return dirContainsGeneratedMarker(filepath.Join(internalDir, name))
+}
+
+func dirContainsGeneratedMarker(dir string) bool {
+	found := false
+	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || found || d.IsDir() || d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if generatedmarker.HasInFile(path) {
+			found = true
+		}
+		return nil
+	})
+	return found
+}
+
 func restorePreservedFiles(absOut string, files []preservedFile) error {
 	for _, file := range files {
 		path := filepath.Join(absOut, file.relPath)
@@ -868,6 +959,78 @@ func restorePreservedFiles(absOut string, files []preservedFile) error {
 		}
 	}
 	return nil
+}
+
+func restorePreservedDirs(absOut string, dirs []preservedDir) error {
+	for _, dir := range dirs {
+		dst := filepath.Join(absOut, dir.relPath)
+		if _, err := os.Stat(dst); err == nil {
+			return fmt.Errorf("refusing to overwrite generated internal sibling package while restoring preserved files: %s", dst)
+		} else if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("checking preserved sibling restore path %s: %w", dst, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return fmt.Errorf("creating preserved sibling parent: %w", err)
+		}
+		if err := movePreservedDir(dir.staged, dst, os.Rename); err != nil {
+			return fmt.Errorf("restoring preserved sibling package %s: %w", dst, err)
+		}
+	}
+	return nil
+}
+
+func cleanupPreservedDirs(dirs []preservedDir) {
+	for _, dir := range dirs {
+		_ = os.RemoveAll(filepath.Dir(dir.staged))
+	}
+}
+
+func movePreservedDir(src, dst string, rename func(string, string) error) error {
+	if err := rename(src, dst); err != nil {
+		if !errors.Is(err, syscall.EXDEV) {
+			return err
+		}
+		if err := copyPreservedDir(src, dst); err != nil {
+			return err
+		}
+		return os.RemoveAll(src)
+	}
+	return nil
+}
+
+func copyPreservedDir(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to preserve symlink inside internal sibling package: %s", path)
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return fmt.Errorf("relativizing preserved sibling path %s: %w", path, err)
+		}
+		target := filepath.Join(dst, rel)
+		info, err := d.Info()
+		if err != nil {
+			return fmt.Errorf("statting preserved sibling path %s: %w", path, err)
+		}
+		switch {
+		case d.IsDir():
+			return os.MkdirAll(target, info.Mode().Perm())
+		case info.Mode().IsRegular():
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("reading preserved sibling file %s: %w", path, err)
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return fmt.Errorf("creating preserved sibling file parent: %w", err)
+			}
+			return os.WriteFile(target, data, info.Mode().Perm())
+		default:
+			return fmt.Errorf("refusing to preserve non-regular internal sibling path: %s", path)
+		}
+	})
 }
 
 func fetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, error) {
