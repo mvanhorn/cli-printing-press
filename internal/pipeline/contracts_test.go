@@ -203,7 +203,7 @@ func TestGenerateHelpMentionsPublishedLibraryDefault(t *testing.T) {
 	root := readContractFile(t, filepath.Join("..", "..", "internal", "cli", "root.go"))
 
 	assert.Contains(t, root, "Output directory (default: ~/printing-press/library/<name>)")
-	assert.Contains(t, root, "Recreate the base output directory while preserving hand-authored internal/cli/*.go files")
+	assert.Contains(t, root, "Recreate the base output directory while preserving hand-edits to generated files via AST-based merge")
 	assert.NotContains(t, root, "~/printing-press/workspaces/<scope>/library")
 }
 
