@@ -24,3 +24,14 @@ Use the wrapper-only carve-out only when the API is genuinely reached through wr
 Catalog entries for browser-facing APIs with rotating public client bearer tokens may declare `bearer_refresh`. When present, both `bearer_refresh.bundle_url` and `bearer_refresh.pattern` are required, the bundle URL must use HTTPS, and the pattern must compile as a Go regexp.
 
 The generator copies this metadata into the printed CLI so `doctor --refresh-bearer` and the agent-accessible `refresh-bearer` command can refresh the user's stored token from the live source bundle.
+
+## Auth key URL
+
+Catalog entries may declare `auth_key_url:` — an HTTPS page where the user can obtain credentials (personal access token, API key, OAuth client, etc.). The generator surfaces it in the printed CLI's auth prompts and `doctor` output as `Get a key at: <URL>`.
+
+Precedence:
+- Catalog `auth_key_url` overrides any URL from the spec.
+- Otherwise, an OpenAPI spec's [`x-auth-key-url`](SPEC-EXTENSIONS.md#x-auth-key-url) is used.
+- Otherwise, the parser infers a URL from the security scheme description, `info.description` (with auth cues), `externalDocs.url`, and `info.contact.url`, in that order.
+
+Set `auth_key_url:` when the inference would land on a generic homepage and you know the specific token-acquisition page. The validator only checks that the URL starts with `https://`; it does not probe reachability.

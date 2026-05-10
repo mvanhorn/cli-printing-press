@@ -8,4 +8,5 @@ openapi_version: "3.0"
 tier: community
 verified_date: "2026-03-24"
 homepage: https://launchdarkly.com
+auth_key_url: https://app.launchdarkly.com/settings/authorization
 notes: "221 paths, API key auth. Flat 'api' resource due to /api/v2/ prefix."

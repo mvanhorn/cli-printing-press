@@ -8,4 +8,5 @@ openapi_version: "3.0"
 tier: official
 verified_date: "2026-03-23"
 homepage: https://www.twilio.com/docs/usage/api
+auth_key_url: https://console.twilio.com/
 notes: None.

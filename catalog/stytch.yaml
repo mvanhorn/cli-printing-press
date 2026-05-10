@@ -8,4 +8,5 @@ openapi_version: "3.0"
 tier: official
 verified_date: "2026-03-23"
 homepage: https://stytch.com/docs
+auth_key_url: https://stytch.com/dashboard/api-keys
 notes: None.

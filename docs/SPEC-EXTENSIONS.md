@@ -374,6 +374,20 @@ Rules:
 - Leading and trailing whitespace is trimmed.
 - The parser does not validate the URL shape.
 
+When the extension is absent and the spec has any auth, the parser falls back
+through the following sources in order and uses the first plausible HTTPS URL:
+
+1. The selected security scheme's `description` (extracted via regex).
+2. `info.description`, but only when the surrounding text mentions
+   credential-related cues (`token`, `api key`, `credential`, `register`,
+   `sign up`, etc.) so an unrelated URL doesn't get picked.
+3. `externalDocs.url`.
+4. `info.contact.url`.
+
+Catalog YAML's `auth_key_url:` (see [`CATALOG.md`](CATALOG.md)) overrides the
+inference. The result drives the printed CLI's `Get a key at: <URL>` output in
+auth prompts and `doctor`.
+
 ### `x-auth-title`
 
 Overrides the title shown for the credential field in install/config surfaces.

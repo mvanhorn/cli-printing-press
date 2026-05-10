@@ -1,6 +1,7 @@
 package openapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -227,7 +228,41 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 		fmt.Fprintf(os.Stderr, "info: spec loaded after stripping broken references\n")
 	}
 
-	doc.InternalizeRefs(context.Background(), nil)
+	// Skip InternalizeRefs when the spec has no external $refs (every $ref starts
+	// with '#'). The Render Public API spec has 314 cross-referenced schemas;
+	// kin-openapi's DefaultRefNameResolver-driven recursion runs > 10 minutes
+	// on it. Lazy ref resolution still works for in-document refs during access.
+	hasExternalRef := false
+	for off := 0; off < len(data); {
+		idx := bytes.Index(data[off:], []byte("\"$ref\""))
+		if idx < 0 {
+			break
+		}
+		off += idx + len("\"$ref\"")
+		colon := bytes.IndexByte(data[off:], ':')
+		if colon < 0 {
+			break
+		}
+		off += colon + 1
+		q1 := bytes.IndexByte(data[off:], '"')
+		if q1 < 0 {
+			break
+		}
+		off += q1 + 1
+		q2 := bytes.IndexByte(data[off:], '"')
+		if q2 < 0 {
+			break
+		}
+		val := data[off : off+q2]
+		off += q2 + 1
+		if len(val) > 0 && val[0] != '#' {
+			hasExternalRef = true
+			break
+		}
+	}
+	if hasExternalRef {
+		doc.InternalizeRefs(context.Background(), nil)
+	}
 
 	name := "api"
 	description := ""
@@ -324,6 +359,9 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 	auth := mapAuthWithDescriptionInference(doc, name, !metadata.explicitEmptySecuritySchemes)
 	if auth.Type != "none" && allOperationsAllowAnonymous(doc) {
 		auth = spec.AuthConfig{Type: "none"}
+	}
+	if auth.Type != "none" && auth.KeyURL == "" {
+		auth.KeyURL = inferAuthKeyURL(doc, auth.Scheme)
 	}
 
 	tierRouting, err := parseTypedExtension[spec.TierRoutingConfig](doc, extensionTierRouting)
@@ -589,6 +627,99 @@ func allDigits(s string) bool {
 		}
 	}
 	return true
+}
+
+// inferAuthKeyURL returns a best-effort HTTPS URL pointing the user at where
+// they can obtain a credential when x-auth-key-url is not set. Precedence:
+//  1. URL embedded in the selected security scheme's description
+//  2. URL embedded in info.description, but only when the surrounding text
+//     mentions auth/credential cues (so we don't pick a URL describing an
+//     unrelated feature)
+//  3. externalDocs.url, when HTTPS
+//  4. info.contact.url, when HTTPS
+//
+// Returns "" when no plausible URL is found. The result is surfaced by the
+// printed CLI's auth prompts as "Get a key at: <URL>", so a wrong URL here is
+// worse than no URL — every step is intentionally conservative.
+func inferAuthKeyURL(doc *openapi3.T, schemeName string) string {
+	if doc == nil {
+		return ""
+	}
+	if schemeName != "" && doc.Components != nil {
+		if ref, ok := doc.Components.SecuritySchemes[schemeName]; ok {
+			if scheme := securitySchemeValue(ref); scheme != nil {
+				if u := firstHTTPSURL(scheme.Description); u != "" {
+					return u
+				}
+			}
+		}
+	}
+	if doc.Info != nil {
+		if u := firstAuthRelatedURL(doc.Info.Description); u != "" {
+			return u
+		}
+	}
+	if doc.ExternalDocs != nil {
+		if u := normalizeHTTPSURL(doc.ExternalDocs.URL); u != "" {
+			return u
+		}
+	}
+	if doc.Info != nil && doc.Info.Contact != nil {
+		if u := normalizeHTTPSURL(doc.Info.Contact.URL); u != "" {
+			return u
+		}
+	}
+	return ""
+}
+
+var httpsURLPattern = regexp.MustCompile(`https://[^\s)>\]"',]+`)
+
+// firstHTTPSURL returns the first https:// substring found in s, with trailing
+// sentence punctuation trimmed.
+func firstHTTPSURL(s string) string {
+	if s == "" {
+		return ""
+	}
+	m := httpsURLPattern.FindString(s)
+	return strings.TrimRight(m, ".,;:!?)")
+}
+
+// firstAuthRelatedURL returns the first HTTPS URL in s, but only when s also
+// contains language indicating the URL is about credentials. Avoids picking a
+// URL that happens to appear in a description of an unrelated feature.
+func firstAuthRelatedURL(s string) string {
+	if s == "" {
+		return ""
+	}
+	lower := strings.ToLower(s)
+	cues := []string{
+		"token", "api key", "api_key", "apikey",
+		"credential", "register", "sign up", "signup",
+		"create an app", "create an application", "personal access",
+	}
+	matched := false
+	for _, c := range cues {
+		if strings.Contains(lower, c) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return ""
+	}
+	return firstHTTPSURL(s)
+}
+
+// normalizeHTTPSURL trims s and returns it only if it parses as an HTTPS URL.
+func normalizeHTTPSURL(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "https://") {
+		return ""
+	}
+	if _, err := url.Parse(s); err != nil {
+		return ""
+	}
+	return s
 }
 
 func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]any) {

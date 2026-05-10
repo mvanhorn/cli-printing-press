@@ -8,6 +8,7 @@ openapi_version: "3.0"
 tier: official
 verified_date: "2026-05-06"
 homepage: https://docs.mercury.com/reference
+auth_key_url: https://app.mercury.com/settings/tokens
 owner_name: Cathryn Lavery
 mcp:
   transport: [stdio, http]

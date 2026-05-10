@@ -2160,6 +2160,190 @@ paths:
 	assert.Equal(t, "Optional FlightAware AeroAPI credential for enriched flight data.", parsed.Auth.Description)
 }
 
+func TestOpenAPIAuthKeyURLInference(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		yaml     string
+		expected string
+	}{
+		{
+			name: "explicit x-auth-key-url wins over inference",
+			yaml: `openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+externalDocs:
+  url: https://docs.example.com/rest-api/
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-apikey
+      description: "Visit https://example.com/wrong-page to get a key"
+      x-auth-key-url: https://example.com/keys
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`,
+			expected: "https://example.com/keys",
+		},
+		{
+			name: "url from security scheme description",
+			yaml: `openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+externalDocs:
+  url: https://docs.example.com/rest-api/
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-apikey
+      description: "Generate a token at https://example.com/account/api-keys."
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`,
+			expected: "https://example.com/account/api-keys",
+		},
+		{
+			name: "fallback to externalDocs.url when scheme has no description",
+			yaml: `openapi: "3.0.3"
+info:
+  title: Figma API
+  version: "1.0.0"
+externalDocs:
+  url: https://developers.figma.com/docs/rest-api/
+servers:
+  - url: https://api.figma.com
+components:
+  securitySchemes:
+    PersonalAccessToken:
+      type: apiKey
+      in: header
+      name: X-Figma-Token
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`,
+			expected: "https://developers.figma.com/docs/rest-api/",
+		},
+		{
+			name: "fallback to info.contact.url when externalDocs missing",
+			yaml: `openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+  contact:
+    url: https://example.com/developers
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-apikey
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`,
+			expected: "https://example.com/developers",
+		},
+		{
+			name: "info.description URL only used when auth-related cues present",
+			yaml: `openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+  description: "Generate an API key at https://example.com/account/keys before calling."
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-apikey
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`,
+			expected: "https://example.com/account/keys",
+		},
+		{
+			name: "info.description URL ignored without auth cue",
+			yaml: `openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+  description: "See https://example.com/changelog for release notes."
+  contact:
+    url: https://example.com/developers
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-apikey
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`,
+			expected: "https://example.com/developers",
+		},
+		{
+			name: "no inference when auth.type is none",
+			yaml: `openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+externalDocs:
+  url: https://docs.example.com/rest-api/
+servers:
+  - url: https://api.example.com
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`,
+			expected: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := Parse([]byte(tc.yaml))
+			require.NoError(t, err)
+			assert.Equal(t, tc.expected, parsed.Auth.KeyURL)
+		})
+	}
+}
+
 func TestOpenAPIAuthEnvVarsPopulateRichDefaults(t *testing.T) {
 	t.Parallel()
 

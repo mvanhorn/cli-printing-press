@@ -167,6 +167,13 @@ func TestValidateEntry(t *testing.T) {
 			},
 			wantErr: "bearer_refresh.pattern is not a valid regexp",
 		},
+		{
+			name: "non https auth_key_url",
+			mutate: func(e *Entry) {
+				e.AuthKeyURL = "http://example.com/keys"
+			},
+			wantErr: `auth_key_url must start with "https://"`,
+		},
 	}
 
 	for _, tt := range tests {
