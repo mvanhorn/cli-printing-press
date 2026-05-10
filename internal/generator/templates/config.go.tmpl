@@ -157,13 +157,19 @@ func Load(configPath string) (*Config, error) {
 	// GraphQL path against the matching env var. Populated even when values
 	// are empty so the client's buildURL helper can issue an actionable
 	// "export FOO_BAR=..." error instead of silently sending a request to a
-	// URL with literal "{shop}" in it.
+	// URL with literal "{shop}" in it. Under PRINTING_PRESS_VERIFY=1 (set by
+	// the printing-press verifier in every mock subprocess), an unset
+	// template var falls through to "<name>_placeholder" so dry-run legs
+	// reach Cobra instead of hitting buildURL's actionable error first.
 	if cfg.TemplateVars == nil {
 		cfg.TemplateVars = map[string]string{}
 	}
+	verifyMode := os.Getenv("PRINTING_PRESS_VERIFY") == "1"
 {{- range .EndpointTemplateVars}}
 	if v := os.Getenv("{{envName $.Name}}_{{upper .}}"); v != "" {
 		cfg.TemplateVars["{{.}}"] = v
+	} else if verifyMode {
+		cfg.TemplateVars["{{.}}"] = "{{.}}_placeholder"
 	}
 {{- end}}
 {{- end}}

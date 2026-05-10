@@ -6628,23 +6628,13 @@ func TestGenerateGraphQLEndpointPathRendersTemplatedURL(t *testing.T) {
 		"BaseURL + GraphQLEndpointPath must resolve to the Shopify Admin endpoint after env substitution")
 }
 
-// TestGenerateEndpointTemplateVarsRuntimeSubstitution covers PR-2's contract:
-// when a spec declares EndpointTemplateVars, the generated CLI gets a buildURL
-// helper that resolves {placeholder} markers against env-backed
-// Config.TemplateVars at request time. The test compiles the generated tree
-// and runs an injected behavioral test that exercises every required path —
-// successful substitution, missing env var (actionable error), and the
-// passthrough case where vars is nil. Mirrors the inject-and-go-test pattern
-// used by TestGenerateMetaSyncErrorClassification so we exercise the helper
-// in its real package context.
-func TestGenerateEndpointTemplateVarsRuntimeSubstitution(t *testing.T) {
-	t.Parallel()
-
-	// Variable names follow the {upper Name}_{upper var} convention. For
-	// Shopify, this means the spec's var name is "api_version" (not
-	// "version") because the real-world env var is SHOPIFY_API_VERSION.
-	// The URL placeholder mirrors the var name, so both sides line up.
-	apiSpec := &spec.APISpec{
+// shopifyTemplateVarsTestSpec returns a Shopify-shape APISpec used by
+// EndpointTemplateVars tests. Variable names follow the {upper Name}_{upper
+// var} convention: the spec's var name is "api_version" (not "version")
+// because the real-world env var is SHOPIFY_API_VERSION; the URL placeholder
+// mirrors the var name so both sides line up.
+func shopifyTemplateVarsTestSpec() *spec.APISpec {
+	return &spec.APISpec{
 		Name:                 "shopify",
 		Description:          "Shopify Admin GraphQL (test fixture)",
 		Version:              "2026-04",
@@ -6688,6 +6678,21 @@ func TestGenerateEndpointTemplateVarsRuntimeSubstitution(t *testing.T) {
 			}},
 		},
 	}
+}
+
+// TestGenerateEndpointTemplateVarsRuntimeSubstitution covers PR-2's contract:
+// when a spec declares EndpointTemplateVars, the generated CLI gets a buildURL
+// helper that resolves {placeholder} markers against env-backed
+// Config.TemplateVars at request time. The test compiles the generated tree
+// and runs an injected behavioral test that exercises every required path —
+// successful substitution, missing env var (actionable error), and the
+// passthrough case where vars is nil. Mirrors the inject-and-go-test pattern
+// used by TestGenerateMetaSyncErrorClassification so we exercise the helper
+// in its real package context.
+func TestGenerateEndpointTemplateVarsRuntimeSubstitution(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := shopifyTemplateVarsTestSpec()
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
@@ -6834,6 +6839,107 @@ func TestCacheKeyIncludesTemplateVars(t *testing.T) {
 	testPath := filepath.Join(outputDir, "internal", "client", "url_behavior_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestBuildURL")
+}
+
+// TestGenerateEndpointTemplateVarsVerifyPlaceholderFallback covers the
+// PRINTING_PRESS_VERIFY=1 fallback in config.Load(): when a spec declares
+// EndpointTemplateVars and the runtime env var (e.g. SHOPIFY_SHOP) is unset,
+// verify mode must seed Config.TemplateVars with a "<name>_placeholder" so
+// dry-run / validate-narrative / dogfood legs reach Cobra. Production
+// behavior — the actionable "export X=..." error from buildURL — must stay
+// unchanged when verify mode is off.
+func TestGenerateEndpointTemplateVarsVerifyPlaceholderFallback(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := shopifyTemplateVarsTestSpec()
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	configGoBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	configGo := string(configGoBytes)
+	assert.Contains(t, configGo, `os.Getenv("PRINTING_PRESS_VERIFY") == "1"`,
+		"config Load() must consult PRINTING_PRESS_VERIFY for the template-var fallback")
+	assert.Contains(t, configGo, `cfg.TemplateVars["shop"] = "shop_placeholder"`,
+		"config Load() must seed the {shop} placeholder under verify mode")
+	assert.Contains(t, configGo, `cfg.TemplateVars["api_version"] = "api_version_placeholder"`,
+		"config Load() must seed the {api_version} placeholder under verify mode")
+
+	// Behavioral coverage: the Load() helper must populate TemplateVars only
+	// when verify mode is on, and a real env var must always win over the
+	// placeholder so production runs are unaffected. The injected `go test`
+	// run also serves as the compile check — a template-emitted syntax error
+	// in config.go surfaces as a build failure here.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	behaviorTest := `package config
+
+import (
+	"path/filepath"
+	"testing"
+)
+
+func clearTemplateEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"SHOPIFY_SHOP", "SHOPIFY_API_VERSION", "PRINTING_PRESS_VERIFY"} {
+		t.Setenv(name, "")
+	}
+}
+
+func TestLoadTemplateVarsVerifyPlaceholder(t *testing.T) {
+	clearTemplateEnv(t)
+	t.Setenv("PRINTING_PRESS_VERIFY", "1")
+
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.TemplateVars["shop"]; got != "shop_placeholder" {
+		t.Errorf("TemplateVars[\"shop\"] = %q, want \"shop_placeholder\"", got)
+	}
+	if got := cfg.TemplateVars["api_version"]; got != "api_version_placeholder" {
+		t.Errorf("TemplateVars[\"api_version\"] = %q, want \"api_version_placeholder\"", got)
+	}
+}
+
+func TestLoadTemplateVarsProductionUnchanged(t *testing.T) {
+	clearTemplateEnv(t)
+
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if v, ok := cfg.TemplateVars["shop"]; ok {
+		t.Errorf("TemplateVars[\"shop\"] should be absent without verify mode; got %q", v)
+	}
+	if v, ok := cfg.TemplateVars["api_version"]; ok {
+		t.Errorf("TemplateVars[\"api_version\"] should be absent without verify mode; got %q", v)
+	}
+}
+
+func TestLoadTemplateVarsRealEnvWinsOverPlaceholder(t *testing.T) {
+	clearTemplateEnv(t)
+	t.Setenv("PRINTING_PRESS_VERIFY", "1")
+	t.Setenv("SHOPIFY_SHOP", "real-store.myshopify.com")
+
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.TemplateVars["shop"]; got != "real-store.myshopify.com" {
+		t.Errorf("real env must beat placeholder: TemplateVars[\"shop\"] = %q", got)
+	}
+	if got := cfg.TemplateVars["api_version"]; got != "api_version_placeholder" {
+		t.Errorf("unset companion var should still get placeholder: got %q", got)
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "config", "verify_placeholder_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestLoadTemplateVars")
 }
 
 // TestGenerateNoEndpointTemplateVarsByteCompat guards the byte-compat
