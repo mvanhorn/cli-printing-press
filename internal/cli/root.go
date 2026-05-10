@@ -154,7 +154,7 @@ func newGenerateCmd() *cobra.Command {
 					return err
 				}
 
-				absOut, _, _, err := resolveGenerateOutputDir(outputDir, parsed.Name, force, true)
+				absOut, _, snapshotDir, err := resolveGenerateOutputDir(outputDir, parsed.Name, force, true)
 				if err != nil {
 					return err
 				}
@@ -162,6 +162,12 @@ func newGenerateCmd() *cobra.Command {
 				novelFeatures, polished, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath})
 				if err != nil {
 					return err
+				}
+
+				if snapshotDir != "" {
+					if err := finalizeForceMerge(snapshotDir, absOut, docYAML); err != nil {
+						return err
+					}
 				}
 
 				runID := pipeline.DeriveRunIDFromResearchDir(researchDir)
@@ -221,13 +227,23 @@ func newGenerateCmd() *cobra.Command {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("plan contains no command definitions")}
 				}
 
-				absOut, _, _, err := resolveGenerateOutputDir(outputDir, planSpec.CLIName, force, true)
+				absOut, _, snapshotDir, err := resolveGenerateOutputDir(outputDir, planSpec.CLIName, force, true)
 				if err != nil {
 					return err
 				}
 
 				if err := generator.GenerateFromPlan(planSpec, absOut); err != nil {
 					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating from plan: %w", err)}
+				}
+
+				if snapshotDir != "" {
+					// Plan-driven generation does not write a manifest with
+					// SpecChecksum, so the cross-spec guard naturally lands
+					// on the defensive full-merge path. Pass nil so any
+					// manifest hash that does exist still gates merge mode.
+					if err := finalizeForceMerge(snapshotDir, absOut, nil); err != nil {
+						return err
+					}
 				}
 
 				fmt.Fprintf(os.Stderr, "Generated %s at %s (from plan)\n", naming.CLI(planSpec.CLIName), absOut)
@@ -320,15 +336,8 @@ func newGenerateCmd() *cobra.Command {
 				if len(specRawBytes) > 0 {
 					primarySpec = specRawBytes[0]
 				}
-				gomodMerged, err := mergeForceSnapshot(snapshotDir, absOut, primarySpec)
-				if err != nil {
-					return &ExitError{Code: ExitGenerationError, Err: err}
-				}
-				if gomodMerged && validate {
-					retidyAfterMerge(absOut)
-				}
-				if removeErr := os.RemoveAll(snapshotDir); removeErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: could not remove snapshot dir %s: %v\n", snapshotDir, removeErr)
+				if err := finalizeForceMerge(snapshotDir, absOut, primarySpec); err != nil {
+					return err
 				}
 			}
 
@@ -828,6 +837,31 @@ func claimOrForce(absOut string, force bool, explicitOutput bool) (resolvedAbsOu
 		return "", "", err
 	}
 	return resolved, "", nil
+}
+
+// finalizeForceMerge runs the post-Generate merge for any --force codepath:
+// classifies snapshotDir against freshDir, merges preserved hand-edits back,
+// re-runs `go mod tidy` when go.mod was merged (so go.sum keeps up with
+// preserved requires), and removes the snapshot on success. On merge
+// failure the snapshot is left in place and the error surfaces a recovery
+// command.
+//
+// Wired from the three --force codepaths (--spec, --docs, --plan) so each
+// one preserves hand-edits consistently — discarding snapshotDir after
+// generation would silently lose user work and leave an orphan that blocks
+// future --force runs.
+func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte) error {
+	gomodMerged, err := mergeForceSnapshot(snapshotDir, freshDir, currentSpecBytes)
+	if err != nil {
+		return &ExitError{Code: ExitGenerationError, Err: err}
+	}
+	if gomodMerged {
+		retidyAfterMerge(freshDir)
+	}
+	if removeErr := os.RemoveAll(snapshotDir); removeErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not remove snapshot dir %s: %v\n", snapshotDir, removeErr)
+	}
+	return nil
 }
 
 // mergeForceSnapshot drives the snapshot→fresh merge after Generate() has
