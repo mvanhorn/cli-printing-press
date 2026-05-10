@@ -137,18 +137,11 @@ func TestClientLimitGenerationEmitsHelperAndBuilds(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./internal/cli")
 }
 
-// TestClientLimitGenerationWithoutDataLayer covers the dominos-shape spec:
-// a GET endpoint with a non-positional `limit` param and no Pagination
-// block, in a CLI whose profiler computes VisionSet.Store=false.
-// Before the helpers.go.tmpl conditional fix, truncateJSONArray was nested
-// inside the {{- if .HasDataLayer}} block, so the call site was emitted
-// (gated only by endpointNeedsClientLimit) but the helper definition was
-// not — producing `undefined: truncateJSONArray` at compile time.
-//
-// The spec shape here mirrors TestGeneratedHelpers_ConditionalDataLayerFunctions
-// (single small resource, simple auth, no rich data profile) so the profiler
-// keeps Store=false; the only addition is a non-positional limit param to
-// trigger HasClientLimit=true.
+// TestClientLimitGenerationWithoutDataLayer covers HasClientLimit=true with
+// HasDataLayer=false: truncateJSONArray must be emitted independently of the
+// data-layer block. TestClientLimitGenerationEmitsHelperAndBuilds does not
+// exercise this combination because the profiler auto-enables Store for its
+// spec shape.
 func TestClientLimitGenerationWithoutDataLayer(t *testing.T) {
 	t.Parallel()
 
@@ -176,11 +169,8 @@ func TestClientLimitGenerationWithoutDataLayer(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), "limitnostore-pp-cli")
 	g := New(apiSpec, outputDir)
-	// Force VisionSet.Store=false so HasDataLayer is false at template
-	// render time. Pre-setting VisionSet to a non-zero value short-circuits
-	// the profiler-driven SelectVisionTemplates call in Generate(), which
-	// would otherwise auto-enable Store for any spec with a list endpoint.
-	g.VisionSet = VisionTemplateSet{Export: true}
+	// Non-zero VisionSet skips SelectVisionTemplates so Store stays false.
+	g.VisionSet = VisionTemplateSet{Export: true, Import: true}
 	require.NoError(t, g.Generate())
 	require.False(t, g.VisionSet.Store, "this regression test only covers the no-data-layer path")
 

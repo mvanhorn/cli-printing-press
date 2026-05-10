@@ -16,12 +16,6 @@ notes: |
   JSON and are the same surface the web and mobile apps consume. They've
   been stable enough that community wrappers have tracked them for years.
 
-  The spec at catalog/specs/dominos-spec.yaml is the Printing Press internal
-  YAML format (spec_format: custom), not OpenAPI. It mirrors the spec already
-  used by the published dominos-pp-cli in the printing-press-library repo so
-  this catalog entry stays continuous with prior generation history rather
-  than introducing a divergent shape.
-
   Surface scope:
     - Browse / read: store-locator, store/{id}/profile, store/{id}/menu,
       tracker, deals, menu categories, cart pricing — anonymous, safe by
