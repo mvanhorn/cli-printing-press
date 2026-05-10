@@ -49,12 +49,25 @@ jobs:
         run: |
           echo "Skipping golangci-lint: no Go, module, lint config, or lint workflow files changed."
 
+      # setup-go's bundled cache restores both GOMODCACHE and GOCACHE as one
+      # ~1GB tarball; on this repo that adds ~75s of extract time per job.
+      # The lint job sees little payoff from a warm GOCACHE (golangci-lint
+      # has its own 1 MB analyzer cache that's already hit cleanly), so we
+      # skip the bundled cache and restore only the module cache manually.
       - uses: actions/setup-go@v6
         if: steps.changes.outputs.needs_lint == 'true'
         with:
           go-version-file: go.mod
-          cache: true
-          cache-dependency-path: go.sum
+          cache: false
+
+      - name: Cache Go modules
+        if: steps.changes.outputs.needs_lint == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: lint-gomodcache-${{ runner.os }}-${{ hashFiles('go.sum') }}
+          restore-keys: |
+            lint-gomodcache-${{ runner.os }}-
 
       - uses: golangci/golangci-lint-action@v9
         if: steps.changes.outputs.needs_lint == 'true'
@@ -107,7 +120,8 @@ jobs:
       matrix:
         include:
           - shard: generator
-          - shard: pipeline-cli
+          - shard: pipeline
+          - shard: cli
           - shard: rest
     steps:
       - uses: actions/checkout@v6
@@ -127,8 +141,11 @@ jobs:
             generator)
               packages=(./internal/generator)
               ;;
-            pipeline-cli)
-              packages=(./internal/pipeline ./internal/cli)
+            pipeline)
+              packages=(./internal/pipeline)
+              ;;
+            cli)
+              packages=(./internal/cli)
               ;;
             rest)
               mapfile -t packages < <(go list ./... | grep -Ev '/internal/(generator|pipeline|cli)$')
