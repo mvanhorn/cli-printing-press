@@ -2557,6 +2557,89 @@ func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/store")
 }
 
+func TestGenerateSimilarCommandUsesCompositeResourceKey(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("similar-composite")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{
+		Store:    true,
+		Insights: []string{"insights/similar.go.tmpl"},
+	}
+	require.NoError(t, gen.Generate())
+
+	inlineTest := `package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+func TestSimilarDisambiguatesOverlappingIDs(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := db.Upsert("biz", "shared", []byte(` + "`" + `{"id":"shared","name":"Pinky restaurant"}` + "`" + `)); err != nil {
+		t.Fatalf("upsert biz: %v", err)
+	}
+	if err := db.Upsert("bookmark", "shared", []byte(` + "`" + `{"id":"shared","name":"Anniversary bookmark"}` + "`" + `)); err != nil {
+		t.Fatalf("upsert bookmark: %v", err)
+	}
+	if err := db.Upsert("biz", "other", []byte(` + "`" + `{"id":"other","name":"Pinky restaurant north"}` + "`" + `)); err != nil {
+		t.Fatalf("upsert peer: %v", err)
+	}
+	db.Close()
+
+	cmd := newSimilarCmd(&rootFlags{asJSON: true})
+	cmd.SetArgs([]string{"shared", "--db", dbPath})
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "matches multiple resource types") {
+		t.Fatalf("similar without --type err = %v, want overlap error", err)
+	}
+
+	cmd = newSimilarCmd(&rootFlags{asJSON: true})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"shared", "--db", dbPath, "--type", "biz"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("similar with --type: %v", err)
+	}
+
+	var got struct {
+		SourceType string ` + "`" + `json:"source_type"` + "`" + `
+		Similar []struct {
+			ID           string ` + "`" + `json:"id"` + "`" + `
+			ResourceType string ` + "`" + `json:"resource_type"` + "`" + `
+		} ` + "`" + `json:"similar"` + "`" + `
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, out.String())
+	}
+	if got.SourceType != "biz" {
+		t.Fatalf("source_type = %q, want biz", got.SourceType)
+	}
+	for _, item := range got.Similar {
+		if item.ID == "shared" && item.ResourceType == "biz" {
+			t.Fatalf("source item was not excluded exactly: %+v", got.Similar)
+		}
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "similar_composite_key_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestSimilarDisambiguatesOverlappingIDs")
+}
+
 func TestLiveFetchWriteThroughCachePopulatesTypedTable(t *testing.T) {
 	t.Parallel()
 
