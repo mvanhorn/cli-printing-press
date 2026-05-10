@@ -3505,3 +3505,172 @@ func validTierRoutingSpec() *APISpec {
 		},
 	}
 }
+
+// TestValidateRejectsReservedPlaceholderHost guards against the OLX-style
+// regression in #818 where a browser-sniff emitter shipped
+// `https://example.com/resource` as a real endpoint path, compiling cleanly
+// into the runtime client and failing only on first live call. The validator
+// must reject any absolute URL field whose bare host is one of the IETF
+// reserved documentation hostnames (RFC 2606 / RFC 6761), while leaving
+// relative paths and subdomained hosts (api.example.com, used as legitimate
+// test scaffolding throughout the codebase) untouched.
+func TestValidateRejectsReservedPlaceholderHost(t *testing.T) {
+	baseValid := func() APISpec {
+		return APISpec{
+			Name:    "demo",
+			BaseURL: "https://api.example.com",
+			Auth:    AuthConfig{Type: "none"},
+			Resources: map[string]Resource{
+				"items": {
+					Endpoints: map[string]Endpoint{
+						"list": {Method: "GET", Path: "/items"},
+					},
+				},
+			},
+		}
+	}
+
+	cases := []struct {
+		name       string
+		mutate     func(s *APISpec)
+		wantErr    string
+		wantNoErr  bool
+		wantHostIn string
+	}{
+		{
+			name: "spec-level base_url with bare example.com host is rejected",
+			mutate: func(s *APISpec) {
+				s.BaseURL = "https://example.com"
+			},
+			wantHostIn: "example.com",
+		},
+		{
+			name: "endpoint path with bare example.com host is rejected",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "https://example.com/resource"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantHostIn: "example.com",
+		},
+		{
+			name: "endpoint path with example.org host is rejected",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "http://example.org/v1/things"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantHostIn: "example.org",
+		},
+		{
+			name: "endpoint base_url override with example.net host is rejected",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.BaseURL = "https://example.net"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantHostIn: "example.net",
+		},
+		{
+			name: "endpoint path with example.test host is rejected",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "https://example.test/resource"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantHostIn: "example.test",
+		},
+		{
+			name: "endpoint path with example.invalid host is rejected",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "https://example.invalid/resource"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantHostIn: "example.invalid",
+		},
+		{
+			name: "endpoint path with bare example host is rejected",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "https://example/resource"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantHostIn: `"example"`,
+		},
+		{
+			name: "resource base_url override with example.com host is rejected",
+			mutate: func(s *APISpec) {
+				r := s.Resources["items"]
+				r.BaseURL = "https://example.com"
+				s.Resources["items"] = r
+			},
+			wantHostIn: "example.com",
+		},
+		{
+			name: "sub-resource endpoint with placeholder host is rejected",
+			mutate: func(s *APISpec) {
+				s.Resources["items"] = Resource{
+					Endpoints: map[string]Endpoint{
+						"list": {Method: "GET", Path: "/items"},
+					},
+					SubResources: map[string]Resource{
+						"reviews": {
+							Endpoints: map[string]Endpoint{
+								"get": {Method: "GET", Path: "https://example.com/reviews"},
+							},
+						},
+					},
+				}
+			},
+			wantHostIn: "example.com",
+		},
+		{
+			name:      "relative path passes",
+			mutate:    func(s *APISpec) {},
+			wantNoErr: true,
+		},
+		{
+			name: "subdomained example.com base_url passes",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.BaseURL = "https://api.example.com/v2"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantNoErr: true,
+		},
+		{
+			name: "subdomained example.com path passes",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "https://geocoding-api.example.com/v1/search"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantNoErr: true,
+		},
+		{
+			name: "query string containing example.com passes (relative path)",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "/proxy?url=https://example.com/x"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantNoErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := baseValid()
+			tc.mutate(&s)
+			err := s.Validate()
+			if tc.wantNoErr {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantHostIn)
+			assert.Contains(t, err.Error(), "reserved placeholder host")
+		})
+	}
+}
