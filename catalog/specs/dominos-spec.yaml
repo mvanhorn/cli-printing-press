@@ -1,0 +1,514 @@
+name: dominos
+display_name: Domino's
+description: Domino's Pizza CLI - order pizza, browse menus, track orders, and manage rewards from the terminal
+version: 0.1.0
+base_url: https://www.dominos.com/api
+auth:
+  type: bearer_token
+  header: Authorization
+  format: Bearer {token}
+  in: header
+  env_vars:
+  - DOMINOS_USERNAME
+  - DOMINOS_PASSWORD
+  - DOMINOS_TOKEN
+  env_var_specs:
+  - name: DOMINOS_USERNAME
+    kind: auth_flow_input
+    required: false
+    sensitive: false
+    description: Domino's account email or phone consumed by `auth login` to obtain a bearer token. Read-only commands work without.
+  - name: DOMINOS_PASSWORD
+    kind: auth_flow_input
+    required: false
+    sensitive: true
+    description: Domino's account password consumed by `auth login` to obtain a bearer token.
+  - name: DOMINOS_TOKEN
+    kind: harvested
+    required: false
+    sensitive: true
+    description: Bearer token populated automatically by `auth login` and read by authenticated commands. Do not set manually — use `auth login` instead.
+  token_url: ''
+config:
+  format: toml
+  path: ~/.config/dominos-pp-cli/config.toml
+resources:
+  stores:
+    description: Find and get information about Domino's stores
+    endpoints:
+      find:
+        method: GET
+        path: /power/store-locator
+        description: Find nearby Domino's stores by address
+        params:
+        - name: s
+          type: string
+          required: true
+          positional: false
+          default: null
+          description: Street address (e.g., "350 5th Ave")
+          fields: []
+        - name: c
+          type: string
+          required: true
+          positional: false
+          default: null
+          description: City, state, zip (e.g., "New York NY 10118")
+          fields: []
+        - name: type
+          type: string
+          required: false
+          positional: false
+          default: Delivery
+          description: 'Service type: Delivery, Carryout, or DriveUpCarryout'
+          fields: []
+        body: []
+        response:
+          type: array
+          item: Store
+        pagination: null
+        no_auth: true
+      get:
+        method: GET
+        path: /power/store/{storeID}/profile
+        description: Get detailed store information including hours, capabilities, and wait times
+        params:
+        - name: storeID
+          type: string
+          required: true
+          positional: true
+          default: null
+          description: Store ID number
+          fields: []
+        body: []
+        response:
+          type: object
+          item: Store
+        pagination: null
+        no_auth: true
+  menu:
+    description: Browse store menus and search for items
+    endpoints:
+      get_menu:
+        method: GET
+        path: /power/store/{storeID}/menu
+        description: Get the full menu for a store with categories, products, variants, and toppings
+        params:
+        - name: storeID
+          type: string
+          required: true
+          positional: true
+          default: null
+          description: Store ID number
+          fields: []
+        - name: lang
+          type: string
+          required: false
+          positional: false
+          default: en
+          description: Language code
+          fields: []
+        - name: structured
+          type: boolean
+          required: false
+          positional: false
+          default: true
+          description: Return structured menu hierarchy
+          fields: []
+        body: []
+        response:
+          type: object
+          item: Menu
+        pagination: null
+        no_auth: true
+  orders:
+    description: Create, validate, price, and place orders
+    endpoints:
+      validate:
+        method: POST
+        path: /power/validate-order
+        description: Validate an order before placing it
+        params: []
+        body:
+        - name: Order
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: Complete order object
+          fields:
+          - name: Address
+            type: object
+            required: true
+            positional: false
+            default: null
+            description: Delivery address
+            fields: []
+          - name: Coupons
+            type: array
+            required: false
+            positional: false
+            default: null
+            description: Applied coupon codes
+            fields: []
+          - name: CustomerID
+            type: string
+            required: false
+            positional: false
+            default: null
+            description: Customer account ID
+            fields: []
+          - name: Email
+            type: string
+            required: false
+            positional: false
+            default: null
+            description: Customer email
+            fields: []
+          - name: FirstName
+            type: string
+            required: true
+            positional: false
+            default: null
+            description: Customer first name
+            fields: []
+          - name: LastName
+            type: string
+            required: true
+            positional: false
+            default: null
+            description: Customer last name
+            fields: []
+          - name: Phone
+            type: string
+            required: true
+            positional: false
+            default: null
+            description: Customer phone number
+            fields: []
+          - name: Products
+            type: array
+            required: true
+            positional: false
+            default: null
+            description: Items in the order
+            fields: []
+          - name: ServiceMethod
+            type: string
+            required: true
+            positional: false
+            default: Delivery
+            description: Delivery, Carryout, or DriveUpCarryout
+            fields: []
+          - name: StoreID
+            type: string
+            required: true
+            positional: false
+            default: null
+            description: Store ID to order from
+            fields: []
+        response:
+          type: object
+          item: OrderValidation
+        pagination: null
+      price:
+        method: POST
+        path: /power/price-order
+        description: Get the price for an order including taxes and fees
+        params: []
+        body:
+        - name: Order
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: Complete order object (same as validate)
+          fields: []
+        response:
+          type: object
+          item: OrderPrice
+        pagination: null
+      place:
+        method: POST
+        path: /power/place-order
+        description: Place an order for delivery or carryout
+        params: []
+        body:
+        - name: Order
+          type: object
+          required: true
+          positional: false
+          default: null
+          description: Validated and priced order object with payment
+          fields: []
+        response:
+          type: object
+          item: OrderPlacement
+        pagination: null
+  tracking:
+    description: Track active orders
+    endpoints:
+      track:
+        method: GET
+        path: /power/tracker
+        description: Track an order by phone number
+        params:
+        - name: Phone
+          type: string
+          required: true
+          positional: false
+          default: null
+          description: Phone number associated with the order
+          fields: []
+        body: []
+        response:
+          type: object
+          item: TrackerData
+        pagination: null
+        no_auth: true
+  graphql:
+    description: GraphQL BFF operations (discovered via sniff)
+    endpoints:
+      customer:
+        method: POST
+        path: /web-bff/graphql
+        description: Get authenticated customer profile with saved addresses and preferences
+        params: []
+        body:
+        - name: operationName
+          type: string
+          required: true
+          positional: false
+          default: Customer
+          description: GraphQL operation name
+          fields: []
+        response:
+          type: object
+          item: Customer
+        pagination: null
+      loyalty_points:
+        method: POST
+        path: /web-bff/graphql
+        description: Get loyalty points balance and status
+        params: []
+        body:
+        - name: operationName
+          type: string
+          required: true
+          positional: false
+          default: LoyaltyPoints
+          description: GraphQL operation name
+          fields: []
+        response:
+          type: object
+          item: LoyaltyPoints
+        pagination: null
+      loyalty_rewards:
+        method: POST
+        path: /web-bff/graphql
+        description: Get available loyalty rewards by tier
+        params: []
+        body:
+        - name: operationName
+          type: string
+          required: true
+          positional: false
+          default: LoyaltyRewards
+          description: GraphQL operation name
+          fields: []
+        response:
+          type: object
+          item: LoyaltyRewards
+        pagination: null
+      loyalty_deals:
+        method: POST
+        path: /web-bff/graphql
+        description: Get member-exclusive deals
+        params: []
+        body:
+        - name: operationName
+          type: string
+          required: true
+          positional: false
+          default: LoyaltyDeals
+          description: GraphQL operation name
+          fields: []
+        response:
+          type: object
+          item: LoyaltyDeals
+        pagination: null
+      deals_list:
+        method: POST
+        path: /web-bff/graphql
+        description: Get available deals and coupons for a store
+        params: []
+        body:
+        - name: operationName
+          type: string
+          required: true
+          positional: false
+          default: DealsList
+          description: GraphQL operation name
+          fields: []
+        response:
+          type: object
+          item: DealsList
+        pagination: null
+        no_auth: true
+      create_cart:
+        method: POST
+        path: /web-bff/graphql
+        description: Create a new shopping cart
+        params: []
+        body:
+        - name: operationName
+          type: string
+          required: true
+          positional: false
+          default: CreateCart
+          description: GraphQL operation name
+          fields: []
+        response:
+          type: object
+          item: Cart
+        pagination: null
+      get_cart:
+        method: POST
+        path: /web-bff/graphql
+        description: Get cart by ID with items and pricing
+        params: []
+        body:
+        - name: operationName
+          type: string
+          required: true
+          positional: false
+          default: CartById
+          description: GraphQL operation name
+          fields: []
+        response:
+          type: object
+          item: Cart
+        pagination: null
+      quick_add_product:
+        method: POST
+        path: /web-bff/graphql
+        description: Quick-add a product to cart by code
+        params: []
+        body:
+        - name: operationName
+          type: string
+          required: true
+          positional: false
+          default: QuickAddProductMenu
+          description: GraphQL operation name
+          fields: []
+        response:
+          type: object
+          item: Cart
+        pagination: null
+      categories:
+        method: POST
+        path: /web-bff/graphql
+        description: Get menu categories for a store
+        params: []
+        body:
+        - name: operationName
+          type: string
+          required: true
+          positional: false
+          default: Category
+          description: GraphQL operation name
+          fields: []
+        response:
+          type: object
+          item: Categories
+        pagination: null
+        no_auth: true
+      products:
+        method: POST
+        path: /web-bff/graphql
+        description: Get products in a category with customization options
+        params: []
+        body:
+        - name: operationName
+          type: string
+          required: true
+          positional: false
+          default: Products
+          description: GraphQL operation name
+          fields: []
+        response:
+          type: object
+          item: Products
+        pagination: null
+        no_auth: true
+      summary_charges:
+        method: POST
+        path: /web-bff/graphql
+        description: Get cart totals including tax and delivery fee
+        params: []
+        body:
+        - name: operationName
+          type: string
+          required: true
+          positional: false
+          default: SummaryCharges
+          description: GraphQL operation name
+          fields: []
+        response:
+          type: object
+          item: SummaryCharges
+        pagination: null
+  customer:
+    description: Customer profile, order history, and loyalty (requires `auth login`)
+    endpoints:
+      orders:
+        method: GET
+        path: /power/customer/{customerID}/order
+        description: List the customer's recent orders. Returns full Order objects (Address, Products, Amounts, Coupons, Status, etc.) for analytics, reorder, and order-history workflows.
+        params:
+        - name: customerID
+          type: string
+          required: true
+          positional: true
+          description: Customer ID (the long base64-style identifier from `auth login`; available via `auth status --json`)
+        - name: limit
+          type: integer
+          required: false
+          positional: false
+          default: 5
+          description: Maximum number of orders to return
+        - name: lang
+          type: string
+          required: false
+          positional: false
+          default: en
+          description: Language code
+        body: []
+        response:
+          type: array
+          item: Order
+        pagination: null
+        no_auth: false
+      loyalty:
+        method: GET
+        path: /power/customer/{customerID}/loyalty
+        description: Loyalty points balance, tier status, and pending points for the customer.
+        params:
+        - name: customerID
+          type: string
+          required: true
+          positional: true
+          description: Customer ID (from `auth login`)
+        body: []
+        response:
+          type: object
+          item: Loyalty
+        pagination: null
+        no_auth: false
+cli_description: Order pizza, browse menus, optimize deals, and track delivery from your terminal — with a local SQLite store that powers reorder, price comparison, and deal stacking no other Domino's tool
+  offers.
+mcp:
+  transport:
+  - stdio
+  - http

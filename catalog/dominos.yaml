@@ -1,36 +1,36 @@
 name: dominos
 display_name: Domino's
-description: Pizza ordering, store lookup, and order tracking. No public API — reached through reverse-engineered JSON endpoints powering the order.dominos.com web flow.
+description: Pizza ordering, store lookup, menu browsing, deal lookup, and order tracking. No public API — reached through reverse-engineered JSON endpoints under order.dominos.com/power.
 category: food-and-dining
+spec_url: https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/catalog/specs/dominos-spec.yaml
+spec_format: custom
+spec_source: sniffed
+auth_required: false
 tier: community
 verified_date: "2026-05-09"
 homepage: https://www.dominos.com
 notes: |
   Domino's does not publish an API. The internal endpoints under
-  `https://order.dominos.com/power/` (store-locator, store-profile, menu,
-  validate-order, price-order, place-order, track) return JSON and are the same
-  surface the web and mobile apps consume. They've been stable enough that
-  community wrappers have tracked them for years.
+  https://order.dominos.com/power/ (store-locator, store/{id}/profile,
+  store/{id}/menu, validate-order, price-order, place-order, tracker) return
+  JSON and are the same surface the web and mobile apps consume. They've
+  been stable enough that community wrappers have tracked them for years.
 
-  Treat this as html/json-sniff implementation backing. The generator should
-  emit a thin HTTP client targeting the `power` endpoints rather than searching
-  for an OpenAPI spec. Auth is anonymous for browse/track flows; placing real
-  orders requires a Domino's account and is out of scope for the printed CLI's
-  default surface.
+  The spec at catalog/specs/dominos-spec.yaml is the Printing Press internal
+  YAML format (spec_format: custom), not OpenAPI. It mirrors the spec already
+  used by the published dominos-pp-cli in the printing-press-library repo so
+  this catalog entry stays continuous with prior generation history rather
+  than introducing a divergent shape.
 
-  Suggested compound queries the printed CLI should make easy:
-    - "nearest open delivery store to <address> with current wait time"
-    - "full menu + active coupons for store <id>, cheapest large pepperoni"
-    - "track order <phone or order key> until delivered"
-wrapper_libraries:
-  - name: power-endpoint-client
-    url: https://order.dominos.com/power/
-    language: go
-    integration_mode: html-scrape
-    notes: |
-      Synthetic wrapper entry — there is no Go library to import. Reimplement
-      the `power/*` JSON endpoints (store-locator, store-profile, menu,
-      validate-order, price-order, track) as a thin Go HTTP client. Use the
-      long-running JS reference at
-      https://github.com/RIAEvangelist/node-dominos-pizza-api for endpoint
-      shapes and payload schemas — do not ship it as a runtime dependency.
+  Surface scope:
+    - Browse / read: store-locator, store/{id}/profile, store/{id}/menu,
+      tracker, deals, menu categories, cart pricing — anonymous, safe by
+      default.
+    - Validate / price: validate-order, price-order — anonymous, structural
+      only, no payment side effect.
+    - place-order: present in the spec but the printed CLI MUST treat it as
+      a side-effect command per the AGENTS.md "Side-effect commands" rule —
+      print by default, require an explicit --confirm / --place opt-in flag,
+      and short-circuit when PRINTING_PRESS_VERIFY=1.
+    - Authenticated profile / loyalty / order history: gated behind
+      `auth login`, out of scope for the default browse surface.
