@@ -62,6 +62,14 @@ func novelPreservedSentinel() string { return "preserved" }
 `)
 	require.NoError(t, os.WriteFile(novelPath, novelSource, 0o644))
 
+	siblingPath := filepath.Join(outputDir, "internal", "source", "custom", "client.go")
+	siblingSource := []byte(`package custom
+
+func KeepSiblingPackage() string { return "preserved" }
+`)
+	require.NoError(t, os.MkdirAll(filepath.Dir(siblingPath), 0o755))
+	require.NoError(t, os.WriteFile(siblingPath, siblingSource, 0o644))
+
 	rootPath := filepath.Join(outputDir, "internal", "cli", "root.go")
 	require.NoError(t, os.WriteFile(rootPath, []byte("package cli\n\nfunc brokenGeneratedEdit() {\n"), 0o644))
 	staleGeneratedPath := filepath.Join(outputDir, "internal", "cli", "old_generated.go")
@@ -77,6 +85,10 @@ func staleGeneratedCommand() {}
 	gotNovel, err := os.ReadFile(novelPath)
 	require.NoError(t, err)
 	assert.Equal(t, string(novelSource), string(gotNovel))
+
+	gotSibling, err := os.ReadFile(siblingPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(siblingSource), string(gotSibling))
 
 	rootGo, err := os.ReadFile(rootPath)
 	require.NoError(t, err)
@@ -98,7 +110,7 @@ func TestGenerateCmdHelpDescribesForceAsGeneratedOverwrite(t *testing.T) {
 	cmd.SetArgs([]string{"--help"})
 
 	require.NoError(t, cmd.Execute())
-	assert.Contains(t, out.String(), "Recreate the base output directory while preserving hand-authored internal/cli/*.go files")
+	assert.Contains(t, out.String(), "Recreate the base output directory while preserving hand-authored internal/cli/*.go files and internal sibling packages")
 }
 
 func TestGenerateCmdForceRefusesSymlinkedInternalCliPreservation(t *testing.T) {
