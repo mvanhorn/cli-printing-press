@@ -73,6 +73,7 @@ func runVerifySkillScript(dir string, only []string, asJSON bool, strict bool) (
 
 	py := exec.Command("python3", pyArgs...)
 	py.Stdin = os.Stdin
+	py.Env = pythonUTF8Env(os.Environ())
 	var stdout, stderr bytes.Buffer
 	py.Stdout = &stdout
 	py.Stderr = &stderr
@@ -332,6 +333,24 @@ func emitMergedJSON(pyResult verifySkillRunResult, runCanonical, hasCanonicalFin
 	}
 	fmt.Println(string(out))
 	return nil
+}
+
+// pythonUTF8Env returns base with PYTHONIOENCODING and PYTHONUTF8 forced to
+// UTF-8. Windows consoles default to cp1252, which cannot encode the ✓/✘
+// glyphs the Python script prints; without these env vars the subprocess
+// crashes with UnicodeEncodeError even though the underlying checks passed.
+// The Python script also calls sys.stdout.reconfigure() as a self-contained
+// defense; this env propagation is the belt-and-suspenders half.
+func pythonUTF8Env(base []string) []string {
+	env := make([]string, 0, len(base)+2)
+	for _, kv := range base {
+		if strings.HasPrefix(kv, "PYTHONIOENCODING=") || strings.HasPrefix(kv, "PYTHONUTF8=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "PYTHONIOENCODING=utf-8", "PYTHONUTF8=1")
+	return env
 }
 
 // indentLines prefixes every line of s with prefix. Used for human-readable
