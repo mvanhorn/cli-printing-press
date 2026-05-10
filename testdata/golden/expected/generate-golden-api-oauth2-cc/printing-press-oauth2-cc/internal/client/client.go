@@ -413,7 +413,13 @@ func resolveClientCredentials(cfg *config.Config) (string, string) {
 }
 
 func (c *Client) mintClientCredentials(clientID, clientSecret string) error {
-	tokenURL := "https://api.cc.example/oauth/token"
+	tokenURL := ""
+	if c.Config != nil {
+		tokenURL = c.Config.TokenURL
+	}
+	if tokenURL == "" {
+		tokenURL = "https://api.cc.example/oauth/token"
+	}
 	if tokenURL == "" {
 		return nil
 	}
@@ -462,7 +468,11 @@ func (c *Client) refreshAccessToken() error {
 		return nil
 	}
 
-	tokenURL := "https://api.cc.example/oauth/token"
+	tokenURL := ""
+	tokenURL = c.Config.TokenURL
+	if tokenURL == "" {
+		tokenURL = "https://api.cc.example/oauth/token"
+	}
 	if tokenURL == "" {
 		return nil
 	}

@@ -37,6 +37,18 @@ type Config struct {
 {{- end}}
 	ClientID       string `{{configTag .Config.Format}}:"client_id"`
 	ClientSecret   string `{{configTag .Config.Format}}:"client_secret"`
+{{- if .Auth.AuthorizationURL}}
+	// AuthorizationURL overrides the spec-baked OAuth2 authorization endpoint.
+	// Falls back to the generator default at the call site when empty so a
+	// user pointing the CLI at a non-default deployment can override without
+	// regenerating.
+	AuthorizationURL string `{{configTag .Config.Format}}:"authorization_url,omitempty"`
+{{- end}}
+{{- if .Auth.TokenURL}}
+	// TokenURL overrides the spec-baked OAuth2 token endpoint. Same fallback
+	// pattern as AuthorizationURL.
+	TokenURL       string `{{configTag .Config.Format}}:"token_url,omitempty"`
+{{- end}}
 {{- end}}
 	Path           string `{{configTag .Config.Format}}:"-"`
 {{- if .Auth.EnvVarSpecs}}
@@ -151,6 +163,16 @@ func Load(configPath string) (*Config, error) {
 	if v := os.Getenv("{{envName .Name}}_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
+{{- if and .HasAuthCommand .Auth.AuthorizationURL}}
+	if v := os.Getenv("{{envName .Name}}_AUTHORIZATION_URL"); v != "" {
+		cfg.AuthorizationURL = v
+	}
+{{- end}}
+{{- if and .HasAuthCommand .Auth.TokenURL}}
+	if v := os.Getenv("{{envName .Name}}_TOKEN_URL"); v != "" {
+		cfg.TokenURL = v
+	}
+{{- end}}
 {{- if .EndpointTemplateVars}}
 
 	// Endpoint template vars: resolve each {placeholder} in BaseURL or the
