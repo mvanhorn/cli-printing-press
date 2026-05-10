@@ -651,6 +651,94 @@ components:
 	assert.Empty(t, fieldsByName["child"].Fields)
 }
 
+func TestParseOneOfRequestBodyEmitsJSONFallback(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: DNS API
+  version: 1.0.0
+paths:
+  /zones/{zoneId}/records:
+    post:
+      operationId: createRecord
+      parameters:
+        - name: zoneId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "#/components/schemas/ARecord"
+                - $ref: "#/components/schemas/CNAMERecord"
+      responses:
+        "200":
+          description: ok
+components:
+  schemas:
+    ARecord:
+      type: object
+      required: [type, name, content]
+      properties:
+        type: {type: string, enum: [A]}
+        name: {type: string}
+        content: {type: string}
+    CNAMERecord:
+      type: object
+      required: [type, name, content]
+      properties:
+        type: {type: string, enum: [CNAME]}
+        name: {type: string}
+        content: {type: string}
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/zones/{zoneId}/records")
+	assert.True(t, endpoint.BodyJSONFallback, "endpoint with oneOf body should opt into --body-json fallback")
+	assert.Empty(t, endpoint.Body, "BodyJSONFallback endpoints expose a single --body-json flag, not typed body params")
+	assert.Equal(t, "application/json", endpoint.RequestContentType, "fallback endpoints should default to application/json")
+}
+
+func TestParseAnyOfRequestBodyEmitsJSONFallback(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Block API
+  version: 1.0.0
+paths:
+  /blocks:
+    post:
+      operationId: createBlock
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - type: object
+                  properties:
+                    paragraph: {type: string}
+                - type: object
+                  properties:
+                    heading: {type: string}
+      responses:
+        "200":
+          description: ok
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/blocks")
+	assert.True(t, endpoint.BodyJSONFallback)
+	assert.Empty(t, endpoint.Body)
+}
+
 func TestParseStytchOpenAPI(t *testing.T) {
 	t.Parallel()
 

@@ -1651,7 +1651,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			}
 
 			params := mapParameters(pathItem, op)
-			body, requestContentType := mapRequestBody(op.RequestBody, method, path)
+			body, requestContentType, bodyJSONFallback := mapRequestBody(op.RequestBody, method, path)
 
 			// Deduplicate body params that collide with query/path params by flag name
 			if len(body) > 0 && len(params) > 0 {
@@ -1675,6 +1675,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				Description:        description,
 				Params:             params,
 				Body:               body,
+				BodyJSONFallback:   bodyJSONFallback,
 				RequestContentType: requestContentType,
 			}
 			endpoint.Tier = readTierExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
@@ -2377,26 +2378,33 @@ func mergeParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []*ope
 	return merged
 }
 
-func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string) ([]spec.Param, string) {
+func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string) ([]spec.Param, string, bool) {
 	requestBody := requestBodyValue(requestBodyRef)
 	if requestBody == nil || requestBody.Content == nil {
-		return nil, ""
+		return nil, "", false
 	}
 
 	requestContentType, media := requestBodyMediaType(requestBody.Content)
 	if media == nil || media.Schema == nil || media.Schema.Value == nil {
-		return nil, ""
+		return nil, "", false
 	}
 
 	properties := map[string]*openapi3.SchemaRef{}
 	required := map[string]struct{}{}
 	if collectAllOfProperties(media.Schema, properties, required, map[*openapi3.Schema]struct{}{}) {
-		warnf("skipping request body for %s %q: contains oneOf/anyOf", strings.ToUpper(method), path)
-		return nil, ""
+		// oneOf/anyOf at the body root cannot be flattened to named flags.
+		// Signal the caller to emit a --body-json fallback flag instead so
+		// the endpoint stays reachable from the CLI.
+		warnf("request body for %s %q contains oneOf/anyOf; emitting --body-json fallback", strings.ToUpper(method), path)
+		fallbackContentType := requestContentType
+		if fallbackContentType == "" {
+			fallbackContentType = "application/json"
+		}
+		return nil, fallbackContentType, true
 	}
 
 	if len(properties) == 0 {
-		return nil, ""
+		return nil, "", false
 	}
 
 	names := make([]string, 0, len(properties))
@@ -2447,7 +2455,7 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		body = append(body, param)
 	}
 
-	return body, requestContentType
+	return body, requestContentType, false
 }
 
 func requestBodyMediaType(content openapi3.Content) (string, *openapi3.MediaType) {

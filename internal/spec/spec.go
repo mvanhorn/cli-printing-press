@@ -916,12 +916,18 @@ func resourceHasBaseURLOverride(resource Resource) bool {
 }
 
 type Endpoint struct {
-	Method             string            `yaml:"method" json:"method"`
-	Path               string            `yaml:"path" json:"path"`
-	BaseURL            string            `yaml:"base_url,omitempty" json:"base_url,omitempty"`
-	Description        string            `yaml:"description" json:"description"`
-	Params             []Param           `yaml:"params" json:"params"`
-	Body               []Param           `yaml:"body" json:"body"`
+	Method      string  `yaml:"method" json:"method"`
+	Path        string  `yaml:"path" json:"path"`
+	BaseURL     string  `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+	Description string  `yaml:"description" json:"description"`
+	Params      []Param `yaml:"params" json:"params"`
+	Body        []Param `yaml:"body" json:"body"`
+	// BodyJSONFallback signals that the request body schema is a oneOf/anyOf
+	// (or other shape that cannot be flattened to named flags) and that the
+	// generator should emit a single --body-json string flag instead of
+	// per-field typed flags. When true, Body is empty and the runtime parses
+	// the flag value as a JSON object and sends it verbatim.
+	BodyJSONFallback   bool              `yaml:"body_json_fallback,omitempty" json:"body_json_fallback,omitempty"`
 	RequestContentType string            `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
 	Response           ResponseDef       `yaml:"response" json:"response"`
 	ResponseFormat     string            `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
