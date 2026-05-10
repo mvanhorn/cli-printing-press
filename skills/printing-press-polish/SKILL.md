@@ -500,7 +500,11 @@ gofmt -w .
 Re-run the diagnostic sweep on the fixed CLI:
 
 ```bash
-printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG 2>&1
+# RESEARCH_ARGS must travel with dogfood here too — without it,
+# checkNovelFeatures doesn't re-sync novel_features_built after Phase 2
+# edits, and publish-validate's transcendence gate reads stale state
+# from Phase 1's pass.
+printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" 2>&1
 printing-press verify --dir "$CLI_DIR" $SPEC_FLAG --json 2>&1
 printing-press workflow-verify --dir "$CLI_DIR" --json 2>&1
 printing-press verify-skill --dir "$CLI_DIR" --json 2>&1
