@@ -3661,6 +3661,166 @@ paths:
 	}
 }
 
+// TestParseIDFieldResourcePrefixedHeuristic covers list responses whose item
+// schemas key off `<singular_resource>_id` (or `_uuid`/`_guid`) instead of a
+// bare `id`. Without this heuristic, APIs like podscan whose Category items
+// only carry `category_id` would fall through every fallback tier and leave
+// IDField empty, causing sync to silently drop every row.
+func TestParseIDFieldResourcePrefixedHeuristic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		path       string
+		schemaYAML string
+		wantID     string
+	}{
+		{
+			name: "plural resource picks <singular>_id",
+			path: "/categories",
+			schemaYAML: `                  type: object
+                  properties:
+                    category_id: {type: string}
+                    category_name: {type: string}
+                    category_display_name: {type: string}
+`,
+			wantID: "category_id",
+		},
+		{
+			name: "singular resource picks <name>_id",
+			path: "/user",
+			schemaYAML: `                  type: object
+                  properties:
+                    user_id: {type: string}
+                    user_name: {type: string}
+`,
+			wantID: "user_id",
+		},
+		{
+			name: "id wins over <singular>_id (REST convention)",
+			path: "/categories",
+			schemaYAML: `                  type: object
+                  properties:
+                    id: {type: string}
+                    category_id: {type: string}
+`,
+			wantID: "id",
+		},
+		{
+			name: "<singular>_id wins over name",
+			path: "/categories",
+			schemaYAML: `                  type: object
+                  properties:
+                    name: {type: string}
+                    category_id: {type: string}
+`,
+			wantID: "category_id",
+		},
+		{
+			name: "_uuid suffix is recognized when _id is absent",
+			path: "/sessions",
+			schemaYAML: `                  type: object
+                  properties:
+                    session_uuid: {type: string}
+                    started_at: {type: string}
+`,
+			wantID: "session_uuid",
+		},
+		{
+			name: "_guid suffix is recognized when _id and _uuid are absent",
+			path: "/devices",
+			schemaYAML: `                  type: object
+                  properties:
+                    device_guid: {type: string}
+                    last_seen: {type: string}
+`,
+			wantID: "device_guid",
+		},
+		{
+			name: "camelCase property name normalizes to snake match",
+			path: "/categories",
+			schemaYAML: `                  type: object
+                  properties:
+                    categoryId: {type: string}
+                    categoryName: {type: string}
+`,
+			wantID: "categoryId",
+		},
+		{
+			name: "kebab-case path resource singularizes correctly",
+			path: "/auth-tokens",
+			schemaYAML: `                  type: object
+                  properties:
+                    auth_token_id: {type: string}
+                    issued_at: {type: string}
+`,
+			wantID: "auth_token_id",
+		},
+		{
+			name: "_id precedence: prefers _id over _uuid",
+			path: "/categories",
+			schemaYAML: `                  type: object
+                  properties:
+                    category_id: {type: string}
+                    category_uuid: {type: string}
+`,
+			wantID: "category_id",
+		},
+		{
+			name: "no <singular>_id falls through to remaining tiers",
+			path: "/things",
+			schemaYAML: `                  type: object
+                  properties:
+                    name: {type: string}
+                    other_id: {type: string}
+`,
+			wantID: "name",
+		},
+		{
+			// Without the irregulars override, `movies` would singularize
+			// via the `ies → y` rule to `movy`, missing `movie_id`.
+			name: "ie-ending stem keeps singular form (movies → movie)",
+			path: "/movies",
+			schemaYAML: `                  type: object
+                  properties:
+                    movie_id: {type: string}
+                    title: {type: string}
+`,
+			wantID: "movie_id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  ` + tt.path + `:
+    get:
+      operationId: list
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+` + tt.schemaYAML)
+			parsed, err := Parse(yamlSpec)
+			require.NoError(t, err)
+
+			ep := findEndpoint(t, parsed, tt.path)
+			assert.Equal(t, tt.wantID, ep.IDField)
+		})
+	}
+}
+
 // TestParseXResourceIDAppliesToEveryOperationOnPath exercises the "extensions
 // live on the path item" rule — both GET and POST operations under /widgets
 // inherit the x-resource-id and x-critical values, even though x-critical is

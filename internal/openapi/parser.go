@@ -1699,7 +1699,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			if pathResourceIDOverride != "" {
 				endpoint.IDField = pathResourceIDOverride
 			} else {
-				endpoint.IDField = resolveIDFieldFromResponseSchema(op)
+				endpoint.IDField = resolveIDFieldFromResponseSchema(op, targetResourceName)
 			}
 			endpoint.Critical = pathCritical
 
@@ -2787,13 +2787,18 @@ func readTierExtension(extensions map[string]any, context string) string {
 	return strings.TrimSpace(tier)
 }
 
-// resolveIDFieldFromResponseSchema implements tiers 2-4 of the IDField fallback
-// chain: prefer "id", then "name", then the first scalar field listed in the
+// resolveIDFieldFromResponseSchema implements tiers 2-5 of the IDField fallback
+// chain: prefer "id", then a resource-prefixed key (`<singular>_id` /
+// `_uuid` / `_guid`), then "name", then the first scalar field listed in the
 // response schema's `required:` array (walking properties in their schema order).
 // Returns "" when no field qualifies; templates fall through to runtime list
 // scanning. Tier 1 (`x-resource-id` extension) is handled separately by the
 // caller — it overrides every tier here.
-func resolveIDFieldFromResponseSchema(op *openapi3.Operation) string {
+//
+// resourceName is the parser's targetResourceName for this operation; it drives
+// the resource-prefixed heuristic and may be empty for synthetic endpoints,
+// in which case that tier is skipped.
+func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName string) string {
 	if op == nil || op.Responses == nil {
 		return ""
 	}
@@ -2816,12 +2821,22 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation) string {
 	if _, ok := itemSchema.Properties["id"]; ok {
 		return "id"
 	}
-	// Tier 3: explicit `name`
+
+	// Tier 3: resource-prefixed key. Catches APIs whose item schemas key off
+	// `<singular>_id` instead of a bare `id` (e.g. podscan's Category with
+	// `category_id`/`category_name`). Both the resource name and each property
+	// name are normalized to snake_case, so `categoryId`/`category_id` and
+	// `auth-tokens`/`auth_token_id` match through the same comparison.
+	if id := resourcePrefixedIDField(itemSchema, resourceName); id != "" {
+		return id
+	}
+
+	// Tier 4: explicit `name`
 	if _, ok := itemSchema.Properties["name"]; ok {
 		return "name"
 	}
 
-	// Tier 4: first scalar field appearing in the schema's required[] array,
+	// Tier 5: first scalar field appearing in the schema's required[] array,
 	// matched against properties in their schema-declared order. kin-openapi
 	// preserves YAML/JSON property order in MapKeys/Extensions but not via
 	// range over Properties (it's a Go map). Fall back to iterating the
@@ -2838,6 +2853,78 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation) string {
 	}
 
 	return ""
+}
+
+// resourcePrefixedIDField returns the first property whose snake-cased name
+// matches `<singular_resource>_id`, then `_uuid`, then `_guid`. Returns "" when
+// the resource name is empty or no property matches. Property names are
+// returned verbatim so callers preserve the spec's original casing (e.g.
+// `categoryId` rather than `category_id`).
+func resourcePrefixedIDField(schema *openapi3.Schema, resourceName string) string {
+	singular := singularizeIdentifier(toSnakeCase(resourceName))
+	if singular == "" {
+		return ""
+	}
+	// Sort property names so behavior is deterministic across Go map
+	// iteration order; this only matters when a schema declares multiple
+	// keys that snake-case to the same target, which is unusual.
+	propNames := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		propNames = append(propNames, name)
+	}
+	sort.Strings(propNames)
+	for _, suffix := range []string{"_id", "_uuid", "_guid"} {
+		target := singular + suffix
+		for _, propName := range propNames {
+			if toSnakeCase(propName) == target {
+				return propName
+			}
+		}
+	}
+	return ""
+}
+
+// singularizeIdentifier returns a simple singular form of a snake-cased
+// identifier. Mirrors spec.singularize for parser-local use without exporting
+// the spec helper. Only the trailing token is singularized so multi-word
+// identifiers like `auth_tokens` become `auth_token`.
+func singularizeIdentifier(s string) string {
+	if s == "" {
+		return ""
+	}
+	idx := strings.LastIndex(s, "_")
+	prefix, last := "", s
+	if idx >= 0 {
+		prefix, last = s[:idx+1], s[idx+1:]
+	}
+	irregulars := map[string]string{
+		"properties": "property",
+		"companies":  "company",
+		"categories": "category",
+		"entries":    "entry",
+		"statuses":   "status",
+		"addresses":  "address",
+		"analyses":   "analysis",
+		// `<stem>+s` plurals on `ie`/`ix`-ending stems that the generic
+		// `ies → y` rule would otherwise mangle (`movies → movy`).
+		"movies":   "movie",
+		"series":   "series",
+		"matrices": "matrix",
+		"indices":  "index",
+		"vertices": "vertex",
+	}
+	if singular, ok := irregulars[last]; ok {
+		return prefix + singular
+	}
+	switch {
+	case strings.HasSuffix(last, "ies") && len(last) > 3:
+		return prefix + last[:len(last)-3] + "y"
+	case strings.HasSuffix(last, "ses"), strings.HasSuffix(last, "xes"), strings.HasSuffix(last, "zes"):
+		return prefix + last[:len(last)-2]
+	case strings.HasSuffix(last, "s") && !strings.HasSuffix(last, "ss") && len(last) > 1:
+		return prefix + last[:len(last)-1]
+	}
+	return prefix + last
 }
 
 // unwrapItemSchema returns the schema of items inside a list response. Handles
