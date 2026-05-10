@@ -1501,6 +1501,13 @@ func operationIDParams(idParam, singularName string) []Param {
 	}}
 }
 
+// Singularize returns a simple singular form of a plural noun. Exported so
+// other packages (notably the OpenAPI parser's resource-prefix ID heuristic)
+// can reuse the same rules without re-implementing the irregulars table.
+func Singularize(s string) string {
+	return singularize(s)
+}
+
 // singularize returns a simple singular form of a plural noun.
 // Handles common patterns; irregular forms use a lookup table.
 func singularize(s string) string {

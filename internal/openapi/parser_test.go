@@ -3530,6 +3530,138 @@ paths:
 	}
 }
 
+// TestParseIDFieldResourcePrefixHeuristic covers the {singular}_id /
+// {resource}_id (and _uuid / _guid) fallback that fires when the existing
+// id/name/required-scalar tiers all fail. APIs that prefix every key field
+// with the resource name (Podscan-style {category_id, category_name, ...})
+// silently dropped rows before this tier — runtime extractID couldn't
+// resolve a primary key, sync stored 0 of N consumed items.
+func TestParseIDFieldResourcePrefixHeuristic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		path       string
+		schemaYAML string
+		wantID     string
+	}{
+		{
+			name: "singular {resource}_id from plural path: category_id for /categories",
+			path: "/categories",
+			schemaYAML: `                  type: object
+                  properties:
+                    category_id: {type: string}
+                    category_name: {type: string}
+                    category_display_name: {type: string}
+`,
+			wantID: "category_id",
+		},
+		{
+			name: "exact {resource}_id when resource is already singular",
+			path: "/notification",
+			schemaYAML: `                  type: object
+                  properties:
+                    notification_id: {type: string}
+                    body: {type: string}
+`,
+			wantID: "notification_id",
+		},
+		{
+			name: "kebab-case resource maps to snake_case prefix: marker_types_id",
+			path: "/marker-types",
+			schemaYAML: `                  type: object
+                  properties:
+                    marker_types_id: {type: string}
+                    description: {type: string}
+`,
+			wantID: "marker_types_id",
+		},
+		{
+			name: "_uuid suffix when {resource}_id is absent",
+			path: "/widgets",
+			schemaYAML: `                  type: object
+                  properties:
+                    widget_uuid: {type: string}
+                    label: {type: string}
+`,
+			wantID: "widget_uuid",
+		},
+		{
+			name: "_guid suffix when {resource}_id and _uuid are absent",
+			path: "/widgets",
+			schemaYAML: `                  type: object
+                  properties:
+                    widget_guid: {type: string}
+                    label: {type: string}
+`,
+			wantID: "widget_guid",
+		},
+		{
+			name: "tier 2 (id) still wins when both id and {resource}_id present",
+			path: "/widgets",
+			schemaYAML: `                  type: object
+                  properties:
+                    id: {type: string}
+                    widget_id: {type: string}
+`,
+			wantID: "id",
+		},
+		{
+			name: "object-typed prefix property is skipped (must be scalar)",
+			path: "/widgets",
+			schemaYAML: `                  type: object
+                  properties:
+                    widget_id:
+                      type: object
+                      properties:
+                        inner: {type: string}
+                    widget_uuid: {type: string}
+`,
+			wantID: "widget_uuid",
+		},
+		{
+			name: "no match: bottoms out empty",
+			path: "/widgets",
+			schemaYAML: `                  type: object
+                  properties:
+                    label: {type: string}
+                    description: {type: string}
+`,
+			wantID: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  ` + tt.path + `:
+    get:
+      operationId: list
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+` + tt.schemaYAML)
+			parsed, err := Parse(yamlSpec)
+			require.NoError(t, err)
+
+			ep := findEndpoint(t, parsed, tt.path)
+			assert.Equal(t, tt.wantID, ep.IDField)
+		})
+	}
+}
+
 // TestParseIDFieldEnvelopeUnwrapping covers list responses whose payload is an
 // object envelope wrapping a single named array (e.g. {events: [...],
 // cursor: "..."}; many list APIs use this shape with the resource name as the

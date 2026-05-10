@@ -1699,7 +1699,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			if pathResourceIDOverride != "" {
 				endpoint.IDField = pathResourceIDOverride
 			} else {
-				endpoint.IDField = resolveIDFieldFromResponseSchema(op)
+				endpoint.IDField = resolveIDFieldFromResponseSchema(op, targetResourceName)
 			}
 			endpoint.Critical = pathCritical
 
@@ -2787,13 +2787,17 @@ func readTierExtension(extensions map[string]any, context string) string {
 	return strings.TrimSpace(tier)
 }
 
-// resolveIDFieldFromResponseSchema implements tiers 2-4 of the IDField fallback
-// chain: prefer "id", then "name", then the first scalar field listed in the
-// response schema's `required:` array (walking properties in their schema order).
-// Returns "" when no field qualifies; templates fall through to runtime list
-// scanning. Tier 1 (`x-resource-id` extension) is handled separately by the
-// caller — it overrides every tier here.
-func resolveIDFieldFromResponseSchema(op *openapi3.Operation) string {
+// resolveIDFieldFromResponseSchema implements tiers 2-5 of the IDField
+// fallback chain: prefer "id", then "name", then the first scalar field
+// listed in the response schema's `required:` array (walking properties in
+// their schema order), then a resource-name-prefix probe (e.g. category_id
+// for resource "categories"). Returns "" when no field qualifies; templates
+// fall through to runtime list scanning. Tier 1 (`x-resource-id` extension)
+// is handled separately by the caller — it overrides every tier here.
+//
+// resourceName is the kebab-case resource slug the parser derived for this
+// path (the same value used to key Resources). Empty disables tier 5.
+func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName string) string {
 	if op == nil || op.Responses == nil {
 		return ""
 	}
@@ -2837,6 +2841,56 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation) string {
 		}
 	}
 
+	// Tier 5: resource-name-prefix probe. APIs that prefix every key field
+	// with the resource name ({category_id, category_name, ...}) leave tier 4
+	// empty when `required:` is unannotated, which then causes runtime
+	// extractID to fall through the generic list and silently drop every row.
+	// Try {singular}_id, {resource}_id, {singular}_uuid, {resource}_uuid,
+	// {singular}_guid, {resource}_guid in that order.
+	if name := resolveIDFieldFromResourceNamePrefix(itemSchema, resourceName); name != "" {
+		return name
+	}
+
+	return ""
+}
+
+// resolveIDFieldFromResourceNamePrefix probes the array-item schema for a
+// scalar property named "<resource>_id", "<singular>_id", or the same
+// patterns with _uuid / _guid suffixes. Returns "" when no candidate
+// matches. resourceName is normalized to lowercase snake_case (kebab "-"
+// becomes "_") so kebab-case paths still match snake_case JSON fields.
+func resolveIDFieldFromResourceNamePrefix(itemSchema *openapi3.Schema, resourceName string) string {
+	if itemSchema == nil || resourceName == "" {
+		return ""
+	}
+	base := strings.ReplaceAll(strings.ToLower(resourceName), "-", "_")
+	if base == "" {
+		return ""
+	}
+	singular := strings.ReplaceAll(strings.ToLower(spec.Singularize(resourceName)), "-", "_")
+
+	seen := map[string]bool{}
+	candidates := make([]string, 0, 6)
+	add := func(c string) {
+		if c == "" || seen[c] {
+			return
+		}
+		seen[c] = true
+		candidates = append(candidates, c)
+	}
+	for _, suffix := range []string{"_id", "_uuid", "_guid"} {
+		add(singular + suffix)
+		add(base + suffix)
+	}
+	for _, name := range candidates {
+		propRef, ok := itemSchema.Properties[name]
+		if !ok || propRef == nil || propRef.Value == nil {
+			continue
+		}
+		if isScalarSchema(propRef.Value) {
+			return name
+		}
+	}
 	return ""
 }
 
