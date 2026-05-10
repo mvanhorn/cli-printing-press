@@ -62,7 +62,7 @@ printing-press-golden-pp-cli which "<capability in your own words>"
 `which` resolves a natural-language capability query to the best matching command from this CLI's curated feature index. Exit code `0` means at least one match; exit code `2` means no confident match — fall back to `--help` or use a narrower query.
 
 ## Auth Setup
-Set your API key via environment variable:
+Run `printing-press-golden-pp-cli auth setup` to print the URL and steps for getting a key (add `--launch` to open the URL). Then set:
 
 ```bash
 export PRINTING_PRESS_GOLDEN_API_KEY="<your-key>"
