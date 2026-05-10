@@ -314,7 +314,7 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			"\n      See API docs: {{.WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
-			"\n      {{.Auth.Instructions}}"+
+			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
 {{- end}}
 			"\n      Run '{{.Name}}-pp-cli doctor' to check auth status."+
 			"\n      Response: "+cliutil.SanitizeErrorBody(msg), err))
@@ -333,7 +333,7 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			"\n      See API docs: {{.WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
-			"\n      {{.Auth.Instructions}}"+
+			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
 {{- end}}
 			"\n      Run '{{.Name}}-pp-cli doctor' to check auth status.", err))
 {{- else if eq .Auth.Type "bearer_token"}}
@@ -349,7 +349,7 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			"\n      See API docs: {{.WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
-			"\n      {{.Auth.Instructions}}"+
+			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
 {{- end}}
 			"\n      Run '{{.Name}}-pp-cli doctor' to check auth status.", err))
 {{- else if eq .Auth.Type "api_key"}}
@@ -365,7 +365,7 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			"\n      See API docs: {{.WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
-			"\n      {{.Auth.Instructions}}"+
+			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
 {{- end}}
 			"\n      Run '{{.Name}}-pp-cli doctor' to check auth status.", err))
 {{- else}}
@@ -381,7 +381,7 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			"\n      See API docs: {{.WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
-			"\n      {{.Auth.Instructions}}"+
+			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
 {{- end}}
 			"\n      Run '{{.Name}}-pp-cli doctor' to check auth status.", err))
 {{- end}}
@@ -399,7 +399,7 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			"\n      See API docs: {{.WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
-			"\n      {{.Auth.Instructions}}"+
+			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
 {{- end}}
 			"\n      Run '{{.Name}}-pp-cli doctor' to check auth status.", err))
 {{- else if or (eq .Auth.Type "") (eq .Auth.Type "none")}}
@@ -419,7 +419,7 @@ func classifyAPIError(err error, flags *rootFlags) error {
 			"\n      See API docs: {{.WebsiteURL}}"+
 {{- end}}
 {{- if .Auth.Instructions}}
-			"\n      {{.Auth.Instructions}}"+
+			{{printf "%q" (printf "\n      %s" .Auth.Instructions)}}+
 {{- end}}
 			"\n      Run '{{.Name}}-pp-cli doctor' to check auth status.", err))
 {{- end}}
