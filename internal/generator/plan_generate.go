@@ -105,7 +105,7 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 			return fmt.Errorf("executing template %s: %w", tmplName, err)
 		}
 		fullPath := filepath.Join(outputDir, outPath)
-		return os.WriteFile(fullPath, normalizeRendered(buf.Bytes(), outPath), 0o644)
+		return os.WriteFile(fullPath, normalizeRendered(buf.Bytes(), tmplName, outPath), 0o644)
 	}
 
 	// Partition commands into top-level and subcommands
