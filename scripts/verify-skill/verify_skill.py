@@ -1019,7 +1019,21 @@ def format_json(report: Report) -> str:
     return json.dumps(out, indent=2)
 
 
+def _force_utf8_stdio() -> None:
+    # Windows consoles default to cp1252, which cannot encode the ✓/✘ glyphs
+    # this script prints. Reconfigure stdout/stderr to UTF-8 so the human
+    # output renders cleanly instead of raising UnicodeEncodeError mid-print.
+    # The Go wrapper also sets PYTHONIOENCODING/PYTHONUTF8 as belt-and-suspenders;
+    # this call covers direct `python3 verify_skill.py ...` invocations.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+        except (AttributeError, OSError):
+            pass
+
+
 def main():
+    _force_utf8_stdio()
     p = argparse.ArgumentParser(
         description="Verify SKILL.md matches shipped CLI source."
     )
