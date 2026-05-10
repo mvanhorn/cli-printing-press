@@ -34,7 +34,11 @@ func IsUUID(s string) bool {
 // shape — adding columns, dropping indexes, changing FTS5 tokenizers —
 // so an older binary refuses to open a newer database rather than silently
 // producing wrong results against a schema it cannot read.
-const StoreSchemaVersion = 1
+const StoreSchemaVersion = 2
+
+const resourcesFTSCreateSQL = `CREATE VIRTUAL TABLE IF NOT EXISTS resources_fts USING fts5(
+	id, resource_type, content, tokenize='porter unicode61'
+)`
 
 type Store struct {
 	db *sql.DB
@@ -243,11 +247,12 @@ func (s *Store) migrate(ctx context.Context) error {
 
 	migrations := []string{
 		`CREATE TABLE IF NOT EXISTS resources (
-			id TEXT PRIMARY KEY,
+			id TEXT NOT NULL,
 			resource_type TEXT NOT NULL,
 			data JSON NOT NULL,
 			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (resource_type, id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_resources_type ON resources(resource_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_resources_synced ON resources(synced_at)`,
@@ -257,9 +262,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			last_synced_at DATETIME,
 			total_count INTEGER DEFAULT 0
 		)`,
-		`CREATE VIRTUAL TABLE IF NOT EXISTS resources_fts USING fts5(
-			id, resource_type, content, tokenize='porter unicode61'
-		)`,
+		resourcesFTSCreateSQL,
 {{- range .Tables}}
 {{- /* Gate: only create tables that have a typed Upsert. Otherwise the
        table is dead — UpsertBatch's dispatch skips it and inserts go only
@@ -337,6 +340,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("database schema version %d is newer than supported version %d; upgrade the CLI binary or open an older database", current, StoreSchemaVersion)
 		}
 
+		if current < 2 {
+			if err := s.migrateResourcesCompositeKey(ctx, conn); err != nil {
+				return fmt.Errorf("migrating resources composite key: %w", err)
+			}
+		}
+
 		if err := s.backfillColumns(ctx, conn); err != nil {
 			return fmt.Errorf("backfilling columns: %w", err)
 		}
@@ -345,16 +354,136 @@ func (s *Store) migrate(ctx context.Context) error {
 				return fmt.Errorf("migration failed: %w", err)
 			}
 		}
-		// Stamp the schema version. On a fresh DB this writes 1; on an
-		// already-stamped DB this is a no-op write of the same value.
-		// An older DB with user_version = 0 and pre-existing tables
-		// gets stamped here without any data rewrites because the
-		// migrations above are idempotent via CREATE TABLE IF NOT EXISTS.
+		// Stamp the schema version. On a fresh DB this writes the current
+		// StoreSchemaVersion; on an already-stamped DB this is a no-op
+		// write of the same value.
+		// An older DB with user_version = 0 and pre-existing tables gets
+		// stamped here after any version-gated rewrites and idempotent
+		// CREATE TABLE IF NOT EXISTS statements have completed.
 		if _, err := conn.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, StoreSchemaVersion)); err != nil {
 			return fmt.Errorf("stamp user_version: %w", err)
 		}
 		return nil
 	})
+}
+
+func (s *Store) migrateResourcesCompositeKey(ctx context.Context, conn *sql.Conn) error {
+	exists, err := tableExists(ctx, conn, "resources")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	composite, err := resourcesTableHasCompositeKey(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if !composite {
+		if _, err := conn.ExecContext(ctx, `CREATE TABLE resources_v2 (
+			id TEXT NOT NULL,
+			resource_type TEXT NOT NULL,
+			data JSON NOT NULL,
+			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (resource_type, id)
+		)`); err != nil {
+			return fmt.Errorf("creating resources_v2: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO resources_v2 (id, resource_type, data, synced_at, updated_at)
+			SELECT id, resource_type, data, synced_at, updated_at FROM resources`); err != nil {
+			return fmt.Errorf("copying resources rows: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `DROP TABLE resources`); err != nil {
+			return fmt.Errorf("dropping old resources table: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `ALTER TABLE resources_v2 RENAME TO resources`); err != nil {
+			return fmt.Errorf("renaming resources_v2: %w", err)
+		}
+	}
+
+	if _, err := conn.ExecContext(ctx, `DROP TABLE IF EXISTS resources_fts`); err != nil {
+		return fmt.Errorf("dropping resources_fts: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, resourcesFTSCreateSQL); err != nil {
+		return fmt.Errorf("creating resources_fts: %w", err)
+	}
+	if err := rebuildResourcesFTS(ctx, conn); err != nil {
+		return fmt.Errorf("rebuilding resources_fts: %w", err)
+	}
+	return nil
+}
+
+func tableExists(ctx context.Context, conn *sql.Conn, name string) (bool, error) {
+	var count int
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count); err != nil {
+		return false, fmt.Errorf("checking table %s: %w", name, err)
+	}
+	return count > 0, nil
+}
+
+func resourcesTableHasCompositeKey(ctx context.Context, conn *sql.Conn) (bool, error) {
+	rows, err := conn.QueryContext(ctx, `PRAGMA table_info(resources)`)
+	if err != nil {
+		return false, fmt.Errorf("reading resources table info: %w", err)
+	}
+	defer rows.Close()
+
+	pk := map[string]int{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull, pkOrder int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pkOrder); err != nil {
+			return false, fmt.Errorf("scanning resources table info: %w", err)
+		}
+		pk[name] = pkOrder
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("reading resources table info rows: %w", err)
+	}
+	return pk["resource_type"] == 1 && pk["id"] == 2, nil
+}
+
+func rebuildResourcesFTS(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx, `SELECT id, resource_type, data FROM resources`)
+	if err != nil {
+		return fmt.Errorf("querying resources: %w", err)
+	}
+
+	type resourceRow struct {
+		id           string
+		resourceType string
+		data         string
+	}
+	var resources []resourceRow
+	for rows.Next() {
+		var r resourceRow
+		if err := rows.Scan(&r.id, &r.resourceType, &r.data); err != nil {
+			rows.Close()
+			return fmt.Errorf("scanning resource: %w", err)
+		}
+		resources = append(resources, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("reading resource rows: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("closing resource rows: %w", err)
+	}
+
+	for _, r := range resources {
+		if _, err := conn.ExecContext(ctx,
+			`INSERT INTO resources_fts (rowid, id, resource_type, content) VALUES (?, ?, ?, ?)`,
+			ftsRowID(r.resourceType, r.id), r.id, r.resourceType, r.data,
+		); err != nil {
+			return fmt.Errorf("indexing resource %s/%s: %w", r.resourceType, r.id, err)
+		}
+	}
+	return nil
 }
 
 const (
@@ -468,14 +597,14 @@ func (s *Store) upsertGenericResourceTx(tx *sql.Tx, resourceType, id string, dat
 	_, err := tx.Exec(
 		`INSERT INTO resources (id, resource_type, data, synced_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET data = excluded.data, synced_at = excluded.synced_at, updated_at = excluded.updated_at`,
+		 ON CONFLICT(resource_type, id) DO UPDATE SET data = excluded.data, synced_at = excluded.synced_at, updated_at = excluded.updated_at`,
 		id, resourceType, string(data), time.Now(), time.Now(),
 	)
 	if err != nil {
 		return err
 	}
 
-	ftsRowid := ftsRowID(id)
+	ftsRowid := ftsRowID(resourceType, id)
 	// Use explicit rowid for FTS5 compatibility with modernc.org/sqlite.
 	// Standard DELETE WHERE column=? may not work on FTS5 virtual tables.
 	if _, err = tx.Exec(`DELETE FROM resources_fts WHERE rowid = ?`, ftsRowid); err != nil {
@@ -555,7 +684,7 @@ func (s *Store) Search(query string, limit int) ([]json.RawMessage, error) {
 	}
 	rows, err := s.db.Query(
 		`SELECT r.data FROM resources r
-		 JOIN resources_fts f ON r.id = f.id
+		 JOIN resources_fts f ON r.id = f.id AND r.resource_type = f.resource_type
 		 WHERE resources_fts MATCH ?
 		 ORDER BY rank
 		 LIMIT ?`,
@@ -589,8 +718,12 @@ func extractObjectID(obj map[string]any) string {
 // ftsRowID derives a deterministic rowid from a string ID for use with FTS5.
 // modernc.org/sqlite's FTS5 implementation may not support DELETE WHERE column=?
 // on virtual tables, so we use explicit rowids and DELETE WHERE rowid=? instead.
-func ftsRowID(id string) int64 {
+func ftsRowID(scope, id string) int64 {
 	var h uint64
+	for _, c := range scope {
+		h = h*31 + uint64(c)
+	}
+	h *= 31
 	for _, c := range id {
 		h = h*31 + uint64(c)
 	}
@@ -665,7 +798,7 @@ func (s *Store) upsert{{pascal .Name}}Tx(tx *sql.Tx, id string, obj map[string]a
 
 	// Standalone FTS: manually sync since content-sync triggers aren't used.
 	// Use explicit rowid for FTS5 compatibility with modernc.org/sqlite.
-	ftsRowid := ftsRowID(id)
+	ftsRowid := ftsRowID("{{.Name}}", id)
 	_, _ = tx.Exec(`DELETE FROM {{safeNameSuffix .Name "_fts"}} WHERE rowid = ?`, ftsRowid)
 	_, _ = tx.Exec(
 		`INSERT INTO {{safeNameSuffix .Name "_fts"}} (rowid, id, {{safeJoin .FTS5Fields ", "}}) VALUES (?{{- range .FTS5Fields}}, ?{{- end}}, ?)`,
