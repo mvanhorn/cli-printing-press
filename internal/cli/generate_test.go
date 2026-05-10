@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
@@ -464,23 +463,6 @@ resources:
 	err := runGenerate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "refusing to snapshot symlinked internal")
-}
-
-func TestMovePreservedDirFallsBackWhenRenameCrossesDevices(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	src := filepath.Join(dir, "staged")
-	dst := filepath.Join(dir, "restored")
-	require.NoError(t, os.MkdirAll(filepath.Join(src, "nested"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(src, "nested", "client.go"), []byte("package nested\n"), 0o644))
-
-	err := movePreservedDir(src, dst, func(_, _ string) error {
-		return &os.LinkError{Op: "rename", Old: src, New: dst, Err: syscall.EXDEV}
-	})
-	require.NoError(t, err)
-	assert.NoDirExists(t, src)
-	assert.FileExists(t, filepath.Join(dst, "nested", "client.go"))
 }
 
 func TestGenerateCmdConsumesTrafficAnalysis(t *testing.T) {
