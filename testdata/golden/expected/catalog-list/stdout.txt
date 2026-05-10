@@ -13,6 +13,9 @@ developer-tools:
 example:
   petstore             Canonical OpenAPI example - pet store management
 
+food-and-dining:
+  dominos              Pizza ordering, store lookup, menu browsing, deal lookup, and order tracking. No public API — reached through reverse-engineered JSON endpoints under order.dominos.com/power.
+
 marketing:
   producthunt          Find, monitor, and export Product Hunt launches for launch research, scouting, and competitive tracking without requiring a Product Hunt API application.
 
