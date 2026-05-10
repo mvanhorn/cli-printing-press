@@ -4412,6 +4412,100 @@ paths:
 	assert.True(t, byName["filename"].Required)
 }
 
+func TestParseFormUrlencodedRequestBodyPreservesContentType(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: OAuth API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /oauth/token:
+    post:
+      operationId: exchangeToken
+      summary: Exchange OAuth token
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type, client_id]
+              properties:
+                grant_type:
+                  type: string
+                client_id:
+                  type: string
+                client_secret:
+                  type: string
+                refresh_token:
+                  type: string
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/oauth/token")
+	assert.Equal(t, "application/x-www-form-urlencoded", endpoint.RequestContentType)
+	require.Len(t, endpoint.Body, 4)
+	byName := map[string]spec.Param{}
+	for _, param := range endpoint.Body {
+		byName[param.Name] = param
+	}
+	assert.True(t, byName["grant_type"].Required)
+	assert.True(t, byName["client_id"].Required)
+	assert.False(t, byName["client_secret"].Required)
+}
+
+// TestParseJSONPreferredOverFormUrlencoded asserts the parser still picks
+// application/json when the spec offers both content types — keeping JSON-
+// declared specs byte-identical and letting form-only OAuth/legacy endpoints
+// surface their wire shape.
+func TestParseJSONPreferredOverFormUrlencoded(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Multi Content API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    post:
+      operationId: createItem
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        "201":
+          description: created
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/items")
+	assert.Equal(t, "application/json", endpoint.RequestContentType)
+}
+
 func findParsedEndpointByPath(t *testing.T, parsed *spec.APISpec, method, path string) spec.Endpoint {
 	t.Helper()
 	for _, resource := range parsed.Resources {

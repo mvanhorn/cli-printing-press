@@ -311,6 +311,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"multipartBodyMaps":     multipartBodyMaps,
 		"endpointUsesMultipart": endpointUsesMultipart,
 		"hasMultipartRequest":   hasMultipartRequest,
+		"formBodyMaps":          formBodyMaps,
+		"endpointUsesForm":      endpointUsesForm,
+		"hasFormRequest":        hasFormRequest,
 		"publicFlagName":        publicFlagName,
 		"publicFlagAliases":     publicFlagAliases,
 		"flagChangedExpr":       flagChangedExpr,
@@ -646,6 +649,7 @@ type clientTemplateData struct {
 	*spec.APISpec
 	HasGraphQLPersistedQueries bool
 	HasMultipartRequest        bool
+	HasFormRequest             bool
 	// Populated by Generator.shouldEmitAuth() so this template gate stays in
 	// sync with auth.go emission, root.go registration, and scoreAuth.
 	HasAuthCommand bool
@@ -1435,6 +1439,7 @@ func (g *Generator) renderSingleFiles() error {
 				APISpec:                    g.Spec,
 				HasGraphQLPersistedQueries: g.hasTrafficAnalysisHint("graphql_persisted_query"),
 				HasMultipartRequest:        hasMultipartRequest(g.Spec),
+				HasFormRequest:             hasFormRequest(g.Spec),
 				HasAuthCommand:             g.shouldEmitAuth(),
 			}
 		case "config.go.tmpl":
@@ -3040,7 +3045,7 @@ func flagChangedExpr(p spec.Param) string {
 func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBinding {
 	bindings := make([]mcpParamBinding, 0, len(endpoint.Params)+len(endpoint.Body))
 	requestContentType := ""
-	if endpointUsesMultipart(endpoint) {
+	if endpointUsesMultipart(endpoint) || endpointUsesForm(endpoint) {
 		requestContentType = endpoint.RequestContentType
 	}
 	for _, p := range endpoint.Params {
@@ -3189,6 +3194,18 @@ func endpointUsesMultipart(endpoint spec.Endpoint) bool {
 }
 
 func hasMultipartRequest(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointUsesMultipart)
+}
+
+func endpointUsesForm(endpoint spec.Endpoint) bool {
+	return strings.EqualFold(strings.TrimSpace(endpoint.RequestContentType), "application/x-www-form-urlencoded")
+}
+
+func hasFormRequest(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointUsesForm)
+}
+
+func anyEndpointMatches(apiSpec *spec.APISpec, predicate func(spec.Endpoint) bool) bool {
 	if apiSpec == nil {
 		return false
 	}
@@ -3196,7 +3213,7 @@ func hasMultipartRequest(apiSpec *spec.APISpec) bool {
 	walk = func(resources map[string]spec.Resource) bool {
 		for _, resource := range resources {
 			for _, endpoint := range resource.Endpoints {
-				if endpointUsesMultipart(endpoint) {
+				if predicate(endpoint) {
 					return true
 				}
 			}
@@ -3207,6 +3224,39 @@ func hasMultipartRequest(apiSpec *spec.APISpec) bool {
 		return false
 	}
 	return walk(apiSpec.Resources)
+}
+
+// formBodyMaps renders per-flag form-field assignments for endpoints that send
+// application/x-www-form-urlencoded request bodies. Object/array/JSON-string
+// fields are validated as JSON then sent as a single string field (matching
+// the JSON-shaped struct_data convention used by reverse-engineered APIs);
+// scalar fields are formatted with %v.
+func formBodyMaps(body []spec.Param, indent string) string {
+	var b strings.Builder
+	for _, p := range body {
+		id := paramIdent(p)
+		ident := toCamel(id)
+		flag := publicFlagName(p)
+		if isComplexMultipartField(p) || isJSONStringParam(p) {
+			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\tif !json.Valid([]byte(body%s)) {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: invalid JSON\")\n", indent, flag)
+			fmt.Fprintf(&b, "%s\t}\n", indent)
+			fmt.Fprintf(&b, "%s\tfields.Set(%q, body%s)\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s}\n", indent)
+			continue
+		}
+		if p.Type == "string" {
+			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\tfields.Set(%q, body%s)\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s}\n", indent)
+			continue
+		}
+		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
+		fmt.Fprintf(&b, "%s\tfields.Set(%q, fmt.Sprintf(\"%%v\", body%s))\n", indent, p.Name, ident)
+		fmt.Fprintf(&b, "%s}\n", indent)
+	}
+	return b.String()
 }
 
 func isBinaryParam(p spec.Param) bool {
