@@ -18,7 +18,7 @@ import (
 	"mime/multipart"
 {{- end}}
 	"net/http"
-{{- if or .HasAuthCommand .HasFormRequest}}
+{{- if or (and .HasAuthCommand .Auth.TokenURL) .HasFormRequest}}
 	"net/url"
 {{- end}}
 	"os"
@@ -1284,7 +1284,13 @@ func (c *Client) mintClientCredentials(clientID, clientSecret string) error {
 	if tokenResp.AccessToken == "" {
 		return fmt.Errorf("OAuth client_credentials mint: response missing access_token")
 	}
-	expiry := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	// Guard against non-conformant servers that return expires_in: 0.
+	// A zero-duration expiry resolves to time.Now(), which authHeader()
+	// then treats as expired, causing every request to re-mint in a loop.
+	expiry := time.Time{}
+	if tokenResp.ExpiresIn > 0 {
+		expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	}
 	c.Config.AuthHeaderVal = "" // force AuthHeader() to use the new AccessToken path
 	if err := c.Config.SaveTokens(clientID, clientSecret, tokenResp.AccessToken, "", expiry); err != nil {
 		return fmt.Errorf("saving minted token: %w", err)
@@ -1299,17 +1305,15 @@ func (c *Client) refreshAccessToken() error {
 	if c.Config == nil {
 		return nil
 	}
+{{- if .Auth.TokenURL}}
 	if c.Config.RefreshToken == "" {
 		return nil
 	}
 
-	tokenURL := ""
-{{- if .Auth.TokenURL}}
-	tokenURL = c.Config.TokenURL
+	tokenURL := c.Config.TokenURL
 	if tokenURL == "" {
 		tokenURL = "{{.Auth.TokenURL}}"
 	}
-{{- end}}
 	if tokenURL == "" {
 		return nil
 	}
@@ -1359,6 +1363,7 @@ func (c *Client) refreshAccessToken() error {
 	if err := c.Config.SaveTokens(c.Config.ClientID, c.Config.ClientSecret, tokenResp.AccessToken, refreshToken, expiry); err != nil {
 		return fmt.Errorf("saving refreshed token: %w", err)
 	}
+{{- end}}
 
 	return nil
 }

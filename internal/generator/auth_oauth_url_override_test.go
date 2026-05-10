@@ -63,7 +63,7 @@ func TestOAuth2URLs_RuntimeOverrideEmittedForAuthCodeGrant(t *testing.T) {
 	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
 	client := string(clientSrc)
-	require.Contains(t, client, "tokenURL = c.Config.TokenURL",
+	require.Contains(t, client, "tokenURL := c.Config.TokenURL",
 		"refreshAccessToken must read c.Config.TokenURL before falling back to spec default")
 }
 
@@ -103,6 +103,19 @@ func TestOAuth2URLs_RuntimeOverrideEmittedForClientCredentialsGrant(t *testing.T
 	client := string(clientSrc)
 	require.Contains(t, client, "tokenURL = c.Config.TokenURL",
 		"mintClientCredentials must read c.Config.TokenURL via the c.Config != nil guard")
+
+	// Pin the auto-refresh expiry guard: without it a server returning
+	// expires_in: 0 makes every request re-trigger mintClientCredentials in
+	// a loop. mintClientCredentials is the runtime auto-refresh path called
+	// from authHeader(), so this guard matters more than the login-path one.
+	mintIdx := strings.Index(client, "func (c *Client) mintClientCredentials")
+	require.NotEqual(t, -1, mintIdx, "mintClientCredentials must be emitted")
+	mintBody := client[mintIdx:]
+	if next := strings.Index(mintBody[1:], "\nfunc "); next != -1 {
+		mintBody = mintBody[:next+1]
+	}
+	require.Contains(t, mintBody, "if tokenResp.ExpiresIn > 0 {",
+		"mintClientCredentials must guard expiry calc against ExpiresIn==0")
 }
 
 // Pins that bearer_token / api_key specs (no OAuth2 URLs) still build cleanly:
