@@ -139,15 +139,19 @@ recovery prompt. Pattern set:
 
 ```bash
 PII_AUTO_REDACT=(
+  'openrouter-api-key|sk-or-v1-[A-Za-z0-9_-]{24,}|<REDACTED:openrouter-api-key>'
   'bearer-stripe-live|Bearer sk_live_[A-Za-z0-9]{20,}|Bearer <REDACTED:stripe-live-token>'
   'bearer-stripe-test|Bearer sk_test_[A-Za-z0-9]{20,}|Bearer <REDACTED:stripe-test-token>'
   'bearer-cal-live|Bearer cal_live_[A-Za-z0-9]{20,}|Bearer <REDACTED:cal-live-token>'
   'bearer-cal-test|Bearer cal_test_[A-Za-z0-9]{20,}|Bearer <REDACTED:cal-test-token>'
   'bearer-github-pat|Bearer ghp_[A-Za-z0-9]{36,}|Bearer <REDACTED:github-pat>'
   'bearer-github-oauth|Bearer gho_[A-Za-z0-9]{36,}|Bearer <REDACTED:github-oauth>'
+  'bearer-github-server|Bearer ghs_[A-Za-z0-9]{36,}|Bearer <REDACTED:github-server-token>'
   'bearer-github-fine|Bearer github_pat_[A-Za-z0-9_]{60,}|Bearer <REDACTED:github-fine-grained-pat>'
   'slack-user-token|xoxp-[A-Za-z0-9-]{40,}|<REDACTED:slack-user-token>'
   'slack-bot-token|xoxb-[A-Za-z0-9-]{40,}|<REDACTED:slack-bot-token>'
+  'slack-app-token|xapp-[A-Za-z0-9-]{32,}|<REDACTED:slack-app-token>'
+  'google-api-key|AIza[A-Za-z0-9_-]{20,}|<REDACTED:google-api-key>'
 )
 
 for entry in "${PII_AUTO_REDACT[@]}"; do
@@ -161,6 +165,10 @@ for entry in "${PII_AUTO_REDACT[@]}"; do
   done
 done
 ```
+
+Do not add a simple `AKIA[0-9A-Z]{16}` shell auto-redaction rule here. AWS
+access keys have the same shape as AWS's canonical documentation placeholder,
+so the binary publish scan handles them with a placeholder allowlist instead.
 
 These patterns are vendor-anchored and the prefix character class is restrictive
 enough that the false-positive rate is effectively zero. Adding a new vendor
