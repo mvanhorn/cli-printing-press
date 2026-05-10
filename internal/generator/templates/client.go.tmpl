@@ -14,6 +14,9 @@ import (
 	"fmt"
 	"io"
 	"math"
+{{- if .HasMultipartRequest}}
+	"mime/multipart"
+{{- end}}
 	"net/http"
 {{- if .HasAuthCommand}}
 	"net/url"
@@ -451,6 +454,17 @@ func (c *Client) PostWithHeaders(path string, body any, headers map[string]strin
 	return c.do("POST", path, nil, body, headers)
 }
 
+{{- if .HasMultipartRequest }}
+func (c *Client) PostMultipart(path string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PostMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
+{{ end }}
+
 func (c *Client) Delete(path string) (json.RawMessage, int, error) {
 	return c.do("DELETE", path, nil, nil, nil)
 }
@@ -467,6 +481,17 @@ func (c *Client) PutWithHeaders(path string, body any, headers map[string]string
 	return c.do("PUT", path, nil, body, headers)
 }
 
+{{- if .HasMultipartRequest }}
+func (c *Client) PutMultipart(path string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PutMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
+{{ end }}
+
 func (c *Client) Patch(path string, body any) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, nil, body, nil)
 }
@@ -474,6 +499,59 @@ func (c *Client) Patch(path string, body any) (json.RawMessage, int, error) {
 func (c *Client) PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, nil, body, headers)
 }
+
+{{- if .HasMultipartRequest }}
+func (c *Client) PatchMultipart(path string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PatchMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
+type multipartRequestBody struct {
+	Fields     map[string]string
+	FileFields map[string]string
+}
+
+func encodeMultipartBody(body multipartRequestBody) ([]byte, string, error) {
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	for fieldName, value := range body.Fields {
+		if err := writer.WriteField(fieldName, value); err != nil {
+			_ = writer.Close()
+			return nil, "", fmt.Errorf("writing multipart field %q: %w", fieldName, err)
+		}
+	}
+	for fieldName, filePath := range body.FileFields {
+		file, err := os.Open(filePath)
+		if err != nil {
+			_ = writer.Close()
+			return nil, "", fmt.Errorf("opening multipart file field %q (%q): %w", fieldName, filePath, err)
+		}
+		part, err := writer.CreateFormFile(fieldName, filepath.Base(filePath))
+		if err != nil {
+			_ = file.Close()
+			_ = writer.Close()
+			return nil, "", fmt.Errorf("creating multipart file field %q (%q): %w", fieldName, filePath, err)
+		}
+		if _, err := io.Copy(part, file); err != nil {
+			_ = file.Close()
+			_ = writer.Close()
+			return nil, "", fmt.Errorf("copying multipart file field %q (%q): %w", fieldName, filePath, err)
+		}
+		if err := file.Close(); err != nil {
+			_ = writer.Close()
+			return nil, "", fmt.Errorf("closing multipart file field %q (%q): %w", fieldName, filePath, err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", fmt.Errorf("finalizing multipart body: %w", err)
+	}
+	return buf.Bytes(), writer.FormDataContentType(), nil
+}
+
+{{ end }}
 
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
@@ -543,12 +621,31 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 {{- end}}
 
 	var bodyBytes []byte
+{{- if .HasMultipartRequest}}
+	var contentType string
+{{- end}}
 	if body != nil {
+{{- if .HasMultipartRequest}}
+		if multipartBody, ok := body.(multipartRequestBody); ok {
+			b, ct, err := encodeMultipartBody(multipartBody)
+			if err != nil {
+				return nil, 0, err
+			}
+			bodyBytes = b
+			contentType = ct
+		} else {
+{{- end}}
 		b, err := json.Marshal(body)
 		if err != nil {
 			return nil, 0, fmt.Errorf("marshaling body: %w", err)
 		}
 		bodyBytes = b
+{{- if .HasMultipartRequest}}
+		contentType = "application/json"
+{{- end}}
+{{- if .HasMultipartRequest}}
+		}
+{{- end}}
 	}
 {{- if .HasGraphQLPersistedQueries}}
 	bodyBytes = c.applyPersistedQueryBodyOverrides(bodyBytes)
@@ -643,7 +740,11 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 			return nil, 0, fmt.Errorf("creating request: %w", err)
 		}
 		if bodyBytes != nil {
+{{- if .HasMultipartRequest}}
+			req.Header.Set("Content-Type", contentType)
+{{- else}}
 			req.Header.Set("Content-Type", "application/json")
+{{- end}}
 		}
 
 		if params != nil {
