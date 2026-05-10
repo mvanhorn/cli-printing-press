@@ -22,9 +22,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 	var flag{{camel (paramIdent .)}} {{goTypeForParam .Name .Type}}
 {{- end}}
 {{- end}}
-{{- range .Endpoint.Body}}
-	var body{{camel (paramIdent .)}} {{goType .Type}}
-{{- end}}
+{{- bodyVarDecls .Endpoint}}
 {{- if .Endpoint.Pagination}}
 	var flagAll bool
 {{- end}}
@@ -43,13 +41,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			}
 {{- end}}
 {{- end}}
-{{- range .Endpoint.Body}}
-{{- if and .Required (not .Default)}}
-			if !{{flagChangedExpr .}} && !flags.dryRun {
-				return fmt.Errorf("required flag \"%s\" not set", "{{publicFlagName .}}")
-			}
-{{- end}}
-{{- end}}
+{{- bodyRequiredChecks .Endpoint "\t\t\t"}}
 {{- range .Endpoint.Params}}
 {{- if and .Enum (not .Positional) (eq .Type "string")}}
 			if {{flagChangedExpr .}} {
@@ -297,14 +289,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- end}}
-{{- range .Endpoint.Body}}
-{{- $param := .}}
-	cmd.Flags().{{cobraFlagFunc .Type}}(&body{{camel (paramIdent .)}}, "{{publicFlagName .}}", {{defaultVal .}}, "{{oneline .Description}}")
-{{- range publicFlagAliases $param}}
-	cmd.Flags().{{cobraFlagFunc $param.Type}}(&body{{camel (paramIdent $param)}}, "{{.}}", {{defaultVal $param}}, "{{oneline $param.Description}}")
-	_ = cmd.Flags().MarkHidden("{{.}}")
-{{- end}}
-{{- end}}
+{{- bodyFlagRegs .Endpoint}}
 {{- if .Endpoint.Pagination}}
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Fetch all pages")
 {{- end}}

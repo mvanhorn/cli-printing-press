@@ -308,6 +308,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"jsonStringParam":       isJSONStringParam,
 		"jsonEnumSuggestion":    jsonEnumSuggestion,
 		"bodyMap":               bodyMap,
+		"bodyVarDecls":          bodyVarDecls,
+		"bodyFlagRegs":          bodyFlagRegs,
+		"bodyRequiredChecks":    bodyRequiredChecks,
 		"multipartBodyMaps":     multipartBodyMaps,
 		"endpointUsesMultipart": endpointUsesMultipart,
 		"hasMultipartRequest":   hasMultipartRequest,
@@ -3124,12 +3127,34 @@ func endpointNeedsClientLimit(endpoint spec.Endpoint) bool {
 // and parameterizes the indent. The output is the body of the
 // `body := map[string]any{}` block — callers emit the surrounding
 // declaration and the closing brace themselves.
+//
+// When a body Param has Type "object" with non-empty Fields, the block
+// recurses: each leaf field becomes its own flag (parent-prefixed in
+// the generated identifier so `start.dateTime` and `end.dateTime` do
+// not collide), and the parent's wire-side key receives a built-up
+// map[string]any rather than a single JSON-string flag.
 func bodyMap(body []spec.Param, indent string) string {
 	var b strings.Builder
+	renderBodyMap(&b, body, indent, "body", "", "")
+	return b.String()
+}
+
+func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identPrefix, flagPrefix string) {
 	for _, p := range body {
 		id := paramIdent(p)
-		ident := toCamel(id)
-		flag := publicFlagName(p)
+		ident := identPrefix + toCamel(id)
+		flag := joinFlag(flagPrefix, publicFlagName(p))
+		if p.Type == "object" && len(p.Fields) > 0 {
+			nestedMap := "nested" + ident
+			fmt.Fprintf(b, "%s{\n", indent)
+			fmt.Fprintf(b, "%s\t%s := map[string]any{}\n", indent, nestedMap)
+			renderBodyMap(b, p.Fields, indent+"\t", nestedMap, ident, flag)
+			fmt.Fprintf(b, "%s\tif len(%s) > 0 {\n", indent, nestedMap)
+			fmt.Fprintf(b, "%s\t\t%s[%q] = %s\n", indent, mapVar, p.Name, nestedMap)
+			fmt.Fprintf(b, "%s\t}\n", indent)
+			fmt.Fprintf(b, "%s}\n", indent)
+			continue
+		}
 		isComplex := p.Type == "object" || p.Type == "array"
 		if isComplex || isJSONStringParam(p) {
 			// object/array: store the parsed value (so the API receives
@@ -3139,20 +3164,159 @@ func bodyMap(body []spec.Param, indent string) string {
 			if isComplex {
 				rhs = "parsed" + ident
 			}
-			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
-			fmt.Fprintf(&b, "%s\tvar parsed%s any\n", indent, ident)
-			fmt.Fprintf(&b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
-			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
-			fmt.Fprintf(&b, "%s\t}\n", indent)
-			fmt.Fprintf(&b, "%s\tbody[%q] = %s\n", indent, p.Name, rhs)
-			fmt.Fprintf(&b, "%s}\n", indent)
+			fmt.Fprintf(b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(b, "%s\tvar parsed%s any\n", indent, ident)
+			fmt.Fprintf(b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
+			fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
+			fmt.Fprintf(b, "%s\t}\n", indent)
+			fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.Name, rhs)
+			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
-		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
-		fmt.Fprintf(&b, "%s\tbody[%q] = body%s\n", indent, p.Name, ident)
-		fmt.Fprintf(&b, "%s}\n", indent)
+		fmt.Fprintf(b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
+		fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.Name, ident)
+		fmt.Fprintf(b, "%s}\n", indent)
 	}
+}
+
+// bodyVarDecls renders Go var declarations for body construction. For
+// JSON-body endpoints, nested-object params (Type "object" with non-empty
+// Fields) recurse: each leaf field becomes its own declaration with a
+// parent-prefixed identifier. For multipart and form-encoded endpoints,
+// the body path stays flat (one var per top-level param) because
+// multipartBodyMaps and formBodyMaps continue to send object-typed
+// parents as JSON-string fields. Output starts with "\n\tvar ..."
+// matching the one-tab indent of the original `{{- range .Endpoint.Body}}`
+// template loop.
+func bodyVarDecls(endpoint spec.Endpoint) string {
+	var b strings.Builder
+	if bodyUsesFlatEmission(endpoint) {
+		for _, p := range endpoint.Body {
+			fmt.Fprintf(&b, "\n\tvar body%s %s", toCamel(paramIdent(p)), goType(p.Type))
+		}
+		return b.String()
+	}
+	renderBodyVarDecls(&b, endpoint.Body, "")
 	return b.String()
+}
+
+// bodyUsesFlatEmission reports whether the endpoint serializes its body
+// via a non-JSON-map path (multipart/form-data or
+// application/x-www-form-urlencoded). Those paths keep one var/flag per
+// top-level body param so multipartBodyMaps / formBodyMaps still find
+// the parent variable to read from.
+func bodyUsesFlatEmission(endpoint spec.Endpoint) bool {
+	return endpointUsesMultipart(endpoint) || endpointUsesForm(endpoint)
+}
+
+func renderBodyVarDecls(b *strings.Builder, body []spec.Param, identPrefix string) {
+	for _, p := range body {
+		ident := identPrefix + toCamel(paramIdent(p))
+		if p.Type == "object" && len(p.Fields) > 0 {
+			renderBodyVarDecls(b, p.Fields, ident)
+			continue
+		}
+		fmt.Fprintf(b, "\n\tvar body%s %s", ident, goType(p.Type))
+	}
+}
+
+// bodyFlagRegs renders cobra flag registrations for body construction.
+// Multipart endpoints keep flat (one flag per top-level body param) so
+// the JSON-string fallback that multipartBodyMaps emits stays addressable.
+// For non-multipart endpoints, nested-object params recurse with
+// parent-prefixed flag names so two parents that share a field name do
+// not collide. Aliases are emitted only at the top level.
+func bodyFlagRegs(endpoint spec.Endpoint) string {
+	var b strings.Builder
+	if bodyUsesFlatEmission(endpoint) {
+		for _, p := range endpoint.Body {
+			renderFlatBodyFlagReg(&b, p, "", "", true)
+		}
+		return b.String()
+	}
+	renderBodyFlagRegs(&b, endpoint.Body, "", "", true)
+	return b.String()
+}
+
+func renderBodyFlagRegs(b *strings.Builder, body []spec.Param, identPrefix, flagPrefix string, topLevel bool) {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 {
+			ident := identPrefix + toCamel(paramIdent(p))
+			flag := joinFlag(flagPrefix, publicFlagName(p))
+			renderBodyFlagRegs(b, p.Fields, ident, flag, false)
+			continue
+		}
+		renderFlatBodyFlagReg(b, p, identPrefix, flagPrefix, topLevel)
+	}
+}
+
+func renderFlatBodyFlagReg(b *strings.Builder, p spec.Param, identPrefix, flagPrefix string, topLevel bool) {
+	ident := identPrefix + toCamel(paramIdent(p))
+	flag := joinFlag(flagPrefix, publicFlagName(p))
+	desc := naming.OneLine(p.Description)
+	fmt.Fprintf(b, "\n\tcmd.Flags().%s(&body%s, \"%s\", %s, \"%s\")",
+		cobraFlagFunc(p.Type), ident, flag, defaultVal(p), desc)
+	if topLevel {
+		for _, alias := range publicFlagAliases(p) {
+			fmt.Fprintf(b, "\n\tcmd.Flags().%s(&body%s, \"%s\", %s, \"%s\")",
+				cobraFlagFunc(p.Type), ident, alias, defaultVal(p), desc)
+			fmt.Fprintf(b, "\n\t_ = cmd.Flags().MarkHidden(\"%s\")", alias)
+		}
+	}
+}
+
+// bodyRequiredChecks renders required-flag validation for body params.
+// indent is the indent prefix applied to each emitted `if` line so the
+// helper can serve both command_endpoint.go.tmpl (4-tab indent inside
+// `if !stdinBody`, 3-tab indent for multipart) and command_promoted.go.tmpl
+// (3-tab indent at RunE-body level). Multipart endpoints keep flat
+// behavior. For non-multipart, top-level params use flagChangedExpr
+// (lifts aliases); nested fields use a single Changed() check on the
+// parent-prefixed flag because aliases are not propagated to children.
+func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
+	var b strings.Builder
+	if bodyUsesFlatEmission(endpoint) {
+		for _, p := range endpoint.Body {
+			renderFlatBodyRequiredCheck(&b, p, indent, "", true)
+		}
+		return b.String()
+	}
+	renderBodyRequiredChecks(&b, endpoint.Body, indent, "", true)
+	return b.String()
+}
+
+func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, indent, flagPrefix string, topLevel bool) {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 {
+			flag := joinFlag(flagPrefix, publicFlagName(p))
+			renderBodyRequiredChecks(b, p.Fields, indent, flag, false)
+			continue
+		}
+		renderFlatBodyRequiredCheck(b, p, indent, flagPrefix, topLevel)
+	}
+}
+
+func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagPrefix string, topLevel bool) {
+	if !p.Required || p.Default != nil {
+		return
+	}
+	flag := joinFlag(flagPrefix, publicFlagName(p))
+	var changedExpr string
+	if topLevel {
+		changedExpr = flagChangedExpr(p)
+	} else {
+		changedExpr = fmt.Sprintf("cmd.Flags().Changed(\"%s\")", flag)
+	}
+	fmt.Fprintf(b, "\n%sif !%s && !flags.dryRun {", indent, changedExpr)
+	fmt.Fprintf(b, "\n%s\treturn fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"%s\")", indent, flag)
+	fmt.Fprintf(b, "\n%s}", indent)
+}
+
+func joinFlag(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+	return prefix + "-" + name
 }
 
 func multipartBodyMaps(body []spec.Param, indent string) string {

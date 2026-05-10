@@ -35,9 +35,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 	var flag{{camel (paramIdent .)}} {{goTypeForParam .Name .Type}}
 {{- end}}
 {{- end}}
-{{- range .Endpoint.Body}}
-	var body{{camel (paramIdent .)}} {{goType .Type}}
-{{- end}}
+{{- bodyVarDecls .Endpoint}}
 {{- if .Endpoint.Pagination}}
 	var flagAll bool
 {{- end}}
@@ -108,22 +106,10 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- if or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")}}
 {{- if or $isMultipart $isForm}}
-{{- range .Endpoint.Body}}
-{{- if and .Required (not .Default)}}
-			if !{{flagChangedExpr .}} && !flags.dryRun {
-				return fmt.Errorf("required flag \"%s\" not set", "{{publicFlagName .}}")
-			}
-{{- end}}
-{{- end}}
+{{- bodyRequiredChecks .Endpoint "\t\t\t"}}
 {{- else}}
 			if !stdinBody {
-{{- range .Endpoint.Body}}
-{{- if and .Required (not .Default)}}
-				if !{{flagChangedExpr .}} && !flags.dryRun {
-					return fmt.Errorf("required flag \"%s\" not set", "{{publicFlagName .}}")
-				}
-{{- end}}
-{{- end}}
+{{- bodyRequiredChecks .Endpoint "\t\t\t\t"}}
 			}
 {{- end}}
 {{- end}}
@@ -583,14 +569,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- end}}
 {{- end}}
-{{- range .Endpoint.Body}}
-{{- $param := .}}
-	cmd.Flags().{{cobraFlagFunc .Type}}(&body{{camel (paramIdent .)}}, "{{publicFlagName .}}", {{defaultVal .}}, "{{oneline .Description}}")
-{{- range publicFlagAliases $param}}
-	cmd.Flags().{{cobraFlagFunc $param.Type}}(&body{{camel (paramIdent $param)}}, "{{.}}", {{defaultVal $param}}, "{{oneline $param.Description}}")
-	_ = cmd.Flags().MarkHidden("{{.}}")
-{{- end}}
-{{- end}}
+{{- bodyFlagRegs .Endpoint}}
 {{- if .Endpoint.Pagination}}
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Fetch all pages")
 {{- end}}
