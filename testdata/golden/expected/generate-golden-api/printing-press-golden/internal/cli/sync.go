@@ -611,7 +611,7 @@ func isEmptyPageResponse(data json.RawMessage) bool {
 	arrayCount := 0
 	for _, raw := range envelope {
 		var candidate []json.RawMessage
-		if err := json.Unmarshal(raw, &candidate); err == nil {
+		if err := json.Unmarshal(raw, &candidate); err == nil && len(candidate) == 0 && string(raw) != "null" {
 			arrayCount++
 		}
 	}

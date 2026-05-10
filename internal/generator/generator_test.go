@@ -5913,6 +5913,36 @@ func TestGeneratedSyncTreatsEmptyWrappedPageAsSuccessfulZeroRecords(t *testing.T
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
 
+	behaviorTest := `package cli
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestIsEmptyPageResponseRejectsNullSingletonFields(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"known wrapper empty array", ` + "`" + `{"results":[]}` + "`" + `, true},
+		{"unknown wrapper empty array", ` + "`" + `{"empty":[]}` + "`" + `, true},
+		{"single null field is not an empty page", ` + "`" + `{"user":null}` + "`" + `, false},
+		{"singleton object with null field is not an empty page", ` + "`" + `{"id":"rec_1","user":null}` + "`" + `, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isEmptyPageResponse(json.RawMessage(tc.body)); got != tc.want {
+				t.Fatalf("isEmptyPageResponse(%s) = %v, want %v", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_empty_page_test.go"), []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestIsEmptyPageResponseRejectsNullSingletonFields")
+
 	binaryPath := filepath.Join(outputDir, "emptywrapsync-pp-cli")
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/emptywrapsync-pp-cli")
 
