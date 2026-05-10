@@ -215,6 +215,30 @@ func TestBodyMap_NestedObject_EmptyFieldsKeepsJSONStringPath(t *testing.T) {
 	}
 }
 
+// TestBodyMap_NestedJSONStringLeafUsesParentPrefixedFlag verifies that
+// when a leaf inside a parent's Fields is itself routed through the
+// JSON-string parse path (an array, or an object without Fields), the
+// emitted error message uses the parent-prefixed flag name. Without
+// flagPrefix threading, the error would name only the leaf — misleading
+// users who set `--metadata-tags` and saw "parsing --tags JSON" on
+// failure.
+func TestBodyMap_NestedJSONStringLeafUsesParentPrefixedFlag(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{
+		Name: "metadata",
+		Type: "object",
+		Fields: []spec.Param{
+			{Name: "tags", Type: "array"},
+		},
+	}}, "\t")
+	if !strings.Contains(got, `"parsing --metadata-tags JSON: %w"`) {
+		t.Errorf("expected parent-prefixed flag in error message, got:\n%s", got)
+	}
+	if strings.Contains(got, `"parsing --tags JSON: %w"`) {
+		t.Errorf("error must not name leaf-only flag (the registered flag is parent-prefixed), got:\n%s", got)
+	}
+}
+
 // TestBodyMap_DeepNesting verifies that nesting recurses past one
 // level. A spec where a parent.child both declare Fields should produce
 // nested blocks two levels deep, with parent-prefixed identifiers

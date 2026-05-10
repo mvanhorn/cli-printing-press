@@ -3135,26 +3135,26 @@ func endpointNeedsClientLimit(endpoint spec.Endpoint) bool {
 // map[string]any rather than a single JSON-string flag.
 func bodyMap(body []spec.Param, indent string) string {
 	var b strings.Builder
-	renderBodyMap(&b, body, indent, "body", "")
+	renderBodyMap(&b, body, indent, "body", "", "")
 	return b.String()
 }
 
-func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identPrefix string) {
+func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identPrefix, flagPrefix string) {
 	for _, p := range body {
 		id := paramIdent(p)
 		ident := identPrefix + toCamel(id)
+		flag := joinFlag(flagPrefix, publicFlagName(p))
 		if p.Type == "object" && len(p.Fields) > 0 {
 			nestedMap := "nested" + ident
 			fmt.Fprintf(b, "%s{\n", indent)
 			fmt.Fprintf(b, "%s\t%s := map[string]any{}\n", indent, nestedMap)
-			renderBodyMap(b, p.Fields, indent+"\t", nestedMap, ident)
+			renderBodyMap(b, p.Fields, indent+"\t", nestedMap, ident, flag)
 			fmt.Fprintf(b, "%s\tif len(%s) > 0 {\n", indent, nestedMap)
 			fmt.Fprintf(b, "%s\t\t%s[%q] = %s\n", indent, mapVar, p.Name, nestedMap)
 			fmt.Fprintf(b, "%s\t}\n", indent)
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
-		flag := publicFlagName(p)
 		isComplex := p.Type == "object" || p.Type == "array"
 		if isComplex || isJSONStringParam(p) {
 			// object/array: store the parsed value (so the API receives
