@@ -745,7 +745,7 @@ info:
   title: Hybrid
   version: "1.0"
 servers:
-  - url: https://example.com
+  - url: https://api.example.com
 components:
   securitySchemes:
     OAuth2:
@@ -791,7 +791,7 @@ info:
   title: Malformed
   version: "1.0"
 servers:
-  - url: https://example.com
+  - url: https://api.example.com
 components:
   securitySchemes:
     OAuth2:
@@ -830,7 +830,7 @@ info:
   title: Sentry
   version: "1.0"
 servers:
-  - url: https://example.com
+  - url: https://api.example.com
 components:
   securitySchemes:
     auth_token:

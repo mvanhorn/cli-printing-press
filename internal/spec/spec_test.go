@@ -3538,6 +3538,13 @@ func TestValidateRejectsReservedPlaceholderHost(t *testing.T) {
 		wantHostIn string
 	}{
 		{
+			name: "spec-level base_url with bare example.com host is rejected",
+			mutate: func(s *APISpec) {
+				s.BaseURL = "https://example.com"
+			},
+			wantHostIn: "example.com",
+		},
+		{
 			name: "endpoint path with bare example.com host is rejected",
 			mutate: func(s *APISpec) {
 				ep := s.Resources["items"].Endpoints["list"]
@@ -3563,6 +3570,33 @@ func TestValidateRejectsReservedPlaceholderHost(t *testing.T) {
 				s.Resources["items"].Endpoints["list"] = ep
 			},
 			wantHostIn: "example.net",
+		},
+		{
+			name: "endpoint path with example.test host is rejected",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "https://example.test/resource"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantHostIn: "example.test",
+		},
+		{
+			name: "endpoint path with example.invalid host is rejected",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "https://example.invalid/resource"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantHostIn: "example.invalid",
+		},
+		{
+			name: "endpoint path with bare example host is rejected",
+			mutate: func(s *APISpec) {
+				ep := s.Resources["items"].Endpoints["list"]
+				ep.Path = "https://example/resource"
+				s.Resources["items"].Endpoints["list"] = ep
+			},
+			wantHostIn: `"example"`,
 		},
 		{
 			name: "resource base_url override with example.com host is rejected",

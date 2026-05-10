@@ -1548,6 +1548,9 @@ func (s *APISpec) Validate() error {
 	if s.BaseURL == "" && s.BasePath == "" {
 		return fmt.Errorf("base_url is required")
 	}
+	if err := validateReservedPlaceholderHost("base_url", s.BaseURL); err != nil {
+		return err
+	}
 	if len(s.Resources) == 0 {
 		return fmt.Errorf("at least one resource is required")
 	}
