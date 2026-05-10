@@ -114,6 +114,7 @@ func printHumanRegenReport(w io.Writer, report *regenmerge.MergeReport, applied 
 		regenmerge.VerdictNovel,
 		regenmerge.VerdictTemplatedWithAdditions,
 		regenmerge.VerdictTemplatedBodyDrift,
+		regenmerge.VerdictTemplatedValueDrift,
 		regenmerge.VerdictNovelCollision,
 	} {
 		fmt.Fprintf(w, "  %-26s %d\n", v, counts[v])
@@ -126,6 +127,7 @@ func printHumanRegenReport(w io.Writer, report *regenmerge.MergeReport, applied 
 		switch fc.Verdict {
 		case regenmerge.VerdictTemplatedWithAdditions,
 			regenmerge.VerdictTemplatedBodyDrift,
+			regenmerge.VerdictTemplatedValueDrift,
 			regenmerge.VerdictNovelCollision:
 			needsReview = append(needsReview, fc)
 		}
@@ -145,6 +147,11 @@ func printHumanRegenReport(w io.Writer, report *regenmerge.MergeReport, applied 
 			if fc.BodyDrift != nil {
 				for fn, calls := range fc.BodyDrift.Functions {
 					fmt.Fprintf(w, "    body_drift in %s: %v\n", fn, calls)
+				}
+			}
+			if fc.ValueDrift != nil {
+				for declName := range fc.ValueDrift.Decls {
+					fmt.Fprintf(w, "    value_drift in %s\n", declName)
 				}
 			}
 		}

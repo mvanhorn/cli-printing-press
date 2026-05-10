@@ -98,6 +98,17 @@ func Apply(report *MergeReport, opts Options) error {
 				return fmt.Errorf("removing stale %s: %w", fc.Path, err)
 			}
 			fc.Applied = true
+		case VerdictNovel,
+			VerdictNovelCollision,
+			VerdictTemplatedWithAdditions,
+			VerdictTemplatedBodyDrift,
+			VerdictTemplatedValueDrift:
+			// Preserve verdicts: tempDir already holds published's copy from
+			// the deep-copy step, and the human-review path keeps it
+			// untouched. No file-level action needed here.
+		default:
+			cleanup()
+			return fmt.Errorf("unhandled verdict %q for %s", fc.Verdict, fc.Path)
 		}
 	}
 

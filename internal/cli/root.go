@@ -9,11 +9,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
@@ -21,7 +22,6 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/docspec"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/generatedmarker"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llm"
@@ -29,6 +29,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline/regenmerge"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 	"github.com/spf13/cobra"
@@ -153,7 +154,7 @@ func newGenerateCmd() *cobra.Command {
 					return err
 				}
 
-				absOut, _, err := resolveGenerateOutputDir(outputDir, parsed.Name, force, true)
+				absOut, _, snapshotDir, err := resolveGenerateOutputDir(outputDir, parsed.Name, force, true)
 				if err != nil {
 					return err
 				}
@@ -161,6 +162,12 @@ func newGenerateCmd() *cobra.Command {
 				novelFeatures, polished, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath})
 				if err != nil {
 					return err
+				}
+
+				if snapshotDir != "" {
+					if err := finalizeForceMerge(snapshotDir, absOut, docYAML); err != nil {
+						return err
+					}
 				}
 
 				runID := pipeline.DeriveRunIDFromResearchDir(researchDir)
@@ -220,13 +227,23 @@ func newGenerateCmd() *cobra.Command {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("plan contains no command definitions")}
 				}
 
-				absOut, _, err := resolveGenerateOutputDir(outputDir, planSpec.CLIName, force, true)
+				absOut, _, snapshotDir, err := resolveGenerateOutputDir(outputDir, planSpec.CLIName, force, true)
 				if err != nil {
 					return err
 				}
 
 				if err := generator.GenerateFromPlan(planSpec, absOut); err != nil {
 					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating from plan: %w", err)}
+				}
+
+				if snapshotDir != "" {
+					// Plan-driven generation does not write a manifest with
+					// SpecChecksum, so the cross-spec guard naturally lands
+					// on the defensive full-merge path. Pass nil so any
+					// manifest hash that does exist still gates merge mode.
+					if err := finalizeForceMerge(snapshotDir, absOut, nil); err != nil {
+						return err
+					}
 				}
 
 				fmt.Fprintf(os.Stderr, "Generated %s at %s (from plan)\n", naming.CLI(planSpec.CLIName), absOut)
@@ -296,7 +313,7 @@ func newGenerateCmd() *cobra.Command {
 				return err
 			}
 
-			absOut, explicitOutput, err := resolveGenerateOutputDir(outputDir, apiSpec.Name, force, !dryRun)
+			absOut, explicitOutput, snapshotDir, err := resolveGenerateOutputDir(outputDir, apiSpec.Name, force, !dryRun)
 			if err != nil {
 				return err
 			}
@@ -307,6 +324,21 @@ func newGenerateCmd() *cobra.Command {
 			novelFeatures, polished, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, specURL: specURL, rejectUnshippablePageContextTraffic: true})
 			if err != nil {
 				return err
+			}
+
+			// Merge any preserved hand-edits from the snapshot into the freshly
+			// emitted tree. snapshotDir is non-empty only when --force ran and
+			// the prior absOut had content. The cross-spec guard inside
+			// mergeForceSnapshot falls back to NOVEL-only preservation when
+			// the snapshot's spec hash differs from the current spec.
+			if snapshotDir != "" {
+				var primarySpec []byte
+				if len(specRawBytes) > 0 {
+					primarySpec = specRawBytes[0]
+				}
+				if err := finalizeForceMerge(snapshotDir, absOut, primarySpec); err != nil {
+					return err
+				}
 			}
 
 			// When --output was not explicitly supplied, normalize the output
@@ -382,7 +414,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: ~/printing-press/library/<name>)")
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
-	cmd.Flags().BoolVar(&force, "force", false, "Recreate the base output directory while preserving hand-authored internal/cli/*.go files and internal sibling packages")
+	cmd.Flags().BoolVar(&force, "force", false, "Recreate the base output directory while preserving hand-edits to generated files via AST-based merge")
 	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
 	cmd.Flags().StringVar(&docsURL, "docs", "", "API documentation URL to generate spec from")
 	cmd.Flags().BoolVar(&polish, "polish", false, "Run LLM polish pass on generated CLI (requires claude or codex CLI)")
@@ -519,23 +551,23 @@ func normalizeHTTPTransport(value string) (string, error) {
 	}
 }
 
-func resolveGenerateOutputDir(outputDir, cliName string, force bool, claim bool) (string, bool, error) {
-	explicitOutput := outputDir != ""
+func resolveGenerateOutputDir(outputDir, cliName string, force bool, claim bool) (resolvedAbsOut string, explicitOutput bool, snapshotDir string, err error) {
+	explicitOutput = outputDir != ""
 	if outputDir == "" {
 		outputDir = pipeline.DefaultOutputDir(cliName)
 	}
 	absOut, err := filepath.Abs(outputDir)
 	if err != nil {
-		return "", false, fmt.Errorf("resolving output path: %w", err)
+		return "", false, "", fmt.Errorf("resolving output path: %w", err)
 	}
 	if !claim {
-		return absOut, explicitOutput, nil
+		return absOut, explicitOutput, "", nil
 	}
-	absOut, err = claimOrForce(absOut, force, explicitOutput)
+	absOut, snapshotDir, err = claimOrForce(absOut, force, explicitOutput)
 	if err != nil {
-		return "", false, &ExitError{Code: ExitInputError, Err: err}
+		return "", false, "", &ExitError{Code: ExitInputError, Err: err}
 	}
-	return absOut, explicitOutput, nil
+	return absOut, explicitOutput, snapshotDir, nil
 }
 
 func applyHTTPTransportDefault(apiSpec *spec.APISpec, analysis *browsersniff.TrafficAnalysis) {
@@ -763,75 +795,268 @@ func httpTransportPriority(value string) int {
 
 // claimOrForce resolves the output directory based on --force and --output flags.
 //
-//   - force=true:  RemoveAll the target, then create it fresh (claims exact slot), preserving hand-authored internal/cli/*.go files and internal sibling packages
+//   - force=true:  rename the existing dir to a sibling snapshot (when present), recreate absOut empty for Generate(); the caller is responsible for merging the snapshot back in via regenmerge.MergeIntoFreshTree once Generate() finishes. Returns the snapshot path so the caller can drive the merge.
 //   - explicit output (--output set) without force: error if exists and non-empty
 //   - default (no --output, no --force): auto-increment via ClaimOutputDir
-func claimOrForce(absOut string, force bool, explicitOutput bool) (string, error) {
+//
+// snapshotDir is non-empty only on the force=true path AND when the prior absOut had content. When non-empty it points to a sibling tempdir holding the pre-regen tree.
+func claimOrForce(absOut string, force bool, explicitOutput bool) (resolvedAbsOut, snapshotDir string, err error) {
 	if force {
-		preserved, err := preserveHandAuthoredInternalCLIFiles(absOut)
+		snapshotDir, err = snapshotForceRegen(absOut)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		preservedDirs, err := preserveHandAuthoredInternalSiblingDirs(absOut)
-		if err != nil {
-			return "", err
+		if mkErr := os.MkdirAll(absOut, 0o755); mkErr != nil {
+			if snapshotDir == "" {
+				return "", "", fmt.Errorf("creating output dir: %w", mkErr)
+			}
+			if rollbackErr := os.Rename(snapshotDir, absOut); rollbackErr != nil {
+				return "", "", fmt.Errorf("creating output dir: %w; snapshot rollback also failed (%v); user must manually move %s back to %s",
+					mkErr, rollbackErr, snapshotDir, absOut)
+			}
+			return "", "", fmt.Errorf("creating output dir: %w", mkErr)
 		}
-		defer cleanupPreservedDirs(preservedDirs)
-		if err := os.RemoveAll(absOut); err != nil {
-			return "", fmt.Errorf("removing existing output dir: %w", err)
-		}
-		if err := os.MkdirAll(absOut, 0o755); err != nil {
-			return "", fmt.Errorf("creating output dir: %w", err)
-		}
-		if err := restorePreservedDirs(absOut, preservedDirs); err != nil {
-			return "", err
-		}
-		if err := restorePreservedFiles(absOut, preserved); err != nil {
-			return "", err
-		}
-		return absOut, nil
+		return absOut, snapshotDir, nil
 	}
 
 	if explicitOutput {
 		if info, err := os.Stat(absOut); err == nil && info.IsDir() {
 			entries, readErr := os.ReadDir(absOut)
 			if readErr != nil {
-				return "", fmt.Errorf("reading output directory: %w", readErr)
+				return "", "", fmt.Errorf("reading output directory: %w", readErr)
 			}
 			if len(entries) > 0 {
-				return "", fmt.Errorf("output directory %s already exists (use --force to overwrite)", absOut)
+				return "", "", fmt.Errorf("output directory %s already exists (use --force to overwrite)", absOut)
 			}
 		}
-		return absOut, nil
+		return absOut, "", nil
 	}
 
-	return pipeline.ClaimOutputDir(absOut)
+	resolved, err := pipeline.ClaimOutputDir(absOut)
+	if err != nil {
+		return "", "", err
+	}
+	return resolved, "", nil
 }
 
-type preservedFile struct {
-	relPath string
-	data    []byte
-	mode    os.FileMode
+// finalizeForceMerge runs the post-Generate merge for any --force codepath:
+// classifies snapshotDir against freshDir, merges preserved hand-edits back,
+// re-runs `go mod tidy` when go.mod was merged (so go.sum keeps up with
+// preserved requires), and removes the snapshot on success. On merge
+// failure the snapshot is left in place and the error surfaces a recovery
+// command.
+//
+// Wired from the three --force codepaths (--spec, --docs, --plan) so each
+// one preserves hand-edits consistently — discarding snapshotDir after
+// generation would silently lose user work and leave an orphan that blocks
+// future --force runs.
+func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte) error {
+	gomodMerged, err := mergeForceSnapshot(snapshotDir, freshDir, currentSpecBytes)
+	if err != nil {
+		return &ExitError{Code: ExitGenerationError, Err: err}
+	}
+	if gomodMerged {
+		retidyAfterMerge(freshDir)
+	}
+	if removeErr := os.RemoveAll(snapshotDir); removeErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not remove snapshot dir %s: %v\n", snapshotDir, removeErr)
+	}
+	return nil
 }
 
-type preservedDir struct {
-	relPath string
-	staged  string
+// mergeForceSnapshot drives the snapshot→fresh merge after Generate() has
+// populated absOut. Computes the cross-spec guard by comparing the
+// snapshot's recorded spec checksum to a sha256 over the current spec
+// bytes. Same checksum (or no recorded checksum) → run the full AST-aware
+// merge; mismatch or unreadable manifest → fall back to NOVEL-only
+// preservation.
+//
+// When the merge updates go.mod (snapshot had hand-added requires), the
+// caller must re-run `go mod tidy` against freshDir to refresh go.sum —
+// validation's tidy ran before merge against fresh's smaller go.mod, so
+// hashes for the preserved requires are missing from go.sum until the
+// post-merge tidy fills them in. The boolean return reports whether that
+// re-tidy is needed.
+//
+// On failure the snapshot is intentionally left in place; the returned
+// error includes the snapshot path so the user can recover manually with
+// `rm -rf <freshDir> && mv <snapshotDir> <freshDir>`.
+func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte) (gomodMerged bool, err error) {
+	report, err := regenmerge.Classify(snapshotDir, freshDir, regenmerge.Options{Force: true})
+	if err != nil {
+		return false, fmt.Errorf("classifying snapshot vs fresh: %w; snapshot preserved at %s", err, snapshotDir)
+	}
+
+	novelOnly := !forceRegenSpecHashMatches(snapshotDir, currentSpecBytes)
+
+	mergeOpts := regenmerge.Options{Force: true, NovelOnly: novelOnly}
+	if err := regenmerge.MergeIntoFreshTree(snapshotDir, freshDir, report, mergeOpts); err != nil {
+		return false, fmt.Errorf("merging snapshot into fresh tree: %w; snapshot preserved at %s — recover with `rm -rf %s && mv %s %s`",
+			err, snapshotDir, freshDir, snapshotDir, freshDir)
+	}
+
+	preserved := 0
+	for _, fc := range report.Files {
+		if fc.Applied {
+			preserved++
+		}
+	}
+	injected := 0
+	for _, lr := range report.LostRegistrations {
+		if lr.Applied {
+			injected += len(lr.Calls)
+		}
+	}
+	mode := ""
+	if novelOnly {
+		mode = " (cross-spec: novel-only preservation)"
+	}
+	fmt.Fprintf(os.Stderr, "Force regen merged %d preserved files / %d AddCommand calls%s\n", preserved, injected, mode)
+	return report.GoMod != nil && report.GoMod.Merged, nil
 }
 
-var generatorOwnedInternalDirs = map[string]bool{
-	"cache":   true,
-	"cli":     true,
-	"client":  true,
-	"cliutil": true,
-	"config":  true,
-	"mcp":     true,
-	"share":   true,
-	"store":   true,
-	"types":   true,
+// retidyAfterMerge re-runs `go mod tidy` against dir so go.sum picks up
+// hashes for any requires the merge added. Generation's prior tidy ran
+// against fresh's go.mod before merge, so any preserved require from the
+// snapshot is in go.mod but missing from go.sum until this step fills it
+// in. Failure here surfaces as a warning rather than a hard error: the
+// merged tree still ships valid sources, and `go mod tidy` is something
+// the user can run manually.
+func retidyAfterMerge(dir string) {
+	cmd := exec.Command("go", "mod", "tidy")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: post-merge `go mod tidy` failed: %v\n%s", err, out)
+	}
 }
 
-func preserveHandAuthoredInternalCLIFiles(absOut string) ([]preservedFile, error) {
+// forceRegenSpecHashMatches reports whether the snapshot's recorded spec
+// checksum matches a sha256 over the current spec bytes. Returns true when:
+//   - the snapshot manifest is missing (defensive — old binary or partial
+//     state from a CLI generated before SpecChecksum was populated),
+//   - the snapshot manifest has an empty SpecChecksum (plan-generated, old
+//     format, or docs source without a stored hash),
+//   - or the snapshot checksum equals the current spec hash.
+//
+// Returns false when:
+//   - the manifest exists but cannot be decoded (corrupt JSON — treat as
+//     unknown lineage and fall back to NOVEL-only preservation),
+//   - the snapshot has a checksum but the caller has no current bytes to
+//     compare (e.g., a --plan --force run over a spec-generated tree;
+//     lineage differs by construction so NOVEL-only is the safe fallback),
+//   - or both sides have a checksum and they differ.
+//
+// The hash matches climanifest.go's storage convention (sha256 over the
+// raw input spec bytes, "sha256:" + hex), so a same-spec regen produces a
+// byte-identical hash and the full-merge path runs.
+func forceRegenSpecHashMatches(snapshotDir string, currentSpecBytes []byte) bool {
+	manifestPath := filepath.Join(snapshotDir, pipeline.CLIManifestFilename)
+	if _, err := os.Stat(manifestPath); errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	manifest, err := pipeline.ReadCLIManifest(snapshotDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not decode snapshot manifest at %s: %v; falling back to novel-only preservation\n", manifestPath, err)
+		return false
+	}
+	if manifest.SpecChecksum == "" {
+		return true
+	}
+	if len(currentSpecBytes) == 0 {
+		return false
+	}
+	return manifest.SpecChecksum == currentSpecChecksum(currentSpecBytes)
+}
+
+func currentSpecChecksum(specBytes []byte) string {
+	sum := sha256.Sum256(specBytes)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// snapshotForceRegen renames absOut to a sibling tempdir for use as a regen
+// recovery path. Returns "" when absOut is missing or empty (nothing to
+// snapshot — fresh generation has nothing to preserve).
+//
+// Symlink-refusal happens BEFORE the rename so a refused regen exits without
+// mutating the user's tree — fail before mutating is the load-bearing
+// guarantee here.
+func snapshotForceRegen(absOut string) (string, error) {
+	info, err := os.Lstat(absOut)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("statting output dir for force regen: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("refusing to snapshot symlinked output dir: %s", absOut)
+	}
+
+	entries, err := os.ReadDir(absOut)
+	if err != nil {
+		return "", fmt.Errorf("reading output dir for force regen: %w", err)
+	}
+	if len(entries) == 0 {
+		return "", nil
+	}
+
+	if err := refuseSymlinksUnderForceRegenTree(absOut); err != nil {
+		return "", err
+	}
+
+	parent := filepath.Dir(absOut)
+	base := filepath.Base(absOut)
+	if orphans, err := findExistingPreserveSiblings(parent, base); err != nil {
+		return "", err
+	} else if len(orphans) > 0 {
+		return "", fmt.Errorf("found %d unrecovered snapshot(s) from prior --force run(s) at: %s; recover hand-edits or remove the directories before retrying",
+			len(orphans), strings.Join(orphans, ", "))
+	}
+	snapshot := filepath.Join(parent, base+".preserve-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+	if _, err := os.Lstat(snapshot); err == nil {
+		return "", fmt.Errorf("snapshot path collision: %s already exists", snapshot)
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("checking snapshot path %s: %w", snapshot, err)
+	}
+	if err := os.Rename(absOut, snapshot); err != nil {
+		return "", fmt.Errorf("snapshotting output dir to %s: %w", snapshot, err)
+	}
+	return snapshot, nil
+}
+
+// findExistingPreserveSiblings returns absolute paths to any directories of
+// the form `<base>.preserve-*` already in parent. These represent
+// unrecovered snapshots from previous --force runs that crashed before
+// merge cleanup. Continuing past one would orphan the user's hand-edits
+// (the new snapshot would be taken from the partial-fresh content of the
+// crashed run, not the original source-of-truth).
+func findExistingPreserveSiblings(parent, base string) ([]string, error) {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading %s for prior snapshots: %w", parent, err)
+	}
+	var orphans []string
+	prefix := base + ".preserve-"
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), prefix) {
+			orphans = append(orphans, filepath.Join(parent, entry.Name()))
+		}
+	}
+	return orphans, nil
+}
+
+// refuseSymlinksUnderForceRegenTree walks the parts of absOut that the
+// regenmerge pipeline subsequently reads through (internal/, internal/cli,
+// internal/cli/*.go, sibling-package directories) and returns an error if
+// any of them are symlinks. The rename in snapshotForceRegen is the
+// destructive boundary, so all symlink checks must pass before it.
+func refuseSymlinksUnderForceRegenTree(absOut string) error {
 	for _, rel := range []string{"internal", filepath.Join("internal", "cli")} {
 		path := filepath.Join(absOut, rel)
 		info, err := os.Lstat(path)
@@ -839,198 +1064,37 @@ func preserveHandAuthoredInternalCLIFiles(absOut string) ([]preservedFile, error
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("statting %s for hand-authored files: %w", rel, err)
+			return fmt.Errorf("statting %s for force regen symlink check: %w", rel, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("refusing to preserve hand-authored files through symlinked %s: %s", rel, path)
+			return fmt.Errorf("refusing to snapshot symlinked %s: %s", rel, path)
 		}
 	}
 
-	cliDir := filepath.Join(absOut, "internal", "cli")
-	entries, err := os.ReadDir(cliDir)
+	if err := refuseSymlinkedEntries(filepath.Join(absOut, "internal", "cli"), "internal/cli file"); err != nil {
+		return err
+	}
+	return refuseSymlinkedEntries(filepath.Join(absOut, "internal"), "internal sibling package")
+}
+
+// refuseSymlinkedEntries reads dir and returns an error if any direct entry
+// is a symlink. A missing dir is not an error (caller may scan paths that
+// don't exist on every CLI). label is interpolated into the error message
+// to identify which surface refused the symlink.
+func refuseSymlinkedEntries(dir, label string) error {
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading internal/cli for hand-authored files: %w", err)
-	}
-
-	var preserved []preservedFile
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".go" {
-			continue
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("refusing to preserve symlinked internal/cli file: %s", filepath.Join(cliDir, entry.Name()))
-		}
-		path := filepath.Join(cliDir, entry.Name())
-		if generatedmarker.HasInFile(path) {
-			continue
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("reading hand-authored candidate %s: %w", path, err)
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return nil, fmt.Errorf("statting hand-authored candidate %s: %w", path, err)
-		}
-		preserved = append(preserved, preservedFile{
-			relPath: filepath.Join("internal", "cli", entry.Name()),
-			data:    data,
-			mode:    info.Mode().Perm(),
-		})
-	}
-	return preserved, nil
-}
-
-func preserveHandAuthoredInternalSiblingDirs(absOut string) ([]preservedDir, error) {
-	internalDir := filepath.Join(absOut, "internal")
-	entries, err := os.ReadDir(internalDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading internal for hand-authored sibling packages: %w", err)
-	}
-
-	var preserved []preservedDir
-	var stagingRoot string
-	for _, entry := range entries {
-		if entry.Type()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("refusing to preserve symlinked internal sibling package: %s", filepath.Join(internalDir, entry.Name()))
-		}
-		if !entry.IsDir() || generatorOwnsInternalDir(internalDir, entry.Name()) {
-			continue
-		}
-		if stagingRoot == "" {
-			stagingRoot, err = os.MkdirTemp("", "printing-press-preserved-internal-*")
-			if err != nil {
-				return nil, fmt.Errorf("creating preservation staging dir: %w", err)
-			}
-		}
-		src := filepath.Join(internalDir, entry.Name())
-		staged := filepath.Join(stagingRoot, entry.Name())
-		if err := copyPreservedDir(src, staged); err != nil {
-			cleanupPreservedDirs(preserved)
-			_ = os.RemoveAll(stagingRoot)
-			return nil, err
-		}
-		preserved = append(preserved, preservedDir{
-			relPath: filepath.Join("internal", entry.Name()),
-			staged:  staged,
-		})
-	}
-	return preserved, nil
-}
-
-func generatorOwnsInternalDir(internalDir, name string) bool {
-	if name == "cli" {
-		return true
-	}
-	if !generatorOwnedInternalDirs[name] {
-		return false
-	}
-	return dirContainsGeneratedMarker(filepath.Join(internalDir, name))
-}
-
-func dirContainsGeneratedMarker(dir string) bool {
-	found := false
-	_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || found || d.IsDir() || d.Type()&os.ModeSymlink != 0 {
 			return nil
 		}
-		if generatedmarker.HasInFile(path) {
-			found = true
-		}
-		return nil
-	})
-	return found
-}
-
-func restorePreservedFiles(absOut string, files []preservedFile) error {
-	for _, file := range files {
-		path := filepath.Join(absOut, file.relPath)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return fmt.Errorf("creating preserved file parent: %w", err)
-		}
-		if err := os.WriteFile(path, file.data, file.mode); err != nil {
-			return fmt.Errorf("restoring preserved file %s: %w", path, err)
+		return fmt.Errorf("reading %s for symlink check: %w", dir, err)
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to snapshot symlinked %s: %s", label, filepath.Join(dir, entry.Name()))
 		}
 	}
 	return nil
-}
-
-func restorePreservedDirs(absOut string, dirs []preservedDir) error {
-	for _, dir := range dirs {
-		dst := filepath.Join(absOut, dir.relPath)
-		if _, err := os.Stat(dst); err == nil {
-			return fmt.Errorf("refusing to overwrite generated internal sibling package while restoring preserved files: %s", dst)
-		} else if err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("checking preserved sibling restore path %s: %w", dst, err)
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return fmt.Errorf("creating preserved sibling parent: %w", err)
-		}
-		if err := movePreservedDir(dir.staged, dst, os.Rename); err != nil {
-			return fmt.Errorf("restoring preserved sibling package %s: %w", dst, err)
-		}
-	}
-	return nil
-}
-
-func cleanupPreservedDirs(dirs []preservedDir) {
-	for _, dir := range dirs {
-		_ = os.RemoveAll(filepath.Dir(dir.staged))
-	}
-}
-
-func movePreservedDir(src, dst string, rename func(string, string) error) error {
-	if err := rename(src, dst); err != nil {
-		if !errors.Is(err, syscall.EXDEV) {
-			return err
-		}
-		if err := copyPreservedDir(src, dst); err != nil {
-			return err
-		}
-		return os.RemoveAll(src)
-	}
-	return nil
-}
-
-func copyPreservedDir(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("refusing to preserve symlink inside internal sibling package: %s", path)
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return fmt.Errorf("relativizing preserved sibling path %s: %w", path, err)
-		}
-		target := filepath.Join(dst, rel)
-		info, err := d.Info()
-		if err != nil {
-			return fmt.Errorf("statting preserved sibling path %s: %w", path, err)
-		}
-		switch {
-		case d.IsDir():
-			return os.MkdirAll(target, info.Mode().Perm())
-		case info.Mode().IsRegular():
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return fmt.Errorf("reading preserved sibling file %s: %w", path, err)
-			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return fmt.Errorf("creating preserved sibling file parent: %w", err)
-			}
-			return os.WriteFile(target, data, info.Mode().Perm())
-		default:
-			return fmt.Errorf("refusing to preserve non-regular internal sibling path: %s", path)
-		}
-	})
 }
 
 func fetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, error) {

@@ -255,6 +255,14 @@ func decideBothPresent(rel, pubPath, freshPath string, pub, fresh declSet, pubMa
 				fc.BodyDrift = drift
 				return fc
 			}
+			// Body-drift's call-target walker misses literal-value changes
+			// and identifier renames in non-call positions. Per-decl
+			// go/printer text compare catches both.
+			if drift := detectValueDrift(pubPath, freshPath); drift != nil {
+				fc.Verdict = VerdictTemplatedValueDrift
+				fc.ValueDrift = drift
+				return fc
+			}
 			fc.Verdict = VerdictTemplatedClean
 			return fc
 		}

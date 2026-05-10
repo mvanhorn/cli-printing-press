@@ -107,7 +107,7 @@ func extractLostRegistrations(publishedDir, freshDir string, pubVerdicts map[str
 		// would duplicate them.
 		relPath := filepath.ToSlash(filepath.Join("internal", "cli", filepath.Base(host)))
 		switch pubVerdicts[relPath] {
-		case VerdictTemplatedBodyDrift, VerdictTemplatedWithAdditions, VerdictNovel, VerdictNovelCollision:
+		case VerdictTemplatedBodyDrift, VerdictTemplatedWithAdditions, VerdictTemplatedValueDrift, VerdictNovel, VerdictNovelCollision:
 			continue
 		}
 		var lost, skipped []string

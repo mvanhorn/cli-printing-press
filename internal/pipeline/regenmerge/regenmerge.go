@@ -41,6 +41,15 @@ const (
 	// published; surface for human review.
 	VerdictTemplatedBodyDrift Verdict = "TEMPLATED-BODY-DRIFT"
 
+	// VerdictTemplatedValueDrift marks a file whose decl-set matches fresh's
+	// and whose body-call-targets match (so body-drift didn't fire) but
+	// whose top-level decls render to different go/printer text. Catches
+	// literal-value drift (e.g., const authPrefix = "Bearer " → "Token ")
+	// and identifier-rename drift in selector positions (e.g., cfg.Bearer
+	// → cfg.Token) — the cases body-drift's call-target walker misses.
+	// Preserve published; surface for human review.
+	VerdictTemplatedValueDrift Verdict = "TEMPLATED-VALUE-DRIFT"
+
 	// VerdictPublishedOnlyTemplated marks a file present only in published
 	// that carries the templated marker. Fresh dropped emitting it. Stale
 	// template emission; user can decide to delete.
@@ -75,6 +84,28 @@ type FileClassification struct {
 	// per-function the call-target identifiers pub references that don't
 	// appear anywhere in fresh's tree.
 	BodyDrift *BodyDrift `json:"body_drift,omitempty"`
+
+	// ValueDrift is populated for TEMPLATED-VALUE-DRIFT verdict. Lists
+	// per-decl the rendered text differences between published and fresh.
+	ValueDrift *ValueDrift `json:"value_drift,omitempty"`
+}
+
+// ValueDrift records per-decl rendered-text differences between published and
+// fresh for a templated file with matching decl-sets and clean body-drift.
+// Each entry names a top-level declaration whose go/printer rendering (with
+// the leading Doc comment stripped) differs between the two trees.
+type ValueDrift struct {
+	// Decls maps the canonical decl name (bare or "(*Type).Method") to the
+	// per-decl rendered-text delta.
+	Decls map[string]ValueDriftDelta `json:"decls,omitempty"`
+}
+
+// ValueDriftDelta records the per-decl rendered text on each side. Both sides
+// are truncated to a reasonable display length; full text is reconstructable
+// from the snapshot/fresh files.
+type ValueDriftDelta struct {
+	Published string `json:"published"`
+	Fresh     string `json:"fresh"`
 }
 
 // BodyDrift records function-body call-target differences between published
@@ -145,11 +176,20 @@ type MergeReport struct {
 	GoMod             *GoModMerge        `json:"go_mod,omitempty"`
 }
 
-// Options configure Classify and Apply behavior.
+// Options configure Classify, Apply, and MergeIntoFreshTree behavior.
 type Options struct {
 	// Force allows operating outside CWD prefix and on dirty git trees.
 	// Off by default.
 	Force bool
+
+	// NovelOnly restricts MergeIntoFreshTree to preserve only NOVEL and
+	// NOVEL-COLLISION files; TEMPLATED-WITH-ADDITIONS, TEMPLATED-BODY-DRIFT,
+	// and TEMPLATED-VALUE-DRIFT are left as fresh emitted them, and lost
+	// AddCommand re-injection is skipped. Used by the cross-spec fallback
+	// path in `generate --force` where the classifier's heuristics aren't
+	// valid across different specs but novel hand-written files (no marker)
+	// remain user-owned regardless of spec lineage.
+	NovelOnly bool
 }
 
 // Classify walks both trees, classifies each file, extracts AddCommand
