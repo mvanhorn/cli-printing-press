@@ -2140,6 +2140,7 @@ components:
         - FLIGHTAWARE_API_KEY
       x-auth-optional: true
       x-auth-key-url: https://flightaware.com/commercial/aeroapi/
+      x-auth-instructions: Sign up for FlightAware AeroAPI and copy the personal API key.
       x-auth-title: FlightAware AeroAPI Key
       x-auth-description: Optional FlightAware AeroAPI credential for enriched flight data.
 paths:
@@ -2156,6 +2157,7 @@ paths:
 	assert.Equal(t, []string{"FLIGHTAWARE_API_KEY"}, parsed.Auth.EnvVars)
 	assert.True(t, parsed.Auth.Optional)
 	assert.Equal(t, "https://flightaware.com/commercial/aeroapi/", parsed.Auth.KeyURL)
+	assert.Equal(t, "Sign up for FlightAware AeroAPI and copy the personal API key.", parsed.Auth.Instructions)
 	assert.Equal(t, "FlightAware AeroAPI Key", parsed.Auth.Title)
 	assert.Equal(t, "Optional FlightAware AeroAPI credential for enriched flight data.", parsed.Auth.Description)
 }

@@ -1274,6 +1274,9 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	if entry.AuthKeyURL != "" && apiSpec.Auth.Type != "none" {
 		apiSpec.Auth.KeyURL = entry.AuthKeyURL
 	}
+	if entry.AuthInstructions != "" && apiSpec.Auth.Type != "none" {
+		apiSpec.Auth.Instructions = entry.AuthInstructions
+	}
 }
 
 func mcpConfigured(m spec.MCPConfig) bool {

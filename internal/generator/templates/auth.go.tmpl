@@ -18,6 +18,9 @@ import (
 	"strings"
 	"time"
 
+{{- if .Auth.KeyURL}}
+	"{{modulePath}}/internal/cliutil"
+{{- end}}
 	"{{modulePath}}/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -28,10 +31,52 @@ func newAuthCmd(flags *rootFlags) *cobra.Command {
 		Short: {{printf "%q" (authCommandShort .APISpec)}},
 	}
 
+	cmd.AddCommand(newAuthSetupCmd(flags))
 	cmd.AddCommand(newAuthLoginCmd(flags))
 	cmd.AddCommand(newAuthStatusCmd(flags))
 	cmd.AddCommand(newAuthLogoutCmd(flags))
 
+	return cmd
+}
+
+// newAuthSetupCmd prints concrete steps for registering an OAuth app and
+// obtaining client credentials. Side-effect rule: print by default, --launch
+// to open the registration URL, short-circuit when the verifier is running.
+func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
+	var launch bool
+	cmd := &cobra.Command{
+		Use:   "setup",
+		Short: "Print steps for registering an OAuth app (use --launch to open the URL)",
+		Example: "  {{.Name}}-pp-cli auth setup\n  {{.Name}}-pp-cli auth setup --launch",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w := cmd.OutOrStdout()
+{{- if .Auth.KeyURL}}
+			fmt.Fprintln(w, "Register an app and copy your credentials at: {{.Auth.KeyURL}}")
+{{- else}}
+			fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
+{{- end}}
+{{- if .Auth.Instructions}}
+			fmt.Fprintln(w, "  {{.Auth.Instructions}}")
+{{- end}}
+			fmt.Fprintln(w, "")
+			fmt.Fprintln(w, "Then run:")
+			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth login --client-id <id> --client-secret <secret>")
+			if !launch {
+				return nil
+			}
+{{- if .Auth.KeyURL}}
+			if cliutil.IsVerifyEnv() {
+				fmt.Fprintln(w, "would launch: {{.Auth.KeyURL}}")
+				return nil
+			}
+			openBrowser("{{.Auth.KeyURL}}")
+{{- else}}
+			fmt.Fprintln(cmd.ErrOrStderr(), "no setup URL configured; cannot launch")
+{{- end}}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&launch, "launch", false, "Open the setup URL in your default browser")
 	return cmd
 }
 

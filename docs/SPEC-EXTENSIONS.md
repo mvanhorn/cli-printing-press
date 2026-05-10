@@ -388,6 +388,23 @@ Catalog YAML's `auth_key_url:` (see [`CATALOG.md`](CATALOG.md)) overrides the
 inference. The result drives the printed CLI's `Get a key at: <URL>` output in
 auth prompts and `doctor`.
 
+### `x-auth-instructions`
+
+Free-form one-line guidance shown alongside `x-auth-key-url`, e.g. "Settings →
+Personal access tokens → Generate new". The printed CLI surfaces this under
+the URL in auth prompts, `doctor`, and the `auth setup` command.
+
+Parsed field: `APISpec.Auth.Instructions`
+
+Rules:
+- Optional.
+- Must be a string.
+- Leading and trailing whitespace is trimmed.
+- Use this when `x-auth-key-url` lands on a docs page rather than the keys UI;
+  the URL says where to start, the instruction says what to do once there.
+
+Catalog YAML's `auth_instructions:` overrides any spec-supplied value.
+
 ### `x-auth-title`
 
 Overrides the title shown for the credential field in install/config surfaces.

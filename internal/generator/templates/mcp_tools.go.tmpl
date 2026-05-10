@@ -283,6 +283,9 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 {{- if .Auth.KeyURL}}
 					{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}} +
 {{- end}}
+{{- if .Auth.Instructions}}
+					{{printf "%q" (printf "\n      %s" .Auth.Instructions)}} +
+{{- end}}
 					{{printf "%q" (printf "\n      Run '%s-pp-cli doctor' to check auth status." .Name)}}), nil
 {{- end}}
 			case strings.Contains(msg, "HTTP 401"):
@@ -302,6 +305,9 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 {{- if .Auth.KeyURL}}
 					{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}} +
 {{- end}}
+{{- if .Auth.Instructions}}
+					{{printf "%q" (printf "\n      %s" .Auth.Instructions)}} +
+{{- end}}
 					{{printf "%q" (printf "\n      Run '%s-pp-cli doctor' to check auth status." .Name)}}), nil
 			case strings.Contains(msg, "HTTP 403"):
 				return mcplib.NewToolResultError("permission denied: " + {{if and .Auth.Type (ne .Auth.Type "none")}}cliutil.SanitizeErrorBody(msg){{else}}msg{{end}} +
@@ -317,6 +323,9 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 {{- end}}
 {{- if .Auth.KeyURL}}
 					{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}} +
+{{- end}}
+{{- if .Auth.Instructions}}
+					{{printf "%q" (printf "\n      %s" .Auth.Instructions)}} +
 {{- end}}
 					{{printf "%q" (printf "\n      Run '%s-pp-cli doctor' to check auth status." .Name)}}), nil
 			case strings.Contains(msg, "HTTP 404"):
@@ -546,6 +555,9 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 {{- end}}
 {{- if .Auth.KeyURL}}
 			"key_url": {{printf "%q" .Auth.KeyURL}},
+{{- end}}
+{{- if .Auth.Instructions}}
+			"instructions": {{printf "%q" .Auth.Instructions}},
 {{- end}}
 		},
 {{- end}}

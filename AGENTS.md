@@ -155,6 +155,7 @@ When adding or editing `catalog/*.yaml`, the entry must pass `internal/catalog` 
 - `tier` must be `official` or `community`.
 - `bearer_refresh`, when present, must include `bundle_url` and `pattern`; `bundle_url` must use HTTPS, and `pattern` must compile as a Go regexp.
 - `auth_key_url`, when present, must use HTTPS. It overrides any URL inferred from the spec and surfaces in the printed CLI as `Get a key at: <URL>`.
+- `auth_instructions`, when present, is a one-line string rendered under the URL. It overrides any `x-auth-instructions` value from the spec.
 - Rebuild the binary after editing; `catalog.FS` is a Go embed.
 See [`docs/CATALOG.md`](docs/CATALOG.md) for validation rationale, the wrapper-only entry shape, and bearer-refresh metadata.
 

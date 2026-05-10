@@ -35,3 +35,9 @@ Precedence:
 - Otherwise, the parser infers a URL from the security scheme description, `info.description` (with auth cues), `externalDocs.url`, and `info.contact.url`, in that order.
 
 Set `auth_key_url:` when the inference would land on a generic homepage and you know the specific token-acquisition page. The validator only checks that the URL starts with `https://`; it does not probe reachability.
+
+## Auth instructions
+
+Catalog entries may also declare `auth_instructions:` — a one-line string of free-form guidance ("Settings → Personal access tokens → Generate new") that the printed CLI prints under the `Get a key at:` line. Use this when the URL lands on a docs page rather than the keys UI: the URL says where to start, the instruction says what to do once there.
+
+Catalog `auth_instructions` overrides any value from the spec's [`x-auth-instructions`](SPEC-EXTENSIONS.md#x-auth-instructions) extension. The printed CLI surfaces it in auth prompts, `doctor`, and the new `auth setup` command (which also takes `--launch` to open the URL in a browser).

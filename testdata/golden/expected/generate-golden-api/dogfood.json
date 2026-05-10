@@ -71,8 +71,8 @@
   "verdict": "WARN",
   "wiring_check": {
     "command_tree": {
-      "defined": 40,
-      "registered": 40
+      "defined": 41,
+      "registered": 41
     },
     "config_consistency": {
       "consistent": true

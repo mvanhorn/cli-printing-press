@@ -35,6 +35,7 @@ const (
 	extensionAuthVars         = "x-auth-vars"
 	extensionAuthOptional     = "x-auth-optional"
 	extensionAuthKeyURL       = "x-auth-key-url"
+	extensionAuthInstructions = "x-auth-instructions"
 	extensionAuthTitle        = "x-auth-title"
 	extensionAuthDescription  = "x-auth-description"
 	extensionSpeakeasyExample = "x-speakeasy-example"
@@ -738,6 +739,9 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 	}
 	if keyURL := stringExtension(extensions, extensionAuthKeyURL); keyURL != "" {
 		auth.KeyURL = keyURL
+	}
+	if instructions := stringExtension(extensions, extensionAuthInstructions); instructions != "" {
+		auth.Instructions = instructions
 	}
 	if title := stringExtension(extensions, extensionAuthTitle); title != "" {
 		auth.Title = title
