@@ -160,6 +160,23 @@ elif ! command -v printing-press >/dev/null 2>&1; then
   fi
 fi
 
+# Verify the Go toolchain is on PATH. Generation runs Go-based quality gates
+# (go mod tidy, go vet, etc.) after writing thousands of lines of scaffolding,
+# so a missing `go` only surfaces 5+ minutes in. Fail-fast costs one command -v
+# call when Go is present and converts a late, opaque failure into a 30-second
+# actionable abort.
+if ! command -v go >/dev/null 2>&1; then
+  echo ""
+  echo "[setup-error] Go toolchain not found."
+  echo ""
+  echo "The Printing Press generator runs Go-based quality gates after generation."
+  echo "Install Go 1.26.3 or newer from https://go.dev/dl/, then verify with:"
+  echo "  go version"
+  echo "Then re-run /printing-press."
+  echo ""
+  return 1 2>/dev/null || exit 1
+fi
+
 PRESS_BASE="$(basename "$_scope_dir" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"
 if [ -z "$PRESS_BASE" ]; then
   PRESS_BASE="workspace"
