@@ -45,15 +45,16 @@ Bugs that rule-based checks miss, typically surfaced by 5 minutes of hands-on te
 # $PRESS_RUNSTATE/runs/<id>/working/<cli> and research.json lives at
 # $PRESS_RUNSTATE/runs/<id>/research.json. Without the fallback, scorecard
 # reports `unable: true` mid-pipeline and we SKIP the most informative review.
-RESEARCH_FLAG=""
+# Use a bash array so the flag survives paths with spaces.
+RESEARCH_ARGS=()
 if [ ! -f "$CLI_DIR/research.json" ]; then
   _grandparent="$(dirname "$(dirname "$CLI_DIR")")"
   if [ -f "$_grandparent/research.json" ]; then
-    RESEARCH_FLAG="--research-dir $_grandparent"
+    RESEARCH_ARGS=(--research-dir "$_grandparent")
   fi
 fi
 
-printing-press scorecard --dir "$CLI_DIR" $RESEARCH_FLAG --live-check --json > /tmp/output-review-livecheck.json 2>&1 || true
+printing-press scorecard --dir "$CLI_DIR" "${RESEARCH_ARGS[@]}" --live-check --json > /tmp/output-review-livecheck.json 2>&1 || true
 ```
 
 If the scorecard call fails or `/tmp/output-review-livecheck.json` is empty, return the SKIP result (Step 3) without dispatching the reviewer.

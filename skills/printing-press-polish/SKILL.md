@@ -153,32 +153,39 @@ fi
 # Without this flag, legacy CLIs whose manifest predates the
 # novel_features schema fail publish-validate's transcendence gate.
 #
-# Two layouts to handle:
-#  1. Post-promote (standalone polish): research.json lives at
+# Two layouts to handle, keyed on $CLI_DIR path structure (NOT on the
+# absence of a manuscripts entry — re-generating a previously-published
+# API leaves stale manuscript entries from prior runs that would point
+# scorecard at the wrong research.json):
+#  1. Mid-pipeline polish (invoked from the main printing-press flow
+#     before promote): $CLI_DIR is under $PRESS_RUNSTATE/.../runs/<id>/working/<cli>
+#     (i.e. the path contains `.runstate/`), and research.json lives at
+#     $PRESS_RUNSTATE/.../runs/<id>/research.json — $CLI_DIR's grandparent.
+#  2. Post-promote (standalone polish): research.json lives at
 #     manuscripts/<api>/<run-id>/research.json.
-#  2. Mid-pipeline polish (invoked from the main printing-press flow
-#     before promote): $CLI_DIR is $PRESS_RUNSTATE/runs/<id>/working/<cli>
-#     and research.json lives at $PRESS_RUNSTATE/runs/<id>/research.json
-#     (two directories above $CLI_DIR).
 RESEARCH_DIR=""
-for d in "$PRESS_HOME/manuscripts/$API_SLUG"/*/research.json "$PRESS_HOME/manuscripts/$CLI_NAME"/*/research.json; do
-  if [ -f "$d" ]; then
-    RESEARCH_DIR="$(dirname "$d")"
-    break
-  fi
-done
+case "$CLI_DIR" in
+  *.runstate/*)
+    _grandparent="$(dirname "$(dirname "$CLI_DIR")")"
+    if [ -f "$_grandparent/research.json" ]; then
+      RESEARCH_DIR="$_grandparent"
+    fi
+    ;;
+  *)
+    for d in "$PRESS_HOME/manuscripts/$API_SLUG"/*/research.json "$PRESS_HOME/manuscripts/$CLI_NAME"/*/research.json; do
+      if [ -f "$d" ]; then
+        RESEARCH_DIR="$(dirname "$d")"
+        break
+      fi
+    done
+    ;;
+esac
 
-# Fallback for mid-pipeline polish: derive from $CLI_DIR's grandparent.
-if [ -z "$RESEARCH_DIR" ]; then
-  _grandparent="$(dirname "$(dirname "$CLI_DIR")")"
-  if [ -f "$_grandparent/research.json" ]; then
-    RESEARCH_DIR="$_grandparent"
-  fi
-fi
-
-RESEARCH_FLAG=""
+# Use a bash array so the flag survives paths with spaces (e.g. when
+# $HOME or $PRESS_RUNSTATE resolves through a path containing spaces).
+RESEARCH_ARGS=()
 if [ -n "$RESEARCH_DIR" ]; then
-  RESEARCH_FLAG="--research-dir $RESEARCH_DIR"
+  RESEARCH_ARGS=(--research-dir "$RESEARCH_DIR")
 fi
 ```
 
@@ -223,11 +230,11 @@ cd "$CLI_DIR"
 # Build
 go build -o "$CLI_NAME" ./cmd/"$CLI_NAME" 2>&1
 
-# Diagnostics. SPEC_FLAG and RESEARCH_FLAG are set in the "Find spec
-# and research dir" step above. RESEARCH_FLAG enables dogfood to
+# Diagnostics. SPEC_FLAG and RESEARCH_ARGS are set in the "Find spec
+# and research dir" step above. RESEARCH_ARGS enables dogfood to
 # verify novel features and sync them into .printing-press.json
 # (required for publish-validate's transcendence gate).
-printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG $RESEARCH_FLAG 2>&1
+printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" 2>&1
 printing-press verify --dir "$CLI_DIR" $SPEC_FLAG --json 2>&1
 printing-press workflow-verify --dir "$CLI_DIR" --json > /tmp/polish-workflow-verify.json 2>&1 || true
 printing-press verify-skill --dir "$CLI_DIR" --json > /tmp/polish-verify-skill.json 2>&1 || true
@@ -235,11 +242,11 @@ printing-press publish validate --dir "$CLI_DIR" --json > /tmp/polish-publish-va
 # --live-check samples novel-feature outputs and populates
 # live_check.features[].warnings (Wave B entity detection) — required for
 # the "Output entity warnings" row below to have data to read.
-# RESEARCH_FLAG points scorecard at the run's research.json when the
+# RESEARCH_ARGS points scorecard at the run's research.json when the
 # CLI lives under $PRESS_RUNSTATE/runs/<id>/working/<cli> (mid-pipeline
 # polish). Without it, scorecard looks adjacent to the binary, doesn't
 # find research.json, and reports `unable: true`.
-printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG $RESEARCH_FLAG --live-check --json > /tmp/polish-scorecard.json 2>&1 || true
+printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" --live-check --json > /tmp/polish-scorecard.json 2>&1 || true
 printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
 printing-press tools-audit "$CLI_DIR" --json > /tmp/polish-tools-audit-before.json 2>&1 || true
 go vet ./... 2>&1
