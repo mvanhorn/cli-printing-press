@@ -403,6 +403,9 @@ func (s *Store) migrateResourcesCompositeKey(ctx context.Context, conn *sql.Conn
 		}
 	}
 
+	// Always rebuild FTS during the v2 transition. The resources table may
+	// already have the composite key, but v1 FTS rowids were scoped by id
+	// alone and must be replaced with resource_type + id rowids.
 	if _, err := conn.ExecContext(ctx, `DROP TABLE IF EXISTS resources_fts`); err != nil {
 		return fmt.Errorf("dropping resources_fts: %w", err)
 	}
