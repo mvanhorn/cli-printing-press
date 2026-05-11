@@ -13,6 +13,10 @@ func ApplyReachabilityDefaults(apiSpec *spec.APISpec, analysis *TrafficAnalysis)
 		return
 	}
 
+	if analysis.Reachability.Mode == "html_scrape" && analysis.Reachability.HTMLExtractSignature != "" {
+		applyHTMLScrapeExtractionDefaults(apiSpec, analysis.Reachability.HTMLExtractSignature)
+	}
+
 	if analysis.Reachability.Mode == "browser_http" || analysis.Reachability.Mode == "browser_clearance_http" || analysis.Reachability.Mode == "browser_required" {
 		if apiSpec.HTTPTransport == "" {
 			switch analysis.Reachability.Mode {
@@ -144,4 +148,60 @@ func hasRequiredInput(endpoint spec.Endpoint) bool {
 		}
 	}
 	return false
+}
+
+// scriptSelectorForSignature maps the SSR state-blob signature label
+// (surfaced by the HAR analyzer) to the runtime extractor's
+// "tag" / "tag#id" / "tag.class" selector grammar. Empty string when
+// the signature does not have a canonical script-tag selector — the
+// runtime falls back to DefaultEmbeddedJSONScriptSelector.
+func scriptSelectorForSignature(signature string) string {
+	switch signature {
+	case "__NEXT_DATA__":
+		return "script#__NEXT_DATA__"
+	case "__NUXT__":
+		return "script#__NUXT__"
+	case "__APP_INITIAL_STATE__":
+		return "script#__APP_INITIAL_STATE__"
+	case "state-view":
+		return "script.state-view"
+	case "application/ld+json":
+		return `script[type="application/ld+json"]`
+	default:
+		// "window.__" matches inline state assigned outside any script
+		// tag; specgen leaves the selector empty so the runtime falls
+		// back to the default and the operator can hand-tune.
+		return ""
+	}
+}
+
+// applyHTMLScrapeExtractionDefaults walks the spec's resources and
+// rewrites HTMLExtract on endpoints that already declared HTML
+// extraction (Mode: page or links from inferHTMLExtract) so they
+// instead emit Mode: embedded-json with the script selector mapped
+// from the analyzer's matched signature. Endpoints without
+// HTMLExtract are left untouched — they aren't HTML-shaped, so the
+// scrape promotion does not apply.
+func applyHTMLScrapeExtractionDefaults(apiSpec *spec.APISpec, signature string) {
+	selector := scriptSelectorForSignature(signature)
+	for resourceName, resource := range apiSpec.Resources {
+		updated := promoteHTMLExtractInResource(resource, selector)
+		apiSpec.Resources[resourceName] = updated
+	}
+}
+
+func promoteHTMLExtractInResource(resource spec.Resource, selector string) spec.Resource {
+	for name, endpoint := range resource.Endpoints {
+		if endpoint.HTMLExtract == nil {
+			continue
+		}
+		endpoint.HTMLExtract.Mode = spec.HTMLExtractModeEmbeddedJSON
+		endpoint.HTMLExtract.ScriptSelector = selector
+		endpoint.HTMLExtract.LinkPrefixes = nil
+		resource.Endpoints[name] = endpoint
+	}
+	for subName, sub := range resource.SubResources {
+		resource.SubResources[subName] = promoteHTMLExtractInResource(sub, selector)
+	}
+	return resource
 }

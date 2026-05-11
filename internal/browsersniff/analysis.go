@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/publicsuffix"
+
 	"github.com/mvanhorn/cli-printing-press/v4/internal/discovery"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
@@ -264,6 +266,12 @@ type ReachabilityAnalysis struct {
 	Confidence float64       `json:"confidence"`
 	Reasons    []string      `json:"reasons,omitempty"`
 	Evidence   []EvidenceRef `json:"evidence,omitempty"`
+
+	// HTMLExtract* fields are populated when Mode == "html_scrape" so
+	// downstream spec emission can pick the right script selector
+	// without re-detecting. Empty otherwise.
+	HTMLExtractMode      string `json:"html_extract_mode,omitempty"`
+	HTMLExtractSignature string `json:"html_extract_signature,omitempty"`
 }
 
 type ProtectionObservation struct {
@@ -927,12 +935,128 @@ func classifyReachability(analysis *TrafficAnalysis, entries []EnrichedEntry) *R
 		}
 	}
 
-	return &ReachabilityAnalysis{
-		Mode:       mode,
-		Confidence: confidence,
-		Reasons:    reasons,
-		Evidence:   evidence,
+	// html_scrape promotion: when the HAR shows an API entry with a
+	// captcha-tier protection signal (JSON unreachable without a browser)
+	// AND an HTML entry on the same registered domain emits an SSR
+	// state blob, the cheaper transport is to scrape the HTML state blob
+	// rather than spin up a browser. This branch runs last so it overrides
+	// whichever mode the earlier branches set (typically browser_required
+	// or browser_clearance_http).
+	htmlExtractMode := ""
+	htmlExtractSignature := ""
+	if apiIdx, ok := findCaptchaTierProtectedAPIEntry(entries, analysis.Protections); ok {
+		refHost := extractHost(entries[apiIdx].URL)
+		if _, signature, ok := findSSRStateBlobEntryOnRegisteredDomain(entries, analysis.Protocols, refHost); ok {
+			mode = "html_scrape"
+			confidence = 0.85
+			reasons = []string{fmt.Sprintf("captcha-tier protection on API + same-registered-domain SSR state blob (signature: %s); html_scrape preferred over browser_required", signature)}
+			htmlExtractMode = "embedded-json"
+			htmlExtractSignature = signature
+		}
 	}
+
+	return &ReachabilityAnalysis{
+		Mode:                 mode,
+		Confidence:           confidence,
+		Reasons:              reasons,
+		Evidence:             evidence,
+		HTMLExtractMode:      htmlExtractMode,
+		HTMLExtractSignature: htmlExtractSignature,
+	}
+}
+
+// captchaTierProtections are the labels that signal "JSON is unreachable
+// without a browser" — the html_scrape promotion fires only on these
+// (not on cloudflare/akamai/datadome/perimeterx, which can usually be
+// cleared with bearer tokens or session cookies via lighter modes).
+var captchaTierProtections = map[string]bool{
+	"captcha":          true,
+	"bot_challenge":    true,
+	"aws_waf":          true,
+	"vercel_challenge": true,
+}
+
+// findCaptchaTierProtectedAPIEntry returns the index of the first
+// API-classified entry that itself surfaces a captcha-tier protection
+// signal. Walking via EvidenceRef.EntryIndex ensures the protection is
+// attributed to the API entry — a Cloudflare-fronted SSR HTML page
+// emitting a cloudflare signal from its own response headers does not
+// satisfy this check.
+func findCaptchaTierProtectedAPIEntry(entries []EnrichedEntry, protections []ProtectionObservation) (int, bool) {
+	for _, p := range protections {
+		if !captchaTierProtections[p.Label] {
+			continue
+		}
+		for _, ev := range p.Evidence {
+			idx := ev.EntryIndex
+			if idx < 0 || idx >= len(entries) {
+				continue
+			}
+			if entries[idx].Classification == "api" {
+				return idx, true
+			}
+		}
+	}
+	return -1, false
+}
+
+// findSSRStateBlobEntryOnRegisteredDomain returns the index and matched
+// signature of the first HTML entry on the same registered domain
+// (eTLD+1) as refHost that emits the ssr_embedded_data protocol. Uses
+// content-type to identify HTML entries because the classifier returns
+// "noise" for HTML (no html class), so Classification is not a usable
+// filter on the HTML side.
+func findSSRStateBlobEntryOnRegisteredDomain(entries []EnrichedEntry, protocols []ProtocolObservation, refHost string) (int, string, bool) {
+	var ssr *ProtocolObservation
+	for i := range protocols {
+		if protocols[i].Label == "ssr_embedded_data" {
+			ssr = &protocols[i]
+			break
+		}
+	}
+	if ssr == nil {
+		return -1, "", false
+	}
+	signature := ssr.Details["signature"]
+	for _, ev := range ssr.Evidence {
+		idx := ev.EntryIndex
+		if idx < 0 || idx >= len(entries) {
+			continue
+		}
+		entry := entries[idx]
+		if !strings.Contains(strings.ToLower(entry.ResponseContentType), "html") {
+			continue
+		}
+		if !sameRegisteredDomain(extractHost(entry.URL), refHost) {
+			continue
+		}
+		return idx, signature, true
+	}
+	return -1, "", false
+}
+
+// sameRegisteredDomain compares two hosts at the eTLD+1 level so
+// subdomain splits like api.example.com / www.example.com qualify as
+// "same site." Falls back to literal hostname equality if either input
+// is a private or unknown TLD that publicsuffix can't resolve.
+func sameRegisteredDomain(hostA, hostB string) bool {
+	a := strings.ToLower(strings.TrimSpace(hostA))
+	b := strings.ToLower(strings.TrimSpace(hostB))
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	aETLD, err := publicsuffix.EffectiveTLDPlusOne(a)
+	if err != nil {
+		return false
+	}
+	bETLD, err := publicsuffix.EffectiveTLDPlusOne(b)
+	if err != nil {
+		return false
+	}
+	return aETLD == bETLD
 }
 
 func hasAPIBrowserRenderedEntry(entries []EnrichedEntry) bool {

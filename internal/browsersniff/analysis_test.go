@@ -772,6 +772,305 @@ func TestDetectSSREmbeddedData(t *testing.T) {
 	}
 }
 
+func TestApplyReachabilityDefaults_HTMLScrapeEmitsEmbeddedJSON(t *testing.T) {
+	tests := []struct {
+		name             string
+		signature        string
+		expectedSelector string
+	}{
+		{"next-data", "__NEXT_DATA__", "script#__NEXT_DATA__"},
+		{"nuxt", "__NUXT__", "script#__NUXT__"},
+		{"app-initial-state", "__APP_INITIAL_STATE__", "script#__APP_INITIAL_STATE__"},
+		{"state-view", "state-view", "script.state-view"},
+		{"ld-json", "application/ld+json", `script[type="application/ld+json"]`},
+		{"window-prefix-leaves-selector-empty", "window.__", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apiSpec := &spec.APISpec{
+				Resources: map[string]spec.Resource{
+					"pages": {
+						Endpoints: map[string]spec.Endpoint{
+							"get_index": {
+								Method: "GET",
+								Path:   "/",
+								HTMLExtract: &spec.HTMLExtract{
+									Mode:         spec.HTMLExtractModePage,
+									LinkPrefixes: []string{"/listing/"},
+									Limit:        50,
+								},
+							},
+						},
+					},
+				},
+			}
+			analysis := &TrafficAnalysis{
+				Reachability: &ReachabilityAnalysis{
+					Mode:                 "html_scrape",
+					HTMLExtractMode:      "embedded-json",
+					HTMLExtractSignature: tt.signature,
+				},
+			}
+			ApplyReachabilityDefaults(apiSpec, analysis)
+
+			ep := apiSpec.Resources["pages"].Endpoints["get_index"]
+			require.NotNil(t, ep.HTMLExtract)
+			assert.Equal(t, spec.HTMLExtractModeEmbeddedJSON, ep.HTMLExtract.Mode)
+			assert.Equal(t, tt.expectedSelector, ep.HTMLExtract.ScriptSelector)
+			assert.Nil(t, ep.HTMLExtract.LinkPrefixes, "link prefixes should clear when promoting to embedded-json")
+		})
+	}
+}
+
+func TestApplyReachabilityDefaults_HTMLScrapeLeavesNonHTMLEndpointsAlone(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"api": {
+				Endpoints: map[string]spec.Endpoint{
+					"get_foo": {
+						Method: "GET",
+						Path:   "/api/foo",
+						// No HTMLExtract — this is a JSON endpoint.
+					},
+				},
+			},
+		},
+	}
+	analysis := &TrafficAnalysis{
+		Reachability: &ReachabilityAnalysis{
+			Mode:                 "html_scrape",
+			HTMLExtractMode:      "embedded-json",
+			HTMLExtractSignature: "__NEXT_DATA__",
+		},
+	}
+	ApplyReachabilityDefaults(apiSpec, analysis)
+
+	ep := apiSpec.Resources["api"].Endpoints["get_foo"]
+	assert.Nil(t, ep.HTMLExtract, "non-HTML endpoints stay untouched")
+}
+
+func TestApplyReachabilityDefaults_HTMLScrapeNotAppliedWhenSignatureEmpty(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"pages": {
+				Endpoints: map[string]spec.Endpoint{
+					"get_index": {
+						Method: "GET",
+						Path:   "/",
+						HTMLExtract: &spec.HTMLExtract{
+							Mode: spec.HTMLExtractModePage,
+						},
+					},
+				},
+			},
+		},
+	}
+	analysis := &TrafficAnalysis{
+		Reachability: &ReachabilityAnalysis{
+			Mode: "html_scrape",
+			// Signature empty — should not promote
+		},
+	}
+	ApplyReachabilityDefaults(apiSpec, analysis)
+
+	ep := apiSpec.Resources["pages"].Endpoints["get_index"]
+	assert.Equal(t, spec.HTMLExtractModePage, ep.HTMLExtract.Mode, "without a signature, mode stays page")
+}
+
+func TestClassifyReachability_HTMLScrapePromotion(t *testing.T) {
+	tests := []struct {
+		name            string
+		entries         []EnrichedEntry
+		expectMode      string
+		expectSignature string
+	}{
+		{
+			name: "yandex-shape-cross-subdomain-promotes",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://api.yandex.example.com/maps/api/search",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"captcha required","redirect":"/showcaptcha?retpath=/"}`,
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://www.yandex.example.com/maps/org/foo/12345/",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("state-view", `{"org":{"name":"Cafe Bistro"}}`),
+				},
+			},
+			expectMode:      "html_scrape",
+			expectSignature: "state-view",
+		},
+		{
+			name: "same-host-promotes-with-next-data",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://example.com/api/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"captcha required"}`,
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://example.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__NEXT_DATA__", `{"foo":1}`),
+				},
+			},
+			expectMode:      "html_scrape",
+			expectSignature: "__NEXT_DATA__",
+		},
+		{
+			name: "different-registered-domain-does-not-promote",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://api.example.com/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"captcha required"}`,
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://other-site.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__NEXT_DATA__", `{}`),
+				},
+			},
+			expectMode:      "browser_required",
+			expectSignature: "",
+		},
+		{
+			name: "cloudflare-only-stays-on-clearance-mode",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://api.example.com/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"blocked"}`,
+					ResponseHeaders:     map[string]string{"Server": "cloudflare", "CF-Ray": "abc"},
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://www.example.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__NEXT_DATA__", `{}`),
+				},
+			},
+			// Cloudflare is not in the captcha tier — promotion does
+			// not fire. The existing browser_http branch handles this
+			// case (cloudflare on the API entry routes to browser_http).
+			expectMode:      "browser_http",
+			expectSignature: "",
+		},
+		{
+			name: "no-protection-no-promotion",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://example.com/api/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"foo":1}`,
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://example.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__NEXT_DATA__", `{}`),
+				},
+			},
+			expectMode:      "standard_http",
+			expectSignature: "",
+		},
+		{
+			name: "captcha-without-ssr-sibling-stays-browser-required",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://example.com/api/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"captcha required"}`,
+				},
+			},
+			expectMode:      "browser_required",
+			expectSignature: "",
+		},
+		{
+			name: "aws-waf-captcha-tier-promotes",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://api.example.com/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"blocked by AWS WAF","captcha":"required"}`,
+					ResponseHeaders:     map[string]string{"x-amzn-RequestId": "abc"},
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://www.example.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__NUXT__", `{}`),
+				},
+			},
+			expectMode:      "html_scrape",
+			expectSignature: "__NUXT__",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			capture := &EnrichedCapture{Entries: tt.entries}
+			analysis, err := AnalyzeTraffic(capture)
+			require.NoError(t, err)
+			require.NotNil(t, analysis.Reachability)
+			assert.Equal(t, tt.expectMode, analysis.Reachability.Mode)
+			if tt.expectSignature != "" {
+				assert.Equal(t, "embedded-json", analysis.Reachability.HTMLExtractMode)
+				assert.Equal(t, tt.expectSignature, analysis.Reachability.HTMLExtractSignature)
+			} else {
+				assert.Empty(t, analysis.Reachability.HTMLExtractMode)
+				assert.Empty(t, analysis.Reachability.HTMLExtractSignature)
+			}
+		})
+	}
+}
+
+func TestSameRegisteredDomain(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"example.com", "example.com", true},
+		{"api.example.com", "www.example.com", true},
+		{"api.example.com", "example.com", true},
+		{"example.com", "other-site.com", false},
+		{"api.example.co.uk", "www.example.co.uk", true},
+		{"example.co.uk", "example.com", false},
+		{"", "example.com", false},
+		{"EXAMPLE.com", "example.COM", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.a+"_"+tt.b, func(t *testing.T) {
+			assert.Equal(t, tt.want, sameRegisteredDomain(tt.a, tt.b))
+		})
+	}
+}
+
 func TestDetectProtocols_SSREmbeddedDataSurfacesSignatureInDetails(t *testing.T) {
 	capture := &EnrichedCapture{
 		Entries: []EnrichedEntry{
