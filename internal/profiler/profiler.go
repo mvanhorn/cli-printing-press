@@ -84,6 +84,14 @@ type SyncableResource struct {
 	// policy. Defaults to false.
 	Critical bool
 
+	// SinceParam is the actual query parameter name this resource's list
+	// endpoint declares for incremental temporal filtering (since,
+	// updated_after, modified_since, …). Empty when the endpoint declares
+	// no such parameter; the sync template skips temporal filtering for
+	// those resources and emits one resource_not_incremental warning per
+	// run when --since/incremental sync was requested.
+	SinceParam string
+
 	// Discriminator routes heterogeneous response items to concrete typed
 	// resources before storage. Empty when the endpoint returns a homogeneous
 	// resource.
@@ -112,6 +120,11 @@ type DependentResource struct {
 	// SyncableResource.Critical so spec authors can mark child paths as
 	// load-bearing.
 	Critical bool
+
+	// SinceParam mirrors SyncableResource.SinceParam for child paths so
+	// the same per-resource temporal-filter gating applies to dependent
+	// syncs.
+	SinceParam string
 
 	// Discriminator routes heterogeneous dependent-resource response items to
 	// concrete typed resources before storage.
@@ -976,6 +989,7 @@ func detectDependentResources(parameterized map[string]parameterizedEntry, synca
 			Tier:           entry.meta.Tier,
 			IDField:        entry.meta.IDField,
 			Critical:       entry.meta.Critical,
+			SinceParam:     entry.meta.SinceParam,
 			Discriminator:  entry.meta.Discriminator,
 		})
 	}
@@ -1028,6 +1042,7 @@ type syncableMeta struct {
 	Tier          string
 	IDField       string
 	Critical      bool
+	SinceParam    string
 	Discriminator DiscriminatorDispatch
 }
 
@@ -1055,8 +1070,24 @@ func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, 
 		Tier:          s.EffectiveTier(resource, e),
 		IDField:       e.IDField,
 		Critical:      e.Critical,
+		SinceParam:    detectEndpointSinceParam(e.Params),
 		Discriminator: discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
 	}
+}
+
+// detectEndpointSinceParam returns the actual query parameter name this
+// endpoint declares for incremental temporal filtering, or "" when none is
+// declared. The match list mirrors the profile-level aggregation in
+// Profile() so per-endpoint detection stays consistent with the
+// PaginationProfile.SinceParam summary.
+func detectEndpointSinceParam(params []spec.Param) string {
+	for _, p := range params {
+		name := strings.ToLower(p.Name)
+		if strings.Contains(name, "since") || strings.Contains(name, "updated_after") || strings.Contains(name, "modified_since") || strings.Contains(name, "updated_at") {
+			return p.Name
+		}
+	}
+	return ""
 }
 
 func applySyncCandidates(syncable map[string]syncableMeta, candidates map[string][]syncableCandidate) {
@@ -1253,6 +1284,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			Tier:          meta.Tier,
 			IDField:       meta.IDField,
 			Critical:      meta.Critical,
+			SinceParam:    meta.SinceParam,
 			Discriminator: meta.Discriminator,
 		}
 	}
