@@ -274,8 +274,12 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 	// flow keeps it in sync with the post-publish CLIManifest fields. The
 	// writer also reconciles against env reads in internal/client/ so the
 	// staged bundle includes any user_config fields the spec did not surface.
+	// Errors abort the promote rather than warn-and-continue — a reconcile
+	// failure here means the published bundle would ship missing user_config
+	// fields, which is the exact bug class this writer chain exists to prevent.
 	if err := WriteMCPBManifest(stagingDir); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not write MCPB manifest.json: %v\n", err)
+		_ = os.RemoveAll(stagingDir)
+		return fmt.Errorf("writing MCPB manifest to staging: %w", err)
 	}
 
 	// Remove any stale backup from a prior successful swap before we create a

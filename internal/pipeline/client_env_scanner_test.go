@@ -348,6 +348,70 @@ func refresh() (string, string) {
 	}
 }
 
+// TestWriteMCPBManifest_DiskReadVariantReconciles guards the
+// disk-read entry point used by lock.go, publish.go, and mcpsync. A
+// regression that broke `WriteMCPBManifest`'s delegation to
+// `WriteMCPBManifestFromStruct` would skip reconcile silently for the
+// most common call shape.
+func TestWriteMCPBManifest_DiskReadVariantReconciles(t *testing.T) {
+	dir := t.TempDir()
+	writeClientFile(t, dir, "auth_refresh.go", `package client
+
+import "os"
+
+func u() (string, string) {
+	return os.Getenv("X_USERNAME"), os.Getenv("X_PASSWORD")
+}
+`)
+	writeManifest(t, dir, CLIManifest{
+		APIName:     "x",
+		MCPBinary:   "x-pp-mcp",
+		MCPReady:    "full",
+		AuthType:    "bearer_token",
+		AuthEnvVars: []string{"X_TOKEN"},
+	})
+
+	require.NoError(t, WriteMCPBManifest(dir))
+
+	got := readMCPBManifest(t, dir)
+	assert.Equal(t, "${user_config.x_username}", got.Server.MCPConfig.Env["X_USERNAME"])
+	assert.Equal(t, "${user_config.x_password}", got.Server.MCPConfig.Env["X_PASSWORD"])
+	for _, key := range []string{"x_username", "x_password"} {
+		entry, ok := got.UserConfig[key]
+		require.True(t, ok, "%s must be in user_config after disk-read writer path", key)
+		assert.True(t, entry.Required, "%s must inherit required from bearer_token auth", key)
+	}
+}
+
+// TestWriteMCPBManifestFromStruct_AuthOptionalPropagates guards the
+// in-memory CLIManifest plumbing — a regression that dropped AuthOptional
+// between the writer and the reconciler would mark discovered fields
+// Required on optional-auth APIs.
+func TestWriteMCPBManifestFromStruct_AuthOptionalPropagates(t *testing.T) {
+	dir := t.TempDir()
+	writeClientFile(t, dir, "client.go", `package client
+
+import "os"
+
+func read() string { return os.Getenv("OPTIONAL_HIDDEN") }
+`)
+	m := CLIManifest{
+		APIName:      "optional-cli",
+		MCPBinary:    "optional-cli-pp-mcp",
+		MCPReady:     "full",
+		AuthType:     "api_key",
+		AuthOptional: true,
+	}
+
+	require.NoError(t, WriteMCPBManifestFromStruct(dir, m))
+
+	got := readMCPBManifest(t, dir)
+	entry, ok := got.UserConfig["optional_hidden"]
+	require.True(t, ok)
+	assert.False(t, entry.Required, "AuthOptional=true must propagate through the writer entry point")
+	assert.Contains(t, entry.Description, "Optional.")
+}
+
 // TestWriteMCPBManifestFromStruct_IdempotentReconcile ensures running the
 // writer twice on the same dir produces identical output bytes — the
 // reconciler must not double-append or churn fields.
