@@ -79,3 +79,20 @@ If the validator or enum values change, update both this doc and the inline `AGE
 Catalog entries for browser-facing APIs with rotating public client bearer tokens may declare `bearer_refresh`. When present, both `bearer_refresh.bundle_url` and `bearer_refresh.pattern` are required, the bundle URL must use HTTPS, and the pattern must compile as a Go regexp.
 
 The generator copies this metadata into the printed CLI so `doctor --refresh-bearer` and the agent-accessible `refresh-bearer` command can refresh the user's stored token from the live source bundle.
+
+## Auth key URL
+
+Catalog entries may declare `auth_key_url:` — an HTTPS page where the user can obtain credentials (personal access token, API key, OAuth client, etc.). The generator surfaces it in the printed CLI's auth prompts and `doctor` output as `Get a key at: <URL>`.
+
+Precedence:
+- Catalog `auth_key_url` overrides any URL from the spec.
+- Otherwise, an OpenAPI spec's [`x-auth-key-url`](SPEC-EXTENSIONS.md#x-auth-key-url) is used.
+- Otherwise, the parser infers a URL from the selected security scheme's `description`, then from `info.description` when the surrounding text mentions credential cues. `externalDocs.url` and `info.contact.url` are intentionally **not** fallbacks — those typically point at the docs landing page or company homepage, not the keys UI. When `KeyURL` is empty, the printed CLI surfaces those URLs under a separate `See API docs:` line instead. See [`SPEC-EXTENSIONS.md`](SPEC-EXTENSIONS.md#x-auth-key-url) for details.
+
+Set `auth_key_url:` when the inference would land on a generic homepage and you know the specific token-acquisition page. The validator only checks that the URL starts with `https://`; it does not probe reachability.
+
+## Auth instructions
+
+Catalog entries may also declare `auth_instructions:` — a one-line string of free-form guidance ("Settings → Personal access tokens → Generate new") that the printed CLI prints under the `Get a key at:` line. Use this when the URL lands on a docs page rather than the keys UI: the URL says where to start, the instruction says what to do once there.
+
+Catalog `auth_instructions` overrides any value from the spec's [`x-auth-instructions`](SPEC-EXTENSIONS.md#x-auth-instructions) extension. The printed CLI surfaces it in auth prompts, `doctor`, and the new `auth setup` command (which also takes `--launch` to open the URL in a browser).

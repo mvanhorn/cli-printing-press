@@ -4627,6 +4627,47 @@ func TestGeneratedHelpers_AuthWithKeyURL_Compiles(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// Adversarial Instructions values must not break generated Go. The auth setup,
+// helpers (401/403 hint paths), and MCP tool description templates all embed
+// .Auth.Instructions inside Go string literals; without %q escaping a value
+// containing " or \ produces a syntax error at template-render time.
+func TestGeneratedHelpers_AuthInstructionsWithSpecialChars_Compiles(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "instrescape",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:         "api_key",
+			Header:       "Authorization",
+			In:           "header",
+			EnvVars:      []string{"INSTRESCAPE_API_KEY"},
+			KeyURL:       "https://example.com/keys",
+			Instructions: `Settings → "Personal access tokens" → \Generate new\`,
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/instrescape-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"users": {
+				Description: "Manage users",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/users", Description: "List users"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "instrescape-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 // --- Unit 4: Doctor Auth Hint Tests ---
 
 func TestGeneratedDoctor_AuthHintsWithKeyURL(t *testing.T) {

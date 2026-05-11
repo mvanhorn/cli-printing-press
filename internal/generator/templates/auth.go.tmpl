@@ -18,6 +18,9 @@ import (
 	"strings"
 	"time"
 
+{{- if or .Auth.KeyURL .WebsiteURL}}
+	"{{modulePath}}/internal/cliutil"
+{{- end}}
 	"{{modulePath}}/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -28,12 +31,82 @@ func newAuthCmd(flags *rootFlags) *cobra.Command {
 		Short: {{printf "%q" (authCommandShort .APISpec)}},
 	}
 
+	cmd.AddCommand(newAuthSetupCmd(flags))
 	cmd.AddCommand(newAuthLoginCmd(flags))
 	cmd.AddCommand(newAuthStatusCmd(flags))
 	cmd.AddCommand(newAuthLogoutCmd(flags))
 
 	return cmd
 }
+
+// newAuthSetupCmd prints concrete steps for registering an OAuth app and
+// obtaining client credentials. Side-effect rule: print by default, --launch
+// to open the registration URL, short-circuit when the verifier is running.
+func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
+	var launch bool
+	cmd := &cobra.Command{
+		Use:   "setup",
+		Short: "Print steps for registering an OAuth app (use --launch to open the URL)",
+		Example: "  {{.Name}}-pp-cli auth setup\n  {{.Name}}-pp-cli auth setup --launch",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w := cmd.OutOrStdout()
+{{- if .Auth.KeyURL}}
+			fmt.Fprintln(w, "Register an app and copy your credentials at: {{.Auth.KeyURL}}")
+{{- else if .WebsiteURL}}
+			fmt.Fprintln(w, "See API docs for OAuth app registration: {{.WebsiteURL}}")
+{{- else}}
+			fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
+{{- end}}
+{{- if .Auth.Instructions}}
+			fmt.Fprintln(w, {{printf "%q" (printf "  %s" .Auth.Instructions)}})
+{{- end}}
+			fmt.Fprintln(w, "")
+			fmt.Fprintln(w, "Then run:")
+			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth login --client-id <id> --client-secret <secret>")
+			if !launch {
+				return nil
+			}
+{{- if or .Auth.KeyURL .WebsiteURL}}
+			launchURL := {{if .Auth.KeyURL}}"{{.Auth.KeyURL}}"{{else}}"{{.WebsiteURL}}"{{end}}
+			if cliutil.IsVerifyEnv() {
+				fmt.Fprintf(w, "would launch: %s\n", launchURL)
+				return nil
+			}
+			if err := openSetupURL(launchURL); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "could not open browser automatically: %v\nopen this URL manually: %s\n", err, launchURL)
+			}
+{{- else}}
+			fmt.Fprintln(cmd.ErrOrStderr(), "no setup URL configured; cannot launch")
+{{- end}}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&launch, "launch", false, "Open the setup URL in your default browser")
+	return cmd
+}
+
+{{- if or .Auth.KeyURL .WebsiteURL}}
+
+// openSetupURL opens url in the OS default browser and returns any error
+// from the launch. Distinct from openBrowser (used by `auth login`) because
+// `auth setup --launch` prints a manual-fallback message on failure rather
+// than silently failing. Per the side-effect rule, the caller short-circuits
+// with cliutil.IsVerifyEnv() before this is reached.
+func openSetupURL(url string) error {
+	var c *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		c = exec.Command("open", url)
+	case "linux":
+		c = exec.Command("xdg-open", url)
+	case "windows":
+		c = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+	}
+	return c.Start()
+}
+{{- end}}
 
 func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 	var clientID string

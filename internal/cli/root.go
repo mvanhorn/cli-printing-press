@@ -1589,6 +1589,12 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	if entry.BearerRefresh.Pattern != "" && apiSpec.BearerRefresh.Pattern == "" {
 		apiSpec.BearerRefresh.Pattern = entry.BearerRefresh.Pattern
 	}
+	if entry.AuthKeyURL != "" && apiSpec.Auth.Type != "none" {
+		apiSpec.Auth.KeyURL = entry.AuthKeyURL
+	}
+	if entry.AuthInstructions != "" && apiSpec.Auth.Type != "none" {
+		apiSpec.Auth.Instructions = entry.AuthInstructions
+	}
 }
 
 func mcpConfigured(m spec.MCPConfig) bool {

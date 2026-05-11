@@ -1,6 +1,7 @@
 package openapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -34,6 +35,7 @@ const (
 	extensionAuthVars         = "x-auth-vars"
 	extensionAuthOptional     = "x-auth-optional"
 	extensionAuthKeyURL       = "x-auth-key-url"
+	extensionAuthInstructions = "x-auth-instructions"
 	extensionAuthTitle        = "x-auth-title"
 	extensionAuthDescription  = "x-auth-description"
 	extensionSpeakeasyExample = "x-speakeasy-example"
@@ -227,7 +229,47 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 		fmt.Fprintf(os.Stderr, "info: spec loaded after stripping broken references\n")
 	}
 
-	doc.InternalizeRefs(context.Background(), nil)
+	// Skip InternalizeRefs when the spec has no external $refs (every $ref starts
+	// with '#'). The Render Public API spec has 314 cross-referenced schemas;
+	// kin-openapi's DefaultRefNameResolver-driven recursion runs > 10 minutes
+	// on it. Lazy ref resolution still works for in-document refs during access.
+	//
+	// Format-agnostic scan: matches both JSON (`"$ref": "..."`) and YAML
+	// (`$ref: '...'` or unquoted `$ref: ./schemas/foo.yaml`). A `$ref` whose
+	// value's first non-quote character is anything but '#' is external, and
+	// we must call InternalizeRefs to resolve it.
+	hasExternalRef := false
+	for off := 0; off < len(data); {
+		idx := bytes.Index(data[off:], []byte("$ref"))
+		if idx < 0 {
+			break
+		}
+		off += idx + len("$ref")
+		// Skip optional closing quote (JSON `"$ref"`) and whitespace before the colon.
+		for off < len(data) && (data[off] == '"' || data[off] == '\'' || data[off] == ' ' || data[off] == '\t') {
+			off++
+		}
+		if off >= len(data) || data[off] != ':' {
+			continue
+		}
+		off++
+		for off < len(data) && (data[off] == ' ' || data[off] == '\t') {
+			off++
+		}
+		if off < len(data) && (data[off] == '"' || data[off] == '\'') {
+			off++
+		}
+		if off >= len(data) {
+			break
+		}
+		if data[off] != '#' {
+			hasExternalRef = true
+			break
+		}
+	}
+	if hasExternalRef {
+		doc.InternalizeRefs(context.Background(), nil)
+	}
 
 	name := "api"
 	description := ""
@@ -324,6 +366,9 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 	auth := mapAuthWithDescriptionInference(doc, name, !metadata.explicitEmptySecuritySchemes)
 	if auth.Type != "none" && allOperationsAllowAnonymous(doc) {
 		auth = spec.AuthConfig{Type: "none"}
+	}
+	if auth.Type != "none" && auth.KeyURL == "" {
+		auth.KeyURL = inferAuthKeyURL(doc, auth.Scheme)
 	}
 
 	tierRouting, err := parseTypedExtension[spec.TierRoutingConfig](doc, extensionTierRouting)
@@ -595,6 +640,79 @@ func allDigits(s string) bool {
 	return true
 }
 
+// inferAuthKeyURL returns a best-effort HTTPS URL pointing the user at where
+// they can obtain a credential when x-auth-key-url is not set. Precedence:
+//  1. URL embedded in the selected security scheme's description
+//  2. URL embedded in info.description, but only when the surrounding text
+//     mentions auth/credential cues (so we don't pick a URL describing an
+//     unrelated feature)
+//
+// Returns "" when no plausible URL is found. The printed CLI surfaces the
+// result as "Get a key at: <URL>", so a wrong URL here is worse than no URL.
+// We deliberately do NOT fall back to externalDocs.url or info.contact.url —
+// those almost always point at the API's docs landing page or the company
+// homepage, neither of which is where users actually create a token. When this
+// returns "", the printed CLI falls back to a separate "See API docs: <URL>"
+// line driven by WebsiteURL, which is honest framing for those URLs.
+func inferAuthKeyURL(doc *openapi3.T, schemeName string) string {
+	if doc == nil {
+		return ""
+	}
+	if schemeName != "" && doc.Components != nil {
+		if ref, ok := doc.Components.SecuritySchemes[schemeName]; ok {
+			if scheme := securitySchemeValue(ref); scheme != nil {
+				if u := firstHTTPSURL(scheme.Description); u != "" {
+					return u
+				}
+			}
+		}
+	}
+	if doc.Info != nil {
+		if u := firstAuthRelatedURL(doc.Info.Description); u != "" {
+			return u
+		}
+	}
+	return ""
+}
+
+var httpsURLPattern = regexp.MustCompile(`https://[^\s)>\]"',]+`)
+
+// firstHTTPSURL returns the first https:// substring found in s, with trailing
+// sentence punctuation trimmed.
+func firstHTTPSURL(s string) string {
+	if s == "" {
+		return ""
+	}
+	m := httpsURLPattern.FindString(s)
+	return strings.TrimRight(m, ".,;:!?)")
+}
+
+// firstAuthRelatedURL returns the first HTTPS URL in s, but only when s also
+// contains language indicating the URL is about credentials. Avoids picking a
+// URL that happens to appear in a description of an unrelated feature.
+func firstAuthRelatedURL(s string) string {
+	if s == "" {
+		return ""
+	}
+	lower := strings.ToLower(s)
+	cues := []string{
+		"token", "api key", "api_key", "apikey",
+		"credential", "register", "sign up", "signup",
+		"create an app", "create an application", "personal access",
+	}
+	matched := false
+	for _, c := range cues {
+		if strings.Contains(lower, c) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return ""
+	}
+	return firstHTTPSURL(s)
+}
+
 func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]any) {
 	if auth == nil || len(extensions) == 0 {
 		return
@@ -611,6 +729,9 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 	}
 	if keyURL := stringExtension(extensions, extensionAuthKeyURL); keyURL != "" {
 		auth.KeyURL = keyURL
+	}
+	if instructions := stringExtension(extensions, extensionAuthInstructions); instructions != "" {
+		auth.Instructions = instructions
 	}
 	if title := stringExtension(extensions, extensionAuthTitle); title != "" {
 		auth.Title = title

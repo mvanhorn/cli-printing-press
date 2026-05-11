@@ -5,10 +5,17 @@ package cli
 
 import (
 	"fmt"
+{{- if or .Auth.KeyURL .WebsiteURL}}
+	"os/exec"
+	"runtime"
+{{- end}}
 {{- if .Auth.EnvVars}}
 	"os"
 {{- end}}
 
+{{- if or .Auth.KeyURL .WebsiteURL}}
+	"{{modulePath}}/internal/cliutil"
+{{- end}}
 	"{{modulePath}}/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -19,12 +26,93 @@ func newAuthCmd(flags *rootFlags) *cobra.Command {
 		Short: {{printf "%q" (authCommandShort .APISpec)}},
 	}
 
+	cmd.AddCommand(newAuthSetupCmd(flags))
 	cmd.AddCommand(newAuthStatusCmd(flags))
 	cmd.AddCommand(newAuthSetTokenCmd(flags))
 	cmd.AddCommand(newAuthLogoutCmd(flags))
 
 	return cmd
 }
+
+// newAuthSetupCmd prints concrete steps for getting a credential. Side-effect
+// rule: print by default, --launch opt-in to open the URL, short-circuit when
+// the verifier is running this in a sandboxed subprocess.
+func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
+	var launch bool
+	cmd := &cobra.Command{
+		Use:   "setup",
+		Short: "Print steps for obtaining a credential (use --launch to open the URL)",
+		Example: "  {{.Name}}-pp-cli auth setup\n  {{.Name}}-pp-cli auth setup --launch",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w := cmd.OutOrStdout()
+{{- if .Auth.KeyURL}}
+			fmt.Fprintln(w, "Get a key at: {{.Auth.KeyURL}}")
+{{- else if .WebsiteURL}}
+			fmt.Fprintln(w, "See API docs: {{.WebsiteURL}}")
+{{- else}}
+			fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
+{{- end}}
+{{- if .Auth.Instructions}}
+			fmt.Fprintln(w, {{printf "%q" (printf "  %s" .Auth.Instructions)}})
+{{- end}}
+{{- if .Auth.EnvVarSpecs}}
+			fmt.Fprintln(w, "")
+			fmt.Fprintln(w, "Then set:")
+{{- range .Auth.EnvVarSpecs}}
+{{- if isRequestAuthEnvVar .}}
+			fmt.Fprintln(w, "  export {{.Name}}=\"<your-token>\"")
+{{- end}}
+{{- end}}
+			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth set-token <token>")
+{{- else if .Auth.EnvVars}}
+			fmt.Fprintln(w, "")
+			fmt.Fprintln(w, "Then set:")
+{{- range .Auth.EnvVars}}
+			fmt.Fprintln(w, "  export {{.}}=\"<your-token>\"")
+{{- end}}
+			fmt.Fprintln(w, "  {{.Name}}-pp-cli auth set-token <token>")
+{{- end}}
+			if !launch {
+				return nil
+			}
+{{- if or .Auth.KeyURL .WebsiteURL}}
+			launchURL := {{if .Auth.KeyURL}}"{{.Auth.KeyURL}}"{{else}}"{{.WebsiteURL}}"{{end}}
+			if cliutil.IsVerifyEnv() {
+				fmt.Fprintf(w, "would launch: %s\n", launchURL)
+				return nil
+			}
+			if err := openSetupURL(launchURL); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "could not open browser automatically: %v\nopen this URL manually: %s\n", err, launchURL)
+			}
+{{- else}}
+			fmt.Fprintln(cmd.ErrOrStderr(), "no setup URL configured; cannot launch")
+{{- end}}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&launch, "launch", false, "Open the setup URL in your default browser")
+	return cmd
+}
+
+{{- if or .Auth.KeyURL .WebsiteURL}}
+
+// openSetupURL opens url in the OS default browser. Per the side-effect rule,
+// the caller short-circuits with cliutil.IsVerifyEnv() before this is reached.
+func openSetupURL(url string) error {
+	var c *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		c = exec.Command("open", url)
+	case "linux":
+		c = exec.Command("xdg-open", url)
+	case "windows":
+		c = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+	}
+	return c.Start()
+}
+{{- end}}
 
 func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{

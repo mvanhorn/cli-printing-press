@@ -128,6 +128,19 @@ type Entry struct {
 	SpecSource string `yaml:"spec_source,omitempty"`
 	// AuthRequired indicates whether the API needs authentication. Empty means unknown.
 	AuthRequired *bool `yaml:"auth_required,omitempty"`
+	// AuthKeyURL is an HTTPS URL pointing the user at the page where they can
+	// obtain credentials (a personal access token, API key, OAuth client, etc.).
+	// Surfaces as "Get a key at: <URL>" in the printed CLI's auth prompts and
+	// doctor output. Overrides any URL inferred from the spec; the spec's
+	// x-auth-key-url and parser inference fallbacks are used when this is empty.
+	AuthKeyURL string `yaml:"auth_key_url,omitempty"`
+	// AuthInstructions is one-line free-form guidance shown alongside
+	// AuthKeyURL — e.g. "Settings → Personal access tokens → Generate new".
+	// Renders under the URL in auth prompts and doctor output, and is the
+	// human-readable companion to the URL when the URL is a generic docs page
+	// rather than a deep link to the keys UI. Overrides any spec-supplied
+	// x-auth-instructions value.
+	AuthInstructions string `yaml:"auth_instructions,omitempty"`
 	// ClientPattern describes the HTTP client pattern needed. Empty defaults to "rest".
 	// Values: rest, proxy-envelope, graphql.
 	ClientPattern string `yaml:"client_pattern,omitempty"`
@@ -300,6 +313,9 @@ func (e *Entry) Validate() error {
 	}
 	if err := validateBearerRefresh(e.BearerRefresh); err != nil {
 		return err
+	}
+	if e.AuthKeyURL != "" && !strings.HasPrefix(e.AuthKeyURL, "https://") {
+		return fmt.Errorf(`auth_key_url must start with "https://"`)
 	}
 
 	return nil
