@@ -73,17 +73,20 @@ func TestGenerateSyncSkipsUnresolvedPathKeys(t *testing.T) {
 	// Structural assertion 1: the regex var declaration is present.
 	assert.Contains(t, syncContent, "unresolvedPathKeyRE",
 		"generated sync.go should declare unresolvedPathKeyRE var")
-	assert.Contains(t, syncContent, "regexp.MustCompile(`\\{[a-z_][a-z0-9_]*\\}`)",
-		"unresolvedPathKeyRE should match lowercase {key} placeholders")
+	assert.Contains(t, syncContent, "regexp.MustCompile(`\\{[a-zA-Z_][a-zA-Z0-9_]*\\}`)",
+		"unresolvedPathKeyRE should match {key} placeholders including camelCase (YouTube Data v3, etc.)")
 
 	// Structural assertion 2: the FindAllString check is wired in syncResource.
 	assert.Contains(t, syncContent, "unresolvedPathKeyRE.FindAllString(path, -1)",
 		"syncResource should scan the resolved path for unresolved {key}s")
 
 	// Structural assertion 3: the sync_warning event payload is correct.
-	assert.Contains(t, syncContent, `"event":"sync_warning"`,
+	// Payload is marshalled from a typed struct (so resource/path get proper
+	// JSON escaping); we assert on the struct field literals rather than the
+	// hand-built JSON string that previous versions emitted.
+	assert.Contains(t, syncContent, `Event:    "sync_warning"`,
 		"skip branch should emit a sync_warning event")
-	assert.Contains(t, syncContent, `"reason":"unfilled_path_key"`,
+	assert.Contains(t, syncContent, `Reason:   "unfilled_path_key"`,
 		"skip branch should use reason=unfilled_path_key")
 
 	// Structural assertion 4: the skip branch returns a Warn (non-fatal),

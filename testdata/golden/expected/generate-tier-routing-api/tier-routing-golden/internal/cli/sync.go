@@ -26,7 +26,7 @@ import (
 // context — flat-list sync cannot fill them. Resources with unresolved
 // keys emit sync_warning and are skipped without aborting the run, so
 // sync still completes for resources that DO have resolvable paths.
-var unresolvedPathKeyRE = regexp.MustCompile(`\{[a-z_][a-z0-9_]*\}`)
+var unresolvedPathKeyRE = regexp.MustCompile(`\{[a-zA-Z_][a-zA-Z0-9_]*\}`)
 
 // syncResult holds the outcome of syncing a single resource.
 type syncResult struct {
@@ -295,11 +295,23 @@ func syncResource(c interface {
 	// hierarchical-API CLIs functional for the resources they CAN sync flat.
 	if missingKeys := unresolvedPathKeyRE.FindAllString(path, -1); len(missingKeys) > 0 {
 		if !humanFriendly {
-			// Identifiers are lowercase ASCII; safe to embed without escaping.
-			keysJSON, _ := json.Marshal(missingKeys)
-			fmt.Fprintf(os.Stdout,
-				`{"event":"sync_warning","resource":"%s","reason":"unfilled_path_key","keys":%s,"path":"%s","message":"path %s requires parent context (%s); resource skipped"}`+"\n",
-				resource, string(keysJSON), path, path, strings.Join(missingKeys, ", "))
+			payload := struct {
+				Event    string   `json:"event"`
+				Resource string   `json:"resource"`
+				Reason   string   `json:"reason"`
+				Keys     []string `json:"keys"`
+				Path     string   `json:"path"`
+				Message  string   `json:"message"`
+			}{
+				Event:    "sync_warning",
+				Resource: resource,
+				Reason:   "unfilled_path_key",
+				Keys:     missingKeys,
+				Path:     path,
+				Message:  fmt.Sprintf("path %s requires parent context (%s); resource skipped", path, strings.Join(missingKeys, ", ")),
+			}
+			payloadJSON, _ := json.Marshal(payload)
+			fmt.Fprintf(os.Stdout, "%s\n", payloadJSON)
 		} else {
 			fmt.Fprintf(os.Stderr, "  %s skipped (requires parent context: %s)\n",
 				resource, strings.Join(missingKeys, ", "))
