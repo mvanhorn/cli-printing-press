@@ -3589,6 +3589,22 @@ func TestCompactListFieldsPreservesUnknownShapes(t *testing.T) {
 	}
 }
 
+// The cursor param's "0" must survive paginatedGet's zero-value strip:
+// offset-paginated APIs require offset=0 on the first page request.
+func TestPaginatedGetExemptsCursorParamFromZeroStripping(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join("templates", "helpers.go.tmpl")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err, "template must exist: %s", path)
+	body := string(data)
+
+	assert.Contains(t, body, "if k == cursorParam || (v != \"0\" && v != \"false\") {",
+		"paginatedGet must keep the cursor param when its value is \"0\" so offset-paginated APIs receive offset=0 on the first page")
+	assert.NotContains(t, body, "if v != \"\" && v != \"0\" && v != \"false\" {",
+		"the unconditional zero/false strip is wrong for the cursor param — every k must be checked against cursorParam first")
+}
+
 // TestPipedJsonGateRespectsExplicitFormatFlags pins the contract: the
 // piped-output auto-JSON gate must defer to explicit --csv / --quiet /
 // --plain flags so piped consumers that asked for a non-JSON format

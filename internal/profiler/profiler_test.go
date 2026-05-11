@@ -1696,3 +1696,122 @@ func TestProfileSpecWalker_MultiPlaceholderPathWarns(t *testing.T) {
 		assert.True(t, found, "walker with explicit key_param must produce a dependent entry")
 	})
 }
+
+// Specs that declare pagination via plain offset+count query params (no
+// explicit pagination: block) must infer the cursor and limit names from
+// those params instead of falling back to "after"/"limit".
+func TestProfilePagination_InfersFromPlainParamsWhenNoExplicitBlock(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "plain-param-pagination",
+		Resources: map[string]spec.Resource{
+			"agents": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/agents",
+						Params:   []spec.Param{{Name: "offset", Type: "int"}, {Name: "count", Type: "int"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"builds": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/builds",
+						Params:   []spec.Param{{Name: "offset", Type: "int"}, {Name: "count", Type: "int"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	assert.Equal(t, "offset", profile.Pagination.CursorParam, "plain offset param must be picked up")
+	assert.Equal(t, "count", profile.Pagination.PageSizeParam, "plain count param must be picked up as limit")
+}
+
+// Explicit pagination: blocks must continue to win over plain-param inference.
+// Mixing the two on the same endpoint would otherwise double-count or let
+// inference shadow the author's deliberate choice.
+func TestProfilePagination_ExplicitBlockWinsOverInference(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "explicit",
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/items",
+						Params: []spec.Param{
+							{Name: "offset", Type: "int"},
+							{Name: "count", Type: "int"},
+						},
+						Pagination: &spec.Pagination{
+							Type:        "cursor",
+							CursorParam: "foo",
+							LimitParam:  "bar",
+						},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	assert.Equal(t, "foo", profile.Pagination.CursorParam, "explicit cursor_param must win")
+	assert.Equal(t, "bar", profile.Pagination.PageSizeParam, "explicit limit_param must win")
+}
+
+// Specs with no recognizable pagination shape must keep the historical
+// after/limit defaults so existing golden output doesn't churn.
+func TestProfilePagination_NoPaginationParamsKeepsDefaults(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "no-pagination",
+		Resources: map[string]spec.Resource{
+			"things": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/things",
+						Params:   []spec.Param{{Name: "filter", Type: "string"}},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	assert.Equal(t, "after", profile.Pagination.CursorParam)
+	assert.Equal(t, "limit", profile.Pagination.PageSizeParam)
+}
+
+// Inference must skip path params and positional args even when their names
+// match candidate sets (e.g. an /items/{page} path segment named "page").
+func TestProfilePagination_SkipsPathAndPositionalParams(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "scoped",
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/items/{page}",
+						Params: []spec.Param{
+							{Name: "page", Type: "string", PathParam: true},
+							{Name: "offset", Type: "int", Positional: true},
+						},
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	assert.Equal(t, "after", profile.Pagination.CursorParam, "path-param 'page' must not be treated as a cursor")
+	assert.Equal(t, "limit", profile.Pagination.PageSizeParam)
+}

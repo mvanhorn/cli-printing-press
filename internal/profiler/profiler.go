@@ -397,6 +397,21 @@ func Profile(s *spec.APISpec) *APIProfile {
 				if endpoint.Pagination.LimitParam != "" {
 					pageSizeParams[endpoint.Pagination.LimitParam]++
 				}
+			} else {
+				// Fallback for specs that expose pagination via plain params
+				// instead of a structured pagination: block.
+				for _, param := range endpoint.Params {
+					if param.PathParam || param.Positional {
+						continue
+					}
+					lower := strings.ToLower(param.Name)
+					if cursorParamCandidates[lower] {
+						cursorParams[param.Name]++
+					}
+					if pageSizeParamCandidates[lower] {
+						pageSizeParams[param.Name]++
+					}
+				}
 			}
 			if endpoint.ResponsePath != "" {
 				responsePaths[endpoint.ResponsePath]++
@@ -672,26 +687,37 @@ func dataFit(v bool) int {
 	return 1
 }
 
-// hasRequiredScopeParams returns true if the endpoint has required query parameters
-// that aren't pagination-related. These are "scoped list" endpoints (e.g., GetFriendList
+// Lowercase-keyed candidate sets shared by the profiler's pagination
+// inference path and hasRequiredScopeParams.
+var (
+	pageSizeParamCandidates = map[string]bool{
+		"limit": true, "per_page": true, "page_size": true, "pagesize": true,
+		"first": true, "count": true, "max_results": true, "page[size]": true,
+	}
+	cursorParamCandidates = map[string]bool{
+		"after": true, "cursor": true, "page_token": true, "offset": true,
+		"page": true, "before": true, "starting_after": true, "page[cursor]": true,
+	}
+)
+
+// hasRequiredScopeParams flags "scoped list" endpoints (e.g., GetFriendList
 // requires steamid) that can't be synced without runtime context.
 func hasRequiredScopeParams(endpoint spec.Endpoint) bool {
-	paginationParams := map[string]bool{
-		"limit": true, "per_page": true, "page_size": true, "pageSize": true, "first": true, "count": true, "max_results": true,
-		"after": true, "cursor": true, "page_token": true, "offset": true, "page": true, "before": true, "starting_after": true,
-		"page[cursor]": true, "page[size]": true,
+	temporalOrFormatParams := map[string]bool{
 		"since": true, "updated_after": true, "modified_since": true, "since_id": true,
-		"key": true, "format": true, // auth and format params, not scope
+		"key": true, "format": true,
 	}
 	for _, param := range endpoint.Params {
 		if param.Required && !param.Positional && !param.PathParam {
-			if !paginationParams[param.Name] && !paginationParams[strings.ToLower(param.Name)] {
-				// Enum params with 2+ values are handled by enum expansion, not scope
-				if len(param.Enum) >= 2 {
-					continue
-				}
-				return true
+			lower := strings.ToLower(param.Name)
+			if pageSizeParamCandidates[lower] || cursorParamCandidates[lower] || temporalOrFormatParams[lower] {
+				continue
 			}
+			// Enum params with 2+ values are handled by enum expansion, not scope
+			if len(param.Enum) >= 2 {
+				continue
+			}
+			return true
 		}
 	}
 	return false
