@@ -151,15 +151,25 @@ func WriteMCPBManifestFromStruct(dir string, m CLIManifest) error {
 	if m.MCPBinary == "" {
 		return nil
 	}
-	// SetEscapeHTML(false) so `>=1.0.0` stays readable instead of `>=1.0.0`.
+	out, err := marshalMCPBManifest(buildMCPBManifest(dir, m))
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, MCPBManifestFilename), out, 0o644)
+}
+
+// marshalMCPBManifest serializes an MCPBManifest with the same encoder
+// settings the writer uses end-to-end. SetEscapeHTML(false) so `>=1.0.0`
+// stays readable instead of `>=1.0.0`.
+func marshalMCPBManifest(manifest MCPBManifest) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(buildMCPBManifest(dir, m)); err != nil {
-		return fmt.Errorf("marshaling MCPB manifest: %w", err)
+	if err := enc.Encode(manifest); err != nil {
+		return nil, fmt.Errorf("marshaling MCPB manifest: %w", err)
 	}
-	return os.WriteFile(filepath.Join(dir, MCPBManifestFilename), buf.Bytes(), 0o644)
+	return buf.Bytes(), nil
 }
 
 func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {

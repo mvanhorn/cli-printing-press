@@ -276,6 +276,15 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 		fmt.Fprintf(os.Stderr, "warning: could not write MCPB manifest.json: %v\n", err)
 	}
 
+	// Reconcile against env reads in internal/client/. Hand-written
+	// credential-flow code (auth_refresh.go, etc.) reads env vars the
+	// OpenAPI spec never advertises; without this pass those vars never
+	// reach the MCPB user_config and the bundled server fails on first
+	// refresh. The scan is purely additive — known env vars stay put.
+	if err := reconcileMCPBManifestFromClient(stagingDir); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not reconcile MCPB manifest from client env reads: %v\n", err)
+	}
+
 	// Remove any stale backup from a prior successful swap before we create a
 	// fresh backup for the current library contents.
 	if _, err := os.Stat(backupDir); err == nil {
