@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
@@ -24,6 +25,12 @@ import (
 var verifySkillScript string
 
 const canonicalSectionsCheckName = "canonical-sections"
+
+const (
+	pythonPython3 = "python3"
+	pythonPy      = "py"
+	pythonPython  = "python"
+)
 
 type verifySkillRunResult struct {
 	Stdout   string
@@ -71,7 +78,7 @@ func runVerifySkillScript(dir string, only []string, asJSON bool, strict bool) (
 		pyArgs = append(pyArgs, "--strict")
 	}
 
-	py := exec.Command("python3", pyArgs...)
+	py := exec.Command(resolvePython(), pyArgs...)
 	py.Stdin = os.Stdin
 	py.Env = pythonUTF8Env(os.Environ())
 	var stdout, stderr bytes.Buffer
@@ -333,6 +340,37 @@ func emitMergedJSON(pyResult verifySkillRunResult, runCanonical, hasCanonicalFin
 	}
 	fmt.Println(string(out))
 	return nil
+}
+
+// resolvePython picks the interpreter name to pass to exec.Command for the
+// embedded verify-skill script. The Windows fallback chain exists because
+// exec.LookPath("python3") on Windows often resolves to the Microsoft Store
+// launcher stub, which is on PATH but exits with a "Python was not found"
+// Store-redirect message instead of running the script.
+func resolvePython() string {
+	if runtime.GOOS != "windows" {
+		return pythonPython3
+	}
+	if path, err := exec.LookPath(pythonPython3); err == nil && !isWindowsStorePython(path) {
+		return pythonPython3
+	}
+	if _, err := exec.LookPath(pythonPy); err == nil {
+		return pythonPy
+	}
+	if path, err := exec.LookPath(pythonPython); err == nil && !isWindowsStorePython(path) {
+		return pythonPython
+	}
+	return pythonPython3
+}
+
+// LookPath succeeds against the Microsoft Store Python launcher stub at
+// .../WindowsApps/python*.exe, so the only pre-exec signal is the path itself.
+func isWindowsStorePython(path string) bool {
+	if path == "" {
+		return false
+	}
+	lower := strings.ToLower(path)
+	return strings.Contains(lower, "windowsapps") && strings.Contains(lower, "python")
 }
 
 // pythonUTF8Env returns base with PYTHONIOENCODING and PYTHONUTF8 forced to
