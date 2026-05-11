@@ -731,17 +731,12 @@ func TestDetectSSREmbeddedData(t *testing.T) {
 			expect: "",
 		},
 		{
-			name: "accepts-304-cached",
+			name: "rejects-304-cached",
 			entry: EnrichedEntry{
 				ResponseContentType: "text/html",
 				ResponseStatus:      304,
 				ResponseBody:        makeSSRPage("__NEXT_DATA__", `{"cached":true}`),
 			},
-			// 304 is outside the 2xx range; the spec calls for 2xx only.
-			// Cached responses surface their full body via HAR replay
-			// regardless of status code, but the gate rejects 3xx to keep
-			// the rule simple. Documented limitation; raise as a follow-up
-			// if real 304 captures surface.
 			expect: "",
 		},
 		{
@@ -808,7 +803,6 @@ func TestApplyReachabilityDefaults_HTMLScrapeEmitsEmbeddedJSON(t *testing.T) {
 			analysis := &TrafficAnalysis{
 				Reachability: &ReachabilityAnalysis{
 					Mode:                 "html_scrape",
-					HTMLExtractMode:      "embedded-json",
 					HTMLExtractSignature: tt.signature,
 				},
 			}
@@ -840,7 +834,6 @@ func TestApplyReachabilityDefaults_HTMLScrapeLeavesNonHTMLEndpointsAlone(t *test
 	analysis := &TrafficAnalysis{
 		Reachability: &ReachabilityAnalysis{
 			Mode:                 "html_scrape",
-			HTMLExtractMode:      "embedded-json",
 			HTMLExtractSignature: "__NEXT_DATA__",
 		},
 	}
@@ -880,10 +873,10 @@ func TestApplyReachabilityDefaults_HTMLScrapeNotAppliedWhenSignatureEmpty(t *tes
 
 func TestClassifyReachability_HTMLScrapePromotion(t *testing.T) {
 	tests := []struct {
-		name            string
-		entries         []EnrichedEntry
-		expectMode      string
-		expectSignature string
+		name              string
+		entries           []EnrichedEntry
+		expectedMode      string
+		expectedSignature string
 	}{
 		{
 			name: "yandex-shape-cross-subdomain-promotes",
@@ -903,8 +896,8 @@ func TestClassifyReachability_HTMLScrapePromotion(t *testing.T) {
 					ResponseBody:        makeSSRPage("state-view", `{"org":{"name":"Cafe Bistro"}}`),
 				},
 			},
-			expectMode:      "html_scrape",
-			expectSignature: "state-view",
+			expectedMode:      "html_scrape",
+			expectedSignature: "state-view",
 		},
 		{
 			name: "same-host-promotes-with-next-data",
@@ -924,8 +917,8 @@ func TestClassifyReachability_HTMLScrapePromotion(t *testing.T) {
 					ResponseBody:        makeSSRPage("__NEXT_DATA__", `{"foo":1}`),
 				},
 			},
-			expectMode:      "html_scrape",
-			expectSignature: "__NEXT_DATA__",
+			expectedMode:      "html_scrape",
+			expectedSignature: "__NEXT_DATA__",
 		},
 		{
 			name: "different-registered-domain-does-not-promote",
@@ -945,8 +938,8 @@ func TestClassifyReachability_HTMLScrapePromotion(t *testing.T) {
 					ResponseBody:        makeSSRPage("__NEXT_DATA__", `{}`),
 				},
 			},
-			expectMode:      "browser_required",
-			expectSignature: "",
+			expectedMode:      "browser_required",
+			expectedSignature: "",
 		},
 		{
 			name: "cloudflare-only-stays-on-clearance-mode",
@@ -970,8 +963,8 @@ func TestClassifyReachability_HTMLScrapePromotion(t *testing.T) {
 			// Cloudflare is not in the captcha tier — promotion does
 			// not fire. The existing browser_http branch handles this
 			// case (cloudflare on the API entry routes to browser_http).
-			expectMode:      "browser_http",
-			expectSignature: "",
+			expectedMode:      "browser_http",
+			expectedSignature: "",
 		},
 		{
 			name: "no-protection-no-promotion",
@@ -991,8 +984,8 @@ func TestClassifyReachability_HTMLScrapePromotion(t *testing.T) {
 					ResponseBody:        makeSSRPage("__NEXT_DATA__", `{}`),
 				},
 			},
-			expectMode:      "standard_http",
-			expectSignature: "",
+			expectedMode:      "standard_http",
+			expectedSignature: "",
 		},
 		{
 			name: "captcha-without-ssr-sibling-stays-browser-required",
@@ -1005,8 +998,8 @@ func TestClassifyReachability_HTMLScrapePromotion(t *testing.T) {
 					ResponseBody:        `{"error":"captcha required"}`,
 				},
 			},
-			expectMode:      "browser_required",
-			expectSignature: "",
+			expectedMode:      "browser_required",
+			expectedSignature: "",
 		},
 		{
 			name: "aws-waf-captcha-tier-promotes",
@@ -1027,8 +1020,8 @@ func TestClassifyReachability_HTMLScrapePromotion(t *testing.T) {
 					ResponseBody:        makeSSRPage("__NUXT__", `{}`),
 				},
 			},
-			expectMode:      "html_scrape",
-			expectSignature: "__NUXT__",
+			expectedMode:      "html_scrape",
+			expectedSignature: "__NUXT__",
 		},
 	}
 
@@ -1038,14 +1031,8 @@ func TestClassifyReachability_HTMLScrapePromotion(t *testing.T) {
 			analysis, err := AnalyzeTraffic(capture)
 			require.NoError(t, err)
 			require.NotNil(t, analysis.Reachability)
-			assert.Equal(t, tt.expectMode, analysis.Reachability.Mode)
-			if tt.expectSignature != "" {
-				assert.Equal(t, "embedded-json", analysis.Reachability.HTMLExtractMode)
-				assert.Equal(t, tt.expectSignature, analysis.Reachability.HTMLExtractSignature)
-			} else {
-				assert.Empty(t, analysis.Reachability.HTMLExtractMode)
-				assert.Empty(t, analysis.Reachability.HTMLExtractSignature)
-			}
+			assert.Equal(t, tt.expectedMode, analysis.Reachability.Mode)
+			assert.Equal(t, tt.expectedSignature, analysis.Reachability.HTMLExtractSignature)
 		})
 	}
 }

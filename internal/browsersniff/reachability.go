@@ -150,38 +150,31 @@ func hasRequiredInput(endpoint spec.Endpoint) bool {
 	return false
 }
 
-// scriptSelectorForSignature maps the SSR state-blob signature label
-// (surfaced by the HAR analyzer) to the runtime extractor's
-// "tag" / "tag#id" / "tag.class" selector grammar. Empty string when
-// the signature does not have a canonical script-tag selector — the
-// runtime falls back to DefaultEmbeddedJSONScriptSelector.
+// scriptSelectorForSignature maps the SSR state-blob signature to the
+// runtime extractor's "tag" / "tag#id" / "tag.class" grammar. Empty
+// for window.__-style inline state — the runtime falls back to
+// DefaultEmbeddedJSONScriptSelector and the operator hand-tunes.
 func scriptSelectorForSignature(signature string) string {
 	switch signature {
-	case "__NEXT_DATA__":
-		return "script#__NEXT_DATA__"
-	case "__NUXT__":
+	case SSRSignatureNextData:
+		return spec.DefaultEmbeddedJSONScriptSelector
+	case SSRSignatureNuxt:
 		return "script#__NUXT__"
-	case "__APP_INITIAL_STATE__":
+	case SSRSignatureAppInitialState:
 		return "script#__APP_INITIAL_STATE__"
-	case "state-view":
+	case SSRSignatureStateView:
 		return "script.state-view"
-	case "application/ld+json":
+	case SSRSignatureLDJSON:
 		return `script[type="application/ld+json"]`
 	default:
-		// "window.__" matches inline state assigned outside any script
-		// tag; specgen leaves the selector empty so the runtime falls
-		// back to the default and the operator can hand-tune.
 		return ""
 	}
 }
 
-// applyHTMLScrapeExtractionDefaults walks the spec's resources and
-// rewrites HTMLExtract on endpoints that already declared HTML
-// extraction (Mode: page or links from inferHTMLExtract) so they
-// instead emit Mode: embedded-json with the script selector mapped
-// from the analyzer's matched signature. Endpoints without
-// HTMLExtract are left untouched — they aren't HTML-shaped, so the
-// scrape promotion does not apply.
+// applyHTMLScrapeExtractionDefaults rewrites HTMLExtract on endpoints
+// that already declared HTML extraction so they emit Mode: embedded-json
+// with the selector mapped from the analyzer's matched signature.
+// Endpoints without HTMLExtract are left untouched.
 func applyHTMLScrapeExtractionDefaults(apiSpec *spec.APISpec, signature string) {
 	selector := scriptSelectorForSignature(signature)
 	for resourceName, resource := range apiSpec.Resources {

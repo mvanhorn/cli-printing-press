@@ -141,7 +141,7 @@ eTLD+1 resolution requires the public suffix list. Go's ecosystem has `golang.or
 - HTML response with both `__NEXT_DATA__` and `application/ld+json`, status 200, 20 KB body → matched, signature == `__NEXT_DATA__` (priority).
 - HTML response with `__NEXT_DATA__`, status 200, 5 KB body → NOT matched (body floor).
 - HTML response with `__NEXT_DATA__`, status 403, 20 KB body → NOT matched (status floor — challenge page).
-- HTML response with `__NEXT_DATA__`, status 304, 20 KB body → matched (cached response in 2xx range).
+- HTML response with `__NEXT_DATA__`, status 304, 20 KB body → NOT matched (status floor — only 2xx promotes; 304 is treated as a non-fresh response we cannot inspect reliably).
 - Non-HTML response (JSON, XML) with state-blob marker substring → NOT matched (existing content-type guard).
 - Call-site verification: a fixture HAR with one SSR HTML entry produces a protocol observation with `Details["signature"]` populated.
 

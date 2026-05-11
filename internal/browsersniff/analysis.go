@@ -267,10 +267,10 @@ type ReachabilityAnalysis struct {
 	Reasons    []string      `json:"reasons,omitempty"`
 	Evidence   []EvidenceRef `json:"evidence,omitempty"`
 
-	// HTMLExtract* fields are populated when Mode == "html_scrape" so
-	// downstream spec emission can pick the right script selector
-	// without re-detecting. Empty otherwise.
-	HTMLExtractMode      string `json:"html_extract_mode,omitempty"`
+	// HTMLExtractSignature is set when Mode == "html_scrape" and carries
+	// which SSR state-blob signature triggered the promotion (one of
+	// SSRSignature*). Downstream spec emission maps it to a script
+	// selector. Empty otherwise.
 	HTMLExtractSignature string `json:"html_extract_signature,omitempty"`
 }
 
@@ -935,14 +935,10 @@ func classifyReachability(analysis *TrafficAnalysis, entries []EnrichedEntry) *R
 		}
 	}
 
-	// html_scrape promotion: when the HAR shows an API entry with a
-	// captcha-tier protection signal (JSON unreachable without a browser)
-	// AND an HTML entry on the same registered domain emits an SSR
-	// state blob, the cheaper transport is to scrape the HTML state blob
-	// rather than spin up a browser. This branch runs last so it overrides
-	// whichever mode the earlier branches set (typically browser_required
-	// or browser_clearance_http).
-	htmlExtractMode := ""
+	// html_scrape overrides browser_required when an API entry carries
+	// a captcha-tier signal AND a same-eTLD+1 HTML sibling emits an SSR
+	// state blob — cheaper than spinning up a browser when the same data
+	// is reachable from a cold HTML fetch.
 	htmlExtractSignature := ""
 	if apiIdx, ok := findCaptchaTierProtectedAPIEntry(entries, analysis.Protections); ok {
 		refHost := extractHost(entries[apiIdx].URL)
@@ -950,7 +946,6 @@ func classifyReachability(analysis *TrafficAnalysis, entries []EnrichedEntry) *R
 			mode = "html_scrape"
 			confidence = 0.85
 			reasons = []string{fmt.Sprintf("captcha-tier protection on API + same-registered-domain SSR state blob (signature: %s); html_scrape preferred over browser_required", signature)}
-			htmlExtractMode = "embedded-json"
 			htmlExtractSignature = signature
 		}
 	}
@@ -960,7 +955,6 @@ func classifyReachability(analysis *TrafficAnalysis, entries []EnrichedEntry) *R
 		Confidence:           confidence,
 		Reasons:              reasons,
 		Evidence:             evidence,
-		HTMLExtractMode:      htmlExtractMode,
 		HTMLExtractSignature: htmlExtractSignature,
 	}
 }
@@ -1457,21 +1451,33 @@ func containsJSONRPC(body string) bool {
 // challenge page rather than a real SSR payload.
 const ssrEmbeddedDataMinBodySize = 10_000
 
-// ssrEmbeddedDataSignatures lists each substring the detector recognizes
-// alongside the canonical signature label downstream consumers use to
-// pick a script selector. Order matters — earlier entries win on
-// multi-match because framework-specific signatures imply a known DOM
-// shape that the generic markers don't.
+// SSR state-blob signature labels surfaced by detectSSREmbeddedData and
+// consumed by spec emission to pick the right script selector. Exported
+// so the producer (this file) and consumer (reachability.go) share the
+// symbol set rather than duplicating string literals.
+const (
+	SSRSignatureNextData        = "__NEXT_DATA__"
+	SSRSignatureNuxt            = "__NUXT__"
+	SSRSignatureAppInitialState = "__APP_INITIAL_STATE__"
+	SSRSignatureStateView       = "state-view"
+	SSRSignatureLDJSON          = "application/ld+json"
+	SSRSignatureWindowPrefix    = "window.__"
+)
+
+// ssrEmbeddedDataSignatures lists each substring the detector matches
+// against alongside its signature label. Order matters — earlier
+// entries win on multi-match because framework-specific signatures
+// imply a known DOM shape the generic markers don't.
 var ssrEmbeddedDataSignatures = []struct {
 	substring string
 	label     string
 }{
-	{"__next_data__", "__NEXT_DATA__"},
-	{"__nuxt__", "__NUXT__"},
-	{"__app_initial_state__", "__APP_INITIAL_STATE__"},
-	{"state-view", "state-view"},
-	{"application/ld+json", "application/ld+json"},
-	{"window.__", "window.__"},
+	{"__next_data__", SSRSignatureNextData},
+	{"__nuxt__", SSRSignatureNuxt},
+	{"__app_initial_state__", SSRSignatureAppInitialState},
+	{"state-view", SSRSignatureStateView},
+	{"application/ld+json", SSRSignatureLDJSON},
+	{"window.__", SSRSignatureWindowPrefix},
 }
 
 // detectSSREmbeddedData returns the matched signature label when an
