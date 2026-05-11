@@ -3290,6 +3290,31 @@ func TestValidateRejectsResourceBaseURLWithProxyEnvelope(t *testing.T) {
 	assert.Contains(t, err.Error(), "base_url")
 }
 
+// TestValidateRejectsBasePathWithProxyEnvelope — proxy-envelope routes via
+// the envelope's Service/Path fields, not a URL-level prefix; a BasePath
+// would be silently ignored by the proxy. Validate must fail-fast.
+func TestValidateRejectsBasePathWithProxyEnvelope(t *testing.T) {
+	t.Parallel()
+	s := &APISpec{
+		Name:          "proxypath",
+		Version:       "0.1.0",
+		BaseURL:       "https://proxy.example.com",
+		BasePath:      "/api/v1",
+		ClientPattern: "proxy-envelope",
+		Resources: map[string]Resource{
+			"items": {
+				Endpoints: map[string]Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List"},
+				},
+			},
+		},
+	}
+	err := s.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "proxy-envelope")
+	assert.Contains(t, err.Error(), "base_path")
+}
+
 // TestValidateAcceptsResourceBaseURLWithoutProxyEnvelope — the same
 // resource override is accepted when client_pattern is not the proxy
 // flavor. Negative cases (no resource override, proxy-envelope alone)
