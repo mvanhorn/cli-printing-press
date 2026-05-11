@@ -12,6 +12,7 @@ user-invocable: false
 allowed-tools:
   - Bash
   - Agent
+created_by: user
 ---
 
 # printing-press-output-review (internal)

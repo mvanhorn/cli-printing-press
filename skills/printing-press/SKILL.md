@@ -14,6 +14,7 @@ allowed-tools:
   - WebSearch
   - AskUserQuestion
   - Agent
+created_by: user
 ---
 
 # /printing-press

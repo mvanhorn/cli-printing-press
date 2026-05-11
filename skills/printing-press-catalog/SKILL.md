@@ -12,6 +12,7 @@ allowed-tools:
   - Grep
   - WebFetch
   - AskUserQuestion
+created_by: user
 ---
 
 # /printing-press-catalog

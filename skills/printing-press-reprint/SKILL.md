@@ -15,6 +15,7 @@ allowed-tools:
   - Read
   - AskUserQuestion
   - Skill
+created_by: user
 ---
 
 # /printing-press-reprint

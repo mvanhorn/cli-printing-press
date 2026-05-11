@@ -18,6 +18,7 @@ allowed-tools:
   - Write
   - Agent
   - AskUserQuestion
+created_by: user
 ---
 
 # /printing-press-retro

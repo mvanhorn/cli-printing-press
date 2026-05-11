@@ -18,6 +18,7 @@ allowed-tools:
   - Write
   - Edit
   - AskUserQuestion
+created_by: user
 ---
 
 # /printing-press-polish

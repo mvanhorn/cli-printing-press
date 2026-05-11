@@ -9,6 +9,7 @@ allowed-tools:
   - Glob
   - Grep
   - AskUserQuestion
+created_by: user
 ---
 
 # /printing-press-score
