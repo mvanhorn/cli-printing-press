@@ -65,6 +65,7 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/mcp/cobratree/classify.go",
 		"internal/mcp/cobratree/typemap.go",
 		"internal/mcp/cobratree/shellout.go",
+		"internal/mcp/cobratree/shellout_test.go",
 		"internal/mcp/cobratree/cli_path.go",
 		"internal/mcp/cobratree/names.go",
 	}
@@ -78,9 +79,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 57},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 62},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 59},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 58},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 63},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 60},
 	}
 
 	for _, tt := range tests {
