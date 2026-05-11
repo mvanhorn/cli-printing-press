@@ -25,6 +25,9 @@ import (
 
 type Config struct {
 	BaseURL        string `{{configTag .Config.Format}}:"base_url"`
+{{- if .BasePath}}
+	BasePath       string `{{configTag .Config.Format}}:"base_path"`
+{{- end}}
 	AuthHeaderVal  string `{{configTag .Config.Format}}:"auth_header"`
 	Headers        map[string]string `{{configTag .Config.Format}}:"headers,omitempty"`
 	AuthSource     string `{{configTag .Config.Format}}:"-"`
@@ -78,6 +81,9 @@ func Load(configPath string) (*Config, error) {
 	cfg := &Config{
 {{- if .BaseURL}}
 		BaseURL: "{{.BaseURL}}",
+{{- end}}
+{{- if .BasePath}}
+		BasePath: "{{.BasePath}}",
 {{- end}}
 	}
 
@@ -163,6 +169,11 @@ func Load(configPath string) (*Config, error) {
 	if v := os.Getenv("{{envName .Name}}_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
+{{- if .BasePath}}
+	if v := os.Getenv("{{envName .Name}}_BASE_PATH"); v != "" {
+		cfg.BasePath = v
+	}
+{{- end}}
 {{- if and .HasAuthCommand .Auth.AuthorizationURL}}
 	if v := os.Getenv("{{envName .Name}}_AUTHORIZATION_URL"); v != "" {
 		cfg.AuthorizationURL = v
