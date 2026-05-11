@@ -288,7 +288,7 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			}
 
 			for _, resource := range resources {
-				res := syncResource({{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, s, resource, "", full, 100{{if .Pagination.DateRangeParam}}, ""{{end}}{{if not (isGraphQL .APISpec)}}, nil{{end}})
+				res := syncResource({{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, s, resource, "", full, 100{{if not (isGraphQL .APISpec)}}, false{{end}}{{if .Pagination.DateRangeParam}}, ""{{end}}{{if not (isGraphQL .APISpec)}}, nil{{end}})
 				if res.Err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "  %s: error: %v\n", resource, res.Err)
 					continue

@@ -153,6 +153,13 @@ Exit codes & warnings:
 					fmt.Fprintln(os.Stderr, "warning: --latest-only ignored because --since is set; --since takes precedence")
 				}
 			}
+			// effectiveLatestOnly drives the max_pages_cap_hit suppression
+			// below. It must reflect whether --latest-only is actually the
+			// cap source — i.e., only when --since is empty. If --since wins
+			// (block above), --latest-only is a no-op for maxPages and any
+			// cap hit reflects the default --max-pages 100 limit, which is
+			// a real anomaly worth surfacing.
+			effectiveLatestOnly := latestOnly && since == ""
 
 			// Resolve --since into an RFC3339 timestamp
 			sinceTS := ""
@@ -179,7 +186,7 @@ Exit codes & warnings:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-						res := syncResource(c, db, resource, sinceTS, full, maxPages, userParams)
+						res := syncResource(c, db, resource, sinceTS, full, maxPages, effectiveLatestOnly, userParams)
 						results <- res
 					}
 				}()
@@ -225,7 +232,7 @@ Exit codes & warnings:
 				}
 			}
 			// Sync dependent (parent-child) resources sequentially after flat resources.
-			depResults := syncDependentResources(c, db, sinceTS, full, maxPages, parentFilter, userParams)
+			depResults := syncDependentResources(c, db, sinceTS, full, maxPages, effectiveLatestOnly, parentFilter, userParams)
 			for _, res := range depResults {
 				if res.Err != nil {
 					if humanFriendly {
@@ -321,7 +328,7 @@ Exit codes & warnings:
 func syncResource(c interface {
 	Get(string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
-}, db *store.Store, resource, sinceTS string, full bool, maxPages int, userParams *syncUserParams) syncResult {
+}, db *store.Store, resource, sinceTS string, full bool, maxPages int, latestOnly bool, userParams *syncUserParams) syncResult {
 	started := time.Now()
 
 	if !humanFriendly {
@@ -543,12 +550,18 @@ func syncResource(c interface {
 
 		pagesFetched++
 
-		// Enforce page ceiling to prevent runaway syncs on large-catalog APIs
+		// Enforce page ceiling to prevent runaway syncs on large-catalog APIs.
+		// Suppress the cap-hit warning when --latest-only is the cap source:
+		// the template pinned maxPages=1 by user intent, and emitting one
+		// warning per paginated resource would mask real sync_anomaly /
+		// sync_error output in the same stream.
 		if maxPages > 0 && pagesFetched >= maxPages {
-			if humanFriendly {
-				fmt.Fprintf(os.Stderr, "\n  %s: reached --max-pages limit (%d pages, %d items)\n", resource, maxPages, totalCount)
-			} else {
-				fmt.Fprintf(os.Stdout, `{"event":"sync_warning","resource":"%s","reason":"max_pages_cap_hit","message":"reached --max-pages cap of %d; data may be truncated. Re-run with --max-pages 0 (unlimited) or higher to verify."}`+"\n", resource, maxPages)
+			if !latestOnly {
+				if humanFriendly {
+					fmt.Fprintf(os.Stderr, "\n  %s: reached --max-pages limit (%d pages, %d items)\n", resource, maxPages, totalCount)
+				} else {
+					fmt.Fprintf(os.Stdout, `{"event":"sync_warning","resource":"%s","reason":"max_pages_cap_hit","message":"reached --max-pages cap of %d; data may be truncated. Re-run with --max-pages 0 (unlimited) or higher to verify."}`+"\n", resource, maxPages)
+				}
 			}
 			break
 		}
@@ -1003,7 +1016,7 @@ func dependentResourceDefs() []dependentResourceDef {
 func syncDependentResources(c interface {
 	Get(string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
-}, db *store.Store, sinceTS string, full bool, maxPages int, parentFilter []string, userParams *syncUserParams) []syncResult {
+}, db *store.Store, sinceTS string, full bool, maxPages int, latestOnly bool, parentFilter []string, userParams *syncUserParams) []syncResult {
 	allow := make(map[string]bool, len(parentFilter))
 	for _, r := range parentFilter {
 		allow[r] = true
@@ -1013,7 +1026,7 @@ func syncDependentResources(c interface {
 		if len(allow) > 0 && !allow[dep.ParentTable] && !allow[dep.Name] {
 			continue
 		}
-		res := syncDependentResource(c, db, dep, sinceTS, full, maxPages, userParams)
+		res := syncDependentResource(c, db, dep, sinceTS, full, maxPages, latestOnly, userParams)
 		results = append(results, res)
 	}
 	return results
@@ -1023,7 +1036,7 @@ func syncDependentResources(c interface {
 func syncDependentResource(c interface {
 	Get(string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
-}, db *store.Store, dep dependentResourceDef, sinceTS string, full bool, maxPages int, userParams *syncUserParams) syncResult {
+}, db *store.Store, dep dependentResourceDef, sinceTS string, full bool, maxPages int, latestOnly bool, userParams *syncUserParams) syncResult {
 	started := time.Now()
 
 	// Query parent table for the keys to substitute into the child path.
@@ -1177,10 +1190,12 @@ func syncDependentResource(c interface {
 			pagesFetched++
 
 			if maxPages > 0 && pagesFetched >= maxPages {
-				if humanFriendly {
-					fmt.Fprintf(os.Stderr, "\n  %s: reached --max-pages limit (%d pages, %d items) for parent %s\n", dep.Name, maxPages, totalCount, parentID)
-				} else {
-					fmt.Fprintf(os.Stdout, `{"event":"sync_warning","resource":"%s","parent":"%s","reason":"max_pages_cap_hit","message":"reached --max-pages cap of %d; data may be truncated. Re-run with --max-pages 0 (unlimited) or higher to verify."}`+"\n", dep.Name, parentID, maxPages)
+				if !latestOnly {
+					if humanFriendly {
+						fmt.Fprintf(os.Stderr, "\n  %s: reached --max-pages limit (%d pages, %d items) for parent %s\n", dep.Name, maxPages, totalCount, parentID)
+					} else {
+						fmt.Fprintf(os.Stdout, `{"event":"sync_warning","resource":"%s","parent":"%s","reason":"max_pages_cap_hit","message":"reached --max-pages cap of %d; data may be truncated. Re-run with --max-pages 0 (unlimited) or higher to verify."}`+"\n", dep.Name, parentID, maxPages)
+					}
 				}
 				break
 			}

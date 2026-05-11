@@ -6472,7 +6472,7 @@ func TestGenerateDependentSyncCompiles(t *testing.T) {
 	// where it gates each dependent.
 	assert.Contains(t, syncContent, "parentFilter := append([]string(nil), resources...)",
 		"sync.go should capture user --resources filter before default expansion")
-	assert.Contains(t, syncContent, "maxPages, parentFilter",
+	assert.Contains(t, syncContent, "effectiveLatestOnly, parentFilter",
 		"sync.go should pass the captured filter into syncDependentResources")
 	assert.Contains(t, syncContent, "parentFilter []string",
 		"syncDependentResources should accept a parent filter")
@@ -6788,6 +6788,42 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	assert.Contains(t, syncContent,
 		`{"event":"sync_warning","resource":"%s","parent":"%s","reason":"max_pages_cap_hit"`,
 		"dependent-resource cap-hit must emit a structured sync_warning with reason max_pages_cap_hit")
+
+	// (b3) Issue #928: --latest-only pins maxPages=1 programmatically, so
+	// the cap is hit on every paginated resource by user intent rather
+	// than anomaly. Both cap-hit emit blocks must sit inside an
+	// `if !latestOnly` guard, otherwise the warning flood masks real
+	// sync_anomaly / sync_error events emitted by the same run.
+	guardBefore := func(marker string) string {
+		idx := strings.Index(syncContent, marker)
+		require.NotEqualf(t, -1, idx, "marker %q must appear in generated sync.go", marker)
+		return syncContent[max(0, idx-400):idx]
+	}
+	assert.Contains(t,
+		guardBefore(`"resource":"%s","reason":"max_pages_cap_hit"`),
+		"if !latestOnly {",
+		"flat-path cap-hit emit must be guarded by `if !latestOnly` (issue #928)")
+	assert.Contains(t,
+		guardBefore(`"resource":"%s","parent":"%s","reason":"max_pages_cap_hit"`),
+		"if !latestOnly {",
+		"dependent-resource cap-hit emit must be guarded by `if !latestOnly` (issue #928)")
+
+	// (b4) The cap-hit guard must consume an effective value derived from
+	// both --latest-only AND --since. When --since is set, --latest-only is
+	// already a no-op for the maxPages pin (block at sync.go.tmpl ~154),
+	// and any cap hit reflects the default 100-page limit — a real anomaly
+	// worth surfacing. Passing the raw --latest-only flag value would
+	// silently suppress legitimate warnings on the --latest-only --since
+	// combined path. Pin the derivation and the callsites that consume it.
+	assert.Contains(t, syncContent,
+		`effectiveLatestOnly := latestOnly && since == ""`,
+		"sync.go must derive effectiveLatestOnly so --since overrides re-enable cap-hit warnings (issue #928 Greptile follow-up)")
+	assert.Contains(t, syncContent,
+		"maxPages, effectiveLatestOnly",
+		"syncResource call must pass effectiveLatestOnly, not the raw --latest-only flag (issue #928 Greptile follow-up)")
+	assert.Contains(t, syncContent,
+		"maxPages, effectiveLatestOnly, parentFilter",
+		"syncDependentResources call must pass effectiveLatestOnly, not the raw --latest-only flag (issue #928 Greptile follow-up)")
 
 	// (c) Sticky-cursor detection on the flat path. The check must compare
 	// against a tracked lastNextCursor and emit the structured warning when
