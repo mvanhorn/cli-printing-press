@@ -3,7 +3,6 @@ package generator
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -68,22 +67,25 @@ func TestDoctorOAuth2PerCallRequiredEnvVarDefersToConfigAuth(t *testing.T) {
 
 	require.Contains(t, doctor, "authConfigured := false")
 	require.Contains(t, doctor, "authConfigured = true")
-	require.Contains(t, doctor, `} else if authConfigured {`,
-		"per_call+Required env var must defer to authConfigured before flagging missing")
-	require.Contains(t, doctor, `authEnvInfo = append(authEnvInfo, "credentials available from "+authSource)`,
-		"missing env var should explain that config auth covers it")
 	require.Contains(t, doctor, `case len(authEnvInfo) > 0 && authConfigured:`,
 		"env_vars switch needs the authConfigured arm to elevate INFO to OK")
 
-	// The error-arm string is generated as a fallback (still present in
-	// the file), but it must not fire when only the per_call+Required var
-	// is missing — that branch lives behind the authConfigured guard
-	// above. Verify the structural order: the missing-required append is
-	// inside the inner else, after the authConfigured branch.
-	idxConfigured := strings.Index(doctor, `} else if authConfigured {`)
-	idxMissing := strings.Index(doctor, `authEnvRequiredMissing = append(authEnvRequiredMissing, "DOCTOR_OAUTH2_ENVSPEC_TOKEN")`)
-	require.NotEqual(t, -1, idxConfigured, "authConfigured branch must be emitted for this case")
-	require.NotEqual(t, -1, idxMissing, "fallback missing-required append must still exist for the unauthenticated case")
-	require.Less(t, idxConfigured, idxMissing,
-		"missing-required append must be the trailing else, not run unconditionally")
+	// Pin the full else-if-else chain as a contiguous substring. A weaker
+	// "both substrings exist" check would pass even if a refactor flattened
+	// authEnvRequiredMissing back to an unconditional append (the exact
+	// shape of the original #879 bug). Asserting the contiguous block
+	// guarantees the missing-required append is the trailing else, gated
+	// by authConfigured.
+	require.Contains(t, doctor, `if os.Getenv("DOCTOR_OAUTH2_ENVSPEC_TOKEN") != "" {
+				authEnvSet = append(authEnvSet, "DOCTOR_OAUTH2_ENVSPEC_TOKEN")
+			} else if authConfigured {
+				authSource, _ := report["auth_source"].(string)
+				if authSource == "" {
+					authSource = "config"
+				}
+				authEnvInfo = append(authEnvInfo, "credentials available from "+authSource)
+			} else {
+				authEnvRequiredMissing = append(authEnvRequiredMissing, "DOCTOR_OAUTH2_ENVSPEC_TOKEN")
+			}`,
+		"per_call+Required env-var check must route missing-required through the authConfigured else chain, not as an unconditional append")
 }
