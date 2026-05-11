@@ -387,10 +387,14 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 func paginatedGet(c interface {
 	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
 }, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
-	// Clean zero-value params
+	// Cursor params are exempt from the "0"/"false" strip: offset-paginated
+	// APIs send offset=0 on the first page.
 	clean := map[string]string{}
 	for k, v := range params {
-		if v != "" && v != "0" && v != "false" {
+		if v == "" {
+			continue
+		}
+		if k == cursorParam || (v != "0" && v != "false") {
 			clean[k] = v
 		}
 	}
