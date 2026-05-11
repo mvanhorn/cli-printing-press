@@ -302,6 +302,36 @@ func TestResources_CompositeKeyPreservesOverlappingIDs(t *testing.T) {
 	}
 }
 
+// Callers detect missing rows via errors.Is(err, sql.ErrNoRows); present
+// rows return the JSON payload with a nil error.
+func TestGet_MissingRowReturnsErrNoRows(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	data, err := s.Get("missing_type", "missing_id")
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("Get missing row err = %v, want sql.ErrNoRows", err)
+	}
+	if data != nil {
+		t.Fatalf("Get missing row data = %s, want nil", data)
+	}
+
+	if err := s.Upsert("present_type", "present_id", []byte(`{"ok":true}`)); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, err := s.Get("present_type", "present_id")
+	if err != nil {
+		t.Fatalf("Get present row: %v", err)
+	}
+	if string(got) != `{"ok":true}` {
+		t.Fatalf("Get present row data = %s, want {\"ok\":true}", got)
+	}
+}
+
 func TestMigrate_ResourcesCompositeKeyUpgrade(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 

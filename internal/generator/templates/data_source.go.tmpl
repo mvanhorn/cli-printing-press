@@ -5,7 +5,9 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -253,10 +255,10 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 
 	item, err := db.Get(resourceType, id)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, DataProvenance{}, fmt.Errorf("resource %q with ID %q not found in local store. Run '{{.Name}}-pp-cli sync' first", resourceType, id)
+		}
 		return nil, DataProvenance{}, fmt.Errorf("querying local store: %w", err)
-	}
-	if item == nil {
-		return nil, DataProvenance{}, fmt.Errorf("resource %q with ID %q not found in local store. Run '{{.Name}}-pp-cli sync' first", resourceType, id)
 	}
 	return item, prov, nil
 }
