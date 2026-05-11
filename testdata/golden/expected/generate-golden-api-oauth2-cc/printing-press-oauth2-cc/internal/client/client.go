@@ -413,7 +413,13 @@ func resolveClientCredentials(cfg *config.Config) (string, string) {
 }
 
 func (c *Client) mintClientCredentials(clientID, clientSecret string) error {
-	tokenURL := "https://api.cc.example/oauth/token"
+	tokenURL := ""
+	if c.Config != nil {
+		tokenURL = c.Config.TokenURL
+	}
+	if tokenURL == "" {
+		tokenURL = "https://api.cc.example/oauth/token"
+	}
 	if tokenURL == "" {
 		return nil
 	}
@@ -446,7 +452,13 @@ func (c *Client) mintClientCredentials(clientID, clientSecret string) error {
 	if tokenResp.AccessToken == "" {
 		return fmt.Errorf("OAuth client_credentials mint: response missing access_token")
 	}
-	expiry := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	// Guard against non-conformant servers that return expires_in: 0.
+	// A zero-duration expiry resolves to time.Now(), which authHeader()
+	// then treats as expired, causing every request to re-mint in a loop.
+	expiry := time.Time{}
+	if tokenResp.ExpiresIn > 0 {
+		expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	}
 	c.Config.AuthHeaderVal = "" // force AuthHeader() to use the new AccessToken path
 	if err := c.Config.SaveTokens(clientID, clientSecret, tokenResp.AccessToken, "", expiry); err != nil {
 		return fmt.Errorf("saving minted token: %w", err)
@@ -462,7 +474,10 @@ func (c *Client) refreshAccessToken() error {
 		return nil
 	}
 
-	tokenURL := "https://api.cc.example/oauth/token"
+	tokenURL := c.Config.TokenURL
+	if tokenURL == "" {
+		tokenURL = "https://api.cc.example/oauth/token"
+	}
 	if tokenURL == "" {
 		return nil
 	}

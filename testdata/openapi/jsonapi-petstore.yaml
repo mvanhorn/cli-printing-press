@@ -4,7 +4,7 @@ info:
   version: 1.0.0
   description: Minimal JSON:API spec used as a generator-side fixture for envelope flattening, page[cursor] pagination, and x-prefix auth tests.
 servers:
-  - url: https://example.com/api
+  - url: https://api.example.com/api
 paths:
   /pets:
     get:

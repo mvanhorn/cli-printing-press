@@ -4,13 +4,17 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,7 +23,6 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/docspec"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/generatedmarker"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llm"
@@ -27,6 +30,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline/regenmerge"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 	"github.com/spf13/cobra"
@@ -151,7 +155,7 @@ func newGenerateCmd() *cobra.Command {
 					return err
 				}
 
-				absOut, _, err := resolveGenerateOutputDir(outputDir, parsed.Name, force, true)
+				absOut, _, snapshotDir, err := resolveGenerateOutputDir(outputDir, parsed.Name, force, true)
 				if err != nil {
 					return err
 				}
@@ -159,6 +163,12 @@ func newGenerateCmd() *cobra.Command {
 				novelFeatures, polished, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath})
 				if err != nil {
 					return err
+				}
+
+				if snapshotDir != "" {
+					if err := finalizeForceMerge(snapshotDir, absOut, docYAML); err != nil {
+						return err
+					}
 				}
 
 				runID := pipeline.DeriveRunIDFromResearchDir(researchDir)
@@ -218,13 +228,23 @@ func newGenerateCmd() *cobra.Command {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("plan contains no command definitions")}
 				}
 
-				absOut, _, err := resolveGenerateOutputDir(outputDir, planSpec.CLIName, force, true)
+				absOut, _, snapshotDir, err := resolveGenerateOutputDir(outputDir, planSpec.CLIName, force, true)
 				if err != nil {
 					return err
 				}
 
 				if err := generator.GenerateFromPlan(planSpec, absOut); err != nil {
 					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating from plan: %w", err)}
+				}
+
+				if snapshotDir != "" {
+					// Plan-driven generation does not write a manifest with
+					// SpecChecksum, so the cross-spec guard naturally lands
+					// on the defensive full-merge path. Pass nil so any
+					// manifest hash that does exist still gates merge mode.
+					if err := finalizeForceMerge(snapshotDir, absOut, nil); err != nil {
+						return err
+					}
 				}
 
 				fmt.Fprintf(os.Stderr, "Generated %s at %s (from plan)\n", naming.CLI(planSpec.CLIName), absOut)
@@ -294,7 +314,7 @@ func newGenerateCmd() *cobra.Command {
 				return err
 			}
 
-			absOut, explicitOutput, err := resolveGenerateOutputDir(outputDir, apiSpec.Name, force, !dryRun)
+			absOut, explicitOutput, snapshotDir, err := resolveGenerateOutputDir(outputDir, apiSpec.Name, force, !dryRun)
 			if err != nil {
 				return err
 			}
@@ -305,6 +325,21 @@ func newGenerateCmd() *cobra.Command {
 			novelFeatures, polished, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, specURL: specURL, rejectUnshippablePageContextTraffic: true})
 			if err != nil {
 				return err
+			}
+
+			// Merge any preserved hand-edits from the snapshot into the freshly
+			// emitted tree. snapshotDir is non-empty only when --force ran and
+			// the prior absOut had content. The cross-spec guard inside
+			// mergeForceSnapshot falls back to NOVEL-only preservation when
+			// the snapshot's spec hash differs from the current spec.
+			if snapshotDir != "" {
+				var primarySpec []byte
+				if len(specRawBytes) > 0 {
+					primarySpec = specRawBytes[0]
+				}
+				if err := finalizeForceMerge(snapshotDir, absOut, primarySpec); err != nil {
+					return err
+				}
 			}
 
 			// When --output was not explicitly supplied, normalize the output
@@ -380,7 +415,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&outputDir, "output", "", "Output directory (default: ~/printing-press/library/<name>)")
 	cmd.Flags().BoolVar(&validate, "validate", true, "Run quality gates on the generated project")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
-	cmd.Flags().BoolVar(&force, "force", false, "Recreate the base output directory while preserving hand-authored internal/cli/*.go files")
+	cmd.Flags().BoolVar(&force, "force", false, "Recreate the base output directory while preserving hand-edits to generated files via AST-based merge")
 	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
 	cmd.Flags().StringVar(&docsURL, "docs", "", "API documentation URL to generate spec from")
 	cmd.Flags().BoolVar(&polish, "polish", false, "Run LLM polish pass on generated CLI (requires claude or codex CLI)")
@@ -517,23 +552,23 @@ func normalizeHTTPTransport(value string) (string, error) {
 	}
 }
 
-func resolveGenerateOutputDir(outputDir, cliName string, force bool, claim bool) (string, bool, error) {
-	explicitOutput := outputDir != ""
+func resolveGenerateOutputDir(outputDir, cliName string, force bool, claim bool) (resolvedAbsOut string, explicitOutput bool, snapshotDir string, err error) {
+	explicitOutput = outputDir != ""
 	if outputDir == "" {
 		outputDir = pipeline.DefaultOutputDir(cliName)
 	}
 	absOut, err := filepath.Abs(outputDir)
 	if err != nil {
-		return "", false, fmt.Errorf("resolving output path: %w", err)
+		return "", false, "", fmt.Errorf("resolving output path: %w", err)
 	}
 	if !claim {
-		return absOut, explicitOutput, nil
+		return absOut, explicitOutput, "", nil
 	}
-	absOut, err = claimOrForce(absOut, force, explicitOutput)
+	absOut, snapshotDir, err = claimOrForce(absOut, force, explicitOutput)
 	if err != nil {
-		return "", false, &ExitError{Code: ExitInputError, Err: err}
+		return "", false, "", &ExitError{Code: ExitInputError, Err: err}
 	}
-	return absOut, explicitOutput, nil
+	return absOut, explicitOutput, snapshotDir, nil
 }
 
 func applyHTTPTransportDefault(apiSpec *spec.APISpec, analysis *browsersniff.TrafficAnalysis) {
@@ -681,11 +716,13 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 		return specs[0]
 	}
 
+	mergedBaseURL, perSpecPathPrefix := planMultiSpecBaseURL(specs)
+
 	merged := &spec.APISpec{
 		Name:        name,
 		Description: "Combined CLI for multiple API services",
 		Version:     specs[0].Version,
-		BaseURL:     specs[0].BaseURL,
+		BaseURL:     mergedBaseURL,
 		BasePath:    specs[0].BasePath,
 		Auth:        specs[0].Auth,
 		Config: spec.ConfigSpec{
@@ -696,7 +733,7 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 		Types:     map[string]spec.TypeDef{},
 	}
 
-	for _, s := range specs {
+	for i, s := range specs {
 		if merged.SpecSource == "" || merged.SpecSource == "official" {
 			switch s.SpecSource {
 			case "sniffed":
@@ -713,12 +750,22 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 			merged.HTTPTransport = strongerHTTPTransport(merged.HTTPTransport, candidateTransport)
 		}
 
+		prefix := perSpecPathPrefix[i]
 		for resourceName, resource := range s.Resources {
+			if prefix != "" {
+				// Same-host/different-path specs are normalized by folding each
+				// spec's path prefix into endpoint paths. Do not also preserve
+				// the source BaseURL path as a resource override, or generated
+				// commands double-prefix nested endpoints.
+				resource = prefixResourceEndpointPaths(resource, prefix, s.BaseURL)
+			} else {
+				resource = resourceWithMergedSpecBaseURL(resource, s.BaseURL, merged.BaseURL)
+			}
 			key := resourceName
 			if _, exists := merged.Resources[key]; exists {
 				key = s.Name + "-" + resourceName
 			}
-			merged.Resources[key] = resourceWithMergedSpecBaseURL(resource, s.BaseURL, merged.BaseURL)
+			merged.Resources[key] = resource
 		}
 
 		for typeName, typeDef := range s.Types {
@@ -753,6 +800,108 @@ func resourceWithMergedSpecBaseURL(resource spec.Resource, sourceBaseURL, merged
 	return resource
 }
 
+// planMultiSpecBaseURL decides how to reconcile the BaseURL field across
+// multiple input specs. The returned perSpecPathPrefix slice has one entry per
+// spec; a non-empty entry tells the caller to prepend that prefix to every
+// endpoint path in that spec. When every spec lives on the same scheme+host
+// but their path components diverge, the merged BaseURL collapses to the bare
+// host and each spec's path component is returned for folding into its
+// endpoints — this rescues the "spec A at https://x.com, spec B at
+// https://x.com/api/v2" case where the old collapse silently dropped spec B's
+// /api/v2 prefix and 404'd every B command. When hosts disagree (a separate,
+// out-of-scope multi-host problem) or every spec shares the same BaseURL, the
+// merged BaseURL stays specs[0].BaseURL and every prefix is empty.
+func planMultiSpecBaseURL(specs []*spec.APISpec) (mergedBaseURL string, perSpecPathPrefix []string) {
+	perSpecPathPrefix = make([]string, len(specs))
+
+	hosts := make([]string, len(specs))
+	paths := make([]string, len(specs))
+	for i, s := range specs {
+		hosts[i], paths[i] = splitBaseURL(s.BaseURL)
+	}
+
+	commonHost := hosts[0]
+	if commonHost == "" {
+		return specs[0].BaseURL, perSpecPathPrefix
+	}
+	for _, h := range hosts[1:] {
+		if h != commonHost {
+			return specs[0].BaseURL, perSpecPathPrefix
+		}
+	}
+
+	// All specs share a host. If every spec also shares the same path, no
+	// rewriting is needed — the merged BaseURL keeps the shared prefix.
+	allSamePath := true
+	for _, p := range paths[1:] {
+		if p != paths[0] {
+			allSamePath = false
+			break
+		}
+	}
+	if allSamePath {
+		return specs[0].BaseURL, perSpecPathPrefix
+	}
+
+	copy(perSpecPathPrefix, paths)
+	fmt.Fprintf(os.Stderr, "[multi-spec] base URL host %q shared; folding per-spec path prefixes into endpoint paths\n", commonHost)
+	return commonHost, perSpecPathPrefix
+}
+
+// splitBaseURL splits an absolute http(s) URL into its scheme+host root and
+// its path component. Returns ("", "") for empty or non-absolute inputs so
+// callers fall through to the existing "specs[0] wins" behavior. The path
+// component is trimmed of its trailing slash so the caller can prepend it to
+// an endpoint Path (which already starts with "/") without double slashes.
+func splitBaseURL(raw string) (host, path string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", ""
+	}
+	host = parsed.Scheme + "://" + parsed.Host
+	path = strings.TrimRight(parsed.Path, "/")
+	return host, path
+}
+
+// prefixResourceEndpointPaths returns a copy of resource with prefix prepended
+// to every endpoint Path (including sub-resources). Endpoints that already
+// declare an absolute BaseURL override are left alone — their path is
+// resolved against that override at runtime, not the spec-level BaseURL, so
+// folding the prefix in would double-resolve.
+func prefixResourceEndpointPaths(resource spec.Resource, prefix, sourceBaseURL string) spec.Resource {
+	out := resource
+	sourceBaseURL = strings.TrimRight(strings.TrimSpace(sourceBaseURL), "/")
+	// The path prefix is being folded into every endpoint path, so any inherited
+	// BaseURL for the same spec must be cleared. Keeping both causes generated
+	// absolute paths to include the prefix twice. Independent endpoint-level
+	// server overrides are preserved.
+	if strings.TrimRight(strings.TrimSpace(out.BaseURL), "/") == sourceBaseURL {
+		out.BaseURL = ""
+	}
+	if len(resource.Endpoints) > 0 {
+		out.Endpoints = make(map[string]spec.Endpoint, len(resource.Endpoints))
+		for name, ep := range resource.Endpoints {
+			epBaseURL := strings.TrimRight(strings.TrimSpace(ep.BaseURL), "/")
+			if epBaseURL == "" || epBaseURL == sourceBaseURL {
+				ep.BaseURL = ""
+				ep.Path = prefix + ep.Path
+			}
+			out.Endpoints[name] = ep
+		}
+	}
+	if len(resource.SubResources) > 0 {
+		out.SubResources = make(map[string]spec.Resource, len(resource.SubResources))
+		for name, sub := range resource.SubResources {
+			out.SubResources[name] = prefixResourceEndpointPaths(sub, prefix, sourceBaseURL)
+		}
+	}
+	return out
+}
+
 func strongerHTTPTransport(current, candidate string) string {
 	if httpTransportPriority(candidate) > httpTransportPriority(current) {
 		return candidate
@@ -777,50 +926,268 @@ func httpTransportPriority(value string) int {
 
 // claimOrForce resolves the output directory based on --force and --output flags.
 //
-//   - force=true:  RemoveAll the target, then create it fresh (claims exact slot), preserving hand-authored internal/cli/*.go files
+//   - force=true:  rename the existing dir to a sibling snapshot (when present), recreate absOut empty for Generate(); the caller is responsible for merging the snapshot back in via regenmerge.MergeIntoFreshTree once Generate() finishes. Returns the snapshot path so the caller can drive the merge.
 //   - explicit output (--output set) without force: error if exists and non-empty
 //   - default (no --output, no --force): auto-increment via ClaimOutputDir
-func claimOrForce(absOut string, force bool, explicitOutput bool) (string, error) {
+//
+// snapshotDir is non-empty only on the force=true path AND when the prior absOut had content. When non-empty it points to a sibling tempdir holding the pre-regen tree.
+func claimOrForce(absOut string, force bool, explicitOutput bool) (resolvedAbsOut, snapshotDir string, err error) {
 	if force {
-		preserved, err := preserveHandAuthoredInternalCLIFiles(absOut)
+		snapshotDir, err = snapshotForceRegen(absOut)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		if err := os.RemoveAll(absOut); err != nil {
-			return "", fmt.Errorf("removing existing output dir: %w", err)
+		if mkErr := os.MkdirAll(absOut, 0o755); mkErr != nil {
+			if snapshotDir == "" {
+				return "", "", fmt.Errorf("creating output dir: %w", mkErr)
+			}
+			if rollbackErr := os.Rename(snapshotDir, absOut); rollbackErr != nil {
+				return "", "", fmt.Errorf("creating output dir: %w; snapshot rollback also failed (%v); user must manually move %s back to %s",
+					mkErr, rollbackErr, snapshotDir, absOut)
+			}
+			return "", "", fmt.Errorf("creating output dir: %w", mkErr)
 		}
-		if err := os.MkdirAll(absOut, 0o755); err != nil {
-			return "", fmt.Errorf("creating output dir: %w", err)
-		}
-		if err := restorePreservedFiles(absOut, preserved); err != nil {
-			return "", err
-		}
-		return absOut, nil
+		return absOut, snapshotDir, nil
 	}
 
 	if explicitOutput {
 		if info, err := os.Stat(absOut); err == nil && info.IsDir() {
 			entries, readErr := os.ReadDir(absOut)
 			if readErr != nil {
-				return "", fmt.Errorf("reading output directory: %w", readErr)
+				return "", "", fmt.Errorf("reading output directory: %w", readErr)
 			}
 			if len(entries) > 0 {
-				return "", fmt.Errorf("output directory %s already exists (use --force to overwrite)", absOut)
+				return "", "", fmt.Errorf("output directory %s already exists (use --force to overwrite)", absOut)
 			}
 		}
-		return absOut, nil
+		return absOut, "", nil
 	}
 
-	return pipeline.ClaimOutputDir(absOut)
+	resolved, err := pipeline.ClaimOutputDir(absOut)
+	if err != nil {
+		return "", "", err
+	}
+	return resolved, "", nil
 }
 
-type preservedFile struct {
-	relPath string
-	data    []byte
-	mode    os.FileMode
+// finalizeForceMerge runs the post-Generate merge for any --force codepath:
+// classifies snapshotDir against freshDir, merges preserved hand-edits back,
+// re-runs `go mod tidy` when go.mod was merged (so go.sum keeps up with
+// preserved requires), and removes the snapshot on success. On merge
+// failure the snapshot is left in place and the error surfaces a recovery
+// command.
+//
+// Wired from the three --force codepaths (--spec, --docs, --plan) so each
+// one preserves hand-edits consistently — discarding snapshotDir after
+// generation would silently lose user work and leave an orphan that blocks
+// future --force runs.
+func finalizeForceMerge(snapshotDir, freshDir string, currentSpecBytes []byte) error {
+	gomodMerged, err := mergeForceSnapshot(snapshotDir, freshDir, currentSpecBytes)
+	if err != nil {
+		return &ExitError{Code: ExitGenerationError, Err: err}
+	}
+	if gomodMerged {
+		retidyAfterMerge(freshDir)
+	}
+	if removeErr := os.RemoveAll(snapshotDir); removeErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not remove snapshot dir %s: %v\n", snapshotDir, removeErr)
+	}
+	return nil
 }
 
-func preserveHandAuthoredInternalCLIFiles(absOut string) ([]preservedFile, error) {
+// mergeForceSnapshot drives the snapshot→fresh merge after Generate() has
+// populated absOut. Computes the cross-spec guard by comparing the
+// snapshot's recorded spec checksum to a sha256 over the current spec
+// bytes. Same checksum (or no recorded checksum) → run the full AST-aware
+// merge; mismatch or unreadable manifest → fall back to NOVEL-only
+// preservation.
+//
+// When the merge updates go.mod (snapshot had hand-added requires), the
+// caller must re-run `go mod tidy` against freshDir to refresh go.sum —
+// validation's tidy ran before merge against fresh's smaller go.mod, so
+// hashes for the preserved requires are missing from go.sum until the
+// post-merge tidy fills them in. The boolean return reports whether that
+// re-tidy is needed.
+//
+// On failure the snapshot is intentionally left in place; the returned
+// error includes the snapshot path so the user can recover manually with
+// `rm -rf <freshDir> && mv <snapshotDir> <freshDir>`.
+func mergeForceSnapshot(snapshotDir, freshDir string, currentSpecBytes []byte) (gomodMerged bool, err error) {
+	report, err := regenmerge.Classify(snapshotDir, freshDir, regenmerge.Options{Force: true})
+	if err != nil {
+		return false, fmt.Errorf("classifying snapshot vs fresh: %w; snapshot preserved at %s", err, snapshotDir)
+	}
+
+	novelOnly := !forceRegenSpecHashMatches(snapshotDir, currentSpecBytes)
+
+	mergeOpts := regenmerge.Options{Force: true, NovelOnly: novelOnly}
+	if err := regenmerge.MergeIntoFreshTree(snapshotDir, freshDir, report, mergeOpts); err != nil {
+		return false, fmt.Errorf("merging snapshot into fresh tree: %w; snapshot preserved at %s — recover with `rm -rf %s && mv %s %s`",
+			err, snapshotDir, freshDir, snapshotDir, freshDir)
+	}
+
+	preserved := 0
+	for _, fc := range report.Files {
+		if fc.Applied {
+			preserved++
+		}
+	}
+	injected := 0
+	for _, lr := range report.LostRegistrations {
+		if lr.Applied {
+			injected += len(lr.Calls)
+		}
+	}
+	mode := ""
+	if novelOnly {
+		mode = " (cross-spec: novel-only preservation)"
+	}
+	fmt.Fprintf(os.Stderr, "Force regen merged %d preserved files / %d AddCommand calls%s\n", preserved, injected, mode)
+	return report.GoMod != nil && report.GoMod.Merged, nil
+}
+
+// retidyAfterMerge re-runs `go mod tidy` against dir so go.sum picks up
+// hashes for any requires the merge added. Generation's prior tidy ran
+// against fresh's go.mod before merge, so any preserved require from the
+// snapshot is in go.mod but missing from go.sum until this step fills it
+// in. Failure here surfaces as a warning rather than a hard error: the
+// merged tree still ships valid sources, and `go mod tidy` is something
+// the user can run manually.
+func retidyAfterMerge(dir string) {
+	cmd := exec.Command("go", "mod", "tidy")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: post-merge `go mod tidy` failed: %v\n%s", err, out)
+	}
+}
+
+// forceRegenSpecHashMatches reports whether the snapshot's recorded spec
+// checksum matches a sha256 over the current spec bytes. Returns true when:
+//   - the snapshot manifest is missing (defensive — old binary or partial
+//     state from a CLI generated before SpecChecksum was populated),
+//   - the snapshot manifest has an empty SpecChecksum (plan-generated, old
+//     format, or docs source without a stored hash),
+//   - or the snapshot checksum equals the current spec hash.
+//
+// Returns false when:
+//   - the manifest exists but cannot be decoded (corrupt JSON — treat as
+//     unknown lineage and fall back to NOVEL-only preservation),
+//   - the snapshot has a checksum but the caller has no current bytes to
+//     compare (e.g., a --plan --force run over a spec-generated tree;
+//     lineage differs by construction so NOVEL-only is the safe fallback),
+//   - or both sides have a checksum and they differ.
+//
+// The hash matches climanifest.go's storage convention (sha256 over the
+// raw input spec bytes, "sha256:" + hex), so a same-spec regen produces a
+// byte-identical hash and the full-merge path runs.
+func forceRegenSpecHashMatches(snapshotDir string, currentSpecBytes []byte) bool {
+	manifestPath := filepath.Join(snapshotDir, pipeline.CLIManifestFilename)
+	if _, err := os.Stat(manifestPath); errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	manifest, err := pipeline.ReadCLIManifest(snapshotDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not decode snapshot manifest at %s: %v; falling back to novel-only preservation\n", manifestPath, err)
+		return false
+	}
+	if manifest.SpecChecksum == "" {
+		return true
+	}
+	if len(currentSpecBytes) == 0 {
+		return false
+	}
+	return manifest.SpecChecksum == currentSpecChecksum(currentSpecBytes)
+}
+
+func currentSpecChecksum(specBytes []byte) string {
+	sum := sha256.Sum256(specBytes)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// snapshotForceRegen renames absOut to a sibling tempdir for use as a regen
+// recovery path. Returns "" when absOut is missing or empty (nothing to
+// snapshot — fresh generation has nothing to preserve).
+//
+// Symlink-refusal happens BEFORE the rename so a refused regen exits without
+// mutating the user's tree — fail before mutating is the load-bearing
+// guarantee here.
+func snapshotForceRegen(absOut string) (string, error) {
+	info, err := os.Lstat(absOut)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("statting output dir for force regen: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("refusing to snapshot symlinked output dir: %s", absOut)
+	}
+
+	entries, err := os.ReadDir(absOut)
+	if err != nil {
+		return "", fmt.Errorf("reading output dir for force regen: %w", err)
+	}
+	if len(entries) == 0 {
+		return "", nil
+	}
+
+	if err := refuseSymlinksUnderForceRegenTree(absOut); err != nil {
+		return "", err
+	}
+
+	parent := filepath.Dir(absOut)
+	base := filepath.Base(absOut)
+	if orphans, err := findExistingPreserveSiblings(parent, base); err != nil {
+		return "", err
+	} else if len(orphans) > 0 {
+		return "", fmt.Errorf("found %d unrecovered snapshot(s) from prior --force run(s) at: %s; recover hand-edits or remove the directories before retrying",
+			len(orphans), strings.Join(orphans, ", "))
+	}
+	snapshot := filepath.Join(parent, base+".preserve-"+strconv.FormatInt(time.Now().UnixNano(), 10))
+	if _, err := os.Lstat(snapshot); err == nil {
+		return "", fmt.Errorf("snapshot path collision: %s already exists", snapshot)
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("checking snapshot path %s: %w", snapshot, err)
+	}
+	if err := os.Rename(absOut, snapshot); err != nil {
+		return "", fmt.Errorf("snapshotting output dir to %s: %w", snapshot, err)
+	}
+	return snapshot, nil
+}
+
+// findExistingPreserveSiblings returns absolute paths to any directories of
+// the form `<base>.preserve-*` already in parent. These represent
+// unrecovered snapshots from previous --force runs that crashed before
+// merge cleanup. Continuing past one would orphan the user's hand-edits
+// (the new snapshot would be taken from the partial-fresh content of the
+// crashed run, not the original source-of-truth).
+func findExistingPreserveSiblings(parent, base string) ([]string, error) {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading %s for prior snapshots: %w", parent, err)
+	}
+	var orphans []string
+	prefix := base + ".preserve-"
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(entry.Name(), prefix) {
+			orphans = append(orphans, filepath.Join(parent, entry.Name()))
+		}
+	}
+	return orphans, nil
+}
+
+// refuseSymlinksUnderForceRegenTree walks the parts of absOut that the
+// regenmerge pipeline subsequently reads through (internal/, internal/cli,
+// internal/cli/*.go, sibling-package directories) and returns an error if
+// any of them are symlinks. The rename in snapshotForceRegen is the
+// destructive boundary, so all symlink checks must pass before it.
+func refuseSymlinksUnderForceRegenTree(absOut string) error {
 	for _, rel := range []string{"internal", filepath.Join("internal", "cli")} {
 		path := filepath.Join(absOut, rel)
 		info, err := os.Lstat(path)
@@ -828,59 +1195,34 @@ func preserveHandAuthoredInternalCLIFiles(absOut string) ([]preservedFile, error
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("statting %s for hand-authored files: %w", rel, err)
+			return fmt.Errorf("statting %s for force regen symlink check: %w", rel, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("refusing to preserve hand-authored files through symlinked %s: %s", rel, path)
+			return fmt.Errorf("refusing to snapshot symlinked %s: %s", rel, path)
 		}
 	}
 
-	cliDir := filepath.Join(absOut, "internal", "cli")
-	entries, err := os.ReadDir(cliDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading internal/cli for hand-authored files: %w", err)
+	if err := refuseSymlinkedEntries(filepath.Join(absOut, "internal", "cli"), "internal/cli file"); err != nil {
+		return err
 	}
-
-	var preserved []preservedFile
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".go" {
-			continue
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("refusing to preserve symlinked internal/cli file: %s", filepath.Join(cliDir, entry.Name()))
-		}
-		path := filepath.Join(cliDir, entry.Name())
-		if generatedmarker.HasInFile(path) {
-			continue
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("reading hand-authored candidate %s: %w", path, err)
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return nil, fmt.Errorf("statting hand-authored candidate %s: %w", path, err)
-		}
-		preserved = append(preserved, preservedFile{
-			relPath: filepath.Join("internal", "cli", entry.Name()),
-			data:    data,
-			mode:    info.Mode().Perm(),
-		})
-	}
-	return preserved, nil
+	return refuseSymlinkedEntries(filepath.Join(absOut, "internal"), "internal sibling package")
 }
 
-func restorePreservedFiles(absOut string, files []preservedFile) error {
-	for _, file := range files {
-		path := filepath.Join(absOut, file.relPath)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return fmt.Errorf("creating preserved file parent: %w", err)
+// refuseSymlinkedEntries reads dir and returns an error if any direct entry
+// is a symlink. A missing dir is not an error (caller may scan paths that
+// don't exist on every CLI). label is interpolated into the error message
+// to identify which surface refused the symlink.
+func refuseSymlinkedEntries(dir, label string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
 		}
-		if err := os.WriteFile(path, file.data, file.mode); err != nil {
-			return fmt.Errorf("restoring preserved file %s: %w", path, err)
+		return fmt.Errorf("reading %s for symlink check: %w", dir, err)
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to snapshot symlinked %s: %s", label, filepath.Join(dir, entry.Name()))
 		}
 	}
 	return nil

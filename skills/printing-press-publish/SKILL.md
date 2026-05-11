@@ -2,7 +2,7 @@
 name: printing-press-publish
 description: Publish a generated CLI to the printing-press-library repo
 version: 0.1.0
-min-binary-version: "0.5.0"
+min-binary-version: "4.0.0"
 allowed-tools:
   - Bash
   - Read
@@ -39,7 +39,7 @@ Before doing anything else:
 
 <!-- PRESS_SETUP_CONTRACT_START -->
 ```bash
-# min-binary-version: 0.5.0
+# min-binary-version: 4.0.0
 
 # Derive scope first — needed for local build detection
 _scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
@@ -76,7 +76,7 @@ mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-After running the setup contract, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, warn the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest` to update." Continue anyway but surface the warning prominently.
+After running the setup contract, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest` to update."
 
 ## Configuration
 
@@ -407,6 +407,8 @@ printing-press publish package \
 ```
 
 Parse the JSON result. Note the `staged_dir`, `module_path`, `manuscripts_included`, and `run_id`. The `module_path` field confirms the Go module path that was set in the packaged CLI's `go.mod` and import paths.
+
+`publish package` performs the mandatory vendor-prefix secret scan over the staged CLI, including copied manuscripts, before returning success. If it reports `vendor-prefix tokens detected`, stop and remove or redact the reported file:line findings before retrying. This is a hard gate and does not depend on `gitleaks`, `trufflehog`, or destination-repo push protection.
 
 Then copy the staged CLI into the publish repo, replacing any existing version:
 
@@ -899,9 +901,21 @@ if the user provided an API key. By the time publish runs, the Printing Press's 
 mistakes should already be caught. But the user may have edited files between
 generation and publish.
 
-### What publish checks (best-effort, warn-only)
+### What publish checks
 
-1. **If `gitleaks` or `trufflehog` is installed**, run it on the staged directory:
+1. **Mandatory binary scan:** `printing-press publish package` scans the staged CLI and manuscripts for live-looking vendor-prefix tokens (`sk-or-v1-*`, `sk_live_*`, `ghp_*`, `ghs_*`, `xoxb-*`, `AKIA*`, and similar). If it fails with `vendor-prefix tokens detected`, treat the package as unpublishable. Do not copy, commit, push, or open a PR until the reported file:line findings are removed or redacted.
+
+2. **If the user's exact API key value is known**, scan the packaged tree before creating the PR. This catches edits or manuscripts added after Phase 5.5:
+   ```bash
+   if [ -n "$API_KEY_VALUE" ] && [ ${#API_KEY_VALUE} -ge 16 ]; then
+     if grep -rF "$API_KEY_VALUE" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" 2>/dev/null; then
+       echo "BLOCKING: API key value found in staged publish tree."
+       exit 1
+     fi
+   fi
+   ```
+
+3. **If `gitleaks` or `trufflehog` is installed**, run it as an enrichment pass on the staged directory:
    ```bash
    if command -v gitleaks >/dev/null 2>&1; then
      gitleaks detect --source "<staging-dir>/library" --no-git --verbose 2>&1
@@ -910,24 +924,24 @@ generation and publish.
    fi
    ```
    These tools use vendor-specific patterns (Steam keys, Stripe keys, GitHub
-   tokens) with low false-positive rates. Their findings are warnings — the
-   user reviews and decides.
+   tokens) with low false-positive rates. Their findings add detector breadth
+   beyond the mandatory floor. Review any finding before proceeding.
 
-2. **If no scanning tool is installed**, do a lightweight check:
+4. **Always do the lightweight structural check:**
    - Verify no `.env` files, `session-state.json`, or `config.toml` with
      real credentials exist in the staged directory
    - Check README examples use `"your-key-here"` placeholders, not real values
    - Check manuscripts (if included) don't contain auth headers or cookie values
 
-3. **Never include** in the staged directory:
+5. **Never include** in the staged directory:
    - `.env` files
    - `session-state.json`
    - Config files with real credentials
    - HAR captures with un-stripped auth headers
 
-If any issues are found, warn the user and ask whether to proceed. The user
-makes the final call — they may have intentionally included something the scan
-flagged (e.g., a test fixture with a fake key). Don't block silently.
+If the mandatory binary scan or exact-value scan finds issues, stop. For
+external-tool or lightweight structural findings, warn the user and ask whether
+to proceed. The user makes the final call on those non-mandatory findings.
 
 ### PII pattern scanning (mandatory)
 

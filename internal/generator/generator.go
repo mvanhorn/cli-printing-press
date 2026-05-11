@@ -305,14 +305,23 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return " (one of: " + strings.Join(values, ", ") + ")"
 		},
-		"jsonStringParam":    isJSONStringParam,
-		"jsonEnumSuggestion": jsonEnumSuggestion,
-		"bodyMap":            bodyMap,
-		"publicFlagName":     publicFlagName,
-		"publicFlagAliases":  publicFlagAliases,
-		"flagChangedExpr":    flagChangedExpr,
-		"mcpInputName":       mcpInputName,
-		"mcpParamBindings":   mcpParamBindings,
+		"jsonStringParam":       isJSONStringParam,
+		"jsonEnumSuggestion":    jsonEnumSuggestion,
+		"bodyMap":               bodyMap,
+		"bodyVarDecls":          bodyVarDecls,
+		"bodyFlagRegs":          bodyFlagRegs,
+		"bodyRequiredChecks":    bodyRequiredChecks,
+		"multipartBodyMaps":     multipartBodyMaps,
+		"endpointUsesMultipart": endpointUsesMultipart,
+		"hasMultipartRequest":   hasMultipartRequest,
+		"formBodyMaps":          formBodyMaps,
+		"endpointUsesForm":      endpointUsesForm,
+		"hasFormRequest":        hasFormRequest,
+		"publicFlagName":        publicFlagName,
+		"publicFlagAliases":     publicFlagAliases,
+		"flagChangedExpr":       flagChangedExpr,
+		"mcpInputName":          mcpInputName,
+		"mcpParamBindings":      mcpParamBindings,
 		// endpointNeedsClientLimit reports whether a list endpoint needs
 		// client-side truncation. True when the endpoint has a `limit`-named
 		// param AND no Pagination block — the spec author asked for a
@@ -642,6 +651,8 @@ type authTemplateData struct {
 type clientTemplateData struct {
 	*spec.APISpec
 	HasGraphQLPersistedQueries bool
+	HasMultipartRequest        bool
+	HasFormRequest             bool
 	// Populated by Generator.shouldEmitAuth() so this template gate stays in
 	// sync with auth.go emission, root.go registration, and scoreAuth.
 	HasAuthCommand bool
@@ -1376,37 +1387,39 @@ func (g *Generator) prepareOutput() error {
 
 func (g *Generator) renderSingleFiles() error {
 	singleFiles := map[string]string{
-		"main.go.tmpl":               filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
-		"helpers.go.tmpl":            filepath.Join("internal", "cli", "helpers.go"),
-		"doctor.go.tmpl":             filepath.Join("internal", "cli", "doctor.go"),
-		"agent_context.go.tmpl":      filepath.Join("internal", "cli", "agent_context.go"),
-		"profile.go.tmpl":            filepath.Join("internal", "cli", "profile.go"),
-		"deliver.go.tmpl":            filepath.Join("internal", "cli", "deliver.go"),
-		"feedback.go.tmpl":           filepath.Join("internal", "cli", "feedback.go"),
-		"which.go.tmpl":              filepath.Join("internal", "cli", "which.go"),
-		"which_test.go.tmpl":         filepath.Join("internal", "cli", "which_test.go"),
-		"config.go.tmpl":             filepath.Join("internal", "config", "config.go"),
-		"cache.go.tmpl":              filepath.Join("internal", "cache", "cache.go"),
-		"client.go.tmpl":             filepath.Join("internal", "client", "client.go"),
-		"cliutil_fanout.go.tmpl":     filepath.Join("internal", "cliutil", "fanout.go"),
-		"cliutil_text.go.tmpl":       filepath.Join("internal", "cliutil", "text.go"),
-		"cliutil_probe.go.tmpl":      filepath.Join("internal", "cliutil", "probe.go"),
-		"cliutil_ratelimit.go.tmpl":  filepath.Join("internal", "cliutil", "ratelimit.go"),
-		"cliutil_verifyenv.go.tmpl":  filepath.Join("internal", "cliutil", "verifyenv.go"),
-		"cliutil_test.go.tmpl":       filepath.Join("internal", "cliutil", "cliutil_test.go"),
-		"cobratree/walker.go.tmpl":   filepath.Join("internal", "mcp", "cobratree", "walker.go"),
-		"cobratree/classify.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "classify.go"),
-		"cobratree/typemap.go.tmpl":  filepath.Join("internal", "mcp", "cobratree", "typemap.go"),
-		"cobratree/shellout.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "shellout.go"),
-		"cobratree/cli_path.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "cli_path.go"),
-		"cobratree/names.go.tmpl":    filepath.Join("internal", "mcp", "cobratree", "names.go"),
-		"types.go.tmpl":              filepath.Join("internal", "types", "types.go"),
-		"golangci.yml.tmpl":          ".golangci.yml",
-		"readme.md.tmpl":             "README.md",
-		"agents.md.tmpl":             "AGENTS.md",
-		"skill.md.tmpl":              "SKILL.md",
-		"LICENSE.tmpl":               "LICENSE",
-		"NOTICE.tmpl":                "NOTICE",
+		"main.go.tmpl":                       filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
+		"helpers.go.tmpl":                    filepath.Join("internal", "cli", "helpers.go"),
+		"doctor.go.tmpl":                     filepath.Join("internal", "cli", "doctor.go"),
+		"agent_context.go.tmpl":              filepath.Join("internal", "cli", "agent_context.go"),
+		"profile.go.tmpl":                    filepath.Join("internal", "cli", "profile.go"),
+		"deliver.go.tmpl":                    filepath.Join("internal", "cli", "deliver.go"),
+		"feedback.go.tmpl":                   filepath.Join("internal", "cli", "feedback.go"),
+		"which.go.tmpl":                      filepath.Join("internal", "cli", "which.go"),
+		"which_test.go.tmpl":                 filepath.Join("internal", "cli", "which_test.go"),
+		"config.go.tmpl":                     filepath.Join("internal", "config", "config.go"),
+		"cache.go.tmpl":                      filepath.Join("internal", "cache", "cache.go"),
+		"client.go.tmpl":                     filepath.Join("internal", "client", "client.go"),
+		"cliutil_fanout.go.tmpl":             filepath.Join("internal", "cliutil", "fanout.go"),
+		"cliutil_text.go.tmpl":               filepath.Join("internal", "cliutil", "text.go"),
+		"cliutil_probe.go.tmpl":              filepath.Join("internal", "cliutil", "probe.go"),
+		"cliutil_ratelimit.go.tmpl":          filepath.Join("internal", "cliutil", "ratelimit.go"),
+		"cliutil_verifyenv.go.tmpl":          filepath.Join("internal", "cliutil", "verifyenv.go"),
+		"cliutil_extractnumber.go.tmpl":      filepath.Join("internal", "cliutil", "extractnumber.go"),
+		"cliutil_extractnumber_test.go.tmpl": filepath.Join("internal", "cliutil", "extractnumber_test.go"),
+		"cliutil_test.go.tmpl":               filepath.Join("internal", "cliutil", "cliutil_test.go"),
+		"cobratree/walker.go.tmpl":           filepath.Join("internal", "mcp", "cobratree", "walker.go"),
+		"cobratree/classify.go.tmpl":         filepath.Join("internal", "mcp", "cobratree", "classify.go"),
+		"cobratree/typemap.go.tmpl":          filepath.Join("internal", "mcp", "cobratree", "typemap.go"),
+		"cobratree/shellout.go.tmpl":         filepath.Join("internal", "mcp", "cobratree", "shellout.go"),
+		"cobratree/cli_path.go.tmpl":         filepath.Join("internal", "mcp", "cobratree", "cli_path.go"),
+		"cobratree/names.go.tmpl":            filepath.Join("internal", "mcp", "cobratree", "names.go"),
+		"types.go.tmpl":                      filepath.Join("internal", "types", "types.go"),
+		"golangci.yml.tmpl":                  ".golangci.yml",
+		"readme.md.tmpl":                     "README.md",
+		"agents.md.tmpl":                     "AGENTS.md",
+		"skill.md.tmpl":                      "SKILL.md",
+		"LICENSE.tmpl":                       "LICENSE",
+		"NOTICE.tmpl":                        "NOTICE",
 	}
 
 	for tmplName, outPath := range singleFiles {
@@ -1430,6 +1443,8 @@ func (g *Generator) renderSingleFiles() error {
 			data = &clientTemplateData{
 				APISpec:                    g.Spec,
 				HasGraphQLPersistedQueries: g.hasTrafficAnalysisHint("graphql_persisted_query"),
+				HasMultipartRequest:        hasMultipartRequest(g.Spec),
+				HasFormRequest:             hasFormRequest(g.Spec),
 				HasAuthCommand:             g.shouldEmitAuth(),
 			}
 		case "config.go.tmpl":
@@ -1657,11 +1672,13 @@ func (g *Generator) GenerateMCPSurface() error {
 		// predates a helper the new MCP template uses (SanitizeErrorBody,
 		// LooksLikeAuthError) fail to build after migration. See the
 		// GenerateMCPSurface doc comment for the full rationale.
-		"cliutil_fanout.go.tmpl":    filepath.Join("internal", "cliutil", "fanout.go"),
-		"cliutil_text.go.tmpl":      filepath.Join("internal", "cliutil", "text.go"),
-		"cliutil_probe.go.tmpl":     filepath.Join("internal", "cliutil", "probe.go"),
-		"cliutil_ratelimit.go.tmpl": filepath.Join("internal", "cliutil", "ratelimit.go"),
-		"cliutil_verifyenv.go.tmpl": filepath.Join("internal", "cliutil", "verifyenv.go"),
+		"cliutil_fanout.go.tmpl":             filepath.Join("internal", "cliutil", "fanout.go"),
+		"cliutil_text.go.tmpl":               filepath.Join("internal", "cliutil", "text.go"),
+		"cliutil_probe.go.tmpl":              filepath.Join("internal", "cliutil", "probe.go"),
+		"cliutil_ratelimit.go.tmpl":          filepath.Join("internal", "cliutil", "ratelimit.go"),
+		"cliutil_verifyenv.go.tmpl":          filepath.Join("internal", "cliutil", "verifyenv.go"),
+		"cliutil_extractnumber.go.tmpl":      filepath.Join("internal", "cliutil", "extractnumber.go"),
+		"cliutil_extractnumber_test.go.tmpl": filepath.Join("internal", "cliutil", "extractnumber_test.go"),
 	}
 	for tmplName, outPath := range mcpFiles {
 		if err := g.renderTemplate(tmplName, outPath, g.Spec); err != nil {
@@ -3013,9 +3030,11 @@ type jsonFlagSuggestion struct {
 }
 
 type mcpParamBinding struct {
-	PublicName string
-	WireName   string
-	Location   string
+	PublicName         string
+	WireName           string
+	Location           string
+	Format             string
+	RequestContentType string
 }
 
 func flagChangedExpr(p spec.Param) string {
@@ -3032,25 +3051,39 @@ func flagChangedExpr(p spec.Param) string {
 
 func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBinding {
 	bindings := make([]mcpParamBinding, 0, len(endpoint.Params)+len(endpoint.Body))
+	requestContentType := ""
+	if endpointUsesMultipart(endpoint) || endpointUsesForm(endpoint) {
+		requestContentType = endpoint.RequestContentType
+	}
 	for _, p := range endpoint.Params {
 		loc := "query"
 		if strings.Contains(pathTemplate, "{"+p.Name+"}") {
 			loc = "path"
 		}
 		bindings = append(bindings, mcpParamBinding{
-			PublicName: p.PublicInputName(),
-			WireName:   p.Name,
-			Location:   loc,
+			PublicName:         p.PublicInputName(),
+			WireName:           p.Name,
+			Location:           loc,
+			RequestContentType: requestContentType,
 		})
 	}
 	for _, p := range endpoint.Body {
 		bindings = append(bindings, mcpParamBinding{
-			PublicName: p.PublicInputName(),
-			WireName:   p.Name,
-			Location:   "body",
+			PublicName:         p.PublicInputName(),
+			WireName:           p.Name,
+			Location:           "body",
+			Format:             multipartBindingFormat(endpoint, p),
+			RequestContentType: requestContentType,
 		})
 	}
 	return bindings
+}
+
+func multipartBindingFormat(endpoint spec.Endpoint, p spec.Param) string {
+	if !endpointUsesMultipart(endpoint) {
+		return ""
+	}
+	return p.Format
 }
 
 func mcpInputName(p spec.Param) string {
@@ -3098,12 +3131,34 @@ func endpointNeedsClientLimit(endpoint spec.Endpoint) bool {
 // and parameterizes the indent. The output is the body of the
 // `body := map[string]any{}` block — callers emit the surrounding
 // declaration and the closing brace themselves.
+//
+// When a body Param has Type "object" with non-empty Fields, the block
+// recurses: each leaf field becomes its own flag (parent-prefixed in
+// the generated identifier so `start.dateTime` and `end.dateTime` do
+// not collide), and the parent's wire-side key receives a built-up
+// map[string]any rather than a single JSON-string flag.
 func bodyMap(body []spec.Param, indent string) string {
 	var b strings.Builder
+	renderBodyMap(&b, body, indent, "body", "", "")
+	return b.String()
+}
+
+func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identPrefix, flagPrefix string) {
 	for _, p := range body {
 		id := paramIdent(p)
-		ident := toCamel(id)
-		flag := publicFlagName(p)
+		ident := identPrefix + toCamel(id)
+		flag := joinFlag(flagPrefix, publicFlagName(p))
+		if p.Type == "object" && len(p.Fields) > 0 {
+			nestedMap := "nested" + ident
+			fmt.Fprintf(b, "%s{\n", indent)
+			fmt.Fprintf(b, "%s\t%s := map[string]any{}\n", indent, nestedMap)
+			renderBodyMap(b, p.Fields, indent+"\t", nestedMap, ident, flag)
+			fmt.Fprintf(b, "%s\tif len(%s) > 0 {\n", indent, nestedMap)
+			fmt.Fprintf(b, "%s\t\t%s[%q] = %s\n", indent, mapVar, p.Name, nestedMap)
+			fmt.Fprintf(b, "%s\t}\n", indent)
+			fmt.Fprintf(b, "%s}\n", indent)
+			continue
+		}
 		isComplex := p.Type == "object" || p.Type == "array"
 		if isComplex || isJSONStringParam(p) {
 			// object/array: store the parsed value (so the API receives
@@ -3113,20 +3168,271 @@ func bodyMap(body []spec.Param, indent string) string {
 			if isComplex {
 				rhs = "parsed" + ident
 			}
+			fmt.Fprintf(b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(b, "%s\tvar parsed%s any\n", indent, ident)
+			fmt.Fprintf(b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
+			fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
+			fmt.Fprintf(b, "%s\t}\n", indent)
+			fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.Name, rhs)
+			fmt.Fprintf(b, "%s}\n", indent)
+			continue
+		}
+		fmt.Fprintf(b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
+		fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.Name, ident)
+		fmt.Fprintf(b, "%s}\n", indent)
+	}
+}
+
+// bodyVarDecls renders Go var declarations for body construction. For
+// JSON-body endpoints, nested-object params (Type "object" with non-empty
+// Fields) recurse: each leaf field becomes its own declaration with a
+// parent-prefixed identifier. For multipart and form-encoded endpoints,
+// the body path stays flat (one var per top-level param) because
+// multipartBodyMaps and formBodyMaps continue to send object-typed
+// parents as JSON-string fields. Output starts with "\n\tvar ..."
+// matching the one-tab indent of the original `{{- range .Endpoint.Body}}`
+// template loop.
+func bodyVarDecls(endpoint spec.Endpoint) string {
+	var b strings.Builder
+	if bodyUsesFlatEmission(endpoint) {
+		for _, p := range endpoint.Body {
+			fmt.Fprintf(&b, "\n\tvar body%s %s", toCamel(paramIdent(p)), goType(p.Type))
+		}
+		return b.String()
+	}
+	renderBodyVarDecls(&b, endpoint.Body, "")
+	return b.String()
+}
+
+// bodyUsesFlatEmission reports whether the endpoint serializes its body
+// via a non-JSON-map path (multipart/form-data or
+// application/x-www-form-urlencoded). Those paths keep one var/flag per
+// top-level body param so multipartBodyMaps / formBodyMaps still find
+// the parent variable to read from.
+func bodyUsesFlatEmission(endpoint spec.Endpoint) bool {
+	return endpointUsesMultipart(endpoint) || endpointUsesForm(endpoint)
+}
+
+func renderBodyVarDecls(b *strings.Builder, body []spec.Param, identPrefix string) {
+	for _, p := range body {
+		ident := identPrefix + toCamel(paramIdent(p))
+		if p.Type == "object" && len(p.Fields) > 0 {
+			renderBodyVarDecls(b, p.Fields, ident)
+			continue
+		}
+		fmt.Fprintf(b, "\n\tvar body%s %s", ident, goType(p.Type))
+	}
+}
+
+// bodyFlagRegs renders cobra flag registrations for body construction.
+// Multipart endpoints keep flat (one flag per top-level body param) so
+// the JSON-string fallback that multipartBodyMaps emits stays addressable.
+// For non-multipart endpoints, nested-object params recurse with
+// parent-prefixed flag names so two parents that share a field name do
+// not collide. Aliases are emitted only at the top level.
+func bodyFlagRegs(endpoint spec.Endpoint) string {
+	var b strings.Builder
+	if bodyUsesFlatEmission(endpoint) {
+		for _, p := range endpoint.Body {
+			renderFlatBodyFlagReg(&b, p, "", "", true)
+		}
+		return b.String()
+	}
+	renderBodyFlagRegs(&b, endpoint.Body, "", "", true)
+	return b.String()
+}
+
+func renderBodyFlagRegs(b *strings.Builder, body []spec.Param, identPrefix, flagPrefix string, topLevel bool) {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 {
+			ident := identPrefix + toCamel(paramIdent(p))
+			flag := joinFlag(flagPrefix, publicFlagName(p))
+			renderBodyFlagRegs(b, p.Fields, ident, flag, false)
+			continue
+		}
+		renderFlatBodyFlagReg(b, p, identPrefix, flagPrefix, topLevel)
+	}
+}
+
+func renderFlatBodyFlagReg(b *strings.Builder, p spec.Param, identPrefix, flagPrefix string, topLevel bool) {
+	ident := identPrefix + toCamel(paramIdent(p))
+	flag := joinFlag(flagPrefix, publicFlagName(p))
+	desc := naming.OneLine(p.Description)
+	fmt.Fprintf(b, "\n\tcmd.Flags().%s(&body%s, \"%s\", %s, \"%s\")",
+		cobraFlagFunc(p.Type), ident, flag, defaultVal(p), desc)
+	if topLevel {
+		for _, alias := range publicFlagAliases(p) {
+			fmt.Fprintf(b, "\n\tcmd.Flags().%s(&body%s, \"%s\", %s, \"%s\")",
+				cobraFlagFunc(p.Type), ident, alias, defaultVal(p), desc)
+			fmt.Fprintf(b, "\n\t_ = cmd.Flags().MarkHidden(\"%s\")", alias)
+		}
+	}
+}
+
+// bodyRequiredChecks renders required-flag validation for body params.
+// indent is the indent prefix applied to each emitted `if` line so the
+// helper can serve both command_endpoint.go.tmpl (4-tab indent inside
+// `if !stdinBody`, 3-tab indent for multipart) and command_promoted.go.tmpl
+// (3-tab indent at RunE-body level). Multipart endpoints keep flat
+// behavior. For non-multipart, top-level params use flagChangedExpr
+// (lifts aliases); nested fields use a single Changed() check on the
+// parent-prefixed flag because aliases are not propagated to children.
+func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
+	var b strings.Builder
+	if bodyUsesFlatEmission(endpoint) {
+		for _, p := range endpoint.Body {
+			renderFlatBodyRequiredCheck(&b, p, indent, "", true)
+		}
+		return b.String()
+	}
+	renderBodyRequiredChecks(&b, endpoint.Body, indent, "", true)
+	return b.String()
+}
+
+func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, indent, flagPrefix string, topLevel bool) {
+	for _, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 {
+			flag := joinFlag(flagPrefix, publicFlagName(p))
+			renderBodyRequiredChecks(b, p.Fields, indent, flag, false)
+			continue
+		}
+		renderFlatBodyRequiredCheck(b, p, indent, flagPrefix, topLevel)
+	}
+}
+
+func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagPrefix string, topLevel bool) {
+	if !p.Required || p.Default != nil {
+		return
+	}
+	flag := joinFlag(flagPrefix, publicFlagName(p))
+	var changedExpr string
+	if topLevel {
+		changedExpr = flagChangedExpr(p)
+	} else {
+		changedExpr = fmt.Sprintf("cmd.Flags().Changed(\"%s\")", flag)
+	}
+	fmt.Fprintf(b, "\n%sif !%s && !flags.dryRun {", indent, changedExpr)
+	fmt.Fprintf(b, "\n%s\treturn fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"%s\")", indent, flag)
+	fmt.Fprintf(b, "\n%s}", indent)
+}
+
+func joinFlag(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+	return prefix + "-" + name
+}
+
+func multipartBodyMaps(body []spec.Param, indent string) string {
+	var b strings.Builder
+	for _, p := range body {
+		id := paramIdent(p)
+		ident := toCamel(id)
+		flag := publicFlagName(p)
+		if isComplexBodyField(p) || isJSONStringParam(p) {
 			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
-			fmt.Fprintf(&b, "%s\tvar parsed%s any\n", indent, ident)
-			fmt.Fprintf(&b, "%s\tif err := json.Unmarshal([]byte(body%s), &parsed%s); err != nil {\n", indent, ident, ident)
-			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
+			fmt.Fprintf(&b, "%s\tif !json.Valid([]byte(body%s)) {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: invalid JSON\")\n", indent, flag)
 			fmt.Fprintf(&b, "%s\t}\n", indent)
-			fmt.Fprintf(&b, "%s\tbody[%q] = %s\n", indent, p.Name, rhs)
+			fmt.Fprintf(&b, "%s\tfields[%q] = body%s\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s}\n", indent)
+			continue
+		}
+		if isBinaryParam(p) {
+			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\tfileFields[%q] = body%s\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s}\n", indent)
+			continue
+		}
+		if p.Type == "string" {
+			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\tfields[%q] = body%s\n", indent, p.Name, ident)
 			fmt.Fprintf(&b, "%s}\n", indent)
 			continue
 		}
 		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
-		fmt.Fprintf(&b, "%s\tbody[%q] = body%s\n", indent, p.Name, ident)
+		fmt.Fprintf(&b, "%s\tfields[%q] = fmt.Sprintf(\"%%v\", body%s)\n", indent, p.Name, ident)
 		fmt.Fprintf(&b, "%s}\n", indent)
 	}
 	return b.String()
+}
+
+func endpointUsesMultipart(endpoint spec.Endpoint) bool {
+	return strings.EqualFold(strings.TrimSpace(endpoint.RequestContentType), "multipart/form-data")
+}
+
+func hasMultipartRequest(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointUsesMultipart)
+}
+
+func endpointUsesForm(endpoint spec.Endpoint) bool {
+	return strings.EqualFold(strings.TrimSpace(endpoint.RequestContentType), "application/x-www-form-urlencoded")
+}
+
+func hasFormRequest(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointUsesForm)
+}
+
+func anyEndpointMatches(apiSpec *spec.APISpec, predicate func(spec.Endpoint) bool) bool {
+	if apiSpec == nil {
+		return false
+	}
+	var walk func(resources map[string]spec.Resource) bool
+	walk = func(resources map[string]spec.Resource) bool {
+		for _, resource := range resources {
+			for _, endpoint := range resource.Endpoints {
+				if predicate(endpoint) {
+					return true
+				}
+			}
+			if walk(resource.SubResources) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(apiSpec.Resources)
+}
+
+// formBodyMaps renders per-flag form-field assignments for endpoints that send
+// application/x-www-form-urlencoded request bodies. Object/array/JSON-string
+// fields are validated as JSON then sent as a single string field (matching
+// the JSON-shaped struct_data convention used by reverse-engineered APIs);
+// scalar fields are formatted with %v.
+func formBodyMaps(body []spec.Param, indent string) string {
+	var b strings.Builder
+	for _, p := range body {
+		id := paramIdent(p)
+		ident := toCamel(id)
+		flag := publicFlagName(p)
+		if isComplexBodyField(p) || isJSONStringParam(p) {
+			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\tif !json.Valid([]byte(body%s)) {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: invalid JSON\")\n", indent, flag)
+			fmt.Fprintf(&b, "%s\t}\n", indent)
+			fmt.Fprintf(&b, "%s\tfields.Set(%q, body%s)\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s}\n", indent)
+			continue
+		}
+		if p.Type == "string" {
+			fmt.Fprintf(&b, "%sif body%s != \"\" {\n", indent, ident)
+			fmt.Fprintf(&b, "%s\tfields.Set(%q, body%s)\n", indent, p.Name, ident)
+			fmt.Fprintf(&b, "%s}\n", indent)
+			continue
+		}
+		fmt.Fprintf(&b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
+		fmt.Fprintf(&b, "%s\tfields.Set(%q, fmt.Sprintf(\"%%v\", body%s))\n", indent, p.Name, ident)
+		fmt.Fprintf(&b, "%s}\n", indent)
+	}
+	return b.String()
+}
+
+func isBinaryParam(p spec.Param) bool {
+	return strings.EqualFold(strings.TrimSpace(p.Format), "binary")
+}
+
+func isComplexBodyField(p spec.Param) bool {
+	return p.Type == "object" || p.Type == "array"
 }
 
 func isJSONStringParam(p spec.Param) bool {

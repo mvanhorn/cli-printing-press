@@ -37,6 +37,18 @@ type Config struct {
 {{- end}}
 	ClientID       string `{{configTag .Config.Format}}:"client_id"`
 	ClientSecret   string `{{configTag .Config.Format}}:"client_secret"`
+{{- if .Auth.AuthorizationURL}}
+	// AuthorizationURL overrides the spec-baked OAuth2 authorization endpoint.
+	// Falls back to the generator default at the call site when empty so a
+	// user pointing the CLI at a non-default deployment can override without
+	// regenerating.
+	AuthorizationURL string `{{configTag .Config.Format}}:"authorization_url,omitempty"`
+{{- end}}
+{{- if .Auth.TokenURL}}
+	// TokenURL overrides the spec-baked OAuth2 token endpoint. Same fallback
+	// pattern as AuthorizationURL.
+	TokenURL       string `{{configTag .Config.Format}}:"token_url,omitempty"`
+{{- end}}
 {{- end}}
 	Path           string `{{configTag .Config.Format}}:"-"`
 {{- if .Auth.EnvVarSpecs}}
@@ -151,19 +163,35 @@ func Load(configPath string) (*Config, error) {
 	if v := os.Getenv("{{envName .Name}}_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
+{{- if and .HasAuthCommand .Auth.AuthorizationURL}}
+	if v := os.Getenv("{{envName .Name}}_AUTHORIZATION_URL"); v != "" {
+		cfg.AuthorizationURL = v
+	}
+{{- end}}
+{{- if and .HasAuthCommand .Auth.TokenURL}}
+	if v := os.Getenv("{{envName .Name}}_TOKEN_URL"); v != "" {
+		cfg.TokenURL = v
+	}
+{{- end}}
 {{- if .EndpointTemplateVars}}
 
 	// Endpoint template vars: resolve each {placeholder} in BaseURL or the
 	// GraphQL path against the matching env var. Populated even when values
 	// are empty so the client's buildURL helper can issue an actionable
 	// "export FOO_BAR=..." error instead of silently sending a request to a
-	// URL with literal "{shop}" in it.
+	// URL with literal "{shop}" in it. Under PRINTING_PRESS_VERIFY=1 (set by
+	// the printing-press verifier in every mock subprocess), an unset
+	// template var falls through to "<name>_placeholder" so dry-run legs
+	// reach Cobra instead of hitting buildURL's actionable error first.
 	if cfg.TemplateVars == nil {
 		cfg.TemplateVars = map[string]string{}
 	}
+	verifyMode := os.Getenv("PRINTING_PRESS_VERIFY") == "1"
 {{- range .EndpointTemplateVars}}
 	if v := os.Getenv("{{envName $.Name}}_{{upper .}}"); v != "" {
 		cfg.TemplateVars["{{.}}"] = v
+	} else if verifyMode {
+		cfg.TemplateVars["{{.}}"] = "{{.}}_placeholder"
 	}
 {{- end}}
 {{- end}}
@@ -264,9 +292,12 @@ func (c *Config) AuthHeader() string {
 	{{- end}}
 {{- end}}
 {{- else if or (eq .Auth.Type "bearer_token") (eq .Auth.Type "oauth2")}}
-{{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
-	// Under OAuth2 client_credentials the env var is the Client ID, not a
-	// usable bearer; the minted AccessToken must win.
+{{- if or (eq .Auth.Type "oauth2") (and (eq .Auth.Type "bearer_token") (eq .Auth.EffectiveOAuth2Grant "client_credentials"))}}
+	// Under OAuth2 (and bearer_token specs running the client_credentials
+	// grant) the configured env vars hold client credentials (client_id /
+	// client_secret), not a usable bearer; the minted AccessToken must
+	// win. Sending the client_id as Authorization: Bearer surfaces as
+	// token_rejected at the API.
 	if c.AccessToken != "" {
 		c.AuthSource = "oauth2"
 		{{- if .Auth.Format}}

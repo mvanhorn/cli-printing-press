@@ -745,7 +745,7 @@ info:
   title: Hybrid
   version: "1.0"
 servers:
-  - url: https://example.com
+  - url: https://api.example.com
 components:
   securitySchemes:
     OAuth2:
@@ -791,7 +791,7 @@ info:
   title: Malformed
   version: "1.0"
 servers:
-  - url: https://example.com
+  - url: https://api.example.com
 components:
   securitySchemes:
     OAuth2:
@@ -830,7 +830,7 @@ info:
   title: Sentry
   version: "1.0"
 servers:
-  - url: https://example.com
+  - url: https://api.example.com
 components:
   securitySchemes:
     auth_token:
@@ -3661,6 +3661,166 @@ paths:
 	}
 }
 
+// TestParseIDFieldResourcePrefixedHeuristic covers list responses whose item
+// schemas key off `<singular_resource>_id` (or `_uuid`/`_guid`) instead of a
+// bare `id`. Without this heuristic, APIs like podscan whose Category items
+// only carry `category_id` would fall through every fallback tier and leave
+// IDField empty, causing sync to silently drop every row.
+func TestParseIDFieldResourcePrefixedHeuristic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		path       string
+		schemaYAML string
+		wantID     string
+	}{
+		{
+			name: "plural resource picks <singular>_id",
+			path: "/categories",
+			schemaYAML: `                  type: object
+                  properties:
+                    category_id: {type: string}
+                    category_name: {type: string}
+                    category_display_name: {type: string}
+`,
+			wantID: "category_id",
+		},
+		{
+			name: "singular resource picks <name>_id",
+			path: "/user",
+			schemaYAML: `                  type: object
+                  properties:
+                    user_id: {type: string}
+                    user_name: {type: string}
+`,
+			wantID: "user_id",
+		},
+		{
+			name: "id wins over <singular>_id (REST convention)",
+			path: "/categories",
+			schemaYAML: `                  type: object
+                  properties:
+                    id: {type: string}
+                    category_id: {type: string}
+`,
+			wantID: "id",
+		},
+		{
+			name: "<singular>_id wins over name",
+			path: "/categories",
+			schemaYAML: `                  type: object
+                  properties:
+                    name: {type: string}
+                    category_id: {type: string}
+`,
+			wantID: "category_id",
+		},
+		{
+			name: "_uuid suffix is recognized when _id is absent",
+			path: "/sessions",
+			schemaYAML: `                  type: object
+                  properties:
+                    session_uuid: {type: string}
+                    started_at: {type: string}
+`,
+			wantID: "session_uuid",
+		},
+		{
+			name: "_guid suffix is recognized when _id and _uuid are absent",
+			path: "/devices",
+			schemaYAML: `                  type: object
+                  properties:
+                    device_guid: {type: string}
+                    last_seen: {type: string}
+`,
+			wantID: "device_guid",
+		},
+		{
+			name: "camelCase property name normalizes to snake match",
+			path: "/categories",
+			schemaYAML: `                  type: object
+                  properties:
+                    categoryId: {type: string}
+                    categoryName: {type: string}
+`,
+			wantID: "categoryId",
+		},
+		{
+			name: "kebab-case path resource singularizes correctly",
+			path: "/auth-tokens",
+			schemaYAML: `                  type: object
+                  properties:
+                    auth_token_id: {type: string}
+                    issued_at: {type: string}
+`,
+			wantID: "auth_token_id",
+		},
+		{
+			name: "_id precedence: prefers _id over _uuid",
+			path: "/categories",
+			schemaYAML: `                  type: object
+                  properties:
+                    category_id: {type: string}
+                    category_uuid: {type: string}
+`,
+			wantID: "category_id",
+		},
+		{
+			name: "no <singular>_id falls through to remaining tiers",
+			path: "/things",
+			schemaYAML: `                  type: object
+                  properties:
+                    name: {type: string}
+                    other_id: {type: string}
+`,
+			wantID: "name",
+		},
+		{
+			// Without the irregulars override, `movies` would singularize
+			// via the `ies → y` rule to `movy`, missing `movie_id`.
+			name: "ie-ending stem keeps singular form (movies → movie)",
+			path: "/movies",
+			schemaYAML: `                  type: object
+                  properties:
+                    movie_id: {type: string}
+                    title: {type: string}
+`,
+			wantID: "movie_id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Test
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  ` + tt.path + `:
+    get:
+      operationId: list
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+` + tt.schemaYAML)
+			parsed, err := Parse(yamlSpec)
+			require.NoError(t, err)
+
+			ep := findEndpoint(t, parsed, tt.path)
+			assert.Equal(t, tt.wantID, ep.IDField)
+		})
+	}
+}
+
 // TestParseXResourceIDAppliesToEveryOperationOnPath exercises the "extensions
 // live on the path item" rule — both GET and POST operations under /widgets
 // inherit the x-resource-id and x-critical values, even though x-critical is
@@ -4361,6 +4521,149 @@ paths:
 	_, err := Parse(data)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "transport")
+}
+
+func TestParseMultipartRequestBodyPreservesContentType(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Upload API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /assets:
+    post:
+      operationId: uploadAsset
+      summary: Upload asset
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [assetData, filename]
+              properties:
+                assetData:
+                  type: string
+                  format: binary
+                  description: Asset file
+                filename:
+                  type: string
+                  description: File name
+      responses:
+        "201":
+          description: created
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/assets")
+	assert.Equal(t, "multipart/form-data", endpoint.RequestContentType)
+	require.Len(t, endpoint.Body, 2)
+	byName := map[string]spec.Param{}
+	for _, param := range endpoint.Body {
+		byName[param.Name] = param
+	}
+	assert.Equal(t, "binary", byName["assetData"].Format)
+	assert.True(t, byName["assetData"].Required)
+	assert.True(t, byName["filename"].Required)
+}
+
+func TestParseFormUrlencodedRequestBodyPreservesContentType(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: OAuth API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /oauth/token:
+    post:
+      operationId: exchangeToken
+      summary: Exchange OAuth token
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type, client_id]
+              properties:
+                grant_type:
+                  type: string
+                client_id:
+                  type: string
+                client_secret:
+                  type: string
+                refresh_token:
+                  type: string
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/oauth/token")
+	assert.Equal(t, "application/x-www-form-urlencoded", endpoint.RequestContentType)
+	require.Len(t, endpoint.Body, 4)
+	byName := map[string]spec.Param{}
+	for _, param := range endpoint.Body {
+		byName[param.Name] = param
+	}
+	assert.True(t, byName["grant_type"].Required)
+	assert.True(t, byName["client_id"].Required)
+	assert.False(t, byName["client_secret"].Required)
+}
+
+// TestParseJSONPreferredOverFormUrlencoded asserts the parser still picks
+// application/json when the spec offers both content types — keeping JSON-
+// declared specs byte-identical and letting form-only OAuth/legacy endpoints
+// surface their wire shape.
+func TestParseJSONPreferredOverFormUrlencoded(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Multi Content API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    post:
+      operationId: createItem
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        "201":
+          description: created
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/items")
+	assert.Equal(t, "application/json", endpoint.RequestContentType)
 }
 
 func findParsedEndpointByPath(t *testing.T, parsed *spec.APISpec, method, path string) spec.Endpoint {

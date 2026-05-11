@@ -23,6 +23,9 @@ type Config struct {
 	TokenExpiry    time.Time `toml:"token_expiry"`
 	ClientID       string `toml:"client_id"`
 	ClientSecret   string `toml:"client_secret"`
+	// TokenURL overrides the spec-baked OAuth2 token endpoint. Same fallback
+	// pattern as AuthorizationURL.
+	TokenURL       string `toml:"token_url,omitempty"`
 	Path           string `toml:"-"`
 	PrintingPressOauth2ClientId string `toml:"press_oauth2_client_id"`
 	PrintingPressOauth2ClientSecret string `toml:"press_oauth2_client_secret"`
@@ -84,6 +87,9 @@ func Load(configPath string) (*Config, error) {
 	if v := os.Getenv("PRINTING_PRESS_OAUTH2_BASE_URL"); v != "" {
 		cfg.BaseURL = v
 	}
+	if v := os.Getenv("PRINTING_PRESS_OAUTH2_TOKEN_URL"); v != "" {
+		cfg.TokenURL = v
+	}
 	return cfg, nil
 }
 
@@ -91,8 +97,11 @@ func (c *Config) AuthHeader() string {
 	if c.AuthHeaderVal != "" {
 		return c.AuthHeaderVal
 	}
-	// Under OAuth2 client_credentials the env var is the Client ID, not a
-	// usable bearer; the minted AccessToken must win.
+	// Under OAuth2 (and bearer_token specs running the client_credentials
+	// grant) the configured env vars hold client credentials (client_id /
+	// client_secret), not a usable bearer; the minted AccessToken must
+	// win. Sending the client_id as Authorization: Bearer surfaces as
+	// token_rejected at the API.
 	if c.AccessToken != "" {
 		c.AuthSource = "oauth2"
 		return "Bearer " + c.AccessToken

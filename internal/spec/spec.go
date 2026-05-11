@@ -916,21 +916,22 @@ func resourceHasBaseURLOverride(resource Resource) bool {
 }
 
 type Endpoint struct {
-	Method          string            `yaml:"method" json:"method"`
-	Path            string            `yaml:"path" json:"path"`
-	BaseURL         string            `yaml:"base_url,omitempty" json:"base_url,omitempty"`
-	Description     string            `yaml:"description" json:"description"`
-	Params          []Param           `yaml:"params" json:"params"`
-	Body            []Param           `yaml:"body" json:"body"`
-	Response        ResponseDef       `yaml:"response" json:"response"`
-	ResponseFormat  string            `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
-	HTMLExtract     *HTMLExtract      `yaml:"html_extract,omitempty" json:"html_extract,omitempty"`       // extraction options when response_format is html
-	Pagination      *Pagination       `yaml:"pagination" json:"pagination"`
-	ResponsePath    string            `yaml:"response_path,omitempty" json:"response_path,omitempty"`       // path to extract data array from response (e.g., "data", "results.items")
-	Meta            map[string]string `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
-	HeaderOverrides []RequiredHeader  `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
-	NoAuth          bool              `yaml:"no_auth,omitempty" json:"no_auth,omitempty"`                   // true when the endpoint does not require authentication
-	Tier            string            `yaml:"tier,omitempty" json:"tier,omitempty"`
+	Method             string            `yaml:"method" json:"method"`
+	Path               string            `yaml:"path" json:"path"`
+	BaseURL            string            `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+	Description        string            `yaml:"description" json:"description"`
+	Params             []Param           `yaml:"params" json:"params"`
+	Body               []Param           `yaml:"body" json:"body"`
+	RequestContentType string            `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
+	Response           ResponseDef       `yaml:"response" json:"response"`
+	ResponseFormat     string            `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
+	HTMLExtract        *HTMLExtract      `yaml:"html_extract,omitempty" json:"html_extract,omitempty"`       // extraction options when response_format is html
+	Pagination         *Pagination       `yaml:"pagination" json:"pagination"`
+	ResponsePath       string            `yaml:"response_path,omitempty" json:"response_path,omitempty"`       // path to extract data array from response (e.g., "data", "results.items")
+	Meta               map[string]string `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
+	HeaderOverrides    []RequiredHeader  `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
+	NoAuth             bool              `yaml:"no_auth,omitempty" json:"no_auth,omitempty"`                   // true when the endpoint does not require authentication
+	Tier               string            `yaml:"tier,omitempty" json:"tier,omitempty"`
 	// IDField is the resolved primary-key field name for items returned by this
 	// endpoint, populated either by a path-item-level `x-resource-id` extension
 	// or, for OpenAPI specs, by walking the response schema (id → name → first
@@ -1547,6 +1548,9 @@ func (s *APISpec) Validate() error {
 	if s.BaseURL == "" && s.BasePath == "" {
 		return fmt.Errorf("base_url is required")
 	}
+	if err := validateReservedPlaceholderHost("base_url", s.BaseURL); err != nil {
+		return err
+	}
 	if len(s.Resources) == 0 {
 		return fmt.Errorf("at least one resource is required")
 	}
@@ -1589,12 +1593,21 @@ func (s *APISpec) Validate() error {
 		if len(r.Endpoints) == 0 && len(r.SubResources) == 0 {
 			return fmt.Errorf("resource %q has no endpoints", name)
 		}
+		if err := validateReservedPlaceholderHost(fmt.Sprintf("resource %q base_url", name), r.BaseURL); err != nil {
+			return err
+		}
 		for eName, e := range r.Endpoints {
 			if e.Method == "" {
 				return fmt.Errorf("resource %q endpoint %q: method is required", name, eName)
 			}
 			if e.Path == "" {
 				return fmt.Errorf("resource %q endpoint %q: path is required", name, eName)
+			}
+			if err := validateReservedPlaceholderHost(fmt.Sprintf("resource %q endpoint %q path", name, eName), e.Path); err != nil {
+				return err
+			}
+			if err := validateReservedPlaceholderHost(fmt.Sprintf("resource %q endpoint %q base_url", name, eName), e.BaseURL); err != nil {
+				return err
 			}
 			if err := validateEndpointPublicParamNames(e); err != nil {
 				return fmt.Errorf("resource %q endpoint %q: %w", name, eName, err)
@@ -1607,12 +1620,21 @@ func (s *APISpec) Validate() error {
 			if len(sub.Endpoints) == 0 {
 				return fmt.Errorf("resource %q sub-resource %q has no endpoints", name, subName)
 			}
+			if err := validateReservedPlaceholderHost(fmt.Sprintf("resource %q sub-resource %q base_url", name, subName), sub.BaseURL); err != nil {
+				return err
+			}
 			for eName, e := range sub.Endpoints {
 				if e.Method == "" {
 					return fmt.Errorf("resource %q sub-resource %q endpoint %q: method is required", name, subName, eName)
 				}
 				if e.Path == "" {
 					return fmt.Errorf("resource %q sub-resource %q endpoint %q: path is required", name, subName, eName)
+				}
+				if err := validateReservedPlaceholderHost(fmt.Sprintf("resource %q sub-resource %q endpoint %q path", name, subName, eName), e.Path); err != nil {
+					return err
+				}
+				if err := validateReservedPlaceholderHost(fmt.Sprintf("resource %q sub-resource %q endpoint %q base_url", name, subName, eName), e.BaseURL); err != nil {
+					return err
 				}
 				if err := validateEndpointPublicParamNames(e); err != nil {
 					return fmt.Errorf("resource %q sub-resource %q endpoint %q: %w", name, subName, eName, err)
@@ -1624,6 +1646,43 @@ func (s *APISpec) Validate() error {
 		}
 	}
 	return nil
+}
+
+// reservedPlaceholderHosts captures the IETF reserved documentation/test
+// hostnames from RFC 2606 §3 and RFC 6761 §6.4. When one of these appears as
+// the bare host of an endpoint URL (no subdomain), it almost always indicates
+// an unresolved placeholder from a sniff or LLM emitter that would otherwise
+// compile into the runtime client and fail at first call. Subdomains
+// (api.example.com, geocoding-api.example.com) remain allowed because the
+// codebase intentionally uses them as obviously-fake-but-parseable test
+// fixtures, and the openapi/docspec parsers fall back to api.example.com when
+// a source spec omits its servers block.
+var reservedPlaceholderHosts = map[string]bool{
+	"example.com":     true,
+	"example.org":     true,
+	"example.net":     true,
+	"example.test":    true,
+	"example.invalid": true,
+	"example":         true,
+}
+
+// validateReservedPlaceholderHost reports a clear error when rawURL is an
+// absolute URL whose bare host is reserved for documentation. Empty values,
+// relative paths, and subdomained hosts pass.
+func validateReservedPlaceholderHost(label, rawURL string) error {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || !u.IsAbs() || u.Host == "" {
+		return nil
+	}
+	host := strings.ToLower(u.Hostname())
+	if !reservedPlaceholderHosts[host] {
+		return nil
+	}
+	return fmt.Errorf("%s: %q points to reserved placeholder host %q (RFC 2606); this indicates an unresolved URL from spec emission (browser-sniff, docs-derived, or hand-authored). Supply a real URL, drop the endpoint, or mark it as a stub before generation", label, rawURL, host)
 }
 
 func (s *APISpec) NormalizeAuthEnvVarSpecs() {

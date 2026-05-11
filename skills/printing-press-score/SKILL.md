@@ -2,7 +2,7 @@
 name: printing-press-score
 description: Score a generated CLI against the Steinberger bar, compare two CLIs side-by-side
 version: 0.1.0
-min-binary-version: "0.3.0"
+min-binary-version: "4.0.0"
 allowed-tools:
   - Bash
   - Read
@@ -35,7 +35,7 @@ Before any other commands, run the setup contract to verify the printing-press b
 
 <!-- PRESS_SETUP_CONTRACT_START -->
 ```bash
-# min-binary-version: 0.3.0
+# min-binary-version: 4.0.0
 
 # Derive scope first — needed for local build detection
 _scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
@@ -72,7 +72,7 @@ mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-After running the setup contract, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, warn the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest` to update." Continue anyway but surface the warning prominently.
+After running the setup contract, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest` to update."
 
 Current-run state is resolved from `$PRESS_RUNSTATE`. Published CLIs are resolved from `$PRESS_LIBRARY`. Archived manuscripts are resolved from `$PRESS_MANUSCRIPTS`.
 

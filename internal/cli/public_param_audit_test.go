@@ -18,7 +18,7 @@ func TestPublicParamAuditJSONInventoriesDecisionRequiredParams(t *testing.T) {
 name: public-param-test
 description: Public param test
 version: "0.1.0"
-base_url: https://example.test
+base_url: https://api.example.com
 auth:
   type: none
 resources:
@@ -67,7 +67,7 @@ func TestPublicParamAuditStrictFailsOnlyForUnreviewedCandidates(t *testing.T) {
 name: public-param-test
 description: Public param test
 version: "0.1.0"
-base_url: https://example.test
+base_url: https://api.example.com
 auth:
   type: none
 resources:
@@ -124,7 +124,7 @@ func TestPublicParamAuditStrictPassesWhenFlagNameIsInSpec(t *testing.T) {
 name: public-param-test
 description: Public param test
 version: "0.1.0"
-base_url: https://example.test
+base_url: https://api.example.com
 auth:
   type: none
 resources:

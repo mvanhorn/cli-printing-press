@@ -2,7 +2,7 @@
 name: printing-press
 description: Generate a ship-ready CLI for an API with a lean research -> generate -> build -> shipcheck loop.
 version: 2.0.0
-min-binary-version: "0.3.0"
+min-binary-version: "4.0.0"
 allowed-tools:
   - Bash
   - Read
@@ -117,16 +117,21 @@ During Phase 5.6 (archiving) and before publishing, read and apply
 
 <!-- PRESS_SETUP_CONTRACT_START -->
 ```bash
-# min-binary-version: 0.3.0
+# min-binary-version: 4.0.0
 
 # Derive scope first — needed for local build detection
 _scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 _scope_dir="$(cd "$_scope_dir" && pwd -P)"
 
+_press_repo=false
+if [ -d "$_scope_dir/cmd/printing-press" ] && [ -f "$_scope_dir/go.mod" ]; then
+  _press_repo=true
+fi
+
 # Prefer local build when running from inside the printing-press repo.
 # The lefthook build hook keeps ./printing-press current after every commit/pull,
 # so it's always newer than the go-install version.
-if [ -x "$_scope_dir/printing-press" ] && [ -d "$_scope_dir/cmd/printing-press" ]; then
+if [ "$_press_repo" = "true" ] && [ -x "$_scope_dir/printing-press" ]; then
   export PATH="$_scope_dir:$PATH"
   echo "Using local build: $_scope_dir/printing-press"
 elif ! command -v printing-press >/dev/null 2>&1; then
@@ -155,6 +160,23 @@ elif ! command -v printing-press >/dev/null 2>&1; then
   fi
 fi
 
+# Verify the Go toolchain is on PATH. Generation runs Go-based quality gates
+# (go mod tidy, go vet, etc.) after writing thousands of lines of scaffolding,
+# so a missing `go` only surfaces 5+ minutes in. Fail-fast costs one command -v
+# call when Go is present and converts a late, opaque failure into a 30-second
+# actionable abort.
+if ! command -v go >/dev/null 2>&1; then
+  echo ""
+  echo "[setup-error] Go toolchain not found."
+  echo ""
+  echo "The Printing Press generator runs Go-based quality gates after generation."
+  echo "Install Go 1.26.3 or newer from https://go.dev/dl/, then verify with:"
+  echo "  go version"
+  echo "Then re-run /printing-press."
+  echo ""
+  return 1 2>/dev/null || exit 1
+fi
+
 PRESS_BASE="$(basename "$_scope_dir" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"
 if [ -z "$PRESS_BASE" ]; then
   PRESS_BASE="workspace"
@@ -169,11 +191,9 @@ PRESS_CURRENT="$PRESS_RUNSTATE/current"
 
 mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT"
 
-# --- Latest-version advisory (throttled, fail-open) ---
-# Once per 24h, check whether a newer printing-press release exists and print a
-# one-line notice if so. Uses `go list` through the public module proxy. Runs in
-# every context — devs ahead of latest stay silent (comparison handles it), devs
-# behind latest get the same nudge anyone else does.
+# --- Latest-version advisory (fail-open) ---
+# Repo checkouts track origin/main because their skills and local binary come
+# from the checkout. Standalone installs track the latest released Go module.
 PRESS_VERCHECK_FILE="$PRESS_HOME/.version-check"
 PRESS_VERCHECK_TTL=86400
 _now_ts=$(date +%s)
@@ -185,26 +205,70 @@ if [ -f "$PRESS_VERCHECK_FILE" ] && [ -z "$PRESS_VERCHECK_FORCE" ]; then
   fi
 fi
 
-if [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
-  _installed=$(printing-press version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
-  _latest=$(go list -m -versions github.com/mvanhorn/cli-printing-press/v4 2>/dev/null | awk '{print $NF}' | sed 's/^v//')
-
-  if [ -n "$_installed" ] && [ -n "$_latest" ] && [ "$_installed" != "$_latest" ]; then
-    # sort -V is not fully semver-aware: it ranks "3.0.0-rc1" above "3.0.0" instead of below.
-    # Acceptable today (we don't ship pre-release tags); revisit if we ever do.
-    _newer=$(printf "v%s\nv%s\n" "$_installed" "$_latest" | sort -V | tail -1 | sed 's/^v//')
-    if [ "$_newer" = "$_latest" ]; then
-      # Marker for the skill prose below to detect and offer an interactive upgrade.
-      # The skill reads PRESS_UPGRADE_AVAILABLE / PRESS_UPGRADE_INSTALLED from this output.
+if [ "$_press_repo" = "true" ]; then
+  # Repo mode checks origin/main every run because the checkout and local build
+  # move quickly; skipped_repo_main suppresses repeated prompts for one SHA.
+  if git -C "$_scope_dir" remote get-url origin >/dev/null 2>&1 &&
+     git -C "$_scope_dir" fetch --quiet origin main >/dev/null 2>&1; then
+    _head_rev=$(git -C "$_scope_dir" rev-parse HEAD 2>/dev/null || true)
+    _main_rev=$(git -C "$_scope_dir" rev-parse origin/main 2>/dev/null || true)
+    _skipped_repo_main=""
+    if [ -f "$PRESS_VERCHECK_FILE" ] && [ -z "$PRESS_VERCHECK_FORCE" ]; then
+      _skipped_repo_main=$(awk -F= '/^skipped_repo_main=/{value=$2} END{print value}' "$PRESS_VERCHECK_FILE" 2>/dev/null)
+    fi
+    if [ -n "$_head_rev" ] && [ -n "$_main_rev" ] &&
+       [ "$_head_rev" != "$_main_rev" ] &&
+       [ "$_skipped_repo_main" != "$_main_rev" ] &&
+       git -C "$_scope_dir" merge-base --is-ancestor "$_head_rev" "$_main_rev" 2>/dev/null; then
       echo ""
-      echo "[upgrade-available] printing-press v$_latest is available (you have v$_installed)"
-      echo "PRESS_UPGRADE_AVAILABLE=$_latest"
-      echo "PRESS_UPGRADE_INSTALLED=$_installed"
+      echo "[repo-upgrade-available] origin/main has newer Printing Press changes"
+      echo "PRESS_REPO_DIR=$_scope_dir"
+      echo "PRESS_REPO_HEAD=$_head_rev"
+      echo "PRESS_REPO_MAIN=$_main_rev"
       echo ""
     fi
+
+    printf "last_check=%s\nlatest=%s\nmode=repo\nskipped_repo_main=%s\n" "$_now_ts" "${_main_rev:-unknown}" "$_skipped_repo_main" > "$PRESS_VERCHECK_FILE" 2>/dev/null || true
+  fi
+elif [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
+  _installed=$(printing-press version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')
+  _latest=""
+
+  if [ -n "$_installed" ]; then
+    _latest=$(go list -m -json github.com/mvanhorn/cli-printing-press/v4@latest 2>/dev/null | awk '
+      /"Version":/ {
+        version=$2
+        gsub(/[",]/, "", version)
+        sub(/^v/, "", version)
+        print version
+        exit
+      }
+    ')
   fi
 
-  printf "last_check=%s\nlatest=%s\n" "$_now_ts" "${_latest:-unknown}" > "$PRESS_VERCHECK_FILE" 2>/dev/null || true
+  if [ -n "$_installed" ] && [ -n "$_latest" ] &&
+     awk -v installed="$_installed" -v latest="$_latest" 'BEGIN {
+       split(installed, a, ".")
+       split(latest, b, ".")
+       # Integer truncation means pre-release suffixes (e.g. "4.0.0-rc.1") are
+       # treated as equal to their GA counterpart. Acceptable while we do not
+       # ship pre-release tags; revisit if that changes.
+       for (i = 1; i <= 3; i++) {
+         if ((a[i] + 0) < (b[i] + 0)) exit 0
+         if ((a[i] + 0) > (b[i] + 0)) exit 1
+       }
+       exit 1
+     }'; then
+    # Marker for the skill prose below to detect and offer an interactive upgrade.
+    # The skill reads PRESS_UPGRADE_AVAILABLE / PRESS_UPGRADE_INSTALLED from this output.
+    echo ""
+    echo "[upgrade-available] printing-press v$_latest is available (you have v$_installed)"
+    echo "PRESS_UPGRADE_AVAILABLE=$_latest"
+    echo "PRESS_UPGRADE_INSTALLED=$_installed"
+    echo ""
+  fi
+
+  printf "last_check=%s\nlatest=%s\nmode=standalone\n" "$_now_ts" "${_latest:-$_installed}" > "$PRESS_VERCHECK_FILE" 2>/dev/null || true
 fi
 
 # --- Codex mode detection (must run as part of setup, not a separate step) ---
@@ -240,9 +304,9 @@ CODEX_CONSECUTIVE_FAILURES=0
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles three signals the contract emits to stdout: `[setup-error]` (refuse to run, surface the install instructions), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional upgrade), and the min-binary-version compatibility check. Skipping the reference will cause the skill to proceed with a missing or out-of-date binary. Do not skip.
+**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles four signals the contract emits to stdout: `[setup-error]` (refuse to run, surface the install instructions), `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), the min-binary-version compatibility check (hard stop if binary is too old), and `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary. Do not skip.
 
-Only after preflight completes successfully (no `[setup-error]`; any `[upgrade-available]` was offered to the user) should you proceed to the Orientation & Briefing section below.
+Only after preflight completes successfully (no `[setup-error]`; any `[repo-upgrade-available]` or `[upgrade-available]` was offered to the user) should you proceed to the Orientation & Briefing section below.
 
 ## Orientation & Briefing
 
@@ -2085,7 +2149,7 @@ Priority 3 (polish):
 After building each command in Priority 1 and Priority 2, verify these 10 principles are met. These map 1:1 to what Phase 4.9's agent readiness reviewer will check - apply them now so the review becomes a confirmation, not a catch-all.
 
 1. **Non-interactive**: No TTY prompts, no `bufio.Scanner(os.Stdin)`, works in CI without a terminal
-2. **Structured output**: `--json` produces valid JSON, `--select` filters fields correctly. Hand-written novel commands that build a Go-typed slice/struct and emit JSON MUST call `printJSONFiltered(cmd.OutOrStdout(), v, flags)` instead of `flags.printJSON(cmd, v)`. The helper marshals the value and routes the bytes through `printOutputWithFlags`, picking up `--select`, `--compact`, `--csv`, and `--quiet` for free; direct `flags.printJSON` drops every one of those flags silently. Endpoint-mirror commands already use `printOutputWithFlags`; this rule covers hand-written novel commands. Verify with `<cli> <novel> --json --select <field> | jq 'keys'` returning only the requested fields.
+2. **Structured output**: `--json` produces valid JSON, `--select` filters fields correctly. Hand-written novel commands that build a Go-typed slice/struct and emit JSON should use the generated receiver-style helper, `flags.printJSON(cmd, v)`, or call `printJSONFiltered(cmd.OutOrStdout(), v, flags)` directly. Both route through `printOutputWithFlags`, picking up `--select`, `--compact`, `--csv`, and `--quiet` for free. Verify with `<cli> <novel> --json --select <field> | jq 'keys'` returning only the requested fields.
 3. **Progressive help**: `--help` shows realistic examples with domain-specific values (not "abc123"). **Use `Example: strings.Trim(\`...\`, "\n")` (preserves leading 2-space indent) NOT `strings.TrimSpace(\`...\`)` (strips it).** TrimSpace makes the first example line unindented; dogfood's example-detection parser is tolerant of this in current versions, but the indented form renders correctly across every Cobra version and is the convention used by every generated command.
 4. **Actionable errors**: Error messages name the specific flag/arg that's wrong and the correct usage
 5. **Safe retries**: Mutation commands support `--dry-run`, idempotent where possible
@@ -2301,6 +2365,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 For features that combine both (cache an API response in the store, or fall through to live when the local store is stale), nest one skeleton inside the other and use the `--data-source auto/local/live` flag pattern from the generated `sync` command.
 
 **Shared helpers available to novel code:** The generator emits `internal/cliutil/` in every CLI. When authoring novel commands, prefer `cliutil.FanoutRun` for any aggregation command (any `--site`/`--source`/`--region` CSV fan-out) and `cliutil.CleanText` for any text extracted from HTML or schema.org JSON-LD. Re-implementing these inline is how recipe-goat's trending silent-drop and `&#39;` entity bugs shipped.
+
+**Streaming frame normalizers MUST use `cliutil.ExtractNumber` / `cliutil.ExtractInt` rather than raw `float64`/`int64` struct fields.** Real-world WebSocket and streaming JSON feeds (Binance, Coinbase, Kraken, Stripe `*_decimal`, vendor-specific market-data feeds) commonly encode numeric values as JSON-encoded strings (`"price":"1.91"`). `json.Unmarshal` of a JSON string into a `float64` field returns no error and silently leaves the field at 0; combined with NULL-on-zero patterns this discards the entire numeric feed with no error signal anywhere in the pipeline. The helpers accept both shapes (JSON number or JSON-encoded string), report `ok=false` on missing/null/unparseable, and are the canonical extraction path for `map[string]json.RawMessage` decoders. Re-implementing this inline as a `float64` struct field is the silent-aggregation-failure bug class.
 
 **Typed exit-code verification:** If a novel command intentionally returns a non-zero code for a non-error control-flow result, add `cmd.Annotations["pp:typed-exit-codes"] = "0,<code>"` (or the equivalent `Annotations: map[string]string{...}` literal) and document the same command-specific codes in its help. Do not list the global failure palette in command help unless those exits should count as a verify pass for that command; keep general exit-code troubleshooting in README/SKILL prose.
 
@@ -2702,6 +2768,8 @@ Skill(
 
 **Pass `$CLI_WORK_DIR` (the absolute working-dir path), not the API slug.** Phase 5.5 fires before Phase 5.6 promotes the working CLI to the library, so `$PRESS_LIBRARY/<slug>/` either doesn't exist yet or contains the *prior* run's CLI. If you paraphrase the args to the slug (e.g., `args: "producthunt"`), polish silently operates on the stale library copy.
 
+**Do not pass `--standalone` in `args`.** Polish's Publish Offer is gated on caller mode (see polish SKILL.md "Publish Offer"): slash-command invocations or Skill-tool invocations carrying `--standalone` run the offer; everything else defers. Phase 5.5 is mid-pipeline — main SKILL owns the publish flow at Phase 6 — so this invocation must remain flag-free. Passing `--standalone` here would re-introduce the failure mode the flag was added to prevent: polish forks the public library, sets global git config, and opens a real PR before the working CLI has been promoted.
+
 The polish skill runs the full diagnostic-fix-rediagnose loop including MCP tool quality polish (via `printing-press tools-audit` plus the playbook at `references/tools-polish.md`) and ends its response with a `---POLISH-RESULT---` block containing scorecard/verify/tools-audit before/after, fixes applied, and a ship recommendation.
 
 Parse the result block. Display the delta to the user:
@@ -2942,10 +3010,11 @@ Skill(
 )
 ```
 
-Two reasons for this exact form, both mirroring Phase 5.5:
+Three reasons for this exact form, all mirroring Phase 5.5:
 
 1. **Pass `$CLI_WORK_DIR` (absolute path), not the slug.** Hold runs leave the CLI in the working directory because Phase 5.6 did not promote — `$PRESS_LIBRARY/<slug>/` either does not exist or holds a stale prior run, and a slug-form invocation would polish that stale copy.
-2. **Use the Skill tool (forked context), not the `/printing-press-polish` slash command.** This matches Phase 5.5's invocation pattern — same shape, same expectations. The polish skill's Publish Offer is gated on caller mode (see polish SKILL.md "If Publish now"); when invoked via the Skill tool in forked context, polish defers the post-publish retro tail to the parent. Main SKILL owns the menu on this path.
+2. **Use the Skill tool (forked context), not the `/printing-press-polish` slash command.** This matches Phase 5.5's invocation pattern — same shape, same expectations. Slash-command invocations auto-enable polish's standalone mode (Publish Offer fires); the Skill tool form defers to the parent unless `--standalone` is passed explicitly. Main SKILL owns the menu on this path.
+3. **Do not include `--standalone` in `args`.** The flag is what polish gates its Publish Offer on (see polish SKILL.md "Publish Offer"). On the hold path the CLI has not been promoted; firing the offer would open a public PR for an un-promoted, un-shipped working copy.
 
 After polish returns, parse the result block and act on the new `ship_recommendation`:
 

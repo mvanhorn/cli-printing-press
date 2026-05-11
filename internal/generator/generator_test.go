@@ -56,6 +56,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cliutil/probe.go",
 		"internal/cliutil/ratelimit.go",
 		"internal/cliutil/verifyenv.go",
+		"internal/cliutil/extractnumber.go",
+		"internal/cliutil/extractnumber_test.go",
 		"internal/cliutil/cliutil_test.go",
 		"internal/client/client.go",
 		"internal/config/config.go",
@@ -76,9 +78,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 55},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 60},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 57},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 57},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 62},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 59},
 	}
 
 	for _, tt := range tests {
@@ -125,9 +127,9 @@ func TestGenerateCliutilPackage(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
 
-	// All three cliutil files must be emitted.
+	// All cliutil files must be emitted.
 	cliutilDir := filepath.Join(outputDir, "internal", "cliutil")
-	for _, name := range []string{"fanout.go", "text.go", "cliutil_test.go"} {
+	for _, name := range []string{"fanout.go", "text.go", "extractnumber.go", "extractnumber_test.go", "cliutil_test.go"} {
 		_, err := os.Stat(filepath.Join(cliutilDir, name))
 		require.NoError(t, err, "expected %s to be emitted", name)
 	}
@@ -146,6 +148,8 @@ func TestGenerateCliutilPackage(t *testing.T) {
 		{"text.go", "func CleanText("},
 		{"text.go", "func LooksLikeAuthError("},
 		{"text.go", "func SanitizeErrorBody("},
+		{"extractnumber.go", "func ExtractNumber("},
+		{"extractnumber.go", "func ExtractInt("},
 	} {
 		data, err := os.ReadFile(filepath.Join(cliutilDir, probe.file))
 		require.NoError(t, err)
@@ -2557,6 +2561,161 @@ func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/store")
 }
 
+// TestGenerateStoreSubResourceUpsertBindingOrder asserts that the typed
+// upsert for a sub-resource table binds its argument values in the same
+// order as the SQL column declarations. buildSubResourceTable puts the
+// FK column between id and data, so the bindings have to match —
+// otherwise JSON blobs land in the FK column, timestamps land in data,
+// and FK values land in synced_at, silently corrupting every row.
+func TestGenerateStoreSubResourceUpsertBindingOrder(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "subres",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"SUBRES_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/subres-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"domains": {
+				Description: "Manage domains",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/domains", Description: "List domains"},
+				},
+				SubResources: map[string]spec.Resource{
+					"verify": {
+						Description: "Verify a domain",
+						Endpoints: map[string]spec.Endpoint{
+							"get": {
+								Method:      "GET",
+								Path:        "/domains/{domainId}/verify",
+								Description: "Get verification status",
+								Params:      []spec.Param{{Name: "domainId", Type: "string", Required: true, Positional: true}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	src := string(storeSrc)
+
+	// buildSubResourceTable inserts the FK column between id and data, so
+	// the column declaration order is (id, domains_id, data, synced_at).
+	assert.Contains(t, src, "INSERT INTO verify (id, domains_id, data, synced_at)",
+		"sub-resource table should declare FK column between id and data")
+
+	// The argument bindings must follow that same order.
+	assert.Regexp(t,
+		`(?s)id,\s+lookupFieldValue\(obj, "domains_id"\),\s+string\(data\),\s+time\.Now\(\),`,
+		src,
+		"upsertVerifyTx binding order must match (id, domains_id, data, synced_at) column order")
+
+	// And the swapped order must be absent.
+	assert.NotRegexp(t,
+		`(?s)id,\s+string\(data\),\s+time\.Now\(\),\s+lookupFieldValue\(obj, "domains_id"\),`,
+		src,
+		"swapped (id, data, synced_at, fk) binding order must not be emitted")
+}
+
+func TestGenerateSimilarCommandUsesCompositeResourceKey(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("similar-composite")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{
+		Store:    true,
+		Insights: []string{"insights/similar.go.tmpl"},
+	}
+	require.NoError(t, gen.Generate())
+
+	inlineTest := `package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+func TestSimilarDisambiguatesOverlappingIDs(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := db.Upsert("biz", "shared", []byte(` + "`" + `{"id":"shared","name":"Pinky restaurant"}` + "`" + `)); err != nil {
+		t.Fatalf("upsert biz: %v", err)
+	}
+	if err := db.Upsert("bookmark", "shared", []byte(` + "`" + `{"id":"shared","name":"Anniversary bookmark"}` + "`" + `)); err != nil {
+		t.Fatalf("upsert bookmark: %v", err)
+	}
+	if err := db.Upsert("biz", "other", []byte(` + "`" + `{"id":"other","name":"Pinky restaurant north"}` + "`" + `)); err != nil {
+		t.Fatalf("upsert peer: %v", err)
+	}
+	db.Close()
+
+	cmd := newSimilarCmd(&rootFlags{asJSON: true})
+	cmd.SetArgs([]string{"shared", "--db", dbPath})
+	err = cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "matches multiple resource types") {
+		t.Fatalf("similar without --type err = %v, want overlap error", err)
+	}
+
+	cmd = newSimilarCmd(&rootFlags{asJSON: true})
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"shared", "--db", dbPath, "--type", "biz"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("similar with --type: %v", err)
+	}
+
+	var got struct {
+		SourceType string ` + "`" + `json:"source_type"` + "`" + `
+		Similar []struct {
+			ID           string ` + "`" + `json:"id"` + "`" + `
+			ResourceType string ` + "`" + `json:"resource_type"` + "`" + `
+		} ` + "`" + `json:"similar"` + "`" + `
+	}
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, out.String())
+	}
+	if got.SourceType != "biz" {
+		t.Fatalf("source_type = %q, want biz", got.SourceType)
+	}
+	for _, item := range got.Similar {
+		if item.ID == "shared" && item.ResourceType == "biz" {
+			t.Fatalf("source item was not excluded exactly: %+v", got.Similar)
+		}
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "similar_composite_key_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestSimilarDisambiguatesOverlappingIDs")
+}
+
 func TestLiveFetchWriteThroughCachePopulatesTypedTable(t *testing.T) {
 	t.Parallel()
 
@@ -3112,8 +3271,10 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, `"resource":`)
 	assert.Contains(t, content, `"status":   statusCode`)
 	assert.Contains(t, content, `"success":  statusCode >= 200 && statusCode < 300`)
-	// Envelope fires on both --json and auto-JSON (piped/non-TTY)
-	assert.Contains(t, content, `flags.asJSON || !isTerminal(cmd.OutOrStdout())`)
+	// Envelope fires on --json and on piped output, but explicit format flags
+	// (--csv, --quiet, --plain) opt out of the auto-JSON path so piped agents
+	// that asked for a non-JSON format actually get it.
+	assert.Contains(t, content, `flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain)`)
 
 	// --quiet is respected before envelope output
 	assert.Contains(t, content, "if flags.quiet {")
@@ -3132,6 +3293,41 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, `envelope["dry_run"] = true`)
 	assert.Contains(t, content, `envelope["status"] = 0`)
 	assert.Contains(t, content, `envelope["success"] = false`)
+}
+
+// TestPipedJsonGateRespectsExplicitFormatFlags pins the contract: the
+// piped-output auto-JSON gate must defer to explicit --csv / --quiet /
+// --plain flags so piped consumers that asked for a non-JSON format
+// actually get it. Before the fix, the gate read
+// `flags.asJSON || !isTerminal(...)` and emitted JSON whenever stdout was
+// piped, which is the common case for agents and shell pipelines, so
+// `--csv | head` produced JSON instead of CSV. The fix adds the
+// `&& !flags.csv && !flags.quiet && !flags.plain` clause so an explicit
+// format choice opts out of the auto-JSON path.
+//
+// Read the templates directly to pin every gate site at once: the
+// command_endpoint and command_promoted templates emit into hundreds of
+// generated files (pet_add.go, pet_list.go, every promoted command), and
+// a per-file assertion would miss any new gate copies that drift in.
+func TestPipedJsonGateRespectsExplicitFormatFlags(t *testing.T) {
+	t.Parallel()
+
+	expected := `flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain)`
+	stale := `flags.asJSON || !isTerminal(cmd.OutOrStdout())`
+
+	for _, path := range []string{
+		filepath.Join("templates", "command_endpoint.go.tmpl"),
+		filepath.Join("templates", "command_promoted.go.tmpl"),
+	} {
+		data, err := os.ReadFile(path)
+		require.NoError(t, err, "template must exist: %s", path)
+		body := string(data)
+
+		assert.Contains(t, body, expected,
+			"%s must gate auto-JSON behind format-flag escape hatch so piped --csv/--quiet/--plain reach the standard pipeline", path)
+		assert.NotContains(t, body, stale,
+			"%s still contains the bare piped-pipe gate; every site must include the format-flag escape hatch", path)
+	}
 }
 
 func TestGeneratedOutput_GetCommandsLackMutationEnvelope(t *testing.T) {
@@ -5848,6 +6044,126 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGeneratedSyncTreatsEmptyWrappedPageAsSuccessfulZeroRecords(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/empty-records":
+			_, _ = w.Write([]byte(`{"results":[]}`))
+		case "/records":
+			_, _ = w.Write([]byte(`{"results":[{"id":"rec_1","name":"One"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	apiSpec := &spec.APISpec{
+		Name:    "emptywrapsync",
+		Version: "0.1.0",
+		BaseURL: server.URL,
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/emptywrapsync-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"empty_records": {
+				Description: "Manage empty records",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/empty-records",
+						Description: "List empty records",
+						Response:    spec.ResponseDef{Type: "array", Item: "Record"},
+						Pagination:  &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+			"records": {
+				Description: "Manage records",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/records",
+						Description: "List records",
+						Response:    spec.ResponseDef{Type: "array", Item: "Record"},
+						Pagination:  &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Record": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "name", Type: "string"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	behaviorTest := `package cli
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestIsEmptyPageResponseRejectsNullSingletonFields(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"known wrapper empty array", ` + "`" + `{"results":[]}` + "`" + `, true},
+		{"unknown wrapper empty array", ` + "`" + `{"empty":[]}` + "`" + `, true},
+		{"top-level null is not an empty page", ` + "`" + `null` + "`" + `, false},
+		{"known wrapper null is not an empty page", ` + "`" + `{"results":null}` + "`" + `, false},
+		{"known data wrapper null is not an empty page", ` + "`" + `{"data":null}` + "`" + `, false},
+		{"single null field is not an empty page", ` + "`" + `{"user":null}` + "`" + `, false},
+		{"singleton object with null field is not an empty page", ` + "`" + `{"id":"rec_1","user":null}` + "`" + `, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isEmptyPageResponse(json.RawMessage(tc.body)); got != tc.want {
+				t.Fatalf("isEmptyPageResponse(%s) = %v, want %v", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_empty_page_test.go"), []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestIsEmptyPageResponseRejectsNullSingletonFields")
+
+	binaryPath := filepath.Join(outputDir, "emptywrapsync-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/emptywrapsync-pp-cli")
+
+	emptyDB := filepath.Join(t.TempDir(), "empty.db")
+	cmd := exec.Command(binaryPath, "--json", "sync", "--resources", "empty_records", "--db", emptyDB, "--max-pages", "1")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	output := string(out)
+	assert.NotContains(t, output, `"event":"sync_error"`)
+	assert.Contains(t, output, `{"event":"sync_complete","resource":"empty_records","total":0`)
+	assert.Contains(t, output, `{"event":"sync_summary","total_records":0,"resources":1,"success":1,"warned":0,"errored":0`)
+
+	recordsDB := filepath.Join(t.TempDir(), "records.db")
+	cmd = exec.Command(binaryPath, "--json", "sync", "--resources", "records", "--db", recordsDB, "--max-pages", "1")
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	output = string(out)
+	assert.NotContains(t, output, `"event":"sync_error"`)
+	assert.Contains(t, output, `{"event":"sync_complete","resource":"records","total":1`)
+	assert.Contains(t, output, `{"event":"sync_summary","total_records":1,"resources":1,"success":1,"warned":0,"errored":0`)
+}
+
 // TestGeneratedSyncExitPolicy pins the generated sync command's exit-code
 // contract: (a) a --strict flag for callers that want any per-resource
 // failure to exit non-zero, (b) a `criticalResources` map literal at the
@@ -6508,23 +6824,13 @@ func TestGenerateGraphQLEndpointPathRendersTemplatedURL(t *testing.T) {
 		"BaseURL + GraphQLEndpointPath must resolve to the Shopify Admin endpoint after env substitution")
 }
 
-// TestGenerateEndpointTemplateVarsRuntimeSubstitution covers PR-2's contract:
-// when a spec declares EndpointTemplateVars, the generated CLI gets a buildURL
-// helper that resolves {placeholder} markers against env-backed
-// Config.TemplateVars at request time. The test compiles the generated tree
-// and runs an injected behavioral test that exercises every required path —
-// successful substitution, missing env var (actionable error), and the
-// passthrough case where vars is nil. Mirrors the inject-and-go-test pattern
-// used by TestGenerateMetaSyncErrorClassification so we exercise the helper
-// in its real package context.
-func TestGenerateEndpointTemplateVarsRuntimeSubstitution(t *testing.T) {
-	t.Parallel()
-
-	// Variable names follow the {upper Name}_{upper var} convention. For
-	// Shopify, this means the spec's var name is "api_version" (not
-	// "version") because the real-world env var is SHOPIFY_API_VERSION.
-	// The URL placeholder mirrors the var name, so both sides line up.
-	apiSpec := &spec.APISpec{
+// shopifyTemplateVarsTestSpec returns a Shopify-shape APISpec used by
+// EndpointTemplateVars tests. Variable names follow the {upper Name}_{upper
+// var} convention: the spec's var name is "api_version" (not "version")
+// because the real-world env var is SHOPIFY_API_VERSION; the URL placeholder
+// mirrors the var name so both sides line up.
+func shopifyTemplateVarsTestSpec() *spec.APISpec {
+	return &spec.APISpec{
 		Name:                 "shopify",
 		Description:          "Shopify Admin GraphQL (test fixture)",
 		Version:              "2026-04",
@@ -6568,6 +6874,21 @@ func TestGenerateEndpointTemplateVarsRuntimeSubstitution(t *testing.T) {
 			}},
 		},
 	}
+}
+
+// TestGenerateEndpointTemplateVarsRuntimeSubstitution covers PR-2's contract:
+// when a spec declares EndpointTemplateVars, the generated CLI gets a buildURL
+// helper that resolves {placeholder} markers against env-backed
+// Config.TemplateVars at request time. The test compiles the generated tree
+// and runs an injected behavioral test that exercises every required path —
+// successful substitution, missing env var (actionable error), and the
+// passthrough case where vars is nil. Mirrors the inject-and-go-test pattern
+// used by TestGenerateMetaSyncErrorClassification so we exercise the helper
+// in its real package context.
+func TestGenerateEndpointTemplateVarsRuntimeSubstitution(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := shopifyTemplateVarsTestSpec()
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
@@ -6714,6 +7035,107 @@ func TestCacheKeyIncludesTemplateVars(t *testing.T) {
 	testPath := filepath.Join(outputDir, "internal", "client", "url_behavior_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestBuildURL")
+}
+
+// TestGenerateEndpointTemplateVarsVerifyPlaceholderFallback covers the
+// PRINTING_PRESS_VERIFY=1 fallback in config.Load(): when a spec declares
+// EndpointTemplateVars and the runtime env var (e.g. SHOPIFY_SHOP) is unset,
+// verify mode must seed Config.TemplateVars with a "<name>_placeholder" so
+// dry-run / validate-narrative / dogfood legs reach Cobra. Production
+// behavior — the actionable "export X=..." error from buildURL — must stay
+// unchanged when verify mode is off.
+func TestGenerateEndpointTemplateVarsVerifyPlaceholderFallback(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := shopifyTemplateVarsTestSpec()
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	configGoBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	configGo := string(configGoBytes)
+	assert.Contains(t, configGo, `os.Getenv("PRINTING_PRESS_VERIFY") == "1"`,
+		"config Load() must consult PRINTING_PRESS_VERIFY for the template-var fallback")
+	assert.Contains(t, configGo, `cfg.TemplateVars["shop"] = "shop_placeholder"`,
+		"config Load() must seed the {shop} placeholder under verify mode")
+	assert.Contains(t, configGo, `cfg.TemplateVars["api_version"] = "api_version_placeholder"`,
+		"config Load() must seed the {api_version} placeholder under verify mode")
+
+	// Behavioral coverage: the Load() helper must populate TemplateVars only
+	// when verify mode is on, and a real env var must always win over the
+	// placeholder so production runs are unaffected. The injected `go test`
+	// run also serves as the compile check — a template-emitted syntax error
+	// in config.go surfaces as a build failure here.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	behaviorTest := `package config
+
+import (
+	"path/filepath"
+	"testing"
+)
+
+func clearTemplateEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"SHOPIFY_SHOP", "SHOPIFY_API_VERSION", "PRINTING_PRESS_VERIFY"} {
+		t.Setenv(name, "")
+	}
+}
+
+func TestLoadTemplateVarsVerifyPlaceholder(t *testing.T) {
+	clearTemplateEnv(t)
+	t.Setenv("PRINTING_PRESS_VERIFY", "1")
+
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.TemplateVars["shop"]; got != "shop_placeholder" {
+		t.Errorf("TemplateVars[\"shop\"] = %q, want \"shop_placeholder\"", got)
+	}
+	if got := cfg.TemplateVars["api_version"]; got != "api_version_placeholder" {
+		t.Errorf("TemplateVars[\"api_version\"] = %q, want \"api_version_placeholder\"", got)
+	}
+}
+
+func TestLoadTemplateVarsProductionUnchanged(t *testing.T) {
+	clearTemplateEnv(t)
+
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if v, ok := cfg.TemplateVars["shop"]; ok {
+		t.Errorf("TemplateVars[\"shop\"] should be absent without verify mode; got %q", v)
+	}
+	if v, ok := cfg.TemplateVars["api_version"]; ok {
+		t.Errorf("TemplateVars[\"api_version\"] should be absent without verify mode; got %q", v)
+	}
+}
+
+func TestLoadTemplateVarsRealEnvWinsOverPlaceholder(t *testing.T) {
+	clearTemplateEnv(t)
+	t.Setenv("PRINTING_PRESS_VERIFY", "1")
+	t.Setenv("SHOPIFY_SHOP", "real-store.myshopify.com")
+
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.TemplateVars["shop"]; got != "real-store.myshopify.com" {
+		t.Errorf("real env must beat placeholder: TemplateVars[\"shop\"] = %q", got)
+	}
+	if got := cfg.TemplateVars["api_version"]; got != "api_version_placeholder" {
+		t.Errorf("unset companion var should still get placeholder: got %q", got)
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "config", "verify_placeholder_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestLoadTemplateVars")
 }
 
 // TestGenerateNoEndpointTemplateVarsByteCompat guards the byte-compat
