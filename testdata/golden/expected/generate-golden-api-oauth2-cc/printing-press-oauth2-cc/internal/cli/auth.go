@@ -76,23 +76,38 @@ Credentials default to PRINTING_PRESS_OAUTH2_CLIENT_ID (Client ID) and PRINTING_
 				return authErr(fmt.Errorf("client ID and secret required (set --client-id/--client-secret or PRINTING_PRESS_OAUTH2_CLIENT_ID/PRINTING_PRESS_OAUTH2_CLIENT_SECRET)"))
 			}
 
-			tok, err := mintClientCredentialsToken(http.DefaultClient, "https://api.cc.example/oauth/token", clientID, clientSecret)
-			if err != nil {
-				return authErr(err)
-			}
-
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
 				return configErr(err)
 			}
+
+			tokenURL := cfg.TokenURL
+			if tokenURL == "" {
+				tokenURL = "https://api.cc.example/oauth/token"
+			}
+			tok, err := mintClientCredentialsToken(http.DefaultClient, tokenURL, clientID, clientSecret)
+			if err != nil {
+				return authErr(err)
+			}
+
 			cfg.AuthHeaderVal = ""
-			expiry := time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+			// Guard against non-conformant servers that return expires_in: 0.
+			// A zero-duration expiry resolves to time.Now(), which the client's
+			// auto-refresh logic then treats as expired immediately.
+			expiry := time.Time{}
+			if tok.ExpiresIn > 0 {
+				expiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
+			}
 			if err := cfg.SaveTokens(clientID, clientSecret, tok.AccessToken, "", expiry); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
 
-			fmt.Fprintf(cmd.OutOrStdout(), "Logged in. Token expires %s (in %ds).\n",
-				expiry.Format(time.RFC3339), tok.ExpiresIn)
+			if expiry.IsZero() {
+				fmt.Fprintln(cmd.OutOrStdout(), "Logged in. Token expiry not provided.")
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Logged in. Token expires %s (in %ds).\n",
+					expiry.Format(time.RFC3339), tok.ExpiresIn)
+			}
 			return nil
 		},
 	}

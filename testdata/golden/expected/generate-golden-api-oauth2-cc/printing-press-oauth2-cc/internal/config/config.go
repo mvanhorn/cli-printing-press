@@ -23,6 +23,9 @@ type Config struct {
 	TokenExpiry    time.Time `toml:"token_expiry"`
 	ClientID       string `toml:"client_id"`
 	ClientSecret   string `toml:"client_secret"`
+	// TokenURL overrides the spec-baked OAuth2 token endpoint. Same fallback
+	// pattern as AuthorizationURL.
+	TokenURL       string `toml:"token_url,omitempty"`
 	Path           string `toml:"-"`
 	PrintingPressOauth2ClientId string `toml:"press_oauth2_client_id"`
 	PrintingPressOauth2ClientSecret string `toml:"press_oauth2_client_secret"`
@@ -83,6 +86,9 @@ func Load(configPath string) (*Config, error) {
 	// Base URL override (used by printing-press verify to point at mock/test servers)
 	if v := os.Getenv("PRINTING_PRESS_OAUTH2_BASE_URL"); v != "" {
 		cfg.BaseURL = v
+	}
+	if v := os.Getenv("PRINTING_PRESS_OAUTH2_TOKEN_URL"); v != "" {
+		cfg.TokenURL = v
 	}
 	return cfg, nil
 }
