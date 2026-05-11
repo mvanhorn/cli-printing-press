@@ -155,7 +155,16 @@ func WriteMCPBManifestFromStruct(dir string, m CLIManifest) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, MCPBManifestFilename), out, 0o644)
+	if err := os.WriteFile(filepath.Join(dir, MCPBManifestFilename), out, 0o644); err != nil {
+		return err
+	}
+	// Extend the just-written manifest with env vars read by
+	// internal/client/*.go that the spec-driven build didn't surface
+	// (credential-flow JWT refreshers, hand-written auth helpers, etc.).
+	// Runs from every writer call site so the bundle path reads a
+	// reconciled manifest regardless of whether it came through lock+promote
+	// or a one-off bundle build.
+	return reconcileMCPBManifestFromClient(dir, m)
 }
 
 // marshalMCPBManifest serializes an MCPBManifest with the same encoder

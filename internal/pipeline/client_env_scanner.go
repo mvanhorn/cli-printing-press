@@ -15,14 +15,17 @@ import (
 
 // scanClientEnvReads parses every Go source file under <dir>/internal/client/
 // and returns the deduplicated, sorted set of env var names read via
-// os.Getenv("..."). Files that fail to parse are skipped without error so a
-// half-generated tree (mid-generate, mid-merge) does not abort the lock pass.
+// os.Getenv("...").
 //
 // The scan is intentionally restricted to internal/client/. Hand-written
 // auth-refresh code in that package is the unambiguous signal the manifest
 // reconciler keys off — broader scans (cmd/, internal/cli/) would pick up
 // env reads that should not become MCPB user_config entries (debug flags,
 // test helpers, IDE shims).
+//
+// Parser errors on individual files are reported via stderr so an operator
+// running publish sees which file the scan skipped. The scan continues so
+// one malformed file does not block reconciliation of the remaining files.
 func scanClientEnvReads(dir string) ([]string, error) {
 	clientDir := filepath.Join(dir, "internal", "client")
 	entries, err := os.ReadDir(clientDir)
@@ -42,6 +45,7 @@ func scanClientEnvReads(dir string) ([]string, error) {
 		path := filepath.Join(clientDir, e.Name())
 		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: skipping unparseable client file %s: %v\n", path, err)
 			continue
 		}
 		ast.Inspect(file, func(n ast.Node) bool {
@@ -80,9 +84,10 @@ func scanClientEnvReads(dir string) ([]string, error) {
 
 // reconcileMCPBManifestFromClient extends the just-written manifest.json in
 // dir with user_config entries for any os.Getenv read in internal/client/*.go
-// that the manifest does not already declare. The signal is post-hoc: any env
-// var the generated client reads but the manifest does not surface is a
-// credential-flow / template-var gap, not a deliberate hidden read.
+// that the manifest does not already declare. cli is the same in-memory
+// CLIManifest the writer just emitted; passing it through avoids a re-read
+// of .printing-press.json (which may not be on disk yet for callers that
+// build the CLI manifest in memory).
 //
 // Safe by construction:
 //   - APIs with no internal/client/ dir produce no changes.
@@ -90,7 +95,7 @@ func scanClientEnvReads(dir string) ([]string, error) {
 //   - Goldens for spec-driven APIs without hand-written client code are
 //     untouched because their client.go's os.Getenv calls all resolve to
 //     names already in mcp_config.env.
-func reconcileMCPBManifestFromClient(dir string) error {
+func reconcileMCPBManifestFromClient(dir string, cli CLIManifest) error {
 	manifestPath := filepath.Join(dir, MCPBManifestFilename)
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -122,16 +127,6 @@ func reconcileMCPBManifestFromClient(dir string) error {
 	}
 	if len(missing) == 0 {
 		return nil
-	}
-
-	cliManifestPath := filepath.Join(dir, CLIManifestFilename)
-	cliData, err := os.ReadFile(cliManifestPath)
-	if err != nil {
-		return fmt.Errorf("reading CLI manifest: %w", err)
-	}
-	var cli CLIManifest
-	if err := json.Unmarshal(cliData, &cli); err != nil {
-		return fmt.Errorf("parsing CLI manifest: %w", err)
 	}
 
 	if manifest.Server.MCPConfig.Env == nil {

@@ -89,7 +89,7 @@ func read() string {
 		assert.Empty(t, got)
 	})
 
-	t.Run("skips files that fail to parse without aborting", func(t *testing.T) {
+	t.Run("logs but continues past files that fail to parse", func(t *testing.T) {
 		dir := t.TempDir()
 		writeClientFile(t, dir, "broken.go", `package client
 this is not go`)
@@ -124,12 +124,12 @@ func read() string { return os.Getenv("PICK_ME") }
 func TestReconcileMCPBManifestFromClient(t *testing.T) {
 	t.Run("no manifest file is a no-op", func(t *testing.T) {
 		dir := t.TempDir()
-		require.NoError(t, reconcileMCPBManifestFromClient(dir))
+		require.NoError(t, reconcileMCPBManifestFromClient(dir, CLIManifest{}))
 	})
 
 	t.Run("no client dir leaves manifest unchanged", func(t *testing.T) {
 		dir := t.TempDir()
-		writeManifest(t, dir, CLIManifest{APIName: "noop", MCPBinary: "noop-pp-mcp", AuthType: "api_key"})
+		cli := CLIManifest{APIName: "noop", MCPBinary: "noop-pp-mcp", AuthType: "api_key"}
 		writeMCPBManifest(t, dir, MCPBManifest{
 			Name: "noop-pp-mcp",
 			Server: MCPBServer{
@@ -140,7 +140,7 @@ func TestReconcileMCPBManifestFromClient(t *testing.T) {
 			},
 		})
 
-		require.NoError(t, reconcileMCPBManifestFromClient(dir))
+		require.NoError(t, reconcileMCPBManifestFromClient(dir, cli))
 
 		got := readMCPBManifest(t, dir)
 		assert.Equal(t, map[string]string{"NOOP_API_KEY": "${user_config.noop_api_key}"}, got.Server.MCPConfig.Env)
@@ -149,12 +149,12 @@ func TestReconcileMCPBManifestFromClient(t *testing.T) {
 
 	t.Run("declared env vars are skipped", func(t *testing.T) {
 		dir := t.TempDir()
-		writeManifest(t, dir, CLIManifest{
+		cli := CLIManifest{
 			APIName:     "stripe",
 			DisplayName: "Stripe",
 			MCPBinary:   "stripe-pp-mcp",
 			AuthType:    "api_key",
-		})
+		}
 		writeMCPBManifest(t, dir, MCPBManifest{
 			Name: "stripe-pp-mcp",
 			Server: MCPBServer{
@@ -171,7 +171,7 @@ import "os"
 func read() string { return os.Getenv("STRIPE_API_KEY") }
 `)
 
-		require.NoError(t, reconcileMCPBManifestFromClient(dir))
+		require.NoError(t, reconcileMCPBManifestFromClient(dir, cli))
 
 		got := readMCPBManifest(t, dir)
 		assert.Len(t, got.Server.MCPConfig.Env, 1)
@@ -180,13 +180,13 @@ func read() string { return os.Getenv("STRIPE_API_KEY") }
 
 	t.Run("adds sensitive user_config for undeclared env reads on required-credential auth", func(t *testing.T) {
 		dir := t.TempDir()
-		writeManifest(t, dir, CLIManifest{
+		cli := CLIManifest{
 			APIName:     "rentalworks-home",
 			DisplayName: "RentalWorks Home",
 			MCPBinary:   "rentalworks-home-pp-mcp",
 			AuthType:    "bearer_token",
 			AuthEnvVars: []string{"RENTALWORKS_HOME_TOKEN"},
-		})
+		}
 		writeMCPBManifest(t, dir, MCPBManifest{
 			Name: "rentalworks-home-pp-mcp",
 			Server: MCPBServer{
@@ -205,7 +205,7 @@ func refresh() (string, string) {
 }
 `)
 
-		require.NoError(t, reconcileMCPBManifestFromClient(dir))
+		require.NoError(t, reconcileMCPBManifestFromClient(dir, cli))
 
 		got := readMCPBManifest(t, dir)
 		assert.Equal(t, "${user_config.rentalworks_home_token}", got.Server.MCPConfig.Env["RENTALWORKS_HOME_TOKEN"])
@@ -220,6 +220,7 @@ func refresh() (string, string) {
 		assert.True(t, username.Required, "credential-required bearer_token auth must propagate Required to discovered fields")
 		assert.Contains(t, username.Description, "RentalWorks Home")
 		assert.Contains(t, username.Description, "credential refresh")
+		assert.NotContains(t, username.Description, "Optional.", "required-auth descriptions must not carry the Optional prefix")
 
 		password, ok := got.UserConfig["rentalworks_home_password"]
 		require.True(t, ok)
@@ -229,13 +230,13 @@ func refresh() (string, string) {
 
 	t.Run("optional auth keeps discovered fields optional", func(t *testing.T) {
 		dir := t.TempDir()
-		writeManifest(t, dir, CLIManifest{
+		cli := CLIManifest{
 			APIName:      "recipe-goat",
 			DisplayName:  "Recipe Goat",
 			MCPBinary:    "recipe-goat-pp-mcp",
 			AuthType:     "api_key",
 			AuthOptional: true,
-		})
+		}
 		writeMCPBManifest(t, dir, MCPBManifest{
 			Name:   "recipe-goat-pp-mcp",
 			Server: MCPBServer{MCPConfig: MCPBLaunchSpec{Env: map[string]string{}}},
@@ -247,7 +248,7 @@ import "os"
 func read() string { return os.Getenv("RECIPE_EXTRA_SECRET") }
 `)
 
-		require.NoError(t, reconcileMCPBManifestFromClient(dir))
+		require.NoError(t, reconcileMCPBManifestFromClient(dir, cli))
 
 		got := readMCPBManifest(t, dir)
 		entry, ok := got.UserConfig["recipe_extra_secret"]
@@ -259,11 +260,11 @@ func read() string { return os.Getenv("RECIPE_EXTRA_SECRET") }
 
 	t.Run("composed auth marks discovered fields optional", func(t *testing.T) {
 		dir := t.TempDir()
-		writeManifest(t, dir, CLIManifest{
+		cli := CLIManifest{
 			APIName:   "pizza",
 			MCPBinary: "pizza-pp-mcp",
 			AuthType:  "composed",
-		})
+		}
 		writeMCPBManifest(t, dir, MCPBManifest{
 			Name:   "pizza-pp-mcp",
 			Server: MCPBServer{MCPConfig: MCPBLaunchSpec{Env: map[string]string{}}},
@@ -275,7 +276,7 @@ import "os"
 func read() string { return os.Getenv("PIZZA_HIDDEN_TOKEN") }
 `)
 
-		require.NoError(t, reconcileMCPBManifestFromClient(dir))
+		require.NoError(t, reconcileMCPBManifestFromClient(dir, cli))
 
 		got := readMCPBManifest(t, dir)
 		entry, ok := got.UserConfig["pizza_hidden_token"]
@@ -285,7 +286,7 @@ func read() string { return os.Getenv("PIZZA_HIDDEN_TOKEN") }
 
 	t.Run("manifest with nil env/userconfig maps gets populated", func(t *testing.T) {
 		dir := t.TempDir()
-		writeManifest(t, dir, CLIManifest{APIName: "x", MCPBinary: "x-pp-mcp", AuthType: "api_key"})
+		cli := CLIManifest{APIName: "x", MCPBinary: "x-pp-mcp", AuthType: "api_key"}
 		writeMCPBManifest(t, dir, MCPBManifest{
 			Name:   "x-pp-mcp",
 			Server: MCPBServer{},
@@ -297,13 +298,97 @@ import "os"
 func read() string { return os.Getenv("X_HIDDEN") }
 `)
 
-		require.NoError(t, reconcileMCPBManifestFromClient(dir))
+		require.NoError(t, reconcileMCPBManifestFromClient(dir, cli))
 
 		got := readMCPBManifest(t, dir)
 		assert.Equal(t, "${user_config.x_hidden}", got.Server.MCPConfig.Env["X_HIDDEN"])
 		_, ok := got.UserConfig["x_hidden"]
 		assert.True(t, ok)
 	})
+}
+
+// TestWriteMCPBManifestFromStruct_ReconcilesClientEnvReads is the
+// integration guard: every WriteMCPBManifest* call site must invoke the
+// reconciler automatically. A regression that detaches reconcile from the
+// writer would let the lock+promote and bundle paths ship un-reconciled
+// manifests, reintroducing #859.
+func TestWriteMCPBManifestFromStruct_ReconcilesClientEnvReads(t *testing.T) {
+	dir := t.TempDir()
+	writeClientFile(t, dir, "auth_refresh.go", `package client
+
+import "os"
+
+func refresh() (string, string) {
+	return os.Getenv("RENTALWORKS_HOME_USERNAME"), os.Getenv("RENTALWORKS_HOME_PASSWORD")
+}
+`)
+
+	m := CLIManifest{
+		APIName:     "rentalworks-home",
+		DisplayName: "RentalWorks Home",
+		MCPBinary:   "rentalworks-home-pp-mcp",
+		MCPReady:    "full",
+		AuthType:    "bearer_token",
+		AuthEnvVars: []string{"RENTALWORKS_HOME_TOKEN"},
+	}
+
+	require.NoError(t, WriteMCPBManifestFromStruct(dir, m))
+
+	got := readMCPBManifest(t, dir)
+	assert.Equal(t, "${user_config.rentalworks_home_token}", got.Server.MCPConfig.Env["RENTALWORKS_HOME_TOKEN"])
+	assert.Equal(t, "${user_config.rentalworks_home_username}", got.Server.MCPConfig.Env["RENTALWORKS_HOME_USERNAME"])
+	assert.Equal(t, "${user_config.rentalworks_home_password}", got.Server.MCPConfig.Env["RENTALWORKS_HOME_PASSWORD"])
+
+	for _, key := range []string{"rentalworks_home_username", "rentalworks_home_password"} {
+		entry, ok := got.UserConfig[key]
+		require.True(t, ok, "%s must be present in user_config", key)
+		assert.True(t, entry.Sensitive, "%s must be sensitive", key)
+		assert.True(t, entry.Required, "%s must be required when base auth requires credential", key)
+		assert.NotContains(t, entry.Description, "Optional.", "%s must not carry Optional prefix on required auth", key)
+	}
+}
+
+// TestWriteMCPBManifestFromStruct_IdempotentReconcile ensures running the
+// writer twice on the same dir produces identical output bytes — the
+// reconciler must not double-append or churn fields.
+func TestWriteMCPBManifestFromStruct_IdempotentReconcile(t *testing.T) {
+	dir := t.TempDir()
+	writeClientFile(t, dir, "auth_refresh.go", `package client
+
+import "os"
+
+func u() string { return os.Getenv("X_USERNAME") }
+`)
+
+	m := CLIManifest{
+		APIName:     "x",
+		MCPBinary:   "x-pp-mcp",
+		MCPReady:    "full",
+		AuthType:    "bearer_token",
+		AuthEnvVars: []string{"X_TOKEN"},
+	}
+
+	require.NoError(t, WriteMCPBManifestFromStruct(dir, m))
+	first, err := os.ReadFile(filepath.Join(dir, MCPBManifestFilename))
+	require.NoError(t, err)
+
+	require.NoError(t, WriteMCPBManifestFromStruct(dir, m))
+	second, err := os.ReadFile(filepath.Join(dir, MCPBManifestFilename))
+	require.NoError(t, err)
+
+	assert.Equal(t, string(first), string(second), "reconcile must be idempotent across consecutive writer runs")
+}
+
+// TestScanClientEnvReadsBacktickLiteral guards against a regression that
+// would drop backtick-quoted env var names. strconv.Unquote handles both
+// forms, but the integration is worth a fixture in case the parser path
+// changes.
+func TestScanClientEnvReadsBacktickLiteral(t *testing.T) {
+	dir := t.TempDir()
+	writeClientFile(t, dir, "client.go", "package client\n\nimport \"os\"\n\nfunc read() string { return os.Getenv(`BACKTICK_VAR`) }\n")
+	got, err := scanClientEnvReads(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"BACKTICK_VAR"}, got)
 }
 
 func writeClientFile(t *testing.T, dir, name, content string) {
