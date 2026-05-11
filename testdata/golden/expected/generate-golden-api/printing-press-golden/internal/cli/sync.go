@@ -943,16 +943,22 @@ func syncResourcePath(resource string) (string, error) {
 }
 
 // dependentResourceDef describes a child resource that requires iterating parent IDs to sync.
+// When KeyField is non-empty, the dependent's parent IDs are extracted from the parent
+// records' KeyField via json_extract rather than from the parent table's primary key.
+// Populated from a spec-declared walker (Endpoint.Walker.KeyField in internal YAML,
+// or `key_field` under `x-pp-sync-walker` in OpenAPI). Empty KeyField preserves the
+// existing parent-primary-key flow byte-for-byte.
 type dependentResourceDef struct {
 	Name          string
 	ParentTable   string
 	ParentIDParam string
 	PathTemplate  string
+	KeyField      string
 }
 
 func dependentResourceDefs() []dependentResourceDef {
 	return []dependentResourceDef{
-		{Name: "tasks", ParentTable: "projects", ParentIDParam: "projectId", PathTemplate: "/projects/{projectId}/tasks"},
+		{Name: "tasks", ParentTable: "projects", ParentIDParam: "projectId", PathTemplate: "/projects/{projectId}/tasks", KeyField: ""},
 	}
 }
 
@@ -985,8 +991,19 @@ func syncDependentResource(c interface {
 }, db *store.Store, dep dependentResourceDef, sinceTS string, full bool, maxPages int) syncResult {
 	started := time.Now()
 
-	// Query parent table for all IDs
-	parentIDs, err := db.ListIDs(dep.ParentTable)
+	// Query parent table for the keys to substitute into the child path.
+	// When KeyField is empty, use the parent's primary key via ListIDs
+	// (the original flat parent-child flow). When KeyField is set, the
+	// spec declared a walker that extracts a non-PK field from each parent
+	// record — ListField looks up the field in the parent's typed column
+	// if present, otherwise json_extract from the generic resources table.
+	var parentIDs []string
+	var err error
+	if dep.KeyField != "" {
+		parentIDs, err = db.ListField(dep.ParentTable, dep.KeyField)
+	} else {
+		parentIDs, err = db.ListIDs(dep.ParentTable)
+	}
 	if err != nil || len(parentIDs) == 0 {
 		if len(parentIDs) == 0 {
 			if humanFriendly {

@@ -1,0 +1,2 @@
+warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it
+Generated sync-walker-golden at <ARTIFACT_DIR>/generate-sync-walker-api/sync-walker-golden

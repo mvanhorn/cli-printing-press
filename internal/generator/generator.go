@@ -1947,6 +1947,13 @@ func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand,
 	return g.renderRootProjectFiles(promotedCommands, promotedResourceNames, workflowConstructors, insightConstructors)
 }
 
+// schemaWithDependentParents adds a parent_id column + index to every
+// dependent resource's table so sync can record which parent each row
+// belongs to. For walker-emitted dependents whose DependentResource.KeyField
+// is non-empty, parent_id stores the value of that field (not strictly a
+// parent's primary key); the column name is retained for backwards
+// compatibility with existing CLIs. The naming caveat is internal — the
+// column is not part of any user-visible API.
 func (g *Generator) schemaWithDependentParents() []TableDef {
 	schema := BuildSchema(g.Spec)
 

@@ -1,0 +1,44 @@
+name: sync-walker-golden
+description: |
+  Golden fixture for the Tier 2 spec-declared walker mechanism. Demonstrates
+  the shape used by hierarchical APIs (Yahoo Fantasy, Reddit pre-2024,
+  YouTube Data v3, MLB Stats) where the child endpoint's path placeholder
+  is a field on the parent record that is not the parent's primary key.
+
+  Walker shape exercised: leagues declares `walker.parent=games` with
+  `key_field=game_key` and `key_param=game_key`. The child path
+  /games/{game_key}/leagues uses a placeholder whose stem ("game_key")
+  does not map to a parent resource via auto-detection's _id/_key
+  stripping — without the walker, no dependent would be detected.
+
+  Fall-through behavior (walker without key_field → existing parent-PK
+  flow via db.ListIDs) is covered by every existing flat-list CLI's
+  dependent sync code path; not repeated in this fixture.
+version: 1.0.0
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [WALKER_GOLDEN_TOKEN]
+resources:
+  games:
+    description: Top-level games resource. The list endpoint populates the
+      generic resources table; rows carry a `game_key` field that the
+      walker's leagues endpoint extracts for child fan-out.
+    endpoints:
+      list:
+        method: GET
+        path: /games
+        description: List games
+        id_field: game_key
+  leagues:
+    description: Leagues, fetched per-game by walking games and extracting
+      each game's game_key into the child path.
+    endpoints:
+      list:
+        method: GET
+        path: /games/{game_key}/leagues
+        description: List leagues for a game
+        walker:
+          parent: games
+          key_field: game_key
+          key_param: game_key
