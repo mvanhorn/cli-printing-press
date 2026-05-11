@@ -207,10 +207,11 @@ The internal copy at `$CLI_DIR` can drift from the public library (`mvanhorn/pri
 2. **Locate this CLI inside the clone.** `find <clone>/library -type d -name "<api>-pp-cli"` or equivalent.
 3. **Run `diff -r <public-cli-dir> $CLI_DIR`** with these exclusions, all of which are expected to diverge after publish:
    - `.printing-press-tools-polish.json` (local ledger, not published)
+   - `.printing-press-pii-polish.json` (local ledger, not published)
    - `go.mod` and `go.sum` — publish rewrites the module path from `<api>-pp-cli` to `github.com/mvanhorn/printing-press-library/library/<category>/<api>`
    - All `.go` files where the only difference is the rewritten import path (the publish step propagates the new module path through every internal import). When inspecting `.go` diffs, scan for substantive changes — anything beyond the module-path prefix swap is real divergence.
 
-   Concretely: `diff -r --exclude=go.mod --exclude=go.sum --exclude=.printing-press-tools-polish.json <public-cli-dir> $CLI_DIR`.
+   Concretely: `diff -r --exclude=go.mod --exclude=go.sum --exclude=.printing-press-tools-polish.json --exclude=.printing-press-pii-polish.json <public-cli-dir> $CLI_DIR`.
 
    Don't pass `--exclude='<api>-pp-cli'` or `--exclude='<api>-pp-mcp'` — those names match both the root-level binary files **and** the `cmd/<api>-pp-cli/` and `cmd/<api>-pp-mcp/` source directories. Excluding by binary name silently skips the entire `cmd/` subtree, hiding real divergence in `main.go`. The "Only in $CLI_DIR: <api>-pp-cli" line for the built binary is one row of expected output, not noise worth filtering at the cost of completeness.
 4. **Surface the result** before continuing.
@@ -255,6 +256,7 @@ printing-press publish validate --dir "$CLI_DIR" --json > /tmp/polish-publish-va
 printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" --live-check --json > /tmp/polish-scorecard.json 2>&1 || true
 printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
 printing-press tools-audit "$CLI_DIR" --json > /tmp/polish-tools-audit-before.json 2>&1 || true
+printing-press pii-audit "$CLI_DIR" --json > /tmp/polish-pii-audit-before.json 2>&1 || true
 go vet ./... 2>&1
 ```
 
@@ -279,6 +281,7 @@ Parse findings into categories:
 | Output entity warnings | scorecard JSON | `live_check.features[].warnings` — raw HTML entities in human output |
 | Output plausibility | Phase 4.85 | Findings from the agentic output review |
 | MCP tool quality | tools-audit | Empty Short, thin Short, missing read-only annotations, thin MCP descriptions |
+| Customer PII | pii-audit | Card last-4, email, phone, ZIP+4, postal-address shapes in high-risk files (manuscripts, fixtures, README) |
 
 **Environmental failures vs. CLI defects.** Some Phase 1 outputs surface failures that aren't real CLI bugs and should not block ship:
 
@@ -494,6 +497,18 @@ Stop and:
 
 Proceed to "After all fixes" only when the audit's summary line reads `no pending findings` with no `incomplete:` block — every gate (pre-decision fields, duplicate rationale, scorecard delta) passes.
 
+### Priority 7: Customer-PII gate
+
+**Your goal now is to clear the PII ledger so promote and publish gates pass.** The PII gate is the deterministic floor that prevents real customer values from reaching published library content. It catches card-last-4, email, US phone, ZIP+4, and postal-address shapes in high-risk files.
+
+Stop and:
+
+1. Run `printing-press pii-audit "$CLI_DIR"` to surface pending findings (or read `/tmp/polish-pii-audit-before.json` from Phase 1's baseline).
+2. You must read `references/pii-polish.md` and follow its per-finding decision tree — fix real values in source with non-matching placeholders, or accept with the `category` + `evidence_context` pre-decision fields.
+3. **Accepting PII findings carries a strict contract.** Missing fields, 6+ accepts sharing a rationale, or wholesale-accepting ≥10 findings without source fixes all fail the gate. See `references/pii-polish.md` "The accept contract" and "Forbidden accept patterns" for the full rules.
+
+Proceed to "After all fixes" only when `pii-audit` reads `no pending findings` with no `incomplete:` block.
+
 ### After all fixes
 
 ```bash
@@ -517,16 +532,17 @@ printing-press verify-skill --dir "$CLI_DIR" --json 2>&1
 printing-press publish validate --dir "$CLI_DIR" --json 2>&1
 printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
 printing-press tools-audit "$CLI_DIR" 2>&1
+printing-press pii-audit "$CLI_DIR" 2>&1
 go vet ./... 2>&1
 ```
 
-Record the after scores. If verify-skill still has any `severity=error` findings, workflow-verify still reports `workflow-fail`, or publish-validate still reports `passed: false`, ship cannot fire (see ship logic below).
+Record the after scores. If verify-skill still has any `severity=error` findings, workflow-verify still reports `workflow-fail`, publish-validate still reports `passed: false`, or pii-audit still has pending findings or gate failures, ship cannot fire (see ship logic below).
 
 ## Ship logic
 
 Compute the ship recommendation:
 
-- **`ship`**: verify >= 80%, scorecard >= 75, no critical failures, **AND** verify-skill exits 0 (no SKILL/CLI mismatches), **AND** workflow-verify is not `workflow-fail`, **AND** publish-validate reports `passed: true`, **AND** tools-audit shows zero pending findings (every finding fixed or explicitly accepted with rationale). The SKILL/workflow/publish gates are hard requirements: a CLI that ships with a SKILL that lies about it (verify-skill findings) gives agents broken instructions; a CLI whose primary workflow fails verification has not actually shipped; a CLI that publish-validate rejects is not publishable.
+- **`ship`**: verify >= 80%, scorecard >= 75, no critical failures, **AND** verify-skill exits 0 (no SKILL/CLI mismatches), **AND** workflow-verify is not `workflow-fail`, **AND** publish-validate reports `passed: true`, **AND** tools-audit shows zero pending findings (every finding fixed or explicitly accepted with rationale), **AND** pii-audit shows zero pending findings and zero gate failures (every PII finding fixed in source or accepted with valid pre-decision fields). The SKILL/workflow/publish/PII gates are hard requirements: a CLI that ships with a SKILL that lies about it (verify-skill findings) gives agents broken instructions; a CLI whose primary workflow fails verification has not actually shipped; a CLI that publish-validate rejects is not publishable; a CLI that fails pii-audit at promote/publish gates will halt shipping anyway.
 - **`ship-with-gaps`**: verify >= 65%, scorecard >= 65, non-critical gaps remain, **AND** the SKILL/workflow/publish gates above hold, **AND** the README has a `## Known Gaps` block that lists the user-facing gaps. Reserved for the rare case where a refactor or external-dependency blocker prevents a clean fix.
 
   **README Known Gaps is mandatory for ship-with-gaps.** The published library copy is what downstream users see; if the verdict claims gaps exist but the README hides them, downstream users meet a CLI that misbehaves with no disclosure. Before emitting `ship_recommendation: ship-with-gaps`:
