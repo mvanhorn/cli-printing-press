@@ -417,9 +417,11 @@ func TestEmbeddedCatalogParsesWrapperOnlyEntries(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, entry.IsWrapperOnly())
 	assert.Equal(t, "travel", entry.Category)
-	require.Len(t, entry.WrapperLibraries, 1)
+	require.Len(t, entry.WrapperLibraries, 2)
 	assert.Equal(t, "krisukox/google-flights-api", entry.WrapperLibraries[0].Name)
 	assert.Equal(t, "native", entry.WrapperLibraries[0].IntegrationMode)
+	assert.Equal(t, "punitarani/fli", entry.WrapperLibraries[1].Name)
+	assert.Equal(t, "subprocess", entry.WrapperLibraries[1].IntegrationMode)
 }
 
 func TestPublicCategoriesExcludeExample(t *testing.T) {
