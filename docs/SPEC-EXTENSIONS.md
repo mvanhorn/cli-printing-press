@@ -31,6 +31,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-auth-description` | `components.securitySchemes.<name>` | `APISpec.Auth.Description` | No |
 | `x-auth-cookie-domain` | `components.securitySchemes.<name>` | `APISpec.Auth.CookieDomain` | No |
 | `x-auth-cookies` | `components.securitySchemes.<name>` | `APISpec.Auth.Cookies` | No |
+| `x-oauth-refresh-token-mechanism` | `components.securitySchemes.<name>` | `APISpec.Auth.RefreshTokenMechanism` | No |
 | `x-resource-id` | path item | `Endpoint.IDField` | No |
 | `x-critical` | path item | `Endpoint.Critical` | No |
 | `x-tier` | path item or operation | `Endpoint.Tier` | No |
@@ -494,6 +495,58 @@ components:
       x-auth-cookies:
         - session_id
         - csrf_token
+```
+
+### `x-oauth-refresh-token-mechanism`
+
+Declares how the authorization endpoint should be asked to issue a refresh
+token. Providers diverge: Google reads `access_type=offline` as a query
+parameter, while WHOOP, X/Twitter, and others read a magic scope value
+(`offline`, `offline.access`, `offline_access`) instead. The generator emits
+neither by default because a Google-shaped silent default silently breaks
+other providers (broken refresh path is invisible until access-token TTL
+expires).
+
+Parsed field: `APISpec.Auth.RefreshTokenMechanism`
+
+Rules:
+
+- Optional. Only consumed by the authorization_code grant template; ignored
+  for other grants and non-OAuth2 auth.
+- Must be a string. Leading and trailing whitespace on the whole value is
+  trimmed.
+- Two exact-match prefixes are accepted:
+  - `scope:<value>` appends `<value>` to the scope list. No query param is
+    added.
+  - `query:<key>=<value>` sets the query parameter exactly once. No scope
+    change.
+- Malformed values (empty key, empty value, missing `=` for `query`, unknown
+  prefix, uppercase prefix) are ignored and produce no emission.
+- For `query:<key>=<value>`, the reserved authorization-URL parameter names
+  `client_id`, `redirect_uri`, `response_type`, `state`, and `scope` are
+  rejected. Permitting them would let a spec author silently overwrite the
+  generator's CSRF state token or core OAuth params.
+- Note: the single-mechanism shape cannot express Google's two-param recipe
+  (`access_type=offline` + `prompt=consent`). The first param is sufficient
+  for refresh-token issuance on initial consent; the second forces re-consent
+  on subsequent logins to keep the refresh-token contract alive. Specs that
+  need both should declare one via this extension and add the other through a
+  future multi-mechanism syntax (out of scope here).
+
+Example:
+
+```yaml
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      x-oauth-refresh-token-mechanism: scope:offline
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.example.com/oauth/authorize
+          tokenUrl: https://api.example.com/oauth/token
+          scopes:
+            read: Read access
 ```
 
 ## Path Item Extensions

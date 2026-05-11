@@ -147,15 +147,20 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 				authURL = "{{.Auth.AuthorizationURL}}"
 			}
 {{- end}}
+{{- $refreshMech := .Auth.ParseRefreshTokenMechanism}}
 			params := url.Values{
 				"client_id":     {clientID},
 				"redirect_uri":  {redirectURI},
 				"response_type": {"code"},
 				"state":         {state},
-				"access_type":   {"offline"},
-				"prompt":        {"consent"},
 			}
+{{- if eq $refreshMech.Kind "query"}}
+			params.Set({{printf "%q" $refreshMech.Key}}, {{printf "%q" $refreshMech.Value}})
+{{- end}}
 			scopes := []string{ {{- range .Auth.Scopes}}"{{.}}", {{end}} }
+{{- if eq $refreshMech.Kind "scope"}}
+			scopes = append(scopes, {{printf "%q" $refreshMech.Scope}})
+{{- end}}
 			if len(scopes) > 0 {
 				params.Set("scope", strings.Join(scopes, " "))
 			}

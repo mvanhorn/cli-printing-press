@@ -502,6 +502,66 @@ type AuthConfig struct {
 	// to authorization_code; ignored for non-oauth2 types. Read via
 	// EffectiveOAuth2Grant() so the default lives in one place.
 	OAuth2Grant string `yaml:"oauth2_grant,omitempty" json:"oauth2_grant,omitempty"`
+
+	// RefreshTokenMechanism declares how the authorization endpoint should be
+	// asked to issue a refresh token. Distinct mechanisms across providers:
+	// Google reads "access_type=offline" as a query param; WHOOP, X/Twitter,
+	// and others read a magic scope value ("offline", "offline.access",
+	// "offline_access") instead. Format: "scope:<value>" or "query:<k=v>".
+	// When empty, the template emits neither -- silent default is preferable
+	// to a Google-shaped default that silently breaks other providers.
+	// Used by the authorization_code flow only; ignored for other grants.
+	RefreshTokenMechanism string `yaml:"refresh_token_mechanism,omitempty" json:"refresh_token_mechanism,omitempty"`
+}
+
+const (
+	RefreshTokenMechanismKindScope = "scope"
+	RefreshTokenMechanismKindQuery = "query"
+)
+
+// ParsedRefreshTokenMechanism is the decoded form of AuthConfig.RefreshTokenMechanism.
+// Kind is "scope", "query", or "" when the field is empty or malformed. Scope is set
+// when Kind=="scope"; Key/Value are set when Kind=="query".
+type ParsedRefreshTokenMechanism struct {
+	Kind  string
+	Scope string
+	Key   string
+	Value string
+}
+
+// ParseRefreshTokenMechanism decodes RefreshTokenMechanism once for templates to
+// pin to a local variable. Malformed input returns the zero value silently --
+// authoring mistakes degrade to today's no-emission default rather than erroring.
+func (a AuthConfig) ParseRefreshTokenMechanism() ParsedRefreshTokenMechanism {
+	prefix, rest, ok := strings.Cut(strings.TrimSpace(a.RefreshTokenMechanism), ":")
+	if !ok || rest == "" {
+		return ParsedRefreshTokenMechanism{}
+	}
+	switch prefix {
+	case RefreshTokenMechanismKindScope:
+		return ParsedRefreshTokenMechanism{Kind: RefreshTokenMechanismKindScope, Scope: rest}
+	case RefreshTokenMechanismKindQuery:
+		k, v, ok := strings.Cut(rest, "=")
+		if !ok || k == "" || v == "" {
+			return ParsedRefreshTokenMechanism{}
+		}
+		// Authoring guard: refuse to overwrite reserved authorization-URL
+		// params. Letting query:state=... slip through would clobber the
+		// generated CSRF state token.
+		if reservedOAuthAuthURLParam(k) {
+			return ParsedRefreshTokenMechanism{}
+		}
+		return ParsedRefreshTokenMechanism{Kind: RefreshTokenMechanismKindQuery, Key: k, Value: v}
+	}
+	return ParsedRefreshTokenMechanism{}
+}
+
+func reservedOAuthAuthURLParam(key string) bool {
+	switch key {
+	case "client_id", "redirect_uri", "response_type", "state", "scope":
+		return true
+	}
+	return false
 }
 
 type AuthEnvVar struct {

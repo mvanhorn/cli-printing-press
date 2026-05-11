@@ -31,24 +31,25 @@ var (
 )
 
 const (
-	extensionAuthEnvVars      = "x-auth-env-vars"
-	extensionAuthVars         = "x-auth-vars"
-	extensionAuthOptional     = "x-auth-optional"
-	extensionAuthKeyURL       = "x-auth-key-url"
-	extensionAuthInstructions = "x-auth-instructions"
-	extensionAuthTitle        = "x-auth-title"
-	extensionAuthDescription  = "x-auth-description"
-	extensionSpeakeasyExample = "x-speakeasy-example"
-	extensionTierRouting      = "x-tier-routing"
-	extensionTier             = "x-tier"
-	extensionMCP              = "x-mcp"
-	extensionSyncWalker       = "x-pp-sync-walker"
-	extensionAPIName          = "x-api-name"
-	extensionDisplayName      = "x-display-name"
-	extensionWebsite          = "x-website"
-	extensionProxyRoutes      = "x-proxy-routes"
-	extensionOrigin           = "x-origin"
-	extensionProviderName     = "x-providerName"
+	extensionAuthEnvVars           = "x-auth-env-vars"
+	extensionAuthVars              = "x-auth-vars"
+	extensionAuthOptional          = "x-auth-optional"
+	extensionAuthKeyURL            = "x-auth-key-url"
+	extensionAuthInstructions      = "x-auth-instructions"
+	extensionAuthTitle             = "x-auth-title"
+	extensionAuthDescription       = "x-auth-description"
+	extensionOAuthRefreshTokenMech = "x-oauth-refresh-token-mechanism"
+	extensionSpeakeasyExample      = "x-speakeasy-example"
+	extensionTierRouting           = "x-tier-routing"
+	extensionTier                  = "x-tier"
+	extensionMCP                   = "x-mcp"
+	extensionSyncWalker            = "x-pp-sync-walker"
+	extensionAPIName               = "x-api-name"
+	extensionDisplayName           = "x-display-name"
+	extensionWebsite               = "x-website"
+	extensionProxyRoutes           = "x-proxy-routes"
+	extensionOrigin                = "x-origin"
+	extensionProviderName          = "x-providerName"
 )
 
 // SetMaxResources overrides the default resource limit. When not called,
@@ -739,6 +740,9 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 	}
 	if description := stringExtension(extensions, extensionAuthDescription); description != "" {
 		auth.Description = description
+	}
+	if mech := stringExtension(extensions, extensionOAuthRefreshTokenMech); mech != "" {
+		auth.RefreshTokenMechanism = mech
 	}
 }
 

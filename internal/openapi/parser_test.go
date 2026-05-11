@@ -2288,6 +2288,57 @@ paths:
 	assert.Equal(t, []string{"OAUTH_CLIENT_ID", "OAUTH_CLIENT_SECRET"}, parsed.Auth.EnvVars)
 }
 
+func TestOpenAPIOAuthRefreshTokenMechanism(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ext  string
+		want string
+	}{
+		{name: "absent leaves field empty", ext: "", want: ""},
+		{name: "scope:offline (WHOOP shape)", ext: "scope:offline", want: "scope:offline"},
+		{name: "scope:offline.access (X/Twitter shape)", ext: "scope:offline.access", want: "scope:offline.access"},
+		{name: "query:access_type=offline (Google shape)", ext: "query:access_type=offline", want: "query:access_type=offline"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ext := ""
+			if tt.ext != "" {
+				ext = "      x-oauth-refresh-token-mechanism: \"" + tt.ext + "\"\n"
+			}
+			yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: OAuth API
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+` + ext + `      flows:
+        authorizationCode:
+          authorizationUrl: https://api.example.com/oauth/authorize
+          tokenUrl: https://api.example.com/oauth/token
+          scopes:
+            read: Read access
+paths:
+  /widgets:
+    get:
+      security:
+        - OAuth2: [read]
+      responses:
+        "200":
+          description: OK
+`)
+			parsed, err := Parse(yamlSpec)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, parsed.Auth.RefreshTokenMechanism)
+		})
+	}
+}
+
 func TestOpenAPIAuthOverrideExtensions(t *testing.T) {
 	t.Parallel()
 
