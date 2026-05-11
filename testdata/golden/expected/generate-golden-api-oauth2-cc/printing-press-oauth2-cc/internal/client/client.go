@@ -253,6 +253,14 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		if req.Header.Get("User-Agent") == "" {
 			req.Header.Set("User-Agent", "printing-press-oauth2-pp-cli/1.0.0")
 		}
+		// Go's net/http omits Accept by default; browsers, curl, and other
+		// stdlibs always send it. Fingerprint-checking WAFs (Imperva, Akamai,
+		// Cloudflare bot-mode, DataDome) flag the absence as a bot signal
+		// and answer with empty-body 5xx, 403, or a challenge redirect
+		// depending on vendor and rule tier.
+		if req.Header.Get("Accept") == "" {
+			req.Header.Set("Accept", "*/*")
+		}
 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
