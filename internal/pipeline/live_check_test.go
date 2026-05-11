@@ -83,6 +83,71 @@ func TestLiveCheck_ResearchDirOverride(t *testing.T) {
 	require.NotContains(t, r2.Reason, "no research.json", "should have read research.json from ResearchDir")
 }
 
+// TestLiveCheck_FindsResearchInParentDir verifies that when ResearchDir is
+// empty and CLIDir has no research.json, the live check walks up the parent
+// chain to locate it. This is the standard pipeline layout where the printed
+// CLI lives under <runRoot>/working/<api>-pp-cli and research.json sits at
+// <runRoot>/research.json — two levels above the CLI dir. Without this walk
+// the Phase 4.85 output-review sub-skill silently SKIPs every non-OpenAPI
+// run.
+func TestLiveCheck_FindsResearchInParentDir(t *testing.T) {
+	runRoot := t.TempDir()
+	workingDir := filepath.Join(runRoot, "working")
+	cliDir := filepath.Join(workingDir, "demo-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	writeStubBinary(t, cliDir, "bin", `exit 0`)
+	writeTestResearchJSON(t, runRoot, []NovelFeature{
+		{Name: "Feature A", Command: "foo", Description: "no example"},
+	})
+
+	// CLIDir is two levels under the dir holding research.json. The live
+	// check should walk up, locate it, and surface the next failure gate
+	// (no Example command) rather than reporting the research.json miss.
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: cliDir, BinaryName: "bin", Timeout: time.Second})
+	require.True(t, result.Unable)
+	require.Contains(t, result.Reason, "Example", "should have located research.json via parent walk and reached the Example-command gate")
+	require.NotContains(t, result.Reason, "no research.json")
+}
+
+// TestLiveCheck_ParentWalkStopsAtBound pins the exact depth boundary so
+// off-by-one drift in researchParentWalkDepth or the loop bound surfaces
+// as a test failure. The walk should include cliDir and the next
+// researchParentWalkDepth (3) parents — research.json at depth 3 is found;
+// depth 4 is not.
+func TestLiveCheck_ParentWalkStopsAtBound(t *testing.T) {
+	t.Run("at bound is found", func(t *testing.T) {
+		root := t.TempDir()
+		atBound := filepath.Join(root, "a", "b", "cli")
+		require.NoError(t, os.MkdirAll(atBound, 0o755))
+		writeStubBinary(t, atBound, "bin", `exit 0`)
+		writeTestResearchJSON(t, root, []NovelFeature{
+			{Name: "Feature A", Command: "foo", Description: "no example"},
+		})
+
+		result := RunLiveCheck(LiveCheckOptions{CLIDir: atBound, BinaryName: "bin", Timeout: time.Second})
+		require.True(t, result.Unable)
+		require.Contains(t, result.Reason, "Example", "research.json at depth 3 should be reachable")
+		require.NotContains(t, result.Reason, "no research.json")
+	})
+
+	t.Run("one past bound is not found", func(t *testing.T) {
+		root := t.TempDir()
+		// Place a sentinel research.json above the test temp tree at the
+		// fake root so any stray host-filesystem research.json above
+		// t.TempDir() can't be picked up by the walk. The walk should
+		// stop before reaching it — that's what this assertion proves.
+		pastBound := filepath.Join(root, "a", "b", "c", "cli")
+		require.NoError(t, os.MkdirAll(pastBound, 0o755))
+		writeTestResearchJSON(t, root, []NovelFeature{
+			{Name: "Feature A", Command: "foo", Description: "no example"},
+		})
+
+		result := RunLiveCheck(LiveCheckOptions{CLIDir: pastBound, BinaryName: "bin", Timeout: time.Second})
+		require.True(t, result.Unable)
+		require.Contains(t, result.Reason, "research.json", "research.json at depth 4 should be out of reach")
+	})
+}
+
 // TestLiveCheck_UnableWhenNoExamples verifies the check skips when research
 // exists but no novel feature has an Example command.
 func TestLiveCheck_UnableWhenNoExamples(t *testing.T) {

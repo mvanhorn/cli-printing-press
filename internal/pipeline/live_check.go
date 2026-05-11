@@ -111,8 +111,11 @@ type LiveCheckOptions struct {
 	// instead of CLIDir. Use this when invoking live-check from a working
 	// directory the run state owns (where research.json lives next to the
 	// run's manuscripts) and the printed CLI hasn't been promoted to its
-	// final library location. Leave blank to keep the historical behavior
-	// of looking for research.json under CLIDir.
+	// final library location. When blank the live check looks under CLIDir
+	// and then walks up a few parent levels (see findResearchDir) so the
+	// standard pipeline layout — research.json at the run-dir level, CLI
+	// under <runRoot>/working/<api>-pp-cli — works without an explicit
+	// override.
 	ResearchDir string
 	// BinaryName, when non-empty, names the executable to run. Leave blank
 	// to let RunLiveCheck derive it from CLIDir (tries `<base>-pp-cli`,
@@ -142,7 +145,7 @@ func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 
 	researchDir := opts.ResearchDir
 	if researchDir == "" {
-		researchDir = opts.CLIDir
+		researchDir = findResearchDir(opts.CLIDir)
 	}
 	research, err := LoadResearch(researchDir)
 	if err != nil {
@@ -201,6 +204,41 @@ func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 		out.PassRate = float64(out.Passed) / float64(total)
 	}
 	return out
+}
+
+// researchParentWalkDepth bounds how far above CLIDir the live check looks
+// for research.json. The standard pipeline lays out
+// <runRoot>/working/<api>-pp-cli, putting research.json two levels above
+// CLIDir; three is a small margin for layouts that add a wrapper directory
+// without inviting scans that could pick up unrelated research.json files
+// far above the working tree.
+const researchParentWalkDepth = 3
+
+// findResearchDir returns a directory containing research.json that the
+// live check can hand to LoadResearch. It first checks cliDir itself, then
+// walks up the parent chain up to researchParentWalkDepth levels. If no
+// research.json is found, cliDir is returned so the caller's error message
+// stays "no research.json: ... <cliDir>/research.json".
+//
+// The walk handles the canonical non-OpenAPI layout where research.json
+// sits at the run-dir level while the printed CLI lives under
+// <runRoot>/working/<api>-pp-cli.
+func findResearchDir(cliDir string) string {
+	if cliDir == "" {
+		return cliDir
+	}
+	dir := cliDir
+	for steps := 0; steps <= researchParentWalkDepth; steps++ {
+		if _, err := os.Stat(filepath.Join(dir, "research.json")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return cliDir
 }
 
 // resolveBinaryPath returns the absolute path to the CLI binary. When name
