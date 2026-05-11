@@ -56,6 +56,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cliutil/probe.go",
 		"internal/cliutil/ratelimit.go",
 		"internal/cliutil/verifyenv.go",
+		"internal/cliutil/extractnumber.go",
+		"internal/cliutil/extractnumber_test.go",
 		"internal/cliutil/cliutil_test.go",
 		"internal/client/client.go",
 		"internal/config/config.go",
@@ -76,9 +78,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 55},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 60},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 57},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 57},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 62},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 59},
 	}
 
 	for _, tt := range tests {
@@ -125,9 +127,9 @@ func TestGenerateCliutilPackage(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
 
-	// All three cliutil files must be emitted.
+	// All cliutil files must be emitted.
 	cliutilDir := filepath.Join(outputDir, "internal", "cliutil")
-	for _, name := range []string{"fanout.go", "text.go", "cliutil_test.go"} {
+	for _, name := range []string{"fanout.go", "text.go", "extractnumber.go", "extractnumber_test.go", "cliutil_test.go"} {
 		_, err := os.Stat(filepath.Join(cliutilDir, name))
 		require.NoError(t, err, "expected %s to be emitted", name)
 	}
@@ -146,6 +148,8 @@ func TestGenerateCliutilPackage(t *testing.T) {
 		{"text.go", "func CleanText("},
 		{"text.go", "func LooksLikeAuthError("},
 		{"text.go", "func SanitizeErrorBody("},
+		{"extractnumber.go", "func ExtractNumber("},
+		{"extractnumber.go", "func ExtractInt("},
 	} {
 		data, err := os.ReadFile(filepath.Join(cliutilDir, probe.file))
 		require.NoError(t, err)
