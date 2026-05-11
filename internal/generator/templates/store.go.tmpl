@@ -642,15 +642,14 @@ func (s *Store) Upsert(resourceType, id string, data json.RawMessage) error {
 	return tx.Commit()
 }
 
+// Propagates sql.ErrNoRows on a miss so callers can distinguish absence from
+// other scan errors via errors.Is.
 func (s *Store) Get(resourceType, id string) (json.RawMessage, error) {
 	var data string
 	err := s.db.QueryRow(
 		`SELECT data FROM resources WHERE resource_type = ? AND id = ?`,
 		resourceType, id,
 	).Scan(&data)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, err
 	}

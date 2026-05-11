@@ -2140,6 +2140,42 @@ func TestGenerateStoreMigrateUsesBeginImmediate(t *testing.T) {
 		"migrate must read PRAGMA user_version BEFORE entering withMigrationLock so newer-DB rejection happens before lock acquisition")
 }
 
+// TestGenerateStoreGetPropagatesErrNoRows pins that the emitted Store.Get
+// propagates sql.ErrNoRows and that the one in-template caller detects
+// missing rows via errors.Is, not a (item == nil) shape.
+func TestGenerateStoreGetPropagatesErrNoRows(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("errnorows-canary")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	storeCode := stripGoComments(string(storeSrc))
+
+	assert.NotRegexp(t, `(?s)func \(s \*Store\) Get\([^)]*\) \([^)]*\) \{[^}]*sql\.ErrNoRows[^}]*return nil, nil`, storeCode,
+		"Store.Get must propagate sql.ErrNoRows; callers gating on existence rely on errors.Is(err, sql.ErrNoRows)")
+	assert.Regexp(t, `(?s)func \(s \*Store\) Get\([^)]*\) \([^)]*\) \{[^}]*return nil, err`, storeCode,
+		"Store.Get must surface the underlying error so sql.ErrNoRows reaches callers; a refactor that adds a nested block before the return would silently bypass the NotRegexp above")
+
+	dataSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "data_source.go"))
+	require.NoError(t, err)
+	dataCode := stripGoComments(string(dataSrc))
+
+	assert.Contains(t, dataCode, "errors.Is(err, sql.ErrNoRows)",
+		"data_source.go must detect missing rows via errors.Is(err, sql.ErrNoRows)")
+	assert.NotContains(t, dataCode, "if item == nil {",
+		"data_source.go must not use (item == nil) to detect missing rows; Get returns sql.ErrNoRows instead")
+
+	storeTestSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "schema_version_test.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(storeTestSrc), "func TestGet_MissingRowReturnsErrNoRows(",
+		"template-level Get contract test must land in the emitted store package; dropping it would leave the runtime contract uncovered in printed CLIs")
+}
+
 // TestGenerateMCPSQLToolUsesReadOnlyStore guards the agent-native security
 // model. The MCP sql and search tools advertise readOnlyHint=true to MCP
 // hosts so the host auto-approves invocations; a false readOnlyHint on a
