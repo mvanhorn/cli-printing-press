@@ -274,6 +274,8 @@ func newGenerateCmd() *cobra.Command {
 				openapi.SetMaxEndpointsPerResource(maxEndpointsPerResource)
 			}
 
+			openAPIParseAuthPref := openAPIAuthPreferenceForGenerate(authPreference, cliName, specFiles, specURL)
+
 			var specs []*spec.APISpec
 			var specRawBytes [][]byte // raw spec data for archiving
 			for _, specFile := range specFiles {
@@ -285,7 +287,7 @@ func newGenerateCmd() *cobra.Command {
 
 				var apiSpec *spec.APISpec
 				if openapi.IsOpenAPI(data) {
-					apiSpec, err = parseOpenAPISpec(specFile, data, lenient, authPreference)
+					apiSpec, err = parseOpenAPISpec(specFile, data, lenient, openAPIParseAuthPref)
 				} else if graphql.IsGraphQLSDL(data) {
 					apiSpec, err = graphql.ParseSDLBytes(specFile, data)
 				} else {
@@ -436,7 +438,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&specURL, "spec-url", "", "Original spec URL for provenance (use when --spec is a local file downloaded from a URL)")
 	cmd.Flags().StringVar(&planFile, "plan", "", "Path to a markdown plan document for plan-driven generation (instead of --spec)")
 	cmd.Flags().StringVar(&trafficAnalysisPath, "traffic-analysis", "", "Path to browser-sniff traffic-analysis.json for advisory generation context")
-	cmd.Flags().StringVar(&authPreference, "auth-preference", "", "Preferred securityScheme name from the spec (overrides default selection; useful when a spec advertises multiple schemes such as OAuth2 + HTTP Basic and you want the simpler one)")
+	cmd.Flags().StringVar(&authPreference, "auth-preference", "", "Preferred securityScheme name from the spec (overrides default selection and any catalog auth_preference; useful when a spec advertises multiple schemes such as OAuth2 + HTTP Basic and you want the simpler one). When omitted, a matching embedded catalog entry's auth_preference applies for OpenAPI parsing.")
 
 	return cmd
 }
@@ -705,6 +707,20 @@ func parseOpenAPISpec(specFile string, data []byte, lenient bool, authPreference
 		opts.Path = specFile
 	}
 	return openapi.ParseWithOptions(data, opts)
+}
+
+// openAPIAuthPreferenceForGenerate resolves AuthPreference for openapi.ParseWithOptions.
+// Explicit --auth-preference wins; otherwise a matching catalog entry's auth_preference
+// is used so catalog-driven generates pick the intended scheme before spec enrichment.
+func openAPIAuthPreferenceForGenerate(cliAuthPref, cliName string, specFiles []string, specURL string) string {
+	if s := strings.TrimSpace(cliAuthPref); s != "" {
+		return s
+	}
+	entry := lookupCatalogEntryForGenerateSpec(strings.TrimSpace(cliName), catalogSpecLookupRefs(specFiles, specURL))
+	if entry == nil {
+		return ""
+	}
+	return strings.TrimSpace(entry.AuthPreference)
 }
 
 func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
@@ -1486,8 +1502,10 @@ func catalogSpecLookupRefs(specFiles []string, specURL string) []string {
 }
 
 func lookupCatalogEntryForGenerateSpec(apiName string, specRefs []string) *catalog.Entry {
-	if entry, err := catalog.LookupFS(catalogfs.FS, apiName); err == nil {
-		return entry
+	if name := strings.TrimSpace(apiName); name != "" {
+		if entry, err := catalog.LookupFS(catalogfs.FS, name); err == nil {
+			return entry
+		}
 	}
 	specURLs := make(map[string]struct{}, len(specRefs))
 	for _, ref := range specRefs {

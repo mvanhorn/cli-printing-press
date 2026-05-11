@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -1637,6 +1638,73 @@ resources:
 		"generated files should land at the user-supplied --output path")
 	assert.NoDirExists(t, derivedDir,
 		"the spec-derived directory must not be created when --output is explicit")
+}
+
+func TestOpenAPIAuthPreferenceForGenerateFromJiraCatalogEntry(t *testing.T) {
+	t.Parallel()
+
+	jira, err := catalog.LookupFS(catalogfs.FS, "jira")
+	require.NoError(t, err)
+	require.Equal(t, "basicAuth", jira.AuthPreference)
+
+	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, ""),
+		"catalog spec_url match should forward auth_preference without --auth-preference")
+	assert.Equal(t, "OAuth2", openAPIAuthPreferenceForGenerate("OAuth2", "", []string{jira.SpecURL}, ""),
+		"explicit --auth-preference must override catalog")
+
+	localSpec := filepath.Join(t.TempDir(), "swagger.json")
+	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "jira", []string{localSpec}, ""),
+		"catalog slug via --name should resolve auth_preference without https spec refs")
+}
+
+func TestOpenAPIAuthPreferenceForGenerateParsesJiraLikeSpecWithCatalogDefault(t *testing.T) {
+	t.Parallel()
+
+	// Mirrors real Jira-style specs: OAuth2 authorizationCode + HTTP Basic; default
+	// parser choice is OAuth2 unless AuthPreference pins basicAuth (see openapi parser tests).
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Atlassian-like
+  version: "1.0"
+servers:
+  - url: https://example.atlassian.net
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            read: read access
+    basicAuth:
+      type: http
+      scheme: basic
+paths:
+  /v1/things:
+    get:
+      operationId: list things
+      security:
+        - basicAuth: []
+        - OAuth2: [read]
+      responses: {"200": {description: ok}}
+`)
+
+	jira, err := catalog.LookupFS(catalogfs.FS, "jira")
+	require.NoError(t, err)
+
+	pref := openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, "")
+	require.Equal(t, "basicAuth", pref)
+
+	parsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec.yaml"), specBytes, false, pref)
+	require.NoError(t, err)
+	assert.Equal(t, "basicAuth", parsed.Auth.Scheme)
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+
+	defaultParsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec2.yaml"), specBytes, false, "")
+	require.NoError(t, err)
+	assert.Equal(t, "OAuth2", defaultParsed.Auth.Scheme, "without catalog-driven preference, OAuth2 wins")
 }
 
 func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {
