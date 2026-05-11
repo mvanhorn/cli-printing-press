@@ -384,12 +384,16 @@ func newPublishPackageCmd() *cobra.Command {
 				cleanupOnFailure()
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for vendor-prefix tokens: %w", err)}
 			}
-			if len(findings) > 0 {
+
+			piiResult, piiErr := artifacts.RunPIIAudit(outCLIDir)
+			if piiErr != nil {
 				cleanupOnFailure()
-				return &ExitError{
-					Code: ExitPublishError,
-					Err:  fmt.Errorf("vendor-prefix tokens detected in staged package:\n%s", artifacts.FormatVendorPrefixSecretFindings(findings)),
-				}
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for PII: %w", piiErr)}
+			}
+
+			if scanErr := formatCombinedScanError(findings, piiResult.Findings, piiResult.Completion); scanErr != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: scanErr}
 			}
 
 			// Success — remove stashed old CLI dirs
@@ -1014,4 +1018,36 @@ func hasContent(dir string) bool {
 		}
 	}
 	return false
+}
+
+// formatCombinedScanError composes the publish-time error message from
+// both scanners. Sections appear in fixed order: vendor-prefix tokens,
+// then PII pending findings, then PII gate failures. Returns nil when
+// nothing to report so callers can branch on the error directly.
+func formatCombinedScanError(
+	secretFindings []artifacts.VendorPrefixSecretFinding,
+	piiFindings []artifacts.PIIFinding,
+	piiCompletion artifacts.PIICompletionStatus,
+) error {
+	var sections []string
+
+	if len(secretFindings) > 0 {
+		sections = append(sections,
+			"vendor-prefix tokens detected in staged package:\n"+
+				artifacts.FormatVendorPrefixSecretFindings(secretFindings))
+	}
+	if artifacts.PIIPendingCount(piiFindings) > 0 {
+		sections = append(sections,
+			"customer PII detected in staged package:\n"+
+				artifacts.FormatPIIFindings(piiFindings))
+	}
+	if piiCompletion.HasGateFailure() {
+		sections = append(sections,
+			"PII gate failures:\n"+
+				artifacts.FormatPIIGateFailures(piiCompletion))
+	}
+	if len(sections) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s", strings.Join(sections, "\n\n"))
 }

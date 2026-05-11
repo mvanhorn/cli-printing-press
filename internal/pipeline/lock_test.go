@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -688,4 +690,165 @@ func setLockOwnerAliveForTest(t *testing.T, alive bool) {
 	original := lockOwnerAliveFunc
 	lockOwnerAliveFunc = func(pid int) bool { return alive }
 	t.Cleanup(func() { lockOwnerAliveFunc = original })
+}
+
+// ---------------------------------------------------------------------------
+// PII gate (U3)
+// ---------------------------------------------------------------------------
+
+func TestPromoteWorkingCLI_PIIGateHaltsOnPendingFindings(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	// Plant real-shaped PII in a high-risk file
+	require.NoError(t, os.WriteFile(
+		filepath.Join(workDir, "data.json"),
+		[]byte(`{"customer_email": "alice@example.com"}`+"\n"),
+		0o644,
+	))
+
+	_, err := AcquireLock("test-pp-cli", "test-scope", false)
+	require.NoError(t, err)
+
+	state := NewStateWithRun("test", workDir, "run-pii-1", "test-scope")
+	writePhase5PassForState(t, state, "none")
+
+	err = PromoteWorkingCLI("test-pp-cli", workDir, state)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "PII gate failed")
+	assert.Contains(t, err.Error(), "pending")
+	assert.Contains(t, err.Error(), "pii-polish.md")
+
+	// Library should NOT have been created
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
+	_, statErr := os.Stat(libDir)
+	assert.True(t, os.IsNotExist(statErr), "library dir should not exist when PII gate halts")
+}
+
+func TestPromoteWorkingCLI_PIIGatePassesWithValidAccepts(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(workDir, "data.json"),
+		[]byte(`{"customer_email": "alice@example.com"}`+"\n"),
+		0o644,
+	))
+
+	// Pre-populate the ledger with the accepted finding (simulating
+	// completed polish run)
+	preflight, err := artifacts.FindPII(workDir)
+	require.NoError(t, err)
+	require.Len(t, preflight, 1)
+	preflight[0].Status = artifacts.PIIStatusAccepted
+	preflight[0].Category = artifacts.PIICategoryDocumentationExample
+	preflight[0].EvidenceContext = "documented example in customer-email README block"
+	require.NoError(t, artifacts.WritePIILedger(workDir, &artifacts.PIILedger{
+		Timestamp:           time.Now().UTC(),
+		CLIDir:              workDir,
+		Findings:            preflight,
+		FindingsCountBefore: 1,
+	}))
+
+	_, err = AcquireLock("test-pp-cli", "test-scope", false)
+	require.NoError(t, err)
+
+	state := NewStateWithRun("test", workDir, "run-pii-2", "test-scope")
+	writePhase5PassForState(t, state, "none")
+
+	err = PromoteWorkingCLI("test-pp-cli", workDir, state)
+	require.NoError(t, err)
+
+	// Library should now exist
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
+	_, statErr := os.Stat(filepath.Join(libDir, "go.mod"))
+	assert.NoError(t, statErr)
+
+	// Ledger should be carried into the published library
+	_, statErr = os.Stat(filepath.Join(libDir, artifacts.PIILedgerFilename))
+	assert.NoError(t, statErr, "ledger should travel with the staged copy")
+}
+
+func TestPromoteWorkingCLI_PIIGateHaltsOnGateFailure(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	// Six findings, all accepted with identical rationale → triggers
+	// duplicate-rationale gate (threshold 5)
+	var lines []string
+	for i := range 6 {
+		lines = append(lines, `"email": "user`+string(rune('A'+i))+`@example.com"`)
+	}
+	require.NoError(t, os.WriteFile(
+		filepath.Join(workDir, "data.json"),
+		[]byte(strings.Join(lines, "\n")+"\n"),
+		0o644,
+	))
+
+	preflight, err := artifacts.FindPII(workDir)
+	require.NoError(t, err)
+	require.Len(t, preflight, 6)
+	for i := range preflight {
+		preflight[i].Status = artifacts.PIIStatusAccepted
+		preflight[i].Category = artifacts.PIICategoryOther
+		preflight[i].EvidenceContext = "ctx"
+		preflight[i].Note = "false positive"
+	}
+	require.NoError(t, artifacts.WritePIILedger(workDir, &artifacts.PIILedger{
+		Timestamp:           time.Now().UTC(),
+		CLIDir:              workDir,
+		Findings:            preflight,
+		FindingsCountBefore: 6,
+	}))
+
+	_, err = AcquireLock("test-pp-cli", "test-scope", false)
+	require.NoError(t, err)
+
+	state := NewStateWithRun("test", workDir, "run-pii-3", "test-scope")
+	writePhase5PassForState(t, state, "none")
+
+	err = PromoteWorkingCLI("test-pp-cli", workDir, state)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gate failure")
+	assert.Contains(t, err.Error(), "share rationale")
+}
+
+func TestPromoteWorkingCLI_PIIGatePassesCleanDir(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(workDir, "data.json"),
+		[]byte(`{"version": "1.2.3", "port": 8080}`+"\n"),
+		0o644,
+	))
+
+	_, err := AcquireLock("test-pp-cli", "test-scope", false)
+	require.NoError(t, err)
+
+	state := NewStateWithRun("test", workDir, "run-pii-4", "test-scope")
+	writePhase5PassForState(t, state, "none")
+
+	err = PromoteWorkingCLI("test-pp-cli", workDir, state)
+	require.NoError(t, err)
 }

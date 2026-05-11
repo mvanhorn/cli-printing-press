@@ -13,12 +13,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/spf13/cobra"
 )
 
 const (
-	ledgerFilename    = ".printing-press-tools-polish.json"
+	ledgerFilename    = artifacts.ToolsPolishLedgerFilename
 	ledgerStaleAfter  = 24 * time.Hour
 	statusAccepted    = "accepted"
 	suspiciousMaxLen  = 30
