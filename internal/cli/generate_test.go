@@ -948,6 +948,150 @@ func TestMergeSpecsPrefersReplayableBrowserTransportOverUnshippablePageContext(t
 	assert.Equal(t, spec.HTTPTransportBrowserChrome, mergedChrome.HTTPTransport)
 }
 
+// TestMergeSpecsRewritesEndpointPathsForDivergentBaseURLPathPrefixes covers the
+// Atlassian-style case from issue #831: spec A's base URL is the bare host and
+// spec B's base URL adds a path prefix on the same host. Without rewriting,
+// every spec-B command 404s because its path prefix is silently dropped by the
+// merge.
+func TestMergeSpecsRewritesEndpointPathsForDivergentBaseURLPathPrefixes(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "a",
+		Version: "0.1.0",
+		BaseURL: "https://example.com",
+		Resources: map[string]spec.Resource{
+			"foo": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/foo"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:    "b",
+		Version: "0.1.0",
+		BaseURL: "https://example.com/api/v2",
+		Resources: map[string]spec.Resource{
+			"bar": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/bar"},
+					"get":  {Method: "GET", Path: "/bar/{id}"},
+				},
+				SubResources: map[string]spec.Resource{
+					"comments": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {Method: "GET", Path: "/bar/{id}/comments"},
+						},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "combo")
+
+	// merged BaseURL collapses to the bare host shared by both specs.
+	assert.Equal(t, "https://example.com", merged.BaseURL)
+
+	// spec A's endpoints (no path prefix on its base URL) are unchanged.
+	assert.Equal(t, "/foo", merged.Resources["foo"].Endpoints["list"].Path)
+
+	// spec B's endpoints absorb the dropped "/api/v2" path component.
+	assert.Equal(t, "/api/v2/bar", merged.Resources["bar"].Endpoints["list"].Path)
+	assert.Equal(t, "/api/v2/bar/{id}", merged.Resources["bar"].Endpoints["get"].Path)
+
+	// Sub-resource endpoints are rewritten too.
+	assert.Equal(t,
+		"/api/v2/bar/{id}/comments",
+		merged.Resources["bar"].SubResources["comments"].Endpoints["list"].Path,
+	)
+}
+
+// TestMergeSpecsLeavesPathsUnchangedWhenBaseURLsAgree guards the idempotent
+// case: when every spec's base URL is identical, no path rewriting fires and
+// the merged BaseURL keeps the shared path prefix.
+func TestMergeSpecsLeavesPathsUnchangedWhenBaseURLsAgree(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "a",
+		Version: "0.1.0",
+		BaseURL: "https://example.com/api/v2",
+		Resources: map[string]spec.Resource{
+			"foo": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/foo"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:    "b",
+		Version: "0.1.0",
+		BaseURL: "https://example.com/api/v2",
+		Resources: map[string]spec.Resource{
+			"bar": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/bar"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "combo")
+
+	assert.Equal(t, "https://example.com/api/v2", merged.BaseURL)
+	assert.Equal(t, "/foo", merged.Resources["foo"].Endpoints["list"].Path)
+	assert.Equal(t, "/bar", merged.Resources["bar"].Endpoints["list"].Path)
+}
+
+// TestMergeSpecsLeavesPathsUnchangedWhenHostsDiffer guards the cross-host case
+// (out of scope for the path-rewrite optimization): when specs live on
+// different hosts, the merge falls back to specs[0].BaseURL and no path
+// rewriting fires. Cross-host runs were already broken; this just keeps the
+// pre-fix behavior so the path-rewrite path doesn't make it worse.
+func TestMergeSpecsLeavesPathsUnchangedWhenHostsDiffer(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "a",
+		Version: "0.1.0",
+		BaseURL: "https://a.example.com",
+		Resources: map[string]spec.Resource{
+			"foo": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/foo"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:    "b",
+		Version: "0.1.0",
+		BaseURL: "https://b.example.com/api/v2",
+		Resources: map[string]spec.Resource{
+			"bar": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/bar"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "combo")
+
+	assert.Equal(t, "https://a.example.com", merged.BaseURL)
+	assert.Equal(t, "/foo", merged.Resources["foo"].Endpoints["list"].Path)
+	assert.Equal(t, "/bar", merged.Resources["bar"].Endpoints["list"].Path)
+}
+
 func TestNormalizeHTTPTransportAllowsBrowserChromeH3(t *testing.T) {
 	t.Parallel()
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -715,11 +716,13 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 		return specs[0]
 	}
 
+	mergedBaseURL, perSpecPathPrefix := planMultiSpecBaseURL(specs)
+
 	merged := &spec.APISpec{
 		Name:        name,
 		Description: "Combined CLI for multiple API services",
 		Version:     specs[0].Version,
-		BaseURL:     specs[0].BaseURL,
+		BaseURL:     mergedBaseURL,
 		BasePath:    specs[0].BasePath,
 		Auth:        specs[0].Auth,
 		Config: spec.ConfigSpec{
@@ -730,7 +733,7 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 		Types:     map[string]spec.TypeDef{},
 	}
 
-	for _, s := range specs {
+	for i, s := range specs {
 		if merged.SpecSource == "" || merged.SpecSource == "official" {
 			switch s.SpecSource {
 			case "sniffed":
@@ -747,7 +750,11 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 			merged.HTTPTransport = strongerHTTPTransport(merged.HTTPTransport, candidateTransport)
 		}
 
+		prefix := perSpecPathPrefix[i]
 		for resourceName, resource := range s.Resources {
+			if prefix != "" {
+				resource = prefixResourceEndpointPaths(resource, prefix)
+			}
 			key := resourceName
 			if _, exists := merged.Resources[key]; exists {
 				key = s.Name + "-" + resourceName
@@ -769,6 +776,98 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 	}
 
 	return merged
+}
+
+// planMultiSpecBaseURL decides how to reconcile the BaseURL field across
+// multiple input specs. The returned perSpecPathPrefix slice has one entry per
+// spec; a non-empty entry tells the caller to prepend that prefix to every
+// endpoint path in that spec. When every spec lives on the same scheme+host
+// but their path components diverge, the merged BaseURL collapses to the bare
+// host and each spec's path component is returned for folding into its
+// endpoints — this rescues the "spec A at https://x.com, spec B at
+// https://x.com/api/v2" case where the old collapse silently dropped spec B's
+// /api/v2 prefix and 404'd every B command. When hosts disagree (a separate,
+// out-of-scope multi-host problem) or every spec shares the same BaseURL, the
+// merged BaseURL stays specs[0].BaseURL and every prefix is empty.
+func planMultiSpecBaseURL(specs []*spec.APISpec) (mergedBaseURL string, perSpecPathPrefix []string) {
+	perSpecPathPrefix = make([]string, len(specs))
+
+	hosts := make([]string, len(specs))
+	paths := make([]string, len(specs))
+	for i, s := range specs {
+		hosts[i], paths[i] = splitBaseURL(s.BaseURL)
+	}
+
+	commonHost := hosts[0]
+	if commonHost == "" {
+		return specs[0].BaseURL, perSpecPathPrefix
+	}
+	for _, h := range hosts[1:] {
+		if h != commonHost {
+			return specs[0].BaseURL, perSpecPathPrefix
+		}
+	}
+
+	// All specs share a host. If every spec also shares the same path, no
+	// rewriting is needed — the merged BaseURL keeps the shared prefix.
+	allSamePath := true
+	for _, p := range paths[1:] {
+		if p != paths[0] {
+			allSamePath = false
+			break
+		}
+	}
+	if allSamePath {
+		return specs[0].BaseURL, perSpecPathPrefix
+	}
+
+	copy(perSpecPathPrefix, paths)
+	fmt.Fprintf(os.Stderr, "[multi-spec] base URL host %q shared; folding per-spec path prefixes into endpoint paths\n", commonHost)
+	return commonHost, perSpecPathPrefix
+}
+
+// splitBaseURL splits an absolute http(s) URL into its scheme+host root and
+// its path component. Returns ("", "") for empty or non-absolute inputs so
+// callers fall through to the existing "specs[0] wins" behavior. The path
+// component is trimmed of its trailing slash so the caller can prepend it to
+// an endpoint Path (which already starts with "/") without double slashes.
+func splitBaseURL(raw string) (host, path string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", ""
+	}
+	host = parsed.Scheme + "://" + parsed.Host
+	path = strings.TrimRight(parsed.Path, "/")
+	return host, path
+}
+
+// prefixResourceEndpointPaths returns a copy of resource with prefix prepended
+// to every endpoint Path (including sub-resources). Endpoints that already
+// declare an absolute BaseURL override are left alone — their path is
+// resolved against that override at runtime, not the spec-level BaseURL, so
+// folding the prefix in would double-resolve.
+func prefixResourceEndpointPaths(resource spec.Resource, prefix string) spec.Resource {
+	out := resource
+	if len(resource.Endpoints) > 0 {
+		out.Endpoints = make(map[string]spec.Endpoint, len(resource.Endpoints))
+		for name, ep := range resource.Endpoints {
+			if ep.BaseURL == "" {
+				ep.Path = prefix + ep.Path
+			}
+			out.Endpoints[name] = ep
+		}
+	}
+	if len(resource.SubResources) > 0 {
+		out.SubResources = make(map[string]spec.Resource, len(resource.SubResources))
+		for name, sub := range resource.SubResources {
+			out.SubResources[name] = prefixResourceEndpointPaths(sub, prefix)
+		}
+	}
+	return out
 }
 
 func strongerHTTPTransport(current, candidate string) string {
