@@ -1,6 +1,8 @@
 package profiler
 
 import (
+	"fmt"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -129,6 +131,14 @@ type DependentResource struct {
 	// Discriminator routes heterogeneous dependent-resource response items to
 	// concrete typed resources before storage.
 	Discriminator DiscriminatorDispatch
+
+	// KeyField, when non-empty, names the field to extract from each parent
+	// record for substitution into the child path — overriding the default of
+	// using the parent's primary key (IDField on the parent's SyncableResource
+	// entry). Populated from a spec-declared walker (Endpoint.Walker.KeyField
+	// in internal YAML, or the `key_field` key under `x-pp-sync-walker` in
+	// OpenAPI). When empty, the existing parent-primary-key flow runs.
+	KeyField string
 }
 
 // APIProfile describes the shape of an API and what power-user features it warrants.
@@ -464,6 +474,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 	p.SyncableResources = sortedSyncableResources(syncable)
 	p.DependentSyncResources = detectDependentResources(parameterized, syncable, shardedSubResources)
+	p.DependentSyncResources = applySpecWalkers(s, p.DependentSyncResources, syncable, s.Types, resourceNameIndex)
 	for resource, fields := range searchable {
 		p.SearchableFields[resource] = sortedKeys(fields)
 	}
@@ -998,6 +1009,137 @@ func detectDependentResources(parameterized map[string]parameterizedEntry, synca
 		return deps[i].Name < deps[j].Name
 	})
 	return deps
+}
+
+// applySpecWalkers merges spec-declared walker configs (Endpoint.Walker,
+// populated from the `walker:` internal-YAML field or the `x-pp-sync-walker`
+// OpenAPI operation extension) into the dependent-sync set. For each endpoint
+// with a non-nil walker, the function either augments the matching
+// auto-detected DependentResource (carrying ParentResource, ParentIDParam,
+// and KeyField overrides through) or synthesizes a new entry when
+// auto-detection missed the link — covering paths where the placeholder name
+// does not match a parent resource, or paths with the placeholder in a
+// matrix or query parameter that resolveParentResource cannot map.
+//
+// Walker configs that fail validation are dropped with a stderr warning
+// rather than silently. Three checks fail:
+//
+//   - parent is not a syncable resource: typo or stale spec; without a flat-
+//     list parent endpoint there is nothing to iterate.
+//   - the child path has 2+ {placeholders} and key_param is not declared
+//     explicitly: firstPathParam returns the first placeholder, which on a
+//     2-deep path is the parent slot, almost always wrong.
+//   - the child path has 0 placeholders and key_param is not declared (the
+//     walker would bind via matrix/query but has no slot named).
+//
+// Existing dependent entries are matched by ("GET "+path) tuple — walker is
+// sync-only and GET-only, and a path-only key would collide if two endpoints
+// share a path across resources or methods.
+//
+// Synthesized entries derive Name from spec.ToSnakeCase(resourceName), not
+// from the endpoint-map key, so a walker that re-declares an already-auto-
+// detected path doesn't create a parallel entry under a different Name.
+// All other per-endpoint fields (Tier, IDField, Critical, SinceParam,
+// Discriminator) flow through metaFromEndpoint so the synthesized entry
+// matches what detectDependentResources would have produced — incremental
+// sync, tier routing, and discriminator dispatch all work the same.
+//
+// Entries without a walker pass through unchanged.
+func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[string]syncableMeta, types map[string]spec.TypeDef, resourceNameIndex map[string]string) []DependentResource {
+	if s == nil {
+		return deps
+	}
+	byPath := make(map[string]int, len(deps))
+	for i, d := range deps {
+		byPath["GET "+d.Path] = i
+	}
+	var walk func(name string, r spec.Resource)
+	walk = func(resourceName string, r spec.Resource) {
+		for endpointName, e := range r.Endpoints {
+			if e.Walker == nil {
+				continue
+			}
+			parent := strings.ToLower(strings.TrimSpace(e.Walker.Parent))
+			if _, ok := syncable[parent]; !ok {
+				fmt.Fprintf(os.Stderr,
+					"warning: walker on %s.%s: parent %q is not a syncable resource; ignoring\n",
+					resourceName, endpointName, e.Walker.Parent)
+				continue
+			}
+			keyParam := strings.TrimSpace(e.Walker.KeyParam)
+			if keyParam == "" {
+				placeholders := countPathPlaceholders(e.Path)
+				switch placeholders {
+				case 1:
+					if p, ok := firstPathParam(e.Path); ok {
+						keyParam = p
+					}
+				case 0:
+					fmt.Fprintf(os.Stderr,
+						"warning: walker on %s.%s: path %q has no {placeholder}; declare key_param explicitly\n",
+						resourceName, endpointName, e.Path)
+					continue
+				default:
+					fmt.Fprintf(os.Stderr,
+						"warning: walker on %s.%s: path %q has %d placeholders; declare key_param explicitly\n",
+						resourceName, endpointName, e.Path, placeholders)
+					continue
+				}
+			}
+			keyField := strings.TrimSpace(e.Walker.KeyField)
+			lookupKey := "GET " + e.Path
+			if idx, ok := byPath[lookupKey]; ok {
+				deps[idx].ParentResource = parent
+				if keyParam != "" {
+					deps[idx].ParentIDParam = keyParam
+				}
+				deps[idx].KeyField = keyField
+				continue
+			}
+			meta := metaFromEndpoint(s, r, e, types, resourceNameIndex)
+			deps = append(deps, DependentResource{
+				Name:           spec.ToSnakeCase(resourceName),
+				ParentResource: parent,
+				ParentIDParam:  keyParam,
+				Path:           e.Path,
+				Tier:           meta.Tier,
+				IDField:        meta.IDField,
+				Critical:       meta.Critical,
+				SinceParam:     meta.SinceParam,
+				Discriminator:  meta.Discriminator,
+				KeyField:       keyField,
+			})
+			byPath[lookupKey] = len(deps) - 1
+		}
+		for subName, sub := range r.SubResources {
+			walk(subName, sub)
+		}
+	}
+	for name, r := range s.Resources {
+		walk(name, r)
+	}
+	sort.Slice(deps, func(i, j int) bool { return deps[i].Name < deps[j].Name })
+	return deps
+}
+
+// countPathPlaceholders counts the number of `{name}` substitution slots in
+// a path template. Used by applySpecWalkers to decide whether
+// firstPathParam's default is safe (single-placeholder path) or ambiguous
+// (zero or 2+).
+func countPathPlaceholders(path string) int {
+	n := 0
+	for i := 0; i < len(path); i++ {
+		if path[i] != '{' {
+			continue
+		}
+		j := strings.IndexByte(path[i:], '}')
+		if j < 0 {
+			break
+		}
+		n++
+		i += j
+	}
+	return n
 }
 
 // firstPathParam returns the name of the first {param} in a path template.

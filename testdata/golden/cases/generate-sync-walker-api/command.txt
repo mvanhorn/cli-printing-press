@@ -1,0 +1,2 @@
+set -euo pipefail
+"$BINARY" generate --spec testdata/golden/fixtures/sync-walker-api.yaml --output "$CASE_ACTUAL_DIR/sync-walker-golden" --force --spec-url file://testdata/golden/fixtures/sync-walker-api.yaml --validate=false

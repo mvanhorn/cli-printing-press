@@ -42,6 +42,7 @@ const (
 	extensionTierRouting      = "x-tier-routing"
 	extensionTier             = "x-tier"
 	extensionMCP              = "x-mcp"
+	extensionSyncWalker       = "x-pp-sync-walker"
 	extensionAPIName          = "x-api-name"
 	extensionDisplayName      = "x-display-name"
 	extensionWebsite          = "x-website"
@@ -1825,6 +1826,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				endpoint.IDField = resolveIDFieldFromResponseSchema(op, targetResourceName)
 			}
 			endpoint.Critical = pathCritical
+			endpoint.Walker = readWalkerExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 
 			targetEndpoints[endpointName] = endpoint
 
@@ -2936,6 +2938,37 @@ func readTierExtension(extensions map[string]any, context string) string {
 		return ""
 	}
 	return strings.TrimSpace(tier)
+}
+
+// readWalkerExtension reads the `x-pp-sync-walker` extension from an
+// operation's Extensions map and returns a parsed WalkerConfig. The raw
+// extension value is expected to be a JSON/YAML object with `parent`,
+// `key_field`, and `key_param` keys; missing keys default per the
+// WalkerConfig field doc. Returns nil when the extension is absent.
+// Malformed values warn and return nil rather than failing the whole parse.
+func readWalkerExtension(extensions map[string]any, context string) *spec.WalkerConfig {
+	if extensions == nil {
+		return nil
+	}
+	raw, ok := extensions[extensionSyncWalker]
+	if !ok {
+		return nil
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		warnf("%s: %s: marshaling: %v; ignoring", context, extensionSyncWalker, err)
+		return nil
+	}
+	var cfg spec.WalkerConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		warnf("%s: %s: parsing: %v; ignoring", context, extensionSyncWalker, err)
+		return nil
+	}
+	if strings.TrimSpace(cfg.Parent) == "" {
+		warnf("%s: %s: parent is required; ignoring", context, extensionSyncWalker)
+		return nil
+	}
+	return &cfg
 }
 
 // resolveIDFieldFromResponseSchema implements tiers 2-5 of the IDField fallback

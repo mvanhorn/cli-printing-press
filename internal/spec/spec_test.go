@@ -3760,3 +3760,58 @@ func TestValidateRejectsReservedPlaceholderHost(t *testing.T) {
 		})
 	}
 }
+
+// TestWalkerConfig_YAMLRoundTrip catches future regressions in WalkerConfig
+// YAML tags or the Walker field's omitempty on Endpoint. The Walker pointer
+// and all three sub-fields must survive a marshal → unmarshal cycle.
+func TestWalkerConfig_YAMLRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("populated walker survives round-trip", func(t *testing.T) {
+		t.Parallel()
+		ep := Endpoint{
+			Method: "GET",
+			Path:   "/games/{game_key}/leagues",
+			Walker: &WalkerConfig{
+				Parent:   "games",
+				KeyField: "game_key",
+				KeyParam: "game_key",
+			},
+		}
+		data, err := yaml.Marshal(ep)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "walker:")
+		assert.Contains(t, string(data), "parent: games")
+		assert.Contains(t, string(data), "key_field: game_key")
+		assert.Contains(t, string(data), "key_param: game_key")
+
+		var roundTripped Endpoint
+		require.NoError(t, yaml.Unmarshal(data, &roundTripped))
+		require.NotNil(t, roundTripped.Walker)
+		assert.Equal(t, "games", roundTripped.Walker.Parent)
+		assert.Equal(t, "game_key", roundTripped.Walker.KeyField)
+		assert.Equal(t, "game_key", roundTripped.Walker.KeyParam)
+	})
+
+	t.Run("nil walker omits the section", func(t *testing.T) {
+		t.Parallel()
+		ep := Endpoint{Method: "GET", Path: "/games"}
+		data, err := yaml.Marshal(ep)
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), "walker:")
+	})
+
+	t.Run("walker with only parent omits optional sub-fields", func(t *testing.T) {
+		t.Parallel()
+		ep := Endpoint{
+			Method: "GET",
+			Path:   "/leagues/{league_id}/teams",
+			Walker: &WalkerConfig{Parent: "leagues"},
+		}
+		data, err := yaml.Marshal(ep)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "parent: leagues")
+		assert.NotContains(t, string(data), "key_field")
+		assert.NotContains(t, string(data), "key_param")
+	})
+}
