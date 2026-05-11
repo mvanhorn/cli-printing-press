@@ -997,9 +997,10 @@ func findCaptchaTierProtectedAPIEntry(entries []EnrichedEntry, protections []Pro
 // findSSRStateBlobEntryOnRegisteredDomain returns the index and matched
 // signature of the first HTML entry on the same registered domain
 // (eTLD+1) as refHost that emits the ssr_embedded_data protocol. Uses
-// content-type to identify HTML entries because the classifier returns
-// "noise" for HTML (no html class), so Classification is not a usable
-// filter on the HTML side.
+// content-type to identify HTML entries because the classifier marks
+// HTML as "noise". Signature is re-detected per entry because the
+// protocol observation collapses multi-entry details, so the per-entry
+// signature is the only reliable source.
 func findSSRStateBlobEntryOnRegisteredDomain(entries []EnrichedEntry, protocols []ProtocolObservation, refHost string) (int, string, bool) {
 	var ssr *ProtocolObservation
 	for i := range protocols {
@@ -1011,7 +1012,6 @@ func findSSRStateBlobEntryOnRegisteredDomain(entries []EnrichedEntry, protocols 
 	if ssr == nil {
 		return -1, "", false
 	}
-	signature := ssr.Details["signature"]
 	for _, ev := range ssr.Evidence {
 		idx := ev.EntryIndex
 		if idx < 0 || idx >= len(entries) {
@@ -1022,6 +1022,10 @@ func findSSRStateBlobEntryOnRegisteredDomain(entries []EnrichedEntry, protocols 
 			continue
 		}
 		if !sameRegisteredDomain(extractHost(entry.URL), refHost) {
+			continue
+		}
+		signature := detectSSREmbeddedData(entry)
+		if signature == "" {
 			continue
 		}
 		return idx, signature, true
@@ -1467,7 +1471,10 @@ const (
 // ssrEmbeddedDataSignatures lists each substring the detector matches
 // against alongside its signature label. Order matters — earlier
 // entries win on multi-match because framework-specific signatures
-// imply a known DOM shape the generic markers don't.
+// imply a known DOM shape the generic markers don't. The state-view
+// and window.__ entries require shape-bearing context (quoted attr
+// value, state-named global) so analytics globals like window.__gtag
+// and CSS classes like state-view-port don't promote benign pages.
 var ssrEmbeddedDataSignatures = []struct {
 	substring string
 	label     string
@@ -1475,9 +1482,13 @@ var ssrEmbeddedDataSignatures = []struct {
 	{"__next_data__", SSRSignatureNextData},
 	{"__nuxt__", SSRSignatureNuxt},
 	{"__app_initial_state__", SSRSignatureAppInitialState},
-	{"state-view", SSRSignatureStateView},
+	{`"state-view"`, SSRSignatureStateView},
+	{`'state-view'`, SSRSignatureStateView},
 	{"application/ld+json", SSRSignatureLDJSON},
-	{"window.__", SSRSignatureWindowPrefix},
+	{"window.__initial_state", SSRSignatureWindowPrefix},
+	{"window.__app_state", SSRSignatureWindowPrefix},
+	{"window.__apollo_state", SSRSignatureWindowPrefix},
+	{"window.__data__", SSRSignatureWindowPrefix},
 }
 
 // detectSSREmbeddedData returns the matched signature label when an

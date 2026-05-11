@@ -189,7 +189,9 @@ func promoteHTMLExtractInResource(resource spec.Resource, selector string) spec.
 			continue
 		}
 		endpoint.HTMLExtract.Mode = spec.HTMLExtractModeEmbeddedJSON
-		endpoint.HTMLExtract.ScriptSelector = selector
+		if selector != "" {
+			endpoint.HTMLExtract.ScriptSelector = selector
+		}
 		endpoint.HTMLExtract.LinkPrefixes = nil
 		resource.Endpoints[name] = endpoint
 	}

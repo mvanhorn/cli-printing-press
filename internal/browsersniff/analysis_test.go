@@ -758,6 +758,31 @@ func TestDetectSSREmbeddedData(t *testing.T) {
 			},
 			expect: "",
 		},
+		{
+			// window.__ matchers must require a state-shaped identifier so
+			// analytics globals like window.__gtag don't promote benign
+			// pages into the html_scrape path.
+			name: "rejects-window-prefix-on-analytics-globals",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody: `<html><head><script>window.__gtag=function(){};window.__ga=1;</script></head><body><p>analytics page</p>` +
+					strings.Repeat("<!-- pad -->\n", 1000) + `</body></html>`,
+			},
+			expect: "",
+		},
+		{
+			// state-view matcher must require the script/attribute shape
+			// so CSS class names like state-view-port don't promote.
+			name: "rejects-state-view-as-css-fragment",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody: `<html><head></head><body><div class="state-view-port-container"></div>` +
+					strings.Repeat("<!-- pad -->\n", 1000) + `</body></html>`,
+			},
+			expect: "",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1022,6 +1047,38 @@ func TestClassifyReachability_HTMLScrapePromotion(t *testing.T) {
 			},
 			expectedMode:      "html_scrape",
 			expectedSignature: "__NUXT__",
+		},
+		{
+			// Ordering guard: matching SSR entry is iterated before a
+			// non-matching cross-domain SSR entry. The selected signature
+			// must come from the entry that satisfies same-eTLD+1, not
+			// from the last SSR entry seen by the protocol scanner.
+			name: "multi-ssr-signature-attributed-to-matching-entry",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://api.example.com/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"captcha required"}`,
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://www.example.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__NEXT_DATA__", `{}`),
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://unrelated-site.com/bar",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__NUXT__", `{}`),
+				},
+			},
+			expectedMode:      "html_scrape",
+			expectedSignature: "__NEXT_DATA__",
 		},
 	}
 
