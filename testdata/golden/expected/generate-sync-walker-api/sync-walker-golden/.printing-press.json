@@ -1,0 +1,23 @@
+{
+  "api_name": "sync-walker-golden",
+  "api_version": "1.0.0",
+  "auth_env_vars": [
+    "WALKER_GOLDEN_TOKEN"
+  ],
+  "auth_type": "bearer_token",
+  "cli_name": "sync-walker-golden-pp-cli",
+  "display_name": "Sync Walker Golden",
+  "generated_at": "<GENERATED_AT>",
+  "mcp_binary": "sync-walker-golden-pp-mcp",
+  "mcp_ready": "full",
+  "mcp_tool_count": 2,
+  "owner": "printing-press-golden",
+  "printer": "printing-press-golden",
+  "printer_name": "printing-press-golden",
+  "printing_press_version": "<PRINTING_PRESS_VERSION>",
+  "schema_version": 1,
+  "spec_checksum": "sha256:2aa39c064cd068cb090102e22a446f9542fa06f75453d52e4fa9db5c21f27809",
+  "spec_format": "internal",
+  "spec_path": "testdata/golden/fixtures/sync-walker-api.yaml",
+  "spec_url": "file://testdata/golden/fixtures/sync-walker-api.yaml"
+}
