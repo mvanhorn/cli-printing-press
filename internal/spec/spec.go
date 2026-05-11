@@ -444,6 +444,7 @@ func (c BearerRefreshConfig) Enabled() bool {
 type AuthConfig struct {
 	Type             string       `yaml:"type" json:"type"` // api_key, oauth2, bearer_token, cookie, composed, session_handshake, none
 	Header           string       `yaml:"header" json:"header"`
+	Prefix           string       `yaml:"prefix,omitempty" json:"prefix,omitempty"` // Authorization scheme word (e.g., "Token", "PRIVATE-TOKEN"); empty defaults to "Bearer". Ignored when Format is set.
 	Format           string       `yaml:"format" json:"format"`
 	EnvVars          []string     `yaml:"env_vars" json:"env_vars"`
 	EnvVarSpecs      []AuthEnvVar `yaml:"env_var_specs,omitempty" json:"env_var_specs,omitempty"`
@@ -554,6 +555,16 @@ func (v AuthEnvVar) MarkdownDescription() string {
 	description = strings.ReplaceAll(description, "\r\n", " ")
 	description = strings.ReplaceAll(description, "\n", " ")
 	return strings.ReplaceAll(description, "\r", " ")
+}
+
+// HeaderPrefix returns Prefix when set, "Bearer" otherwise. Callers only
+// consult it when Auth.Format is empty; Format's placeholder template
+// already carries its own prefix and takes precedence.
+func (c AuthConfig) HeaderPrefix() string {
+	if p := strings.TrimSpace(c.Prefix); p != "" {
+		return p
+	}
+	return "Bearer"
 }
 
 // CanonicalEnvVar returns the deterministic canonical entry for human-prose surfaces.
@@ -706,6 +717,32 @@ func (c AuthConfig) EffectiveOAuth2Grant() string {
 
 // validateOAuth2Grant ensures OAuth2Grant is empty or one of the supported
 // values. Empty is accepted (treated as the default). Cross-checking against
+// validateAuthPrefix rejects characters that would break out of the Go
+// double-quoted string literal the generator emits at the prefix interpolation
+// sites (`return "<prefix> " + c.Token`). RFC 7235 only permits token
+// characters in the scheme word anyway, so the cap is both safety and spec
+// adherence. Length is bounded so a typo doesn't balloon every printed CLI's
+// AuthHeader return value.
+func validateAuthPrefix(c AuthConfig) error {
+	prefix := c.Prefix
+	if prefix == "" {
+		return nil
+	}
+	if len(prefix) > 32 {
+		return fmt.Errorf("auth.prefix length %d exceeds 32-character cap", len(prefix))
+	}
+	for i, r := range prefix {
+		if r > 0x7E || r < 0x21 {
+			return fmt.Errorf("auth.prefix contains non-printable or non-ASCII byte at index %d (0x%02x); only RFC 7235 token characters are allowed", i, r)
+		}
+		switch r {
+		case '"', '\\', '(', ')', ',', '/', ':', ';', '<', '=', '>', '?', '@', '[', ']', '{', '}':
+			return fmt.Errorf("auth.prefix contains separator character %q at index %d; only RFC 7235 token characters are allowed", r, i)
+		}
+	}
+	return nil
+}
+
 // AuthConfig.Type is intentionally skipped: the field is ignored for
 // non-oauth2 types, matching how SessionTTLHours and similar fields behave.
 func validateOAuth2Grant(c AuthConfig) error {
@@ -1576,6 +1613,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateOAuth2Grant(s.Auth); err != nil {
+		return err
+	}
+	if err := validateAuthPrefix(s.Auth); err != nil {
 		return err
 	}
 	if err := validateSessionHandshake(s.Auth); err != nil {

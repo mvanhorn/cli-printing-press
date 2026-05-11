@@ -186,6 +186,222 @@ func TestAuthHeader_EnvVarWinsOverFileToken(t *testing.T) {
 	}
 }
 
+// TestAuthHeader_BearerTokenPrefixOverride pins that a bearer_token spec
+// declaring auth.prefix changes the rendered Authorization scheme word
+// across both the env-var and AccessToken branches. APIs that require a
+// non-Bearer scheme (e.g., "Token", "PRIVATE-TOKEN", lowercase "token")
+// otherwise force operators to hand-edit generated config. When auth.prefix
+// is unset, "Bearer" remains the default.
+func TestAuthHeader_BearerTokenPrefixOverride(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		prefix   string
+		expected string
+	}{
+		{"default", "", "Bearer"},
+		{"token", "Token", "Token"},
+		{"lowercase", "token", "token"},
+		{"private_token", "PRIVATE-TOKEN", "PRIVATE-TOKEN"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec("prefix-" + tc.name)
+			apiSpec.Auth = spec.AuthConfig{
+				Type:    "bearer_token",
+				Header:  "Authorization",
+				Prefix:  tc.prefix,
+				EnvVars: []string{"PREFIX_TEST_TOKEN"},
+			}
+
+			outputDir := filepath.Join(t.TempDir(), "prefix-"+tc.name+"-pp-cli")
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+			require.NoError(t, err)
+			body := authHeaderBody(t, string(cfgSrc))
+
+			envField := resolveEnvVarField("PREFIX_TEST_TOKEN")
+			require.Contains(t, body, `return "`+tc.expected+` " + c.`+envField,
+				"env-var branch must render configured prefix")
+			require.Contains(t, body, `return "`+tc.expected+` " + c.AccessToken`,
+				"AccessToken branch must render configured prefix")
+
+			if tc.prefix != "" && tc.expected != "Bearer" {
+				assert.NotContains(t, body, `return "Bearer " + c.`+envField,
+					"default Bearer literal must not leak when prefix is overridden")
+				assert.NotContains(t, body, `return "Bearer " + c.AccessToken`,
+					"default Bearer literal must not leak when prefix is overridden")
+			}
+		})
+	}
+}
+
+// TestAuthHeader_BearerTokenPrefixFormatPrecedence pins that Auth.Format
+// wins over Auth.Prefix at the same call sites, so the documented "Ignored
+// when Format is set" contract survives template restructuring.
+func TestAuthHeader_BearerTokenPrefixFormatPrecedence(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("prefix-format")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:    "bearer_token",
+		Header:  "Authorization",
+		Prefix:  "Token",
+		Format:  "Bearer {token}",
+		EnvVars: []string{"PREFIX_FORMAT_TOKEN"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "prefix-format-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	body := authHeaderBody(t, string(cfgSrc))
+
+	envField := resolveEnvVarField("PREFIX_FORMAT_TOKEN")
+	require.Contains(t, body, `applyAuthFormat("Bearer {token}"`,
+		"Format must render via applyAuthFormat, not via the prefix literal")
+	assert.NotContains(t, body, `return "Token " + c.`+envField,
+		"Prefix must not leak into the env-var branch when Format is set")
+	assert.NotContains(t, body, `return "Token " + c.AccessToken`,
+		"Prefix must not leak into the AccessToken branch when Format is set")
+}
+
+// TestAuthHeader_BearerTokenPrefixMissedSites exercises the three
+// non-default code paths in config.go.tmpl that the main override table
+// does not reach: oauth2/client_credentials, BearerRefresh.Enabled, and
+// the $isAuthEnvVarORCase branch. Without these cases a revert of any of
+// those template sites back to a "Bearer " literal would ship undetected.
+func TestAuthHeader_BearerTokenPrefixMissedSites(t *testing.T) {
+	t.Parallel()
+
+	t.Run("oauth2_client_credentials", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("prefix-oauth2-cc")
+		apiSpec.Auth = spec.AuthConfig{
+			Type:        "bearer_token",
+			Header:      "Authorization",
+			Prefix:      "Token",
+			EnvVarSpecs: []spec.AuthEnvVar{{Name: "CC_PREFIX_CLIENT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput}, {Name: "CC_PREFIX_CLIENT_SECRET", Kind: spec.AuthEnvVarKindAuthFlowInput, Sensitive: true}},
+			OAuth2Grant: spec.OAuth2GrantClientCredentials,
+			TokenURL:    "https://example.com/token",
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "prefix-oauth2-cc-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+		require.NoError(t, err)
+		body := authHeaderBody(t, string(cfgSrc))
+
+		require.Contains(t, body, `return "Token " + c.AccessToken`,
+			"oauth2/client_credentials AccessToken branch must honor configured prefix")
+		assert.NotContains(t, body, `return "Bearer " + c.AccessToken`,
+			"default Bearer literal must not leak in the oauth2/cc branch when prefix is overridden")
+	})
+
+	t.Run("bearer_refresh_enabled", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("prefix-bearer-refresh")
+		apiSpec.Auth = spec.AuthConfig{
+			Type:    "bearer_token",
+			Header:  "Authorization",
+			Prefix:  "Token",
+			EnvVars: []string{"REFRESH_PREFIX_TOKEN"},
+		}
+		apiSpec.BearerRefresh = spec.BearerRefreshConfig{
+			BundleURL: "https://cdn.example.com/main.js",
+			Pattern:   `"(AAAAAAAA[^"]+)"`,
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "prefix-bearer-refresh-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+		require.NoError(t, err)
+		body := authHeaderBody(t, string(cfgSrc))
+
+		require.Contains(t, body, `return "Token " + c.AccessToken`,
+			"BearerRefresh AccessToken branch must honor configured prefix")
+		assert.NotContains(t, body, `return "Bearer " + c.AccessToken`,
+			"default Bearer literal must not leak in the bearer_refresh branch when prefix is overridden")
+	})
+
+	t.Run("env_var_or_case", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("prefix-or-case")
+		apiSpec.Auth = spec.AuthConfig{
+			Type:   "bearer_token",
+			Header: "Authorization",
+			Prefix: "Token",
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "OR_PREFIX_A", Kind: spec.AuthEnvVarKindPerCall, Required: false},
+				{Name: "OR_PREFIX_B", Kind: spec.AuthEnvVarKindPerCall, Required: false},
+			},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "prefix-or-case-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+		require.NoError(t, err)
+		body := authHeaderBody(t, string(cfgSrc))
+
+		fieldA := resolveEnvVarField("OR_PREFIX_A")
+		fieldB := resolveEnvVarField("OR_PREFIX_B")
+		require.Contains(t, body, `return "Token " + c.`+fieldA,
+			"OR-case env-var branch must honor configured prefix (first env var)")
+		require.Contains(t, body, `return "Token " + c.`+fieldB,
+			"OR-case env-var branch must honor configured prefix (second env var)")
+		assert.NotContains(t, body, `return "Bearer " + c.`+fieldA,
+			"default Bearer literal must not leak in the OR-case branch when prefix is overridden")
+	})
+}
+
+// TestTierRouting_BearerPrefix pins that the per-tier bearer scheme in
+// client.go.tmpl honors auth.prefix on the tier's auth config, matching
+// the default-tier AuthHeader() behavior.
+func TestTierRouting_BearerPrefix(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("tier-prefix")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:    "bearer_token",
+		Header:  "Authorization",
+		EnvVars: []string{"TIER_PREFIX_TOKEN"},
+	}
+	apiSpec.TierRouting = spec.TierRoutingConfig{
+		DefaultTier: "primary",
+		Tiers: map[string]spec.TierConfig{
+			"primary": {
+				Auth: spec.AuthConfig{
+					Type:    "bearer_token",
+					Header:  "Authorization",
+					Prefix:  "Token",
+					EnvVars: []string{"TIER_PRIMARY_TOKEN"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "tier-prefix-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	content := string(clientSrc)
+
+	require.Contains(t, content, `value := "Token " + tierValue0`,
+		"per-tier bearer auth must honor configured prefix")
+	assert.NotContains(t, content, `value := "Bearer " + tierValue0`,
+		"default Bearer literal must not leak when tier prefix is overridden")
+}
+
 // authHeaderBody slices out just the AuthHeader function body so precedence
 // assertions can't be tricked by a matching pattern in unrelated code
 // further down the file.

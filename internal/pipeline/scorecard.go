@@ -1499,6 +1499,10 @@ type openAPISecurityScheme struct {
 	Scheme     string
 	In         string
 	HeaderName string
+	// Prefix mirrors apispec.AuthConfig.Prefix for internal-YAML specs that
+	// override the literal "Bearer" scheme word (e.g., "Token", "PRIVATE-TOKEN").
+	// Empty for OpenAPI-derived schemes; bearer-branch scoring falls back to "Bearer".
+	Prefix string
 }
 
 const (
@@ -1913,7 +1917,11 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 		}
 	case strings.Contains(nameLower, "bearer") || (scheme.Type == "http" && scheme.Scheme == "bearer"):
 		scoreable = true
-		if authPrefixLiteralPresent("Bearer", clientContent, configContent, authContent) {
+		bearerLiteral := scheme.Prefix
+		if strings.TrimSpace(bearerLiteral) == "" {
+			bearerLiteral = "Bearer"
+		}
+		if authPrefixLiteralPresent(bearerLiteral, clientContent, configContent, authContent) {
 			authHeaderMatched = true
 		}
 	case strings.Contains(nameLower, "basic") || (scheme.Type == "http" && scheme.Scheme == "basic"):

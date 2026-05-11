@@ -3,6 +3,7 @@ package spec
 import (
 	"bytes"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -851,6 +852,91 @@ func TestThrottlingValidate(t *testing.T) {
 			}
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestAuthPrefixValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		prefix  string
+		wantErr string
+	}{
+		{name: "empty is valid (defaults to Bearer)", prefix: ""},
+		{name: "Bearer is valid", prefix: "Bearer"},
+		{name: "Token is valid", prefix: "Token"},
+		{name: "lowercase token is valid", prefix: "token"},
+		{name: "PRIVATE-TOKEN is valid (hyphen is a token char)", prefix: "PRIVATE-TOKEN"},
+		{name: "embedded quote is rejected", prefix: `Token"`, wantErr: "separator character"},
+		{name: "backslash is rejected", prefix: `Token\`, wantErr: "separator character"},
+		{name: "carriage return is rejected", prefix: "Token\r", wantErr: "non-printable"},
+		{name: "newline is rejected", prefix: "Token\n", wantErr: "non-printable"},
+		{name: "space is rejected", prefix: "Token Foo", wantErr: "non-printable"},
+		{name: "non-ASCII is rejected", prefix: "Tøken", wantErr: "non-ASCII"},
+		{name: "over-long prefix is rejected", prefix: strings.Repeat("A", 33), wantErr: "32-character cap"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAuthPrefix(AuthConfig{Prefix: tt.prefix})
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestAPISpecValidate_RejectsBadAuthPrefix(t *testing.T) {
+	build := func(prefix string) APISpec {
+		return APISpec{
+			Name:    "prefix-validate",
+			BaseURL: "https://api.example.com",
+			Auth: AuthConfig{
+				Type:    "bearer_token",
+				Header:  "Authorization",
+				Prefix:  prefix,
+				EnvVars: []string{"PREFIX_VALIDATE_TOKEN"},
+			},
+			Resources: map[string]Resource{
+				"items": {
+					Endpoints: map[string]Endpoint{
+						"list": {Method: "GET", Path: "/items"},
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("valid prefix passes Validate()", func(t *testing.T) {
+		s := build("Token")
+		require.NoError(t, s.Validate())
+	})
+
+	t.Run("embedded quote is rejected at the APISpec level", func(t *testing.T) {
+		s := build(`Token"`)
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "auth.prefix")
+	})
+}
+
+func TestAuthConfigHeaderPrefix(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		want   string
+	}{
+		{name: "empty defaults to Bearer", prefix: "", want: "Bearer"},
+		{name: "whitespace-only defaults to Bearer", prefix: "   ", want: "Bearer"},
+		{name: "Token is preserved", prefix: "Token", want: "Token"},
+		{name: "surrounding whitespace is trimmed", prefix: "  Token  ", want: "Token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AuthConfig{Prefix: tt.prefix}.HeaderPrefix()
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

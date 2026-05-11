@@ -2339,3 +2339,28 @@ func writeScorecardFixture(t *testing.T, root, relPath, content string) {
 		t.Fatalf("write %s: %v", relPath, err)
 	}
 }
+
+// TestScoreAuthScheme_BearerPrefixOverride pins that the AuthProtocol scorer
+// accepts a non-Bearer scheme literal when openAPISecurityScheme.Prefix is
+// populated by an internal-YAML spec. The relative comparison (with-Prefix
+// scores higher than without) survives weight rebalancing where an absolute
+// threshold would not.
+func TestScoreAuthScheme_BearerPrefixOverride(t *testing.T) {
+	configWithToken := `func (c *Config) AuthHeader() string { return "Token " + c.AccessToken }`
+	clientStub := `req.Header.Set("Authorization", c.AuthHeader())`
+
+	withPrefix := openAPISecurityScheme{
+		Key:    "bearer_token",
+		Type:   "http",
+		Scheme: "bearer",
+		Prefix: "Token",
+	}
+	withoutPrefix := withPrefix
+	withoutPrefix.Prefix = ""
+
+	scoreWith, _ := scoreAuthScheme(clientStub, configWithToken, "", withPrefix)
+	scoreWithout, _ := scoreAuthScheme(clientStub, configWithToken, "", withoutPrefix)
+
+	assert.Greater(t, scoreWith, scoreWithout,
+		"AuthProtocol score with configured prefix must exceed the empty-prefix default when generated code uses the prefix literal")
+}
