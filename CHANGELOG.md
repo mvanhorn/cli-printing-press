@@ -1,5 +1,35 @@
 # Changelog
 
+## [4.4.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.3.0...v4.4.0) (2026-05-11)
+
+
+### Features
+
+* **cli:** promote html_scrape reachability mode when captcha-tier protection blocks JSON + SSR sibling carries state blob ([#1065](https://github.com/mvanhorn/cli-printing-press/issues/1065)) ([d7e2d74](https://github.com/mvanhorn/cli-printing-press/commit/d7e2d74f32fcefbb730366c40bb4c33974bc3ead))
+* **cli:** sync.walker spec parameter for hierarchical APIs ([#1060](https://github.com/mvanhorn/cli-printing-press/issues/1060)) ([#1074](https://github.com/mvanhorn/cli-printing-press/issues/1074)) ([24962b7](https://github.com/mvanhorn/cli-printing-press/commit/24962b7c862f5f4d6cb3679908615266d4c531e4))
+
+
+### Bug Fixes
+
+* **catalog:** refresh google-flights entry to reflect fli native port ([#1084](https://github.com/mvanhorn/cli-printing-press/issues/1084)) ([5c4ef3a](https://github.com/mvanhorn/cli-printing-press/commit/5c4ef3a7a4faea5f8f3b3eaaed4e62a8e773396e))
+* **ci:** drop cancel-in-progress from pr-title workflow ([#1068](https://github.com/mvanhorn/cli-printing-press/issues/1068)) ([424199a](https://github.com/mvanhorn/cli-printing-press/commit/424199a7a4bd9b90c1787a0a30d1c00228728630))
+* **cli:** delegate workflow archive to syncResource ([#1090](https://github.com/mvanhorn/cli-printing-press/issues/1090)) ([3d515c4](https://github.com/mvanhorn/cli-printing-press/commit/3d515c457de657b470035e71bda8b5d8808f45e2))
+* **cli:** dispatch typed-table upserts on spec resource key, not snake table name ([#1071](https://github.com/mvanhorn/cli-printing-press/issues/1071)) ([705bad2](https://github.com/mvanhorn/cli-printing-press/commit/705bad2df0c1081ddb5e42a7aa949c5767ae52b0)), closes [#1064](https://github.com/mvanhorn/cli-printing-press/issues/1064)
+* **cli:** emit --body-json fallback for oneOf/anyOf request bodies ([#994](https://github.com/mvanhorn/cli-printing-press/issues/994)) ([910c228](https://github.com/mvanhorn/cli-printing-press/commit/910c228d48e4de0bdc21e6ba4b5f39e827ef2f5a)), closes [#977](https://github.com/mvanhorn/cli-printing-press/issues/977)
+* **cli:** emit default Accept */* header in generated HTTP clients ([#1112](https://github.com/mvanhorn/cli-printing-press/issues/1112)) ([c626efc](https://github.com/mvanhorn/cli-printing-press/commit/c626efca9403e829bafbee3c160ce7354c47d3f4))
+* **cli:** exempt CLI-root vendor spec files from PII audit scope ([#1121](https://github.com/mvanhorn/cli-printing-press/issues/1121)) ([6536cff](https://github.com/mvanhorn/cli-printing-press/commit/6536cfffc1a796604286df2c8fc67d8ff113e1ae))
+* **cli:** gate OAuth refresh-token params on x-oauth-refresh-token-mechanism ([#1099](https://github.com/mvanhorn/cli-printing-press/issues/1099)) ([cba06db](https://github.com/mvanhorn/cli-printing-press/commit/cba06db19aa2dd0af1b161686873e98f1ae2a71a))
+* **cli:** gofmt rendered .go output in generator emit phase ([#1100](https://github.com/mvanhorn/cli-printing-press/issues/1100)) ([1ca94b9](https://github.com/mvanhorn/cli-printing-press/commit/1ca94b91e8ff917a24f996a7d89aaa89dd1a27d6)), closes [#1080](https://github.com/mvanhorn/cli-printing-press/issues/1080)
+* **cli:** honor Spec.BasePath in generated client URL construction ([#1108](https://github.com/mvanhorn/cli-printing-press/issues/1108)) ([c642074](https://github.com/mvanhorn/cli-printing-press/commit/c6420747099278647d33c51c9f64df85d8584fdf))
+* **cli:** infer pagination defaults from plain params; preserve cursor=0 in paginatedGet ([#1115](https://github.com/mvanhorn/cli-printing-press/issues/1115)) ([10cc48a](https://github.com/mvanhorn/cli-printing-press/commit/10cc48a822022450b12109c1d13fd09dddb04033)), closes [#927](https://github.com/mvanhorn/cli-printing-press/issues/927)
+* **cli:** preserve unknown-shape records in compactListFields ([#1078](https://github.com/mvanhorn/cli-printing-press/issues/1078)) ([dc6fe87](https://github.com/mvanhorn/cli-printing-press/commit/dc6fe8791ec3693a8addac8dab27f0e333c1e326)), closes [#1046](https://github.com/mvanhorn/cli-printing-press/issues/1046)
+* **cli:** skip Windows Python Store stub in verify-skill ([#1086](https://github.com/mvanhorn/cli-printing-press/issues/1086)) ([27ad2dd](https://github.com/mvanhorn/cli-printing-press/commit/27ad2dda618d56431cf3fcd826017c3a760c3cc2))
+* **cli:** stage runstate manuscripts during lock promote ([#1094](https://github.com/mvanhorn/cli-printing-press/issues/1094)) ([17d1930](https://github.com/mvanhorn/cli-printing-press/commit/17d1930735e5e9d5f26298640e869f978951b886)), closes [#889](https://github.com/mvanhorn/cli-printing-press/issues/889)
+* **cli:** suppress max_pages_cap_hit warning under --latest-only ([#1120](https://github.com/mvanhorn/cli-printing-press/issues/1120)) ([5f2bde7](https://github.com/mvanhorn/cli-printing-press/commit/5f2bde7fa62b2235b83cb2092a069f6b6456beaa))
+* **cli:** surface API body in sync_error events and add --param passthrough ([#1104](https://github.com/mvanhorn/cli-printing-press/issues/1104)) ([cb3c097](https://github.com/mvanhorn/cli-printing-press/commit/cb3c0974a1c9ab449e50d7a3700a979cb3e0f82c))
+* **cli:** unwrap single-key API envelopes before agent provenance envelope ([#1095](https://github.com/mvanhorn/cli-printing-press/issues/1095)) ([ff4b652](https://github.com/mvanhorn/cli-printing-press/commit/ff4b65286008d0f2224befa5b1d0624afe5e1e6e)), closes [#894](https://github.com/mvanhorn/cli-printing-press/issues/894)
+* **cli:** validate ListIDs resourceType to close SQL injection ([#1000](https://github.com/mvanhorn/cli-printing-press/issues/1000)) ([242a56b](https://github.com/mvanhorn/cli-printing-press/commit/242a56bc6a2d88cc8b93ac29d90254a7f7d6e1e9))
+
 ## [4.3.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.2.2...v4.3.0) (2026-05-11)
 
 
