@@ -14,11 +14,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"printing-press-golden-pp-cli/internal/cliutil"
+	"printing-press-golden-pp-cli/internal/config"
 	"sort"
 	"strings"
 	"time"
-	"printing-press-golden-pp-cli/internal/cliutil"
-	"printing-press-golden-pp-cli/internal/config"
 )
 
 type Client struct {
@@ -30,8 +30,6 @@ type Client struct {
 	cacheDir   string
 	limiter    *cliutil.AdaptiveLimiter
 }
-
-
 
 // APIError carries HTTP status information for structured exit codes.
 type APIError struct {
@@ -396,7 +394,6 @@ func sanitizeJSONResponse(body []byte) []byte {
 	}
 	return body
 }
-
 
 // maskToken redacts all but the last 4 characters of a token for safe display.
 func maskToken(token string) string {

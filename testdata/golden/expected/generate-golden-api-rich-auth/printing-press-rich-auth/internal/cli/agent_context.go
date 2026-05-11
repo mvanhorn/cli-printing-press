@@ -22,13 +22,13 @@ const agentContextSchemaVersion = "3"
 // (2026-04-13 Wrangler post): agents can introspect the live CLI without
 // parsing --help or reading source.
 type agentContext struct {
-	SchemaVersion               string                `json:"schema_version"`
-	CLI                         agentContextCLI       `json:"cli"`
-	Auth                        agentContextAuth      `json:"auth"`
-	Discovery                   *agentContextDiscovery `json:"discovery,omitempty"`
-	Commands                    []agentContextCommand `json:"commands"`
-	AvailableProfiles           []string              `json:"available_profiles"`
-	FeedbackEndpointConfigured  bool                  `json:"feedback_endpoint_configured"`
+	SchemaVersion              string                 `json:"schema_version"`
+	CLI                        agentContextCLI        `json:"cli"`
+	Auth                       agentContextAuth       `json:"auth"`
+	Discovery                  *agentContextDiscovery `json:"discovery,omitempty"`
+	Commands                   []agentContextCommand  `json:"commands"`
+	AvailableProfiles          []string               `json:"available_profiles"`
+	FeedbackEndpointConfigured bool                   `json:"feedback_endpoint_configured"`
 }
 
 type agentContextCLI struct {
@@ -105,45 +105,45 @@ reading source. Schema is versioned via schema_version.`,
 func buildAgentContext(rootCmd *cobra.Command) agentContext {
 	envVars := []agentContextAuthEnvVar{
 		{
-			Name:      "RICH_AUTH_API_KEY",
-			Kind:      "per_call",
-			Required:  true,
-			Sensitive: true,
+			Name:        "RICH_AUTH_API_KEY",
+			Kind:        "per_call",
+			Required:    true,
+			Sensitive:   true,
 			Description: "Set to your API credential.",
 		},
 		{
-			Name:      "RICH_AUTH_CLIENT_ID",
-			Kind:      "auth_flow_input",
-			Required:  false,
-			Sensitive: false,
+			Name:        "RICH_AUTH_CLIENT_ID",
+			Kind:        "auth_flow_input",
+			Required:    false,
+			Sensitive:   false,
 			Description: "OAuth application client identifier.",
 		},
 		{
-			Name:      "RICH_AUTH_CLIENT_SECRET",
-			Kind:      "auth_flow_input",
-			Required:  false,
-			Sensitive: true,
+			Name:        "RICH_AUTH_CLIENT_SECRET",
+			Kind:        "auth_flow_input",
+			Required:    false,
+			Sensitive:   true,
 			Description: "Set during initial auth setup.",
 		},
 		{
-			Name:      "RICH_AUTH_OPTIONAL_TOKEN",
-			Kind:      "per_call",
-			Required:  false,
-			Sensitive: true,
+			Name:        "RICH_AUTH_OPTIONAL_TOKEN",
+			Kind:        "per_call",
+			Required:    false,
+			Sensitive:   true,
 			Description: "Set to your API credential.",
 		},
 		{
-			Name:      "RICH_AUTH_BOT_TOKEN",
-			Kind:      "per_call",
-			Required:  false,
-			Sensitive: true,
+			Name:        "RICH_AUTH_BOT_TOKEN",
+			Kind:        "per_call",
+			Required:    false,
+			Sensitive:   true,
 			Description: "Set to your API credential.",
 		},
 		{
-			Name:      "RICH_AUTH_USER_TOKEN",
-			Kind:      "per_call",
-			Required:  false,
-			Sensitive: true,
+			Name:        "RICH_AUTH_USER_TOKEN",
+			Kind:        "per_call",
+			Required:    false,
+			Sensitive:   true,
 			Description: "Set to your API credential.",
 		},
 	}

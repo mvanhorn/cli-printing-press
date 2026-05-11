@@ -15,8 +15,8 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"tier-routing-golden-pp-cli/internal/cli"
-	"tier-routing-golden-pp-cli/internal/cliutil"
 	"tier-routing-golden-pp-cli/internal/client"
+	"tier-routing-golden-pp-cli/internal/cliutil"
 	"tier-routing-golden-pp-cli/internal/config"
 	"tier-routing-golden-pp-cli/internal/mcp/cobratree"
 	"tier-routing-golden-pp-cli/internal/store"
@@ -31,7 +31,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/items/enterprise", "enterprise", []mcpParamBinding{ }, []string{ }),
+		makeAPIHandler("GET", "/items/enterprise", "enterprise", []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("items_list",
@@ -40,7 +40,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/items", "free", []mcpParamBinding{ }, []string{ }),
+		makeAPIHandler("GET", "/items", "free", []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("items_premium",
@@ -49,7 +49,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/items/premium", "paid", []mcpParamBinding{ }, []string{ }),
+		makeAPIHandler("GET", "/items/premium", "paid", []mcpParamBinding{}, []string{}),
 	)
 	// SQL tool — ad-hoc analysis on synced data without API calls
 	s.AddTool(
@@ -237,6 +237,7 @@ func dbPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "tier-routing-golden-pp-cli", "data.db")
 }
+
 // Note: MCP tools use their own dbPath() because they are in a separate package (main, not cli).
 // The CLI's defaultDBPath() in the cli package uses the same canonical path.
 
@@ -349,10 +350,10 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 			"type": "bearer_token",
 			"env_vars": []map[string]any{
 				{
-					"name": "TIER_GLOBAL_TOKEN",
-					"kind": "per_call",
-					"required": true,
-					"sensitive": true,
+					"name":        "TIER_GLOBAL_TOKEN",
+					"kind":        "per_call",
+					"required":    true,
+					"sensitive":   true,
 					"description": "Set to your API credential.",
 				},
 			},
@@ -364,10 +365,10 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 					"auth_type": "bearer_token",
 					"env_vars": []map[string]any{
 						{
-							"name": "TIER_ENTERPRISE_TOKEN",
-							"kind": "per_call",
-							"required": true,
-							"sensitive": true,
+							"name":        "TIER_ENTERPRISE_TOKEN",
+							"kind":        "per_call",
+							"required":    true,
+							"sensitive":   true,
 							"description": "Set to your API credential.",
 						},
 					},
@@ -377,13 +378,13 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 				},
 				"paid": map[string]any{
 					"auth_type": "api_key",
-					"base_url": "https://paid.api.example.com",
+					"base_url":  "https://paid.api.example.com",
 					"env_vars": []map[string]any{
 						{
-							"name": "TIER_PAID_KEY",
-							"kind": "per_call",
-							"required": true,
-							"sensitive": true,
+							"name":        "TIER_PAID_KEY",
+							"kind":        "per_call",
+							"required":    true,
+							"sensitive":   true,
 							"description": "Set to your API credential.",
 						},
 					},
@@ -391,16 +392,16 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 			},
 			"endpoints": map[string]string{
 				"items_enterprise": "enterprise",
-				"items_list": "free",
-				"items_premium": "paid",
+				"items_list":       "free",
+				"items_premium":    "paid",
 			},
 		},
 		"resources": []map[string]any{
 			{
-				"name": "items",
+				"name":        "items",
 				"description": "Items",
-				"endpoints": []string{"enterprise", "list", "premium",  },
-				"syncable": true,
+				"endpoints":   []string{"enterprise", "list", "premium"},
+				"syncable":    true,
 			},
 		},
 		"query_tips": []string{

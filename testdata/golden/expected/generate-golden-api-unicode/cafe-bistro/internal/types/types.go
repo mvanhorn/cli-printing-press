@@ -3,9 +3,8 @@
 
 package types
 
-
 type CafeMenu struct {
-	Id string `json:"id"`
-	Name string `json:"name"`
+	Id         string `json:"id"`
+	Name       string `json:"name"`
 	Specialite string `json:"specialite"`
 }

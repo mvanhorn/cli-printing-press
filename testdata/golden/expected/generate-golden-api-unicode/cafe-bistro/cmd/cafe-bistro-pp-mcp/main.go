@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/mark3labs/mcp-go/server"
 	mcptools "cafe-bistro-pp-cli/internal/mcp"
+	"github.com/mark3labs/mcp-go/server"
 )
 
 func main() {

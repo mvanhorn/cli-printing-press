@@ -15,8 +15,8 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"printing-press-golden-pp-cli/internal/cli"
-	"printing-press-golden-pp-cli/internal/cliutil"
 	"printing-press-golden-pp-cli/internal/client"
+	"printing-press-golden-pp-cli/internal/cliutil"
 	"printing-press-golden-pp-cli/internal/config"
 	"printing-press-golden-pp-cli/internal/mcp/cobratree"
 	"printing-press-golden-pp-cli/internal/store"
@@ -31,7 +31,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/currencies", []mcpParamBinding{ }, []string{ }),
+		makeAPIHandler("GET", "/currencies", []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_create",
@@ -42,7 +42,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("POST", "/projects", []mcpParamBinding{{PublicName: "name", WireName: "name", Location: "body"},{PublicName: "owner_email", WireName: "owner_email", Location: "body"},{PublicName: "visibility", WireName: "visibility", Location: "body"}, }, []string{ }),
+		makeAPIHandler("POST", "/projects", []mcpParamBinding{{PublicName: "name", WireName: "name", Location: "body"}, {PublicName: "owner_email", WireName: "owner_email", Location: "body"}, {PublicName: "visibility", WireName: "visibility", Location: "body"}}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_get",
@@ -52,7 +52,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/projects/{projectId}", []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}, }, []string{"projectId", }),
+		makeAPIHandler("GET", "/projects/{projectId}", []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}}, []string{"projectId"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_list",
@@ -64,7 +64,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/projects", []mcpParamBinding{{PublicName: "status", WireName: "status", Location: "query"},{PublicName: "limit", WireName: "limit", Location: "query"},{PublicName: "cursor", WireName: "cursor", Location: "query"}, }, []string{ }),
+		makeAPIHandler("GET", "/projects", []mcpParamBinding{{PublicName: "status", WireName: "status", Location: "query"}, {PublicName: "limit", WireName: "limit", Location: "query"}, {PublicName: "cursor", WireName: "cursor", Location: "query"}}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_tasks_list-project",
@@ -77,7 +77,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/projects/{projectId}/tasks", []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"},{PublicName: "priority", WireName: "priority", Location: "query"},{PublicName: "limit", WireName: "limit", Location: "query"},{PublicName: "cursor", WireName: "cursor", Location: "query"}, }, []string{"projectId", }),
+		makeAPIHandler("GET", "/projects/{projectId}/tasks", []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "priority", WireName: "priority", Location: "query"}, {PublicName: "limit", WireName: "limit", Location: "query"}, {PublicName: "cursor", WireName: "cursor", Location: "query"}}, []string{"projectId"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_tasks_update-project",
@@ -89,7 +89,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("title", mcplib.Description("Title")),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("PATCH", "/projects/{projectId}/tasks/{taskId}", []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"},{PublicName: "taskId", WireName: "taskId", Location: "path"},{PublicName: "completed", WireName: "completed", Location: "body"},{PublicName: "priority", WireName: "priority", Location: "body"},{PublicName: "title", WireName: "title", Location: "body"}, }, []string{"projectId","taskId", }),
+		makeAPIHandler("PATCH", "/projects/{projectId}/tasks/{taskId}", []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "taskId", WireName: "taskId", Location: "path"}, {PublicName: "completed", WireName: "completed", Location: "body"}, {PublicName: "priority", WireName: "priority", Location: "body"}, {PublicName: "title", WireName: "title", Location: "body"}}, []string{"projectId", "taskId"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("public_get-status",
@@ -98,7 +98,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/public/status", []mcpParamBinding{ }, []string{ }),
+		makeAPIHandler("GET", "/public/status", []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("reports_summary_get-report-year",
@@ -108,7 +108,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/reports/{year}/summary", []mcpParamBinding{{PublicName: "year", WireName: "year", Location: "path"}, }, []string{"year", }),
+		makeAPIHandler("GET", "/reports/{year}/summary", []mcpParamBinding{{PublicName: "year", WireName: "year", Location: "path"}}, []string{"year"}),
 	)
 	// Search tool — faster than iterating list endpoints for finding specific items
 	s.AddTool(
@@ -306,6 +306,7 @@ func dbPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "printing-press-golden-pp-cli", "data.db")
 }
+
 // Note: MCP tools use their own dbPath() because they are in a separate package (main, not cli).
 // The CLI's defaultDBPath() in the cli package uses the same canonical path.
 
@@ -445,37 +446,37 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 			"type": "api_key",
 			"env_vars": []map[string]any{
 				{
-					"name": "PRINTING_PRESS_GOLDEN_API_KEY",
-					"kind": "per_call",
-					"required": true,
-					"sensitive": true,
+					"name":        "PRINTING_PRESS_GOLDEN_API_KEY",
+					"kind":        "per_call",
+					"required":    true,
+					"sensitive":   true,
 					"description": "Set to your API credential.",
 				},
 			},
 		},
 		"resources": []map[string]any{
 			{
-				"name": "currencies",
+				"name":        "currencies",
 				"description": "Manage currencies",
-				"endpoints": []string{"list",  },
-				"syncable": true,
+				"endpoints":   []string{"list"},
+				"syncable":    true,
 			},
 			{
-				"name": "projects",
+				"name":        "projects",
 				"description": "Manage projects",
-				"endpoints": []string{"create", "get", "list",  },
-				"syncable": true,
-				"searchable": true,
+				"endpoints":   []string{"create", "get", "list"},
+				"syncable":    true,
+				"searchable":  true,
 			},
 			{
-				"name": "public",
+				"name":        "public",
 				"description": "Manage public",
-				"endpoints": []string{"get-status",  },
+				"endpoints":   []string{"get-status"},
 			},
 			{
-				"name": "reports",
+				"name":        "reports",
 				"description": "Manage reports",
-				"endpoints": []string{ },
+				"endpoints":   []string{},
 			},
 		},
 		"query_tips": []string{

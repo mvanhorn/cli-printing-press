@@ -16,9 +16,9 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 	var flagC string
 
 	cmd := &cobra.Command{
-		Use:   "find",
-		Short: "Find nearby stores by address",
-		Example: "  public-param-golden-pp-cli stores find --address example-value --city example-value",
+		Use:         "find",
+		Short:       "Find nearby stores by address",
+		Example:     "  public-param-golden-pp-cli stores find --address example-value --city example-value",
 		Annotations: map[string]string{"pp:endpoint": "stores.find", "pp:method": "GET", "pp:path": "/power/store-locator", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !(cmd.Flags().Changed("address") || cmd.Flags().Changed("s")) && !flags.dryRun {
