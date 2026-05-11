@@ -171,7 +171,7 @@ In local mode: searches locally synced data only.`,
 			switch resourceType {
 {{- range .Tables}}
 {{- if .FTS5}}
-			case "{{.Name}}":
+			case "{{.Resource}}":
 				results, err = db.Search{{pascal .Name}}(query, limit)
 {{- end}}
 {{- end}}

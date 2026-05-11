@@ -845,7 +845,7 @@ func (s *Store) Upsert{{pascal .Name}}(data json.RawMessage) error {
 	}
 	defer tx.Rollback()
 
-	if err := s.upsertGenericResourceTx(tx, "{{.Name}}", id, data); err != nil {
+	if err := s.upsertGenericResourceTx(tx, "{{.Resource}}", id, data); err != nil {
 		return err
 	}
 	if err := s.upsert{{pascal .Name}}Tx(tx, id, obj, data); err != nil {
@@ -944,7 +944,7 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) (int, 
 		switch resourceType {
 {{- range .Tables}}
 {{- if hasTypedTable .}}
-		case "{{.Name}}":
+		case "{{.Resource}}":
 			if err := s.upsert{{pascal .Name}}Tx(tx, id, obj, item); err != nil {
 				return 0, extractFailures, fmt.Errorf("typed upsert for %s/%s: %w", resourceType, id, err)
 			}
