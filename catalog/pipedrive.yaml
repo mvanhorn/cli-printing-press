@@ -8,4 +8,6 @@ openapi_version: "3.0"
 tier: official
 verified_date: "2026-03-25"
 homepage: https://developers.pipedrive.com
+auth_key_url: https://app.pipedrive.com/settings/personal/api
+auth_instructions: "Copy your personal API token from Personal preferences -> API."
 notes: "Zero CLI competition. CRM from the terminal."

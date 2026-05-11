@@ -201,7 +201,7 @@ When you know what you want to do but not which command does it, ask the CLI dir
 {{- else if eq .Auth.Type "api_key"}}
 
 {{- with $canonicalEnvVar}}
-Set your API key via environment variable:
+Run `{{$.Name}}-pp-cli auth setup` to print the URL and steps for getting a key (add `--launch` to open the URL). Then set:
 
 ```bash
 export {{.Name}}="<your-key>"
@@ -211,7 +211,7 @@ Or persist it in `{{$.Config.Path}}`.
 {{- end}}
 {{- else if eq .Auth.Type "oauth2"}}
 
-Authenticate via the browser:
+Run `{{.Name}}-pp-cli auth setup` for the registration URL and steps (add `--launch` to open the URL). Then authenticate:
 
 ```bash
 {{.Name}}-pp-cli auth login
@@ -220,7 +220,7 @@ Authenticate via the browser:
 Tokens are stored locally and refreshed automatically.
 {{- else if eq .Auth.Type "bearer_token"}}
 
-Store your access token:
+Run `{{.Name}}-pp-cli auth setup` for the URL and steps to obtain a token (add `--launch` to open the URL). Then store it:
 
 ```bash
 {{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE

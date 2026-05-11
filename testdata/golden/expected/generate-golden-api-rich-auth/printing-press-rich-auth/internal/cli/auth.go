@@ -6,7 +6,6 @@ package cli
 import (
 	"fmt"
 	"os"
-
 	"printing-press-rich-pp-cli/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -17,10 +16,41 @@ func newAuthCmd(flags *rootFlags) *cobra.Command {
 		Short: "Manage authentication for Printing Press Rich",
 	}
 
+	cmd.AddCommand(newAuthSetupCmd(flags))
 	cmd.AddCommand(newAuthStatusCmd(flags))
 	cmd.AddCommand(newAuthSetTokenCmd(flags))
 	cmd.AddCommand(newAuthLogoutCmd(flags))
 
+	return cmd
+}
+
+// newAuthSetupCmd prints concrete steps for getting a credential. Side-effect
+// rule: print by default, --launch opt-in to open the URL, short-circuit when
+// the verifier is running this in a sandboxed subprocess.
+func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
+	var launch bool
+	cmd := &cobra.Command{
+		Use:   "setup",
+		Short: "Print steps for obtaining a credential (use --launch to open the URL)",
+		Example: "  printing-press-rich-pp-cli auth setup\n  printing-press-rich-pp-cli auth setup --launch",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			w := cmd.OutOrStdout()
+			fmt.Fprintln(w, "No setup URL is configured for this CLI; check the API's docs.")
+			fmt.Fprintln(w, "")
+			fmt.Fprintln(w, "Then set:")
+			fmt.Fprintln(w, "  export RICH_AUTH_API_KEY=\"<your-token>\"")
+			fmt.Fprintln(w, "  export RICH_AUTH_OPTIONAL_TOKEN=\"<your-token>\"")
+			fmt.Fprintln(w, "  export RICH_AUTH_BOT_TOKEN=\"<your-token>\"")
+			fmt.Fprintln(w, "  export RICH_AUTH_USER_TOKEN=\"<your-token>\"")
+			fmt.Fprintln(w, "  printing-press-rich-pp-cli auth set-token <token>")
+			if !launch {
+				return nil
+			}
+			fmt.Fprintln(cmd.ErrOrStderr(), "no setup URL configured; cannot launch")
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&launch, "launch", false, "Open the setup URL in your default browser")
 	return cmd
 }
 

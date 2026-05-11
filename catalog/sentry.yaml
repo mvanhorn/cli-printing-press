@@ -8,4 +8,6 @@ openapi_version: "3.0"
 tier: community
 verified_date: "2026-03-24"
 homepage: https://sentry.io
+auth_key_url: https://sentry.io/settings/account/api/auth-tokens/
+auth_instructions: "Create an auth token with the scopes your workflow needs (project:read, event:read, etc.)."
 notes: "126 paths, bearer auth. Templated base URL {region}.sentry.io needs manual config."

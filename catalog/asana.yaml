@@ -8,4 +8,6 @@ openapi_version: "3.0"
 tier: official
 verified_date: "2026-03-23"
 homepage: https://developers.asana.com/reference
+auth_key_url: https://app.asana.com/0/my-apps
+auth_instructions: "Create a personal access token under Apps & Integrations."
 notes: None.
