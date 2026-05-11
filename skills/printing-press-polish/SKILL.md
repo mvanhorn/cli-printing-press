@@ -77,21 +77,26 @@ and let the divergence check (below) handle any drift.
 
 ### Resolve CLI
 
-The argument can be:
+The argument string can contain a `--standalone` flag plus one positional value (a slug, binary name, or path). The flag may appear before or after the positional value; it is the only flag this skill consumes from `args`. Strip it before path resolution.
+
+The positional value can be:
 - A short name: `redfin` (looks up `$PRESS_LIBRARY/redfin`)
 - A full name: `redfin-pp-cli` (strips suffix, looks up `$PRESS_LIBRARY/redfin`)
 - A path: `~/printing-press/library/redfin` (used directly)
 
-Resolution order:
-1. If the argument is an absolute or `~`-prefixed path and exists, use it
+Resolution order for the positional value:
+1. If it is an absolute or `~`-prefixed path and exists, use it
 2. Try `$PRESS_LIBRARY/<arg>` (exact match — works for slug like `redfin`)
-3. If arg has `-pp-cli` suffix, strip it and try `$PRESS_LIBRARY/<slug>` (e.g., `redfin-pp-cli` → `redfin`)
+3. If it has `-pp-cli` suffix, strip it and try `$PRESS_LIBRARY/<slug>` (e.g., `redfin-pp-cli` → `redfin`)
 4. Fuzzy search: `ls $PRESS_LIBRARY/ | grep -i <arg>` for close matches
 
-**Caller scenarios.** Polish has two callers and they pass different argument forms:
+**Caller scenarios and the `--standalone` flag.** Polish has two callers; they invoke it through different mechanisms, and the Publish Offer at the end of this skill fires only when `STANDALONE_MODE` is true. **Determine `STANDALONE_MODE` from the caller mode and the flag, not from the resolved path.**
 
-- **Standalone (user-invoked, `/printing-press-polish redfin`).** The arg is a slug or binary name; resolution lands on `$PRESS_LIBRARY/<slug>/`. This is the published copy and the right target.
-- **Mid-pipeline (main printing-press skill Phase 5.5).** The arg is `$CLI_WORK_DIR` — an absolute path to `~/printing-press/.runstate/.../runs/.../working/<api>-pp-cli/`. Resolution must hit rule 1. **Do not paraphrase this to the slug** — Phase 5.5 fires before the working CLI is promoted, so `$PRESS_LIBRARY/<slug>/` either doesn't exist or holds the *prior* run's stale CLI.
+- **Standalone (user-invoked, `/printing-press-polish redfin`).** Invoked via the slash command. Treat as `STANDALONE_MODE=true` unconditionally — the slash-command form is the publish-intent surface, even when the user omits the flag. The arg is a slug or binary name; resolution lands on `$PRESS_LIBRARY/<slug>/`. This is the published copy and the right target.
+- **Mid-pipeline (main printing-press skill Phase 5.5, hold-path "Polish to retry").** Invoked via the Skill tool with `args: "$CLI_WORK_DIR"`. The arg is an absolute path to `~/printing-press/.runstate/.../runs/.../working/<api>-pp-cli/`; resolution must hit rule 1. `STANDALONE_MODE=false` by default — main SKILL owns the publish flow on this path, so polish defers. **Do not paraphrase the arg to the slug** — Phase 5.5 fires before the working CLI is promoted, so `$PRESS_LIBRARY/<slug>/` either doesn't exist or holds the *prior* run's stale CLI.
+- **Skill-tool standalone override.** A non-slash caller that genuinely wants polish to publish must opt in explicitly by including `--standalone` in `args` (e.g., `args: "--standalone ~/printing-press/library/redfin"`). Without that token, polish never publishes from a Skill-tool invocation — even if the resolved path happens to live under `$PRESS_LIBRARY/`. The flag is the contract; the path is not.
+
+This caller-mode-driven gate replaces the older path-substring heuristic (`*.runstate/*`). The heuristic broke when the main SKILL's Phase 5.5/5.6 ordering inverted, or when polish was invoked from a non-`.runstate` scratch layout: polish would see a `$PRESS_LIBRARY/<slug>/` path, conclude "standalone," and fire its Publish Offer (fork, global git config, public PR) inside a mid-pipeline run. The flag is unambiguous and the safer default is no-publish.
 
 The lock-status check in the next code block is the safety net for the mid-pipeline scenario: if a build lock is held for this CLI (under either name form), polish refuses to run. `printing-press lock` normalizes slug ↔ binary-name internally, so the check works regardless of which form the basename produces.
 
@@ -102,6 +107,7 @@ relative timestamps (e.g., "generated 2 hours ago").
 ```bash
 CLI_DIR="<resolved path>"
 CLI_NAME="$(basename "$CLI_DIR")"
+STANDALONE_MODE="<true|false>"  # true iff slash-command invocation or --standalone in args; default false for Skill-tool invocations
 
 # Check if there's an active build lock — polish edits would be overwritten
 # when the running build promotes to library.
@@ -636,17 +642,20 @@ Set `no` when another invocation would re-tread the same ground:
 
 ## Publish Offer
 
-**Skip this entire section in mid-pipeline mode.** Detect from `$CLI_DIR`: if the path is under `.runstate/` (i.e., `$PRESS_RUNSTATE/<scope>/runs/.../working/<api>-pp-cli/`), polish is being called from main SKILL Phase 5.5 or hold-path "Polish to retry," and the working CLI has not been promoted to library yet. `/printing-press-publish <slug>` resolves to `$PRESS_LIBRARY/<slug>/`, which is either empty or holds a stale prior run — invoking publish here would either fail to resolve or ship the wrong copy. The parent skill owns the publish flow on that path; just emit the result block and return.
+**Skip this entire section unless `STANDALONE_MODE` is true.** `STANDALONE_MODE` is set in the "Resolve CLI" block above based on the caller mode: true for slash-command invocations (`/printing-press-polish ...`) or Skill-tool invocations that pass `--standalone` in `args`; false otherwise. When false, polish is being called from main SKILL Phase 5.5 or hold-path "Polish to retry," and the working CLI has not been promoted to library yet. `/printing-press-publish <slug>` would resolve to `$PRESS_LIBRARY/<slug>/`, which is either empty or holds a stale prior run — invoking publish here would either fail to resolve or ship the wrong copy. The parent skill owns the publish flow on that path; just emit the result block and return.
 
 A simple check:
 
 ```bash
-case "$CLI_DIR" in
-  *.runstate/*) echo "mid-pipeline; skipping Publish Offer"; return ;;
-esac
+if [ "$STANDALONE_MODE" != "true" ]; then
+  echo "non-standalone caller; skipping Publish Offer"
+  return
+fi
 ```
 
-For standalone invocations (`$CLI_DIR` under `$PRESS_LIBRARY/<slug>/`), continue with the offer below.
+The gate is the caller-mode flag, **not** the resolved path. A Skill-tool invocation without `--standalone` defers publish even when the path lives under `$PRESS_LIBRARY/<slug>/`; this is the safer default, and the only way the inverted Phase 5.5/5.6 failure mode (mid-pipeline run firing a public fork + PR) gets caught at the polish boundary. The previous path-substring heuristic (`*.runstate/*`) is no longer load-bearing here — it has been retained in the research-dir resolution block above because that block is selecting between two real on-disk layouts, which is a different concern from publish gating.
+
+For standalone invocations, continue with the offer below.
 
 If `ship` or `ship-with-gaps`:
 
@@ -713,7 +722,7 @@ Present via `AskUserQuestion`:
 
 If the user picks yes, invoke `/printing-press-retro`.
 
-(In mid-pipeline mode this whole section is unreachable — the Publish Offer guard at the top of this section returns early — so no extra check is needed here.)
+(When `STANDALONE_MODE` is false this whole section is unreachable — the Publish Offer guard at the top of this section returns early — so no extra check is needed here.)
 
 ### If "Polish again"
 
