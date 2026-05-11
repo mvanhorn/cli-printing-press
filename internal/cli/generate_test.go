@@ -898,6 +898,125 @@ resources:
 	assert.Contains(t, err.Error(), "not a shippable printed CLI runtime")
 }
 
+func TestMergeSpecsPreservesPerSpecBaseURLPrefixes(t *testing.T) {
+	t.Parallel()
+
+	rootSpec := &spec.APISpec{
+		Name:    "core",
+		Version: "0.1.0",
+		BaseURL: "https://tenant.example.com",
+		Resources: map[string]spec.Resource{
+			"projects": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/projects"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	wikiSpec := &spec.APISpec{
+		Name:    "wiki",
+		Version: "0.1.0",
+		BaseURL: "https://tenant.example.com/wiki/api/v2",
+		Resources: map[string]spec.Resource{
+			"pages": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/pages"},
+				},
+				SubResources: map[string]spec.Resource{
+					"comments": {
+						Endpoints: map[string]spec.Endpoint{
+							"list": {Method: "GET", Path: "/pages/{page_id}/comments"},
+						},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{rootSpec, wikiSpec}, "combo")
+
+	assert.Equal(t, "https://tenant.example.com", merged.BaseURL)
+	assert.Empty(t, merged.Resources["projects"].BaseURL)
+	assert.Empty(t, merged.Resources["pages"].BaseURL)
+	assert.Empty(t, merged.Resources["pages"].SubResources["comments"].BaseURL)
+	assert.Equal(t, "/wiki/api/v2/pages", merged.Resources["pages"].Endpoints["list"].Path)
+	assert.Equal(
+		t,
+		"/wiki/api/v2/pages/{page_id}/comments",
+		merged.Resources["pages"].SubResources["comments"].Endpoints["list"].Path,
+	)
+}
+
+func TestGenerateMultiSpecEmitsNestedResourceBaseURLPrefix(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	rootSpecPath := filepath.Join(dir, "core.yaml")
+	wikiSpecPath := filepath.Join(dir, "wiki.yaml")
+	outputDir := filepath.Join(dir, "combo")
+	require.NoError(t, os.WriteFile(rootSpecPath, []byte(`name: core
+description: Core API
+version: 0.1.0
+base_url: https://tenant.example.com
+auth:
+  type: none
+resources:
+  projects:
+    description: Projects
+    endpoints:
+      list:
+        method: GET
+        path: /projects
+        description: List projects
+`), 0o644))
+	require.NoError(t, os.WriteFile(wikiSpecPath, []byte(`name: wiki
+description: Wiki API
+version: 0.1.0
+base_url: https://tenant.example.com/wiki/api/v2
+auth:
+  type: none
+resources:
+  pages:
+    description: Pages
+    endpoints:
+      list:
+        method: GET
+        path: /pages
+        description: List pages
+    sub_resources:
+      comments:
+        description: Page comments
+        endpoints:
+          list:
+            method: GET
+            path: /pages/{page_id}/comments
+            description: List page comments
+`), 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", rootSpecPath,
+		"--spec", wikiSpecPath,
+		"--name", "combo",
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+	})
+
+	require.NoError(t, cmd.Execute())
+
+	commentsHandler, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "pages_comments_list.go"))
+	require.NoError(t, err)
+	assert.Contains(
+		t,
+		string(commentsHandler),
+		`path := "/wiki/api/v2/pages/{page_id}/comments"`,
+	)
+
+}
+
 func TestMergeSpecsPrefersReplayableBrowserTransportOverUnshippablePageContext(t *testing.T) {
 	t.Parallel()
 

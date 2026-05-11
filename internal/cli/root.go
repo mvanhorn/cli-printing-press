@@ -754,7 +754,13 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 		prefix := perSpecPathPrefix[i]
 		for resourceName, resource := range s.Resources {
 			if prefix != "" {
-				resource = prefixResourceEndpointPaths(resource, prefix)
+				// Same-host/different-path specs are normalized by folding each
+				// spec's path prefix into endpoint paths. Do not also preserve
+				// the source BaseURL path as a resource override, or generated
+				// commands double-prefix nested endpoints.
+				resource = prefixResourceEndpointPaths(resource, prefix, s.BaseURL)
+			} else {
+				resource = resourceWithMergedSpecBaseURL(resource, s.BaseURL, merged.BaseURL)
 			}
 			key := resourceName
 			if _, exists := merged.Resources[key]; exists {
@@ -777,6 +783,22 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 	}
 
 	return merged
+}
+
+func resourceWithMergedSpecBaseURL(resource spec.Resource, sourceBaseURL, mergedBaseURL string) spec.Resource {
+	sourceBaseURL = strings.TrimRight(strings.TrimSpace(sourceBaseURL), "/")
+	mergedBaseURL = strings.TrimRight(strings.TrimSpace(mergedBaseURL), "/")
+	if sourceBaseURL != "" && sourceBaseURL != mergedBaseURL && strings.TrimSpace(resource.BaseURL) == "" {
+		resource.BaseURL = sourceBaseURL
+	}
+	if len(resource.SubResources) > 0 {
+		subResources := make(map[string]spec.Resource, len(resource.SubResources))
+		for name, sub := range resource.SubResources {
+			subResources[name] = resourceWithMergedSpecBaseURL(sub, sourceBaseURL, mergedBaseURL)
+		}
+		resource.SubResources = subResources
+	}
+	return resource
 }
 
 // planMultiSpecBaseURL decides how to reconcile the BaseURL field across
@@ -851,12 +873,22 @@ func splitBaseURL(raw string) (host, path string) {
 // declare an absolute BaseURL override are left alone — their path is
 // resolved against that override at runtime, not the spec-level BaseURL, so
 // folding the prefix in would double-resolve.
-func prefixResourceEndpointPaths(resource spec.Resource, prefix string) spec.Resource {
+func prefixResourceEndpointPaths(resource spec.Resource, prefix, sourceBaseURL string) spec.Resource {
 	out := resource
+	sourceBaseURL = strings.TrimRight(strings.TrimSpace(sourceBaseURL), "/")
+	// The path prefix is being folded into every endpoint path, so any inherited
+	// BaseURL for the same spec must be cleared. Keeping both causes generated
+	// absolute paths to include the prefix twice. Independent endpoint-level
+	// server overrides are preserved.
+	if strings.TrimRight(strings.TrimSpace(out.BaseURL), "/") == sourceBaseURL {
+		out.BaseURL = ""
+	}
 	if len(resource.Endpoints) > 0 {
 		out.Endpoints = make(map[string]spec.Endpoint, len(resource.Endpoints))
 		for name, ep := range resource.Endpoints {
-			if ep.BaseURL == "" {
+			epBaseURL := strings.TrimRight(strings.TrimSpace(ep.BaseURL), "/")
+			if epBaseURL == "" || epBaseURL == sourceBaseURL {
+				ep.BaseURL = ""
 				ep.Path = prefix + ep.Path
 			}
 			out.Endpoints[name] = ep
@@ -865,7 +897,7 @@ func prefixResourceEndpointPaths(resource spec.Resource, prefix string) spec.Res
 	if len(resource.SubResources) > 0 {
 		out.SubResources = make(map[string]spec.Resource, len(resource.SubResources))
 		for name, sub := range resource.SubResources {
-			out.SubResources[name] = prefixResourceEndpointPaths(sub, prefix)
+			out.SubResources[name] = prefixResourceEndpointPaths(sub, prefix, sourceBaseURL)
 		}
 	}
 	return out
