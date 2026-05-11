@@ -3230,7 +3230,7 @@ func endpointNeedsClientLimit(endpoint spec.Endpoint) bool {
 // map[string]any rather than a single JSON-string flag.
 func bodyMap(body []spec.Param, indent string) string {
 	var b strings.Builder
-	renderBodyMap(&b, body, indent, "body", "", "")
+	renderBodyMap(&b, flattenCollidingBodyFields(body), indent, "body", "", "")
 	return b.String()
 }
 
@@ -3335,7 +3335,7 @@ func bodyVarDecls(endpoint spec.Endpoint) string {
 		}
 		return b.String()
 	}
-	renderBodyVarDecls(&b, endpoint.Body, "")
+	renderBodyVarDecls(&b, flattenCollidingBodyFields(endpoint.Body), "")
 	return b.String()
 }
 
@@ -3377,7 +3377,7 @@ func bodyFlagRegs(endpoint spec.Endpoint) string {
 		}
 		return b.String()
 	}
-	renderBodyFlagRegs(&b, endpoint.Body, "", "", true)
+	renderBodyFlagRegs(&b, flattenCollidingBodyFields(endpoint.Body), "", "", true)
 	return b.String()
 }
 
@@ -3439,7 +3439,7 @@ func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
 		}
 		return b.String()
 	}
-	renderBodyRequiredChecks(&b, endpoint.Body, indent, "", true)
+	renderBodyRequiredChecks(&b, flattenCollidingBodyFields(endpoint.Body), indent, "", true)
 	return b.String()
 }
 
