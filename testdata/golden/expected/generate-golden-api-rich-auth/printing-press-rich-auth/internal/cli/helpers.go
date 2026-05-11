@@ -132,6 +132,94 @@ type accessWarning struct {
 	Message string // human-readable detail (the API's body or GraphQL error message)
 }
 
+// syncErrorJSON returns a one-line JSON sync_error event. When err wraps a
+// *client.APIError, the structured status/method/path/body fields let
+// operators see the API's response body without parsing a wrapped error
+// string — required for diagnosing 4xx responses on endpoints whose OpenAPI
+// spec marks filter params optional but the API treats them as required.
+//
+// parent is non-empty only on the dependent-resource path, where it
+// identifies which parent ID's child request failed.
+func syncErrorJSON(resource, parent string, err error) string {
+	payload := struct {
+		Event    string `json:"event"`
+		Resource string `json:"resource"`
+		Parent   string `json:"parent,omitempty"`
+		Status   int    `json:"status,omitempty"`
+		Method   string `json:"method,omitempty"`
+		Path     string `json:"path,omitempty"`
+		Body     string `json:"body,omitempty"`
+		Error    string `json:"error"`
+	}{
+		Event:    "sync_error",
+		Resource: resource,
+		Parent:   parent,
+		Error:    err.Error(),
+	}
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) {
+		payload.Status = apiErr.StatusCode
+		payload.Method = apiErr.Method
+		payload.Path = apiErr.Path
+		payload.Body = apiErr.Body
+	}
+	out, _ := json.Marshal(payload)
+	return string(out)
+}
+
+// syncUserParams carries user-supplied query parameters injected into every
+// sync HTTP request. perResource entries win over global on key conflict.
+type syncUserParams struct {
+	global      map[string]string
+	perResource map[string]map[string]string
+}
+
+// parseSyncUserParams parses the repeatable --param key=value and
+// --resource-param resource:key=value flags. Returns usage errors keyed on the
+// specific invalid token so the user sees which entry was rejected.
+func parseSyncUserParams(globalFlags, perResourceFlags []string) (*syncUserParams, error) {
+	p := &syncUserParams{
+		global:      map[string]string{},
+		perResource: map[string]map[string]string{},
+	}
+	for _, kv := range globalFlags {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("invalid --param %q: expected key=value", kv)
+		}
+		p.global[k] = v
+	}
+	for _, spec := range perResourceFlags {
+		resource, kv, ok := strings.Cut(spec, ":")
+		if !ok || resource == "" {
+			return nil, fmt.Errorf("invalid --resource-param %q: expected resource:key=value", spec)
+		}
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("invalid --resource-param %q: expected resource:key=value", spec)
+		}
+		if p.perResource[resource] == nil {
+			p.perResource[resource] = map[string]string{}
+		}
+		p.perResource[resource][k] = v
+	}
+	return p, nil
+}
+
+// applyTo merges user params into the request map. Called after spec-derived
+// params (cursor, since, page-size, dates) so user flags can override them.
+func (p *syncUserParams) applyTo(resource string, params map[string]string) {
+	if p == nil {
+		return
+	}
+	for k, v := range p.global {
+		params[k] = v
+	}
+	for k, v := range p.perResource[resource] {
+		params[k] = v
+	}
+}
+
 // accessDenialPatterns matches API error bodies that indicate the request was
 // rejected for access-policy reasons rather than for input validity. Matching
 // is case-insensitive and uses word boundaries so common substrings inside
