@@ -786,11 +786,14 @@ func (s *Store) upsert{{pascal .Name}}Tx(tx *sql.Tx, id string, obj map[string]a
 		`INSERT INTO {{safeName .Name}} ({{columnNames .Columns}})
 		 VALUES ({{columnPlaceholders .Columns}})
 		 ON CONFLICT(id) DO UPDATE SET {{updateSet .Columns}}`,
-		id,
-		string(data),
-		time.Now(),
 {{- range .Columns}}
-{{- if and (ne .Name "id") (ne .Name "data") (ne .Name "synced_at")}}
+{{- if eq .Name "id"}}
+		id,
+{{- else if eq .Name "data"}}
+		string(data),
+{{- else if eq .Name "synced_at"}}
+		time.Now(),
+{{- else}}
 		lookupFieldValue(obj, "{{.Name}}"),
 {{- end}}
 {{- end}}

@@ -2561,6 +2561,78 @@ func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/store")
 }
 
+// TestGenerateStoreSubResourceUpsertBindingOrder asserts that the typed
+// upsert for a sub-resource table binds its argument values in the same
+// order as the SQL column declarations. buildSubResourceTable puts the
+// FK column between id and data, so the bindings have to match —
+// otherwise JSON blobs land in the FK column, timestamps land in data,
+// and FK values land in synced_at, silently corrupting every row.
+func TestGenerateStoreSubResourceUpsertBindingOrder(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "subres",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"SUBRES_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/subres-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"domains": {
+				Description: "Manage domains",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/domains", Description: "List domains"},
+				},
+				SubResources: map[string]spec.Resource{
+					"verify": {
+						Description: "Verify a domain",
+						Endpoints: map[string]spec.Endpoint{
+							"get": {
+								Method:      "GET",
+								Path:        "/domains/{domainId}/verify",
+								Description: "Get verification status",
+								Params:      []spec.Param{{Name: "domainId", Type: "string", Required: true, Positional: true}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	src := string(storeSrc)
+
+	// buildSubResourceTable inserts the FK column between id and data, so
+	// the column declaration order is (id, domains_id, data, synced_at).
+	assert.Contains(t, src, "INSERT INTO verify (id, domains_id, data, synced_at)",
+		"sub-resource table should declare FK column between id and data")
+
+	// The argument bindings must follow that same order.
+	assert.Regexp(t,
+		`(?s)id,\s+lookupFieldValue\(obj, "domains_id"\),\s+string\(data\),\s+time\.Now\(\),`,
+		src,
+		"upsertVerifyTx binding order must match (id, domains_id, data, synced_at) column order")
+
+	// And the swapped order must be absent.
+	assert.NotRegexp(t,
+		`(?s)id,\s+string\(data\),\s+time\.Now\(\),\s+lookupFieldValue\(obj, "domains_id"\),`,
+		src,
+		"swapped (id, data, synced_at, fk) binding order must not be emitted")
+}
+
 func TestGenerateSimilarCommandUsesCompositeResourceKey(t *testing.T) {
 	t.Parallel()
 
