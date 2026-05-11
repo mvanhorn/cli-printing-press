@@ -6097,6 +6097,22 @@ func TestGeneratedSyncGatesSinceParamPerResource(t *testing.T) {
 					},
 				},
 			},
+			// Dependent (parameterized child) path with no temporal-filter
+			// param — exercises the second warning emission site in
+			// syncDependentResource so parity assertions can verify both
+			// code paths emit the same shape.
+			"comments": {
+				Description: "Comments per event",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/events/{event_id}/comments",
+						Description: "List comments for an event",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
 		},
 	}
 
@@ -6124,10 +6140,29 @@ func TestGeneratedSyncGatesSinceParamPerResource(t *testing.T) {
 	assert.NotContains(t, syncContent, `case "users":`,
 		"users resource has no since-like param and must not appear in the switch — empty result skips the cursor")
 
-	// Warn emission lands when effectiveSince != "" and sinceParam == "".
+	// Pin the full warning JSON shape so future template churn can't silently
+	// drop a key, rename the event, or break the agent-facing contract.
+	const fullWarning = `{"event":"sync_warning","resource":"%s","reason":"resource_not_incremental","message":"endpoint does not declare a temporal filter parameter; incremental sync has no effect for this resource"}`
+	assert.Contains(t, syncContent, fullWarning,
+		"warning event must preserve the full agent-facing JSON shape")
+	// Both syncResource (flat) and syncDependentResource (parameterized child
+	// paths) must emit the warning. Counting occurrences guards against one
+	// site being deleted while a single assert.Contains still passes.
+	assert.GreaterOrEqual(t, strings.Count(syncContent, fullWarning), 2,
+		"warning must appear on both the flat and dependent-resource code paths")
+
+	// Human-mode warning to stderr — silent-fallback guard for TTY users.
 	assert.Contains(t, syncContent,
-		`"reason":"resource_not_incremental"`,
-		"warning event must be emitted when a resource lacks temporal-filter support")
+		`"  %s: incremental sync ignored (endpoint declares no temporal filter; falling back to full pagination)\n"`,
+		"human-mode users must see a stderr warning when --since is dropped")
+
+	// Zeroing the temporal-filter timestamp is what actually prevents the
+	// blind ?since= from reaching the API. Pin both sites; without these
+	// the warning emission alone is cosmetic.
+	assert.Contains(t, syncContent, `effectiveSince = ""`,
+		"flat path must zero effectiveSince after warning so no cursor leaks through")
+	assert.Contains(t, syncContent, `depSinceTS = ""`,
+		"dependent path must zero depSinceTS after warning so no cursor leaks through")
 
 	// Build to catch template-syntax / import errors.
 	runGoCommand(t, outputDir, "mod", "tidy")

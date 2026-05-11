@@ -1286,6 +1286,30 @@ func TestProfileSyncableResourceSinceParamPropagation(t *testing.T) {
 					},
 				},
 			},
+			"posts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/posts",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "modified_since", Type: "string"},
+						},
+					},
+				},
+			},
+			"changelog": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/changelog",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "updated_at", Type: "string"},
+						},
+					},
+				},
+			},
 			"users": {
 				Endpoints: map[string]spec.Endpoint{
 					"list": {
@@ -1310,6 +1334,12 @@ func TestProfileSyncableResourceSinceParamPropagation(t *testing.T) {
 
 	require.Contains(t, byName, "audit")
 	assert.Equal(t, "updated_after", byName["audit"].SinceParam, "spec-declared name (not the profile-wide guess) wins")
+
+	require.Contains(t, byName, "posts")
+	assert.Equal(t, "modified_since", byName["posts"].SinceParam, "modified_since heuristic branch")
+
+	require.Contains(t, byName, "changelog")
+	assert.Equal(t, "updated_at", byName["changelog"].SinceParam, "updated_at heuristic branch")
 
 	require.Contains(t, byName, "users")
 	assert.Empty(t, byName["users"].SinceParam, "endpoints without a since-like param yield empty SinceParam — the sync template treats this as 'do not send'")
