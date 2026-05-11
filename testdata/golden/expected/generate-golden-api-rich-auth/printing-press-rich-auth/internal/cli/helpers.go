@@ -220,6 +220,32 @@ func (p *syncUserParams) applyTo(resource string, params map[string]string) {
 	}
 }
 
+// validateResourceNames returns a usage-shaped error when any --resource-param
+// key targets a resource not in known. Without this check a typo
+// (e.g. --resource-param chanels:mine=true) is a silent no-op: the param
+// never matches a real resource and sync proceeds with missing rows.
+func (p *syncUserParams) validateResourceNames(known []string) error {
+	if p == nil || len(p.perResource) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(known))
+	for _, r := range known {
+		set[r] = struct{}{}
+	}
+	var unknown []string
+	for r := range p.perResource {
+		if _, ok := set[r]; !ok {
+			unknown = append(unknown, r)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf("--resource-param references unknown resource(s): %s (known: %s)",
+		strings.Join(unknown, ", "), strings.Join(known, ", "))
+}
+
 // accessDenialPatterns matches API error bodies that indicate the request was
 // rejected for access-policy reasons rather than for input validity. Matching
 // is case-insensitive and uses word boundaries so common substrings inside

@@ -67,6 +67,13 @@ func TestGenerateSyncParamPassthrough(t *testing.T) {
 	require.NotEqual(t, -1, applyIdx, "syncResource should apply user params before c.Get")
 	assert.Less(t, loopIdx, applyIdx,
 		"user params must apply after spec-derived params so flags can override")
+
+	// --resource-param keys must be validated against known resources before
+	// sync starts, so a typo errors instead of silently no-op'ing.
+	assert.Contains(t, syncSrc, "userParams.validateResourceNames(knownSyncResourceNames())",
+		"sync should validate --resource-param keys against the known resource set")
+	assert.Contains(t, syncSrc, "func knownSyncResourceNames() []string",
+		"knownSyncResourceNames helper must be emitted alongside defaultSyncResources")
 }
 
 // TestGenerateSyncErrorJSONIncludesAPIBody verifies that the sync_error JSON

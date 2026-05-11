@@ -113,6 +113,15 @@ Exit codes & warnings:
 				resources = defaultSyncResources()
 			}
 
+			// Reject --resource-param keys that don't match a known resource.
+			// Validates against the full top-level + dependent set, not the
+			// user-filtered `resources` slice, so legitimate cases like
+			// "filter to A, but apply param to B if it gets synced" still
+			// catch typos without false positives.
+			if err := userParams.validateResourceNames(knownSyncResourceNames()); err != nil {
+				return usageErr(err)
+			}
+
 			// --full: clear all sync cursors before starting
 			if full {
 				for _, resource := range resources {
@@ -909,6 +918,14 @@ func defaultSyncResources() []string {
 	return []string{
 		"items",
 	}
+}
+
+// knownSyncResourceNames returns every resource name sync will accept —
+// flat resources plus any parent-child dependents. Used by --resource-param
+// validation to reject misspellings before they become silent no-ops.
+func knownSyncResourceNames() []string {
+	names := defaultSyncResources()
+	return names
 }
 
 // syncResourcePath maps resource names to their actual API endpoint paths.
