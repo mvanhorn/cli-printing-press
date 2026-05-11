@@ -18,6 +18,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// unresolvedPathKeyRE matches `{key}` placeholders left in a sync path
+// after syncResourcePath() resolution. Hierarchical APIs (Yahoo Fantasy,
+// Reddit pre-2024, YouTube Data v3, MLB Stats, etc.) declare paths like
+// "/league/{league_key}/players" that can only be filled from parent
+// context — flat-list sync cannot fill them. Resources with unresolved
+// keys emit sync_warning and are skipped without aborting the run, so
+// sync still completes for resources that DO have resolvable paths.
+var unresolvedPathKeyRE = regexp.MustCompile(`\{[a-zA-Z_][a-zA-Z0-9_]*\}`)
+
 // syncResult holds the outcome of syncing a single resource.
 type syncResult struct {
 	Resource string
@@ -300,6 +309,43 @@ func syncResource(c interface {
 	if err != nil {
 		return syncResult{Resource: resource, Err: err, Duration: time.Since(started)}
 	}
+
+	// Skip resources whose path template still contains unresolved `{key}`
+	// placeholders after syncResourcePath() resolution. These paths require
+	// parent context (league_key, team_key, channel_id, etc.) that flat-list
+	// sync cannot fill. Emit a sync_warning describing the missing keys and
+	// continue — sync exits 0 if any resource succeeded, so this keeps
+	// hierarchical-API CLIs functional for the resources they CAN sync flat.
+	if missingKeys := unresolvedPathKeyRE.FindAllString(path, -1); len(missingKeys) > 0 {
+		if !humanFriendly {
+			payload := struct {
+				Event    string   `json:"event"`
+				Resource string   `json:"resource"`
+				Reason   string   `json:"reason"`
+				Keys     []string `json:"keys"`
+				Path     string   `json:"path"`
+				Message  string   `json:"message"`
+			}{
+				Event:    "sync_warning",
+				Resource: resource,
+				Reason:   "unfilled_path_key",
+				Keys:     missingKeys,
+				Path:     path,
+				Message:  fmt.Sprintf("path %s requires parent context (%s); resource skipped", path, strings.Join(missingKeys, ", ")),
+			}
+			payloadJSON, _ := json.Marshal(payload)
+			fmt.Fprintf(os.Stdout, "%s\n", payloadJSON)
+		} else {
+			fmt.Fprintf(os.Stderr, "  %s skipped (requires parent context: %s)\n",
+				resource, strings.Join(missingKeys, ", "))
+		}
+		return syncResult{
+			Resource: resource,
+			Warn:     fmt.Errorf("skipped %s: unresolved path keys %v", resource, missingKeys),
+			Duration: time.Since(started),
+		}
+	}
+
 	var totalCount int
 
 	// Resume cursor from sync_state (unless --full cleared it)
