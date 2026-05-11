@@ -70,6 +70,8 @@ When a downstream consumer (parser, schema validator) needs a valid-shape value,
 
 **Manuscripts (`.manuscripts/<runID>/`).** Highest-risk source — captured browser-sniff content is by construction where customer values entered. Acceptance for manuscript findings requires the explicit `evidence_context`-cited justification; "captured data" alone is not sufficient. When in doubt, replace the value in the manuscript file directly (it's local working state) and use a hand-authored fixture with synthetic values for any downstream tests.
 
+**Vendor spec files at the CLI root (`spec.yaml`, `spec.yml`, `spec.json`).** Exempt from the audit by design — these are the OpenAPI/internal source the operator passed to `--spec`, and vendor `example:` blocks (Stripe `jenny@example.com`, GitHub user-schema example phones) are documentation, not customer PII. The exemption is depth-1 only; the same basename nested under `.manuscripts/` or `testdata/` is captured content and stays in scope.
+
 ## Forbidden accept patterns
 
 The binary enforces these via gate failures, not just convention:
