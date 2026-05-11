@@ -958,7 +958,7 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 	switch resource {
 {{- range .Tables}}
 {{- if hasTypedTable .}}
-	case "{{.Name}}":
+	case "{{.Resource}}":
 		return db.Upsert{{pascal .Name}}(data)
 {{- end}}
 {{- end}}

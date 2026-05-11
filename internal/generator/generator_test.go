@@ -2598,6 +2598,108 @@ func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/store")
 }
 
+// TestUpsertDispatchPreservesMultiWordResourceCasing is the regression test
+// for issue #1064: dispatch case strings must use the spec resource key,
+// not the snake-cased table name, or kebab multi-word resources silently
+// skip the typed upsert and FTS search paths.
+func TestUpsertDispatchPreservesMultiWordResourceCasing(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "media",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/media-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"audio-isolation": {
+				Description: "Isolated audio tracks",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/v1/audio-isolation",
+						Description: "List isolation jobs",
+						Response:    spec.ResponseDef{Type: "array", Item: "AudioIsolation"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"AudioIsolation": {
+				Fields: []spec.TypeField{
+					{Name: "id", Type: "string"},
+					{Name: "name", Type: "string"},
+					// Two FTS-eligible text fields force the schema builder
+					// to emit FTS5, which in turn emits the search dispatch
+					// switch that #1064 also affects.
+					{Name: "description", Type: "string"},
+					{Name: "status", Type: "string"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, Search: true}
+	require.NoError(t, gen.Generate())
+
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	store := string(storeSrc)
+
+	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	sync := string(syncSrc)
+
+	searchSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "search.go"))
+	require.NoError(t, err)
+	search := string(searchSrc)
+
+	// The typed helper name keeps its snake-derived PascalCase shape — the
+	// fix only changes the case-string discriminant, not the Go identifier.
+	assert.Contains(t, store, "func (s *Store) upsertAudioIsolationTx(",
+		"typed Tx helper should still be PascalCase-named from snake schema name")
+	assert.Contains(t, store, "func (s *Store) UpsertAudioIsolation(",
+		"public typed upsert should still be PascalCase-named from snake schema name")
+	assert.Contains(t, store, "func (s *Store) SearchAudioIsolation(",
+		"FTS5 search helper should still be PascalCase-named from snake schema name")
+
+	// UpsertBatch must dispatch on the runtime resource form (kebab) to
+	// match defaultSyncResources/syncResourcePath/resourceIDFieldOverrides.
+	assert.Regexp(t,
+		`(?s)func \(s \*Store\) UpsertBatch\(.*case "audio-isolation":\s+if err := s\.upsertAudioIsolationTx\(`,
+		store,
+		"UpsertBatch must dispatch on \"audio-isolation\" — the snake case string never matches the kebab runtime resource (issue #1064)")
+
+	// upsertSingleObject must dispatch the same way.
+	assert.Regexp(t,
+		`(?s)func upsertSingleObject\(.*case "audio-isolation":\s+return db\.UpsertAudioIsolation\(data\)`,
+		sync,
+		"upsertSingleObject must dispatch on \"audio-isolation\" so single-object responses reach the typed table (issue #1064)")
+
+	// search.go's --type filter has the same shape — the user passes the
+	// kebab name (matching what `sync` advertises), so the case must too.
+	assert.Regexp(t,
+		`(?s)switch resourceType \{.*case "audio-isolation":\s+results, err = db\.SearchAudioIsolation\(query, limit\)`,
+		search,
+		"search dispatch must accept \"audio-isolation\" so --type <kebab-resource> reaches the FTS index (issue #1064)")
+
+	// And the old snake-case discriminants must be absent — leaving them in
+	// would mean the dispatch is fixed in one place but not the other.
+	for _, src := range []string{store, sync, search} {
+		assert.NotContains(t, src, `case "audio_isolation":`,
+			"snake_case case string is the bug; only kebab-case should match the runtime resource")
+	}
+
+	// Compile and run the generated store package. The emitted
+	// TestUpsertBatch_PopulatesAudioIsolationTable calls
+	// UpsertBatch("audio-isolation", ...) against the kebab dispatch case;
+	// a regression that re-broke either side would fail here at runtime.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/store")
+}
+
 // TestGenerateStoreSubResourceUpsertBindingOrder asserts that the typed
 // upsert for a sub-resource table binds its argument values in the same
 // order as the SQL column declarations. buildSubResourceTable puts the

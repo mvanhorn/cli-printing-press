@@ -288,14 +288,14 @@ func TestUpsertBatch_Populates{{pascal .Name}}Table(t *testing.T) {
 		json.RawMessage(`{"id": "test-002"}`),
 		json.RawMessage(`{"id": "test-003"}`),
 	}
-	if _, _, err := s.UpsertBatch("{{.Name}}", items); err != nil {
+	if _, _, err := s.UpsertBatch("{{.Resource}}", items); err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
 	}
 
 	db := s.DB()
 
 	var generic int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM resources WHERE resource_type = ?`, "{{.Name}}").Scan(&generic); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM resources WHERE resource_type = ?`, "{{.Resource}}").Scan(&generic); err != nil {
 		t.Fatalf("count resources: %v", err)
 	}
 	if generic != len(items) {
@@ -329,7 +329,7 @@ func TestUpsertBatch_Sets{{pascal .Name}}ParentID(t *testing.T) {
 		json.RawMessage(`{"id": "child-002", "parent_id": "parent-A"}`),
 		json.RawMessage(`{"id": "child-003", "parent_id": "parent-B"}`),
 	}
-	if _, _, err := s.UpsertBatch("{{.Name}}", items); err != nil {
+	if _, _, err := s.UpsertBatch("{{.Resource}}", items); err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
 	}
 

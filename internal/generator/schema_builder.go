@@ -8,7 +8,11 @@ import (
 )
 
 type TableDef struct {
+	// Name is the snake_cased SQL/Go identifier (table DDL, Pascal-derived
+	// method names). Resource is the original spec key used by callers that
+	// dispatch on the runtime resource string, which preserves spec casing.
 	Name         string
+	Resource     string
 	Columns      []ColumnDef
 	Indexes      []IndexDef
 	FTS5         bool
@@ -65,8 +69,9 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 		tableName := toSnakeCase(name)
 
 		table := TableDef{
-			Name:    tableName,
-			Columns: append([]ColumnDef(nil), baseTableColumns...),
+			Name:     tableName,
+			Resource: name,
+			Columns:  append([]ColumnDef(nil), baseTableColumns...),
 		}
 
 		if gravity >= 2 {
@@ -143,7 +148,10 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 	// author naming a top-level resource the same thing the shard synthesizes
 	// (e.g. top-level "gists_commits" plus a multi-parent "commits" under
 	// "gists") would otherwise emit two CREATE TABLE statements and two
-	// duplicate Upsert<X>Tx methods, breaking the build on regen.
+	// duplicate Upsert<X>Tx methods, breaking the build on regen. Top-level
+	// tables are appended before sub-resource tables, so on a Name collision
+	// the kept entry carries the top-level Resource (raw spec key) rather
+	// than the sub-resource's snake-cased form.
 	seen := make(map[string]bool)
 	deduped := make([]TableDef, 0, len(tables))
 	for _, t := range tables {
@@ -155,7 +163,8 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 	tables = deduped
 
 	tables = append(tables, TableDef{
-		Name: "sync_state",
+		Name:     "sync_state",
+		Resource: "sync_state",
 		Columns: []ColumnDef{
 			{Name: "resource_type", Type: "TEXT", PrimaryKey: true},
 			{Name: "last_cursor", Type: "TEXT"},
@@ -372,8 +381,9 @@ func buildSubResourceTable(name string, r spec.Resource, parentTable string) Tab
 	columns = append(columns, baseTableColumns[1:]...) // data, synced_at
 
 	return TableDef{
-		Name:    tableName,
-		Columns: columns,
+		Name:     tableName,
+		Resource: tableName,
+		Columns:  columns,
 		Indexes: []IndexDef{
 			{
 				Name:      "idx_" + tableName + "_" + parentCol,
