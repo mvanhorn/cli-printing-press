@@ -1714,6 +1714,14 @@ func buildPromotedCommandPlan(apiSpec *spec.APISpec) ([]PromotedCommand, map[str
 }
 
 func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool, promotedEndpointNames map[string]string) error {
+	// When the spec emits promoted commands, the generator also emits the api
+	// browser (api_discovery.go), whose RunE filters root.Commands() by
+	// child.Hidden. Mark the raw top-level resource groups Hidden so they
+	// surface there instead of cluttering --help. Direct invocation still
+	// works (Cobra's Hidden only suppresses listing). For specs without
+	// promoted commands the api browser is not generated, so leave resources
+	// visible.
+	hideTopLevelResources := len(g.PromotedCommands) > 0
 	// Generate per-resource parent files + per-endpoint command files
 	// This produces more files (one per endpoint) which improves Breadth scoring
 	for name, resource := range g.Spec.Resources {
@@ -1733,7 +1741,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				FuncPrefix:   name,
 				CommandPath:  name,
 				Resource:     resource,
-				Hidden:       false,
+				Hidden:       hideTopLevelResources,
 				APISpec:      g.Spec,
 			}
 			parentPath := filepath.Join("internal", "cli", safeResourceFileStem(name)+".go")
