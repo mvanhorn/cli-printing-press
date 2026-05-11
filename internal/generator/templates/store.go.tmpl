@@ -1041,11 +1041,21 @@ func (s *Store) GetSyncCursor(resourceType string) string {
 
 // ListIDs returns all IDs from a resource's domain table, or from the generic
 // resources table if no domain table exists. Used by dependent sync to iterate parents.
+//
+// resourceType is never interpolated into SQL directly. We resolve it to a real
+// table name via a parameterized sqlite_master lookup; only that trusted name is
+// substituted (double-quoted) into the SELECT. Callers may pass any string.
 func (s *Store) ListIDs(resourceType string) ([]string, error) {
-	// Try domain table first (tables are named after the resource type)
-	query := fmt.Sprintf("SELECT id FROM %s", resourceType)
-	rows, err := s.db.Query(query)
-	if err != nil {
+	var table string
+	err := s.db.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+		resourceType,
+	).Scan(&table)
+	var rows *sql.Rows
+	if err == nil && table != "" {
+		rows, err = s.db.Query(fmt.Sprintf(`SELECT id FROM "%s"`, strings.ReplaceAll(table, `"`, `""`)))
+	}
+	if err != nil || table == "" {
 		// Fall back to generic resources table
 		rows, err = s.db.Query("SELECT id FROM resources WHERE resource_type = ?", resourceType)
 		if err != nil {
