@@ -266,6 +266,13 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 		return fmt.Errorf("copying to staging directory: %w", err)
 	}
 
+	// Phase 5 writes acceptance markers to the runstate, but the published
+	// copy is the path downstream consumers see — embed them before the swap.
+	if err := stageRunstateManuscripts(stagingDir, state); err != nil {
+		_ = os.RemoveAll(stagingDir)
+		return fmt.Errorf("staging runstate manuscripts: %w", err)
+	}
+
 	// Update state to reflect promotion.
 	state.PublishedDir = libraryDir
 
@@ -333,6 +340,50 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 	default:
 		return nil
 	}
+}
+
+// A pre-existing subtree in the staging copy wins so artifacts that generate
+// or polish wrote directly into the working dir are never overwritten by an
+// older runstate snapshot. No-op when state has no RunID — the
+// NewMinimalState path for plan-driven CLIs has no runstate to stage from.
+func stageRunstateManuscripts(stagingDir string, state *PipelineState) error {
+	if state == nil || state.RunID == "" {
+		return nil
+	}
+	// The leaf component of each source path becomes the subdir name in
+	// staging (proofs/research/discovery). This pairs with the directory
+	// shape established by paths.go's RunProofsDir, RunResearchDir, and
+	// RunDiscoveryDir helpers; if those rename their leaf names, the
+	// destination layout follows automatically.
+	sources := []string{
+		state.ProofsDir(),
+		state.ResearchDir(),
+		state.DiscoveryDir(),
+	}
+	dstRoot := filepath.Join(stagingDir, ".manuscripts", state.RunID)
+	for _, src := range sources {
+		name := filepath.Base(src)
+		info, err := os.Stat(src)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("inspecting runstate %s: %w", name, err)
+		}
+		if !info.IsDir() {
+			continue
+		}
+		target := filepath.Join(dstRoot, name)
+		if _, statErr := os.Stat(target); statErr == nil {
+			continue
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("checking %s in staging: %w", target, statErr)
+		}
+		if err := CopyDir(src, target); err != nil {
+			return fmt.Errorf("copying runstate %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 func validatePhase5GateForPromote(workingDir string, state *PipelineState) error {

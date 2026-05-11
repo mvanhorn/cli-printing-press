@@ -626,6 +626,150 @@ func TestPromoteWorkingCLI_MinimalStateNoRunstate(t *testing.T) {
 	assert.Equal(t, libDir, state.PublishedDir)
 }
 
+func TestPromoteWorkingCLI_StagesRunstateManuscripts(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+	_, err := AcquireLock("test-pp-cli", "test-scope", false)
+	require.NoError(t, err)
+
+	state := NewStateWithRun("test", workDir, "run-stage-001", "test-scope")
+	writePhase5PassForState(t, state, "none")
+
+	// Plant research and discovery alongside the phase5 marker so we can
+	// assert the whole runstate triplet gets staged into the published copy.
+	require.NoError(t, os.MkdirAll(state.ResearchDir(), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(state.ResearchDir(), "notes.md"), []byte("research notes\n"), 0o644))
+	require.NoError(t, os.MkdirAll(state.DiscoveryDir(), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(state.DiscoveryDir(), "endpoints.json"), []byte("{}\n"), 0o644))
+
+	err = PromoteWorkingCLI("test-pp-cli", workDir, state)
+	require.NoError(t, err)
+
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
+	manuRoot := filepath.Join(libDir, ".manuscripts", state.RunID)
+
+	// phase5-acceptance.json must be reachable at the path publish validate
+	// looks at first: <lib>/.manuscripts/<run-id>/proofs/.
+	_, err = os.Stat(filepath.Join(manuRoot, "proofs", Phase5AcceptanceFilename))
+	assert.NoError(t, err, "phase5 acceptance marker should be staged into the published copy")
+
+	data, err := os.ReadFile(filepath.Join(manuRoot, "research", "notes.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "research notes\n", string(data))
+
+	data, err = os.ReadFile(filepath.Join(manuRoot, "discovery", "endpoints.json"))
+	require.NoError(t, err)
+	assert.Equal(t, "{}\n", string(data))
+}
+
+func TestPromoteWorkingCLI_PreservesPreexistingManuscripts(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+	_, err := AcquireLock("test-pp-cli", "test-scope", false)
+	require.NoError(t, err)
+
+	state := NewStateWithRun("test", workDir, "run-stage-002", "test-scope")
+	writePhase5PassForState(t, state, "none")
+
+	// Working dir already carries a proofs subtree at the destination path
+	// with a sentinel file. We must not clobber it during staging.
+	preexistingProofs := filepath.Join(workDir, ".manuscripts", state.RunID, "proofs")
+	require.NoError(t, os.MkdirAll(preexistingProofs, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(preexistingProofs, "sentinel.txt"), []byte("keep-me\n"), 0o644))
+
+	// Also seed a different, non-overlapping research dir in runstate so
+	// non-conflicting subdirs still get staged on the same run.
+	require.NoError(t, os.MkdirAll(state.ResearchDir(), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(state.ResearchDir(), "notes.md"), []byte("from runstate\n"), 0o644))
+
+	err = PromoteWorkingCLI("test-pp-cli", workDir, state)
+	require.NoError(t, err)
+
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
+	manuRoot := filepath.Join(libDir, ".manuscripts", state.RunID)
+
+	data, err := os.ReadFile(filepath.Join(manuRoot, "proofs", "sentinel.txt"))
+	require.NoError(t, err, "pre-existing proofs subtree should survive staging")
+	assert.Equal(t, "keep-me\n", string(data))
+
+	data, err = os.ReadFile(filepath.Join(manuRoot, "research", "notes.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "from runstate\n", string(data))
+}
+
+func TestPromoteWorkingCLI_StagesPartialRunstate(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+	_, err := AcquireLock("test-pp-cli", "test-scope", false)
+	require.NoError(t, err)
+
+	state := NewStateWithRun("test", workDir, "run-stage-003", "test-scope")
+	// Only proofs is populated — research and discovery dirs do not exist
+	// in the runstate. The staging step must skip them via os.IsNotExist
+	// without aborting the promote.
+	writePhase5PassForState(t, state, "none")
+
+	err = PromoteWorkingCLI("test-pp-cli", workDir, state)
+	require.NoError(t, err)
+
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
+	manuRoot := filepath.Join(libDir, ".manuscripts", state.RunID)
+
+	_, err = os.Stat(filepath.Join(manuRoot, "proofs", Phase5AcceptanceFilename))
+	assert.NoError(t, err)
+
+	_, statErr := os.Stat(filepath.Join(manuRoot, "research"))
+	assert.True(t, os.IsNotExist(statErr), "research subdir should not be created when runstate has none")
+	_, statErr = os.Stat(filepath.Join(manuRoot, "discovery"))
+	assert.True(t, os.IsNotExist(statErr), "discovery subdir should not be created when runstate has none")
+}
+
+func TestPromoteWorkingCLI_StagingNoopForMinimalState(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+	state := NewMinimalState("test-pp-cli", workDir)
+	require.Empty(t, state.RunID, "minimal state should have no RunID")
+
+	err := PromoteWorkingCLI("test-pp-cli", workDir, state)
+	require.NoError(t, err)
+
+	libDir := filepath.Join(PublishedLibraryRoot(), "test")
+	_, statErr := os.Stat(filepath.Join(libDir, ".manuscripts"))
+	assert.True(t, os.IsNotExist(statErr), "minimal-state promote should not create a .manuscripts dir")
+}
+
 func TestIsStale(t *testing.T) {
 	fresh := &LockState{UpdatedAt: time.Now()}
 	assert.False(t, IsStale(fresh))
