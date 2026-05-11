@@ -5,7 +5,6 @@ package cobratree
 
 import (
 	"reflect"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -73,7 +72,10 @@ func TestCliArgsFromMCP_BlocksRootFlags(t *testing.T) {
 // any flag NOT in blockedRootFlags must still pass through, including
 // strings, bools, numbers, and []any. Without this, a tightening change
 // to the blocklist that accidentally drops legitimate per-command flags
-// would silently break every MCP-driven command.
+// would silently break every MCP-driven command. cliArgsFromMCP also
+// guarantees sorted-key output (so generated commands see deterministic
+// argv ordering); compare directly to catch a regression in either the
+// blocklist or the sort.
 func TestCliArgsFromMCP_AllowsPerCommandFlags(t *testing.T) {
 	in := map[string]any{
 		"query":   "alpha",
@@ -82,12 +84,8 @@ func TestCliArgsFromMCP_AllowsPerCommandFlags(t *testing.T) {
 		"tags":    []any{"a", "b"},
 	}
 	got := cliArgsFromMCP(in)
-	// cliArgsFromMCP sorts keys; expected output reflects that order.
 	want := []string{"--limit", "25", "--query", "alpha", "--tags", "a,b", "--verbose"}
-	sort.Strings(want) // defensive: keep test stable if expected ordering shifts
-	gotSorted := append([]string{}, got...)
-	sort.Strings(gotSorted)
-	if !reflect.DeepEqual(gotSorted, want) {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cliArgsFromMCP per-command passthrough: got %v, want %v", got, want)
 	}
 }
