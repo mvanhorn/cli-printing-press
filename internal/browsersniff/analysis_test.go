@@ -124,7 +124,7 @@ func TestAnalyzeTraffic_DetectsProtocolProtectionAndWarningCategories(t *testing
 				URL:                 "https://app.example.com/explore",
 				ResponseStatus:      200,
 				ResponseContentType: "text/html",
-				ResponseBody:        `<html><script id="__NEXT_DATA__" type="application/json">{"props":{}}</script><div id="__next"></div></html>`,
+				ResponseBody:        makeSSRPageWithNextData(`{"props":{}}`),
 			},
 			{
 				Method:              "GET",
@@ -638,4 +638,633 @@ func TestEvidenceRef_MixedArrayInTrafficAnalysis(t *testing.T) {
 		"string-form evidence should re-emit as a JSON string")
 	assert.Contains(t, string(out), `"entry_index":0`,
 		"object-form evidence should re-emit as a JSON object")
+}
+
+func TestDetectSSREmbeddedData(t *testing.T) {
+	tests := []struct {
+		name   string
+		entry  EnrichedEntry
+		expect string
+	}{
+		{
+			name: "next-data",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody:        makeSSRPage("__NEXT_DATA__", `{"props":{}}`),
+			},
+			expect: "__NEXT_DATA__",
+		},
+		{
+			name: "nuxt",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody:        makeSSRPage("__NUXT__", `{"state":{}}`),
+			},
+			expect: "__NUXT__",
+		},
+		{
+			name: "app-initial-state",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody:        makeSSRPage("__APP_INITIAL_STATE__", `{"data":{}}`),
+			},
+			expect: "__APP_INITIAL_STATE__",
+		},
+		{
+			name: "state-view-yandex",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody:        makeSSRPage("state-view", `{"map":{}}`),
+			},
+			expect: "state-view",
+		},
+		{
+			name: "ld-json",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody:        makeSSRPage("application/ld+json", `{"@type":"Product"}`),
+			},
+			expect: "application/ld+json",
+		},
+		{
+			name: "window-prefix",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody:        makeSSRPage("window.__", `{"initial":{}}`),
+			},
+			expect: "window.__",
+		},
+		{
+			name: "priority-next-data-wins-over-ld-json",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody: `<html><head></head><body>` +
+					`<script id="__NEXT_DATA__" type="application/json">{}</script>` +
+					`<script type="application/ld+json">{}</script>` +
+					strings.Repeat("<!-- pad -->\n", 1000) + `</body></html>`,
+			},
+			expect: "__NEXT_DATA__",
+		},
+		{
+			name: "rejects-below-size-floor",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody:        `<html><script id="__NEXT_DATA__" type="application/json">{}</script></html>`,
+			},
+			expect: "",
+		},
+		{
+			name: "rejects-non-2xx-status",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      403,
+				ResponseBody:        makeSSRPage("__NEXT_DATA__", `{"challenge":true}`),
+			},
+			expect: "",
+		},
+		{
+			name: "rejects-304-cached",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      304,
+				ResponseBody:        makeSSRPage("__NEXT_DATA__", `{"cached":true}`),
+			},
+			expect: "",
+		},
+		{
+			name: "rejects-non-html-content-type",
+			entry: EnrichedEntry{
+				ResponseContentType: "application/json",
+				ResponseStatus:      200,
+				ResponseBody:        makeSSRPage("__NEXT_DATA__", `{"shape":{}}`),
+			},
+			expect: "",
+		},
+		{
+			name: "no-signature-no-match",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody: `<html><head></head><body><p>just a normal page</p>` +
+					strings.Repeat("<!-- pad -->\n", 1000) + `</body></html>`,
+			},
+			expect: "",
+		},
+		{
+			// window.__ matchers must require a state-shaped identifier so
+			// analytics globals like window.__gtag don't promote benign
+			// pages into the html_scrape path.
+			name: "rejects-window-prefix-on-analytics-globals",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody: `<html><head><script>window.__gtag=function(){};window.__ga=1;</script></head><body><p>analytics page</p>` +
+					strings.Repeat("<!-- pad -->\n", 1000) + `</body></html>`,
+			},
+			expect: "",
+		},
+		{
+			// state-view matcher must require the script/attribute shape
+			// so CSS class names like state-view-port don't promote.
+			name: "rejects-state-view-as-css-fragment",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody: `<html><head></head><body><div class="state-view-port-container"></div>` +
+					strings.Repeat("<!-- pad -->\n", 1000) + `</body></html>`,
+			},
+			expect: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectSSREmbeddedData(tt.entry)
+			assert.Equal(t, tt.expect, got)
+		})
+	}
+}
+
+func TestApplyReachabilityDefaults_HTMLScrapeEmitsEmbeddedJSON(t *testing.T) {
+	tests := []struct {
+		name             string
+		signature        string
+		expectedSelector string
+	}{
+		{"next-data", "__NEXT_DATA__", "script#__NEXT_DATA__"},
+		{"nuxt", "__NUXT__", "script#__NUXT__"},
+		{"app-initial-state", "__APP_INITIAL_STATE__", "script#__APP_INITIAL_STATE__"},
+		{"state-view", "state-view", "script.state-view"},
+		{"ld-json", "application/ld+json", `script[type="application/ld+json"]`},
+		{"window-prefix-leaves-selector-empty", "window.__", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apiSpec := &spec.APISpec{
+				Resources: map[string]spec.Resource{
+					"pages": {
+						Endpoints: map[string]spec.Endpoint{
+							"get_index": {
+								Method: "GET",
+								Path:   "/",
+								HTMLExtract: &spec.HTMLExtract{
+									Mode:         spec.HTMLExtractModePage,
+									LinkPrefixes: []string{"/listing/"},
+									Limit:        50,
+								},
+							},
+						},
+					},
+				},
+			}
+			analysis := &TrafficAnalysis{
+				Reachability: &ReachabilityAnalysis{
+					Mode:                 "html_scrape",
+					HTMLExtractSignature: tt.signature,
+				},
+			}
+			ApplyReachabilityDefaults(apiSpec, analysis)
+
+			ep := apiSpec.Resources["pages"].Endpoints["get_index"]
+			require.NotNil(t, ep.HTMLExtract)
+			assert.Equal(t, spec.HTMLExtractModeEmbeddedJSON, ep.HTMLExtract.Mode)
+			assert.Equal(t, tt.expectedSelector, ep.HTMLExtract.ScriptSelector)
+			assert.Nil(t, ep.HTMLExtract.LinkPrefixes, "link prefixes should clear when promoting to embedded-json")
+		})
+	}
+}
+
+func TestApplyReachabilityDefaults_HTMLScrapeLeavesNonHTMLEndpointsAlone(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"api": {
+				Endpoints: map[string]spec.Endpoint{
+					"get_foo": {
+						Method: "GET",
+						Path:   "/api/foo",
+						// No HTMLExtract — this is a JSON endpoint.
+					},
+				},
+			},
+		},
+	}
+	analysis := &TrafficAnalysis{
+		Reachability: &ReachabilityAnalysis{
+			Mode:                 "html_scrape",
+			HTMLExtractSignature: "__NEXT_DATA__",
+		},
+	}
+	ApplyReachabilityDefaults(apiSpec, analysis)
+
+	ep := apiSpec.Resources["api"].Endpoints["get_foo"]
+	assert.Nil(t, ep.HTMLExtract, "non-HTML endpoints stay untouched")
+}
+
+func TestApplyReachabilityDefaults_HTMLScrapePromotesNestedSubResources(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"pages": {
+				Endpoints: map[string]spec.Endpoint{
+					"get_index": {
+						Method: "GET",
+						Path:   "/",
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:         spec.HTMLExtractModePage,
+							LinkPrefixes: []string{"/parent/"},
+						},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"items": {
+						Endpoints: map[string]spec.Endpoint{
+							"get_item": {
+								Method: "GET",
+								Path:   "/parent/{id}",
+								HTMLExtract: &spec.HTMLExtract{
+									Mode:         spec.HTMLExtractModePage,
+									LinkPrefixes: []string{"/parent/"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	analysis := &TrafficAnalysis{
+		Reachability: &ReachabilityAnalysis{
+			Mode:                 "html_scrape",
+			HTMLExtractSignature: "__NEXT_DATA__",
+		},
+	}
+	ApplyReachabilityDefaults(apiSpec, analysis)
+
+	parent := apiSpec.Resources["pages"].Endpoints["get_index"]
+	assert.Equal(t, spec.HTMLExtractModeEmbeddedJSON, parent.HTMLExtract.Mode)
+	assert.Equal(t, "script#__NEXT_DATA__", parent.HTMLExtract.ScriptSelector)
+
+	child := apiSpec.Resources["pages"].SubResources["items"].Endpoints["get_item"]
+	require.NotNil(t, child.HTMLExtract, "sub-resource endpoint should still have HTMLExtract")
+	assert.Equal(t, spec.HTMLExtractModeEmbeddedJSON, child.HTMLExtract.Mode, "sub-resource endpoint must also promote")
+	assert.Equal(t, "script#__NEXT_DATA__", child.HTMLExtract.ScriptSelector)
+	assert.Nil(t, child.HTMLExtract.LinkPrefixes, "sub-resource link prefixes should clear")
+}
+
+func TestApplyReachabilityDefaults_HTMLScrapeNotAppliedWhenSignatureEmpty(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"pages": {
+				Endpoints: map[string]spec.Endpoint{
+					"get_index": {
+						Method: "GET",
+						Path:   "/",
+						HTMLExtract: &spec.HTMLExtract{
+							Mode: spec.HTMLExtractModePage,
+						},
+					},
+				},
+			},
+		},
+	}
+	analysis := &TrafficAnalysis{
+		Reachability: &ReachabilityAnalysis{
+			Mode: "html_scrape",
+			// Signature empty — should not promote
+		},
+	}
+	ApplyReachabilityDefaults(apiSpec, analysis)
+
+	ep := apiSpec.Resources["pages"].Endpoints["get_index"]
+	assert.Equal(t, spec.HTMLExtractModePage, ep.HTMLExtract.Mode, "without a signature, mode stays page")
+}
+
+func TestClassifyReachability_HTMLScrapePromotion(t *testing.T) {
+	tests := []struct {
+		name              string
+		entries           []EnrichedEntry
+		expectedMode      string
+		expectedSignature string
+	}{
+		{
+			name: "yandex-shape-cross-subdomain-promotes",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://api.yandex.example.com/maps/api/search",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"captcha required","redirect":"/showcaptcha?retpath=/"}`,
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://www.yandex.example.com/maps/org/foo/12345/",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("state-view", `{"org":{"name":"Cafe Bistro"}}`),
+				},
+			},
+			expectedMode:      "html_scrape",
+			expectedSignature: "state-view",
+		},
+		{
+			name: "same-host-promotes-with-next-data",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://example.com/api/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"captcha required"}`,
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://example.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__NEXT_DATA__", `{"foo":1}`),
+				},
+			},
+			expectedMode:      "html_scrape",
+			expectedSignature: "__NEXT_DATA__",
+		},
+		{
+			name: "different-registered-domain-does-not-promote",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://api.example.com/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"captcha required"}`,
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://other-site.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__NEXT_DATA__", `{}`),
+				},
+			},
+			expectedMode:      "browser_required",
+			expectedSignature: "",
+		},
+		{
+			name: "cloudflare-only-stays-on-clearance-mode",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://api.example.com/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"blocked"}`,
+					ResponseHeaders:     map[string]string{"Server": "cloudflare", "CF-Ray": "abc"},
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://www.example.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__NEXT_DATA__", `{}`),
+				},
+			},
+			// Cloudflare is not in the captcha tier — promotion does
+			// not fire. The existing browser_http branch handles this
+			// case (cloudflare on the API entry routes to browser_http).
+			expectedMode:      "browser_http",
+			expectedSignature: "",
+		},
+		{
+			name: "no-protection-no-promotion",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://example.com/api/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"foo":1}`,
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://example.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__NEXT_DATA__", `{}`),
+				},
+			},
+			expectedMode:      "standard_http",
+			expectedSignature: "",
+		},
+		{
+			name: "captcha-without-ssr-sibling-stays-browser-required",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://example.com/api/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"captcha required"}`,
+				},
+			},
+			expectedMode:      "browser_required",
+			expectedSignature: "",
+		},
+		{
+			name: "aws-waf-captcha-tier-promotes",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://api.example.com/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"blocked by AWS WAF","captcha":"required"}`,
+					ResponseHeaders:     map[string]string{"x-amzn-RequestId": "abc"},
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://www.example.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__NUXT__", `{}`),
+				},
+			},
+			expectedMode:      "html_scrape",
+			expectedSignature: "__NUXT__",
+		},
+		{
+			name: "vercel-challenge-captcha-tier-promotes",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://api.example.com/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"vercel challenge"}`,
+					ResponseHeaders:     map[string]string{"x-vercel-mitigated": "challenge"},
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://www.example.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__APP_INITIAL_STATE__", `{}`),
+				},
+			},
+			expectedMode:      "html_scrape",
+			expectedSignature: "__APP_INITIAL_STATE__",
+		},
+		{
+			name: "bot-challenge-captcha-tier-promotes",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://api.example.com/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"managed challenge"}`,
+					ResponseHeaders:     map[string]string{"cf-mitigated": "challenge"},
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://www.example.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("application/ld+json", `{"@type":"Product"}`),
+				},
+			},
+			expectedMode:      "html_scrape",
+			expectedSignature: "application/ld+json",
+		},
+		{
+			// Ordering guard: matching SSR entry is iterated before a
+			// non-matching cross-domain SSR entry. The selected signature
+			// must come from the entry that satisfies same-eTLD+1, not
+			// from the last SSR entry seen by the protocol scanner.
+			name: "multi-ssr-signature-attributed-to-matching-entry",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://api.example.com/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"captcha required"}`,
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://www.example.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__NEXT_DATA__", `{}`),
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://unrelated-site.com/bar",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__NUXT__", `{}`),
+				},
+			},
+			expectedMode:      "html_scrape",
+			expectedSignature: "__NEXT_DATA__",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			capture := &EnrichedCapture{Entries: tt.entries}
+			analysis, err := AnalyzeTraffic(capture)
+			require.NoError(t, err)
+			require.NotNil(t, analysis.Reachability)
+			assert.Equal(t, tt.expectedMode, analysis.Reachability.Mode)
+			assert.Equal(t, tt.expectedSignature, analysis.Reachability.HTMLExtractSignature)
+		})
+	}
+}
+
+func TestSameRegisteredDomain(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"example.com", "example.com", true},
+		{"api.example.com", "www.example.com", true},
+		{"api.example.com", "example.com", true},
+		{"example.com", "other-site.com", false},
+		{"api.example.co.uk", "www.example.co.uk", true},
+		{"example.co.uk", "example.com", false},
+		{"", "example.com", false},
+		{"EXAMPLE.com", "example.COM", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.a+"_"+tt.b, func(t *testing.T) {
+			assert.Equal(t, tt.want, sameRegisteredDomain(tt.a, tt.b))
+		})
+	}
+}
+
+func TestDetectProtocols_SSREmbeddedDataSurfacesSignatureInDetails(t *testing.T) {
+	capture := &EnrichedCapture{
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://example.com/maps/org/foo/12345/",
+				ResponseStatus:      200,
+				ResponseContentType: "text/html",
+				ResponseBody:        makeSSRPage("state-view", `{"org":{"name":"Cafe Bistro"}}`),
+			},
+		},
+	}
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	var ssr *ProtocolObservation
+	for i := range analysis.Protocols {
+		if analysis.Protocols[i].Label == "ssr_embedded_data" {
+			ssr = &analysis.Protocols[i]
+			break
+		}
+	}
+	require.NotNil(t, ssr, "ssr_embedded_data protocol must be observed")
+	assert.Equal(t, "state-view", ssr.Details["signature"])
+}
+
+// makeSSRPage builds an HTML body carrying the requested SSR signature
+// marker and pads past ssrEmbeddedDataMinBodySize. Real SSR captures are
+// 10KB+; the filler simulates that without embedding a real page. The
+// __NEXT_DATA__ shape also includes the `id="__next"` mount node so
+// `looksBrowserRendered` fires on the same fixture (matches typical
+// Next.js output).
+func makeSSRPage(signature, payload string) string {
+	var inner string
+	switch signature {
+	case "__NEXT_DATA__":
+		inner = `<script id="__NEXT_DATA__" type="application/json">` + payload + `</script><div id="__next"></div>`
+	case "__NUXT__":
+		inner = `<script>window.__NUXT__=` + payload + `</script>`
+	case "__APP_INITIAL_STATE__":
+		inner = `<script id="__APP_INITIAL_STATE__" type="application/json">` + payload + `</script>`
+	case "state-view":
+		inner = `<script type="application/json" class="state-view">` + payload + `</script>`
+	case "application/ld+json":
+		inner = `<script type="application/ld+json">` + payload + `</script>`
+	case "window.__":
+		inner = `<script>window.__INITIAL_STATE__=` + payload + `</script>`
+	default:
+		inner = payload
+	}
+	filler := strings.Repeat("<!-- ssr -->\n", 1000)
+	return `<html><head></head><body>` + inner + filler + `</body></html>`
+}
+
+// makeSSRPageWithNextData is the most common shorthand for tests that
+// only need a Next.js-shape body.
+func makeSSRPageWithNextData(payload string) string {
+	return makeSSRPage("__NEXT_DATA__", payload)
 }
