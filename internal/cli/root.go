@@ -791,9 +791,6 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 // merged BaseURL stays specs[0].BaseURL and every prefix is empty.
 func planMultiSpecBaseURL(specs []*spec.APISpec) (mergedBaseURL string, perSpecPathPrefix []string) {
 	perSpecPathPrefix = make([]string, len(specs))
-	if len(specs) == 0 {
-		return "", perSpecPathPrefix
-	}
 
 	hosts := make([]string, len(specs))
 	paths := make([]string, len(specs))
@@ -825,9 +822,7 @@ func planMultiSpecBaseURL(specs []*spec.APISpec) (mergedBaseURL string, perSpecP
 	}
 
 	copy(perSpecPathPrefix, paths)
-	if os.Getenv("PRINTING_PRESS_VERIFY") != "1" {
-		fmt.Fprintf(os.Stderr, "[multi-spec] base URL host %q shared; folding per-spec path prefixes into endpoint paths\n", commonHost)
-	}
+	fmt.Fprintf(os.Stderr, "[multi-spec] base URL host %q shared; folding per-spec path prefixes into endpoint paths\n", commonHost)
 	return commonHost, perSpecPathPrefix
 }
 
@@ -856,9 +851,6 @@ func splitBaseURL(raw string) (host, path string) {
 // resolved against that override at runtime, not the spec-level BaseURL, so
 // folding the prefix in would double-resolve.
 func prefixResourceEndpointPaths(resource spec.Resource, prefix string) spec.Resource {
-	if prefix == "" {
-		return resource
-	}
 	out := resource
 	if len(resource.Endpoints) > 0 {
 		out.Endpoints = make(map[string]spec.Endpoint, len(resource.Endpoints))
