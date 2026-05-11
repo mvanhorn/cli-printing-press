@@ -648,6 +648,81 @@ func TestPublishPackageRejectsVendorPrefixSecretsInStagedCLI(t *testing.T) {
 	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
 }
 
+func TestPublishPackageRejectsPIIInStagedCLI(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	// Plant real-shaped PII in a high-risk file
+	require.NoError(t, os.WriteFile(
+		filepath.Join(cliDir, "data.json"),
+		[]byte(`{"customer_email": "alice@example.com"}`+"\n"),
+		0o644,
+	))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "customer PII detected")
+	assert.Contains(t, err.Error(), "email")
+
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
+}
+
+func TestPublishPackageRejectsPIIInManuscripts(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	runID := "20260329-100000"
+	researchFile := filepath.Join(home, "manuscripts", "test", runID, "research", "captured.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(researchFile), 0o755))
+	require.NoError(t, os.WriteFile(researchFile, []byte(`{"recipient_email": "leak@example.com"}`+"\n"), 0o644))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "customer PII detected")
+	assert.Contains(t, err.Error(), "captured.json")
+
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
+}
+
+func TestPublishPackageCombinesSecretAndPIIReports(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+	// Plant both a secret AND PII
+	require.NoError(t, os.WriteFile(
+		filepath.Join(cliDir, "spec.json"),
+		[]byte("{\n  \"token\": \""+testSecret("sk", "-or-v1-", "abcdefghijklmnopqrstuvwxyz1234567890")+"\"\n}\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(cliDir, "data.json"),
+		[]byte(`{"customer_email": "alice@example.com"}`+"\n"),
+		0o644,
+	))
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "vendor-prefix tokens detected")
+	assert.Contains(t, err.Error(), "customer PII detected")
+
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target even on combined-error path")
+}
+
 func TestPublishPackageRejectsVendorPrefixSecretsInManuscripts(t *testing.T) {
 	home := setLibraryTestEnv(t)
 	cliDir := filepath.Join(home, "library", "test-pp-cli")
