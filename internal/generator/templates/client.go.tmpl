@@ -39,6 +39,11 @@ import (
 
 type Client struct {
 	BaseURL    string
+{{- if .BasePath}}
+	// BasePath sits between BaseURL and the request path; empty unless the
+	// spec declares base_path.
+	BasePath   string
+{{- end}}
 	Config     *config.Config
 	HTTPClient *http.Client
 	DryRun     bool
@@ -152,11 +157,11 @@ func (c *Client) baseURLForRequest() string {
 	{{- if $tier.BaseURL}}
 		return strings.TrimRight({{printf "%q" $tier.BaseURL}}, "/")
 	{{- else}}
-		return c.BaseURL
+		return c.BaseURL{{if $.BasePath}} + c.BasePath{{end}}
 	{{- end}}
 {{- end}}
 	default:
-		return c.BaseURL
+		return c.BaseURL{{if .BasePath}} + c.BasePath{{end}}
 	}
 }
 
@@ -302,6 +307,9 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	sess.AttachTo(httpClient)
 	return &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
+{{- if .BasePath}}
+		BasePath:   normalizeBasePath(cfg.BasePath),
+{{- end}}
 		Config:     cfg,
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
@@ -325,6 +333,9 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	httpClient := newHTTPClient(timeout, nil)
 	return &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
+{{- if .BasePath}}
+		BasePath:   normalizeBasePath(cfg.BasePath),
+{{- end}}
 		Config:     cfg,
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
@@ -377,6 +388,9 @@ func (c *Client) ProbeGet(path string) (int, error) {
 func (c *Client) cacheKey(path string, params map[string]string) string {
 	key := path
 	key += "|base_url=" + c.BaseURL
+{{- if .BasePath}}
+	key += "|base_path=" + c.BasePath
+{{- end}}
 {{- if .HasTierRouting}}
 	key += "|tier=" + c.requestTier + "|tier_base_url=" + c.baseURLForRequest()
 {{- end}}
@@ -636,13 +650,13 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 	if isAbsoluteURL(path) {
 		targetURL, urlErr = buildURL("", path, endpointVars)
 	} else {
-		targetURL, urlErr = buildURL({{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{end}}, path, endpointVars)
+		targetURL, urlErr = buildURL({{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{if .BasePath}} + c.BasePath{{end}}{{end}}, path, endpointVars)
 	}
 	if urlErr != nil {
 		return nil, 0, urlErr
 	}
 {{- else}}
-		targetURL, urlErr := buildURL({{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{end}}, path, endpointVars)
+		targetURL, urlErr := buildURL({{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{if .BasePath}} + c.BasePath{{end}}{{end}}, path, endpointVars)
 	if urlErr != nil {
 		return nil, 0, urlErr
 	}
@@ -656,10 +670,10 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 	if isAbsoluteURL(path) {
 		targetURL = path
 	} else {
-		targetURL = {{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{end}} + path
+		targetURL = {{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{if .BasePath}} + c.BasePath{{end}}{{end}} + path
 	}
 {{- else}}
-	targetURL := {{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{end}} + path
+	targetURL := {{if .HasTierRouting}}requestBaseURL{{else}}c.BaseURL{{if .BasePath}} + c.BasePath{{end}}{{end}} + path
 {{- end}}
 {{- end}}
 {{- end}}
@@ -1375,6 +1389,28 @@ func (c *Client) refreshAccessToken() error {
 // concat with c.BaseURL must be skipped for those calls).
 func isAbsoluteURL(path string) bool {
 	return strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "http://")
+}
+
+{{end -}}
+{{if .BasePath -}}
+// normalizeBasePath trims surrounding whitespace and trailing slashes, then
+// guarantees a single leading slash so concatenation with c.BaseURL produces
+// well-formed URLs whether the operator wrote "/api/v1", "api/v1/", or
+// "/api/v1/". Empty input stays empty so an unset override doesn't inject a
+// stray "/" into the request URL.
+func normalizeBasePath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	p = strings.TrimRight(p, "/")
+	if p == "" {
+		return ""
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p
 }
 
 {{end -}}
