@@ -1671,6 +1671,9 @@ func (s *APISpec) Validate() error {
 	if s.ClientPattern == "proxy-envelope" && s.HasResourceBaseURLOverride() {
 		return fmt.Errorf("resource or endpoint base_url overrides are incompatible with client_pattern=proxy-envelope; the proxy POSTs every request to the spec-level BaseURL, so per-request overrides would be silently ignored")
 	}
+	if s.ClientPattern == "proxy-envelope" && s.BasePath != "" {
+		return fmt.Errorf("base_path is incompatible with client_pattern=proxy-envelope; the proxy routes via the envelope's Service/Path fields, not a URL-level prefix — fold the prefix into base_url instead")
+	}
 	for name, r := range s.Resources {
 		if len(r.Endpoints) == 0 && len(r.SubResources) == 0 {
 			return fmt.Errorf("resource %q has no endpoints", name)
