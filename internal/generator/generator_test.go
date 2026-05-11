@@ -1756,17 +1756,20 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 	assert.Equal(t, "Soup", recipesEnv.Results[1]["name"])
 
 	// Custom selector + empty json_path: returns the whole parsed JSON.
+	// The extracted shape `{"items":[...]}` is a single-key wrapper that
+	// wrapWithProvenance unwraps, so the envelope's `results` is the
+	// inner array — consistent .results[] shape across APIs.
 	cmd = exec.Command(binaryPath, "articles", "list", "--json")
 	cmd.Env = append(os.Environ(), "EMBEDDEDJSON_BASE_URL="+server.URL)
 	out, err = cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
 	var articleEnv struct {
-		Results map[string]any `json:"results"`
+		Results []map[string]any `json:"results"`
 	}
 	require.NoError(t, json.Unmarshal(out, &articleEnv), string(out))
-	items, ok := articleEnv.Results["items"].([]any)
-	require.True(t, ok, "expected items array, got %T", articleEnv.Results["items"])
-	require.Len(t, items, 2)
+	require.Len(t, articleEnv.Results, 2)
+	assert.Equal(t, "a", articleEnv.Results[0]["slug"])
+	assert.Equal(t, "b", articleEnv.Results[1]["slug"])
 
 	// Missing script tag: extractor reports an actionable error rather
 	// than silently returning empty data.
@@ -3764,11 +3767,190 @@ func TestGeneratedHelpers_ConditionalDataLayerFunctions(t *testing.T) {
 	assert.NotContains(t, content, "DataProvenance")
 	assert.NotContains(t, content, "printProvenance")
 	assert.NotContains(t, content, "wrapWithProvenance")
+	assert.NotContains(t, content, "unwrapSingleKeyArray")
 	assert.NotContains(t, content, "defaultDBPath")
 
 	// Core helpers should still be present
 	assert.Contains(t, content, "classifyAPIError")
 	assert.Contains(t, content, "printOutputWithFlags")
+}
+
+// TestGeneratedHelpers_WrapWithProvenanceUnwrapsSingleKeyEnvelope guards
+// the runtime contract of wrapWithProvenance for single-key API envelopes.
+// Without the unwrap, --json output for APIs that wrap collections in
+// {"results":[...]}, {"data":[...]}, etc. ends up double-nested
+// ({"meta":..., "results":{"results":[...]}}), forcing agents into
+// API-specific jq paths instead of a stable .results[]. The behavior test
+// is injected into the generated CLI and run with `go test`, so a template
+// regression on the unwrap shape fails this test before any printed CLI
+// inherits the bad output shape.
+func TestGeneratedHelpers_WrapWithProvenanceUnwrapsSingleKeyEnvelope(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "envelopeunwrap",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/envelopeunwrap-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/items",
+						Description: "List items",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	src := string(helpersGo)
+	assert.Contains(t, src, "func unwrapSingleKeyArray(",
+		"helpers.go must define the unwrap helper")
+	assert.Contains(t, src, "unwrapSingleKeyArray(data)",
+		"wrapWithProvenance must call the unwrap helper on valid JSON data")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	behaviorTest := `package cli
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestUnwrapSingleKeyArray_KnownWrapperKeysUnwrap(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"results", ` + "`{\"results\":[{\"id\":\"a\"}]}`" + `, ` + "`[{\"id\":\"a\"}]`" + `},
+		{"data", ` + "`{\"data\":[{\"id\":\"a\"}]}`" + `, ` + "`[{\"id\":\"a\"}]`" + `},
+		{"items", ` + "`{\"items\":[1,2,3]}`" + `, ` + "`[1,2,3]`" + `},
+		{"nodes", ` + "`{\"nodes\":[]}`" + `, ` + "`[]`" + `},
+		{"entries", ` + "`{\"entries\":[\"x\"]}`" + `, ` + "`[\"x\"]`" + `},
+		{"records", ` + "`{\"records\":[null]}`" + `, ` + "`[null]`" + `},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := unwrapSingleKeyArray(json.RawMessage(tc.in))
+			if string(got) != tc.want {
+				t.Fatalf("unwrapSingleKeyArray(%s) = %s, want %s", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUnwrapSingleKeyArray_PassThroughs(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"bare array", ` + "`[{\"id\":\"a\"}]`" + `},
+		{"multi-key object preserves cursor", ` + "`{\"results\":[],\"next_page_token\":\"abc\"}`" + `},
+		{"unknown wrapper key", ` + "`{\"payload\":[1,2]}`" + `},
+		{"single key but not array value", ` + "`{\"data\":{\"issues\":{\"nodes\":[]}}}`" + `},
+		{"single key but value is null", ` + "`{\"results\":null}`" + `},
+		{"single key but value is string", ` + "`{\"data\":\"hello\"}`" + `},
+		{"empty object", ` + "`{}`" + `},
+		{"non-object scalar", ` + "`42`" + `},
+		{"invalid json", ` + "`<xml/>`" + `},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := unwrapSingleKeyArray(json.RawMessage(tc.in))
+			if string(got) != tc.in {
+				t.Fatalf("unwrapSingleKeyArray(%s) = %s, want unchanged", tc.in, got)
+			}
+		})
+	}
+}
+
+func TestWrapWithProvenance_FlattensSingleKeyEnvelope(t *testing.T) {
+	prov := DataProvenance{Source: "live"}
+	wrapped, err := wrapWithProvenance(json.RawMessage(` + "`{\"results\":[{\"id\":\"a\"}]}`" + `), prov)
+	if err != nil {
+		t.Fatalf("wrapWithProvenance: %v", err)
+	}
+	var out struct {
+		Meta    map[string]any    ` + "`json:\"meta\"`" + `
+		Results []json.RawMessage ` + "`json:\"results\"`" + `
+	}
+	if err := json.Unmarshal(wrapped, &out); err != nil {
+		t.Fatalf("output is not flat .results[]: %v\noutput: %s", err, wrapped)
+	}
+	if len(out.Results) != 1 {
+		t.Fatalf("want 1 result, got %d (output: %s)", len(out.Results), wrapped)
+	}
+}
+
+func TestWrapWithProvenance_PreservesMultiKeyResponseForCursor(t *testing.T) {
+	prov := DataProvenance{Source: "live"}
+	wrapped, err := wrapWithProvenance(json.RawMessage(` + "`{\"results\":[{\"id\":\"a\"}],\"next_page_token\":\"xyz\"}`" + `), prov)
+	if err != nil {
+		t.Fatalf("wrapWithProvenance: %v", err)
+	}
+	var out struct {
+		Results map[string]json.RawMessage ` + "`json:\"results\"`" + `
+	}
+	if err := json.Unmarshal(wrapped, &out); err != nil {
+		t.Fatalf("results should still be the original object: %v\noutput: %s", err, wrapped)
+	}
+	if _, ok := out.Results["next_page_token"]; !ok {
+		t.Fatalf("cursor must remain accessible; output: %s", wrapped)
+	}
+}
+
+func TestWrapWithProvenance_BareArrayUnchanged(t *testing.T) {
+	prov := DataProvenance{Source: "live"}
+	wrapped, err := wrapWithProvenance(json.RawMessage(` + "`[{\"id\":\"a\"}]`" + `), prov)
+	if err != nil {
+		t.Fatalf("wrapWithProvenance: %v", err)
+	}
+	var out struct {
+		Results []json.RawMessage ` + "`json:\"results\"`" + `
+	}
+	if err := json.Unmarshal(wrapped, &out); err != nil {
+		t.Fatalf("bare array must round-trip into .results[]: %v\noutput: %s", err, wrapped)
+	}
+	if len(out.Results) != 1 {
+		t.Fatalf("want 1 result, got %d (output: %s)", len(out.Results), wrapped)
+	}
+}
+
+func TestWrapWithProvenance_NonJSONEmbeddedAsString(t *testing.T) {
+	prov := DataProvenance{Source: "live"}
+	wrapped, err := wrapWithProvenance(json.RawMessage(` + "`<rss><channel/></rss>`" + `), prov)
+	if err != nil {
+		t.Fatalf("wrapWithProvenance: %v", err)
+	}
+	var out struct {
+		Results string ` + "`json:\"results\"`" + `
+	}
+	if err := json.Unmarshal(wrapped, &out); err != nil {
+		t.Fatalf("non-JSON payload must embed as a string: %v\noutput: %s", err, wrapped)
+	}
+	if out.Results != ` + "`<rss><channel/></rss>`" + ` {
+		t.Fatalf("want raw payload preserved, got %q", out.Results)
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "wrap_provenance_unwrap_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestUnwrapSingleKeyArray|TestWrapWithProvenance_")
 }
 
 // --- Unit 3: Top-Level Command Promotion Tests ---

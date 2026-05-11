@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1222,12 +1223,50 @@ func printProvenance(cmd *cobra.Command, count int, prov DataProvenance) {
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s%d results (cached, synced %s)\n", prefix, count, age)
 }
 
+// unwrapSingleKeyArray flattens single-key collection envelopes
+// ({"results":[...]}, {"data":[...]}, etc.) so the agent envelope
+// emits a stable .results[] across APIs. Multi-key objects pass
+// through so cursor/pagination fields stay accessible; non-array
+// values pass through so non-collection responses aren't reshaped.
+//
+// The wrapper-key set is intentionally narrower than
+// extractPaginatedItems (which also walks domain-specific keys like
+// "messages", "members", "values" used by social/messaging APIs).
+// This helper only flattens canonical collection envelopes for
+// --json output; the pagination walker has a broader remit.
+func unwrapSingleKeyArray(data json.RawMessage) json.RawMessage {
+	leading := bytes.TrimLeft(data, " \t\r\n")
+	if len(leading) == 0 || leading[0] != '{' {
+		return data
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return data
+	}
+	if len(obj) != 1 {
+		return data
+	}
+	for key, val := range obj {
+		if key != "results" && key != "data" && key != "items" && key != "nodes" && key != "entries" && key != "records" {
+			return data
+		}
+		trimmed := bytes.TrimLeft(val, " \t\r\n")
+		if len(trimmed) == 0 || trimmed[0] != '[' {
+			return data
+		}
+		return val
+	}
+	return data
+}
+
 // wrapWithProvenance wraps response data in a provenance envelope:
 // {"results": ..., "meta": {...}}. When data is valid JSON, it embeds as
 // the parsed shape; when data is non-JSON (e.g., XML/RSS responses, plain
 // text), it embeds as a JSON string so json.Marshal doesn't choke on
 // "invalid character '<'" while still passing the raw payload through to
-// the consumer.
+// the consumer. Single-key array envelopes from the API (e.g.
+// {"results": [...]}, {"data": [...]}) are unwrapped first so the output
+// shape is the same regardless of the API's wrapper key.
 func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMessage, error) {
 	meta := map[string]any{"source": prov.Source}
 	if prov.SyncedAt != nil {
@@ -1242,8 +1281,10 @@ func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMess
 	if prov.Freshness != nil {
 		meta["freshness"] = prov.Freshness
 	}
-	var results any = json.RawMessage(data)
-	if !json.Valid(data) {
+	var results any
+	if json.Valid(data) {
+		results = json.RawMessage(unwrapSingleKeyArray(data))
+	} else {
 		results = string(data)
 	}
 	envelope := map[string]any{
