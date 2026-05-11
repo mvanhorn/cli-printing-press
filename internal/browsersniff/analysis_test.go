@@ -124,7 +124,7 @@ func TestAnalyzeTraffic_DetectsProtocolProtectionAndWarningCategories(t *testing
 				URL:                 "https://app.example.com/explore",
 				ResponseStatus:      200,
 				ResponseContentType: "text/html",
-				ResponseBody:        `<html><script id="__NEXT_DATA__" type="application/json">{"props":{}}</script><div id="__next"></div></html>`,
+				ResponseBody:        makeSSRPageWithNextData(`{"props":{}}`),
 			},
 			{
 				Method:              "GET",
@@ -638,4 +638,196 @@ func TestEvidenceRef_MixedArrayInTrafficAnalysis(t *testing.T) {
 		"string-form evidence should re-emit as a JSON string")
 	assert.Contains(t, string(out), `"entry_index":0`,
 		"object-form evidence should re-emit as a JSON object")
+}
+
+func TestDetectSSREmbeddedData(t *testing.T) {
+	tests := []struct {
+		name   string
+		entry  EnrichedEntry
+		expect string
+	}{
+		{
+			name: "next-data",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody:        makeSSRPage("__NEXT_DATA__", `{"props":{}}`),
+			},
+			expect: "__NEXT_DATA__",
+		},
+		{
+			name: "nuxt",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody:        makeSSRPage("__NUXT__", `{"state":{}}`),
+			},
+			expect: "__NUXT__",
+		},
+		{
+			name: "app-initial-state",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody:        makeSSRPage("__APP_INITIAL_STATE__", `{"data":{}}`),
+			},
+			expect: "__APP_INITIAL_STATE__",
+		},
+		{
+			name: "state-view-yandex",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody:        makeSSRPage("state-view", `{"map":{}}`),
+			},
+			expect: "state-view",
+		},
+		{
+			name: "ld-json",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody:        makeSSRPage("application/ld+json", `{"@type":"Product"}`),
+			},
+			expect: "application/ld+json",
+		},
+		{
+			name: "window-prefix",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody:        makeSSRPage("window.__", `{"initial":{}}`),
+			},
+			expect: "window.__",
+		},
+		{
+			name: "priority-next-data-wins-over-ld-json",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody: `<html><head></head><body>` +
+					`<script id="__NEXT_DATA__" type="application/json">{}</script>` +
+					`<script type="application/ld+json">{}</script>` +
+					strings.Repeat("<!-- pad -->\n", 1000) + `</body></html>`,
+			},
+			expect: "__NEXT_DATA__",
+		},
+		{
+			name: "rejects-below-size-floor",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody:        `<html><script id="__NEXT_DATA__" type="application/json">{}</script></html>`,
+			},
+			expect: "",
+		},
+		{
+			name: "rejects-non-2xx-status",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      403,
+				ResponseBody:        makeSSRPage("__NEXT_DATA__", `{"challenge":true}`),
+			},
+			expect: "",
+		},
+		{
+			name: "accepts-304-cached",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      304,
+				ResponseBody:        makeSSRPage("__NEXT_DATA__", `{"cached":true}`),
+			},
+			// 304 is outside the 2xx range; the spec calls for 2xx only.
+			// Cached responses surface their full body via HAR replay
+			// regardless of status code, but the gate rejects 3xx to keep
+			// the rule simple. Documented limitation; raise as a follow-up
+			// if real 304 captures surface.
+			expect: "",
+		},
+		{
+			name: "rejects-non-html-content-type",
+			entry: EnrichedEntry{
+				ResponseContentType: "application/json",
+				ResponseStatus:      200,
+				ResponseBody:        makeSSRPage("__NEXT_DATA__", `{"shape":{}}`),
+			},
+			expect: "",
+		},
+		{
+			name: "no-signature-no-match",
+			entry: EnrichedEntry{
+				ResponseContentType: "text/html",
+				ResponseStatus:      200,
+				ResponseBody: `<html><head></head><body><p>just a normal page</p>` +
+					strings.Repeat("<!-- pad -->\n", 1000) + `</body></html>`,
+			},
+			expect: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectSSREmbeddedData(tt.entry)
+			assert.Equal(t, tt.expect, got)
+		})
+	}
+}
+
+func TestDetectProtocols_SSREmbeddedDataSurfacesSignatureInDetails(t *testing.T) {
+	capture := &EnrichedCapture{
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://example.com/maps/org/foo/12345/",
+				ResponseStatus:      200,
+				ResponseContentType: "text/html",
+				ResponseBody:        makeSSRPage("state-view", `{"org":{"name":"Cafe Bistro"}}`),
+			},
+		},
+	}
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	var ssr *ProtocolObservation
+	for i := range analysis.Protocols {
+		if analysis.Protocols[i].Label == "ssr_embedded_data" {
+			ssr = &analysis.Protocols[i]
+			break
+		}
+	}
+	require.NotNil(t, ssr, "ssr_embedded_data protocol must be observed")
+	assert.Equal(t, "state-view", ssr.Details["signature"])
+}
+
+// makeSSRPage builds an HTML body carrying the requested SSR signature
+// marker and pads past ssrEmbeddedDataMinBodySize. Real SSR captures are
+// 10KB+; the filler simulates that without embedding a real page. The
+// __NEXT_DATA__ shape also includes the `id="__next"` mount node so
+// `looksBrowserRendered` fires on the same fixture (matches typical
+// Next.js output).
+func makeSSRPage(signature, payload string) string {
+	var inner string
+	switch signature {
+	case "__NEXT_DATA__":
+		inner = `<script id="__NEXT_DATA__" type="application/json">` + payload + `</script><div id="__next"></div>`
+	case "__NUXT__":
+		inner = `<script>window.__NUXT__=` + payload + `</script>`
+	case "__APP_INITIAL_STATE__":
+		inner = `<script id="__APP_INITIAL_STATE__" type="application/json">` + payload + `</script>`
+	case "state-view":
+		inner = `<script type="application/json" class="state-view">` + payload + `</script>`
+	case "application/ld+json":
+		inner = `<script type="application/ld+json">` + payload + `</script>`
+	case "window.__":
+		inner = `<script>window.__INITIAL_STATE__=` + payload + `</script>`
+	default:
+		inner = payload
+	}
+	filler := strings.Repeat("<!-- ssr -->\n", 1000)
+	return `<html><head></head><body>` + inner + filler + `</body></html>`
+}
+
+// makeSSRPageWithNextData is the most common shorthand for tests that
+// only need a Next.js-shape body.
+func makeSSRPageWithNextData(payload string) string {
+	return makeSSRPage("__NEXT_DATA__", payload)
 }

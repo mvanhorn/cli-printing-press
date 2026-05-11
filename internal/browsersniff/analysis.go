@@ -674,8 +674,8 @@ func detectProtocols(entries []EnrichedEntry) []ProtocolObservation {
 		if strings.Contains(host, "firebase") || strings.Contains(path, "firestore") || strings.Contains(path, "google.firestore") {
 			addProtocol("firebase", 0.75, entry, index, "firebase/firestore host or path", nil)
 		}
-		if isSSREmbeddedData(entry) {
-			addProtocol("ssr_embedded_data", 0.85, entry, index, "HTML contains embedded structured data", nil)
+		if signature := detectSSREmbeddedData(entry); signature != "" {
+			addProtocol("ssr_embedded_data", 0.85, entry, index, "HTML contains embedded structured data", map[string]string{"signature": signature})
 		} else if strings.Contains(respType, "text/html") && strings.TrimSpace(entry.ResponseBody) != "" {
 			addProtocol("html_scrape", 0.55, entry, index, "HTML response observed", nil)
 		}
@@ -1328,12 +1328,49 @@ func containsJSONRPC(body string) bool {
 	return ok
 }
 
-func isSSREmbeddedData(entry EnrichedEntry) bool {
+// ssrEmbeddedDataMinBodySize is the body-size floor below which an HTML
+// response with a state-blob marker is treated as an empty template or
+// challenge page rather than a real SSR payload.
+const ssrEmbeddedDataMinBodySize = 10_000
+
+// ssrEmbeddedDataSignatures lists each substring the detector recognizes
+// alongside the canonical signature label downstream consumers use to
+// pick a script selector. Order matters — earlier entries win on
+// multi-match because framework-specific signatures imply a known DOM
+// shape that the generic markers don't.
+var ssrEmbeddedDataSignatures = []struct {
+	substring string
+	label     string
+}{
+	{"__next_data__", "__NEXT_DATA__"},
+	{"__nuxt__", "__NUXT__"},
+	{"__app_initial_state__", "__APP_INITIAL_STATE__"},
+	{"state-view", "state-view"},
+	{"application/ld+json", "application/ld+json"},
+	{"window.__", "window.__"},
+}
+
+// detectSSREmbeddedData returns the matched signature label when an
+// HTML response carries a server-rendered state blob, or "" when no
+// signature matches. Requires HTTP 2xx and body >= the size floor so
+// challenge pages and empty templates do not promote to html_scrape.
+func detectSSREmbeddedData(entry EnrichedEntry) string {
 	if !strings.Contains(strings.ToLower(entry.ResponseContentType), "html") {
-		return false
+		return ""
+	}
+	if entry.ResponseStatus < 200 || entry.ResponseStatus >= 300 {
+		return ""
+	}
+	if len(entry.ResponseBody) < ssrEmbeddedDataMinBodySize {
+		return ""
 	}
 	body := strings.ToLower(entry.ResponseBody)
-	return strings.Contains(body, "__next_data__") || strings.Contains(body, "application/ld+json") || strings.Contains(body, "window.__")
+	for _, sig := range ssrEmbeddedDataSignatures {
+		if strings.Contains(body, sig.substring) {
+			return sig.label
+		}
+	}
+	return ""
 }
 
 func looksBrowserRendered(entry EnrichedEntry) bool {
