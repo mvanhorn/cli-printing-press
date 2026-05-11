@@ -247,6 +247,13 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		if req.Header.Get("User-Agent") == "" {
 			req.Header.Set("User-Agent", "printing-press-golden-pp-cli/2026.04")
 		}
+		// Go's net/http omits Accept by default; browsers, curl, and other
+		// stdlibs always send it. Fingerprint-checking WAFs (Imperva, Akamai,
+		// Cloudflare bot-mode, DataDome) flag the absence as a bot signal
+		// and answer with HTTP 500.
+		if req.Header.Get("Accept") == "" {
+			req.Header.Set("Accept", "*/*")
+		}
 
 		resp, err := c.HTTPClient.Do(req)
 		if err != nil {
