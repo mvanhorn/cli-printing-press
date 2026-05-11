@@ -6472,7 +6472,7 @@ func TestGenerateDependentSyncCompiles(t *testing.T) {
 	// where it gates each dependent.
 	assert.Contains(t, syncContent, "parentFilter := append([]string(nil), resources...)",
 		"sync.go should capture user --resources filter before default expansion")
-	assert.Contains(t, syncContent, "maxPages, parentFilter",
+	assert.Contains(t, syncContent, "latestOnly, parentFilter",
 		"sync.go should pass the captured filter into syncDependentResources")
 	assert.Contains(t, syncContent, "parentFilter []string",
 		"syncDependentResources should accept a parent filter")
@@ -6788,6 +6788,25 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	assert.Contains(t, syncContent,
 		`{"event":"sync_warning","resource":"%s","parent":"%s","reason":"max_pages_cap_hit"`,
 		"dependent-resource cap-hit must emit a structured sync_warning with reason max_pages_cap_hit")
+
+	// (b3) Issue #928: --latest-only pins maxPages=1 programmatically, so
+	// the cap is hit on every paginated resource by user intent rather
+	// than anomaly. Both cap-hit emit blocks must sit inside an
+	// `if !latestOnly` guard, otherwise the warning flood masks real
+	// sync_anomaly / sync_error events emitted by the same run.
+	guardBefore := func(marker string) string {
+		idx := strings.Index(syncContent, marker)
+		require.NotEqualf(t, -1, idx, "marker %q must appear in generated sync.go", marker)
+		return syncContent[max(0, idx-400):idx]
+	}
+	assert.Contains(t,
+		guardBefore(`"resource":"%s","reason":"max_pages_cap_hit"`),
+		"if !latestOnly {",
+		"flat-path cap-hit emit must be guarded by `if !latestOnly` (issue #928)")
+	assert.Contains(t,
+		guardBefore(`"resource":"%s","parent":"%s","reason":"max_pages_cap_hit"`),
+		"if !latestOnly {",
+		"dependent-resource cap-hit emit must be guarded by `if !latestOnly` (issue #928)")
 
 	// (c) Sticky-cursor detection on the flat path. The check must compare
 	// against a tracked lastNextCursor and emit the structured warning when
