@@ -915,7 +915,7 @@ func (s *Store) ListIDs(resourceType string) ([]string, error) {
 	).Scan(&table)
 	var rows *sql.Rows
 	if err == nil && table != "" {
-		rows, err = s.db.Query(fmt.Sprintf(`SELECT id FROM "%s"`, table))
+		rows, err = s.db.Query(fmt.Sprintf(`SELECT id FROM "%s"`, strings.ReplaceAll(table, `"`, `""`)))
 	}
 	if err != nil || table == "" {
 		// Fall back to generic resources table
