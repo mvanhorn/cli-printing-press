@@ -67,7 +67,13 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 
 			redirectURI := fmt.Sprintf("http://localhost:%d/callback", listener.Addr().(*net.TCPAddr).Port)
 
-			authURL := "{{.Auth.AuthorizationURL}}"
+			authURL := ""
+{{- if .Auth.AuthorizationURL}}
+			authURL = cfg.AuthorizationURL
+			if authURL == "" {
+				authURL = "{{.Auth.AuthorizationURL}}"
+			}
+{{- end}}
 			params := url.Values{
 				"client_id":     {clientID},
 				"redirect_uri":  {redirectURI},
@@ -126,7 +132,13 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 
 			server.Shutdown(context.Background())
 
-			tokenURL := "{{.Auth.TokenURL}}"
+			tokenURL := ""
+{{- if .Auth.TokenURL}}
+			tokenURL = cfg.TokenURL
+			if tokenURL == "" {
+				tokenURL = "{{.Auth.TokenURL}}"
+			}
+{{- end}}
 			tokenParams := url.Values{
 				"grant_type":   {"authorization_code"},
 				"code":         {code},
@@ -164,12 +176,22 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 				return fmt.Errorf("no access token in response")
 			}
 
-			expiry := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+			// Guard against non-conformant servers that return expires_in: 0.
+			// A zero-duration expiry resolves to time.Now(), which authHeader()
+			// then treats as expired and triggers a refresh on every call.
+			expiry := time.Time{}
+			if tokenResp.ExpiresIn > 0 {
+				expiry = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+			}
 			if err := cfg.SaveTokens(clientID, clientSecret, tokenResp.AccessToken, tokenResp.RefreshToken, expiry); err != nil {
 				return fmt.Errorf("saving tokens: %w", err)
 			}
 
-			fmt.Fprintf(os.Stderr, "%s Authentication successful! Token expires at %s\n", green("OK"), expiry.Format(time.RFC3339))
+			if expiry.IsZero() {
+				fmt.Fprintf(os.Stderr, "%s Authentication successful! Token expiry not provided.\n", green("OK"))
+			} else {
+				fmt.Fprintf(os.Stderr, "%s Authentication successful! Token expires at %s\n", green("OK"), expiry.Format(time.RFC3339))
+			}
 			return nil
 		},
 	}
