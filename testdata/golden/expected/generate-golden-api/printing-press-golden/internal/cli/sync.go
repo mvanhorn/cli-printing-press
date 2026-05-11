@@ -153,6 +153,13 @@ Exit codes & warnings:
 					fmt.Fprintln(os.Stderr, "warning: --latest-only ignored because --since is set; --since takes precedence")
 				}
 			}
+			// effectiveLatestOnly drives the max_pages_cap_hit suppression
+			// below. It must reflect whether --latest-only is actually the
+			// cap source — i.e., only when --since is empty. If --since wins
+			// (block above), --latest-only is a no-op for maxPages and any
+			// cap hit reflects the default --max-pages 100 limit, which is
+			// a real anomaly worth surfacing.
+			effectiveLatestOnly := latestOnly && since == ""
 
 			// Resolve --since into an RFC3339 timestamp
 			sinceTS := ""
@@ -179,7 +186,7 @@ Exit codes & warnings:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-						res := syncResource(c, db, resource, sinceTS, full, maxPages, latestOnly, userParams)
+						res := syncResource(c, db, resource, sinceTS, full, maxPages, effectiveLatestOnly, userParams)
 						results <- res
 					}
 				}()
@@ -225,7 +232,7 @@ Exit codes & warnings:
 				}
 			}
 			// Sync dependent (parent-child) resources sequentially after flat resources.
-			depResults := syncDependentResources(c, db, sinceTS, full, maxPages, latestOnly, parentFilter, userParams)
+			depResults := syncDependentResources(c, db, sinceTS, full, maxPages, effectiveLatestOnly, parentFilter, userParams)
 			for _, res := range depResults {
 				if res.Err != nil {
 					if humanFriendly {

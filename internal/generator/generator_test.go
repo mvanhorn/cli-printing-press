@@ -6472,7 +6472,7 @@ func TestGenerateDependentSyncCompiles(t *testing.T) {
 	// where it gates each dependent.
 	assert.Contains(t, syncContent, "parentFilter := append([]string(nil), resources...)",
 		"sync.go should capture user --resources filter before default expansion")
-	assert.Contains(t, syncContent, "latestOnly, parentFilter",
+	assert.Contains(t, syncContent, "effectiveLatestOnly, parentFilter",
 		"sync.go should pass the captured filter into syncDependentResources")
 	assert.Contains(t, syncContent, "parentFilter []string",
 		"syncDependentResources should accept a parent filter")
@@ -6807,6 +6807,23 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 		guardBefore(`"resource":"%s","parent":"%s","reason":"max_pages_cap_hit"`),
 		"if !latestOnly {",
 		"dependent-resource cap-hit emit must be guarded by `if !latestOnly` (issue #928)")
+
+	// (b4) The cap-hit guard must consume an effective value derived from
+	// both --latest-only AND --since. When --since is set, --latest-only is
+	// already a no-op for the maxPages pin (block at sync.go.tmpl ~154),
+	// and any cap hit reflects the default 100-page limit — a real anomaly
+	// worth surfacing. Passing the raw --latest-only flag value would
+	// silently suppress legitimate warnings on the --latest-only --since
+	// combined path. Pin the derivation and the callsites that consume it.
+	assert.Contains(t, syncContent,
+		`effectiveLatestOnly := latestOnly && since == ""`,
+		"sync.go must derive effectiveLatestOnly so --since overrides re-enable cap-hit warnings (issue #928 Greptile follow-up)")
+	assert.Contains(t, syncContent,
+		"maxPages, effectiveLatestOnly",
+		"syncResource call must pass effectiveLatestOnly, not the raw --latest-only flag (issue #928 Greptile follow-up)")
+	assert.Contains(t, syncContent,
+		"maxPages, effectiveLatestOnly, parentFilter",
+		"syncDependentResources call must pass effectiveLatestOnly, not the raw --latest-only flag (issue #928 Greptile follow-up)")
 
 	// (c) Sticky-cursor detection on the flat path. The check must compare
 	// against a tracked lastNextCursor and emit the structured warning when
