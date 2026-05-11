@@ -3332,6 +3332,39 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, `envelope["success"] = false`)
 }
 
+// TestCompactListFieldsPreservesUnknownShapes pins the two contracts that
+// keep `--agent` / `--compact` from silently emitting {} for records that
+// don't match the canonical id/name/title allowlist: a per-item fallback
+// to the original item, and a wider scalar allowlist that covers
+// monetary, metric, locale, and identity-adjacent keys.
+//
+// Pinned at the template level because the helper renders into every
+// printed CLI's helpers.go and a per-fixture assertion would miss future
+// copies that drift in.
+func TestCompactListFieldsPreservesUnknownShapes(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join("templates", "helpers.go.tmpl")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err, "template must exist: %s", path)
+	body := string(data)
+
+	assert.Contains(t, body, "if len(compact) == 0 {",
+		"compactListFields must preserve the original item when no allowlist keys match — otherwise records with domain-specific field names get reduced to {}")
+	assert.Contains(t, body, "compact = item",
+		"compactListFields must assign the original item as the per-item fallback")
+
+	for _, key := range []string{
+		`"price":`, `"fare":`, `"currency":`,
+		`"rating":`,
+		`"locale":`, `"language":`,
+		`"code":`,
+	} {
+		assert.Contains(t, body, key,
+			"compactListFields allowlist must include %s so canonical-schema records keep high-signal scalars across business/travel/commerce/locale APIs", key)
+	}
+}
+
 // TestPipedJsonGateRespectsExplicitFormatFlags pins the contract: the
 // piped-output auto-JSON gate must defer to explicit --csv / --quiet /
 // --plain flags so piped consumers that asked for a non-JSON format

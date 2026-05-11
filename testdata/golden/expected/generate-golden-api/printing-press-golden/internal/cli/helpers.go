@@ -582,12 +582,31 @@ func compactFields(data json.RawMessage) json.RawMessage {
 }
 
 // compactListFields keeps only high-gravity fields for array responses.
+// When an item carries none of these keys the original is preserved, so
+// `--agent` does not silently emit {} for APIs whose response shapes use
+// domain-specific field names (travel: airline/destination; commerce: vendor).
 func compactListFields(items []map[string]any) json.RawMessage {
 	keepFields := map[string]bool{
+		// Identity
 		"id": true, "name": true, "title": true, "identifier": true,
-		"status": true, "state": true, "type": true, "priority": true,
-		"url": true, "email": true, "key": true,
+		"code": true, "slug": true, "key": true,
+		// Categorization
+		"status": true, "state": true, "type": true, "kind": true, "priority": true,
+		// Communication
+		"url": true, "email": true,
+		// Monetary
+		"price": true, "amount": true, "cost": true, "fare": true,
+		"rate": true, "currency": true,
+		// Metrics
+		"rating": true, "score": true, "count": true,
+		// Locale / geo
+		"language": true, "locale": true, "country": true, "region": true,
+		"city": true, "domain": true,
+		// Temporal
 		"created_at": true, "updated_at": true, "createdAt": true, "updatedAt": true,
+		"date": true,
+		// Versioning
+		"version": true,
 	}
 
 	filtered := make([]map[string]any, 0, len(items))
@@ -597,6 +616,9 @@ func compactListFields(items []map[string]any) json.RawMessage {
 			if keepFields[k] {
 				compact[k] = v
 			}
+		}
+		if len(compact) == 0 {
+			compact = item
 		}
 		filtered = append(filtered, compact)
 	}
