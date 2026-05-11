@@ -26,7 +26,13 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string) server.
 		finalArgs := append([]string{}, prefixArgs...)
 		finalArgs = append(finalArgs, cliArgsFromMCP(args)...)
 		if raw, _ := args["args"].(string); strings.TrimSpace(raw) != "" {
-			finalArgs = append(finalArgs, splitShellArgs(raw)...)
+			tokens := splitShellArgs(raw)
+			for _, t := range tokens {
+				if strings.HasPrefix(t, "-") {
+					return mcplib.NewToolResultError(fmt.Sprintf("flag-like argument %q not allowed in positional args field; use structured tool parameters instead", t)), nil
+				}
+			}
+			finalArgs = append(finalArgs, tokens...)
 		}
 		cmd := exec.CommandContext(ctx, lookupPath, finalArgs...)
 		out, err := cmd.CombinedOutput()
@@ -37,10 +43,24 @@ func shellOutToCLI(cliPath func() (string, error), commandPath []string) server.
 	}
 }
 
+// blockedRootFlags are root-level CLI flags that an MCP client must not be
+// able to override via structured tool parameters. Allowing them lets a
+// caller swap auth credentials, redirect the API base URL, load a malicious
+// config file, or change the delivery target — all of which sit outside the
+// per-command surface the agent is supposed to be calling.
+var blockedRootFlags = map[string]bool{
+	"args":     true,
+	"base-url": true,
+	"config":   true,
+	"deliver":  true,
+	"profile":  true,
+	"token":    true,
+}
+
 func cliArgsFromMCP(args map[string]any) []string {
 	keys := make([]string, 0, len(args))
 	for k := range args {
-		if k != "args" {
+		if !blockedRootFlags[k] {
 			keys = append(keys, k)
 		}
 	}
