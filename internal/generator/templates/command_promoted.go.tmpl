@@ -186,7 +186,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			// body-aware cached read helper is filed as #425 for when a
 			// second store-backed POST-search consumer ships.
 			body := map[string]any{}
-{{bodyMap .Endpoint.Body "\t\t\t"}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}(path, body)
+{{bodyMapForEndpoint .Endpoint "\t\t\t"}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}(path, body)
 {{- end}}
 {{- else}}
 			// HEAD/OPTIONS and unknown verbs fall back to GET so generation
