@@ -5,6 +5,7 @@ Generated artifacts live under the user's home directory, not in this repo.
 ## Local artifacts
 
 - `~/printing-press/library/<api-slug>/` — local library: printed CLIs the generator has produced. Directory names are keyed by API slug, not CLI name. The binary inside is still `<api-slug>-pp-cli`.
+- `~/printing-press/library/<api-slug>/.manuscripts/<run-id>/` — per-run manuscripts (proofs, research, discovery) embedded inside the printed CLI by `printing-press lock promote`. Mirrors what `publish package` later copies into a packaged tarball, so `publish validate` can find the Phase 5 acceptance marker on a freshly promoted CLI without manual `cp -r` from the runstate.
 - `~/printing-press/manuscripts/<api-slug>/` — archived research and verification proofs, keyed by API slug. One API can have multiple runs.
 - `~/printing-press/.runstate/<scope>/` — mutable per-workspace state such as current run and sync cursors.
 
