@@ -8,6 +8,8 @@ openapi_version: "3.0"
 tier: community
 verified_date: "2026-03-25"
 homepage: https://plaid.com/docs/api
+auth_key_url: https://dashboard.plaid.com/team/keys
+auth_instructions: "Use Sandbox keys (PLAID_ENV=sandbox) until you have completed Plaid review for production."
 notes: "Fintech devs' go-to banking API. Abandoned community CLI (57 stars) proves demand."
 known_alternatives:
   - name: plaid-cli

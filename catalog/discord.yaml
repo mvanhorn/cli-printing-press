@@ -8,4 +8,6 @@ openapi_version: "3.1"
 tier: official
 verified_date: "2026-03-23"
 homepage: https://discord.com/developers/docs
+auth_key_url: https://discord.com/developers/applications
+auth_instructions: "Create an application, add a bot, and copy the bot token from the Bot tab."
 notes: Very large spec (1MB+). Generator truncates to 50 resources / 20 endpoints per resource.

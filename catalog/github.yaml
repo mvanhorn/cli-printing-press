@@ -8,6 +8,8 @@ openapi_version: "3.0"
 tier: official
 verified_date: "2026-03-23"
 homepage: https://docs.github.com/en/rest
+auth_key_url: https://github.com/settings/tokens
+auth_instructions: "Generate a fine-grained personal access token (or classic) with the scopes your workflow needs."
 notes: Very large spec. Generator truncates significantly.
 known_alternatives:
   - name: gh

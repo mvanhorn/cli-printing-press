@@ -8,4 +8,6 @@ openapi_version: "3.0"
 tier: official
 verified_date: "2026-03-23"
 homepage: https://developers.hubspot.com/docs/api
+auth_key_url: https://app.hubspot.com/private-apps
+auth_instructions: "Create a private app, grant CRM scopes, and copy the access token."
 notes: Only covers CRM Contacts endpoint. HubSpot has many separate specs.
