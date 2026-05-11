@@ -1092,6 +1092,38 @@ func TestEffectiveOAuth2Grant(t *testing.T) {
 	}
 }
 
+func TestParseRefreshTokenMechanism(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want ParsedRefreshTokenMechanism
+	}{
+		{name: "empty", raw: "", want: ParsedRefreshTokenMechanism{}},
+		{name: "whitespace only", raw: "   ", want: ParsedRefreshTokenMechanism{}},
+		{name: "scope offline", raw: "scope:offline", want: ParsedRefreshTokenMechanism{Kind: RefreshTokenMechanismKindScope, Scope: "offline"}},
+		{name: "scope offline.access", raw: "scope:offline.access", want: ParsedRefreshTokenMechanism{Kind: RefreshTokenMechanismKindScope, Scope: "offline.access"}},
+		{name: "scope offline_access", raw: "scope:offline_access", want: ParsedRefreshTokenMechanism{Kind: RefreshTokenMechanismKindScope, Scope: "offline_access"}},
+		{name: "query access_type", raw: "query:access_type=offline", want: ParsedRefreshTokenMechanism{Kind: RefreshTokenMechanismKindQuery, Key: "access_type", Value: "offline"}},
+		{name: "query empty key rejected", raw: "query:=offline", want: ParsedRefreshTokenMechanism{}},
+		{name: "query empty value rejected", raw: "query:access_type=", want: ParsedRefreshTokenMechanism{}},
+		{name: "query missing equals rejected", raw: "query:access_type", want: ParsedRefreshTokenMechanism{}},
+		{name: "unknown prefix rejected", raw: "header:Foo=bar", want: ParsedRefreshTokenMechanism{}},
+		{name: "missing colon rejected", raw: "scope offline", want: ParsedRefreshTokenMechanism{}},
+		{name: "case-sensitive prefix rejected", raw: "Scope:offline", want: ParsedRefreshTokenMechanism{}},
+		{name: "reserved key state rejected", raw: "query:state=foo", want: ParsedRefreshTokenMechanism{}},
+		{name: "reserved key client_id rejected", raw: "query:client_id=foo", want: ParsedRefreshTokenMechanism{}},
+		{name: "reserved key redirect_uri rejected", raw: "query:redirect_uri=foo", want: ParsedRefreshTokenMechanism{}},
+		{name: "reserved key response_type rejected", raw: "query:response_type=token", want: ParsedRefreshTokenMechanism{}},
+		{name: "reserved key scope rejected", raw: "query:scope=offline", want: ParsedRefreshTokenMechanism{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := AuthConfig{RefreshTokenMechanism: tt.raw}
+			assert.Equal(t, tt.want, cfg.ParseRefreshTokenMechanism())
+		})
+	}
+}
+
 func TestVersionPassedThrough(t *testing.T) {
 	base := func(v string) APISpec {
 		return APISpec{

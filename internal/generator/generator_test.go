@@ -659,6 +659,119 @@ func TestGenerateOAuth2AuthTemplateConditionally(t *testing.T) {
 	})
 }
 
+func TestGenerateOAuth2RefreshTokenMechanism(t *testing.T) {
+	t.Parallel()
+
+	baseSpec := func() *spec.APISpec {
+		return &spec.APISpec{
+			Name:    "oauthapi",
+			Version: "0.1.0",
+			BaseURL: "https://api.example.com",
+			Auth: spec.AuthConfig{
+				Type:             "bearer_token",
+				Header:           "Authorization",
+				Format:           "Bearer {token}",
+				EnvVars:          []string{"OAUTHAPI_TOKEN"},
+				AuthorizationURL: "https://api.example.com/oauth/authorize",
+				TokenURL:         "https://api.example.com/oauth/token",
+				Scopes:           []string{"read"},
+				OAuth2Grant:      spec.OAuth2GrantAuthorizationCode,
+			},
+			Config: spec.ConfigSpec{
+				Format: "toml",
+				Path:   "~/.config/oauthapi-pp-cli/config.toml",
+			},
+			Resources: map[string]spec.Resource{
+				"items": {
+					Description: "Manage items",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/items", Description: "List items"},
+					},
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name         string
+		mechanism    string
+		wantContains []string
+		wantAbsent   []string
+	}{
+		{
+			name:      "default omits Google-specific params",
+			mechanism: "",
+			wantAbsent: []string{
+				`"access_type":`,
+				`"prompt":`,
+				`params.Set("access_type"`,
+				`params.Set("prompt"`,
+			},
+		},
+		{
+			name:      "scope mechanism appends to scopes",
+			mechanism: "scope:offline",
+			wantContains: []string{
+				`scopes = append(scopes, "offline")`,
+			},
+			wantAbsent: []string{
+				`params.Set("access_type"`,
+				`"access_type":`,
+			},
+		},
+		{
+			name:      "query mechanism emits exact param",
+			mechanism: "query:access_type=offline",
+			wantContains: []string{
+				`params.Set("access_type", "offline")`,
+			},
+			wantAbsent: []string{
+				`"access_type":   {"offline"}`,
+				`scopes = append(scopes,`,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			apiSpec := baseSpec()
+			apiSpec.Auth.RefreshTokenMechanism = tt.mechanism
+
+			outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			authGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+			require.NoError(t, err)
+			content := string(authGo)
+			for _, want := range tt.wantContains {
+				assert.Contains(t, content, want, "missing expected emission")
+			}
+			for _, absent := range tt.wantAbsent {
+				assert.NotContains(t, content, absent, "should not emit")
+			}
+		})
+	}
+
+	t.Run("client_credentials grant ignores mechanism", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := baseSpec()
+		apiSpec.Auth.OAuth2Grant = spec.OAuth2GrantClientCredentials
+		apiSpec.Auth.AuthorizationURL = ""
+		apiSpec.Auth.RefreshTokenMechanism = "scope:offline"
+
+		outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		authGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+		require.NoError(t, err)
+		content := string(authGo)
+		assert.NotContains(t, content, `scopes = append(scopes, "offline")`,
+			"client_credentials grant must not emit authorization_code refresh-token mechanism")
+		assert.NotContains(t, content, `params.Set(`,
+			"client_credentials grant uses a token-endpoint POST, not an authorization URL")
+	})
+}
+
 func TestGeneratedOutput_READMEBearerTokenMCPSetup(t *testing.T) {
 	t.Parallel()
 
