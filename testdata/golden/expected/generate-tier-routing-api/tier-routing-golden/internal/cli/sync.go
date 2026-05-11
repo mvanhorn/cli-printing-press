@@ -272,6 +272,8 @@ Exit codes & warnings:
 
 // syncResource handles the full paginated sync of a single resource.
 // It resumes from the last cursor unless sinceTS or full mode overrides it.
+// channel_workflow.go.tmpl mirrors the trailing dates arg conditional;
+// keep both call sites in sync if this signature changes.
 func syncResource(c interface {
 	Get(string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
