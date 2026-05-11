@@ -64,3 +64,33 @@ func TestPythonUTF8Env_EmptyBase(t *testing.T) {
 		t.Errorf("expected both UTF-8 entries, got %v", got)
 	}
 }
+
+func TestIsWindowsStorePython(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"store stub python3", `C:\Users\alice\AppData\Local\Microsoft\WindowsApps\python3.exe`, true},
+		{"store stub python", `C:\Users\alice\AppData\Local\Microsoft\WindowsApps\python.exe`, true},
+		{"store stub versioned python3.13", `C:\Users\alice\AppData\Local\Microsoft\WindowsApps\python3.13.exe`, true},
+		{"store stub mixed case", `C:\Users\alice\AppData\Local\Microsoft\WINDOWSAPPS\Python3.exe`, true},
+		{"store stub forward slashes", `C:/Users/alice/AppData/Local/Microsoft/WindowsApps/python3.exe`, true},
+		{"real python install", `C:\Python314\python.exe`, false},
+		{"py launcher", `C:\Windows\py.exe`, false},
+		{"unix path", "/usr/bin/python3", false},
+		{"unrelated windowsapps binary", `C:\Users\alice\AppData\Local\Microsoft\WindowsApps\winget.exe`, false},
+		{"empty path", "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isWindowsStorePython(tc.path); got != tc.want {
+				t.Errorf("isWindowsStorePython(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
