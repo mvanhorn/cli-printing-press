@@ -1,6 +1,7 @@
 package generator
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -99,16 +100,12 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 		if err != nil {
 			return fmt.Errorf("parsing template %s: %w", tmplName, err)
 		}
-		fullPath := filepath.Join(outputDir, outPath)
-		f, err := os.Create(fullPath)
-		if err != nil {
-			return fmt.Errorf("creating %s: %w", fullPath, err)
-		}
-		defer func() { _ = f.Close() }()
-		if err := tmpl.Execute(f, data); err != nil {
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, data); err != nil {
 			return fmt.Errorf("executing template %s: %w", tmplName, err)
 		}
-		return nil
+		fullPath := filepath.Join(outputDir, outPath)
+		return os.WriteFile(fullPath, normalizeRendered(buf.Bytes(), outPath), 0o644)
 	}
 
 	// Partition commands into top-level and subcommands

@@ -14,10 +14,10 @@ import (
 func newLeaguesPromotedCmd(flags *rootFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
-		Use:   "leagues <game_key>",
-		Short: "List leagues for a game",
-		Long:  "Shortcut for 'leagues list'. List leagues for a game",
-		Example: "  sync-walker-golden-pp-cli leagues your-token-here",
+		Use:         "leagues <game_key>",
+		Short:       "List leagues for a game",
+		Long:        "Shortcut for 'leagues list'. List leagues for a game",
+		Example:     "  sync-walker-golden-pp-cli leagues your-token-here",
 		Annotations: map[string]string{"pp:endpoint": "leagues.list", "pp:method": "GET", "pp:path": "/games/{game_key}/leagues", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()

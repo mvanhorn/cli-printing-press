@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
 	"printing-press-rich-pp-cli/internal/client"
 	"printing-press-rich-pp-cli/internal/config"
 	"printing-press-rich-pp-cli/internal/store"
-	"github.com/spf13/cobra"
 )
 
 // looksLikeDoctorInterstitial reports whether the response body matches a known

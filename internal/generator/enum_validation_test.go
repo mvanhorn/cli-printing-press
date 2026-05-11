@@ -57,7 +57,7 @@ func TestEnumParamEmitsValidation(t *testing.T) {
 		"flag description must include enum values")
 
 	// Runtime validation block emitted.
-	require.Contains(t, code, `allowedStatus := []string{ "active", "archived", "pending" }`,
+	require.Contains(t, code, `allowedStatus := []string{"active", "archived", "pending"}`,
 		"runtime validation must declare the allowed set")
 	require.Contains(t, code, `warning: --%s %q not in allowed set %v`,
 		"runtime validation must warn on unknown value")
@@ -135,8 +135,8 @@ func TestMultipleEnumParamsDoNotCollide(t *testing.T) {
 	code := string(src)
 
 	// Each enum param gets its own uniquely-named locals.
-	require.Contains(t, code, `allowedStatus := []string{ "active", "archived" }`)
-	require.Contains(t, code, `allowedKind := []string{ "alpha", "beta" }`)
+	require.Contains(t, code, `allowedStatus := []string{"active", "archived"}`)
+	require.Contains(t, code, `allowedKind := []string{"alpha", "beta"}`)
 	require.Contains(t, code, `validStatus := false`)
 	require.Contains(t, code, `validKind := false`)
 }

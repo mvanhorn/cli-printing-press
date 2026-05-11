@@ -15,8 +15,8 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"printing-press-rich-pp-cli/internal/cli"
-	"printing-press-rich-pp-cli/internal/cliutil"
 	"printing-press-rich-pp-cli/internal/client"
+	"printing-press-rich-pp-cli/internal/cliutil"
 	"printing-press-rich-pp-cli/internal/config"
 	"printing-press-rich-pp-cli/internal/mcp/cobratree"
 	"printing-press-rich-pp-cli/internal/store"
@@ -31,7 +31,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/items", []mcpParamBinding{ }, []string{ }),
+		makeAPIHandler("GET", "/items", []mcpParamBinding{}, []string{}),
 	)
 	// SQL tool — ad-hoc analysis on synced data without API calls
 	s.AddTool(
@@ -218,6 +218,7 @@ func dbPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "printing-press-rich-pp-cli", "data.db")
 }
+
 // Note: MCP tools use their own dbPath() because they are in a separate package (main, not cli).
 // The CLI's defaultDBPath() in the cli package uses the same canonical path.
 
@@ -330,55 +331,55 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 			"type": "api_key",
 			"env_vars": []map[string]any{
 				{
-					"name": "RICH_AUTH_API_KEY",
-					"kind": "per_call",
-					"required": true,
-					"sensitive": true,
+					"name":        "RICH_AUTH_API_KEY",
+					"kind":        "per_call",
+					"required":    true,
+					"sensitive":   true,
 					"description": "Set to your API credential.",
 				},
 				{
-					"name": "RICH_AUTH_CLIENT_ID",
-					"kind": "auth_flow_input",
-					"required": false,
-					"sensitive": false,
+					"name":        "RICH_AUTH_CLIENT_ID",
+					"kind":        "auth_flow_input",
+					"required":    false,
+					"sensitive":   false,
 					"description": "OAuth application client identifier.",
 				},
 				{
-					"name": "RICH_AUTH_CLIENT_SECRET",
-					"kind": "auth_flow_input",
-					"required": false,
-					"sensitive": true,
+					"name":        "RICH_AUTH_CLIENT_SECRET",
+					"kind":        "auth_flow_input",
+					"required":    false,
+					"sensitive":   true,
 					"description": "Set during initial auth setup.",
 				},
 				{
-					"name": "RICH_AUTH_OPTIONAL_TOKEN",
-					"kind": "per_call",
-					"required": false,
-					"sensitive": true,
+					"name":        "RICH_AUTH_OPTIONAL_TOKEN",
+					"kind":        "per_call",
+					"required":    false,
+					"sensitive":   true,
 					"description": "Set to your API credential.",
 				},
 				{
-					"name": "RICH_AUTH_BOT_TOKEN",
-					"kind": "per_call",
-					"required": false,
-					"sensitive": true,
+					"name":        "RICH_AUTH_BOT_TOKEN",
+					"kind":        "per_call",
+					"required":    false,
+					"sensitive":   true,
 					"description": "Set to your API credential.",
 				},
 				{
-					"name": "RICH_AUTH_USER_TOKEN",
-					"kind": "per_call",
-					"required": false,
-					"sensitive": true,
+					"name":        "RICH_AUTH_USER_TOKEN",
+					"kind":        "per_call",
+					"required":    false,
+					"sensitive":   true,
 					"description": "Set to your API credential.",
 				},
 			},
 		},
 		"resources": []map[string]any{
 			{
-				"name": "items",
+				"name":        "items",
 				"description": "Manage items",
-				"endpoints": []string{"list",  },
-				"syncable": true,
+				"endpoints":   []string{"list"},
+				"syncable":    true,
 			},
 		},
 		"query_tips": []string{

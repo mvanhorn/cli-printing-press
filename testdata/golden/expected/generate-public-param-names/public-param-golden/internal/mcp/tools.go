@@ -29,7 +29,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("POST", "/stores", []mcpParamBinding{{PublicName: "store-code", WireName: "store_code", Location: "body"}, }, []string{ }),
+		makeAPIHandler("POST", "/stores", []mcpParamBinding{{PublicName: "store-code", WireName: "store_code", Location: "body"}}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("stores_find",
@@ -40,7 +40,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/power/store-locator", []mcpParamBinding{{PublicName: "address", WireName: "s", Location: "query"},{PublicName: "city", WireName: "c", Location: "query"}, }, []string{ }),
+		makeAPIHandler("GET", "/power/store-locator", []mcpParamBinding{{PublicName: "address", WireName: "s", Location: "query"}, {PublicName: "city", WireName: "c", Location: "query"}}, []string{}),
 	)
 
 	// Context tool — front-loaded domain knowledge for agents.
@@ -210,6 +210,7 @@ func dbPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "public-param-golden-pp-cli", "data.db")
 }
+
 // Note: MCP tools use their own dbPath() because they are in a separate package (main, not cli).
 // The CLI's defaultDBPath() in the cli package uses the same canonical path.
 
@@ -223,10 +224,10 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion public-param-golden-pp-cli binary.",
 		"resources": []map[string]any{
 			{
-				"name": "stores",
+				"name":        "stores",
 				"description": "Store lookup operations",
-				"endpoints": []string{"create", "find",  },
-				"searchable": true,
+				"endpoints":   []string{"create", "find"},
+				"searchable":  true,
 			},
 		},
 		"query_tips": []string{

@@ -18,13 +18,13 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 	var flagAll bool
 
 	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List projects",
-		Example: "  printing-press-golden-pp-cli projects list",
+		Use:         "list",
+		Short:       "List projects",
+		Example:     "  printing-press-golden-pp-cli projects list",
 		Annotations: map[string]string{"pp:endpoint": "projects.list", "pp:method": "GET", "pp:path": "/projects", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cmd.Flags().Changed("status") {
-				allowedStatus := []string{ "draft", "active", "archived" }
+				allowedStatus := []string{"draft", "active", "archived"}
 				validStatus := false
 				for _, v := range allowedStatus {
 					if flagStatus == v {
@@ -44,7 +44,7 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 			path := "/projects"
 			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "projects", path, map[string]string{
 				"status": fmt.Sprintf("%v", flagStatus),
-				"limit": fmt.Sprintf("%v", flagLimit),
+				"limit":  fmt.Sprintf("%v", flagLimit),
 				"cursor": fmt.Sprintf("%v", flagCursor),
 			}, nil, flagAll, "cursor", "", "")
 			if err != nil {

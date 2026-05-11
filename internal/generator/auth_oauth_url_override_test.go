@@ -36,8 +36,8 @@ func TestOAuth2URLs_RuntimeOverrideEmittedForAuthCodeGrant(t *testing.T) {
 	require.NoError(t, err)
 	cfg := string(cfgSrc)
 
-	require.Contains(t, cfg, "AuthorizationURL string", "Config must expose AuthorizationURL override field")
-	require.Contains(t, cfg, "TokenURL       string", "Config must expose TokenURL override field")
+	require.Regexp(t, `\bAuthorizationURL\s+string\b`, cfg, "Config must expose AuthorizationURL override field")
+	require.Regexp(t, `\bTokenURL\s+string\b`, cfg, "Config must expose TokenURL override field")
 	require.Contains(t, cfg, `os.Getenv("OAUTH_URL_OVERRIDE_AUTHORIZATION_URL")`,
 		"Load() must read AuthorizationURL env override")
 	require.Contains(t, cfg, `os.Getenv("OAUTH_URL_OVERRIDE_TOKEN_URL")`,
@@ -85,8 +85,8 @@ func TestOAuth2URLs_RuntimeOverrideEmittedForClientCredentialsGrant(t *testing.T
 	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
 	require.NoError(t, err)
 	cfg := string(cfgSrc)
-	require.Contains(t, cfg, "TokenURL       string")
-	require.NotContains(t, cfg, "AuthorizationURL string",
+	require.Regexp(t, `\bTokenURL\s+string\b`, cfg)
+	require.NotRegexp(t, `\bAuthorizationURL\s+string\b`, cfg,
 		"client_credentials grant has no authorization URL, so the field must not be emitted")
 	require.Contains(t, cfg, `os.Getenv("CC_URL_OVERRIDE_TOKEN_URL")`)
 
@@ -137,9 +137,9 @@ func TestOAuth2URLs_NoFieldsForBearerTokenSpec(t *testing.T) {
 	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
 	require.NoError(t, err)
 	cfg := string(cfgSrc)
-	require.NotContains(t, cfg, "AuthorizationURL string",
+	require.NotRegexp(t, `\bAuthorizationURL\s+string\b`, cfg,
 		"plain bearer_token has no OAuth2 URLs; field must not be emitted")
-	require.NotContains(t, cfg, "TokenURL       string",
+	require.NotRegexp(t, `\bTokenURL\s+string\b`, cfg,
 		"plain bearer_token has no OAuth2 URLs; field must not be emitted")
 
 	clientSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))

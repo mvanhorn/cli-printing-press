@@ -14,17 +14,17 @@ import (
 )
 
 type Config struct {
-	BaseURL        string `toml:"base_url"`
-	AuthHeaderVal  string `toml:"auth_header"`
-	Headers        map[string]string `toml:"headers,omitempty"`
-	AuthSource     string `toml:"-"`
-	AccessToken    string `toml:"access_token"`
-	RefreshToken   string `toml:"refresh_token"`
-	TokenExpiry    time.Time `toml:"token_expiry"`
-	ClientID       string `toml:"client_id"`
-	ClientSecret   string `toml:"client_secret"`
-	Path           string `toml:"-"`
-	PrintingPressGoldenApiKey string `toml:"press_golden_api_key"`
+	BaseURL                   string            `toml:"base_url"`
+	AuthHeaderVal             string            `toml:"auth_header"`
+	Headers                   map[string]string `toml:"headers,omitempty"`
+	AuthSource                string            `toml:"-"`
+	AccessToken               string            `toml:"access_token"`
+	RefreshToken              string            `toml:"refresh_token"`
+	TokenExpiry               time.Time         `toml:"token_expiry"`
+	ClientID                  string            `toml:"client_id"`
+	ClientSecret              string            `toml:"client_secret"`
+	Path                      string            `toml:"-"`
+	PrintingPressGoldenApiKey string            `toml:"press_golden_api_key"`
 }
 
 func Load(configPath string) (*Config, error) {

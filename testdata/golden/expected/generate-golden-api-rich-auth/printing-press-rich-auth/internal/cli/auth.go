@@ -5,9 +5,9 @@ package cli
 
 import (
 	"fmt"
+	"github.com/spf13/cobra"
 	"os"
 	"printing-press-rich-pp-cli/internal/config"
-	"github.com/spf13/cobra"
 )
 
 func newAuthCmd(flags *rootFlags) *cobra.Command {
@@ -30,8 +30,8 @@ func newAuthCmd(flags *rootFlags) *cobra.Command {
 func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 	var launch bool
 	cmd := &cobra.Command{
-		Use:   "setup",
-		Short: "Print steps for obtaining a credential (use --launch to open the URL)",
+		Use:     "setup",
+		Short:   "Print steps for obtaining a credential (use --launch to open the URL)",
 		Example: "  printing-press-rich-pp-cli auth setup\n  printing-press-rich-pp-cli auth setup --launch",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			w := cmd.OutOrStdout()
@@ -56,8 +56,8 @@ func newAuthSetupCmd(_ *rootFlags) *cobra.Command {
 
 func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
-		Use:   "status",
-		Short: "Show authentication status",
+		Use:     "status",
+		Short:   "Show authentication status",
 		Example: "  printing-press-rich-pp-cli auth status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(flags.configPath)
@@ -108,10 +108,10 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 
 func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
-		Use:   "set-token <token>",
-		Short: "Save an API token to the config file",
+		Use:     "set-token <token>",
+		Short:   "Save an API token to the config file",
 		Example: "  printing-press-rich-pp-cli auth set-token YOUR_TOKEN_HERE",
-		Args:  cobra.ExactArgs(1),
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
@@ -148,8 +148,8 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 
 func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
-		Use:   "logout",
-		Short: "Clear stored credentials",
+		Use:     "logout",
+		Short:   "Clear stored credentials",
 		Example: "  printing-press-rich-pp-cli auth logout",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(flags.configPath)
