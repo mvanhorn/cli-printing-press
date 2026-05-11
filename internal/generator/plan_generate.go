@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"go/format"
 	"os"
 	"os/exec"
 	"path"
@@ -105,16 +104,8 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 		if err := tmpl.Execute(&buf, data); err != nil {
 			return fmt.Errorf("executing template %s: %w", tmplName, err)
 		}
-		rendered := buf.Bytes()
-		if filepath.Ext(outPath) == ".go" {
-			if formatted, err := format.Source(rendered); err == nil {
-				rendered = formatted
-			} else {
-				fmt.Fprintf(os.Stderr, "WARNING: gofmt failed for %s: %v\n", outPath, err)
-			}
-		}
 		fullPath := filepath.Join(outputDir, outPath)
-		return os.WriteFile(fullPath, rendered, 0o644)
+		return os.WriteFile(fullPath, normalizeRendered(buf.Bytes(), outPath), 0o644)
 	}
 
 	// Partition commands into top-level and subcommands
