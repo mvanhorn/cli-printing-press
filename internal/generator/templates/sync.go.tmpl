@@ -111,6 +111,12 @@ Exit codes & warnings:
 			}
 			defer db.Close()
 
+{{- if .DependentSyncResources}}
+			// Snapshot before defaults expand, so an empty user filter stays empty
+			// and dependents inherit "sync everything" instead of the default list.
+			parentFilter := append([]string(nil), resources...)
+{{- end}}
+
 			// If no specific resources, sync top-level resources
 			if len(resources) == 0 {
 				resources = defaultSyncResources()
@@ -224,7 +230,7 @@ Exit codes & warnings:
 
 {{- if .DependentSyncResources}}
 			// Sync dependent (parent-child) resources sequentially after flat resources.
-			depResults := syncDependentResources(c, db, sinceTS, full, maxPages{{if .Pagination.DateRangeParam}}, syncDates{{end}})
+			depResults := syncDependentResources(c, db, sinceTS, full, maxPages, parentFilter{{if .Pagination.DateRangeParam}}, syncDates{{end}})
 			for _, res := range depResults {
 				if res.Err != nil {
 					if humanFriendly {
@@ -1056,12 +1062,21 @@ func dependentResourceDefs() []dependentResourceDef {
 }
 
 // syncDependentResources iterates parent tables and syncs child resources per parent ID.
+// parentFilter mirrors the user's --resources flag (empty = sync everything). A dependent
+// runs when its parent table or its own name appears in the filter.
 func syncDependentResources(c {{if .HasTierRouting}}*client.Client{{else}}interface {
 	Get(string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
-}{{end}}, db *store.Store, sinceTS string, full bool, maxPages int{{if .Pagination.DateRangeParam}}, dates string{{end}}) []syncResult {
+}{{end}}, db *store.Store, sinceTS string, full bool, maxPages int, parentFilter []string{{if .Pagination.DateRangeParam}}, dates string{{end}}) []syncResult {
+	allow := make(map[string]bool, len(parentFilter))
+	for _, r := range parentFilter {
+		allow[r] = true
+	}
 	var results []syncResult
 	for _, dep := range dependentResourceDefs() {
+		if len(allow) > 0 && !allow[dep.ParentTable] && !allow[dep.Name] {
+			continue
+		}
 		res := syncDependentResource({{if .HasTierRouting}}syncClientForResource(c, dep.Name){{else}}c{{end}}, db, dep, sinceTS, full, maxPages{{if .Pagination.DateRangeParam}}, dates{{end}})
 		results = append(results, res)
 	}
