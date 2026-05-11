@@ -3653,22 +3653,25 @@ var goarchTokens = map[string]struct{}{
 
 // safeResourceFileStem returns a basename (without .go) safe to write under
 // internal/cli/, suffixing "_cmd" if the bare stem matches Go's filename-based
-// build-constraint pattern (*_<GOOS>.go, *_<GOARCH>.go, *_<GOOS>_<GOARCH>.go).
-// Without this rename, a file like scheduling_windows.go would get an implicit
-// Windows-only build tag and be silently excluded on macOS/Linux builds.
+// build-constraint pattern (*_<GOOS>.go, *_<GOARCH>.go, *_<GOOS>_<GOARCH>.go)
+// or Go's test-file pattern (*_test.go). Without this rename a file like
+// scheduling_windows.go would get an implicit Windows-only build tag and be
+// silently excluded on macOS/Linux builds, and a file like webhook_test.go
+// would be treated as a test file and excluded from the normal package build.
 //
 // The reserved-name collision is handled separately at spec-parse time
 // (see ReservedCLIResourceNames) because the function-name collision needs a
 // hard error rather than a silent rename — `new<Name>Cmd` would clash with
 // the reserved template's identically-named cobra builder.
 //
-// The suffix "_cmd" is never itself a GOOS or GOARCH token, so a single
-// application is sufficient.
+// The suffix "_cmd" is never itself a GOOS, GOARCH, or "test" token, so a
+// single application is sufficient.
 //
 // Examples:
 //
 //	safeResourceFileStem("scheduling_windows")     -> "scheduling_windows_cmd"
 //	safeResourceFileStem("foo_linux_amd64")        -> "foo_linux_amd64_cmd"
+//	safeResourceFileStem("webhook_test")           -> "webhook_test_cmd"
 //	safeResourceFileStem("scheduling_window_days") -> "scheduling_window_days" (no change)
 //	safeResourceFileStem("feedback")               -> "feedback" (no change; rejected at parse)
 func safeResourceFileStem(stem string) string {
@@ -3679,6 +3682,12 @@ func safeResourceFileStem(stem string) string {
 			return stem + "_cmd"
 		}
 		if _, isArch := goarchTokens[last]; isArch {
+			return stem + "_cmd"
+		}
+		if last == "test" {
+			// Go treats *_test.go as a test file and excludes it from
+			// the normal package build. Suffix "_cmd" keeps the file in
+			// the normal build.
 			return stem + "_cmd"
 		}
 	}
