@@ -1,0 +1,10 @@
+name: gmail
+display_name: Gmail
+description: Gmail API for reading, sending, and managing email
+category: productivity
+spec_url: https://www.googleapis.com/discovery/v1/apis/gmail/v1/rest
+spec_format: google-discovery
+tier: official
+verified_date: "2026-05-11"
+homepage: https://developers.google.com/workspace/gmail/api
+notes: Uses Google Discovery format (not OpenAPI). Auth requires an OAuth2 access token.
