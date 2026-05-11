@@ -188,6 +188,56 @@ func TestFindPII_ExcludedFiles(t *testing.T) {
 	assert.Contains(t, files, "data.json")
 }
 
+// CLI-root vendor spec files (the source the operator passed to --spec)
+// are exempt because vendor-published `example:` blocks are not customer
+// PII. The exemption is depth-1 only; a spec.yaml nested under
+// .manuscripts/ is captured content and stays in scope.
+func TestFindPII_RootVendorSpecExempt(t *testing.T) {
+	root := t.TempDir()
+	pii := `"email": "jenny@example.com"`
+	write(t, filepath.Join(root, "spec.yaml"), pii)
+	write(t, filepath.Join(root, "spec.yml"), pii)
+	write(t, filepath.Join(root, "spec.json"), pii)
+	// Sibling yaml at the root must still scan — only the literal
+	// vendor-spec basenames are exempt.
+	write(t, filepath.Join(root, "config.yaml"), pii)
+
+	findings, err := FindPII(root)
+	require.NoError(t, err)
+
+	files := uniqueFiles(findings)
+	assert.NotContains(t, files, "spec.yaml")
+	assert.NotContains(t, files, "spec.yml")
+	assert.NotContains(t, files, "spec.json")
+	assert.Contains(t, files, "config.yaml")
+}
+
+// Negative: nested spec.yaml files are captured content, not vendor
+// source. They stay in scope so browser-sniff captures keep flagging.
+// Two scope re-entry paths are exercised:
+//   - high-risk dirs (.manuscripts/, testdata/) match via highRiskDirGlobs
+//   - arbitrary subdirs (output/) match via the *.yaml entry in
+//     highRiskFileGlobs; pinned here as a regression guard against a
+//     future tweak that broadens the exemption from depth-1 to all paths
+func TestFindPII_NestedSpecYamlStillScans(t *testing.T) {
+	root := t.TempDir()
+	pii := `"email": "captured@victim.com"`
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".manuscripts", "run1", "research"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "testdata"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "output"), 0755))
+	write(t, filepath.Join(root, ".manuscripts", "run1", "research", "spec.yaml"), pii)
+	write(t, filepath.Join(root, "testdata", "spec.yaml"), pii)
+	write(t, filepath.Join(root, "output", "spec.yaml"), pii)
+
+	findings, err := FindPII(root)
+	require.NoError(t, err)
+
+	files := uniqueFiles(findings)
+	assert.Contains(t, files, ".manuscripts/run1/research/spec.yaml")
+	assert.Contains(t, files, "testdata/spec.yaml")
+	assert.Contains(t, files, "output/spec.yaml")
+}
+
 func TestFindPII_BinaryFileSkip(t *testing.T) {
 	root := t.TempDir()
 	// Planted PII in a "json" file with embedded nulls (mimics binary)

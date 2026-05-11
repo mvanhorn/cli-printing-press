@@ -163,6 +163,20 @@ var excludedFiles = map[string]bool{
 	ToolsPolishLedgerFilename: true,
 }
 
+// rootVendorSpecFiles are the CLI-root basenames the generator embeds
+// as vendor source — the OpenAPI/internal spec the operator passed to
+// `--spec`. Vendor-published `example:` values (emails, phones,
+// addresses) are documentation, not customer PII, so a Stripe/Zendesk/
+// GitHub spec doesn't false-fail every promote. Exemption is depth-1
+// only; a spec.yaml nested under .manuscripts/ or testdata/ is captured
+// content and stays in scope. Mirrors findArchivedSpec()'s candidate
+// set in internal/pipeline/climanifest.go.
+var rootVendorSpecFiles = map[string]bool{
+	"spec.json": true,
+	"spec.yaml": true,
+	"spec.yml":  true,
+}
+
 // skippedDirs are subtree names the walker never descends into at the
 // top level. Scoping to depth-1 is deliberate — `.git` and friends as
 // direct children of the cli-dir are infrastructure; the same names
@@ -239,6 +253,9 @@ func FindPII(root string) ([]PIIFinding, error) {
 func isHighRiskFile(relSlash string) bool {
 	base := filepath.Base(relSlash)
 	if excludedFiles[base] {
+		return false
+	}
+	if !strings.Contains(relSlash, "/") && rootVendorSpecFiles[base] {
 		return false
 	}
 	parts := strings.Split(relSlash, "/")
