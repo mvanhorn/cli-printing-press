@@ -651,6 +651,173 @@ components:
 	assert.Empty(t, fieldsByName["child"].Fields)
 }
 
+func TestParseOneOfRequestBodyEmitsJSONFallback(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: DNS API
+  version: 1.0.0
+paths:
+  /zones/{zoneId}/records:
+    post:
+      operationId: createRecord
+      parameters:
+        - name: zoneId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: "#/components/schemas/ARecord"
+                - $ref: "#/components/schemas/CNAMERecord"
+      responses:
+        "200":
+          description: ok
+components:
+  schemas:
+    ARecord:
+      type: object
+      required: [type, name, content]
+      properties:
+        type: {type: string, enum: [A]}
+        name: {type: string}
+        content: {type: string}
+    CNAMERecord:
+      type: object
+      required: [type, name, content]
+      properties:
+        type: {type: string, enum: [CNAME]}
+        name: {type: string}
+        content: {type: string}
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/zones/{zoneId}/records")
+	assert.True(t, endpoint.BodyJSONFallback, "endpoint with oneOf body should opt into --body-json fallback")
+	assert.Empty(t, endpoint.Body, "BodyJSONFallback endpoints expose a single --body-json flag, not typed body params")
+	assert.Equal(t, "application/json", endpoint.RequestContentType, "fallback endpoints should default to application/json")
+}
+
+func TestParseAnyOfRequestBodyEmitsJSONFallback(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Block API
+  version: 1.0.0
+paths:
+  /blocks:
+    post:
+      operationId: createBlock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              anyOf:
+                - type: object
+                  properties:
+                    paragraph: {type: string}
+                - type: object
+                  properties:
+                    heading: {type: string}
+      responses:
+        "200":
+          description: ok
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/blocks")
+	assert.True(t, endpoint.BodyJSONFallback)
+	assert.True(t, endpoint.BodyRequired, "requestBody.required should thread through to Endpoint.BodyRequired")
+	assert.Empty(t, endpoint.Body)
+}
+
+// TestParseOneOfRequestBodyPreservesVendorJSONContentType confirms a
+// non-default JSON content type (application/vnd.api+json,
+// application/problem+json, etc.) round-trips through the fallback path.
+// The runtime decode is content-type-agnostic; what matters is that the
+// declared type isn't multipart or form-urlencoded.
+func TestParseOneOfRequestBodyPreservesVendorJSONContentType(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Vendor API
+  version: 1.0.0
+paths:
+  /events:
+    post:
+      operationId: createEvent
+      requestBody:
+        content:
+          application/vnd.api+json:
+            schema:
+              oneOf:
+                - type: object
+                  properties:
+                    type: {type: string}
+                - type: object
+                  properties:
+                    kind: {type: string}
+      responses:
+        "200":
+          description: ok
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/events")
+	assert.True(t, endpoint.BodyJSONFallback)
+	assert.Equal(t, "application/vnd.api+json", endpoint.RequestContentType)
+}
+
+// TestParseOneOfRequestBodyMultipartDoesNotEmitJSONFallback covers the
+// guard that prevents emitting a --body-json flag for non-JSON content
+// types. The runtime JSON branch of command_endpoint.go.tmpl is not
+// wired for multipart, so a fallback flag there would be dead.
+func TestParseOneOfRequestBodyMultipartDoesNotEmitJSONFallback(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Upload API
+  version: 1.0.0
+paths:
+  /uploads:
+    post:
+      operationId: createUpload
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              oneOf:
+                - type: object
+                  properties:
+                    file: {type: string, format: binary}
+                - type: object
+                  properties:
+                    url: {type: string}
+      responses:
+        "200":
+          description: ok
+`))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/uploads")
+	assert.False(t, endpoint.BodyJSONFallback, "multipart oneOf should not opt into the JSON fallback")
+	assert.Empty(t, endpoint.Body)
+}
+
 func TestParseStytchOpenAPI(t *testing.T) {
 	t.Parallel()
 

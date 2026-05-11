@@ -3,6 +3,7 @@
 {{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
 {{- $hasMultipartRequest := hasMultipartRequest .APISpec}}
 {{- $hasFormRequest := hasFormRequest .APISpec}}
+{{- $hasBodyJSONFallback := hasBodyJSONFallback .APISpec}}
 
 package mcp
 
@@ -63,6 +64,9 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
 {{- end}}
 {{- end}}
+{{- if $endpoint.BodyJSONFallback}}
+			mcplib.WithString("body_json"{{if $endpoint.BodyRequired}}, mcplib.Required(){{end}}, mcplib.Description("Request body as a JSON object string (this endpoint accepts a polymorphic schema: oneOf/anyOf)")),
+{{- end}}
 {{- if eq (upper $endpoint.Method) "GET"}}
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
@@ -106,6 +110,9 @@ func RegisterTools(s *server.MCPServer) {
 {{- else}}
 			mcplib.WithString({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
 {{- end}}
+{{- end}}
+{{- if $endpoint.BodyJSONFallback}}
+			mcplib.WithString("body_json"{{if $endpoint.BodyRequired}}, mcplib.Required(){{end}}, mcplib.Description("Request body as a JSON object string (this endpoint accepts a polymorphic schema: oneOf/anyOf)")),
 {{- end}}
 {{- if eq (upper $endpoint.Method) "GET"}}
 			mcplib.WithReadOnlyHintAnnotation(true),
@@ -251,6 +258,12 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 		formFields := url.Values{}
 		formEncoded := false
 {{- end}}
+{{- if $hasBodyJSONFallback}}
+		// bodyJSONOverride holds an opaque body for endpoints whose request
+		// schema is a oneOf/anyOf and was wired with a single body_json input.
+		// When set, it replaces the marshaled bodyArgs map for POST/PUT/PATCH.
+		var bodyJSONOverride json.RawMessage
+{{- end}}
 		for _, binding := range bindings {
 			knownArgs[binding.PublicName] = true
 {{- if $hasMultipartRequest}}
@@ -286,6 +299,19 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 {{- if $hasFormRequest}}
 				if formEncoded {
 					formFields.Set(binding.WireName, mcpFormFieldValue(v))
+				}
+{{- end}}
+{{- if $hasBodyJSONFallback}}
+			case "body_json":
+				if s, ok := v.(string); ok && s != "" {
+					var parsed any
+					if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+						return mcplib.NewToolResultError("body_json must be a valid JSON object: " + err.Error()), nil
+					}
+					if _, isMap := parsed.(map[string]any); !isMap {
+						return mcplib.NewToolResultError(fmt.Sprintf("body_json must be a JSON object, got JSON %T", parsed)), nil
+					}
+					bodyJSONOverride = json.RawMessage(s)
 				}
 {{- end}}
 			default:
@@ -342,6 +368,12 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 				break
 			}
 {{- end}}
+{{- if $hasBodyJSONFallback}}
+			if len(bodyJSONOverride) > 0 {
+				data, _, err = c.Post(path, bodyJSONOverride)
+				break
+			}
+{{- end}}
 			body, _ := json.Marshal(bodyArgs)
 			data, _, err = c.Post(path, body)
 		case "PUT":
@@ -357,6 +389,12 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 				break
 			}
 {{- end}}
+{{- if $hasBodyJSONFallback}}
+			if len(bodyJSONOverride) > 0 {
+				data, _, err = c.Put(path, bodyJSONOverride)
+				break
+			}
+{{- end}}
 			body, _ := json.Marshal(bodyArgs)
 			data, _, err = c.Put(path, body)
 		case "PATCH":
@@ -369,6 +407,12 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 {{- if $hasFormRequest}}
 			if formEncoded {
 				data, _, err = c.PatchForm(path, formFields)
+				break
+			}
+{{- end}}
+{{- if $hasBodyJSONFallback}}
+			if len(bodyJSONOverride) > 0 {
+				data, _, err = c.Patch(path, bodyJSONOverride)
 				break
 			}
 {{- end}}

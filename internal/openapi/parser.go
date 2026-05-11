@@ -1651,7 +1651,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			}
 
 			params := mapParameters(pathItem, op)
-			body, requestContentType := mapRequestBody(op.RequestBody, method, path)
+			body, requestContentType, bodyJSONFallback, bodyRequired := mapRequestBody(op.RequestBody, method, path)
 
 			// Deduplicate body params that collide with query/path params by flag name
 			if len(body) > 0 && len(params) > 0 {
@@ -1675,6 +1675,8 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				Description:        description,
 				Params:             params,
 				Body:               body,
+				BodyJSONFallback:   bodyJSONFallback,
+				BodyRequired:       bodyRequired,
 				RequestContentType: requestContentType,
 			}
 			endpoint.Tier = readTierExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
@@ -2377,26 +2379,35 @@ func mergeParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []*ope
 	return merged
 }
 
-func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string) ([]spec.Param, string) {
+func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string) ([]spec.Param, string, bool, bool) {
 	requestBody := requestBodyValue(requestBodyRef)
 	if requestBody == nil || requestBody.Content == nil {
-		return nil, ""
+		return nil, "", false, false
 	}
 
 	requestContentType, media := requestBodyMediaType(requestBody.Content)
 	if media == nil || media.Schema == nil || media.Schema.Value == nil {
-		return nil, ""
+		return nil, "", false, false
 	}
 
 	properties := map[string]*openapi3.SchemaRef{}
 	required := map[string]struct{}{}
 	if collectAllOfProperties(media.Schema, properties, required, map[*openapi3.Schema]struct{}{}) {
-		warnf("skipping request body for %s %q: contains oneOf/anyOf", strings.ToUpper(method), path)
-		return nil, ""
+		// oneOf/anyOf at the body root cannot be flattened to named flags.
+		// Only enable the --body-json fallback for JSON-shaped content
+		// types; the runtime decode path is wired through the JSON branch
+		// of the command template and does not understand multipart or
+		// form-urlencoded encodings.
+		if !isJSONContentType(requestContentType) {
+			warnf("skipping request body for %s %q: contains oneOf/anyOf and content type %q is not JSON-shaped", strings.ToUpper(method), path, requestContentType)
+			return nil, "", false, false
+		}
+		warnf("request body for %s %q contains oneOf/anyOf; emitting --body-json fallback", strings.ToUpper(method), path)
+		return nil, requestContentType, true, requestBody.Required
 	}
 
 	if len(properties) == 0 {
-		return nil, ""
+		return nil, "", false, false
 	}
 
 	names := make([]string, 0, len(properties))
@@ -2447,7 +2458,26 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		body = append(body, param)
 	}
 
-	return body, requestContentType
+	return body, requestContentType, false, requestBody.Required
+}
+
+// isJSONContentType reports whether ct is a JSON-shaped media type:
+// application/json, any */*+json variant (e.g. application/vnd.api+json),
+// or text/json. Multipart and form-urlencoded encodings are excluded so
+// the --body-json fallback only fires when the runtime is wired through
+// the JSON branch of the command template.
+func isJSONContentType(ct string) bool {
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	if ct == "" {
+		return false
+	}
+	if i := strings.Index(ct, ";"); i >= 0 {
+		ct = strings.TrimSpace(ct[:i])
+	}
+	if ct == "application/json" || ct == "text/json" {
+		return true
+	}
+	return strings.HasPrefix(ct, "application/") && strings.HasSuffix(ct, "+json")
 }
 
 func requestBodyMediaType(content openapi3.Content) (string, *openapi3.MediaType) {

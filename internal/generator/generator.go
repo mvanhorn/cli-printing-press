@@ -308,6 +308,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"jsonStringParam":       isJSONStringParam,
 		"jsonEnumSuggestion":    jsonEnumSuggestion,
 		"bodyMap":               bodyMap,
+		"bodyMapForEndpoint":    bodyMapForEndpoint,
 		"bodyVarDecls":          bodyVarDecls,
 		"bodyFlagRegs":          bodyFlagRegs,
 		"bodyRequiredChecks":    bodyRequiredChecks,
@@ -317,6 +318,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"formBodyMaps":          formBodyMaps,
 		"endpointUsesForm":      endpointUsesForm,
 		"hasFormRequest":        hasFormRequest,
+		"hasBodyJSONFallback":   hasBodyJSONFallback,
 		"publicFlagName":        publicFlagName,
 		"publicFlagAliases":     publicFlagAliases,
 		"flagChangedExpr":       flagChangedExpr,
@@ -3063,6 +3065,17 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 			RequestContentType: requestContentType,
 		})
 	}
+	if endpoint.BodyJSONFallback {
+		// Single opaque body-json input; the handler parses it as JSON and
+		// sends it verbatim, mirroring the CLI's --body-json fallback for
+		// oneOf/anyOf request bodies. Body is empty by parser invariant.
+		bindings = append(bindings, mcpParamBinding{
+			PublicName: "body_json",
+			WireName:   "body_json",
+			Location:   "body_json",
+		})
+		return bindings
+	}
 	for _, p := range endpoint.Body {
 		bindings = append(bindings, mcpParamBinding{
 			PublicName:         p.PublicInputName(),
@@ -3139,6 +3152,43 @@ func bodyMap(body []spec.Param, indent string) string {
 	return b.String()
 }
 
+// bodyMapForEndpoint dispatches between the typed-flag body-map renderer
+// and the --body-json fallback renderer. Templates call this in place of
+// bodyMap so the BodyJSONFallback decision lives in one place.
+func bodyMapForEndpoint(endpoint spec.Endpoint, indent string) string {
+	if endpoint.BodyJSONFallback {
+		return bodyJSONFallbackMap(indent)
+	}
+	return bodyMap(endpoint.Body, indent)
+}
+
+// bodyJSONFallbackMap renders the body-population block used when an
+// endpoint's request body schema is a oneOf/anyOf (or otherwise opaque)
+// and we expose a single `--body-json` string flag. The caller has
+// already emitted `body = map[string]any{}`; this block conditionally
+// overwrites body with a parsed JSON object when the user passed a value.
+//
+// The fallback intentionally accepts only JSON objects. Top-level
+// discriminated unions in real-world specs (Cloudflare DNS records,
+// Stripe PaymentMethod, Notion blocks, Linear filters) are object-shaped;
+// rare array-typed bodies are out of scope for the minimum-viable
+// fallback and surface as a clear error message.
+func bodyJSONFallbackMap(indent string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%sif flagBodyJSON != \"\" {\n", indent)
+	fmt.Fprintf(&b, "%s\tvar parsedBodyJSON any\n", indent)
+	fmt.Fprintf(&b, "%s\tif err := json.Unmarshal([]byte(flagBodyJSON), &parsedBodyJSON); err != nil {\n", indent)
+	fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"parsing --body-json: %%w\", err)\n", indent)
+	fmt.Fprintf(&b, "%s\t}\n", indent)
+	fmt.Fprintf(&b, "%s\tasMap, ok := parsedBodyJSON.(map[string]any)\n", indent)
+	fmt.Fprintf(&b, "%s\tif !ok {\n", indent)
+	fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"--body-json must be a JSON object, got JSON %%T\", parsedBodyJSON)\n", indent)
+	fmt.Fprintf(&b, "%s\t}\n", indent)
+	fmt.Fprintf(&b, "%s\tbody = asMap\n", indent)
+	fmt.Fprintf(&b, "%s}\n", indent)
+	return b.String()
+}
+
 func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identPrefix, flagPrefix string) {
 	for _, p := range body {
 		id := paramIdent(p)
@@ -3188,8 +3238,15 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identP
 // parents as JSON-string fields. Output starts with "\n\tvar ..."
 // matching the one-tab indent of the original `{{- range .Endpoint.Body}}`
 // template loop.
+//
+// When endpoint.BodyJSONFallback is set (oneOf/anyOf body schema), a single
+// `flagBodyJSON` string is declared instead of per-field flags.
 func bodyVarDecls(endpoint spec.Endpoint) string {
 	var b strings.Builder
+	if endpoint.BodyJSONFallback {
+		b.WriteString("\n\tvar flagBodyJSON string")
+		return b.String()
+	}
 	if bodyUsesFlatEmission(endpoint) {
 		for _, p := range endpoint.Body {
 			fmt.Fprintf(&b, "\n\tvar body%s %s", toCamel(paramIdent(p)), goType(p.Type))
@@ -3228,6 +3285,10 @@ func renderBodyVarDecls(b *strings.Builder, body []spec.Param, identPrefix strin
 // not collide. Aliases are emitted only at the top level.
 func bodyFlagRegs(endpoint spec.Endpoint) string {
 	var b strings.Builder
+	if endpoint.BodyJSONFallback {
+		b.WriteString("\n\tcmd.Flags().StringVar(&flagBodyJSON, \"body-json\", \"\", \"Provide the full request body as a JSON object string (this endpoint accepts a polymorphic schema: oneOf/anyOf)\")")
+		return b.String()
+	}
 	if bodyUsesFlatEmission(endpoint) {
 		for _, p := range endpoint.Body {
 			renderFlatBodyFlagReg(&b, p, "", "", true)
@@ -3275,6 +3336,14 @@ func renderFlatBodyFlagReg(b *strings.Builder, p spec.Param, identPrefix, flagPr
 // parent-prefixed flag because aliases are not propagated to children.
 func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
 	var b strings.Builder
+	if endpoint.BodyJSONFallback {
+		if endpoint.BodyRequired {
+			fmt.Fprintf(&b, "\n%sif !cmd.Flags().Changed(\"body-json\") && !flags.dryRun {", indent)
+			fmt.Fprintf(&b, "\n%s\treturn fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"body-json\")", indent)
+			fmt.Fprintf(&b, "\n%s}", indent)
+		}
+		return b.String()
+	}
 	if bodyUsesFlatEmission(endpoint) {
 		for _, p := range endpoint.Body {
 			renderFlatBodyRequiredCheck(&b, p, indent, "", true)
@@ -3367,6 +3436,14 @@ func endpointUsesForm(endpoint spec.Endpoint) bool {
 
 func hasFormRequest(apiSpec *spec.APISpec) bool {
 	return anyEndpointMatches(apiSpec, endpointUsesForm)
+}
+
+func endpointUsesBodyJSONFallback(endpoint spec.Endpoint) bool {
+	return endpoint.BodyJSONFallback
+}
+
+func hasBodyJSONFallback(apiSpec *spec.APISpec) bool {
+	return anyEndpointMatches(apiSpec, endpointUsesBodyJSONFallback)
 }
 
 func anyEndpointMatches(apiSpec *spec.APISpec, predicate func(spec.Endpoint) bool) bool {

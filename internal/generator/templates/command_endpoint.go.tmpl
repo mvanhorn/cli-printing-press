@@ -284,7 +284,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				body = jsonBody
 			} else {
 				body = map[string]any{}
-{{bodyMap .Endpoint.Body "\t\t\t\t"}}			}
+{{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PostWithHeaders(path, body, headerOverrides)
 {{- else}}
@@ -329,7 +329,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				body = jsonBody
 			} else {
 				body = map[string]any{}
-{{bodyMap .Endpoint.Body "\t\t\t\t"}}			}
+{{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PutWithHeaders(path, body, headerOverrides)
 {{- else}}
@@ -368,7 +368,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				body = jsonBody
 			} else {
 				body = map[string]any{}
-{{bodyMap .Endpoint.Body "\t\t\t\t"}}			}
+{{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PatchWithHeaders(path, body, headerOverrides)
 {{- else}}
