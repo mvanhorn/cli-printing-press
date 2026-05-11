@@ -19,6 +19,7 @@ printing-press-golden/internal/mcp/cobratree/walker.go
 printing-press-golden/internal/mcp/cobratree/classify.go
 printing-press-golden/internal/mcp/cobratree/typemap.go
 printing-press-golden/internal/mcp/cobratree/shellout.go
+printing-press-golden/internal/mcp/cobratree/shellout_test.go
 printing-press-golden/internal/mcp/cobratree/cli_path.go
 printing-press-golden/internal/mcp/cobratree/names.go
 printing-press-golden/cmd/printing-press-golden-pp-mcp/main.go

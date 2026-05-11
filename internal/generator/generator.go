@@ -1411,6 +1411,7 @@ func (g *Generator) renderSingleFiles() error {
 		"cobratree/classify.go.tmpl":         filepath.Join("internal", "mcp", "cobratree", "classify.go"),
 		"cobratree/typemap.go.tmpl":          filepath.Join("internal", "mcp", "cobratree", "typemap.go"),
 		"cobratree/shellout.go.tmpl":         filepath.Join("internal", "mcp", "cobratree", "shellout.go"),
+		"cobratree/shellout_test.go.tmpl":    filepath.Join("internal", "mcp", "cobratree", "shellout_test.go"),
 		"cobratree/cli_path.go.tmpl":         filepath.Join("internal", "mcp", "cobratree", "cli_path.go"),
 		"cobratree/names.go.tmpl":            filepath.Join("internal", "mcp", "cobratree", "names.go"),
 		"types.go.tmpl":                      filepath.Join("internal", "types", "types.go"),
@@ -1657,12 +1658,13 @@ func (g *Generator) GenerateMCPSurface() error {
 	}
 	g.PromotedCommands, g.PromotedResourceNames, g.PromotedEndpointNames = buildPromotedCommandPlan(g.Spec)
 	mcpFiles := map[string]string{
-		"cobratree/walker.go.tmpl":   filepath.Join("internal", "mcp", "cobratree", "walker.go"),
-		"cobratree/classify.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "classify.go"),
-		"cobratree/typemap.go.tmpl":  filepath.Join("internal", "mcp", "cobratree", "typemap.go"),
-		"cobratree/shellout.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "shellout.go"),
-		"cobratree/cli_path.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "cli_path.go"),
-		"cobratree/names.go.tmpl":    filepath.Join("internal", "mcp", "cobratree", "names.go"),
+		"cobratree/walker.go.tmpl":        filepath.Join("internal", "mcp", "cobratree", "walker.go"),
+		"cobratree/classify.go.tmpl":      filepath.Join("internal", "mcp", "cobratree", "classify.go"),
+		"cobratree/typemap.go.tmpl":       filepath.Join("internal", "mcp", "cobratree", "typemap.go"),
+		"cobratree/shellout.go.tmpl":      filepath.Join("internal", "mcp", "cobratree", "shellout.go"),
+		"cobratree/shellout_test.go.tmpl": filepath.Join("internal", "mcp", "cobratree", "shellout_test.go"),
+		"cobratree/cli_path.go.tmpl":      filepath.Join("internal", "mcp", "cobratree", "cli_path.go"),
+		"cobratree/names.go.tmpl":         filepath.Join("internal", "mcp", "cobratree", "names.go"),
 		// cliutil files. Deliberately asymmetric with the marker-checked
 		// tools.go / handlers.go / root.go paths elsewhere in mcp-sync:
 		// those files can carry hand-edits and require explicit
