@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 )
 
@@ -229,6 +231,9 @@ func PromoteWorkingCLI(cliName, workingDir string, state *PipelineState) error {
 	if err := validatePhase5GateForPromote(workingDir, state); err != nil {
 		return err
 	}
+	if err := validatePIIGateForPromote(workingDir); err != nil {
+		return err
+	}
 
 	slug := naming.TrimCLISuffix(cliName)
 	libraryDir := filepath.Join(PublishedLibraryRoot(), slug)
@@ -349,6 +354,46 @@ func validatePhase5GateForPromote(workingDir string, state *PipelineState) error
 		return nil
 	}
 	return fmt.Errorf("phase5 gate failed: %s", result.Detail)
+}
+
+// validatePIIGateForPromote runs the PII audit against the working
+// directory and refuses promote when pending findings or enforcement-
+// primitive failures remain. The audit's ledger is refreshed in place
+// so agent-written accepts from a prior polish run carry forward; new
+// findings that appeared since polish surface as pending.
+//
+// The error message points operators at the ledger file and the
+// pii-polish playbook so they know where to act. A clean working dir
+// (no findings) passes with no ledger write effects.
+func validatePIIGateForPromote(workingDir string) error {
+	result, err := artifacts.RunPIIAudit(workingDir)
+	if err != nil {
+		return err
+	}
+	pending := artifacts.PIIPendingCount(result.Findings)
+	if pending == 0 && !result.Completion.HasGateFailure() {
+		return nil
+	}
+
+	var parts []string
+	if pending > 0 {
+		parts = append(parts, fmt.Sprintf("%d pending PII finding(s)", pending))
+	}
+	if result.Completion.HasGateFailure() {
+		parts = append(parts, fmt.Sprintf("%d gate failure(s)", result.Completion.GateFailureCount()))
+	}
+	ledgerPath := filepath.Join(workingDir, artifacts.PIILedgerFilename)
+	msg := fmt.Sprintf("PII gate failed: %s\n", strings.Join(parts, ", "))
+	if pending > 0 {
+		msg += "pending findings:\n" + artifacts.FormatPIIFindings(result.Findings) + "\n"
+	}
+	if result.Completion.HasGateFailure() {
+		msg += "gate failures:\n" + artifacts.FormatPIIGateFailures(result.Completion) + "\n"
+	}
+	msg += fmt.Sprintf("ledger: %s\n", ledgerPath)
+	msg += "scope: phase-1 detectors (card-last-4, email, phone, ZIP+4, postal-address); order-IDs, ASINs, names are deferred to #960.\n"
+	msg += "run `printing-press pii-audit <dir>` and follow skills/printing-press-polish/references/pii-polish.md"
+	return fmt.Errorf("%s", msg)
 }
 
 // IsStale returns true if the lock's heartbeat is too old or its owner
