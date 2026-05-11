@@ -97,8 +97,11 @@ func (c *Config) AuthHeader() string {
 	if c.AuthHeaderVal != "" {
 		return c.AuthHeaderVal
 	}
-	// Under OAuth2 client_credentials the env var is the Client ID, not a
-	// usable bearer; the minted AccessToken must win.
+	// Under OAuth2 (and bearer_token specs running the client_credentials
+	// grant) the configured env vars hold client credentials (client_id /
+	// client_secret), not a usable bearer; the minted AccessToken must
+	// win. Sending the client_id as Authorization: Bearer surfaces as
+	// token_rejected at the API.
 	if c.AccessToken != "" {
 		c.AuthSource = "oauth2"
 		return "Bearer " + c.AccessToken

@@ -57,37 +57,60 @@ func TestAuthHeader_ClientCredentialsDoesNotUseSetupEnvVars(t *testing.T) {
 	assert.Less(t, verifyIdx, mintIdx, "mock verification must not dial the real token endpoint")
 }
 
-func TestAuthHeader_OAuth2AuthorizationCodeUsesToken(t *testing.T) {
+// TestAuthHeader_OAuth2DoesNotUseSetupEnvVars pins that for every OAuth2
+// grant (authorization_code via the default, client_credentials via explicit
+// OAuth2Grant) the configured env vars (e.g. CLIENT_ID / CLIENT_SECRET) are
+// never emitted as bearer headers. The minted AccessToken is the only usable
+// bearer; sending CLIENT_ID as `Authorization: Bearer` surfaces as
+// token_rejected at the API.
+func TestAuthHeader_OAuth2DoesNotUseSetupEnvVars(t *testing.T) {
 	t.Parallel()
 
-	apiSpec := minimalSpec("oauth-precedence")
-	apiSpec.Auth = spec.AuthConfig{
-		Type:             "oauth2",
-		Header:           "Authorization",
-		Format:           "Bearer {token}",
-		EnvVars:          []string{"OAUTH_AUTH_TEST_TOKEN"},
-		AuthorizationURL: "https://example.com/auth",
-		TokenURL:         "https://example.com/token",
+	cases := []struct {
+		name  string
+		grant string
+	}{
+		{"authorization_code", ""},
+		{"client_credentials", spec.OAuth2GrantClientCredentials},
 	}
 
-	outputDir := filepath.Join(t.TempDir(), "oauth-precedence-pp-cli")
-	require.NoError(t, New(apiSpec, outputDir).Generate())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
-	require.NoError(t, err)
-	content := string(cfgSrc)
+			apiSpec := minimalSpec("oauth-precedence-" + tc.name)
+			apiSpec.Auth = spec.AuthConfig{
+				Type:   "oauth2",
+				Header: "Authorization",
+				Format: "Bearer {token}",
+				EnvVarSpecs: []spec.AuthEnvVar{
+					{Name: "OAUTH_AUTH_TEST_CLIENT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: false, Sensitive: false},
+					{Name: "OAUTH_AUTH_TEST_CLIENT_SECRET", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: false, Sensitive: true},
+				},
+				AuthorizationURL: "https://example.com/auth",
+				TokenURL:         "https://example.com/token",
+				OAuth2Grant:      tc.grant,
+			}
 
-	envCheck := "if c." + resolveEnvVarField("OAUTH_AUTH_TEST_TOKEN") + ` != ""`
-	tokenCheck := `if c.AccessToken != ""`
+			outputDir := filepath.Join(t.TempDir(), "oauth-precedence-"+tc.name+"-pp-cli")
+			require.NoError(t, New(apiSpec, outputDir).Generate())
 
-	require.Contains(t, content, envCheck)
-	require.Contains(t, content, tokenCheck)
+			cfgSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+			require.NoError(t, err)
+			content := string(cfgSrc)
 
-	body := authHeaderBody(t, content)
-	envIdx := strings.Index(body, envCheck)
-	tokenIdx := strings.Index(body, tokenCheck)
-	assert.Less(t, envIdx, tokenIdx,
-		"env-var bearer fallback should win over file token for OAuth2 authorization_code")
+			clientIDCheck := "if c." + resolveEnvVarField("OAUTH_AUTH_TEST_CLIENT_ID") + ` != ""`
+			clientSecretCheck := "if c." + resolveEnvVarField("OAUTH_AUTH_TEST_CLIENT_SECRET") + ` != ""`
+			tokenCheck := `if c.AccessToken != ""`
+
+			body := authHeaderBody(t, content)
+			require.Contains(t, body, tokenCheck, "AuthHeader must check AccessToken")
+			require.Contains(t, body, `applyAuthFormat("Bearer {token}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})`,
+				"AuthHeader must return the AccessToken via applyAuthFormat")
+			require.NotContains(t, body, clientIDCheck, "client ID must not be used as a bearer token")
+			require.NotContains(t, body, clientSecretCheck, "client secret must not be used as a bearer token")
+		})
+	}
 }
 
 func TestAuthLoginEnvVarsUseShellSafePrefix(t *testing.T) {

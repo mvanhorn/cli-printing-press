@@ -292,9 +292,12 @@ func (c *Config) AuthHeader() string {
 	{{- end}}
 {{- end}}
 {{- else if or (eq .Auth.Type "bearer_token") (eq .Auth.Type "oauth2")}}
-{{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
-	// Under OAuth2 client_credentials the env var is the Client ID, not a
-	// usable bearer; the minted AccessToken must win.
+{{- if or (eq .Auth.Type "oauth2") (and (eq .Auth.Type "bearer_token") (eq .Auth.EffectiveOAuth2Grant "client_credentials"))}}
+	// Under OAuth2 (and bearer_token specs running the client_credentials
+	// grant) the configured env vars hold client credentials (client_id /
+	// client_secret), not a usable bearer; the minted AccessToken must
+	// win. Sending the client_id as Authorization: Bearer surfaces as
+	// token_rejected at the API.
 	if c.AccessToken != "" {
 		c.AuthSource = "oauth2"
 		{{- if .Auth.Format}}
