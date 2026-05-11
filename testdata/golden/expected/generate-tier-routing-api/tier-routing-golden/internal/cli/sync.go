@@ -331,10 +331,23 @@ func syncResource(c interface {
 	// Determine the since param value:
 	// 1. Explicit --since flag takes priority
 	// 2. Otherwise use last_synced_at from sync_state for incremental sync
-	sinceParam := determineSinceParam()
+	sinceParam := syncResourceSinceParam(resource)
 	effectiveSince := sinceTS
 	if effectiveSince == "" && !lastSynced.IsZero() && !full {
 		effectiveSince = lastSynced.Format(time.RFC3339)
+	}
+	// Resources whose list endpoint declares no temporal-filter parameter
+	// fall back to plain pagination — sending a synthetic since=... would
+	// reach the API as an unknown query param and (for strict APIs like
+	// Notion) fail the whole resource with a 400. Warn once per resource
+	// when the user expected incremental behavior.
+	if effectiveSince != "" && sinceParam == "" {
+		if humanFriendly {
+			fmt.Fprintf(os.Stderr, "  %s: incremental sync ignored (endpoint declares no temporal filter; falling back to full pagination)\n", resource)
+		} else {
+			fmt.Fprintf(os.Stdout, `{"event":"sync_warning","resource":"%s","reason":"resource_not_incremental","message":"endpoint does not declare a temporal filter parameter; incremental sync has no effect for this resource"}`+"\n", resource)
+		}
+		effectiveSince = ""
 	}
 
 	cursor := existingCursor
@@ -555,9 +568,14 @@ func determinePaginationDefaults() paginationDefaults {
 	}
 }
 
-// determineSinceParam returns the query parameter name for incremental sync filtering.
-func determineSinceParam() string {
-	return "since"
+// syncResourceSinceParam returns the query parameter name this resource's
+// list endpoint declares for incremental temporal filtering, or "" when the
+// endpoint declares none. Skipping the param for "" resources avoids
+// validation-error 400s on APIs that reject unknown query keys.
+func syncResourceSinceParam(resource string) string {
+	switch resource {
+	}
+	return ""
 }
 
 // extractPageItems attempts to extract an array of items and pagination cursor from a response.

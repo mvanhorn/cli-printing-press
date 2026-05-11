@@ -1253,6 +1253,137 @@ func TestProfileDependentResourceUnsetMetadata(t *testing.T) {
 	assert.False(t, profile.DependentSyncResources[0].Critical)
 }
 
+// TestProfileSyncableResourceSinceParamPropagation asserts that per-endpoint
+// since-like query parameter declarations flow into SyncableResource.SinceParam.
+// The sync template uses that field to skip incremental-cursor emission for
+// resources whose endpoint does not declare such a parameter, avoiding the
+// Notion-style 400 the blind-append behavior used to produce.
+func TestProfileSyncableResourceSinceParamPropagation(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "mixed",
+		Resources: map[string]spec.Resource{
+			"events": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/events",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "since", Type: "string"},
+						},
+					},
+				},
+			},
+			"audit": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/audit",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "updated_after", Type: "string"},
+						},
+					},
+				},
+			},
+			"posts": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/posts",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "modified_since", Type: "string"},
+						},
+					},
+				},
+			},
+			"changelog": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/changelog",
+						Response: spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "updated_at", Type: "string"},
+						},
+					},
+				},
+			},
+			"users": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/v1/users",
+						Response: spec.ResponseDef{Type: "array"},
+						Params:   []spec.Param{},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := make(map[string]SyncableResource, len(profile.SyncableResources))
+	for _, r := range profile.SyncableResources {
+		byName[r.Name] = r
+	}
+
+	require.Contains(t, byName, "events")
+	assert.Equal(t, "since", byName["events"].SinceParam, "literal since param should propagate verbatim")
+
+	require.Contains(t, byName, "audit")
+	assert.Equal(t, "updated_after", byName["audit"].SinceParam, "spec-declared name (not the profile-wide guess) wins")
+
+	require.Contains(t, byName, "posts")
+	assert.Equal(t, "modified_since", byName["posts"].SinceParam, "modified_since heuristic branch")
+
+	require.Contains(t, byName, "changelog")
+	assert.Equal(t, "updated_at", byName["changelog"].SinceParam, "updated_at heuristic branch")
+
+	require.Contains(t, byName, "users")
+	assert.Empty(t, byName["users"].SinceParam, "endpoints without a since-like param yield empty SinceParam — the sync template treats this as 'do not send'")
+}
+
+// TestProfileDependentResourceSinceParamPropagation mirrors
+// TestProfileSyncableResourceSinceParamPropagation for parameterized child
+// paths so dependent-resource sync gets the same per-endpoint gating as flat
+// resources.
+func TestProfileDependentResourceSinceParamPropagation(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "chat",
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/channels",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"messages": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/channels/{channel_id}/messages",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Params: []spec.Param{
+							{Name: "channel_id", Type: "string", PathParam: true},
+							{Name: "modified_since", Type: "string"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.DependentSyncResources, 1)
+	assert.Equal(t, "modified_since", profile.DependentSyncResources[0].SinceParam)
+}
+
 // TestProfileSyncableResourceShorterPathWinsMetadata asserts that when two
 // candidate endpoints can populate the same syncable resource, the shorter-path
 // rule that already governs the Path field also picks the IDField/Critical

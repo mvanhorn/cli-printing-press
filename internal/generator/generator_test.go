@@ -6124,6 +6124,130 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// TestGeneratedSyncGatesSinceParamPerResource pins the fix for issue #900:
+// generators must only inject the incremental-cursor query parameter on
+// resources whose list endpoint actually declares it. Resources that don't
+// (e.g. Notion's /v1/users) get a one-shot resource_not_incremental warning
+// instead of a blind ?since=... that the API rejects with 400.
+func TestGeneratedSyncGatesSinceParamPerResource(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "gatedsync",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"GATEDSYNC_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/gatedsync-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			// Declares since — sync should pass it through.
+			"events": {
+				Description: "Event log",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/events",
+						Description: "List events",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Params: []spec.Param{
+							{Name: "since", Type: "string"},
+						},
+					},
+				},
+			},
+			// No temporal-filter param — sync must skip the cursor and warn.
+			"users": {
+				Description: "User directory",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/users",
+						Description: "List users",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+			// Dependent (parameterized child) path with no temporal-filter
+			// param — exercises the second warning emission site in
+			// syncDependentResource so parity assertions can verify both
+			// code paths emit the same shape.
+			"comments": {
+				Description: "Comments per event",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/events/{event_id}/comments",
+						Description: "List comments for an event",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	// Per-resource lookup replaces the blind global determineSinceParam().
+	assert.NotContains(t, syncContent, "determineSinceParam()",
+		"pre-fix helper that returned a blind global param name must be gone")
+	assert.Contains(t, syncContent, "func syncResourceSinceParam(resource string) string",
+		"per-resource helper must be emitted")
+
+	// events declares since → switch case present with the literal param name.
+	assert.Contains(t, syncContent, `case "events":`,
+		"events resource must appear in the per-resource switch")
+	assert.Contains(t, syncContent, `return "since"`,
+		"events resource must map to its declared param name")
+
+	// users declares no since-like param → no case for it (falls through to "").
+	assert.NotContains(t, syncContent, `case "users":`,
+		"users resource has no since-like param and must not appear in the switch — empty result skips the cursor")
+
+	// Pin the full warning JSON shape so future template churn can't silently
+	// drop a key, rename the event, or break the agent-facing contract.
+	const fullWarning = `{"event":"sync_warning","resource":"%s","reason":"resource_not_incremental","message":"endpoint does not declare a temporal filter parameter; incremental sync has no effect for this resource"}`
+	assert.Contains(t, syncContent, fullWarning,
+		"warning event must preserve the full agent-facing JSON shape")
+	// Both syncResource (flat) and syncDependentResource (parameterized child
+	// paths) must emit the warning. Counting occurrences guards against one
+	// site being deleted while a single assert.Contains still passes.
+	assert.GreaterOrEqual(t, strings.Count(syncContent, fullWarning), 2,
+		"warning must appear on both the flat and dependent-resource code paths")
+
+	// Human-mode warning to stderr — silent-fallback guard for TTY users.
+	assert.Contains(t, syncContent,
+		`"  %s: incremental sync ignored (endpoint declares no temporal filter; falling back to full pagination)\n"`,
+		"human-mode users must see a stderr warning when --since is dropped")
+
+	// Zeroing the temporal-filter timestamp is what actually prevents the
+	// blind ?since= from reaching the API. Pin both sites; without these
+	// the warning emission alone is cosmetic.
+	assert.Contains(t, syncContent, `effectiveSince = ""`,
+		"flat path must zero effectiveSince after warning so no cursor leaks through")
+	assert.Contains(t, syncContent, `depSinceTS = ""`,
+		"dependent path must zero depSinceTS after warning so no cursor leaks through")
+
+	// Build to catch template-syntax / import errors.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 func TestGeneratedSyncTreatsEmptyWrappedPageAsSuccessfulZeroRecords(t *testing.T) {
 	t.Parallel()
 
