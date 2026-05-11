@@ -51,6 +51,36 @@ func TestDoctorWithVerifyPathCanClaimCredentialsValid(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestDoctorClassifiesHTTP401AsInvalidAnd403AsScopeLimited(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("doctor-scope")
+	apiSpec.Auth.VerifyPath = "/account"
+
+	outputDir := filepath.Join(t.TempDir(), "doctor-scope-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	doctorSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	src := string(doctorSrc)
+
+	require.Contains(t, src, "case authAPIErr.StatusCode == 401:",
+		"doctor must keep a dedicated 401 branch so HTTP 401 reports as invalid credentials")
+	require.Contains(t, src, `"invalid (HTTP %d) — check your credentials"`,
+		"doctor's 401 message must continue to direct users to check the credential value")
+
+	require.Contains(t, src, "case authAPIErr.StatusCode == 403:",
+		"doctor must split 401 and 403 so 403 (scope-limited) is not misreported as invalid")
+	require.Contains(t, src, `"scope-limited (HTTP %d) — credentials are valid but lack permission for this endpoint. Check your dashboard's API key scope."`,
+		"doctor's 403 message must surface as scope-limited and point at dashboard scope, not the credential value")
+
+	require.NotContains(t, src, "authAPIErr.StatusCode == 401 || authAPIErr.StatusCode == 403",
+		"doctor must not collapse 401 and 403 into a single invalid branch")
+
+	require.Contains(t, src, `case strings.Contains(s, "scope-limited"):`,
+		"doctor's human-readable indicator switch must classify scope-limited as WARN, not FAIL")
+}
+
 func TestAuthStatusReportsCredentialsPresentNotVerified(t *testing.T) {
 	t.Parallel()
 

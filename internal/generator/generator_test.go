@@ -4799,7 +4799,9 @@ func TestGeneratedDoctor_AuthVerifyPathProbesEndpoint(t *testing.T) {
 	assert.Contains(t, content, `verifyPath := "/me?fields=id"`)
 	assert.Contains(t, content, `c.GetWithHeaders(verifyPath`)
 	assert.NotContains(t, content, `&http.Client{`)
-	// When verify_path is set, 401/403 keeps the strict "invalid" verdict
+	// When verify_path is set, HTTP 401 keeps the strict "invalid" verdict.
+	// 403 is handled separately as scope-limited; see
+	// TestDoctorClassifiesHTTP401AsInvalidAnd403AsScopeLimited.
 	assert.Contains(t, content, `"invalid (HTTP %d) — check your credentials"`)
 	// And does NOT emit the inconclusive fallback wording
 	assert.NotContains(t, content, "inconclusive (HTTP %d from base URL")
