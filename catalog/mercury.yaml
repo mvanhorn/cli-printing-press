@@ -8,6 +8,8 @@ openapi_version: "3.0"
 tier: official
 verified_date: "2026-05-06"
 homepage: https://docs.mercury.com/reference
+auth_key_url: https://app.mercury.com/settings/tokens
+auth_instructions: "Create an API token under Settings -> API and treat it as production credentials."
 owner_name: Cathryn Lavery
 mcp:
   transport: [stdio, http]

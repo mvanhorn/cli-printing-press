@@ -394,6 +394,11 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 {{- end}}
 {{- if .Auth.KeyURL}}
 					{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}} +
+{{- else if .WebsiteURL}}
+					{{printf "%q" (printf "\n      See API docs: %s" .WebsiteURL)}} +
+{{- end}}
+{{- if .Auth.Instructions}}
+					{{printf "%q" (printf "\n      %s" .Auth.Instructions)}} +
 {{- end}}
 					{{printf "%q" (printf "\n      Run '%s-pp-cli doctor' to check auth status." .Name)}}), nil
 {{- end}}
@@ -413,6 +418,11 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 {{- end}}
 {{- if .Auth.KeyURL}}
 					{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}} +
+{{- else if .WebsiteURL}}
+					{{printf "%q" (printf "\n      See API docs: %s" .WebsiteURL)}} +
+{{- end}}
+{{- if .Auth.Instructions}}
+					{{printf "%q" (printf "\n      %s" .Auth.Instructions)}} +
 {{- end}}
 					{{printf "%q" (printf "\n      Run '%s-pp-cli doctor' to check auth status." .Name)}}), nil
 			case strings.Contains(msg, "HTTP 403"):
@@ -429,6 +439,11 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 {{- end}}
 {{- if .Auth.KeyURL}}
 					{{printf "%q" (printf "\n      Get a key at: %s" .Auth.KeyURL)}} +
+{{- else if .WebsiteURL}}
+					{{printf "%q" (printf "\n      See API docs: %s" .WebsiteURL)}} +
+{{- end}}
+{{- if .Auth.Instructions}}
+					{{printf "%q" (printf "\n      %s" .Auth.Instructions)}} +
 {{- end}}
 					{{printf "%q" (printf "\n      Run '%s-pp-cli doctor' to check auth status." .Name)}}), nil
 			case strings.Contains(msg, "HTTP 404"):
@@ -658,6 +673,11 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 {{- end}}
 {{- if .Auth.KeyURL}}
 			"key_url": {{printf "%q" .Auth.KeyURL}},
+{{- else if .WebsiteURL}}
+			"docs_url": {{printf "%q" .WebsiteURL}},
+{{- end}}
+{{- if .Auth.Instructions}}
+			"instructions": {{printf "%q" .Auth.Instructions}},
 {{- end}}
 		},
 {{- end}}

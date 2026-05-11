@@ -8,6 +8,8 @@ openapi_version: "3.0"
 tier: official
 verified_date: "2026-03-23"
 homepage: https://stripe.com/docs/api
+auth_key_url: https://dashboard.stripe.com/apikeys
+auth_instructions: "Use a test mode key (sk_test_*) unless you intend to charge live cards."
 notes: Very large spec (~500 endpoints). Generator truncates significantly.
 known_alternatives:
   - name: stripe-cli
