@@ -992,8 +992,37 @@ type Endpoint struct {
 	// true, a per-resource failure is treated as a hard failure even under the
 	// new (non-strict) exit-code policy. Populated from the path-item-level
 	// `x-critical` extension on OpenAPI specs; defaults to false.
-	Critical bool   `yaml:"critical,omitempty" json:"critical,omitempty"`
-	Alias    string `yaml:"-" json:"-"` // computed, not from YAML
+	Critical bool `yaml:"critical,omitempty" json:"critical,omitempty"`
+	// Walker, when present, declares this endpoint as a hierarchical child
+	// resource fetched by iterating a named parent. Used when the generator's
+	// path-param dependent-resource auto-detection would miss the link — for
+	// example when the child's path puts the parent placeholder in a matrix
+	// or query parameter, or when the placeholder name does not match the
+	// parent resource. Internal YAML emits it as `walker:` on the endpoint;
+	// OpenAPI emits it as `x-pp-sync-walker` on the operation. See
+	// docs/SPEC-EXTENSIONS.md for the canonical schema.
+	Walker *WalkerConfig `yaml:"walker,omitempty" json:"walker,omitempty"`
+	Alias  string        `yaml:"-" json:"-"` // computed, not from YAML
+}
+
+// WalkerConfig declares a hierarchical-walk dependency for a child endpoint.
+// The generator synthesizes (or augments) a DependentResource entry from this
+// config so the existing dependent-sync machinery handles the fan-out.
+type WalkerConfig struct {
+	// Parent is the resource name to iterate. Must be syncable (i.e., have a
+	// flat-list endpoint) so its rows are available in the local store.
+	Parent string `yaml:"parent" json:"parent"`
+	// KeyField is the field name to extract from each parent record for
+	// substitution into the child path. Defaults to the parent's IDField
+	// (primary key) when empty. Use this when the child path needs a parent
+	// field that is not the parent's primary key.
+	KeyField string `yaml:"key_field,omitempty" json:"key_field,omitempty"`
+	// KeyParam is the placeholder name in the child path that receives the
+	// extracted key value. Defaults to the first {placeholder} found in the
+	// child's Path when empty. Set this explicitly when the child path has
+	// multiple placeholders or when the placeholder name does not match the
+	// auto-detection convention.
+	KeyParam string `yaml:"key_param,omitempty" json:"key_param,omitempty"`
 }
 
 func (e Endpoint) EffectiveResponseFormat() string {

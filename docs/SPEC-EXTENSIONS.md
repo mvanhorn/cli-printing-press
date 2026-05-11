@@ -34,6 +34,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-resource-id` | path item | `Endpoint.IDField` | No |
 | `x-critical` | path item | `Endpoint.Critical` | No |
 | `x-tier` | path item or operation | `Endpoint.Tier` | No |
+| `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
 
 ## `info` Extensions
 
@@ -588,6 +589,77 @@ paths:
   /premium/search:
     get:
       x-tier: paid
+      responses:
+        "200": {description: ok}
+```
+
+### `x-pp-sync-walker`
+
+Declares a hierarchical-walk dependency for a child endpoint. Synthesizes (or
+augments) a dependent-resource entry so the generator's existing
+parent-child sync machinery handles the fan-out — fetch the parent, extract
+the named field from each parent record, substitute it into the child path,
+fetch each child.
+
+Use this when the auto-detected parent-child link in the profiler would miss
+your endpoint or pick the wrong parent. Common cases:
+
+- The child path's placeholder name does not match a parent resource (e.g.
+  `/games/{game_key}/leagues` — `game_key` does not stem to "games" via the
+  default `_id`/`_key` stripping).
+- The parent placeholder lives in a matrix or query parameter rather than the
+  path, so the path has no `{placeholder}` for auto-detection to read.
+- The child path uses a parent field that is not the parent's primary key
+  (e.g. Yahoo Fantasy's `game_key`, Reddit's `subreddit` name).
+
+Parsed field: `Endpoint.Walker` (a `*spec.WalkerConfig`)
+
+Rules:
+- Optional.
+- Operation-level only. (No path-item-level form today.)
+- `parent` (string, required): the resource name to iterate. The parent must
+  itself be a syncable resource (i.e., have a flat-list endpoint). Walkers
+  pointing at non-syncable parents emit a `warning:` to stderr at generate
+  time and are dropped.
+- `key_field` (string, optional): the field to extract from each parent
+  record for substitution into the child path. Defaults to the parent's
+  primary key. Set this when the child path needs a non-PK field.
+- `key_param` (string, optional): the placeholder name in the child path
+  that receives the extracted value. Defaults to the first (and only)
+  `{placeholder}` in the child path when there is exactly one. **Required
+  explicitly when the child path has 0 or 2+ placeholders** — the
+  single-placeholder default would otherwise pick the wrong slot (or no
+  slot at all). The generator warns and drops the walker when it's ambiguous
+  and `key_param` is missing.
+- Walker-emitted dependents flow through the same `syncDependentResource`
+  machinery as auto-detected ones, so concurrency/retry/cursor/Upsert
+  behavior is identical.
+
+Internal YAML emits this as `walker:` on the endpoint with the same
+sub-field names (`parent`, `key_field`, `key_param`). Both surfaces parse
+to the same `WalkerConfig` struct.
+
+Example:
+
+```yaml
+paths:
+  /games:
+    get:
+      summary: List games (parent for the walker below)
+      responses:
+        "200": {description: ok}
+  /games/{game_key}/leagues:
+    get:
+      summary: List leagues for a game
+      x-pp-sync-walker:
+        parent: games
+        key_field: game_key
+        key_param: game_key
+      parameters:
+        - name: game_key
+          in: path
+          required: true
+          schema: {type: string}
       responses:
         "200": {description: ok}
 ```

@@ -5038,3 +5038,77 @@ func findParsedEndpointByPath(t *testing.T, parsed *spec.APISpec, method, path s
 	t.Fatalf("endpoint %s %s not found", method, path)
 	return spec.Endpoint{}
 }
+
+// TestParseSyncWalkerExtension pins the x-pp-sync-walker operation
+// extension shape. The extension declares a hierarchical-walk dependency
+// for a child endpoint (parent resource name, optional non-PK key field,
+// optional explicit key param). Parsed into Endpoint.Walker.
+func TestParseSyncWalkerExtension(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Walker API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /games:
+    get:
+      summary: List games
+      responses:
+        "200":
+          description: ok
+  /games/{game_key}/leagues:
+    get:
+      summary: List leagues for a game
+      x-pp-sync-walker:
+        parent: games
+        key_field: game_key
+        key_param: game_key
+      parameters:
+        - name: game_key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /leagues/{league_id}/teams:
+    get:
+      summary: List teams (walker without key_field)
+      x-pp-sync-walker:
+        parent: leagues
+      parameters:
+        - name: league_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	// Endpoint with full walker config.
+	leagues := findParsedEndpointByPath(t, parsed, "GET", "/games/{game_key}/leagues")
+	require.NotNil(t, leagues.Walker, "x-pp-sync-walker must populate Endpoint.Walker")
+	assert.Equal(t, "games", leagues.Walker.Parent)
+	assert.Equal(t, "game_key", leagues.Walker.KeyField)
+	assert.Equal(t, "game_key", leagues.Walker.KeyParam)
+
+	// Endpoint with only parent set.
+	teams := findParsedEndpointByPath(t, parsed, "GET", "/leagues/{league_id}/teams")
+	require.NotNil(t, teams.Walker)
+	assert.Equal(t, "leagues", teams.Walker.Parent)
+	assert.Empty(t, teams.Walker.KeyField)
+	assert.Empty(t, teams.Walker.KeyParam)
+
+	// Endpoint without the extension.
+	games := findParsedEndpointByPath(t, parsed, "GET", "/games")
+	assert.Nil(t, games.Walker, "endpoint without x-pp-sync-walker must have nil Walker")
+}
