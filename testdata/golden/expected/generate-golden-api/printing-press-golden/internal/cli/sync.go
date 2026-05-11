@@ -99,6 +99,9 @@ Exit codes & warnings:
 				return fmt.Errorf("opening local database: %w", err)
 			}
 			defer db.Close()
+			// Snapshot before defaults expand, so an empty user filter stays empty
+			// and dependents inherit "sync everything" instead of the default list.
+			parentFilter := append([]string(nil), resources...)
 
 			// If no specific resources, sync top-level resources
 			if len(resources) == 0 {
@@ -206,7 +209,7 @@ Exit codes & warnings:
 				}
 			}
 			// Sync dependent (parent-child) resources sequentially after flat resources.
-			depResults := syncDependentResources(c, db, sinceTS, full, maxPages)
+			depResults := syncDependentResources(c, db, sinceTS, full, maxPages, parentFilter)
 			for _, res := range depResults {
 				if res.Err != nil {
 					if humanFriendly {
@@ -954,12 +957,21 @@ func dependentResourceDefs() []dependentResourceDef {
 }
 
 // syncDependentResources iterates parent tables and syncs child resources per parent ID.
+// parentFilter mirrors the user's --resources flag (empty = sync everything). A dependent
+// runs when its parent table or its own name appears in the filter.
 func syncDependentResources(c interface {
 	Get(string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
-}, db *store.Store, sinceTS string, full bool, maxPages int) []syncResult {
+}, db *store.Store, sinceTS string, full bool, maxPages int, parentFilter []string) []syncResult {
+	allow := make(map[string]bool, len(parentFilter))
+	for _, r := range parentFilter {
+		allow[r] = true
+	}
 	var results []syncResult
 	for _, dep := range dependentResourceDefs() {
+		if len(allow) > 0 && !allow[dep.ParentTable] && !allow[dep.Name] {
+			continue
+		}
 		res := syncDependentResource(c, db, dep, sinceTS, full, maxPages)
 		results = append(results, res)
 	}

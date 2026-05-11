@@ -5926,6 +5926,19 @@ func TestGenerateDependentSyncCompiles(t *testing.T) {
 	assert.Contains(t, syncContent, `"messages"`, "sync.go should reference messages as a dependent resource")
 	assert.Contains(t, syncContent, `"channels"`, "sync.go should reference channels as the parent")
 
+	// --resources must filter the dependent fan-out the same way it filters
+	// flat resources. The capture must happen before defaults expand the
+	// slice, and the filter must flow through to syncDependentResources
+	// where it gates each dependent.
+	assert.Contains(t, syncContent, "parentFilter := append([]string(nil), resources...)",
+		"sync.go should capture user --resources filter before default expansion")
+	assert.Contains(t, syncContent, "maxPages, parentFilter",
+		"sync.go should pass the captured filter into syncDependentResources")
+	assert.Contains(t, syncContent, "parentFilter []string",
+		"syncDependentResources should accept a parent filter")
+	assert.Contains(t, syncContent, "!allow[dep.ParentTable] && !allow[dep.Name]",
+		"syncDependentResources should gate dependents on parent name or dep name")
+
 	// The generated project should compile and the generated store tests
 	// should pass — including TestUpsertBatch_SetsMessagesParentID, which
 	// verifies dependent-resource sync fills the typed parent_id column
