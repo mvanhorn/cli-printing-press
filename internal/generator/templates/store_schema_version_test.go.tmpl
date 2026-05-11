@@ -302,9 +302,8 @@ func TestResources_CompositeKeyPreservesOverlappingIDs(t *testing.T) {
 	}
 }
 
-// TestGet_MissingRowReturnsErrNoRows pins that callers can detect missing
-// rows via errors.Is(err, sql.ErrNoRows); present rows return the JSON
-// payload with a nil error.
+// Callers detect missing rows via errors.Is(err, sql.ErrNoRows); present
+// rows return the JSON payload with a nil error.
 func TestGet_MissingRowReturnsErrNoRows(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "data.db")
 	s, err := Open(dbPath)

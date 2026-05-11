@@ -2140,9 +2140,9 @@ func TestGenerateStoreMigrateUsesBeginImmediate(t *testing.T) {
 		"migrate must read PRAGMA user_version BEFORE entering withMigrationLock so newer-DB rejection happens before lock acquisition")
 }
 
-// TestGenerateStoreGetPropagatesErrNoRows pins that the emitted Store.Get
-// propagates sql.ErrNoRows and that the one in-template caller detects
-// missing rows via errors.Is, not a (item == nil) shape.
+// Callers gating on existence rely on errors.Is(err, sql.ErrNoRows); the
+// emitted Store.Get must surface the sentinel rather than swallow it into
+// a nil-shape that bypasses the caller's err check.
 func TestGenerateStoreGetPropagatesErrNoRows(t *testing.T) {
 	t.Parallel()
 
