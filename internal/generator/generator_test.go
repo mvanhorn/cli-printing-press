@@ -266,9 +266,11 @@ func TestGenerateDedupesResourceRegistryMapEntries(t *testing.T) {
 	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
 	require.NoError(t, err)
 
-	assert.Equal(t, 1, strings.Count(string(storeSrc), `"contacts": "id",`), "store.go should emit one ID override per resource")
-	assert.Equal(t, 1, strings.Count(string(syncSrc), `"contacts": "id",`), "sync.go should emit one ID override per resource")
-	assert.Equal(t, 1, strings.Count(string(syncSrc), `"contacts": true,`), "sync.go should emit one critical flag per resource")
+	contactsIDRE := regexp.MustCompile(`"contacts":\s+"id",`)
+	contactsCriticalRE := regexp.MustCompile(`"contacts":\s+true,`)
+	assert.Len(t, contactsIDRE.FindAllStringIndex(string(storeSrc), -1), 1, "store.go should emit one ID override per resource")
+	assert.Len(t, contactsIDRE.FindAllStringIndex(string(syncSrc), -1), 1, "sync.go should emit one ID override per resource")
+	assert.Len(t, contactsCriticalRE.FindAllStringIndex(string(syncSrc), -1), 1, "sync.go should emit one critical flag per resource")
 	runGoCommand(t, outputDir, "test", "./internal/cli", "./internal/store")
 }
 
@@ -754,7 +756,7 @@ func TestGenerateBearerRefreshDoctorCommand(t *testing.T) {
 	configGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
 	require.NoError(t, err)
 	configContent := string(configGo)
-	assert.Contains(t, configContent, "BearerTokenRefreshedAt time.Time")
+	assert.Regexp(t, `\bBearerTokenRefreshedAt\s+time\.Time\b`, configContent)
 	assert.Contains(t, configContent, "func (c *Config) SaveBearerToken(")
 	assert.Contains(t, configContent, `c.AuthSource = "bearer_refresh"`)
 	assert.Contains(t, configContent, "c.RefreshbearerPublicBearer = \"\"")
@@ -2994,7 +2996,7 @@ func TestSyncDiscriminatorDispatchRoutesMixedItemsToTypedTables(t *testing.T) {
 	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
 	require.NoError(t, err)
 	src := string(syncSrc)
-	assert.Contains(t, src, `"workspace": "workspaces"`)
+	assert.Regexp(t, `"workspace":\s+"workspaces"`, src)
 	assert.Contains(t, src, `upsertResourceBatch(db, resource, items)`)
 
 	inlineTest := fmt.Sprintf(`package cli
@@ -3782,9 +3784,9 @@ func TestGeneratedExport_ValidatesResourceArgument(t *testing.T) {
 	exportGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "export.go"))
 	require.NoError(t, err)
 	exportContent := string(exportGo)
-	assert.Contains(t, exportContent, `"items": true`)
-	assert.Contains(t, exportContent, `"stories": true`)
-	assert.Contains(t, exportContent, `"users": true`)
+	assert.Regexp(t, `"items":\s+true`, exportContent)
+	assert.Regexp(t, `"stories":\s+true`, exportContent)
+	assert.Regexp(t, `"users":\s+true`, exportContent)
 	assert.Contains(t, exportContent, `unknown resource %q; valid: %s`)
 
 	runGoCommandRequired(t, outputDir, "build", "-o", "./testexport-pp-cli", "./cmd/testexport-pp-cli")
@@ -4211,8 +4213,8 @@ func TestGeneratedOutput_PromotedCommandKeepsSubresourceParents(t *testing.T) {
 
 	cardsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "account_cards_get-account.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(cardsSrc), `Example: "  promsub-pp-cli account cards get-account `)
-	assert.NotContains(t, string(cardsSrc), `Example: "  promsub-pp-cli account get-account `)
+	assert.Regexp(t, `Example:\s+"  promsub-pp-cli account cards get-account `, string(cardsSrc))
+	assert.NotRegexp(t, `Example:\s+"  promsub-pp-cli account get-account `, string(cardsSrc))
 }
 
 func TestExampleLineUsesRenderedCommandAndFlagNames(t *testing.T) {
@@ -4461,10 +4463,10 @@ func TestGeneratedOutput_AgentMoneyWorkflowPaymentPlan(t *testing.T) {
 	require.NoError(t, err)
 	workflowSrc := string(workflowGo)
 	assert.Contains(t, workflowSrc, "func newWorkflowPaymentPlanCmd(flags *rootFlags) *cobra.Command")
-	assert.Contains(t, workflowSrc, `Use:   "payment-plan"`)
+	assert.Regexp(t, `Use:\s+"payment-plan"`, workflowSrc)
 	assert.Contains(t, workflowSrc, `base = []string{"treasury-pp-cli", "account", "transactions", "create"}`)
-	assert.Contains(t, workflowSrc, `"dry_run_command": append(append([]string{}, base...), "--dry-run", "--agent")`)
-	assert.Contains(t, workflowSrc, `"execute_command": append([]string{}, base...)`)
+	assert.Regexp(t, `"dry_run_command":\s+append\(append\(\[\]string\{\}, base\.\.\.\), "--dry-run", "--agent"\)`, workflowSrc)
+	assert.Regexp(t, `"execute_command":\s+append\(\[\]string\{\}, base\.\.\.\)`, workflowSrc)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
@@ -7194,9 +7196,9 @@ func TestGenerateSyncIncludesSiblingListResources(t *testing.T) {
 	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
 	require.NoError(t, err)
 	syncContent := string(syncGo)
-	assert.Contains(t, syncContent, `"portfolio": "/portfolio/fills"`)
-	assert.Contains(t, syncContent, `"portfolio-orders": "/portfolio/orders"`)
-	assert.Contains(t, syncContent, `"portfolio-settlements": "/portfolio/settlements"`)
+	assert.Regexp(t, `"portfolio":\s+"/portfolio/fills"`, syncContent)
+	assert.Regexp(t, `"portfolio-orders":\s+"/portfolio/orders"`, syncContent)
+	assert.Regexp(t, `"portfolio-settlements":\s+"/portfolio/settlements"`, syncContent)
 }
 
 func TestGenerateGraphQLCompiles(t *testing.T) {
@@ -7451,9 +7453,9 @@ func TestGenerateEndpointTemplateVarsRuntimeSubstitution(t *testing.T) {
 	urlGo := string(urlGoBytes)
 	assert.Contains(t, urlGo, "func buildURL(",
 		"url.go must define the buildURL helper")
-	assert.Contains(t, urlGo, `"shop": "SHOPIFY_SHOP"`,
+	assert.Regexp(t, `"shop":\s+"SHOPIFY_SHOP"`, urlGo,
 		"templateVarEnvNames must wire {shop} to SHOPIFY_SHOP")
-	assert.Contains(t, urlGo, `"api_version": "SHOPIFY_API_VERSION"`,
+	assert.Regexp(t, `"api_version":\s+"SHOPIFY_API_VERSION"`, urlGo,
 		"templateVarEnvNames must wire {api_version} to SHOPIFY_API_VERSION")
 
 	// config.go must populate Config.TemplateVars from env at Load() time.
@@ -8034,7 +8036,7 @@ func TestGenerateResourceBaseURLOverrideRoutesAgentDispatchSurfaces(t *testing.T
 
 	codeOrch, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "code_orch.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(codeOrch), `Path:    "https://geocoding-api.example.com/v1/search"`,
+	assert.Regexp(t, `Path:\s+"https://geocoding-api\.example\.com/v1/search"`, string(codeOrch),
 		"code-orchestration execute must use the effective resource override URL")
 
 	intents, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "intents.go"))
@@ -8387,7 +8389,7 @@ func TestGeneratePublicParamNamesInPromotedExamples(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	promotedSource := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_checkout.go")
-	assert.Contains(t, promotedSource, `Example: "  promoted-public-params-pp-cli checkout --store-code example-value"`)
+	assert.Regexp(t, `Example:\s+"  promoted-public-params-pp-cli checkout --store-code example-value"`, promotedSource)
 }
 
 // TestGenerateMCPCodeOrchKeywordsHasStopwordFilter proves the keyword

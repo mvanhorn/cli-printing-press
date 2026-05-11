@@ -140,7 +140,7 @@ func TestGenerateCostThrottlingPrimitives(t *testing.T) {
 	clientGoBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
 	clientGo := string(clientGoBytes)
-	assert.Contains(t, clientGo, "Throttle     *ThrottleState",
+	assert.Contains(t, clientGo, "Throttle *ThrottleState",
 		"client.go must declare the Throttle field")
 	assert.Contains(t, clientGo, "ThrottleMode: ThrottleModeStrict",
 		"client.go must default ThrottleMode to strict in New()")
