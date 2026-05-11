@@ -151,15 +151,34 @@ func WriteMCPBManifestFromStruct(dir string, m CLIManifest) error {
 	if m.MCPBinary == "" {
 		return nil
 	}
-	// SetEscapeHTML(false) so `>=1.0.0` stays readable instead of `>=1.0.0`.
+	out, err := marshalMCPBManifest(buildMCPBManifest(dir, m))
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, MCPBManifestFilename), out, 0o644); err != nil {
+		return err
+	}
+	// Extend the just-written manifest with env vars read by
+	// internal/client/*.go that the spec-driven build didn't surface
+	// (credential-flow JWT refreshers, hand-written auth helpers, etc.).
+	// Runs from every writer call site so the bundle path reads a
+	// reconciled manifest regardless of whether it came through lock+promote
+	// or a one-off bundle build.
+	return reconcileMCPBManifestFromClient(dir, m)
+}
+
+// marshalMCPBManifest serializes an MCPBManifest with the same encoder
+// settings the writer uses end-to-end. SetEscapeHTML(false) so `>=1.0.0`
+// stays readable instead of `>=1.0.0`.
+func marshalMCPBManifest(manifest MCPBManifest) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(buildMCPBManifest(dir, m)); err != nil {
-		return fmt.Errorf("marshaling MCPB manifest: %w", err)
+	if err := enc.Encode(manifest); err != nil {
+		return nil, fmt.Errorf("marshaling MCPB manifest: %w", err)
 	}
-	return os.WriteFile(filepath.Join(dir, MCPBManifestFilename), buf.Bytes(), 0o644)
+	return buf.Bytes(), nil
 }
 
 func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
