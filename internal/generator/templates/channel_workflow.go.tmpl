@@ -13,7 +13,9 @@ import (
 {{- if .AgentMoneyWorkflow.Enabled}}
 	"strings"
 {{- end}}
+{{- if or .SyncEnabled .AgentMoneyWorkflow.Enabled}}
 	"time"
+{{- end}}
 
 	"{{modulePath}}/internal/store"
 	"github.com/spf13/cobra"
@@ -25,7 +27,9 @@ func newWorkflowCmd(flags *rootFlags) *cobra.Command {
 		Short: "Compound workflows that combine multiple API operations",
 	}
 
+{{- if .SyncEnabled}}
 	cmd.AddCommand(newWorkflowArchiveCmd(flags))
+{{- end}}
 	cmd.AddCommand(newWorkflowStatusCmd(flags))
 {{- if .AgentMoneyWorkflow.Enabled}}
 	cmd.AddCommand(newWorkflowPaymentPlanCmd(flags))
@@ -239,6 +243,7 @@ func workflowAmountArg(amount float64, integer bool) (string, error) {
 }
 {{- end}}
 
+{{- if .SyncEnabled}}
 func newWorkflowArchiveCmd(flags *rootFlags) *cobra.Command {
 	var dbPath string
 	var full bool
@@ -273,65 +278,27 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			resources := []string{ {{- range .SyncableResources}}"{{.Name}}", {{end}} }
 			totalSynced := 0
 
+			// --full clears the cursor here because syncResource reads
+			// existingCursor unconditionally; its full param only gates the
+			// since filter, not cursor reset. Mirrors newSyncCmd's pattern.
+			if full {
+				for _, resource := range resources {
+					_ = s.SaveSyncState(resource, "", 0)
+				}
+			}
+
 			for _, resource := range resources {
-				cursor := ""
-				if !full {
-					existing, _, _, err := s.GetSyncState(resource)
-					if err == nil && existing != "" {
-						cursor = existing
-					}
+				res := syncResource({{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, s, resource, "", full, 100{{if .Pagination.DateRangeParam}}, ""{{end}})
+				if res.Err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "  %s: error: %v\n", resource, res.Err)
+					continue
 				}
-
-				fmt.Fprintf(cmd.ErrOrStderr(), "Syncing %s...\n", resource)
-
-				params := map[string]string{"limit": "100"}
-				if cursor != "" {
-					params["after"] = cursor
+				if res.Warn != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "  %s: warning: %v\n", resource, res.Warn)
+					continue
 				}
-
-				count := 0
-				for {
-					data, fetchErr := c.Get("/"+resource, params)
-					if fetchErr != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "  warning: %s: %v\n", resource, fetchErr)
-						break
-					}
-					var items []json.RawMessage
-					if err := json.Unmarshal(data, &items); err != nil {
-						// Might be a single object, not array
-						if err := s.Upsert(resource, resource+"-singleton", data); err != nil {
-							fmt.Fprintf(cmd.ErrOrStderr(), "  warning: store %s: %v\n", resource, err)
-						}
-						count++
-						break
-					}
-					if len(items) == 0 {
-						break
-					}
-					for _, item := range items {
-						var obj struct{ ID string `json:"id"` }
-						json.Unmarshal(item, &obj)
-						id := obj.ID
-						if id == "" {
-							id = fmt.Sprintf("%s-%d", resource, count)
-						}
-						if err := s.Upsert(resource, id, item); err != nil {
-							fmt.Fprintf(cmd.ErrOrStderr(), "  warning: store %s/%s: %v\n", resource, id, err)
-						}
-						cursor = id
-						count++
-					}
-					if len(items) < 100 {
-						break
-					}
-					params["after"] = cursor
-				}
-
-				if count > 0 {
-					s.SaveSyncState(resource, cursor, count)
-				}
-				totalSynced += count
-				fmt.Fprintf(cmd.ErrOrStderr(), "  %s: %d items\n", resource, count)
+				totalSynced += res.Count
+				fmt.Fprintf(cmd.ErrOrStderr(), "  %s: %d synced\n", resource, res.Count)
 			}
 
 			if flags.asJSON {
@@ -355,6 +322,7 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 
 	return cmd
 }
+{{- end}}
 
 func newWorkflowStatusCmd(flags *rootFlags) *cobra.Command {
 	var dbPath string

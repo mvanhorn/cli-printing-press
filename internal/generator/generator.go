@@ -2174,12 +2174,16 @@ func (g *Generator) renderWorkflowFiles(visionData visionRenderData) ([]string, 
 			*spec.APISpec
 			SyncableResources  []profiler.SyncableResource
 			SearchableFields   map[string][]string
+			Pagination         profiler.PaginationProfile
 			AgentMoneyWorkflow AgentMoneyWorkflow
+			SyncEnabled        bool
 		}{
 			APISpec:            g.Spec,
 			SyncableResources:  g.profile.SyncableResources,
 			SearchableFields:   g.profile.SearchableFields,
+			Pagination:         g.profile.Pagination,
 			AgentMoneyWorkflow: visionData.AgentMoneyWorkflow,
+			SyncEnabled:        g.VisionSet.Sync,
 		}
 		if err := g.renderTemplate("channel_workflow.go.tmpl", filepath.Join("internal", "cli", "channel_workflow.go"), workflowData); err != nil {
 			return nil, fmt.Errorf("rendering workflow: %w", err)

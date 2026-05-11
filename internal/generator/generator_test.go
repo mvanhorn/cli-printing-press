@@ -4505,6 +4505,62 @@ func TestGeneratedOutput_AgentMoneyWorkflowPaymentPlan(t *testing.T) {
 	assert.Contains(t, string(out), "--purpose is required for domesticWire payment plans")
 }
 
+// TestGeneratedOutput_WorkflowArchiveDelegatesToSyncResource pins issue
+// #1077's fix: workflow archive must delegate to syncResource (so it
+// inherits the spec-driven path, envelope unwrap, and pagination params),
+// and the archive subcommand must only emit when Sync is enabled.
+// A regression that brings back the inline c.Get("/"+resource), bare
+// json.Unmarshal into []json.RawMessage, or hardcoded params["after"]
+// would silently re-introduce three P1 bugs across the printed library.
+func TestGeneratedOutput_WorkflowArchiveDelegatesToSyncResource(t *testing.T) {
+	t.Parallel()
+
+	t.Run("sync_enabled emits archive delegating to syncResource", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("archive-sync-on")
+		outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+		gen := New(apiSpec, outputDir)
+		gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+		require.NoError(t, gen.Generate())
+
+		workflowGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "channel_workflow.go"))
+		require.NoError(t, err)
+		src := string(workflowGo)
+
+		assert.Contains(t, src, "func newWorkflowArchiveCmd(flags *rootFlags) *cobra.Command",
+			"archive command must be emitted when Sync is enabled")
+		assert.Contains(t, src, "syncResource(",
+			"archive must delegate to syncResource so it inherits the hardened sync loop")
+
+		assert.NotContains(t, src, `c.Get("/"+resource`,
+			"archive must not hardcode `/<resource>` paths (#1077 Bug 1)")
+		assert.NotContains(t, src, `json.Unmarshal(data, &items)`,
+			"archive must not bare-unmarshal arrays; use extractPageItems via syncResource (#1077 Bug 2)")
+		assert.NotContains(t, src, `params["after"] = cursor`,
+			"archive must not hardcode `?after=` pagination; use determinePaginationDefaults via syncResource (#1077 Bug 3)")
+	})
+
+	t.Run("sync_disabled drops archive subcommand", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := minimalSpec("archive-sync-off")
+		outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+		gen := New(apiSpec, outputDir)
+		gen.VisionSet = VisionTemplateSet{Store: true}
+		require.NoError(t, gen.Generate())
+
+		workflowGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "channel_workflow.go"))
+		require.NoError(t, err)
+		src := string(workflowGo)
+
+		assert.NotContains(t, src, "func newWorkflowArchiveCmd",
+			"archive must not be emitted when Sync is disabled (syncResource is absent)")
+		assert.NotContains(t, src, "newWorkflowArchiveCmd(flags)",
+			"archive must not be registered when Sync is disabled")
+		assert.Contains(t, src, "func newWorkflowStatusCmd",
+			"status subcommand must still be emitted")
+	})
+}
+
 func TestGeneratedOutput_PromotedCommandCompiles(t *testing.T) {
 	t.Parallel()
 
