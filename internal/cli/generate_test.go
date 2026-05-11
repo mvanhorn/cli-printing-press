@@ -767,7 +767,7 @@ resources:
 
 	agentContext, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "agent_context.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(agentContext), `Reachability:  "browser_clearance_http (90% confidence)"`)
+	assert.Regexp(t, `Reachability:\s+"browser_clearance_http \(90% confidence\)"`, string(agentContext))
 }
 
 func TestGenerateCmdDoesNotRequireBrowserProofForPostOnlyClearance(t *testing.T) {

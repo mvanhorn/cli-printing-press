@@ -15,8 +15,8 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"mcp-cloudflare-pp-cli/internal/cli"
-	"mcp-cloudflare-pp-cli/internal/cliutil"
 	"mcp-cloudflare-pp-cli/internal/client"
+	"mcp-cloudflare-pp-cli/internal/cliutil"
 	"mcp-cloudflare-pp-cli/internal/config"
 	"mcp-cloudflare-pp-cli/internal/mcp/cobratree"
 	"mcp-cloudflare-pp-cli/internal/store"
@@ -212,6 +212,7 @@ func dbPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "mcp-cloudflare-pp-cli", "data.db")
 }
+
 // Note: MCP tools use their own dbPath() because they are in a separate package (main, not cli).
 // The CLI's defaultDBPath() in the cli package uses the same canonical path.
 
@@ -324,20 +325,20 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 			"type": "api_key",
 			"env_vars": []map[string]any{
 				{
-					"name": "MCP_CLOUDFLARE_API_KEY",
-					"kind": "per_call",
-					"required": true,
-					"sensitive": true,
+					"name":        "MCP_CLOUDFLARE_API_KEY",
+					"kind":        "per_call",
+					"required":    true,
+					"sensitive":   true,
 					"description": "Set to your API credential.",
 				},
 			},
 		},
 		"resources": []map[string]any{
 			{
-				"name": "items",
+				"name":        "items",
 				"description": "Manage items",
-				"endpoints": []string{"list",  },
-				"syncable": true,
+				"endpoints":   []string{"list"},
+				"syncable":    true,
 			},
 		},
 		"query_tips": []string{

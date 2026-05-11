@@ -733,6 +733,7 @@ func sqliteFieldValue(v any) any {
 func lookupFieldValue(obj map[string]any, snakeKey string) any {
 	return LookupFieldValue(obj, snakeKey)
 }
+
 // upsertLeaguesTx writes the typed-table portion of a leagues upsert
 // inside an existing transaction. The caller is responsible for the generic
 // resources insert (via upsertGenericResourceTx) and for committing the tx.

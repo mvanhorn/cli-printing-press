@@ -12,32 +12,32 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/spf13/cobra"
 	"printing-press-golden-pp-cli/internal/client"
 	"printing-press-golden-pp-cli/internal/config"
-	"github.com/spf13/cobra"
 )
 
 var version = "1.0.0"
 
 type rootFlags struct {
-	asJSON       bool
-	compact      bool
-	csv          bool
-	plain        bool
-	quiet        bool
-	dryRun       bool
-	noCache      bool
-	noInput      bool
-	idempotent   bool
-	yes          bool
-	agent        bool
-	selectFields string
-	configPath   string
-	profileName  string
-	deliverSpec  string
-	timeout      time.Duration
-	rateLimit    float64
-	dataSource   string
+	asJSON        bool
+	compact       bool
+	csv           bool
+	plain         bool
+	quiet         bool
+	dryRun        bool
+	noCache       bool
+	noInput       bool
+	idempotent    bool
+	yes           bool
+	agent         bool
+	selectFields  string
+	configPath    string
+	profileName   string
+	deliverSpec   string
+	timeout       time.Duration
+	rateLimit     float64
+	dataSource    string
 	freshnessMeta any
 
 	// deliverBuf captures command output when --deliver is set to a

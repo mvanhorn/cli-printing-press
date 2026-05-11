@@ -53,13 +53,13 @@ func RegisterCodeOrchestrationTools(s *server.MCPServer) {
 // lowercase stream of description + path tokens used for naive ranking;
 // anything more sophisticated belongs on the agent side.
 type codeOrchEndpoint struct {
-	ID          string
-	Method      string
-	Path        string
-	Tier        string
-	Summary     string
-	Positional  []string
-	keywords    []string
+	ID         string
+	Method     string
+	Path       string
+	Tier       string
+	Summary    string
+	Positional []string
+	keywords   []string
 }
 
 // codeOrchEndpoints is the generator-populated registry covering every
@@ -67,12 +67,12 @@ type codeOrchEndpoint struct {
 // via <api>_search, so hierarchy shows up as dotted IDs, not nested maps.
 var codeOrchEndpoints = []codeOrchEndpoint{
 	{
-		ID:      "items.list",
-		Method:  "GET",
-		Path:    "/items",
-		Summary: "List items",
-		Positional: []string{ },
-		keywords: codeOrchKeywords("items", "list", "List items", "/items"),
+		ID:         "items.list",
+		Method:     "GET",
+		Path:       "/items",
+		Summary:    "List items",
+		Positional: []string{},
+		keywords:   codeOrchKeywords("items", "list", "List items", "/items"),
 	},
 }
 

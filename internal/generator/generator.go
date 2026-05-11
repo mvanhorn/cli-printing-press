@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"go/format"
 	"net/url"
 	"os"
 	"path"
@@ -2704,9 +2705,28 @@ func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
 		return err
 	}
 
-	rendered := bytes.TrimRight(buf.Bytes(), " \t\r\n")
+	return os.WriteFile(fullPath, normalizeRendered(buf.Bytes(), outPath), 0o644)
+}
+
+// normalizeRendered prepares template-rendered bytes for disk: trims trailing
+// whitespace and re-appends a single newline, then runs go/format.Source on
+// `.go` outputs so printed CLIs ship formatting-clean. Template authors
+// hand-align struct fields inconsistently, and without this pass every fresh
+// print surfaces hundreds of phantom diffs on the first `gofmt -w`. Falls
+// through with a stderr warning rather than fail-hard so a malformed template
+// surfaces as a compile error downstream instead of an opaque emit failure.
+func normalizeRendered(raw []byte, outPath string) []byte {
+	rendered := bytes.TrimRight(raw, " \t\r\n")
 	rendered = append(rendered, '\n')
-	return os.WriteFile(fullPath, rendered, 0o644)
+	if filepath.Ext(outPath) != ".go" {
+		return rendered
+	}
+	formatted, err := format.Source(rendered)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WARNING: gofmt failed for %s: %v\n", outPath, err)
+		return rendered
+	}
+	return formatted
 }
 
 func validateRenderedArtifact(outPath, content string) error {

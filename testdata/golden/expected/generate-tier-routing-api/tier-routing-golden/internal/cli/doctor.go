@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
 	"tier-routing-golden-pp-cli/internal/client"
 	"tier-routing-golden-pp-cli/internal/config"
 	"tier-routing-golden-pp-cli/internal/store"
-	"github.com/spf13/cobra"
 )
 
 // looksLikeDoctorInterstitial reports whether the response body matches a known

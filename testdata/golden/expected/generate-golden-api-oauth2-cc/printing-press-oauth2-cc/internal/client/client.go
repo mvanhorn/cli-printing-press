@@ -15,12 +15,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"printing-press-oauth2-pp-cli/internal/cliutil"
+	"printing-press-oauth2-pp-cli/internal/config"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-	"printing-press-oauth2-pp-cli/internal/cliutil"
-	"printing-press-oauth2-pp-cli/internal/config"
 )
 
 type Client struct {
@@ -36,8 +36,6 @@ type Client struct {
 	// endpoint and race on Config field writes / file persistence.
 	ccMu *sync.Mutex
 }
-
-
 
 // APIError carries HTTP status information for structured exit codes.
 type APIError struct {
@@ -555,7 +553,6 @@ func sanitizeJSONResponse(body []byte) []byte {
 	}
 	return body
 }
-
 
 // maskToken redacts all but the last 4 characters of a token for safe display.
 func maskToken(token string) string {
