@@ -171,10 +171,11 @@ func scriptSelectorForSignature(signature string) string {
 	}
 }
 
-// applyHTMLScrapeExtractionDefaults rewrites HTMLExtract on endpoints
-// that already declared HTML extraction so they emit Mode: embedded-json
-// with the selector mapped from the analyzer's matched signature.
-// Endpoints without HTMLExtract are left untouched.
+// applyHTMLScrapeExtractionDefaults promotes endpoints that already
+// declared HTMLExtract to embedded-json mode with a signature-derived
+// selector. Endpoints without HTMLExtract are skipped because the
+// signature alone is not enough to fabricate extraction config for
+// endpoints that never asked for HTML extraction.
 func applyHTMLScrapeExtractionDefaults(apiSpec *spec.APISpec, signature string) {
 	selector := scriptSelectorForSignature(signature)
 	for resourceName, resource := range apiSpec.Resources {

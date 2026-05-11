@@ -944,7 +944,9 @@ func classifyReachability(analysis *TrafficAnalysis, entries []EnrichedEntry) *R
 		refHost := extractHost(entries[apiIdx].URL)
 		if _, signature, ok := findSSRStateBlobEntryOnRegisteredDomain(entries, analysis.Protocols, refHost); ok {
 			mode = "html_scrape"
-			confidence = 0.85
+			if confidence < 0.85 {
+				confidence = 0.85
+			}
 			reasons = []string{fmt.Sprintf("captcha-tier protection on API + same-registered-domain SSR state blob (signature: %s); html_scrape preferred over browser_required", signature)}
 			htmlExtractSignature = signature
 		}
@@ -1035,8 +1037,9 @@ func findSSRStateBlobEntryOnRegisteredDomain(entries []EnrichedEntry, protocols 
 
 // sameRegisteredDomain compares two hosts at the eTLD+1 level so
 // subdomain splits like api.example.com / www.example.com qualify as
-// "same site." Falls back to literal hostname equality if either input
-// is a private or unknown TLD that publicsuffix can't resolve.
+// "same site." Literal-equality is checked first so private or unknown
+// TLDs (intranet hosts, raw IPs, .test/.local) still match themselves
+// even when publicsuffix can't resolve them.
 func sameRegisteredDomain(hostA, hostB string) bool {
 	a := strings.ToLower(strings.TrimSpace(hostA))
 	b := strings.ToLower(strings.TrimSpace(hostB))

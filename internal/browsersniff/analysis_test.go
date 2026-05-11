@@ -868,6 +868,56 @@ func TestApplyReachabilityDefaults_HTMLScrapeLeavesNonHTMLEndpointsAlone(t *test
 	assert.Nil(t, ep.HTMLExtract, "non-HTML endpoints stay untouched")
 }
 
+func TestApplyReachabilityDefaults_HTMLScrapePromotesNestedSubResources(t *testing.T) {
+	apiSpec := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"pages": {
+				Endpoints: map[string]spec.Endpoint{
+					"get_index": {
+						Method: "GET",
+						Path:   "/",
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:         spec.HTMLExtractModePage,
+							LinkPrefixes: []string{"/parent/"},
+						},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"items": {
+						Endpoints: map[string]spec.Endpoint{
+							"get_item": {
+								Method: "GET",
+								Path:   "/parent/{id}",
+								HTMLExtract: &spec.HTMLExtract{
+									Mode:         spec.HTMLExtractModePage,
+									LinkPrefixes: []string{"/parent/"},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	analysis := &TrafficAnalysis{
+		Reachability: &ReachabilityAnalysis{
+			Mode:                 "html_scrape",
+			HTMLExtractSignature: "__NEXT_DATA__",
+		},
+	}
+	ApplyReachabilityDefaults(apiSpec, analysis)
+
+	parent := apiSpec.Resources["pages"].Endpoints["get_index"]
+	assert.Equal(t, spec.HTMLExtractModeEmbeddedJSON, parent.HTMLExtract.Mode)
+	assert.Equal(t, "script#__NEXT_DATA__", parent.HTMLExtract.ScriptSelector)
+
+	child := apiSpec.Resources["pages"].SubResources["items"].Endpoints["get_item"]
+	require.NotNil(t, child.HTMLExtract, "sub-resource endpoint should still have HTMLExtract")
+	assert.Equal(t, spec.HTMLExtractModeEmbeddedJSON, child.HTMLExtract.Mode, "sub-resource endpoint must also promote")
+	assert.Equal(t, "script#__NEXT_DATA__", child.HTMLExtract.ScriptSelector)
+	assert.Nil(t, child.HTMLExtract.LinkPrefixes, "sub-resource link prefixes should clear")
+}
+
 func TestApplyReachabilityDefaults_HTMLScrapeNotAppliedWhenSignatureEmpty(t *testing.T) {
 	apiSpec := &spec.APISpec{
 		Resources: map[string]spec.Resource{
@@ -1047,6 +1097,50 @@ func TestClassifyReachability_HTMLScrapePromotion(t *testing.T) {
 			},
 			expectedMode:      "html_scrape",
 			expectedSignature: "__NUXT__",
+		},
+		{
+			name: "vercel-challenge-captcha-tier-promotes",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://api.example.com/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"vercel challenge"}`,
+					ResponseHeaders:     map[string]string{"x-vercel-mitigated": "challenge"},
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://www.example.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("__APP_INITIAL_STATE__", `{}`),
+				},
+			},
+			expectedMode:      "html_scrape",
+			expectedSignature: "__APP_INITIAL_STATE__",
+		},
+		{
+			name: "bot-challenge-captcha-tier-promotes",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://api.example.com/foo",
+					ResponseStatus:      403,
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"error":"managed challenge"}`,
+					ResponseHeaders:     map[string]string{"cf-mitigated": "challenge"},
+				},
+				{
+					Method:              "GET",
+					URL:                 "https://www.example.com/foo",
+					ResponseStatus:      200,
+					ResponseContentType: "text/html",
+					ResponseBody:        makeSSRPage("application/ld+json", `{"@type":"Product"}`),
+				},
+			},
+			expectedMode:      "html_scrape",
+			expectedSignature: "application/ld+json",
 		},
 		{
 			// Ordering guard: matching SSR entry is iterated before a
