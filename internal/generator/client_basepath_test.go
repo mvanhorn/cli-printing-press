@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -34,9 +35,13 @@ func TestClientHonorsSpecBasePath(t *testing.T) {
 	require.NoError(t, err)
 	client := string(clientSrc)
 
-	assert.Contains(t, client, "BasePath   string",
+	// Whitespace-insensitive: gofmt may align columns differently than the
+	// template's literal indentation, so match field shape via regex.
+	clientBasePathField := regexp.MustCompile(`(?m)^\s*BasePath\s+string\b`)
+	assert.Regexp(t, clientBasePathField, client,
 		"Client struct should expose a BasePath field when the spec declares one")
-	assert.Contains(t, client, "BasePath:   normalizeBasePath(cfg.BasePath)",
+	clientNewAssign := regexp.MustCompile(`BasePath:\s+normalizeBasePath\(cfg\.BasePath\)`)
+	assert.Regexp(t, clientNewAssign, client,
 		"New() should populate Client.BasePath from cfg.BasePath via the normalizer")
 	assert.Contains(t, client, "c.BaseURL + c.BasePath + path",
 		"do() should construct request URLs as BaseURL+BasePath+path")
@@ -49,7 +54,8 @@ func TestClientHonorsSpecBasePath(t *testing.T) {
 	require.NoError(t, err)
 	config := string(configSrc)
 
-	assert.Contains(t, config, `BasePath       string `+"`"+`toml:"base_path"`+"`",
+	configBasePathField := regexp.MustCompile("(?m)^\\s*BasePath\\s+string\\s+`toml:\"base_path\"`")
+	assert.Regexp(t, configBasePathField, config,
 		"Config struct should expose BasePath with a serialized tag matching the spec's config format")
 	assert.Contains(t, config, `BasePath: "/~api"`,
 		"Load() should seed cfg.BasePath from the spec default")
