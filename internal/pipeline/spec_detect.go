@@ -134,6 +134,7 @@ func internalSpecToOpenAPISpecInfo(s *apispec.APISpec) *openAPISpecInfo {
 		case "bearer_token":
 			scheme.Type = "http"
 			scheme.Scheme = "bearer"
+			scheme.Prefix = s.Auth.Prefix
 		case "api_key":
 			scheme.Type = "apikey"
 			scheme.In = s.Auth.In

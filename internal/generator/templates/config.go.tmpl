@@ -303,7 +303,7 @@ func (c *Config) AuthHeader() string {
 		{{- if .Auth.Format}}
 		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
 		{{- else}}
-		return "Bearer " + c.AccessToken
+		return "{{.Auth.HeaderPrefix}} " + c.AccessToken
 		{{- end}}
 	}
 	return ""
@@ -316,7 +316,7 @@ func (c *Config) AuthHeader() string {
 		{{- if .Auth.Format}}
 		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
 		{{- else}}
-		return "Bearer " + c.AccessToken
+		return "{{.Auth.HeaderPrefix}} " + c.AccessToken
 		{{- end}}
 	}
 {{- else}}
@@ -335,7 +335,7 @@ func (c *Config) AuthHeader() string {
 			{{- end}}
 		})
 		{{- else}}
-		return "Bearer " + c.{{resolveEnvVarField .Name}}
+		return "{{$.Auth.HeaderPrefix}} " + c.{{resolveEnvVarField .Name}}
 		{{- end}}
 	}
 {{- end}}
@@ -352,7 +352,7 @@ func (c *Config) AuthHeader() string {
 			{{- end}}
 		})
 		{{- else}}
-		return "Bearer " + c.{{resolveEnvVarField .Name}}
+		return "{{$.Auth.HeaderPrefix}} " + c.{{resolveEnvVarField .Name}}
 		{{- end}}
 	}
 	{{- end}}
@@ -363,7 +363,7 @@ func (c *Config) AuthHeader() string {
 		{{- if .Auth.Format}}
 		return applyAuthFormat("{{.Auth.Format}}", map[string]string{"access_token": c.AccessToken, "token": c.AccessToken})
 		{{- else}}
-		return "Bearer " + c.AccessToken
+		return "{{.Auth.HeaderPrefix}} " + c.AccessToken
 		{{- end}}
 	}
 {{- end}}

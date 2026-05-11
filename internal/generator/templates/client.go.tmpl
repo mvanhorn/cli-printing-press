@@ -186,7 +186,7 @@ func (c *Client) authForRequest() (requestAuth, error) {
 		{{- end}}
 		})
 	{{- else if eq $tier.Auth.Type "bearer_token"}}
-		value := "Bearer " + tierValue0
+		value := "{{$tier.Auth.HeaderPrefix}} " + tierValue0
 	{{- else}}
 		value := tierValue0
 	{{- end}}
