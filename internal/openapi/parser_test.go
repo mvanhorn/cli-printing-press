@@ -1046,15 +1046,15 @@ info:
   title: Mixed
   version: "1.0"
 servers:
-  - url: https://example.com
+  - url: https://api.example.com
 components:
   securitySchemes:
     OAuth2:
       type: oauth2
       flows:
         authorizationCode:
-          authorizationUrl: https://example.com/authorize
-          tokenUrl: https://example.com/token
+          authorizationUrl: https://api.example.com/authorize
+          tokenUrl: https://api.example.com/token
           scopes:
             read: read
     BasicAuth:
@@ -1086,15 +1086,15 @@ info:
   title: Mixed
   version: "1.0"
 servers:
-  - url: https://example.com
+  - url: https://api.example.com
 components:
   securitySchemes:
     OAuth2:
       type: oauth2
       flows:
         authorizationCode:
-          authorizationUrl: https://example.com/authorize
-          tokenUrl: https://example.com/token
+          authorizationUrl: https://api.example.com/authorize
+          tokenUrl: https://api.example.com/token
           scopes:
             read: read
     basicAuth:
