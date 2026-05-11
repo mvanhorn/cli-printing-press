@@ -75,6 +75,7 @@ func TestIsWindowsStorePython(t *testing.T) {
 	}{
 		{"store stub python3", `C:\Users\alice\AppData\Local\Microsoft\WindowsApps\python3.exe`, true},
 		{"store stub python", `C:\Users\alice\AppData\Local\Microsoft\WindowsApps\python.exe`, true},
+		{"store stub versioned python3.13", `C:\Users\alice\AppData\Local\Microsoft\WindowsApps\python3.13.exe`, true},
 		{"store stub mixed case", `C:\Users\alice\AppData\Local\Microsoft\WINDOWSAPPS\Python3.exe`, true},
 		{"store stub forward slashes", `C:/Users/alice/AppData/Local/Microsoft/WindowsApps/python3.exe`, true},
 		{"real python install", `C:\Python314\python.exe`, false},
