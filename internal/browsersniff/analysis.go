@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/publicsuffix"
+
 	"github.com/mvanhorn/cli-printing-press/v4/internal/discovery"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
@@ -264,6 +266,12 @@ type ReachabilityAnalysis struct {
 	Confidence float64       `json:"confidence"`
 	Reasons    []string      `json:"reasons,omitempty"`
 	Evidence   []EvidenceRef `json:"evidence,omitempty"`
+
+	// HTMLExtractSignature is set when Mode == "html_scrape" and carries
+	// which SSR state-blob signature triggered the promotion (one of
+	// SSRSignature*). Downstream spec emission maps it to a script
+	// selector. Empty otherwise.
+	HTMLExtractSignature string `json:"html_extract_signature,omitempty"`
 }
 
 type ProtectionObservation struct {
@@ -674,8 +682,8 @@ func detectProtocols(entries []EnrichedEntry) []ProtocolObservation {
 		if strings.Contains(host, "firebase") || strings.Contains(path, "firestore") || strings.Contains(path, "google.firestore") {
 			addProtocol("firebase", 0.75, entry, index, "firebase/firestore host or path", nil)
 		}
-		if isSSREmbeddedData(entry) {
-			addProtocol("ssr_embedded_data", 0.85, entry, index, "HTML contains embedded structured data", nil)
+		if signature := detectSSREmbeddedData(entry); signature != "" {
+			addProtocol("ssr_embedded_data", 0.85, entry, index, "HTML contains embedded structured data", map[string]string{"signature": signature})
 		} else if strings.Contains(respType, "text/html") && strings.TrimSpace(entry.ResponseBody) != "" {
 			addProtocol("html_scrape", 0.55, entry, index, "HTML response observed", nil)
 		}
@@ -927,12 +935,129 @@ func classifyReachability(analysis *TrafficAnalysis, entries []EnrichedEntry) *R
 		}
 	}
 
-	return &ReachabilityAnalysis{
-		Mode:       mode,
-		Confidence: confidence,
-		Reasons:    reasons,
-		Evidence:   evidence,
+	// html_scrape overrides browser_required when an API entry carries
+	// a captcha-tier signal AND a same-eTLD+1 HTML sibling emits an SSR
+	// state blob — cheaper than spinning up a browser when the same data
+	// is reachable from a cold HTML fetch.
+	htmlExtractSignature := ""
+	if apiIdx, ok := findCaptchaTierProtectedAPIEntry(entries, analysis.Protections); ok {
+		refHost := extractHost(entries[apiIdx].URL)
+		if _, signature, ok := findSSRStateBlobEntryOnRegisteredDomain(entries, analysis.Protocols, refHost); ok {
+			mode = "html_scrape"
+			if confidence < 0.85 {
+				confidence = 0.85
+			}
+			reasons = []string{fmt.Sprintf("captcha-tier protection on API + same-registered-domain SSR state blob (signature: %s); html_scrape preferred over browser_required", signature)}
+			htmlExtractSignature = signature
+		}
 	}
+
+	return &ReachabilityAnalysis{
+		Mode:                 mode,
+		Confidence:           confidence,
+		Reasons:              reasons,
+		Evidence:             evidence,
+		HTMLExtractSignature: htmlExtractSignature,
+	}
+}
+
+// captchaTierProtections are the labels that signal "JSON is unreachable
+// without a browser" — the html_scrape promotion fires only on these
+// (not on cloudflare/akamai/datadome/perimeterx, which can usually be
+// cleared with bearer tokens or session cookies via lighter modes).
+var captchaTierProtections = map[string]bool{
+	"captcha":          true,
+	"bot_challenge":    true,
+	"aws_waf":          true,
+	"vercel_challenge": true,
+}
+
+// findCaptchaTierProtectedAPIEntry returns the index of the first
+// API-classified entry that itself surfaces a captcha-tier protection
+// signal. Walking via EvidenceRef.EntryIndex ensures the protection is
+// attributed to the API entry — a Cloudflare-fronted SSR HTML page
+// emitting a cloudflare signal from its own response headers does not
+// satisfy this check.
+func findCaptchaTierProtectedAPIEntry(entries []EnrichedEntry, protections []ProtectionObservation) (int, bool) {
+	for _, p := range protections {
+		if !captchaTierProtections[p.Label] {
+			continue
+		}
+		for _, ev := range p.Evidence {
+			idx := ev.EntryIndex
+			if idx < 0 || idx >= len(entries) {
+				continue
+			}
+			if entries[idx].Classification == "api" {
+				return idx, true
+			}
+		}
+	}
+	return -1, false
+}
+
+// findSSRStateBlobEntryOnRegisteredDomain returns the index and matched
+// signature of the first HTML entry on the same registered domain
+// (eTLD+1) as refHost that emits the ssr_embedded_data protocol. Uses
+// content-type to identify HTML entries because the classifier marks
+// HTML as "noise". Signature is re-detected per entry because the
+// protocol observation collapses multi-entry details, so the per-entry
+// signature is the only reliable source.
+func findSSRStateBlobEntryOnRegisteredDomain(entries []EnrichedEntry, protocols []ProtocolObservation, refHost string) (int, string, bool) {
+	var ssr *ProtocolObservation
+	for i := range protocols {
+		if protocols[i].Label == "ssr_embedded_data" {
+			ssr = &protocols[i]
+			break
+		}
+	}
+	if ssr == nil {
+		return -1, "", false
+	}
+	for _, ev := range ssr.Evidence {
+		idx := ev.EntryIndex
+		if idx < 0 || idx >= len(entries) {
+			continue
+		}
+		entry := entries[idx]
+		if !strings.Contains(strings.ToLower(entry.ResponseContentType), "html") {
+			continue
+		}
+		if !sameRegisteredDomain(extractHost(entry.URL), refHost) {
+			continue
+		}
+		signature := detectSSREmbeddedData(entry)
+		if signature == "" {
+			continue
+		}
+		return idx, signature, true
+	}
+	return -1, "", false
+}
+
+// sameRegisteredDomain compares two hosts at the eTLD+1 level so
+// subdomain splits like api.example.com / www.example.com qualify as
+// "same site." Literal-equality is checked first so private or unknown
+// TLDs (intranet hosts, raw IPs, .test/.local) still match themselves
+// even when publicsuffix can't resolve them.
+func sameRegisteredDomain(hostA, hostB string) bool {
+	a := strings.ToLower(strings.TrimSpace(hostA))
+	b := strings.ToLower(strings.TrimSpace(hostB))
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	aETLD, err := publicsuffix.EffectiveTLDPlusOne(a)
+	if err != nil {
+		return false
+	}
+	bETLD, err := publicsuffix.EffectiveTLDPlusOne(b)
+	if err != nil {
+		return false
+	}
+	return aETLD == bETLD
 }
 
 func hasAPIBrowserRenderedEntry(entries []EnrichedEntry) bool {
@@ -1328,12 +1453,68 @@ func containsJSONRPC(body string) bool {
 	return ok
 }
 
-func isSSREmbeddedData(entry EnrichedEntry) bool {
+// ssrEmbeddedDataMinBodySize is the body-size floor below which an HTML
+// response with a state-blob marker is treated as an empty template or
+// challenge page rather than a real SSR payload.
+const ssrEmbeddedDataMinBodySize = 10_000
+
+// SSR state-blob signature labels surfaced by detectSSREmbeddedData and
+// consumed by spec emission to pick the right script selector. Exported
+// so the producer (this file) and consumer (reachability.go) share the
+// symbol set rather than duplicating string literals.
+const (
+	SSRSignatureNextData        = "__NEXT_DATA__"
+	SSRSignatureNuxt            = "__NUXT__"
+	SSRSignatureAppInitialState = "__APP_INITIAL_STATE__"
+	SSRSignatureStateView       = "state-view"
+	SSRSignatureLDJSON          = "application/ld+json"
+	SSRSignatureWindowPrefix    = "window.__"
+)
+
+// ssrEmbeddedDataSignatures lists each substring the detector matches
+// against alongside its signature label. Order matters — earlier
+// entries win on multi-match because framework-specific signatures
+// imply a known DOM shape the generic markers don't. The state-view
+// and window.__ entries require shape-bearing context (quoted attr
+// value, state-named global) so analytics globals like window.__gtag
+// and CSS classes like state-view-port don't promote benign pages.
+var ssrEmbeddedDataSignatures = []struct {
+	substring string
+	label     string
+}{
+	{"__next_data__", SSRSignatureNextData},
+	{"__nuxt__", SSRSignatureNuxt},
+	{"__app_initial_state__", SSRSignatureAppInitialState},
+	{`"state-view"`, SSRSignatureStateView},
+	{`'state-view'`, SSRSignatureStateView},
+	{"application/ld+json", SSRSignatureLDJSON},
+	{"window.__initial_state", SSRSignatureWindowPrefix},
+	{"window.__app_state", SSRSignatureWindowPrefix},
+	{"window.__apollo_state", SSRSignatureWindowPrefix},
+	{"window.__data__", SSRSignatureWindowPrefix},
+}
+
+// detectSSREmbeddedData returns the matched signature label when an
+// HTML response carries a server-rendered state blob, or "" when no
+// signature matches. Requires HTTP 2xx and body >= the size floor so
+// challenge pages and empty templates do not promote to html_scrape.
+func detectSSREmbeddedData(entry EnrichedEntry) string {
 	if !strings.Contains(strings.ToLower(entry.ResponseContentType), "html") {
-		return false
+		return ""
+	}
+	if entry.ResponseStatus < 200 || entry.ResponseStatus >= 300 {
+		return ""
+	}
+	if len(entry.ResponseBody) < ssrEmbeddedDataMinBodySize {
+		return ""
 	}
 	body := strings.ToLower(entry.ResponseBody)
-	return strings.Contains(body, "__next_data__") || strings.Contains(body, "application/ld+json") || strings.Contains(body, "window.__")
+	for _, sig := range ssrEmbeddedDataSignatures {
+		if strings.Contains(body, sig.substring) {
+			return sig.label
+		}
+	}
+	return ""
 }
 
 func looksBrowserRendered(entry EnrichedEntry) bool {
