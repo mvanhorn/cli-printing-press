@@ -467,7 +467,7 @@ Proceed to "After all fixes" only when the audit's summary line reads `no pendin
 
 ### Priority 7: Customer-PII gate
 
-**Your goal now is to clear the PII ledger so promote and publish gates pass.** The PII gate is the deterministic floor that prevents recurrence of the amazon-orders retro #955 leak (real customer values reached published library content). It catches card-last-4, email, US phone, ZIP+4, and postal-address shapes in high-risk files.
+**Your goal now is to clear the PII ledger so promote and publish gates pass.** The PII gate is the deterministic floor that prevents real customer values from reaching published library content. It catches card-last-4, email, US phone, ZIP+4, and postal-address shapes in high-risk files.
 
 Stop and:
 

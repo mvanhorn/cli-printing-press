@@ -17,8 +17,10 @@ import (
 // persists agent decisions across runs.
 //
 // Default exit is 0 (diagnostic). The `--strict` flag exits non-zero
-// when pending findings or gate failures remain — used by the
-// promote/publish gates to detect a failed audit.
+// when pending findings or gate failures remain — for external CI
+// callers that shell out to `printing-press pii-audit`. The in-process
+// promote/publish gates call artifacts.RunPIIAudit directly and apply
+// equivalent enforcement.
 func newPIIAuditCmd() *cobra.Command {
 	var asJSON bool
 	var strict bool
@@ -77,9 +79,6 @@ pending findings or gate failures remain.`,
 				}
 			} else {
 				renderPIIAuditTable(cmd.OutOrStdout(), result.Findings, result.Delta, result.Completion)
-				if artifacts.IsStalePIILedger(artifacts.ReadPIILedger(cliDir)) {
-					fmt.Fprintln(cmd.OutOrStderr(), "warning: prior ledger is older than 24h — agent state preserved; review accepts before promote.")
-				}
 			}
 
 			if strict && (artifacts.PIIPendingCount(result.Findings) > 0 || result.Completion.HasGateFailure()) {
@@ -106,9 +105,9 @@ func renderPIIAuditTable(w io.Writer, findings []artifacts.PIIFinding, delta art
 	switch {
 	case pending == 0 && !gateFired:
 		if accepted > 0 {
-			fmt.Fprintf(w, "pii-audit: no pending findings (%d accepted) — phase-1 scope (card/email/phone/zip/postal); order-IDs, ASINs, names deferred to #960\n", accepted)
+			fmt.Fprintf(w, "pii-audit: no pending findings (%d accepted) — phase-1 scope (card/email/phone/zip/postal); order-IDs, ASINs, and standalone names are a future detector class\n", accepted)
 		} else {
-			fmt.Fprintln(w, "pii-audit: no findings — phase-1 scope (card/email/phone/zip/postal); order-IDs, ASINs, names deferred to #960")
+			fmt.Fprintln(w, "pii-audit: no findings — phase-1 scope (card/email/phone/zip/postal); order-IDs, ASINs, and standalone names are a future detector class")
 		}
 	case pending == 0 && gateFired:
 		fmt.Fprintf(w, "pii-audit: incomplete (%d accepted, %d gate failure(s))\n",

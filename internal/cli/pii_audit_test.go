@@ -121,7 +121,7 @@ func TestPIIAuditCmd_StrictFailsOnAcceptMissingCategory(t *testing.T) {
 	cmd2.SetArgs([]string{dir, "--strict"})
 	err := cmd2.Execute()
 	require.Error(t, err)
-	assert.Contains(t, stdout.String(), "missing category")
+	assert.Contains(t, stdout.String(), "pre-decision fields")
 }
 
 func TestPIIAuditCmd_AgentFieldsSurviveReRun(t *testing.T) {

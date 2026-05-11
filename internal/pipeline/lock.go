@@ -359,16 +359,15 @@ func validatePhase5GateForPromote(workingDir string, state *PipelineState) error
 // validatePIIGateForPromote runs the PII audit against the working
 // directory and refuses promote when pending findings or enforcement-
 // primitive failures remain. The audit's ledger is refreshed in place
-// so agent-written accepts from a prior polish run carry forward; new
-// findings that appeared since polish surface as pending.
-//
-// The error message points operators at the ledger file and the
-// pii-polish playbook so they know where to act. A clean working dir
-// (no findings) passes with no ledger write effects.
+// (every call rewrites the ledger with the current timestamp and
+// FindingsCountBefore baseline) so agent-written accepts from a prior
+// polish run carry forward and new findings since polish surface as
+// pending. The error message points operators at the ledger file and
+// the pii-polish playbook.
 func validatePIIGateForPromote(workingDir string) error {
 	result, err := artifacts.RunPIIAudit(workingDir)
 	if err != nil {
-		return err
+		return fmt.Errorf("PII gate failed (scan error): %w", err)
 	}
 	pending := artifacts.PIIPendingCount(result.Findings)
 	if pending == 0 && !result.Completion.HasGateFailure() {
@@ -391,7 +390,7 @@ func validatePIIGateForPromote(workingDir string) error {
 		msg += "gate failures:\n" + artifacts.FormatPIIGateFailures(result.Completion) + "\n"
 	}
 	msg += fmt.Sprintf("ledger: %s\n", ledgerPath)
-	msg += "scope: phase-1 detectors (card-last-4, email, phone, ZIP+4, postal-address); order-IDs, ASINs, names are deferred to #960.\n"
+	msg += "scope: phase-1 detectors (card-last-4, email, phone, ZIP+4, postal-address); order-IDs, ASINs, and standalone names are a future detector class.\n"
 	msg += "run `printing-press pii-audit <dir>` and follow skills/printing-press-polish/references/pii-polish.md"
 	return fmt.Errorf("%s", msg)
 }

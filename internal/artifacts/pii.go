@@ -478,7 +478,7 @@ func ReconcilePIILedger(previous *PIILedger, current []PIIFinding) PIILedgerDelt
 
 // Gate fields all empty + no pending findings means the run is complete.
 type PIICompletionStatus struct {
-	IncompleteAccepts        []PIIFinding         // accepts missing category or evidence_context
+	IncompleteAccepts        []PIIFinding         // accepts that fail missingPIIAcceptFields — see that helper for the full predicate
 	DuplicateRationaleGroups []PIIRationaleGroup  // accepts sharing a normalized note
 	AllAcceptedNoFixes       *PIIAllAcceptedIssue // every finding accepted, zero fixes from baseline
 	NextPending              *PIIFinding          // resume hint
@@ -762,7 +762,7 @@ func FormatPIIGateFailures(c PIICompletionStatus) string {
 	}
 	var lines []string
 	if len(c.IncompleteAccepts) > 0 {
-		lines = append(lines, fmt.Sprintf("  %d accepted finding(s) missing category or evidence_context:",
+		lines = append(lines, fmt.Sprintf("  %d accepted finding(s) with missing or invalid pre-decision fields (category, evidence_context, or note when category=other):",
 			len(c.IncompleteAccepts)))
 		for _, f := range c.IncompleteAccepts {
 			lines = append(lines, fmt.Sprintf("    %s:%d %s [%s]",

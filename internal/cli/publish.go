@@ -388,7 +388,7 @@ func newPublishPackageCmd() *cobra.Command {
 			piiResult, piiErr := artifacts.RunPIIAudit(outCLIDir)
 			if piiErr != nil {
 				cleanupOnFailure()
-				return &ExitError{Code: ExitPublishError, Err: piiErr}
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for PII: %w", piiErr)}
 			}
 
 			if scanErr := formatCombinedScanError(findings, piiResult.Findings, piiResult.Completion); scanErr != nil {
@@ -1021,9 +1021,9 @@ func hasContent(dir string) bool {
 }
 
 // formatCombinedScanError composes the publish-time error message from
-// both scanners. Sections appear in fixed order (vendor-prefix tokens
-// first, customer PII second). Returns nil when nothing to report so
-// callers can branch on the error directly.
+// both scanners. Sections appear in fixed order: vendor-prefix tokens,
+// then PII pending findings, then PII gate failures. Returns nil when
+// nothing to report so callers can branch on the error directly.
 func formatCombinedScanError(
 	secretFindings []artifacts.VendorPrefixSecretFinding,
 	piiFindings []artifacts.PIIFinding,
