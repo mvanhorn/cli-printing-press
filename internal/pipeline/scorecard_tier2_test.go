@@ -2342,25 +2342,25 @@ func writeScorecardFixture(t *testing.T, root, relPath, content string) {
 
 // TestScoreAuthScheme_BearerPrefixOverride pins that the AuthProtocol scorer
 // accepts a non-Bearer scheme literal when openAPISecurityScheme.Prefix is
-// populated by an internal-YAML spec. Without this, a spec using auth.prefix
-// would silently lose 3 AuthProtocol points because the generated code no
-// longer contains the literal "Bearer ".
+// populated by an internal-YAML spec. The relative comparison (with-Prefix
+// scores higher than without) survives weight rebalancing where an absolute
+// threshold would not.
 func TestScoreAuthScheme_BearerPrefixOverride(t *testing.T) {
 	configWithToken := `func (c *Config) AuthHeader() string { return "Token " + c.AccessToken }`
 	clientStub := `req.Header.Set("Authorization", c.AuthHeader())`
 
-	scheme := openAPISecurityScheme{
+	withPrefix := openAPISecurityScheme{
 		Key:    "bearer_token",
 		Type:   "http",
 		Scheme: "bearer",
 		Prefix: "Token",
 	}
+	withoutPrefix := withPrefix
+	withoutPrefix.Prefix = ""
 
-	got, _ := scoreAuthScheme(clientStub, configWithToken, "", scheme)
-	assert.GreaterOrEqual(t, got, 7, "AuthProtocol should credit non-Bearer prefix when scheme.Prefix is set")
+	scoreWith, _ := scoreAuthScheme(clientStub, configWithToken, "", withPrefix)
+	scoreWithout, _ := scoreAuthScheme(clientStub, configWithToken, "", withoutPrefix)
 
-	defaultScheme := scheme
-	defaultScheme.Prefix = ""
-	got, _ = scoreAuthScheme(clientStub, configWithToken, "", defaultScheme)
-	assert.Less(t, got, 7, "AuthProtocol should not credit Token literal when scheme.Prefix is empty (default Bearer expected)")
+	assert.Greater(t, scoreWith, scoreWithout,
+		"AuthProtocol score with configured prefix must exceed the empty-prefix default when generated code uses the prefix literal")
 }

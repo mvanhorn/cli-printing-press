@@ -888,6 +888,40 @@ func TestAuthPrefixValidate(t *testing.T) {
 	}
 }
 
+func TestAPISpecValidate_RejectsBadAuthPrefix(t *testing.T) {
+	build := func(prefix string) APISpec {
+		return APISpec{
+			Name:    "prefix-validate",
+			BaseURL: "https://api.example.com",
+			Auth: AuthConfig{
+				Type:    "bearer_token",
+				Header:  "Authorization",
+				Prefix:  prefix,
+				EnvVars: []string{"PREFIX_VALIDATE_TOKEN"},
+			},
+			Resources: map[string]Resource{
+				"items": {
+					Endpoints: map[string]Endpoint{
+						"list": {Method: "GET", Path: "/items"},
+					},
+				},
+			},
+		}
+	}
+
+	t.Run("valid prefix passes Validate()", func(t *testing.T) {
+		s := build("Token")
+		require.NoError(t, s.Validate())
+	})
+
+	t.Run("embedded quote is rejected at the APISpec level", func(t *testing.T) {
+		s := build(`Token"`)
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "auth.prefix")
+	})
+}
+
 func TestAuthConfigHeaderPrefix(t *testing.T) {
 	tests := []struct {
 		name   string
