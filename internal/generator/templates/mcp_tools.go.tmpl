@@ -65,7 +65,7 @@ func RegisterTools(s *server.MCPServer) {
 {{- end}}
 {{- end}}
 {{- if $endpoint.BodyJSONFallback}}
-			mcplib.WithString("body_json", mcplib.Description("Request body as a JSON object string (complex schema: oneOf/anyOf)")),
+			mcplib.WithString("body_json"{{if $endpoint.BodyRequired}}, mcplib.Required(){{end}}, mcplib.Description("Request body as a JSON object string (this endpoint accepts a polymorphic schema: oneOf/anyOf)")),
 {{- end}}
 {{- if eq (upper $endpoint.Method) "GET"}}
 			mcplib.WithReadOnlyHintAnnotation(true),
@@ -112,7 +112,7 @@ func RegisterTools(s *server.MCPServer) {
 {{- end}}
 {{- end}}
 {{- if $endpoint.BodyJSONFallback}}
-			mcplib.WithString("body_json", mcplib.Description("Request body as a JSON object string (complex schema: oneOf/anyOf)")),
+			mcplib.WithString("body_json"{{if $endpoint.BodyRequired}}, mcplib.Required(){{end}}, mcplib.Description("Request body as a JSON object string (this endpoint accepts a polymorphic schema: oneOf/anyOf)")),
 {{- end}}
 {{- if eq (upper $endpoint.Method) "GET"}}
 			mcplib.WithReadOnlyHintAnnotation(true),
@@ -304,8 +304,12 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 {{- if $hasBodyJSONFallback}}
 			case "body_json":
 				if s, ok := v.(string); ok && s != "" {
-					if !json.Valid([]byte(s)) {
-						return mcplib.NewToolResultError("body_json must be a valid JSON object"), nil
+					var parsed any
+					if err := json.Unmarshal([]byte(s), &parsed); err != nil {
+						return mcplib.NewToolResultError("body_json must be a valid JSON object: " + err.Error()), nil
+					}
+					if _, isMap := parsed.(map[string]any); !isMap {
+						return mcplib.NewToolResultError(fmt.Sprintf("body_json must be a JSON object, got JSON %T", parsed)), nil
 					}
 					bodyJSONOverride = json.RawMessage(s)
 				}

@@ -456,16 +456,18 @@ func TestBodyJSONFallback_VarDecls(t *testing.T) {
 }
 
 // TestBodyJSONFallback_FlagRegs registers a single --body-json flag with
-// a help string mentioning oneOf/anyOf so users know why the fallback
-// shape is in play.
+// user-facing help that also names oneOf/anyOf for spec-aware readers.
 func TestBodyJSONFallback_FlagRegs(t *testing.T) {
 	t.Parallel()
 	got := bodyFlagRegs(spec.Endpoint{BodyJSONFallback: true})
 	if !strings.Contains(got, `cmd.Flags().StringVar(&flagBodyJSON, "body-json"`) {
 		t.Errorf("expected --body-json flag registration, got:\n%s", got)
 	}
+	if !strings.Contains(got, "polymorphic schema") {
+		t.Errorf("expected user-facing help text, got:\n%s", got)
+	}
 	if !strings.Contains(got, "oneOf/anyOf") {
-		t.Errorf("expected help text to mention oneOf/anyOf, got:\n%s", got)
+		t.Errorf("expected spec-aware hint mentioning oneOf/anyOf, got:\n%s", got)
 	}
 }
 
@@ -494,7 +496,7 @@ func TestBodyJSONFallback_BodyMap(t *testing.T) {
 		`json.Unmarshal([]byte(flagBodyJSON), &parsedBodyJSON)`,
 		`asMap, ok := parsedBodyJSON.(map[string]any)`,
 		`body = asMap`,
-		`--body-json must be a JSON object`,
+		`--body-json must be a JSON object, got JSON %T`,
 	}
 	for _, s := range wantSubstrings {
 		if !strings.Contains(got, s) {
@@ -519,17 +521,13 @@ func TestBodyJSONFallback_BodyMap_TypedPath(t *testing.T) {
 }
 
 // TestMCPParamBindings_BodyJSONFallback inserts a single body_json
-// binding with Location="body_json" and drops the per-field body
-// bindings, mirroring the CLI surface.
+// binding with Location="body_json", mirroring the CLI surface. Parser
+// invariant: Body is empty when BodyJSONFallback is set.
 func TestMCPParamBindings_BodyJSONFallback(t *testing.T) {
 	t.Parallel()
 	endpoint := spec.Endpoint{
 		BodyJSONFallback: true,
 		Params:           []spec.Param{{Name: "zoneId", Type: "string"}},
-		// Body intentionally non-empty to confirm it is ignored when the
-		// fallback flag is set; the parser never produces this combination
-		// today, but the helper must be defensive.
-		Body: []spec.Param{{Name: "type", Type: "string"}},
 	}
 	bindings := mcpParamBindings(endpoint, "/zones/{zoneId}/records")
 
@@ -547,5 +545,18 @@ func TestMCPParamBindings_BodyJSONFallback(t *testing.T) {
 	}
 	if foundTypedBody {
 		t.Errorf("BodyJSONFallback should suppress per-field body bindings, got: %+v", bindings)
+	}
+}
+
+// TestBodyJSONFallback_RequiredChecks_RequiredBody emits a Changed check
+// on --body-json when the OpenAPI requestBody.required flag was true.
+func TestBodyJSONFallback_RequiredChecks_RequiredBody(t *testing.T) {
+	t.Parallel()
+	got := bodyRequiredChecks(spec.Endpoint{BodyJSONFallback: true, BodyRequired: true}, "\t\t\t")
+	if !strings.Contains(got, `cmd.Flags().Changed("body-json")`) {
+		t.Errorf("expected Changed check on body-json for required body, got:%q", got)
+	}
+	if !strings.Contains(got, `"required flag \"%s\" not set", "body-json"`) {
+		t.Errorf("expected body-json in error message, got:%q", got)
 	}
 }

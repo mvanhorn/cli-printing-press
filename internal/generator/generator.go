@@ -3068,7 +3068,7 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 	if endpoint.BodyJSONFallback {
 		// Single opaque body-json input; the handler parses it as JSON and
 		// sends it verbatim, mirroring the CLI's --body-json fallback for
-		// oneOf/anyOf request bodies.
+		// oneOf/anyOf request bodies. Body is empty by parser invariant.
 		bindings = append(bindings, mcpParamBinding{
 			PublicName: "body_json",
 			WireName:   "body_json",
@@ -3182,7 +3182,7 @@ func bodyJSONFallbackMap(indent string) string {
 	fmt.Fprintf(&b, "%s\t}\n", indent)
 	fmt.Fprintf(&b, "%s\tasMap, ok := parsedBodyJSON.(map[string]any)\n", indent)
 	fmt.Fprintf(&b, "%s\tif !ok {\n", indent)
-	fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"--body-json must be a JSON object\")\n", indent)
+	fmt.Fprintf(&b, "%s\t\treturn fmt.Errorf(\"--body-json must be a JSON object, got JSON %%T\", parsedBodyJSON)\n", indent)
 	fmt.Fprintf(&b, "%s\t}\n", indent)
 	fmt.Fprintf(&b, "%s\tbody = asMap\n", indent)
 	fmt.Fprintf(&b, "%s}\n", indent)
@@ -3286,7 +3286,7 @@ func renderBodyVarDecls(b *strings.Builder, body []spec.Param, identPrefix strin
 func bodyFlagRegs(endpoint spec.Endpoint) string {
 	var b strings.Builder
 	if endpoint.BodyJSONFallback {
-		b.WriteString("\n\tcmd.Flags().StringVar(&flagBodyJSON, \"body-json\", \"\", \"Complex schema (oneOf/anyOf); provide the request body as a JSON object string\")")
+		b.WriteString("\n\tcmd.Flags().StringVar(&flagBodyJSON, \"body-json\", \"\", \"Provide the full request body as a JSON object string (this endpoint accepts a polymorphic schema: oneOf/anyOf)\")")
 		return b.String()
 	}
 	if bodyUsesFlatEmission(endpoint) {
@@ -3337,11 +3337,11 @@ func renderFlatBodyFlagReg(b *strings.Builder, p spec.Param, identPrefix, flagPr
 func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
 	var b strings.Builder
 	if endpoint.BodyJSONFallback {
-		// We don't know whether the request body is required without
-		// resolving the OpenAPI requestBody.required flag here. Skip the
-		// pre-flight check; an empty body either succeeds (optional) or
-		// surfaces a clear 400 from the API. This mirrors how endpoints
-		// with no body params behave today.
+		if endpoint.BodyRequired {
+			fmt.Fprintf(&b, "\n%sif !cmd.Flags().Changed(\"body-json\") && !flags.dryRun {", indent)
+			fmt.Fprintf(&b, "\n%s\treturn fmt.Errorf(\"required flag \\\"%%s\\\" not set\", \"body-json\")", indent)
+			fmt.Fprintf(&b, "\n%s}", indent)
+		}
 		return b.String()
 	}
 	if bodyUsesFlatEmission(endpoint) {

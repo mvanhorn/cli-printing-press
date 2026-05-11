@@ -925,9 +925,15 @@ type Endpoint struct {
 	// BodyJSONFallback signals that the request body schema is a oneOf/anyOf
 	// (or other shape that cannot be flattened to named flags) and that the
 	// generator should emit a single --body-json string flag instead of
-	// per-field typed flags. When true, Body is empty and the runtime parses
-	// the flag value as a JSON object and sends it verbatim.
-	BodyJSONFallback   bool              `yaml:"body_json_fallback,omitempty" json:"body_json_fallback,omitempty"`
+	// per-field typed flags. The parser sets this only for JSON-shaped
+	// content types and leaves Body empty; helpers treat Body as ignored
+	// when this flag is true.
+	BodyJSONFallback bool `yaml:"body_json_fallback,omitempty" json:"body_json_fallback,omitempty"`
+	// BodyRequired mirrors OpenAPI's requestBody.required for body params
+	// the parser cannot describe at field level (currently used only by
+	// the BodyJSONFallback path). The typed body path uses per-Param
+	// Required flags instead; this field is ignored when Body is populated.
+	BodyRequired       bool              `yaml:"body_required,omitempty" json:"body_required,omitempty"`
 	RequestContentType string            `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
 	Response           ResponseDef       `yaml:"response" json:"response"`
 	ResponseFormat     string            `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
