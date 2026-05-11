@@ -46,6 +46,8 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var maxPages int
 	var latestOnly bool
 	var strict bool
+	var paramFlags []string
+	var resourceParamFlags []string
 
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -85,6 +87,11 @@ Exit codes & warnings:
   # Latest-only: refresh head of each resource, no historical backfill
   tier-routing-golden-pp-cli sync --latest-only`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			userParams, err := parseSyncUserParams(paramFlags, resourceParamFlags)
+			if err != nil {
+				return usageErr(err)
+			}
+
 			c, err := flags.newClient()
 			if err != nil {
 				return err
@@ -104,6 +111,15 @@ Exit codes & warnings:
 			// If no specific resources, sync top-level resources
 			if len(resources) == 0 {
 				resources = defaultSyncResources()
+			}
+
+			// Reject --resource-param keys that don't match a known resource.
+			// Validates against the full top-level + dependent set, not the
+			// user-filtered `resources` slice, so legitimate cases like
+			// "filter to A, but apply param to B if it gets synced" still
+			// catch typos without false positives.
+			if err := userParams.validateResourceNames(knownSyncResourceNames()); err != nil {
+				return usageErr(err)
 			}
 
 			// --full: clear all sync cursors before starting
@@ -161,7 +177,7 @@ Exit codes & warnings:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-						res := syncResource(syncClientForResource(c, resource), db, resource, sinceTS, full, maxPages)
+						res := syncResource(syncClientForResource(c, resource), db, resource, sinceTS, full, maxPages, userParams)
 						results <- res
 					}
 				}()
@@ -266,6 +282,8 @@ Exit codes & warnings:
 	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero).")
+	cmd.Flags().StringArrayVar(&paramFlags, "param", nil, "Extra query param to inject into every sync request (repeatable, key=value). Use for APIs whose spec marks a filter optional but the endpoint rejects calls without it (e.g. --param mine=true). Avoid pagination keys (limit/since/cursor) — overriding them corrupts resume state.")
+	cmd.Flags().StringArrayVar(&resourceParamFlags, "resource-param", nil, "Per-resource extra query param (repeatable, resource:key=value). Wins over --param when both define the same key.")
 
 	return cmd
 }
@@ -277,7 +295,7 @@ Exit codes & warnings:
 func syncResource(c interface {
 	Get(string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
-}, db *store.Store, resource, sinceTS string, full bool, maxPages int) syncResult {
+}, db *store.Store, resource, sinceTS string, full bool, maxPages int, userParams *syncUserParams) syncResult {
 	started := time.Now()
 
 	if !humanFriendly {
@@ -386,6 +404,11 @@ func syncResource(c interface {
 			params[sinceParam] = effectiveSince
 		}
 
+		// Apply user-supplied --param / --resource-param overrides last so they
+		// win over spec-derived defaults (e.g. forcing mine=true on a list
+		// endpoint whose OpenAPI spec marks the filter optional).
+		userParams.applyTo(resource, params)
+
 		data, err := c.Get(path, params)
 		if err != nil {
 			if w, ok := isSyncAccessWarning(err); ok {
@@ -396,7 +419,7 @@ func syncResource(c interface {
 				return syncResult{Resource: resource, Count: totalCount, Warn: fmt.Errorf("skipped %s: %s", resource, w.Reason), Duration: time.Since(started)}
 			}
 			if !humanFriendly {
-				fmt.Fprintf(os.Stdout, `{"event":"sync_error","resource":"%s","error":"%s"}`+"\n", resource, strings.ReplaceAll(err.Error(), `"`, `\"`))
+				fmt.Fprintln(os.Stdout, syncErrorJSON(resource, "", err))
 			}
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("fetching %s: %w", resource, err), Duration: time.Since(started)}
 		}
@@ -412,7 +435,7 @@ func syncResource(c interface {
 			// Single object response - try to store as-is
 			if err := upsertSingleObject(db, resource, data); err != nil {
 				if !humanFriendly {
-					fmt.Fprintf(os.Stdout, `{"event":"sync_error","resource":"%s","error":"%s"}`+"\n", resource, strings.ReplaceAll(err.Error(), `"`, `\"`))
+					fmt.Fprintln(os.Stdout, syncErrorJSON(resource, "", err))
 				}
 				return syncResult{Resource: resource, Err: err, Duration: time.Since(started)}
 			}
@@ -434,7 +457,7 @@ func syncResource(c interface {
 		stored, extractFailures, err := upsertResourceBatch(db, resource, items)
 		if err != nil {
 			if !humanFriendly {
-				fmt.Fprintf(os.Stdout, `{"event":"sync_error","resource":"%s","error":"%s"}`+"\n", resource, strings.ReplaceAll(err.Error(), `"`, `\"`))
+				fmt.Fprintln(os.Stdout, syncErrorJSON(resource, "", err))
 			}
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("upserting batch for %s: %w", resource, err), Duration: time.Since(started)}
 		}
@@ -894,6 +917,14 @@ func defaultSyncResources() []string {
 	return []string{
 		"items",
 	}
+}
+
+// knownSyncResourceNames returns every resource name sync will accept —
+// flat resources plus any parent-child dependents. Used by --resource-param
+// validation to reject misspellings before they become silent no-ops.
+func knownSyncResourceNames() []string {
+	names := defaultSyncResources()
+	return names
 }
 
 // syncResourcePath maps resource names to their actual API endpoint paths.
