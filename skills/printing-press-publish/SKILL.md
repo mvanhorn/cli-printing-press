@@ -734,6 +734,16 @@ git push --force-with-lease -u origin feat/<api-slug>
 git push -u origin feat/<api-slug>
 ```
 
+### Capture the pushed commit SHA
+
+After pushing, capture the head commit SHA. This is used to build durable manuscript links in the PR body (see "Build the PR description" below).
+
+```bash
+HEAD_SHA=$(git rev-parse HEAD)
+```
+
+The SHA stays resolvable on `mvanhorn/printing-press-library` for the life of the PR (GitHub mirrors fork-PR head commits to `refs/pull/<N>/head` on the upstream), and remains valid after the PR is merged and the branch is deleted. Each invocation of this skill captures a fresh `HEAD_SHA` after its push and rewrites the body, so links stay current across updates the skill performs. If the branch is force-pushed outside this skill, re-run `/printing-press-publish` to refresh the body — the prior links will still resolve, but they'll point at the manuscript contents from before the out-of-band push.
+
 ### Create or update PR
 
 Read `access` and `gh_user` from `$PUBLISH_CONFIG`. These determine how `gh pr create` is called.
@@ -747,7 +757,7 @@ Build the PR description from:
 - The manifest's `novel_features` array from the packaged CLI after Step 6
 - The `help_output` captured in Step 4
 - The CLI's README (first 2-3 paragraphs, or note that README is missing)
-- Links to `.manuscripts/<run-id>/research/` and `.manuscripts/<run-id>/proofs/` within the PR branch
+- Links to every file under `.manuscripts/<run-id>/research/` and `.manuscripts/<run-id>/proofs/`. Each link must be a full `https://github.com/mvanhorn/printing-press-library/blob/<HEAD_SHA>/library/<category>/<api-slug>/.manuscripts/<run-id>/<subdir>/<filename>` URL — never a relative path (GitHub resolves those against `…/pull/`, producing broken `…/pull/library/…` URLs) and never a directory (the blob view requires a file). Enumerate the actual files; do not invent or skip them.
 - The validation results from Step 4
 - A Gaps section listing any missing manifest fields
 
@@ -821,8 +831,10 @@ $ <cli-name> --help
 
 ### Manuscripts
 
-- [Research Brief](<link to library/<category>/<api-slug>/.manuscripts/<run-id>/research/>)
-- [Shipcheck Results](<link to library/<category>/<api-slug>/.manuscripts/<run-id>/proofs/>)
+<For each file actually present under `$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.manuscripts/<run-id>/research/` and `.../proofs/`, emit one bullet using the form below. Use the human label that matches the file (e.g. `Research Brief`, `Absorb Manifest`, `Novel Features Brainstorm`, `Phase 5 Acceptance`). Substitute `<HEAD_SHA>` with the value captured after push. Do NOT use relative paths.>
+
+- [<label>](https://github.com/mvanhorn/printing-press-library/blob/<HEAD_SHA>/library/<category>/<api-slug>/.manuscripts/<run-id>/research/<filename>)
+- [<label>](https://github.com/mvanhorn/printing-press-library/blob/<HEAD_SHA>/library/<category>/<api-slug>/.manuscripts/<run-id>/proofs/<filename>)
 
 ### Validation Results
 
