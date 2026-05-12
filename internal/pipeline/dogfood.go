@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	openapiparser "github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
@@ -601,7 +602,11 @@ func LoadDogfoodResults(dir string) (*DogfoodReport, error) {
 }
 
 func writeDogfoodResults(report *DogfoodReport, dir string) error {
-	data, err := json.MarshalIndent(report, "", "  ")
+	// Marshal a copy so callers keep the real paths they passed in.
+	emitted := *report
+	emitted.Dir = artifacts.RedactCLIDirRoot(report.Dir)
+	emitted.SpecPath = artifacts.RedactPathUnderCLI(report.Dir, report.SpecPath)
+	data, err := json.MarshalIndent(&emitted, "", "  ")
 	if err != nil {
 		return err
 	}
