@@ -678,6 +678,14 @@ func extractResponseData(data json.RawMessage) json.RawMessage {
 	}
 }
 
+// compactVerboseFields are the prose-shaped fields stripped by both the
+// list and single-object compact paths. Centralised so the contract stays
+// in lockstep across both helpers.
+var compactVerboseFields = map[string]bool{
+	"description": true, "body": true, "content": true,
+	"comments": true, "attachments": true, "html": true, "markdown": true,
+}
+
 // compactFields keeps only the most important fields for agent consumption.
 // For arrays: allowlist of high-gravity fields (no descriptions).
 // For single objects: blocklist that strips known-verbose fields (descriptions, comments, etc.).
@@ -698,9 +706,23 @@ func compactFields(data json.RawMessage) json.RawMessage {
 }
 
 // compactListFields keeps only high-gravity fields for array responses.
-// When an item carries none of these keys the original is preserved, so
-// `--agent` does not silently emit {} for APIs whose response shapes use
-// domain-specific field names (travel: airline/destination; commerce: vendor).
+//
+// Two-layer keep rule:
+//
+//  1. A static allow-list covers canonical scalars (id/name/price/status/...).
+//  2. A data-driven extension also keeps any scalar key present in at least
+//     80% of input rows. This catches hand-written novel commands whose
+//     output keys (object_name, match_key, snippet) aren't on the canonical
+//     allow-list, without forcing every printed CLI to expand the list.
+//
+// Verbose fields (description, body, content, etc.) are excluded from the
+// data-driven extension regardless of frequency, so the compact intent
+// (short identifying values for agent consumption, not full prose) is
+// preserved.
+//
+// When an item still carries none of the keep keys, the original is
+// preserved so `--agent` does not silently emit {} for shapes whose key
+// names are entirely off-canonical.
 func compactListFields(items []map[string]any) json.RawMessage {
 	keepFields := map[string]bool{
 		// Identity
@@ -724,6 +746,31 @@ func compactListFields(items []map[string]any) json.RawMessage {
 		// Versioning
 		"version": true,
 	}
+	if len(items) > 0 {
+		keyCounts := map[string]int{}
+		for _, item := range items {
+			for k, v := range item {
+				if compactVerboseFields[k] || !isCompactScalar(v) {
+					continue
+				}
+				keyCounts[k]++
+			}
+		}
+		// ceil(len(items) * 0.8) without importing math. Capped at len-1 for
+		// len >= 2 so a single missing row cannot veto a key on small lists
+		// (without the cap, ceil(0.8*n) == n for n in {2,3,4}, which silently
+		// reintroduces the partial-strip bug whenever a heterogeneous 2-4 row
+		// response mixes one allow-list key with novel keys).
+		threshold := (len(items)*4 + 4) / 5
+		if len(items) >= 2 && threshold > len(items)-1 {
+			threshold = len(items) - 1
+		}
+		for k, count := range keyCounts {
+			if count >= threshold {
+				keepFields[k] = true
+			}
+		}
+	}
 
 	filtered := make([]map[string]any, 0, len(items))
 	for _, item := range items {
@@ -742,17 +789,26 @@ func compactListFields(items []map[string]any) json.RawMessage {
 	return result
 }
 
+// isCompactScalar reports whether v is a small primitive (string, number,
+// bool, null) suitable for --compact projection. Objects and arrays are
+// rejected: they almost always represent nested structure that defeats the
+// "short identifying value" intent of --compact, and including them in the
+// data-driven keep set would bloat agent output.
+func isCompactScalar(v any) bool {
+	switch v.(type) {
+	case nil, bool, float64, string:
+		return true
+	default:
+		return false
+	}
+}
+
 // compactObjectFields strips known-verbose fields from single-object responses.
 // Uses a blocklist so it works across all API domains (project management, payments, CRM, etc.).
 func compactObjectFields(obj map[string]any) json.RawMessage {
-	stripFields := map[string]bool{
-		"description": true, "body": true, "content": true,
-		"comments": true, "attachments": true, "html": true, "markdown": true,
-	}
-
 	compact := map[string]any{}
 	for k, v := range obj {
-		if !stripFields[k] {
+		if !compactVerboseFields[k] {
 			compact[k] = v
 		}
 	}
@@ -924,8 +980,7 @@ func printAutoTable(w io.Writer, items []map[string]any) error {
 	// Count scalar vs complex fields to decide format
 	scalarCount := 0
 	for _, v := range items[0] {
-		switch v.(type) {
-		case string, float64, bool, nil:
+		if isCompactScalar(v) {
 			scalarCount++
 		}
 	}
