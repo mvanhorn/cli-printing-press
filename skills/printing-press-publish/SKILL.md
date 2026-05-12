@@ -831,10 +831,14 @@ $ <cli-name> --help
 
 ### Manuscripts
 
-<For each file actually present under `$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.manuscripts/<run-id>/research/` and `.../proofs/`, emit one bullet using the form below. Use the human label that matches the file (e.g. `Research Brief`, `Absorb Manifest`, `Novel Features Brainstorm`, `Phase 5 Acceptance`). Substitute `<HEAD_SHA>` with the value captured after push. Do NOT use relative paths.>
+<!-- One bullet per file, NOT one per directory. Repeat the research/ row for every file in research/, and the proofs/ row for every file in proofs/. Use a human label that matches the file (e.g. `Research Brief`, `Absorb Manifest`, `Novel Features Brainstorm`, `Phase 5 Acceptance`). Substitute `<HEAD_SHA>` with the value captured after push. Do NOT use relative paths. -->
 
 - [<label>](https://github.com/mvanhorn/printing-press-library/blob/<HEAD_SHA>/library/<category>/<api-slug>/.manuscripts/<run-id>/research/<filename>)
+- [<label>](https://github.com/mvanhorn/printing-press-library/blob/<HEAD_SHA>/library/<category>/<api-slug>/.manuscripts/<run-id>/research/<filename>)
+- … (one bullet for each remaining file in `.manuscripts/<run-id>/research/`)
 - [<label>](https://github.com/mvanhorn/printing-press-library/blob/<HEAD_SHA>/library/<category>/<api-slug>/.manuscripts/<run-id>/proofs/<filename>)
+- [<label>](https://github.com/mvanhorn/printing-press-library/blob/<HEAD_SHA>/library/<category>/<api-slug>/.manuscripts/<run-id>/proofs/<filename>)
+- … (one bullet for each remaining file in `.manuscripts/<run-id>/proofs/`)
 
 ### Validation Results
 
