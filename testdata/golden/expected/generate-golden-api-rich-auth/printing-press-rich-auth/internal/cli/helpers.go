@@ -400,7 +400,12 @@ func paginatedGet(c interface {
 	}
 
 	if !fetchAll {
-		return c.GetWithHeaders(path, clean, headers)
+		data, err := c.GetWithHeaders(path, clean, headers)
+		if err != nil {
+			return nil, err
+		}
+		emitTruncationWarning(data, nextCursorPath, hasMoreField)
+		return data, nil
 	}
 
 	// Fetch all pages
@@ -467,6 +472,51 @@ func paginatedGet(c interface {
 	}
 	result, _ := json.Marshal(allItems)
 	return json.RawMessage(result), nil
+}
+
+// Silent page-1 truncation is the worst-possible mode for agents,
+// who otherwise compute totals against an incomplete set without
+// passing --all.
+func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField string) {
+	if nextCursorPath == "" && hasMoreField == "" {
+		return
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return
+	}
+	var nextCursor string
+	if nextCursorPath != "" {
+		if tokenRaw, ok := rawAtPath(obj, nextCursorPath); ok {
+			_ = json.Unmarshal(tokenRaw, &nextCursor)
+		}
+	}
+	var hasMore bool
+	if hasMoreField != "" {
+		if moreRaw, ok := rawAtPath(obj, hasMoreField); ok {
+			_ = json.Unmarshal(moreRaw, &hasMore)
+		}
+	}
+	if nextCursor == "" && !hasMore {
+		return
+	}
+	// --all only advances when a next-cursor is configured. has_more-only
+	// endpoints have no cursor to set on the next page, so the --all loop
+	// re-fetches the same response forever. Don't advertise an escape
+	// hatch that doesn't work for this topology.
+	if nextCursorPath != "" {
+		if humanFriendly {
+			fmt.Fprintf(os.Stderr, "warning: results truncated; more pages available. Re-run with --all to fetch every page.\n")
+		} else {
+			fmt.Fprintf(os.Stderr, `{"event":"truncated","hint":"pass --all to fetch every page"}`+"\n")
+		}
+		return
+	}
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "warning: results truncated; more pages available.\n")
+	} else {
+		fmt.Fprintf(os.Stderr, `{"event":"truncated"}`+"\n")
+	}
 }
 
 func extractPaginatedItems(obj map[string]json.RawMessage) ([]json.RawMessage, bool) {
