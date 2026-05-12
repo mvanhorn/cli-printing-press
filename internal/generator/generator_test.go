@@ -1500,7 +1500,7 @@ func TestGenerateBrowserChromeH3Transport(t *testing.T) {
 	// surf's Chrome impersonation manages the Accept header alongside
 	// User-Agent on the H3 transport too; the generator must not emit a
 	// competing default.
-	assert.NotContains(t, string(clientGo), `req.Header.Set("Accept", "*/*")`)
+	assert.NotContains(t, string(clientGo), `req.Header.Set("Accept",`)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/client")
@@ -5994,7 +5994,7 @@ func TestGenerate_UserAgentOverrideGatedByBrowserTransport(t *testing.T) {
 	standardClient, err := os.ReadFile(filepath.Join(standardDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(standardClient), `req.Header.Set("User-Agent", "standard-pp-cli/0.1.0")`)
-	assert.Contains(t, string(standardClient), `req.Header.Set("Accept", "*/*")`)
+	assert.Contains(t, string(standardClient), `req.Header.Set("Accept", "application/json")`)
 	assert.Contains(t, string(standardClient), `if req.Header.Get("Accept") == "" {`)
 
 	browserDir := filepath.Join(t.TempDir(), "browser-pp-cli")
@@ -6006,7 +6006,7 @@ func TestGenerate_UserAgentOverrideGatedByBrowserTransport(t *testing.T) {
 	assert.NotContains(t, string(browserClient), `req.Header.Set("User-Agent"`)
 	// surf's Chrome impersonation manages the Accept header alongside
 	// User-Agent; the generator must not emit a competing default for either.
-	assert.NotContains(t, string(browserClient), `req.Header.Set("Accept", "*/*")`)
+	assert.NotContains(t, string(browserClient), `req.Header.Set("Accept",`)
 	// auth.go is not emitted for auth.type:none specs (see Generator.renderAuthFiles).
 	// Stronger assertion than the previous "no newAuthRefreshCmd in auth.go": there's
 	// no auth.go at all for no-auth CLIs.
@@ -6028,7 +6028,7 @@ func TestGenerateRequiredAcceptHeaderBeatsDefaultAccept(t *testing.T) {
 
 	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 	requiredIdx := strings.Index(clientSrc, `req.Header.Set("Accept", "application/vnd.api.v3+json")`)
-	defaultIdx := strings.Index(clientSrc, `req.Header.Set("Accept", "*/*")`)
+	defaultIdx := strings.Index(clientSrc, `req.Header.Set("Accept", "application/json")`)
 	require.GreaterOrEqual(t, requiredIdx, 0, "spec-required Accept header must be emitted")
 	require.GreaterOrEqual(t, defaultIdx, 0, "Accept fallback default must still be emitted")
 	assert.Less(t, requiredIdx, defaultIdx, "spec-required Accept must be set before the if-empty default")
