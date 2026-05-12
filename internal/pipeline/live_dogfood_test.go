@@ -1948,18 +1948,27 @@ func TestRunLiveDogfoodSearchErrorPathInvalidJSON(t *testing.T) {
 }
 
 func TestRunLiveDogfoodSearchErrorPathMutationFallthrough(t *testing.T) {
-	dir, binaryName, _ := setupRichFixture(t)
+	dir, binaryName, argvLogPath := setupRichFixture(t)
 	report := runRichFixtureMatrix(t, dir, binaryName)
 
-	// widgets delete has no --query flag and no <query> positional, so
-	// commandSupportsSearch returns false. Even if it had --query (it
-	// doesn't), the mutating-leaf deny-list (delete is in mutatingVerbs)
-	// would still suppress search-shape and route to the existing
-	// non-zero-required strategy. Fixture exit 2 → Pass.
+	// widgets delete is a mutating leaf (in mutatingVerbs). The error_path
+	// probe is skipped without invoking the binary so that APIs which would
+	// accept __printing_press_invalid__ as a real id (and queue or perform
+	// the deletion) cannot mutate live data.
 	got := findResultByCommandKind(report, "widgets delete", LiveDogfoodTestError)
 	require.NotNil(t, got)
-	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
-	assert.Equal(t, 2, got.ExitCode)
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status, got.Reason)
+	assert.Equal(t, reasonMutatingErrorPath, got.Reason)
+	assert.Empty(t, got.Args, "skipped error_path must not include executable mutation args")
+	assert.Equal(t, 0, got.ExitCode, "skipped error_path must not record a real exit code")
+
+	// Defense-in-depth: the binary must not have been invoked with the
+	// invalid-id sentinel. Status=Skip alone is structurally distinct from
+	// a Pass that ran the probe, but a direct argv-log check makes the
+	// "no live invocation" invariant explicit.
+	lines := readArgvLog(t, argvLogPath)
+	assert.Equal(t, 0, countArgvLines(lines, "delete", "__printing_press_invalid__"),
+		"error_path probe must not invoke the binary for a mutating command")
 }
 
 // writeLiveDogfoodDryRunFixture builds a CLI binary that exposes three
@@ -1987,6 +1996,12 @@ func writeLiveDogfoodDryRunFixture(t *testing.T) (dir string, binaryName string)
 	binPath := filepath.Join(dir, binaryName)
 	script := `#!/bin/sh
 set -u
+
+# Argv logging side channel — same convention as setupRichFixture. Tests
+# that don't set PRINTING_PRESS_TEST_ARGV_LOG see no behavior change.
+if [ -n "${PRINTING_PRESS_TEST_ARGV_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$PRINTING_PRESS_TEST_ARGV_LOG"
+fi
 
 if [ "$1" = "agent-context" ]; then
   cat <<'JSON'
@@ -2297,6 +2312,37 @@ func TestRunLiveDogfoodErrorPathRealSkipMatchesHappyPathReason(t *testing.T) {
 		"error_path_real skip reason must match happy_path skip reason")
 	assert.Contains(t, errorReal.Reason, "no list companion",
 		"resolve-skipped reason should surface the list-companion gap")
+}
+
+func TestRunLiveDogfoodSkipsErrorPathForMutatorWithDryRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	argvLogPath := filepath.Join(t.TempDir(), "argv.log")
+	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLogPath)
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	// widgets update <id> is a mutator that advertises --dry-run and takes a
+	// positional argument. The fixture is wired to exit 99 ("matrix should
+	// have skipped") if invoked. With the fix the error_path probe must
+	// skip outright instead of running `widgets update __printing_press_invalid__`
+	// against the live API — even though --dry-run could be injected, the
+	// error_path's invalid-argument semantics are not compatible with a
+	// dry-run preview, so the safe action is to skip.
+	got := findResultByCommandKind(report, "widgets update", LiveDogfoodTestError)
+	require.NotNil(t, got, "expected widgets update error_path result in matrix")
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status, got.Reason)
+	assert.Equal(t, reasonMutatingErrorPath, got.Reason)
+	assert.Empty(t, got.Args, "skipped error_path must not include executable mutation args")
+
+	// Defense-in-depth: assert the binary was never invoked with the
+	// invalid-id sentinel. The exit-99 sentinel in the fixture already
+	// catches regression via the Status/Args/ExitCode assertions, but
+	// stating the "no live invocation" invariant directly is clearer.
+	lines := readArgvLog(t, argvLogPath)
+	assert.Equal(t, 0, countArgvLines(lines, "update", "__printing_press_invalid__"),
+		"error_path probe must not invoke the binary for a mutating command")
 }
 
 // TestRunLiveDogfoodErrorPathRealReportContribution locks in the matrix

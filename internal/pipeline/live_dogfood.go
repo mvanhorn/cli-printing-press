@@ -38,6 +38,7 @@ const (
 // across the matrix builder, the flag help text, and the test fixtures.
 const reasonDestructiveAtAuth = "destructive-at-auth"
 const reasonMutatingDryRunOnly = "mutating command dry-run only"
+const reasonMutatingErrorPath = "mutating command; error_path would call live API without --dry-run"
 const reasonNoLiveSignal = "no live happy/json pass; credential-unavailable skips cannot certify acceptance"
 const reasonUnavailableRunnerCredentials = "unavailable for runner credentials"
 
@@ -721,58 +722,66 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	}
 
 	if liveDogfoodCommandTakesArg(command.Help) {
-		flagNames := extractFlagNames(command.Help)
-		hasQueryFlag := slices.Contains(flagNames, "query")
-		// Search-shape strategy is suppressed for mutating leaves so a
-		// `delete --query=...` mass-delete is never probed with the
-		// invalid-token sentinel against the live API.
-		isSearch := commandSupportsSearch(command.Help) && !mutating
-		suppliedJSON := slices.Contains(flagNames, "json")
-
-		var errorArgs []string
-		if isSearch {
-			errorArgs = append([]string{}, command.Path...)
-			if hasQueryFlag {
-				errorArgs = append(errorArgs, "--query", "__printing_press_invalid__")
-			} else {
-				errorArgs = append(errorArgs, "__printing_press_invalid__")
-			}
-			if suppliedJSON {
-				errorArgs = appendJSONArg(errorArgs)
-			}
+		if mutating {
+			// Mutating commands cannot run the error_path probe safely: the
+			// __printing_press_invalid__ sentinel is sent as a real argument
+			// and many APIs accept arbitrary string fields (tag names, labels,
+			// notes), turning the probe into a real create/update/delete with
+			// no rollback. --dry-run injection is the happy_path-only safety
+			// net; for the error_path we skip outright, mirroring how
+			// error_path_real already skips below.
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonMutatingErrorPath))
 		} else {
-			errorArgs = append(append([]string{}, command.Path...), "__printing_press_invalid__")
-		}
+			flagNames := extractFlagNames(command.Help)
+			hasQueryFlag := slices.Contains(flagNames, "query")
+			isSearch := commandSupportsSearch(command.Help)
+			suppliedJSON := slices.Contains(flagNames, "json")
 
-		errorRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, errorArgs, ctx.timeout)
-		errorResult := liveDogfoodResult(commandName, LiveDogfoodTestError, errorArgs, errorRun)
-
-		if isSearch {
-			// Real-world feed/content APIs return recent items as a fallback
-			// for unmatched queries, so non-empty results under exit 0 are
-			// not a failure signal. The only fail mode is invalid JSON when
-			// the caller asked for --json.
-			switch {
-			case errorRun.exitCode != 0:
-				errorResult.Status = LiveDogfoodStatusPass
-				errorResult.Reason = ""
-			case suppliedJSON && !json.Valid([]byte(errorRun.stdout)):
-				errorResult.Status = LiveDogfoodStatusFail
-				errorResult.Reason = "invalid JSON under --json"
-			default:
-				errorResult.Status = LiveDogfoodStatusPass
-				errorResult.Reason = ""
-			}
-		} else {
-			if errorRun.exitCode != 0 {
-				errorResult.Status = LiveDogfoodStatusPass
-				errorResult.Reason = ""
+			var errorArgs []string
+			if isSearch {
+				errorArgs = append([]string{}, command.Path...)
+				if hasQueryFlag {
+					errorArgs = append(errorArgs, "--query", "__printing_press_invalid__")
+				} else {
+					errorArgs = append(errorArgs, "__printing_press_invalid__")
+				}
+				if suppliedJSON {
+					errorArgs = appendJSONArg(errorArgs)
+				}
 			} else {
-				errorResult.Status = LiveDogfoodStatusFail
-				errorResult.Reason = "expected non-zero exit for invalid argument"
+				errorArgs = append(append([]string{}, command.Path...), "__printing_press_invalid__")
 			}
+
+			errorRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, errorArgs, ctx.timeout)
+			errorResult := liveDogfoodResult(commandName, LiveDogfoodTestError, errorArgs, errorRun)
+
+			if isSearch {
+				// Real-world feed/content APIs return recent items as a fallback
+				// for unmatched queries, so non-empty results under exit 0 are
+				// not a failure signal. The only fail mode is invalid JSON when
+				// the caller asked for --json.
+				switch {
+				case errorRun.exitCode != 0:
+					errorResult.Status = LiveDogfoodStatusPass
+					errorResult.Reason = ""
+				case suppliedJSON && !json.Valid([]byte(errorRun.stdout)):
+					errorResult.Status = LiveDogfoodStatusFail
+					errorResult.Reason = "invalid JSON under --json"
+				default:
+					errorResult.Status = LiveDogfoodStatusPass
+					errorResult.Reason = ""
+				}
+			} else {
+				if errorRun.exitCode != 0 {
+					errorResult.Status = LiveDogfoodStatusPass
+					errorResult.Reason = ""
+				} else {
+					errorResult.Status = LiveDogfoodStatusFail
+					errorResult.Reason = "expected non-zero exit for invalid argument"
+				}
+			}
+			results = append(results, errorResult)
 		}
-		results = append(results, errorResult)
 	} else {
 		results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, "no positional argument"))
 	}
