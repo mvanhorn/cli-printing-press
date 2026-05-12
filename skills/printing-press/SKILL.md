@@ -2989,7 +2989,9 @@ If the shipcheck report contains a `## Known Gaps` block, prepend: "Note: shipch
 
 ### If "Publish now"
 
-Invoke `/printing-press publish <api>`. The publish skill handles everything from there.
+Invoke `/printing-press-publish <api>`. The publish skill handles everything from there — fork, branch, manifest checks, `cli-skills/pp-<api-slug>/SKILL.md` regen, push, and PR creation.
+
+**Do not improvise the publish flow.** Even though the publish skill itself runs `gh repo fork`, `git push`, and `gh pr create --repo mvanhorn/printing-press-library …` internally, running those commands by hand from this phase skips the preflight checks (printer sentinel validation, manifest shape, vendor-spec PII scope, govulncheck on the changed module) and the public library's own `AGENTS.md` requirements that the skill mirrors. The CWD here is `cli-printing-press`, so the public library's `AGENTS.md` is not loaded — the skill is the only entry point that brings those rules into context. If the publish skill fails, fix the underlying issue (or report it as a machine bug); do not bypass it. See [`AGENTS.md`](AGENTS.md) "Publishing to the Public Library" for the full rule.
 
 **After publish returns success**, offer retro as a soft tail. This is where retro lives on the ship-path — it has no business being a peer of publish on the headline menu, but a post-publish optional offer lets users compound learnings without forcing the choice up front. Retro at this point sees the publish step as part of the session it analyzes.
 
@@ -3008,7 +3010,7 @@ Invoke `/printing-press-polish <api>`. The polish skill runs another diagnostic-
 
 ### If "Done for now"
 
-End normally. The CLI is in `$PRESS_LIBRARY/<api>` and the user can run `/printing-press publish`, `/printing-press-polish`, or `/printing-press-retro` later.
+End normally. The CLI is in `$PRESS_LIBRARY/<api>` and the user can run `/printing-press-publish`, `/printing-press-polish`, or `/printing-press-retro` later.
 
 ### Hold-path menu
 

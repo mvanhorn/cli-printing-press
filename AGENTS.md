@@ -179,6 +179,16 @@ Run `govulncheck` in default mode only, scoped to the generated or publishing CL
 ## Local Artifacts
 Generated artifacts live under `~/printing-press/`, not in this repo: `library/<api-slug>/`, `manuscripts/<api-slug>/`, and `.runstate/<scope>/`. The API slug is derived by the generator from the spec title (`cleanSpecName`), and the binary name is `<api-slug>-pp-cli`. Never hardcode an API slug when the generator can derive it. See [`docs/ARTIFACTS.md`](docs/ARTIFACTS.md) for local-vs-public flow and divergence rules.
 
+## Publishing to the Public Library
+The only supported path for **publishing a generated CLI** (adding or updating an entry under `library/<category>/<api-slug>/` in [mvanhorn/printing-press-library](https://github.com/mvanhorn/printing-press-library)) is to invoke the `/printing-press-publish` skill. The skill runs the required `gh`/`git` commands itself; do not reproduce them by hand.
+- Invoke `/printing-press-publish` and let it drive the fork, branch, manifest checks, `cli-skills/pp-<api-slug>/SKILL.md` regen, push, and PR creation. Following its prompts is the supported flow.
+- Do not skip the skill and improvise the same steps from scratch (manual `gh repo fork` / `cp -r` into a library clone / `gh pr create --repo mvanhorn/printing-press-library …` / branch push to a fork without the skill driving it). The commands look similar; the difference is the preflight checks and conventions the skill enforces before they run.
+- Do not edit `registry.json` or README catalog cells in a publish PR — the public library refreshes those post-merge from `.printing-press.json` / `manifest.json`.
+
+Why this matters: the publish skill enforces preflight checks (printer sentinel validation, manifest shape, vendor-spec PII scope, govulncheck scoped to the changed module) and mirrors the public library's own `AGENTS.md` requirements. An agent operating in this repo's CWD never loads the public library's `AGENTS.md`, so those rules are invisible unless the skill is the entry point.
+
+If `/printing-press-publish` fails, fix the underlying issue (or report it as a machine bug) — do not bypass the skill to land a CLI-publish PR.
+
 ## Internal Skills
 `.claude/skills/` contains internal skills for developing the Printing Press itself (for example `printing-press-retro`). These load automatically when Claude Code is started from inside this repo.
 If you are running Claude Code from a different directory and need these skills available, install them globally:
