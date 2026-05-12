@@ -81,9 +81,68 @@ func dedupeEndpointIdentifiers(resKey, epName string, ep spec.Endpoint, asyncJob
 			bodyFlagNames[publicFlagName(p)] = struct{}{}
 		}
 	}
-	ep.Body = uniquifyIdentifiers(ep.Body, "body", nil, bodyFlagNames)
+	// renderBodyVarDecls and renderBodyFlagRegs recurse into nested object
+	// Fields on the JSON-body path, so the dedup pass must walk the same
+	// tree to see post-flatten identifiers like body<Parent><Child>; a
+	// flat top-level walk misses parent-prefixed leaves that collide with
+	// sibling scalars. Multipart/form bodies skip the recursion because
+	// their emission keeps one var/flag per top-level param.
+	if bodyUsesFlatEmission(ep) {
+		ep.Body = uniquifyIdentifiers(ep.Body, "body", nil, bodyFlagNames)
+	} else {
+		usedIdents := map[string]struct{}{}
+		usedFlags := map[string]struct{}{}
+		for k := range bodyFlagNames {
+			usedFlags[k] = struct{}{}
+		}
+		ep.Body = uniquifyBodyTree(ep.Body, "", "", usedIdents, usedFlags)
+	}
 
 	return ep, nil
+}
+
+// uniquifyBodyTree walks Body recursively in the same shape that
+// renderBodyVarDecls and renderBodyFlagRegs emit on the JSON-body path.
+// usedIdents and usedFlags carry the accumulated reservations across all
+// levels so a nested leaf whose post-flatten Go identifier collides with a
+// sibling scalar at any level gets its IdentName suffixed via the existing
+// _2, _3, ... convention.
+func uniquifyBodyTree(body []spec.Param, identPrefix, flagPrefix string, usedIdents, usedFlags map[string]struct{}) []spec.Param {
+	out := make([]spec.Param, len(body))
+	for i, p := range body {
+		if p.Type == "object" && len(p.Fields) > 0 {
+			childIdent := identPrefix + toCamel(paramIdent(p))
+			childFlag := joinFlag(flagPrefix, publicFlagName(p))
+			p.Fields = uniquifyBodyTree(p.Fields, childIdent, childFlag, usedIdents, usedFlags)
+			out[i] = p
+			continue
+		}
+		ident := "body" + identPrefix + toCamel(paramIdent(p))
+		flag := joinFlag(flagPrefix, publicFlagName(p))
+		_, identTaken := usedIdents[ident]
+		_, flagTaken := usedFlags[flag]
+		if !identTaken && !flagTaken {
+			usedIdents[ident] = struct{}{}
+			usedFlags[flag] = struct{}{}
+			out[i] = p
+			continue
+		}
+		for n := 2; ; n++ {
+			candidate := fmt.Sprintf("%s_%d", p.Name, n)
+			candIdent := "body" + identPrefix + toCamel(candidate)
+			candFlag := joinFlag(flagPrefix, flagName(candidate))
+			_, identTaken := usedIdents[candIdent]
+			_, flagTaken := usedFlags[candFlag]
+			if !identTaken && !flagTaken {
+				p.IdentName = candidate
+				usedIdents[candIdent] = struct{}{}
+				usedFlags[candFlag] = struct{}{}
+				out[i] = p
+				break
+			}
+		}
+	}
+	return out
 }
 
 // reservedFlagNamesForEndpoint returns identifiers and cobra flag names that
