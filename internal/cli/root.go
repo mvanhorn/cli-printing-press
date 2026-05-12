@@ -6,13 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -683,13 +680,7 @@ func inferTrafficAnalysisPath(specFiles []string, specSource string) string {
 }
 
 func readSpec(specFile string, refresh bool, skipCache bool) ([]byte, error) {
-	var data []byte
-	var err error
-	if openapi.IsRemoteSpecSource(specFile) {
-		data, err = fetchOrCacheSpec(specFile, refresh, skipCache)
-	} else {
-		data, err = os.ReadFile(specFile)
-	}
+	data, err := openapi.LoadSpecBytes(specFile, refresh, skipCache)
 	if err != nil {
 		return nil, err
 	}
@@ -1227,80 +1218,6 @@ func refuseSymlinkedEntries(dir, label string) error {
 		}
 	}
 	return nil
-}
-
-func fetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, error) {
-	sum := sha256.Sum256([]byte(specURL))
-	cacheKey := hex.EncodeToString(sum[:])
-
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("finding user home directory: %w", err)
-	}
-
-	cacheDir := filepath.Join(homeDir, ".cache", "printing-press", "specs")
-	cachePath := filepath.Join(cacheDir, cacheKey+".json")
-
-	// Read from existing cache even in dry-run mode (no writes needed)
-	if !refresh {
-		info, err := os.Stat(cachePath)
-		switch {
-		case err == nil && time.Since(info.ModTime()) < 24*time.Hour:
-			fmt.Fprintf(os.Stderr, "Using cached spec for %s\n", specURL)
-			data, readErr := os.ReadFile(cachePath)
-			if readErr != nil {
-				return nil, fmt.Errorf("reading cached spec: %w", readErr)
-			}
-			return data, nil
-		case err != nil && !os.IsNotExist(err):
-			return nil, fmt.Errorf("checking cached spec: %w", err)
-		}
-	}
-
-	fmt.Fprintf(os.Stderr, "Fetching spec from %s...\n", specURL)
-	resp, err := http.Get(specURL)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("unexpected response status: %s", resp.Status)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("reading response body: %w", err)
-	}
-
-	// Content-validity check: reject responses that look like error pages
-	// instead of feeding them to the parser (which emits confusing errors).
-	if len(data) < 256 {
-		trimmed := strings.TrimSpace(string(data))
-		if strings.HasPrefix(trimmed, "<") ||
-			regexp.MustCompile(`^\d{3}:\s`).MatchString(trimmed) {
-			return nil, fmt.Errorf("spec_url %s returned a small response that does not look like an OpenAPI spec (%d bytes): %q",
-				specURL, len(data), trunc50(trimmed))
-		}
-	}
-
-	if !skipCache {
-		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
-			return nil, fmt.Errorf("creating cache directory: %w", err)
-		}
-		if err := os.WriteFile(cachePath, data, 0o644); err != nil {
-			return nil, fmt.Errorf("writing cached spec: %w", err)
-		}
-	}
-
-	return data, nil
-}
-
-func trunc50(s string) string {
-	if len(s) > 50 {
-		return s[:50] + "..."
-	}
-	return s
 }
 
 func newVersionCmd() *cobra.Command {

@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 )
 
 func TestFetchOrCacheSpec_ContentValidityCheck(t *testing.T) {
@@ -41,7 +43,7 @@ func TestFetchOrCacheSpec_ContentValidityCheck(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			_, err := fetchOrCacheSpec(srv.URL, true, true)
+			_, err := openapi.FetchOrCacheSpec(srv.URL, true, true)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("expected no error, got: %v", err)

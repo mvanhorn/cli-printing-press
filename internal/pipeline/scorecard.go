@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"gopkg.in/yaml.v3"
 )
@@ -1535,7 +1536,7 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 		return nil, nil
 	}
 
-	data, err := os.ReadFile(specPath)
+	data, err := openapi.LoadSpecBytes(specPath, false, false)
 	if err != nil {
 		return nil, fmt.Errorf("reading spec: %w", err)
 	}

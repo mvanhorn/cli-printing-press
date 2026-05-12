@@ -609,7 +609,7 @@ func writeDogfoodResults(report *DogfoodReport, dir string) error {
 }
 
 func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
-	data, err := os.ReadFile(specPath)
+	data, err := openapiparser.LoadSpecBytes(specPath, false, false)
 	if err != nil {
 		return nil, fmt.Errorf("reading spec: %w", err)
 	}
