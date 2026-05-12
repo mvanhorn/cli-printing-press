@@ -1577,15 +1577,19 @@ func candidateSecuritySchemeNames(doc *openapi3.T) []string {
 }
 
 // Ordering rationale: Bearer is the simplest for CLI use; OAuth2 flows rank
-// by viability for non-interactive runs (cc > authorization_code > implicit);
-// apiKey-in-header beats apiKey-in-query because query strings leak to logs;
-// HTTP Basic ranks below standalone apiKey because compound legacy schemes
-// (email + key) surface as basic-ish patterns and shouldn't outrank a modern
-// apiKey alternative when both are offered.
+// by viability for non-interactive runs (cc > authorization_code > password >
+// implicit); apiKey-in-header beats apiKey-in-query because query strings leak
+// to logs; HTTP Basic ranks below standalone apiKey because compound legacy
+// schemes (email + key) surface as basic-ish patterns and shouldn't outrank a
+// modern apiKey alternative when both are offered. Password (ROPC) is
+// deprecated but kept above all apiKey shapes so multi-scheme specs that
+// pair ROPC with an apiKey alternative don't regress vs. the prior selector,
+// which returned any well-formed oauth2 before any apiKey.
 const (
 	schemePriorityBearer          = 0
 	schemePriorityOAuth2CC        = 100
 	schemePriorityOAuth2AuthCode  = 200
+	schemePriorityOAuth2Password  = 250
 	schemePriorityOAuth2Implicit  = 300
 	schemePriorityAPIKeyHeader    = 400
 	schemePriorityAPIKeyQuery     = 450
@@ -1614,6 +1618,9 @@ func schemePriorityScore(scheme *openapi3.SecurityScheme) int {
 			}
 			if ac := scheme.Flows.AuthorizationCode; ac != nil && strings.TrimSpace(ac.AuthorizationURL) != "" && strings.TrimSpace(ac.TokenURL) != "" {
 				return schemePriorityOAuth2AuthCode
+			}
+			if pw := scheme.Flows.Password; pw != nil && strings.TrimSpace(pw.TokenURL) != "" {
+				return schemePriorityOAuth2Password
 			}
 			if ic := scheme.Flows.Implicit; ic != nil && strings.TrimSpace(ic.AuthorizationURL) != "" {
 				return schemePriorityOAuth2Implicit

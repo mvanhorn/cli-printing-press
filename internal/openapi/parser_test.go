@@ -1189,12 +1189,57 @@ paths:
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			parsed, err := Parse(fmt.Appendf(nil, specTemplate, tc.scheme))
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantType, parsed.Auth.Type)
 			assert.Equal(t, tc.wantHdr, parsed.Auth.Header)
 		})
 	}
+}
+
+func TestSelectSecuritySchemeOAuth2PasswordBeatsAPIKey(t *testing.T) {
+	t.Parallel()
+
+	// OAuth2 Password (ROPC) is deprecated but real specs still use it for
+	// server-to-server flows alongside an apiKey alternative. The old 3-pass
+	// selector returned any well-formed oauth2 before any apiKey; the new
+	// priority-score selector must preserve that ordering or such specs
+	// regress silently to the apiKey scheme. See PR #1238 review feedback.
+	spec := []byte(`openapi: "3.0.3"
+info:
+  title: ROPC-shape
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ropcAuth: []
+  - apiKeyAuth: []
+components:
+  securitySchemes:
+    ropcAuth:
+      type: oauth2
+      flows:
+        password:
+          tokenUrl: https://api.example.com/oauth/token
+          scopes:
+            read: read access
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+paths:
+  /v1/items:
+    get:
+      operationId: listItems
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(spec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type, "well-formed ROPC oauth2 must outrank co-declared apiKey")
+	assert.Equal(t, "ropcAuth", parsed.Auth.Scheme)
 }
 
 func TestSkipUnderscoreFields(t *testing.T) {
