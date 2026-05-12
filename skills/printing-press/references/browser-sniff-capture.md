@@ -113,9 +113,12 @@ If neither tool is installed, offer to install via `AskUserQuestion`. Do not ins
 **If user picks browser-use:**
 
 ```bash
-# Detect Python package manager
+# Detect Python package manager. Use `uv tool install` (not `uv pip install`):
+# `uv pip install` targets the active venv and won't put the binary in PATH
+# outside it; `uv tool install` creates an isolated env and symlinks the
+# entry-point into `~/.local/bin`.
 if command -v uv >/dev/null 2>&1; then
-  uv pip install browser-use
+  uv tool install browser-use
 elif command -v pip >/dev/null 2>&1; then
   pip install browser-use
 else

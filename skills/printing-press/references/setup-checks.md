@@ -115,7 +115,10 @@ If the setup contract output contains a line starting with `[browser-tools-missi
 
 Then ask the user via `AskUserQuestion` before continuing setup. The prompt fires every run when either tool is missing — there is no decline cache. Re-prompting is intentional: browser-use and agent-browser are the preferred Phase 1.7 backends, and mid-flight install gates during generation are more disruptive than one short preflight prompt.
 
-- **question:** `"browser-use and/or agent-browser are not installed. These are the preferred Phase 1.7 browser-sniff backends — broadly useful for future runs and avoids mid-flight install prompts. (chrome-MCP is a narrow-case fallback, not a substitute.) Install now?"`
+- **question** (compose based on which are missing — pick the matching row):
+  - Both missing: `"browser-use and agent-browser are not installed. These are the preferred Phase 1.7 browser-sniff backends — broadly useful for future runs and avoids mid-flight install prompts. (chrome-MCP is a narrow-case fallback, not a substitute.) Install now?"`
+  - Only `browser-use` missing: `"browser-use is not installed. It is the preferred Phase 1.7 browser-sniff primary backend — broadly useful for future runs and avoids mid-flight install prompts. Install now?"`
+  - Only `agent-browser` missing: `"agent-browser is not installed. It is the secondary browser-sniff backend (used for cookie capture from running Chrome) — broadly useful for future runs and avoids mid-flight install prompts. Install now?"`
 - **header:** `"Browser-sniff backends"`
 - **multiSelect:** `false`
 - **options:** compose based on which are missing — see below.
@@ -131,8 +134,11 @@ Then ask the user via `AskUserQuestion` before continuing setup. The prompt fire
 For `browser-use`:
 
 ```bash
+# Use `uv tool install` (not `uv pip install`). `uv pip install` targets the
+# active venv and won't put the binary in PATH outside it; `uv tool install`
+# creates an isolated env and symlinks the entry-point into `~/.local/bin`.
 if command -v uv >/dev/null 2>&1; then
-  uv pip install browser-use
+  uv tool install browser-use
 elif command -v pip >/dev/null 2>&1; then
   pip install browser-use
 else
