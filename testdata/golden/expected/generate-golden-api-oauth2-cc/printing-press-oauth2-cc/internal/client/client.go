@@ -490,9 +490,6 @@ func (c *Client) refreshAccessToken() error {
 	if tokenURL == "" {
 		tokenURL = "https://api.cc.example/oauth/token"
 	}
-	if tokenURL == "" {
-		return nil
-	}
 
 	params := url.Values{
 		"grant_type":    {"refresh_token"},

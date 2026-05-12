@@ -1229,7 +1229,7 @@ func (c *Client) authHeader() (string, error) {
 		}
 		c.ccMu.Unlock()
 	}
-{{- else if .HasAuthCommand}}
+{{- else if and .HasAuthCommand (ne .Auth.TokenURL "")}}
 	if c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" {
 		if err := c.refreshAccessToken(); err != nil {
 			return "", err
@@ -1327,13 +1327,12 @@ func (c *Client) mintClientCredentials(clientID, clientSecret string) error {
 }
 {{- end}}
 
-{{- if .HasAuthCommand}}
+{{- if and .HasAuthCommand (ne .Auth.TokenURL "")}}
 
 func (c *Client) refreshAccessToken() error {
 	if c.Config == nil {
 		return nil
 	}
-{{- if .Auth.TokenURL}}
 	if c.Config.RefreshToken == "" {
 		return nil
 	}
@@ -1341,9 +1340,6 @@ func (c *Client) refreshAccessToken() error {
 	tokenURL := c.Config.TokenURL
 	if tokenURL == "" {
 		tokenURL = "{{.Auth.TokenURL}}"
-	}
-	if tokenURL == "" {
-		return nil
 	}
 
 	params := url.Values{
@@ -1391,7 +1387,6 @@ func (c *Client) refreshAccessToken() error {
 	if err := c.Config.SaveTokens(c.Config.ClientID, c.Config.ClientSecret, tokenResp.AccessToken, refreshToken, expiry); err != nil {
 		return fmt.Errorf("saving refreshed token: %w", err)
 	}
-{{- end}}
 
 	return nil
 }

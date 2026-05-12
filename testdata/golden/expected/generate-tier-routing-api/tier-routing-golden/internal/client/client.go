@@ -481,20 +481,7 @@ func (c *Client) authHeader() (string, error) {
 	if c.Config == nil {
 		return "", nil
 	}
-	if c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" {
-		if err := c.refreshAccessToken(); err != nil {
-			return "", err
-		}
-	}
 	return c.Config.AuthHeader(), nil
-}
-
-func (c *Client) refreshAccessToken() error {
-	if c.Config == nil {
-		return nil
-	}
-
-	return nil
 }
 
 // sanitizeJSONResponse strips known JSONP/XSSI prefixes and UTF-8 BOM from
