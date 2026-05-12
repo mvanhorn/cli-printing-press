@@ -112,6 +112,62 @@ func TestGenerateRenamesBodyFieldCollidingWithQueryParam(t *testing.T) {
 	assert.Contains(t, mcpSource, `PublicName: "tags-2", WireName: "tags", Location: "body"`)
 }
 
+// TestGenerateDeduplicatesNestedBodyFieldCollidingWithSiblingScalar guards
+// the dot-flatten/sibling-scalar collision class. When a body schema declares
+// both a top-level convenience scalar (e.g., `leadAccountId`) and a nested
+// object whose dot-flattened path camelizes to the same Go identifier (e.g.,
+// `lead.accountId`), both produce `bodyLeadAccountId` after camelization. The
+// dedup pass must walk Body recursively so the post-flatten collision is
+// detected; otherwise the generated handler emits duplicate `var
+// bodyLeadAccountId` declarations and refuses to compile.
+func TestGenerateDeduplicatesNestedBodyFieldCollidingWithSiblingScalar(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("collide-nested")
+	apiSpec.Resources["components"] = spec.Resource{
+		Description: "Components",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/components",
+				Description: "Create a component with deprecated and canonical lead fields",
+				Body: []spec.Param{
+					{Name: "leadAccountId", Type: "string", Description: "Deprecated convenience scalar"},
+					{Name: "lead", Type: "object", Description: "Canonical nested object", Fields: []spec.Param{
+						{Name: "accountId", Type: "string", Description: "Account id of the lead"},
+					}},
+				},
+			},
+			"get": {
+				Method:      "GET",
+				Path:        "/components/{id}",
+				Description: "Get one component",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "collide-nested-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	bodyVars, flagBindings := parseBodyDeclarations(t,
+		filepath.Join(outputDir, "internal", "cli", "components_create.go"))
+
+	assertNoDuplicates(t, bodyVars,
+		"a nested-object leaf must produce a Go identifier distinct from a sibling scalar that camelizes to the same name")
+	assertNoDuplicates(t, flagBindings,
+		"a nested-object leaf must register a cobra flag name distinct from a sibling scalar")
+	require.Len(t, bodyVars, 2,
+		"both the convenience scalar and the nested field must survive dedup")
+	assert.Contains(t, bodyVars, "bodyLeadAccountId",
+		"one of the colliding fields keeps the canonical Go identifier")
+	assert.Contains(t, bodyVars, "bodyLeadAccountId2",
+		"the deduped field uses the _2 suffix convention")
+	assert.Contains(t, flagBindings, "lead-account-id",
+		"one of the colliding fields keeps the canonical cobra flag name")
+	assert.Contains(t, flagBindings, "lead-account-id-2",
+		"the deduped field's cobra flag carries the -2 suffix")
+}
+
 // TestGenerateRenamesBodyFieldCollidingWithStdin guards against a body field
 // literally named `stdin` colliding with the `--stdin` flag the template
 // emits for POST/PUT/PATCH endpoints (command_endpoint.go.tmpl:525).
