@@ -357,7 +357,11 @@ func TestValidatePhase5Gate_SkipCannotOverrideManifestAuthType(t *testing.T) {
 	assert.Contains(t, result.Detail, "does not match")
 }
 
-func TestValidatePhase5Gate_PassMarkerRequiresIdentityAndTestCount(t *testing.T) {
+func TestValidatePhase5Gate_PassMarkerRejectsEmptyIdentityWhenManifestIdentifies(t *testing.T) {
+	// Stale-marker protection: when the manifest identifies the CLI, an
+	// empty-identity marker would otherwise pass every future promote.
+	// Reject it so cross-check enforcement degrades only for the actual
+	// unidentified-manifest case.
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
 	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
@@ -372,6 +376,50 @@ func TestValidatePhase5Gate_PassMarkerRequiresIdentityAndTestCount(t *testing.T)
 	result := ValidatePhase5Gate(proofsDir, manifest)
 	require.False(t, result.Passed)
 	assert.Contains(t, result.Detail, "api_name")
+}
+
+func TestValidatePhase5Gate_PassMarkerAllowsEmptyIdentityWhenManifestUnidentified(t *testing.T) {
+	// dogfood --write-acceptance may run for a foreign working dir with no
+	// manifest and no runstate; the marker then has no identity to record
+	// and the gate has no manifest identity to compare against either.
+	// The marker still validates because the cross-check has nothing to
+	// enforce.
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.True(t, result.Passed, result.Detail)
+	assert.Equal(t, "pass", result.Status)
+}
+
+func TestValidatePhase5Gate_PassMarkerCrossChecksIdentityWhenPresent(t *testing.T) {
+	// When the marker does carry identity, mismatches against the manifest
+	// must still be rejected — this is what prevents stale markers from a
+	// prior run leaking into a fresh promote.
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "stripe", CLIName: "stripe-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "notion",
+		RunID:         "run-1",
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "does not match")
 }
 
 func TestValidatePhase5Gate_SkipMarkerRequiresIdentity(t *testing.T) {

@@ -1101,25 +1101,24 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport) {
 }
 
 func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodReport) error {
-	manifest, err := ReadCLIManifest(opts.CLIDir)
-	if err != nil {
-		return fmt.Errorf("reading CLI manifest for phase5 acceptance: %w", err)
-	}
-	if manifest.APIName == "" {
-		return fmt.Errorf("CLI manifest missing api_name; cannot write phase5 acceptance")
-	}
-	if manifest.RunID == "" {
-		return fmt.Errorf("CLI manifest missing run_id; cannot write phase5 acceptance")
-	}
-	authType := manifest.AuthType
+	// Identity (api_name/run_id) is recorded so `lock promote`'s cross-check
+	// in validatePhase5Marker can reject stale markers. Three sources, in
+	// order: the working-dir manifest (most authoritative — already merged
+	// catalog/spec data), the runstate for this working dir (covers the
+	// pre-promote case where generate has not written the manifest yet), and
+	// finally an empty fall-back so dogfood still emits a marker for foreign
+	// working dirs. The marker carries empty identity only when neither
+	// source exists, which is the scenario where a downstream gate has no
+	// manifest identity to compare against either.
+	apiName, runID, authType := resolveLiveDogfoodAcceptanceIdentity(opts.CLIDir)
 	if authType == "" {
 		authType = "none"
 	}
 
 	marker := Phase5GateMarker{
 		SchemaVersion: 1,
-		APIName:       manifest.APIName,
-		RunID:         manifest.RunID,
+		APIName:       apiName,
+		RunID:         runID,
 		Status:        "pass",
 		Level:         report.Level,
 		MatrixSize:    report.MatrixSize,
@@ -1142,6 +1141,33 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 		return fmt.Errorf("writing phase5 acceptance marker: %w", err)
 	}
 	return nil
+}
+
+// resolveLiveDogfoodAcceptanceIdentity finds the marker's api_name, run_id,
+// and auth_type. Manifest on disk wins (also yields auth_type); runstate
+// fills in when the manifest hasn't been written yet (the pre-promote case
+// from issue #963). I/O errors other than "not found" propagate as empty
+// values rather than failing the write — emitting an incomplete marker
+// beats blocking dogfood, and the gate cross-check catches identity drift
+// on the way to promote.
+func resolveLiveDogfoodAcceptanceIdentity(cliDir string) (apiName, runID, authType string) {
+	if manifest, err := ReadCLIManifest(cliDir); err == nil {
+		apiName = manifest.APIName
+		runID = manifest.RunID
+		authType = manifest.AuthType
+	}
+	if apiName != "" && runID != "" {
+		return apiName, runID, authType
+	}
+	if state, err := FindStateByWorkingDir(cliDir); err == nil {
+		if apiName == "" {
+			apiName = state.APIName
+		}
+		if runID == "" {
+			runID = state.RunID
+		}
+	}
+	return apiName, runID, authType
 }
 
 func liveDogfoodQuickCommands(commands []liveDogfoodCommand) []liveDogfoodCommand {
