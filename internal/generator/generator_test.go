@@ -3076,6 +3076,65 @@ func TestGenerateStoreSubResourceUpsertBindingOrder(t *testing.T) {
 		"swapped (id, data, synced_at, fk) binding order must not be emitted")
 }
 
+// TestGenerateStoreSubResourceUpsertBatchTestSatisfiesNotNullFK pins the
+// emitted TestUpsertBatch_Populates<Name>Table fixture against the NOT NULL
+// parent FK column declared by buildSubResourceTable. Without an injected
+// FK value, the typed insert fails the NOT NULL constraint on a freshly
+// generated CLI.
+func TestGenerateStoreSubResourceUpsertBatchTestSatisfiesNotNullFK(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "subres-fk",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/subres-fk-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"domains": {
+				Description: "Manage domains",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/domains", Description: "List domains"},
+				},
+				SubResources: map[string]spec.Resource{
+					"verify": {
+						Description: "Verify a domain",
+						Endpoints: map[string]spec.Endpoint{
+							"get": {
+								Method:      "GET",
+								Path:        "/domains/{domainId}/verify",
+								Description: "Get verification status",
+								Params:      []spec.Param{{Name: "domainId", Type: "string", Required: true, Positional: true}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	testSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "upsert_batch_test.go"))
+	require.NoError(t, err)
+	// Anchor all three FK injections to the function body so go test -short
+	// (which skips runGoCommand build/test) still gates a regression that
+	// moved the FK into a comment or only one of the three rows.
+	assert.Regexp(t,
+		`(?s)func TestUpsertBatch_PopulatesVerifyTable\(.*?"domains_id":\s*"[^"]+".*?"domains_id":\s*"[^"]+".*?"domains_id":\s*"[^"]+"`,
+		string(testSrc),
+		"TestUpsertBatch_PopulatesVerifyTable fixture must populate the parent FK column declared NOT NULL by buildSubResourceTable in all three items")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/store")
+}
+
 func TestGenerateSimilarCommandUsesCompositeResourceKey(t *testing.T) {
 	t.Parallel()
 
