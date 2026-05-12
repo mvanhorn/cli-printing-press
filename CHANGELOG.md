@@ -1,5 +1,26 @@
 # Changelog
 
+## [4.5.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.5.0...v4.5.1) (2026-05-12)
+
+
+### Bug Fixes
+
+* **cli:** accept backtick raw-string Use: in dogfood walkers ([#1169](https://github.com/mvanhorn/cli-printing-press/issues/1169)) ([7ba9c20](https://github.com/mvanhorn/cli-printing-press/commit/7ba9c20a352c473cdffa8db492543a719f1518d2))
+* **cli:** credit auth_protocol on structural OAuth surface, not "Bearer " literal ([#1176](https://github.com/mvanhorn/cli-printing-press/issues/1176)) ([e8c03cf](https://github.com/mvanhorn/cli-printing-press/commit/e8c03cffc5241963ce803a30ef29c541ae3f958d)), closes [#941](https://github.com/mvanhorn/cli-printing-press/issues/941)
+* **cli:** dedupe nested body-field flatten collisions with sibling scalars ([#1190](https://github.com/mvanhorn/cli-printing-press/issues/1190)) ([c5a5441](https://github.com/mvanhorn/cli-printing-press/commit/c5a5441d3771568ee2d6d07db998af6e0c6f236e)), closes [#1043](https://github.com/mvanhorn/cli-printing-press/issues/1043)
+* **cli:** emit stderr truncation warning on single-page list responses ([#1177](https://github.com/mvanhorn/cli-printing-press/issues/1177)) ([6cda260](https://github.com/mvanhorn/cli-printing-press/commit/6cda260642f1af9379c66d2a5e7e5fd4f6364245))
+* **cli:** handle PascalCase .NET-shape API responses in sync ([#1135](https://github.com/mvanhorn/cli-printing-press/issues/1135)) ([#1174](https://github.com/mvanhorn/cli-printing-press/issues/1174)) ([84138f9](https://github.com/mvanhorn/cli-printing-press/commit/84138f91da785001da9b105ce647cbfff0bdb386))
+* **cli:** index args[] by positional ordinal in path-param emit ([#1211](https://github.com/mvanhorn/cli-printing-press/issues/1211)) ([460d676](https://github.com/mvanhorn/cli-printing-press/commit/460d676ec54a9c231ff98f2047edbe61bffe2693))
+* **cli:** make dogfood acceptance marker manifest read best-effort ([#1179](https://github.com/mvanhorn/cli-printing-press/issues/1179)) ([ee13fb1](https://github.com/mvanhorn/cli-printing-press/commit/ee13fb1611755cc2964a506b03bf614a44d190eb)), closes [#963](https://github.com/mvanhorn/cli-printing-press/issues/963)
+* **cli:** map Cobra/pflag pre-RunE usage errors to exit code 2 ([#1194](https://github.com/mvanhorn/cli-printing-press/issues/1194)) ([dabf63f](https://github.com/mvanhorn/cli-printing-press/commit/dabf63f8753eeddc10a72b6b74f37a713f137e3c))
+* **cli:** preserve novel-command keys in --compact partial-strip path ([#1167](https://github.com/mvanhorn/cli-printing-press/issues/1167)) ([f88a10b](https://github.com/mvanhorn/cli-printing-press/commit/f88a10b3a9fc3738acffc496db4e476a57851c21))
+* **cli:** preserve x-mcp config when merging combo specs ([#1187](https://github.com/mvanhorn/cli-printing-press/issues/1187)) ([660829e](https://github.com/mvanhorn/cli-printing-press/commit/660829ed3cce879fc15209d50fe39df96594ff8e)), closes [#1044](https://github.com/mvanhorn/cli-printing-press/issues/1044)
+* **cli:** redact $HOME paths from publish-tree JSON artifacts ([#1181](https://github.com/mvanhorn/cli-printing-press/issues/1181)) ([a3c3c65](https://github.com/mvanhorn/cli-printing-press/commit/a3c3c6537f36d371e14d1410c35d702300ca1b53))
+* **cli:** refuse to ship CLIs with placeholder base URL ([#1186](https://github.com/mvanhorn/cli-printing-press/issues/1186)) ([c9a35b5](https://github.com/mvanhorn/cli-printing-press/commit/c9a35b5e2423c8d8a21eec6fa126c9b10e85746d))
+* **cli:** resolve validation binary path with platform.ExecutablePath ([#1213](https://github.com/mvanhorn/cli-printing-press/issues/1213)) ([7365fcc](https://github.com/mvanhorn/cli-printing-press/commit/7365fcc31c061342fd55c2c84633794a00e1d30a)), closes [#978](https://github.com/mvanhorn/cli-printing-press/issues/978)
+* **cli:** route scorer subcommand --spec URLs through generate's fetch path ([#1178](https://github.com/mvanhorn/cli-printing-press/issues/1178)) ([5e3667d](https://github.com/mvanhorn/cli-printing-press/commit/5e3667df2e2aabef62b0110b7557b93df7fae2cf))
+* **cli:** scope HTTP cache to &lt;api&gt;/http so invalidateCache spares siblings ([#1166](https://github.com/mvanhorn/cli-printing-press/issues/1166)) ([3697610](https://github.com/mvanhorn/cli-printing-press/commit/36976106f4357fb3dba3242a85ba66b9eb677bc3)), closes [#1126](https://github.com/mvanhorn/cli-printing-press/issues/1126)
+
 ## [4.5.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.4.0...v4.5.0) (2026-05-12)
 
 
