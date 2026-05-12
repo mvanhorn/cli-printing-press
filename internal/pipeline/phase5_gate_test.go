@@ -357,13 +357,35 @@ func TestValidatePhase5Gate_SkipCannotOverrideManifestAuthType(t *testing.T) {
 	assert.Contains(t, result.Detail, "does not match")
 }
 
-func TestValidatePhase5Gate_PassMarkerAllowsMissingIdentity(t *testing.T) {
-	// dogfood --write-acceptance can run before `lock promote` writes the
-	// manifest, in which case the marker has no api_name/run_id to copy.
-	// The marker still validates because cross-check identity enforcement
-	// happens only when both sides carry the field.
+func TestValidatePhase5Gate_PassMarkerRejectsEmptyIdentityWhenManifestIdentifies(t *testing.T) {
+	// Stale-marker protection: when the manifest identifies the CLI, an
+	// empty-identity marker would otherwise pass every future promote.
+	// Reject it so cross-check enforcement degrades only for the actual
+	// unidentified-manifest case.
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.False(t, result.Passed)
+	assert.Contains(t, result.Detail, "api_name")
+}
+
+func TestValidatePhase5Gate_PassMarkerAllowsEmptyIdentityWhenManifestUnidentified(t *testing.T) {
+	// dogfood --write-acceptance may run for a foreign working dir with no
+	// manifest and no runstate; the marker then has no identity to record
+	// and the gate has no manifest identity to compare against either.
+	// The marker still validates because the cross-check has nothing to
+	// enforce.
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{AuthType: "none"}
 	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
 		SchemaVersion: 1,
 		Status:        "pass",

@@ -92,13 +92,31 @@ func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFil
 		result.Detail = fmt.Sprintf("unsupported phase5 marker schema_version %d", marker.SchemaVersion)
 		return result
 	}
-	if marker.APIName != "" && manifest.APIName != "" && marker.APIName != manifest.APIName {
-		result.Detail = fmt.Sprintf("phase5 marker api_name %q does not match manifest api_name %q", marker.APIName, manifest.APIName)
-		return result
+	// Stale-marker protection: when the manifest carries identity, the
+	// marker must carry the same identity. An empty marker.APIName/RunID is
+	// only acceptable when the manifest is itself unidentified (e.g., a
+	// minimal state with no api_name) — otherwise an empty-identity marker
+	// would silently pass every subsequent promote regardless of run_id
+	// rotation.
+	if manifest.APIName != "" {
+		if marker.APIName == "" {
+			result.Detail = "phase5 marker missing api_name (manifest identifies the CLI)"
+			return result
+		}
+		if marker.APIName != manifest.APIName {
+			result.Detail = fmt.Sprintf("phase5 marker api_name %q does not match manifest api_name %q", marker.APIName, manifest.APIName)
+			return result
+		}
 	}
-	if marker.RunID != "" && manifest.RunID != "" && marker.RunID != manifest.RunID {
-		result.Detail = fmt.Sprintf("phase5 marker run_id %q does not match manifest run_id %q", marker.RunID, manifest.RunID)
-		return result
+	if manifest.RunID != "" {
+		if marker.RunID == "" {
+			result.Detail = "phase5 marker missing run_id (manifest identifies the run)"
+			return result
+		}
+		if marker.RunID != manifest.RunID {
+			result.Detail = fmt.Sprintf("phase5 marker run_id %q does not match manifest run_id %q", marker.RunID, manifest.RunID)
+			return result
+		}
 	}
 
 	switch status {
