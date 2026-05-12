@@ -388,6 +388,33 @@ func newOrphanCmd() { cmd := &cobra.Command{Use: "orphan"} }
 	assert.Equal(t, []string{"orphan"}, result.Unregistered)
 }
 
+// TestCheckCommandTree_BacktickUse pins that the constructor walker reads
+// the Use: leaf name from a backtick raw-string literal, which authors reach
+// for when the command name contains a literal double-quote. Without
+// backtick support, useName silently falls back to the constructor name
+// and the command surfaces with the wrong identity in CommandTreeResult.
+func TestCheckCommandTree_BacktickUse(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+
+	writeTestFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() {
+	rootCmd.AddCommand(newQueryCmd())
+}
+`)
+	writeTestFile(t, filepath.Join(cliDir, "query.go"),
+		"package cli\n"+
+			"func newQueryCmd() *cobra.Command {\n"+
+			"\treturn &cobra.Command{Use: `query <project> \"<sql>\"`}\n"+
+			"}\n")
+
+	result := checkCommandTree(dir)
+	assert.Equal(t, 1, result.Defined)
+	assert.Equal(t, 1, result.Registered)
+	assert.Empty(t, result.Unregistered)
+}
+
 func TestCheckCommandTree_DeeplyNested(t *testing.T) {
 	dir := t.TempDir()
 	cliDir := filepath.Join(dir, "internal", "cli")
@@ -1012,6 +1039,36 @@ func newHealthCmd() *cobra.Command {
 	})
 }
 
+// TestCheckNovelFeatures_BacktickUse pins that the walker matches commands
+// declared with Go's backtick raw-string Use: form. Authors reach for
+// backticks when the command name contains a literal double-quote (e.g.,
+// `query <project> "<sql>"`), and the walker must not silently report
+// those as missing.
+func TestCheckNovelFeatures_BacktickUse(t *testing.T) {
+	cliDir := t.TempDir()
+	cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+	writeTestFile(t, filepath.Join(cliCodeDir, "query.go"),
+		"package cli\n"+
+			"func newQueryCmd() *cobra.Command {\n"+
+			"\treturn &cobra.Command{Use: `query <project> \"<sql>\"`}\n"+
+			"}\n")
+
+	researchDir := t.TempDir()
+	research := &ResearchResult{
+		APIName: "test",
+		NovelFeatures: []NovelFeature{
+			{Name: "SQL query", Command: "query"},
+		},
+	}
+	require.NoError(t, writeResearchJSON(research, researchDir))
+
+	result := checkNovelFeatures(cliDir, researchDir)
+	assert.Equal(t, 1, result.Planned)
+	assert.Equal(t, 1, result.Found)
+	assert.Empty(t, result.Missing)
+}
+
 func TestCheckNovelFeatures_ZeroSurvivors(t *testing.T) {
 	// All planned features missing — novel_features_built should be a non-nil
 	// empty slice (not omitted), so the fallback to the aspirational list
@@ -1397,6 +1454,48 @@ func newCmd() *cobra.Command {
 
 	result := checkNamingConsistency(dir)
 	assert.Empty(t, result.Violations, "--yes is allowed; only --skip-confirmations variants are banned")
+}
+
+// TestCheckNamingConsistency_BacktickUse pins that the verb extractor reads
+// the leading identifier from a backtick raw-string Use: declaration. A
+// banned verb hidden in a backtick literal must still surface as a
+// violation; symmetrically, a permitted verb in the same form must not
+// produce a false positive.
+func TestCheckNamingConsistency_BacktickUse(t *testing.T) {
+	t.Run("permitted verb in backtick Use", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+		writeTestFile(t, filepath.Join(dir, "internal", "cli", "cmd.go"),
+			"package cli\n"+
+				"\n"+
+				"import \"github.com/spf13/cobra\"\n"+
+				"\n"+
+				"func newQueryCmd() *cobra.Command {\n"+
+				"\treturn &cobra.Command{Use: `query <project> \"<sql>\"`}\n"+
+				"}\n")
+
+		result := checkNamingConsistency(dir)
+		assert.Equal(t, 1, result.Checked)
+		assert.Empty(t, result.Violations)
+	})
+
+	t.Run("banned verb in backtick Use", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+		writeTestFile(t, filepath.Join(dir, "internal", "cli", "cmd.go"),
+			"package cli\n"+
+				"\n"+
+				"import \"github.com/spf13/cobra\"\n"+
+				"\n"+
+				"func newInfoCmd() *cobra.Command {\n"+
+				"\treturn &cobra.Command{Use: `info <project> \"<filter>\"`}\n"+
+				"}\n")
+
+		result := checkNamingConsistency(dir)
+		require.Len(t, result.Violations, 1)
+		assert.Equal(t, "info", result.Violations[0].Banned)
+		assert.Equal(t, "verb", result.Violations[0].Category)
+	})
 }
 
 func TestCheckNamingConsistency_NoFalsePositiveOnIdentifierWithBannedSubstring(t *testing.T) {

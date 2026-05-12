@@ -1152,10 +1152,11 @@ func scoreVision(dir string) int {
 	return score
 }
 
-// cobraUseLeafRe extracts the first whitespace-delimited token from a Cobra
-// `Use: "..."` literal — the leaf command name (e.g., `"trajectory <slug>"`
-// → `trajectory`).
-var cobraUseLeafRe = regexp.MustCompile(`Use:\s*"([^"\s]+)`)
+// cobraUseLeafRe extracts the leaf command name from a Cobra Use: literal.
+// Accepts both Go string forms — double-quoted and backtick raw-string —
+// because authors reach for backticks when the value contains a literal
+// double-quote.
+var cobraUseLeafRe = regexp.MustCompile("Use:\\s*[\"`]([^\"`\\s]+)")
 
 // manifestNovelFeatureLeaves returns the leaves of every novel_features[].command
 // in dir/.printing-press.json. Returns nil when the manifest is missing,
