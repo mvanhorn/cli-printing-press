@@ -267,13 +267,13 @@ func (s *Store) migrate(ctx context.Context) error {
 			total_count INTEGER DEFAULT 0
 		)`,
 		resourcesFTSCreateSQL,
-		`CREATE TABLE IF NOT EXISTS leagues (
-			id TEXT PRIMARY KEY,
-			data JSON NOT NULL,
-			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			parent_id TEXT
+		`CREATE TABLE IF NOT EXISTS "leagues" (
+			"id" TEXT PRIMARY KEY,
+			"data" JSON NOT NULL,
+			"synced_at" DATETIME DEFAULT CURRENT_TIMESTAMP,
+			"parent_id" TEXT
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_leagues_parent_id ON leagues(parent_id)`,
+		`CREATE INDEX IF NOT EXISTS "idx_leagues_parent_id" ON "leagues"("parent_id")`,
 	}
 
 	// Run every migration — including the column backfill and the
@@ -750,9 +750,9 @@ func lookupFieldValue(obj map[string]any, snakeKey string) any {
 // opening a per-item transaction.
 func (s *Store) upsertLeaguesTx(tx *sql.Tx, id string, obj map[string]any, data json.RawMessage) error {
 	if _, err := tx.Exec(
-		`INSERT INTO leagues (id, data, synced_at, parent_id)
+		`INSERT INTO "leagues" ("id", "data", "synced_at", "parent_id")
 		 VALUES (?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET data = excluded.data, synced_at = excluded.synced_at, parent_id = excluded.parent_id`,
+		 ON CONFLICT("id") DO UPDATE SET "data" = excluded."data", "synced_at" = excluded."synced_at", "parent_id" = excluded."parent_id"`,
 		id,
 		string(data),
 		time.Now(),

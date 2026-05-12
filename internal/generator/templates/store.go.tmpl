@@ -800,7 +800,7 @@ func (s *Store) upsert{{pascal .Name}}Tx(tx *sql.Tx, id string, obj map[string]a
 	if _, err := tx.Exec(
 		`INSERT INTO {{safeName .Name}} ({{columnNames .Columns}})
 		 VALUES ({{columnPlaceholders .Columns}})
-		 ON CONFLICT(id) DO UPDATE SET {{updateSet .Columns}}`,
+		 ON CONFLICT({{safeName "id"}}) DO UPDATE SET {{updateSet .Columns}}`,
 {{- range .Columns}}
 {{- if eq .Name "id"}}
 		id,
