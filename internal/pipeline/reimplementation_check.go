@@ -178,7 +178,7 @@ func checkReimplementation(cliDir, researchDir string) ReimplementationCheckResu
 		"doctor.go":  true,
 		"auth.go":    true,
 	}
-	useLineRe := regexp.MustCompile(`Use:\s*"([^"\s]+)`)
+	useLineRe := cobraUseLeafRe
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".go") {

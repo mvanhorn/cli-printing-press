@@ -496,7 +496,7 @@ func collectRegisteredCommands(dir string) (paths, leaves map[string]bool) {
 	// (Execute / helpers) isn't a new*Cmd constructor.
 	rootAddRe := regexp.MustCompile(`rootCmd\.AddCommand\(\s*(new\w+Cmd)\b`)
 	funcHeaderRe := regexp.MustCompile(`func\s+(new\w+Cmd)\s*\(`)
-	useRe := regexp.MustCompile(`Use:\s*"([^"\s]+)`)
+	useRe := cobraUseLeafRe
 	addChildRe := regexp.MustCompile(`\.AddCommand\(\s*(new\w+Cmd)\b`)
 
 	for _, file := range files {
@@ -1066,9 +1066,16 @@ func checkNamingConsistency(dir string) NamingCheckResult {
 	result := NamingCheckResult{Checked: len(files)}
 
 	// Extract the first token of a cobra Use: declaration:
-	//   Use:  "get",       -> "get"
-	//   Use:  "list [id]", -> "list"
-	useRe := regexp.MustCompile(`(?m)Use:\s*"([A-Za-z][A-Za-z0-9_-]*)`)
+	//   Use:  "get",                  -> "get"
+	//   Use:  "list [id]",            -> "list"
+	//   Use:  `query "<sql>"`,        -> "query"
+	//
+	// Deliberately not consolidated onto cobraUseLeafRe: the naming check
+	// only judges identifier-shaped verbs, so the capture class is tightened
+	// to [A-Za-z][A-Za-z0-9_-]* — anything broader would let a flag token
+	// or angle-bracket arg masquerade as a verb. Both regexes accept the
+	// same delimiters; only the capture differs.
+	useRe := regexp.MustCompile("(?m)Use:\\s*[\"`]([A-Za-z][A-Za-z0-9_-]*)")
 
 	// Extract long-form flag names from the common cobra registration
 	// patterns: StringVar, BoolVar, IntVar, Int64Var, StringVarP, BoolVarP,
@@ -1921,7 +1928,7 @@ func checkCommandTree(dir string) CommandTreeResult {
 	// A constructor is func newXxxCmd(...) — we extract both the function name
 	// and the cobra Use: field (the command name users see).
 	constructorRe := regexp.MustCompile(`(?m)^func\s+(new\w+Cmd)\s*\(`)
-	useFieldRe := regexp.MustCompile(`(?m)Use:\s*"([^"\s]+)`)
+	useFieldRe := cobraUseLeafRe
 
 	type cmdDef struct {
 		constructor string // e.g. "newBookingsCmd"

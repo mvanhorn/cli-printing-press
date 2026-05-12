@@ -510,6 +510,46 @@ func newFakeCmd(flags *rootFlags) *cobra.Command {
 	}
 }
 
+// TestCheckReimplementation_BacktickUse pins that the file index recognizes
+// commands declared with Go's backtick raw-string Use: form. Authors reach
+// for backticks when the command name contains a literal double-quote
+// (e.g., `query <project> "<sql>"`); without backtick support the file
+// drops out of leafToFiles and the reimplementation check silently skips
+// the command entirely.
+func TestCheckReimplementation_BacktickUse(t *testing.T) {
+	files := map[string]string{
+		"query.go": "package cli\n" +
+			"\n" +
+			"import \"github.com/spf13/cobra\"\n" +
+			"\n" +
+			"func newQueryCmd(flags *rootFlags) *cobra.Command {\n" +
+			"\treturn &cobra.Command{\n" +
+			"\t\tUse: `query <project> \"<sql>\"`,\n" +
+			"\t\tRunE: func(cmd *cobra.Command, args []string) error {\n" +
+			"\t\t\tc, err := flags.newClient()\n" +
+			"\t\t\tif err != nil { return err }\n" +
+			"\t\t\t_ = c\n" +
+			"\t\t\treturn nil\n" +
+			"\t\t},\n" +
+			"\t}\n" +
+			"}\n",
+	}
+	cliDir, pipelineDir := seedReimplementationFixture(t, files, []NovelFeature{
+		{Name: "SQL query", Command: "query"},
+	})
+
+	got := checkReimplementation(cliDir, pipelineDir)
+	if got.Skipped {
+		t.Fatalf("expected non-skipped result, got Skipped=true (backtick Use: not indexed)")
+	}
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Suspicious) != 0 {
+		t.Fatalf("Suspicious: want 0, got %d (%v)", len(got.Suspicious), got.Suspicious)
+	}
+}
+
 // Skip path: when research.json is missing the check returns Skipped
 // rather than crashing.
 func TestCheckReimplementation_NoResearchDir_Skipped(t *testing.T) {
