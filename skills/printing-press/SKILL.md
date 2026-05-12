@@ -1874,7 +1874,8 @@ The total is what an agent loads at MCP server start.
 | >50 | Default to recommending the Cloudflare pattern (transport + code orchestration + hidden endpoint tools). The generator will also print a warning at this size. |
 
 **The Cloudflare pattern** (recommended for large surfaces) — edit the spec's
-`mcp:` block before running `generate`:
+`mcp:` block (internal YAML) or `x-mcp:` block (OpenAPI) before running
+`generate`:
 
 ```yaml
 mcp:
@@ -1893,6 +1894,12 @@ agents (Managed Agents, web clients) can connect. `mcp.orchestration: code`
 emits the thin search+execute pair that covers the full surface in ~1K tokens.
 `mcp.endpoint_tools: hidden` removes the raw per-endpoint tools that would
 otherwise still show up alongside the orchestration pair.
+
+For OpenAPI input specs, declare these fields under `x-mcp:` at the document
+root (OpenAPI 3.0 `x-*` vendor extensions). The shape is identical to the
+internal-YAML `mcp:` block above — same field names, just nested under a
+vendor-extension key. See [`docs/SPEC-EXTENSIONS.md`](../../docs/SPEC-EXTENSIONS.md) for the canonical
+schema and `info`-level placement option.
 
 **Smaller-surface variants:**
 
