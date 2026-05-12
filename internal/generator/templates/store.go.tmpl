@@ -800,7 +800,7 @@ func (s *Store) upsert{{pascal .Name}}Tx(tx *sql.Tx, id string, obj map[string]a
 	if _, err := tx.Exec(
 		`INSERT INTO {{safeName .Name}} ({{columnNames .Columns}})
 		 VALUES ({{columnPlaceholders .Columns}})
-		 ON CONFLICT(id) DO UPDATE SET {{updateSet .Columns}}`,
+		 ON CONFLICT({{safeName "id"}}) DO UPDATE SET {{updateSet .Columns}}`,
 {{- range .Columns}}
 {{- if eq .Name "id"}}
 		id,
@@ -984,8 +984,8 @@ func (s *Store) Search{{pascal .Name}}(query string, limit int) ([]json.RawMessa
 	}
 	rows, err := s.db.Query(
 		`SELECT t.data FROM {{safeName .Name}} t
-		 JOIN {{.Name}}_fts ON {{.Name}}_fts.rowid = t.rowid
-		 WHERE {{.Name}}_fts MATCH ?
+		 JOIN {{safeNameSuffix .Name "_fts"}} ON {{safeNameSuffix .Name "_fts"}}.rowid = t.rowid
+		 WHERE {{safeNameSuffix .Name "_fts"}} MATCH ?
 		 ORDER BY rank LIMIT ?`,
 		query, limit,
 	)

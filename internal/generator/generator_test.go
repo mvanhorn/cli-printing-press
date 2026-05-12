@@ -3059,7 +3059,8 @@ func TestGenerateStoreSubResourceUpsertBindingOrder(t *testing.T) {
 
 	// buildSubResourceTable inserts the FK column between id and data, so
 	// the column declaration order is (id, domains_id, data, synced_at).
-	assert.Contains(t, src, "INSERT INTO verify (id, domains_id, data, synced_at)",
+	// safeSQLName quote-wraps every identifier in emitted SQL.
+	assert.Contains(t, src, `INSERT INTO "verify" ("id", "domains_id", "data", "synced_at")`,
 		"sub-resource table should declare FK column between id and data")
 
 	// The argument bindings must follow that same order.
@@ -6688,17 +6689,46 @@ func TestGenerateDependentSyncCompiles(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/store")
 }
 
-func TestGenerateDependentSyncReservedWordCompiles(t *testing.T) {
+func TestGenerateReservedWordResourceTableNamesCompileAndMigrate(t *testing.T) {
 	t.Parallel()
 
-	// A spec whose dependent-resource table name is a SQL reserved word
-	// (e.g. references, trigger, view, order) must still produce a CLI
-	// that builds and whose store tests pass. The store template's
-	// backfillColumns slice and the upgrade-path test's t.Fatalf format
-	// string both interpolate the table name into Go double-quoted
-	// strings; safeSQLName quote-wraps reserved words for SQL contexts,
-	// so applying it in a Go-string context would emit invalid Go for
-	// any reserved-word resource. Regression for issue #272 follow-up.
+	// A spec whose resource or response field snake_cases to a SQL
+	// reserved word must still produce a CLI that builds and whose store
+	// migration succeeds. The single fixture exercises three regression
+	// classes in one compile cycle:
+	//
+	//   - "references" as a typed top-level resource: non-strict keyword.
+	//     Surfaces as a Go compile failure if safeSQLName ever leaks into
+	//     a Go-string context (backfillColumns slice, upgrade-path
+	//     t.Fatalf format string).
+	//   - "add" as a typed top-level resource: strict-reserved keyword.
+	//     A typed CREATE TABLE for `add` is emitted into the migrations
+	//     slice. SQLite rejects that unquoted with `near "add": syntax
+	//     error`, so migrate() — called from every test in the generated
+	//     store package — fails at parse time without quoting.
+	//   - "from" as a response field on the shared type: strict-reserved
+	//     keyword in column position. The columnNames helper feeds INSERT
+	//     INTO and the CREATE TABLE column list; both fail at parse time
+	//     unless the column identifier is quoted.
+	//
+	// Top-level resources are used deliberately. Sub-resources would emit
+	// CREATE TABLE statements too, but the generated upsert_batch_test
+	// has a NOT NULL constraint bug on FK columns that masks the keyword
+	// regression with a different failure.
+	mkField := func(name string) spec.TypeField {
+		return spec.TypeField{Name: name, Type: "string"}
+	}
+	endpoints := func(path string) map[string]spec.Endpoint {
+		return map[string]spec.Endpoint{
+			"list": {
+				Method:      "GET",
+				Path:        path,
+				Description: "List items",
+				Response:    spec.ResponseDef{Type: "array", Item: "Item"},
+				Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+			},
+		}
+	}
 	apiSpec := &spec.APISpec{
 		Name:    "docstore",
 		Version: "0.1.0",
@@ -6714,30 +6744,20 @@ func TestGenerateDependentSyncReservedWordCompiles(t *testing.T) {
 			Path:   "~/.config/docstore-pp-cli/config.toml",
 		},
 		Resources: map[string]spec.Resource{
-			"documents": {
-				Description: "Manage documents",
-				Endpoints: map[string]spec.Endpoint{
-					"list": {
-						Method:      "GET",
-						Path:        "/documents",
-						Description: "List documents",
-						Response:    spec.ResponseDef{Type: "array"},
-						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
-					},
-				},
-			},
-			// "references" snake_cases to "references" — a SQL reserved
-			// word per internal/generator/schema_builder.go:322.
-			"references": {
-				Description: "Manage references attached to a document",
-				Endpoints: map[string]spec.Endpoint{
-					"list": {
-						Method:      "GET",
-						Path:        "/documents/{documentId}/references",
-						Description: "List references for a document",
-						Response:    spec.ResponseDef{Type: "array"},
-						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
-					},
+			"documents":  {Description: "Documents", Endpoints: endpoints("/documents")},
+			"references": {Description: "References", Endpoints: endpoints("/references")},
+			"add":        {Description: "Add operations", Endpoints: endpoints("/add")},
+		},
+		Types: map[string]spec.TypeDef{
+			"Item": {
+				Fields: []spec.TypeField{
+					mkField("id"),
+					mkField("title"),
+					mkField("body"),
+					// `from` is a SQLite strict-reserved keyword,
+					// exercising the column-identifier path through
+					// columnNames / updateSet.
+					mkField("from"),
 				},
 			},
 		},
@@ -6747,8 +6767,28 @@ func TestGenerateDependentSyncReservedWordCompiles(t *testing.T) {
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
 
-	// The generated store.go must compile (no embedded "" from safeName
-	// quote-wrapping) and the per-table upgrade test must run cleanly.
+	storeSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	store := string(storeSrc)
+
+	// Cheap pre-check: the bug-shaped strings must appear in the emitted
+	// SQL so the compile-and-migrate gates below have something to catch.
+	// A previous iteration of this test left `add` without a typed column
+	// set — gravity stayed below the typed-table threshold and no CREATE
+	// TABLE for `add` was emitted, leaving the regression unreached.
+	assert.Contains(t, store, `CREATE TABLE IF NOT EXISTS "add"`,
+		"strict-reserved table name must emit a quoted CREATE TABLE")
+	assert.Contains(t, store, `CREATE TABLE IF NOT EXISTS "references"`,
+		"non-strict-reserved table name must emit a quoted CREATE TABLE")
+	assert.Contains(t, store, `"from" TEXT`,
+		"strict-reserved column identifier must be quoted in the CREATE TABLE column list")
+	assert.Contains(t, store, `INSERT INTO "add"`,
+		"strict-reserved table name must be quoted in the upsert INSERT")
+
+	// The generated store.go must compile (no embedded "" leaking into a
+	// Go-string context) and the per-table migration must run cleanly —
+	// the SQLite parse failure surfaces inside the store tests' migrate()
+	// call.
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
 	runGoCommand(t, outputDir, "test", "./internal/store")
@@ -9356,8 +9396,11 @@ func TestStoreSkipsDeadTablesForResourcesWithoutTypedUpsert(t *testing.T) {
 
 	// Pin the exact CREATE TABLE set: only resources, sync_state (always
 	// emitted), and items (has typed columns) survive. No demo_auth, no
-	// renamed-with-suffix dead table, nothing else snuck in.
-	createRe := regexp.MustCompile("`CREATE TABLE IF NOT EXISTS (\\w+) \\(")
+	// renamed-with-suffix dead table, nothing else snuck in. The framework
+	// tables (resources, sync_state) are hand-written in the template
+	// without safeSQLName, so the regex accepts both quoted and unquoted
+	// forms.
+	createRe := regexp.MustCompile("`CREATE TABLE IF NOT EXISTS \"?(\\w+)\"? \\(")
 	gotTables := map[string]bool{}
 	for _, m := range createRe.FindAllStringSubmatch(store, -1) {
 		gotTables[m[1]] = true
