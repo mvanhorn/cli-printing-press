@@ -2655,6 +2655,186 @@ func TestExtractPageItemsNoCursor(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractPageItems", "./internal/cli")
 }
 
+// TestGeneratedSyncHandlesPascalCaseDotNetShape verifies the generated sync +
+// store paths recognize .NET-shape PascalCase envelopes ("Items"), PKs ("Id"),
+// and field keys (LookupFieldValue PascalCase pass). Parser-side tier-5 PK
+// selection is covered separately in internal/openapi/parser_test.go.
+func TestGeneratedSyncHandlesPascalCaseDotNetShape(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "dotnet",
+		Version: "0.1.0",
+		BaseURL: "https://dotnet.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/dotnet-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"orders": {
+				Description: "Orders",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/orders",
+						Description: "List orders",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	inlineTest := `package cli
+
+import (
+	"encoding/json"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+func TestExtractPageItemsPascalCaseItemsEnvelope(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"Items": [{"Id": "ord-1"}, {"Id": "ord-2"}],
+		"TotalItems": 2
+	}` + "`" + `)
+	items, _, _ := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 2 {
+		t.Fatalf("Items envelope: want 2 items, got %d", len(items))
+	}
+	var first map[string]any
+	if err := json.Unmarshal(items[0], &first); err != nil {
+		t.Fatalf("unmarshal item[0]: %v", err)
+	}
+	if first["Id"] != "ord-1" {
+		t.Fatalf("want item[0].Id=ord-1, got %v", first["Id"])
+	}
+}
+
+func TestExtractPageItemsPascalCaseDataEnvelope(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"Data": [{"Id": "a"}, {"Id": "b"}, {"Id": "c"}]
+	}` + "`" + `)
+	items, _, _ := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 3 {
+		t.Fatalf("Data envelope: want 3 items, got %d", len(items))
+	}
+	var third map[string]any
+	if err := json.Unmarshal(items[2], &third); err != nil {
+		t.Fatalf("unmarshal item[2]: %v", err)
+	}
+	if third["Id"] != "c" {
+		t.Fatalf("want item[2].Id=c, got %v", third["Id"])
+	}
+}
+
+func TestExtractPageItemsPascalCaseResultsEnvelope(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"Results": [{"Id": "x"}]
+	}` + "`" + `)
+	items, _, _ := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 1 {
+		t.Fatalf("Results envelope: want 1 item, got %d", len(items))
+	}
+	var only map[string]any
+	if err := json.Unmarshal(items[0], &only); err != nil {
+		t.Fatalf("unmarshal item[0]: %v", err)
+	}
+	if only["Id"] != "x" {
+		t.Fatalf("want item[0].Id=x, got %v", only["Id"])
+	}
+}
+
+// TestExtractPageItemsLowercaseTakesPriorityOverPascal pins the documented
+// scan ordering: when both lowercase and PascalCase wrapper keys appear in
+// the same response, the lowercase entry wins.
+func TestExtractPageItemsLowercaseTakesPriorityOverPascal(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"items": [{"id": "lower"}],
+		"Items": [{"Id": "pascal"}]
+	}` + "`" + `)
+	items, _, _ := extractPageItems(json.RawMessage(body), "cursor")
+	if len(items) != 1 {
+		t.Fatalf("want 1 item from lowercase envelope, got %d", len(items))
+	}
+	var first map[string]any
+	if err := json.Unmarshal(items[0], &first); err != nil {
+		t.Fatalf("unmarshal item[0]: %v", err)
+	}
+	if first["id"] != "lower" {
+		t.Fatalf("lowercase must win: want lower, got %v", first["id"])
+	}
+}
+
+func TestLookupFieldValuePascalCase(t *testing.T) {
+	obj := map[string]any{"Id": "abc", "OrderTotal": float64(42)}
+
+	if v := store.LookupFieldValue(obj, "id"); v != "abc" {
+		t.Fatalf("LookupFieldValue id: want abc, got %v", v)
+	}
+	if v := store.LookupFieldValue(obj, "order_total"); v != float64(42) {
+		t.Fatalf("LookupFieldValue order_total: want 42, got %v", v)
+	}
+}
+
+func TestLookupFieldValueCamelCaseStillResolves(t *testing.T) {
+	obj := map[string]any{"orderTotal": float64(7)}
+	if v := store.LookupFieldValue(obj, "order_total"); v != float64(7) {
+		t.Fatalf("camelCase: want 7, got %v", v)
+	}
+}
+
+func TestLookupFieldValueSnakeCasePrecedence(t *testing.T) {
+	obj := map[string]any{
+		"order_total": float64(1),
+		"orderTotal":  float64(2),
+		"OrderTotal":  float64(3),
+	}
+	if v := store.LookupFieldValue(obj, "order_total"); v != float64(1) {
+		t.Fatalf("snake_case must win: got %v", v)
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "sync_pascalcase_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	const storeInlineTest = `package store
+
+import "testing"
+
+func TestExtractObjectIDPascalCaseId(t *testing.T) {
+	if got := extractObjectID(map[string]any{"Id": "ord-1"}); got != "ord-1" {
+		t.Fatalf("PascalCase Id: want ord-1, got %q", got)
+	}
+}
+
+func TestExtractObjectIDLowercaseIdWinsOverPascal(t *testing.T) {
+	if got := extractObjectID(map[string]any{"id": "lower", "Id": "pascal"}); got != "lower" {
+		t.Fatalf("lowercase id must win over PascalCase Id: got %q", got)
+	}
+}
+
+func TestExtractObjectIDPascalCaseIdWinsOverUppercaseID(t *testing.T) {
+	if got := extractObjectID(map[string]any{"ID": "upper", "Id": "pascal"}); got != "pascal" {
+		t.Fatalf("PascalCase Id must precede uppercase ID: got %q", got)
+	}
+}
+`
+	storeTestPath := filepath.Join(outputDir, "internal", "store", "store_pascalcase_test.go")
+	require.NoError(t, os.WriteFile(storeTestPath, []byte(storeInlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractPageItemsPascalCase|TestLookupFieldValue", "./internal/cli")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractObjectID", "./internal/store")
+}
+
 func adsCampaignSpec() *spec.APISpec {
 	return &spec.APISpec{
 		Name:    "ads",

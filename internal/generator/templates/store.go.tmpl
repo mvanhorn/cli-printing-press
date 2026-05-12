@@ -716,7 +716,7 @@ func (s *Store) Search(query string, limit int) ([]json.RawMessage, error) {
 }
 
 func extractObjectID(obj map[string]any) string {
-	for _, key := range []string{"id", "ID", "uuid", "slug", "name"} {
+	for _, key := range []string{"id", "Id", "ID", "uuid", "slug", "name"} {
 		if v, ok := obj[key]; ok {
 			return fmt.Sprintf("%v", v)
 		}
@@ -739,10 +739,12 @@ func ftsRowID(scope, id string) int64 {
 	return int64(h & 0x7FFFFFFFFFFFFFFF) // ensure positive
 }
 
-// LookupFieldValue resolves a field value from a JSON object map, trying
-// the snake_case key first and the camelCase rendering second. Exported so
-// the sync command's extractID and the upsert path resolve fields the same
-// way — a divergence here produces silent drops on heterogeneous payloads.
+// LookupFieldValue resolves a field value from a JSON object map, trying the
+// snake_case key first, then the camelCase rendering, then the PascalCase
+// rendering. Exported so the sync command's extractID and the upsert path
+// resolve fields the same way — a divergence here produces silent drops on
+// heterogeneous payloads. The PascalCase pass handles .NET-shaped responses
+// (`Id`, `Name`, `OrderId`) without forcing each spec to declare casing.
 func LookupFieldValue(obj map[string]any, snakeKey string) any {
 	if v, ok := obj[snakeKey]; ok {
 		return sqliteFieldValue(v)
@@ -754,8 +756,15 @@ func LookupFieldValue(obj map[string]any, snakeKey string) any {
 		}
 		parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
 	}
-	if v, ok := obj[strings.Join(parts, "")]; ok {
+	camel := strings.Join(parts, "")
+	if v, ok := obj[camel]; ok {
 		return sqliteFieldValue(v)
+	}
+	if parts[0] != "" {
+		pascal := strings.ToUpper(parts[0][:1]) + parts[0][1:] + strings.Join(parts[1:], "")
+		if v, ok := obj[pascal]; ok {
+			return sqliteFieldValue(v)
+		}
 	}
 	return nil
 }

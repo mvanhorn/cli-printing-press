@@ -3024,18 +3024,23 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName strin
 		return "name"
 	}
 
-	// Tier 5: first scalar field appearing in the schema's required[] array,
-	// matched against properties in their schema-declared order. kin-openapi
-	// preserves YAML/JSON property order in MapKeys/Extensions but not via
-	// range over Properties (it's a Go map). Fall back to iterating the
-	// required[] slice itself: that order is stable and is what spec authors
+	// Tier 5: first plausible-PK scalar field appearing in the schema's
+	// required[] array, matched against properties in their schema-declared
+	// order. kin-openapi preserves YAML/JSON property order in MapKeys/Extensions
+	// but not via range over Properties (it's a Go map). Fall back to iterating
+	// the required[] slice itself: that order is stable and is what spec authors
 	// intend when they care about which field "wins."
+	//
+	// "Plausible-PK" excludes boolean, enum, and date/date-time fields even
+	// though they are scalar — they are structurally low-cardinality or
+	// non-identifier-shaped, so committing them as a runtime override
+	// collapses unrelated rows onto the same PK during upsert.
 	for _, fieldName := range itemSchema.Required {
 		propRef, ok := itemSchema.Properties[fieldName]
 		if !ok || propRef == nil || propRef.Value == nil {
 			continue
 		}
-		if isScalarSchema(propRef.Value) {
+		if isPlausibleIDFieldSchema(propRef.Value) {
 			return fieldName
 		}
 	}
@@ -3181,8 +3186,7 @@ func singleArrayProperty(schema *openapi3.Schema) *openapi3.Schema {
 
 // isScalarSchema reports whether the schema's type is a scalar — string,
 // integer, number, or boolean. Excludes objects, arrays, and refs that resolve
-// to either. Used by tier 4 of the IDField fallback chain to skip non-scalar
-// fields when picking a primary key.
+// to either.
 func isScalarSchema(schema *openapi3.Schema) bool {
 	if schema == nil || schema.Type == nil {
 		return false
@@ -3195,6 +3199,29 @@ func isScalarSchema(schema *openapi3.Schema) bool {
 		return true
 	}
 	return false
+}
+
+// isPlausibleIDFieldSchema is the tier-5 PK predicate: a scalar that is also
+// not boolean, not enum-restricted, and not date/date-time formatted. Booleans
+// have cardinality 2 (true/false), enums have hand-picked low cardinality, and
+// date/date-time fields are timestamps — none can serve as a primary key
+// without collapsing distinct rows during upsert. See profiler.resourceIDFieldOverrides
+// and store.UpsertBatch.
+func isPlausibleIDFieldSchema(schema *openapi3.Schema) bool {
+	if !isScalarSchema(schema) {
+		return false
+	}
+	if schema.Type.Includes(openapi3.TypeBoolean) {
+		return false
+	}
+	if len(schema.Enum) > 0 {
+		return false
+	}
+	format := strings.ToLower(schema.Format)
+	if format == "date" || format == "date-time" {
+		return false
+	}
+	return true
 }
 
 func mapTypes(doc *openapi3.T, out *spec.APISpec) {

@@ -3900,6 +3900,80 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
 `,
 			wantID: "",
 		},
+		{
+			// A required boolean must not be picked as the PK — booleans
+			// collapse N rows onto "true"/"false" during upsert.
+			name: "tier 5: boolean required field is skipped",
+			schemaYAML: `                  type: object
+                  required: [is_active, sku]
+                  properties:
+                    is_active: {type: boolean}
+                    sku: {type: string}
+`,
+			wantID: "sku",
+		},
+		{
+			// A required enum-restricted string must not be picked — enums
+			// have hand-picked low cardinality and collapse distinct rows onto
+			// the same PK during upsert.
+			name: "tier 5: enum-restricted string is skipped",
+			schemaYAML: `                  type: object
+                  required: [status, ticker]
+                  properties:
+                    status:
+                      type: string
+                      enum: [active, paused, closed]
+                    ticker: {type: string}
+`,
+			wantID: "ticker",
+		},
+		{
+			// A required date-time field must not be picked — timestamps are
+			// structurally non-identifier-shaped and often shared across
+			// batches of records.
+			name: "tier 5: date-time formatted field is skipped",
+			schemaYAML: `                  type: object
+                  required: [created_at, order_number]
+                  properties:
+                    created_at:
+                      type: string
+                      format: date-time
+                    order_number: {type: string}
+`,
+			wantID: "order_number",
+		},
+		{
+			// Date-only format must also be skipped — same uniqueness concern
+			// as date-time.
+			name: "tier 5: date-only formatted field is skipped",
+			schemaYAML: `                  type: object
+                  required: [delivery_date, tracking_code]
+                  properties:
+                    delivery_date:
+                      type: string
+                      format: date
+                    tracking_code: {type: string}
+`,
+			wantID: "tracking_code",
+		},
+		{
+			// All required fields are non-plausible-PK — empty result so
+			// templates fall through to runtime fallbacks instead of locking
+			// in a poison override.
+			name: "tier 5: empty when only boolean/enum/date-time required fields exist",
+			schemaYAML: `                  type: object
+                  required: [is_active, status, created_at]
+                  properties:
+                    is_active: {type: boolean}
+                    status:
+                      type: string
+                      enum: [active, paused]
+                    created_at:
+                      type: string
+                      format: date-time
+`,
+			wantID: "",
+		},
 	}
 
 	for _, tt := range tests {

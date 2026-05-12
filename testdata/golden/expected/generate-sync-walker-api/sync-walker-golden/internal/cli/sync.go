@@ -1262,7 +1262,14 @@ var resourceIDFieldOverrides = map[string]string{
 // annotations (x-resource-id), not this list.
 var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}
 
-var pageItemKeys = []string{"data", "results", "items", "records", "nodes", "entries"}
+// pageItemKeys is scanned in priority order; lowercase REST-convention keys
+// come first, PascalCase .NET variants second. Without the PascalCase row,
+// {"Items": [...]} envelopes fall through to the ambiguity scan and a
+// single-array sibling miscount silently truncates sync.
+var pageItemKeys = []string{
+	"data", "results", "items", "records", "nodes", "entries",
+	"Data", "Results", "Items", "Records", "Nodes", "Entries",
+}
 
 // criticalResources is the template-time projection of per-resource Critical
 // (set by the profiler from the spec's path-item x-critical extension). It
