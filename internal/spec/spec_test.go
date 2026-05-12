@@ -4032,7 +4032,11 @@ resources:
 		s, err := ParseBytes([]byte(input))
 		require.NoError(t, err)
 		ep := s.Resources["records"].Endpoints["remove"]
-		require.Len(t, ep.Params, 2, "id placeholder + cascade query stay in Params")
+		names := make([]string, len(ep.Params))
+		for i, p := range ep.Params {
+			names[i] = p.Name
+		}
+		assert.ElementsMatch(t, []string{"id", "cascade"}, names, "DELETE keeps the {id} placeholder enrichPathParams injected and the cascade query param")
 		assert.Empty(t, ep.Body, "DELETE keeps cascade as a query/flag, not body")
 	})
 
@@ -4058,5 +4062,77 @@ resources:
 		ep := s.Resources["channels"].SubResources["messages"].Endpoints["post"]
 		require.Len(t, ep.Body, 1)
 		assert.Equal(t, "text", ep.Body[0].Name)
+	})
+
+	t.Run("explicit empty body: [] opts out of promotion", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  pipelines:
+    description: Pipeline endpoints
+    endpoints:
+      trigger:
+        method: POST
+        path: /pipelines/trigger
+        description: Trigger a pipeline
+        params:
+          - name: dry_run
+            type: boolean
+        body: []
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["pipelines"].Endpoints["trigger"]
+		assert.True(t, ep.BodySet, "explicit `body: []` should set BodySet")
+		assert.Empty(t, ep.Body, "explicit empty body stays empty")
+		require.Len(t, ep.Params, 1, "params stay as query params when author opted out")
+		assert.Equal(t, "dry_run", ep.Params[0].Name)
+	})
+
+	t.Run("mixed params and explicit body leaves params as query strings", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  uploads:
+    description: Upload endpoints
+    endpoints:
+      create:
+        method: POST
+        path: /uploads
+        description: Create upload
+        params:
+          - name: idempotency_key
+            type: string
+        body:
+          - name: filename
+            type: string
+            required: true
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["uploads"].Endpoints["create"]
+		assert.True(t, ep.BodySet)
+		require.Len(t, ep.Params, 1, "idempotency_key stays as query/flag, not silently moved into body")
+		assert.Equal(t, "idempotency_key", ep.Params[0].Name)
+		require.Len(t, ep.Body, 1)
+		assert.Equal(t, "filename", ep.Body[0].Name)
+	})
+
+	t.Run("absent body key leaves BodySet false and triggers promotion", func(t *testing.T) {
+		t.Parallel()
+		input := header + `  notes:
+    description: Note endpoints
+    endpoints:
+      create:
+        method: POST
+        path: /notes
+        description: Create note
+        params:
+          - name: title
+            type: string
+            required: true
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		ep := s.Resources["notes"].Endpoints["create"]
+		assert.False(t, ep.BodySet, "no body key in source -> BodySet false")
+		require.Len(t, ep.Body, 1, "title was promoted to body")
+		assert.Equal(t, "title", ep.Body[0].Name)
 	})
 }
