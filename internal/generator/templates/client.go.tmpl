@@ -867,9 +867,15 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		// stdlibs always send it. Fingerprint-checking WAFs (Imperva, Akamai,
 		// Cloudflare bot-mode, DataDome) flag the absence as a bot signal
 		// and answer with empty-body 5xx, 403, or a challenge redirect
-		// depending on vendor and rule tier.
+		// depending on vendor and rule tier. The value is application/json
+		// rather than */* because strict-JSON APIs (Zendesk, Atlassian REST,
+		// Salesforce) return 415 on anything that isn't literally
+		// application/json; specs that need a different content type
+		// (vendor mediatypes, XML, HTML) declare it via RequiredHeaders or
+		// per-endpoint headerOverrides, both of which run before this
+		// if-empty default.
 		if req.Header.Get("Accept") == "" {
-			req.Header.Set("Accept", "*/*")
+			req.Header.Set("Accept", "application/json")
 		}
 {{- end}}
 
