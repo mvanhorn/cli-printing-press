@@ -3556,11 +3556,17 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, `envelope["success"] = false`)
 }
 
-// TestCompactListFieldsPreservesUnknownShapes pins the two contracts that
-// keep `--agent` / `--compact` from silently emitting {} for records that
-// don't match the canonical id/name/title allowlist: a per-item fallback
-// to the original item, and a wider scalar allowlist that covers
-// monetary, metric, locale, and identity-adjacent keys.
+// TestCompactListFieldsPreservesUnknownShapes pins the contracts that keep
+// `--agent` / `--compact` from silently emitting {} or partial-strip rows
+// for records that don't match the canonical id/name/title allowlist:
+//
+//  1. The static allow-list covers canonical scalars (price/fare/locale/code/...).
+//  2. A data-driven extension keeps any scalar key present in 80%+ of rows,
+//     so hand-written novel commands whose output keys aren't on the
+//     allow-list (object_name, match_key, snippet) survive projection.
+//  3. Verbose fields (description, body, ...) are excluded from the
+//     extension regardless of frequency.
+//  4. A per-item fallback preserves the original item when no key matches.
 //
 // Pinned at the template level because the helper renders into every
 // printed CLI's helpers.go and a per-fixture assertion would miss future
@@ -3574,7 +3580,7 @@ func TestCompactListFieldsPreservesUnknownShapes(t *testing.T) {
 	body := string(data)
 
 	assert.Contains(t, body, "if len(compact) == 0 {",
-		"compactListFields must preserve the original item when no allowlist keys match — otherwise records with domain-specific field names get reduced to {}")
+		"compactListFields must preserve the original item when no keep keys match — otherwise records with domain-specific field names get reduced to {}")
 	assert.Contains(t, body, "compact = item",
 		"compactListFields must assign the original item as the per-item fallback")
 
@@ -3587,6 +3593,19 @@ func TestCompactListFieldsPreservesUnknownShapes(t *testing.T) {
 		assert.Contains(t, body, key,
 			"compactListFields allowlist must include %s so canonical-schema records keep high-signal scalars across business/travel/commerce/locale APIs", key)
 	}
+
+	// Data-driven extension: pin the symbols that make the 80%-frequency
+	// rule fire. Without these, partial-strip silently drops novel-command
+	// fields whenever a row happens to also carry one allow-list key
+	// (e.g. {"id":"x","object_name":"users","match_key":"uuid"} -> {"id":"x"}).
+	assert.Contains(t, body, "keyCounts",
+		"compactListFields must count per-key occurrence so frequent novel-command keys survive")
+	assert.Contains(t, body, "isCompactScalar",
+		"compactListFields must filter the data-driven extension by scalar type so nested objects/arrays don't bloat --compact output")
+	assert.Contains(t, body, "compactVerboseFields",
+		"compactListFields must exclude description/body/content from the data-driven extension regardless of frequency")
+	assert.Contains(t, body, "threshold",
+		"compactListFields must compute a frequency threshold for the data-driven extension")
 }
 
 // The cursor param's "0" must survive paginatedGet's zero-value strip:
