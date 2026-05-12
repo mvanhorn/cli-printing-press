@@ -1,4 +1,6 @@
 ---
+title: "No-auth specs emitted dead token scaffolding in config.go and client.go"
+category: logic-errors
 module: internal/generator
 date: "2026-05-08"
 problem_type: logic_error
@@ -21,9 +23,11 @@ tags:
   - test-coverage
 ---
 
+# No-auth specs emitted dead token scaffolding in config.go and client.go
+
 ## Problem
 
-The Printing Press generator gates `auth.go` emission, the `root.go` `HasAuthCommand` registration, and the scorecard's `scoreAuth` exemption on `Generator.shouldEmitAuth()` (`internal/generator/generator.go:1808`). Two additional artifacts were never wired through the same gate: `config.go.tmpl` and `client.go.tmpl`.
+The Printing Press generator gates `auth.go` emission, the `root.go` `HasAuthCommand` registration, and the scorecard's `scoreAuth` exemption on `Generator.shouldEmitAuth()` (`internal/generator/generator.go:1898`). Two additional artifacts were never wired through the same gate: `config.go.tmpl` and `client.go.tmpl`.
 
 For any spec where `shouldEmitAuth()` returns false — `auth.type: "none"` AND no `AuthorizationURL` AND no `graphql_persisted_query` traffic-analysis hint — the generator emitted:
 
@@ -43,7 +47,7 @@ func (g *Generator) shouldEmitAuth() bool {
 }
 ```
 
-The predicate's doc comment enumerates the call sites that "must agree". Before PR #704, only three of the five did.
+The predicate's doc comment names the central auth-emission gate. Before PR #704, `auth.go`, `root.go`, and `scoreAuth` agreed on it, while `config.go.tmpl` and `client.go.tmpl` still emitted token scaffolding through separate template data.
 
 ## Symptoms
 
@@ -112,7 +116,7 @@ case "config.go.tmpl":
 
 ## Why This Works
 
-`Generator.shouldEmitAuth()` is the canonical predicate. Plumbing its return value into both template-data structs makes the templates gate on the exact same condition that gates `auth.go`. All five call sites enumerated in the predicate's doc comment now agree by construction.
+`Generator.shouldEmitAuth()` is the canonical predicate. Plumbing its return value into both template-data structs makes the templates gate on the exact same condition that gates `auth.go`, `root.go`, and `scoreAuth`.
 
 When `shouldEmitAuth()` is false, no token field, no token method, no refresh function, and no associated import reach the emitted CLI. When it is true, the full scaffolding emits as before. No caller in either branch is left without its callee.
 
@@ -152,7 +156,7 @@ runGoCommand(t, outputDir, "mod", "tidy")
 runGoCommand(t, outputDir, "build", "./...")
 ```
 
-Use the existing `runGoCommand` helper (`internal/generator/generator_test.go:981`); it auto-skips under `-short` so the unit lane stays fast and full CI catches the regression.
+Use the existing `runGoCommand` helper (`internal/generator/generator_test.go:1244`); it auto-skips under `-short` so the unit lane stays fast and full CI catches the regression.
 
 ## Related
 

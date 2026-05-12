@@ -8,7 +8,7 @@ problem_type: best_practice
 component: tooling
 symptoms:
   - "Developers modify scoring dimensions without understanding tier weighting, causing score drift"
-  - "New dimensions added without updating tier sum constants (120 for Tier 1, 50 for Tier 2)"
+  - "New dimensions added without updating tier sum constants (200 for Tier 1, 60 for Tier 2)"
   - "Pattern strings changed without verifying they match actual generated code output"
   - "File discovery helpers misused, causing double-counting or missed files"
 root_cause: inadequate_documentation
@@ -29,13 +29,13 @@ tags:
 
 ## Problem
 
-The Steinberger scorecard in `internal/pipeline/scorecard.go` is an 18-dimension scoring system with non-obvious conventions. Developers modifying scoring functions introduce bugs when they don't understand the system's implicit rules around units, ordering, file scope, and pattern matching limitations.
+The Steinberger scorecard in `internal/pipeline/scorecard.go` is a two-tier scoring system with non-obvious conventions. Developers modifying scoring functions introduce bugs when they don't understand the system's implicit rules around units, ordering, file scope, optional dimensions, and pattern matching limitations.
 
 ## Scoring Architecture
 
 ### Dimension structure
 
-**Tier 1 -- Infrastructure (12 dimensions, 0-10 each, 120 raw max):**
+**Tier 1 -- Infrastructure (20 dimensions, 0-10 each, 200 raw base max):**
 
 | Dimension | Max | Primary files checked |
 |-----------|-----|----------------------|
@@ -46,13 +46,21 @@ The Steinberger scorecard in `internal/pipeline/scorecard.go` is an 18-dimension
 | README | 10 | `README.md` |
 | Doctor | 10 | `doctor.go` |
 | AgentNative | 10 | `root.go`, `helpers.go`, command files |
+| MCPQuality | 10 | MCP server files and tool registration |
+| MCPDescriptionQuality | 10 | `tools-manifest.json` and MCP tool descriptions; optional |
+| MCPTokenEff | 10 | MCP surface sizing and token budget; optional |
+| MCPRemoteTransport | 10 | MCP transport support; optional |
+| MCPToolDesign | 10 | MCP tool grouping and intent design; optional |
+| MCPSurfaceStrategy | 10 | Large-surface MCP strategy; optional |
 | LocalCache | 10 | `client/client.go`, `store/store.go` |
+| CacheFreshness | 10 | cache invalidation and freshness strategy; optional |
 | Breadth | 10 | All CLI files (excludes `infraAllFiles`) |
 | Vision | 10 | `store/store.go`, `root.go`, vision-related files |
 | Workflows | 10 | All CLI files (excludes `infraCoreFiles`) |
 | Insight | 10 | All CLI files (excludes `infraCoreFiles`) |
+| AgentWorkflow | 10 | async jobs, profiles, delivery, feedback readiness |
 
-**Tier 2 -- Domain Correctness (6 dimensions, varying max, 50 raw max):**
+**Tier 2 -- Domain Correctness (7 dimensions, varying max, 60 raw base max):**
 
 | Dimension | Max | Primary files checked |
 |-----------|-----|----------------------|
@@ -62,16 +70,19 @@ The Steinberger scorecard in `internal/pipeline/scorecard.go` is an 18-dimension
 | SyncCorrectness | 10 | All CLI files |
 | TypeFidelity | 5 | Command files |
 | DeadCode | 5 | `root.go`, `helpers.go`, other CLI files |
+| LiveAPIVerification | 10 | live verify report; optional |
 
 ### Total formula
 
 ```
-tier1Normalized = (tier1Raw * 50) / 120   // scale 0-120 → 0-50
-tier2Normalized = (tier2Raw * 50) / 50    // scale 0-50  → 0-50
+tier1Max = scorecardTierMax(sc, 200, optionalTier1Dims...)
+tier2Max = scorecardTierMax(sc, 60, optionalTier2Dims...)
+tier1Normalized = (tier1Raw * 50) / tier1Max
+tier2Normalized = (tier2Raw * 50) / tier2Max
 Total = tier1Normalized + tier2Normalized  // 0-100
 ```
 
-Each tier contributes exactly 50 points max. If you add a Tier 1 dimension, update the `120` constant. If you add a Tier 2 dimension, update the `50` constant.
+Each tier contributes exactly 50 points max. If you add a Tier 1 dimension, update the `200` base constant in `recomputeScorecardTotals`. If you add a Tier 2 dimension, update the `60` base constant. If the new dimension can be unscored, add a `Dim*` constant and include it in the matching `scorecardTierMax` call.
 
 ### Unscored dimensions
 
@@ -88,9 +99,7 @@ type Scorecard struct {
 Render unscored dimensions as `N/A`, omit them from gap reports, and remove their max points from the denominator before normalizing the tier:
 
 ```go
-tier2Max := 50
-if sc.IsDimensionUnscored("path_validity") { tier2Max -= 10 }
-if sc.IsDimensionUnscored("auth_protocol") { tier2Max -= 10 }
+tier2Max := scorecardTierMax(sc, 60, DimLiveAPIVerification, DimPathValidity, DimAuthProtocol)
 tier2Normalized := (tier2Raw * 50) / tier2Max
 ```
 
@@ -211,7 +220,7 @@ Six prefixes appear in both workflow and insight lists: `stale`, `conflicts`, `s
 
 10. **For AuthProtocol, score runtime emission after using the spec to identify the contract.** OpenAPI `securitySchemes` can model one composed header protocol as multiple same-prefix `apiKey` headers. Expand only signing-style companions, preserve explicit OR alternatives, and verify each required header is assigned in the generated client.
 
-11. **Update tier constants when adding dimensions.** Tier 1 constant is `120` (12 x 10). Tier 2 constant is `50`. Both live in the `RunScorecard` function. If dimensions can become unscored, adjust the runtime denominator too.
+11. **Update tier constants when adding dimensions.** Tier 1 base is `200`; Tier 2 base is `60`. Both live in `recomputeScorecardTotals`. If dimensions can become unscored, add a dimension constant and thread it through `scorecardTierMax` so the runtime denominator changes with `UnscoredDimensions`.
 
 12. **Test every scoring function independently.** Each `score*()` function should have fixture-based tests covering: high score, low score, dimension-specific edge cases, and unscored/unknown states for evidence-dependent dimensions.
 
@@ -223,4 +232,4 @@ For detailed examples of bugs caused by violating these rules, see `docs/solutio
 - `docs/solutions/logic-errors/scorer-dogfood-composed-header-auth-and-example-continuations-2026-05-05.md` -- composed header-auth scoring and shell-style example-tokenizer bug fixes
 - `docs/plans/2026-03-25-feat-visionary-research-phase-plan.md` -- defines the Steinberger vision scoring and workflow/insight semantics
 - `docs/plans/2026-03-25-fix-scorecard-too-easy-real-quality-plan.md` -- predecessor plan that redesigned scoring from presence-only to quality-aware
-- `skills/printing-press/references/scorecard-patterns.md` -- **STALE**: documents only 9 of 18 dimensions, wrong total range, pre-broadening file assumptions. Needs full rewrite.
+- `skills/printing-press/references/scorecard-patterns.md` -- **STALE**: documents the older scorecard shape, wrong total range, and pre-broadening file assumptions. Needs full rewrite.
