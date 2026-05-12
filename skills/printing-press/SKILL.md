@@ -2981,7 +2981,7 @@ Invoke `/printing-press-polish <api>`. The polish skill runs another diagnostic-
 
 ### If "Done for now"
 
-End normally. The CLI is in `$PRESS_LIBRARY/<api>` and the user can run `/printing-press publish`, `/printing-press-polish`, or `/printing-press-retro` later.
+End normally. The CLI is in `$PRESS_LIBRARY/<api>` and the user can run `/printing-press-publish`, `/printing-press-polish`, or `/printing-press-retro` later.
 
 ### Hold-path menu
 
