@@ -1069,6 +1069,12 @@ func checkNamingConsistency(dir string) NamingCheckResult {
 	//   Use:  "get",                  -> "get"
 	//   Use:  "list [id]",            -> "list"
 	//   Use:  `query "<sql>"`,        -> "query"
+	//
+	// Deliberately not consolidated onto cobraUseLeafRe: the naming check
+	// only judges identifier-shaped verbs, so the capture class is tightened
+	// to [A-Za-z][A-Za-z0-9_-]* — anything broader would let a flag token
+	// or angle-bracket arg masquerade as a verb. Both regexes accept the
+	// same delimiters; only the capture differs.
 	useRe := regexp.MustCompile("(?m)Use:\\s*[\"`]([A-Za-z][A-Za-z0-9_-]*)")
 
 	// Extract long-form flag names from the common cobra registration
