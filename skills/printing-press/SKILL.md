@@ -2274,12 +2274,23 @@ Include:
 
 **MANDATORY. Do NOT proceed to Phase 4 until this gate passes.**
 
-Before moving to shipcheck, verify the build log against the absorb manifest:
+Before moving to shipcheck, verify the build log against the absorb manifest. Counting alone is not enough: a build that replaces an approved `keywords-data google-ads search-volume --auto-mode` with a self-contained wrapper `keywords volume` keeps the count right while shipping a different command than what Phase 1.5 approved. The gate must verify the **specific approved command path** for each transcendence row.
 
-1. Count the transcendence features in the Phase 1.5 manifest's transcendence table
-2. Count the transcendence commands actually built (present in `internal/cli/` and registered in `root.go`)
-3. If built < manifest count, **STOP**. List the missing features and build them before proceeding
+1. **Per-row Cobra resolution check.** Read every transcendence row from `$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`. For each row's `Command` value, strip flag tokens and quoted args to get the leaf command path (drop everything from the first `-` token onward; `bottleneck` stays `bottleneck`, `velocity --weeks 4` becomes `velocity`, `compare "LeBron" "Curry"` becomes `compare`, `keywords-data google-ads search-volume --auto-mode` becomes `keywords-data google-ads search-volume`). Then run:
+   ```bash
+   ./<api>-pp-cli <leaf path> --help
+   ```
+   Assert (a) exit code 0 AND (b) the help output's `Usage:` line ends with the leaf token, not a parent command's name. Cobra falls through to the parent's help when a subcommand is unknown — same exit 0, but `Usage: <parent> [command]` instead of `Usage: <parent> <leaf> [flags]`. A passing row's `Usage:` line ends with the leaf you asked for; a parent fall-through lists the leaf only under `Available Commands:`.
+2. **HALT on any miss.** If any approved row fails (a) or (b), STOP. Either build the approved command path now, or return to Phase 1.5 with a revised manifest for explicit re-approval per the existing "no mid-build downgrade" rule. Do not invent a wrapper command and silently update the manifest. Do not classify the feature as "documentation-only" because integration touches many files.
+3. **Deterministic backstop.** After the per-row walk, run the same machine-checked equivalent so a manifest-vs-`research.json` drift cannot mask a miss:
+   ```bash
+   printing-press dogfood --dir "$CLI_WORK_DIR" --research-dir "$API_RUN_DIR" --json \
+     | jq -e '.novel_features_check | (.skipped == true) or (.found == .planned and (.missing // []) == [])'
+   ```
+   The `novel_features_check` block reports planned/found/missing against `research.json`'s `novel_features`; an exit-0 here plus a clean per-row walk means both sources agree the build matches Phase 1.5 approval. If `dogfood` reports missing features that the manifest still lists, either `research.json` was edited mid-build (re-derive it from the manifest per Step 1.5e) or the build is genuinely incomplete (return to step 1).
 4. **Test presence for pure-logic novel packages.** Every Go package you created under `internal/` for novel-feature logic (parsers, matchers, scalers, scrapers — anything that isn't command wiring) must have a `_test.go` with at least one table-driven happy-path test per exported function. `printing-press dogfood` surfaces violations as structural issues: pure-logic packages with zero tests fail shipcheck; packages with fewer than 3 test functions are flagged as warnings for Phase 4.85's agentic review. Trivial placeholder tests pass the file-presence check but are the wrong shape — write real assertions or the review catches you.
+
+The check is structural — no judgment about whether each command does "enough." Behavioral correctness remains dogfood's and scorecard's job in Phase 4.
 
 The generator handles Priority 0 (data layer) and most of Priority 1 (absorbed API endpoints). Priority 2 (transcendence) is always hand-built — the generator does not produce these. If you skip Priority 2, the CLI ships without the features that differentiate it from every other tool.
 
