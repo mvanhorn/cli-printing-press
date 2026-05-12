@@ -984,8 +984,8 @@ func (s *Store) Search{{pascal .Name}}(query string, limit int) ([]json.RawMessa
 	}
 	rows, err := s.db.Query(
 		`SELECT t.data FROM {{safeName .Name}} t
-		 JOIN {{.Name}}_fts ON {{.Name}}_fts.rowid = t.rowid
-		 WHERE {{.Name}}_fts MATCH ?
+		 JOIN {{safeNameSuffix .Name "_fts"}} ON {{safeNameSuffix .Name "_fts"}}.rowid = t.rowid
+		 WHERE {{safeNameSuffix .Name "_fts"}} MATCH ?
 		 ORDER BY rank LIMIT ?`,
 		query, limit,
 	)
