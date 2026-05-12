@@ -2624,7 +2624,9 @@ Surface to the user only when the fix requires a real tradeoff they have to make
 
 Treat agent judgment as sufficient here — these categories are distinguishable on inspection. Conservatism is the failure mode, not over-fixing. Drafting an AskUserQuestion because "the user might want to know" is premature; fix the issue and note it in the shipcheck report.
 
-Re-run the native review after each autofix round until findings clear. Cap at 3 rounds; if findings persist after round 3, stop and surface — autofix is not converging.
+Re-run the native review after each autofix round until findings clear. Cap at 3 rounds; if findings persist after round 3, stop and surface — autofix is not converging. Findings in out-of-scope paths (`internal/cliutil/`, `internal/mcp/cobratree/`) file as retro-candidates and do not count toward the convergence check or the 3-round cap; the convergence check applies only to in-scope findings.
+
+**Findings artifact.** Log all review activity to `manuscripts/<api>/<run>/proofs/phase-4.95-findings.md`: each finding's file:line, severity, autofix outcome (fixed in-place / surfaced to user / filed as retro-candidate), and the corresponding fix commit or rationale. The shipcheck report references this file for the autofix summary; the retro skill scans it for template-shape candidates worth filing against the machine.
 
 **Rollout posture.** Unlike Phase 4.85, this phase starts without a warnings-only calibration period. The native review tools (`/review` in Claude Code, Codex's built-in review) are mature, well-understood surfaces — calibration risk is low. The 3-round autofix cap is the safety net for runaway findings, and the template-shape escape hatch routes systemic issues to retro instead of patching in place.
 
