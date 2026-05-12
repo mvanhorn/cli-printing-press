@@ -357,3 +357,12 @@ jobs:
           fi
 
           echo "All generated compile shards passed."
+
+  skill-docs:
+    name: skill-docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Compatibility check
+        run: |
+          echo "Skill docs validation runs inside go-lint."
