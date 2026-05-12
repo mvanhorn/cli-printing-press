@@ -759,8 +759,15 @@ func compactListFields(items []map[string]any) json.RawMessage {
 				keyCounts[k]++
 			}
 		}
-		// ceil(len(items) * 0.8) without importing math
+		// ceil(len(items) * 0.8) without importing math. Capped at len-1 for
+		// len >= 2 so a single missing row cannot veto a key on small lists
+		// (without the cap, ceil(0.8*n) == n for n in {2,3,4}, which silently
+		// reintroduces the partial-strip bug whenever a heterogeneous 2-4 row
+		// response mixes one allow-list key with novel keys).
 		threshold := (len(items)*4 + 4) / 5
+		if len(items) >= 2 && threshold > len(items)-1 {
+			threshold = len(items) - 1
+		}
 		for k, count := range keyCounts {
 			if count >= threshold {
 				keepFields[k] = true
