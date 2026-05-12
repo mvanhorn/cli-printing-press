@@ -711,7 +711,7 @@ func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField st
 			fmt.Fprintf(os.Stderr, `{"event":"truncated","hint":"pass --all to fetch every page"}`+"\n")
 		}
 		return
-		return
+	}
 	}
 	if humanFriendly {
 		fmt.Fprintf(os.Stderr, "warning: results truncated; more pages available.\n")
