@@ -1,6 +1,6 @@
 # Setup Checks
 
-Post-contract checks the skill must run after executing the bash setup contract block in `SKILL.md`. These handle four signals the contract emits to stdout: `[setup-error]`, `[repo-upgrade-available]`, `[upgrade-available]`, and the `min-binary-version` compatibility check.
+Post-contract checks the skill must run after executing the bash setup contract block in `SKILL.md`. These handle five signals the contract emits to stdout: `[setup-error]`, `[repo-upgrade-available]`, `[upgrade-available]`, `[browser-tools-missing]`, and the `min-binary-version` compatibility check.
 
 Apply these in order. Each section is conditional — do nothing if its trigger isn't present.
 
@@ -105,3 +105,57 @@ These two commands update skill files that live outside the repo; they only take
 If the upgrade command fails (network error, auth error, etc.), surface the failure to the user and continue with the current binary — do not block the run on a failed upgrade. The user can re-run later.
 
 If no `[upgrade-available]` line was emitted, skip this section entirely.
+
+## 5. Interactive browser-sniff backend install prompt
+
+If the setup contract output contains a line starting with `[browser-tools-missing]`, parse the follow-up lines:
+
+- `PRESS_BROWSER_USE_MISSING=<true|false>`
+- `PRESS_AGENT_BROWSER_MISSING=<true|false>`
+
+Then ask the user via `AskUserQuestion` before continuing setup. The prompt fires every run when either tool is missing — there is no decline cache. Re-prompting is intentional: browser-use and agent-browser are the preferred Phase 1.7 backends, and mid-flight install gates during generation are more disruptive than one short preflight prompt.
+
+- **question:** `"browser-use and/or agent-browser are not installed. These are the preferred Phase 1.7 browser-sniff backends — broadly useful for future runs and avoids mid-flight install prompts. (chrome-MCP is a narrow-case fallback, not a substitute.) Install now?"`
+- **header:** `"Browser-sniff backends"`
+- **multiSelect:** `false`
+- **options:** compose based on which are missing — see below.
+
+**Option composition.**
+
+- Both missing → (1) **Install both** (Recommended), (2) **Install browser-use only**, (3) **Install agent-browser only**, (4) **Skip for this run**.
+- Only `browser-use` missing → (1) **Install browser-use** (Recommended), (2) **Skip for this run**.
+- Only `agent-browser` missing → (1) **Install agent-browser** (Recommended), (2) **Skip for this run**.
+
+**Install commands.**
+
+For `browser-use`:
+
+```bash
+if command -v uv >/dev/null 2>&1; then
+  uv pip install browser-use
+elif command -v pip >/dev/null 2>&1; then
+  pip install browser-use
+else
+  echo "Neither uv nor pip found. Install Python first: https://www.python.org/downloads/"
+fi
+```
+
+For `agent-browser`:
+
+```bash
+if command -v brew >/dev/null 2>&1; then
+  brew install agent-browser
+elif command -v npm >/dev/null 2>&1; then
+  npm install -g agent-browser
+else
+  echo "Neither brew nor npm found. Install Node.js first: https://nodejs.org/"
+fi
+```
+
+After install, verify with `command -v <tool>` and confirm to the user: `"Installed <tool>."` **Continue this current setup run with the newly available tools — do not stop, do not skip the remaining checks (min-binary-version compatibility, etc.).**
+
+If an install command fails (no Python, no Node.js, network error), surface the failure to the user and continue without the missing backend. Do not block the run on a failed install — runs using vendor specs, `--spec`, or `--har` do not need these tools, and the lazy Step 1b prompt in `browser-sniff-capture.md` remains as a fallback if browser-sniff is later invoked.
+
+If the user picks **Skip for this run**, continue without prompting further this run. The decision is not cached — the prompt re-fires on the next run if the tool is still missing.
+
+If no `[browser-tools-missing]` line was emitted, skip this section entirely.
