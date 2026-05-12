@@ -1101,15 +1101,18 @@ func finalizeLiveDogfoodReport(report *LiveDogfoodReport) {
 }
 
 func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodReport) error {
-	manifest, err := ReadCLIManifest(opts.CLIDir)
-	if err != nil {
+	// Manifest read is best-effort: dogfood --write-acceptance runs before
+	// `lock promote` writes the published manifest, so the file may not exist
+	// yet. When it does (e.g., rerunning dogfood after a prior promote),
+	// enrich the marker with identity fields and auth_type; otherwise emit a
+	// marker with whatever the dogfood run already knows about itself. The
+	// downstream phase5 gate cross-checks identity only when both marker and
+	// manifest carry the field, so empty identity remains consistent.
+	var manifest CLIManifest
+	if existing, err := ReadCLIManifest(opts.CLIDir); err == nil {
+		manifest = existing
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("reading CLI manifest for phase5 acceptance: %w", err)
-	}
-	if manifest.APIName == "" {
-		return fmt.Errorf("CLI manifest missing api_name; cannot write phase5 acceptance")
-	}
-	if manifest.RunID == "" {
-		return fmt.Errorf("CLI manifest missing run_id; cannot write phase5 acceptance")
 	}
 	authType := manifest.AuthType
 	if authType == "" {

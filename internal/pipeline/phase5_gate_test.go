@@ -357,7 +357,11 @@ func TestValidatePhase5Gate_SkipCannotOverrideManifestAuthType(t *testing.T) {
 	assert.Contains(t, result.Detail, "does not match")
 }
 
-func TestValidatePhase5Gate_PassMarkerRequiresIdentityAndTestCount(t *testing.T) {
+func TestValidatePhase5Gate_PassMarkerAllowsMissingIdentity(t *testing.T) {
+	// dogfood --write-acceptance can run before `lock promote` writes the
+	// manifest, in which case the marker has no api_name/run_id to copy.
+	// The marker still validates because cross-check identity enforcement
+	// happens only when both sides carry the field.
 	proofsDir := t.TempDir()
 	manifest := CLIManifest{APIName: "test", CLIName: "test-pp-cli", RunID: "run-1", AuthType: "none"}
 	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
@@ -370,8 +374,30 @@ func TestValidatePhase5Gate_PassMarkerRequiresIdentityAndTestCount(t *testing.T)
 	})
 
 	result := ValidatePhase5Gate(proofsDir, manifest)
+	require.True(t, result.Passed, result.Detail)
+	assert.Equal(t, "pass", result.Status)
+}
+
+func TestValidatePhase5Gate_PassMarkerCrossChecksIdentityWhenPresent(t *testing.T) {
+	// When the marker does carry identity, mismatches against the manifest
+	// must still be rejected — this is what prevents stale markers from a
+	// prior run leaking into a fresh promote.
+	proofsDir := t.TempDir()
+	manifest := CLIManifest{APIName: "stripe", CLIName: "stripe-pp-cli", RunID: "run-1", AuthType: "none"}
+	writePhase5GateMarker(t, proofsDir, Phase5AcceptanceFilename, Phase5GateMarker{
+		SchemaVersion: 1,
+		APIName:       "notion",
+		RunID:         "run-1",
+		Status:        "pass",
+		Level:         "full",
+		MatrixSize:    1,
+		TestsPassed:   1,
+		AuthContext:   Phase5AuthContext{Type: "none"},
+	})
+
+	result := ValidatePhase5Gate(proofsDir, manifest)
 	require.False(t, result.Passed)
-	assert.Contains(t, result.Detail, "api_name")
+	assert.Contains(t, result.Detail, "does not match")
 }
 
 func TestValidatePhase5Gate_SkipMarkerRequiresIdentity(t *testing.T) {

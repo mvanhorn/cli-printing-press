@@ -142,11 +142,12 @@ func validatePhase5Marker(marker Phase5GateMarker, manifest CLIManifest, skipFil
 }
 
 func validatePhase5PassMarker(marker Phase5GateMarker) string {
+	// api_name and run_id are identity tags: the cross-check in
+	// validatePhase5Marker enforces consistency when both marker and
+	// manifest carry them, so requiring them here would reject markers
+	// written before the manifest exists (e.g., dogfood --write-acceptance
+	// run prior to `lock promote`).
 	switch {
-	case strings.TrimSpace(marker.APIName) == "":
-		return "phase5 acceptance marker missing api_name"
-	case strings.TrimSpace(marker.RunID) == "":
-		return "phase5 acceptance marker missing run_id"
 	case phase5Level(marker) == "":
 		return "phase5 acceptance marker missing level"
 	case marker.MatrixSize <= 0:

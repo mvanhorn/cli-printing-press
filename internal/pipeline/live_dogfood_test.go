@@ -246,23 +246,45 @@ func TestRunLiveDogfoodExplicitBinaryNameMustExist(t *testing.T) {
 	assert.Contains(t, err.Error(), "missing-pp-cli")
 }
 
-func TestRunLiveDogfoodAcceptanceRequiresManifestIdentity(t *testing.T) {
+func TestRunLiveDogfoodAcceptanceWithoutManifestEmitsMarker(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
 
+	// Phase 5 dogfood runs before `lock promote` writes the manifest. With
+	// no .printing-press.json on disk, --write-acceptance must still emit a
+	// marker carrying the dogfood run's own data; the gate cross-check in
+	// validatePhase5Marker handles identity once a manifest appears.
 	dir, binaryName := writeLiveDogfoodFixture(t, true)
 	require.NoError(t, os.Remove(filepath.Join(dir, CLIManifestFilename)))
 
-	_, err := RunLiveDogfood(LiveDogfoodOptions{
+	markerPath := filepath.Join(t.TempDir(), Phase5AcceptanceFilename)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
 		CLIDir:              dir,
 		BinaryName:          binaryName,
 		Level:               "full",
 		Timeout:             2 * time.Second,
-		WriteAcceptancePath: filepath.Join(t.TempDir(), Phase5AcceptanceFilename),
+		WriteAcceptancePath: markerPath,
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "CLI manifest")
+	require.NoError(t, err)
+	require.Equal(t, "PASS", report.Verdict, report.Tests)
+
+	data, err := os.ReadFile(markerPath)
+	require.NoError(t, err)
+	var marker Phase5GateMarker
+	require.NoError(t, json.Unmarshal(data, &marker))
+	assert.Equal(t, "pass", marker.Status)
+	assert.Equal(t, "full", marker.Level)
+	assert.Equal(t, report.MatrixSize, marker.MatrixSize)
+	assert.Equal(t, report.Passed, marker.TestsPassed)
+	assert.Empty(t, marker.APIName, "marker should not invent identity when manifest is absent")
+	assert.Empty(t, marker.RunID, "marker should not invent identity when manifest is absent")
+	assert.Equal(t, "none", marker.AuthContext.Type)
+
+	// Validation still passes because the cross-check is skipped when the
+	// marker omits identity fields.
+	validation := ValidatePhase5Gate(filepath.Dir(markerPath), CLIManifest{APIName: "fixture", RunID: "run-x", AuthType: "none"})
+	assert.True(t, validation.Passed, validation.Detail)
 }
 
 // TestFinalizeLiveDogfoodReportVerdictGate exercises the quick-level verdict
