@@ -73,7 +73,7 @@ Constraints on the call site:
 
 - Only fire on `resp.StatusCode < 400` — 4xx/5xx didn't mutate state.
 - Only fire when `method != http.MethodGet`.
-- Skip on dry-run paths (`!c.DryRun`) and inside the retry loop (only the final success).
+- Skip on dry-run paths (`c.DryRun`) and inside the retry loop (only the final success).
 - Best-effort: ignore the `RemoveAll` error so a cache-clear failure does not fail the surrounding successful mutation.
 
 ### Discarded alternative — selective invalidation by resource family
