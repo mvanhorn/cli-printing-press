@@ -300,7 +300,7 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	homeDir, _ := os.UserHomeDir()
-	cacheDir := filepath.Join(homeDir, ".cache", "{{.Name}}-pp-cli")
+	cacheDir := filepath.Join(homeDir, ".cache", "{{.Name}}-pp-cli", "http")
 {{- if eq .Auth.Type "session_handshake"}}
 	sess := newSessionManager(timeout)
 	httpClient := newHTTPClient(timeout, sess.CookieJar())

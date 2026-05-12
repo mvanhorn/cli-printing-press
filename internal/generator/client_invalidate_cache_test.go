@@ -61,3 +61,31 @@ func TestGenerateEmitsInvalidateCacheSymmetry(t *testing.T) {
 	assert.Contains(t, clientGo, "func (c *Client) writeCache(",
 		"client.go must still define writeCache; symmetry presupposes both")
 }
+
+// TestGenerateCacheDirIsHTTPSubdir guards #1126: cacheDir must point at
+// ~/.cache/<api>/http (not ~/.cache/<api>) so that invalidateCache's
+// os.RemoveAll only wipes the HTTP cache and leaves sibling state files
+// (SQLite mirrors, FTS5 stores, watchlists) intact.
+func TestGenerateCacheDirIsHTTPSubdir(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "stytch.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	clientGoBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientGo := string(clientGoBytes)
+
+	cliName := naming.CLI(apiSpec.Name)
+	wantSubdir := `filepath.Join(homeDir, ".cache", "` + cliName + `", "http")`
+	wantOldShape := `filepath.Join(homeDir, ".cache", "` + cliName + `")`
+
+	assert.Contains(t, clientGo, wantSubdir,
+		"client.go must place cacheDir under <api>/http so invalidateCache spares siblings (#1126)")
+	assert.NotContains(t, clientGo, wantOldShape,
+		"client.go must not point cacheDir at the bare ~/.cache/<api>/ root (#1126)")
+}
