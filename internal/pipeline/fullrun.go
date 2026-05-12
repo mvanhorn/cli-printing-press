@@ -3,8 +3,6 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +12,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/llmpolish"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"gopkg.in/yaml.v3"
 )
 
@@ -318,18 +317,7 @@ func copySpecToOutput(specFlag, specURL, outputDir string) error {
 
 // readSpecBytes fetches spec content from a URL or reads it from a local file.
 func readSpecBytes(specURL string) ([]byte, error) {
-	if strings.HasPrefix(specURL, "http://") || strings.HasPrefix(specURL, "https://") {
-		resp, err := http.Get(specURL) //nolint:gosec // spec URLs are operator-provided
-		if err != nil {
-			return nil, err
-		}
-		defer func() { _ = resp.Body.Close() }()
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("HTTP %d fetching %s", resp.StatusCode, specURL)
-		}
-		return io.ReadAll(resp.Body)
-	}
-	return os.ReadFile(specURL)
+	return openapi.LoadSpecBytes(specURL, false, false)
 }
 
 // ensureJSON converts YAML content to JSON. If the input is already valid

@@ -11,7 +11,7 @@ import (
 
 // TestRejectIfNotSpec covers issue #275 F-5's content-validity heuristic.
 // A stale catalog spec_url returns "404: Not Found" or an HTML error page;
-// the existing fetchOrCacheSpec status check catches HTTP-level errors, but
+// the existing openapi.FetchOrCacheSpec status check catches HTTP-level errors, but
 // any path that hands a downloaded body to readSpec without that gate (a
 // user feeding a curl-saved 404 dump as --spec, a stale cache entry, an
 // upstream proxy that masks status codes) bypasses it. rejectIfNotSpec
