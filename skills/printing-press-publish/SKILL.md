@@ -887,6 +887,20 @@ rm -f "$PR_BODY_FILE"
 
 Display the full PR URL (e.g., `https://github.com/mvanhorn/printing-press-library/pull/10`), not the shorthand `org/repo#N` format. The full URL is clickable in all terminals and contexts.
 
+## After the PR opens
+
+Once the PR is open, it enters the public library repo's review contract. That contract is owned by [`mvanhorn/printing-press-library` AGENTS.md → "Automated code review with Greptile"](https://github.com/mvanhorn/printing-press-library/blob/main/AGENTS.md#automated-code-review-with-greptile); read it for the canonical version. An agent invoking this skill from `cli-printing-press` will not have loaded the library's AGENTS.md, so the obligations are summarized here:
+
+- **Resolve every Greptile finding.** Read findings from two surfaces — they don't overlap:
+  - `gh pr view <PR> --repo <owner>/<repo> --comments` returns the top-level issue conversation (Greptile's summary comment, score, CI bots).
+  - `gh api repos/<owner>/<repo>/pulls/<PR>/comments` returns the inline diff-anchored review comments — Greptile posts each P0/P1/P2 finding here, **and these are NOT included in `--comments`**. Skipping this call is how an agent silently declares "all findings resolved" while every inline thread is still open.
+
+  For each P0/P1/P2 thread, either push a fix or reply with a concrete reason it shouldn't fire — not "won't fix", but *why* the code is right as written or *why* deferral is justified. The 0-5 score is a confidence signal, not a hard gate; 4/5 and 5/5 are both acceptable end states, and the score will land in that range naturally once threads are addressed.
+- **All CI checks must pass.** `verify-library-conventions`, `Govulncheck`, and any other workflow on the PR must be green before merge.
+- **Don't merge with unresolved threads** even when CI is green and the score looks good.
+- **Don't hand-edit `registry.json` or `cli-skills/pp-<api-slug>/SKILL.md` to satisfy a finding** — both are bot-regenerated post-merge by `[skip ci]` commits and your edits will be overwritten.
+- **Hand off once review-ready.** When all threads are resolved or replied to and CI is green, stop and tell the user. Don't loop polling for the merge; the user owns that decision.
+
 ## Secret & PII Protection
 
 Before creating the PR, verify that no secrets leaked into the packaged CLI.
