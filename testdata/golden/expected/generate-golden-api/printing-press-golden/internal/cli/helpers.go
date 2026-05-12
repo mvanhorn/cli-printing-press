@@ -507,7 +507,7 @@ func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField st
 	// endpoints have no cursor to set on the next page, so the --all loop
 	// re-fetches the same response forever. Don't advertise an escape
 	// hatch that doesn't work for this topology.
-	if nextCursorPath != "" {
+	if nextCursor != "" {
 		if humanFriendly {
 			fmt.Fprintf(os.Stderr, "warning: results truncated; more pages available. Re-run with --all to fetch every page.\n")
 		} else {

@@ -712,7 +712,6 @@ func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField st
 		}
 		return
 	}
-	}
 	if humanFriendly {
 		fmt.Fprintf(os.Stderr, "warning: results truncated; more pages available.\n")
 	} else {
