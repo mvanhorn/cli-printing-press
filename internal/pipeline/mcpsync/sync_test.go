@@ -1230,3 +1230,218 @@ func TestSyncFallsThroughToRegistryDisplayName(t *testing.T) {
 	require.NoError(t, json.Unmarshal(provData, &prov))
 	assert.Equal(t, "TestBrand!", prov.DisplayName)
 }
+
+// TestApplyManifestNameOverrideReplacesParsedName locks the contract
+// that the manifest's api_name outranks the spec-derived slug and the
+// spec-shaped Config.Path migrates alongside parsed.Name so downstream
+// emitters (mcp_binary, tools-manifest api_name, cmd/<slug>-pp-{cli,mcp}/,
+// README config path) all follow the manifest.
+func TestApplyManifestNameOverrideReplacesParsedName(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "telegram-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	require.NoError(t, pipeline.WriteCLIManifest(cliDir, pipeline.CLIManifest{
+		APIName: "telegram",
+		CLIName: "telegram-pp-cli",
+	}))
+
+	parsed := &spec.APISpec{
+		Name: "telegram-bot",
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/telegram-bot-pp-cli/config.toml",
+		},
+	}
+	prior := applyManifestNameOverride(cliDir, parsed)
+	assert.Equal(t, "telegram-bot", prior, "should report the prior spec-derived slug")
+	assert.Equal(t, "telegram", parsed.Name, "parsed.Name should adopt the manifest's api_name")
+	assert.Equal(t, "~/.config/telegram-pp-cli/config.toml", parsed.Config.Path,
+		"spec-derived Config.Path must follow the override so README's Config file: line tracks the binary")
+}
+
+// TestApplyManifestNameOverrideNoOpWhenManifestAgrees — most CLIs are
+// already aligned (manifest api_name matches spec-derived slug). The
+// override must be a no-op so it doesn't churn unrelated state.
+func TestApplyManifestNameOverrideNoOpWhenManifestAgrees(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "producthunt-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	require.NoError(t, pipeline.WriteCLIManifest(cliDir, pipeline.CLIManifest{
+		APIName: "producthunt",
+		CLIName: "producthunt-pp-cli",
+	}))
+
+	parsed := &spec.APISpec{
+		Name: "producthunt",
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/producthunt-pp-cli/config.toml",
+		},
+	}
+	prior := applyManifestNameOverride(cliDir, parsed)
+	assert.Equal(t, "", prior, "agreement should report no override")
+	assert.Equal(t, "producthunt", parsed.Name)
+	assert.Equal(t, "~/.config/producthunt-pp-cli/config.toml", parsed.Config.Path)
+}
+
+// TestApplyManifestNameOverrideMissingManifest — older library CLIs
+// predate .printing-press.json. The override must fall through silently
+// so the legacy reconcileSpecNameWithDir path stays in charge.
+func TestApplyManifestNameOverrideMissingManifest(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "legacy-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+
+	parsed := &spec.APISpec{
+		Name: "legacy-api",
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/legacy-api-pp-cli/config.toml",
+		},
+	}
+	prior := applyManifestNameOverride(cliDir, parsed)
+	assert.Equal(t, "", prior, "missing manifest should report no override")
+	assert.Equal(t, "legacy-api", parsed.Name, "parsed.Name must be untouched when manifest is absent")
+	assert.Equal(t, "~/.config/legacy-api-pp-cli/config.toml", parsed.Config.Path)
+}
+
+// TestApplyManifestNameOverrideEmptyAPIName — a malformed manifest with
+// no api_name (corrupted, partial write) must not clobber parsed.Name
+// with the empty string.
+func TestApplyManifestNameOverrideEmptyAPIName(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "partial-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	require.NoError(t, pipeline.WriteCLIManifest(cliDir, pipeline.CLIManifest{
+		// APIName intentionally empty — simulates a partially-written manifest.
+		CLIName: "partial-pp-cli",
+	}))
+
+	parsed := &spec.APISpec{Name: "partial-api"}
+	prior := applyManifestNameOverride(cliDir, parsed)
+	assert.Equal(t, "", prior)
+	assert.Equal(t, "partial-api", parsed.Name, "empty api_name must not override")
+}
+
+// TestApplyManifestNameOverridePreservesCustomConfigPath — when an
+// operator hand-customized Config.Path (e.g., per-environment paths,
+// XDG_CONFIG_HOME-style overrides), the override must not rewrite it.
+// Only the spec-derived shape `~/.config/<old>-pp-cli/config.toml` is
+// migrated; everything else is preserved.
+func TestApplyManifestNameOverridePreservesCustomConfigPath(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "telegram-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	require.NoError(t, pipeline.WriteCLIManifest(cliDir, pipeline.CLIManifest{
+		APIName: "telegram",
+		CLIName: "telegram-pp-cli",
+	}))
+
+	parsed := &spec.APISpec{
+		Name: "telegram-bot",
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "$XDG_CONFIG_HOME/telegram/config.toml",
+		},
+	}
+	prior := applyManifestNameOverride(cliDir, parsed)
+	assert.Equal(t, "telegram-bot", prior)
+	assert.Equal(t, "telegram", parsed.Name)
+	assert.Equal(t, "$XDG_CONFIG_HOME/telegram/config.toml", parsed.Config.Path,
+		"hand-customized Config.Path must not be rewritten by the override")
+}
+
+// TestSyncManifestAPINameWinsOverSpecDerivedSlug is the end-to-end
+// integration: generate a CLI under a "telegram-pp-cli/" directory,
+// then rewrite spec.yaml so the parsed slug diverges. Asserts that
+// every name-bearing surface (.printing-press.json, tools-manifest.json,
+// manifest.json, cmd/ directories) keeps tracking the manifest's
+// api_name instead of regenerating against the spec-derived slug.
+func TestSyncManifestAPINameWinsOverSpecDerivedSlug(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "telegram",
+		Version: "0.1.0",
+		BaseURL: "https://api.telegram.org",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"TELEGRAM_TOKEN"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/telegram-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"messages": {
+				Description: "Send messages",
+				Endpoints: map[string]spec.Endpoint{
+					"send": {Method: "POST", Path: "/messages", Description: "Send a message"},
+				},
+			},
+		},
+	}
+	cliDir := filepath.Join(t.TempDir(), "telegram-pp-cli")
+	gen := generator.New(apiSpec, cliDir)
+	require.NoError(t, gen.Generate())
+	require.NoError(t, pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
+		APIName:   apiSpec.Name,
+		OutputDir: cliDir,
+		Spec:      apiSpec,
+	}))
+
+	// Rewrite spec.yaml so the archived spec slug diverges from the
+	// manifest api_name — the shape loadArchivedSpec produces when
+	// info.title's slug differs from the chosen --name.
+	driftedSpec := *apiSpec
+	driftedSpec.Name = "telegram-bot"
+	driftedSpec.Config.Path = "~/.config/telegram-bot-pp-cli/config.toml"
+	specData, err := yaml.Marshal(&driftedSpec)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "spec.yaml"), specData, 0o644))
+
+	result, err := Sync(cliDir, Options{Force: true})
+	require.NoError(t, err)
+	assert.True(t, result.Changed)
+
+	// .printing-press.json's mcp_binary must keep tracking the manifest
+	// api_name, not the spec-derived "telegram-bot" slug.
+	provData, err := os.ReadFile(filepath.Join(cliDir, pipeline.CLIManifestFilename))
+	require.NoError(t, err)
+	var prov pipeline.CLIManifest
+	require.NoError(t, json.Unmarshal(provData, &prov))
+	assert.Equal(t, "telegram", prov.APIName, "api_name must hold the manifest-authoritative slug")
+	assert.Equal(t, "telegram-pp-mcp", prov.MCPBinary, "mcp_binary must derive from manifest api_name, not spec title")
+
+	// tools-manifest.json's api_name must follow the same source of truth.
+	toolsData, err := os.ReadFile(filepath.Join(cliDir, pipeline.ToolsManifestFilename))
+	require.NoError(t, err)
+	var tools struct {
+		APIName string `json:"api_name"`
+	}
+	require.NoError(t, json.Unmarshal(toolsData, &tools))
+	assert.Equal(t, "telegram", tools.APIName, "tools-manifest api_name must hold the manifest-authoritative slug")
+
+	// The MCPB manifest's name/entry_point must point at the actual
+	// built binary "telegram-pp-mcp", not "telegram-bot-pp-mcp".
+	manifestData, err := os.ReadFile(filepath.Join(cliDir, pipeline.MCPBManifestFilename))
+	require.NoError(t, err)
+	var manifest struct {
+		Name   string `json:"name"`
+		Server struct {
+			EntryPoint string `json:"entry_point"`
+		} `json:"server"`
+	}
+	require.NoError(t, json.Unmarshal(manifestData, &manifest))
+	assert.Equal(t, "telegram-pp-mcp", manifest.Name, "MCPB manifest name must derive from manifest api_name")
+	assert.Equal(t, "bin/telegram-pp-mcp", manifest.Server.EntryPoint, "entry_point must derive from manifest api_name, not spec title")
+
+	// No stray cmd/telegram-bot-pp-{cli,mcp}/ directories should have
+	// been created by GenerateMCPSurface.
+	_, err = os.Stat(filepath.Join(cliDir, "cmd", "telegram-bot-pp-cli"))
+	assert.True(t, os.IsNotExist(err), "no stray cmd/telegram-bot-pp-cli/ directory should be created")
+	_, err = os.Stat(filepath.Join(cliDir, "cmd", "telegram-bot-pp-mcp"))
+	assert.True(t, os.IsNotExist(err), "no stray cmd/telegram-bot-pp-mcp/ directory should be created")
+}
