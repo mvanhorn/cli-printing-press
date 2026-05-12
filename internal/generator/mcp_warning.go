@@ -10,12 +10,13 @@ import (
 const largeMCPSurfaceWarning = `warning: spec exposes %d MCP endpoint tools (>%d threshold). The default
          endpoint-mirror surface burns agent context at this scale and will
          score poorly on the scorecard's MCP architectural dimensions. Consider
-         enriching the spec's mcp: block before generation:
+         enriching the spec's mcp: (internal YAML) or x-mcp: (OpenAPI) block
+         before generation:
            mcp:
              transport: [stdio, http]    # remote-capable; reaches hosted agents
              orchestration: code         # thin <api>_search + <api>_execute pair
              endpoint_tools: hidden      # suppress raw per-endpoint mirrors
-         See docs/SPEC-EXTENSIONS.md for the full mcp: schema.
+         See docs/SPEC-EXTENSIONS.md for the full mcp:/x-mcp: schema.
 `
 
 // warnUnenrichedLargeMCPSurface honors the contract on
