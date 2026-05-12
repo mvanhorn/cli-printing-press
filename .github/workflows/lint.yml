@@ -20,7 +20,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check whether Go lint is needed
+      - name: Check whether lint validations are needed
         id: changes
         shell: bash
         run: |
@@ -33,21 +33,41 @@ jobs:
           printf '  %s\n' "${changed[@]}"
 
           needs_lint=false
+          needs_skill_docs=false
           for file in "${changed[@]}"; do
             case "$file" in
               *.go|go.mod|go.sum|.golangci.yml|.github/workflows/lint.yml)
                 needs_lint=true
-                break
                 ;;
             esac
+
+            case "$file" in
+              skills/*|docs/SKILLS.md|.github/scripts/validate-skill-docs.sh|.github/workflows/lint.yml)
+                needs_skill_docs=true
+                ;;
+            esac
+
+            if [[ "$needs_lint" == "true" && "$needs_skill_docs" == "true" ]]; then
+              break
+            fi
           done
 
           echo "needs_lint=$needs_lint" >> "$GITHUB_OUTPUT"
+          echo "needs_skill_docs=$needs_skill_docs" >> "$GITHUB_OUTPUT"
 
       - name: Skip Go lint
         if: steps.changes.outputs.needs_lint != 'true'
         run: |
           echo "Skipping golangci-lint: no Go, module, lint config, or lint workflow files changed."
+
+      - name: Skip skill docs validation
+        if: steps.changes.outputs.needs_skill_docs != 'true'
+        run: |
+          echo "Skipping skill docs validation: no skill docs, skill guidance, or skill-doc workflow files changed."
+
+      - name: Validate skill docs
+        if: steps.changes.outputs.needs_skill_docs == 'true'
+        run: bash .github/scripts/validate-skill-docs.sh
 
       # setup-go's bundled cache restores both GOMODCACHE and GOCACHE as one
       # ~1GB tarball; on this repo that adds ~75s of extract time per job.
@@ -337,45 +357,3 @@ jobs:
           fi
 
           echo "All generated compile shards passed."
-
-  skill-docs:
-    name: skill-docs
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Check whether skill docs validation is needed
-        id: changes
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          git fetch --no-tags --prune origin "${{ github.base_ref }}"
-          mapfile -t changed < <(git diff --name-only --diff-filter=ACMR "origin/${{ github.base_ref }}...HEAD")
-
-          echo "Changed files:"
-          printf '  %s\n' "${changed[@]}"
-
-          needs_skill_docs=false
-          for file in "${changed[@]}"; do
-            case "$file" in
-              skills/*|docs/SKILLS.md|.github/scripts/validate-skill-docs.sh|.github/workflows/lint.yml)
-                needs_skill_docs=true
-                break
-                ;;
-            esac
-          done
-
-          echo "needs_skill_docs=$needs_skill_docs" >> "$GITHUB_OUTPUT"
-
-      - name: Skip skill docs validation
-        if: steps.changes.outputs.needs_skill_docs != 'true'
-        run: |
-          echo "Skipping skill docs validation: no skill docs, skill guidance, or skill-doc workflow files changed."
-
-      - name: Validate skill docs
-        if: steps.changes.outputs.needs_skill_docs == 'true'
-        run: bash .github/scripts/validate-skill-docs.sh
