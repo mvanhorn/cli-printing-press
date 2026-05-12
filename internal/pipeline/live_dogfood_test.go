@@ -1997,6 +1997,12 @@ func writeLiveDogfoodDryRunFixture(t *testing.T) (dir string, binaryName string)
 	script := `#!/bin/sh
 set -u
 
+# Argv logging side channel — same convention as setupRichFixture. Tests
+# that don't set PRINTING_PRESS_TEST_ARGV_LOG see no behavior change.
+if [ -n "${PRINTING_PRESS_TEST_ARGV_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$PRINTING_PRESS_TEST_ARGV_LOG"
+fi
+
 if [ "$1" = "agent-context" ]; then
   cat <<'JSON'
 {
@@ -2312,6 +2318,8 @@ func TestRunLiveDogfoodSkipsErrorPathForMutatorWithDryRun(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
+	argvLogPath := filepath.Join(t.TempDir(), "argv.log")
+	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLogPath)
 	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
 	report := runDryRunFixtureMatrix(t, dir, binaryName)
 
@@ -2327,6 +2335,14 @@ func TestRunLiveDogfoodSkipsErrorPathForMutatorWithDryRun(t *testing.T) {
 	assert.Equal(t, LiveDogfoodStatusSkip, got.Status, got.Reason)
 	assert.Equal(t, reasonMutatingErrorPath, got.Reason)
 	assert.Empty(t, got.Args, "skipped error_path must not include executable mutation args")
+
+	// Defense-in-depth: assert the binary was never invoked with the
+	// invalid-id sentinel. The exit-99 sentinel in the fixture already
+	// catches regression via the Status/Args/ExitCode assertions, but
+	// stating the "no live invocation" invariant directly is clearer.
+	lines := readArgvLog(t, argvLogPath)
+	assert.Equal(t, 0, countArgvLines(lines, "update", "__printing_press_invalid__"),
+		"error_path probe must not invoke the binary for a mutating command")
 }
 
 // TestRunLiveDogfoodErrorPathRealReportContribution locks in the matrix
