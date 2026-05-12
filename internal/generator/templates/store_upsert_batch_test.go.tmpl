@@ -267,8 +267,18 @@ func TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses(t *testing.T) {
 {{- if $hasTyped }}
 {{- range .Tables}}
 {{- if hasTypedTable .}}
+{{- /* $parentFKCol captures buildSubResourceTable's NOT NULL parent FK
+       (e.g. "domains_id"). The fixture must populate it or the typed
+       insert fails the NOT NULL constraint. The predicate is
+       first-match-wins: buildSubResourceTable emits parentCol second
+       (after id, before data/synced_at), so it wins even if a future
+       schema change introduces another NotNull non-PK column. */ -}}
 {{- $hasParentID := false }}
-{{- range .Columns}}{{if eq .Name "parent_id"}}{{$hasParentID = true}}{{end}}{{end}}
+{{- $parentFKCol := "" }}
+{{- range .Columns}}
+{{- if eq .Name "parent_id"}}{{$hasParentID = true}}{{end}}
+{{- if and .NotNull (not .PrimaryKey) (ne .Name "data") (eq $parentFKCol "")}}{{$parentFKCol = .Name}}{{end}}
+{{- end}}
 
 // TestUpsertBatch_Populates{{pascal .Name}}Table verifies that UpsertBatch
 // dispatches paginated items into both the generic resources table AND the
@@ -284,9 +294,9 @@ func TestUpsertBatch_Populates{{pascal .Name}}Table(t *testing.T) {
 	defer s.Close()
 
 	items := []json.RawMessage{
-		json.RawMessage(`{"id": "test-001"}`),
-		json.RawMessage(`{"id": "test-002"}`),
-		json.RawMessage(`{"id": "test-003"}`),
+		json.RawMessage(`{"id": "test-001"{{if $parentFKCol}}, "{{$parentFKCol}}": "test-parent-001"{{end}}}`),
+		json.RawMessage(`{"id": "test-002"{{if $parentFKCol}}, "{{$parentFKCol}}": "test-parent-001"{{end}}}`),
+		json.RawMessage(`{"id": "test-003"{{if $parentFKCol}}, "{{$parentFKCol}}": "test-parent-001"{{end}}}`),
 	}
 	if _, _, err := s.UpsertBatch("{{.Resource}}", items); err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
