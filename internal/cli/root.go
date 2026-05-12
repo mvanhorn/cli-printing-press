@@ -771,6 +771,10 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 		if s.Auth.AuthorizationURL != "" && merged.Auth.AuthorizationURL == "" {
 			merged.Auth = s.Auth
 		}
+
+		if mcpConfigured(s.MCP) && !mcpConfigured(merged.MCP) {
+			merged.MCP = s.MCP
+		}
 	}
 
 	return merged

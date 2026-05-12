@@ -1211,6 +1211,136 @@ func TestMergeSpecsLeavesPathsUnchangedWhenHostsDiffer(t *testing.T) {
 	assert.Equal(t, "/bar", merged.Resources["bar"].Endpoints["list"].Path)
 }
 
+// TestMergeSpecsCarriesMCPConfigFromFirstDeclaringSpec verifies that a combo
+// run preserves x-mcp configuration from the first input spec that declares
+// it. Without this precedence loop, mergeSpecs silently drops MCP config and
+// the downstream code-orchestration gate falls back to the endpoint-mirror
+// surface no matter what the input specs requested.
+func TestMergeSpecsCarriesMCPConfigFromFirstDeclaringSpec(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:      "a",
+		Version:   "0.1.0",
+		BaseURL:   "https://api.example.com",
+		Resources: map[string]spec.Resource{},
+		Types:     map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:      "b",
+		Version:   "0.1.0",
+		BaseURL:   "https://api.example.com",
+		Resources: map[string]spec.Resource{},
+		Types:     map[string]spec.TypeDef{},
+		MCP: spec.MCPConfig{
+			Orchestration: "code",
+		},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "combo")
+
+	assert.True(t, merged.MCP.IsCodeOrchestration(), "merged MCP should retain x-mcp.orchestration=code from specB")
+}
+
+// TestMergeSpecsLeavesMCPZeroWhenNoSpecDeclares verifies that combos without
+// any x-mcp declaration produce a zero-valued merged MCP, so the existing
+// endpoint-mirror default and "consider code-orchestration" advisory keep
+// working unchanged.
+func TestMergeSpecsLeavesMCPZeroWhenNoSpecDeclares(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:      "a",
+		Version:   "0.1.0",
+		BaseURL:   "https://api.example.com",
+		Resources: map[string]spec.Resource{},
+		Types:     map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:      "b",
+		Version:   "0.1.0",
+		BaseURL:   "https://api.example.com",
+		Resources: map[string]spec.Resource{},
+		Types:     map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "combo")
+
+	assert.False(t, merged.MCP.IsCodeOrchestration())
+	assert.Empty(t, merged.MCP.Transport)
+	assert.Empty(t, merged.MCP.Intents)
+}
+
+// TestMergeSpecsCarriesMCPFullFieldsFromDeclaringSpec exercises the merge
+// loop with a non-Orchestration trigger field (Transport) and asserts that
+// Addr and Intents propagate alongside it. Without this case, a regression to
+// a partial field-by-field copy or an mcpConfigured branch that ignored
+// non-Orchestration fields would slip past the other tests.
+func TestMergeSpecsCarriesMCPFullFieldsFromDeclaringSpec(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:      "a",
+		Version:   "0.1.0",
+		BaseURL:   "https://api.example.com",
+		Resources: map[string]spec.Resource{},
+		Types:     map[string]spec.TypeDef{},
+		MCP: spec.MCPConfig{
+			Transport: []string{"stdio", "http"},
+			Addr:      ":7777",
+			Intents: []spec.Intent{
+				{Name: "search_things"},
+			},
+		},
+	}
+	specB := &spec.APISpec{
+		Name:      "b",
+		Version:   "0.1.0",
+		BaseURL:   "https://api.example.com",
+		Resources: map[string]spec.Resource{},
+		Types:     map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "combo")
+
+	assert.Equal(t, []string{"stdio", "http"}, merged.MCP.Transport)
+	assert.Equal(t, ":7777", merged.MCP.Addr)
+	assert.Len(t, merged.MCP.Intents, 1)
+	assert.Equal(t, "search_things", merged.MCP.Intents[0].Name)
+}
+
+// TestMergeSpecsFirstDeclaringMCPWins verifies that when more than one input
+// spec declares x-mcp, the first declaring spec wins, mirroring the existing
+// first-wins precedence used for Auth.AuthorizationURL.
+func TestMergeSpecsFirstDeclaringMCPWins(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:      "a",
+		Version:   "0.1.0",
+		BaseURL:   "https://api.example.com",
+		Resources: map[string]spec.Resource{},
+		Types:     map[string]spec.TypeDef{},
+		MCP: spec.MCPConfig{
+			Orchestration: "code",
+		},
+	}
+	specB := &spec.APISpec{
+		Name:      "b",
+		Version:   "0.1.0",
+		BaseURL:   "https://api.example.com",
+		Resources: map[string]spec.Resource{},
+		Types:     map[string]spec.TypeDef{},
+		MCP: spec.MCPConfig{
+			Orchestration: "intent",
+		},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "combo")
+
+	assert.Equal(t, "code", merged.MCP.Orchestration)
+}
+
 func TestNormalizeHTTPTransportAllowsBrowserChromeH3(t *testing.T) {
 	t.Parallel()
 
