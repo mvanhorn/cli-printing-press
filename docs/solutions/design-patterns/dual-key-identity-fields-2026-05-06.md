@@ -175,5 +175,5 @@ author: "Trevin Chow"   # display-shaped
 - `docs/solutions/conventions/soft-validation-in-reusable-library-packages-2026-05-06.md` — the empty-value behavior for `OwnerName` (soft warn + slug fallback) so the generator stays reusable from tests / mcp-sync / regen-merge without forcing every caller to set the field
 - `docs/solutions/conventions/preserve-original-authorship-in-multi-author-retrofits-2026-05-06.md` — when `OwnerName` flows through a sweep over published content (vs. a fresh print), the resolver must NOT trust the operator's git config; lessons from the public-library retrofit
 - `internal/generator/plan_generate.go` — `resolveOwnerForNew` / `resolveOwnerNameForNew` split
-- `internal/spec/spec.go:103` — `OwnerName` field declaration with comment cross-referencing the slug field
+- `internal/spec/spec.go:109` — `OwnerName` field declaration with comment cross-referencing the slug field; the adjacent `Printer` / `PrinterName` pair applies the same slug-vs-display split to printer attribution
 - `AGENTS.md` — Naming and Disambiguation section pins the lesson for future contributors
