@@ -86,9 +86,10 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 
 			path := "{{.ResourceBaseURL}}{{.Endpoint.Path}}"{{/* ResourceBaseURL is empty unless the resource or endpoint declares an override; when set it makes path absolute and the client skips the c.BaseURL concat. */}}
-{{- range $i, $p := .Endpoint.Params}}
+{{- range .Endpoint.Params}}
 {{- if .Positional}}
-			if len(args) < {{add $i 1}} {
+{{- $pi := positionalIndex $.Endpoint .Name}}
+			if len(args) < {{add $pi 1}} {
 				// JSON envelope: {error, usage}. Written first; the
 				// usageErr return preserves exit code 2 across modes.
 				if flags.asJSON {
@@ -102,7 +103,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				return usageErr(fmt.Errorf("{{.Name}} is required\nUsage: %s <%s>", cmd.CommandPath(), "{{.Name}}"))
 			}
 {{- if pathContainsParam $.Endpoint.Path .Name}}
-			path = replacePathParam(path, "{{.Name}}", args[{{$i}}])
+			path = replacePathParam(path, "{{.Name}}", args[{{$pi}}])
 {{- end}}
 {{- end}}
 {{- end}}
@@ -114,9 +115,9 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 
 {{- if .Endpoint.UsesHTMLResponse}}
 			htmlRequestParams := map[string]string{}
-{{- range $i, $p := .Endpoint.Params}}
+{{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-			htmlRequestParams["{{.Name}}"] = args[{{$i}}]
+			htmlRequestParams["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
@@ -129,9 +130,9 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- if .Endpoint.Pagination}}
 {{- if .HasStore}}
 			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", path, map[string]string{
-{{- range $i, $p := .Endpoint.Params}}
+{{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-				"{{.Name}}": args[{{$i}}],
+				"{{.Name}}": args[{{positionalIndex $.Endpoint .Name}}],
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 				"{{.Name}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
@@ -140,9 +141,9 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			}, nil, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- else}}
 			data, err := paginatedGet(c, path, map[string]string{
-{{- range $i, $p := .Endpoint.Params}}
+{{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-				"{{.Name}}": args[{{$i}}],
+				"{{.Name}}": args[{{positionalIndex $.Endpoint .Name}}],
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 				"{{.Name}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
@@ -153,9 +154,9 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- else}}
 {{- if or (eq (upper .Endpoint.Method) "GET") (eq (upper .Endpoint.Method) "HEAD") (eq (upper .Endpoint.Method) "OPTIONS")}}
 			params := map[string]string{}
-{{- range $i, $p := .Endpoint.Params}}
+{{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-			params["{{.Name}}"] = args[{{$i}}]
+			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {

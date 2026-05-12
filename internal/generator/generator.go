@@ -360,6 +360,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"pathContainsParam": func(path, name string) bool {
 			return strings.Contains(path, "{"+name+"}")
 		},
+		"positionalIndex": positionalIndex,
 		"safeJoin": func(fields []string, sep string) string {
 			safe := make([]string, len(fields))
 			for i, f := range fields {
@@ -3695,6 +3696,28 @@ func positionalArgs(e spec.Endpoint) string {
 		return " " + strings.Join(args, " ")
 	}
 	return ""
+}
+
+// positionalIndex returns the args[] slot a positional param fills at runtime.
+// Cobra populates args from CLI positionals in Positional-only declaration
+// order, but Endpoint.Params interleaves query/header params alongside path
+// params. The full-Params index drifts from the Positional ordinal as soon as
+// a non-positional param sits before a positional one (common when an OpenAPI
+// list endpoint declares query params before the path param) and the runtime
+// fails with "<name> is required" no matter what positional the user passes.
+// Returns -1 if name is not a positional param.
+func positionalIndex(e spec.Endpoint, name string) int {
+	idx := 0
+	for _, p := range e.Params {
+		if !p.Positional {
+			continue
+		}
+		if p.Name == name {
+			return idx
+		}
+		idx++
+	}
+	return -1
 }
 
 func configTag(format string) string {
