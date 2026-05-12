@@ -5,6 +5,7 @@ printing-press-golden/cmd/printing-press-golden-pp-cli/main.go
 printing-press-golden/internal/client/client.go
 printing-press-golden/internal/cli/helpers.go
 printing-press-golden/internal/cli/root.go
+printing-press-golden/internal/cli/root_test.go
 printing-press-golden/internal/cli/auth.go
 printing-press-golden/internal/cli/projects_list.go
 printing-press-golden/internal/cli/projects_create.go

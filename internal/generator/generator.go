@@ -1393,6 +1393,7 @@ func (g *Generator) renderSingleFiles() error {
 	singleFiles := map[string]string{
 		"main.go.tmpl":                       filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
 		"helpers.go.tmpl":                    filepath.Join("internal", "cli", "helpers.go"),
+		"root_test.go.tmpl":                  filepath.Join("internal", "cli", "root_test.go"),
 		"doctor.go.tmpl":                     filepath.Join("internal", "cli", "doctor.go"),
 		"agent_context.go.tmpl":              filepath.Join("internal", "cli", "agent_context.go"),
 		"profile.go.tmpl":                    filepath.Join("internal", "cli", "profile.go"),
