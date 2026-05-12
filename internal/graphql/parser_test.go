@@ -237,3 +237,20 @@ func bodyParam(params []spec.Param, name string) spec.Param {
 	}
 	return spec.Param{}
 }
+
+// TestParseSDLMarksFallbackBaseURLAsPlaceholder pins that an unknown
+// GraphQL source (no entry in knownGraphQLDefaults) sets
+// BaseURLIsPlaceholder so the generate command can refuse a shipping CLI
+// whose `doctor` would DNS-fail on every call.
+func TestParseSDLMarksFallbackBaseURLAsPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := ParseSDLBytes("unknown-graphql-service.graphql", []byte(testSDL))
+	require.NoError(t, err)
+	assert.True(t, parsed.BaseURLIsPlaceholder, "unknown GraphQL source must mark BaseURL as placeholder")
+	assert.Equal(t, spec.PlaceholderBaseURL, parsed.BaseURL)
+
+	parsed, err = ParseSDLBytes("linear-schema.graphql", []byte(testSDL))
+	require.NoError(t, err)
+	assert.False(t, parsed.BaseURLIsPlaceholder, "known GraphQL source (linear) must not be marked placeholder")
+}

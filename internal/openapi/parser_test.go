@@ -5237,3 +5237,71 @@ paths:
 	games := findParsedEndpointByPath(t, parsed, "GET", "/games")
 	assert.Nil(t, games.Walker, "endpoint without x-pp-sync-walker must have nil Walker")
 }
+
+// TestParseMarksFallbackBaseURLAsPlaceholder pins the contract used by the
+// generate command to refuse shipping specs that omit `servers:` entirely.
+// The parser falls back to a placeholder URL so in-memory test fixtures keep
+// parsing, but the returned spec must carry BaseURLIsPlaceholder=true so
+// downstream callers can detect-and-refuse instead of silently writing a
+// DNS-failing config.toml.
+func TestParseMarksFallbackBaseURLAsPlaceholder(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no servers block sets the flag", func(t *testing.T) {
+		specYAML := `openapi: "3.0.3"
+info:
+  title: No Servers Test
+  version: "1.0"
+paths:
+  /thing:
+    get:
+      operationId: getThing
+      responses:
+        '200': {description: OK}
+`
+		parsed, err := Parse([]byte(specYAML))
+		require.NoError(t, err)
+		assert.True(t, parsed.BaseURLIsPlaceholder, "no-servers spec must mark BaseURL as placeholder")
+		assert.Equal(t, spec.PlaceholderBaseURL, parsed.BaseURL)
+	})
+
+	t.Run("explicit top-level servers leaves the flag false", func(t *testing.T) {
+		specYAML := `openapi: "3.0.3"
+info:
+  title: With Servers Test
+  version: "1.0"
+servers:
+  - url: https://api.real.com
+paths:
+  /thing:
+    get:
+      operationId: getThing
+      responses:
+        '200': {description: OK}
+`
+		parsed, err := Parse([]byte(specYAML))
+		require.NoError(t, err)
+		assert.False(t, parsed.BaseURLIsPlaceholder, "spec with real servers must not be marked placeholder")
+		assert.Equal(t, "https://api.real.com", parsed.BaseURL)
+	})
+
+	t.Run("per-operation servers leave the flag false", func(t *testing.T) {
+		specYAML := `openapi: "3.0.3"
+info:
+  title: Per-Op Only Test
+  version: "1.0"
+paths:
+  /thing:
+    get:
+      operationId: getThing
+      servers:
+        - url: https://api.real.com
+      responses:
+        '200': {description: OK}
+`
+		parsed, err := Parse([]byte(specYAML))
+		require.NoError(t, err)
+		assert.False(t, parsed.BaseURLIsPlaceholder, "spec with per-operation servers must not be marked placeholder")
+		assert.Equal(t, "https://api.real.com", parsed.BaseURL)
+	})
+}

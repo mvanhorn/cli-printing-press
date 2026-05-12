@@ -61,6 +61,12 @@ const (
 //   - Astro:       site-specific; declare per spec
 const DefaultEmbeddedJSONScriptSelector = "script#__NEXT_DATA__"
 
+// PlaceholderBaseURL is the fake host parsers substitute when they cannot
+// resolve a real one. Shared across openapi/graphql/docspec so callers have
+// one canonical sentinel to compare against; the generate command refuses
+// to ship a CLI whose BaseURL is this value.
+const PlaceholderBaseURL = "https://api.example.com"
+
 type APISpec struct {
 	Name string `yaml:"name" json:"name"`
 	// DisplayName is the human-readable brand name used in user-facing
@@ -76,6 +82,10 @@ type APISpec struct {
 	// info.title. Catalog enrichment may replace that fallback, but must not
 	// replace explicit display_name / x-display-name values.
 	DisplayNameDerivedFromTitle bool `yaml:"-" json:"-"`
+	// BaseURLIsPlaceholder is set by parsers that filled BaseURL with the
+	// PlaceholderBaseURL fallback because the source declared no real host.
+	// The generate command refuses to ship in that state — see internal/cli/root.go.
+	BaseURLIsPlaceholder bool `yaml:"-" json:"-"`
 	// Description describes the API itself ("REST API for ordering pizza").
 	// It flows into generated docs and SKILL.md but is intentionally NOT used
 	// as the printed CLI's --help text; that's CLIDescription's job.

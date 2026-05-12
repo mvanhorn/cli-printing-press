@@ -1709,3 +1709,42 @@ func runGoCommandForCLITest(t *testing.T, dir string, args ...string) {
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
 }
+
+// TestGenerateCmdRefusesPlaceholderBaseURL pins the contract that the
+// generate command halts when the spec declares neither `servers:` nor
+// any per-operation server. The parser falls back to a fake hostname so
+// the spec keeps parsing, but the generate command must refuse to write
+// a CLI whose `doctor` would DNS-fail on every call.
+func TestGenerateCmdRefusesPlaceholderBaseURL(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "noserversapp")
+	require.NoError(t, os.WriteFile(specPath, []byte(`openapi: "3.0.3"
+info:
+  title: No Servers App
+  version: "1.0"
+paths:
+  /things:
+    get:
+      operationId: listThings
+      responses:
+        '200':
+          description: OK
+`), 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", specPath,
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+	})
+
+	err := cmd.Execute()
+	require.Error(t, err, "expected generate to refuse a spec without servers")
+	assert.Contains(t, err.Error(), specPath, "error must name the offending spec file")
+	assert.Contains(t, err.Error(), "no `servers:`", "error must explain that the spec declares no servers")
+	assert.NoDirExists(t, outputDir, "refusal must fire before any output is written")
+}

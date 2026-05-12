@@ -360,9 +360,11 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 			basePath = perOpPath
 		}
 	}
+	baseURLIsPlaceholder := false
 	if baseURL == "" && basePath == "" {
 		warnf("no servers defined in spec; generated CLI will require base_url in config")
-		baseURL = "https://api.example.com"
+		baseURL = spec.PlaceholderBaseURL
+		baseURLIsPlaceholder = true
 	}
 
 	auth := mapAuthWithDescriptionInference(doc, name, !metadata.explicitEmptySecuritySchemes)
@@ -390,6 +392,7 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 		Description:                 description,
 		Version:                     version,
 		BaseURL:                     baseURL,
+		BaseURLIsPlaceholder:        baseURLIsPlaceholder,
 		BasePath:                    basePath,
 		WebsiteURL:                  websiteURL,
 		ProxyRoutes:                 proxyRoutes,

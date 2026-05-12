@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -88,8 +89,13 @@ func TestDetectAuth(t *testing.T) {
 }
 
 func TestDetectBaseURL(t *testing.T) {
-	assert.Equal(t, "https://api.stripe.com", detectBaseURL("Base URL: https://api.stripe.com/v1"))
-	assert.Equal(t, "https://api.example.com", detectBaseURL("No URL here"))
+	url, isPlaceholder := detectBaseURL("Base URL: https://api.stripe.com/v1")
+	assert.Equal(t, "https://api.stripe.com", url)
+	assert.False(t, isPlaceholder)
+
+	url, isPlaceholder = detectBaseURL("No URL here")
+	assert.Equal(t, spec.PlaceholderBaseURL, url)
+	assert.True(t, isPlaceholder, "missing URL must signal placeholder fallback")
 }
 
 func TestFirstSegment(t *testing.T) {
