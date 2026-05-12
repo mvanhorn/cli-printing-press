@@ -802,7 +802,7 @@ func readPreviousLedger(cliDir string) *ToolsAuditLedger {
 func writeLedger(cliDir string, manifest *pipeline.ToolsManifest, findings []ToolsAuditFinding, previous *ToolsAuditLedger) error {
 	ledger := ToolsAuditLedger{
 		Timestamp: time.Now().UTC(),
-		CLIDir:    cliDir,
+		CLIDir:    artifacts.RedactCLIDirRoot(cliDir),
 		Findings:  findings,
 	}
 	// ScorecardBefore is sticky: captured on the first run that has no
