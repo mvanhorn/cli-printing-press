@@ -750,6 +750,8 @@ func isListEndpoint(name string, endpoint spec.Endpoint, types map[string]spec.T
 
 // wrapperArrayKeys are response object field names that indicate the object
 // wraps a list of items. Kept in sync with extractPageItems in sync.go.tmpl.
+// hasWrapperArrayField lowercases each field name before lookup, so
+// PascalCase variants ("Items", "Data") match the lowercase entries here.
 var wrapperArrayKeys = map[string]bool{
 	"data":    true,
 	"results": true,
