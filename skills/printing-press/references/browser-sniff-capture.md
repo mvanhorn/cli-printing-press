@@ -58,8 +58,13 @@ When a proxy pattern is detected:
 Check which browser automation tools are available:
 
 ```bash
-# Prefer browser-use (CLI-driven, Performance API collection)
-if command -v browser-use >/dev/null 2>&1 || uvx browser-use --help >/dev/null 2>&1; then
+# Prefer browser-use (CLI-driven, Performance API collection).
+# Use `command -v` only. Do NOT use `uvx browser-use --help` as a fallback
+# probe: when uvx exists but browser-use doesn't, that command silently
+# downloads and caches the package, which is an unconsented install.
+# The capture commands below invoke `browser-use` directly (not via uvx),
+# so a uvx-cache-only state would lie to the detection.
+if command -v browser-use >/dev/null 2>&1; then
   SNIFF_BACKEND="browser-use"
 # Fall back to agent-browser only if it can provide equivalent network capture artifacts.
 elif command -v agent-browser >/dev/null 2>&1; then
@@ -92,7 +97,9 @@ If either MCP flag is true, extend the status report:
 
 > "Using **<tool>** for traffic capture. Fallbacks available: chrome-MCP, computer-use." (list whichever flags are true)
 
-#### Step 1b: Install capture tool (if none found)
+#### Step 1b: Install capture tool (fallback — preflight should have prompted first)
+
+Preflight (`references/setup-checks.md` section 5) offers to install browser-use and agent-browser on every run, so most users arrive at Step 1 with one or both already installed. This step is a fallback for the case where the user declined the preflight prompt and the current run actually needs a browser backend.
 
 If neither tool is installed, offer to install via `AskUserQuestion`. Do not install automatically:
 
@@ -106,9 +113,12 @@ If neither tool is installed, offer to install via `AskUserQuestion`. Do not ins
 **If user picks browser-use:**
 
 ```bash
-# Detect Python package manager
+# Detect Python package manager. Use `uv tool install` (not `uv pip install`):
+# `uv pip install` targets the active venv and won't put the binary in PATH
+# outside it; `uv tool install` creates an isolated env and symlinks the
+# entry-point into `~/.local/bin`.
 if command -v uv >/dev/null 2>&1; then
-  uv pip install browser-use
+  uv tool install browser-use
 elif command -v pip >/dev/null 2>&1; then
   pip install browser-use
 else

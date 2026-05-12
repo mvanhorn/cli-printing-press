@@ -271,6 +271,35 @@ elif [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
   printf "last_check=%s\nlatest=%s\nmode=standalone\n" "$_now_ts" "${_latest:-$_installed}" > "$PRESS_VERCHECK_FILE" 2>/dev/null || true
 fi
 
+# --- Browser-sniff backend advisory (fail-open, every-run) ---
+# browser-use and agent-browser are the preferred Phase 1.7 browser-sniff
+# backends. They are not hard requirements — vendor-spec, --spec, and --har
+# runs never invoke them — but when discovery does need them, mid-flight
+# install prompts are disruptive. Emit a marker every run so setup-checks.md
+# can strongly offer install. No decline caching: a run that didn't need them
+# yesterday may need them today, and the prompt cost is small.
+_browser_use_missing=true
+_agent_browser_missing=true
+# Use `command -v` only. Do NOT use `uvx browser-use --help` as a fallback
+# probe: when uvx exists but browser-use doesn't, that command silently
+# downloads and caches the package, which would be an unconsented install.
+# Downstream capture commands also invoke `browser-use` directly (not via
+# uvx), so a uvx-cache-only state would lie to the detection.
+if command -v browser-use >/dev/null 2>&1; then
+  _browser_use_missing=false
+fi
+if command -v agent-browser >/dev/null 2>&1; then
+  _agent_browser_missing=false
+fi
+
+if [ "$_browser_use_missing" = "true" ] || [ "$_agent_browser_missing" = "true" ]; then
+  echo ""
+  echo "[browser-tools-missing] one or more browser-sniff backends not installed"
+  echo "PRESS_BROWSER_USE_MISSING=$_browser_use_missing"
+  echo "PRESS_AGENT_BROWSER_MISSING=$_agent_browser_missing"
+  echo ""
+fi
+
 # --- Codex mode detection (must run as part of setup, not a separate step) ---
 # Codex mode: opt-in only. User must pass "codex" or "--codex" to enable.
 if echo "$ARGUMENTS" | grep -qiE '(^| )(--?codex|codex)( |$)'; then
@@ -304,9 +333,9 @@ CODEX_CONSECUTIVE_FAILURES=0
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles four signals the contract emits to stdout: `[setup-error]` (refuse to run, surface the install instructions), `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), the min-binary-version compatibility check (hard stop if binary is too old), and `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary. Do not skip.
+**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles five signals the contract emits to stdout: `[setup-error]` (refuse to run, surface the install instructions), `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), the min-binary-version compatibility check (hard stop if binary is too old), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), and `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, or hit a mid-flight install prompt if browser-sniff is later needed. Do not skip.
 
-Only after preflight completes successfully (no `[setup-error]`; any `[repo-upgrade-available]` or `[upgrade-available]` was offered to the user) should you proceed to the Orientation & Briefing section below.
+Only after preflight completes successfully (no `[setup-error]`; any `[repo-upgrade-available]`, `[upgrade-available]`, or `[browser-tools-missing]` was offered to the user) should you proceed to the Orientation & Briefing section below.
 
 ## Orientation & Briefing
 
