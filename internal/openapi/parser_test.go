@@ -1020,6 +1020,228 @@ paths:
 	assert.Equal(t, []string{"SENTRY_AUTH_TOKEN"}, parsed.Auth.EnvVars)
 }
 
+func TestSelectSecuritySchemeMultiSchemePrefersBearer(t *testing.T) {
+	t.Parallel()
+
+	// Cloudflare-shape: a spec advertises a modern http+bearer scheme
+	// alongside a legacy email + apiKey pair. The parser must pick the
+	// bearer scheme so the generated CLI reads CF_API_TOKEN and sets
+	// Authorization: Bearer, not X-Auth-Email.
+	spec := []byte(`openapi: "3.0.3"
+info:
+  title: Cloudflare-shape
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - api_email: []
+    api_key: []
+  - api_token: []
+components:
+  securitySchemes:
+    api_email:
+      type: apiKey
+      in: header
+      name: X-Auth-Email
+    api_key:
+      type: apiKey
+      in: header
+      name: X-Auth-Key
+    api_token:
+      type: http
+      scheme: bearer
+paths:
+  /v1/zones:
+    get:
+      operationId: listZones
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(spec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type, "bearer outranks apiKey-header")
+	assert.Equal(t, "Authorization", parsed.Auth.Header)
+	assert.Equal(t, "api_token", parsed.Auth.Scheme, "selected scheme name must surface for downstream env-var derivation")
+}
+
+func TestSelectSecuritySchemeRespectsRootSecurityFilter(t *testing.T) {
+	t.Parallel()
+
+	// Datadog-shape: components declares an OAuth2 marketplace scheme
+	// alongside the primary apiKey scheme, but root-level security only
+	// references the apiKey. The parser must restrict candidates to the
+	// root-declared schemes so the marketplace OAuth2 does not win pass 1.
+	spec := []byte(`openapi: "3.0.3"
+info:
+  title: Datadog-shape
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - apiKeyAuth: []
+components:
+  securitySchemes:
+    AuthZ:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.example.com/oauth2/authorize
+          tokenUrl: https://api.example.com/oauth2/token
+          scopes:
+            read: read access
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: DD-API-KEY
+paths:
+  /v1/series:
+    get:
+      operationId: queryMetrics
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(spec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", parsed.Auth.Type, "components-only OAuth2 must not outrank root-declared apiKey")
+	assert.Equal(t, "DD-API-KEY", parsed.Auth.Header)
+	assert.Equal(t, "apiKeyAuth", parsed.Auth.Scheme)
+}
+
+func TestSelectSecuritySchemeFallsBackToComponentsWhenRootSecurityEmpty(t *testing.T) {
+	t.Parallel()
+
+	// A spec with `security: []` (or only `{}` no-auth requirements at
+	// root) does not constrain candidates — fall back to all schemes in
+	// components, sorted alphabetically, and apply the type priority.
+	spec := []byte(`openapi: "3.0.3"
+info:
+  title: NoRootSecurity
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    LegacyAPIKey:
+      type: apiKey
+      in: header
+      name: X-Legacy-Key
+    ModernBearer:
+      type: http
+      scheme: bearer
+paths:
+  /v1/items:
+    get:
+      operationId: listItems
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(spec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type, "type priority still applies when root security is absent")
+	assert.Equal(t, "ModernBearer", parsed.Auth.Scheme)
+}
+
+func TestSelectSecuritySchemeSingleSchemeUnchanged(t *testing.T) {
+	t.Parallel()
+
+	// Negative case from the issue acceptance criteria: single-scheme specs
+	// must continue to emit identical output.
+	specTemplate := `openapi: "3.0.3"
+info: {title: X, version: "1.0"}
+servers: [{url: https://api.example.com}]
+security: [{Only: []}]
+components:
+  securitySchemes:
+    Only:
+%s
+paths:
+  /v1/x: {get: {operationId: getX, responses: {"200": {description: ok}}}}
+`
+
+	cases := []struct {
+		name     string
+		scheme   string
+		wantType string
+		wantHdr  string
+	}{
+		{
+			name:     "apiKey only",
+			scheme:   "      type: apiKey\n      in: header\n      name: X-API-Key",
+			wantType: "api_key",
+			wantHdr:  "X-API-Key",
+		},
+		{
+			name:     "bearer only",
+			scheme:   "      type: http\n      scheme: bearer",
+			wantType: "bearer_token",
+			wantHdr:  "Authorization",
+		},
+		{
+			name:     "basic only",
+			scheme:   "      type: http\n      scheme: basic",
+			wantType: "api_key",
+			wantHdr:  "Authorization",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			parsed, err := Parse(fmt.Appendf(nil, specTemplate, tc.scheme))
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantType, parsed.Auth.Type)
+			assert.Equal(t, tc.wantHdr, parsed.Auth.Header)
+		})
+	}
+}
+
+func TestSelectSecuritySchemeOAuth2PasswordBeatsAPIKey(t *testing.T) {
+	t.Parallel()
+
+	// OAuth2 Password (ROPC) is deprecated but real specs still use it for
+	// server-to-server flows alongside an apiKey alternative. The old 3-pass
+	// selector returned any well-formed oauth2 before any apiKey; the new
+	// priority-score selector must preserve that ordering or such specs
+	// regress silently to the apiKey scheme. See PR #1238 review feedback.
+	spec := []byte(`openapi: "3.0.3"
+info:
+  title: ROPC-shape
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ropcAuth: []
+  - apiKeyAuth: []
+components:
+  securitySchemes:
+    ropcAuth:
+      type: oauth2
+      flows:
+        password:
+          tokenUrl: https://api.example.com/oauth/token
+          scopes:
+            read: read access
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+paths:
+  /v1/items:
+    get:
+      operationId: listItems
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(spec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type, "well-formed ROPC oauth2 must outrank co-declared apiKey")
+	assert.Equal(t, "ropcAuth", parsed.Auth.Scheme)
+}
+
 func TestSkipUnderscoreFields(t *testing.T) {
 	spec := []byte(`
 openapi: "3.0.0"

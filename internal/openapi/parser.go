@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -1515,76 +1516,129 @@ func selectSecurityScheme(doc *openapi3.T) (string, *openapi3.SecurityScheme) {
 		return "", nil
 	}
 
-	orderedNames := orderedSecuritySchemeNames(doc)
-	for _, name := range orderedNames {
-		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
-		if scheme == nil || !strings.EqualFold(scheme.Type, "oauth2") || scheme.Flows == nil {
-			continue
-		}
-		if ac := scheme.Flows.AuthorizationCode; ac != nil && strings.TrimSpace(ac.AuthorizationURL) != "" && strings.TrimSpace(ac.TokenURL) != "" {
-			return name, scheme
-		}
-	}
+	candidates := candidateSecuritySchemeNames(doc)
 
-	for _, name := range orderedNames {
+	bestScore := math.MaxInt
+	var bestName string
+	var bestScheme *openapi3.SecurityScheme
+
+	for _, name := range candidates {
 		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
 		if scheme == nil {
 			continue
 		}
-		switch strings.ToLower(scheme.Type) {
-		case "apikey", "oauth2":
-			return name, scheme
-		case "http":
-			switch strings.ToLower(scheme.Scheme) {
-			case "bearer", "basic":
-				return name, scheme
-			}
+		score := schemePriorityScore(scheme)
+		if score < bestScore {
+			bestScore = score
+			bestName = name
+			bestScheme = scheme
 		}
 	}
 
-	for _, name := range orderedNames {
-		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
-		if scheme != nil {
-			return name, scheme
-		}
-	}
-
-	return "", nil
+	return bestName, bestScheme
 }
 
-func orderedSecuritySchemeNames(doc *openapi3.T) []string {
+// Root security is authoritative when present: a components-only scheme
+// (e.g. an OAuth2 marketplace flow the API doesn't actually accept at the
+// document default) must not outrank an apiKey the spec explicitly named.
+// The empty-names guard handles `security: []` and `security: [{}]`
+// no-auth declarations, where falling back to components recovers the
+// previous behavior for inferred-auth specs.
+func candidateSecuritySchemeNames(doc *openapi3.T) []string {
 	seen := map[string]struct{}{}
 	var names []string
 
-	for _, requirement := range doc.Security {
-		var requirementNames []string
-		for name := range requirement {
-			requirementNames = append(requirementNames, name)
-		}
-		sort.Strings(requirementNames)
-		for _, name := range requirementNames {
-			if _, ok := seen[name]; ok {
-				continue
+	if doc.Security != nil {
+		for _, requirement := range doc.Security {
+			var requirementNames []string
+			for name := range requirement {
+				requirementNames = append(requirementNames, name)
 			}
-			seen[name] = struct{}{}
-			names = append(names, name)
+			sort.Strings(requirementNames)
+			for _, name := range requirementNames {
+				if _, ok := seen[name]; ok {
+					continue
+				}
+				seen[name] = struct{}{}
+				names = append(names, name)
+			}
+		}
+		if len(names) > 0 {
+			return names
 		}
 	}
 
-	var all []string
+	all := make([]string, 0, len(doc.Components.SecuritySchemes))
 	for name := range doc.Components.SecuritySchemes {
 		all = append(all, name)
 	}
 	sort.Strings(all)
-	for _, name := range all {
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		names = append(names, name)
-	}
+	return all
+}
 
-	return names
+// Ordering rationale: Bearer is the simplest for CLI use; OAuth2 flows rank
+// by viability for non-interactive runs (cc > authorization_code > password >
+// implicit); apiKey-in-header beats apiKey-in-query because query strings leak
+// to logs; HTTP Basic ranks below standalone apiKey because compound legacy
+// schemes (email + key) surface as basic-ish patterns and shouldn't outrank a
+// modern apiKey alternative when both are offered. Password (ROPC) is
+// deprecated but kept above all apiKey shapes so multi-scheme specs that
+// pair ROPC with an apiKey alternative don't regress vs. the prior selector,
+// which returned any well-formed oauth2 before any apiKey.
+const (
+	schemePriorityBearer          = 0
+	schemePriorityOAuth2CC        = 100
+	schemePriorityOAuth2AuthCode  = 200
+	schemePriorityOAuth2Password  = 250
+	schemePriorityOAuth2Implicit  = 300
+	schemePriorityAPIKeyHeader    = 400
+	schemePriorityAPIKeyQuery     = 450
+	schemePriorityHTTPBasic       = 500
+	schemePriorityAPIKeyCookie    = 600
+	schemePriorityAPIKeyOther     = 700
+	schemePriorityOAuth2Malformed = 800
+	schemePriorityHTTPOther       = 900
+	schemePriorityUnknown         = 1000
+)
+
+func schemePriorityScore(scheme *openapi3.SecurityScheme) int {
+	switch strings.ToLower(scheme.Type) {
+	case "http":
+		switch strings.ToLower(scheme.Scheme) {
+		case "bearer":
+			return schemePriorityBearer
+		case "basic":
+			return schemePriorityHTTPBasic
+		}
+		return schemePriorityHTTPOther
+	case "oauth2":
+		if scheme.Flows != nil {
+			if cc := scheme.Flows.ClientCredentials; cc != nil && strings.TrimSpace(cc.TokenURL) != "" {
+				return schemePriorityOAuth2CC
+			}
+			if ac := scheme.Flows.AuthorizationCode; ac != nil && strings.TrimSpace(ac.AuthorizationURL) != "" && strings.TrimSpace(ac.TokenURL) != "" {
+				return schemePriorityOAuth2AuthCode
+			}
+			if pw := scheme.Flows.Password; pw != nil && strings.TrimSpace(pw.TokenURL) != "" {
+				return schemePriorityOAuth2Password
+			}
+			if ic := scheme.Flows.Implicit; ic != nil && strings.TrimSpace(ic.AuthorizationURL) != "" {
+				return schemePriorityOAuth2Implicit
+			}
+		}
+		return schemePriorityOAuth2Malformed
+	case "apikey":
+		switch strings.ToLower(scheme.In) {
+		case "header":
+			return schemePriorityAPIKeyHeader
+		case "query":
+			return schemePriorityAPIKeyQuery
+		case "cookie":
+			return schemePriorityAPIKeyCookie
+		}
+		return schemePriorityAPIKeyOther
+	}
+	return schemePriorityUnknown
 }
 
 func securitySchemeValue(ref *openapi3.SecuritySchemeRef) *openapi3.SecurityScheme {
