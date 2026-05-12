@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 )
 
 // RunWorkflowVerification builds the CLI and runs all workflows from the manifest.
@@ -392,7 +394,10 @@ func deriveOverallVerdict(manifest *WorkflowManifest, results []WorkflowResult) 
 
 // writeWorkflowVerifyReport writes the report as JSON to the given directory.
 func writeWorkflowVerifyReport(dir string, report *WorkflowVerifyReport) error {
-	data, err := json.MarshalIndent(report, "", "  ")
+	// Marshal a copy so callers keep the real path they passed in.
+	emitted := *report
+	emitted.Dir = artifacts.RedactCLIDirRoot(report.Dir)
+	data, err := json.MarshalIndent(&emitted, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling workflow verify report: %w", err)
 	}
