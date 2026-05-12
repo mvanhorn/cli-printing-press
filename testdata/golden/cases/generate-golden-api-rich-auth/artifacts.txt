@@ -7,5 +7,6 @@ printing-press-rich-auth/internal/cli/auth.go
 printing-press-rich-auth/internal/cli/root_test.go
 printing-press-rich-auth/internal/cli/doctor.go
 printing-press-rich-auth/internal/cli/helpers.go
+printing-press-rich-auth/internal/cli/helpers_test.go
 printing-press-rich-auth/internal/config/config.go
 printing-press-rich-auth/internal/mcp/tools.go

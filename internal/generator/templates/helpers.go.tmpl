@@ -781,6 +781,16 @@ func printJSONFiltered(w io.Writer, v any, flags *rootFlags) error {
 // filterFields keeps only the specified fields (comma-separated) from JSON objects/arrays.
 // Supports dotted paths like "events.shortName" to descend into nested structures.
 // Arrays are traversed element-wise: "events.shortName" keeps shortName on each event.
+//
+// For RPC-style POST responses that wrap items in a common envelope key
+// (results, data, items, hits) and pad the envelope with heavy companion
+// fields (full context blobs, pre-fetched prose, raw_response), --select
+// auto-descends into that array when none of the selected paths match a
+// top-level key. The user wrote --select id,score expecting item-level
+// fields; returning just the narrowed array strips the heavy envelope
+// fields, which is the dominant token-saving win on RAG-shaped responses.
+// To preserve the envelope wrap, use dotted paths (--select results.id,
+// results.score).
 func filterFields(data json.RawMessage, fields string) json.RawMessage {
 	var paths [][]string
 	for _, f := range strings.Split(fields, ",") {
@@ -797,7 +807,46 @@ func filterFields(data json.RawMessage, fields string) json.RawMessage {
 	if len(paths) == 0 {
 		return data
 	}
+	if inner, ok := selectEnvelopeArray(data, paths); ok {
+		return filterFieldsRec(inner, paths)
+	}
 	return filterFieldsRec(data, paths)
+}
+
+// selectEnvelopeArray returns the inner array if `data` is an object whose
+// top-level keys don't match any path head AND a common envelope key
+// (results, data, items, hits) holds an array. Used by filterFields to make
+// --select ergonomic on RPC-style POST responses. Returns (nil, false) if
+// any path head matches a top-level key (no unwrap needed) or if no
+// envelope key holds an array (no safe unwrap).
+func selectEnvelopeArray(data json.RawMessage, paths [][]string) (json.RawMessage, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return nil, false
+	}
+	for _, p := range paths {
+		if len(p) == 0 {
+			continue
+		}
+		head := p[0]
+		for k := range obj {
+			lower := strings.ToLower(k)
+			if lower == head || camelToKebab(k) == head {
+				return nil, false
+			}
+		}
+	}
+	for _, key := range []string{"results", "data", "items", "hits"} {
+		v, ok := obj[key]
+		if !ok {
+			continue
+		}
+		var arr []json.RawMessage
+		if json.Unmarshal(v, &arr) == nil {
+			return v, true
+		}
+	}
+	return nil, false
 }
 
 // filterFieldsRec applies path filters to a JSON value. Each path is a list of
