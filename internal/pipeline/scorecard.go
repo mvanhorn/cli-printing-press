@@ -1762,6 +1762,7 @@ func evaluateAuthProtocol(dir string, spec *openAPISpecInfo) dimensionScore {
 		return dimensionScore{scored: true}
 	}
 
+	hasStructuralOAuth := hasStructuralOAuthSurface(dir, configContent)
 	referencedSchemes := referencedSecuritySchemes(spec.SecurityRequirements)
 	totalScore := 0
 	scoredSets := 0
@@ -1773,7 +1774,7 @@ func evaluateAuthProtocol(dir string, spec *openAPISpecInfo) dimensionScore {
 		bestScore := -1
 		scoreable := false
 		for _, alternative := range requirementSet.Alternatives {
-			score, ok := scoreAuthAlternative(clientContent, configContent, authContent, spec.SecuritySchemes, alternative, referencedSchemes)
+			score, ok := scoreAuthAlternative(clientContent, configContent, authContent, hasStructuralOAuth, spec.SecuritySchemes, alternative, referencedSchemes)
 			if !ok {
 				continue
 			}
@@ -1856,7 +1857,7 @@ func referencedSecuritySchemes(requirementSets []securityRequirementSet) map[str
 	return referenced
 }
 
-func scoreAuthAlternative(clientContent, configContent, authContent string, schemes map[string]openAPISecurityScheme, alternative []string, referencedSchemes map[string]bool) (int, bool) {
+func scoreAuthAlternative(clientContent, configContent, authContent string, hasStructuralOAuth bool, schemes map[string]openAPISecurityScheme, alternative []string, referencedSchemes map[string]bool) (int, bool) {
 	if len(alternative) == 0 {
 		return 0, false
 	}
@@ -1876,7 +1877,7 @@ func scoreAuthAlternative(clientContent, configContent, authContent string, sche
 		if composedHeaders && isAPIKeyHeaderScheme(scheme) {
 			score, scoreable = scoreComposedHeaderScheme(clientContent, scheme)
 		} else {
-			score, scoreable = scoreAuthScheme(clientContent, configContent, authContent, scheme)
+			score, scoreable = scoreAuthScheme(clientContent, configContent, authContent, hasStructuralOAuth, scheme)
 		}
 		if !scoreable {
 			continue
@@ -1897,7 +1898,7 @@ func scoreAuthAlternative(clientContent, configContent, authContent string, sche
 	return score, true
 }
 
-func scoreAuthScheme(clientContent, configContent, authContent string, scheme openAPISecurityScheme) (int, bool) {
+func scoreAuthScheme(clientContent, configContent, authContent string, hasStructuralOAuth bool, scheme openAPISecurityScheme) (int, bool) {
 	nameLower := strings.ToLower(scheme.Key)
 	headerName := "Authorization"
 	authHeaderMatched := false
@@ -1905,6 +1906,7 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 	queryMatched := false
 	envMatched := false
 	scoreable := false
+	bearerStyle := false
 
 	if strings.EqualFold(scheme.Type, "apikey") && scheme.In == "header" && strings.TrimSpace(scheme.HeaderName) != "" {
 		headerName = scheme.HeaderName
@@ -1918,6 +1920,7 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 		}
 	case strings.Contains(nameLower, "bearer") || (scheme.Type == "http" && scheme.Scheme == "bearer"):
 		scoreable = true
+		bearerStyle = true
 		bearerLiteral := scheme.Prefix
 		if strings.TrimSpace(bearerLiteral) == "" {
 			bearerLiteral = "Bearer"
@@ -1942,12 +1945,25 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 		}
 	case strings.EqualFold(scheme.Type, "oauth2"), strings.EqualFold(scheme.Type, "openidconnect"):
 		scoreable = true
+		bearerStyle = true
 		if authPrefixLiteralPresent("Bearer", clientContent, configContent, authContent) {
 			authHeaderMatched = true
 		}
 	}
 	if !scoreable {
 		return 0, false
+	}
+
+	// Bearer-style schemes (http/bearer, oauth2, openidconnect) are otherwise
+	// scored by grepping for the "Bearer " literal and the spec's scheme key as
+	// an env-var needle, both of which a cosmetic polish pass can fake by adding
+	// an unused const. Real OAuth machinery (refresh-token rotation in config or
+	// a dedicated oauth helper package) credits both signals at once because the
+	// CLI demonstrably exchanges tokens and reads OAuth env vars (CLIENT_ID,
+	// REFRESH_TOKEN) that sanitizeEnvName never matches.
+	if bearerStyle && hasStructuralOAuth {
+		authHeaderMatched = true
+		envMatched = true
 	}
 
 	// AuthProtocol pattern: generated clients use Header.Set/Add with the expected header name.
@@ -2097,6 +2113,22 @@ func scoreComposedHeaderScheme(clientContent string, scheme openAPISecuritySchem
 func headerAssignmentPresent(clientContent, headerName string) bool {
 	return strings.Contains(clientContent, `Header.Set("`+headerName+`"`) ||
 		strings.Contains(clientContent, `Header.Add("`+headerName+`"`)
+}
+
+// refreshTokenFieldRe word-anchors RefreshToken so cosmetic names like
+// NoRefreshToken or RefreshTokenError don't satisfy the structural check.
+var refreshTokenFieldRe = regexp.MustCompile(`\bRefreshToken\b`)
+
+// hasStructuralOAuthSurface returns true when the printed CLI ships real
+// OAuth machinery rather than a literal "Bearer " const that grep can find.
+// Either signal is sufficient — a generated config.go with a RefreshToken
+// rotation field, or a hand-written internal/oauth/ helper package.
+func hasStructuralOAuthSurface(dir, configContent string) bool {
+	if refreshTokenFieldRe.MatchString(configContent) {
+		return true
+	}
+	info, err := os.Stat(filepath.Join(dir, "internal", "oauth"))
+	return err == nil && info.IsDir()
 }
 
 func authPrefixLiteralPresent(prefix string, contents ...string) bool {
