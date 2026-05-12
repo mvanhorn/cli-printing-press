@@ -248,7 +248,7 @@ func TestParseSDLMarksFallbackBaseURLAsPlaceholder(t *testing.T) {
 	parsed, err := ParseSDLBytes("unknown-graphql-service.graphql", []byte(testSDL))
 	require.NoError(t, err)
 	assert.True(t, parsed.BaseURLIsPlaceholder, "unknown GraphQL source must mark BaseURL as placeholder")
-	assert.Equal(t, "https://api.example.com", parsed.BaseURL)
+	assert.Equal(t, spec.PlaceholderBaseURL, parsed.BaseURL)
 
 	parsed, err = ParseSDLBytes("linear-schema.graphql", []byte(testSDL))
 	require.NoError(t, err)

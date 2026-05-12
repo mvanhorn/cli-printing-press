@@ -5262,7 +5262,7 @@ paths:
 		parsed, err := Parse([]byte(specYAML))
 		require.NoError(t, err)
 		assert.True(t, parsed.BaseURLIsPlaceholder, "no-servers spec must mark BaseURL as placeholder")
-		assert.Equal(t, "https://api.example.com", parsed.BaseURL)
+		assert.Equal(t, spec.PlaceholderBaseURL, parsed.BaseURL)
 	})
 
 	t.Run("explicit top-level servers leaves the flag false", func(t *testing.T) {

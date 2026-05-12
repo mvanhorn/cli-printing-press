@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -93,7 +94,7 @@ func TestDetectBaseURL(t *testing.T) {
 	assert.False(t, isPlaceholder)
 
 	url, isPlaceholder = detectBaseURL("No URL here")
-	assert.Equal(t, "https://api.example.com", url)
+	assert.Equal(t, spec.PlaceholderBaseURL, url)
 	assert.True(t, isPlaceholder, "missing URL must signal placeholder fallback")
 }
 
