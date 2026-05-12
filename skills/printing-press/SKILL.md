@@ -2583,7 +2583,7 @@ Use the Agent tool or review directly with this prompt contract:
 
 ## Phase 4.85: Agentic Output Review
 
-**Runs after Phase 4.8, before Phase 5.** Phase 4.8 reviews SKILL.md prose against the shipped CLI. Phase 4.85 reviews the CLI's **actual command output** for plausibility bugs that rule-based checks can't encode (substring-match relevance failures, format bugs, silent source drops, ranking failures). The dispatch prompt, gate logic, and known blind spots live in the `printing-press-output-review` sub-skill — single source of truth shared with the polish skill (which runs the same review during its diagnostic loop).
+**Runs after Phase 4.8, before Phase 4.95.** Phase 4.8 reviews SKILL.md prose against the shipped CLI. Phase 4.85 reviews the CLI's **actual command output** for plausibility bugs that rule-based checks can't encode (substring-match relevance failures, format bugs, silent source drops, ranking failures). The dispatch prompt, gate logic, and known blind spots live in the `printing-press-output-review` sub-skill — single source of truth shared with the polish skill (which runs the same review during its diagnostic loop).
 
 Invoke the sub-skill via the Skill tool:
 
@@ -2597,6 +2597,42 @@ Skill(
 The sub-skill carries `context: fork` so the reviewer agent's diagnostic chatter stays isolated from this generation flow. It returns a `---OUTPUT-REVIEW-RESULT---` block with `status: PASS|WARN|SKIP` and a list of findings.
 
 **Wave B rollout policy:** all findings surface as **warnings**, not blockers. Shipcheck does not fail on Phase 4.85 findings. Log the findings to `manuscripts/<api>/<run>/proofs/phase-4.85-findings.md` and surface them to the user. The user decides case by case whether to fix before shipping. Wave B calibrates false-positive rates before Wave C flips errors to blocking.
+
+## Phase 4.95: Native Code Review
+
+**Runs after Phase 4.85, before Phase 5.** Reviews the printed CLI source for security and correctness issues using the harness's built-in code review.
+
+**Target.** The generated CLI and MCP source under `$CLI_WORK_DIR`. In scope: `internal/cli/`, `internal/mcp/` (excluding `cobratree/`), `internal/store/`, `internal/client/`, and `cmd/`. **Out of scope:** `internal/cliutil/` and `internal/mcp/cobratree/` — these are generator-reserved packages. Any finding there is a machine bug; route to retro, do not patch in place.
+
+Use the harness-native code review path:
+- Claude Code: invoke `/review [target]` against `$CLI_WORK_DIR`.
+- Codex: review the current diff/target directly in built-in code-review mode.
+- Other harnesses: use their native review command or equivalent.
+
+**Autofix policy.** This is the cheapest fix-window in the entire pipeline — session context is hot, no PR feedback round-trip, no publish decision in flight. The default is fix. Surfacing to the user is the exception, not the rule. Severity is informational, not gating: a low-severity nil-deref is a 30-second fix; close it the same as a high-severity one.
+
+Fix without asking when:
+- The fix is mechanical (parameterized query, input validation, error wrapping, missing nil check, dead code removal, obvious refactor).
+- The fix is small-scope and behavior-preserving from the README's point of view.
+- There is no plausible competing implementation a reasonable user would prefer over the chosen one.
+
+Surface to the user only when the fix requires a real tradeoff they have to make. Real tradeoffs look like:
+- **Shipping scope shrinks.** Closing the finding cleanly means dropping or significantly degrading a Phase 1.5-approved feature. (Per the Rules section, scope changes route back to Phase 1.5 for re-approval, not a silent shrink here.)
+- **Two materially different valid fixes** with different cost, surface, or dependency profiles, and either is defensible.
+- **The finding implies a Phase 1 research miss** — wrong primary source, wrong auth model, wrong transport — that the agent cannot resolve from in-session context.
+- **The fix re-triggers a long phase** (re-running browser-sniff, regen from spec, etc.).
+
+Treat agent judgment as sufficient here — these categories are distinguishable on inspection. Conservatism is the failure mode, not over-fixing. Drafting an AskUserQuestion because "the user might want to know" is premature; fix the issue and note it in the shipcheck report.
+
+Re-run the native review after each autofix round until findings clear. Cap at 3 rounds; if findings persist after round 3, stop and surface — autofix is not converging.
+
+**Rollout posture.** Unlike Phase 4.85, this phase starts without a warnings-only calibration period. The native review tools (`/review` in Claude Code, Codex's built-in review) are mature, well-understood surfaces — calibration risk is low. The 3-round autofix cap is the safety net for runaway findings, and the template-shape escape hatch routes systemic issues to retro instead of patching in place.
+
+**Template-shape escape hatch.** Even if a finding lives in an in-scope path, if it appears to come from a generator template (recurs across files in identical shape, sits in a path matched by `internal/generator/templates/`'s emit set, or duplicates a known prior template bug), file as retro-candidate and surface to the user rather than autofixing. Patching the printed CLI hides the machine bug from the next CLI.
+
+**Post-fix simplification (Claude Code only).** After the review + autofix loop converges, the printed CLI has fresh edits from the autofix passes — typically defensive guards, sanitization helpers, and near-duplicate fixes across sibling files. Run `/simplify` scoped to the same in-scope paths to consolidate duplication, remove dead code, and tighten the autofix output before dogfood. `/simplify` is Claude Code-only; skip on Codex and other harnesses (they have no built-in equivalent, and the press skill explicitly avoids custom simplification logic — same rule as the native code review above).
+
+**Harness exemption.** If the current harness has no built-in code review, skip this phase with "Native code review unavailable in this harness; skipping" in the shipcheck report.
 
 ## Phase 5: Dogfood Testing
 
