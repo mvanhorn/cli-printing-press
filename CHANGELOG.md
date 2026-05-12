@@ -1,5 +1,13 @@
 # Changelog
 
+## [4.5.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.4.0...v4.5.0) (2026-05-12)
+
+
+### Features
+
+* **skills:** add native code review phase to printing-press ([#1160](https://github.com/mvanhorn/cli-printing-press/issues/1160)) ([88c5b69](https://github.com/mvanhorn/cli-printing-press/commit/88c5b6966b1cdb1387f919c08b4aa21359d51762))
+* **skills:** offer browser-sniff backend install at preflight ([#1132](https://github.com/mvanhorn/cli-printing-press/issues/1132)) ([8990fc2](https://github.com/mvanhorn/cli-printing-press/commit/8990fc242ff1a4ec7c57892e2896f5cd77fd7be2))
+
 ## [4.4.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.3.0...v4.4.0) (2026-05-11)
 
 
