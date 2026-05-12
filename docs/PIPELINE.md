@@ -39,6 +39,8 @@ Every phase has two orthogonal status fields:
 
 `Status` tracks the execution state of the phase. `PlanStatus` tracks the state of the phase's plan file: a freshly-initialized phase has a `seed` plan; once expanded by the planner it becomes `expanded`; once the phase finishes it becomes `completed`. Both are defined in `internal/pipeline/state.go`.
 
+`LoadState` and `save()` defensively initialize the on-disk `phases` map to an empty object when it is unmarshaled as nil. Phase names, ordering, transitions, and the version-migration semantics described in this document are unaffected by that guard.
+
 ## Phases
 
 Each phase below lists four fields: what it consumes, what it produces, what gates it must pass, and which artifacts it leaves on disk.
