@@ -316,6 +316,10 @@ func copySpecToOutput(specFlag, specURL, outputDir string) error {
 }
 
 // readSpecBytes fetches spec content from a URL or reads it from a local file.
+// URL sources go through openapi.LoadSpecBytes's 24h on-disk cache, the same
+// cache the primary `generate` parse path uses; in practice this means the
+// spec.json archived alongside the generated CLI matches the spec the
+// generator parsed, even when the upstream rolled between the two reads.
 func readSpecBytes(specURL string) ([]byte, error) {
 	return openapi.LoadSpecBytes(specURL, false, false)
 }

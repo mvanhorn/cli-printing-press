@@ -13,6 +13,12 @@ import (
 	"time"
 )
 
+// smallResponseErrorPrefix matches the "404: Not Found" / "500: ..." shape
+// some upstreams return as a 200-body payload instead of an HTTP error. The
+// small-response branch in FetchOrCacheSpec uses it to surface a clear
+// rejection at the boundary rather than feeding the body to the parser.
+var smallResponseErrorPrefix = regexp.MustCompile(`^\d{3}:\s`)
+
 // LoadSpecBytes reads OpenAPI spec bytes from either a local filesystem path
 // or an http(s) URL, picking the right transport from the source string.
 // Callers that previously wrapped os.ReadFile gain URL support transparently;
@@ -78,7 +84,7 @@ func FetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, err
 	if len(data) < 256 {
 		trimmed := strings.TrimSpace(string(data))
 		if strings.HasPrefix(trimmed, "<") ||
-			regexp.MustCompile(`^\d{3}:\s`).MatchString(trimmed) {
+			smallResponseErrorPrefix.MatchString(trimmed) {
 			return nil, fmt.Errorf("spec_url %s returned a small response that does not look like an OpenAPI spec (%d bytes): %q",
 				specURL, len(data), truncFifty(trimmed))
 		}
