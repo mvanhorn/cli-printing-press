@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,38 @@ import (
 
 	"github.com/stretchr/testify/assert"
 )
+
+// TestLoadOpenAPISpec_AcceptsHTTPURL is the regression guard for #1001:
+// scorer subcommands rejected --spec URLs because the loader called
+// os.ReadFile directly. The fix routes through openapi.LoadSpecBytes,
+// which dispatches by scheme. A URL must now load successfully on every
+// platform without a separate "curl to /tmp" workaround.
+func TestLoadOpenAPISpec_AcceptsHTTPURL(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{
+  "openapi": "3.0.0",
+  "info": {"title": "Demo", "version": "1.0"},
+  "paths": {
+    "/things": {"get": {"responses": {"200": {"description": "ok"}}}}
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer_auth": {"type": "http", "scheme": "bearer"}
+    }
+  }
+}`))
+	}))
+	defer srv.Close()
+
+	info, err := loadOpenAPISpec(srv.URL)
+	assert.NoError(t, err)
+	assert.NotNil(t, info)
+	assert.Contains(t, info.Paths, "/things")
+	assert.Contains(t, info.SecuritySchemes, "bearer_auth")
+}
 
 func TestIsThinMCPDescription(t *testing.T) {
 	tests := []struct {
