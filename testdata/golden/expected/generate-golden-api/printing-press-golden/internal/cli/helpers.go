@@ -622,6 +622,12 @@ func filterFields(data json.RawMessage, fields string) json.RawMessage {
 // --select ergonomic on RPC-style POST responses. Returns (nil, false) if
 // any path head matches a top-level key (no unwrap needed) or if no
 // envelope key holds an array (no safe unwrap).
+//
+// Both the guard (path-head vs top-level key) and the envelope lookup are
+// case-insensitive so the function is symmetric with the rest of filterFields
+// (which lowercases path segments and matches keys via matchSelectSegment).
+// An API returning a `Results` or `RESULTS` envelope behaves the same as
+// the canonical lowercase `results`.
 func selectEnvelopeArray(data json.RawMessage, paths [][]string) (json.RawMessage, bool) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(data, &obj); err != nil {
@@ -639,9 +645,9 @@ func selectEnvelopeArray(data json.RawMessage, paths [][]string) (json.RawMessag
 			}
 		}
 	}
-	for _, key := range []string{"results", "data", "items", "hits"} {
-		v, ok := obj[key]
-		if !ok {
+	envelopeKeys := map[string]bool{"results": true, "data": true, "items": true, "hits": true}
+	for k, v := range obj {
+		if !envelopeKeys[strings.ToLower(k)] {
 			continue
 		}
 		var arr []json.RawMessage

@@ -103,6 +103,11 @@ func TestFilterFields_TopLevelMatch_DoesNotUnwrap(t *testing.T) {
 // case: when no common envelope key (results/data/items/hits) is present,
 // the function falls back to the pre-existing object-filtering behavior
 // rather than unwrapping a random array-valued field.
+//
+// Pre-existing behavior: filterFieldsRec processes the object, strips every
+// top-level key that doesn't match a selected path, and returns the
+// narrowed object. With paths {id, name} and top-level keys {records,
+// count} there is no overlap, so the output is exactly {}.
 func TestFilterFields_NoEnvelopeKey_FallsBackToObjectFilter(t *testing.T) {
 	t.Parallel()
 	in := json.RawMessage(`{
@@ -111,19 +116,28 @@ func TestFilterFields_NoEnvelopeKey_FallsBackToObjectFilter(t *testing.T) {
 	}`)
 	out := filterFields(in, "id,name")
 
-	// Path heads (id, name) don't match top-level keys (records, count), AND
-	// "records" is not a recognized envelope key. Should NOT unwrap; pre-existing
-	// behavior strips all non-matching top-level keys.
-	if !strings.HasPrefix(strings.TrimSpace(string(out)), "{") {
-		t.Errorf("expected object shape preserved when no envelope key matches, got: %s", out)
+	// Output must be the canonical empty object — not the unwrapped array
+	// [{"id":"a","name":"alpha"}] (which would mean the unwrap incorrectly
+	// fired on the non-envelope "records" key) and not the original input
+	// (which would mean no filter was applied at all).
+	got := strings.TrimSpace(string(out))
+	if got != "{}" {
+		t.Errorf("expected exactly {} when no envelope key matches and no path matches a top-level field, got: %s", got)
 	}
 }
 
 // TestFilterFields_DataEnvelope_UnwrapsAndNarrows asserts the four recognized
-// envelope keys (results, data, items, hits) all trigger the unwrap.
+// envelope keys (results, data, items, hits) all trigger the unwrap,
+// case-insensitively so that "Results", "RESULTS", etc., behave identically
+// to the canonical lowercase form (matches filterFields' broader
+// case-insensitive treatment of selected paths).
 func TestFilterFields_DataEnvelope_UnwrapsAndNarrows(t *testing.T) {
 	t.Parallel()
-	for _, envelope := range []string{"results", "data", "items", "hits"} {
+	envelopes := []string{
+		"results", "data", "items", "hits",
+		"Results", "DATA", "Items", "Hits",
+	}
+	for _, envelope := range envelopes {
 		envelope := envelope
 		t.Run(envelope, func(t *testing.T) {
 			t.Parallel()
