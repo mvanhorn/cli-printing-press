@@ -91,7 +91,7 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 
 	render := func(tmplName, outPath string, data any) error {
 		// embed.FS uses forward-slash paths; filepath.Join breaks on Windows.
-		content, err := templateFS.ReadFile("templates/" + tmplName)
+		content, err := templateFS.ReadFile(path.Join("templates", tmplName))
 		if err != nil {
 			return fmt.Errorf("reading template %s: %w", tmplName, err)
 		}
