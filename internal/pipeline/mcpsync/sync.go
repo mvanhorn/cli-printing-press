@@ -494,6 +494,14 @@ func applyManifestNameOverride(cliDir string, parsed *spec.APISpec) string {
 	}
 	m, err := pipeline.ReadCLIManifest(cliDir)
 	if err != nil {
+		// fs.ErrNotExist is the expected legacy-CLI case — fall through
+		// silently. A JSON parse failure (corrupted/partially-written
+		// manifest) is not expected: it would silently revert to the
+		// pre-fix spec-derived slug with no operator signal, so surface
+		// it on stderr.
+		if !errors.Is(err, fs.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "mcp-sync: could not read .printing-press.json (%v); falling back to spec-derived slug\n", err)
+		}
 		return ""
 	}
 	if m.APIName == "" || m.APIName == parsed.Name {

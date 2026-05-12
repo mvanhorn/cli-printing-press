@@ -1305,6 +1305,28 @@ func TestApplyManifestNameOverrideMissingManifest(t *testing.T) {
 	assert.Equal(t, "~/.config/legacy-api-pp-cli/config.toml", parsed.Config.Path)
 }
 
+// TestApplyManifestNameOverrideMalformedJSON — a corrupted
+// .printing-press.json (truncated, partial write, hand-edited and
+// broken) must fall through without overriding, and must NOT be
+// indistinguishable from the missing-file case. The stderr warning
+// is the operator's only signal that the guard was bypassed.
+func TestApplyManifestNameOverrideMalformedJSON(t *testing.T) {
+	t.Parallel()
+	cliDir := filepath.Join(t.TempDir(), "corrupt-pp-cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	// Truncated JSON — would unmarshal to an error, not "{}".
+	require.NoError(t, os.WriteFile(
+		filepath.Join(cliDir, pipeline.CLIManifestFilename),
+		[]byte(`{"api_name": "corrupt`),
+		0o644,
+	))
+
+	parsed := &spec.APISpec{Name: "spec-derived"}
+	prior := applyManifestNameOverride(cliDir, parsed)
+	assert.Equal(t, "", prior, "malformed manifest must not produce an override")
+	assert.Equal(t, "spec-derived", parsed.Name, "parsed.Name must be preserved when the manifest cannot be parsed")
+}
+
 // TestApplyManifestNameOverrideEmptyAPIName — a malformed manifest with
 // no api_name (corrupted, partial write) must not clobber parsed.Name
 // with the empty string.
