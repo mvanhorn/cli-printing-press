@@ -30,6 +30,14 @@ func TestIsCobraUsageError(t *testing.T) {
 		// original (or wrapped *cliError) exit code.
 		{"API error pass-through", errors.New("API returned 500"), false},
 		{"network error pass-through", errors.New("dial tcp: connection refused"), false},
+		// Pattern-tightness regressions: application RunE errors that
+		// happen to mention "required flag" / "flag needs an argument" /
+		// "invalid argument" as prose must NOT classify as usage errors.
+		// The anchored prefixes guard against this; if the patterns are
+		// ever loosened back to Contains() these tests catch the drift.
+		{"app msg containing 'required flag' as prose", errors.New("the required flag config is missing from the manifest"), false},
+		{"app msg containing 'flag needs an argument' as prose", errors.New("this flag needs an argument upstream before retry"), false},
+		{"app msg containing 'invalid argument' as prose", errors.New("invalid argument provided to handler at /foo"), false},
 	}
 	for _, tc := range cases {
 		tc := tc

@@ -94,17 +94,22 @@ func Execute() error {
 }
 
 // isCobraUsageError reports whether err matches one of Cobra/pflag's
-// pre-RunE usage-error shapes. Detection is by message prefix/substring
-// to match the same approach the unknown-flag hint path uses above;
-// neither Cobra nor pflag exports typed sentinels for these.
+// pre-RunE usage-error shapes. Detection is by message prefix to match
+// the same approach the unknown-flag hint path uses above; neither
+// Cobra nor pflag exports typed sentinels for these.
+//
+// Patterns are anchored to the literal punctuation Cobra and pflag
+// emit so an application's own RunE error that happens to contain the
+// substring "required flag" or "invalid argument" doesn't get
+// misclassified as a usage error.
 //
 // Patterns covered (Cobra v1.x + pflag v1.x as of 2026-05):
-//   - "unknown flag: --foo"             (pflag)
-//   - "unknown shorthand flag: 'x' in -x" (pflag)
-//   - "unknown command \"foo\" for ..." (Cobra)
-//   - "required flag(s) \"foo\" not set" (Cobra MarkFlagRequired)
-//   - "flag needs an argument: --foo"   (pflag, missing value)
-//   - "invalid argument \"x\" for ..."  (pflag, parse failure)
+//   - "unknown flag: --foo"                            (pflag)
+//   - "unknown shorthand flag: 'x' in -x"              (pflag)
+//   - "unknown command \"foo\" for ..."                (Cobra)
+//   - "required flag(s) \"foo\" not set"               (Cobra MarkFlagRequired)
+//   - "flag needs an argument: --foo"                  (pflag, missing value)
+//   - "invalid argument \"x\" for \"--y\" flag: ..."   (pflag, parse failure)
 //
 // Returns false for nil err.
 func isCobraUsageError(err error) bool {
@@ -115,9 +120,9 @@ func isCobraUsageError(err error) bool {
 	return strings.HasPrefix(msg, "unknown flag") ||
 		strings.HasPrefix(msg, "unknown shorthand flag") ||
 		strings.HasPrefix(msg, "unknown command") ||
-		strings.Contains(msg, "required flag") ||
-		strings.Contains(msg, "flag needs an argument") ||
-		strings.HasPrefix(msg, "invalid argument")
+		strings.HasPrefix(msg, `required flag(s) "`) ||
+		strings.HasPrefix(msg, "flag needs an argument:") ||
+		strings.HasPrefix(msg, `invalid argument "`)
 }
 
 func newRootCmd(flags *rootFlags) *cobra.Command {
