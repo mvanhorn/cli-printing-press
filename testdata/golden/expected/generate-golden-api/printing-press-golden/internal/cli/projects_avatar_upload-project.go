@@ -6,70 +6,47 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 
 	"github.com/spf13/cobra"
 )
 
-func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
-	var flagNotify bool
-	var bodyCompleted bool
-	var bodyPriority string
-	var bodyTitle string
-	var stdinBody bool
+func newProjectsAvatarUploadProjectCmd(flags *rootFlags) *cobra.Command {
+	var flagOverwrite bool
+	var bodyCaption string
+	var bodyFile string
 
 	cmd := &cobra.Command{
-		Use:         "update-project <projectId> <taskId>",
+		Use:         "upload-project <projectId>",
 		Aliases:     []string{"update"},
-		Short:       "Update project task",
-		Example:     "  printing-press-golden-pp-cli projects tasks update-project 550e8400-e29b-41d4-a716-446655440000 550e8400-e29b-41d4-a716-446655440000",
-		Annotations: map[string]string{"pp:endpoint": "tasks.update-project", "pp:method": "PATCH", "pp:path": "/projects/{projectId}/tasks/{taskId}"},
+		Short:       "Upload project avatar",
+		Example:     "  printing-press-golden-pp-cli projects avatar upload-project 550e8400-e29b-41d4-a716-446655440000",
+		Annotations: map[string]string{"pp:endpoint": "avatar.upload-project", "pp:method": "PUT", "pp:path": "/projects/{projectId}/avatar"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return cmd.Help()
-			}
-			if !stdinBody {
 			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
 
-			path := "/projects/{projectId}/tasks/{taskId}"
+			path := "/projects/{projectId}/avatar"
 			path = replacePathParam(path, "projectId", args[0])
-			if len(args) < 2 {
-				return usageErr(fmt.Errorf("taskId is required\nUsage: %s <%s>", cmd.CommandPath(), "taskId"))
+			fields := map[string]string{}
+			fileFields := map[string]string{}
+			if bodyCaption != "" {
+				fields["caption"] = bodyCaption
 			}
-			path = replacePathParam(path, "taskId", args[1])
-			var body map[string]any
-			if stdinBody {
-				stdinData, err := io.ReadAll(os.Stdin)
-				if err != nil {
-					return fmt.Errorf("reading stdin: %w", err)
-				}
-				var jsonBody map[string]any
-				if err := json.Unmarshal(stdinData, &jsonBody); err != nil {
-					return fmt.Errorf("parsing stdin JSON: %w", err)
-				}
-				body = jsonBody
-			} else {
-				body = map[string]any{}
-				if bodyCompleted != false {
-					body["completed"] = bodyCompleted
-				}
-				if bodyPriority != "" {
-					body["priority"] = bodyPriority
-				}
-				if bodyTitle != "" {
-					body["title"] = bodyTitle
-				}
+			if bodyFile != "" {
+				fileFields["file"] = bodyFile
 			}
+
 			params := map[string]string{}
-			if flagNotify != false {
-				params["notify"] = fmt.Sprintf("%v", flagNotify)
+			if flagOverwrite != false {
+				params["overwrite"] = fmt.Sprintf("%v", flagOverwrite)
 			}
-			data, statusCode, err := c.PatchWithParams(path, params, body)
+			data, statusCode, err := c.PutMultipartWithParams(path, params, fields, fileFields)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -110,8 +87,8 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 					filtered = compactFields(filtered)
 				}
 				envelope := map[string]any{
-					"action":   "patch",
-					"resource": "tasks",
+					"action":   "put",
+					"resource": "avatar",
 					"path":     path,
 					"status":   statusCode,
 					"success":  statusCode >= 200 && statusCode < 300,
@@ -136,11 +113,9 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}
-	cmd.Flags().BoolVar(&flagNotify, "notify", false, "Notify")
-	cmd.Flags().BoolVar(&bodyCompleted, "completed", false, "Completed")
-	cmd.Flags().StringVar(&bodyPriority, "priority", "", "Priority")
-	cmd.Flags().StringVar(&bodyTitle, "title", "", "Title")
-	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin")
+	cmd.Flags().BoolVar(&flagOverwrite, "overwrite", false, "Overwrite")
+	cmd.Flags().StringVar(&bodyCaption, "caption", "", "Caption")
+	cmd.Flags().StringVar(&bodyFile, "file", "", "File")
 
 	return cmd
 }

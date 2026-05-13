@@ -82,7 +82,7 @@ func TestGenerateMultipartRequestBodyUsesMultipartClient(t *testing.T) {
 	assert.Contains(t, mcpSrc, `Format: "binary"`)
 	assert.Contains(t, mcpSrc, `RequestContentType: "multipart/form-data"`)
 	assert.Contains(t, mcpSrc, `multipartFileFields[binding.WireName] = fmt.Sprintf("%v", v)`)
-	assert.Contains(t, mcpSrc, `data, _, err = c.PostMultipart(path, multipartFields, multipartFileFields)`)
+	assert.Contains(t, mcpSrc, `data, _, err = c.PostMultipartWithParams(path, params, multipartFields, multipartFileFields)`)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")

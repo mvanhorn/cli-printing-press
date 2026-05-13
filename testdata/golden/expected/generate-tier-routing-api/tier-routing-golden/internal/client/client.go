@@ -246,12 +246,28 @@ func (c *Client) PostWithHeaders(path string, body any, headers map[string]strin
 	return c.do("POST", path, nil, body, headers)
 }
 
+func (c *Client) PostWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.do("POST", path, params, body, nil)
+}
+
+func (c *Client) PostWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, params, body, headers)
+}
+
 func (c *Client) Delete(path string) (json.RawMessage, int, error) {
 	return c.do("DELETE", path, nil, nil, nil)
 }
 
 func (c *Client) DeleteWithHeaders(path string, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do("DELETE", path, nil, nil, headers)
+}
+
+func (c *Client) DeleteWithParams(path string, params map[string]string) (json.RawMessage, int, error) {
+	return c.do("DELETE", path, params, nil, nil)
+}
+
+func (c *Client) DeleteWithParamsAndHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("DELETE", path, params, nil, headers)
 }
 
 func (c *Client) Put(path string, body any) (json.RawMessage, int, error) {
@@ -262,12 +278,28 @@ func (c *Client) PutWithHeaders(path string, body any, headers map[string]string
 	return c.do("PUT", path, nil, body, headers)
 }
 
+func (c *Client) PutWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.do("PUT", path, params, body, nil)
+}
+
+func (c *Client) PutWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, params, body, headers)
+}
+
 func (c *Client) Patch(path string, body any) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, nil, body, nil)
 }
 
 func (c *Client) PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, nil, body, headers)
+}
+
+func (c *Client) PatchWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, params, body, nil)
+}
+
+func (c *Client) PatchWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, params, body, headers)
 }
 
 // do executes an HTTP request. headerOverrides, when non-nil, override global

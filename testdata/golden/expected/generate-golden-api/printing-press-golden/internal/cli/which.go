@@ -31,6 +31,7 @@ var whichIndex = []whichEntry{
 	{Command: "projects create", Description: "Create project", Group: "projects"},
 	{Command: "projects get", Description: "Get project", Group: "projects"},
 	{Command: "projects list", Description: "List projects", Group: "projects"},
+	{Command: "projects avatar upload-project", Description: "Upload project avatar", Group: "projects"},
 	{Command: "projects tasks list-project", Description: "List project tasks", Group: "projects"},
 	{Command: "projects tasks update-project", Description: "Update project task", Group: "projects"},
 	{Command: "public get-status", Description: "Get public service status", Group: "public"},
