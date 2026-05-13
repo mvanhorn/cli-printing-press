@@ -9,6 +9,10 @@ queue_rules:
       - check-success = golden
       - check-success = pr-title
       - check-success = test
+      - or:
+        - check-success = Greptile Review
+        - check-neutral = Greptile Review
+        - check-skipped = Greptile Review
     merge_method: squash
     update_method: rebase
     batch_size: 3
@@ -41,3 +45,7 @@ merge_protections:
       - check-success = golden
       - check-success = pr-title
       - check-success = test
+      - or:
+        - check-success = Greptile Review
+        - check-neutral = Greptile Review
+        - check-skipped = Greptile Review
