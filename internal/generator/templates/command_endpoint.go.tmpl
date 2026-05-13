@@ -258,18 +258,56 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			fields := map[string]string{}
 			fileFields := map[string]string{}
 {{multipartBodyMaps .Endpoint.Body "\t\t\t"}}
+{{- if endpointHasQueryFlags .Endpoint}}
+			params := map[string]string{}
+{{- range .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+{{- end}}
+{{- if and (not .Positional) (not .PathParam)}}
+			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
+				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+			}
+{{- end}}
+{{- end}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.PostMultipartWithParamsAndHeaders(path, params, fields, fileFields, headerOverrides)
+{{- else}}
+			data, statusCode, err := c.PostMultipartWithParams(path, params, fields, fileFields)
+{{- end}}
+{{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PostMultipartWithHeaders(path, fields, fileFields, headerOverrides)
 {{- else}}
 			data, statusCode, err := c.PostMultipart(path, fields, fileFields)
 {{- end}}
+{{- end}}
 {{- else if $isForm}}
 			fields := url.Values{}
 {{formBodyMaps .Endpoint.Body "\t\t\t"}}
+{{- if endpointHasQueryFlags .Endpoint}}
+			params := map[string]string{}
+{{- range .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+{{- end}}
+{{- if and (not .Positional) (not .PathParam)}}
+			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
+				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+			}
+{{- end}}
+{{- end}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.PostFormWithParamsAndHeaders(path, params, fields, headerOverrides)
+{{- else}}
+			data, statusCode, err := c.PostFormWithParams(path, params, fields)
+{{- end}}
+{{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PostFormWithHeaders(path, fields, headerOverrides)
 {{- else}}
 			data, statusCode, err := c.PostForm(path, fields)
+{{- end}}
 {{- end}}
 {{- else}}
 			var body map[string]any
@@ -286,35 +324,111 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			} else {
 				body = map[string]any{}
 {{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
+{{- if endpointHasQueryFlags .Endpoint}}
+			params := map[string]string{}
+{{- range .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+{{- end}}
+{{- if and (not .Positional) (not .PathParam)}}
+			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
+				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+			}
+{{- end}}
+{{- end}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.PostWithParamsAndHeaders(path, params, body, headerOverrides)
+{{- else}}
+			data, statusCode, err := c.PostWithParams(path, params, body)
+{{- end}}
+{{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PostWithHeaders(path, body, headerOverrides)
 {{- else}}
 			data, statusCode, err := c.Post(path, body)
 {{- end}}
 {{- end}}
+{{- end}}
 {{- else if eq .Endpoint.Method "DELETE"}}
+{{- if endpointHasQueryFlags .Endpoint}}
+			params := map[string]string{}
+{{- range .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+{{- end}}
+{{- if and (not .Positional) (not .PathParam)}}
+			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
+				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+			}
+{{- end}}
+{{- end}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.DeleteWithParamsAndHeaders(path, params, headerOverrides)
+{{- else}}
+			data, statusCode, err := c.DeleteWithParams(path, params)
+{{- end}}
+{{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.DeleteWithHeaders(path, headerOverrides)
 {{- else}}
 			data, statusCode, err := c.Delete(path)
+{{- end}}
 {{- end}}
 {{- else if eq .Endpoint.Method "PUT"}}
 {{- if $isMultipart}}
 			fields := map[string]string{}
 			fileFields := map[string]string{}
 {{multipartBodyMaps .Endpoint.Body "\t\t\t"}}
+{{- if endpointHasQueryFlags .Endpoint}}
+			params := map[string]string{}
+{{- range .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+{{- end}}
+{{- if and (not .Positional) (not .PathParam)}}
+			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
+				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+			}
+{{- end}}
+{{- end}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.PutMultipartWithParamsAndHeaders(path, params, fields, fileFields, headerOverrides)
+{{- else}}
+			data, statusCode, err := c.PutMultipartWithParams(path, params, fields, fileFields)
+{{- end}}
+{{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PutMultipartWithHeaders(path, fields, fileFields, headerOverrides)
 {{- else}}
 			data, statusCode, err := c.PutMultipart(path, fields, fileFields)
 {{- end}}
+{{- end}}
 {{- else if $isForm}}
 			fields := url.Values{}
 {{formBodyMaps .Endpoint.Body "\t\t\t"}}
+{{- if endpointHasQueryFlags .Endpoint}}
+			params := map[string]string{}
+{{- range .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+{{- end}}
+{{- if and (not .Positional) (not .PathParam)}}
+			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
+				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+			}
+{{- end}}
+{{- end}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.PutFormWithParamsAndHeaders(path, params, fields, headerOverrides)
+{{- else}}
+			data, statusCode, err := c.PutFormWithParams(path, params, fields)
+{{- end}}
+{{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PutFormWithHeaders(path, fields, headerOverrides)
 {{- else}}
 			data, statusCode, err := c.PutForm(path, fields)
+{{- end}}
 {{- end}}
 {{- else}}
 			var body map[string]any
@@ -331,10 +445,29 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			} else {
 				body = map[string]any{}
 {{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
+{{- if endpointHasQueryFlags .Endpoint}}
+			params := map[string]string{}
+{{- range .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+{{- end}}
+{{- if and (not .Positional) (not .PathParam)}}
+			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
+				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+			}
+{{- end}}
+{{- end}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.PutWithParamsAndHeaders(path, params, body, headerOverrides)
+{{- else}}
+			data, statusCode, err := c.PutWithParams(path, params, body)
+{{- end}}
+{{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PutWithHeaders(path, body, headerOverrides)
 {{- else}}
 			data, statusCode, err := c.Put(path, body)
+{{- end}}
 {{- end}}
 {{- end}}
 {{- else if eq .Endpoint.Method "PATCH"}}
@@ -342,18 +475,56 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			fields := map[string]string{}
 			fileFields := map[string]string{}
 {{multipartBodyMaps .Endpoint.Body "\t\t\t"}}
+{{- if endpointHasQueryFlags .Endpoint}}
+			params := map[string]string{}
+{{- range .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+{{- end}}
+{{- if and (not .Positional) (not .PathParam)}}
+			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
+				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+			}
+{{- end}}
+{{- end}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.PatchMultipartWithParamsAndHeaders(path, params, fields, fileFields, headerOverrides)
+{{- else}}
+			data, statusCode, err := c.PatchMultipartWithParams(path, params, fields, fileFields)
+{{- end}}
+{{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PatchMultipartWithHeaders(path, fields, fileFields, headerOverrides)
 {{- else}}
 			data, statusCode, err := c.PatchMultipart(path, fields, fileFields)
 {{- end}}
+{{- end}}
 {{- else if $isForm}}
 			fields := url.Values{}
 {{formBodyMaps .Endpoint.Body "\t\t\t"}}
+{{- if endpointHasQueryFlags .Endpoint}}
+			params := map[string]string{}
+{{- range .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+{{- end}}
+{{- if and (not .Positional) (not .PathParam)}}
+			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
+				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+			}
+{{- end}}
+{{- end}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.PatchFormWithParamsAndHeaders(path, params, fields, headerOverrides)
+{{- else}}
+			data, statusCode, err := c.PatchFormWithParams(path, params, fields)
+{{- end}}
+{{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PatchFormWithHeaders(path, fields, headerOverrides)
 {{- else}}
 			data, statusCode, err := c.PatchForm(path, fields)
+{{- end}}
 {{- end}}
 {{- else}}
 			var body map[string]any
@@ -370,10 +541,29 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			} else {
 				body = map[string]any{}
 {{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
+{{- if endpointHasQueryFlags .Endpoint}}
+			params := map[string]string{}
+{{- range .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+{{- end}}
+{{- if and (not .Positional) (not .PathParam)}}
+			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
+				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+			}
+{{- end}}
+{{- end}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.PatchWithParamsAndHeaders(path, params, body, headerOverrides)
+{{- else}}
+			data, statusCode, err := c.PatchWithParams(path, params, body)
+{{- end}}
+{{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PatchWithHeaders(path, body, headerOverrides)
 {{- else}}
 			data, statusCode, err := c.Patch(path, body)
+{{- end}}
 {{- end}}
 {{- end}}
 {{- end}}
