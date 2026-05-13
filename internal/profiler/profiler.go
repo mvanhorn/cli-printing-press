@@ -97,8 +97,9 @@ type SyncableResource struct {
 	SinceParam string
 
 	// SupportsPagination is true when the chosen list endpoint declares a
-	// page-size parameter. The sync template uses this to avoid sending
-	// synthetic limit/offset params to strict non-paginated list endpoints.
+	// cursor or page-size parameter. The sync template uses this to avoid
+	// sending synthetic limit/offset params to strict non-paginated list
+	// endpoints.
 	SupportsPagination bool
 
 	// Discriminator routes heterogeneous response items to concrete typed
@@ -1317,7 +1318,9 @@ func detectEndpointSinceParam(params []spec.Param) string {
 }
 
 func endpointSupportsPagination(endpoint spec.Endpoint) bool {
-	if endpoint.Pagination != nil && strings.TrimSpace(endpoint.Pagination.LimitParam) != "" {
+	if endpoint.Pagination != nil &&
+		(strings.TrimSpace(endpoint.Pagination.LimitParam) != "" ||
+			strings.TrimSpace(endpoint.Pagination.CursorParam) != "") {
 		return true
 	}
 	for _, param := range endpoint.Params {
