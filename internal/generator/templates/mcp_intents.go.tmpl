@@ -160,11 +160,15 @@ func callIntentEndpoint(c *client.Client, ref string, params map[string]any) (an
 
 	var data json.RawMessage
 	var err error
+	// Intent dispatch has no schema metadata at runtime to bucket params into
+	// body vs query, so POST/PUT/PATCH keep the everything-to-body design.
+	// DELETE is the one verb where query routing is unambiguous; the previous
+	// code built `query` but never passed it.
 	switch ep.method {
 	case "GET":
 		data, err = c.Get(path, query)
 	case "DELETE":
-		data, _, err = c.Delete(path)
+		data, _, err = c.DeleteWithParams(path, query)
 	default:
 		body, mErr := json.Marshal(params)
 		if mErr != nil {
