@@ -11,9 +11,11 @@ queue_rules:
       - check-success = test
     merge_method: squash
     update_method: rebase
-    batch_size: 1
+    batch_size: 3
+    checks_timeout: 60m
 
 merge_queue:
+  max_parallel_checks: 2
   queued_label: queued
   dequeued_label: dequeued
   status_comments: outcomes
