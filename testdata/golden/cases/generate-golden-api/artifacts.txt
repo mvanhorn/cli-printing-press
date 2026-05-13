@@ -11,6 +11,8 @@ printing-press-golden/internal/cli/projects_list.go
 printing-press-golden/internal/cli/projects_create.go
 printing-press-golden/internal/cli/projects_tasks_list-project.go
 printing-press-golden/internal/cli/projects_tasks_update-project.go
+printing-press-golden/internal/cli/projects_avatar.go
+printing-press-golden/internal/cli/projects_avatar_upload-project.go
 printing-press-golden/internal/cli/promoted_public.go
 printing-press-golden/internal/cliutil/text.go
 printing-press-golden/internal/cliutil/ratelimit.go
