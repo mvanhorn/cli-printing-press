@@ -9,11 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestStoreResolveByNameValidatesField pins the SQL-injection guard on
-// ResolveByName's caller-supplied field names. json_extract path components
-// can't be bound as SQL parameters, so the splice is structurally required
-// — but every field must be validated against validIdentifierRE before
-// being substituted into the query.
 func TestStoreResolveByNameValidatesField(t *testing.T) {
 	t.Parallel()
 
