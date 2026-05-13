@@ -1406,6 +1406,7 @@ func (g *Generator) renderSingleFiles() error {
 		"config.go.tmpl":                     filepath.Join("internal", "config", "config.go"),
 		"cache.go.tmpl":                      filepath.Join("internal", "cache", "cache.go"),
 		"client.go.tmpl":                     filepath.Join("internal", "client", "client.go"),
+		"client_test.go.tmpl":                filepath.Join("internal", "client", "client_test.go"),
 		"cliutil_fanout.go.tmpl":             filepath.Join("internal", "cliutil", "fanout.go"),
 		"cliutil_text.go.tmpl":               filepath.Join("internal", "cliutil", "text.go"),
 		"cliutil_probe.go.tmpl":              filepath.Join("internal", "cliutil", "probe.go"),
