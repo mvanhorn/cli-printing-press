@@ -151,8 +151,8 @@ func TestEmbeddedPagedHelperEmitted_HasMore(t *testing.T) {
 	require.NoError(t, err)
 	body := string(getSrc)
 	assert.Contains(t, body, "func fetchFullCustomersGetSubscriptions(")
-	assert.Contains(t, body, `fetchEmbeddedPagedSubresource(c, childPath, "has_more", true)`,
-		"has_more-style envelopes should delegate to the shared paginator with nextIsBoolean=true")
+	assert.Contains(t, body, `fetchEmbeddedPagedSubresource(c, childPath, "has_more", false, true)`,
+		"has_more-style envelopes should delegate to the shared paginator with nextIsURL=false, nextIsBoolean=true")
 
 	runGoCommand(t, outDir, "build", "./internal/cli")
 }

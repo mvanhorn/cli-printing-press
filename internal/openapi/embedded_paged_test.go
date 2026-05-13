@@ -60,6 +60,7 @@ paths:
 	assert.Equal(t, "/playlists/{id}/tracks", got.ChildPath)
 	assert.Equal(t, "items", got.ItemsField)
 	assert.Equal(t, "next", got.NextField)
+	assert.True(t, got.NextIsURL, "`next` is the canonical URL-bearing next-page field")
 	assert.False(t, got.NextIsBoolean)
 }
 
@@ -105,6 +106,7 @@ paths:
 	assert.Equal(t, "data", got.ItemsField)
 	assert.Equal(t, "has_more", got.NextField)
 	assert.True(t, got.NextIsBoolean)
+	assert.False(t, got.NextIsURL, "has_more envelopes carry no URL — runtime must single-fetch and warn")
 }
 
 // TestEmbeddedPagedSubresources_NoEnvelope ensures plain non-paged nested
@@ -188,6 +190,103 @@ paths:
 	require.True(t, ok)
 	assert.Empty(t, ep.EmbeddedPagedSubresources,
 		"list endpoints (no path placeholder) must not surface embedded sub-resources")
+}
+
+// TestEmbeddedPagedSubresources_CursorVsURL is the runtime-correctness
+// guard: detection must distinguish full-URL next fields (next, next_url)
+// from opaque cursor tokens (next_cursor, next_page_token, cursor),
+// because the runtime helper can follow the former with a direct GET
+// but cannot construct the next request from the latter without
+// API-specific cursor-to-query-param arithmetic. Misclassifying a
+// cursor as a URL would make the runtime issue GETs against the
+// cursor string itself, producing 404s — the opposite of the silent-
+// truncation bug this fix targets.
+func TestEmbeddedPagedSubresources_CursorVsURL(t *testing.T) {
+	t.Parallel()
+
+	doc := []byte(`
+openapi: "3.0.0"
+info: { title: KindCheck, version: "1.0" }
+servers: [{ url: https://api.kind.example/v1 }]
+paths:
+  /url-shape/{id}:
+    get:
+      operationId: getURLShape
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tracks:
+                    type: object
+                    properties:
+                      items: { type: array, items: { type: object } }
+                      next: { type: string }
+  /cursor-shape/{id}:
+    get:
+      operationId: getCursorShape
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  children:
+                    type: object
+                    properties:
+                      results: { type: array, items: { type: object } }
+                      next_cursor: { type: string }
+  /token-shape/{id}:
+    get:
+      operationId: getTokenShape
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: object
+                    properties:
+                      data: { type: array, items: { type: object } }
+                      next_page_token: { type: string }
+`)
+	parsed, err := Parse(doc)
+	require.NoError(t, err)
+
+	urlEP, ok := findGetEndpoint(parsed, "/url-shape/{id}")
+	require.True(t, ok)
+	require.Len(t, urlEP.EmbeddedPagedSubresources, 1)
+	assert.True(t, urlEP.EmbeddedPagedSubresources[0].NextIsURL,
+		"`next` is a known URL-bearing field; the runtime can follow it directly")
+	assert.False(t, urlEP.EmbeddedPagedSubresources[0].NextIsBoolean)
+
+	cursorEP, ok := findGetEndpoint(parsed, "/cursor-shape/{id}")
+	require.True(t, ok)
+	require.Len(t, cursorEP.EmbeddedPagedSubresources, 1)
+	assert.False(t, cursorEP.EmbeddedPagedSubresources[0].NextIsURL,
+		"`next_cursor` is opaque; the runtime cannot GET it as a path and must emit a truncation event")
+	assert.False(t, cursorEP.EmbeddedPagedSubresources[0].NextIsBoolean)
+
+	tokenEP, ok := findGetEndpoint(parsed, "/token-shape/{id}")
+	require.True(t, ok)
+	require.Len(t, tokenEP.EmbeddedPagedSubresources, 1)
+	assert.False(t, tokenEP.EmbeddedPagedSubresources[0].NextIsURL,
+		"`next_page_token` is opaque; same constraint as next_cursor")
+	assert.False(t, tokenEP.EmbeddedPagedSubresources[0].NextIsBoolean)
 }
 
 // TestEmbeddedPagedSubresources_CaseInsensitive guards the detector
@@ -295,6 +394,8 @@ paths:
 		"multi-path-param parents must propagate every placeholder into ChildPath so the runtime helper substitutes them all")
 	assert.Equal(t, "/repos/{owner}/{repo}/pulls/{n}/review_comments", byProp["review_comments"].ChildPath)
 	assert.Equal(t, "next_page_token", byProp["commits"].NextField)
+	assert.False(t, byProp["commits"].NextIsURL,
+		"next_page_token is an opaque cursor, not a URL — runtime must NOT GET it as a path")
 	assert.True(t, byProp["review_comments"].NextIsBoolean)
 }
 

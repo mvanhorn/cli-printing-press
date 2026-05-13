@@ -805,7 +805,7 @@ func fetchFull{{$funcPrefix}}{{$endpointCamel}}{{$propCamel}}(c interface {
 	for name, val := range pathParams {
 		childPath = replacePathParam(childPath, name, val)
 	}
-	return fetchEmbeddedPagedSubresource(c, childPath, "{{.NextField}}", {{if .NextIsBoolean}}true{{else}}false{{end}})
+	return fetchEmbeddedPagedSubresource(c, childPath, "{{.NextField}}", {{if .NextIsURL}}true{{else}}false{{end}}, {{if .NextIsBoolean}}true{{else}}false{{end}})
 }
 {{- end}}
 {{- end}}
