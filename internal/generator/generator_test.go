@@ -4456,6 +4456,86 @@ func TestWrapWithProvenance_NonJSONEmbeddedAsString(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestUnwrapSingleKeyArray|TestWrapWithProvenance_")
 }
 
+// TestGeneratedListCommand_ProvenanceGatedByHumanTable asserts that the
+// `N results (live|cached ...)` diagnostic is gated by wantsHumanTable in
+// every generated list command. Without the gate the line leaks into stdout
+// of agent-piped consumers — every printed CLI ships the same list-handler
+// shape, so a template regression here re-introduces the leak everywhere.
+func TestGeneratedListCommand_ProvenanceGatedByHumanTable(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "provenancegate",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/provenancegate-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			// Multi-endpoint resource exercises command_endpoint.go.tmpl.
+			"items": {
+				Description: "Items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/items",
+						Description: "List items",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+					"get": {
+						Method:      "GET",
+						Path:        "/items/{id}",
+						Description: "Get one item",
+						Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true, PathParam: true}},
+					},
+				},
+			},
+			// Single-endpoint resource exercises command_promoted.go.tmpl.
+			"things": {
+				Description: "Things",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/things",
+						Description: "List things",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	cases := []struct {
+		name string
+		file string
+	}{
+		{"endpoint template", "items_list.go"},
+		{"promoted template", "promoted_things.go"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", tc.file))
+			require.NoError(t, err, "generated list command file must exist")
+			src := string(body)
+
+			require.Equal(t, 1, strings.Count(src, "printProvenance(cmd,"),
+				"exactly one printProvenance call should remain; a second ungated call would re-leak the diagnostic")
+
+			gateIdx := strings.Index(src, "if wantsHumanTable(cmd.OutOrStdout(), flags) {")
+			require.GreaterOrEqual(t, gateIdx, 0,
+				"printProvenance call must be wrapped in a wantsHumanTable gate")
+			require.Equal(t, -1, strings.Index(src[:gateIdx], "printProvenance(cmd,"),
+				"no ungated printProvenance call may precede the wantsHumanTable gate")
+			require.GreaterOrEqual(t, strings.Index(src[gateIdx:], "printProvenance(cmd,"), 0,
+				"printProvenance call must appear inside the wantsHumanTable block")
+		})
+	}
+}
+
 // --- Unit 3: Top-Level Command Promotion Tests ---
 
 func TestToKebab(t *testing.T) {
