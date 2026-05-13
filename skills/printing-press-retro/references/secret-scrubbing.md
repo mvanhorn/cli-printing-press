@@ -99,8 +99,9 @@ for entry in "${PII_PATTERNS[@]}"; do
   for dir in "$STAGING_MANUSCRIPTS" "$STAGING_CLI_SOURCE"; do
     [ -d "$dir" ] || continue
     find "$dir" -type f -print0 | while IFS= read -r -d '' f; do
-      if grep -qE "$regex" "$f" 2>/dev/null; then
-        perl -i -pe "s/$regex/$tag/g" "$f" 2>/dev/null
+      # Case-insensitive: API JSON routinely lowercases IBANs and other identifiers.
+      if grep -qiE "$regex" "$f" 2>/dev/null; then
+        perl -i -pe "s/$regex/$tag/gi" "$f" 2>/dev/null
         echo "Redacted $name in $(basename "$f")"
       fi
     done
@@ -186,7 +187,7 @@ PII_REGEX='(\b[A-Z]{6}[0-9]{2}[A-Z][0-9]{2}[A-Z][0-9]{3}[A-Z]\b|\b(AD|AT|BE|BG|C
 for dir in "$STAGING_MANUSCRIPTS" "$STAGING_CLI_SOURCE"; do
   [ -d "$dir" ] || continue
   CRED_MATCHES=$(grep -rEi "$CRED_REGEX" "$dir" 2>/dev/null | grep -v 'REDACTED' | head -5)
-  PII_MATCHES=$(grep -rE "$PII_REGEX" "$dir" 2>/dev/null | grep -v 'REDACTED' | head -5)
+  PII_MATCHES=$(grep -rEi "$PII_REGEX" "$dir" 2>/dev/null | grep -v 'REDACTED' | head -5)
   if [ -n "$CRED_MATCHES" ] || [ -n "$PII_MATCHES" ]; then
     [ -n "$CRED_MATCHES" ] && echo "$CRED_MATCHES"
     [ -n "$PII_MATCHES" ] && echo "$PII_MATCHES"
