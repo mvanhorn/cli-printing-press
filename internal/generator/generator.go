@@ -209,6 +209,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"cobraFlagFuncForParam": cobraFlagFuncForParam,
 		"defaultVal":            defaultVal,
 		"defaultValForParam":    defaultValForParam,
+		"isConstDefault":        paramIsConstDefault,
 		"zeroVal":               zeroVal,
 		"zeroValForParam": func(name, t string) string {
 			kind := primitiveKind(t)
@@ -3070,6 +3071,38 @@ func defaultValForParam(p spec.Param) string {
 	return defaultVal(p)
 }
 
+// paramIsConstDefault holds for single-value-enum params whose default
+// equals the only enum value. Templates emit MarkHidden for these so
+// --help does not list a flag whose only valid value is the default,
+// while the flag stays registered so the wire-side default still flows.
+// This catches the single-URL routing-selector shape, where an API
+// selects an operation via a fixed query param.
+func paramIsConstDefault(p spec.Param) bool {
+	if len(p.Enum) != 1 || p.Default == nil {
+		return false
+	}
+	// Float defaults round-trip ambiguously under any single string format:
+	// fmt.Sprintf("%v", float64(2.0)) and strconv.FormatFloat with -1
+	// precision both yield "2", which would miss a heterogeneous spec
+	// declaring `enum: ["2.0"]` alongside `default: 2.0`. Parse the enum
+	// element as a float and compare numerically so "2", "2.0", and "2.00"
+	// are all equivalent to float64(2.0).
+	switch v := p.Default.(type) {
+	case float64:
+		if enumF, err := strconv.ParseFloat(p.Enum[0], 64); err == nil {
+			return enumF == v
+		}
+		return false
+	case float32:
+		if enumF, err := strconv.ParseFloat(p.Enum[0], 32); err == nil {
+			return float32(enumF) == v
+		}
+		return false
+	default:
+		return fmt.Sprintf("%v", p.Default) == p.Enum[0]
+	}
+}
+
 type jsonFlagSuggestion struct {
 	FlagName string
 	Values   []string
@@ -3359,6 +3392,13 @@ func renderBodyFlagRegs(b *strings.Builder, body []spec.Param, identPrefix, flag
 	}
 }
 
+// renderFlatBodyFlagReg emits cobra flag registrations for a single body
+// param. Const-default detection via paramIsConstDefault is intentionally
+// not wired through here yet: the primary use case is the query-param
+// routing-selector shape, not body fields. If a future API surfaces a
+// const-default body field, extend the emission here with a MarkHidden
+// line gated by paramIsConstDefault, mirroring the command_endpoint and
+// command_promoted templates.
 func renderFlatBodyFlagReg(b *strings.Builder, p spec.Param, identPrefix, flagPrefix string, topLevel bool) {
 	ident := identPrefix + toCamel(paramIdent(p))
 	flag := joinFlag(flagPrefix, publicFlagName(p))
