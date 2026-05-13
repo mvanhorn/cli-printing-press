@@ -920,6 +920,8 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 	switch resource {
 	case "projects":
 		return db.UpsertProjects(data)
+	case "avatar":
+		return db.UpsertAvatar(data)
 	case "tasks":
 		return db.UpsertTasks(data)
 	case "summary":
