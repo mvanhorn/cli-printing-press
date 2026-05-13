@@ -304,6 +304,9 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- if not .Positional}}
 {{- $param := .}}
 	cmd.Flags().{{cobraFlagFuncForParam .Name .Type}}(&flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", {{defaultValForParam .}}, "{{oneline .Description}}{{enumDescriptionHint .Enum}}")
+{{- if isConstDefault .}}
+	_ = cmd.Flags().MarkHidden("{{publicFlagName .}}")
+{{- end}}
 {{- range publicFlagAliases $param}}
 	cmd.Flags().{{cobraFlagFuncForParam $param.Name $param.Type}}(&flag{{camel (paramIdent $param)}}, "{{.}}", {{defaultValForParam $param}}, "{{oneline $param.Description}}{{enumDescriptionHint $param.Enum}}")
 	_ = cmd.Flags().MarkHidden("{{.}}")
