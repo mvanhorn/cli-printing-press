@@ -1041,17 +1041,24 @@ type Endpoint struct {
 	// the parser cannot describe at field level (currently used only by
 	// the BodyJSONFallback path). The typed body path uses per-Param
 	// Required flags instead; this field is ignored when Body is populated.
-	BodyRequired       bool              `yaml:"body_required,omitempty" json:"body_required,omitempty"`
-	RequestContentType string            `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
-	Response           ResponseDef       `yaml:"response" json:"response"`
-	ResponseFormat     string            `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
-	HTMLExtract        *HTMLExtract      `yaml:"html_extract,omitempty" json:"html_extract,omitempty"`       // extraction options when response_format is html
-	Pagination         *Pagination       `yaml:"pagination" json:"pagination"`
-	ResponsePath       string            `yaml:"response_path,omitempty" json:"response_path,omitempty"`       // path to extract data array from response (e.g., "data", "results.items")
-	Meta               map[string]string `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
-	HeaderOverrides    []RequiredHeader  `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
-	NoAuth             bool              `yaml:"no_auth,omitempty" json:"no_auth,omitempty"`                   // true when the endpoint does not require authentication
-	Tier               string            `yaml:"tier,omitempty" json:"tier,omitempty"`
+	BodyRequired       bool         `yaml:"body_required,omitempty" json:"body_required,omitempty"`
+	RequestContentType string       `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
+	Response           ResponseDef  `yaml:"response" json:"response"`
+	ResponseFormat     string       `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
+	HTMLExtract        *HTMLExtract `yaml:"html_extract,omitempty" json:"html_extract,omitempty"`       // extraction options when response_format is html
+	Pagination         *Pagination  `yaml:"pagination" json:"pagination"`
+	// EmbeddedPagedSubresources names paged-envelope properties nested
+	// inside this endpoint's success response (e.g. GET /<resource>/{id}
+	// where the API caps the embedded sub-resource at the first page
+	// regardless of the actual total). The generator emits a
+	// fetchFull<Endpoint><Property> companion per entry so callers
+	// needing the full child collection don't silently truncate.
+	EmbeddedPagedSubresources []EmbeddedPagedSubresource `yaml:"embedded_paged_subresources,omitempty" json:"embedded_paged_subresources,omitempty"`
+	ResponsePath              string                     `yaml:"response_path,omitempty" json:"response_path,omitempty"`       // path to extract data array from response (e.g., "data", "results.items")
+	Meta                      map[string]string          `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
+	HeaderOverrides           []RequiredHeader           `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
+	NoAuth                    bool                       `yaml:"no_auth,omitempty" json:"no_auth,omitempty"`                   // true when the endpoint does not require authentication
+	Tier                      string                     `yaml:"tier,omitempty" json:"tier,omitempty"`
 	// IDField is the resolved primary-key field name for items returned by this
 	// endpoint, populated either by a path-item-level `x-resource-id` extension
 	// or, for OpenAPI specs, by walking the response schema (id → name → first
@@ -1294,6 +1301,24 @@ type Pagination struct {
 	CursorParam    string `yaml:"cursor_param" json:"cursor_param"`         // query param name for cursor (after, pageToken, offset)
 	NextCursorPath string `yaml:"next_cursor_path" json:"next_cursor_path"` // response field with next cursor (nextPageToken, cursor)
 	HasMoreField   string `yaml:"has_more_field" json:"has_more_field"`     // response field indicating more pages (has_more)
+}
+
+// EmbeddedPagedSubresource describes one paged-envelope property nested
+// inside a parent GET response. See Endpoint.EmbeddedPagedSubresources
+// for how this drives fetchFull<X> companion-helper emission.
+//
+// ItemsField records which array key the detector matched; it is
+// detection-provenance metadata, not a runtime override. Generated
+// helpers walk the envelope via extractPaginatedItems, which scans
+// every known items-style key, so a hand-authored spec changing
+// ItemsField does not change runtime behavior.
+type EmbeddedPagedSubresource struct {
+	Property      string `yaml:"property" json:"property"`                                   // JSON property name in the parent response (e.g. "tracks")
+	ChildPath     string `yaml:"child_path" json:"child_path"`                               // sub-resource path; required, populated by the detector (parent.Path + "/" + Property)
+	ItemsField    string `yaml:"items_field" json:"items_field"`                             // array property inside the envelope; detection-provenance metadata only
+	NextField     string `yaml:"next_field" json:"next_field"`                               // next-page signal inside the envelope (URL string, opaque cursor, or has_more-style bool)
+	NextIsURL     bool   `yaml:"next_is_url,omitempty" json:"next_is_url,omitempty"`         // true when NextField carries a full URL the runtime can GET directly (vs an opaque cursor that needs API-specific arithmetic)
+	NextIsBoolean bool   `yaml:"next_is_boolean,omitempty" json:"next_is_boolean,omitempty"` // true when NextField is a has_more-style boolean rather than a cursor/URL string
 }
 
 type TypeDef struct {
