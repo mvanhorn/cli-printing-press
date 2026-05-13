@@ -30,7 +30,9 @@ func TestClientCacheKeyScopesByBaseURLAndAuthIdentity(t *testing.T) {
 
 	require.Contains(t, body, `"|base_url=" + c.BaseURL`, "cache keys must isolate staging/prod or per-tenant base URLs")
 	require.Contains(t, body, `"|auth_source=" + c.Config.AuthSource`, "cache keys should distinguish env/config/profile auth sources")
-	require.Contains(t, body, `sha256.Sum256([]byte(c.Config.AuthHeader()))`, "cache keys should include an auth fingerprint without storing the raw token")
+	require.Contains(t, body, `authHeader := c.Config.AuthHeader()`, "cache keys should capture AuthHeader() once")
+	require.Contains(t, body, `sha256.Sum256([]byte(authHeader))`, "cache keys should include an auth fingerprint without storing the raw token")
+	require.NotContains(t, body, `sha256.Sum256([]byte(c.Config.AuthHeader()))`, "cache keys should reuse the captured authHeader, not call AuthHeader() twice")
 	require.Contains(t, body, `sort.Strings(paramKeys)`, "cache keys should be deterministic for map params")
 }
 
