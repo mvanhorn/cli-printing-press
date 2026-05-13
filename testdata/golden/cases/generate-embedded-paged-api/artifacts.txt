@@ -1,0 +1,4 @@
+embedded-paged-api/internal/cli/helpers.go
+embedded-paged-api/internal/cli/playlists_get.go
+embedded-paged-api/internal/cli/pages_get.go
+embedded-paged-api/internal/cli/customers_get.go

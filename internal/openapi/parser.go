@@ -4738,9 +4738,19 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 // and runtime walks agree on what counts as a page of items.
 var itemsFieldNames = []string{"data", "items", "results", "messages", "members", "values"}
 
-// nextFieldStringNames lists cursor/URL-typed properties that indicate
-// another page is available.
-var nextFieldStringNames = []string{"next", "next_cursor", "nextcursor", "next_url", "nexturl", "next_page_token", "nextpagetoken", "cursor"}
+// nextFieldURLNames lists string properties that carry a full URL to
+// the next page (resolvable directly with GET). The runtime helper
+// follows these without API-specific cursor arithmetic.
+var nextFieldURLNames = []string{"next", "next_url", "nexturl"}
+
+// nextFieldCursorNames lists string properties that carry an opaque
+// cursor token (e.g. next_page_token, next_cursor). These cannot be
+// followed without knowing which query parameter to set on the next
+// request — metadata the embedded envelope does not provide — so the
+// runtime helper treats their presence the same way it treats
+// has_more=true: fetch page 1, then emit a truncation event so callers
+// know data is incomplete.
+var nextFieldCursorNames = []string{"next_cursor", "nextcursor", "next_page_token", "nextpagetoken", "cursor"}
 
 // nextFieldBoolNames lists boolean-typed "more pages" flags.
 var nextFieldBoolNames = []string{"has_more", "hasmore"}
@@ -4790,8 +4800,8 @@ func detectEmbeddedPagedSubresources(op *openapi3.Operation, parentPath string) 
 		if !ok {
 			continue
 		}
-		nextField, isBool, ok := findNextField(lowered)
-		if !ok {
+		nextField, kind := findNextField(lowered)
+		if kind == nextKindNone {
 			continue
 		}
 		out = append(out, spec.EmbeddedPagedSubresource{
@@ -4799,7 +4809,8 @@ func detectEmbeddedPagedSubresources(op *openapi3.Operation, parentPath string) 
 			ChildPath:     joinChildPath(parentPath, propName),
 			ItemsField:    itemsField,
 			NextField:     nextField,
-			NextIsBoolean: isBool,
+			NextIsURL:     kind == nextKindURL,
+			NextIsBoolean: kind == nextKindBoolean,
 		})
 	}
 	return out
@@ -4849,18 +4860,35 @@ func findItemsField(s *openapi3.Schema, lowered map[string]string) (string, bool
 	return "", false
 }
 
-func findNextField(lowered map[string]string) (string, bool, bool) {
-	for _, candidate := range nextFieldStringNames {
+// nextFieldKind classifies the detected next-page signal so the
+// runtime can decide whether to follow it (URL) or stop and warn
+// (cursor / has_more bool).
+type nextFieldKind int
+
+const (
+	nextKindNone nextFieldKind = iota
+	nextKindURL
+	nextKindCursor
+	nextKindBoolean
+)
+
+func findNextField(lowered map[string]string) (string, nextFieldKind) {
+	for _, candidate := range nextFieldURLNames {
 		if actual, ok := lowered[candidate]; ok {
-			return actual, false, true
+			return actual, nextKindURL
+		}
+	}
+	for _, candidate := range nextFieldCursorNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindCursor
 		}
 	}
 	for _, candidate := range nextFieldBoolNames {
 		if actual, ok := lowered[candidate]; ok {
-			return actual, true, true
+			return actual, nextKindBoolean
 		}
 	}
-	return "", false, false
+	return "", nextKindNone
 }
 
 // joinChildPath returns parentPath + "/" + property — the conventional
