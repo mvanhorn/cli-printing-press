@@ -519,8 +519,12 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- if or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")}}
 {{- if .HasStore}}
-			// Print provenance to stderr for human-facing output
-			{
+			// Print provenance to stderr for human-facing output only.
+			// Machine-format flags (--json, --csv, --compact, --quiet, --plain,
+			// --select) and piped stdout suppress this line; the JSON envelope
+			// already carries meta.source for those consumers.
+			// SYNC: keep this gate aligned with command_promoted.go.tmpl.
+			if wantsHumanTable(cmd.OutOrStdout(), flags) {
 				var countItems []json.RawMessage
 				_ = json.Unmarshal(data, &countItems)
 				printProvenance(cmd, len(countItems), prov)
