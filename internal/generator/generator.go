@@ -315,6 +315,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"bodyRequiredChecks":    bodyRequiredChecks,
 		"multipartBodyMaps":     multipartBodyMaps,
 		"endpointUsesMultipart": endpointUsesMultipart,
+		"endpointHasQueryFlags": endpointHasQueryFlags,
 		"hasMultipartRequest":   hasMultipartRequest,
 		"formBodyMaps":          formBodyMaps,
 		"endpointUsesForm":      endpointUsesForm,
@@ -3467,6 +3468,21 @@ func multipartBodyMaps(body []spec.Param, indent string) string {
 		fmt.Fprintf(&b, "%s}\n", indent)
 	}
 	return b.String()
+}
+
+// endpointHasQueryFlags reports whether the endpoint declares any non-positional,
+// non-path parameters — i.e., flags that should be encoded as URL query string.
+// True for any HTTP method. Used by the non-GET handler template to decide
+// whether to build a params map and route through the *WithParams client
+// variant, so query-shaped params on POST/PUT/DELETE/PATCH reach the URL
+// instead of being silently dropped into the JSON body or omitted.
+func endpointHasQueryFlags(endpoint spec.Endpoint) bool {
+	for _, p := range endpoint.Params {
+		if !p.Positional && !p.PathParam {
+			return true
+		}
+	}
+	return false
 }
 
 func endpointUsesMultipart(endpoint spec.Endpoint) bool {
