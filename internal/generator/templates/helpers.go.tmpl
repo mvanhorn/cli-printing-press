@@ -12,6 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+{{- if .HasEmbeddedPaged}}
+	"net/url"
+{{- end}}
 	"os"
 {{- if .HasDataLayer}}
 	"path/filepath"
@@ -743,6 +746,120 @@ func extractPaginatedItems(obj map[string]json.RawMessage) ([]json.RawMessage, b
 	}
 	return nil, false
 }
+
+{{- if .HasEmbeddedPaged}}
+
+// embeddedPagedSubresourcePageCap bounds the page loop in
+// fetchEmbeddedPagedSubresource so a misbehaving server returning a
+// non-empty next URL on every response can't spin forever. 500 covers
+// the largest realistic embedded sub-resource (e.g. 50k items at 100
+// per page); pathological servers trip the cap and surface an error
+// instead of hanging.
+const embeddedPagedSubresourcePageCap = 500
+
+// fetchEmbeddedPagedSubresource paginates the embedded paged
+// sub-resource at childPath until exhausted, returning the
+// concatenated items. The generator emits per-endpoint thin wrappers
+// that call this with the detected envelope shape; consolidating the
+// loop here keeps the page cap, error handling, and envelope-walking
+// logic in one place.
+//
+// nextField is the envelope property that signals "more pages":
+// either a cursor/URL string (next, next_cursor, next_page_token,
+// cursor) or a has_more-style bool (has_more). When nextIsBoolean is
+// true the helper performs a single GET — has_more-only envelopes
+// carry no inline next URL, and paginating further requires API-
+// specific arithmetic that cannot be synthesized from the embedded
+// envelope alone. The helper emits a stderr truncation event in that
+// case so partial results are observable rather than masquerading as
+// complete.
+//
+// Property lookup is case-insensitive: API authors sometimes describe
+// envelopes in one casing in the schema and serve another on the wire
+// (`NextPageToken` vs `nextPageToken`). Treating both as equivalent
+// turns a silent-truncation bug into a successful page advance.
+func fetchEmbeddedPagedSubresource(c interface {
+	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+}, childPath, nextField string, nextIsBoolean bool) ([]json.RawMessage, error) {
+	all := make([]json.RawMessage, 0)
+	nextURL := ""
+	for page := 0; page < embeddedPagedSubresourcePageCap; page++ {
+		target := childPath
+		if nextURL != "" {
+			target = relativizeNextURL(nextURL)
+		}
+		data, err := c.GetWithHeaders(target, nil, nil)
+		if err != nil {
+			return nil, fmt.Errorf("paginating embedded sub-resource %q page %d: %w", childPath, page+1, err)
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return nil, fmt.Errorf("paginating embedded sub-resource %q page %d: unexpected response shape: %w", childPath, page+1, err)
+		}
+		if items, ok := extractPaginatedItems(obj); ok {
+			all = append(all, items...)
+		}
+		if nextIsBoolean {
+			if moreRaw, ok := caseInsensitiveLookup(obj, nextField); ok {
+				var more bool
+				if json.Unmarshal(moreRaw, &more) == nil && more {
+					if humanFriendly {
+						fmt.Fprintf(os.Stderr, "warning: %s truncated; more pages available via the dedicated list endpoint.\n", childPath)
+					} else {
+						fmt.Fprintf(os.Stderr, `{"event":"truncated","sub_resource":%q}`+"\n", childPath)
+					}
+				}
+			}
+			return all, nil
+		}
+		nextRaw, ok := caseInsensitiveLookup(obj, nextField)
+		if !ok {
+			return all, nil
+		}
+		var nextStr string
+		if json.Unmarshal(nextRaw, &nextStr) != nil || nextStr == "" {
+			return all, nil
+		}
+		nextURL = nextStr
+	}
+	return all, fmt.Errorf("paginating embedded sub-resource %q: hit %d-page cap (likely a server returning a non-empty next URL on every response)", childPath, embeddedPagedSubresourcePageCap)
+}
+
+// relativizeNextURL strips an absolute scheme+host from a next-page URL
+// so the client's BaseURL+path concat doesn't produce a double-prefixed
+// target. Vendors that return absolute next URLs (e.g. for offset-based
+// pagination) would otherwise concatenate against c.BaseURL on every
+// follow-up request and 404 from page 2 onward.
+func relativizeNextURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || !u.IsAbs() {
+		return raw
+	}
+	path := u.Path
+	if path == "" {
+		path = "/"
+	}
+	if u.RawQuery != "" {
+		path += "?" + u.RawQuery
+	}
+	return path
+}
+
+// caseInsensitiveLookup returns obj[key] tolerating envelope casing
+// drift between the spec and the wire response.
+func caseInsensitiveLookup(obj map[string]json.RawMessage, key string) (json.RawMessage, bool) {
+	if raw, ok := obj[key]; ok {
+		return raw, true
+	}
+	lowered := strings.ToLower(key)
+	for k, raw := range obj {
+		if strings.ToLower(k) == lowered {
+			return raw, true
+		}
+	}
+	return nil, false
+}
+{{- end}}
 
 func rawAtPath(obj map[string]json.RawMessage, path string) (json.RawMessage, bool) {
 	if raw, ok := obj[path]; ok {
