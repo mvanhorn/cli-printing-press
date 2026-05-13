@@ -15,11 +15,15 @@ queue_rules:
         - check-skipped = Greptile Review
     merge_method: squash
     update_method: rebase
-    batch_size: 3
+    # OSS plan: batch_size must be 1 and max_parallel_checks must be 1 to
+    # stay in in-place mode. The draft `mergify/merge-queue/*` PR train
+    # (used when batch_size > 1 or max_parallel_checks > 1) is the paid
+    # "Merge Queue Batch" feature.
+    batch_size: 1
     checks_timeout: 60m
 
 merge_queue:
-  max_parallel_checks: 2
+  max_parallel_checks: 1
   queued_label: queued
   dequeued_label: dequeued
   status_comments: outcomes
