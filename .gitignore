@@ -12,3 +12,8 @@ catalog/specs/*.graphql
 library/
 dist/
 claude-upgrade-progress.json
+
+# Local AI agent instructions (not for sharing)
+CLAUDE.local.md
+AGENTS.override.md
+.claude/settings.local.json
