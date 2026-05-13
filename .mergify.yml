@@ -11,7 +11,9 @@ queue_rules:
       - check-success = test
     merge_method: squash
     update_method: rebase
-    batch_size: 1
+    batch_size: 3
+    speculative_checks: 2
+    checks_timeout: 60m
 
 merge_queue:
   queued_label: queued
