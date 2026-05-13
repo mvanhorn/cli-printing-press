@@ -183,6 +183,9 @@ After all layers complete, do a final scan for obvious leaks:
 ```bash
 FINAL_CHECK=false
 CRED_REGEX='(sk_live_|sk_test_|ghp_|gho_|Bearer [A-Za-z0-9]{20})'
+# PII_REGEX must mirror the shapes in PII_PATTERNS above; update both together
+# (e.g. when adding Partita IVA with an allowlist) so the verification step
+# does not silently stop checking a shape the scrub loop still redacts.
 PII_REGEX='(\b[A-Z]{6}[0-9]{2}[A-Z][0-9]{2}[A-Z][0-9]{3}[A-Z]\b|\b(AD|AT|BE|BG|CH|CY|CZ|DE|DK|EE|ES|FI|FR|GB|GI|GR|HR|HU|IE|IS|IT|LI|LT|LU|LV|MC|MT|NL|NO|PL|PT|RO|SE|SI|SK|SM|VA)[0-9]{2}[A-Z0-9]{11,30}\b|\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b)'
 for dir in "$STAGING_MANUSCRIPTS" "$STAGING_CLI_SOURCE"; do
   [ -d "$dir" ] || continue
