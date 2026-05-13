@@ -12,10 +12,10 @@ queue_rules:
     merge_method: squash
     update_method: rebase
     batch_size: 3
-    speculative_checks: 2
     checks_timeout: 60m
 
 merge_queue:
+  max_parallel_checks: 2
   queued_label: queued
   dequeued_label: dequeued
   status_comments: outcomes
