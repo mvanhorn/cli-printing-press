@@ -203,10 +203,8 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 	}
 
 	query := map[string]string{}
-	if ep.Method == "GET" || ep.Method == "DELETE" {
-		for k, v := range params {
-			query[k] = fmt.Sprintf("%v", v)
-		}
+	for k, v := range params {
+		query[k] = fmt.Sprintf("%v", v)
 	}
 
 	var data json.RawMessage
@@ -214,7 +212,7 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 	case "GET":
 		data, err = c.Get(path, query)
 	case "DELETE":
-		data, _, err = c.Delete(path)
+		data, _, err = c.DeleteWithParams(path, query)
 	default:
 		body, mErr := json.Marshal(params)
 		if mErr != nil {
@@ -222,11 +220,11 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		}
 		switch ep.Method {
 		case "POST":
-			data, _, err = c.Post(path, body)
+			data, _, err = c.PostWithParams(path, query, body)
 		case "PUT":
-			data, _, err = c.Put(path, body)
+			data, _, err = c.PutWithParams(path, query, body)
 		case "PATCH":
-			data, _, err = c.Patch(path, body)
+			data, _, err = c.PatchWithParams(path, query, body)
 		default:
 			return mcplib.NewToolResultError(fmt.Sprintf("unsupported method %q", ep.Method)), nil
 		}

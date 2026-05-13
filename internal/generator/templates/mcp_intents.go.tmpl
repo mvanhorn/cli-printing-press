@@ -164,7 +164,7 @@ func callIntentEndpoint(c *client.Client, ref string, params map[string]any) (an
 	case "GET":
 		data, err = c.Get(path, query)
 	case "DELETE":
-		data, _, err = c.Delete(path)
+		data, _, err = c.DeleteWithParams(path, query)
 	default:
 		body, mErr := json.Marshal(params)
 		if mErr != nil {
@@ -172,11 +172,11 @@ func callIntentEndpoint(c *client.Client, ref string, params map[string]any) (an
 		}
 		switch ep.method {
 		case "POST":
-			data, _, err = c.Post(path, body)
+			data, _, err = c.PostWithParams(path, query, body)
 		case "PUT":
-			data, _, err = c.Put(path, body)
+			data, _, err = c.PutWithParams(path, query, body)
 		case "PATCH":
-			data, _, err = c.Patch(path, body)
+			data, _, err = c.PatchWithParams(path, query, body)
 		default:
 			return nil, fmt.Errorf("unsupported method %q", ep.method)
 		}
