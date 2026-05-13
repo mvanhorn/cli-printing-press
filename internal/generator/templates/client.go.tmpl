@@ -485,6 +485,14 @@ func (c *Client) PostMultipartWithHeaders(path string, fields map[string]string,
 	return c.do("POST", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
 }
 
+func (c *Client) PostMultipartWithParams(path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PostMultipartWithParamsAndHeaders(path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
 {{ end }}
 {{- if .HasFormRequest }}
 func (c *Client) PostForm(path string, fields url.Values) (json.RawMessage, int, error) {
@@ -493,6 +501,14 @@ func (c *Client) PostForm(path string, fields url.Values) (json.RawMessage, int,
 
 func (c *Client) PostFormWithHeaders(path string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do("POST", path, nil, formRequestBody{Fields: fields}, headers)
+}
+
+func (c *Client) PostFormWithParams(path string, params map[string]string, fields url.Values) (json.RawMessage, int, error) {
+	return c.do("POST", path, params, formRequestBody{Fields: fields}, nil)
+}
+
+func (c *Client) PostFormWithParamsAndHeaders(path string, params map[string]string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, params, formRequestBody{Fields: fields}, headers)
 }
 
 {{ end }}
@@ -538,6 +554,14 @@ func (c *Client) PutMultipartWithHeaders(path string, fields map[string]string, 
 	return c.do("PUT", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
 }
 
+func (c *Client) PutMultipartWithParams(path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PutMultipartWithParamsAndHeaders(path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
 {{ end }}
 {{- if .HasFormRequest }}
 func (c *Client) PutForm(path string, fields url.Values) (json.RawMessage, int, error) {
@@ -546,6 +570,14 @@ func (c *Client) PutForm(path string, fields url.Values) (json.RawMessage, int, 
 
 func (c *Client) PutFormWithHeaders(path string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do("PUT", path, nil, formRequestBody{Fields: fields}, headers)
+}
+
+func (c *Client) PutFormWithParams(path string, params map[string]string, fields url.Values) (json.RawMessage, int, error) {
+	return c.do("PUT", path, params, formRequestBody{Fields: fields}, nil)
+}
+
+func (c *Client) PutFormWithParamsAndHeaders(path string, params map[string]string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, params, formRequestBody{Fields: fields}, headers)
 }
 
 {{ end }}
@@ -575,6 +607,14 @@ func (c *Client) PatchMultipartWithHeaders(path string, fields map[string]string
 	return c.do("PATCH", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
 }
 
+func (c *Client) PatchMultipartWithParams(path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PatchMultipartWithParamsAndHeaders(path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
 {{ end }}
 {{- if .HasFormRequest }}
 func (c *Client) PatchForm(path string, fields url.Values) (json.RawMessage, int, error) {
@@ -583,6 +623,14 @@ func (c *Client) PatchForm(path string, fields url.Values) (json.RawMessage, int
 
 func (c *Client) PatchFormWithHeaders(path string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, nil, formRequestBody{Fields: fields}, headers)
+}
+
+func (c *Client) PatchFormWithParams(path string, params map[string]string, fields url.Values) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, params, formRequestBody{Fields: fields}, nil)
+}
+
+func (c *Client) PatchFormWithParamsAndHeaders(path string, params map[string]string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, params, formRequestBody{Fields: fields}, headers)
 }
 
 {{ end }}

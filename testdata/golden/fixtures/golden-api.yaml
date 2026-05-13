@@ -259,6 +259,41 @@ paths:
       responses:
         "200":
           description: OK
+  # /projects/{projectId}/avatar exercises the multipart-body + in:query
+  # combo. Regression guard: the PUT/PATCH/POST multipart branches used to
+  # route only the body fields and silently dropped any query flag.
+  /projects/{projectId}/avatar:
+    put:
+      tags: [projects]
+      operationId: uploadProjectAvatar
+      summary: Upload project avatar
+      parameters:
+        - $ref: "#/components/parameters/ApiVersion"
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: overwrite
+          in: query
+          required: false
+          schema:
+            type: boolean
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                caption:
+                  type: string
+      responses:
+        "200":
+          description: OK
   # /currencies has no x-resource-id and the response schema has neither `id`
   # nor `name` — exercises U3's runtime safety-net path: the generic fallback
   # list at UpsertBatch resolves the PK via `code`.
