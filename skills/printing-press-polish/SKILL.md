@@ -245,7 +245,19 @@ printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" 2>&1
 printing-press verify --dir "$CLI_DIR" $SPEC_FLAG --json 2>&1
 printing-press workflow-verify --dir "$CLI_DIR" --json > /tmp/polish-workflow-verify.json 2>&1 || true
 printing-press verify-skill --dir "$CLI_DIR" --json > /tmp/polish-verify-skill.json 2>&1 || true
-printing-press publish validate --dir "$CLI_DIR" --json > /tmp/polish-publish-validate.json 2>&1 || true
+# publish-validate is a publish-readiness gate, not a CLI-readiness gate.
+# Mid-pipeline polish runs before the main SKILL's promote step and before
+# the publish skill packages tools-manifest.json, so its prerequisites
+# (manifest.printer from git config github.user, packaged tools manifest,
+# phase5 acceptance proof relocated under $CLI_DIR/.manuscripts/<run>/proofs/)
+# are not yet satisfied. Running publish-validate here would cascade
+# parent-pipeline-owned failures into the polish ship_recommendation,
+# which the main SKILL's Phase 5.5 verdict-override then turns into a
+# CLI-level hold. Only run publish-validate when polish is the publish
+# entry point (slash-command invocation or explicit --standalone).
+if [ "$STANDALONE_MODE" = "true" ]; then
+  printing-press publish validate --dir "$CLI_DIR" --json > /tmp/polish-publish-validate.json 2>&1 || true
+fi
 # --live-check samples novel-feature outputs and populates
 # live_check.features[].warnings (Wave B entity detection) — required for
 # the "Output entity warnings" row below to have data to read.
@@ -260,7 +272,7 @@ printing-press pii-audit "$CLI_DIR" --json > /tmp/polish-pii-audit-before.json 2
 go vet ./... 2>&1
 ```
 
-verify-skill, workflow-verify, and publish-validate run alongside dogfood/verify/scorecard so polish catches the same class of failures the public-library CI catches. The publish-validate leg is a hard ship-gate: polish cannot recommend `ship` or `ship-with-gaps` while `printing-press publish validate` reports `passed: false`.
+verify-skill and workflow-verify run alongside dogfood/verify/scorecard so polish catches the same class of failures the public-library CI catches. `publish-validate` runs only when `STANDALONE_MODE=true` (slash-command or `--standalone` Skill-tool invocation). The publish-validate leg is a hard ship-gate **for standalone polish**: in that mode polish cannot recommend `ship` or `ship-with-gaps` while `printing-press publish validate` reports `passed: false`. Mid-pipeline polish (`STANDALONE_MODE=false`) skips publish-validate entirely — its prerequisites (manifest.printer from `git config github.user`, packaged `tools-manifest.json`, phase5 acceptance proof relocated under `$CLI_DIR/.manuscripts/<run>/proofs/`) are parent-pipeline-owned and not yet satisfied at this point; the main SKILL's Phase 6 publish flow gates on publish-validate at the correct time. See "Ship logic" below for how this affects ship_recommendation.
 
 **If Phase 1 baseline reveals the underlying CLI needs re-discovery** — broken HTML/SSR extraction, sparse capture (fewer than 5 unique endpoints in the source manuscript), wrong endpoint shapes, missing GraphQL operation hashes, or any signal that the CLI was generated from incomplete capture — polish does not normally do browser capture itself, but the shared playbook at `skills/printing-press/references/browser-sniff-capture.md` covers all available capture backends including the Claude chrome-MCP (`mcp__claude-in-chrome__*`) and computer-use (`mcp__computer-use__*`) when the runtime exposes them. Read Step 1 (tool detection), Step 2c.5 (failure-recovery menu), and Step 2e (chrome-MCP capture playbook) of that reference before improvising. Re-discovery from polish is rare but real; when it happens, use the shared backends — do not invent a new capture flow.
 
@@ -271,7 +283,7 @@ Parse findings into categories:
 | Verify failures | verify --json | Commands with score < 3 |
 | SKILL static-check failures | verify-skill --json | Any `findings[]` with `severity=error` (flag-names, flag-commands, positional-args, unknown-command, canonical-sections). Hard ship-gate: ship cannot fire while these exist. |
 | Workflow gaps | workflow-verify --json | Verdict `workflow-fail`. Soft gate: surface in `remaining_issues` and downgrade to `hold` when the workflow is the CLI's primary value. |
-| Publish validation failures | publish validate --json | `passed: false`. Hard ship-gate: ship cannot fire while publish validate fails. If the only failing check is missing phase5 acceptance, report `phase5 acceptance required` with the next-step command: authenticate, then run `printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG --live --level quick --write-acceptance <proofs-dir>/phase5-acceptance.json`. Use the proofs directory from the validate error when present. |
+| Publish validation failures | publish validate --json | `passed: false`. **Standalone polish only** (runs only when `STANDALONE_MODE=true`); skipped in mid-pipeline polish where publish prerequisites aren't yet satisfied. When it runs, it's a hard ship-gate: ship cannot fire while publish validate fails. If the only failing check is missing phase5 acceptance, report `phase5 acceptance required` with the next-step command: authenticate, then run `printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG --live --level quick --write-acceptance <proofs-dir>/phase5-acceptance.json`. Use the proofs directory from the validate error when present. |
 | Dead code | dogfood | Dead functions, dead flags |
 | Stale files | dogfood | Unregistered commands |
 | Description issues | dogfood | Boilerplate root Short |
@@ -529,21 +541,23 @@ printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" 2>&1
 printing-press verify --dir "$CLI_DIR" $SPEC_FLAG --json 2>&1
 printing-press workflow-verify --dir "$CLI_DIR" --json 2>&1
 printing-press verify-skill --dir "$CLI_DIR" --json 2>&1
-printing-press publish validate --dir "$CLI_DIR" --json 2>&1
+if [ "$STANDALONE_MODE" = "true" ]; then
+  printing-press publish validate --dir "$CLI_DIR" --json 2>&1
+fi
 printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
 printing-press tools-audit "$CLI_DIR" 2>&1
 printing-press pii-audit "$CLI_DIR" 2>&1
 go vet ./... 2>&1
 ```
 
-Record the after scores. If verify-skill still has any `severity=error` findings, workflow-verify still reports `workflow-fail`, publish-validate still reports `passed: false`, or pii-audit still has pending findings or gate failures, ship cannot fire (see ship logic below).
+Record the after scores. If verify-skill still has any `severity=error` findings, workflow-verify still reports `workflow-fail`, publish-validate still reports `passed: false` (standalone mode only — mid-pipeline polish doesn't run this check), or pii-audit still has pending findings or gate failures, ship cannot fire (see ship logic below).
 
 ## Ship logic
 
 Compute the ship recommendation:
 
-- **`ship`**: verify >= 80%, scorecard >= 75, no critical failures, **AND** verify-skill exits 0 (no SKILL/CLI mismatches), **AND** workflow-verify is not `workflow-fail`, **AND** publish-validate reports `passed: true`, **AND** tools-audit shows zero pending findings (every finding fixed or explicitly accepted with rationale), **AND** pii-audit shows zero pending findings and zero gate failures (every PII finding fixed in source or accepted with valid pre-decision fields). The SKILL/workflow/publish/PII gates are hard requirements: a CLI that ships with a SKILL that lies about it (verify-skill findings) gives agents broken instructions; a CLI whose primary workflow fails verification has not actually shipped; a CLI that publish-validate rejects is not publishable; a CLI that fails pii-audit at promote/publish gates will halt shipping anyway.
-- **`ship-with-gaps`**: verify >= 65%, scorecard >= 65, non-critical gaps remain, **AND** the SKILL/workflow/publish gates above hold, **AND** the README has a `## Known Gaps` block that lists the user-facing gaps. Reserved for the rare case where a refactor or external-dependency blocker prevents a clean fix.
+- **`ship`**: verify >= 80%, scorecard >= 75, no critical failures, **AND** verify-skill exits 0 (no SKILL/CLI mismatches), **AND** workflow-verify is not `workflow-fail`, **AND** (when `STANDALONE_MODE=true`) publish-validate reports `passed: true`, **AND** tools-audit shows zero pending findings (every finding fixed or explicitly accepted with rationale), **AND** pii-audit shows zero pending findings and zero gate failures (every PII finding fixed in source or accepted with valid pre-decision fields). The SKILL/workflow/publish/PII gates are hard requirements: a CLI that ships with a SKILL that lies about it (verify-skill findings) gives agents broken instructions; a CLI whose primary workflow fails verification has not actually shipped; a CLI that publish-validate rejects is not publishable; a CLI that fails pii-audit at promote/publish gates will halt shipping anyway. The publish-validate gate applies only when polish ran it (standalone mode); mid-pipeline polish defers publish-readiness to the main SKILL's Phase 6.
+- **`ship-with-gaps`**: verify >= 65%, scorecard >= 65, non-critical gaps remain, **AND** the SKILL/workflow gates above hold, **AND** (when `STANDALONE_MODE=true`) the publish-validate gate holds, **AND** the README has a `## Known Gaps` block that lists the user-facing gaps. Reserved for the rare case where a refactor or external-dependency blocker prevents a clean fix.
 
   **README Known Gaps is mandatory for ship-with-gaps.** The published library copy is what downstream users see; if the verdict claims gaps exist but the README hides them, downstream users meet a CLI that misbehaves with no disclosure. Before emitting `ship_recommendation: ship-with-gaps`:
 
@@ -560,7 +574,7 @@ Compute the ship recommendation:
   4. List each Known Gaps write/update in `fixes_applied` so the caller can surface that this happened.
 
   If polish cannot responsibly populate Known Gaps from the available evidence (e.g., `remaining_issues` is all internal jargon with no user-facing reading), downgrade the verdict to `hold` rather than ship without disclosure.
-- **`hold`**: verify < 65% or scorecard < 65 or critical failures, **OR** verify-skill has unresolved findings, **OR** workflow-verify reports `workflow-fail` and the workflow is the CLI's primary value.
+- **`hold`**: verify < 65% or scorecard < 65 or critical failures, **OR** verify-skill has unresolved findings, **OR** workflow-verify reports `workflow-fail` and the workflow is the CLI's primary value, **OR** (when `STANDALONE_MODE=true`) publish-validate reports `passed: false`. Mid-pipeline polish never reaches `hold` because of publish-validate — the check doesn't run in that mode and `publish_validate_*` is emitted as `skipped (mid-pipeline)`.
 
 ### Push higher without gaming
 
@@ -620,8 +634,8 @@ govet_before: <N>
 govet_after: <N>
 tools_audit_before: <N pending>
 tools_audit_after: <N pending>
-publish_validate_before: <PASS|FAIL>
-publish_validate_after: <PASS|FAIL>
+publish_validate_before: <PASS|FAIL|skipped (mid-pipeline)>
+publish_validate_after: <PASS|FAIL|skipped (mid-pipeline)>
 fixes_applied:
 - <one-line description of each fix>
 skipped_findings:
@@ -638,6 +652,8 @@ The three lists serve different purposes:
 - **fixes_applied**: what changed — the caller displays these
 - **skipped_findings**: issues you found but deliberately did not fix, with reasoning (e.g., "verify classifies `stale` as read — scorer bug, not a CLI problem", "thin-short on `version` accepted as-is — accurate and brief"). The caller surfaces these so the user can decide whether to address them manually.
 - **remaining_issues**: issues you tried to fix but couldn't resolve.
+
+**`publish_validate_*` values.** Emit `PASS` or `FAIL` when polish ran publish-validate (standalone mode). Emit the literal string `skipped (mid-pipeline)` when polish skipped it (mid-pipeline invocation, `STANDALONE_MODE=false`). The skipped value is informational only: callers must not treat it as a failure when deciding whether to cascade polish's `ship_recommendation` into a CLI-level hold.
 
 ### Picking `further_polish_recommended`
 

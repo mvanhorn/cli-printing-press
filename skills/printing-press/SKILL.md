@@ -2869,6 +2869,8 @@ Polish pass:
 
 **Verdict override:** If the polish skill's `ship_recommendation` is `hold` and the Phase 4 verdict was `ship`, downgrade to `hold`. Release the lock without promoting.
 
+Mid-pipeline polish does **not** run `publish-validate` — that gate is the publish skill's responsibility at Phase 6, where the prerequisites it checks (manifest.printer from `git config github.user`, packaged `tools-manifest.json`, phase5 acceptance proof under `$CLI_DIR/.manuscripts/<run>/proofs/`) are actually satisfied. Polish emits `publish_validate_before: skipped (mid-pipeline)` and `publish_validate_after: skipped (mid-pipeline)` in this invocation; treat those values as informational, never as a hold signal. A first-time user without `git config github.user` set will no longer see their CLI-level run downgraded to `hold` because of a publish prerequisite that the press itself owns satisfying.
+
 Write the polish skill's full response to:
 
 `$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-polish.md`
