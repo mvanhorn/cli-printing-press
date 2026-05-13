@@ -574,7 +574,7 @@ Compute the ship recommendation:
   4. List each Known Gaps write/update in `fixes_applied` so the caller can surface that this happened.
 
   If polish cannot responsibly populate Known Gaps from the available evidence (e.g., `remaining_issues` is all internal jargon with no user-facing reading), downgrade the verdict to `hold` rather than ship without disclosure.
-- **`hold`**: verify < 65% or scorecard < 65 or critical failures, **OR** verify-skill has unresolved findings, **OR** workflow-verify reports `workflow-fail` and the workflow is the CLI's primary value.
+- **`hold`**: verify < 65% or scorecard < 65 or critical failures, **OR** verify-skill has unresolved findings, **OR** workflow-verify reports `workflow-fail` and the workflow is the CLI's primary value, **OR** (when `STANDALONE_MODE=true`) publish-validate reports `passed: false`. Mid-pipeline polish never reaches `hold` because of publish-validate — the check doesn't run in that mode and `publish_validate_*` is emitted as `skipped (mid-pipeline)`.
 
 ### Push higher without gaming
 
