@@ -13,6 +13,7 @@ import (
 )
 
 func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
+	var flagNotify bool
 	var bodyCompleted bool
 	var bodyPriority string
 	var bodyTitle string
@@ -42,6 +43,9 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 			}
 			path = replacePathParam(path, "taskId", args[1])
 			params := map[string]string{}
+			if flagNotify != false {
+				params["notify"] = fmt.Sprintf("%v", flagNotify)
+			}
 			var body map[string]any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
@@ -132,6 +136,7 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}
+	cmd.Flags().BoolVar(&flagNotify, "notify", false, "Notify")
 	cmd.Flags().BoolVar(&bodyCompleted, "completed", false, "Completed")
 	cmd.Flags().StringVar(&bodyPriority, "priority", "", "Priority")
 	cmd.Flags().StringVar(&bodyTitle, "title", "", "Title")

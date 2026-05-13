@@ -44,11 +44,12 @@ func TestGenerateMutatingEndpointPassesQueryParams(t *testing.T) {
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_text-to-speech.go")
 	assert.Contains(t, endpointSrc, `params := map[string]string{}`)
 	assert.Contains(t, endpointSrc, `params["output_format"] = fmt.Sprintf("%v", flagOutputFormat)`)
-	assert.Contains(t, endpointSrc, `c.PostWithParams(path, params, body)`)
+	assert.Contains(t, endpointSrc, `c.PostWithParamsAndHeaders(path, params, body, headerOverrides)`)
 
 	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	assert.Contains(t, mcpSrc, `PublicName: "output_format", WireName: "output_format", Location: "query"`)
-	assert.Contains(t, mcpSrc, `data, _, err = c.PostWithParams(path, params, body)`)
+	assert.Contains(t, mcpSrc, `data, _, err = c.PostWithParamsAndHeaders(path, params, body, headers)`)
+	assert.Contains(t, mcpSrc, `"content_encoding": "base64"`)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")

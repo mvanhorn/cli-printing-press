@@ -61,6 +61,7 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cliutil/extractnumber_test.go",
 		"internal/cliutil/cliutil_test.go",
 		"internal/client/client.go",
+		"internal/client/client_test.go",
 		"internal/config/config.go",
 		"internal/mcp/cobratree/walker.go",
 		"internal/mcp/cobratree/classify.go",
@@ -80,9 +81,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 59},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 64},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 61},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 60},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 65},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 62},
 	}
 
 	for _, tt := range tests {
@@ -1501,6 +1502,18 @@ func TestGenerateBrowserChromeH3Transport(t *testing.T) {
 	// User-Agent on the H3 transport too; the generator must not emit a
 	// competing default.
 	assert.NotContains(t, string(clientGo), `req.Header.Set("Accept",`)
+
+	// ResponseHeaderTimeout override must emit on the H3 path too —
+	// surf's per-stage timeout (10s default) caps any browser-impersonate
+	// transport regardless of the H2/H3 variant. Without these asserts a
+	// future refactor could silently strip the override from the H3
+	// branch and slow-streaming H3 endpoints would fail at surf's default
+	// with no test catching it. Mirrors the assertions in
+	// TestBrowserTransport_OverridesResponseHeaderTimeout (which exercises
+	// the H2 default).
+	assert.Contains(t, string(clientGo), `enetxhttp "github.com/enetx/http"`)
+	assert.Contains(t, string(clientGo), "surfClient.GetTransport().(*enetxhttp.Transport)")
+	assert.Contains(t, string(clientGo), "t.ResponseHeaderTimeout = timeout")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/client")
@@ -4454,6 +4467,116 @@ func TestWrapWithProvenance_NonJSONEmbeddedAsString(t *testing.T) {
 	testPath := filepath.Join(outputDir, "internal", "cli", "wrap_provenance_unwrap_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestUnwrapSingleKeyArray|TestWrapWithProvenance_")
+}
+
+// findMatchingBrace returns the index of the `}` that closes the `{` at
+// openIdx. Treats `{` and `}` as raw bytes — only safe for generated Go
+// regions known to contain no string literals or comments holding braces.
+// Returns -1 when no match is found.
+func findMatchingBrace(src string, openIdx int) int {
+	if openIdx >= len(src) || src[openIdx] != '{' {
+		return -1
+	}
+	depth := 0
+	for i := openIdx; i < len(src); i++ {
+		switch src[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// TestGeneratedListCommand_ProvenanceGatedByHumanTable asserts that the
+// `N results (live|cached ...)` diagnostic is gated by wantsHumanTable in
+// every generated list command. Without the gate the line leaks into stdout
+// of agent-piped consumers — every printed CLI ships the same list-handler
+// shape, so a template regression here re-introduces the leak everywhere.
+func TestGeneratedListCommand_ProvenanceGatedByHumanTable(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "provenancegate",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/provenancegate-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			// Multi-endpoint resource exercises command_endpoint.go.tmpl.
+			"items": {
+				Description: "Items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/items",
+						Description: "List items",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+					"get": {
+						Method:      "GET",
+						Path:        "/items/{id}",
+						Description: "Get one item",
+						Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true, PathParam: true}},
+					},
+				},
+			},
+			// Single-endpoint resource exercises command_promoted.go.tmpl.
+			"things": {
+				Description: "Things",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/things",
+						Description: "List things",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	cases := []struct {
+		name string
+		file string
+	}{
+		{"endpoint template", "items_list.go"},
+		{"promoted template", "promoted_things.go"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", tc.file))
+			require.NoError(t, err, "generated list command file must exist")
+			src := string(body)
+
+			require.Equal(t, 1, strings.Count(src, "printProvenance(cmd,"),
+				"exactly one printProvenance call should remain; a second ungated call would re-leak the diagnostic")
+
+			gateIdx := strings.Index(src, "if wantsHumanTable(cmd.OutOrStdout(), flags) {")
+			require.GreaterOrEqual(t, gateIdx, 0,
+				"printProvenance call must be wrapped in a wantsHumanTable gate")
+			require.Equal(t, -1, strings.Index(src[:gateIdx], "printProvenance(cmd,"),
+				"no ungated printProvenance call may precede the wantsHumanTable gate")
+
+			openBraceOffset := strings.Index(src[gateIdx:], "{")
+			require.GreaterOrEqual(t, openBraceOffset, 0, "gate must have an opening brace")
+			closeBraceIdx := findMatchingBrace(src, gateIdx+openBraceOffset)
+			require.Greater(t, closeBraceIdx, gateIdx, "gate must have a matching closing brace")
+			provIdx := strings.Index(src[gateIdx:], "printProvenance(cmd,")
+			require.GreaterOrEqual(t, provIdx, 0, "printProvenance must appear after the gate opens")
+			require.Less(t, gateIdx+provIdx, closeBraceIdx,
+				"printProvenance must appear between the gate's open and close braces, not after the block")
+		})
+	}
 }
 
 // --- Unit 3: Top-Level Command Promotion Tests ---
@@ -7780,7 +7903,7 @@ func TestGenerateOperationRoutingPathParamDefault(t *testing.T) {
 	mcpGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
 	assert.Regexp(t,
-		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/graphql/\{pathQueryId\}/Followers",\s*\[]mcpParamBinding\{.*WireName: "pathQueryId".*\},\s*\[]string\{[^}]*"pathQueryId"`),
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/graphql/\{pathQueryId\}/Followers",\s*false,\s*\[]mcpParamBinding\{.*WireName: "pathQueryId".*\},\s*\[]string\{[^}]*"pathQueryId"`),
 		string(mcpGo),
 		"MCP handler must receive the routing path param so it can substitute the URL")
 }
@@ -8469,9 +8592,9 @@ func TestGenerateResourceBaseURLOverrideRoutesToOverrideHost(t *testing.T) {
 	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
 	mcpToolsStr := string(mcpTools)
-	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search"`,
+	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search", false`,
 		"geocoding MCP endpoint mirror must emit the absolute override URL")
-	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "/forecast"`,
+	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "/forecast", false`,
 		"forecast MCP endpoint mirror must keep the relative path when its resource has no override")
 
 	// Must compile.
@@ -8559,7 +8682,7 @@ func TestGenerateEndpointBaseURLOverrideRoutesToOverrideHost(t *testing.T) {
 
 	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(mcpTools), `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search"`,
+	assert.Contains(t, string(mcpTools), `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search", false`,
 		"typed MCP endpoint tool must use the endpoint override URL")
 }
 
@@ -8969,11 +9092,11 @@ func TestGenerateMCPHandlerPreservesQueryPositionals(t *testing.T) {
 	// Call sites still pass both names — the upstream emit is unchanged;
 	// the fix lives entirely inside the handler body.
 	assert.Regexp(t,
-		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/search/movie",\s*\[]mcpParamBinding\{.*WireName: "query".*\},\s*\[]string\{[^}]*"query"`),
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/search/movie",\s*false,\s*\[]mcpParamBinding\{.*WireName: "query".*\},\s*\[]string\{[^}]*"query"`),
 		tools,
 		"search call site must still pass `query` in positionalParams (handler decides path vs query at runtime)")
 	assert.Regexp(t,
-		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/movie/\{movieId\}",\s*\[]mcpParamBinding\{.*WireName: "movieId".*\},\s*\[]string\{[^}]*"movieId"`),
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/movie/\{movieId\}",\s*false,\s*\[]mcpParamBinding\{.*WireName: "movieId".*\},\s*\[]string\{[^}]*"movieId"`),
 		tools,
 		"get-by-id call site must pass `movieId` in positionalParams")
 

@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -61,7 +62,7 @@ type mcpParamBinding struct {
 }
 
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
-func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
+func makeAPIHandler(method, pathTemplate string, binaryResponse bool, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		c, err := newMCPClient()
 		if err != nil {
@@ -81,6 +82,10 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 		pathParams := make(map[string]bool, len(positionalParams))
 		params := make(map[string]string)
 		bodyArgs := make(map[string]any)
+		var headers map[string]string
+		if binaryResponse {
+			headers = map[string]string{client.BinaryResponseHeader: "true"}
+		}
 		for _, binding := range bindings {
 			knownArgs[binding.PublicName] = true
 			v, ok := args[binding.PublicName]
@@ -124,17 +129,37 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 		var data json.RawMessage
 		switch method {
 		case "GET":
+			if binaryResponse {
+				data, err = c.GetWithHeaders(path, params, headers)
+				break
+			}
 			data, err = c.Get(path, params)
 		case "POST":
 			body, _ := json.Marshal(bodyArgs)
+			if binaryResponse {
+				data, _, err = c.PostWithParamsAndHeaders(path, params, body, headers)
+				break
+			}
 			data, _, err = c.PostWithParams(path, params, body)
 		case "PUT":
 			body, _ := json.Marshal(bodyArgs)
+			if binaryResponse {
+				data, _, err = c.PutWithParamsAndHeaders(path, params, body, headers)
+				break
+			}
 			data, _, err = c.PutWithParams(path, params, body)
 		case "PATCH":
 			body, _ := json.Marshal(bodyArgs)
+			if binaryResponse {
+				data, _, err = c.PatchWithParamsAndHeaders(path, params, body, headers)
+				break
+			}
 			data, _, err = c.PatchWithParams(path, params, body)
 		case "DELETE":
+			if binaryResponse {
+				data, _, err = c.DeleteWithParamsAndHeaders(path, params, headers)
+				break
+			}
 			data, _, err = c.DeleteWithParams(path, params)
 		default:
 			return mcplib.NewToolResultError("unsupported method: " + method), nil
@@ -186,6 +211,14 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 					return mcplib.NewToolResultText(string(out)), nil
 				}
 			}
+		}
+		if binaryResponse {
+			out, _ := json.Marshal(map[string]any{
+				"content_encoding": "base64",
+				"data_base64":      base64.StdEncoding.EncodeToString(data),
+				"byte_count":       len(data),
+			})
+			return mcplib.NewToolResultText(string(out)), nil
 		}
 		return mcplib.NewToolResultText(string(data)), nil
 	}

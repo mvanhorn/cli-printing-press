@@ -209,6 +209,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"cobraFlagFuncForParam": cobraFlagFuncForParam,
 		"defaultVal":            defaultVal,
 		"defaultValForParam":    defaultValForParam,
+		"isConstDefault":        paramIsConstDefault,
 		"zeroVal":               zeroVal,
 		"zeroValForParam": func(name, t string) string {
 			kind := primitiveKind(t)
@@ -247,6 +248,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"mcpParamDesc":           g.mcpParamDescription,
 		"flagName":               flagName,
 		"paramIdent":             paramIdent,
+		"paramWireName":          paramWireName,
 		"typeFieldIdent":         typeFieldIdent,
 		"safeTypeName":           safeTypeName,
 		"hasNonScalarType": func(types map[string]spec.TypeDef) bool {
@@ -315,6 +317,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"bodyRequiredChecks":    bodyRequiredChecks,
 		"multipartBodyMaps":     multipartBodyMaps,
 		"endpointUsesMultipart": endpointUsesMultipart,
+		"endpointHasQueryFlags": endpointHasQueryFlags,
 		"hasMultipartRequest":   hasMultipartRequest,
 		"formBodyMaps":          formBodyMaps,
 		"endpointUsesForm":      endpointUsesForm,
@@ -576,6 +579,7 @@ type HelperFlags struct {
 	HasMultiPositional bool // spec has endpoints with 2+ positional params → emit usageErr
 	HasDataLayer       bool // CLI has a local store (sync/search) → emit provenance helpers
 	HasClientLimit     bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
+	HasEmbeddedPaged   bool // at least one GET endpoint has detected embedded paged sub-resources → emit fetchEmbeddedPagedSubresource
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
@@ -588,6 +592,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 			}
 			if endpointNeedsClientLimit(e) {
 				flags.HasClientLimit = true
+			}
+			if len(e.EmbeddedPagedSubresources) > 0 {
+				flags.HasEmbeddedPaged = true
 			}
 			positionalCount := 0
 			for _, p := range e.Params {
@@ -609,6 +616,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				}
 				if endpointNeedsClientLimit(e) {
 					flags.HasClientLimit = true
+				}
+				if len(e.EmbeddedPagedSubresources) > 0 {
+					flags.HasEmbeddedPaged = true
 				}
 				positionalCount := 0
 				for _, p := range e.Params {
@@ -1404,6 +1414,7 @@ func (g *Generator) renderSingleFiles() error {
 		"config.go.tmpl":                     filepath.Join("internal", "config", "config.go"),
 		"cache.go.tmpl":                      filepath.Join("internal", "cache", "cache.go"),
 		"client.go.tmpl":                     filepath.Join("internal", "client", "client.go"),
+		"client_test.go.tmpl":                filepath.Join("internal", "client", "client_test.go"),
 		"cliutil_fanout.go.tmpl":             filepath.Join("internal", "cliutil", "fanout.go"),
 		"cliutil_text.go.tmpl":               filepath.Join("internal", "cliutil", "text.go"),
 		"cliutil_probe.go.tmpl":              filepath.Join("internal", "cliutil", "probe.go"),
@@ -3069,6 +3080,38 @@ func defaultValForParam(p spec.Param) string {
 	return defaultVal(p)
 }
 
+// paramIsConstDefault holds for single-value-enum params whose default
+// equals the only enum value. Templates emit MarkHidden for these so
+// --help does not list a flag whose only valid value is the default,
+// while the flag stays registered so the wire-side default still flows.
+// This catches the single-URL routing-selector shape, where an API
+// selects an operation via a fixed query param.
+func paramIsConstDefault(p spec.Param) bool {
+	if len(p.Enum) != 1 || p.Default == nil {
+		return false
+	}
+	// Float defaults round-trip ambiguously under any single string format:
+	// fmt.Sprintf("%v", float64(2.0)) and strconv.FormatFloat with -1
+	// precision both yield "2", which would miss a heterogeneous spec
+	// declaring `enum: ["2.0"]` alongside `default: 2.0`. Parse the enum
+	// element as a float and compare numerically so "2", "2.0", and "2.00"
+	// are all equivalent to float64(2.0).
+	switch v := p.Default.(type) {
+	case float64:
+		if enumF, err := strconv.ParseFloat(p.Enum[0], 64); err == nil {
+			return enumF == v
+		}
+		return false
+	case float32:
+		if enumF, err := strconv.ParseFloat(p.Enum[0], 32); err == nil {
+			return float32(enumF) == v
+		}
+		return false
+	default:
+		return fmt.Sprintf("%v", p.Default) == p.Enum[0]
+	}
+}
+
 type jsonFlagSuggestion struct {
 	FlagName string
 	Values   []string
@@ -3358,6 +3401,13 @@ func renderBodyFlagRegs(b *strings.Builder, body []spec.Param, identPrefix, flag
 	}
 }
 
+// renderFlatBodyFlagReg emits cobra flag registrations for a single body
+// param. Const-default detection via paramIsConstDefault is intentionally
+// not wired through here yet: the primary use case is the query-param
+// routing-selector shape, not body fields. If a future API surfaces a
+// const-default body field, extend the emission here with a MarkHidden
+// line gated by paramIsConstDefault, mirroring the command_endpoint and
+// command_promoted templates.
 func renderFlatBodyFlagReg(b *strings.Builder, p spec.Param, identPrefix, flagPrefix string, topLevel bool) {
 	ident := identPrefix + toCamel(paramIdent(p))
 	flag := joinFlag(flagPrefix, publicFlagName(p))
@@ -3467,6 +3517,21 @@ func multipartBodyMaps(body []spec.Param, indent string) string {
 		fmt.Fprintf(&b, "%s}\n", indent)
 	}
 	return b.String()
+}
+
+// endpointHasQueryFlags reports whether the endpoint declares any non-positional,
+// non-path parameters — i.e., flags that should be encoded as URL query string.
+// True for any HTTP method. Used by the non-GET handler template to decide
+// whether to build a params map and route through the *WithParams client
+// variant, so query-shaped params on POST/PUT/DELETE/PATCH reach the URL
+// instead of being silently dropped into the JSON body or omitted.
+func endpointHasQueryFlags(endpoint spec.Endpoint) bool {
+	for _, p := range endpoint.Params {
+		if !p.Positional && !p.PathParam {
+			return true
+		}
+	}
+	return false
 }
 
 func endpointUsesMultipart(endpoint spec.Endpoint) bool {

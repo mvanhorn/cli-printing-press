@@ -1125,7 +1125,13 @@ func inferQueryParamAuth(doc *openapi3.T, name string, fallback spec.AuthConfig)
 	// Find the most common auth-like param name.
 	var best string
 	var bestCount int
-	for pName, cnt := range paramCounts {
+	paramNames := make([]string, 0, len(paramCounts))
+	for pName := range paramCounts {
+		paramNames = append(paramNames, pName)
+	}
+	sort.Strings(paramNames)
+	for _, pName := range paramNames {
+		cnt := paramCounts[pName]
 		if cnt > bestCount {
 			best = pName
 			bestCount = cnt
@@ -1184,7 +1190,13 @@ func inferHeaderParamAPIKeyAuth(doc *openapi3.T, name string, fallback spec.Auth
 
 	var best string
 	var bestCount int
-	for pName, cnt := range paramCounts {
+	paramNames := make([]string, 0, len(paramCounts))
+	for pName := range paramCounts {
+		paramNames = append(paramNames, pName)
+	}
+	sort.Strings(paramNames)
+	for _, pName := range paramNames {
+		cnt := paramCounts[pName]
 		if cnt > bestCount {
 			best = pName
 			bestCount = cnt
@@ -1952,6 +1964,12 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			endpoint.Response, endpoint.ResponsePath = mapResponse(op, targetResourceName+"_"+endpointName, out)
 			if strings.ToUpper(method) == "GET" {
 				endpoint.Pagination = detectPagination(endpoint.Params, op)
+				// Only single-resource fetches (GET /resource/{id}) can carry
+				// embedded paged sub-resources; list endpoints ARE the paged
+				// endpoint themselves and don't need a companion helper.
+				if strings.Contains(path, "{") {
+					endpoint.EmbeddedPagedSubresources = detectEmbeddedPagedSubresources(op, path)
+				}
 			}
 			endpoint.NoAuth = operationAllowsAnonymous(op, doc)
 
@@ -4848,6 +4866,180 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	}
 
 	return &pag
+}
+
+// itemsFieldNames lists JSON property names that, when typed as an array,
+// signal "this object is a paged envelope" — matches the runtime
+// extractPaginatedItems helper in templates/helpers.go.tmpl so detect-time
+// and runtime walks agree on what counts as a page of items.
+var itemsFieldNames = []string{"data", "items", "results", "messages", "members", "values"}
+
+// nextFieldURLNames lists string properties that carry a full URL to
+// the next page (resolvable directly with GET). The runtime helper
+// follows these without API-specific cursor arithmetic.
+var nextFieldURLNames = []string{"next", "next_url", "nexturl"}
+
+// nextFieldCursorNames lists string properties that carry an opaque
+// cursor token (e.g. next_page_token, next_cursor). These cannot be
+// followed without knowing which query parameter to set on the next
+// request — metadata the embedded envelope does not provide — so the
+// runtime helper treats their presence the same way it treats
+// has_more=true: fetch page 1, then emit a truncation event so callers
+// know data is incomplete.
+var nextFieldCursorNames = []string{"next_cursor", "nextcursor", "next_page_token", "nextpagetoken", "cursor"}
+
+// nextFieldBoolNames lists boolean-typed "more pages" flags.
+var nextFieldBoolNames = []string{"has_more", "hasmore"}
+
+// detectEmbeddedPagedSubresources walks the success-response schema of a
+// GET operation looking for top-level properties whose nested shape is a
+// paged envelope. Each match yields a companion-helper candidate; the
+// caller stores the result on Endpoint.EmbeddedPagedSubresources and the
+// generator emits fetchFull<Endpoint><Property> helpers from there.
+// Returns nil when nothing matches so callers can compare against nil.
+//
+// Detection is a two-part heuristic: the property schema must be
+// object-shaped AND carry both an array items field (items/data/
+// results/...) and a next-page signal (cursor/URL string or has_more-
+// style bool).
+func detectEmbeddedPagedSubresources(op *openapi3.Operation, parentPath string) []spec.EmbeddedPagedSubresource {
+	if op == nil || op.Responses == nil {
+		return nil
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil {
+		return nil
+	}
+	schemaRef := selectResponseSchema(success.Value)
+	if schemaRef == nil || schemaRef.Value == nil {
+		return nil
+	}
+
+	var out []spec.EmbeddedPagedSubresource
+	propNames := make([]string, 0, len(schemaRef.Value.Properties))
+	for name := range schemaRef.Value.Properties {
+		propNames = append(propNames, name)
+	}
+	sort.Strings(propNames)
+
+	for _, propName := range propNames {
+		propRef := schemaRef.Value.Properties[propName]
+		if propRef == nil || propRef.Value == nil {
+			continue
+		}
+		propSchema := propRef.Value
+		if !schemaHasObjectShape(propSchema) {
+			continue
+		}
+		lowered := loweredPropertyMap(propSchema)
+		itemsField, ok := findItemsField(propSchema, lowered)
+		if !ok {
+			continue
+		}
+		nextField, kind := findNextField(lowered)
+		if kind == nextKindNone {
+			continue
+		}
+		out = append(out, spec.EmbeddedPagedSubresource{
+			Property:      propName,
+			ChildPath:     joinChildPath(parentPath, propName),
+			ItemsField:    itemsField,
+			NextField:     nextField,
+			NextIsURL:     kind == nextKindURL,
+			NextIsBoolean: kind == nextKindBoolean,
+		})
+	}
+	return out
+}
+
+func schemaHasObjectShape(s *openapi3.Schema) bool {
+	if s == nil {
+		return false
+	}
+	if s.Type != nil && s.Type.Is("object") {
+		return true
+	}
+	// Some specs omit `type: object` but declare properties anyway —
+	// treat that as object-shaped for detection purposes.
+	return len(s.Properties) > 0
+}
+
+// loweredPropertyMap returns a case-insensitive lookup from canonical
+// lowercase property name to the wire-side name actually declared on the
+// schema, so detection survives vendors that capitalize fields ("Items",
+// "NextPageToken") while preserving the original casing for emission.
+func loweredPropertyMap(s *openapi3.Schema) map[string]string {
+	out := make(map[string]string, len(s.Properties))
+	for name := range s.Properties {
+		out[strings.ToLower(name)] = name
+	}
+	return out
+}
+
+func findItemsField(s *openapi3.Schema, lowered map[string]string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	for _, candidate := range itemsFieldNames {
+		actual, ok := lowered[candidate]
+		if !ok {
+			continue
+		}
+		ref := s.Properties[actual]
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		if ref.Value.Type != nil && ref.Value.Type.Is("array") {
+			return actual, true
+		}
+	}
+	return "", false
+}
+
+// nextFieldKind classifies the detected next-page signal so the
+// runtime can decide whether to follow it (URL) or stop and warn
+// (cursor / has_more bool).
+type nextFieldKind int
+
+const (
+	nextKindNone nextFieldKind = iota
+	nextKindURL
+	nextKindCursor
+	nextKindBoolean
+)
+
+func findNextField(lowered map[string]string) (string, nextFieldKind) {
+	for _, candidate := range nextFieldURLNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindURL
+		}
+	}
+	for _, candidate := range nextFieldCursorNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindCursor
+		}
+	}
+	for _, candidate := range nextFieldBoolNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindBoolean
+		}
+	}
+	return "", nextKindNone
+}
+
+// joinChildPath returns parentPath + "/" + property — the conventional
+// URL shape for the dedicated child endpoint of an embedded paged
+// sub-resource (e.g. <api>/resource/{id}/<subresource>). APIs that
+// publish the sub-resource at a non-conventional URL must override via
+// the spec field after parsing.
+func joinChildPath(parentPath, property string) string {
+	if parentPath == "" || property == "" {
+		return ""
+	}
+	if strings.HasSuffix(parentPath, "/") {
+		return parentPath + property
+	}
+	return parentPath + "/" + property
 }
 
 func humanizeEndpointName(name string) string {

@@ -21,6 +21,8 @@ import (
 	"time"
 )
 
+const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
+
 type Client struct {
 	BaseURL     string
 	Config      *config.Config
@@ -190,7 +192,7 @@ func (c *Client) cacheKey(path string, params map[string]string) string {
 	if c.Config != nil {
 		key += "|auth_source=" + c.Config.AuthSource
 		if authHeader := c.Config.AuthHeader(); authHeader != "" {
-			authHash := sha256.Sum256([]byte(c.Config.AuthHeader()))
+			authHash := sha256.Sum256([]byte(authHeader))
 			key += "|auth=" + hex.EncodeToString(authHash[:8])
 		}
 		if c.Config.Path != "" {
@@ -379,6 +381,10 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		for k, v := range headerOverrides {
 			req.Header.Set(k, v)
 		}
+		binaryResponse := strings.EqualFold(req.Header.Get(BinaryResponseHeader), "true")
+		if binaryResponse {
+			req.Header.Del(BinaryResponseHeader)
+		}
 		if req.Header.Get("User-Agent") == "" {
 			req.Header.Set("User-Agent", "tier-routing-golden-pp-cli/1.0.0")
 		}
@@ -394,7 +400,11 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		// per-endpoint headerOverrides, both of which run before this
 		// if-empty default.
 		if req.Header.Get("Accept") == "" {
-			req.Header.Set("Accept", "application/json")
+			if binaryResponse {
+				req.Header.Set("Accept", "*/*")
+			} else {
+				req.Header.Set("Accept", "application/json")
+			}
 		}
 
 		resp, err := c.HTTPClient.Do(req)
@@ -408,7 +418,9 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		if err != nil {
 			return nil, 0, fmt.Errorf("reading response: %w", err)
 		}
-		respBody = sanitizeJSONResponse(respBody)
+		if !binaryResponse {
+			respBody = sanitizeJSONResponse(respBody)
+		}
 
 		// Success
 		if resp.StatusCode < 400 {
@@ -553,9 +565,9 @@ func maskToken(token string) string {
 }
 
 func truncateBody(b []byte) string {
-	s := string(b)
-	if len(s) > 200 {
-		return s[:200] + "..."
+	const maxBytes = 4096
+	if len(b) <= maxBytes {
+		return string(b)
 	}
-	return s
+	return strings.ToValidUTF8(string(b[:maxBytes]), "") + "..."
 }

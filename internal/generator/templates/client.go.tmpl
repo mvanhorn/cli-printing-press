@@ -31,11 +31,14 @@ import (
 	"time"
 
 {{- if .UsesBrowserHTTPTransport}}
+	enetxhttp "github.com/enetx/http"
 	"github.com/enetx/surf"
 {{ end}}
 	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/config"
 )
+
+const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
 
 type Client struct {
 	BaseURL    string
@@ -287,6 +290,22 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 		builder = builder.Session()
 	}
 	surfClient := builder.Build().Unwrap()
+	// Surf's underlying *http.Transport sets ResponseHeaderTimeout to
+	// its package default (10s in surf v1.x), which caps how long we
+	// wait for the FIRST response byte independent of the overall
+	// client Timeout. Slow-streaming endpoints (RAG queries, LLM
+	// completions, server-side rendering) routinely take longer than
+	// that to emit headers; without this override the user-facing
+	// --timeout flag has no effect on transport-layer cutoffs and
+	// requests fail with "net/http: timeout awaiting response headers"
+	// at the package default regardless of --timeout. Override so the
+	// transport-layer ceiling tracks the user's intent.
+	// surf's GetTransport returns *enetxhttp.Transport (surf's HTTP fork
+	// used for browser-impersonate features), NOT *net/http.Transport,
+	// so the assertion targets the enetx package's Transport type.
+	if t, ok := surfClient.GetTransport().(*enetxhttp.Transport); ok {
+		t.ResponseHeaderTimeout = timeout
+	}
 	httpClient := surfClient.Std()
 	httpClient.Timeout = timeout
 	if jar != nil {
@@ -397,7 +416,7 @@ func (c *Client) cacheKey(path string, params map[string]string) string {
 	if c.Config != nil {
 		key += "|auth_source=" + c.Config.AuthSource
 		if authHeader := c.Config.AuthHeader(); authHeader != "" {
-			authHash := sha256.Sum256([]byte(c.Config.AuthHeader()))
+			authHash := sha256.Sum256([]byte(authHeader))
 			key += "|auth=" + hex.EncodeToString(authHash[:8])
 		}
 		if c.Config.Path != "" {
@@ -939,6 +958,10 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		for k, v := range headerOverrides {
 			req.Header.Set(k, v)
 		}
+		binaryResponse := strings.EqualFold(req.Header.Get(BinaryResponseHeader), "true")
+		if binaryResponse {
+			req.Header.Del(BinaryResponseHeader)
+		}
 {{- if not .UsesBrowserManagedUserAgent}}
 		if req.Header.Get("User-Agent") == "" {
 			req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
@@ -955,7 +978,11 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		// per-endpoint headerOverrides, both of which run before this
 		// if-empty default.
 		if req.Header.Get("Accept") == "" {
-			req.Header.Set("Accept", "application/json")
+			if binaryResponse {
+				req.Header.Set("Accept", "*/*")
+			} else {
+				req.Header.Set("Accept", "application/json")
+			}
 		}
 {{- end}}
 
@@ -970,7 +997,9 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		if err != nil {
 			return nil, 0, fmt.Errorf("reading response: %w", err)
 		}
-		respBody = sanitizeJSONResponse(respBody)
+		if !binaryResponse {
+			respBody = sanitizeJSONResponse(respBody)
+		}
 
 		// Success
 		if resp.StatusCode < 400 {
@@ -1541,9 +1570,9 @@ func maskToken(token string) string {
 }
 
 func truncateBody(b []byte) string {
-	s := string(b)
-	if len(s) > 200 {
-		return s[:200] + "..."
+	const maxBytes = 4096
+	if len(b) <= maxBytes {
+		return string(b)
 	}
-	return s
+	return strings.ToValidUTF8(string(b[:maxBytes]), "") + "..."
 }
