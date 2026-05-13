@@ -409,8 +409,8 @@ func maskToken(token string) string {
 
 func truncateBody(b []byte) string {
 	s := string(b)
-	if len(s) > 200 {
-		return s[:200] + "..."
+	if len(s) > 4096 {
+		return s[:4096] + "..."
 	}
 	return s
 }
