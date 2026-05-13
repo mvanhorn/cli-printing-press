@@ -96,13 +96,13 @@ func TestUnknownSubcommand(t *testing.T) {
 }
 
 func TestSubcommandStubsReturnNotImplemented(t *testing.T) {
+	// refresh is no longer a stub; it has its own coverage in refresh_test.go.
 	cases := []struct {
 		name string
 		args []string
 	}{
 		{"login", []string{"login", "example.com"}},
 		{"status", []string{"status", "example.com"}},
-		{"refresh", []string{"refresh", "example.com"}},
 		{"list", []string{"list"}},
 		{"forget", []string{"forget", "example.com"}},
 	}
