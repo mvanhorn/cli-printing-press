@@ -16,9 +16,9 @@ func newThingsListCmd(flags *rootFlags) *cobra.Command {
 	var stdinBody bool
 
 	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List things via GraphQL",
-		Example: "  graphql-shared-golden-pp-cli things list",
+		Use:         "list",
+		Short:       "List things via GraphQL",
+		Example:     "  graphql-shared-golden-pp-cli things list",
 		Annotations: map[string]string{"pp:endpoint": "things.list", "pp:method": "POST", "pp:path": "/graphql", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {
@@ -58,7 +58,9 @@ func newThingsListCmd(flags *rootFlags) *cobra.Command {
 						return nil
 					}
 				} else {
-					var wrapped struct{ Data []map[string]any `json:"data"` }
+					var wrapped struct {
+						Data []map[string]any `json:"data"`
+					}
 					if json.Unmarshal(data, &wrapped) == nil && len(wrapped.Data) > 0 {
 						if err := printAutoTable(cmd.OutOrStdout(), wrapped.Data); err != nil {
 							fmt.Fprintf(os.Stderr, "warning: table rendering failed, falling back to JSON: %v\n", err)
@@ -68,7 +70,7 @@ func newThingsListCmd(flags *rootFlags) *cobra.Command {
 					}
 				}
 			}
-			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
+			if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain) {
 				if flags.quiet {
 					return nil
 				}
