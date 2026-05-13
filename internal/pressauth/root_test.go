@@ -96,11 +96,12 @@ func TestUnknownSubcommand(t *testing.T) {
 }
 
 func TestSubcommandStubsReturnNotImplemented(t *testing.T) {
+	// login is no longer a stub (U3 wired chromedp capture). The rest of
+	// the subcommands stay stubbed until U4/U5/U6 land.
 	cases := []struct {
 		name string
 		args []string
 	}{
-		{"login", []string{"login", "example.com"}},
 		{"status", []string{"status", "example.com"}},
 		{"refresh", []string{"refresh", "example.com"}},
 		{"list", []string{"list"}},
@@ -117,6 +118,39 @@ func TestSubcommandStubsReturnNotImplemented(t *testing.T) {
 				t.Errorf("%s stub should wrap ErrNotImplemented, got: %v", tc.name, err)
 			}
 		})
+	}
+}
+
+// TestLoginRequiresLoginURL exercises the U3 flag-validation path: when the
+// caller passes a domain but omits --login-url, login should refuse with a
+// usage-error exit code rather than launching chromedp.
+func TestLoginRequiresLoginURL(t *testing.T) {
+	_, _, err := runCmd([]string{"login", "example.com"})
+	if err == nil {
+		t.Fatal("expected error when --login-url is missing, got nil")
+	}
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected an *ExitError, got %T: %v", err, err)
+	}
+	if exitErr.Code != ExitUsageError {
+		t.Errorf("expected ExitUsageError (%d), got code %d", ExitUsageError, exitErr.Code)
+	}
+	if !strings.Contains(err.Error(), "--login-url") {
+		t.Errorf("error should mention --login-url, got: %v", err)
+	}
+}
+
+// TestLoginRejectsInsecureURL guards the http:// vs https:// branch in
+// validateLoginURL. http://localhost is allowed; http://anywhere-else is
+// not.
+func TestLoginRejectsInsecureURL(t *testing.T) {
+	_, _, err := runCmd([]string{"login", "example.com", "--login-url", "http://example.com/login"})
+	if err == nil {
+		t.Fatal("expected error for plain http login URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Errorf("error should explain https requirement, got: %v", err)
 	}
 }
 
