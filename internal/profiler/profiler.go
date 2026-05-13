@@ -96,6 +96,11 @@ type SyncableResource struct {
 	// run when --since/incremental sync was requested.
 	SinceParam string
 
+	// SupportsPagination is true when the chosen list endpoint declares a
+	// page-size parameter. The sync template uses this to avoid sending
+	// synthetic limit/offset params to strict non-paginated list endpoints.
+	SupportsPagination bool
+
 	// Discriminator routes heterogeneous response items to concrete typed
 	// resources before storage. Empty when the endpoint returns a homogeneous
 	// resource.
@@ -129,6 +134,11 @@ type DependentResource struct {
 	// the same per-resource temporal-filter gating applies to dependent
 	// syncs.
 	SinceParam string
+
+	// SupportsPagination mirrors SyncableResource.SupportsPagination for child
+	// paths so dependent syncs skip synthetic limit/offset params on endpoints
+	// that do not declare page-size pagination.
+	SupportsPagination bool
 
 	// Discriminator routes heterogeneous dependent-resource response items to
 	// concrete typed resources before storage.
@@ -1063,15 +1073,16 @@ func detectDependentResources(parameterized map[string]parameterizedEntry, synca
 		}
 
 		deps = append(deps, DependentResource{
-			Name:           emittedName,
-			ParentResource: parentResource,
-			ParentIDParam:  paramName,
-			Path:           entry.meta.Path,
-			Tier:           entry.meta.Tier,
-			IDField:        entry.meta.IDField,
-			Critical:       entry.meta.Critical,
-			SinceParam:     entry.meta.SinceParam,
-			Discriminator:  entry.meta.Discriminator,
+			Name:               emittedName,
+			ParentResource:     parentResource,
+			ParentIDParam:      paramName,
+			Path:               entry.meta.Path,
+			Tier:               entry.meta.Tier,
+			IDField:            entry.meta.IDField,
+			Critical:           entry.meta.Critical,
+			SinceParam:         entry.meta.SinceParam,
+			SupportsPagination: entry.meta.SupportsPagination,
+			Discriminator:      entry.meta.Discriminator,
 		})
 	}
 	// Sort for deterministic output
@@ -1168,16 +1179,17 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 			}
 			meta := metaFromEndpoint(s, r, e, types, resourceNameIndex)
 			deps = append(deps, DependentResource{
-				Name:           spec.ToSnakeCase(resourceName),
-				ParentResource: parent,
-				ParentIDParam:  keyParam,
-				Path:           e.Path,
-				Tier:           meta.Tier,
-				IDField:        meta.IDField,
-				Critical:       meta.Critical,
-				SinceParam:     meta.SinceParam,
-				Discriminator:  meta.Discriminator,
-				KeyField:       keyField,
+				Name:               spec.ToSnakeCase(resourceName),
+				ParentResource:     parent,
+				ParentIDParam:      keyParam,
+				Path:               e.Path,
+				Tier:               meta.Tier,
+				IDField:            meta.IDField,
+				Critical:           meta.Critical,
+				SinceParam:         meta.SinceParam,
+				SupportsPagination: meta.SupportsPagination,
+				Discriminator:      meta.Discriminator,
+				KeyField:           keyField,
 			})
 			byPath[lookupKey] = len(deps) - 1
 		}
@@ -1250,12 +1262,13 @@ func resolveParentResource(walkParent, paramName string, syncable map[string]syn
 // is still selecting between candidates (e.g., flat vs. paginated). It is
 // converted into a SyncableResource at the end of Profile().
 type syncableMeta struct {
-	Path          string
-	Tier          string
-	IDField       string
-	Critical      bool
-	SinceParam    string
-	Discriminator DiscriminatorDispatch
+	Path               string
+	Tier               string
+	IDField            string
+	Critical           bool
+	SinceParam         string
+	SupportsPagination bool
+	Discriminator      DiscriminatorDispatch
 }
 
 type syncableCandidate struct {
@@ -1278,12 +1291,13 @@ type parameterizedEntry struct {
 // fields propagate uniformly.
 func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, types map[string]spec.TypeDef, resourceNameIndex map[string]string) syncableMeta {
 	return syncableMeta{
-		Path:          e.Path,
-		Tier:          s.EffectiveTier(resource, e),
-		IDField:       e.IDField,
-		Critical:      e.Critical,
-		SinceParam:    detectEndpointSinceParam(e.Params),
-		Discriminator: discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
+		Path:               e.Path,
+		Tier:               s.EffectiveTier(resource, e),
+		IDField:            e.IDField,
+		Critical:           e.Critical,
+		SinceParam:         detectEndpointSinceParam(e.Params),
+		SupportsPagination: endpointSupportsPagination(e),
+		Discriminator:      discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
 	}
 }
 
@@ -1300,6 +1314,21 @@ func detectEndpointSinceParam(params []spec.Param) string {
 		}
 	}
 	return ""
+}
+
+func endpointSupportsPagination(endpoint spec.Endpoint) bool {
+	if endpoint.Pagination != nil && strings.TrimSpace(endpoint.Pagination.LimitParam) != "" {
+		return true
+	}
+	for _, param := range endpoint.Params {
+		if param.PathParam || param.Positional {
+			continue
+		}
+		if pageSizeParamCandidates[strings.ToLower(param.Name)] {
+			return true
+		}
+	}
+	return false
 }
 
 func applySyncCandidates(syncable map[string]syncableMeta, candidates map[string][]syncableCandidate) {
@@ -1491,13 +1520,14 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 	for i, name := range names {
 		meta := m[name]
 		resources[i] = SyncableResource{
-			Name:          name,
-			Path:          meta.Path,
-			Tier:          meta.Tier,
-			IDField:       meta.IDField,
-			Critical:      meta.Critical,
-			SinceParam:    meta.SinceParam,
-			Discriminator: meta.Discriminator,
+			Name:               name,
+			Path:               meta.Path,
+			Tier:               meta.Tier,
+			IDField:            meta.IDField,
+			Critical:           meta.Critical,
+			SinceParam:         meta.SinceParam,
+			SupportsPagination: meta.SupportsPagination,
+			Discriminator:      meta.Discriminator,
 		}
 	}
 	return resources

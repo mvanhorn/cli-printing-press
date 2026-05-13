@@ -738,12 +738,17 @@ func TestIsAuthEnvVarORCase(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "all required entries are not OR case",
+			name: "all required per-call entries are OR case",
 			auth: AuthConfig{EnvVarSpecs: []AuthEnvVar{
 				{Name: "FIRST_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true},
 				{Name: "SECOND_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true},
 			}},
-			want: false,
+			want: true,
+		},
+		{
+			name: "legacy env vars list is OR case",
+			auth: AuthConfig{EnvVars: []string{"FIRST_API_KEY", "SECOND_API_KEY"}},
+			want: true,
 		},
 		{
 			name: "all non-required per-call entries are OR case",

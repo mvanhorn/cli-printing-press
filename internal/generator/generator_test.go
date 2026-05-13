@@ -8391,6 +8391,71 @@ func TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGeneratedSyncAdvancesOffsetWhenHasMoreWithoutCursor(t *testing.T) {
+	t.Parallel()
+
+	offsetPaged := func(path string) spec.Endpoint {
+		return spec.Endpoint{
+			Method:      "GET",
+			Path:        path,
+			Description: "List records",
+			Response:    spec.ResponseDef{Type: "array"},
+			Pagination:  &spec.Pagination{Type: "offset", CursorParam: "offset", LimitParam: "limit", HasMoreField: "has_more"},
+		}
+	}
+	apiSpec := &spec.APISpec{
+		Name:    "offsetsync",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"OFFSETSYNC_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/offsetsync-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Description: "Accounts",
+				Endpoints: map[string]spec.Endpoint{
+					"list": offsetPaged("/accounts"),
+				},
+			},
+			"transactions": {
+				Description: "Transactions",
+				Endpoints: map[string]spec.Endpoint{
+					"list": offsetPaged("/accounts/{account_id}/transactions"),
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	assert.NotContains(t, syncContent, `if !hasMore || len(items) < pageSize.limit || nextCursor == ""`,
+		"sync loops must not require an API-returned next cursor for offset pagination")
+	assert.Contains(t, syncContent, `if !hasMore || len(items) < pageSize.limit {`,
+		"sync loops must break only on real done signals before handling cursor advancement")
+	assert.Contains(t, syncContent, `if pageSize.cursorParam == "offset" {`,
+		"offset pagination must advance the cursor client-side when has_more is true")
+	assert.Contains(t, syncContent, `nextCursor = strconv.Itoa(currentOffset + pageSize.limit)`,
+		"offset pagination must compute the next offset from the current cursor and limit")
+	assert.GreaterOrEqual(t, strings.Count(syncContent, `currentOffset, _ := strconv.Atoi(cursor)`), 2,
+		"offset advancement must be emitted in both flat and dependent-resource sync loops")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 // TestGeneratedSyncGatesSinceParamPerResource pins the fix for issue #900:
 // generators must only inject the incremental-cursor query parameter on
 // resources whose list endpoint actually declares it. Resources that don't
@@ -8476,14 +8541,21 @@ func TestGeneratedSyncGatesSinceParamPerResource(t *testing.T) {
 	assert.Contains(t, syncContent, "func syncResourceSinceParam(resource string) string",
 		"per-resource helper must be emitted")
 
+	sinceHelperStart := strings.Index(syncContent, "func syncResourceSinceParam(resource string) string")
+	require.NotEqual(t, -1, sinceHelperStart, "sync.go must emit syncResourceSinceParam")
+	sinceHelperBody := syncContent[sinceHelperStart:]
+	if nextFunc := strings.Index(sinceHelperBody[1:], "\nfunc "); nextFunc != -1 {
+		sinceHelperBody = sinceHelperBody[:nextFunc+1]
+	}
+
 	// events declares since → switch case present with the literal param name.
-	assert.Contains(t, syncContent, `case "events":`,
+	assert.Contains(t, sinceHelperBody, `case "events":`,
 		"events resource must appear in the per-resource switch")
-	assert.Contains(t, syncContent, `return "since"`,
+	assert.Contains(t, sinceHelperBody, `return "since"`,
 		"events resource must map to its declared param name")
 
 	// users declares no since-like param → no case for it (falls through to "").
-	assert.NotContains(t, syncContent, `case "users":`,
+	assert.NotContains(t, sinceHelperBody, `case "users":`,
 		"users resource has no since-like param and must not appear in the switch — empty result skips the cursor")
 
 	// Pin the full warning JSON shape so future template churn can't silently
@@ -8511,6 +8583,113 @@ func TestGeneratedSyncGatesSinceParamPerResource(t *testing.T) {
 		"dependent path must zero depSinceTS after warning so no cursor leaks through")
 
 	// Build to catch template-syntax / import errors.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGeneratedSyncGatesPaginationParamsPerResource(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "mixedpaging",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"MIXEDPAGING_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/mixedpaging-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Description: "Accounts",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/accounts",
+						Description: "List accounts",
+						Response:    spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "limit", Type: "integer"},
+							{Name: "offset", Type: "integer"},
+						},
+						Pagination: &spec.Pagination{Type: "offset", CursorParam: "offset", LimitParam: "limit"},
+					},
+				},
+			},
+			"transactions": {
+				Description: "Transactions",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/accounts/{account_id}/transactions",
+						Description: "List transactions",
+						Response:    spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "limit", Type: "integer"},
+							{Name: "offset", Type: "integer"},
+						},
+						Pagination: &spec.Pagination{Type: "offset", CursorParam: "offset", LimitParam: "limit"},
+					},
+				},
+			},
+			"categories": {
+				Description: "Categories",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/categories",
+						Description: "List categories",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"budget_settings": {
+				Description: "Budget settings",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/budgets/settings",
+						Description: "Get budget settings",
+						Response:    spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	helperStart := strings.Index(syncContent, "func resourceSupportsPagination(resource string) bool")
+	require.NotEqual(t, -1, helperStart, "sync.go must emit resourceSupportsPagination")
+	helperBody := syncContent[helperStart:]
+	if nextFunc := strings.Index(helperBody[1:], "\nfunc "); nextFunc != -1 {
+		helperBody = helperBody[:nextFunc+1]
+	}
+
+	assert.Contains(t, helperBody, `case "accounts":`,
+		"accounts declares limit/offset and must opt into pagination params")
+	assert.Contains(t, helperBody, `case "transactions":`,
+		"dependent transactions declares limit/offset and must opt into pagination params")
+	assert.NotContains(t, helperBody, `case "categories":`,
+		"categories declares no limit param and must not receive pagination params")
+	assert.NotContains(t, helperBody, `case "budget_settings":`,
+		"/budgets/settings is non-paginated and must fall through to false")
+	assert.Contains(t, syncContent, `if resourceSupportsPagination(resource) {`,
+		"flat sync loop must gate page-size and cursor params per resource")
+	assert.Contains(t, syncContent, `if resourceSupportsPagination(dep.Name) {`,
+		"dependent sync loop must gate page-size and cursor params per resource")
+
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
 }

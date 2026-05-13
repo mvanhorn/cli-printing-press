@@ -234,6 +234,42 @@ func TestClassifyFullExample_ReportsUnsupportedWhenDryRunUnavailable(t *testing.
 	}
 }
 
+func TestRunFullExample_SkipsAuthSetToken(t *testing.T) {
+	t.Parallel()
+
+	got := classifyFullExample(
+		context.Background(),
+		"/not/invoked",
+		"stub auth set-token YOUR_TOKEN_HERE",
+		[]byte("      --dry-run   Show request without sending"),
+		Result{Section: SectionQuickstart, Command: "stub auth set-token YOUR_TOKEN_HERE", Words: "auth set-token YOUR_TOKEN_HERE"},
+	)
+	if got.Status != StatusUnsupported {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusUnsupported)
+	}
+	if got.Error != "full-example validation skipped: command is side-effectful (auth/launch/apply)" {
+		t.Errorf("Error = %q", got.Error)
+	}
+}
+
+func TestRunFullExample_SkipsAuthLogout(t *testing.T) {
+	t.Parallel()
+
+	got := classifyFullExample(
+		context.Background(),
+		"/not/invoked",
+		"stub auth logout",
+		[]byte("      --dry-run   Show request without sending"),
+		Result{Section: SectionRecipes, Command: "stub auth logout", Words: "auth logout"},
+	)
+	if got.Status != StatusUnsupported {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusUnsupported)
+	}
+	if got.Error != "full-example validation skipped: command is side-effectful (auth/launch/apply)" {
+		t.Errorf("Error = %q", got.Error)
+	}
+}
+
 // TestValidate_EmptyResearchFlagsResearchEmpty covers the LLM-omitted-
 // both-sections case.
 func TestValidate_EmptyResearchFlagsResearchEmpty(t *testing.T) {

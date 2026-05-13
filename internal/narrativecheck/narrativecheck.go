@@ -294,6 +294,11 @@ func classifyFullExample(ctx context.Context, binaryPath, command string, helpOu
 	}
 
 	args := append([]string(nil), tokens[1:]...)
+	if isSideEffectfulNarrativeExample(args) {
+		r.Status = StatusUnsupported
+		r.Error = "full-example validation skipped: command is side-effectful (auth/launch/apply)"
+		return r
+	}
 	if !hasEnabledBoolFlag(args, "--dry-run") {
 		if !helpAdvertisesDryRun(helpOut) {
 			r.Status = StatusUnsupported
@@ -319,6 +324,26 @@ func classifyFullExample(ctx context.Context, binaryPath, command string, helpOu
 
 	r.Status = StatusOK
 	return r
+}
+
+func isSideEffectfulNarrativeExample(args []string) bool {
+	if len(args) >= 2 && args[0] == "auth" {
+		switch args[1] {
+		case "set-token", "logout", "setup", "login":
+			return true
+		}
+	}
+
+	hasApply := false
+	for _, arg := range args {
+		if strings.Contains(arg, "--launch") {
+			return true
+		}
+		if strings.Contains(arg, "--apply") {
+			hasApply = true
+		}
+	}
+	return hasApply && !hasEnabledBoolFlag(args, "--dry-run")
 }
 
 func hasEnabledBoolFlag(args []string, flag string) bool {
