@@ -202,9 +202,15 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		}
 	}
 
+	// Code-orch dispatch has no schema metadata at runtime to bucket params
+	// into body vs query, so POST/PUT/PATCH keep the everything-to-body
+	// design. DELETE is the one verb where query routing is unambiguous; the
+	// previous code built `query` but never passed it.
 	query := map[string]string{}
-	for k, v := range params {
-		query[k] = fmt.Sprintf("%v", v)
+	if ep.Method == "GET" || ep.Method == "DELETE" {
+		for k, v := range params {
+			query[k] = fmt.Sprintf("%v", v)
+		}
 	}
 
 	var data json.RawMessage
@@ -220,11 +226,11 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		}
 		switch ep.Method {
 		case "POST":
-			data, _, err = c.PostWithParams(path, query, body)
+			data, _, err = c.Post(path, body)
 		case "PUT":
-			data, _, err = c.PutWithParams(path, query, body)
+			data, _, err = c.Put(path, body)
 		case "PATCH":
-			data, _, err = c.PatchWithParams(path, query, body)
+			data, _, err = c.Patch(path, body)
 		default:
 			return mcplib.NewToolResultError(fmt.Sprintf("unsupported method %q", ep.Method)), nil
 		}
