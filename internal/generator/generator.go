@@ -578,6 +578,7 @@ type HelperFlags struct {
 	HasMultiPositional bool // spec has endpoints with 2+ positional params → emit usageErr
 	HasDataLayer       bool // CLI has a local store (sync/search) → emit provenance helpers
 	HasClientLimit     bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
+	HasEmbeddedPaged   bool // at least one GET endpoint has detected embedded paged sub-resources → emit fetchEmbeddedPagedSubresource
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
@@ -590,6 +591,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 			}
 			if endpointNeedsClientLimit(e) {
 				flags.HasClientLimit = true
+			}
+			if len(e.EmbeddedPagedSubresources) > 0 {
+				flags.HasEmbeddedPaged = true
 			}
 			positionalCount := 0
 			for _, p := range e.Params {
@@ -611,6 +615,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				}
 				if endpointNeedsClientLimit(e) {
 					flags.HasClientLimit = true
+				}
+				if len(e.EmbeddedPagedSubresources) > 0 {
+					flags.HasEmbeddedPaged = true
 				}
 				positionalCount := 0
 				for _, p := range e.Params {
