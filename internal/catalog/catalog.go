@@ -115,6 +115,7 @@ type Entry struct {
 	SpecURL           string     `yaml:"spec_url"`
 	SpecFormat        string     `yaml:"spec_format"`
 	OpenAPIVersion    string     `yaml:"openapi_version"`
+	BaseURL           string     `yaml:"base_url,omitempty"`
 	Tier              string     `yaml:"tier"`
 	VerifiedDate      string     `yaml:"verified_date"`
 	Homepage          string     `yaml:"homepage"`
@@ -310,6 +311,9 @@ func (e *Entry) Validate() error {
 		if _, ok := validHTTPTransports[e.HTTPTransport]; !ok {
 			return fmt.Errorf("http_transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h3")
 		}
+	}
+	if e.BaseURL != "" && !strings.HasPrefix(e.BaseURL, "https://") {
+		return fmt.Errorf(`base_url must start with "https://"`)
 	}
 	if err := validateBearerRefresh(e.BearerRefresh); err != nil {
 		return err

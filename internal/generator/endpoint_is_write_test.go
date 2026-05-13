@@ -249,7 +249,7 @@ func TestHasWriteCommands_PostAsQueryFlipsHasWriteFalse(t *testing.T) {
 
 // TestPromotedCommandVerbBranching covers the integration path: the
 // rendered promoted command emits the same HTTP verb the spec declared,
-// so a POST-only endpoint hits c.Post and a GET-only endpoint stays on
+// so a POST-only endpoint hits c.PostWithParams and a GET-only endpoint stays on
 // c.Get/resolveRead.
 func TestPromotedCommandVerbBranching(t *testing.T) {
 	cases := []struct {
@@ -262,7 +262,7 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 		mustNotHave  []string
 	}{
 		{
-			name:         "POST endpoint emits c.Post",
+			name:         "POST endpoint emits c.PostWithParams",
 			apiName:      "post-promoted",
 			resourceName: "queries",
 			endpointName: "searchAll",
@@ -272,7 +272,7 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 				Description: "Search collections by free text",
 				Body:        []spec.Param{{Name: "queryText", Type: "string"}},
 			},
-			mustContain: []string{"c.Post("},
+			mustContain: []string{"c.PostWithParams("},
 			mustNotHave: []string{"c.Get(path, params)"},
 		},
 		{
@@ -561,8 +561,8 @@ func TestPromotedCommandPlumbsBodyFields(t *testing.T) {
 		"promoted command must build a body map from body flags")
 	require.Contains(t, src, `body["name"] = bodyName`,
 		"body map must use the spec-declared field name, not the camelCased flag var")
-	require.Contains(t, src, `c.Post(path, body)`,
-		"promoted command must pass the body map to c.Post, not the params map")
+	require.Contains(t, src, `c.PostWithParams(path, params, body)`,
+		"promoted command must pass the body map to c.PostWithParams, not the params map")
 	require.NotContains(t, src, `c.Post(path, params)`,
 		"promoted command must NOT pass params (URL/path params) as the request body — that was the bug")
 }

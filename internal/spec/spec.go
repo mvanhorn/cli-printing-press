@@ -31,8 +31,9 @@ const (
 )
 
 const (
-	ResponseFormatJSON = "json"
-	ResponseFormatHTML = "html"
+	ResponseFormatJSON   = "json"
+	ResponseFormatHTML   = "html"
+	ResponseFormatBinary = "binary"
 )
 
 const (
@@ -1135,6 +1136,10 @@ func (e Endpoint) EffectiveResponseFormat() string {
 
 func (e Endpoint) UsesHTMLResponse() bool {
 	return e.EffectiveResponseFormat() == ResponseFormatHTML
+}
+
+func (e Endpoint) UsesBinaryResponse() bool {
+	return e.EffectiveResponseFormat() == ResponseFormatBinary
 }
 
 type HTMLExtract struct {
@@ -2372,9 +2377,9 @@ func validateTierRoutingResource(s *APISpec, resourcePath string, resource Resou
 
 func validateEndpointResponseFormat(e Endpoint) error {
 	switch e.ResponseFormat {
-	case "", ResponseFormatJSON, ResponseFormatHTML:
+	case "", ResponseFormatJSON, ResponseFormatHTML, ResponseFormatBinary:
 	default:
-		return fmt.Errorf("response_format must be one of: json, html")
+		return fmt.Errorf("response_format must be one of: json, html, binary")
 	}
 	if !e.UsesHTMLResponse() {
 		return nil

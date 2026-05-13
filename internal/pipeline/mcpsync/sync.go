@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 
+	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpoverrides"
@@ -80,6 +82,7 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	if prior := applyManifestNameOverride(cliDir, parsed); prior != "" {
 		fmt.Fprintf(os.Stderr, "mcp-sync: using manifest api_name %q over spec-derived slug %q\n", parsed.Name, prior)
 	}
+	applyCatalogMetadata(parsed)
 	// Validate that spec.yaml.name matches the directory's basename.
 	// Older library CLIs sometimes have drift (weather-goat's
 	// spec.yaml.name = "weather"; open-meteo's name diverges similarly)
@@ -511,8 +514,72 @@ func applyManifestNameOverride(cliDir string, parsed *spec.APISpec) string {
 	if parsed.Config.Path == fmt.Sprintf(defaultConfigPathFormat, naming.CLI(prior)) {
 		parsed.Config.Path = fmt.Sprintf(defaultConfigPathFormat, naming.CLI(m.APIName))
 	}
+	rebaseAuthEnvPrefix(&parsed.Auth, prior, m.APIName)
 	parsed.Name = m.APIName
 	return prior
+}
+
+func applyCatalogMetadata(parsed *spec.APISpec) {
+	if parsed == nil {
+		return
+	}
+	entry, err := catalog.LookupFS(catalogfs.FS, parsed.Name)
+	if err != nil {
+		return
+	}
+	if entry.BaseURL != "" && isReplaceableCatalogBaseURL(parsed.BaseURL, parsed.BaseURLIsPlaceholder) {
+		parsed.BaseURL = entry.BaseURL
+		parsed.BaseURLIsPlaceholder = false
+	}
+	if entry.DisplayName != "" {
+		parsed.DisplayName = entry.DisplayName
+		parsed.DisplayNameDerivedFromTitle = false
+	}
+	if entry.Description != "" {
+		parsed.CLIDescription = entry.Description
+	}
+	if entry.AuthKeyURL != "" {
+		parsed.Auth.KeyURL = entry.AuthKeyURL
+	}
+	if entry.AuthInstructions != "" {
+		parsed.Auth.Instructions = entry.AuthInstructions
+	}
+	if entry.ClientPattern != "" {
+		parsed.ClientPattern = entry.ClientPattern
+	}
+	if entry.HTTPTransport != "" {
+		parsed.HTTPTransport = entry.HTTPTransport
+	}
+	if entry.SpecSource != "" {
+		parsed.SpecSource = entry.SpecSource
+	}
+}
+
+func rebaseAuthEnvPrefix(auth *spec.AuthConfig, oldName, newName string) {
+	if auth == nil || oldName == "" || newName == "" || oldName == newName {
+		return
+	}
+	oldPrefix := naming.EnvPrefix(oldName) + "_"
+	newPrefix := naming.EnvPrefix(newName) + "_"
+	for i, envVar := range auth.EnvVars {
+		if strings.HasPrefix(envVar, oldPrefix) {
+			auth.EnvVars[i] = newPrefix + strings.TrimPrefix(envVar, oldPrefix)
+		}
+	}
+	for i := range auth.EnvVarSpecs {
+		if strings.HasPrefix(auth.EnvVarSpecs[i].Name, oldPrefix) {
+			auth.EnvVarSpecs[i].Name = newPrefix + strings.TrimPrefix(auth.EnvVarSpecs[i].Name, oldPrefix)
+		}
+	}
+}
+
+func isReplaceableCatalogBaseURL(baseURL string, placeholder bool) bool {
+	switch strings.TrimRight(strings.TrimSpace(baseURL), "/") {
+	case "", strings.TrimRight(spec.PlaceholderBaseURL, "/"), "https://api.example.com":
+		return true
+	default:
+		return placeholder
+	}
 }
 
 // readExistingManifestDisplayName returns the display_name from an

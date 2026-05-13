@@ -294,6 +294,7 @@ func newGenerateCmd() *cobra.Command {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing spec %s: %w", specFile, err)}
 				}
 
+				enrichSpecFromCatalog(apiSpec, catalogSpecLookupRefs(specFiles, specURL)...)
 				if apiSpec.BaseURLIsPlaceholder {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("spec %s declares no `servers:` block and no per-operation servers; the generator cannot resolve a real base URL and refuses to ship a CLI whose `doctor` would DNS-fail on every call. Add a `servers:` block with the real API host, or run via crowd-sniff with `--base-url` to supply one", specFile)}
 				}
@@ -306,6 +307,7 @@ func newGenerateCmd() *cobra.Command {
 				apiSpec = specs[0]
 				// Override spec-derived name when --name is explicitly provided
 				if cliName != "" {
+					rebaseAuthEnvPrefix(&apiSpec.Auth, apiSpec.Name, cliName)
 					apiSpec.Name = cliName
 				}
 			} else {
@@ -526,6 +528,24 @@ func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource
 		apiSpec.Owner = owner
 	}
 	return nil
+}
+
+func rebaseAuthEnvPrefix(auth *spec.AuthConfig, oldName, newName string) {
+	if auth == nil || oldName == "" || newName == "" || oldName == newName {
+		return
+	}
+	oldPrefix := naming.EnvPrefix(oldName) + "_"
+	newPrefix := naming.EnvPrefix(newName) + "_"
+	for i, envVar := range auth.EnvVars {
+		if strings.HasPrefix(envVar, oldPrefix) {
+			auth.EnvVars[i] = newPrefix + strings.TrimPrefix(envVar, oldPrefix)
+		}
+	}
+	for i := range auth.EnvVarSpecs {
+		if strings.HasPrefix(auth.EnvVarSpecs[i].Name, oldPrefix) {
+			auth.EnvVarSpecs[i].Name = newPrefix + strings.TrimPrefix(auth.EnvVarSpecs[i].Name, oldPrefix)
+		}
+	}
 }
 
 func normalizeSpecSource(value string) (string, error) {
@@ -1523,6 +1543,10 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	}
 	if entry.Homepage != "" && apiSpec.WebsiteURL == "" {
 		apiSpec.WebsiteURL = entry.Homepage
+	}
+	if entry.BaseURL != "" && (apiSpec.BaseURL == "" || apiSpec.BaseURLIsPlaceholder) {
+		apiSpec.BaseURL = strings.TrimRight(entry.BaseURL, "/")
+		apiSpec.BaseURLIsPlaceholder = false
 	}
 	if entry.Category != "" && apiSpec.Category == "" {
 		apiSpec.Category = entry.Category
