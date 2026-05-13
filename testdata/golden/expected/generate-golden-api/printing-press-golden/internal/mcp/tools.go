@@ -67,6 +67,17 @@ func RegisterTools(s *server.MCPServer) {
 		makeAPIHandler("GET", "/projects", []mcpParamBinding{{PublicName: "status", WireName: "status", Location: "query"}, {PublicName: "limit", WireName: "limit", Location: "query"}, {PublicName: "cursor", WireName: "cursor", Location: "query"}}, []string{}),
 	)
 	s.AddTool(
+		mcplib.NewTool("projects_avatar_upload-project",
+			mcplib.WithDescription("Upload project avatar. Required: projectId. Optional: overwrite, caption, file."),
+			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
+			mcplib.WithString("overwrite", mcplib.Description("Overwrite")),
+			mcplib.WithString("caption", mcplib.Description("Caption")),
+			mcplib.WithString("file", mcplib.Description("File")),
+			mcplib.WithOpenWorldHintAnnotation(true),
+		),
+		makeAPIHandler("PUT", "/projects/{projectId}/avatar", []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path", RequestContentType: "multipart/form-data"}, {PublicName: "overwrite", WireName: "overwrite", Location: "query", RequestContentType: "multipart/form-data"}, {PublicName: "caption", WireName: "caption", Location: "body", RequestContentType: "multipart/form-data"}, {PublicName: "file", WireName: "file", Location: "body", Format: "binary", RequestContentType: "multipart/form-data"}}, []string{"projectId"}),
+	)
+	s.AddTool(
 		mcplib.NewTool("projects_tasks_list-project",
 			mcplib.WithDescription("List project tasks. Required: projectId. Optional: priority, limit (default: 50), cursor. Returns array of Task."),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
@@ -81,15 +92,16 @@ func RegisterTools(s *server.MCPServer) {
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_tasks_update-project",
-			mcplib.WithDescription("Update project task. Required: projectId, taskId. Optional: completed, priority, title. Partial update."),
+			mcplib.WithDescription("Update project task. Required: projectId, taskId. Optional: notify, completed, priority (plus 1 more). Partial update."),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
 			mcplib.WithString("taskId", mcplib.Required(), mcplib.Description("Task id")),
+			mcplib.WithString("notify", mcplib.Description("Notify")),
 			mcplib.WithString("completed", mcplib.Description("Completed")),
 			mcplib.WithString("priority", mcplib.Description("Priority")),
 			mcplib.WithString("title", mcplib.Description("Title")),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("PATCH", "/projects/{projectId}/tasks/{taskId}", []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "taskId", WireName: "taskId", Location: "path"}, {PublicName: "completed", WireName: "completed", Location: "body"}, {PublicName: "priority", WireName: "priority", Location: "body"}, {PublicName: "title", WireName: "title", Location: "body"}}, []string{"projectId", "taskId"}),
+		makeAPIHandler("PATCH", "/projects/{projectId}/tasks/{taskId}", []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "taskId", WireName: "taskId", Location: "path"}, {PublicName: "notify", WireName: "notify", Location: "query"}, {PublicName: "completed", WireName: "completed", Location: "body"}, {PublicName: "priority", WireName: "priority", Location: "body"}, {PublicName: "title", WireName: "title", Location: "body"}}, []string{"projectId", "taskId"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("public_get-status",
@@ -149,9 +161,21 @@ func RegisterTools(s *server.MCPServer) {
 }
 
 type mcpParamBinding struct {
-	PublicName string
-	WireName   string
-	Location   string
+	PublicName         string
+	WireName           string
+	Location           string
+	Format             string
+	RequestContentType string
+}
+
+func mcpMultipartFieldValue(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	if data, err := json.Marshal(v); err == nil {
+		return string(data)
+	}
+	return fmt.Sprintf("%v", v)
 }
 
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
@@ -175,8 +199,14 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 		pathParams := make(map[string]bool, len(positionalParams))
 		params := make(map[string]string)
 		bodyArgs := make(map[string]any)
+		multipartFields := make(map[string]string)
+		multipartFileFields := make(map[string]string)
+		multipart := false
 		for _, binding := range bindings {
 			knownArgs[binding.PublicName] = true
+			if strings.EqualFold(binding.RequestContentType, "multipart/form-data") {
+				multipart = true
+			}
 			v, ok := args[binding.PublicName]
 			if !ok {
 				continue
@@ -188,6 +218,13 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 				path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)
 			case "body":
 				bodyArgs[binding.WireName] = v
+				if multipart {
+					if strings.EqualFold(binding.Format, "binary") {
+						multipartFileFields[binding.WireName] = fmt.Sprintf("%v", v)
+					} else {
+						multipartFields[binding.WireName] = mcpMultipartFieldValue(v)
+					}
+				}
 			default:
 				params[binding.WireName] = fmt.Sprintf("%v", v)
 			}
@@ -210,6 +247,9 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 			switch method {
 			case "POST", "PUT", "PATCH":
 				bodyArgs[k] = v
+				if multipart {
+					multipartFields[k] = mcpMultipartFieldValue(v)
+				}
 			default:
 				params[k] = fmt.Sprintf("%v", v)
 			}
@@ -220,16 +260,28 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 		case "GET":
 			data, err = c.Get(path, params)
 		case "POST":
+			if multipart {
+				data, _, err = c.PostMultipartWithParams(path, params, multipartFields, multipartFileFields)
+				break
+			}
 			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.Post(path, body)
+			data, _, err = c.PostWithParams(path, params, body)
 		case "PUT":
+			if multipart {
+				data, _, err = c.PutMultipartWithParams(path, params, multipartFields, multipartFileFields)
+				break
+			}
 			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.Put(path, body)
+			data, _, err = c.PutWithParams(path, params, body)
 		case "PATCH":
+			if multipart {
+				data, _, err = c.PatchMultipartWithParams(path, params, multipartFields, multipartFileFields)
+				break
+			}
 			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.Patch(path, body)
+			data, _, err = c.PatchWithParams(path, params, body)
 		case "DELETE":
-			data, _, err = c.Delete(path)
+			data, _, err = c.DeleteWithParams(path, params)
 		default:
 			return mcplib.NewToolResultError("unsupported method: " + method), nil
 		}
@@ -439,7 +491,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 		"api":         "printing-press-golden",
 		"description": "Purpose-built fixture for golden generation coverage.",
 		"archetype":   "project-management",
-		"tool_count":  8,
+		"tool_count":  9,
 		// tool_surface tells agents which surface a capability lives on.
 		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion printing-press-golden-pp-cli binary.",
 		"auth": map[string]any{

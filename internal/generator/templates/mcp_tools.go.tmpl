@@ -358,68 +358,68 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 		case "POST":
 {{- if $hasMultipartRequest}}
 			if multipart {
-				data, _, err = c.PostMultipart(path, multipartFields, multipartFileFields)
+				data, _, err = c.PostMultipartWithParams(path, params, multipartFields, multipartFileFields)
 				break
 			}
 {{- end}}
 {{- if $hasFormRequest}}
 			if formEncoded {
-				data, _, err = c.PostForm(path, formFields)
+				data, _, err = c.PostFormWithParams(path, params, formFields)
 				break
 			}
 {{- end}}
 {{- if $hasBodyJSONFallback}}
 			if len(bodyJSONOverride) > 0 {
-				data, _, err = c.Post(path, bodyJSONOverride)
+				data, _, err = c.PostWithParams(path, params, bodyJSONOverride)
 				break
 			}
 {{- end}}
 			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.Post(path, body)
+			data, _, err = c.PostWithParams(path, params, body)
 		case "PUT":
 {{- if $hasMultipartRequest}}
 			if multipart {
-				data, _, err = c.PutMultipart(path, multipartFields, multipartFileFields)
+				data, _, err = c.PutMultipartWithParams(path, params, multipartFields, multipartFileFields)
 				break
 			}
 {{- end}}
 {{- if $hasFormRequest}}
 			if formEncoded {
-				data, _, err = c.PutForm(path, formFields)
+				data, _, err = c.PutFormWithParams(path, params, formFields)
 				break
 			}
 {{- end}}
 {{- if $hasBodyJSONFallback}}
 			if len(bodyJSONOverride) > 0 {
-				data, _, err = c.Put(path, bodyJSONOverride)
+				data, _, err = c.PutWithParams(path, params, bodyJSONOverride)
 				break
 			}
 {{- end}}
 			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.Put(path, body)
+			data, _, err = c.PutWithParams(path, params, body)
 		case "PATCH":
 {{- if $hasMultipartRequest}}
 			if multipart {
-				data, _, err = c.PatchMultipart(path, multipartFields, multipartFileFields)
+				data, _, err = c.PatchMultipartWithParams(path, params, multipartFields, multipartFileFields)
 				break
 			}
 {{- end}}
 {{- if $hasFormRequest}}
 			if formEncoded {
-				data, _, err = c.PatchForm(path, formFields)
+				data, _, err = c.PatchFormWithParams(path, params, formFields)
 				break
 			}
 {{- end}}
 {{- if $hasBodyJSONFallback}}
 			if len(bodyJSONOverride) > 0 {
-				data, _, err = c.Patch(path, bodyJSONOverride)
+				data, _, err = c.PatchWithParams(path, params, bodyJSONOverride)
 				break
 			}
 {{- end}}
 			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.Patch(path, body)
+			data, _, err = c.PatchWithParams(path, params, body)
 		case "DELETE":
-			data, _, err = c.Delete(path)
+			data, _, err = c.DeleteWithParams(path, params)
 		default:
 			return mcplib.NewToolResultError("unsupported method: " + method), nil
 		}

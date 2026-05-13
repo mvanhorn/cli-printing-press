@@ -3,7 +3,7 @@
     "api_name": "printing-press-golden",
     "competitor_scores": null,
     "gap_report": [
-      "MCP: 8 tools (1 public, 7 auth-required) — readiness: full"
+      "MCP: 9 tools (1 public, 8 auth-required) — readiness: full"
     ],
     "overall_grade": "A",
     "steinberger": {

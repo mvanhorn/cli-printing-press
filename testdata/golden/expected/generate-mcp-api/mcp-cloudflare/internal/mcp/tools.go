@@ -127,15 +127,15 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 			data, err = c.Get(path, params)
 		case "POST":
 			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.Post(path, body)
+			data, _, err = c.PostWithParams(path, params, body)
 		case "PUT":
 			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.Put(path, body)
+			data, _, err = c.PutWithParams(path, params, body)
 		case "PATCH":
 			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.Patch(path, body)
+			data, _, err = c.PatchWithParams(path, params, body)
 		case "DELETE":
-			data, _, err = c.Delete(path)
+			data, _, err = c.DeleteWithParams(path, params)
 		default:
 			return mcplib.NewToolResultError("unsupported method: " + method), nil
 		}
