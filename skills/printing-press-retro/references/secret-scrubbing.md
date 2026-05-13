@@ -76,6 +76,51 @@ for entry in "${PATTERNS[@]}"; do
 done
 ```
 
+### Jurisdiction-specific PII scanning
+
+Live-API responses captured during browser-sniff or live-key dogfood routinely
+include identifying data of the data subject and any third parties the API
+surfaced. These patterns redact common high-confidence shapes before upload.
+They are defense-in-depth, not bulletproof — free-form names, descriptive
+fields, and unenumerated jurisdictions still slip through.
+
+The `|` field separator collides with the `(IT|DE|...)` country-code
+alternation in the IBAN regex, so PII patterns use `~` as the field separator.
+
+```bash
+PII_PATTERNS=(
+  'codice-fiscale~\b[A-Z]{6}[0-9]{2}[A-Z][0-9]{2}[A-Z][0-9]{3}[A-Z]\b~<REDACTED:pii-codice-fiscale>'
+  'eu-iban~\b(AD|AT|BE|BG|CH|CY|CZ|DE|DK|EE|ES|FI|FR|GB|GI|GR|HR|HU|IE|IS|IT|LI|LT|LU|LV|MC|MT|NL|NO|PL|PT|RO|SE|SI|SK|SM|VA)[0-9]{2}[A-Z0-9]{11,30}\b~<REDACTED:pii-eu-iban>'
+  'us-ssn~\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b~<REDACTED:pii-us-ssn>'
+)
+
+for entry in "${PII_PATTERNS[@]}"; do
+  IFS='~' read -r name regex tag <<< "$entry"
+  for dir in "$STAGING_MANUSCRIPTS" "$STAGING_CLI_SOURCE"; do
+    [ -d "$dir" ] || continue
+    find "$dir" -type f -print0 | while IFS= read -r -d '' f; do
+      # Case-insensitive: API JSON routinely lowercases IBANs and other identifiers.
+      if grep -qiE "$regex" "$f" 2>/dev/null; then
+        perl -i -pe "s/$regex/$tag/gi" "$f" 2>/dev/null
+        echo "Redacted $name in $(basename "$f")"
+      fi
+    done
+  done
+done
+```
+
+Pattern notes:
+
+- **Codice Fiscale** (Italian tax code) is a 16-character `LLLLLLDDLDDLDDDL` shape with no plausible collision against ordinary text.
+- **EU IBAN** is anchored to the SEPA country-code prefix list, so the broad `[A-Z0-9]{11,30}` body cannot match a generic phone number, order ID, or vendor SKU.
+- **US SSN** uses the `DDD-DD-DDDD` dashed form, which avoids collisions with bare 9-digit runs in other identifiers.
+
+Out of scope (deferred to follow-up work):
+
+- Bare 11-digit Partita IVA / VAT numbers (false-positive rate against order IDs, phone numbers, and timestamps is too high without an allowlist).
+- Free-form residential addresses (not regex-matchable with acceptable precision).
+- Refusing upload when `discovery/sample-*.json` files are present (a separate gate at the staging-copy step, tracked separately).
+
 ### Env var assignment scanning
 
 Separately scan for hardcoded secret assignments in source code:
@@ -137,16 +182,23 @@ After all layers complete, do a final scan for obvious leaks:
 
 ```bash
 FINAL_CHECK=false
+CRED_REGEX='(sk_live_|sk_test_|ghp_|gho_|Bearer [A-Za-z0-9]{20})'
+# PII_REGEX must mirror the shapes in PII_PATTERNS above; update both together
+# (e.g. when adding Partita IVA with an allowlist) so the verification step
+# does not silently stop checking a shape the scrub loop still redacts.
+PII_REGEX='(\b[A-Z]{6}[0-9]{2}[A-Z][0-9]{2}[A-Z][0-9]{3}[A-Z]\b|\b(AD|AT|BE|BG|CH|CY|CZ|DE|DK|EE|ES|FI|FR|GB|GI|GR|HR|HU|IE|IS|IT|LI|LT|LU|LV|MC|MT|NL|NO|PL|PT|RO|SE|SI|SK|SM|VA)[0-9]{2}[A-Z0-9]{11,30}\b|\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b)'
 for dir in "$STAGING_MANUSCRIPTS" "$STAGING_CLI_SOURCE"; do
   [ -d "$dir" ] || continue
-  MATCHES=$(grep -rEi '(sk_live_|sk_test_|ghp_|gho_|Bearer [A-Za-z0-9]{20})' "$dir" 2>/dev/null | grep -v 'REDACTED' | head -5)
-  if [ -n "$MATCHES" ]; then
-    echo "$MATCHES"
+  CRED_MATCHES=$(grep -rEi "$CRED_REGEX" "$dir" 2>/dev/null | grep -v 'REDACTED' | head -5)
+  PII_MATCHES=$(grep -rEi "$PII_REGEX" "$dir" 2>/dev/null | grep -v 'REDACTED' | head -5)
+  if [ -n "$CRED_MATCHES" ] || [ -n "$PII_MATCHES" ]; then
+    [ -n "$CRED_MATCHES" ] && echo "$CRED_MATCHES"
+    [ -n "$PII_MATCHES" ] && echo "$PII_MATCHES"
     FINAL_CHECK=true
   fi
 done
 if [ "$FINAL_CHECK" = true ]; then
-  echo "WARNING: Potential secrets still found after scrubbing. Review the matches above."
+  echo "WARNING: Potential secrets or PII still found after scrubbing. Review the matches above."
   echo "Artifacts will NOT be uploaded until this is resolved."
 fi
 ```
