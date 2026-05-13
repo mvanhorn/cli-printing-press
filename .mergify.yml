@@ -1,8 +1,14 @@
 queue_rules:
   - name: default
+    # Single condition block (no separate merge_conditions) so Mergify uses
+    # in-place mode instead of draft_pr mode. In-place mode rebases the
+    # source PR's branch directly; CI re-runs on the source PR where
+    # Greptile (and any other PR-only review apps) can actually post.
+    # The draft `mergify/merge-queue/*` mechanism creates bot-owned branches
+    # that Greptile skips, which was the root cause of every queued PR
+    # timing out waiting for Greptile.
     queue_conditions:
       - base = main
-    merge_conditions:
       - check-success = build-and-test
       - check-success = generated-test
       - check-success = go-lint
@@ -15,10 +21,7 @@ queue_rules:
         - check-skipped = Greptile Review
     merge_method: squash
     update_method: rebase
-    # OSS plan: batch_size must be 1 and max_parallel_checks must be 1 to
-    # stay in in-place mode. The draft `mergify/merge-queue/*` PR train
-    # (used when batch_size > 1 or max_parallel_checks > 1) is the paid
-    # "Merge Queue Batch" feature.
+    # OSS plan: batch_size and max_parallel_checks must both be 1.
     batch_size: 1
     checks_timeout: 60m
 
