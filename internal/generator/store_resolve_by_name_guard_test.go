@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -23,10 +24,9 @@ func TestStoreResolveByNameValidatesField(t *testing.T) {
 
 	require.Contains(t, body, `for _, field := range matchFields {`,
 		"ResolveByName must iterate matchFields")
-	require.Contains(t, body, `if !validIdentifierRE.MatchString(field) {`,
-		"ResolveByName must validate each field name before splicing into json_extract path")
-	require.Contains(t, body, `continue`,
-		"unsafe field names must be skipped, not used to build the query")
+	guard := regexp.MustCompile(`if !validIdentifierRE\.MatchString\(field\) \{\s*continue\s*\}`)
+	require.Regexp(t, guard, body,
+		"ResolveByName must validate each field name and continue past invalid entries before splicing into the json_extract path; the continue must be inside the validIdentifierRE guard, not the pre-existing query-error continue")
 }
 
 func resolveByNameBody(t *testing.T, content string) string {
