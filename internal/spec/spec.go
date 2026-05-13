@@ -1073,6 +1073,12 @@ type Endpoint struct {
 	// docs/SPEC-EXTENSIONS.md for the canonical schema.
 	Walker *WalkerConfig `yaml:"walker,omitempty" json:"walker,omitempty"`
 	Alias  string        `yaml:"-" json:"-"` // computed, not from YAML
+	// BodySet reports whether the source spec declared a `body:` key on this
+	// endpoint, distinct from an absent key. Populated by the custom
+	// UnmarshalYAML / UnmarshalJSON below. The params→body promotion pass
+	// reads this to honor an explicit empty `body: []` as an opt-out signal
+	// for write endpoints that genuinely take query params and no JSON body.
+	BodySet bool `yaml:"-" json:"-"`
 }
 
 // WalkerConfig declares a hierarchical-walk dependency for a child endpoint.
@@ -1093,6 +1099,31 @@ type WalkerConfig struct {
 	// multiple placeholders or when the placeholder name does not match the
 	// auto-detection convention.
 	KeyParam string `yaml:"key_param,omitempty" json:"key_param,omitempty"`
+}
+
+func (e *Endpoint) UnmarshalYAML(value *yaml.Node) error {
+	type endpointAlias Endpoint
+	var out endpointAlias
+	if err := value.Decode(&out); err != nil {
+		return err
+	}
+	*e = Endpoint(out)
+	e.BodySet = yamlMappingHasKey(value, "body")
+	return nil
+}
+
+func (e *Endpoint) UnmarshalJSON(data []byte) error {
+	type endpointAlias Endpoint
+	var out endpointAlias
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	*e = Endpoint(out)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err == nil {
+		_, e.BodySet = raw["body"]
+	}
+	return nil
 }
 
 func (e Endpoint) EffectiveResponseFormat() string {
@@ -1323,6 +1354,7 @@ func ParseBytes(data []byte) (*APISpec, error) {
 	}
 	s.expandOperations()
 	s.enrichPathParams()
+	s.promoteParamsToBodyForWriteEndpoints()
 	if err := s.validateReservedNames(); err != nil {
 		return nil, err
 	}
@@ -1566,6 +1598,69 @@ func enrichEndpointPathParams(e *Endpoint) {
 			Description: name,
 		})
 	}
+}
+
+// promoteParamsToBodyForWriteEndpoints fills Endpoint.Body for POST/PUT/PATCH
+// endpoints whose source spec did not declare a `body:` key by relocating
+// non-path, non-positional Params there. Internal YAML specs commonly list
+// write-endpoint payload fields under `params:` instead of `body:`. Without
+// this promotion, the generator declares flags and required-flag validation
+// for those params, but the body-assembly branch in command_endpoint.go.tmpl
+// iterates only Endpoint.Body — so the values never reach the request body
+// and the API rejects the call with "missing required field".
+//
+// Author intent wins when `body:` is present in the source, even if empty:
+//   - `body: [...]` (non-empty) preserves the explicit block; remaining
+//     `params:` entries are left as query parameters by design.
+//   - `body: []` (explicit empty) is the escape hatch for write endpoints
+//     that genuinely take only query parameters and carry no JSON body.
+//   - Mixed `params:` + non-empty `body:` is allowed but not auto-merged.
+//     The author is asserting that those `params:` entries are URL query
+//     parameters, not body fields. Authors who want them in the body must
+//     move them under `body:` themselves.
+func (s *APISpec) promoteParamsToBodyForWriteEndpoints() {
+	for resourceName, r := range s.Resources {
+		s.promoteResourceParamsToBody(&r)
+		s.Resources[resourceName] = r
+	}
+}
+
+func (s *APISpec) promoteResourceParamsToBody(r *Resource) {
+	if r.Endpoints != nil {
+		for endpointName, e := range r.Endpoints {
+			promoteEndpointParamsToBody(&e)
+			r.Endpoints[endpointName] = e
+		}
+	}
+	for subName, sub := range r.SubResources {
+		s.promoteResourceParamsToBody(&sub)
+		r.SubResources[subName] = sub
+	}
+}
+
+func promoteEndpointParamsToBody(e *Endpoint) {
+	switch strings.ToUpper(e.Method) {
+	case "POST", "PUT", "PATCH":
+	default:
+		return
+	}
+	if e.BodySet || len(e.Body) > 0 || len(e.Params) == 0 {
+		return
+	}
+	keep := make([]Param, 0, len(e.Params))
+	promote := make([]Param, 0, len(e.Params))
+	for _, p := range e.Params {
+		if p.PathParam || p.Positional {
+			keep = append(keep, p)
+			continue
+		}
+		promote = append(promote, p)
+	}
+	if len(promote) == 0 {
+		return
+	}
+	e.Params = keep
+	e.Body = promote
 }
 
 // expandOperations converts operations shorthand (e.g., [list, get, create])
