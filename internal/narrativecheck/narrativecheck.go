@@ -334,15 +334,10 @@ func isSideEffectfulNarrativeExample(args []string) bool {
 		}
 	}
 
-	hasApply := false
-	for _, arg := range args {
-		if strings.Contains(arg, "--launch") {
-			return true
-		}
-		if strings.Contains(arg, "--apply") {
-			hasApply = true
-		}
+	if hasEnabledBoolFlag(args, "--launch") {
+		return true
 	}
+	hasApply := hasEnabledBoolFlag(args, "--apply")
 	return hasApply && !hasEnabledBoolFlag(args, "--dry-run")
 }
 

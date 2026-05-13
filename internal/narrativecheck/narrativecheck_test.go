@@ -270,6 +270,57 @@ func TestRunFullExample_SkipsAuthLogout(t *testing.T) {
 	}
 }
 
+func TestIsSideEffectfulNarrativeExample_UsesExactFlagMatches(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{
+			name: "launch flag is side effectful",
+			args: []string{"widgets", "create", "--launch"},
+			want: true,
+		},
+		{
+			name: "launch true flag is side effectful",
+			args: []string{"widgets", "create", "--launch=true"},
+			want: true,
+		},
+		{
+			name: "launch substring flag is not side effectful",
+			args: []string{"widgets", "create", "--launch-app"},
+			want: false,
+		},
+		{
+			name: "apply without dry run is side effectful",
+			args: []string{"widgets", "create", "--apply"},
+			want: true,
+		},
+		{
+			name: "apply with dry run is not side effectful",
+			args: []string{"widgets", "create", "--apply", "--dry-run"},
+			want: false,
+		},
+		{
+			name: "apply substring flag is not side effectful",
+			args: []string{"widgets", "create", "--apply-template"},
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := isSideEffectfulNarrativeExample(tc.args)
+			if got != tc.want {
+				t.Fatalf("isSideEffectfulNarrativeExample(%v) = %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestValidate_EmptyResearchFlagsResearchEmpty covers the LLM-omitted-
 // both-sections case.
 func TestValidate_EmptyResearchFlagsResearchEmpty(t *testing.T) {
