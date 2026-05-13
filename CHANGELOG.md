@@ -1,5 +1,26 @@
 # Changelog
 
+## [4.6.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.5.2...v4.6.0) (2026-05-13)
+
+
+### Features
+
+* **cli:** emit fetchFull&lt;X&gt; companion for GET-embedded paged sub-resources ([#1301](https://github.com/mvanhorn/cli-printing-press/issues/1301)) ([900b335](https://github.com/mvanhorn/cli-printing-press/commit/900b335ce15efab58b8007a8cdb80de2de80ff4e))
+
+
+### Bug Fixes
+
+* **ci:** collapse Mergify two-step CI to enable in-place mode ([#1336](https://github.com/mvanhorn/cli-printing-press/issues/1336)) ([5ac1de7](https://github.com/mvanhorn/cli-printing-press/commit/5ac1de7c5823ef6b90a210a4ca2135ede7ae1449))
+* **cli:** close ResolveByName json_extract injection + dedupe cacheKey AuthHeader call ([#1278](https://github.com/mvanhorn/cli-printing-press/issues/1278)) ([e21feae](https://github.com/mvanhorn/cli-printing-press/commit/e21feae6854f272d8a1d3c12d581da49ec739fb9))
+* **cli:** hide const-default query flags from --help ([#1287](https://github.com/mvanhorn/cli-printing-press/issues/1287)) ([ee3638b](https://github.com/mvanhorn/cli-printing-press/commit/ee3638b2e846e38c3fa7f23e4de82aac6d781332)), closes [#1273](https://github.com/mvanhorn/cli-printing-press/issues/1273)
+* **cli:** promote write-endpoint params to body when body is empty ([#791](https://github.com/mvanhorn/cli-printing-press/issues/791)) ([ff13530](https://github.com/mvanhorn/cli-printing-press/commit/ff1353099491ede69491a2694763ec88c856eccc))
+* **cli:** propagate --timeout to surf transport ResponseHeaderTimeout ([#1212](https://github.com/mvanhorn/cli-printing-press/issues/1212)) ([69cefbe](https://github.com/mvanhorn/cli-printing-press/commit/69cefbe9db5219d8c6e03e51e74f218a36c567f8))
+* **cli:** raise API error body truncation cap from 200 to 4096 bytes ([#1285](https://github.com/mvanhorn/cli-printing-press/issues/1285)) ([513ae01](https://github.com/mvanhorn/cli-printing-press/commit/513ae01d9afa7e8a3b7d850db7824d596d118c61))
+* **cli:** route in:query params to URL on PUT/DELETE/POST/PATCH handlers ([#1279](https://github.com/mvanhorn/cli-printing-press/issues/1279)) ([b8488ee](https://github.com/mvanhorn/cli-printing-press/commit/b8488ee422472772141c9137b869ae5cbee3492c))
+* **cli:** support $-prefixed pagination params for Socrata-style APIs ([#1204](https://github.com/mvanhorn/cli-printing-press/issues/1204)) ([3819b67](https://github.com/mvanhorn/cli-printing-press/commit/3819b67f8118617725671467a7a0f6ee712c4304))
+* **skills:** extend retro pre-upload scrub with jurisdiction-specific PII patterns ([#1302](https://github.com/mvanhorn/cli-printing-press/issues/1302)) ([42093ad](https://github.com/mvanhorn/cli-printing-press/commit/42093ad854a0c2505104aba03f92d418c04d3f59)), closes [#1291](https://github.com/mvanhorn/cli-printing-press/issues/1291)
+* **skills:** skip publish-validate in mid-pipeline polish ([#1300](https://github.com/mvanhorn/cli-printing-press/issues/1300)) ([8cc7e65](https://github.com/mvanhorn/cli-printing-press/commit/8cc7e655ff4475070ba906f9891682d88ffedfa7))
+
 ## [4.5.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.5.1...v4.5.2) (2026-05-12)
 
 
