@@ -209,6 +209,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"cobraFlagFuncForParam": cobraFlagFuncForParam,
 		"defaultVal":            defaultVal,
 		"defaultValForParam":    defaultValForParam,
+		"isConstDefault":        paramIsConstDefault,
 		"zeroVal":               zeroVal,
 		"zeroValForParam": func(name, t string) string {
 			kind := primitiveKind(t)
@@ -3067,6 +3068,19 @@ func defaultValForParam(p spec.Param) string {
 		return `""`
 	}
 	return defaultVal(p)
+}
+
+// paramIsConstDefault holds for single-value-enum params whose default
+// equals the only enum value. Templates emit MarkHidden for these so
+// --help does not list a flag whose only valid value is the default,
+// while the flag stays registered so the wire-side default still flows.
+// This catches the single-URL routing-selector shape, where an API
+// selects an operation via a fixed query param.
+func paramIsConstDefault(p spec.Param) bool {
+	if len(p.Enum) != 1 || p.Default == nil {
+		return false
+	}
+	return fmt.Sprintf("%v", p.Default) == p.Enum[0]
 }
 
 type jsonFlagSuggestion struct {
