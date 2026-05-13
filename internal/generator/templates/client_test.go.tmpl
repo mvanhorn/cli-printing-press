@@ -65,4 +65,8 @@ func TestTruncateBody_UTF8RuneAtBoundary(t *testing.T) {
 	if !strings.HasSuffix(got, "...") {
 		t.Fatalf("want trailing %q", "...")
 	}
+	// Partial rune must be dropped, not replaced: 4094 valid bytes + "...".
+	if want := 4094 + 3; len(got) != want {
+		t.Fatalf("len = %d, want %d (partial rune should be dropped, not replaced)", len(got), want)
+	}
 }
