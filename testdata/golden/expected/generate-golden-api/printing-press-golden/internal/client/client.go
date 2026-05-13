@@ -408,9 +408,9 @@ func maskToken(token string) string {
 }
 
 func truncateBody(b []byte) string {
-	s := string(b)
-	if len(s) > 4096 {
-		return s[:4096] + "..."
+	const maxBytes = 4096
+	if len(b) <= maxBytes {
+		return string(b)
 	}
-	return s
+	return strings.ToValidUTF8(string(b[:maxBytes]), "") + "..."
 }
