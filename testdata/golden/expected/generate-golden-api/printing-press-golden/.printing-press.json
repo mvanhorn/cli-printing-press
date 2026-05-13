@@ -17,7 +17,7 @@
   "printer_name": "printing-press-golden",
   "printing_press_version": "<PRINTING_PRESS_VERSION>",
   "schema_version": 1,
-  "spec_checksum": "sha256:333b2c06c645b8f394fbbaaedf8126e06919529d7d9305c94c5ebcf1f5a897b5",
+  "spec_checksum": "sha256:b8e8630520b6a451ed058d133299b64e2b859d198e9539dd4b1285a9048c39c6",
   "spec_format": "openapi3",
   "spec_path": "testdata/golden/fixtures/golden-api.yaml",
   "spec_url": "file://testdata/golden/fixtures/golden-api.yaml"

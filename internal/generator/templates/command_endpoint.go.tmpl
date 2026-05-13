@@ -286,17 +286,55 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			} else {
 				body = map[string]any{}
 {{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
+{{- if endpointHasQueryFlags .Endpoint}}
+			params := map[string]string{}
+{{- range .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+{{- end}}
+{{- if and (not .Positional) (not .PathParam)}}
+			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
+				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+			}
+{{- end}}
+{{- end}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.PostWithParamsAndHeaders(path, params, body, headerOverrides)
+{{- else}}
+			data, statusCode, err := c.PostWithParams(path, params, body)
+{{- end}}
+{{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PostWithHeaders(path, body, headerOverrides)
 {{- else}}
 			data, statusCode, err := c.Post(path, body)
 {{- end}}
 {{- end}}
+{{- end}}
 {{- else if eq .Endpoint.Method "DELETE"}}
+{{- if endpointHasQueryFlags .Endpoint}}
+			params := map[string]string{}
+{{- range .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+{{- end}}
+{{- if and (not .Positional) (not .PathParam)}}
+			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
+				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+			}
+{{- end}}
+{{- end}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.DeleteWithParamsAndHeaders(path, params, headerOverrides)
+{{- else}}
+			data, statusCode, err := c.DeleteWithParams(path, params)
+{{- end}}
+{{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.DeleteWithHeaders(path, headerOverrides)
 {{- else}}
 			data, statusCode, err := c.Delete(path)
+{{- end}}
 {{- end}}
 {{- else if eq .Endpoint.Method "PUT"}}
 {{- if $isMultipart}}
@@ -331,10 +369,29 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			} else {
 				body = map[string]any{}
 {{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
+{{- if endpointHasQueryFlags .Endpoint}}
+			params := map[string]string{}
+{{- range .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+{{- end}}
+{{- if and (not .Positional) (not .PathParam)}}
+			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
+				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+			}
+{{- end}}
+{{- end}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.PutWithParamsAndHeaders(path, params, body, headerOverrides)
+{{- else}}
+			data, statusCode, err := c.PutWithParams(path, params, body)
+{{- end}}
+{{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PutWithHeaders(path, body, headerOverrides)
 {{- else}}
 			data, statusCode, err := c.Put(path, body)
+{{- end}}
 {{- end}}
 {{- end}}
 {{- else if eq .Endpoint.Method "PATCH"}}
@@ -370,10 +427,29 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			} else {
 				body = map[string]any{}
 {{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
+{{- if endpointHasQueryFlags .Endpoint}}
+			params := map[string]string{}
+{{- range .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+{{- end}}
+{{- if and (not .Positional) (not .PathParam)}}
+			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
+				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+			}
+{{- end}}
+{{- end}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, statusCode, err := c.PatchWithParamsAndHeaders(path, params, body, headerOverrides)
+{{- else}}
+			data, statusCode, err := c.PatchWithParams(path, params, body)
+{{- end}}
+{{- else}}
 {{- if .Endpoint.HeaderOverrides}}
 			data, statusCode, err := c.PatchWithHeaders(path, body, headerOverrides)
 {{- else}}
 			data, statusCode, err := c.Patch(path, body)
+{{- end}}
 {{- end}}
 {{- end}}
 {{- end}}

@@ -81,15 +81,16 @@ func RegisterTools(s *server.MCPServer) {
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_tasks_update-project",
-			mcplib.WithDescription("Update project task. Required: projectId, taskId. Optional: completed, priority, title. Partial update."),
+			mcplib.WithDescription("Update project task. Required: projectId, taskId. Optional: notify, completed, priority (plus 1 more). Partial update."),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
 			mcplib.WithString("taskId", mcplib.Required(), mcplib.Description("Task id")),
+			mcplib.WithString("notify", mcplib.Description("Notify")),
 			mcplib.WithString("completed", mcplib.Description("Completed")),
 			mcplib.WithString("priority", mcplib.Description("Priority")),
 			mcplib.WithString("title", mcplib.Description("Title")),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("PATCH", "/projects/{projectId}/tasks/{taskId}", []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "taskId", WireName: "taskId", Location: "path"}, {PublicName: "completed", WireName: "completed", Location: "body"}, {PublicName: "priority", WireName: "priority", Location: "body"}, {PublicName: "title", WireName: "title", Location: "body"}}, []string{"projectId", "taskId"}),
+		makeAPIHandler("PATCH", "/projects/{projectId}/tasks/{taskId}", []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "taskId", WireName: "taskId", Location: "path"}, {PublicName: "notify", WireName: "notify", Location: "query"}, {PublicName: "completed", WireName: "completed", Location: "body"}, {PublicName: "priority", WireName: "priority", Location: "body"}, {PublicName: "title", WireName: "title", Location: "body"}}, []string{"projectId", "taskId"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("public_get-status",
