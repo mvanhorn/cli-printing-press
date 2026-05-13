@@ -242,9 +242,9 @@ paths:
           required: true
           schema:
             type: string
-        # Query param on a non-GET endpoint — regression guard for #1275, where
-        # the PUT/DELETE/POST/PATCH templates dropped in:query params on the
-        # floor instead of routing them through the URL query string.
+        # Query param on a non-GET endpoint — regression guard: the
+        # PUT/DELETE/POST/PATCH templates used to drop in:query params on
+        # the floor instead of routing them through the URL query string.
         - name: notify
           in: query
           required: false
