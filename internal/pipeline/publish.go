@@ -13,6 +13,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/v4/catalog"
 	catalogpkg "github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
@@ -378,7 +379,7 @@ func applyPublishCatalogMetadata(parsed *spec.APISpec, apiName string) {
 	}
 	priorName := parsed.Name
 	if priorName != "" && priorName != apiName {
-		rebaseParsedAuthEnvPrefix(&parsed.Auth, priorName, apiName)
+		catalogmeta.RebaseAuthEnvPrefix(&parsed.Auth, priorName, apiName)
 	}
 	parsed.Name = apiName
 
@@ -386,59 +387,7 @@ func applyPublishCatalogMetadata(parsed *spec.APISpec, apiName string) {
 	if err != nil {
 		return
 	}
-	if entry.BaseURL != "" && isReplaceableCatalogBaseURL(parsed.BaseURL, parsed.BaseURLIsPlaceholder) {
-		parsed.BaseURL = entry.BaseURL
-		parsed.BaseURLIsPlaceholder = false
-	}
-	if entry.DisplayName != "" {
-		parsed.DisplayName = entry.DisplayName
-		parsed.DisplayNameDerivedFromTitle = false
-	}
-	if entry.Description != "" {
-		parsed.CLIDescription = entry.Description
-	}
-	if entry.AuthKeyURL != "" {
-		parsed.Auth.KeyURL = entry.AuthKeyURL
-	}
-	if entry.AuthInstructions != "" {
-		parsed.Auth.Instructions = entry.AuthInstructions
-	}
-	if entry.ClientPattern != "" {
-		parsed.ClientPattern = entry.ClientPattern
-	}
-	if entry.HTTPTransport != "" {
-		parsed.HTTPTransport = entry.HTTPTransport
-	}
-	if entry.SpecSource != "" {
-		parsed.SpecSource = entry.SpecSource
-	}
-}
-
-func rebaseParsedAuthEnvPrefix(auth *spec.AuthConfig, oldName, newName string) {
-	if auth == nil || oldName == "" || newName == "" || oldName == newName {
-		return
-	}
-	oldPrefix := naming.EnvPrefix(oldName) + "_"
-	newPrefix := naming.EnvPrefix(newName) + "_"
-	for i, envVar := range auth.EnvVars {
-		if strings.HasPrefix(envVar, oldPrefix) {
-			auth.EnvVars[i] = newPrefix + strings.TrimPrefix(envVar, oldPrefix)
-		}
-	}
-	for i := range auth.EnvVarSpecs {
-		if strings.HasPrefix(auth.EnvVarSpecs[i].Name, oldPrefix) {
-			auth.EnvVarSpecs[i].Name = newPrefix + strings.TrimPrefix(auth.EnvVarSpecs[i].Name, oldPrefix)
-		}
-	}
-}
-
-func isReplaceableCatalogBaseURL(baseURL string, placeholder bool) bool {
-	switch strings.TrimRight(strings.TrimSpace(baseURL), "/") {
-	case "", strings.TrimRight(spec.PlaceholderBaseURL, "/"), "https://api.example.com":
-		return true
-	default:
-		return placeholder
-	}
+	catalogmeta.ApplyRuntimeMetadata(parsed, entry)
 }
 
 // loadResearchForPromote returns the research.json relevant to the

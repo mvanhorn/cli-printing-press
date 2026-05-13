@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
@@ -1671,7 +1672,7 @@ func TestRebaseAuthEnvPrefix(t *testing.T) {
 		},
 	}
 
-	rebaseAuthEnvPrefix(&auth, "elevenlabs-documentation", "elevenlabs")
+	catalogmeta.RebaseAuthEnvPrefix(&auth, "elevenlabs-documentation", "elevenlabs")
 
 	assert.Equal(t, []string{"ELEVENLABS_API_KEY", "UNCHANGED_TOKEN"}, auth.EnvVars)
 	assert.Equal(t, "ELEVENLABS_CLIENT_ID", auth.EnvVarSpecs[0].Name)

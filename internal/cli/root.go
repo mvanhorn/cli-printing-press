@@ -19,6 +19,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/docspec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
@@ -307,7 +308,7 @@ func newGenerateCmd() *cobra.Command {
 				apiSpec = specs[0]
 				// Override spec-derived name when --name is explicitly provided
 				if cliName != "" {
-					rebaseAuthEnvPrefix(&apiSpec.Auth, apiSpec.Name, cliName)
+					catalogmeta.RebaseAuthEnvPrefix(&apiSpec.Auth, apiSpec.Name, cliName)
 					apiSpec.Name = cliName
 				}
 			} else {
@@ -528,24 +529,6 @@ func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource
 		apiSpec.Owner = owner
 	}
 	return nil
-}
-
-func rebaseAuthEnvPrefix(auth *spec.AuthConfig, oldName, newName string) {
-	if auth == nil || oldName == "" || newName == "" || oldName == newName {
-		return
-	}
-	oldPrefix := naming.EnvPrefix(oldName) + "_"
-	newPrefix := naming.EnvPrefix(newName) + "_"
-	for i, envVar := range auth.EnvVars {
-		if strings.HasPrefix(envVar, oldPrefix) {
-			auth.EnvVars[i] = newPrefix + strings.TrimPrefix(envVar, oldPrefix)
-		}
-	}
-	for i := range auth.EnvVarSpecs {
-		if strings.HasPrefix(auth.EnvVarSpecs[i].Name, oldPrefix) {
-			auth.EnvVarSpecs[i].Name = newPrefix + strings.TrimPrefix(auth.EnvVarSpecs[i].Name, oldPrefix)
-		}
-	}
 }
 
 func normalizeSpecSource(value string) (string, error) {
@@ -1544,7 +1527,7 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	if entry.Homepage != "" && apiSpec.WebsiteURL == "" {
 		apiSpec.WebsiteURL = entry.Homepage
 	}
-	if entry.BaseURL != "" && (apiSpec.BaseURL == "" || apiSpec.BaseURLIsPlaceholder) {
+	if entry.BaseURL != "" && catalogmeta.IsReplaceableBaseURL(apiSpec.BaseURL, apiSpec.BaseURLIsPlaceholder) {
 		apiSpec.BaseURL = strings.TrimRight(entry.BaseURL, "/")
 		apiSpec.BaseURLIsPlaceholder = false
 	}
