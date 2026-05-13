@@ -33,6 +33,21 @@ func TestParamIsConstDefault(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "single-value enum with matching float default preserving fractional form",
+			p:    spec.Param{Name: "version", Type: "number", Enum: []string{"2.0"}, Default: float64(2.0)},
+			want: true,
+		},
+		{
+			name: "single-value enum with matching float default carrying real fraction",
+			p:    spec.Param{Name: "ratio", Type: "number", Enum: []string{"1.5"}, Default: float64(1.5)},
+			want: true,
+		},
+		{
+			name: "single-value float enum that does not match the default",
+			p:    spec.Param{Name: "ratio", Type: "number", Enum: []string{"1.5"}, Default: float64(2.5)},
+			want: false,
+		},
+		{
 			name: "single-value enum with mismatched default is not const",
 			p:    spec.Param{Name: "Command", Type: "string", Enum: []string{"a"}, Default: "b"},
 			want: false,
