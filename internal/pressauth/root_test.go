@@ -96,14 +96,14 @@ func TestUnknownSubcommand(t *testing.T) {
 }
 
 func TestSubcommandStubsReturnNotImplemented(t *testing.T) {
-	// login is no longer a stub (U3 wired chromedp capture). The rest of
-	// the subcommands stay stubbed until U4/U5/U6 land.
+	// login (U3, chromedp capture) and refresh (U4, lazy refresh) are no
+	// longer stubs; both have their own coverage in chrome_test.go and
+	// refresh_test.go. The remaining stubs land in U5.
 	cases := []struct {
 		name string
 		args []string
 	}{
 		{"status", []string{"status", "example.com"}},
-		{"refresh", []string{"refresh", "example.com"}},
 		{"list", []string{"list"}},
 		{"forget", []string{"forget", "example.com"}},
 	}

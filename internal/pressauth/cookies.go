@@ -1,7 +1,9 @@
 package pressauth
 
 import (
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -28,10 +30,31 @@ the user at the login subcommand.`,
 			if domain == "" {
 				return &ExitError{Code: ExitUsageError, Err: fmt.Errorf("domain argument cannot be empty")}
 			}
-			return &ExitError{
-				Code: ExitNotCaptured,
-				Err:  fmt.Errorf("no captured session for %s — run: press-auth login %s (not implemented)", domain, domain),
+
+			state, err := Load(domain)
+			if err != nil {
+				if errors.Is(err, ErrStateNotFound) {
+					return &ExitError{
+						Code: ExitNotCaptured,
+						Err:  fmt.Errorf("no captured session for %s — run: press-auth login %s", domain, domain),
+					}
+				}
+				return &ExitError{Code: ExitUnknownError, Err: err}
 			}
+
+			// Lazy refresh: trigger when the cached expiry is unknown (zero,
+			// e.g. a fresh capture from U3 that hasn't yet seen a server
+			// response) or when we're inside the refresh window.
+			if state.JWTExpiry.IsZero() || time.Until(state.JWTExpiry) <= expiryRefreshWindow {
+				refreshed, refErr := Refresh(cmd.Context(), state)
+				if refErr != nil {
+					return refErr
+				}
+				state = refreshed
+			}
+
+			fmt.Fprintln(cmd.OutOrStdout(), formatCookieHeader(state.Cookies))
+			return nil
 		},
 	}
 
