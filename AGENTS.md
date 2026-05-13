@@ -192,12 +192,11 @@ Why this matters: the publish skill enforces preflight checks (printer sentinel 
 If `/printing-press-publish` fails, fix the underlying issue (or report it as a machine bug) — do not bypass the skill to land a CLI-publish PR.
 
 ## Internal Skills
-`.claude/skills/` contains internal skills for developing the Printing Press itself (for example `printing-press-retro`). These load automatically when Claude Code is started from inside this repo.
-If you are running Claude Code from a different directory and need these skills available, install them globally:
+`skills/` at the repo root contains the Printing Press skills (for example `printing-press-retro`). To make them available to Claude Code regardless of working directory, install them globally:
 ```bash
 .claude/scripts/install-internal-skills.sh
 ```
-This copies the internal skills to `~/.claude/skills/`.
+This copies the skills to `~/.claude/skills/`.
 
 ## Skill Authoring
 When a machine change alters what an agent should do or what a command guarantees, update the relevant `SKILL.md` in the same change; do not leave the skill as a stale manual workaround for behavior the machine now owns.
