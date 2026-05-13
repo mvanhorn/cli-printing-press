@@ -85,7 +85,12 @@ func newAuthLoginCmd(flags *rootFlags) *cobra.Command {
 
 Use --chrome to read cookies from Chrome for {{.Auth.CookieDomain}}.
 Use --browser as an alias for --chrome.
-Requires a cookie extraction tool (pycookiecheat, cookies, or cookie-scoop-cli).
+
+Authentication is attempted in this order:
+  1. press-auth (preferred companion that spawns its own controlled Chrome
+     window and persists cookies between runs)
+  2. A cookie extraction tool (pycookiecheat, cookies, or cookie-scoop-cli)
+  3. Live Chrome via browser-use, agent-browser, or raw CDP
 
 If you have multiple Chrome profiles, pycookiecheat and cookie-scoop-cli can
 auto-detect which profile is logged in. Use --profile to select a specific
@@ -112,53 +117,87 @@ profile by name when the installed backend supports it.`,
 			w := cmd.OutOrStdout()
 			domain := "{{.Auth.CookieDomain}}"
 
-			// Step 1: Detect cookie extraction tool
-			tool, err := detectCookieTool()
-			if err != nil {
-				fmt.Fprintln(w, red("No cookie extraction tool found."))
-				fmt.Fprintln(w, "")
-				fmt.Fprintln(w, "Install one of:")
-				fmt.Fprintln(w, "  pip install pycookiecheat          # Python (recommended)")
-				fmt.Fprintln(w, "  brew install barnardb/cookies/cookies  # Homebrew")
-				fmt.Fprintln(w, "  cargo install cookie-scoop-cli     # Rust")
-				return authErr(fmt.Errorf("no cookie tool found"))
-			}
-
-			if profileFlag != "" && !cookieToolSupportsProfiles(tool) {
-				return authErr(fmt.Errorf("%s does not support --profile; install pycookiecheat or cookie-scoop-cli", tool))
-			}
-
-			// Step 2: Resolve which Chrome profile to use when the backend can honor it
-			profileDir := ""
-			if cookieToolSupportsProfiles(tool) {
-				profileDir, err = resolveChromeProfile(w, cmd.InOrStdin(), domain, profileFlag)
-				if err != nil {
-					loginURL := "https://" + strings.TrimPrefix(domain, ".")
-					fmt.Fprintln(w, "")
-					fmt.Fprintln(w, red("No Chrome profile has cookies for "+domain+"."))
-					fmt.Fprintln(w, "")
-					fmt.Fprintln(w, "Log in to your account:")
-					fmt.Fprintf(w, "\n  %s\n\n", loginURL)
-					fmt.Fprintln(w, "Then run this command again:")
-					fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --chrome\n")
-					return authErr(fmt.Errorf("not logged in to %s", domain))
+			// Step 0: Try press-auth, the dedicated cookie capture companion.
+			// press-auth spawns its own controlled Chrome window so users do not
+			// need to relaunch their daily Chrome with --remote-debugging-port.
+			// If press-auth is not installed, fall through silently to the
+			// legacy extraction chain. If press-auth is installed but errored
+			// (e.g. ExitNotCaptured because the user has not logged in yet),
+			// surface its message and still fall through — the legacy chain may
+			// succeed if persistent cookies are already on disk.
+			var cookies string
+			fromPressAuth := false
+			if pressAuthPath, err := exec.LookPath("press-auth"); err == nil {
+				paCookies, paErr := tryPressAuth(pressAuthPath, domain)
+				if paErr == nil && paCookies != "" {
+					fmt.Fprintf(w, "Loaded cookies via press-auth for %s.\n", domain)
+					cookies = paCookies
+					fromPressAuth = true
+				} else if paErr != nil {
+					fmt.Fprintf(w, "press-auth returned an error: %v\n", paErr)
+					fmt.Fprintln(w, "Falling back to other extraction methods.")
+					fmt.Fprintln(w, "If you haven't logged in yet, run:")
+					fmt.Fprintf(w, "\n  press-auth login %s --login-url <login-url>\n\n", domain)
 				}
 			}
 
-			if profileDir != "" {
-				fmt.Fprintf(w, "Reading cookies from Chrome profile %q for %s...\n", profileDir, domain)
-			} else {
-				fmt.Fprintf(w, "Reading cookies for %s...\n", domain)
-			}
+			if !fromPressAuth {
+				// Step 1: Detect cookie extraction tool
+				tool, err := detectCookieTool()
+				if err != nil {
+					fmt.Fprintln(w, red("No cookie extraction tool found."))
+					fmt.Fprintln(w, "")
+					fmt.Fprintln(w, "Recommended fix:")
+					fmt.Fprintln(w, "  go install github.com/mvanhorn/cli-printing-press/v4/cmd/press-auth@latest")
+					fmt.Fprintf(w, "  press-auth login %s --login-url <login-url>\n", domain)
+					fmt.Fprintln(w, "")
+					fmt.Fprintln(w, "press-auth is the dedicated cookie capture companion which spawns")
+					fmt.Fprintln(w, "its own controlled Chrome window — no need to relaunch your daily")
+					fmt.Fprintln(w, "Chrome or learn about --remote-debugging-port.")
+					fmt.Fprintln(w, "")
+					fmt.Fprintln(w, "Or install one of the legacy extraction tools:")
+					fmt.Fprintln(w, "  pip install pycookiecheat          # Python")
+					fmt.Fprintln(w, "  brew install barnardb/cookies/cookies  # Homebrew")
+					fmt.Fprintln(w, "  cargo install cookie-scoop-cli     # Rust")
+					return authErr(fmt.Errorf("no cookie tool found"))
+				}
 
-			// Step 3: Extract cookies from the resolved profile
-			cookies, err := extractCookies(tool, domain, profileDir)
-			if err != nil {
-				return authErr(fmt.Errorf("extracting cookies: %w", err))
-			}
+				if profileFlag != "" && !cookieToolSupportsProfiles(tool) {
+					return authErr(fmt.Errorf("%s does not support --profile; install pycookiecheat or cookie-scoop-cli", tool))
+				}
 
-			if cookies == "" {
-				return authErr(fmt.Errorf("cookie tool returned no cookies for %s", domain))
+				// Step 2: Resolve which Chrome profile to use when the backend can honor it
+				profileDir := ""
+				if cookieToolSupportsProfiles(tool) {
+					profileDir, err = resolveChromeProfile(w, cmd.InOrStdin(), domain, profileFlag)
+					if err != nil {
+						loginURL := "https://" + strings.TrimPrefix(domain, ".")
+						fmt.Fprintln(w, "")
+						fmt.Fprintln(w, red("No Chrome profile has cookies for "+domain+"."))
+						fmt.Fprintln(w, "")
+						fmt.Fprintln(w, "Log in to your account:")
+						fmt.Fprintf(w, "\n  %s\n\n", loginURL)
+						fmt.Fprintln(w, "Then run this command again:")
+						fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --chrome\n")
+						return authErr(fmt.Errorf("not logged in to %s", domain))
+					}
+				}
+
+				if profileDir != "" {
+					fmt.Fprintf(w, "Reading cookies from Chrome profile %q for %s...\n", profileDir, domain)
+				} else {
+					fmt.Fprintf(w, "Reading cookies for %s...\n", domain)
+				}
+
+				// Step 3: Extract cookies from the resolved profile
+				cookies, err = extractCookies(tool, domain, profileDir)
+				if err != nil {
+					return authErr(fmt.Errorf("extracting cookies: %w", err))
+				}
+
+				if cookies == "" {
+					return authErr(fmt.Errorf("cookie tool returned no cookies for %s", domain))
+				}
 			}
 
 {{- if eq .Auth.Type "composed"}}
@@ -187,8 +226,16 @@ profile by name when the installed backend supports it.`,
 				if liveErr != nil {
 					fmt.Fprintf(w, "\n%s Could not read live session: %v\n", red("ERROR"), liveErr)
 					fmt.Fprintln(w, "")
-					fmt.Fprintln(w, "Make sure Chrome is running with "+loginURL+" open and you are logged in.")
-					fmt.Fprintln(w, "Then run this command again:")
+					fmt.Fprintln(w, "Recommended fix:")
+					fmt.Fprintln(w, "  go install github.com/mvanhorn/cli-printing-press/v4/cmd/press-auth@latest")
+					fmt.Fprintf(w, "  press-auth login %s --login-url %s\n", domain, loginURL)
+					fmt.Fprintln(w, "")
+					fmt.Fprintln(w, "press-auth is the dedicated cookie capture companion which spawns")
+					fmt.Fprintln(w, "its own controlled Chrome window — no need to relaunch your daily")
+					fmt.Fprintln(w, "Chrome or learn about --remote-debugging-port.")
+					fmt.Fprintln(w, "")
+					fmt.Fprintln(w, "Or make sure Chrome is running with "+loginURL+" open and you are logged in,")
+					fmt.Fprintln(w, "then run this command again:")
 					fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --chrome\n")
 					fmt.Fprintln(w, "")
 					fmt.Fprintln(w, "If this keeps failing, install a browser tool:")
@@ -1130,6 +1177,28 @@ func resolveProfileByName(name string) (string, error) {
 	}
 
 	return "", fmt.Errorf("Chrome profile %q not found", name)
+}
+
+// --- press-auth companion ---
+
+// tryPressAuth shells out to the press-auth binary and returns the captured
+// Cookie header value. The binary's stdout format is "name1=value1; name2=value2",
+// which parseCookieString already understands. When press-auth exits non-zero,
+// its stderr message is surfaced so callers can hint the user toward
+// `press-auth login <domain>` without dead-ending the auth flow.
+func tryPressAuth(pressAuthPath, domain string) (string, error) {
+	cmd := exec.Command(pressAuthPath, "cookies", domain)
+	var out, errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(errBuf.String())
+		if msg != "" {
+			return "", fmt.Errorf("%s", msg)
+		}
+		return "", err
+	}
+	return strings.TrimSpace(out.String()), nil
 }
 
 // --- Cookie extraction tools ---
