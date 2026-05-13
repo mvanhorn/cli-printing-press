@@ -1503,6 +1503,18 @@ func TestGenerateBrowserChromeH3Transport(t *testing.T) {
 	// competing default.
 	assert.NotContains(t, string(clientGo), `req.Header.Set("Accept",`)
 
+	// ResponseHeaderTimeout override must emit on the H3 path too —
+	// surf's per-stage timeout (10s default) caps any browser-impersonate
+	// transport regardless of the H2/H3 variant. Without these asserts a
+	// future refactor could silently strip the override from the H3
+	// branch and slow-streaming H3 endpoints would fail at surf's default
+	// with no test catching it. Mirrors the assertions in
+	// TestBrowserTransport_OverridesResponseHeaderTimeout (which exercises
+	// the H2 default).
+	assert.Contains(t, string(clientGo), `enetxhttp "github.com/enetx/http"`)
+	assert.Contains(t, string(clientGo), "surfClient.GetTransport().(*enetxhttp.Transport)")
+	assert.Contains(t, string(clientGo), "t.ResponseHeaderTimeout = timeout")
+
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/client")
 }
