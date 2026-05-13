@@ -19,6 +19,11 @@ queue_rules:
         - check-success = Greptile Review
         - check-neutral = Greptile Review
         - check-skipped = Greptile Review
+        # release-please PRs are auto-generated changelog + version bumps;
+        # Greptile reliably silent-skips them so no check-run is ever posted.
+        - and:
+          - head = release-please--branches--main
+          - "title ~= ^chore\\(main\\): release"
     merge_method: squash
     update_method: rebase
     # OSS plan: batch_size and max_parallel_checks must both be 1.
@@ -56,3 +61,8 @@ merge_protections:
         - check-success = Greptile Review
         - check-neutral = Greptile Review
         - check-skipped = Greptile Review
+        # release-please PRs are auto-generated changelog + version bumps;
+        # Greptile reliably silent-skips them so no check-run is ever posted.
+        - and:
+          - head = release-please--branches--main
+          - "title ~= ^chore\\(main\\): release"
