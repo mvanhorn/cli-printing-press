@@ -1112,8 +1112,7 @@ func (s *Store) Status() (map[string]int, error) {
 //
 // json_extract path components cannot be bound as SQL parameters, so each
 // field is validated against validIdentifierRE before being spliced into
-// the query. Fields that fail validation are skipped so callers may pass
-// untrusted strings without risk.
+// the query.
 func (s *Store) ResolveByName(resourceType string, input string, matchFields ...string) (string, error) {
 	if IsUUID(input) {
 		return input, nil
