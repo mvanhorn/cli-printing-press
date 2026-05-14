@@ -261,7 +261,7 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 {{- if $hasBodyJSONFallback}}
 		// bodyJSONOverride holds an opaque body for endpoints whose request
 		// schema is a oneOf/anyOf and was wired with a single body_json input.
-		// When set, it replaces the marshaled bodyArgs map for POST/PUT/PATCH.
+		// When set, it replaces the bodyArgs map for POST/PUT/PATCH.
 		var bodyJSONOverride json.RawMessage
 {{- end}}
 		for _, binding := range bindings {
@@ -374,8 +374,7 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 				break
 			}
 {{- end}}
-			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.PostWithParams(path, params, body)
+			data, _, err = c.PostWithParams(path, params, bodyArgs)
 		case "PUT":
 {{- if $hasMultipartRequest}}
 			if multipart {
@@ -395,8 +394,7 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 				break
 			}
 {{- end}}
-			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.PutWithParams(path, params, body)
+			data, _, err = c.PutWithParams(path, params, bodyArgs)
 		case "PATCH":
 {{- if $hasMultipartRequest}}
 			if multipart {
@@ -416,8 +414,7 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 				break
 			}
 {{- end}}
-			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.PatchWithParams(path, params, body)
+			data, _, err = c.PatchWithParams(path, params, bodyArgs)
 		case "DELETE":
 			data, _, err = c.DeleteWithParams(path, params)
 		default:

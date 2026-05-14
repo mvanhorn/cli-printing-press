@@ -9172,6 +9172,67 @@ func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	assert.Contains(t, skill, `public-params-pp-cli stores create --store-code example-value`)
 }
 
+// TestMCPHandlerPassesBodyArgsMap pins that POST/PUT/PATCH branches forward
+// the bodyArgs map directly to the client, not via a pre-marshal. The client's
+// do() json.Marshals what it receives; passing []byte causes encoding/json to
+// base64-encode it into a quoted string, which strict APIs reject.
+func TestMCPHandlerPassesBodyArgsMap(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcp-body-passthrough")
+	apiSpec.Resources["widgets"] = spec.Resource{
+		Description: "Widgets",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/widgets",
+				Description: "Create a widget",
+				Body: []spec.Param{
+					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
+				},
+			},
+			"replace": {
+				Method:      "PUT",
+				Path:        "/widgets/{id}",
+				Description: "Replace a widget",
+				Params: []spec.Param{
+					{Name: "id", Type: "string", Required: true, Description: "Widget id"},
+				},
+				Body: []spec.Param{
+					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
+				},
+			},
+			"update": {
+				Method:      "PATCH",
+				Path:        "/widgets/{id}",
+				Description: "Update a widget",
+				Params: []spec.Param{
+					{Name: "id", Type: "string", Required: true, Description: "Widget id"},
+				},
+				Body: []spec.Param{
+					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+
+	assert.NotContains(t, mcpSource, "json.Marshal(bodyArgs)",
+		"MCP handler must not pre-marshal bodyArgs: client.do() json.Marshals what it receives, "+
+			"so a []byte arrives base64-encoded on the wire and strict APIs reject the payload")
+
+	assert.Contains(t, mcpSource, "c.PostWithParams(path, params, bodyArgs)",
+		"POST branch must forward bodyArgs directly to the client")
+	assert.Contains(t, mcpSource, "c.PutWithParams(path, params, bodyArgs)",
+		"PUT branch must forward bodyArgs directly to the client")
+	assert.Contains(t, mcpSource, "c.PatchWithParams(path, params, bodyArgs)",
+		"PATCH branch must forward bodyArgs directly to the client")
+}
+
 func TestGeneratePublicParamNamesInPromotedExamples(t *testing.T) {
 	t.Parallel()
 

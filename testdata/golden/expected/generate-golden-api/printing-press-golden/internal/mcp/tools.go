@@ -264,22 +264,19 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 				data, _, err = c.PostMultipartWithParams(path, params, multipartFields, multipartFileFields)
 				break
 			}
-			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.PostWithParams(path, params, body)
+			data, _, err = c.PostWithParams(path, params, bodyArgs)
 		case "PUT":
 			if multipart {
 				data, _, err = c.PutMultipartWithParams(path, params, multipartFields, multipartFileFields)
 				break
 			}
-			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.PutWithParams(path, params, body)
+			data, _, err = c.PutWithParams(path, params, bodyArgs)
 		case "PATCH":
 			if multipart {
 				data, _, err = c.PatchMultipartWithParams(path, params, multipartFields, multipartFileFields)
 				break
 			}
-			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.PatchWithParams(path, params, body)
+			data, _, err = c.PatchWithParams(path, params, bodyArgs)
 		case "DELETE":
 			data, _, err = c.DeleteWithParams(path, params)
 		default:
