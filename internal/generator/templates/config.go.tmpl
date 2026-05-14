@@ -237,11 +237,21 @@ func (c *Config) AuthHeader() string {
 {{- end}}
 {{- if eq .Auth.Type "api_key"}}
 {{- if $basicAuthEnvVars}}
+{{- if eq (len $basicAuthEnvVars) 1}}
+	if c.{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}} == "" {
+		return ""
+	}
+	credentials := c.{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}} + ":"
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(credentials))
+{{- else if eq (len $basicAuthEnvVars) 2}}
 	if c.{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}} == "" || c.{{resolveEnvVarField (index $basicAuthEnvVars 1).Name}} == "" {
 		return ""
 	}
 	credentials := c.{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}} + ":" + c.{{resolveEnvVarField (index $basicAuthEnvVars 1).Name}}
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(credentials))
+{{- else}}
+	return ""
+{{- end}}
 {{- else if $isAuthEnvVarORCase}}
 {{- range .Auth.EnvVarSpecs}}
 	if c.{{resolveEnvVarField .Name}} != "" {
