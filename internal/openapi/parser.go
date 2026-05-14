@@ -58,6 +58,17 @@ const (
 	// so the profiler treats /tenant/{tenant}/<resource> paths as standalone
 	// sync resources rather than parent-context-dependent.
 	extensionTenantEnvVar = "x-tenant-env-var"
+	// extensionPathTemplateEnvVars is the generic, map-shaped successor to
+	// extensionTenantEnvVar. Each entry binds a path placeholder to an
+	// object with two optional fields: `env` registers a runtime env-var
+	// override that flows into EndpointTemplateVars (same bucket as
+	// x-tenant-env-var, suitable for BaseURL placeholders like
+	// {workspace} or {org}); `default` bakes a literal into operation
+	// paths at generation time and drops the matching path parameter,
+	// suitable for canonical always-valid values like Gmail's userId='me'.
+	// When both are set, default wins and the env field is ignored — the
+	// placeholder is fully resolved before runtime substitution sees it.
+	extensionPathTemplateEnvVars = "x-path-template-env-vars"
 )
 
 // tenantPlaceholderName is the canonical placeholder that x-tenant-env-var
@@ -399,7 +410,7 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 		return nil, err
 	}
 
-	templateVars, templateEnvOverrides := parseEndpointTemplateExtensions(doc)
+	templateVars, templateEnvOverrides, pathParamDefaults := parseEndpointTemplateExtensions(doc)
 
 	result := &spec.APISpec{
 		Name:                         name,
@@ -417,6 +428,7 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 		MCP:                          mcpConfig,
 		EndpointTemplateVars:         templateVars,
 		EndpointTemplateEnvOverrides: templateEnvOverrides,
+		EndpointPathParamDefaults:    pathParamDefaults,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -448,6 +460,8 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 	result.RequiredHeaders, perEndpointHeaders = detectRequiredHeaders(doc, result.Auth)
 	applyHeaderOverrides(result, perEndpointHeaders)
 
+	applyPathParamDefaults(result)
+
 	if err := result.Validate(); err != nil {
 		return nil, fmt.Errorf("validating parsed spec: %w", err)
 	}
@@ -456,28 +470,75 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 }
 
 // parseEndpointTemplateExtensions collects spec-declared endpoint template
-// placeholders and their env-var name overrides. Returns nil/nil for specs
-// that declare neither so existing generated outputs are byte-identical.
+// placeholders, env-var name overrides, and build-time path-parameter
+// defaults. Returns nil/nil/nil for specs that declare none so existing
+// generated outputs are byte-identical.
 //
-// Today only x-tenant-env-var lands here — it maps the implicit {tenant}
-// placeholder to an explicit env var (e.g. ST_TENANT_ID). When more
-// placeholders join (Atlassian {workspace}, GitHub {org}), prefer adding a
-// generic x-path-template-env-vars map-shaped extension over piling on
-// per-scope extensions.
-func parseEndpointTemplateExtensions(doc *openapi3.T) ([]string, map[string]string) {
-	raw, ok := lookupOpenAPIInfoExtension(doc, extensionTenantEnvVar)
-	if !ok {
-		return nil, nil
+// Two extensions feed this function: x-tenant-env-var (legacy scalar that
+// binds {tenant} to a single env-var override) and x-path-template-env-vars
+// (generic map of placeholder -> {env, default}). For each entry in the
+// generic extension, an `env` field registers the placeholder for runtime
+// BaseURL substitution (same bucket as x-tenant-env-var), and a `default`
+// field bakes a literal into operation paths at generation time. When both
+// are set on the same entry, default wins and env is ignored — the
+// placeholder is fully resolved before runtime substitution sees it.
+func parseEndpointTemplateExtensions(doc *openapi3.T) ([]string, map[string]string, map[string]string) {
+	var vars []string
+	envOverrides := map[string]string{}
+	defaults := map[string]string{}
+
+	if raw, ok := lookupOpenAPIInfoExtension(doc, extensionTenantEnvVar); ok {
+		if envName, ok := raw.(string); ok {
+			if envName = strings.TrimSpace(envName); envName != "" {
+				vars = append(vars, tenantPlaceholderName)
+				envOverrides[tenantPlaceholderName] = envName
+			}
+		}
 	}
-	envName, ok := raw.(string)
-	if !ok {
-		return nil, nil
+
+	if raw, ok := lookupOpenAPIInfoExtension(doc, extensionPathTemplateEnvVars); ok {
+		if entries, ok := raw.(map[string]any); ok {
+			keys := make([]string, 0, len(entries))
+			for k := range entries {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, name := range keys {
+				obj, ok := entries[name].(map[string]any)
+				if !ok {
+					continue
+				}
+				var envName, defaultValue string
+				if v, ok := obj["env"].(string); ok {
+					envName = strings.TrimSpace(v)
+				}
+				if v, ok := obj["default"].(string); ok {
+					defaultValue = strings.TrimSpace(v)
+				}
+				if defaultValue != "" {
+					defaults[name] = defaultValue
+					continue
+				}
+				if envName != "" {
+					if !slices.Contains(vars, name) {
+						vars = append(vars, name)
+					}
+					envOverrides[name] = envName
+				}
+			}
+		}
 	}
-	envName = strings.TrimSpace(envName)
-	if envName == "" {
-		return nil, nil
+
+	if len(vars) == 0 {
+		vars = nil
 	}
-	return []string{tenantPlaceholderName}, map[string]string{tenantPlaceholderName: envName}
+	if len(envOverrides) == 0 {
+		envOverrides = nil
+	}
+	if len(defaults) == 0 {
+		defaults = nil
+	}
+	return vars, envOverrides, defaults
 }
 
 // parseTypedExtension bridges kin-openapi's untyped any-tree to a typed
@@ -2234,6 +2295,54 @@ func markAllEndpointsNoAuth(resources map[string]spec.Resource) {
 		}
 		resources[name] = r
 	}
+}
+
+// applyPathParamDefaults bakes EndpointPathParamDefaults entries into every
+// operation path under result.Resources and drops the matching path
+// parameter from each endpoint's Params list. Runs as a post-parse sweep so
+// downstream consumers (profiler, generator, manifest emitter) see fully
+// resolved paths and never re-emit a flag for the resolved placeholder.
+// No-op for specs that declare no defaults, preserving byte-compat with
+// existing generated outputs.
+func applyPathParamDefaults(result *spec.APISpec) {
+	if result == nil || len(result.EndpointPathParamDefaults) == 0 {
+		return
+	}
+	defaults := result.EndpointPathParamDefaults
+	var walk func(resources map[string]spec.Resource)
+	walk = func(resources map[string]spec.Resource) {
+		for key, r := range resources {
+			for name, value := range defaults {
+				r.Path = strings.ReplaceAll(r.Path, "{"+name+"}", value)
+			}
+			for eName, e := range r.Endpoints {
+				substituted := map[string]bool{}
+				for name, value := range defaults {
+					placeholder := "{" + name + "}"
+					if strings.Contains(e.Path, placeholder) {
+						e.Path = strings.ReplaceAll(e.Path, placeholder, value)
+						substituted[name] = true
+					}
+				}
+				if len(substituted) > 0 && len(e.Params) > 0 {
+					kept := make([]spec.Param, 0, len(e.Params))
+					for _, p := range e.Params {
+						if substituted[p.Name] {
+							continue
+						}
+						kept = append(kept, p)
+					}
+					e.Params = kept
+				}
+				r.Endpoints[eName] = e
+			}
+			if len(r.SubResources) > 0 {
+				walk(r.SubResources)
+			}
+			resources[key] = r
+		}
+	}
+	walk(result.Resources)
 }
 
 func assignEndpointAliases(resources map[string]spec.Resource) {

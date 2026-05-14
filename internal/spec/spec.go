@@ -126,31 +126,41 @@ type APISpec struct {
 	// the API-name convention (e.g. {tenant} resolved from ST_TENANT_ID
 	// across every ServiceTitan module). Populated from the OpenAPI
 	// `info.x-tenant-env-var` extension or set directly in internal YAML.
-	EndpointTemplateEnvOverrides map[string]string   `yaml:"endpoint_template_env_overrides,omitempty" json:"endpoint_template_env_overrides,omitempty"`
-	Owner                        string              `yaml:"owner,omitempty" json:"owner,omitempty"`                   // GitHub owner for import paths and Homebrew tap
-	OwnerName                    string              `yaml:"owner_name,omitempty" json:"owner_name,omitempty"`         // Display name (e.g. "Trevin Chow") for prose surfaces — Hermes author:, README byline. Distinct from Owner (slug) which drives module paths and copyright headers.
-	Printer                      string              `yaml:"printer,omitempty" json:"printer,omitempty"`               // GitHub @handle of the human who ran the press for this CLI. Drives the per-CLI README byline link and the registry-side attribution. Distinct from Owner (the API-spec owner / wrapper-author identity).
-	PrinterName                  string              `yaml:"printer_name,omitempty" json:"printer_name,omitempty"`     // Display name of the printer (e.g. "Matt Van Horn") for prose surfaces — README byline parenthetical. Resolution path mirrors OwnerName: raw git config user.name, no slug fallback, no "USER" sentinel.
-	Kind                         string              `yaml:"kind,omitempty" json:"kind,omitempty"`                     // "rest" (default) or "synthetic" — synthetic CLIs aggregate multiple sources beyond the spec; dogfood's path-validity check is relaxed accordingly
-	SpecSource                   string              `yaml:"spec_source,omitempty" json:"spec_source,omitempty"`       // official, community, sniffed, docs — affects generated client defaults
-	ClientPattern                string              `yaml:"client_pattern,omitempty" json:"client_pattern,omitempty"` // rest (default), proxy-envelope — affects generated HTTP client
-	HTTPTransport                string              `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-http, browser-chrome, or browser-chrome-h3
-	HealthCheckPath              string              `yaml:"health_check_path,omitempty" json:"health_check_path,omitempty"`
-	ProxyRoutes                  map[string]string   `yaml:"proxy_routes,omitempty" json:"proxy_routes,omitempty"`    // path prefix → service name for proxy-envelope routing
-	BearerRefresh                BearerRefreshConfig `yaml:"bearer_refresh,omitempty" json:"bearer_refresh,omitzero"` // live-source metadata for rotating public client bearer tokens
-	WebsiteURL                   string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`      // product/company website (not the API base URL)
-	Category                     string              `yaml:"category,omitempty" json:"category,omitempty"`            // catalog category (e.g., productivity, developer-tools) — used for library install path
-	Auth                         AuthConfig          `yaml:"auth" json:"auth"`
-	TierRouting                  TierRoutingConfig   `yaml:"tier_routing,omitempty" json:"tier_routing,omitzero"`
-	RequiredHeaders              []RequiredHeader    `yaml:"required_headers,omitempty" json:"required_headers,omitempty"`
-	Config                       ConfigSpec          `yaml:"config" json:"config"`
-	Resources                    map[string]Resource `yaml:"resources" json:"resources"`
-	Types                        map[string]TypeDef  `yaml:"types" json:"types"`
-	ExtraCommands                []ExtraCommand      `yaml:"extra_commands,omitempty" json:"extra_commands,omitempty"` // hand-written cobra commands declared so SKILL.md can document them; spec-only metadata, no code generated
-	Cache                        CacheConfig         `yaml:"cache,omitempty" json:"cache"`                             // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
-	Share                        ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
-	MCP                          MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, the emitted MCP binary is stdio-only (today's default). Opting into http adds a --transport/--addr flag surface so the same binary can serve cloud-hosted agents.
-	Throttling                   ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
+	EndpointTemplateEnvOverrides map[string]string `yaml:"endpoint_template_env_overrides,omitempty" json:"endpoint_template_env_overrides,omitempty"`
+	// EndpointPathParamDefaults binds an OpenAPI path-parameter name to a
+	// literal value that the generator substitutes into every operation
+	// path at generation time. Used for parameters with a canonical
+	// always-valid value (e.g. Gmail's userId='me' for the authenticated
+	// user). After substitution the matching path parameter is dropped
+	// from each endpoint, so the printed CLI exposes neither a placeholder
+	// nor a flag for it. Populated from the OpenAPI
+	// `info.x-path-template-env-vars` extension's per-placeholder
+	// `default` field, or set directly in internal YAML.
+	EndpointPathParamDefaults map[string]string   `yaml:"endpoint_path_param_defaults,omitempty" json:"endpoint_path_param_defaults,omitempty"`
+	Owner                     string              `yaml:"owner,omitempty" json:"owner,omitempty"`                   // GitHub owner for import paths and Homebrew tap
+	OwnerName                 string              `yaml:"owner_name,omitempty" json:"owner_name,omitempty"`         // Display name (e.g. "Trevin Chow") for prose surfaces — Hermes author:, README byline. Distinct from Owner (slug) which drives module paths and copyright headers.
+	Printer                   string              `yaml:"printer,omitempty" json:"printer,omitempty"`               // GitHub @handle of the human who ran the press for this CLI. Drives the per-CLI README byline link and the registry-side attribution. Distinct from Owner (the API-spec owner / wrapper-author identity).
+	PrinterName               string              `yaml:"printer_name,omitempty" json:"printer_name,omitempty"`     // Display name of the printer (e.g. "Matt Van Horn") for prose surfaces — README byline parenthetical. Resolution path mirrors OwnerName: raw git config user.name, no slug fallback, no "USER" sentinel.
+	Kind                      string              `yaml:"kind,omitempty" json:"kind,omitempty"`                     // "rest" (default) or "synthetic" — synthetic CLIs aggregate multiple sources beyond the spec; dogfood's path-validity check is relaxed accordingly
+	SpecSource                string              `yaml:"spec_source,omitempty" json:"spec_source,omitempty"`       // official, community, sniffed, docs — affects generated client defaults
+	ClientPattern             string              `yaml:"client_pattern,omitempty" json:"client_pattern,omitempty"` // rest (default), proxy-envelope — affects generated HTTP client
+	HTTPTransport             string              `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-http, browser-chrome, or browser-chrome-h3
+	HealthCheckPath           string              `yaml:"health_check_path,omitempty" json:"health_check_path,omitempty"`
+	ProxyRoutes               map[string]string   `yaml:"proxy_routes,omitempty" json:"proxy_routes,omitempty"`    // path prefix → service name for proxy-envelope routing
+	BearerRefresh             BearerRefreshConfig `yaml:"bearer_refresh,omitempty" json:"bearer_refresh,omitzero"` // live-source metadata for rotating public client bearer tokens
+	WebsiteURL                string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`      // product/company website (not the API base URL)
+	Category                  string              `yaml:"category,omitempty" json:"category,omitempty"`            // catalog category (e.g., productivity, developer-tools) — used for library install path
+	Auth                      AuthConfig          `yaml:"auth" json:"auth"`
+	TierRouting               TierRoutingConfig   `yaml:"tier_routing,omitempty" json:"tier_routing,omitzero"`
+	RequiredHeaders           []RequiredHeader    `yaml:"required_headers,omitempty" json:"required_headers,omitempty"`
+	Config                    ConfigSpec          `yaml:"config" json:"config"`
+	Resources                 map[string]Resource `yaml:"resources" json:"resources"`
+	Types                     map[string]TypeDef  `yaml:"types" json:"types"`
+	ExtraCommands             []ExtraCommand      `yaml:"extra_commands,omitempty" json:"extra_commands,omitempty"` // hand-written cobra commands declared so SKILL.md can document them; spec-only metadata, no code generated
+	Cache                     CacheConfig         `yaml:"cache,omitempty" json:"cache"`                             // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
+	Share                     ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
+	MCP                       MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, the emitted MCP binary is stdio-only (today's default). Opting into http adds a --transport/--addr flag surface so the same binary can serve cloud-hosted agents.
+	Throttling                ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
 }
 
 type TierRoutingConfig struct {
