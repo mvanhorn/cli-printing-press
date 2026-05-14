@@ -922,6 +922,113 @@ func TestSaveBearerTokenClearsEnvBackedField(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// Composed apiKey + OAuth2 cc (ServiceTitan shape): the primary auth is the
+// OAuth bearer, but the API also requires a per-call ST-App-Key header carried
+// by a sibling apiKey scheme. AdditionalHeaders on AuthConfig drives three
+// generator emissions: a Config struct field, an os.Getenv loader in Load(),
+// and a req.Header.Set in the client request hot-path. Without all three, the
+// composed-auth API returns 401 even with a valid bearer.
+func TestGenerateComposedApiKeyPlusBearerEmitsAdditionalHeader(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "stcompose",
+		Version: "0.1.0",
+		BaseURL: "https://api.servicetitan.io",
+		Auth: spec.AuthConfig{
+			Type:        "bearer_token",
+			Header:      "Authorization",
+			Format:      "Bearer {token}",
+			OAuth2Grant: spec.OAuth2GrantClientCredentials,
+			TokenURL:    "https://auth.servicetitan.io/connect/token",
+			EnvVars:     []string{"ST_CLIENT_ID", "ST_CLIENT_SECRET"},
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "ST_CLIENT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: true},
+				{Name: "ST_CLIENT_SECRET", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: true, Sensitive: true},
+			},
+			AdditionalHeaders: []spec.AdditionalAuthHeader{
+				{
+					Header: "ST-App-Key",
+					In:     "header",
+					Scheme: "apiKeyHeader",
+					EnvVar: spec.AuthEnvVar{
+						Name:      "ST_APP_KEY",
+						Kind:      spec.AuthEnvVarKindPerCall,
+						Required:  true,
+						Sensitive: true,
+					},
+				},
+			},
+		},
+		Config: spec.ConfigSpec{Format: "toml", Path: "~/.config/stcompose-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"customers": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/customers"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	configBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	configSrc := string(configBytes)
+	assert.Regexp(t, `StAppKey\s+string`, configSrc,
+		"Config struct must carry a field for the sibling apiKey env var")
+	assert.Contains(t, configSrc, `os.Getenv("ST_APP_KEY")`,
+		"Load() must read ST_APP_KEY from env")
+	assert.Contains(t, configSrc, `cfg.StAppKey = v`,
+		"Load() must assign ST_APP_KEY into the Config field")
+
+	clientBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientSrc := string(clientBytes)
+	assert.Contains(t, clientSrc, `req.Header.Set("ST-App-Key", v)`,
+		"client must set ST-App-Key on every outbound request when configured")
+}
+
+// OAuth2 client_credentials specs without a sibling apiKey scheme must not
+// emit the additional-header block. Guards against the previous emission
+// regressing into "every OAuth CLI now ships a useless extra Config field".
+func TestGenerateOAuth2WithoutAdditionalHeadersIsClean(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "ccclean",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:        "bearer_token",
+			Header:      "Authorization",
+			Format:      "Bearer {token}",
+			OAuth2Grant: spec.OAuth2GrantClientCredentials,
+			TokenURL:    "https://api.example.com/oauth/token",
+			EnvVars:     []string{"CCCLEAN_CLIENT_ID", "CCCLEAN_CLIENT_SECRET"},
+		},
+		Config: spec.ConfigSpec{Format: "toml", Path: "~/.config/ccclean-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	clientBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(clientBytes), "Composed-scheme per-call headers",
+		"specs without sibling per_call schemes must not emit the additional-header block")
+}
+
 func TestGenerateOAuth2ClientCredentialsAuthTemplate(t *testing.T) {
 	t.Parallel()
 

@@ -570,6 +570,28 @@ type AuthConfig struct {
 	// to a Google-shaped default that silently breaks other providers.
 	// Used by the authorization_code flow only; ignored for other grants.
 	RefreshTokenMechanism string `yaml:"refresh_token_mechanism,omitempty" json:"refresh_token_mechanism,omitempty"`
+
+	// AdditionalHeaders carries per-call credentials from non-winning sibling
+	// security schemes. Composed apiKey + OAuth (or apiKey + bearer) shapes
+	// declare both schemes in components.securitySchemes; selectSecurityScheme
+	// picks one as the primary (Authorization-bearer half) and the parser then
+	// scans the rest for apiKey schemes carrying x-auth-vars[*].kind: per_call,
+	// so the apiKey header gets sent alongside the primary auth. Generator
+	// emits a Config field + os.Getenv loader per entry, plus a req.Header.Set
+	// after the primary auth header on every request.
+	AdditionalHeaders []AdditionalAuthHeader `yaml:"additional_headers,omitempty" json:"additional_headers,omitempty"`
+}
+
+// AdditionalAuthHeader pairs a sibling-scheme header destination with the
+// per-call env var that supplies its value. Only In == "header" is emitted by
+// the generator today; the field is serialized so parsed specs round-trip
+// cleanly and validators can distinguish placements without relying on the
+// destination string.
+type AdditionalAuthHeader struct {
+	Header string     `yaml:"header" json:"header"`
+	In     string     `yaml:"in,omitempty" json:"in,omitempty"`
+	Scheme string     `yaml:"scheme,omitempty" json:"scheme,omitempty"`
+	EnvVar AuthEnvVar `yaml:"env_var" json:"env_var"`
 }
 
 const (
@@ -1916,6 +1938,9 @@ func (s *APISpec) Validate() error {
 	if err := validateAuthEnvVarSpecs("auth", s.Auth); err != nil {
 		return err
 	}
+	if err := validateAdditionalAuthHeaders("auth", s.Auth); err != nil {
+		return err
+	}
 	if err := validateTierRouting(s); err != nil {
 		return err
 	}
@@ -2082,6 +2107,48 @@ func validatePublicParamNameList(context string, params []Param) error {
 				return fmt.Errorf("%s: alias %q collides with %s", aliasLabel, alias, previous)
 			}
 			seen[alias] = aliasLabel
+		}
+	}
+	return nil
+}
+
+// validateAdditionalAuthHeaders checks that each composed-auth sibling entry
+// names a destination header and a per_call env var, and that no two siblings
+// (or a sibling and a primary EnvVarSpec) share a header or env-var name.
+// Collisions would emit duplicate Config struct fields or duplicate
+// req.Header.Set calls, so a hard error at parse time is preferable to silent
+// generation drift or a compile failure in the generated CLI.
+func validateAdditionalAuthHeaders(context string, auth AuthConfig) error {
+	seenHeaders := make(map[string]struct{}, len(auth.AdditionalHeaders))
+	primaryNames := make(map[string]struct{}, len(auth.EnvVarSpecs))
+	for _, ev := range auth.EnvVarSpecs {
+		if name := strings.TrimSpace(ev.Name); name != "" {
+			primaryNames[name] = struct{}{}
+		}
+	}
+	seenNames := make(map[string]struct{}, len(auth.AdditionalHeaders))
+	for i, ah := range auth.AdditionalHeaders {
+		header := strings.TrimSpace(ah.Header)
+		if header == "" {
+			return fmt.Errorf("%s.additional_headers[%d].header is required", context, i)
+		}
+		if _, dup := seenHeaders[header]; dup {
+			return fmt.Errorf("%s.additional_headers contains duplicate header %q", context, header)
+		}
+		seenHeaders[header] = struct{}{}
+		name := strings.TrimSpace(ah.EnvVar.Name)
+		if name == "" {
+			return fmt.Errorf("%s.additional_headers[%d].env_var.name is required", context, i)
+		}
+		if _, dup := seenNames[name]; dup {
+			return fmt.Errorf("%s.additional_headers contains duplicate env_var.name %q", context, name)
+		}
+		if _, dup := primaryNames[name]; dup {
+			return fmt.Errorf("%s.additional_headers[%d].env_var.name %q collides with env_var_specs", context, i, name)
+		}
+		seenNames[name] = struct{}{}
+		if ah.EnvVar.EffectiveKind() != AuthEnvVarKindPerCall {
+			return fmt.Errorf("%s.additional_headers[%d].env_var.kind must be %q (got %q)", context, i, AuthEnvVarKindPerCall, ah.EnvVar.Kind)
 		}
 	}
 	return nil

@@ -365,7 +365,8 @@ func mcpbUserConfigAuthEnvVars(m CLIManifest) []spec.AuthEnvVar {
 	if len(envVarSpecs) == 0 {
 		return nil
 	}
-	filtered := make([]spec.AuthEnvVar, 0, len(envVarSpecs))
+	filtered := make([]spec.AuthEnvVar, 0, len(envVarSpecs)+len(m.AuthAdditionalHeaders))
+	seen := make(map[string]struct{}, len(envVarSpecs))
 	for _, envVar := range envVarSpecs {
 		if envVar.Name == "" {
 			continue
@@ -373,10 +374,27 @@ func mcpbUserConfigAuthEnvVars(m CLIManifest) []spec.AuthEnvVar {
 		switch envVar.Kind {
 		case "", spec.AuthEnvVarKindPerCall:
 			envVar.Kind = spec.AuthEnvVarKindPerCall
+			seen[envVar.Name] = struct{}{}
 			filtered = append(filtered, envVar)
 		case spec.AuthEnvVarKindAuthFlowInput, spec.AuthEnvVarKindHarvested:
 			continue
 		}
+	}
+	// Sibling-scheme credentials (e.g. an apiKey header alongside an OAuth
+	// bearer) ride the same user_config + env-forwarding path so MCP hosts
+	// prompt for them at install time. Without this, composed-auth specs ship
+	// install bundles that silently 401 at first request.
+	for _, ah := range m.AuthAdditionalHeaders {
+		ev := ah.EnvVar
+		if ev.Name == "" {
+			continue
+		}
+		if _, dup := seen[ev.Name]; dup {
+			continue
+		}
+		ev.Kind = spec.AuthEnvVarKindPerCall
+		seen[ev.Name] = struct{}{}
+		filtered = append(filtered, ev)
 	}
 	return filtered
 }

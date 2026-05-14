@@ -944,6 +944,18 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 			req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
 {{- end}}
 		}
+{{- if .Auth.AdditionalHeaders}}
+		// Composed-scheme per-call headers carried by sibling apiKey schemes.
+		// Sent independently of authHeader: the API requires both the primary
+		// auth header and each sibling header on every request.
+		if c.Config != nil {
+{{- range .Auth.AdditionalHeaders}}
+			if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
+				req.Header.Set("{{.Header}}", v)
+			}
+{{- end}}
+		}
+{{- end}}
 {{- range .RequiredHeaders}}
 		req.Header.Set("{{.Name}}", "{{.Value}}")
 {{- end}}

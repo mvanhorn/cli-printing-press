@@ -3026,6 +3026,186 @@ paths:
 	assert.True(t, parsed.Auth.EnvVarSpecs[0].Sensitive)
 }
 
+// ServiceTitan-shape: an apiKey scheme carrying a per-tenant header credential
+// sits alongside an OAuth2 client_credentials scheme. selectSecurityScheme
+// picks the OAuth2 half (bearer Authorization); without sibling-scheme
+// collection, the apiKey half is dropped and every request returns 401.
+func TestComposedApiKeyPlusOAuthCollectsAdditionalHeader(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: ServiceTitan-shape
+  version: "1.0.0"
+servers:
+  - url: https://api.servicetitan.io
+security:
+  - apiKeyHeader: []
+    oauth: []
+components:
+  securitySchemes:
+    apiKeyHeader:
+      type: apiKey
+      in: header
+      name: ST-App-Key
+      x-auth-vars:
+        - name: ST_APP_KEY
+          kind: per_call
+          required: true
+          sensitive: true
+    oauth:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.servicetitan.io/connect/token
+          scopes: {}
+paths:
+  /tenant/{tenant}/customers:
+    get:
+      operationId: listCustomers
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "bearer_token", parsed.Auth.Type, "OAuth2 cc beats apiKey-header in scheme priority")
+	assert.Equal(t, "oauth", parsed.Auth.Scheme)
+	require.Len(t, parsed.Auth.AdditionalHeaders, 1, "sibling apiKey scheme must surface as an additional header")
+	additional := parsed.Auth.AdditionalHeaders[0]
+	assert.Equal(t, "ST-App-Key", additional.Header)
+	assert.Equal(t, "header", additional.In)
+	assert.Equal(t, "apiKeyHeader", additional.Scheme)
+	assert.Equal(t, "ST_APP_KEY", additional.EnvVar.Name)
+	assert.Equal(t, spec.AuthEnvVarKindPerCall, additional.EnvVar.Kind)
+	assert.True(t, additional.EnvVar.Required)
+	assert.True(t, additional.EnvVar.Sensitive)
+}
+
+// Single-scheme apiKey (no sibling OAuth) must keep its existing single-scheme
+// emission path: the per_call envvar lives on EnvVarSpecs, and
+// AdditionalHeaders stays empty so the generator does not emit duplicate
+// Config fields or req.Header.Set calls.
+func TestSingleApiKeySchemeDoesNotPopulateAdditionalHeaders(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Single ApiKey
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      x-auth-vars:
+        - name: EXAMPLE_API_KEY
+          kind: per_call
+          required: true
+          sensitive: true
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Empty(t, parsed.Auth.AdditionalHeaders, "single-scheme path must not duplicate the primary envvar as additional")
+}
+
+// A sibling apiKey scheme that omits the x-auth-vars extension is silently
+// skipped: collectAdditionalAuthHeaders never invents env-var names. The
+// scheme's per-call credential simply isn't covered, and the primary auth
+// remains untouched.
+func TestSiblingApiKeyWithoutAuthVarsIsSkipped(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: no-auth-vars-sibling
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+security:
+  - bearer: []
+    apiKey: []
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-Sibling-Key
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+	assert.Empty(t, parsed.Auth.AdditionalHeaders)
+}
+
+// Sibling apiKey-in-query schemes are skipped: the issue this addresses is
+// header-only (ST-App-Key, Stripe-Signature, Atlassian-Token). A query-param
+// sibling would imply mixing query-auth with bearer Authorization, which is
+// not a shape this fix supports, and pretending it works would silently emit
+// broken code.
+func TestSiblingApiKeyInQueryIsSkipped(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: query-sibling
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+security:
+  - bearer: []
+    queryKey: []
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+    queryKey:
+      type: apiKey
+      in: query
+      name: api_key
+      x-auth-vars:
+        - name: EXAMPLE_QUERY_KEY
+          kind: per_call
+          required: true
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+	assert.Empty(t, parsed.Auth.AdditionalHeaders)
+}
+
 func TestOpenAPIAuthClassifiesCookieAndOAuth2ClientCredentialsEnvVars(t *testing.T) {
 	t.Parallel()
 

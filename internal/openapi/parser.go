@@ -660,7 +660,73 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	applyAuthOverrideExtensions(&auth, scheme.Extensions)
 	applyAuthEnvVarDefaults(&auth, envPrefix)
 	applyAuthVarsRichOverride(&auth, scheme.Extensions, fmt.Sprintf("components.securitySchemes.%s.%s", schemeName, extensionAuthVars))
+	auth.AdditionalHeaders = collectAdditionalAuthHeaders(doc, schemeName)
 	return auth
+}
+
+// collectAdditionalAuthHeaders scans non-winning apiKey-in-header security
+// schemes for x-auth-vars per_call entries. Composed auth shapes (apiKey +
+// OAuth bearer, Stripe-Signature + bearer, ST-App-Key + bearer) declare the
+// apiKey scheme separately; selectSecurityScheme picks the bearer half, and
+// without this sweep the apiKey half is silently dropped. Only apiKey-typed
+// schemes are considered: http-bearer/http-basic losers do not carry an
+// additive per-call header destination distinct from the primary Authorization
+// header, and considering them would produce a useless duplicate emission.
+func collectAdditionalAuthHeaders(doc *openapi3.T, winner string) []spec.AdditionalAuthHeader {
+	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) <= 1 {
+		return nil
+	}
+	names := make([]string, 0, len(doc.Components.SecuritySchemes))
+	for name := range doc.Components.SecuritySchemes {
+		if name == winner {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var headers []spec.AdditionalAuthHeader
+	for _, name := range names {
+		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
+		if scheme == nil {
+			continue
+		}
+		if !strings.EqualFold(scheme.Type, "apiKey") {
+			continue
+		}
+		header := strings.TrimSpace(scheme.Name)
+		if header == "" {
+			continue
+		}
+		// apiKey schemes must declare `in` per OpenAPI 3.x; an empty value is a
+		// spec authoring mistake and would otherwise silently emit a header.
+		if !strings.EqualFold(strings.TrimSpace(scheme.In), "header") {
+			continue
+		}
+		raw, ok := scheme.Extensions[extensionAuthVars]
+		if !ok || raw == nil {
+			continue
+		}
+		envVars, err := authVarsExtension(raw)
+		if err != nil || len(envVars) == 0 {
+			continue
+		}
+		for _, ev := range envVars {
+			if ev.EffectiveKind() != spec.AuthEnvVarKindPerCall {
+				continue
+			}
+			if strings.TrimSpace(ev.Name) == "" {
+				continue
+			}
+			headers = append(headers, spec.AdditionalAuthHeader{
+				Header: header,
+				In:     "header",
+				Scheme: name,
+				EnvVar: ev,
+			})
+		}
+	}
+	return headers
 }
 
 func isGenericAPIKeySchemeSuffix(suffix string) bool {
