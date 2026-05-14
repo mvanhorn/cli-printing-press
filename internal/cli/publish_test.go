@@ -1136,6 +1136,19 @@ func testSecret(parts ...string) string {
 	return strings.Join(parts, "")
 }
 
+func TestPublishPackageAllowMirrorDeletionsRequiresDest(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--allow-mirror-deletions", "--json"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--allow-mirror-deletions requires --dest")
+}
+
 func TestListMirrorOnlyFiles(t *testing.T) {
 	srcDir := t.TempDir()
 	mirrorDir := t.TempDir()

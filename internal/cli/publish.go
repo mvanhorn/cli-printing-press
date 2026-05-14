@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -247,6 +248,9 @@ func newPublishPackageCmd() *cobra.Command {
 			}
 			if target != "" && dest != "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--target and --dest are mutually exclusive")}
+			}
+			if allowMirrorDeletions && dest == "" {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--allow-mirror-deletions requires --dest (the divergence guard runs only in --dest mode)")}
 			}
 
 			// Cheap existence checks before expensive validation
@@ -519,7 +523,7 @@ func checkMirrorDivergence(mirrorCLIDir, sourceCLIDir string) error {
 		fmt.Fprintf(&msg, "  ... and %d more\n", len(mirrorOnly)-limit)
 	}
 
-	return &ExitError{Code: ExitInputError, Err: fmt.Errorf("%s", strings.TrimRight(msg.String(), "\n"))}
+	return &ExitError{Code: ExitInputError, Err: errors.New(strings.TrimRight(msg.String(), "\n"))}
 }
 
 // listMirrorOnlyFiles returns slash-separated relative paths under
