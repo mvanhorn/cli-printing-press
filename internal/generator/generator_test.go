@@ -3070,8 +3070,22 @@ func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
 	assert.Contains(t, src, "func (s *Store) UpsertCampaigns(", "public typed upsert missing for campaigns")
 
 	// UpsertBatch must dispatch to the typed helper inside its switch.
-	assert.Regexp(t, `(?s)func \(s \*Store\) UpsertBatch\(.*case "campaigns":\s+if err := s\.upsertCampaignsTx\(`, src,
+	// The dispatch now captures the typed error so a savepoint can roll it
+	// back without unwinding the outer transaction (issue #1392); the
+	// shape went from `if err := s.upsertCampaignsTx(...)` to
+	// `typedErr = s.upsertCampaignsTx(...)`.
+	assert.Regexp(t, `(?s)func \(s \*Store\) UpsertBatch\(.*case "campaigns":\s+typedErr = s\.upsertCampaignsTx\(`, src,
 		"UpsertBatch must dispatch to upsertCampaignsTx — without this, paginated syncs leave typed tables empty (issue #268)")
+
+	// SAVEPOINT/RELEASE/ROLLBACK isolates typed-table failures so a NOT NULL
+	// constraint in a generated typed table does not unwind the outer
+	// transaction and strand the generic resources row (issue #1392).
+	assert.Contains(t, src, `tx.Exec("SAVEPOINT " + savepoint)`,
+		"UpsertBatch must open a SAVEPOINT before the typed dispatch (issue #1392)")
+	assert.Contains(t, src, `tx.Exec("ROLLBACK TO SAVEPOINT " + savepoint)`,
+		"UpsertBatch must ROLLBACK TO SAVEPOINT on typed-table failure so the generic row survives (issue #1392)")
+	assert.Contains(t, src, `tx.Exec("RELEASE SAVEPOINT " + savepoint)`,
+		"UpsertBatch must RELEASE the savepoint after either success or rollback so it is cleared from the stack (issue #1392)")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/store")
@@ -3146,8 +3160,10 @@ func TestUpsertDispatchPreservesMultiWordResourceCasing(t *testing.T) {
 
 	// UpsertBatch must dispatch on the runtime resource form (kebab) to
 	// match defaultSyncResources/syncResourcePath/resourceIDFieldOverrides.
+	// The dispatch captures the typed error into a local so a savepoint
+	// can roll it back without unwinding the outer transaction (#1392).
 	assert.Regexp(t,
-		`(?s)func \(s \*Store\) UpsertBatch\(.*case "audio-isolation":\s+if err := s\.upsertAudioIsolationTx\(`,
+		`(?s)func \(s \*Store\) UpsertBatch\(.*case "audio-isolation":\s+typedErr = s\.upsertAudioIsolationTx\(`,
 		store,
 		"UpsertBatch must dispatch on \"audio-isolation\" — the snake case string never matches the kebab runtime resource (issue #1064)")
 
