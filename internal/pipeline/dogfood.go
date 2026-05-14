@@ -327,7 +327,13 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 	}
 	built := make([]NovelFeature, 0)
 	for _, nf := range research.NovelFeatures {
-		if matchNovelFeature(nf, paths, leaves) {
+		matched := matchNovelFeature(nf, paths, leaves)
+		if !matched {
+			if cm, applied := matchCrossCuttingFeature(nf.Command, cliDir); applied && cm {
+				matched = true
+			}
+		}
+		if matched {
 			result.Found++
 			built = append(built, nf)
 		} else {
@@ -395,6 +401,129 @@ func matchNovelFeature(nf NovelFeature, paths, leaves map[string]bool) bool {
 	}
 	for _, alias := range nf.Aliases {
 		if ap := commandPath(alias); ap != "" && try(ap) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchCrossCuttingFeature handles novel features whose command string
+// describes cross-cutting code — global flags or internal helpers —
+// rather than naming a CLI command. The regular path/leaf matcher can't
+// see these because they don't appear in the cobra command tree.
+//
+// Returns (matched, applied):
+//   - applied=false means the feature isn't cross-cutting (no flag token,
+//     no recognized parenthetical marker); the caller should fall back
+//     to the regular matcher.
+//   - applied=true, matched=true means a positive signal was found.
+//   - applied=true, matched=false means the feature is genuinely missing
+//     (e.g., a `--<flag>` named explicitly that isn't declared anywhere
+//     in CLI source).
+//
+// Detection strategy is deliberately a "cheap retrofit" (per issue
+// #1197): a literal-string scan of `internal/cli/*.go` for declared
+// flags, and a presence check for agent-authored packages under
+// `internal/` for `(internal ...)` markers. Parenthetical descriptors
+// without a flag to anchor on are trusted rather than reported missing.
+func matchCrossCuttingFeature(cmd, cliDir string) (matched, applied bool) {
+	lc := strings.ToLower(strings.TrimSpace(cmd))
+	flags := extractFlagNames(lc)
+	marker := parenLeadMarker(lc)
+	if marker == "" && len(flags) == 0 {
+		return false, false
+	}
+
+	// Flag-bearing features take the strict path: a declared flag means
+	// found; a named flag with no declaration means genuinely missing.
+	// This preserves the negative-test case for "(any) --nonexistent".
+	if len(flags) > 0 {
+		for _, f := range flags {
+			if flagDeclaredInCLI(f, cliDir) {
+				return true, true
+			}
+		}
+		return false, true
+	}
+
+	// Parenthetical-only feature — no specific flag to anchor on.
+	switch marker {
+	case "internal":
+		return hasAgentInternalPackage(cliDir), true
+	case "global", "any":
+		// Behavioural descriptions like "(any read command, default
+		// behavior)" carry no specific signal. Trust the planner rather
+		// than emit a false-positive missing.
+		return true, true
+	}
+	return false, false
+}
+
+// parenLeadMarker returns the cross-cutting marker word at the start of
+// a feature command — "internal", "any", or "global" — or "" if the
+// feature doesn't begin with one of the known parenthetical markers.
+// Caller passes an already-lowercased and trimmed string.
+func parenLeadMarker(lc string) string {
+	if !strings.HasPrefix(lc, "(") {
+		return ""
+	}
+	inner := lc[1:]
+	end := len(inner)
+	for i, r := range inner {
+		if r == ' ' || r == ')' || r == ',' {
+			end = i
+			break
+		}
+	}
+	switch inner[:end] {
+	case "internal", "any", "global":
+		return inner[:end]
+	}
+	return ""
+}
+
+// flagDeclaredInCLI reports whether name appears as a quoted string
+// literal in any `internal/cli/*.go` file. Cobra registers long-flag
+// names via string literals on Flags()/PersistentFlags() calls, so a
+// `"<name>"` substring match is a reliable cheap signal without parsing
+// Go source.
+func flagDeclaredInCLI(name, cliDir string) bool {
+	if name == "" {
+		return false
+	}
+	needle := `"` + name + `"`
+	for _, f := range listGoFiles(filepath.Join(cliDir, "internal", "cli")) {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(data), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAgentInternalPackage reports whether the CLI carries any
+// agent-authored package directory under internal/ — that is, a
+// subdirectory with at least one .go file that isn't the always-emitted
+// command package (cli) or a generator-reserved package (cliutil, mcp).
+// Used to corroborate "(internal ...)" novel-feature claims when no
+// specific keyword is available to pinpoint a package.
+func hasAgentInternalPackage(cliDir string) bool {
+	entries, err := os.ReadDir(filepath.Join(cliDir, "internal"))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		switch e.Name() {
+		case "cli", "cliutil", "mcp":
+			continue
+		}
+		if len(listGoFiles(filepath.Join(cliDir, "internal", e.Name()))) > 0 {
 			return true
 		}
 	}

@@ -1164,6 +1164,182 @@ func TestCheckNovelFeatures_ZeroSurvivors(t *testing.T) {
 	assert.NotContains(t, string(rootData), "planned health")
 }
 
+// TestCheckNovelFeatures_CrossCutting pins the cross-cutting-feature
+// fallback added in #1197: planned features whose Command is a
+// parenthetical marker ("(any) --dry-run", "(internal client behavior)",
+// "(any read command, default behavior)") are detected against
+// rootFlags / agent-authored internal packages rather than reported as
+// missing. Flag-named features still report missing when the flag isn't
+// declared anywhere in CLI source.
+func TestCheckNovelFeatures_CrossCutting(t *testing.T) {
+	// Helper: minimal CLI fixture with a single command file plus a
+	// root.go that declares a few persistent flags as string literals.
+	// Optional agentPkg adds an agent-authored internal/<name>/<name>.go.
+	setupCLI := func(t *testing.T, agentPkg string) string {
+		t.Helper()
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "root.go"), strings.Join([]string{
+			`package cli`,
+			``,
+			`func newRootCmd() *cobra.Command {`,
+			`	rootCmd := &cobra.Command{Use: "test-pp-cli"}`,
+			`	rootCmd.PersistentFlags().Bool("dry-run", false, "preview only")`,
+			`	rootCmd.PersistentFlags().String("tier", "", "service tier")`,
+			`	rootCmd.AddCommand(newHealthCmd())`,
+			`	return rootCmd`,
+			`}`,
+			``,
+		}, "\n"))
+		if agentPkg != "" {
+			agentDir := filepath.Join(cliDir, "internal", agentPkg)
+			require.NoError(t, os.MkdirAll(agentDir, 0o755))
+			writeTestFile(t, filepath.Join(agentDir, "request.go"),
+				"package "+agentPkg+"\n\nfunc DoRequest() {}\n")
+		}
+		return cliDir
+	}
+
+	t.Run("global flag declared on rootCmd resolves (any) marker", func(t *testing.T) {
+		cliDir := setupCLI(t, "")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Dry-run mode", Command: "(any) --dry-run"},
+				{Name: "Service tier", Command: "(any) --tier standard"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 2, result.Planned)
+		assert.Equal(t, 2, result.Found)
+		assert.Empty(t, result.Missing)
+	})
+
+	t.Run("undeclared flag reports missing", func(t *testing.T) {
+		cliDir := setupCLI(t, "")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Bogus flag", Command: "(any) --nonexistent-flag"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 0, result.Found)
+		assert.Equal(t, []string{"(any) --nonexistent-flag"}, result.Missing)
+	})
+
+	t.Run("internal marker resolves when an agent-authored package exists", func(t *testing.T) {
+		cliDir := setupCLI(t, "dfs")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Adaptive client", Command: "(internal client behavior)"},
+				{Name: "Config resolution", Command: "(internal config resolution)"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 2, result.Found)
+		assert.Empty(t, result.Missing)
+	})
+
+	t.Run("internal marker reports missing when no agent package exists", func(t *testing.T) {
+		cliDir := setupCLI(t, "")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Adaptive client", Command: "(internal client behavior)"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 0, result.Found)
+		assert.Equal(t, []string{"(internal client behavior)"}, result.Missing)
+	})
+
+	t.Run("any-marker description without flag trusts the planner", func(t *testing.T) {
+		cliDir := setupCLI(t, "")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Default behavior", Command: "(any read command, default behavior)"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Found)
+		assert.Empty(t, result.Missing)
+	})
+
+	t.Run("regular commands still reported missing when unbuilt", func(t *testing.T) {
+		// "sql" and "search" don't have command files and don't carry
+		// cross-cutting markers, so they must still appear as missing —
+		// the cross-cutting fallback must not mask genuinely-unbuilt
+		// commands.
+		cliDir := setupCLI(t, "dfs")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Local SQL", Command: "sql"},
+				{Name: "Local search", Command: "search"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 0, result.Found)
+		assert.ElementsMatch(t, []string{"sql", "search"}, result.Missing)
+	})
+}
+
+// TestMatchCrossCuttingFeature covers the helper's edge cases directly:
+// non-cross-cutting inputs return applied=false so the regular path
+// matcher gets to decide; flag detection extracts =value suffixes and
+// surrounding punctuation; case-folding is consistent.
+func TestMatchCrossCuttingFeature(t *testing.T) {
+	cliDir := t.TempDir()
+	cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+	writeTestFile(t, filepath.Join(cliCodeDir, "root.go"),
+		"package cli\n\nfunc init() {\n\t_ = \"dry-run\"\n\t_ = \"agent\"\n}\n")
+
+	cases := []struct {
+		name    string
+		cmd     string
+		matched bool
+		applied bool
+	}{
+		{"plain command name yields applied=false", "health", false, false},
+		{"space-separated path yields applied=false", "portfolio perf", false, false},
+		{"bare flag matches declared name", "--dry-run", true, true},
+		{"flag with =value suffix matches", "--dry-run=true", true, true},
+		{"flag with trailing punctuation matches", "--dry-run,", true, true},
+		{"uppercase paren marker normalizes", "(ANY) --dry-run", true, true},
+		{"undeclared flag reports missing", "(any) --no-such-flag", false, true},
+		{"unknown paren marker yields applied=false", "(observation) something", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			matched, applied := matchCrossCuttingFeature(tc.cmd, cliDir)
+			assert.Equal(t, tc.applied, applied, "applied")
+			assert.Equal(t, tc.matched, matched, "matched")
+		})
+	}
+}
+
 func captureStderr[T any](t *testing.T, captured *string, fn func() T) T {
 	t.Helper()
 
