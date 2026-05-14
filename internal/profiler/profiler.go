@@ -3,6 +3,7 @@ package profiler
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -338,7 +339,16 @@ func Profile(s *spec.APISpec) *APIProfile {
 				listCapableGETs++
 				listResources[resourceName] = struct{}{}
 
-				standaloneList := !strings.Contains(endpoint.Path, "{") && !hasRequiredScopeParams(endpoint)
+				// pathParamsAllTemplateVars treats paths whose only
+				// {placeholder}s are spec-declared EndpointTemplateVars
+				// (e.g. /tenant/{tenant}/<resource> when "tenant" is the
+				// tenant-scoping path-positional template) as standalone.
+				// buildURL substitutes those from env-backed
+				// Config.TemplateVars at request time, so they don't need
+				// parent-context iteration like /channels/{channelId}/messages
+				// does.
+				resolvable := pathParamsAllTemplateVars(endpoint.Path, s)
+				standaloneList := (!strings.Contains(endpoint.Path, "{") || resolvable) && !hasRequiredScopeParams(endpoint)
 
 				if endpoint.Pagination != nil {
 					p.ListEndpoints++
@@ -360,7 +370,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 							meta.Path = expandedPath
 							syncable[expandedName] = meta
 						}
-					} else if strings.Contains(endpoint.Path, "{") {
+					} else if strings.Contains(endpoint.Path, "{") && !resolvable {
 						// Parameterized paginated paths can't sync standalone — track
 						// them for dependent-resource detection below. Carry the
 						// endpoint's metadata so x-resource-id and x-critical
@@ -381,7 +391,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 				} else if standaloneList {
 					addSyncCandidate(resourceName, metaFromEndpoint(s, r, endpoint, s.Types, resourceNameIndex))
 				}
-			} else if method == "GET" && !strings.Contains(endpoint.Path, "{") && !hasRequiredScopeParams(endpoint) && looksLikeCollectionEndpoint(endpointNameLower) {
+			} else if method == "GET" && (!strings.Contains(endpoint.Path, "{") || pathParamsAllTemplateVars(endpoint.Path, s)) && !hasRequiredScopeParams(endpoint) && looksLikeCollectionEndpoint(endpointNameLower) {
 				// Catch-all for simple GET collection endpoints that isListEndpoint
 				// didn't recognise (e.g., response is an untyped object with no
 				// wrapper field defined in the spec's types map).
@@ -699,6 +709,32 @@ var (
 		"page": true, "before": true, "starting_after": true, "page[cursor]": true,
 	}
 )
+
+// pathTemplatePlaceholderRE matches {placeholder} tokens in a path. Identifier
+// shape mirrors templateVarPattern in the emitted url.go.tmpl so client-side
+// resolution sees the same set of names this helper accepts.
+var pathTemplatePlaceholderRE = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
+
+// pathParamsAllTemplateVars reports whether every {placeholder} in path is
+// declared in s.EndpointTemplateVars — i.e. fully resolvable via the printed
+// CLI's runtime buildURL substitution without parent-context iteration. Paths
+// with no {placeholder}s return false; the standaloneList gate handles those
+// separately.
+func pathParamsAllTemplateVars(path string, s *spec.APISpec) bool {
+	if s == nil || len(s.EndpointTemplateVars) == 0 || !strings.Contains(path, "{") {
+		return false
+	}
+	matches := pathTemplatePlaceholderRE.FindAllStringSubmatch(path, -1)
+	if len(matches) == 0 {
+		return false
+	}
+	for _, m := range matches {
+		if !s.IsEndpointTemplateVar(m[1]) {
+			return false
+		}
+	}
+	return true
+}
 
 // hasRequiredScopeParams flags "scoped list" endpoints (e.g., GetFriendList
 // requires steamid) that can't be synced without runtime context.

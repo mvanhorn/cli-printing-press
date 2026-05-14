@@ -59,7 +59,7 @@ func RegisterTools(s *server.MCPServer) {
 		mcplib.NewTool("projects_list",
 			mcplib.WithDescription("List projects. Optional: status, limit (default: 25), cursor. Returns array of Project."),
 			mcplib.WithString("status", mcplib.Description("Status")),
-			mcplib.WithString("limit", mcplib.Description("Limit")),
+			mcplib.WithNumber("limit", mcplib.Description("Limit")),
 			mcplib.WithString("cursor", mcplib.Description("Cursor")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
@@ -71,7 +71,7 @@ func RegisterTools(s *server.MCPServer) {
 		mcplib.NewTool("projects_avatar_upload-project",
 			mcplib.WithDescription("Upload project avatar. Required: projectId. Optional: overwrite, caption, file."),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
-			mcplib.WithString("overwrite", mcplib.Description("Overwrite")),
+			mcplib.WithBoolean("overwrite", mcplib.Description("Overwrite")),
 			mcplib.WithString("caption", mcplib.Description("Caption")),
 			mcplib.WithString("file", mcplib.Description("File")),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -83,7 +83,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDescription("List project tasks. Required: projectId. Optional: priority, limit (default: 50), cursor. Returns array of Task."),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
 			mcplib.WithString("priority", mcplib.Description("Priority")),
-			mcplib.WithString("limit", mcplib.Description("Limit")),
+			mcplib.WithNumber("limit", mcplib.Description("Limit")),
 			mcplib.WithString("cursor", mcplib.Description("Cursor")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
@@ -96,8 +96,8 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDescription("Update project task. Required: projectId, taskId. Optional: notify, completed, priority (plus 1 more). Partial update."),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
 			mcplib.WithString("taskId", mcplib.Required(), mcplib.Description("Task id")),
-			mcplib.WithString("notify", mcplib.Description("Notify")),
-			mcplib.WithString("completed", mcplib.Description("Completed")),
+			mcplib.WithBoolean("notify", mcplib.Description("Notify")),
+			mcplib.WithBoolean("completed", mcplib.Description("Completed")),
 			mcplib.WithString("priority", mcplib.Description("Priority")),
 			mcplib.WithString("title", mcplib.Description("Title")),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -116,7 +116,7 @@ func RegisterTools(s *server.MCPServer) {
 	s.AddTool(
 		mcplib.NewTool("reports_summary_get-report-year",
 			mcplib.WithDescription("Get a report summary for a year. Required: year."),
-			mcplib.WithString("year", mcplib.Required(), mcplib.Description("Year")),
+			mcplib.WithNumber("year", mcplib.Required(), mcplib.Description("Year")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -277,12 +277,11 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, bindings [
 				data, _, err = c.PostMultipartWithParams(path, params, multipartFields, multipartFileFields)
 				break
 			}
-			body, _ := json.Marshal(bodyArgs)
 			if binaryResponse {
-				data, _, err = c.PostWithParamsAndHeaders(path, params, body, headers)
+				data, _, err = c.PostWithParamsAndHeaders(path, params, bodyArgs, headers)
 				break
 			}
-			data, _, err = c.PostWithParams(path, params, body)
+			data, _, err = c.PostWithParams(path, params, bodyArgs)
 		case "PUT":
 			if multipart {
 				if binaryResponse {
@@ -292,12 +291,11 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, bindings [
 				data, _, err = c.PutMultipartWithParams(path, params, multipartFields, multipartFileFields)
 				break
 			}
-			body, _ := json.Marshal(bodyArgs)
 			if binaryResponse {
-				data, _, err = c.PutWithParamsAndHeaders(path, params, body, headers)
+				data, _, err = c.PutWithParamsAndHeaders(path, params, bodyArgs, headers)
 				break
 			}
-			data, _, err = c.PutWithParams(path, params, body)
+			data, _, err = c.PutWithParams(path, params, bodyArgs)
 		case "PATCH":
 			if multipart {
 				if binaryResponse {
@@ -307,12 +305,11 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, bindings [
 				data, _, err = c.PatchMultipartWithParams(path, params, multipartFields, multipartFileFields)
 				break
 			}
-			body, _ := json.Marshal(bodyArgs)
 			if binaryResponse {
-				data, _, err = c.PatchWithParamsAndHeaders(path, params, body, headers)
+				data, _, err = c.PatchWithParamsAndHeaders(path, params, bodyArgs, headers)
 				break
 			}
-			data, _, err = c.PatchWithParams(path, params, body)
+			data, _, err = c.PatchWithParams(path, params, bodyArgs)
 		case "DELETE":
 			if binaryResponse {
 				data, _, err = c.DeleteWithParamsAndHeaders(path, params, headers)

@@ -135,26 +135,23 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, bindings [
 			}
 			data, err = c.Get(path, params)
 		case "POST":
-			body, _ := json.Marshal(bodyArgs)
 			if binaryResponse {
-				data, _, err = c.PostWithParamsAndHeaders(path, params, body, headers)
+				data, _, err = c.PostWithParamsAndHeaders(path, params, bodyArgs, headers)
 				break
 			}
-			data, _, err = c.PostWithParams(path, params, body)
+			data, _, err = c.PostWithParams(path, params, bodyArgs)
 		case "PUT":
-			body, _ := json.Marshal(bodyArgs)
 			if binaryResponse {
-				data, _, err = c.PutWithParamsAndHeaders(path, params, body, headers)
+				data, _, err = c.PutWithParamsAndHeaders(path, params, bodyArgs, headers)
 				break
 			}
-			data, _, err = c.PutWithParams(path, params, body)
+			data, _, err = c.PutWithParams(path, params, bodyArgs)
 		case "PATCH":
-			body, _ := json.Marshal(bodyArgs)
 			if binaryResponse {
-				data, _, err = c.PatchWithParamsAndHeaders(path, params, body, headers)
+				data, _, err = c.PatchWithParamsAndHeaders(path, params, bodyArgs, headers)
 				break
 			}
-			data, _, err = c.PatchWithParams(path, params, body)
+			data, _, err = c.PatchWithParams(path, params, bodyArgs)
 		case "DELETE":
 			if binaryResponse {
 				data, _, err = c.DeleteWithParamsAndHeaders(path, params, headers)

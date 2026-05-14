@@ -58,24 +58,31 @@ type CLIManifest struct {
 	// Printer is the original printer's GitHub handle, preserved across regens.
 	Printer string `json:"printer,omitempty"`
 	// PrinterName is the optional display name rendered beside the printer handle.
-	PrinterName          string            `json:"printer_name,omitempty"`
-	SpecURL              string            `json:"spec_url,omitempty"`
-	SpecPath             string            `json:"spec_path,omitempty"`
-	SpecFormat           string            `json:"spec_format,omitempty"`
-	SpecChecksum         string            `json:"spec_checksum,omitempty"`
-	RunID                string            `json:"run_id,omitempty"`
-	CatalogEntry         string            `json:"catalog_entry,omitempty"`
-	Category             string            `json:"category,omitempty"`
-	Description          string            `json:"description,omitempty"`
-	MCPBinary            string            `json:"mcp_binary,omitempty"`
-	MCPToolCount         int               `json:"mcp_tool_count,omitempty"`
-	MCPPublicToolCount   int               `json:"mcp_public_tool_count,omitempty"`
-	MCPReady             string            `json:"mcp_ready,omitempty"`
-	APIVersion           string            `json:"api_version,omitempty"` // from the spec's info.version — provenance only, not the CLI version
-	AuthType             string            `json:"auth_type,omitempty"`
-	AuthEnvVars          []string          `json:"auth_env_vars,omitempty"`
-	AuthEnvVarSpecs      []spec.AuthEnvVar `json:"auth_env_var_specs,omitempty"`
-	EndpointTemplateVars []string          `json:"endpoint_template_vars,omitempty"`
+	PrinterName        string            `json:"printer_name,omitempty"`
+	SpecURL            string            `json:"spec_url,omitempty"`
+	SpecPath           string            `json:"spec_path,omitempty"`
+	SpecFormat         string            `json:"spec_format,omitempty"`
+	SpecChecksum       string            `json:"spec_checksum,omitempty"`
+	RunID              string            `json:"run_id,omitempty"`
+	CatalogEntry       string            `json:"catalog_entry,omitempty"`
+	Category           string            `json:"category,omitempty"`
+	Description        string            `json:"description,omitempty"`
+	MCPBinary          string            `json:"mcp_binary,omitempty"`
+	MCPToolCount       int               `json:"mcp_tool_count,omitempty"`
+	MCPPublicToolCount int               `json:"mcp_public_tool_count,omitempty"`
+	MCPReady           string            `json:"mcp_ready,omitempty"`
+	APIVersion         string            `json:"api_version,omitempty"` // from the spec's info.version — provenance only, not the CLI version
+	AuthType           string            `json:"auth_type,omitempty"`
+	AuthEnvVars        []string          `json:"auth_env_vars,omitempty"`
+	AuthEnvVarSpecs    []spec.AuthEnvVar `json:"auth_env_var_specs,omitempty"`
+	// AuthAdditionalHeaders mirrors AuthConfig.AdditionalHeaders so the MCPB
+	// manifest's user_config block prompts for sibling-scheme per-call
+	// credentials (e.g. an apiKey header alongside an OAuth bearer). Without
+	// this field, agents installing the printed CLI via Claude Desktop never
+	// see the second credential prompt and every request returns 401.
+	AuthAdditionalHeaders        []spec.AdditionalAuthHeader `json:"auth_additional_headers,omitempty"`
+	EndpointTemplateVars         []string                    `json:"endpoint_template_vars,omitempty"`
+	EndpointTemplateEnvOverrides map[string]string           `json:"endpoint_template_env_overrides,omitempty"`
 	// AuthKeyURL is the page where users register for an API key. Used by
 	// downstream emitters (MCPB manifest user_config descriptions, doctor
 	// hints) to point users at the right credential source.
@@ -304,6 +311,7 @@ func orderedCLIManifestKeys(raw map[string]json.RawMessage) []string {
 		"auth_env_vars",
 		"auth_env_var_specs",
 		"endpoint_template_vars",
+		"endpoint_template_env_overrides",
 		"auth_key_url",
 		"auth_title",
 		"auth_description",
@@ -406,7 +414,9 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	if !spec.AllAuthEnvVarSpecsInferred(envVarSpecs) {
 		m.AuthEnvVarSpecs = envVarSpecs
 	}
+	m.AuthAdditionalHeaders = parsed.Auth.AdditionalHeaders
 	m.EndpointTemplateVars = parsed.EndpointTemplateVars
+	m.EndpointTemplateEnvOverrides = parsed.EndpointTemplateEnvOverrides
 	m.AuthKeyURL = parsed.Auth.KeyURL
 	m.AuthTitle = parsed.Auth.Title
 	m.AuthDescription = parsed.Auth.Description

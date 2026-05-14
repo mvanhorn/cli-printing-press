@@ -68,6 +68,11 @@ type Config struct {
 {{- end}}
 {{- end}}
 {{- end}}
+{{- range .Auth.AdditionalHeaders}}
+{{- if not (envVarIsBuiltinField .EnvVar.Name)}}
+	{{envVarField .EnvVar.Name}} string `{{configTag $.Config.Format}}:"{{envVarPlaceholder .EnvVar.Name}}"`
+{{- end}}
+{{- end}}
 {{- if .EndpointTemplateVars}}
 	// TemplateVars holds the runtime values for {placeholder} markers in
 	// BaseURL and the request path (e.g. Shopify's {shop}/{version}). Populated
@@ -135,6 +140,14 @@ func Load(configPath string) (*Config, error) {
 	}
 {{- end}}
 {{- end}}
+{{- range .Auth.AdditionalHeaders}}
+	// Sibling-scheme per-call credential sent on every request alongside the
+	// primary auth. AuthSource intentionally not stamped: the primary auth
+	// remains the canonical surface for doctor/auth-status reporting.
+	if v := os.Getenv("{{.EnvVar.Name}}"); v != "" {
+		cfg.{{resolveEnvVarField .EnvVar.Name}} = v
+	}
+{{- end}}
 
 	// Label config-file-derived credentials so doctor can distinguish
 	// "credentials persisted on disk" from "no credentials at all" — without
@@ -199,7 +212,7 @@ func Load(configPath string) (*Config, error) {
 	}
 	verifyMode := os.Getenv("PRINTING_PRESS_VERIFY") == "1"
 {{- range .EndpointTemplateVars}}
-	if v := os.Getenv("{{envName $.Name}}_{{upper .}}"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("{{endpointTemplateEnvName .}}")); v != "" {
 		cfg.TemplateVars["{{.}}"] = v
 	} else if verifyMode {
 		cfg.TemplateVars["{{.}}"] = "{{.}}_placeholder"

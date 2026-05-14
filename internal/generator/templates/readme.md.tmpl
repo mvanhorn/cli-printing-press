@@ -113,7 +113,7 @@ Set the endpoint variables for the tenant, workspace, or API version you want th
 
 ```bash
 {{- range .EndpointTemplateVars}}
-export {{envName $.Name}}_{{upper .}}="{{if eq . "shop"}}<your-store>.myshopify.com{{else if eq . "api_version"}}{{$.Version}}{{else}}<{{.}}>{{end}}"
+export {{endpointTemplateEnvName .}}="{{if eq . "shop"}}<your-store>.myshopify.com{{else if eq . "api_version"}}{{$.Version}}{{else}}<{{.}}>{{end}}"
 {{- end}}
 ```
 {{- end}}
@@ -333,7 +333,7 @@ This CLI resolves endpoint placeholders at runtime, so one installed binary can 
 
 Endpoint environment variables:
 {{- range .EndpointTemplateVars}}
-- `{{envName $.Name}}_{{upper .}}` resolves `{ {{- . -}} }`
+- `{{endpointTemplateEnvName .}}` resolves `{ {{- . -}} }`
 {{- end}}
 
 Base URL: `{{.BaseURL}}`
