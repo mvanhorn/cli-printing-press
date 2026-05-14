@@ -322,8 +322,20 @@ type EndpointCluster struct {
 	// Cookie, X-API-Key, etc.). Observation-only — values are never recorded.
 	// Mirrors spec.Endpoint.ObservedAuth so downstream gates can read
 	// per-endpoint auth signal directly from the traffic-analysis sidecar.
-	ObservedAuth []string      `json:"observed_auth,omitempty"`
-	Evidence     []EvidenceRef `json:"evidence,omitempty"`
+	ObservedAuth []string `json:"observed_auth,omitempty"`
+	// NormalizationFlags surfaces per-cluster shape anomalies that downstream
+	// confidence consumers (absorb gate, dogfood, novel-feature ranking) care
+	// about. Possible values: single-sample, single-status, mixed-content-types,
+	// request-body-only-on-some-samples, divergent-response-shape. Empty
+	// slice is omitted via omitempty.
+	NormalizationFlags []string `json:"normalization_flags,omitempty"`
+	// Confidence is a coarse bucket derived from Count, Statuses, and
+	// NormalizationFlags: "low" when Count<3 or any flag is set, "medium"
+	// for 3-9 samples with no flags, "high" for 10+ samples with multiple
+	// status codes and no flags. The bucket is intentionally coarse so
+	// future numeric-confidence refinements stay backward-compatible.
+	Confidence string        `json:"confidence,omitempty"`
+	Evidence   []EvidenceRef `json:"evidence,omitempty"`
 }
 
 type ShapeSummary struct {
@@ -1112,6 +1124,8 @@ func buildEndpointClusters(groups []EndpointGroup, entries []EnrichedEntry) []En
 		cluster.RequestShape = summarizeRequestShape(group.Entries, requestBodies)
 		cluster.ResponseShape = summarizeResponseShape(responseBodies)
 		cluster.ObservedAuth = observedAuthHeaders(group.Entries)
+		cluster.NormalizationFlags = computeNormalizationFlags(group.Method, cluster.Count, cluster.Statuses, cluster.ContentTypes, len(requestBodies))
+		cluster.Confidence = bucketConfidence(cluster.Count, cluster.Statuses, cluster.NormalizationFlags)
 		clusters = append(clusters, cluster)
 	}
 	sort.Slice(clusters, func(i, j int) bool {
@@ -1124,6 +1138,74 @@ func buildEndpointClusters(groups []EndpointGroup, entries []EnrichedEntry) []En
 		return clusters[i].Host < clusters[j].Host
 	})
 	return clusters
+}
+
+// computeNormalizationFlags returns the set of shape-anomaly flags for an
+// endpoint cluster. Flags surface signals downstream confidence consumers
+// care about — small samples, single-status responses, content-type drift,
+// inconsistent request-body presence on write methods. Order is stable so
+// the resulting JSON is golden-friendly.
+//
+// The divergent-response-shape flag from the plan is reserved here for a
+// future signal: it would fire when pre-normalization paths collapsed but
+// responses diverged structurally. Today's classifier already keys clusters
+// by host + method + normalizedPath so that collapse cannot happen, hence
+// the flag is never populated. Kept in the documented set so writers and
+// readers across PP and external review tooling share a single vocabulary.
+func computeNormalizationFlags(method string, sampleCount int, statuses []int, contentTypes []string, requestBodyCount int) []string {
+	flags := make([]string, 0, 4)
+	if sampleCount <= 1 {
+		flags = append(flags, "single-sample")
+	}
+	if len(statuses) == 1 {
+		flags = append(flags, "single-status")
+	}
+	if hasMixedContentTypes(contentTypes) {
+		flags = append(flags, "mixed-content-types")
+	}
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case "POST", "PUT", "PATCH":
+		if requestBodyCount > 0 && requestBodyCount < sampleCount {
+			flags = append(flags, "request-body-only-on-some-samples")
+		}
+	}
+	if len(flags) == 0 {
+		return nil
+	}
+	return flags
+}
+
+// hasMixedContentTypes returns true when the cluster's content types span
+// more than one media type after stripping parameters. "application/json"
+// and "application/json; charset=utf-8" count as the same media type, since
+// the only difference is encoding metadata.
+func hasMixedContentTypes(contentTypes []string) bool {
+	seen := map[string]bool{}
+	for _, ct := range contentTypes {
+		head := strings.SplitN(ct, ";", 2)[0]
+		normalized := strings.ToLower(strings.TrimSpace(head))
+		if normalized == "" {
+			continue
+		}
+		seen[normalized] = true
+		if len(seen) > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// bucketConfidence maps Count + Statuses + flags onto a coarse low/medium/high
+// label. Coarse on purpose — future numeric refinements should not require
+// downstream consumers to learn new label values.
+func bucketConfidence(sampleCount int, statuses []int, flags []string) string {
+	if sampleCount < 3 || len(flags) > 0 {
+		return "low"
+	}
+	if sampleCount >= 10 && len(statuses) >= 2 {
+		return "high"
+	}
+	return "medium"
 }
 
 func originalEntryIndexes(entries []EnrichedEntry) map[string][]int {
