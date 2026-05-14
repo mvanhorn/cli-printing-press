@@ -137,6 +137,7 @@ func TestDoctorEmitsHardcodedUserAgentForBearerAuthSpecs(t *testing.T) {
 	apiSpec.Auth = spec.AuthConfig{
 		Type:       "bearer_token",
 		Header:     "Authorization",
+		In:         "header",
 		VerifyPath: "/me",
 		EnvVars:    []string{"BEARER_AUTH_FIXTURE_TOKEN"},
 	}
