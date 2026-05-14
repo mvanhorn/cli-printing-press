@@ -362,7 +362,7 @@ func mcpbUserConfigAuthEnvVars(m CLIManifest) []spec.AuthEnvVar {
 			envVarSpecs[i].Required = required
 		}
 	}
-	if len(envVarSpecs) == 0 {
+	if len(envVarSpecs) == 0 && len(m.AuthAdditionalHeaders) == 0 {
 		return nil
 	}
 	filtered := make([]spec.AuthEnvVar, 0, len(envVarSpecs)+len(m.AuthAdditionalHeaders))

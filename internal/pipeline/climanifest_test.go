@@ -958,6 +958,44 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.True(t, uc.Sensitive)
 	})
 
+	t.Run("sibling header credential surfaces even when primary env vars are absent", func(t *testing.T) {
+		// Defensive: a manifest carrying AuthAdditionalHeaders but no primary
+		// env vars (no AuthEnvVarSpecs, no AuthEnvVars) must still emit the
+		// sibling credential into user_config and the env block. The generator
+		// does not produce this combination today, but hand-crafted manifests
+		// and future auth shapes (e.g. OAuth where the primary credential is
+		// minted via a non-env code path) would otherwise silently 401.
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:   "siblings-only",
+			MCPBinary: "siblings-only-pp-mcp",
+			MCPReady:  "full",
+			AuthType:  "bearer_token",
+			AuthAdditionalHeaders: []spec.AdditionalAuthHeader{
+				{
+					Header: "X-Sibling-Key",
+					In:     "header",
+					Scheme: "apiKeyHeader",
+					EnvVar: spec.AuthEnvVar{
+						Name:      "SIBLINGS_ONLY_KEY",
+						Kind:      spec.AuthEnvVarKindPerCall,
+						Required:  true,
+						Sensitive: true,
+					},
+				},
+			},
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		assert.Equal(t, "${user_config.siblings_only_key}", got.Server.MCPConfig.Env["SIBLINGS_ONLY_KEY"])
+		uc, ok := got.UserConfig["siblings_only_key"]
+		require.True(t, ok, "sibling credential must surface in user_config")
+		assert.True(t, uc.Required)
+		assert.True(t, uc.Sensitive)
+	})
+
 	t.Run("auth metadata overrides user_config title and description", func(t *testing.T) {
 		dir := t.TempDir()
 		writeManifest(t, dir, CLIManifest{
