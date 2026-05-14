@@ -132,13 +132,13 @@ profile by name when the installed backend supports it.`,
 				return authErr(fmt.Errorf("no cookie tool found"))
 			}
 
-			if profileFlag != "" && !cookieToolSupportsProfiles(tool) {
-				return authErr(fmt.Errorf("%s does not support --profile; install pycookiecheat or cookie-scoop-cli", tool))
+			if profileFlag != "" && !cookieToolSupportsProfiles(tool.name) {
+				return authErr(fmt.Errorf("%s does not support --profile; install pycookiecheat or cookie-scoop-cli", tool.name))
 			}
 
 			// Step 2: Resolve which Chrome profile to use when the backend can honor it
 			profileDir := ""
-			if cookieToolSupportsProfiles(tool) {
+			if cookieToolSupportsProfiles(tool.name) {
 				profileDir, err = resolveChromeProfile(w, cmd.InOrStdin(), domain, profileFlag)
 				if err != nil {
 					loginURL := "https://" + strings.TrimPrefix(domain, ".")
@@ -1163,47 +1163,57 @@ func resolvePythonBinary() (string, []string, bool) {
 	return "", nil, false
 }
 
+// cookieTool bundles the detected tool name with any auxiliary invocation
+// data the extraction call needs. For pycookiecheat we carry the Python
+// binary and its leading args so detection and extraction cannot disagree
+// if PATH mutates between calls.
+type cookieTool struct {
+	name   string
+	pyBin  string
+	pyArgs []string
+}
+
 // detectCookieTool checks for available cookie extraction tools in preference order.
 // pycookiecheat is skipped on Windows because upstream raises
 // `OSError("This script only works on MacOS or Linux.")` regardless of whether
 // the import probe succeeds.
-func detectCookieTool() (string, error) {
+func detectCookieTool() (cookieTool, error) {
 	if runtime.GOOS != "windows" {
 		if bin, args, ok := resolvePythonBinary(); ok {
 			probeArgs := append(append([]string{}, args...), "-c", "import pycookiecheat")
 			if err := exec.Command(bin, probeArgs...).Run(); err == nil {
-				return "pycookiecheat", nil
+				return cookieTool{name: "pycookiecheat", pyBin: bin, pyArgs: args}, nil
 			}
 		}
 	}
 	if err := exec.Command("cookies", "--help").Run(); err == nil {
-		return "cookies", nil
+		return cookieTool{name: "cookies"}, nil
 	}
 	if err := exec.Command("cookie-scoop", "--help").Run(); err == nil {
-		return "cookie-scoop", nil
+		return cookieTool{name: "cookie-scoop"}, nil
 	}
 	if runtime.GOOS == "windows" {
-		return "", fmt.Errorf("no cookie extraction tool found; pycookiecheat does not support Windows. Use `auth login --browser` (live Chrome via CDP) or install cookie-scoop-cli")
+		return cookieTool{}, fmt.Errorf("no cookie extraction tool found; pycookiecheat does not support Windows. Use `auth login --browser` (live Chrome via CDP) or install cookie-scoop-cli")
 	}
-	return "", fmt.Errorf("no cookie extraction tool found; install one: pip install pycookiecheat")
+	return cookieTool{}, fmt.Errorf("no cookie extraction tool found; install one: pip install pycookiecheat")
 }
 
 // extractCookies shells out to the detected tool and returns a Cookie header value string.
 // profileDir selects which Chrome profile to read from (e.g. "Default", "Profile 1").
-func extractCookies(tool, domain, profileDir string) (string, error) {
-	switch tool {
+func extractCookies(tool cookieTool, domain, profileDir string) (string, error) {
+	switch tool.name {
 	case "pycookiecheat":
-		return extractViaPycookiecheat(domain, profileDir)
+		return extractViaPycookiecheat(tool, domain, profileDir)
 	case "cookies":
 		return extractViaCookiesCLI(domain)
 	case "cookie-scoop":
 		return extractViaCookieScoop(domain, profileDir)
 	default:
-		return "", fmt.Errorf("unknown cookie tool: %s", tool)
+		return "", fmt.Errorf("unknown cookie tool: %s", tool.name)
 	}
 }
 
-func extractViaPycookiecheat(domain, profileDir string) (string, error) {
+func extractViaPycookiecheat(tool cookieTool, domain, profileDir string) (string, error) {
 	cleanDomain := strings.TrimPrefix(domain, ".")
 	cookiePath := ""
 	if profileDir != "" && profileDir != "Default" {
@@ -1228,12 +1238,8 @@ func extractViaPycookiecheat(domain, profileDir string) (string, error) {
 		)
 	}
 
-	bin, args, ok := resolvePythonBinary()
-	if !ok {
-		return "", fmt.Errorf("python interpreter not found on PATH (tried python3, python, py)")
-	}
 	var out bytes.Buffer
-	cmd := exec.Command(bin, append(append([]string{}, args...), "-c", script)...)
+	cmd := exec.Command(tool.pyBin, append(append([]string{}, tool.pyArgs...), "-c", script)...)
 	cmd.Stdout = &out
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

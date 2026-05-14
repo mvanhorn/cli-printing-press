@@ -6367,19 +6367,24 @@ func TestGenerate_CookieAuthWindowsCompatibility(t *testing.T) {
 	content := string(auth)
 
 	// Python resolver tries all three common binary names rather than only `python3`.
+	// Match the struct-literal needles so `"python"` isn't vacuously satisfied as
+	// a substring of `"python3"`.
 	assert.Contains(t, content, "resolvePythonBinary")
-	assert.Contains(t, content, `"python3"`)
-	assert.Contains(t, content, `"python"`)
-	assert.Contains(t, content, `"py"`)
-	assert.Contains(t, content, `"-3"`)
+	assert.Contains(t, content, `{"python3", nil}`)
+	assert.Contains(t, content, `{"python", nil}`)
+	assert.Contains(t, content, `{"py", []string{"-3"}}`)
 
 	// pycookiecheat is skipped on Windows because it raises OSError there.
 	assert.Contains(t, content, `runtime.GOOS != "windows"`)
 	assert.Contains(t, content, "pycookiecheat does not support Windows")
 
-	// Extraction must use the resolved binary, not a hardcoded `python3`.
+	// The resolved (bin, args) pair is carried on cookieTool so detection and
+	// extraction cannot disagree about which interpreter to invoke.
+	assert.Contains(t, content, "type cookieTool struct")
+	assert.Contains(t, content, "pyBin")
+	assert.Contains(t, content, "pyArgs")
 	assert.NotContains(t, content, `exec.Command("python3", "-c", script)`)
-	assert.Contains(t, content, `exec.Command(bin,`)
+	assert.Contains(t, content, `exec.Command(tool.pyBin,`)
 
 	// Windows users get a workable next step instead of the Unix install hint.
 	assert.Contains(t, content, "auth login --browser")
