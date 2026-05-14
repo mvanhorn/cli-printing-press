@@ -3785,7 +3785,36 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, `"action":`)
 	assert.Contains(t, content, `"resource":`)
 	assert.Contains(t, content, `"status":   statusCode`)
-	assert.Contains(t, content, `"success":  statusCode >= 200 && statusCode < 300`)
+	// Mutate envelope's success now depends on both HTTP status and absence
+	// of a body-level partial-failure (e.g. Google Ads partialFailureError).
+	assert.Contains(t, content, `"success":  statusCode >= 200 && statusCode < 300 && partialFailure == nil`)
+	// Detection runs before any output-mode branch so the exit code is
+	// consistent across table, JSON envelope, and raw output paths.
+	assert.Contains(t, content, `detectPartialFailure(data)`)
+	// --allow-partial-failure downgrades the typed exit (code 6) to a warning.
+	assert.Contains(t, content, `flags.allowPartialFailure`)
+	assert.Contains(t, content, `partialFailureErr(`)
+
+	// The generated helpers.go must carry the detection helper, the
+	// typed-exit constructor, and the structured report shape. These are
+	// what makes the partial-failure path machine-readable; if any goes
+	// missing on regen the silent-swallow regression returns.
+	helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	helpersContent := string(helpersGo)
+	assert.Contains(t, helpersContent, `func detectPartialFailure(`)
+	assert.Contains(t, helpersContent, `func partialFailureErr(`)
+	assert.Contains(t, helpersContent, `type partialFailureReport struct`)
+	assert.Contains(t, helpersContent, `&cliError{code: 6, err: err}`)
+
+	// Root.go must expose the --allow-partial-failure persistent flag and
+	// the matching rootFlags field.
+	rootGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	rootContent := string(rootGo)
+	assert.Contains(t, rootContent, `allow-partial-failure`)
+	assert.Contains(t, rootContent, `allowPartialFailure bool`)
+
 	// Envelope fires on --json and on piped output, but explicit format flags
 	// (--csv, --quiet, --plain) opt out of the auto-JSON path so piped agents
 	// that asked for a non-JSON format actually get it.
@@ -3808,6 +3837,120 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, `envelope["dry_run"] = true`)
 	assert.Contains(t, content, `envelope["status"] = 0`)
 	assert.Contains(t, content, `envelope["success"] = false`)
+}
+
+// TestGeneratedOutput_PartialFailureDetectionRuntime drops a runtime
+// test into the generated CLI module and executes go test against the
+// emitted detectPartialFailure helper. This is the load-bearing
+// safeguard: the per-string assertions above prove the strings are
+// emitted, but only running the generated code proves the detector
+// actually identifies a Google-Ads-style partialFailureError body,
+// extracts results[].resourceName, and returns nil on a clean 2xx.
+//
+// The fixture mirrors the shape the Google Ads API returns for a
+// `campaigns:mutate` call where partial_failure=true and at least one
+// operation failed.
+func TestGeneratedOutput_PartialFailureDetectionRuntime(t *testing.T) {
+	t.Parallel()
+
+	outputDir := generatePetstore(t)
+
+	// Place the runtime test alongside helpers.go in the generated
+	// internal/cli package so it can call the unexported detector.
+	runtimeTest := `package cli
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestDetectPartialFailure_GoogleAdsBatchShape(t *testing.T) {
+	body := []byte(` + "`" + `{
+		"results": [
+			{"resourceName": "customers/123/campaigns/1"},
+			{"resourceName": "customers/123/campaigns/2"}
+		],
+		"partialFailureError": {
+			"code": 3,
+			"message": "Some operations failed",
+			"details": [
+				{"errors": [{"errorCode": {"campaignError": "DUPLICATE_NAME"}}]}
+			]
+		}
+	}` + "`" + `)
+	got := detectPartialFailure(body)
+	if got == nil {
+		t.Fatalf("expected partialFailureReport, got nil")
+	}
+	if got.Field != "partialFailureError" {
+		t.Errorf("Field = %q, want %q", got.Field, "partialFailureError")
+	}
+	if got.Code != 3 {
+		t.Errorf("Code = %d, want 3", got.Code)
+	}
+	if got.Message != "Some operations failed" {
+		t.Errorf("Message = %q, want %q", got.Message, "Some operations failed")
+	}
+	if len(got.ResourceNames) != 2 {
+		t.Fatalf("ResourceNames length = %d, want 2", len(got.ResourceNames))
+	}
+	if got.ResourceNames[0] != "customers/123/campaigns/1" {
+		t.Errorf("ResourceNames[0] = %q", got.ResourceNames[0])
+	}
+	// Report must round-trip to the envelope shape. Marshalling here
+	// asserts the json tags match what mutate-envelope consumers expect.
+	out, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("json.Marshal(report): %v", err)
+	}
+	var roundTrip map[string]any
+	if err := json.Unmarshal(out, &roundTrip); err != nil {
+		t.Fatalf("json.Unmarshal(report): %v", err)
+	}
+	if roundTrip["field"] != "partialFailureError" {
+		t.Errorf("round-trip field = %v", roundTrip["field"])
+	}
+	if rn, _ := roundTrip["resource_names"].([]any); len(rn) != 2 {
+		t.Errorf("round-trip resource_names = %v", roundTrip["resource_names"])
+	}
+}
+
+func TestDetectPartialFailure_CleanResponseReturnsNil(t *testing.T) {
+	body := []byte(` + "`" + `{"results": [{"resourceName": "customers/123/campaigns/1"}]}` + "`" + `)
+	if got := detectPartialFailure(body); got != nil {
+		t.Errorf("expected nil for clean response, got %+v", got)
+	}
+}
+
+func TestDetectPartialFailure_EmptyErrorObjectIgnored(t *testing.T) {
+	// Some servers return an empty partialFailureError{} when
+	// partial_failure mode was not enabled. Empty code + empty message
+	// must not flag a partial failure or callers exit non-zero on
+	// every batch.
+	body := []byte(` + "`" + `{"results": [], "partialFailureError": {}}` + "`" + `)
+	if got := detectPartialFailure(body); got != nil {
+		t.Errorf("expected nil for empty partialFailureError, got %+v", got)
+	}
+}
+
+func TestDetectPartialFailure_PartialFailureErrTypedExitCode(t *testing.T) {
+	// partialFailureErr must wrap with the typed exit code (6) so the
+	// CLI's ExitCode() emits a distinguishable code; HTTP failures use
+	// apiErr (5), so 6 stays reserved for partial-failure semantics.
+	err := partialFailureErr(&jsonSyntaxStub{msg: "x"})
+	if got := ExitCode(err); got != 6 {
+		t.Errorf("ExitCode = %d, want 6", got)
+	}
+}
+
+type jsonSyntaxStub struct{ msg string }
+
+func (e *jsonSyntaxStub) Error() string { return e.msg }
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "partialfailure_runtime_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(runtimeTest), 0o644))
+
+	runGoCommand(t, outputDir, "test", "-run", "TestDetectPartialFailure", "./internal/cli")
 }
 
 // TestCompactListFieldsPreservesUnknownShapes pins the contracts that keep

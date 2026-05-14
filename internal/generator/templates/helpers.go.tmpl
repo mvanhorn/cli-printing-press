@@ -118,6 +118,81 @@ func apiErr(err error) error      { return &cliError{code: 5, err: err} }
 func configErr(err error) error   { return &cliError{code: 10, err: err} }
 func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
 
+// partialFailureErr signals that the upstream API returned a 2xx with a
+// body shape indicating some operations in a batch failed (e.g. Google
+// Ads `partialFailureError`, similar shapes from Drive batch, Sheets
+// batchUpdate, Cloud Resource Manager). Distinct from apiErr (HTTP-level
+// failure) so callers can distinguish "request rejected" from "request
+// accepted but some ops failed".
+func partialFailureErr(err error) error { return &cliError{code: 6, err: err} }
+
+// partialFailureReport describes the structured detection result for a
+// mutate-style response body. Emitted in the envelope under
+// "partial_failure" so machine-readable callers can route per-operation
+// remediation.
+type partialFailureReport struct {
+	Field         string   `json:"field"`
+	Message       string   `json:"message,omitempty"`
+	Code          int      `json:"code,omitempty"`
+	Details       any      `json:"details,omitempty"`
+	ResourceNames []string `json:"resource_names,omitempty"`
+}
+
+// detectPartialFailure inspects a mutate-style JSON response for a
+// partial-failure-shaped field. Returns nil when no partial failure is
+// detected. The detector is intentionally generic across APIs that emit
+// 2xx-with-batch-errors. New partial-failure-shaped fields are added to
+// partialFailureFields, not at call sites. When `results[]` is present
+// (Google Ads convention) it extracts per-op `resourceName` so callers
+// can see which operations did succeed.
+func detectPartialFailure(data []byte) *partialFailureReport {
+	if len(data) == 0 {
+		return nil
+	}
+	var top map[string]any
+	if err := json.Unmarshal(data, &top); err != nil {
+		return nil
+	}
+	partialFailureFields := []string{"partialFailureError"}
+	for _, field := range partialFailureFields {
+		raw, ok := top[field]
+		if !ok || raw == nil {
+			continue
+		}
+		obj, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		message, _ := obj["message"].(string)
+		var code int
+		if n, ok := obj["code"].(float64); ok {
+			code = int(n)
+		}
+		// Empty object means partial-failure mode was off or no ops
+		// failed; do not flag.
+		if code == 0 && strings.TrimSpace(message) == "" {
+			continue
+		}
+		report := &partialFailureReport{
+			Field:   field,
+			Message: message,
+			Code:    code,
+			Details: obj["details"],
+		}
+		if results, ok := top["results"].([]any); ok {
+			for _, r := range results {
+				if rm, ok := r.(map[string]any); ok {
+					if name, ok := rm["resourceName"].(string); ok && name != "" {
+						report.ResourceNames = append(report.ResourceNames, name)
+					}
+				}
+			}
+		}
+		return report
+	}
+	return nil
+}
+
 // dryRunOK reports whether the command should short-circuit without doing any
 // real work because --dry-run was set. The verify pipeline probes hand-written
 // commands with --dry-run; commands that put validation in cobra's `Args:` or
