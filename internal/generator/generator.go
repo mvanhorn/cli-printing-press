@@ -960,8 +960,11 @@ func basicAuthEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
 			})
 		}
 	}
-	if len(envVars) < 2 {
+	if len(envVars) == 0 {
 		return nil
+	}
+	if len(envVars) == 1 {
+		return envVars
 	}
 	return envVars[:2]
 }
