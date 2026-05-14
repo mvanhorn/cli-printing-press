@@ -370,6 +370,209 @@ func TestDetectAuth_FallsBackToHeaderInference(t *testing.T) {
 	assert.Equal(t, "Authorization", auth.Header)
 }
 
+func TestObservedAuthHeaders(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		entries []EnrichedEntry
+		want    []string
+	}{
+		{
+			name: "single authorization header",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{"Authorization": "Bearer eyJabc"}},
+			},
+			want: []string{"authorization"},
+		},
+		{
+			name: "multiple distinct auth headers in one sample",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{
+					"Authorization": "Bearer t",
+					"X-CSRF-Token":  "abc",
+					"Cookie":        "session=x",
+				}},
+			},
+			want: []string{"authorization", "cookie", "x-csrf-token"},
+		},
+		{
+			name: "mixed across samples - union, presence not requirement",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{"Authorization": "Bearer t"}},
+				{RequestHeaders: map[string]string{"Accept": "application/json"}},
+			},
+			want: []string{"authorization"},
+		},
+		{
+			name: "no auth headers - nil result for omitempty",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{"Accept": "application/json", "User-Agent": "x"}},
+			},
+			want: nil,
+		},
+		{
+			name: "case-insensitive merge",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{"Authorization": "x"}},
+				{RequestHeaders: map[string]string{"AUTHORIZATION": "y"}},
+				{RequestHeaders: map[string]string{"authorization": "z"}},
+			},
+			want: []string{"authorization"},
+		},
+		{
+			name: "values never leak - only names emitted",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{"Authorization": "Bearer eyJ.SECRET.token"}},
+			},
+			want: []string{"authorization"},
+		},
+		{
+			name: "api-key and api_key variants",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{"X-Api-Key": "k1"}},
+				{RequestHeaders: map[string]string{"x_api_key": "k2"}},
+			},
+			want: []string{"x-api-key", "x_api_key"},
+		},
+		{
+			name: "contains-token contains-secret contains-signature patterns",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{
+					"X-Auth-Token":    "t",
+					"X-Hub-Secret":    "s",
+					"X-Sig-Signature": "g",
+				}},
+			},
+			want: []string{"x-auth-token", "x-hub-secret", "x-sig-signature"},
+		},
+		{
+			name:    "empty entries",
+			entries: []EnrichedEntry{},
+			want:    nil,
+		},
+		{
+			name: "non-auth headers ignored",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{
+					"Accept":     "application/json",
+					"User-Agent": "ua/1.0",
+					"Referer":    "https://example.com",
+				}},
+			},
+			want: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := observedAuthHeaders(tc.entries)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestAnalyzeCapture_PopulatesObservedAuthOnSpecEndpoint(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders: map[string]string{
+					"Authorization": "Bearer eyJtoken",
+					"Accept":        "application/json",
+				},
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":2}`,
+				RequestHeaders: map[string]string{
+					"Accept": "application/json",
+				},
+			},
+		},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+
+	var found bool
+	for _, resource := range apiSpec.Resources {
+		for _, endpoint := range resource.Endpoints {
+			if endpoint.Method == "GET" && endpoint.Path == "/v1/items" {
+				assert.Equal(t, []string{"authorization"}, endpoint.ObservedAuth)
+				found = true
+			}
+		}
+	}
+	assert.True(t, found, "expected GET /v1/items endpoint")
+}
+
+func TestAnalyzeCapture_OmitsObservedAuthWhenAbsent(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/public",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"ok":true}`,
+				RequestHeaders:      map[string]string{"Accept": "application/json"},
+			},
+		},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+
+	for _, resource := range apiSpec.Resources {
+		for _, endpoint := range resource.Endpoints {
+			assert.Nil(t, endpoint.ObservedAuth, "endpoint %s %s should have nil ObservedAuth", endpoint.Method, endpoint.Path)
+		}
+	}
+}
+
+func TestAnalyzeCapture_PopulatesObservedAuthOnGraphQLEndpoint(t *testing.T) {
+	t.Parallel()
+
+	postsEntry := graphqlBFFEntry("PostsToday", `{"date":"2026-04-22"}`, "aaa111")
+	postsEntry.RequestHeaders["Authorization"] = "Bearer eyJtoken"
+	launchesEntry := graphqlBFFEntry("ProductPageLaunches", `{"slug":"sample-product"}`, "bbb222")
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.example.com",
+		Entries:   []EnrichedEntry{postsEntry, launchesEntry, postsEntry},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+
+	posts, ok := apiSpec.Resources["posts"]
+	require.True(t, ok, "expected posts resource from PostsToday operation")
+	postsToday, ok := posts.Endpoints["today"]
+	require.True(t, ok, "expected today endpoint from PostsToday operation")
+	assert.Equal(t, []string{"authorization"}, postsToday.ObservedAuth)
+
+	products, ok := apiSpec.Resources["products"]
+	require.True(t, ok, "expected products resource from ProductPageLaunches operation")
+	launches, ok := products.Endpoints["launches"]
+	require.True(t, ok, "expected launches endpoint")
+	assert.Nil(t, launches.ObservedAuth, "launches operation had no auth headers")
+}
+
 func TestWriteEnrichedCaptureUsesPrivatePermissions(t *testing.T) {
 	t.Parallel()
 

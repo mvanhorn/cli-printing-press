@@ -1128,7 +1128,15 @@ type Endpoint struct {
 	Meta                      map[string]string          `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
 	HeaderOverrides           []RequiredHeader           `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
 	NoAuth                    bool                       `yaml:"no_auth,omitempty" json:"no_auth,omitempty"`                   // true when the endpoint does not require authentication
-	Tier                      string                     `yaml:"tier,omitempty" json:"tier,omitempty"`
+	// ObservedAuth lists the lowercased request header names observed on this
+	// endpoint during browser-sniff capture that match common auth surfaces
+	// (Authorization, Cookie, X-API-Key, etc.). Observation-only — header
+	// values are never recorded. Populated only by sniffed specs; vendor specs
+	// and crowd-sniff leave it empty. Consumers (Phase 2 tier routing, MCP
+	// surface routing) may use it as per-endpoint auth evidence rather than
+	// inferring from spec-level signals.
+	ObservedAuth []string `yaml:"observed_auth,omitempty" json:"observed_auth,omitempty"`
+	Tier         string   `yaml:"tier,omitempty" json:"tier,omitempty"`
 	// IDField is the resolved primary-key field name for items returned by this
 	// endpoint, populated either by a path-item-level `x-resource-id` extension
 	// or, for OpenAPI specs, by walking the response schema (id → name → first

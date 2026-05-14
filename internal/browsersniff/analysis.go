@@ -308,16 +308,22 @@ func (p *ProtectionObservation) UnmarshalJSON(data []byte) error {
 }
 
 type EndpointCluster struct {
-	Host          string        `json:"host,omitempty"`
-	Method        string        `json:"method"`
-	Path          string        `json:"path"`
-	Count         int           `json:"count"`
-	Statuses      []int         `json:"statuses,omitempty"`
-	ContentTypes  []string      `json:"content_types,omitempty"`
-	SizeClass     string        `json:"size_class,omitempty"`
-	RequestShape  ShapeSummary  `json:"request_shape"`
-	ResponseShape ShapeSummary  `json:"response_shape"`
-	Evidence      []EvidenceRef `json:"evidence,omitempty"`
+	Host          string       `json:"host,omitempty"`
+	Method        string       `json:"method"`
+	Path          string       `json:"path"`
+	Count         int          `json:"count"`
+	Statuses      []int        `json:"statuses,omitempty"`
+	ContentTypes  []string     `json:"content_types,omitempty"`
+	SizeClass     string       `json:"size_class,omitempty"`
+	RequestShape  ShapeSummary `json:"request_shape"`
+	ResponseShape ShapeSummary `json:"response_shape"`
+	// ObservedAuth lists lowercased request header names observed on this
+	// cluster's entries that match common auth surfaces (Authorization,
+	// Cookie, X-API-Key, etc.). Observation-only — values are never recorded.
+	// Mirrors spec.Endpoint.ObservedAuth so downstream gates can read
+	// per-endpoint auth signal directly from the traffic-analysis sidecar.
+	ObservedAuth []string      `json:"observed_auth,omitempty"`
+	Evidence     []EvidenceRef `json:"evidence,omitempty"`
 }
 
 type ShapeSummary struct {
@@ -1105,6 +1111,7 @@ func buildEndpointClusters(groups []EndpointGroup, entries []EnrichedEntry) []En
 		cluster.SizeClass = classifyBodySize(totalSize, len(group.Entries))
 		cluster.RequestShape = summarizeRequestShape(group.Entries, requestBodies)
 		cluster.ResponseShape = summarizeResponseShape(responseBodies)
+		cluster.ObservedAuth = observedAuthHeaders(group.Entries)
 		clusters = append(clusters, cluster)
 	}
 	sort.Slice(clusters, func(i, j int) bool {

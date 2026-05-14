@@ -45,6 +45,89 @@ func TestAnalyzeTraffic_EmptyAndNilCapture(t *testing.T) {
 	assert.Contains(t, warningTypes(analysis.Warnings), "empty_capture")
 }
 
+func TestAnalyzeTraffic_PopulatesObservedAuthOnEndpointCluster(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders: map[string]string{
+					"Authorization": "Bearer eyJtoken",
+					"Cookie":        "session=x",
+				},
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/public",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"ok":true}`,
+				RequestHeaders:      map[string]string{"Accept": "application/json"},
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	var authedCluster *EndpointCluster
+	var publicCluster *EndpointCluster
+	for i := range analysis.EndpointClusters {
+		c := &analysis.EndpointClusters[i]
+		switch c.Path {
+		case "/v1/items":
+			authedCluster = c
+		case "/v1/public":
+			publicCluster = c
+		}
+	}
+	require.NotNil(t, authedCluster, "expected /v1/items cluster")
+	require.NotNil(t, publicCluster, "expected /v1/public cluster")
+
+	assert.Equal(t, []string{"authorization", "cookie"}, authedCluster.ObservedAuth)
+	assert.Nil(t, publicCluster.ObservedAuth, "public endpoint should omit observed_auth")
+}
+
+func TestAnalyzeTraffic_ObservedAuthCanonicalizesAcrossSamples(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/me",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders:      map[string]string{"AUTHORIZATION": "Bearer a"},
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/me",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders:      map[string]string{"authorization": "Bearer b", "X-API-Key": "k"},
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, analysis.EndpointClusters)
+	cluster := analysis.EndpointClusters[0]
+	assert.Equal(t, "/v1/me", cluster.Path)
+	assert.Equal(t, []string{"authorization", "x-api-key"}, cluster.ObservedAuth)
+}
+
 func TestAnalyzeTraffic_RedactsAuthSignals(t *testing.T) {
 	t.Parallel()
 

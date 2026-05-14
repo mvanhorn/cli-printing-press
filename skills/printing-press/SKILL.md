@@ -1760,6 +1760,13 @@ Detection signals:
   documented as paid, partner, premium, or quota-gated.
 - Browser/crowd sniffing found public endpoints and SDK/MCP research found a
   separate credential for expanded coverage.
+- Sniffed specs carry per-endpoint `observed_auth` (a list of lowercased request
+  header names observed during capture, e.g. `[authorization]` or `[x-api-key]`).
+  An empty or missing `observed_auth` on an endpoint is evidence that the request
+  went anonymously; a populated list is evidence the endpoint required auth. The
+  same per-endpoint signal is mirrored on `TrafficAnalysis.endpoint_clusters[].observed_auth`
+  in the traffic-analysis sidecar. Treat both as observation-only — not a security
+  scheme declaration — and corroborate with documentation before declaring a tier.
 
 Action:
 - Internal YAML: add `tier_routing` plus `tier` on the affected resource or

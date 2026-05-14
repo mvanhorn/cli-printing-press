@@ -235,9 +235,10 @@ func buildGraphQLOperationEndpoint(op graphQLOperationGroup, resourceName string
 
 	payloadParams := graphqlPayloadParams(op)
 	endpoint := spec.Endpoint{
-		Method:      op.Method,
-		Path:        op.Path,
-		Description: graphQLBFFCommandDescription(resourceName, endpointName),
+		Method:       op.Method,
+		Path:         op.Path,
+		Description:  graphQLBFFCommandDescription(resourceName, endpointName),
+		ObservedAuth: observedAuthHeaders(op.Entries),
 		Response: spec.ResponseDef{
 			Type: inferResponseType(responseBodies),
 			Item: safeGraphQLOperationName(op.OperationName),
@@ -578,11 +579,12 @@ func buildEndpoint(group EndpointGroup) spec.Endpoint {
 	}
 
 	endpoint := spec.Endpoint{
-		Method:      group.Method,
-		Path:        group.NormalizedPath,
-		Description: fmt.Sprintf("%s %s", group.Method, group.NormalizedPath),
-		Params:      params,
-		Body:        body,
+		Method:       group.Method,
+		Path:         group.NormalizedPath,
+		Description:  fmt.Sprintf("%s %s", group.Method, group.NormalizedPath),
+		Params:       params,
+		Body:         body,
+		ObservedAuth: observedAuthHeaders(group.Entries),
 		Response: spec.ResponseDef{
 			Type: responseType,
 			Item: deriveResponseItemName(group.NormalizedPath),
@@ -980,6 +982,45 @@ func detectAuth(capture *EnrichedCapture, entries []EnrichedEntry, name string) 
 	}
 
 	return spec.AuthConfig{Type: "none"}
+}
+
+// observedAuthHeaders returns the sorted set of lowercased request header
+// names observed across entries that match common auth surfaces
+// (Authorization, Cookie, X-CSRF-Token, X-API-Key, etc., plus contains-style
+// matches on token / secret / signature / api-key). Values are never
+// inspected or returned; only the header NAME travels. Returns nil when
+// nothing matched so consumers using `omitempty` can drop the field cleanly.
+func observedAuthHeaders(entries []EnrichedEntry) []string {
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		for name := range entry.RequestHeaders {
+			lower := strings.ToLower(strings.TrimSpace(name))
+			if lower == "" {
+				continue
+			}
+			if isObservedAuthHeaderName(lower) {
+				seen[lower] = true
+			}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	return sortedBoolKeys(seen)
+}
+
+func isObservedAuthHeaderName(lowerName string) bool {
+	switch lowerName {
+	case "authorization", "cookie", "set-cookie", "x-csrf-token", "x-xsrf-token", "x-api-key", "proxy-authorization":
+		return true
+	}
+	if strings.Contains(lowerName, "api-key") || strings.Contains(lowerName, "api_key") {
+		return true
+	}
+	if strings.Contains(lowerName, "token") || strings.Contains(lowerName, "secret") || strings.Contains(lowerName, "signature") {
+		return true
+	}
+	return false
 }
 
 func detectCapturedAuth(capture *AuthCapture, envPrefix string) spec.AuthConfig {
