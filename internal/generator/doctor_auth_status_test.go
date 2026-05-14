@@ -89,3 +89,95 @@ func TestDoctorOAuth2PerCallRequiredEnvVarDefersToConfigAuth(t *testing.T) {
 			}`,
 		"per_call+Required env-var check must route missing-required through the authConfigured else chain, not as an unconditional append")
 }
+
+// TestDoctorPreservesConfiguredUserAgentWhenAuthHeaderIsUserAgent pins the
+// fix for the "User-Agent IS the auth credential" case. When the API spec
+// declares Auth.Header == "User-Agent" + Auth.In == "header" (e.g. the
+// weather.gov userAgent securityScheme), the credential-probe code path
+// must keep the user's configured UA on authHeaders["User-Agent"]; the
+// hardcoded "<name>-pp-cli" fallback must NOT emit, because it would
+// overwrite the operator's identity and make the probe test the wrong UA.
+func TestDoctorPreservesConfiguredUserAgentWhenAuthHeaderIsUserAgent(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("ua-auth-fixture")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:       "api_key",
+		Header:     "User-Agent",
+		In:         "header",
+		VerifyPath: "/alerts/active",
+		EnvVars:    []string{"UA_AUTH_FIXTURE_USER_AGENT"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "ua-auth-fixture-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	doctorSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	doctor := string(doctorSrc)
+
+	// The configured UA must be set on the probe.
+	require.Contains(t, doctor, `authHeaders["User-Agent"] = authHeader`,
+		"doctor probe must assign the configured UA (via authHeader) to authHeaders[\"User-Agent\"]")
+
+	// The hardcoded fallback must NOT clobber the configured UA.
+	require.NotContains(t, doctor, `authHeaders["User-Agent"] = "ua-auth-fixture-pp-cli"`,
+		"doctor must not overwrite authHeaders[\"User-Agent\"] with the hardcoded fallback when Auth.Header itself is User-Agent")
+}
+
+// TestDoctorEmitsHardcodedUserAgentForBearerAuthSpecs guards the converse:
+// when Auth.Header is Authorization (the common bearer case), the
+// hardcoded User-Agent fallback must still emit so the probe identifies
+// itself. This pins that the UA-preservation fix is scoped to the
+// UA-as-auth case and does not regress the default path.
+func TestDoctorEmitsHardcodedUserAgentForBearerAuthSpecs(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("bearer-auth-fixture")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:       "bearer_token",
+		Header:     "Authorization",
+		VerifyPath: "/me",
+		EnvVars:    []string{"BEARER_AUTH_FIXTURE_TOKEN"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "bearer-auth-fixture-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	doctorSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	doctor := string(doctorSrc)
+
+	require.Contains(t, doctor, `authHeaders["User-Agent"] = "bearer-auth-fixture-pp-cli"`,
+		"doctor must continue to emit the hardcoded UA fallback for bearer-auth specs where the API does not use User-Agent itself as the credential")
+}
+
+// TestDoctorPreservesConfiguredUserAgentWhenAuthInIsEmpty pins the
+// default-Auth.In behaviour: when Auth.In is empty, the doctor template
+// treats it as the header-auth path (the query-auth branch is the
+// special case). The UA-preservation gate must trip on this default
+// too — otherwise a spec that omits Auth.In would silently regress.
+func TestDoctorPreservesConfiguredUserAgentWhenAuthInIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("ua-auth-empty-in")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:       "api_key",
+		Header:     "User-Agent",
+		// Auth.In intentionally left empty to exercise the default.
+		VerifyPath: "/alerts/active",
+		EnvVars:    []string{"UA_AUTH_EMPTY_IN_USER_AGENT"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "ua-auth-empty-in-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	doctorSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	doctor := string(doctorSrc)
+
+	require.Contains(t, doctor, `authHeaders["User-Agent"] = authHeader`,
+		"doctor probe must assign the configured UA when Auth.In is empty (defaults to header)")
+	require.NotContains(t, doctor, `authHeaders["User-Agent"] = "ua-auth-empty-in-pp-cli"`,
+		"doctor must not emit the hardcoded UA fallback when Auth.Header is User-Agent, even with Auth.In empty")
+}
