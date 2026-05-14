@@ -664,29 +664,55 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	return auth
 }
 
-// collectAdditionalAuthHeaders scans non-winning apiKey-in-header security
-// schemes for x-auth-vars per_call entries. Composed auth shapes (apiKey +
-// OAuth bearer, Stripe-Signature + bearer, ST-App-Key + bearer) declare the
-// apiKey scheme separately; selectSecurityScheme picks the bearer half, and
-// without this sweep the apiKey half is silently dropped. Only apiKey-typed
-// schemes are considered: http-bearer/http-basic losers do not carry an
-// additive per-call header destination distinct from the primary Authorization
-// header, and considering them would produce a useless duplicate emission.
+// collectAdditionalAuthHeaders scans AND-group siblings of the winning
+// security scheme for x-auth-vars per_call entries. Composed auth shapes
+// (apiKey + OAuth bearer, Stripe-Signature + bearer, ST-App-Key + bearer)
+// declare the apiKey scheme in the same security requirement object as the
+// bearer; selectSecurityScheme picks the bearer half, and without this sweep
+// the apiKey half is silently dropped.
+//
+// AND vs OR matters: OpenAPI security is a list of requirement objects, where
+// each object is an AND-group (all schemes named must be satisfied) and the
+// list itself is OR (any one object suffices). A spec offering BearerAuth and
+// ApiKeyAuth as alternatives (each in its own requirement object) must NOT
+// promote the unused alternative as a sibling — that would emit a spurious
+// header on every Bearer-authenticated request. Only schemes co-located with
+// the winner in a requirement object are promoted.
+//
+// Only apiKey-typed siblings with `in: header` and an `x-auth-vars` per_call
+// declaration are considered. When doc.Security is empty (no root-level AND
+// grouping declared), no siblings are promoted: without an explicit
+// requirement object the AND/OR relationship is ambiguous and conservative
+// behavior is to emit nothing.
 func collectAdditionalAuthHeaders(doc *openapi3.T, winner string) []spec.AdditionalAuthHeader {
 	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) <= 1 {
 		return nil
 	}
-	names := make([]string, 0, len(doc.Components.SecuritySchemes))
-	for name := range doc.Components.SecuritySchemes {
-		if name == winner {
+	if winner == "" || len(doc.Security) == 0 {
+		return nil
+	}
+
+	siblingSet := map[string]struct{}{}
+	var siblings []string
+	for _, req := range doc.Security {
+		if _, ok := req[winner]; !ok {
 			continue
 		}
-		names = append(names, name)
+		for name := range req {
+			if name == winner {
+				continue
+			}
+			if _, dup := siblingSet[name]; dup {
+				continue
+			}
+			siblingSet[name] = struct{}{}
+			siblings = append(siblings, name)
+		}
 	}
-	sort.Strings(names)
+	sort.Strings(siblings)
 
 	var headers []spec.AdditionalAuthHeader
-	for _, name := range names {
+	for _, name := range siblings {
 		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
 		if scheme == nil {
 			continue

@@ -3127,6 +3127,49 @@ paths:
 	assert.Empty(t, parsed.Auth.AdditionalHeaders, "single-scheme path must not duplicate the primary envvar as additional")
 }
 
+// OR-alternative auth: two security requirement objects, each with a single
+// scheme — the API accepts EITHER scheme, not both. Sibling detection must
+// NOT promote the unused alternative as an additional header. The winning
+// scheme runs alone; the alternative is only relevant if the user picks it.
+func TestSiblingApiKeyInDifferentRequirementGroupIsSkipped(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: or-alternatives
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+security:
+  - bearer: []
+  - apiKey: []
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+    apiKey:
+      type: apiKey
+      in: header
+      name: X-Alternative-Key
+      x-auth-vars:
+        - name: EXAMPLE_ALTERNATIVE_KEY
+          kind: per_call
+          required: true
+          sensitive: true
+paths:
+  /items:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+	assert.Empty(t, parsed.Auth.AdditionalHeaders,
+		"OR alternative schemes must not surface as required siblings")
+}
+
 // A sibling apiKey scheme that omits the x-auth-vars extension is silently
 // skipped: collectAdditionalAuthHeaders never invents env-var names. The
 // scheme's per-call credential simply isn't covered, and the primary auth

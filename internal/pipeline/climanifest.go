@@ -414,11 +414,7 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	if !spec.AllAuthEnvVarSpecsInferred(envVarSpecs) {
 		m.AuthEnvVarSpecs = envVarSpecs
 	}
-	if len(parsed.Auth.AdditionalHeaders) > 0 {
-		m.AuthAdditionalHeaders = parsed.Auth.AdditionalHeaders
-	} else {
-		m.AuthAdditionalHeaders = nil
-	}
+	m.AuthAdditionalHeaders = parsed.Auth.AdditionalHeaders
 	m.EndpointTemplateVars = parsed.EndpointTemplateVars
 	m.EndpointTemplateEnvOverrides = parsed.EndpointTemplateEnvOverrides
 	m.AuthKeyURL = parsed.Auth.KeyURL
