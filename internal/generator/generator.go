@@ -1637,6 +1637,9 @@ func (g *Generator) Generate() error {
 				"Set `git config github.user` (your GitHub @handle) to populate this correctly before publishing.\n",
 		)
 	}
+	if g.Spec.HealthCheckPath == "" {
+		g.Spec.HealthCheckPath = deriveHealthCheckPath(g.Spec)
+	}
 	if err := g.prepareOutput(); err != nil {
 		return err
 	}
@@ -3637,6 +3640,42 @@ func anyEndpointMatches(apiSpec *spec.APISpec, predicate func(spec.Endpoint) boo
 		return false
 	}
 	return walk(apiSpec.Resources)
+}
+
+// findEndpointMatch returns the first endpoint for which predicate is true,
+// walking resources and sub-resources depth-first. Resource and endpoint
+// names are iterated in sorted order so callers that bake the returned
+// endpoint's path into generated output stay deterministic across runs.
+func findEndpointMatch(apiSpec *spec.APISpec, predicate func(spec.Endpoint) bool) (spec.Endpoint, bool) {
+	if apiSpec == nil {
+		return spec.Endpoint{}, false
+	}
+	var walk func(resources map[string]spec.Resource) (spec.Endpoint, bool)
+	walk = func(resources map[string]spec.Resource) (spec.Endpoint, bool) {
+		for _, rName := range sortedKeys(resources) {
+			resource := resources[rName]
+			for _, eName := range sortedKeys(resource.Endpoints) {
+				endpoint := resource.Endpoints[eName]
+				if predicate(endpoint) {
+					return endpoint, true
+				}
+			}
+			if e, ok := walk(resource.SubResources); ok {
+				return e, ok
+			}
+		}
+		return spec.Endpoint{}, false
+	}
+	return walk(apiSpec.Resources)
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // formBodyMaps renders per-flag form-field assignments for endpoints that send
