@@ -1,6 +1,8 @@
 package browsersniff
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -1205,4 +1207,212 @@ func deriveNameFromURL(raw string) string {
 	}
 
 	return strings.Join(labels, "-")
+}
+
+// SampleFile is the on-disk shape of one redacted endpoint sample written
+// to <spec-stem>-samples/<method>__<path-slug>__<hash>.json. Designed so a
+// reviewer can read a single file and see exactly what evidence backed the
+// emitted spec entry, with credentials stripped at write time.
+type SampleFile struct {
+	Endpoint              string            `json:"endpoint"`
+	Method                string            `json:"method"`
+	RawURL                string            `json:"raw_url"`
+	Status                int               `json:"status"`
+	RequestHeaders        map[string]string `json:"request_headers,omitempty"`
+	RequestBody           any               `json:"request_body"`
+	ResponseHeaders       map[string]string `json:"response_headers,omitempty"`
+	ResponseBody          any               `json:"response_body"`
+	ResponseBodyKnown     bool              `json:"response_body_known"`
+	ResponseBodyTruncated bool              `json:"response_body_truncated,omitempty"`
+	Redactions            []string          `json:"redactions,omitempty"`
+}
+
+const sampleBodyMaxBytes = 16 * 1024
+
+// DefaultSamplesPath returns the canonical samples directory for a spec at
+// specPath: a sibling directory named <stem>-samples/. Mirrors
+// DefaultTrafficAnalysisPath's naming convention so artifacts cluster.
+func DefaultSamplesPath(specPath string) string {
+	dir := filepath.Dir(specPath)
+	base := filepath.Base(specPath)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	if stem == "" || stem == "." {
+		stem = "spec"
+	}
+	return filepath.Join(dir, stem+"-samples")
+}
+
+// WriteSamples writes one redacted SampleFile per endpoint group to
+// outputDir. outputDir must already exist. Returns the number of files
+// written. Files are named method__path-slug__hash.json so the same
+// endpoint group produces the same filename across reruns.
+//
+// The capture's entries are re-classified and re-deduplicated locally
+// using the same ClassifyEntries + DeduplicateEndpoints path that
+// AnalyzeCapture uses, so the file set is a 1:1 reflection of what the
+// emitted spec would contain.
+func WriteSamples(capture *EnrichedCapture, outputDir string) (int, error) {
+	if capture == nil {
+		return 0, fmt.Errorf("capture is required")
+	}
+	if strings.TrimSpace(outputDir) == "" {
+		return 0, fmt.Errorf("output directory is required")
+	}
+
+	apiEntries, _ := ClassifyEntries(capture.Entries)
+	groups := DeduplicateEndpoints(apiEntries)
+
+	written := 0
+	for _, group := range groups {
+		sample := buildSampleFile(group)
+		filename := sampleFilename(group)
+		data, err := encodeSampleJSON(sample)
+		if err != nil {
+			return written, fmt.Errorf("marshaling sample %s: %w", filename, err)
+		}
+		path := filepath.Join(outputDir, filename)
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			return written, fmt.Errorf("writing sample %s: %w", filename, err)
+		}
+		written++
+	}
+	return written, nil
+}
+
+// encodeSampleJSON marshals a SampleFile with HTML-escaping disabled so the
+// `<redacted>` sentinel and other URL-safe characters travel verbatim
+// instead of becoming `<redacted>`. Reviewers read these files
+// directly; unicode-escaped content fights that.
+func encodeSampleJSON(sample SampleFile) ([]byte, error) {
+	var buf strings.Builder
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(sample); err != nil {
+		return nil, err
+	}
+	return []byte(buf.String()), nil
+}
+
+// sampleFilename returns method__path-slug__hash.json. The hash is the
+// first 8 hex chars of sha256(METHOD + " " + normalizedPath) so the same
+// endpoint group always lands at the same filename across reruns.
+func sampleFilename(group EndpointGroup) string {
+	method := strings.ToLower(strings.TrimSpace(group.Method))
+	if method == "" {
+		method = "get"
+	}
+
+	slug := group.NormalizedPath
+	slug = strings.ReplaceAll(slug, "{", "")
+	slug = strings.ReplaceAll(slug, "}", "")
+	slug = strings.ReplaceAll(slug, "/", "_")
+	slug = strings.TrimLeft(slug, "_")
+	if slug == "" {
+		slug = "root"
+	}
+
+	h := sha256.Sum256([]byte(strings.ToUpper(method) + " " + group.NormalizedPath))
+	return fmt.Sprintf("%s__%s__%s.json", method, slug, hex.EncodeToString(h[:4]))
+}
+
+// buildSampleFile selects a representative entry from the group, redacts
+// it, and assembles the on-disk SampleFile struct. Redaction paths are
+// path-prefixed so a reviewer can locate exactly what was stripped.
+func buildSampleFile(group EndpointGroup) SampleFile {
+	entry := selectSampleEntry(group.Entries)
+
+	redactedReqHeaders, reqHeaderRedactions := RedactHeaders(entry.RequestHeaders)
+	redactedRespHeaders, respHeaderRedactions := RedactHeaders(entry.ResponseHeaders)
+
+	reqBody, _, reqBodyRedactions := preparedSampleBody(entry.RequestBody, "request_body")
+	respBody, respTruncated, respBodyRedactions := preparedSampleBody(entry.ResponseBody, "response_body")
+
+	redactions := make([]string, 0, len(reqHeaderRedactions)+len(respHeaderRedactions)+len(reqBodyRedactions)+len(respBodyRedactions))
+	for _, name := range reqHeaderRedactions {
+		redactions = append(redactions, "request_headers."+name)
+	}
+	for _, name := range respHeaderRedactions {
+		redactions = append(redactions, "response_headers."+name)
+	}
+	redactions = append(redactions, reqBodyRedactions...)
+	redactions = append(redactions, respBodyRedactions...)
+	sort.Strings(redactions)
+	if len(redactions) == 0 {
+		redactions = nil
+	}
+
+	return SampleFile{
+		Endpoint:              fmt.Sprintf("%s %s", group.Method, group.NormalizedPath),
+		Method:                group.Method,
+		RawURL:                entry.URL,
+		Status:                entry.ResponseStatus,
+		RequestHeaders:        redactedReqHeaders,
+		RequestBody:           reqBody,
+		ResponseHeaders:       redactedRespHeaders,
+		ResponseBody:          respBody,
+		ResponseBodyKnown:     strings.TrimSpace(entry.ResponseBody) != "",
+		ResponseBodyTruncated: respTruncated,
+		Redactions:            redactions,
+	}
+}
+
+// selectSampleEntry picks the most-recent successful (2xx) entry; falls
+// back to most-recent non-error (<500); falls back to the most-recent
+// entry. Capture order is preserved by ClassifyEntries, so iterating and
+// overwriting on each match yields "most-recent of category".
+func selectSampleEntry(entries []EnrichedEntry) EnrichedEntry {
+	if len(entries) == 0 {
+		return EnrichedEntry{}
+	}
+
+	var success, nonError EnrichedEntry
+	var hasSuccess, hasNonError bool
+	for _, entry := range entries {
+		if entry.ResponseStatus >= 200 && entry.ResponseStatus < 300 {
+			success = entry
+			hasSuccess = true
+		}
+		if entry.ResponseStatus > 0 && entry.ResponseStatus < 500 {
+			nonError = entry
+			hasNonError = true
+		}
+	}
+	if hasSuccess {
+		return success
+	}
+	if hasNonError {
+		return nonError
+	}
+	return entries[len(entries)-1]
+}
+
+// preparedSampleBody returns the body value (JSON-typed when parseable,
+// otherwise a string), a truncation flag, and the path-prefixed redaction
+// labels. pathPrefix is the dotted root applied to redaction labels.
+func preparedSampleBody(body string, pathPrefix string) (any, bool, []string) {
+	trimmed := strings.TrimSpace(body)
+	if trimmed == "" {
+		return nil, false, nil
+	}
+
+	truncated := false
+	if len(trimmed) > sampleBodyMaxBytes {
+		trimmed = trimmed[:sampleBodyMaxBytes]
+		truncated = true
+	}
+
+	redactedBody, redactedPaths := RedactJSONBody(trimmed)
+
+	prefixed := make([]string, 0, len(redactedPaths))
+	for _, p := range redactedPaths {
+		prefixed = append(prefixed, pathPrefix+"."+p)
+	}
+
+	var parsed any
+	if err := json.Unmarshal([]byte(redactedBody), &parsed); err == nil {
+		return parsed, truncated, prefixed
+	}
+	return redactedBody, truncated, prefixed
 }
