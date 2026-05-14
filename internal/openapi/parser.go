@@ -1551,16 +1551,6 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 		}
 	}
 
-	for _, name := range candidates {
-		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
-		if scheme == nil || !strings.EqualFold(scheme.Type, "oauth2") || scheme.Flows == nil {
-			continue
-		}
-		if ac := scheme.Flows.AuthorizationCode; ac != nil && strings.TrimSpace(ac.AuthorizationURL) != "" && strings.TrimSpace(ac.TokenURL) != "" {
-			return name, scheme
-		}
-	}
-
 	bestScore := math.MaxInt
 	var bestName string
 	var bestScheme *openapi3.SecurityScheme
