@@ -9,14 +9,11 @@ import (
 )
 
 // TestMainNoDoublePrintErrors asserts the generated cmd/<cli>/main.go does
-// not print err.Error() to stderr, since root.go.tmpl leaves Cobra's
-// default error printing on (SilenceUsage:true but no SilenceErrors). A
-// second main.go-side print causes every failing command to emit the
-// error message twice — once with Cobra's "Error:" prefix and once as
-// the raw message — which is what schoology/epic-myhealth shipped before
-// this fix.
-//
-// We pin the structural shape: no `fmt` import in main.go, no
+// not print err.Error() to stderr. root.go.tmpl leaves Cobra's default
+// error printing on (SilenceUsage:true but no SilenceErrors), so a
+// second main.go-side print would emit every failing command's message
+// twice — once with Cobra's "Error:" prefix and once as the raw text.
+// Pin the structural shape here: no `fmt` import in main.go, no
 // `fmt.Fprintln(os.Stderr, err.Error())` call. Behavior is covered
 // by the emitted root.go's own tests (root_test.go.tmpl).
 func TestMainNoDoublePrintErrors(t *testing.T) {
