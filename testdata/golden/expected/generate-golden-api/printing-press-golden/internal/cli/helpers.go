@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"printing-press-golden-pp-cli/internal/client"
@@ -379,8 +380,11 @@ func truncate(s string, max int) string {
 func newTabWriter(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 }
+
+// replacePathParam percent-encodes value so path-reserved characters in
+// user input do not collapse into extra path segments.
 func replacePathParam(path, name, value string) string {
-	return strings.ReplaceAll(path, "{"+name+"}", value)
+	return strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(value))
 }
 
 // paginatedGet fetches pages and concatenates array results. The headers
