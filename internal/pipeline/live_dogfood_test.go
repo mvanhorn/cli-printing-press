@@ -166,6 +166,243 @@ func TestLiveDogfoodCommandMutatesPrefersEndpointMethod(t *testing.T) {
 	}))
 }
 
+func TestHappyPathFileFixtureSkip(t *testing.T) {
+	t.Parallel()
+
+	cliDir := t.TempDir()
+	existing := filepath.Join(cliDir, "fixture.csv")
+	require.NoError(t, os.WriteFile(existing, []byte("header\nvalue\n"), 0o600))
+
+	cases := []struct {
+		name       string
+		args       []string
+		wantSkip   bool
+		wantPrefix string
+	}{
+		{
+			name:     "no file flag",
+			args:     []string{"sync", "--limit", "5"},
+			wantSkip: false,
+		},
+		{
+			name:       "missing csv fixture",
+			args:       []string{"vet", "--csv", "prospects.csv"},
+			wantSkip:   true,
+			wantPrefix: "file fixture required: --csv prospects.csv",
+		},
+		{
+			name:       "missing file fixture",
+			args:       []string{"import-csv", "--file", "accounts.csv"},
+			wantSkip:   true,
+			wantPrefix: "file fixture required: --file accounts.csv",
+		},
+		{
+			name:       "missing fixture via --flag=value form",
+			args:       []string{"import-csv", "--file=accounts.csv"},
+			wantSkip:   true,
+			wantPrefix: "file fixture required: --file accounts.csv",
+		},
+		{
+			name:     "existing fixture in cliDir",
+			args:     []string{"vet", "--csv", "fixture.csv"},
+			wantSkip: false,
+		},
+		{
+			name:     "URL value does not trigger skip",
+			args:     []string{"upload", "--file", "https://example.com/data.csv"},
+			wantSkip: false,
+		},
+		{
+			name:     "unrelated flag name ignored",
+			args:     []string{"resolve", "--query", "anything.csv"},
+			wantSkip: false,
+		},
+		{
+			name:     "case-insensitive flag match",
+			args:     []string{"upload", "--CSV", "missing.csv"},
+			wantSkip: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := happyPathFileFixtureSkip(tc.args, cliDir)
+			if tc.wantSkip {
+				assert.NotEmpty(t, got, "expected skip reason")
+				if tc.wantPrefix != "" {
+					assert.Equal(t, tc.wantPrefix, got)
+				}
+			} else {
+				assert.Empty(t, got, "expected no skip")
+			}
+		})
+	}
+}
+
+func TestRunLiveDogfoodHappyPathHandlesShellCommentInExample(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodShellCommentScript(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "sync", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected sync happy_path result")
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status,
+		"trailing '# comment' in Cobra Example must not bleed into happy_path argv (reason=%q)", happy.Reason)
+	assert.Equal(t, []string{"sync"}, happy.Args,
+		"happy_path argv must contain only the subcommand path, not the comment text")
+}
+
+func writeLiveDogfoodShellCommentScript(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"sync"}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "sync" ] && [ "${2:-}" = "--help" ]; then
+  cat <<'HELP'
+Refresh local cache.
+
+Usage:
+  fixture-pp-cli sync [flags]
+
+Examples:
+  fixture-pp-cli sync                       # full schema + records refresh
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "sync" ]; then
+  # Anything past 'sync' means the example's trailing comment leaked into
+  # argv — fail loudly so the test catches the regression.
+  if [ "$#" -gt 1 ] && [ "${2}" != "--json" ]; then
+    echo "unexpected sync args: $*" >&2
+    exit 4
+  fi
+  if [ "${2:-}" = "--json" ]; then
+    echo '{"synced":true}'
+    exit 0
+  fi
+  echo 'synced'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
+func TestRunLiveDogfoodSkipsHappyPathOnMissingFileFixture(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodFileFixtureScript(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "import-csv", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected import-csv happy_path result")
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Contains(t, happy.Reason, reasonFileFixtureRequired)
+	assert.Contains(t, happy.Reason, "accounts.csv")
+
+	json := findResultByCommandKind(report, "import-csv", LiveDogfoodTestJSON)
+	require.NotNil(t, json, "expected import-csv json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, json.Status)
+	assert.Contains(t, json.Reason, reasonFileFixtureRequired)
+
+	help := findResultByCommandKind(report, "import-csv", LiveDogfoodTestHelp)
+	require.NotNil(t, help, "expected import-csv help result")
+	assert.Equal(t, LiveDogfoodStatusPass, help.Status, "help check must still pass when the only failure is a missing fixture")
+}
+
+func writeLiveDogfoodFileFixtureScript(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"import-csv"}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "import-csv" ] && [ "${2:-}" = "--help" ]; then
+  cat <<'HELP'
+Import accounts from a CSV file.
+
+Usage:
+  fixture-pp-cli import-csv [flags]
+
+Examples:
+  fixture-pp-cli import-csv --file accounts.csv
+
+Flags:
+      --file string   Path to the CSV file
+      --json          Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "import-csv" ]; then
+  # Without a real fixture, this would error out. The test exercises the
+  # skip path; the actual subprocess should never be invoked for happy_path.
+  echo 'open accounts.csv: no such file or directory' >&2
+  exit 1
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
 func TestValidLiveDogfoodJSONOutputAcceptsNDJSON(t *testing.T) {
 	t.Parallel()
 

@@ -49,6 +49,16 @@ func Split(s string) ([]string, error) {
 		case '"':
 			inQuote = true
 			tokenStarted = true
+		case '#':
+			if !tokenStarted {
+				// Shell line comment: '#' at the start of a word drops the
+				// rest of the input. Cobra Example fields routinely append
+				// trailing comments ("sync # full refresh"); without this
+				// branch a downstream consumer runs the binary with the
+				// comment text as positional args.
+				return tokens, nil
+			}
+			current.WriteRune(r)
 		case ' ', '\t', '\n', '\r':
 			if tokenStarted {
 				flush()

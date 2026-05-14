@@ -41,6 +41,7 @@ const reasonMutatingDryRunOnly = "mutating command dry-run only"
 const reasonMutatingErrorPath = "mutating command; error_path would call live API without --dry-run"
 const reasonNoLiveSignal = "no live happy/json pass; credential-unavailable skips cannot certify acceptance"
 const reasonUnavailableRunnerCredentials = "unavailable for runner credentials"
+const reasonFileFixtureRequired = "file fixture required"
 
 type LiveDogfoodOptions struct {
 	CLIDir              string
@@ -674,13 +675,20 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	mutating := liveDogfoodCommandMutates(command)
 	useDryRun := mutating && commandSupportsDryRun(command.Help)
 
+	fixtureSkip := happyPathFileFixtureSkip(happyArgs, ctx.cliDir)
 	resolvedArgs, resolveSkipped, resolveReason := resolveCommandPositionals(command, happyArgs, ctx)
-	if resolveSkipped {
+	switch {
+	case fixtureSkip != "":
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, fixtureSkip),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, fixtureSkip),
+		)
+	case resolveSkipped:
 		results = append(results,
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, resolveReason),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, resolveReason),
 		)
-	} else {
+	default:
 		happyArgs = resolvedArgs
 
 		runArgs := happyArgs
@@ -976,6 +984,66 @@ func endpointTargetsAuthResource(endpoint, path string) bool {
 	return slices.ContainsFunc(strings.Split(strings.ToLower(endpoint), "."), func(segment string) bool {
 		return destructiveAuthResources[segment]
 	})
+}
+
+// happyPathFileFixtureSkip returns a skip reason when the parsed Example
+// references a file-flag value that doesn't exist on disk relative to
+// cliDir. Flag names containing "file" or "csv" trigger the check; the
+// motivating cases are `--file accounts.csv` / `--csv prospects.csv` shapes
+// where the example would otherwise fail with `open <path>: no such file
+// or directory`, masking the signal that the command is callable.
+func happyPathFileFixtureSkip(args []string, cliDir string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "--") {
+			continue
+		}
+		name := strings.TrimPrefix(a, "--")
+		var value string
+		if eq := strings.IndexByte(name, '='); eq >= 0 {
+			value = name[eq+1:]
+			name = name[:eq]
+		} else if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+			value = args[i+1]
+			i++
+		}
+		if !flagNameSuggestsFile(name) {
+			continue
+		}
+		if value == "" || strings.Contains(value, "://") {
+			continue
+		}
+		if fileExistsRelativeTo(value, cliDir) {
+			continue
+		}
+		return fmt.Sprintf("%s: --%s %s", reasonFileFixtureRequired, name, value)
+	}
+	return ""
+}
+
+func flagNameSuggestsFile(name string) bool {
+	n := strings.ToLower(name)
+	return strings.Contains(n, "file") || strings.Contains(n, "csv")
+}
+
+func fileExistsRelativeTo(p, cliDir string) bool {
+	if p == "" {
+		return false
+	}
+	if filepath.IsAbs(p) {
+		_, err := os.Stat(p)
+		return err == nil
+	}
+	candidates := []string{p}
+	if cliDir != "" {
+		candidates = append(candidates, filepath.Join(cliDir, p))
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func liveDogfoodHappyArgs(command liveDogfoodCommand) ([]string, bool) {
