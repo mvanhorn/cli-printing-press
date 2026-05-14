@@ -42,7 +42,9 @@ _scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 _scope_dir="$(cd "$_scope_dir" && pwd -P)"
 
 # Prefer local build when running from inside the printing-press repo.
+_press_repo=false
 if [ -x "$_scope_dir/printing-press" ] && [ -d "$_scope_dir/cmd/printing-press" ]; then
+  _press_repo=true
   export PATH="$_scope_dir:$PATH"
   echo "Using local build: $_scope_dir/printing-press"
 elif ! command -v printing-press >/dev/null 2>&1; then
@@ -55,6 +57,19 @@ elif ! command -v printing-press >/dev/null 2>&1; then
   fi
   return 1 2>/dev/null || exit 1
 fi
+
+# Resolve and emit the absolute path the agent must use for every later
+# `printing-press` invocation. `export PATH` above only affects this one
+# Bash tool call; subsequent calls open a fresh shell and resolve bare
+# `printing-press` against the user's default PATH, where a stale global
+# can silently shadow the local build. The agent captures this marker and
+# substitutes the absolute path into every later invocation.
+if [ "$_press_repo" = "true" ]; then
+  PRINTING_PRESS_BIN="$_scope_dir/printing-press"
+else
+  PRINTING_PRESS_BIN="$(command -v printing-press 2>/dev/null || true)"
+fi
+echo "PRINTING_PRESS_BIN=$PRINTING_PRESS_BIN"
 
 PRESS_BASE="$(basename "$_scope_dir" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"
 if [ -z "$PRESS_BASE" ]; then
@@ -72,7 +87,9 @@ mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-After running the setup contract, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest` to update."
+After running the setup contract, capture the `PRINTING_PRESS_BIN=<abs-path>` line from stdout. **Every subsequent `printing-press ...` invocation in this skill must use that absolute path** (substitute the value, not the literal `$PRINTING_PRESS_BIN` token) — `export PATH` above only affects the single Bash tool call it runs in, so later calls open a fresh shell where bare `printing-press` resolves against the user's default `PATH` and a stale global can shadow the local build.
+
+After capturing the binary path, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `<PRINTING_PRESS_BIN> version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest` to update."
 
 Current-run state is resolved from `$PRESS_RUNSTATE`. Published CLIs are resolved from `$PRESS_LIBRARY`. Archived manuscripts are resolved from `$PRESS_MANUSCRIPTS`.
 

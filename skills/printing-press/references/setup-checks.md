@@ -1,8 +1,8 @@
 # Setup Checks
 
-Post-contract checks the skill must run after executing the bash setup contract block in `SKILL.md`. These handle five signals the contract emits to stdout: `[setup-error]`, `[repo-upgrade-available]`, `[upgrade-available]`, `[browser-tools-missing]`, and the `min-binary-version` compatibility check.
+Post-contract checks the skill must run after executing the bash setup contract block in `SKILL.md`. These handle six signals the contract emits to stdout: `[setup-error]`, `[repo-upgrade-available]`, the `min-binary-version` compatibility check, `[upgrade-available]`, `[browser-tools-missing]`, and the always-emitted `PRINTING_PRESS_BIN=<abs-path>` marker (with optional `[binary-shadow]` advisory).
 
-Apply these in order. Each section is conditional — do nothing if its trigger isn't present.
+Apply these in order. Each section is conditional — do nothing if its trigger isn't present, except section 6 which is unconditional.
 
 ## 1. Refusal: missing prerequisite
 
@@ -165,3 +165,33 @@ If an install command fails (no Python, no Node.js, network error), surface the 
 If the user picks **Skip for this run**, continue without prompting further this run. The decision is not cached — the prompt re-fires on the next run if the tool is still missing.
 
 If no `[browser-tools-missing]` line was emitted, skip this section entirely.
+
+## 6. Absolute binary path (unconditional)
+
+The setup contract always emits one line of the form:
+
+```
+PRINTING_PRESS_BIN=<absolute path to the binary>
+```
+
+Capture this value. Every subsequent `printing-press ...` invocation in this skill, in reference docs it loads, and in any sub-skill it delegates to (`printing-press-publish`, `printing-press-polish`, `printing-press-score`, etc.) must be made using this absolute path, **not** bare `printing-press`. Substitute the captured path each time you compose a Bash command — `$PRINTING_PRESS_BIN` is not a live shell variable across Bash tool calls; only the literal absolute path it expands to in preflight survives.
+
+This rule exists because the contract's `export PATH=...` line only affects the single Bash tool call it runs in. Subsequent Bash tool calls open fresh shells with the user's default `PATH`. When a global `printing-press` is installed at a stale version (e.g. `$HOME/go/bin/printing-press` from an earlier `go install`), bare `printing-press` resolves to the stale global and silently shadows the local repo build that preflight selected. Using the absolute path the contract emitted eliminates the shadow.
+
+If `PRINTING_PRESS_BIN` was emitted as an empty value (`PRINTING_PRESS_BIN=`), the contract was unable to resolve a binary; this should have already been surfaced as `[setup-error]` and the skill should have stopped at section 1. Treat an empty value here as a setup-error fallback and stop.
+
+### Optional shadow advisory
+
+If the setup contract output also contains a line starting with `[binary-shadow]`, parse the follow-up lines:
+
+- `PRESS_BIN_LOCAL_VERSION=<version reported by the local build>`
+- `PRESS_BIN_GLOBAL_VERSION=<version reported by the differing global on PATH>`
+- `PRESS_BIN_GLOBAL_PATH=<absolute path to the differing global>`
+
+Surface a single-line note to the user before continuing — informational only, do not prompt:
+
+> "Note: a global printing-press v`<global>` is installed at `<path>` but the local repo build is v`<local>`. This run will use the local build (the absolute path the preflight selected); the global is unchanged."
+
+Then continue. Do not modify or remove the global. The note exists so the user can reconcile the divergence on their own time (typically with `go install ...@latest` in the global once they want the new version everywhere).
+
+If no `[binary-shadow]` line was emitted, skip the advisory and continue.
