@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1133,4 +1134,195 @@ func writePublishablePhase5Pass(t *testing.T) {
 
 func testSecret(parts ...string) string {
 	return strings.Join(parts, "")
+}
+
+func TestListMirrorOnlyFiles(t *testing.T) {
+	srcDir := t.TempDir()
+	mirrorDir := t.TempDir()
+
+	// Files in both.
+	for _, p := range []string{"go.mod", "README.md", filepath.Join("internal", "cli", "root.go")} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(srcDir, p)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, p), []byte("src"), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(mirrorDir, p)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(mirrorDir, p), []byte("mirror"), 0o644))
+	}
+
+	// Files only in mirror (the deletion risk).
+	for _, p := range []string{
+		filepath.Join("internal", "source", "resy", "client.go"),
+		filepath.Join("internal", "source", "resy", "types.go"),
+	} {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(mirrorDir, p)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(mirrorDir, p), []byte("mirror-only"), 0o644))
+	}
+
+	// Files only in mirror but under excluded prefixes (should be ignored).
+	require.NoError(t, os.MkdirAll(filepath.Join(mirrorDir, ".manuscripts", "20260101-000000", "research"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(mirrorDir, ".manuscripts", "20260101-000000", "research", "brief.md"), []byte("old"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(mirrorDir, "build"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(mirrorDir, "build", "host.tar.gz"), []byte("artifact"), 0o644))
+
+	// File only in source (not a deletion risk).
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "NEW.md"), []byte("new in source"), 0o644))
+
+	got, err := listMirrorOnlyFiles(mirrorDir, srcDir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		"internal/source/resy/client.go",
+		"internal/source/resy/types.go",
+	}, got)
+}
+
+func TestListMirrorOnlyFilesNothingMissing(t *testing.T) {
+	srcDir := t.TempDir()
+	mirrorDir := t.TempDir()
+	for _, p := range []string{"go.mod", "README.md"} {
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, p), []byte("src"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(mirrorDir, p), []byte("mirror"), 0o644))
+	}
+
+	got, err := listMirrorOnlyFiles(mirrorDir, srcDir)
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestListMirrorOnlyFilesTopLevelFileNamedLikeExcludedDir(t *testing.T) {
+	srcDir := t.TempDir()
+	mirrorDir := t.TempDir()
+
+	// Mirror has a top-level FILE (not directory) literally named
+	// .manuscripts. The exclusion targets the .manuscripts/ directory,
+	// not files with that name, so this should be reported.
+	require.NoError(t, os.WriteFile(filepath.Join(mirrorDir, ".manuscripts"), []byte("not a dir"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(mirrorDir, "build"), []byte("also not a dir"), 0o644))
+
+	got, err := listMirrorOnlyFiles(mirrorDir, srcDir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{".manuscripts", "build"}, got)
+}
+
+func TestPublishPackageDestDivergenceMessageTruncatesAndUsesSingular(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	destDir := filepath.Join(t.TempDir(), "publish-repo")
+	mirrorCLIDir := filepath.Join(destDir, "library", "other", "test")
+	require.NoError(t, os.MkdirAll(mirrorCLIDir, 0o755))
+
+	// Singular case: exactly one mirror-only file.
+	soloDir := filepath.Join(mirrorCLIDir, "internal", "extra")
+	require.NoError(t, os.MkdirAll(soloDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(soloDir, "only.go"), []byte("package extra\n"), 0o644))
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--json"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mirror has 1 file not present")
+
+	// Truncation case: more mirror-only files than mirrorDivergenceExampleLimit.
+	overflowDir := filepath.Join(mirrorCLIDir, "internal", "overflow")
+	require.NoError(t, os.MkdirAll(overflowDir, 0o755))
+	total := mirrorDivergenceExampleLimit + 3
+	for i := range total {
+		require.NoError(t, os.WriteFile(filepath.Join(overflowDir, fmt.Sprintf("f%02d.go", i)), []byte("package overflow\n"), 0o644))
+	}
+
+	err = cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("mirror has %d files not present", total+1))
+	assert.Contains(t, err.Error(), fmt.Sprintf("... and %d more", total+1-mirrorDivergenceExampleLimit))
+}
+
+func TestPublishPackageDestRefusesMirrorOnlyContent(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	destDir := filepath.Join(t.TempDir(), "publish-repo")
+	mirrorCLIDir := filepath.Join(destDir, "library", "other", "test")
+	require.NoError(t, os.MkdirAll(mirrorCLIDir, 0o755))
+
+	// Mirror has a package the source does not. Without the guard, the
+	// publish overlay would silently delete it.
+	resyDir := filepath.Join(mirrorCLIDir, "internal", "source", "resy")
+	require.NoError(t, os.MkdirAll(resyDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(resyDir, "client.go"), []byte("package resy\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(resyDir, "types.go"), []byte("package resy\n"), 0o644))
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mirror has 2 files not present in source library")
+	assert.Contains(t, err.Error(), "internal/source/resy/client.go")
+	assert.Contains(t, err.Error(), "internal/source/resy/types.go")
+	assert.Contains(t, err.Error(), "--allow-mirror-deletions")
+
+	// Mirror content must remain intact after refusal.
+	_, err = os.Stat(filepath.Join(resyDir, "client.go"))
+	assert.NoError(t, err, "mirror content should remain after refusal")
+	_, err = os.Stat(mirrorCLIDir + ".old")
+	assert.ErrorIs(t, err, os.ErrNotExist, "should not have stashed before failing")
+}
+
+func TestPublishPackageDestAllowMirrorDeletionsOverride(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	destDir := filepath.Join(t.TempDir(), "publish-repo")
+	mirrorCLIDir := filepath.Join(destDir, "library", "other", "test")
+	resyDir := filepath.Join(mirrorCLIDir, "internal", "source", "resy")
+	require.NoError(t, os.MkdirAll(resyDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(resyDir, "client.go"), []byte("package resy\n"), 0o644))
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--allow-mirror-deletions", "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.Equal(t, filepath.Join(destDir, "library", "other", "test"), result.StagedDir)
+
+	// Mirror-only file is gone after the override.
+	_, err = os.Stat(filepath.Join(resyDir, "client.go"))
+	assert.ErrorIs(t, err, os.ErrNotExist, "mirror-only file should be deleted with override")
+}
+
+func TestPublishPackageDestIgnoresManuscriptsDivergence(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	// Create manuscripts for the new run.
+	runID := "20260329-100000"
+	researchDir := filepath.Join(home, "manuscripts", "test", runID, "research")
+	require.NoError(t, os.MkdirAll(researchDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "brief.md"), []byte("# Brief"), 0o644))
+
+	destDir := filepath.Join(t.TempDir(), "publish-repo")
+	mirrorCLIDir := filepath.Join(destDir, "library", "other", "test")
+
+	// Mirror has an old manuscripts run and a stale build/ dir. Neither
+	// represents real divergence; both are managed by the publish flow.
+	oldMSDir := filepath.Join(mirrorCLIDir, ".manuscripts", "20260101-000000", "research")
+	require.NoError(t, os.MkdirAll(oldMSDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(oldMSDir, "brief.md"), []byte("old"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(mirrorCLIDir, "build"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(mirrorCLIDir, "build", "host.tar.gz"), []byte("artifact"), 0o644))
+
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--dest", destDir, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err, "manuscripts/build divergence should not block the overlay")
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+	assert.True(t, result.ManuscriptsIncluded)
 }

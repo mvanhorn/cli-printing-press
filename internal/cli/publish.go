@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -214,6 +215,7 @@ func newPublishPackageCmd() *cobra.Command {
 	var target string
 	var dest string
 	var modulePath string
+	var allowMirrorDeletions bool
 	var asJSON bool
 
 	cmd := &cobra.Command{
@@ -296,6 +298,15 @@ func newPublishPackageCmd() *cobra.Command {
 			if dest != "" {
 				rootDir = dest
 				outCLIDir = filepath.Join(dest, "library", category, dirName)
+
+				// Scoped to this CLI dir; other categories belong to
+				// category-migration intent, where the operator has
+				// already accepted that the old location goes away.
+				if !allowMirrorDeletions {
+					if err := checkMirrorDivergence(outCLIDir, dir); err != nil {
+						return err
+					}
+				}
 
 				// Move existing CLI dirs aside (don't delete yet — restore on failure)
 				var err error
@@ -420,6 +431,7 @@ func newPublishPackageCmd() *cobra.Command {
 	cmd.Flags().StringVar(&target, "target", "", "Staging directory to create (mutually exclusive with --dest)")
 	cmd.Flags().StringVar(&dest, "dest", "", "Publish repo to write into directly (mutually exclusive with --target)")
 	cmd.Flags().StringVar(&modulePath, "module-path", "", "Go module path to set (e.g., github.com/org/repo/library/category/cli-name)")
+	cmd.Flags().BoolVar(&allowMirrorDeletions, "allow-mirror-deletions", false, "Allow the overlay to delete mirror files that have no source counterpart (use only after manual reconciliation)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
@@ -475,6 +487,87 @@ func removeStashedDirs(dirs []stashedDir) {
 	for _, d := range dirs {
 		_ = os.RemoveAll(d.stashed)
 	}
+}
+
+// mirrorDivergenceExampleLimit caps how many would-be-deleted paths the
+// divergence error names inline before falling back to a count.
+const mirrorDivergenceExampleLimit = 10
+
+// checkMirrorDivergence returns an ExitInputError naming the first
+// findings if any file under mirrorCLIDir is not present in sourceCLIDir.
+// A non-existent mirrorCLIDir is treated as no divergence.
+func checkMirrorDivergence(mirrorCLIDir, sourceCLIDir string) error {
+	mirrorOnly, err := listMirrorOnlyFiles(mirrorCLIDir, sourceCLIDir)
+	if err != nil {
+		return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning mirror for divergence: %w", err)}
+	}
+	if len(mirrorOnly) == 0 {
+		return nil
+	}
+
+	var msg strings.Builder
+	noun := "files"
+	if len(mirrorOnly) == 1 {
+		noun = "file"
+	}
+	fmt.Fprintf(&msg, "mirror has %d %s not present in source library (likely a direct community PR or independent edit). Publishing now would delete this content. Reconcile manually, then re-run with --allow-mirror-deletions to override.\n", len(mirrorOnly), noun)
+	limit := min(len(mirrorOnly), mirrorDivergenceExampleLimit)
+	for _, p := range mirrorOnly[:limit] {
+		fmt.Fprintf(&msg, "  %s\n", p)
+	}
+	if len(mirrorOnly) > limit {
+		fmt.Fprintf(&msg, "  ... and %d more\n", len(mirrorOnly)-limit)
+	}
+
+	return &ExitError{Code: ExitInputError, Err: fmt.Errorf("%s", strings.TrimRight(msg.String(), "\n"))}
+}
+
+// listMirrorOnlyFiles returns slash-separated relative paths under
+// mirrorCLIDir whose corresponding files do not exist under sourceCLIDir.
+// The top-level .manuscripts/ and build/ directories are skipped because
+// the publish flow manages those outputs separately: .manuscripts/ is
+// repopulated per run, and build/ is stripped after the source copy. A
+// non-existent mirrorCLIDir is treated as no divergence.
+func listMirrorOnlyFiles(mirrorCLIDir, sourceCLIDir string) ([]string, error) {
+	var mirrorOnly []string
+	err := filepath.WalkDir(mirrorCLIDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if path == mirrorCLIDir && os.IsNotExist(walkErr) {
+				return fs.SkipAll
+			}
+			return fmt.Errorf("%s: %w", path, walkErr)
+		}
+		if path == mirrorCLIDir {
+			return nil
+		}
+
+		rel, err := filepath.Rel(mirrorCLIDir, path)
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			switch rel {
+			case ".manuscripts", "build":
+				return fs.SkipDir
+			}
+			return nil
+		}
+
+		if _, statErr := os.Lstat(filepath.Join(sourceCLIDir, rel)); statErr != nil {
+			if os.IsNotExist(statErr) {
+				mirrorOnly = append(mirrorOnly, filepath.ToSlash(rel))
+				return nil
+			}
+			return statErr
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return mirrorOnly, nil
 }
 
 // resolveManuscripts finds the manuscripts directory and most recent run ID
