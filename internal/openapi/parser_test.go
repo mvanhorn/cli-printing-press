@@ -5527,3 +5527,81 @@ paths:
 		assert.Equal(t, "https://api.real.com", parsed.BaseURL)
 	})
 }
+
+// TestParseTenantEnvVarExtension pins the x-tenant-env-var contract from
+// issue #1305: when set under info, the parser registers "tenant" as an
+// EndpointTemplateVar with the declared env var as the override so the
+// profiler can include /tenant/{tenant}/<resource> paths in flat sync and
+// downstream emitters resolve the placeholder against the real env name.
+func TestParseTenantEnvVarExtension(t *testing.T) {
+	t.Parallel()
+
+	t.Run("info.x-tenant-env-var registers tenant template var + override", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: ServiceTitan CRM
+  version: 1.0.0
+  x-tenant-env-var: ST_TENANT_ID
+servers:
+  - url: https://api.servicetitan.io
+paths:
+  /tenant/{tenant}/customers:
+    get:
+      summary: List customers
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"tenant"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, map[string]string{"tenant": "ST_TENANT_ID"}, parsed.EndpointTemplateEnvOverrides)
+		assert.Equal(t, "ST_TENANT_ID", parsed.EndpointTemplateEnvName("tenant"))
+	})
+
+	t.Run("absent extension leaves both fields empty", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Single Tenant API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Empty(t, parsed.EndpointTemplateVars)
+		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
+	})
+
+	t.Run("blank extension value is treated as absent", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Bad Annotation
+  version: 1.0.0
+  x-tenant-env-var: "   "
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Empty(t, parsed.EndpointTemplateVars, "whitespace-only extension must not register a template var")
+		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
+	})
+}

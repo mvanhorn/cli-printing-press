@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 )
@@ -308,7 +307,7 @@ func buildMCPBEnv(m CLIManifest) map[string]string {
 		env[envVar.Name] = "${user_config." + userConfigKey(envVar.Name) + "}"
 	}
 	for _, templateVar := range m.EndpointTemplateVars {
-		name := endpointTemplateEnvVar(m.APIName, templateVar)
+		name := endpointTemplateEnvVar(m, templateVar)
 		env[name] = "${user_config." + userConfigKey(name) + "}"
 	}
 	return env
@@ -340,7 +339,7 @@ func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
 		}
 	}
 	for _, templateVar := range m.EndpointTemplateVars {
-		name := endpointTemplateEnvVar(m.APIName, templateVar)
+		name := endpointTemplateEnvVar(m, templateVar)
 		vars[userConfigKey(name)] = MCPBVar{
 			Type:        mcpbVarTypeString,
 			Title:       name,
@@ -382,8 +381,13 @@ func mcpbUserConfigAuthEnvVars(m CLIManifest) []spec.AuthEnvVar {
 	return filtered
 }
 
-func endpointTemplateEnvVar(apiName, templateVar string) string {
-	return strings.ToUpper(naming.Snake(apiName) + "_" + naming.Snake(templateVar))
+func endpointTemplateEnvVar(m CLIManifest, templateVar string) string {
+	if override, ok := m.EndpointTemplateEnvOverrides[templateVar]; ok {
+		if trimmed := strings.TrimSpace(override); trimmed != "" {
+			return trimmed
+		}
+	}
+	return spec.DefaultEndpointTemplateEnvName(m.APIName, templateVar)
 }
 
 // userConfigKey lowercases the env var so manifest user_config keys match

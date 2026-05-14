@@ -336,8 +336,17 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		// `?limit=N` query param without honoring it; truncating client-
 		// side means the user-facing --limit flag works regardless.
 		// Surfaced by hackernews retro #350 finding F6.
-		"endpointNeedsClientLimit":       endpointNeedsClientLimit,
-		"envName":                        naming.EnvPrefix,
+		"endpointNeedsClientLimit": endpointNeedsClientLimit,
+		"envName":                  naming.EnvPrefix,
+		// endpointTemplateEnvName resolves the env-var name for a
+		// {placeholder} in EndpointTemplateVars. Returns the spec-declared
+		// override (e.g. ST_TENANT_ID for {tenant}) when one exists, else
+		// the conventional <APINAME>_<UPPER_PLACEHOLDER>. Bound to the
+		// generator's current spec; callers in templates pass just the
+		// placeholder name.
+		"endpointTemplateEnvName": func(placeholder string) string {
+			return s.EndpointTemplateEnvName(placeholder)
+		},
 		"safeName":                       safeSQLName,
 		"resourceIDFieldOverrideEntries": resourceIDFieldOverrideEntries,
 		"criticalResourceEntries":        criticalResourceEntries,

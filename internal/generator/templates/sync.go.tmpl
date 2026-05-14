@@ -9,6 +9,9 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+{{- if .EndpointTemplateVars}}
+	"slices"
+{{- end}}
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +33,19 @@ import (
 // keys emit sync_warning and are skipped without aborting the run, so
 // sync still completes for resources that DO have resolvable paths.
 var unresolvedPathKeyRE = regexp.MustCompile(`\{[a-zA-Z_][a-zA-Z0-9_]*\}`)
+
+{{- if .EndpointTemplateVars}}
+
+// endpointTemplateVarSet enumerates the {placeholder}s the printed CLI's
+// buildURL helper will substitute from env-backed Config.TemplateVars. The
+// unresolved-key sync check filters these out so per-tenant paths like
+// /tenant/{tenant}/<resource> don't trip the "requires parent context" skip.
+var endpointTemplateVarSet = map[string]bool{
+{{- range .EndpointTemplateVars}}
+	"{{.}}": true,
+{{- end}}
+}
+{{- end}}
 
 // syncResult holds the outcome of syncing a single resource.
 type syncResult struct {
@@ -371,7 +387,20 @@ func syncResource(c interface {
 	// sync cannot fill. Emit a sync_warning describing the missing keys and
 	// continue — sync exits 0 if any resource succeeded, so this keeps
 	// hierarchical-API CLIs functional for the resources they CAN sync flat.
+{{- if .EndpointTemplateVars}}
+	//
+	// EndpointTemplateVars placeholders (e.g. {tenant} in per-tenant SaaS
+	// APIs) are pre-filtered out: buildURL substitutes them from
+	// env-backed Config.TemplateVars at request time, so they aren't
+	// missing context — they're already resolvable.
+	missingKeys := unresolvedPathKeyRE.FindAllString(path, -1)
+	missingKeys = slices.DeleteFunc(missingKeys, func(token string) bool {
+		return endpointTemplateVarSet[token[1:len(token)-1]]
+	})
+	if len(missingKeys) > 0 {
+{{- else}}
 	if missingKeys := unresolvedPathKeyRE.FindAllString(path, -1); len(missingKeys) > 0 {
+{{- end}}
 		if !humanFriendly {
 			payload := struct {
 				Event    string   `json:"event"`

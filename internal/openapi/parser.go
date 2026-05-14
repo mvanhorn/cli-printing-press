@@ -51,7 +51,20 @@ const (
 	extensionProxyRoutes           = "x-proxy-routes"
 	extensionOrigin                = "x-origin"
 	extensionProviderName          = "x-providerName"
+	// extensionTenantEnvVar declares the env-var name that resolves the
+	// {tenant} path-positional template in multi-tenant SaaS APIs (every
+	// path is /tenant/{tenant}/...). When set, the parser registers
+	// "tenant" as an EndpointTemplateVar with this env var as the override,
+	// so the profiler treats /tenant/{tenant}/<resource> paths as standalone
+	// sync resources rather than parent-context-dependent.
+	extensionTenantEnvVar = "x-tenant-env-var"
 )
+
+// tenantPlaceholderName is the canonical placeholder that x-tenant-env-var
+// maps to. Kept narrow on purpose — when this generalizes beyond ServiceTitan
+// (Atlassian {workspace}, GitHub {org}), promote to a list-shaped extension
+// rather than overloading this constant.
+const tenantPlaceholderName = "tenant"
 
 // SetMaxResources overrides the default resource limit. When not called,
 // the parser uses a default of 500 which accommodates all known APIs.
@@ -386,20 +399,24 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 		return nil, err
 	}
 
+	templateVars, templateEnvOverrides := parseEndpointTemplateExtensions(doc)
+
 	result := &spec.APISpec{
-		Name:                        name,
-		DisplayName:                 displayName,
-		DisplayNameDerivedFromTitle: displayNameDerivedFromTitle,
-		Description:                 description,
-		Version:                     version,
-		BaseURL:                     baseURL,
-		BaseURLIsPlaceholder:        baseURLIsPlaceholder,
-		BasePath:                    basePath,
-		WebsiteURL:                  websiteURL,
-		ProxyRoutes:                 proxyRoutes,
-		Auth:                        auth,
-		TierRouting:                 tierRouting,
-		MCP:                         mcpConfig,
+		Name:                         name,
+		DisplayName:                  displayName,
+		DisplayNameDerivedFromTitle:  displayNameDerivedFromTitle,
+		Description:                  description,
+		Version:                      version,
+		BaseURL:                      baseURL,
+		BaseURLIsPlaceholder:         baseURLIsPlaceholder,
+		BasePath:                     basePath,
+		WebsiteURL:                   websiteURL,
+		ProxyRoutes:                  proxyRoutes,
+		Auth:                         auth,
+		TierRouting:                  tierRouting,
+		MCP:                          mcpConfig,
+		EndpointTemplateVars:         templateVars,
+		EndpointTemplateEnvOverrides: templateEnvOverrides,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -436,6 +453,31 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 	}
 
 	return result, nil
+}
+
+// parseEndpointTemplateExtensions collects spec-declared endpoint template
+// placeholders and their env-var name overrides. Returns nil/nil for specs
+// that declare neither so existing generated outputs are byte-identical.
+//
+// Today only x-tenant-env-var lands here — it maps the implicit {tenant}
+// placeholder to an explicit env var (e.g. ST_TENANT_ID). When more
+// placeholders join (Atlassian {workspace}, GitHub {org}), prefer adding a
+// generic x-path-template-env-vars map-shaped extension over piling on
+// per-scope extensions.
+func parseEndpointTemplateExtensions(doc *openapi3.T) ([]string, map[string]string) {
+	raw, ok := lookupOpenAPIInfoExtension(doc, extensionTenantEnvVar)
+	if !ok {
+		return nil, nil
+	}
+	envName, ok := raw.(string)
+	if !ok {
+		return nil, nil
+	}
+	envName = strings.TrimSpace(envName)
+	if envName == "" {
+		return nil, nil
+	}
+	return []string{tenantPlaceholderName}, map[string]string{tenantPlaceholderName: envName}
 }
 
 // parseTypedExtension bridges kin-openapi's untyped any-tree to a typed

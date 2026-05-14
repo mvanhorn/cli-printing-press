@@ -9661,3 +9661,82 @@ func TestStoreSkipsDeadTablesForResourcesWithoutTypedUpsert(t *testing.T) {
 	assert.Contains(t, store, "upsertGenericResourceTx(tx, resourceType, id",
 		"UpsertBatch must still call upsertGenericResourceTx so renamed resources land in `resources`")
 }
+
+// TestGenerateEndpointTemplateEnvOverridesWireThrough pins issue #1305: when
+// the spec declares an explicit env-var name for a template placeholder
+// (e.g. ST_TENANT_ID for {tenant}), every emitted artifact that touches
+// env-var resolution must use the override instead of the default
+// <APINAME>_<PLACEHOLDER> convention. Sync also needs to surface the
+// template-resolvable path without skipping it as "requires parent context".
+func TestGenerateEndpointTemplateEnvOverridesWireThrough(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:                 "servicetitan-crm",
+		Description:          "ServiceTitan CRM (test fixture)",
+		Version:              "1.0",
+		BaseURL:              "https://api.servicetitan.io",
+		EndpointTemplateVars: []string{"tenant"},
+		EndpointTemplateEnvOverrides: map[string]string{
+			"tenant": "ST_TENANT_ID",
+		},
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			EnvVars: []string{"ST_API_TOKEN"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/servicetitan-crm-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"customers": {
+				Description: "Customers",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/tenant/{tenant}/customers",
+						Pagination: &spec.Pagination{CursorParam: "pageToken", LimitParam: "pageSize"},
+						Response:   spec.ResponseDef{Type: "array", Item: "Customer"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Customer": {Fields: []spec.TypeField{{Name: "id", Type: "string"}}},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	urlGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "url.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `"tenant":\s+"ST_TENANT_ID"`, string(urlGo),
+		"templateVarEnvNames must use the spec-declared override, not the SERVICETITAN_CRM_TENANT default")
+	assert.NotContains(t, string(urlGo), "SERVICETITAN_CRM_TENANT",
+		"the default <APINAME>_<PLACEHOLDER> name must not leak when an override is declared")
+
+	configGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(configGo), `os.Getenv("ST_TENANT_ID")`,
+		"config Load() must read the override env var name")
+	assert.NotContains(t, string(configGo), `os.Getenv("SERVICETITAN_CRM_TENANT")`,
+		"the default env var name must not appear when an override exists")
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncSrc := string(syncGo)
+	assert.Contains(t, syncSrc, `"customers": "/tenant/{tenant}/customers"`,
+		"defaultSyncResources/syncResourcePath must include the tenant-scoped path with the placeholder preserved")
+	assert.Contains(t, syncSrc, `endpointTemplateVarSet = map[string]bool`,
+		"sync must declare the template-var set so the unresolved-key check ignores {tenant}")
+	assert.Contains(t, syncSrc, `slices.DeleteFunc`,
+		"sync must filter template-var placeholders out of the missing-keys list before warning")
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(readme), "ST_TENANT_ID",
+		"README must surface the override env var name in the runtime endpoint instructions")
+}
