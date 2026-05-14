@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.6.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.6.0...v4.6.1) (2026-05-14)
+
+
+### Bug Fixes
+
+* **cli:** coerce number-typed --limit param to int ([#1370](https://github.com/mvanhorn/cli-printing-press/issues/1370)) ([80f5bc6](https://github.com/mvanhorn/cli-printing-press/commit/80f5bc6ca5d1c5aae2ca0880d19a5cd2396046ab)), closes [#1082](https://github.com/mvanhorn/cli-printing-press/issues/1082)
+* **cli:** consume x-tenant-env-var so per-tenant sync paths ship populated ([#1368](https://github.com/mvanhorn/cli-printing-press/issues/1368)) ([51b758c](https://github.com/mvanhorn/cli-printing-press/commit/51b758c713f3c4252697d38d8355a9f3bb4b81f2))
+* **cli:** detect cross-cutting novel features in dogfood scorer ([#1364](https://github.com/mvanhorn/cli-printing-press/issues/1364)) ([a601038](https://github.com/mvanhorn/cli-printing-press/commit/a60103844391e29535b12d8a416d558944086192))
+* **cli:** drop MCP handler pre-marshal that base64-encoded mutating bodies ([#1357](https://github.com/mvanhorn/cli-printing-press/issues/1357)) ([1fc5f62](https://github.com/mvanhorn/cli-printing-press/commit/1fc5f62bef9c21716e27c092545ed2ca8c6f1aca))
+* **cli:** percent-encode path param values in replacePathParam ([#1366](https://github.com/mvanhorn/cli-printing-press/issues/1366)) ([77fce43](https://github.com/mvanhorn/cli-printing-press/commit/77fce43f42bf32c3c9d286ed69b506d93b3635da))
+* **cli:** refuse publish package --dest overlay when mirror diverges from source ([#1371](https://github.com/mvanhorn/cli-printing-press/issues/1371)) ([1ff6853](https://github.com/mvanhorn/cli-printing-press/commit/1ff685373907ac9966ceacdea7628a69edf7c235))
+* **cli:** skip framework-auto-generated operationIds when deriving command names ([#1367](https://github.com/mvanhorn/cli-printing-press/issues/1367)) ([d697eb5](https://github.com/mvanhorn/cli-printing-press/commit/d697eb5ae9ee18804c77022996f71058c972982d))
+* **cli:** strip embedded .git/ and .gitmodules in pipeline.CopyDir ([#1358](https://github.com/mvanhorn/cli-printing-press/issues/1358)) ([0f8dc98](https://github.com/mvanhorn/cli-printing-press/commit/0f8dc989616797be1c1a326dc6d420dc8426289d)), closes [#1304](https://github.com/mvanhorn/cli-printing-press/issues/1304)
+* **cli:** wire composed apiKey + bearer sibling headers through parser, templates, and MCP manifest ([#1359](https://github.com/mvanhorn/cli-printing-press/issues/1359)) ([2437cab](https://github.com/mvanhorn/cli-printing-press/commit/2437cab76049ef0cbf81a6e49cf53595c31c8649)), closes [#1303](https://github.com/mvanhorn/cli-printing-press/issues/1303)
+
 ## [4.6.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.5.2...v4.6.0) (2026-05-13)
 
 
