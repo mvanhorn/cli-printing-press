@@ -123,6 +123,32 @@ func dryRunOK(flags *rootFlags) bool {
 	return flags != nil && flags.dryRun
 }
 
+// parentNoSubcommandRunE returns a RunE that handles parents invoked without a
+// subcommand. In machine output (--json/--agent) the parent emits a structured
+// error to stdout listing valid subcommands and exits 2; otherwise cobra's
+// default help text is printed. Without this, agents driving the CLI in
+// --agent mode received only human-readable help on stdout and exit 0, with no
+// signal that the invocation was incomplete.
+func parentNoSubcommandRunE(flags *rootFlags) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		if flags != nil && flags.asJSON {
+			subs := make([]string, 0, len(cmd.Commands()))
+			for _, c := range cmd.Commands() {
+				if c.IsAvailableCommand() && c.Name() != "help" {
+					subs = append(subs, c.Name())
+				}
+			}
+			sort.Strings(subs)
+			_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+				"error":             "subcommand required",
+				"valid_subcommands": subs,
+			})
+			return usageErr(fmt.Errorf("subcommand required for %q", cmd.CommandPath()))
+		}
+		return cmd.Help()
+	}
+}
+
 // accessWarning describes an API access-denial that sync converts into a
 // non-fatal warning. It carries enough structured data for the sync_warning
 // JSON event without parsing free-form error strings downstream.

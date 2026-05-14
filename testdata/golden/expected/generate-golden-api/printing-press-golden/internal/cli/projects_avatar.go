@@ -11,6 +11,7 @@ func newProjectsAvatarCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "avatar",
 		Short: "Manage avatar",
+		RunE:  parentNoSubcommandRunE(flags),
 	}
 
 	cmd.AddCommand(newProjectsAvatarUploadProjectCmd(flags))

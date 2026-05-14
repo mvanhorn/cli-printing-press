@@ -153,6 +153,7 @@ agent can invoke the same command with the same configuration each run.
 
 Use --profile <name> on any command to apply that profile's values.
 Explicit flags override profile values.`,
+		RunE: parentNoSubcommandRunE(flags),
 	}
 	cmd.AddCommand(newProfileSaveCmd(flags))
 	cmd.AddCommand(newProfileUseCmd(flags))

@@ -9898,3 +9898,54 @@ func TestGenerateEndpointTemplateEnvOverridesWireThrough(t *testing.T) {
 	assert.Contains(t, string(readme), "ST_TENANT_ID",
 		"README must surface the override env var name in the runtime endpoint instructions")
 }
+
+// TestGenerateParentNoSubcommandRunE_WiredOnResourceParents: every generated
+// resource parent command must wire the parentNoSubcommandRunE helper so
+// invocations without a subcommand in --agent / --json mode get a structured
+// JSON error instead of human-readable cobra help on stdout. Before the fix,
+// agents driving the CLI silently received help text and exit 0. The helper
+// also has to be defined exactly once in helpers.go so the generated package
+// compiles. Multi-endpoint resources are exercised so a parent is actually
+// emitted (single-endpoint resources get promoted to a direct subcommand).
+func TestGenerateParentNoSubcommandRunE_WiredOnResourceParents(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("parent-runE-wired")
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Manage items",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/items", Description: "List items"},
+				"get":  {Method: "GET", Path: "/items/{id}", Description: "Get one item"},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(helpersSrc), "func parentNoSubcommandRunE(flags *rootFlags)",
+		"helpers.go must define parentNoSubcommandRunE so generated parents can wire it")
+	assert.Contains(t, string(helpersSrc), `"subcommand required"`,
+		"the helper must emit a structured JSON error envelope")
+	assert.Contains(t, string(helpersSrc), `"valid_subcommands"`,
+		"the JSON envelope must list valid subcommands so agents can self-correct")
+
+	parentSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(parentSrc),
+		"the resource parent must call the shared helper instead of falling through to cobra's default help")
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(authSrc),
+		"the auth parent shares the same bug class and must wire the helper too")
+
+	profileSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "profile.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(profileSrc),
+		"the profile parent shares the same bug class and must wire the helper too")
+}
