@@ -94,7 +94,19 @@ If the user picks **Yes**, run:
 go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest
 ```
 
-After it completes, confirm with `<PRINTING_PRESS_BIN> version --json` if the captured path is still valid for the freshly installed binary (it is, when the contract resolved `PRINTING_PRESS_BIN` from `command -v printing-press` and the new `go install` overwrote that same path; the upgrade replaces the binary in-place), and tell the user `"Upgraded to v<new>."` **Continue this current setup run with the freshly installed binary on disk — do not stop, do not reload the session, do not skip the remaining checks (min-binary-version compatibility, etc.).**
+After `go install` completes, **re-resolve `PRINTING_PRESS_BIN`** before confirming. `go install` writes to `$(go env GOBIN)` if set, otherwise `$(go env GOPATH)/bin` — which may not be the same path the contract originally captured (e.g. when the pre-upgrade binary was at `/opt/homebrew/bin/printing-press` or `/usr/local/bin/printing-press`, the new binary lives at `$GOPATH/bin/printing-press` and the old one is unchanged). Run this re-resolution in a single Bash call so its stdout becomes the new captured value:
+
+```bash
+_gobin="$(go env GOBIN 2>/dev/null)"
+[ -z "$_gobin" ] && _gobin="$(go env GOPATH 2>/dev/null)/bin"
+if [ -x "$_gobin/printing-press" ]; then
+  echo "PRINTING_PRESS_BIN=$_gobin/printing-press"
+else
+  echo "PRINTING_PRESS_BIN=$(command -v printing-press 2>/dev/null || true)"
+fi
+```
+
+Capture the new `PRINTING_PRESS_BIN=<abs-path>` value and use it for every subsequent `printing-press ...` invocation in the rest of this run, overriding the value captured in the preamble. Then confirm with `<PRINTING_PRESS_BIN> version --json` and tell the user `"Upgraded to v<new>."` **Continue this current setup run with the freshly installed binary on disk — do not stop, do not reload the session, do not skip the remaining checks (min-binary-version compatibility, etc.).**
 
 Separately, as out-of-band advice for the user's *next* session (not a stop signal for this run), tell them they can also refresh their installed skill files outside the repo checkout by running one of:
 
