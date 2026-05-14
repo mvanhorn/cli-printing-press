@@ -9920,9 +9920,11 @@ func TestGenerateParentNoSubcommandRunE_WiredOnResourceParents(t *testing.T) {
 			},
 		},
 	}
+	apiSpec.Share = spec.ShareConfig{Enabled: true, SnapshotTables: []string{"items"}}
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
 	require.NoError(t, gen.Generate())
 
 	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
@@ -9948,4 +9950,14 @@ func TestGenerateParentNoSubcommandRunE_WiredOnResourceParents(t *testing.T) {
 	require.NoError(t, err)
 	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(profileSrc),
 		"the profile parent shares the same bug class and must wire the helper too")
+
+	workflowSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "channel_workflow.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(workflowSrc),
+		"the workflow parent shares the same bug class and must wire the helper too")
+
+	shareSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "share_commands.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(shareSrc),
+		"the share parent shares the same bug class and must wire the helper too")
 }
