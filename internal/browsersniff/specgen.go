@@ -1209,6 +1209,57 @@ func deriveNameFromURL(raw string) string {
 	return strings.Join(labels, "-")
 }
 
+// FilterEndpointsByMinSamples drops endpoints from apiSpec.Resources whose
+// underlying capture cluster carries fewer than minSamples paired entries.
+// Resources left with no endpoints are dropped too. Returns the number of
+// endpoints removed. A minSamples value <= 1 is a no-op (default behavior).
+//
+// Filtering happens against re-derived endpoint groups from the capture
+// rather than the spec itself, so the qualifying set matches exactly what
+// AnalyzeCapture would have seen. GraphQL operations that share one
+// underlying cluster (e.g., many distinct operationName values all hitting
+// /frontend/graphql) survive together or drop together with that cluster.
+// Per-operation thresholding is a future refinement.
+//
+// The TrafficAnalysis sidecar is intentionally untouched: dropped endpoints
+// remain visible there with their `low` confidence and `single-sample`
+// flag (or whichever applies) so an operator can audit what filtered out.
+func FilterEndpointsByMinSamples(apiSpec *spec.APISpec, capture *EnrichedCapture, minSamples int) int {
+	if apiSpec == nil || capture == nil || minSamples <= 1 {
+		return 0
+	}
+	apiEntries, _ := ClassifyEntries(capture.Entries)
+	groups := DeduplicateEndpoints(apiEntries)
+
+	qualifying := map[string]bool{}
+	for _, g := range groups {
+		if len(g.Entries) >= minSamples {
+			qualifying[endpointFilterKey(g.Method, g.NormalizedPath)] = true
+		}
+	}
+
+	dropped := 0
+	for resourceName, resource := range apiSpec.Resources {
+		for endpointName, endpoint := range resource.Endpoints {
+			key := endpointFilterKey(endpoint.Method, endpoint.Path)
+			if !qualifying[key] {
+				delete(resource.Endpoints, endpointName)
+				dropped++
+			}
+		}
+		if len(resource.Endpoints) == 0 {
+			delete(apiSpec.Resources, resourceName)
+		} else {
+			apiSpec.Resources[resourceName] = resource
+		}
+	}
+	return dropped
+}
+
+func endpointFilterKey(method string, path string) string {
+	return strings.ToUpper(strings.TrimSpace(method)) + " " + path
+}
+
 // SampleFile is the on-disk shape of one redacted endpoint sample written
 // to <spec-stem>-samples/<method>__<path-slug>__<hash>.json. Designed so a
 // reviewer can read a single file and see exactly what evidence backed the

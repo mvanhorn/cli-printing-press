@@ -20,6 +20,8 @@ func newBrowserSniffCmd() *cobra.Command {
 	var samplesOutputPath string
 	var name string
 	var blocklist string
+	var include string
+	var minSamples int
 	var authFrom string
 
 	cmd := &cobra.Command{
@@ -27,6 +29,7 @@ func newBrowserSniffCmd() *cobra.Command {
 		Short: "Analyze captured web traffic to discover API endpoints and generate a spec",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			browsersniff.SetAdditionalBlocklist(splitCSV(blocklist))
+			browsersniff.SetAdditionalIncludeList(splitCSV(include))
 
 			capture, err := browsersniff.LoadCapture(harPath)
 			if err != nil {
@@ -69,6 +72,9 @@ func newBrowserSniffCmd() *cobra.Command {
 				return fmt.Errorf("analyzing traffic: %w", err)
 			}
 			browsersniff.ApplyReachabilityDefaults(apiSpec, trafficAnalysis)
+
+			droppedEndpoints := browsersniff.FilterEndpointsByMinSamples(apiSpec, capture, minSamples)
+
 			samplesWritten, err := writeBrowserSniffOutputs(apiSpec, trafficAnalysis, capture, outputPath, analysisOutputPath, samplesOutputPath)
 			if err != nil {
 				return err
@@ -84,6 +90,9 @@ func newBrowserSniffCmd() *cobra.Command {
 			if samplesOutputPath != "" && samplesWritten > 0 {
 				fmt.Printf("Samples written to %s (%d endpoint%s)\n", samplesOutputPath, samplesWritten, plural(samplesWritten))
 			}
+			if droppedEndpoints > 0 {
+				fmt.Printf("Dropped %d endpoint%s below --min-samples=%d (still visible in %s)\n", droppedEndpoints, plural(droppedEndpoints), minSamples, analysisOutputPath)
+			}
 			fmt.Printf("Run 'printing-press generate --spec %s' to build the CLI\n", outputPath)
 			return nil
 		},
@@ -94,7 +103,9 @@ func newBrowserSniffCmd() *cobra.Command {
 	cmd.Flags().StringVar(&analysisOutputPath, "analysis-output", "", "Output path for traffic analysis JSON (defaults beside the spec)")
 	cmd.Flags().StringVar(&samplesOutputPath, "samples-output", "", "Output directory for per-endpoint redacted samples (defaults to <spec-stem>-samples beside the spec; pass empty string to disable via --samples-output=\"\")")
 	cmd.Flags().StringVar(&name, "name", "", "Override the auto-detected API name")
-	cmd.Flags().StringVar(&blocklist, "blocklist", "", "Comma-separated additional domains to filter")
+	cmd.Flags().StringVar(&blocklist, "blocklist", "", "Comma-separated additional hostnames to filter (extends the default analytics/telemetry blocklist)")
+	cmd.Flags().StringVar(&include, "include", "", "Comma-separated host or path substrings to rescue from default filtering; matches win over --blocklist and the static-asset suffix demotion")
+	cmd.Flags().IntVar(&minSamples, "min-samples", 1, "Drop endpoints with fewer than N paired samples from the emitted spec; the dropped endpoints remain in the traffic-analysis sidecar for audit. Default 1 leaves behavior unchanged; 2+ is recommended for production capture")
 	cmd.Flags().StringVar(&authFrom, "auth-from", "", "Path to an enriched capture file to import auth from")
 	_ = cmd.MarkFlagRequired("har")
 
