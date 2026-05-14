@@ -36,8 +36,9 @@ func TestSyncBackfillsEndpointAnnotations(t *testing.T) {
 			"projects": {
 				Description: "Manage projects",
 				Endpoints: map[string]spec.Endpoint{
-					"list": {Method: "GET", Path: "/projects", Description: "List projects"},
-					"get":  {Method: "GET", Path: "/projects/{id}", Description: "Get a project"},
+					"list":   {Method: "GET", Path: "/projects", Description: "List projects"},
+					"get":    {Method: "GET", Path: "/projects/{id}", Description: "Get a project"},
+					"delete": {Method: "DELETE", Path: "/projects/{id}", Description: "Delete a project", Meta: map[string]string{"mcp:privacy-sensitive": "true"}},
 				},
 			},
 		},
@@ -72,6 +73,10 @@ func RegisterNovelFeatureTools() { shellOutToCLI("projects list") }
 	updatedEndpoint, err := os.ReadFile(endpointPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(updatedEndpoint), `Annotations: map[string]string{"pp:endpoint": "projects.list", "pp:method": "GET", "pp:path": "/projects", "mcp:read-only": "true"}`)
+
+	deleteEndpoint, err := os.ReadFile(filepath.Join(cliDir, "internal", "cli", "projects_delete.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(deleteEndpoint), `Annotations: map[string]string{"pp:endpoint": "projects.delete", "pp:method": "DELETE", "pp:path": "/projects/{id}", "mcp:destructive": "true", "mcp:privacy-sensitive": "true"}`)
 
 	updatedTools, err := os.ReadFile(filepath.Join(cliDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)

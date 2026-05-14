@@ -64,9 +64,6 @@ func toolOptionsForCommand(cmd *cobra.Command) []mcplib.ToolOption {
 		mcplib.WithToolAnnotation(mcplib.ToolAnnotation{}),
 		mcplib.WithDescription(descriptionFor(cmd)),
 	}
-	if isMCPPrivacySensitive(cmd) {
-		options = append(options, mcplib.WithTitleAnnotation("Privacy-sensitive"))
-	}
 	options = append(options, toolOptionsForFlags(cmd)...)
 	if commandTakesArgs(cmd) {
 		options = append(options, mcplib.WithString("args", mcplib.Description("Additional positional arguments or raw CLI flags to append to the command.")))

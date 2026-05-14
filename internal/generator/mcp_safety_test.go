@@ -178,7 +178,6 @@ func TestGeneratedMCPSafetySurfaces(t *testing.T) {
 			},
 			wantCommandContains: []string{`"mcp:read-only": "true"`, `"mcp:privacy-sensitive": "true"`},
 			wantToolContains: []string{
-				`mcplib.WithTitleAnnotation("Privacy-sensitive")`,
 				`mcplib.WithReadOnlyHintAnnotation(true)`,
 				`Privacy-sensitive: may expose personal, financial, or message content.`,
 			},
@@ -357,7 +356,6 @@ func TestToolOptionsForCommandSafetyHints(t *testing.T) {
 			wantReadOnly: boolPtr(true),
 			wantDestructive: boolPtr(false),
 			wantOpenWorld: boolPtr(true),
-			wantTitle: "Privacy-sensitive",
 			wantDescriptionStart: "Privacy-sensitive: Get mail",
 		},
 	}

@@ -41,9 +41,6 @@ func RegisterTools(s *server.MCPServer) {
 		mcplib.NewTool({{printf "%q" (printf "%s_%s" (snake $name) (snake $eName))}},
 			mcplib.WithToolAnnotation(mcplib.ToolAnnotation{}),
 			mcplib.WithDescription({{printf "%q" (composeMCPDesc $.APISpec $resource $endpoint $.MCPPublicCount $.MCPTotalCount)}}),
-{{- if endpointMetaTrue $endpoint "mcp:privacy-sensitive"}}
-			mcplib.WithTitleAnnotation("Privacy-sensitive"),
-{{- end}}
 {{- range $endpoint.Params}}
 {{- if eq .Type "integer"}}
 			mcplib.WithNumber({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
@@ -80,9 +77,6 @@ func RegisterTools(s *server.MCPServer) {
 		mcplib.NewTool({{printf "%q" (printf "%s_%s_%s" (snake $name) (snake $subName) (snake $eName))}},
 			mcplib.WithToolAnnotation(mcplib.ToolAnnotation{}),
 			mcplib.WithDescription({{printf "%q" (composeMCPSubDesc $.APISpec $resource $subResource $endpoint $.MCPPublicCount $.MCPTotalCount)}}),
-{{- if endpointMetaTrue $endpoint "mcp:privacy-sensitive"}}
-			mcplib.WithTitleAnnotation("Privacy-sensitive"),
-{{- end}}
 {{- range $endpoint.Params}}
 {{- if eq .Type "integer"}}
 			mcplib.WithNumber({{printf "%q" .Name}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
