@@ -9340,6 +9340,57 @@ func TestMCPHandlerPassesBodyArgsMap(t *testing.T) {
 		"PATCH branch must forward bodyArgs directly to the client")
 }
 
+// TestMCPBindingNumericTypesAcrossSpecShapes pins template wiring: both
+// OpenAPI-parsed shapes ("int", "bool") and internal-spec literals
+// ("integer", "boolean") flow through mcpBindingFunc to WithNumber /
+// WithBoolean across body and query surfaces.
+func TestMCPBindingNumericTypesAcrossSpecShapes(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcp-numeric-binding")
+	apiSpec.Resources["messages"] = spec.Resource{
+		Description: "Messages",
+		Endpoints: map[string]spec.Endpoint{
+			"openapi-shape": {
+				Method:      "POST",
+				Path:        "/messages",
+				Description: "Send a message (OpenAPI-parsed types)",
+				Params: []spec.Param{
+					{Name: "silent", Type: "bool", Description: "Suppress notifications"},
+				},
+				Body: []spec.Param{
+					{Name: "priority", Type: "int", Required: true, Description: "Priority level"},
+				},
+			},
+			"internal-shape": {
+				Method:      "POST",
+				Path:        "/messages/legacy",
+				Description: "Send a message (internal-spec types)",
+				Params: []spec.Param{
+					{Name: "enabled", Type: "boolean", Description: "Enabled"},
+				},
+				Body: []spec.Param{
+					{Name: "count", Type: "integer", Required: true, Description: "Count"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+
+	assert.Contains(t, mcpSource, `mcplib.WithBoolean("silent"`,
+		"OpenAPI bool query param must bind WithBoolean")
+	assert.Contains(t, mcpSource, `mcplib.WithNumber("priority", mcplib.Required()`,
+		"OpenAPI int body field must bind WithNumber (Pushover trigger case)")
+	assert.Contains(t, mcpSource, `mcplib.WithBoolean("enabled"`,
+		"internal-spec boolean query param must bind WithBoolean")
+	assert.Contains(t, mcpSource, `mcplib.WithNumber("count", mcplib.Required()`,
+		"internal-spec integer body field must bind WithNumber")
+}
+
 func TestGeneratePublicParamNamesInPromotedExamples(t *testing.T) {
 	t.Parallel()
 

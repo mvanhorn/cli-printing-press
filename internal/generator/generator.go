@@ -207,6 +207,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"goStoreType":           goStoreType,
 		"cobraFlagFunc":         cobraFlagFunc,
 		"cobraFlagFuncForParam": cobraFlagFuncForParam,
+		"mcpBindingFunc":        mcpBindingFunc,
 		"defaultVal":            defaultVal,
 		"defaultValForParam":    defaultValForParam,
 		"isConstDefault":        paramIsConstDefault,
@@ -3051,6 +3052,24 @@ func cobraFlagFunc(t string) string {
 		return "Float64Var"
 	default:
 		return "StringVar"
+	}
+}
+
+// mcpBindingFunc returns the mcplib.With* function name used in MCP tool
+// input-schema registration so numeric fields bind as JSON numbers (not
+// quoted strings) and pass through the generic makeAPIHandler intact.
+// Funnels through primitiveKind so OpenAPI-parsed shapes ("int", "float",
+// "bool") and internal-spec literals ("integer", "number", "boolean")
+// produce the same binding. Object/array bodies fall back to WithString
+// because they ride the --body-json fallback or a JSON-string flag.
+func mcpBindingFunc(t string) string {
+	switch primitiveKind(t) {
+	case "int", "float":
+		return "WithNumber"
+	case "bool":
+		return "WithBoolean"
+	default:
+		return "WithString"
 	}
 }
 
