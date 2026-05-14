@@ -205,11 +205,12 @@ func TestGenerateRenamesBodyFieldCollidingWithStdin(t *testing.T) {
 		"the body field named 'stdin' must not collide with the template's --stdin flag")
 }
 
-// TestGenerateDeduplicatesNestedTreesCollapsedToSameIdent covers the
-// #1243 root cause: two distinct nested-object paths whose joined
-// camelized segments collapse to the same Go identifier. Project.Customer.name
-// and ProjectCustomer.name (a sibling object literally named projectCustomer)
-// both produce bodyProjectCustomerName.
+// TestGenerateDeduplicatesNestedTreesCollapsedToSameIdent guards the
+// case where two distinct nested-object paths whose joined camelized
+// segments collapse to the same Go identifier. Project.Customer.name
+// and ProjectCustomer.name (a sibling object literally named
+// projectCustomer) both produce bodyProjectCustomerName, and the dedup
+// pass must rename one of them.
 func TestGenerateDeduplicatesNestedTreesCollapsedToSameIdent(t *testing.T) {
 	t.Parallel()
 
@@ -246,17 +247,21 @@ func TestGenerateDeduplicatesNestedTreesCollapsedToSameIdent(t *testing.T) {
 		"nested paths whose joined camelized identifiers collapse to the same Go name must dedupe")
 	assertNoDuplicates(t, flagBindings,
 		"nested paths whose joined camelized flag names collapse must dedupe")
+	require.Len(t, bodyVars, 2,
+		"both collapsed paths must survive dedup as distinct Go identifiers")
+	assert.Contains(t, flagBindings, "project-customer-name",
+		"the first registrant keeps the canonical cobra flag name")
+	assert.Contains(t, flagBindings, "project-customer-name-2",
+		"the deduped sibling carries the -2 suffix")
 }
 
-// TestGenerateDeduplicatesConvergentNestedBodyPaths covers issue #1243.
-// When two distinct nested body paths converge on the same trailing
-// segments (e.g., Project.Customer.name AND Project.PostalAddress.Customer.name),
-// the existing identPrefix-based walker produces unique identifiers
-// (bodyProjectCustomerName vs bodyProjectPostalAddressCustomerName) by
-// joining the full path. This test guards that property — and adds a
-// trickier case where two siblings of the same parent each carry a
-// nested object with a colliding leaf name (Wrapper.Inner.value vs
-// Wrapper.Inner.value via duplicated nested-object siblings).
+// TestGenerateDeduplicatesConvergentNestedBodyPaths guards two distinct
+// nested body paths that converge on the same trailing segments
+// (Project.Customer.name AND Project.PostalAddress.Customer.name). The
+// identPrefix-based walker joins the full path so both leaves produce
+// unique identifiers (bodyProjectCustomerName vs
+// bodyProjectPostalAddressCustomerName) without falling back on the _N
+// suffix.
 func TestGenerateDeduplicatesConvergentNestedBodyPaths(t *testing.T) {
 	t.Parallel()
 
@@ -299,18 +304,22 @@ func TestGenerateDeduplicatesConvergentNestedBodyPaths(t *testing.T) {
 		"convergent nested paths must produce distinct Go identifiers")
 	assertNoDuplicates(t, flagBindings,
 		"convergent nested paths must register distinct cobra flag names")
+	require.Len(t, bodyVars, 2,
+		"both convergent name leaves must survive as distinct Go identifiers")
+	assert.Contains(t, bodyVars, "bodyProjectCustomerName",
+		"the direct project.customer.name leaf produces this identifier")
+	assert.Contains(t, bodyVars, "bodyProjectPostalAddressCustomerName",
+		"the project.postalAddress.customer.name leaf produces this identifier via path-prefix joining")
 }
 
-// TestGenerateDeduplicatesCyclicRefBodyShape covers the Tripletex shape
-// from #1243: an OpenAPI body schema where $refs chain through multiple
-// paths that re-enter the same component schema. The parser's cycle
-// detection terminates the recursion when it revisits a schema pointer,
-// producing leaf entries at each cut point. The generator's dedupe pass
-// then walks the resulting tree and uniquifies any collisions.
-//
-// This drives the full OpenAPI parse → dedupe → render path to lock in
-// that both convergent paths and cycle-cut leaves emit unique Go
-// identifiers.
+// TestGenerateDeduplicatesCyclicRefBodyShape drives the full OpenAPI
+// parse → dedupe → render path on a body schema where $refs chain
+// through multiple paths that re-enter the same component schema. The
+// parser's cycle detection terminates the recursion when it revisits a
+// schema pointer, producing leaf entries at each cut point. The
+// generator's dedupe pass then walks the resulting tree and uniquifies
+// any collisions so every cycle-cut leaf and every direct leaf emit
+// distinct Go identifiers.
 func TestGenerateDeduplicatesCyclicRefBodyShape(t *testing.T) {
 	t.Parallel()
 
@@ -411,9 +420,17 @@ components:
 	assertNoDuplicates(t, flagBindings,
 		"cyclic-ref body shape must register distinct cobra flag names")
 
-	// Spot-check that the named convergent path lands on a unique identifier.
+	// The cycle-cut shape produces three leaves: the direct
+	// project.customer.name string and two cycle-cut customer objects
+	// at distinct paths.
+	require.Len(t, bodyVars, 3,
+		"every direct and cycle-cut leaf must survive dedup as a distinct Go identifier")
 	assert.Contains(t, bodyVars, "bodyProjectCustomerName",
 		"the direct project.customer.name leaf must emit bodyProjectCustomerName")
+	assert.Contains(t, bodyVars, "bodyProjectCustomerLedgerAccountVatTypeCustomer",
+		"the ledgerAccount.vatType.customer cycle-cut leaf must emit a unique identifier under its full path")
+	assert.Contains(t, bodyVars, "bodyProjectCustomerPostalAddressCustomer",
+		"the postalAddress.customer cycle-cut leaf must emit a unique identifier under its full path")
 }
 
 // parseBodyDeclarations returns the names of all `var bodyXxx` declarations
