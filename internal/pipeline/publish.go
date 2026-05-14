@@ -553,6 +553,21 @@ func CopyDir(src, dst string) error {
 			return nil
 		}
 
+		// Drop git plumbing wherever it appears in the tree. A stray .git
+		// from `git init` in a working CLI dir, or a nested submodule, would
+		// otherwise be carried into the library and re-staged downstream as
+		// a submodule pointer when `git add` runs in the publish repo.
+		// .gitignore / .gitattributes are legitimate CLI content and stay.
+		if d.Name() == ".git" {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() == ".gitmodules" {
+			return nil
+		}
+
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
