@@ -529,6 +529,22 @@ func parseEndpointTemplateExtensions(doc *openapi3.T) ([]string, map[string]stri
 		}
 	}
 
+	// default wins across extensions: if x-tenant-env-var registered a key
+	// that x-path-template-env-vars then declared a default for, drop the
+	// stale runtime entry so the placeholder is fully baked and downstream
+	// generators do not emit dead config / URL-substitution code for it.
+	if len(defaults) > 0 {
+		filtered := vars[:0]
+		for _, v := range vars {
+			if _, baked := defaults[v]; baked {
+				delete(envOverrides, v)
+				continue
+			}
+			filtered = append(filtered, v)
+		}
+		vars = filtered
+	}
+
 	if len(vars) == 0 {
 		vars = nil
 	}
@@ -2327,7 +2343,7 @@ func applyPathParamDefaults(result *spec.APISpec) {
 				if len(substituted) > 0 && len(e.Params) > 0 {
 					kept := make([]spec.Param, 0, len(e.Params))
 					for _, p := range e.Params {
-						if substituted[p.Name] {
+						if substituted[p.Name] && isPathSubstitutionParam(p) {
 							continue
 						}
 						kept = append(kept, p)

@@ -303,15 +303,28 @@ Effect on generated output (when set):
   `Params`. The printed CLI exposes neither a placeholder nor a flag
   for the resolved parameter.
 
-Example:
+Examples:
+
+Runtime env-var override for a BaseURL placeholder, parallel to
+`x-tenant-env-var`:
+
+```yaml
+info:
+  title: Atlassian API
+  version: 1.0.0
+  x-path-template-env-vars:
+    workspace:
+      env: ATLASSIAN_WORKSPACE
+```
+
+Build-time literal substitution that bakes a canonical value into every
+operation path and drops the matching path parameter:
 
 ```yaml
 info:
   title: Gmail Users API
   version: 1.0.0
   x-path-template-env-vars:
-    workspace:
-      env: ATLASSIAN_WORKSPACE
     userId:
       default: me
 ```
