@@ -85,6 +85,9 @@ func TestURLPathEscapeBehaviorPinsContract(t *testing.T) {
 		{"sc-domain:example.com", "sc-domain:example.com"},
 	}
 	for _, c := range cases {
-		assert.Equal(t, c.want, url.PathEscape(c.in), "input %q", c.in)
+		t.Run(c.in, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, c.want, url.PathEscape(c.in))
+		})
 	}
 }
