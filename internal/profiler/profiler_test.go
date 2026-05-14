@@ -1816,8 +1816,8 @@ func TestProfilePagination_SkipsPathAndPositionalParams(t *testing.T) {
 	assert.Equal(t, "limit", profile.Pagination.PageSizeParam)
 }
 
-// TestProfileTemplateVarPathBecomesFlatSyncable pins issue #1305: paths whose
-// only {placeholder} is an EndpointTemplateVar (e.g. /tenant/{tenant}/<resource>
+// TestProfileTemplateVarPathBecomesFlatSyncable: paths whose only
+// {placeholder} is an EndpointTemplateVar (e.g. /tenant/{tenant}/<resource>
 // when the spec declares x-tenant-env-var) are runtime-resolvable through
 // buildURL — they should become flat SyncableResources rather than landing
 // in DependentSyncResources (which would require iterating a non-existent

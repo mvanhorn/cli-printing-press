@@ -5528,11 +5528,11 @@ paths:
 	})
 }
 
-// TestParseTenantEnvVarExtension pins the x-tenant-env-var contract from
-// issue #1305: when set under info, the parser registers "tenant" as an
-// EndpointTemplateVar with the declared env var as the override so the
-// profiler can include /tenant/{tenant}/<resource> paths in flat sync and
-// downstream emitters resolve the placeholder against the real env name.
+// TestParseTenantEnvVarExtension: when info.x-tenant-env-var is set, the
+// parser registers "tenant" as an EndpointTemplateVar with the declared
+// env var as the override so the profiler can include
+// /tenant/{tenant}/<resource> paths in flat sync and downstream emitters
+// resolve the placeholder against the real env name.
 func TestParseTenantEnvVarExtension(t *testing.T) {
 	t.Parallel()
 

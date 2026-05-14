@@ -9662,10 +9662,10 @@ func TestStoreSkipsDeadTablesForResourcesWithoutTypedUpsert(t *testing.T) {
 		"UpsertBatch must still call upsertGenericResourceTx so renamed resources land in `resources`")
 }
 
-// TestGenerateEndpointTemplateEnvOverridesWireThrough pins issue #1305: when
-// the spec declares an explicit env-var name for a template placeholder
-// (e.g. ST_TENANT_ID for {tenant}), every emitted artifact that touches
-// env-var resolution must use the override instead of the default
+// TestGenerateEndpointTemplateEnvOverridesWireThrough: when the spec
+// declares an explicit env-var name for a template placeholder (e.g.
+// ST_TENANT_ID for {tenant}), every emitted artifact that touches env-var
+// resolution must use the override instead of the default
 // <APINAME>_<PLACEHOLDER> convention. Sync also needs to surface the
 // template-resolvable path without skipping it as "requires parent context".
 func TestGenerateEndpointTemplateEnvOverridesWireThrough(t *testing.T) {
