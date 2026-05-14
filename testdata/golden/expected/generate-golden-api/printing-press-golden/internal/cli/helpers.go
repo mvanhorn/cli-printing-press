@@ -662,17 +662,47 @@ func filterFieldsRec(data json.RawMessage, paths [][]string) json.RawMessage {
 			}
 		}
 		filtered := map[string]json.RawMessage{}
+		matchedAny := false
 		for k, v := range obj {
 			matched := matchSelectSegment(k, keepWhole, subPaths)
 			if matched == "" {
 				continue
 			}
+			matchedAny = true
 			if keepWhole[matched] {
 				filtered[k] = v
 				continue
 			}
 			if subs := subPaths[matched]; subs != nil {
 				filtered[k] = filterFieldsRec(v, subs)
+			}
+		}
+		// Envelope fallback: when no top-level keys matched but at least one
+		// sibling is a non-null array, treat the object as a list envelope
+		// (`{"items":[...]}`, `{"data":[...]}`, `{"total_count":N,"items":[...]}`)
+		// and apply the selector inside the array(s). Non-array siblings pass
+		// through verbatim so envelope metadata (counts, null pagination
+		// cursors) stays visible. The foundArray guard preserves the prior
+		// empty-object result for flat objects where no key matches and no
+		// array exists. The `arr != nil` check rejects JSON null, which
+		// json.Unmarshal otherwise accepts into a []json.RawMessage as a
+		// nil slice and would coerce to `[]`.
+		if !matchedAny {
+			pending := map[string]json.RawMessage{}
+			foundArray := false
+			for k, v := range obj {
+				var arr []json.RawMessage
+				if json.Unmarshal(v, &arr) == nil && arr != nil {
+					foundArray = true
+					pending[k] = filterFieldsRec(v, paths)
+				} else {
+					pending[k] = v
+				}
+			}
+			if foundArray {
+				for k, v := range pending {
+					filtered[k] = v
+				}
 			}
 		}
 		result, _ := json.Marshal(filtered)
