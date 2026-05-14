@@ -1288,7 +1288,11 @@ func newHealthCmd() *cobra.Command {
 		// "sql" and "search" don't have command files and don't carry
 		// cross-cutting markers, so they must still appear as missing —
 		// the cross-cutting fallback must not mask genuinely-unbuilt
-		// commands.
+		// commands. The "sql --dry-run" variant pins that a real command
+		// verb followed by a globally-declared flag is still reported
+		// missing: the fallback must defer to the regular matcher for
+		// these shapes, not absorb them just because the flag happens to
+		// be quoted in internal/cli/*.go.
 		cliDir := setupCLI(t, "dfs")
 		researchDir := t.TempDir()
 		require.NoError(t, writeResearchJSON(&ResearchResult{
@@ -1296,12 +1300,13 @@ func newHealthCmd() *cobra.Command {
 			NovelFeatures: []NovelFeature{
 				{Name: "Local SQL", Command: "sql"},
 				{Name: "Local search", Command: "search"},
+				{Name: "SQL dry-run", Command: "sql --dry-run"},
 			},
 		}, researchDir))
 
 		result := checkNovelFeatures(cliDir, researchDir)
 		assert.Equal(t, 0, result.Found)
-		assert.ElementsMatch(t, []string{"sql", "search"}, result.Missing)
+		assert.ElementsMatch(t, []string{"sql", "search", "sql --dry-run"}, result.Missing)
 	})
 }
 
@@ -1324,6 +1329,7 @@ func TestMatchCrossCuttingFeature(t *testing.T) {
 	}{
 		{"plain command name yields applied=false", "health", false, false},
 		{"space-separated path yields applied=false", "portfolio perf", false, false},
+		{"command followed by flag yields applied=false", "sql --dry-run", false, false},
 		{"bare flag matches declared name", "--dry-run", true, true},
 		{"flag with =value suffix matches", "--dry-run=true", true, true},
 		{"flag with trailing punctuation matches", "--dry-run,", true, true},

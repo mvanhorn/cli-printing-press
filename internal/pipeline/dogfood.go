@@ -433,6 +433,15 @@ func matchCrossCuttingFeature(cmd, cliDir string) (matched, applied bool) {
 	if marker == "" && len(flags) == 0 {
 		return false, false
 	}
+	// A plain command name followed by a flag ("sql --format") is not a
+	// cross-cutting feature: the verb names the command, and the flag is
+	// only an argument. Without a paren marker the regular path/leaf
+	// matcher is the authority; bailing here keeps the fallback from
+	// silently masking unbuilt commands when a flag name happens to
+	// appear elsewhere in internal/cli/*.go.
+	if marker == "" && commandPath(cmd) != "" {
+		return false, false
+	}
 
 	// Flag-bearing features take the strict path: a declared flag means
 	// found; a named flag with no declaration means genuinely missing.
