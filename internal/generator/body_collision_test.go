@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -202,6 +203,217 @@ func TestGenerateRenamesBodyFieldCollidingWithStdin(t *testing.T) {
 
 	assertNoDuplicates(t, flagBindings,
 		"the body field named 'stdin' must not collide with the template's --stdin flag")
+}
+
+// TestGenerateDeduplicatesNestedTreesCollapsedToSameIdent covers the
+// #1243 root cause: two distinct nested-object paths whose joined
+// camelized segments collapse to the same Go identifier. Project.Customer.name
+// and ProjectCustomer.name (a sibling object literally named projectCustomer)
+// both produce bodyProjectCustomerName.
+func TestGenerateDeduplicatesNestedTreesCollapsedToSameIdent(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("collide-collapsed")
+	apiSpec.Resources["entries"] = spec.Resource{
+		Description: "Entries",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/entries",
+				Description: "Two nested objects whose joined paths camelize identically",
+				Body: []spec.Param{
+					{Name: "project", Type: "object", Description: "Project wrapper", Fields: []spec.Param{
+						{Name: "customer", Type: "object", Description: "Customer (nested via project)", Fields: []spec.Param{
+							{Name: "name", Type: "string", Description: "Name via project.customer"},
+						}},
+					}},
+					{Name: "projectCustomer", Type: "object", Description: "Project-customer (sibling at top)", Fields: []spec.Param{
+						{Name: "name", Type: "string", Description: "Name via projectCustomer"},
+					}},
+				},
+			},
+			"get": {Method: "GET", Path: "/entries/{id}", Description: "Get one"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "collide-collapsed-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	bodyVars, flagBindings := parseBodyDeclarations(t,
+		filepath.Join(outputDir, "internal", "cli", "entries_create.go"))
+
+	assertNoDuplicates(t, bodyVars,
+		"nested paths whose joined camelized identifiers collapse to the same Go name must dedupe")
+	assertNoDuplicates(t, flagBindings,
+		"nested paths whose joined camelized flag names collapse must dedupe")
+}
+
+// TestGenerateDeduplicatesConvergentNestedBodyPaths covers issue #1243.
+// When two distinct nested body paths converge on the same trailing
+// segments (e.g., Project.Customer.name AND Project.PostalAddress.Customer.name),
+// the existing identPrefix-based walker produces unique identifiers
+// (bodyProjectCustomerName vs bodyProjectPostalAddressCustomerName) by
+// joining the full path. This test guards that property — and adds a
+// trickier case where two siblings of the same parent each carry a
+// nested object with a colliding leaf name (Wrapper.Inner.value vs
+// Wrapper.Inner.value via duplicated nested-object siblings).
+func TestGenerateDeduplicatesConvergentNestedBodyPaths(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("collide-convergent")
+	apiSpec.Resources["assets"] = spec.Resource{
+		Description: "Assets",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/assets",
+				Description: "Create an asset whose body has convergent nested paths",
+				Body: []spec.Param{
+					{Name: "project", Type: "object", Description: "Project root", Fields: []spec.Param{
+						{Name: "customer", Type: "object", Description: "Direct customer", Fields: []spec.Param{
+							{Name: "name", Type: "string", Description: "Customer name (direct)"},
+						}},
+						{Name: "postalAddress", Type: "object", Description: "Postal address", Fields: []spec.Param{
+							{Name: "customer", Type: "object", Description: "Postal address customer", Fields: []spec.Param{
+								{Name: "name", Type: "string", Description: "Customer name (via address)"},
+							}},
+						}},
+					}},
+				},
+			},
+			"get": {
+				Method:      "GET",
+				Path:        "/assets/{id}",
+				Description: "Get one asset",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "collide-convergent-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	bodyVars, flagBindings := parseBodyDeclarations(t,
+		filepath.Join(outputDir, "internal", "cli", "assets_create.go"))
+
+	assertNoDuplicates(t, bodyVars,
+		"convergent nested paths must produce distinct Go identifiers")
+	assertNoDuplicates(t, flagBindings,
+		"convergent nested paths must register distinct cobra flag names")
+}
+
+// TestGenerateDeduplicatesCyclicRefBodyShape covers the Tripletex shape
+// from #1243: an OpenAPI body schema where $refs chain through multiple
+// paths that re-enter the same component schema. The parser's cycle
+// detection terminates the recursion when it revisits a schema pointer,
+// producing leaf entries at each cut point. The generator's dedupe pass
+// then walks the resulting tree and uniquifies any collisions.
+//
+// This drives the full OpenAPI parse → dedupe → render path to lock in
+// that both convergent paths and cycle-cut leaves emit unique Go
+// identifiers.
+func TestGenerateDeduplicatesCyclicRefBodyShape(t *testing.T) {
+	t.Parallel()
+
+	yaml := `openapi: 3.0.0
+info:
+  title: cyclic-shape
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /asset:
+    post:
+      operationId: createAsset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Asset'
+      responses:
+        '200':
+          description: ok
+  /asset/{id}:
+    get:
+      operationId: getAsset
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: ok
+components:
+  schemas:
+    Asset:
+      type: object
+      properties:
+        project: {$ref: '#/components/schemas/Project'}
+    Project:
+      type: object
+      properties:
+        customer: {$ref: '#/components/schemas/Customer'}
+    Customer:
+      type: object
+      properties:
+        name: {type: string}
+        ledgerAccount: {$ref: '#/components/schemas/LedgerAccount'}
+        postalAddress: {$ref: '#/components/schemas/PostalAddress'}
+    LedgerAccount:
+      type: object
+      properties:
+        vatType: {$ref: '#/components/schemas/VatType'}
+    VatType:
+      type: object
+      properties:
+        customer: {$ref: '#/components/schemas/Customer'}
+    PostalAddress:
+      type: object
+      properties:
+        customer: {$ref: '#/components/schemas/Customer'}
+`
+	apiSpec, err := openapi.Parse([]byte(yaml))
+	require.NoError(t, err)
+
+	apiSpec.Name = "cyclic-shape"
+	apiSpec.Owner = "test-owner"
+	apiSpec.OwnerName = "Test Author"
+	if apiSpec.Auth.Type == "" {
+		apiSpec.Auth = spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"CYCLIC_SHAPE_TOKEN"},
+		}
+	}
+	apiSpec.Config = spec.ConfigSpec{
+		Format: "toml",
+		Path:   "~/.config/cyclic-shape-pp-cli/config.toml",
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "cyclic-shape-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	// The endpoint file name uses the resource derived by the parser. The
+	// asset resource path is /asset; the POST endpoint becomes <resource>_<op>.go.
+	postFile := filepath.Join(outputDir, "internal", "cli", "asset_create-asset.go")
+	if _, err := os.Stat(postFile); err != nil {
+		postFile = filepath.Join(outputDir, "internal", "cli", "asset_create.go")
+	}
+	require.FileExists(t, postFile,
+		"the createAsset POST command file must exist")
+
+	bodyVars, flagBindings := parseBodyDeclarations(t, postFile)
+
+	assertNoDuplicates(t, bodyVars,
+		"cyclic-ref body shape must produce distinct Go identifiers for every emitted var")
+	assertNoDuplicates(t, flagBindings,
+		"cyclic-ref body shape must register distinct cobra flag names")
+
+	// Spot-check that the named convergent path lands on a unique identifier.
+	assert.Contains(t, bodyVars, "bodyProjectCustomerName",
+		"the direct project.customer.name leaf must emit bodyProjectCustomerName")
 }
 
 // parseBodyDeclarations returns the names of all `var bodyXxx` declarations
