@@ -84,7 +84,7 @@ func TestFindPII_PhoneUS(t *testing.T) {
 		{name: "no-area-code-leading-one", line: `"phone": "115-555-0123"`, expectKinds: nil},
 		{name: "no-exchange-leading-zero", line: `"phone": "415-055-0123"`, expectKinds: nil},
 		{name: "no-exchange-leading-one", line: `"phone": "415-155-0123"`, expectKinds: nil},
-		{name: "area-code-200-valid", line: `"phone": "(212) 555-0123"`, expectKinds: []string{PIIKindPhoneUS}},
+		{name: "area-code-212-valid", line: `"phone": "(212) 555-0123"`, expectKinds: []string{PIIKindPhoneUS}},
 		{name: "area-code-900-valid", line: `"phone": "(900) 234-5678"`, expectKinds: []string{PIIKindPhoneUS}},
 	}
 	for _, tt := range tests {
