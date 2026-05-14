@@ -2890,6 +2890,19 @@ func isCursorParam(name string) bool {
 	return false
 }
 
+// isFlagLimitParam returns true when a parameter is the canonical
+// pagination/truncation `--limit` flag, which is always count-shaped
+// (integer) regardless of whether the spec declares it as `number`.
+// LLM-derived specs in `--docs` mode have produced `limit: number`,
+// which previously emitted `Float64Var`/`float64 flagLimit` and broke
+// `truncateJSONArray(data, flagLimit)` at compile time because the
+// helper expects an `int`. Keyed on the same case-insensitive match
+// `endpointNeedsClientLimit` uses, so the override fires exactly where
+// the truncate caller lives.
+func isFlagLimitParam(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), "limit")
+}
+
 func primitiveKind(t string) string {
 	switch strings.ToLower(strings.TrimSpace(t)) {
 	case "string":
@@ -3033,9 +3046,11 @@ func cobraFlagFunc(t string) string {
 }
 
 // goTypeForParam returns the Go type for a parameter, overriding int→string
-// for ID-like parameters to avoid overflow and zero-value confusion, and
+// for ID-like parameters to avoid overflow and zero-value confusion,
 // numeric→string for pagination cursors so they survive scientific-notation
-// rendering of large Unix timestamps and millisecond cursors.
+// rendering of large Unix timestamps and millisecond cursors, and
+// float→int for the canonical `--limit` flag whose semantics are always
+// a count.
 func goTypeForParam(name, t string) string {
 	kind := primitiveKind(t)
 	if isIDParam(name) && kind == "int" {
@@ -3044,11 +3059,15 @@ func goTypeForParam(name, t string) string {
 	if isCursorParam(name) && (kind == "int" || kind == "float") {
 		return "string"
 	}
+	if isFlagLimitParam(name) && kind == "float" {
+		return "int"
+	}
 	return goType(t)
 }
 
 // cobraFlagFuncForParam returns the cobra flag function, overriding IntVar→StringVar
-// for ID-like parameters and Float64Var/IntVar→StringVar for pagination cursors.
+// for ID-like parameters, Float64Var/IntVar→StringVar for pagination cursors,
+// and Float64Var→IntVar for the canonical `--limit` flag.
 func cobraFlagFuncForParam(name, t string) string {
 	kind := primitiveKind(t)
 	if isIDParam(name) && kind == "int" {
@@ -3057,12 +3076,17 @@ func cobraFlagFuncForParam(name, t string) string {
 	if isCursorParam(name) && (kind == "int" || kind == "float") {
 		return "StringVar"
 	}
+	if isFlagLimitParam(name) && kind == "float" {
+		return "IntVar"
+	}
 	return cobraFlagFunc(t)
 }
 
 // defaultValForParam returns the default value for a flag parameter,
-// overriding int→string for ID-like parameters and numeric→string for
-// pagination cursors so the StringVar default matches the StringVar field type.
+// overriding int→string for ID-like parameters, numeric→string for
+// pagination cursors so the StringVar default matches the StringVar field type,
+// and float→int for the canonical `--limit` flag so the IntVar default
+// matches its coerced int type.
 func defaultValForParam(p spec.Param) string {
 	kind := primitiveKind(p.Type)
 	if isIDParam(p.Name) && kind == "int" {
@@ -3076,6 +3100,11 @@ func defaultValForParam(p spec.Param) string {
 			return fmt.Sprintf("%q", fmt.Sprintf("%v", p.Default))
 		}
 		return `""`
+	}
+	if isFlagLimitParam(p.Name) && kind == "float" {
+		coerced := p
+		coerced.Type = "integer"
+		return defaultVal(coerced)
 	}
 	return defaultVal(p)
 }
