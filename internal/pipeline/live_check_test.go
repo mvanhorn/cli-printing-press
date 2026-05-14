@@ -508,6 +508,34 @@ func TestLiveCheck_BinaryAutoDerivation(t *testing.T) {
 	require.Contains(t, result.Features[0].Example, "stub x matched")
 }
 
+func TestLiveCheckBinaryCandidatesPreferBuildStageBin(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join("tmp", "sample-cli")
+	stagedUnix := filepath.Join(dir, "build", "stage", "bin", "sample-cli-pp-cli")
+	stagedWin := platform.ExecutablePathForGOOS(filepath.Join(dir, "build", "stage", "bin", "sample-cli-pp-cli"), "windows")
+	legacyUnix := filepath.Join(dir, "sample-cli-pp-cli")
+
+	cands := liveCheckBinaryCandidatesForGOOS(dir, "", "windows")
+	assert.Contains(t, cands, stagedUnix)
+	assert.Contains(t, cands, stagedWin)
+	assert.Contains(t, cands, legacyUnix)
+
+	// Canonical staged path must come before the legacy cliDir fallback.
+	stagedIdx := -1
+	legacyIdx := -1
+	for i, c := range cands {
+		if c == stagedUnix && stagedIdx == -1 {
+			stagedIdx = i
+		}
+		if c == legacyUnix && legacyIdx == -1 {
+			legacyIdx = i
+		}
+	}
+	assert.True(t, stagedIdx >= 0 && legacyIdx >= 0 && stagedIdx < legacyIdx,
+		"staged build/stage/bin path must be tried before cliDir legacy path, got order %v", cands)
+}
+
 func TestLiveCheckBinaryCandidatesIncludeHostExecutableName(t *testing.T) {
 	t.Parallel()
 
