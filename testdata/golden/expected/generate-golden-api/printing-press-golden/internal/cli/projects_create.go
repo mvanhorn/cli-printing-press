@@ -65,6 +65,24 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
+			// Inspect the mutate response body for a partial-failure-shaped
+			// field (e.g. Google Ads `partialFailureError`). Several Google
+			// APIs return 200 OK with a partial-failure field when some
+			// operations in the batch failed; ignoring it silently swallows
+			// real failures. Detection runs before output-mode selection so
+			// the exit code is consistent regardless of how stdout is
+			// rendered. --dry-run short-circuits because no real request
+			// was sent.
+			var partialFailure *partialFailureReport
+			if !flags.dryRun && statusCode >= 200 && statusCode < 300 {
+				partialFailure = detectPartialFailure(data)
+				if partialFailure != nil {
+					fmt.Fprintf(os.Stderr, "warning: partial failure detected in %s response: %s\n", "projects", partialFailure.Message)
+					if len(partialFailure.ResourceNames) > 0 {
+						fmt.Fprintf(os.Stderr, "         succeeded: %d operation(s)\n", len(partialFailure.ResourceNames))
+					}
+				}
+			}
 			if wantsHumanTable(cmd.OutOrStdout(), flags) {
 				// Check if response contains an array (directly or wrapped in "data")
 				var items []map[string]any
@@ -72,6 +90,9 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 					if err := printAutoTable(cmd.OutOrStdout(), items); err != nil {
 						fmt.Fprintf(os.Stderr, "warning: table rendering failed, falling back to JSON: %v\n", err)
 					} else {
+						if partialFailure != nil && !flags.allowPartialFailure {
+							return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", "projects", partialFailure.Message))
+						}
 						return nil
 					}
 				} else {
@@ -82,6 +103,9 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 						if err := printAutoTable(cmd.OutOrStdout(), wrapped.Data); err != nil {
 							fmt.Fprintf(os.Stderr, "warning: table rendering failed, falling back to JSON: %v\n", err)
 						} else {
+							if partialFailure != nil && !flags.allowPartialFailure {
+								return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", "projects", partialFailure.Message))
+							}
 							return nil
 						}
 					}
@@ -89,6 +113,9 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 			}
 			if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !flags.csv && !flags.quiet && !flags.plain) {
 				if flags.quiet {
+					if partialFailure != nil && !flags.allowPartialFailure {
+						return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", "projects", partialFailure.Message))
+					}
 					return nil
 				}
 				// Apply --compact and --select to the API response before wrapping.
@@ -106,7 +133,10 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 					"resource": "projects",
 					"path":     path,
 					"status":   statusCode,
-					"success":  statusCode >= 200 && statusCode < 300,
+					"success":  statusCode >= 200 && statusCode < 300 && partialFailure == nil,
+				}
+				if partialFailure != nil {
+					envelope["partial_failure"] = partialFailure
 				}
 				if flags.dryRun {
 					envelope["dry_run"] = true
@@ -123,9 +153,28 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)
+				if perr := printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true); perr != nil {
+					return perr
+				}
+				if partialFailure != nil && !flags.allowPartialFailure {
+					return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", "projects", partialFailure.Message))
+				}
+				return nil
 			}
-			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
+			// Fall-through for mutate paths that did not hit the table or
+			// asJSON branches: --quiet, --csv, --plain, and default terminal
+			// raw output. printOutputWithFlags renders the body, then the
+			// typed partial-failure exit fires unless --allow-partial-failure
+			// downgrades it. Without this guard a partial failure would exit
+			// 0 for these output modes — the exact silent-swallow regression
+			// the surrounding patch is preventing for asJSON / piped output.
+			if perr := printOutputWithFlags(cmd.OutOrStdout(), data, flags); perr != nil {
+				return perr
+			}
+			if partialFailure != nil && !flags.allowPartialFailure {
+				return partialFailureErr(fmt.Errorf("partial failure in %s response: %s", "projects", partialFailure.Message))
+			}
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&bodyName, "name", "", "Name")

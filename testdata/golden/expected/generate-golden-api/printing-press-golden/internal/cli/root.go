@@ -20,25 +20,30 @@ import (
 var version = "1.0.0"
 
 type rootFlags struct {
-	asJSON        bool
-	compact       bool
-	csv           bool
-	plain         bool
-	quiet         bool
-	dryRun        bool
-	noCache       bool
-	noInput       bool
-	idempotent    bool
-	yes           bool
-	agent         bool
-	selectFields  string
-	configPath    string
-	profileName   string
-	deliverSpec   string
-	timeout       time.Duration
-	rateLimit     float64
-	dataSource    string
-	freshnessMeta any
+	asJSON     bool
+	compact    bool
+	csv        bool
+	plain      bool
+	quiet      bool
+	dryRun     bool
+	noCache    bool
+	noInput    bool
+	idempotent bool
+	yes        bool
+	agent      bool
+	// allowPartialFailure downgrades a detected response-body partial-failure
+	// (e.g. Google Ads `partialFailureError`) from a non-zero exit to a
+	// stderr warning. Default false so silent partial successes surface as
+	// failures by default.
+	allowPartialFailure bool
+	selectFields        string
+	configPath          string
+	profileName         string
+	deliverSpec         string
+	timeout             time.Duration
+	rateLimit           float64
+	dataSource          string
+	freshnessMeta       any
 
 	// deliverBuf captures command output when --deliver is set to a
 	// non-stdout sink. Flushed to the sink after Execute returns.
@@ -148,6 +153,7 @@ Run 'printing-press-golden-pp-cli doctor' to verify auth and connectivity.`,
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	rootCmd.PersistentFlags().BoolVar(&humanFriendly, "human-friendly", false, "Enable colored output and rich formatting")
 	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set all agent-friendly defaults (--json --compact --no-input --no-color --yes)")
+	rootCmd.PersistentFlags().BoolVar(&flags.allowPartialFailure, "allow-partial-failure", false, "Downgrade response-body partial-failure (e.g. partialFailureError) to a warning instead of a non-zero exit")
 	rootCmd.PersistentFlags().StringVar(&flags.dataSource, "data-source", "auto", "Data source for read commands: auto (live with local fallback), live (API only), local (synced data only)")
 	rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile (see 'printing-press-golden-pp-cli profile list')")
 	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")
