@@ -212,10 +212,10 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", path, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-				"{{.Name}}": args[{{positionalIndex $.Endpoint .Name}}],
+				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
-				"{{.Name}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
+				"{{paramWireName .}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
 			}, {{if .Endpoint.HeaderOverrides}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
@@ -223,10 +223,10 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			data, err := paginatedGet(c, path, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-				"{{.Name}}": args[{{positionalIndex $.Endpoint .Name}}],
+				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
-				"{{.Name}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
+				"{{paramWireName .}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
 			}, {{if .Endpoint.HeaderOverrides}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
@@ -235,11 +235,11 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			params := map[string]string{}
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
-			params["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
+			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
-				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
+				params["{{paramWireName .}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
 			}
 {{- end}}
 {{- end}}
@@ -784,3 +784,28 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 
 	return cmd
 }
+{{if and (eq .Endpoint.Method "GET") .Endpoint.EmbeddedPagedSubresources}}
+{{- $endpointCamel := camel .EndpointName}}
+{{- $funcPrefix := camel .FuncPrefix}}
+{{- $parentPath := .Endpoint.Path}}
+{{- range .Endpoint.EmbeddedPagedSubresources}}
+{{- $propCamel := camel .Property}}
+
+// fetchFull{{$funcPrefix}}{{$endpointCamel}}{{$propCamel}} returns every item
+// in the "{{.Property}}" sub-resource of GET {{$parentPath}}. The parent
+// response embeds at most the first page of this sub-resource, so any
+// caller that treats the embed as complete silently truncates; this
+// companion calls the dedicated child endpoint and paginates until
+// exhausted. pathParams must include every {placeholder} in the parent
+// path (e.g. {"id": "<value>"}).
+func fetchFull{{$funcPrefix}}{{$endpointCamel}}{{$propCamel}}(c interface {
+	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+}, pathParams map[string]string) ([]json.RawMessage, error) {
+	childPath := "{{.ChildPath}}"
+	for name, val := range pathParams {
+		childPath = replacePathParam(childPath, name, val)
+	}
+	return fetchEmbeddedPagedSubresource(c, childPath, "{{.NextField}}", {{if .NextIsURL}}true{{else}}false{{end}}, {{if .NextIsBoolean}}true{{else}}false{{end}})
+}
+{{- end}}
+{{- end}}

@@ -27,6 +27,7 @@ One teammate with API credentials runs 'share publish' on a cadence; the
 rest run 'share subscribe <remote>' once, then read from the cache
 without needing credentials. Auto-refresh picks up new snapshots on the
 next read command.`,
+		RunE: parentNoSubcommandRunE(flags),
 	}
 	cmd.AddCommand(newShareExportCmd(flags))
 	cmd.AddCommand(newShareImportCmd(flags))

@@ -922,6 +922,113 @@ func TestSaveBearerTokenClearsEnvBackedField(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// Composed apiKey + OAuth2 cc (ServiceTitan shape): the primary auth is the
+// OAuth bearer, but the API also requires a per-call ST-App-Key header carried
+// by a sibling apiKey scheme. AdditionalHeaders on AuthConfig drives three
+// generator emissions: a Config struct field, an os.Getenv loader in Load(),
+// and a req.Header.Set in the client request hot-path. Without all three, the
+// composed-auth API returns 401 even with a valid bearer.
+func TestGenerateComposedApiKeyPlusBearerEmitsAdditionalHeader(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "stcompose",
+		Version: "0.1.0",
+		BaseURL: "https://api.servicetitan.io",
+		Auth: spec.AuthConfig{
+			Type:        "bearer_token",
+			Header:      "Authorization",
+			Format:      "Bearer {token}",
+			OAuth2Grant: spec.OAuth2GrantClientCredentials,
+			TokenURL:    "https://auth.servicetitan.io/connect/token",
+			EnvVars:     []string{"ST_CLIENT_ID", "ST_CLIENT_SECRET"},
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "ST_CLIENT_ID", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: true},
+				{Name: "ST_CLIENT_SECRET", Kind: spec.AuthEnvVarKindAuthFlowInput, Required: true, Sensitive: true},
+			},
+			AdditionalHeaders: []spec.AdditionalAuthHeader{
+				{
+					Header: "ST-App-Key",
+					In:     "header",
+					Scheme: "apiKeyHeader",
+					EnvVar: spec.AuthEnvVar{
+						Name:      "ST_APP_KEY",
+						Kind:      spec.AuthEnvVarKindPerCall,
+						Required:  true,
+						Sensitive: true,
+					},
+				},
+			},
+		},
+		Config: spec.ConfigSpec{Format: "toml", Path: "~/.config/stcompose-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"customers": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/customers"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	configBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	configSrc := string(configBytes)
+	assert.Regexp(t, `StAppKey\s+string`, configSrc,
+		"Config struct must carry a field for the sibling apiKey env var")
+	assert.Contains(t, configSrc, `os.Getenv("ST_APP_KEY")`,
+		"Load() must read ST_APP_KEY from env")
+	assert.Contains(t, configSrc, `cfg.StAppKey = v`,
+		"Load() must assign ST_APP_KEY into the Config field")
+
+	clientBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientSrc := string(clientBytes)
+	assert.Contains(t, clientSrc, `req.Header.Set("ST-App-Key", v)`,
+		"client must set ST-App-Key on every outbound request when configured")
+}
+
+// OAuth2 client_credentials specs without a sibling apiKey scheme must not
+// emit the additional-header block. Guards against the previous emission
+// regressing into "every OAuth CLI now ships a useless extra Config field".
+func TestGenerateOAuth2WithoutAdditionalHeadersIsClean(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "ccclean",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:        "bearer_token",
+			Header:      "Authorization",
+			Format:      "Bearer {token}",
+			OAuth2Grant: spec.OAuth2GrantClientCredentials,
+			TokenURL:    "https://api.example.com/oauth/token",
+			EnvVars:     []string{"CCCLEAN_CLIENT_ID", "CCCLEAN_CLIENT_SECRET"},
+		},
+		Config: spec.ConfigSpec{Format: "toml", Path: "~/.config/ccclean-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	clientBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(clientBytes), "Composed-scheme per-call headers",
+		"specs without sibling per_call schemes must not emit the additional-header block")
+}
+
 func TestGenerateOAuth2ClientCredentialsAuthTemplate(t *testing.T) {
 	t.Parallel()
 
@@ -1228,6 +1335,62 @@ func TestBasicAuthHeader(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "./internal/config")
 }
 
+func TestGenerateHTTPBasicAuthHeaderEncodesSingleCredential(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "basic-single",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			In:      "header",
+			Header:  "Authorization",
+			Format:  "Basic {token}:",
+			EnvVars: []string{"BASIC_TOKEN"},
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "BASIC_TOKEN", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/basic-single/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/items",
+						Description: "List items",
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	const inlineTest = `package config
+
+import "testing"
+
+func TestSingleCredentialBasicAuthHeader(t *testing.T) {
+	cfg := &Config{BasicToken: "secret"}
+	if got := cfg.AuthHeader(); got != "Basic c2VjcmV0Og==" {
+		t.Fatalf("AuthHeader() = %q", got)
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "config", "basic_auth_single_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/config")
+}
+
 func countFiles(t *testing.T, root string) int {
 	t.Helper()
 
@@ -1502,6 +1665,18 @@ func TestGenerateBrowserChromeH3Transport(t *testing.T) {
 	// User-Agent on the H3 transport too; the generator must not emit a
 	// competing default.
 	assert.NotContains(t, string(clientGo), `req.Header.Set("Accept",`)
+
+	// ResponseHeaderTimeout override must emit on the H3 path too —
+	// surf's per-stage timeout (10s default) caps any browser-impersonate
+	// transport regardless of the H2/H3 variant. Without these asserts a
+	// future refactor could silently strip the override from the H3
+	// branch and slow-streaming H3 endpoints would fail at surf's default
+	// with no test catching it. Mirrors the assertions in
+	// TestBrowserTransport_OverridesResponseHeaderTimeout (which exercises
+	// the H2 default).
+	assert.Contains(t, string(clientGo), `enetxhttp "github.com/enetx/http"`)
+	assert.Contains(t, string(clientGo), "surfClient.GetTransport().(*enetxhttp.Transport)")
+	assert.Contains(t, string(clientGo), "t.ResponseHeaderTimeout = timeout")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/client")
@@ -2895,8 +3070,22 @@ func TestGenerateStoreUpsertBatchDispatchesToTypedTable(t *testing.T) {
 	assert.Contains(t, src, "func (s *Store) UpsertCampaigns(", "public typed upsert missing for campaigns")
 
 	// UpsertBatch must dispatch to the typed helper inside its switch.
-	assert.Regexp(t, `(?s)func \(s \*Store\) UpsertBatch\(.*case "campaigns":\s+if err := s\.upsertCampaignsTx\(`, src,
+	// The dispatch now captures the typed error so a savepoint can roll it
+	// back without unwinding the outer transaction (issue #1392); the
+	// shape went from `if err := s.upsertCampaignsTx(...)` to
+	// `typedErr = s.upsertCampaignsTx(...)`.
+	assert.Regexp(t, `(?s)func \(s \*Store\) UpsertBatch\(.*case "campaigns":\s+typedErr = s\.upsertCampaignsTx\(`, src,
 		"UpsertBatch must dispatch to upsertCampaignsTx — without this, paginated syncs leave typed tables empty (issue #268)")
+
+	// SAVEPOINT/RELEASE/ROLLBACK isolates typed-table failures so a NOT NULL
+	// constraint in a generated typed table does not unwind the outer
+	// transaction and strand the generic resources row (issue #1392).
+	assert.Contains(t, src, `tx.Exec("SAVEPOINT " + savepoint)`,
+		"UpsertBatch must open a SAVEPOINT before the typed dispatch (issue #1392)")
+	assert.Contains(t, src, `tx.Exec("ROLLBACK TO SAVEPOINT " + savepoint)`,
+		"UpsertBatch must ROLLBACK TO SAVEPOINT on typed-table failure so the generic row survives (issue #1392)")
+	assert.Contains(t, src, `tx.Exec("RELEASE SAVEPOINT " + savepoint)`,
+		"UpsertBatch must RELEASE the savepoint after either success or rollback so it is cleared from the stack (issue #1392)")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/store")
@@ -2971,8 +3160,10 @@ func TestUpsertDispatchPreservesMultiWordResourceCasing(t *testing.T) {
 
 	// UpsertBatch must dispatch on the runtime resource form (kebab) to
 	// match defaultSyncResources/syncResourcePath/resourceIDFieldOverrides.
+	// The dispatch captures the typed error into a local so a savepoint
+	// can roll it back without unwinding the outer transaction (#1392).
 	assert.Regexp(t,
-		`(?s)func \(s \*Store\) UpsertBatch\(.*case "audio-isolation":\s+if err := s\.upsertAudioIsolationTx\(`,
+		`(?s)func \(s \*Store\) UpsertBatch\(.*case "audio-isolation":\s+typedErr = s\.upsertAudioIsolationTx\(`,
 		store,
 		"UpsertBatch must dispatch on \"audio-isolation\" — the snake case string never matches the kebab runtime resource (issue #1064)")
 
@@ -6135,6 +6326,71 @@ func TestGenerate_CookieAuthUsesBrowserTemplate(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// TestGenerate_CookieAuthWindowsCompatibility asserts the cookie-auth template
+// emits a portable Python resolver and a Windows-aware fallback for the
+// `auth login --chrome` flow. Regression for issue #1101: hardcoded `python3`
+// and a non-Windows-friendly install hint made every cookie-auth CLI unusable
+// on Windows.
+func TestGenerate_CookieAuthWindowsCompatibility(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "winapp",
+		Version: "0.1.0",
+		BaseURL: "https://app.example.com",
+		Auth: spec.AuthConfig{
+			Type:         "cookie",
+			Header:       "Cookie",
+			In:           "cookie",
+			CookieDomain: ".example.com",
+			EnvVars:      []string{"WINAPP_COOKIES"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/winapp-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/api/items", Description: "List items"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "winapp-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	auth, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	content := string(auth)
+
+	// Python resolver tries all three common binary names rather than only `python3`.
+	// Match the struct-literal needles so `"python"` isn't vacuously satisfied as
+	// a substring of `"python3"`.
+	assert.Contains(t, content, "resolvePythonBinary")
+	assert.Contains(t, content, `{"python3", nil}`)
+	assert.Contains(t, content, `{"python", nil}`)
+	assert.Contains(t, content, `{"py", []string{"-3"}}`)
+
+	// pycookiecheat is skipped on Windows because it raises OSError there.
+	assert.Contains(t, content, `runtime.GOOS != "windows"`)
+	assert.Contains(t, content, "pycookiecheat does not support Windows")
+
+	// The resolved (bin, args) pair is carried on cookieTool so detection and
+	// extraction cannot disagree about which interpreter to invoke.
+	assert.Contains(t, content, "type cookieTool struct")
+	assert.Contains(t, content, "pyBin")
+	assert.Contains(t, content, "pyArgs")
+	assert.NotContains(t, content, `exec.Command("python3", "-c", script)`)
+	assert.Contains(t, content, `exec.Command(tool.pyBin,`)
+
+	// Windows users get a workable next step instead of the Unix install hint.
+	assert.Contains(t, content, "auth login --browser")
+	assert.Contains(t, content, "cookie-scoop-cli")
+}
+
 func TestGenerate_UserAgentOverrideGatedByBrowserTransport(t *testing.T) {
 	t.Parallel()
 
@@ -9160,6 +9416,118 @@ func TestGeneratePublicParamNamesAcrossCLISurfaces(t *testing.T) {
 	assert.Contains(t, skill, `public-params-pp-cli stores create --store-code example-value`)
 }
 
+// TestMCPHandlerPassesBodyArgsMap pins that POST/PUT/PATCH branches forward
+// the bodyArgs map directly to the client, not via a pre-marshal. The client's
+// do() json.Marshals what it receives; passing []byte causes encoding/json to
+// base64-encode it into a quoted string, which strict APIs reject.
+func TestMCPHandlerPassesBodyArgsMap(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcp-body-passthrough")
+	apiSpec.Resources["widgets"] = spec.Resource{
+		Description: "Widgets",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/widgets",
+				Description: "Create a widget",
+				Body: []spec.Param{
+					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
+				},
+			},
+			"replace": {
+				Method:      "PUT",
+				Path:        "/widgets/{id}",
+				Description: "Replace a widget",
+				Params: []spec.Param{
+					{Name: "id", Type: "string", Required: true, Description: "Widget id"},
+				},
+				Body: []spec.Param{
+					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
+				},
+			},
+			"update": {
+				Method:      "PATCH",
+				Path:        "/widgets/{id}",
+				Description: "Update a widget",
+				Params: []spec.Param{
+					{Name: "id", Type: "string", Required: true, Description: "Widget id"},
+				},
+				Body: []spec.Param{
+					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+
+	assert.NotContains(t, mcpSource, "json.Marshal(bodyArgs)",
+		"MCP handler must not pre-marshal bodyArgs: client.do() json.Marshals what it receives, "+
+			"so a []byte arrives base64-encoded on the wire and strict APIs reject the payload")
+
+	assert.Contains(t, mcpSource, "c.PostWithParams(path, params, bodyArgs)",
+		"POST branch must forward bodyArgs directly to the client")
+	assert.Contains(t, mcpSource, "c.PutWithParams(path, params, bodyArgs)",
+		"PUT branch must forward bodyArgs directly to the client")
+	assert.Contains(t, mcpSource, "c.PatchWithParams(path, params, bodyArgs)",
+		"PATCH branch must forward bodyArgs directly to the client")
+}
+
+// TestMCPBindingNumericTypesAcrossSpecShapes pins template wiring: both
+// OpenAPI-parsed shapes ("int", "bool") and internal-spec literals
+// ("integer", "boolean") flow through mcpBindingFunc to WithNumber /
+// WithBoolean across body and query surfaces.
+func TestMCPBindingNumericTypesAcrossSpecShapes(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcp-numeric-binding")
+	apiSpec.Resources["messages"] = spec.Resource{
+		Description: "Messages",
+		Endpoints: map[string]spec.Endpoint{
+			"openapi-shape": {
+				Method:      "POST",
+				Path:        "/messages",
+				Description: "Send a message (OpenAPI-parsed types)",
+				Params: []spec.Param{
+					{Name: "silent", Type: "bool", Description: "Suppress notifications"},
+				},
+				Body: []spec.Param{
+					{Name: "priority", Type: "int", Required: true, Description: "Priority level"},
+				},
+			},
+			"internal-shape": {
+				Method:      "POST",
+				Path:        "/messages/legacy",
+				Description: "Send a message (internal-spec types)",
+				Params: []spec.Param{
+					{Name: "enabled", Type: "boolean", Description: "Enabled"},
+				},
+				Body: []spec.Param{
+					{Name: "count", Type: "integer", Required: true, Description: "Count"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+
+	assert.Contains(t, mcpSource, `mcplib.WithBoolean("silent"`,
+		"OpenAPI bool query param must bind WithBoolean")
+	assert.Contains(t, mcpSource, `mcplib.WithNumber("priority", mcplib.Required()`,
+		"OpenAPI int body field must bind WithNumber (Pushover trigger case)")
+	assert.Contains(t, mcpSource, `mcplib.WithBoolean("enabled"`,
+		"internal-spec boolean query param must bind WithBoolean")
+	assert.Contains(t, mcpSource, `mcplib.WithNumber("count", mcplib.Required()`,
+		"internal-spec integer body field must bind WithNumber")
+}
+
 func TestGeneratePublicParamNamesInPromotedExamples(t *testing.T) {
 	t.Parallel()
 
@@ -9587,4 +9955,146 @@ func TestStoreSkipsDeadTablesForResourcesWithoutTypedUpsert(t *testing.T) {
 	// claim that UpsertBatch keeps writing to `resources` for unknown types.
 	assert.Contains(t, store, "upsertGenericResourceTx(tx, resourceType, id",
 		"UpsertBatch must still call upsertGenericResourceTx so renamed resources land in `resources`")
+}
+
+// TestGenerateEndpointTemplateEnvOverridesWireThrough: when the spec
+// declares an explicit env-var name for a template placeholder (e.g.
+// ST_TENANT_ID for {tenant}), every emitted artifact that touches env-var
+// resolution must use the override instead of the default
+// <APINAME>_<PLACEHOLDER> convention. Sync also needs to surface the
+// template-resolvable path without skipping it as "requires parent context".
+func TestGenerateEndpointTemplateEnvOverridesWireThrough(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:                 "servicetitan-crm",
+		Description:          "ServiceTitan CRM (test fixture)",
+		Version:              "1.0",
+		BaseURL:              "https://api.servicetitan.io",
+		EndpointTemplateVars: []string{"tenant"},
+		EndpointTemplateEnvOverrides: map[string]string{
+			"tenant": "ST_TENANT_ID",
+		},
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			EnvVars: []string{"ST_API_TOKEN"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/servicetitan-crm-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"customers": {
+				Description: "Customers",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/tenant/{tenant}/customers",
+						Pagination: &spec.Pagination{CursorParam: "pageToken", LimitParam: "pageSize"},
+						Response:   spec.ResponseDef{Type: "array", Item: "Customer"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Customer": {Fields: []spec.TypeField{{Name: "id", Type: "string"}}},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	urlGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "url.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `"tenant":\s+"ST_TENANT_ID"`, string(urlGo),
+		"templateVarEnvNames must use the spec-declared override, not the SERVICETITAN_CRM_TENANT default")
+	assert.NotContains(t, string(urlGo), "SERVICETITAN_CRM_TENANT",
+		"the default <APINAME>_<PLACEHOLDER> name must not leak when an override is declared")
+
+	configGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(configGo), `os.Getenv("ST_TENANT_ID")`,
+		"config Load() must read the override env var name")
+	assert.NotContains(t, string(configGo), `os.Getenv("SERVICETITAN_CRM_TENANT")`,
+		"the default env var name must not appear when an override exists")
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncSrc := string(syncGo)
+	assert.Contains(t, syncSrc, `"customers": "/tenant/{tenant}/customers"`,
+		"defaultSyncResources/syncResourcePath must include the tenant-scoped path with the placeholder preserved")
+	assert.Contains(t, syncSrc, `endpointTemplateVarSet = map[string]bool`,
+		"sync must declare the template-var set so the unresolved-key check ignores {tenant}")
+	assert.Contains(t, syncSrc, `slices.DeleteFunc`,
+		"sync must filter template-var placeholders out of the missing-keys list before warning")
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(readme), "ST_TENANT_ID",
+		"README must surface the override env var name in the runtime endpoint instructions")
+}
+
+// TestGenerateParentNoSubcommandRunE_WiredOnResourceParents: every generated
+// resource parent command must wire the parentNoSubcommandRunE helper so
+// invocations without a subcommand in --agent / --json mode get a structured
+// JSON error instead of human-readable cobra help on stdout. Before the fix,
+// agents driving the CLI silently received help text and exit 0. The helper
+// also has to be defined exactly once in helpers.go so the generated package
+// compiles. Multi-endpoint resources are exercised so a parent is actually
+// emitted (single-endpoint resources get promoted to a direct subcommand).
+func TestGenerateParentNoSubcommandRunE_WiredOnResourceParents(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("parent-runE-wired")
+	apiSpec.Resources = map[string]spec.Resource{
+		"items": {
+			Description: "Manage items",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/items", Description: "List items"},
+				"get":  {Method: "GET", Path: "/items/{id}", Description: "Get one item"},
+			},
+		},
+	}
+	apiSpec.Share = spec.ShareConfig{Enabled: true, SnapshotTables: []string{"items"}}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(helpersSrc), "func parentNoSubcommandRunE(flags *rootFlags)",
+		"helpers.go must define parentNoSubcommandRunE so generated parents can wire it")
+	assert.Contains(t, string(helpersSrc), `"subcommand required"`,
+		"the helper must emit a structured JSON error envelope")
+	assert.Contains(t, string(helpersSrc), `"valid_subcommands"`,
+		"the JSON envelope must list valid subcommands so agents can self-correct")
+
+	parentSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "items.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(parentSrc),
+		"the resource parent must call the shared helper instead of falling through to cobra's default help")
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(authSrc),
+		"the auth parent shares the same bug class and must wire the helper too")
+
+	profileSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "profile.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(profileSrc),
+		"the profile parent shares the same bug class and must wire the helper too")
+
+	workflowSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "channel_workflow.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(workflowSrc),
+		"the workflow parent shares the same bug class and must wire the helper too")
+
+	shareSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "share_commands.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(shareSrc),
+		"the share parent shares the same bug class and must wire the helper too")
 }

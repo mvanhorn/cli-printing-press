@@ -207,6 +207,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"goStoreType":           goStoreType,
 		"cobraFlagFunc":         cobraFlagFunc,
 		"cobraFlagFuncForParam": cobraFlagFuncForParam,
+		"mcpBindingFunc":        mcpBindingFunc,
 		"defaultVal":            defaultVal,
 		"defaultValForParam":    defaultValForParam,
 		"isConstDefault":        paramIsConstDefault,
@@ -248,6 +249,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"mcpParamDesc":           g.mcpParamDescription,
 		"flagName":               flagName,
 		"paramIdent":             paramIdent,
+		"paramWireName":          paramWireName,
 		"typeFieldIdent":         typeFieldIdent,
 		"safeTypeName":           safeTypeName,
 		"hasNonScalarType": func(types map[string]spec.TypeDef) bool {
@@ -335,8 +337,17 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		// `?limit=N` query param without honoring it; truncating client-
 		// side means the user-facing --limit flag works regardless.
 		// Surfaced by hackernews retro #350 finding F6.
-		"endpointNeedsClientLimit":       endpointNeedsClientLimit,
-		"envName":                        naming.EnvPrefix,
+		"endpointNeedsClientLimit": endpointNeedsClientLimit,
+		"envName":                  naming.EnvPrefix,
+		// endpointTemplateEnvName resolves the env-var name for a
+		// {placeholder} in EndpointTemplateVars. Returns the spec-declared
+		// override (e.g. ST_TENANT_ID for {tenant}) when one exists, else
+		// the conventional <APINAME>_<UPPER_PLACEHOLDER>. Bound to the
+		// generator's current spec; callers in templates pass just the
+		// placeholder name.
+		"endpointTemplateEnvName": func(placeholder string) string {
+			return s.EndpointTemplateEnvName(placeholder)
+		},
 		"safeName":                       safeSQLName,
 		"resourceIDFieldOverrideEntries": resourceIDFieldOverrideEntries,
 		"criticalResourceEntries":        criticalResourceEntries,
@@ -578,6 +589,7 @@ type HelperFlags struct {
 	HasMultiPositional bool // spec has endpoints with 2+ positional params → emit usageErr
 	HasDataLayer       bool // CLI has a local store (sync/search) → emit provenance helpers
 	HasClientLimit     bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
+	HasEmbeddedPaged   bool // at least one GET endpoint has detected embedded paged sub-resources → emit fetchEmbeddedPagedSubresource
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
@@ -590,6 +602,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 			}
 			if endpointNeedsClientLimit(e) {
 				flags.HasClientLimit = true
+			}
+			if len(e.EmbeddedPagedSubresources) > 0 {
+				flags.HasEmbeddedPaged = true
 			}
 			positionalCount := 0
 			for _, p := range e.Params {
@@ -611,6 +626,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 				}
 				if endpointNeedsClientLimit(e) {
 					flags.HasClientLimit = true
+				}
+				if len(e.EmbeddedPagedSubresources) > 0 {
+					flags.HasEmbeddedPaged = true
 				}
 				positionalCount := 0
 				for _, p := range e.Params {
@@ -942,8 +960,11 @@ func basicAuthEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
 			})
 		}
 	}
-	if len(envVars) < 2 {
+	if len(envVars) == 0 {
 		return nil
+	}
+	if len(envVars) == 1 {
+		return envVars
 	}
 	return envVars[:2]
 }
@@ -1615,6 +1636,9 @@ func (g *Generator) Generate() error {
 			"WARNING: spec.Printer is empty; README printer attribution will be omitted. "+
 				"Set `git config github.user` (your GitHub @handle) to populate this correctly before publishing.\n",
 		)
+	}
+	if g.Spec.HealthCheckPath == "" {
+		g.Spec.HealthCheckPath = deriveHealthCheckPath(g.Spec)
 	}
 	if err := g.prepareOutput(); err != nil {
 		return err
@@ -2882,6 +2906,19 @@ func isCursorParam(name string) bool {
 	return false
 }
 
+// isFlagLimitParam returns true when a parameter is the canonical
+// pagination/truncation `--limit` flag, which is always count-shaped
+// (integer) regardless of whether the spec declares it as `number`.
+// LLM-derived specs in `--docs` mode have produced `limit: number`,
+// which previously emitted `Float64Var`/`float64 flagLimit` and broke
+// `truncateJSONArray(data, flagLimit)` at compile time because the
+// helper expects an `int`. Keyed on the same case-insensitive match
+// `endpointNeedsClientLimit` uses, so the override fires exactly where
+// the truncate caller lives.
+func isFlagLimitParam(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), "limit")
+}
+
 func primitiveKind(t string) string {
 	switch strings.ToLower(strings.TrimSpace(t)) {
 	case "string":
@@ -3024,10 +3061,30 @@ func cobraFlagFunc(t string) string {
 	}
 }
 
+// mcpBindingFunc returns the mcplib.With* function name used in MCP tool
+// input-schema registration so numeric fields bind as JSON numbers (not
+// quoted strings) and pass through the generic makeAPIHandler intact.
+// Funnels through primitiveKind so OpenAPI-parsed shapes ("int", "float",
+// "bool") and internal-spec literals ("integer", "number", "boolean")
+// produce the same binding. Object/array bodies fall back to WithString
+// because they ride the --body-json fallback or a JSON-string flag.
+func mcpBindingFunc(t string) string {
+	switch primitiveKind(t) {
+	case "int", "float":
+		return "WithNumber"
+	case "bool":
+		return "WithBoolean"
+	default:
+		return "WithString"
+	}
+}
+
 // goTypeForParam returns the Go type for a parameter, overriding int→string
-// for ID-like parameters to avoid overflow and zero-value confusion, and
+// for ID-like parameters to avoid overflow and zero-value confusion,
 // numeric→string for pagination cursors so they survive scientific-notation
-// rendering of large Unix timestamps and millisecond cursors.
+// rendering of large Unix timestamps and millisecond cursors, and
+// float→int for the canonical `--limit` flag whose semantics are always
+// a count.
 func goTypeForParam(name, t string) string {
 	kind := primitiveKind(t)
 	if isIDParam(name) && kind == "int" {
@@ -3036,11 +3093,15 @@ func goTypeForParam(name, t string) string {
 	if isCursorParam(name) && (kind == "int" || kind == "float") {
 		return "string"
 	}
+	if isFlagLimitParam(name) && kind == "float" {
+		return "int"
+	}
 	return goType(t)
 }
 
 // cobraFlagFuncForParam returns the cobra flag function, overriding IntVar→StringVar
-// for ID-like parameters and Float64Var/IntVar→StringVar for pagination cursors.
+// for ID-like parameters, Float64Var/IntVar→StringVar for pagination cursors,
+// and Float64Var→IntVar for the canonical `--limit` flag.
 func cobraFlagFuncForParam(name, t string) string {
 	kind := primitiveKind(t)
 	if isIDParam(name) && kind == "int" {
@@ -3049,12 +3110,17 @@ func cobraFlagFuncForParam(name, t string) string {
 	if isCursorParam(name) && (kind == "int" || kind == "float") {
 		return "StringVar"
 	}
+	if isFlagLimitParam(name) && kind == "float" {
+		return "IntVar"
+	}
 	return cobraFlagFunc(t)
 }
 
 // defaultValForParam returns the default value for a flag parameter,
-// overriding int→string for ID-like parameters and numeric→string for
-// pagination cursors so the StringVar default matches the StringVar field type.
+// overriding int→string for ID-like parameters, numeric→string for
+// pagination cursors so the StringVar default matches the StringVar field type,
+// and float→int for the canonical `--limit` flag so the IntVar default
+// matches its coerced int type.
 func defaultValForParam(p spec.Param) string {
 	kind := primitiveKind(p.Type)
 	if isIDParam(p.Name) && kind == "int" {
@@ -3068,6 +3134,11 @@ func defaultValForParam(p spec.Param) string {
 			return fmt.Sprintf("%q", fmt.Sprintf("%v", p.Default))
 		}
 		return `""`
+	}
+	if isFlagLimitParam(p.Name) && kind == "float" {
+		coerced := p
+		coerced.Type = "integer"
+		return defaultVal(coerced)
 	}
 	return defaultVal(p)
 }
@@ -3569,6 +3640,42 @@ func anyEndpointMatches(apiSpec *spec.APISpec, predicate func(spec.Endpoint) boo
 		return false
 	}
 	return walk(apiSpec.Resources)
+}
+
+// findEndpointMatch returns the first endpoint for which predicate is true,
+// walking resources and sub-resources depth-first. Resource and endpoint
+// names are iterated in sorted order so callers that bake the returned
+// endpoint's path into generated output stay deterministic across runs.
+func findEndpointMatch(apiSpec *spec.APISpec, predicate func(spec.Endpoint) bool) (spec.Endpoint, bool) {
+	if apiSpec == nil {
+		return spec.Endpoint{}, false
+	}
+	var walk func(resources map[string]spec.Resource) (spec.Endpoint, bool)
+	walk = func(resources map[string]spec.Resource) (spec.Endpoint, bool) {
+		for _, rName := range sortedKeys(resources) {
+			resource := resources[rName]
+			for _, eName := range sortedKeys(resource.Endpoints) {
+				endpoint := resource.Endpoints[eName]
+				if predicate(endpoint) {
+					return endpoint, true
+				}
+			}
+			if e, ok := walk(resource.SubResources); ok {
+				return e, ok
+			}
+		}
+		return spec.Endpoint{}, false
+	}
+	return walk(apiSpec.Resources)
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // formBodyMaps renders per-flag form-field assignments for endpoints that send

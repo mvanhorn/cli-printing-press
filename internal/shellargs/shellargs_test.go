@@ -19,6 +19,19 @@ func TestSplit(t *testing.T) {
 		{"cli --name foo\\\nbar", []string{"cli", "--name", "foobar"}},
 		{"cli --name \"foo\\\nbar\"", []string{"cli", "--name", "foobar"}},
 		{`cli regex \\d+\\s+goat`, []string{"cli", "regex", `\d+\s+goat`}},
+		// Shell line comments: '#' at the start of a word drops the rest of
+		// the input. Cobra Example fields routinely use trailing comments.
+		{`cli sync                       # full schema + records refresh`, []string{"cli", "sync"}},
+		{`cli # whole-line comment`, []string{"cli"}},
+		{`cli foo --bar baz  # explanation`, []string{"cli", "foo", "--bar", "baz"}},
+		// Quoted '#' is part of the value, not a comment.
+		{`cli query "# not a comment"`, []string{"cli", "query", "# not a comment"}},
+		// '#' embedded inside an unquoted token (no leading whitespace) is a
+		// literal character — bash semantics treat '#' as a comment only at
+		// the start of a word.
+		{`cli regex foo#bar`, []string{"cli", "regex", "foo#bar"}},
+		// Escaped '#' is a literal.
+		{`cli \#literal`, []string{"cli", "#literal"}},
 	}
 	for _, tc := range cases {
 		got, err := Split(tc.in)

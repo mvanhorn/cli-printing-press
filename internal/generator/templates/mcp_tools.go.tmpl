@@ -47,22 +47,10 @@ func RegisterTools(s *server.MCPServer) {
 		mcplib.NewTool({{printf "%q" (printf "%s_%s" (snake $name) (snake $eName))}},
 			mcplib.WithDescription({{printf "%q" (composeMCPDesc $.APISpec $resource $endpoint $.MCPPublicCount $.MCPTotalCount)}}),
 {{- range $endpoint.Params}}
-{{- if eq .Type "integer"}}
-			mcplib.WithNumber({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
-{{- else if eq .Type "boolean"}}
-			mcplib.WithBoolean({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
-{{- else}}
-			mcplib.WithString({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
-{{- end}}
+			mcplib.{{mcpBindingFunc .Type}}({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
 {{- end}}
 {{- range $endpoint.Body}}
-{{- if eq .Type "integer"}}
-			mcplib.WithNumber({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
-{{- else if eq .Type "boolean"}}
-			mcplib.WithBoolean({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
-{{- else}}
-			mcplib.WithString({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
-{{- end}}
+			mcplib.{{mcpBindingFunc .Type}}({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
 {{- end}}
 {{- if $endpoint.BodyJSONFallback}}
 			mcplib.WithString("body_json"{{if $endpoint.BodyRequired}}, mcplib.Required(){{end}}, mcplib.Description("Request body as a JSON object string (this endpoint accepts a polymorphic schema: oneOf/anyOf)")),
@@ -94,22 +82,10 @@ func RegisterTools(s *server.MCPServer) {
 		mcplib.NewTool({{printf "%q" (printf "%s_%s_%s" (snake $name) (snake $subName) (snake $eName))}},
 			mcplib.WithDescription({{printf "%q" (composeMCPSubDesc $.APISpec $resource $subResource $endpoint $.MCPPublicCount $.MCPTotalCount)}}),
 {{- range $endpoint.Params}}
-{{- if eq .Type "integer"}}
-			mcplib.WithNumber({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
-{{- else if eq .Type "boolean"}}
-			mcplib.WithBoolean({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
-{{- else}}
-			mcplib.WithString({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
-{{- end}}
+			mcplib.{{mcpBindingFunc .Type}}({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
 {{- end}}
 {{- range $endpoint.Body}}
-{{- if eq .Type "integer"}}
-			mcplib.WithNumber({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
-{{- else if eq .Type "boolean"}}
-			mcplib.WithBoolean({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
-{{- else}}
-			mcplib.WithString({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
-{{- end}}
+			mcplib.{{mcpBindingFunc .Type}}({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
 {{- end}}
 {{- if $endpoint.BodyJSONFallback}}
 			mcplib.WithString("body_json"{{if $endpoint.BodyRequired}}, mcplib.Required(){{end}}, mcplib.Description("Request body as a JSON object string (this endpoint accepts a polymorphic schema: oneOf/anyOf)")),
@@ -261,7 +237,7 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 {{- if $hasBodyJSONFallback}}
 		// bodyJSONOverride holds an opaque body for endpoints whose request
 		// schema is a oneOf/anyOf and was wired with a single body_json input.
-		// When set, it replaces the marshaled bodyArgs map for POST/PUT/PATCH.
+		// When set, it replaces the bodyArgs map for POST/PUT/PATCH.
 		var bodyJSONOverride json.RawMessage
 {{- end}}
 		for _, binding := range bindings {
@@ -374,8 +350,7 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 				break
 			}
 {{- end}}
-			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.PostWithParams(path, params, body)
+			data, _, err = c.PostWithParams(path, params, bodyArgs)
 		case "PUT":
 {{- if $hasMultipartRequest}}
 			if multipart {
@@ -395,8 +370,7 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 				break
 			}
 {{- end}}
-			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.PutWithParams(path, params, body)
+			data, _, err = c.PutWithParams(path, params, bodyArgs)
 		case "PATCH":
 {{- if $hasMultipartRequest}}
 			if multipart {
@@ -416,8 +390,7 @@ func makeAPIHandler(method, pathTemplate string, bindings []mcpParamBinding, pos
 				break
 			}
 {{- end}}
-			body, _ := json.Marshal(bodyArgs)
-			data, _, err = c.PatchWithParams(path, params, body)
+			data, _, err = c.PatchWithParams(path, params, bodyArgs)
 		case "DELETE":
 			data, _, err = c.DeleteWithParams(path, params)
 		default:

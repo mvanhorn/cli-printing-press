@@ -110,6 +110,35 @@ func TestCobraFlagFuncAcceptsSpecScalarAliases(t *testing.T) {
 	assert.Equal(t, "StringVar", cobraFlagFuncForParam("cursor", "integer"))
 }
 
+// TestMCPBindingFunc pins that OpenAPI-parsed shapes ("int", "float",
+// "bool") and internal-spec literals ("integer", "number", "boolean")
+// produce the same MCP binding.
+func TestMCPBindingFunc(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		typ  string
+		want string
+	}{
+		{"integer", "WithNumber"},
+		{"int", "WithNumber"},
+		{"number", "WithNumber"},
+		{"float", "WithNumber"},
+		{"boolean", "WithBoolean"},
+		{"bool", "WithBoolean"},
+		{"string", "WithString"},
+		{"", "WithString"},
+		{"object", "WithString"},
+		{"array", "WithString"},
+		{"INTEGER", "WithNumber"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.typ, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, mcpBindingFunc(tt.typ))
+		})
+	}
+}
+
 func TestDefaultAndZeroValuesAcceptSpecScalarAliases(t *testing.T) {
 	t.Parallel()
 

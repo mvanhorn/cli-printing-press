@@ -316,6 +316,118 @@ func TestValidation(t *testing.T) {
 	}
 }
 
+// validateAdditionalAuthHeaders covers six distinct error paths; this table
+// hits each one and confirms the happy path still validates.
+func TestValidateAdditionalAuthHeadersErrors(t *testing.T) {
+	t.Parallel()
+
+	baseSpec := func(auth AuthConfig) APISpec {
+		return APISpec{
+			Name:    "auth-api",
+			BaseURL: "https://api.example.com",
+			Auth:    auth,
+			Resources: map[string]Resource{
+				"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+			},
+		}
+	}
+	perCall := func(name string) AuthEnvVar {
+		return AuthEnvVar{Name: name, Kind: AuthEnvVarKindPerCall, Required: true, Sensitive: true}
+	}
+	tests := []struct {
+		name    string
+		auth    AuthConfig
+		wantErr string
+	}{
+		{
+			name: "happy path: per_call sibling with header validates",
+			auth: AuthConfig{
+				Type:   "bearer_token",
+				Header: "Authorization",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "ST-App-Key", In: "header", EnvVar: perCall("ST_APP_KEY")},
+				},
+			},
+		},
+		{
+			name: "missing header",
+			auth: AuthConfig{
+				Type: "bearer_token",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "", EnvVar: perCall("ST_APP_KEY")},
+				},
+			},
+			wantErr: "auth.additional_headers[0].header is required",
+		},
+		{
+			name: "missing env_var name",
+			auth: AuthConfig{
+				Type: "bearer_token",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "ST-App-Key", EnvVar: AuthEnvVar{Kind: AuthEnvVarKindPerCall}},
+				},
+			},
+			wantErr: "auth.additional_headers[0].env_var.name is required",
+		},
+		{
+			name: "duplicate header",
+			auth: AuthConfig{
+				Type: "bearer_token",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "X-Same", EnvVar: perCall("FIRST_KEY")},
+					{Header: "X-Same", EnvVar: perCall("SECOND_KEY")},
+				},
+			},
+			wantErr: `auth.additional_headers contains duplicate header "X-Same"`,
+		},
+		{
+			name: "duplicate env_var name",
+			auth: AuthConfig{
+				Type: "bearer_token",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "X-First", EnvVar: perCall("SAME_KEY")},
+					{Header: "X-Second", EnvVar: perCall("SAME_KEY")},
+				},
+			},
+			wantErr: `auth.additional_headers contains duplicate env_var.name "SAME_KEY"`,
+		},
+		{
+			name: "collision with primary EnvVarSpecs",
+			auth: AuthConfig{
+				Type:        "bearer_token",
+				EnvVarSpecs: []AuthEnvVar{{Name: "SHARED_KEY", Kind: AuthEnvVarKindPerCall, Required: true}},
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "ST-App-Key", EnvVar: perCall("SHARED_KEY")},
+				},
+			},
+			wantErr: `auth.additional_headers[0].env_var.name "SHARED_KEY" collides with env_var_specs`,
+		},
+		{
+			name: "non-per_call kind",
+			auth: AuthConfig{
+				Type: "bearer_token",
+				AdditionalHeaders: []AdditionalAuthHeader{
+					{Header: "ST-App-Key", EnvVar: AuthEnvVar{Name: "ST_APP_KEY", Kind: AuthEnvVarKindAuthFlowInput, Required: true}},
+				},
+			},
+			wantErr: `auth.additional_headers[0].env_var.kind must be "per_call" (got "auth_flow_input")`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			candidate := baseSpec(tt.auth)
+			err := candidate.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestAuthEnvVarSpecsNormalizeAndValidate(t *testing.T) {
 	baseSpec := func(auth AuthConfig) APISpec {
 		return APISpec{

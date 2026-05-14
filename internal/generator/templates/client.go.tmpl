@@ -31,6 +31,7 @@ import (
 	"time"
 
 {{- if .UsesBrowserHTTPTransport}}
+	enetxhttp "github.com/enetx/http"
 	"github.com/enetx/surf"
 {{ end}}
 	"{{modulePath}}/internal/cliutil"
@@ -287,6 +288,22 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 		builder = builder.Session()
 	}
 	surfClient := builder.Build().Unwrap()
+	// Surf's underlying *http.Transport sets ResponseHeaderTimeout to
+	// its package default (10s in surf v1.x), which caps how long we
+	// wait for the FIRST response byte independent of the overall
+	// client Timeout. Slow-streaming endpoints (RAG queries, LLM
+	// completions, server-side rendering) routinely take longer than
+	// that to emit headers; without this override the user-facing
+	// --timeout flag has no effect on transport-layer cutoffs and
+	// requests fail with "net/http: timeout awaiting response headers"
+	// at the package default regardless of --timeout. Override so the
+	// transport-layer ceiling tracks the user's intent.
+	// surf's GetTransport returns *enetxhttp.Transport (surf's HTTP fork
+	// used for browser-impersonate features), NOT *net/http.Transport,
+	// so the assertion targets the enetx package's Transport type.
+	if t, ok := surfClient.GetTransport().(*enetxhttp.Transport); ok {
+		t.ResponseHeaderTimeout = timeout
+	}
 	httpClient := surfClient.Std()
 	httpClient.Timeout = timeout
 	if jar != nil {
@@ -397,7 +414,7 @@ func (c *Client) cacheKey(path string, params map[string]string) string {
 	if c.Config != nil {
 		key += "|auth_source=" + c.Config.AuthSource
 		if authHeader := c.Config.AuthHeader(); authHeader != "" {
-			authHash := sha256.Sum256([]byte(c.Config.AuthHeader()))
+			authHash := sha256.Sum256([]byte(authHeader))
 			key += "|auth=" + hex.EncodeToString(authHash[:8])
 		}
 		if c.Config.Path != "" {
@@ -927,6 +944,18 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 			req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
 {{- end}}
 		}
+{{- if .Auth.AdditionalHeaders}}
+		// Composed-scheme per-call headers carried by sibling apiKey schemes.
+		// Sent independently of authHeader: the API requires both the primary
+		// auth header and each sibling header on every request.
+		if c.Config != nil {
+{{- range .Auth.AdditionalHeaders}}
+			if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
+				req.Header.Set("{{.Header}}", v)
+			}
+{{- end}}
+		}
+{{- end}}
 {{- range .RequiredHeaders}}
 		req.Header.Set("{{.Name}}", "{{.Value}}")
 {{- end}}
