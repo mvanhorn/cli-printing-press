@@ -1023,7 +1023,14 @@ func happyPathFileFixtureSkip(args []string, cliDir string) string {
 
 func flagNameSuggestsFile(name string) bool {
 	n := strings.ToLower(name)
-	return strings.Contains(n, "file") || strings.Contains(n, "csv")
+	if n == "file" || n == "csv" {
+		return true
+	}
+	// Anchor on a separator so `--profile` (contains "file") and similar
+	// non-file flags don't trigger spurious skips. Common shapes covered:
+	// `--input-file`, `--output_file`, `--import-csv`, `--config-csv`.
+	return strings.HasSuffix(n, "-file") || strings.HasSuffix(n, "_file") ||
+		strings.HasSuffix(n, "-csv") || strings.HasSuffix(n, "_csv")
 }
 
 func fileExistsRelativeTo(p, cliDir string) bool {

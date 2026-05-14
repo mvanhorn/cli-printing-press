@@ -222,6 +222,35 @@ func TestHappyPathFileFixtureSkip(t *testing.T) {
 			args:     []string{"upload", "--CSV", "missing.csv"},
 			wantSkip: true,
 		},
+		{
+			// --profile contains "file" as a substring but is not a file
+			// flag; spurious skips here would silently drop test signal.
+			name:     "profile flag does not trigger skip",
+			args:     []string{"deploy", "--profile", "staging"},
+			wantSkip: false,
+		},
+		{
+			name:     "hyphenated suffix matches",
+			args:     []string{"upload", "--input-file", "missing.txt"},
+			wantSkip: true,
+		},
+		{
+			name:     "underscore suffix matches",
+			args:     []string{"upload", "--output_file", "missing.txt"},
+			wantSkip: true,
+		},
+		{
+			name:     "csv suffix matches",
+			args:     []string{"import", "--import-csv", "missing.csv"},
+			wantSkip: true,
+		},
+		{
+			// --file-format takes a format identifier (csv/json), not a path.
+			// Greptile's suggestion correctly excludes the prefix shape.
+			name:     "file prefix without suffix anchor does not match",
+			args:     []string{"export", "--file-format", "csv"},
+			wantSkip: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
