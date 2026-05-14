@@ -118,10 +118,17 @@ profile by name when the installed backend supports it.`,
 			if err != nil {
 				fmt.Fprintln(w, red("No cookie extraction tool found."))
 				fmt.Fprintln(w, "")
-				fmt.Fprintln(w, "Install one of:")
-				fmt.Fprintln(w, "  pip install pycookiecheat          # Python (recommended)")
-				fmt.Fprintln(w, "  brew install barnardb/cookies/cookies  # Homebrew")
-				fmt.Fprintln(w, "  cargo install cookie-scoop-cli     # Rust")
+				if runtime.GOOS == "windows" {
+					fmt.Fprintln(w, "pycookiecheat does not support Windows. Read cookies from a live Chrome session instead:")
+					fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --browser\n\n")
+					fmt.Fprintln(w, "Or install a cross-platform reader:")
+					fmt.Fprintln(w, "  cargo install cookie-scoop-cli     # Rust")
+				} else {
+					fmt.Fprintln(w, "Install one of:")
+					fmt.Fprintln(w, "  pip install pycookiecheat          # Python (recommended)")
+					fmt.Fprintln(w, "  brew install barnardb/cookies/cookies  # Homebrew")
+					fmt.Fprintln(w, "  cargo install cookie-scoop-cli     # Rust")
+				}
 				return authErr(fmt.Errorf("no cookie tool found"))
 			}
 
@@ -1135,21 +1142,48 @@ func resolveProfileByName(name string) (string, error) {
 
 // --- Cookie extraction tools ---
 
-// detectCookieTool checks for available cookie extraction tools in preference order.
-func detectCookieTool() (string, error) {
-	tools := []struct {
-		name  string
-		check []string
+// resolvePythonBinary finds a usable Python 3 interpreter, returning the
+// executable name and any leading args (e.g. `py -3` on Windows). pycookiecheat
+// is the only tool the CLI shells into Python for, and Windows ships
+// `python.exe` or the `py` launcher rather than `python3`.
+func resolvePythonBinary() (string, []string, bool) {
+	candidates := []struct {
+		bin  string
+		args []string
 	}{
-		{"pycookiecheat", []string{"python3", "-c", "import pycookiecheat"}},
-		{"cookies", []string{"cookies", "--help"}},
-		{"cookie-scoop", []string{"cookie-scoop", "--help"}},
+		{"python3", nil},
+		{"python", nil},
+		{"py", []string{"-3"}},
 	}
-
-	for _, tool := range tools {
-		if err := exec.Command(tool.check[0], tool.check[1:]...).Run(); err == nil {
-			return tool.name, nil
+	for _, c := range candidates {
+		if _, err := exec.LookPath(c.bin); err == nil {
+			return c.bin, c.args, true
 		}
+	}
+	return "", nil, false
+}
+
+// detectCookieTool checks for available cookie extraction tools in preference order.
+// pycookiecheat is skipped on Windows because upstream raises
+// `OSError("This script only works on MacOS or Linux.")` regardless of whether
+// the import probe succeeds.
+func detectCookieTool() (string, error) {
+	if runtime.GOOS != "windows" {
+		if bin, args, ok := resolvePythonBinary(); ok {
+			probeArgs := append(append([]string{}, args...), "-c", "import pycookiecheat")
+			if err := exec.Command(bin, probeArgs...).Run(); err == nil {
+				return "pycookiecheat", nil
+			}
+		}
+	}
+	if err := exec.Command("cookies", "--help").Run(); err == nil {
+		return "cookies", nil
+	}
+	if err := exec.Command("cookie-scoop", "--help").Run(); err == nil {
+		return "cookie-scoop", nil
+	}
+	if runtime.GOOS == "windows" {
+		return "", fmt.Errorf("no cookie extraction tool found; pycookiecheat does not support Windows. Use `auth login --browser` (live Chrome via CDP) or install cookie-scoop-cli")
 	}
 	return "", fmt.Errorf("no cookie extraction tool found; install one: pip install pycookiecheat")
 }
@@ -1194,8 +1228,12 @@ func extractViaPycookiecheat(domain, profileDir string) (string, error) {
 		)
 	}
 
+	bin, args, ok := resolvePythonBinary()
+	if !ok {
+		return "", fmt.Errorf("python interpreter not found on PATH (tried python3, python, py)")
+	}
 	var out bytes.Buffer
-	cmd := exec.Command("python3", "-c", script)
+	cmd := exec.Command(bin, append(append([]string{}, args...), "-c", script)...)
 	cmd.Stdout = &out
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
