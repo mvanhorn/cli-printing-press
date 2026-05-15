@@ -6,11 +6,49 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"{{modulePath}}/internal/store"
 	"github.com/spf13/cobra"
 )
+
+// staleTimestampFields lists every JSON key the press considers a
+// modification timestamp when looking for stale items. Order matters:
+// the WHERE/ORDER BY and the Go-side scan iterate this list in order,
+// so the first key present on a row wins. Includes the historical
+// updatedAt/updated_at pair plus variants commonly seen in mainstream
+// APIs (Asana modified_at, Notion last_edited_time, Stripe updated, etc.)
+// so a `stale` query against any of them returns real data instead of
+// silently empty results.
+var staleTimestampFields = []string{
+	"updatedAt",
+	"updated_at",
+	"updatedDate",
+	"modifiedAt",
+	"modified_at",
+	"lastModified",
+	"last_modified",
+	"lastEditedTime",
+	"last_edited_time",
+	"updated",
+	"last_updated",
+}
+
+// buildStaleTimestampPredicate emits SQL clauses (with the same `?`
+// placeholder consumed for every field) that match a row whose
+// modification timestamp is older than cutoff or sort by the earliest
+// such timestamp. Centralising the field list keeps WHERE / ORDER BY /
+// in-Go scan in lockstep.
+func buildStaleTimestampPredicate() (whereClause, orderClause string, placeholders int) {
+	whereParts := make([]string, 0, len(staleTimestampFields))
+	orderParts := make([]string, 0, len(staleTimestampFields))
+	for _, f := range staleTimestampFields {
+		whereParts = append(whereParts, fmt.Sprintf("json_extract(data, '$.%s') < ?", f))
+		orderParts = append(orderParts, fmt.Sprintf("json_extract(data, '$.%s') ASC", f))
+	}
+	return strings.Join(whereParts, " OR "), strings.Join(orderParts, ", "), len(whereParts)
+}
 
 func newStaleCmd(flags *rootFlags) *cobra.Command {
 	var days int
@@ -48,18 +86,19 @@ the specified number of days. Useful for identifying forgotten or blocked work.`
 
 			cutoff := time.Now().AddDate(0, 0, -days).Format(time.RFC3339)
 
-			// Query resources table for items not updated since cutoff
-			query := `SELECT id, resource_type, data FROM resources
-				WHERE json_extract(data, '$.updatedAt') < ?
-				   OR json_extract(data, '$.updated_at') < ?`
-			qArgs := []any{cutoff, cutoff}
+			whereClause, orderClause, n := buildStaleTimestampPredicate()
+			query := "SELECT id, resource_type, data FROM resources WHERE (" + whereClause + ")"
+			qArgs := make([]any, 0, n+4)
+			for i := 0; i < n; i++ {
+				qArgs = append(qArgs, cutoff)
+			}
 
 			if team != "" {
 				query += ` AND (json_extract(data, '$.teamId') = ? OR json_extract(data, '$.team_id') = ? OR json_extract(data, '$.team') = ?)`
 				qArgs = append(qArgs, team, team, team)
 			}
 
-			query += ` ORDER BY json_extract(data, '$.updatedAt') ASC, json_extract(data, '$.updated_at') ASC`
+			query += " ORDER BY " + orderClause
 
 			// Get total count first
 			countQuery := "SELECT COUNT(*) FROM (" + query + ")"
@@ -112,7 +151,7 @@ the specified number of days. Useful for identifying forgotten or blocked work.`
 
 				updatedAt := ""
 				daysSince := days
-				for _, key := range []string{"updatedAt", "updated_at", "updatedDate"} {
+				for _, key := range staleTimestampFields {
 					if v, ok := obj[key]; ok {
 						updatedAt = fmt.Sprintf("%v", v)
 						if t, err := time.Parse(time.RFC3339, updatedAt); err == nil {
