@@ -5034,25 +5034,28 @@ func selectDescription(summary, description string) string {
 }
 
 func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Pagination {
-	paramNames := map[string]struct{}{}
+	// Map lowercase parameter name back to the spec's original casing so
+	// the detected LimitParam/CursorParam preserves whatever the API
+	// expects (e.g. Google APIs reject `pagesize` but accept `pageSize`).
+	originalCase := map[string]string{}
 	for _, p := range params {
-		paramNames[strings.ToLower(p.Name)] = struct{}{}
+		originalCase[strings.ToLower(p.Name)] = p.Name
 	}
 
 	var pag spec.Pagination
 
 	// Detect limit param
 	for _, name := range []string{"limit", "maxresults", "pagesize", "page_size", "max_results", "per_page", "page[size]"} {
-		if _, ok := paramNames[name]; ok {
-			pag.LimitParam = name
+		if orig, ok := originalCase[name]; ok {
+			pag.LimitParam = orig
 			break
 		}
 	}
 
 	// Detect cursor param and pagination type
 	for _, name := range []string{"pagetoken", "page_token"} {
-		if _, ok := paramNames[name]; ok {
-			pag.CursorParam = name
+		if orig, ok := originalCase[name]; ok {
+			pag.CursorParam = orig
 			pag.Type = "page_token"
 			pag.NextCursorPath = "nextPageToken"
 			break
@@ -5060,8 +5063,8 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	}
 	if pag.Type == "" {
 		for _, name := range []string{"after", "cursor", "page[cursor]"} {
-			if _, ok := paramNames[name]; ok {
-				pag.CursorParam = name
+			if orig, ok := originalCase[name]; ok {
+				pag.CursorParam = orig
 				pag.Type = "cursor"
 				break
 			}
@@ -5069,8 +5072,8 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	}
 	if pag.Type == "" {
 		for _, name := range []string{"offset"} {
-			if _, ok := paramNames[name]; ok {
-				pag.CursorParam = name
+			if orig, ok := originalCase[name]; ok {
+				pag.CursorParam = orig
 				pag.Type = "offset"
 				break
 			}

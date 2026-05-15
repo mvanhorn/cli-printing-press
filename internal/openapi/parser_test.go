@@ -6113,3 +6113,55 @@ paths:
 			"default captured verbatim; generator must use %q to escape at emit time")
 	})
 }
+
+// TestDetectPaginationPreservesParameterCase guards #1353 — Google APIs
+// declare `pageSize` (camelCase) and reject the lowercased `pagesize`
+// the detector previously stored. The detector matches case-insensitively
+// but must store the parameter name as it appears in the spec.
+func TestDetectPaginationPreservesParameterCase(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		paramName string
+		wantLimit string
+	}{
+		{"google camelCase pageSize", "pageSize", "pageSize"},
+		{"snake_case page_size", "page_size", "page_size"},
+		{"plain lowercase limit", "limit", "limit"},
+		{"mixed-case maxResults", "maxResults", "maxResults"},
+		{"per_page", "per_page", "per_page"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pag := detectPagination([]spec.Param{{Name: tc.paramName}}, nil)
+			require.NotNil(t, pag, "detector should classify %q as a paginator", tc.paramName)
+			assert.Equal(t, tc.wantLimit, pag.LimitParam)
+		})
+	}
+}
+
+func TestDetectPaginationPreservesCursorParamCase(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		paramName string
+		wantParam string
+		wantType  string
+	}{
+		{"google camelCase pageToken", "pageToken", "pageToken", "page_token"},
+		{"snake_case page_token", "page_token", "page_token", "page_token"},
+		{"plain after", "after", "after", "cursor"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pag := detectPagination([]spec.Param{{Name: tc.paramName}}, nil)
+			require.NotNil(t, pag, "detector should classify %q as a cursor paginator", tc.paramName)
+			assert.Equal(t, tc.wantParam, pag.CursorParam)
+			assert.Equal(t, tc.wantType, pag.Type)
+		})
+	}
+}
