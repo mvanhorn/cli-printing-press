@@ -282,6 +282,93 @@ func TestDiscoverPathParamProbes_EmptyBinaryReturnsNil(t *testing.T) {
 	assert.Nil(t, discoverPathParamProbes(""))
 }
 
+// TestDiscoverPathParamProbes_SkipsParentGroupsWithPlaceholders pins the
+// leaf-only contract: a parent/group command whose Usage line happens to
+// carry a <placeholder> token (e.g. `cli zones <zone-id> [command]`)
+// must NOT be probed. Probing it would invoke the synthetic value as a
+// subcommand, producing an "unknown command" exit that silently passes
+// the sentinel check and inflates Total / Passed without testing
+// anything meaningful.
+func TestDiscoverPathParamProbes_SkipsParentGroupsWithPlaceholders(t *testing.T) {
+	binary := buildParentGroupWithPlaceholderFixture(t)
+	probes := discoverPathParamProbes(binary)
+	paths := make([]string, 0, len(probes))
+	for _, p := range probes {
+		paths = append(paths, strings.Join(p.path, " "))
+	}
+	assert.NotContains(t, paths, "zones",
+		"depth-1 leaves are skipped, but this would have caught a depth-1 'parent' bug regardless")
+	assert.NotContains(t, paths, "zones records",
+		"parent group with <zone-id> in Usage must not be probed; only true leaves qualify")
+	assert.Contains(t, paths, "zones records list",
+		"the true leaf at depth 3 should still be probed")
+}
+
+func buildParentGroupWithPlaceholderFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, `package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	args := os.Args[1:]
+	joined := strings.Join(args, " ")
+	switch {
+	case joined == "" || joined == "--help":
+		fmt.Println(`+"`"+`Test
+
+Usage:
+  cli [command]
+
+Available Commands:
+  zones  Manage zones (this group carries a placeholder in Usage)
+`+"`"+`)
+	case joined == "zones --help":
+		// Parent group whose Usage carries a placeholder. Listing
+		// children means it is NOT a leaf — the probe must skip it.
+		fmt.Println(`+"`"+`Manage zones
+
+Usage:
+  cli zones <zone-id> [command]
+
+Available Commands:
+  records  Manage records under a zone
+`+"`"+`)
+	case joined == "zones records --help":
+		// Same: parent group, listed children, has placeholder.
+		fmt.Println(`+"`"+`Manage records
+
+Usage:
+  cli zones records <zone-id> [command]
+
+Available Commands:
+  list  List records
+`+"`"+`)
+	case joined == "zones records list --help":
+		// True leaf at depth 3 — should be probed.
+		fmt.Println(`+"`"+`List records
+
+Usage:
+  cli zones records list <zone-id> [flags]
+
+Flags:
+  -h, --help help
+`+"`"+`)
+	}
+}
+`)
+	binaryPath := filepath.Join(dir, "cli")
+	out, err := exec.Command("go", "build", "-o", binaryPath, mainFile).CombinedOutput()
+	require.NoError(t, err, "build fixture: %s", string(out))
+	return binaryPath
+}
+
 func TestRunPathParamProbes_DistinguishesFailureModes(t *testing.T) {
 	binary := buildPathParamProbeFixture(t)
 
@@ -296,7 +383,7 @@ func TestRunPathParamProbes_DistinguishesFailureModes(t *testing.T) {
 	broken := byCommand["tags contacts list"]
 	assert.False(t, broken.Passed, "leaf that returns 'is required' is the bug shape; must be flagged")
 	assert.NotEmpty(t, broken.Reason)
-	assert.Contains(t, broken.Args, "--dry-run")
+	assert.NotEmpty(t, broken.Positionals, "Positionals should capture the synthetic values injected for the placeholder")
 
 	working := byCommand["tags contacts get"]
 	assert.True(t, working.Passed, "leaf that accepts the positional must pass")

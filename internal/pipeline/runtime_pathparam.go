@@ -42,11 +42,15 @@ const pathParamProbeMaxDepth = 6
 const pathParamProbeTimeout = 10 * time.Second
 
 // PathParamProbeResult records one positional-binding probe.
+// Positionals lists only the synthetic values injected for each
+// placeholder; Command already carries the human-readable command path,
+// so the two fields together describe the full invocation without
+// duplicating the path in both places.
 type PathParamProbeResult struct {
-	Command string   `json:"command"`
-	Args    []string `json:"args,omitempty"`
-	Passed  bool     `json:"passed"`
-	Reason  string   `json:"reason,omitempty"`
+	Command     string   `json:"command"`
+	Positionals []string `json:"positionals,omitempty"`
+	Passed      bool     `json:"passed"`
+	Reason      string   `json:"reason,omitempty"`
 }
 
 // discoverPathParamProbes walks the binary's cobra tree by recursively
@@ -57,6 +61,13 @@ type PathParamProbeResult struct {
 // double-counting them in Total / Critical. Nodes whose --help fails
 // are skipped rather than counted as failures (a non-responsive --help
 // is its own bug, surfaced elsewhere).
+//
+// Only leaves (nodes whose --help advertises no children) are probed.
+// A parent/group whose Usage happened to carry a <placeholder> token
+// (e.g. `cli tags <filter> [command]`) would otherwise be invoked with
+// the synthetic value as a subcommand, producing an "unknown command"
+// exit that silently passes the sentinel check and inflates Total /
+// Passed without testing anything meaningful.
 func discoverPathParamProbes(binary string) []pathParamProbe {
 	if binary == "" {
 		return nil
@@ -73,7 +84,9 @@ func discoverPathParamProbes(binary string) []pathParamProbe {
 			return
 		}
 
-		if len(path) >= 2 {
+		children := parseHelpCommands(helpOut)
+
+		if len(path) >= 2 && len(children) == 0 {
 			if placeholders := extractPositionalsFromUsage(helpOut); len(placeholders) > 0 {
 				probes = append(probes, pathParamProbe{
 					path:         append([]string(nil), path...),
@@ -82,7 +95,7 @@ func discoverPathParamProbes(binary string) []pathParamProbe {
 			}
 		}
 
-		for _, child := range parseHelpCommands(helpOut) {
+		for _, child := range children {
 			childPath := append(append([]string(nil), path...), child.Name)
 			walk(childPath)
 		}
@@ -133,17 +146,19 @@ func runPathParamProbes(binary string, env []string, paramDefaults map[string]st
 	}
 	results := make([]PathParamProbeResult, 0, len(probes))
 	for _, probe := range probes {
-		invokeArgs := append([]string{}, probe.path...)
+		positionals := make([]string, 0, len(probe.placeholders))
 		for _, name := range probe.placeholders {
-			invokeArgs = append(invokeArgs, resolvePositionalValue(name, paramDefaults))
+			positionals = append(positionals, resolvePositionalValue(name, paramDefaults))
 		}
+		invokeArgs := append([]string{}, probe.path...)
+		invokeArgs = append(invokeArgs, positionals...)
 		invokeArgs = append(invokeArgs, "--dry-run")
 
 		out, err := runCLIWithOutput(binary, invokeArgs, env, pathParamProbeTimeout)
 		result := PathParamProbeResult{
-			Command: strings.Join(probe.path, " "),
-			Args:    invokeArgs,
-			Passed:  true,
+			Command:     strings.Join(probe.path, " "),
+			Positionals: positionals,
+			Passed:      true,
 		}
 		// Only the "missing positional" sentinel counts as a probe failure.
 		// Other errors (auth, transient, intentional non-zero) belong to
