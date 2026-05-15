@@ -289,7 +289,7 @@ Session state files (`session-state.json`) contain live browser cookies and auth
 tokens captured during an authenticated browser-sniff run. The containment model
 is **by location**, not by archive-time cleanup: `SESSION_STATE_FILE` (set in
 SKILL.md's "Run Initialization") points at
-`${TMPDIR:-/tmp}/printing-press/session/$RUN_ID/session-state.json`, outside
+`${TMPDIR:-/tmp}/printing-press-$(id -u)/session/$RUN_ID/session-state.json`, outside
 `$DISCOVERY_DIR`. The Phase 5.5 archive `cp -r "$DISCOVERY_DIR"` therefore cannot
 pick it up, regardless of operator action. After the archive completes, the
 Phase 5.5 block also wipes `$SESSION_DIR` so back-to-back runs do not accumulate

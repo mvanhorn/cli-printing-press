@@ -533,7 +533,13 @@ STAMP="$(date +%Y-%m-%d-%H%M%S)"
 # browser-sniff) lives OUTSIDE $API_RUN_DIR so the Phase 5.5 archive
 # `cp -r "$DISCOVERY_DIR"` cannot pick it up. Containment by location, not by
 # manual rm-before-archive.
-SESSION_DIR="${TMPDIR:-/tmp}/printing-press/session/$RUN_ID"
+#
+# Base prefix is user-scoped (`printing-press-$(id -u)`) so that on a Linux
+# host with a shared /tmp, the umask-077 subshell below does not lock the
+# top-level `printing-press` directory to a single user. macOS already gives
+# us a per-user $TMPDIR; the $(id -u) suffix keeps semantics identical there.
+SESSION_BASE="${TMPDIR:-/tmp}/printing-press-$(id -u)"
+SESSION_DIR="$SESSION_BASE/session/$RUN_ID"
 SESSION_STATE_FILE="$SESSION_DIR/session-state.json"
 
 mkdir -p "$RESEARCH_DIR" "$PROOFS_DIR" "$PIPELINE_DIR" "$CLI_WORK_DIR"
@@ -541,7 +547,9 @@ mkdir -p "$RESEARCH_DIR" "$PROOFS_DIR" "$PIPELINE_DIR" "$CLI_WORK_DIR"
 # at creation, not after a follow-up chmod. The two-step `mkdir; chmod` form
 # leaves a TOCTOU window where a concurrent process could open the directory
 # (and any session-state.json written into it) while perms are still
-# umask-derived (typically 0755 on Linux).
+# umask-derived (typically 0755 on Linux). The umask propagates to every
+# directory `mkdir -p` creates; the user-scoped $SESSION_BASE above is what
+# keeps that from blocking other users on the same host.
 (umask 077 && mkdir -p "$SESSION_DIR")
 STATE_FILE="$API_RUN_DIR/state.json"
 ```

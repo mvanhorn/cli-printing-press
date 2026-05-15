@@ -345,7 +345,7 @@ If the result is `SESSION_EXPIRED` (login link visible, no account link), the pr
 
 Do NOT silently proceed without auth when the session has expired. The authenticated surface is often the most valuable part of the API (order history, rewards, saved data).
 
-If cookies are verified, proceed to Steps 2a/2b capture flow with the authenticated session loaded. The session state file is stored at `$SESSION_STATE_FILE` (under `${TMPDIR:-/tmp}/printing-press/session/$RUN_ID/`, outside `$DISCOVERY_DIR`, so it cannot reach archived manuscripts).
+If cookies are verified, proceed to Steps 2a/2b capture flow with the authenticated session loaded. The session state file is stored at `$SESSION_STATE_FILE` (under `${TMPDIR:-/tmp}/printing-press-$(id -u)/session/$RUN_ID/`, outside `$DISCOVERY_DIR`, so it cannot reach archived manuscripts).
 
 #### Step 2a.0: Direct-API-probe fallback (try before browser-use when WAF-protected)
 
