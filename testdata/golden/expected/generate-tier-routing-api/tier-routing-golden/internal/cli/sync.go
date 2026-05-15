@@ -68,7 +68,17 @@ Exit codes & warnings:
   emit {"event":"sync_warning","reason":"exit_policy_default_changed",
   ...} so callers can detect that a partial failure was tolerated. Pass
   --strict to exit non-zero on any per-resource failure. Exit is always
-  non-zero when every selected resource failed, regardless of --strict.`,
+  non-zero when every selected resource failed, regardless of --strict.
+
+Resource scoping:
+  --resources runs the named flat resources, plus any parent-keyed
+  dependent whose own name is listed OR whose parent table is listed.
+  Naming a parent therefore cascades to its dependents (so "sync this
+  parent and its children" works without listing every nested resource
+  by hand). There is no flag today to suppress the cascade for a named
+  parent. To run a dependent without re-syncing its parent, list only
+  the dependent by name; the parent table must already be populated
+  from a prior sync.`,
 		Example: `  # Sync all resources
   tier-routing-golden-pp-cli sync
 
@@ -281,7 +291,7 @@ Exit codes & warnings:
 		},
 	}
 
-	cmd.Flags().StringSliceVar(&resources, "resources", nil, "Comma-separated resource types to sync")
+	cmd.Flags().StringSliceVar(&resources, "resources", nil, "Comma-separated resource types to sync. Naming a parent also runs its parent-keyed dependents (see Long help for scoping).")
 	cmd.Flags().BoolVar(&full, "full", false, "Full resync (ignore previous checkpoint)")
 	cmd.Flags().StringVar(&since, "since", "", "Incremental sync duration (e.g. 7d, 24h, 1w, 30m)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
