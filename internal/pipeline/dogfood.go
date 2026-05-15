@@ -204,6 +204,12 @@ func (s *openAPISpec) IsSynthetic() bool {
 }
 
 func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, error) {
+	releaseHome, err := scopeSubprocessHome()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseHome()
+
 	cfg := dogfoodConfig{}
 	for _, o := range opts {
 		o(&cfg)
@@ -1761,6 +1767,7 @@ func runStdoutOnly(binaryPath string, timeout time.Duration, args ...string) ([]
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binaryPath, args...)
+	applyDefaultSubprocessEnv(cmd)
 	out, err := cmd.Output()
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("timed out after %s", timeout)
@@ -1876,6 +1883,7 @@ func runDogfoodCmd(binary string, timeout time.Duration, args ...string) (string
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
+	applyDefaultSubprocessEnv(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil && ctx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("timed out after %s", timeout)

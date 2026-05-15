@@ -85,6 +85,11 @@ type FreshnessResult struct {
 
 // RunVerify executes the runtime verification pipeline.
 func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
+	releaseHome, err := scopeSubprocessHome()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseHome()
 	if cfg.NoSpec {
 		return runStructuralVerify(cfg)
 	}
@@ -225,7 +230,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 	// buildEnv constructs the environment for test subprocesses, passing
 	// all auth-related env vars so auth-requiring commands can complete.
 	buildEnv := func() []string {
-		env := os.Environ()
+		env := subprocessEnv()
 		if report.Mode == "live" {
 			for _, ev := range authEnvVars {
 				if val := os.Getenv(ev); val != "" {
@@ -535,7 +540,7 @@ func runBrowserSessionProofTest(binary string, auth apispec.AuthConfig) CommandR
 		return result
 	}
 
-	output, err := runCLIWithOutput(binary, []string{"doctor", "--json"}, os.Environ(), 20*time.Second)
+	output, err := runCLIWithOutput(binary, []string{"doctor", "--json"}, subprocessEnv(), 20*time.Second)
 	if err != nil {
 		result.Error = fmt.Sprintf("doctor --json failed: %v", err)
 		result.Score = 0
