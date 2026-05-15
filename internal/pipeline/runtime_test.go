@@ -136,9 +136,17 @@ func TestRunBrowserSessionProofTestPassesValidDoctorProof(t *testing.T) {
 // score 0.
 func TestRunBrowserSessionProofTestPropagatesVerifyEnv(t *testing.T) {
 	binary := buildVerifyEnvDoctorBinary(t)
-	// Ensure the env var isn't already set in the test process; the
-	// probe must add it itself.
-	t.Setenv("PRINTING_PRESS_VERIFY", "")
+	// Fully unset PRINTING_PRESS_VERIFY for the duration of the test
+	// rather than t.Setenv(key, ""), which would leave PRINTING_PRESS_VERIFY=
+	// in os.Environ() and let it shadow the probe's later "=1" entry on
+	// platforms where the first env occurrence wins.
+	prev, had := os.LookupEnv("PRINTING_PRESS_VERIFY")
+	require.NoError(t, os.Unsetenv("PRINTING_PRESS_VERIFY"))
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv("PRINTING_PRESS_VERIFY", prev)
+		}
+	})
 
 	result := runBrowserSessionProofTest(binary, apispec.AuthConfig{
 		RequiresBrowserSession:       true,
