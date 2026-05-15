@@ -278,13 +278,13 @@ func auditMCPManifest(m *pipeline.ToolsManifest) []ToolsAuditFinding {
 }
 
 type commandFields struct {
-	use string
+	use   string
+	short string
 	// hasExplicitReadOnly is true when the mcp:read-only annotation is
 	// present with ANY value (including "false"). The audit's
 	// missing-read-only finding fires only when the annotation is
 	// genuinely absent — an author who has explicitly opted out by
 	// writing "false" has done the right thing and shouldn't be flagged.
-	short               string
 	hasExplicitReadOnly bool
 	hasEndpoint         bool
 	hasRunE             bool // true when the literal declares Run or RunE; parent groupers omit both

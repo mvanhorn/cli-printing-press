@@ -463,35 +463,24 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-// TestAuditCommandFieldsExplicitReadOnlyFalse pins #891: an explicit
-// `mcp:read-only: false` annotation suppresses the missing-read-only
-// finding for read-shaped names, treating it identically to `true`.
-// Only a genuinely absent annotation should still fire.
-func TestAuditCommandFieldsExplicitReadOnlyFalse(t *testing.T) {
+// TestAuditCommandFieldsExplicitReadOnly pins #891 at the
+// auditCommandFields layer: the missing-read-only finding fires only
+// when the annotation is genuinely absent. The AST-level differentiation
+// between explicit-true and explicit-false collapses to the same
+// hasExplicitReadOnly=true signal by the time it reaches this function,
+// so a single "present" case suffices here; the explicit-false vs
+// explicit-true distinction is covered by TestInspectAnnotationsExplicitReadOnlyFalse.
+func TestAuditCommandFieldsExplicitReadOnly(t *testing.T) {
 	cases := []struct {
 		name                string
 		fields              commandFields
 		wantMissingReadOnly bool
 	}{
 		{
-			name: "explicit true suppresses missing-read-only",
+			name: "explicit annotation (any value) suppresses missing-read-only",
 			fields: commandFields{
 				use:                 "report",
 				short:               "Generate a report",
-				hasExplicitReadOnly: true,
-				hasRunE:             true,
-			},
-			wantMissingReadOnly: false,
-		},
-		{
-			name: "explicit false also suppresses missing-read-only",
-			fields: commandFields{
-				use: "report",
-				// "report" matches the read-shape heuristic, but the
-				// author has correctly classified the command as not
-				// read-only via an explicit annotation. The audit must
-				// honor that opt-out the same way it honors "true".
-				short:               "Generate and persist a report",
 				hasExplicitReadOnly: true,
 				hasRunE:             true,
 			},
