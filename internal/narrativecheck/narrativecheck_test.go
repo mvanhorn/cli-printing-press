@@ -252,6 +252,137 @@ func TestValidate_EmptyResearchFlagsResearchEmpty(t *testing.T) {
 	}
 }
 
+func TestSplitShellChain(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		in       string
+		segments []string
+		hasPipe  bool
+		wantErr  bool
+	}{
+		{"plain command", "stub widgets list", []string{"stub widgets list"}, false, false},
+		{"and-chain", "stub sync && stub list --within 60d", []string{"stub sync", "stub list --within 60d"}, false, false},
+		{"semicolon-chain", "stub sync ; stub list", []string{"stub sync", "stub list"}, false, false},
+		{"or-chain", "stub sync || stub list", []string{"stub sync", "stub list"}, false, false},
+		{"top-level pipe sets flag, leaves segments unsplit", "stub list | grep foo", []string{"stub list | grep foo"}, true, false},
+		{"and inside double quotes", `stub run --msg "a && b"`, []string{`stub run --msg "a && b"`}, false, false},
+		{"semicolon inside single quotes", "stub run --msg 'a ; b'", []string{"stub run --msg 'a ; b'"}, false, false},
+		{"pipe inside quotes is not top-level", `stub run --msg "a | b"`, []string{`stub run --msg "a | b"`}, false, false},
+		{"empty trailing segment dropped", "stub sync &&", []string{"stub sync"}, false, false},
+		{"unclosed quote errors", `stub run --msg "open`, nil, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			segs, hasPipe, err := splitShellChain(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("splitShellChain(%q) = nil error, want error", tc.in)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("splitShellChain(%q) errored: %v", tc.in, err)
+			}
+			if hasPipe != tc.hasPipe {
+				t.Errorf("hasPipe = %v, want %v", hasPipe, tc.hasPipe)
+			}
+			if strings.Join(segs, "|") != strings.Join(tc.segments, "|") {
+				t.Errorf("segments = %q, want %q", segs, tc.segments)
+			}
+		})
+	}
+}
+
+func TestValidate_ChainedRecipePassesWhenBothHalvesResolve(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"recipes":[
+			{"command":"stub widgets list && stub widgets show 42"}
+		]
+	}}`)
+
+	report, err := Validate(context.Background(), research, binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Walked != 1 || report.HasFailures() {
+		t.Fatalf("chained recipe should walk OK, got walked=%d failures=%v results=%+v", report.Walked, report.HasFailures(), report.Results)
+	}
+}
+
+func TestValidate_ChainedRecipeFlagsBrokenRHS(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"recipes":[
+			{"command":"stub widgets list && stub typo-here"}
+		]
+	}}`)
+
+	report, err := Validate(context.Background(), research, binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Missing != 1 {
+		t.Fatalf("chained recipe with broken RHS should report missing, got %+v", report)
+	}
+	got := report.Results[0]
+	if !strings.Contains(got.Error, "segment 2") {
+		t.Errorf("error should attribute failure to segment 2: %s", got.Error)
+	}
+	if got.Command != "stub widgets list && stub typo-here" {
+		t.Errorf("Result.Command should preserve the original recipe, got %q", got.Command)
+	}
+}
+
+func TestValidateWithOptions_ChainedRecipeRunsBothFullExamples(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"recipes":[
+			{"command":"stub widgets list && stub widgets show 42"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, binary, Options{FullExamples: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Walked != 1 || report.HasFailures() {
+		t.Fatalf("chained full-example recipe should pass, got %+v", report)
+	}
+}
+
+func TestValidate_PipeRecipeSkipsWithReason(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"recipes":[
+			{"command":"stub widgets list | jq ."}
+		]
+	}}`)
+
+	report, err := Validate(context.Background(), research, binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Unsupported != 1 {
+		t.Fatalf("piped recipe should classify as Unsupported, got %+v", report)
+	}
+	got := report.Results[0]
+	if !strings.Contains(got.Error, "pipe-skipped") {
+		t.Errorf("error should explain the pipe skip: %s", got.Error)
+	}
+}
+
 // writeFile writes content to a temp file and returns the path.
 func writeFile(t *testing.T, content string) string {
 	t.Helper()
