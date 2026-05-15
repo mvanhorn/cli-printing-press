@@ -529,7 +529,15 @@ DISCOVERY_DIR="$API_RUN_DIR/discovery"
 CLI_WORK_DIR="$API_RUN_DIR/working/<api>-pp-cli"
 STAMP="$(date +%Y-%m-%d-%H%M%S)"
 
-mkdir -p "$RESEARCH_DIR" "$PROOFS_DIR" "$PIPELINE_DIR" "$CLI_WORK_DIR"
+# Session state (live cookies, CSRF tokens captured during authenticated
+# browser-sniff) lives OUTSIDE $API_RUN_DIR so the Phase 5.5 archive
+# `cp -r "$DISCOVERY_DIR"` cannot pick it up. Containment by location, not by
+# manual rm-before-archive.
+SESSION_DIR="${TMPDIR:-/tmp}/printing-press/session/$RUN_ID"
+SESSION_STATE_FILE="$SESSION_DIR/session-state.json"
+
+mkdir -p "$RESEARCH_DIR" "$PROOFS_DIR" "$PIPELINE_DIR" "$CLI_WORK_DIR" "$SESSION_DIR"
+chmod 700 "$SESSION_DIR" 2>/dev/null || true
 STATE_FILE="$API_RUN_DIR/state.json"
 ```
 
@@ -2970,8 +2978,10 @@ cp -f "$API_RUN_DIR/research.json" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/researc
 cp -r "$PROOFS_DIR" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs" 2>/dev/null || true
 
 # Archive discovery artifacts (browser-sniff captures, URL lists, traffic analysis, browser-sniff report).
-# Remove session state before archiving — contains authentication cookies/tokens.
-rm -f "$DISCOVERY_DIR/session-state.json"
+# Session state lives outside $DISCOVERY_DIR (see Run Initialization), so the
+# archive cannot pick it up. The legacy rm is a no-op safety net for an
+# in-flight $DISCOVERY_DIR carried over from a pre-isolation run.
+rm -f "$DISCOVERY_DIR/session-state.json" 2>/dev/null || true
 
 # Strip response bodies from HAR before archiving to control size.
 if [ -d "$DISCOVERY_DIR" ]; then
@@ -2982,6 +2992,11 @@ if [ -d "$DISCOVERY_DIR" ]; then
   done
   cp -r "$DISCOVERY_DIR" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/discovery" 2>/dev/null || true
 fi
+
+# Wipe live-auth scratch dir now that the run is archived. The directory lives
+# under ${TMPDIR:-/tmp}, so OS-level tmp reaping is the long-tail fallback, but
+# we clean explicitly so back-to-back runs do not accumulate session state.
+rm -rf "$SESSION_DIR" 2>/dev/null || true
 ```
 
 **MANDATORY: After archiving, you MUST proceed to Phase 6 below. Do not print a summary and stop. Do not treat archiving as the end of the run. The run ends when the user has been asked about next steps via the ship-path or hold-path menu.**
