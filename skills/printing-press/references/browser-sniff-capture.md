@@ -223,14 +223,16 @@ For option 1 (save-then-restore):
 **IMPORTANT:** `--auto-connect`, `--state`, `--profile`, and `--headed` are daemon launch options in agent-browser. They only take effect when starting a new daemon. You MUST close the daemon between save and load.
 
 ```bash
-# Grab cookies from running Chrome
-agent-browser --auto-connect state save "$DISCOVERY_DIR/session-state.json" 2>&1
+# Grab cookies from running Chrome. $SESSION_STATE_FILE lives outside
+# $DISCOVERY_DIR (initialized in SKILL.md's "Run Initialization") so the
+# Phase 5.5 `cp -r "$DISCOVERY_DIR"` cannot pick it up.
+agent-browser --auto-connect state save "$SESSION_STATE_FILE" 2>&1
 
 # Close the auto-connect daemon so --state can start a fresh one
 agent-browser close 2>&1
 
 # Start a new headless daemon with the saved auth state
-agent-browser --state "$DISCOVERY_DIR/session-state.json" open <url>
+agent-browser --state "$SESSION_STATE_FILE" open <url>
 ```
 If auto-connect fails (no debug port), explain: "Chrome doesn't have remote debugging enabled. Quit Chrome and relaunch with `--remote-debugging-port=9222`, or pick option 2."
 
@@ -278,7 +280,7 @@ browser-use open <login-url> --headed --session "<api>-auth"
 Instruct the user: "A browser window is open. Please log in to `<site>`. Let me know when you're done."
 After login, save state:
 ```bash
-agent-browser state save "$DISCOVERY_DIR/session-state.json"
+agent-browser state save "$SESSION_STATE_FILE"
 ```
 Close the headed browser and restart headless with the saved state.
 
@@ -343,7 +345,7 @@ If the result is `SESSION_EXPIRED` (login link visible, no account link), the pr
 
 Do NOT silently proceed without auth when the session has expired. The authenticated surface is often the most valuable part of the API (order history, rewards, saved data).
 
-If cookies are verified, proceed to Steps 2a/2b capture flow with the authenticated session loaded. The session state file is stored at `$DISCOVERY_DIR/session-state.json`.
+If cookies are verified, proceed to Steps 2a/2b capture flow with the authenticated session loaded. The session state file is stored at `$SESSION_STATE_FILE` (under `${TMPDIR:-/tmp}/printing-press-$(id -u)/session/$RUN_ID/`, outside `$DISCOVERY_DIR`, so it cannot reach archived manuscripts).
 
 #### Step 2a.0: Direct-API-probe fallback (try before browser-use when WAF-protected)
 

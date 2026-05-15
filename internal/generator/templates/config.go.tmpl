@@ -68,6 +68,11 @@ type Config struct {
 {{- end}}
 {{- end}}
 {{- end}}
+{{- range .Auth.AdditionalHeaders}}
+{{- if not (envVarIsBuiltinField .EnvVar.Name)}}
+	{{envVarField .EnvVar.Name}} string `{{configTag $.Config.Format}}:"{{envVarPlaceholder .EnvVar.Name}}"`
+{{- end}}
+{{- end}}
 {{- if .EndpointTemplateVars}}
 	// TemplateVars holds the runtime values for {placeholder} markers in
 	// BaseURL and the request path (e.g. Shopify's {shop}/{version}). Populated
@@ -135,6 +140,14 @@ func Load(configPath string) (*Config, error) {
 	}
 {{- end}}
 {{- end}}
+{{- range .Auth.AdditionalHeaders}}
+	// Sibling-scheme per-call credential sent on every request alongside the
+	// primary auth. AuthSource intentionally not stamped: the primary auth
+	// remains the canonical surface for doctor/auth-status reporting.
+	if v := os.Getenv("{{.EnvVar.Name}}"); v != "" {
+		cfg.{{resolveEnvVarField .EnvVar.Name}} = v
+	}
+{{- end}}
 
 	// Label config-file-derived credentials so doctor can distinguish
 	// "credentials persisted on disk" from "no credentials at all" — without
@@ -199,7 +212,7 @@ func Load(configPath string) (*Config, error) {
 	}
 	verifyMode := os.Getenv("PRINTING_PRESS_VERIFY") == "1"
 {{- range .EndpointTemplateVars}}
-	if v := os.Getenv("{{envName $.Name}}_{{upper .}}"); v != "" {
+	if v := strings.TrimSpace(os.Getenv("{{endpointTemplateEnvName .}}")); v != "" {
 		cfg.TemplateVars["{{.}}"] = v
 	} else if verifyMode {
 		cfg.TemplateVars["{{.}}"] = "{{.}}_placeholder"
@@ -224,11 +237,21 @@ func (c *Config) AuthHeader() string {
 {{- end}}
 {{- if eq .Auth.Type "api_key"}}
 {{- if $basicAuthEnvVars}}
+{{- if eq (len $basicAuthEnvVars) 1}}
+	if c.{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}} == "" {
+		return ""
+	}
+	credentials := c.{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}} + ":"
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(credentials))
+{{- else if eq (len $basicAuthEnvVars) 2}}
 	if c.{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}} == "" || c.{{resolveEnvVarField (index $basicAuthEnvVars 1).Name}} == "" {
 		return ""
 	}
 	credentials := c.{{resolveEnvVarField (index $basicAuthEnvVars 0).Name}} + ":" + c.{{resolveEnvVarField (index $basicAuthEnvVars 1).Name}}
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(credentials))
+{{- else}}
+	return ""
+{{- end}}
 {{- else if $isAuthEnvVarORCase}}
 {{- range .Auth.EnvVarSpecs}}
 	if c.{{resolveEnvVarField .Name}} != "" {
@@ -500,11 +523,39 @@ func (c *Config) SaveBearerToken(accessToken string, refreshedAt time.Time) erro
 {{- end}}
 
 func (c *Config) ClearTokens() error {
+	// AuthHeader() falls back to the env-var-derived fields when AuthHeaderVal
+	// and AccessToken are empty, so dropping the working credential requires
+	// zeroing every emitted credential field, not just the OAuth trio.
+	// ClientID/ClientSecret persist to disk via SaveTokens for the oauth2
+	// and oauth2-cc flows, so logout must wipe them too; otherwise
+	// `auth login` can re-mint a new access token unattended.
+	c.AuthHeaderVal = ""
 	c.AccessToken = ""
 	c.RefreshToken = ""
 	c.TokenExpiry = time.Time{}
+	c.ClientID = ""
+	c.ClientSecret = ""
 {{- if .BearerRefresh.Enabled}}
 	c.BearerTokenRefreshedAt = time.Time{}
+{{- end}}
+{{- if .Auth.EnvVarSpecs}}
+{{- range .Auth.EnvVarSpecs}}
+{{- if not (envVarIsBuiltinField .Name)}}
+	c.{{envVarField .Name}} = ""
+{{- end}}
+{{- end}}
+{{- else if .Auth.EnvVars}}
+	// fallback to legacy EnvVars when EnvVarSpecs is empty
+{{- range .Auth.EnvVars}}
+{{- if not (envVarIsBuiltinField .)}}
+	c.{{envVarField .}} = ""
+{{- end}}
+{{- end}}
+{{- end}}
+{{- range .Auth.AdditionalHeaders}}
+{{- if not (envVarIsBuiltinField .EnvVar.Name)}}
+	c.{{envVarField .EnvVar.Name}} = ""
+{{- end}}
 {{- end}}
 	return c.save()
 }

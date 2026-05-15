@@ -1815,3 +1815,82 @@ func TestProfilePagination_SkipsPathAndPositionalParams(t *testing.T) {
 	assert.Equal(t, "after", profile.Pagination.CursorParam, "path-param 'page' must not be treated as a cursor")
 	assert.Equal(t, "limit", profile.Pagination.PageSizeParam)
 }
+
+// TestProfileTemplateVarPathBecomesFlatSyncable: paths whose only
+// {placeholder} is an EndpointTemplateVar (e.g. /tenant/{tenant}/<resource>
+// when the spec declares x-tenant-env-var) are runtime-resolvable through
+// buildURL — they should become flat SyncableResources rather than landing
+// in DependentSyncResources (which would require iterating a non-existent
+// parent table).
+func TestProfileTemplateVarPathBecomesFlatSyncable(t *testing.T) {
+	s := &spec.APISpec{
+		Name:                 "servicetitan",
+		EndpointTemplateVars: []string{"tenant"},
+		EndpointTemplateEnvOverrides: map[string]string{
+			"tenant": "ST_TENANT_ID",
+		},
+		Resources: map[string]spec.Resource{
+			"customers": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/tenant/{tenant}/customers",
+						Pagination: &spec.Pagination{CursorParam: "pageToken", LimitParam: "pageSize"},
+						Response:   spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.SyncableResources, 1, "tenant-scoped resource must surface as a flat SyncableResource")
+	assert.Equal(t, "customers", profile.SyncableResources[0].Name)
+	assert.Equal(t, "/tenant/{tenant}/customers", profile.SyncableResources[0].Path,
+		"path must preserve the {tenant} placeholder for buildURL to substitute")
+	assert.Empty(t, profile.DependentSyncResources, "tenant placeholder is not a parent context — must not become a DependentResource")
+}
+
+// TestProfileMixedPlaceholdersNotPromoted guards against over-eager
+// promotion: paths mixing a template-var placeholder with a real parent-
+// context placeholder must NOT be promoted to flat sync. The dependent-
+// resource matching is governed elsewhere; here we only pin the negative
+// (no false promotion) since that's what regression on this change would
+// look like.
+func TestProfileMixedPlaceholdersNotPromoted(t *testing.T) {
+	s := &spec.APISpec{
+		Name:                 "servicetitan",
+		EndpointTemplateVars: []string{"tenant"},
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/tenant/{tenant}/channels",
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+						Response:   spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"messages": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/tenant/{tenant}/channels/{channel_id}/messages",
+						Pagination: &spec.Pagination{CursorParam: "cursor", LimitParam: "limit"},
+						Response:   spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	flatNames := make([]string, 0, len(profile.SyncableResources))
+	for _, r := range profile.SyncableResources {
+		flatNames = append(flatNames, r.Name)
+	}
+	assert.Contains(t, flatNames, "channels", "tenant-only path is flat")
+	assert.NotContains(t, flatNames, "messages",
+		"a path containing {channel_id} alongside the template var must not flatten into SyncableResources")
+}

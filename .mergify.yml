@@ -1,19 +1,37 @@
 queue_rules:
   - name: default
+    # Single condition block (no separate merge_conditions) so Mergify uses
+    # in-place mode instead of draft_pr mode. In-place mode rebases the
+    # source PR's branch directly; CI re-runs on the source PR where
+    # Greptile (and any other PR-only review apps) can actually post.
+    # The draft `mergify/merge-queue/*` mechanism creates bot-owned branches
+    # that Greptile skips, which was the root cause of every queued PR
+    # timing out waiting for Greptile.
     queue_conditions:
       - base = main
-    merge_conditions:
       - check-success = build-and-test
       - check-success = generated-test
       - check-success = go-lint
       - check-success = golden
       - check-success = pr-title
       - check-success = test
+      - or:
+        - check-success = Greptile Review
+        - check-neutral = Greptile Review
+        - check-skipped = Greptile Review
+        # release-please PRs are auto-generated changelog + version bumps;
+        # Greptile reliably silent-skips them so no check-run is ever posted.
+        - and:
+          - head = release-please--branches--main
+          - "title ~= ^chore\\(main\\): release"
     merge_method: squash
     update_method: rebase
+    # OSS plan: batch_size and max_parallel_checks must both be 1.
     batch_size: 1
+    checks_timeout: 60m
 
 merge_queue:
+  max_parallel_checks: 1
   queued_label: queued
   dequeued_label: dequeued
   status_comments: outcomes
@@ -39,3 +57,12 @@ merge_protections:
       - check-success = golden
       - check-success = pr-title
       - check-success = test
+      - or:
+        - check-success = Greptile Review
+        - check-neutral = Greptile Review
+        - check-skipped = Greptile Review
+        # release-please PRs are auto-generated changelog + version bumps;
+        # Greptile reliably silent-skips them so no check-run is ever posted.
+        - and:
+          - head = release-please--branches--main
+          - "title ~= ^chore\\(main\\): release"

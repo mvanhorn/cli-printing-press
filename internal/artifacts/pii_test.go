@@ -72,6 +72,20 @@ func TestFindPII_PhoneUS(t *testing.T) {
 		{name: "country-code", line: `"phone": "+1 415 555 0123"`, expectKinds: []string{PIIKindPhoneUS}},
 		{name: "version-string", line: `"version": "1.2.3"`, expectKinds: nil},
 		{name: "ip-address", line: `"addr": "192.168.1.1"`, expectKinds: nil},
+		// NANP-shape filters — area code and exchange code must each
+		// start with 2-9. Regression for the dataforseo retro: 10-digit
+		// product UPCs and coordinate-shaped numerics false-positived.
+		{name: "no-product-upc-leading-zero", line: `"upc": "0190074442"`, expectKinds: nil},
+		{name: "no-coordinate-leading-one", line: `"lng": 106.0512973`, expectKinds: nil},
+		{name: "no-epoch-timestamp", line: `"updated_at": 1700000000`, expectKinds: nil},
+		// Boundary cases that prove the constraint is on the leading
+		// digit of each quadrant, not on the whole string.
+		{name: "no-area-code-leading-zero", line: `"phone": "015-555-0123"`, expectKinds: nil},
+		{name: "no-area-code-leading-one", line: `"phone": "115-555-0123"`, expectKinds: nil},
+		{name: "no-exchange-leading-zero", line: `"phone": "415-055-0123"`, expectKinds: nil},
+		{name: "no-exchange-leading-one", line: `"phone": "415-155-0123"`, expectKinds: nil},
+		{name: "area-code-212-valid", line: `"phone": "(212) 555-0123"`, expectKinds: []string{PIIKindPhoneUS}},
+		{name: "area-code-900-valid", line: `"phone": "(900) 234-5678"`, expectKinds: []string{PIIKindPhoneUS}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

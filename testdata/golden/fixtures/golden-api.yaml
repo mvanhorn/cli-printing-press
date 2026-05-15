@@ -242,12 +242,55 @@ paths:
           required: true
           schema:
             type: string
+        # Query param on a non-GET endpoint — regression guard: the
+        # PUT/DELETE/POST/PATCH templates used to drop in:query params on
+        # the floor instead of routing them through the URL query string.
+        - name: notify
+          in: query
+          required: false
+          schema:
+            type: boolean
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: "#/components/schemas/UpdateTaskRequest"
+      responses:
+        "200":
+          description: OK
+  # /projects/{projectId}/avatar exercises the multipart-body + in:query
+  # combo. Regression guard: the PUT/PATCH/POST multipart branches used to
+  # route only the body fields and silently dropped any query flag.
+  /projects/{projectId}/avatar:
+    put:
+      tags: [projects]
+      operationId: uploadProjectAvatar
+      summary: Upload project avatar
+      parameters:
+        - $ref: "#/components/parameters/ApiVersion"
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: overwrite
+          in: query
+          required: false
+          schema:
+            type: boolean
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                caption:
+                  type: string
       responses:
         "200":
           description: OK

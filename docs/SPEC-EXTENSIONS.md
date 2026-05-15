@@ -220,6 +220,51 @@ x-mcp:
   endpoint_tools: hidden
 ```
 
+### `x-tenant-env-var`
+
+Declares the env-var name that resolves the implicit `{tenant}` path
+placeholder for multi-tenant SaaS APIs whose every path is
+`/tenant/{tenant}/<resource>`. Without this annotation, the generator
+classifies tenant-templated paths as parent-context-dependent and emits an
+empty `defaultSyncResources` / `syncResourcePath` map; sync silently no-ops
+and every downstream offline command ships broken.
+
+Parsed fields: `APISpec.EndpointTemplateVars` (`tenant` added) and
+`APISpec.EndpointTemplateEnvOverrides["tenant"]` (env-var name).
+
+Rules:
+- Optional. Specs without `x-tenant-env-var` keep single-tenant behavior;
+  no `{tenant}`-aware emission, no spurious env reads.
+- Declared under `info` only (path-positional templates are spec-wide).
+- Value must be a non-empty string after `TrimSpace`. Whitespace-only
+  values are treated as absent.
+- The placeholder name is `tenant`. Specs that use a different
+  placeholder (`{workspace}`, `{org}`) should set
+  `EndpointTemplateVars` + `EndpointTemplateEnvOverrides` directly in
+  internal YAML until this extension generalizes.
+
+Effect on generated output (when set):
+- The profiler treats `/.../{tenant}/...` paths as standalone-listable, so
+  the resource becomes a flat `SyncableResource` rather than a
+  `DependentSyncResource`.
+- The emitted `config.go` reads the override env-var name (e.g.
+  `ST_TENANT_ID`) into `Config.TemplateVars["tenant"]` at `Load()` time.
+- The emitted `url.go` `buildURL` substitutes `{tenant}` from
+  `Config.TemplateVars` at request time and names the override env var in
+  the actionable error when the value is missing.
+- The emitted `sync.go` filters `{tenant}` out of the unresolved-key
+  warning so per-tenant paths don't get skipped as "requires parent
+  context".
+
+Example:
+
+```yaml
+info:
+  title: ServiceTitan CRM
+  version: 1.0.0
+  x-tenant-env-var: ST_TENANT_ID
+```
+
 ## Security Scheme Extensions
 
 Security scheme extensions are read from

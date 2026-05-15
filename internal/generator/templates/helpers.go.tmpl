@@ -12,6 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+{{- if or .HasEmbeddedPaged .HasPathParams}}
+	"net/url"
+{{- end}}
 	"os"
 {{- if .HasDataLayer}}
 	"path/filepath"
@@ -135,6 +138,32 @@ func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
 // See SKILL.md "Phase 3: Build The GOAT" for the full pattern.
 func dryRunOK(flags *rootFlags) bool {
 	return flags != nil && flags.dryRun
+}
+
+// parentNoSubcommandRunE returns a RunE that handles parents invoked without a
+// subcommand. In machine output (--json/--agent) the parent emits a structured
+// error to stdout listing valid subcommands and exits 2; otherwise cobra's
+// default help text is printed. Without this, agents driving the CLI in
+// --agent mode received only human-readable help on stdout and exit 0, with no
+// signal that the invocation was incomplete.
+func parentNoSubcommandRunE(flags *rootFlags) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		if flags != nil && flags.asJSON {
+			subs := make([]string, 0, len(cmd.Commands()))
+			for _, c := range cmd.Commands() {
+				if c.IsAvailableCommand() && c.Name() != "help" {
+					subs = append(subs, c.Name())
+				}
+			}
+			sort.Strings(subs)
+			_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+				"error":             "subcommand required",
+				"valid_subcommands": subs,
+			})
+			return usageErr(fmt.Errorf("subcommand required for %q", cmd.CommandPath()))
+		}
+		return cmd.Help()
+	}
 }
 
 {{- if .HasDataLayer}}
@@ -575,8 +604,10 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 }
 
 {{- if .HasPathParams}}
+// replacePathParam percent-encodes value so path-reserved characters in
+// user input do not collapse into extra path segments.
 func replacePathParam(path, name, value string) string {
-	return strings.ReplaceAll(path, "{"+name+"}", value)
+	return strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(value))
 }
 {{- end}}
 
@@ -744,6 +775,139 @@ func extractPaginatedItems(obj map[string]json.RawMessage) ([]json.RawMessage, b
 	return nil, false
 }
 
+{{- if .HasEmbeddedPaged}}
+
+// embeddedPagedSubresourcePageCap bounds the page loop in
+// fetchEmbeddedPagedSubresource so a misbehaving server returning a
+// non-empty next URL on every response can't spin forever. 500 covers
+// the largest realistic embedded sub-resource (e.g. 50k items at 100
+// per page); pathological servers trip the cap and surface an error
+// instead of hanging.
+const embeddedPagedSubresourcePageCap = 500
+
+// fetchEmbeddedPagedSubresource paginates the embedded paged
+// sub-resource at childPath until exhausted, returning the
+// concatenated items. The generator emits per-endpoint thin wrappers
+// that call this with the detected envelope shape; consolidating the
+// loop here keeps the page cap, error handling, and envelope-walking
+// logic in one place.
+//
+// nextField names the envelope's "more pages" property. nextIsURL
+// distinguishes the two cursor shapes:
+//
+//   - nextIsURL=true: the property carries a full URL the runtime can
+//     GET directly to fetch the next page (envelope shape: items+next).
+//   - nextIsURL=false: the property either carries an opaque cursor
+//     token whose required query-param name isn't part of the embedded
+//     envelope, or it's a has_more-style bool. In either case the
+//     helper performs a single GET and emits a stderr truncation event
+//     when the field indicates more pages exist — paginating further
+//     requires API-specific arithmetic that cannot be synthesized
+//     from the envelope alone, so callers must use the dedicated list
+//     endpoint for full traversal.
+//
+// Envelope lookups are case-insensitive: API authors sometimes
+// describe envelopes in one casing in the schema and serve another on
+// the wire (`NextPageToken` vs `nextPageToken`).
+func fetchEmbeddedPagedSubresource(c interface {
+	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+}, childPath, nextField string, nextIsURL, nextIsBoolean bool) ([]json.RawMessage, error) {
+	all := make([]json.RawMessage, 0)
+	nextURL := ""
+	for page := 0; page < embeddedPagedSubresourcePageCap; page++ {
+		target := childPath
+		if nextURL != "" {
+			target = relativizeNextURL(nextURL)
+		}
+		data, err := c.GetWithHeaders(target, nil, nil)
+		if err != nil {
+			return nil, fmt.Errorf("paginating embedded sub-resource %q page %d: %w", childPath, page+1, err)
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(data, &obj); err != nil {
+			return nil, fmt.Errorf("paginating embedded sub-resource %q page %d: unexpected response shape: %w", childPath, page+1, err)
+		}
+		if items, ok := extractPaginatedItems(obj); ok {
+			all = append(all, items...)
+		}
+		if !nextIsURL {
+			if moreRaw, ok := caseInsensitiveLookup(obj, nextField); ok {
+				if hasUnfollowableNextSignal(moreRaw, nextIsBoolean) {
+					emitEmbeddedPagedTruncationWarning(childPath)
+				}
+			}
+			return all, nil
+		}
+		nextRaw, ok := caseInsensitiveLookup(obj, nextField)
+		if !ok {
+			return all, nil
+		}
+		var nextStr string
+		if json.Unmarshal(nextRaw, &nextStr) != nil || nextStr == "" {
+			return all, nil
+		}
+		nextURL = nextStr
+	}
+	return all, fmt.Errorf("paginating embedded sub-resource %q: hit %d-page cap (likely a server returning a non-empty next URL on every response)", childPath, embeddedPagedSubresourcePageCap)
+}
+
+// hasUnfollowableNextSignal reports whether a non-URL next field
+// value indicates more pages exist (true bool, non-empty cursor
+// string) — the caller emits a truncation warning when this returns
+// true. Returns false on missing/null/false/empty signals.
+func hasUnfollowableNextSignal(raw json.RawMessage, nextIsBoolean bool) bool {
+	if nextIsBoolean {
+		var more bool
+		return json.Unmarshal(raw, &more) == nil && more
+	}
+	var cursor string
+	return json.Unmarshal(raw, &cursor) == nil && cursor != ""
+}
+
+func emitEmbeddedPagedTruncationWarning(childPath string) {
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "warning: %s truncated; more pages available via the dedicated list endpoint.\n", childPath)
+	} else {
+		fmt.Fprintf(os.Stderr, `{"event":"truncated","sub_resource":%q}`+"\n", childPath)
+	}
+}
+
+// relativizeNextURL strips an absolute scheme+host from a next-page URL
+// so the client's BaseURL+path concat doesn't produce a double-prefixed
+// target. Vendors that return absolute next URLs (e.g. for offset-based
+// pagination) would otherwise concatenate against c.BaseURL on every
+// follow-up request and 404 from page 2 onward.
+func relativizeNextURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || !u.IsAbs() {
+		return raw
+	}
+	path := u.Path
+	if path == "" {
+		path = "/"
+	}
+	if u.RawQuery != "" {
+		path += "?" + u.RawQuery
+	}
+	return path
+}
+
+// caseInsensitiveLookup returns obj[key] tolerating envelope casing
+// drift between the spec and the wire response.
+func caseInsensitiveLookup(obj map[string]json.RawMessage, key string) (json.RawMessage, bool) {
+	if raw, ok := obj[key]; ok {
+		return raw, true
+	}
+	lowered := strings.ToLower(key)
+	for k, raw := range obj {
+		if strings.ToLower(k) == lowered {
+			return raw, true
+		}
+	}
+	return nil, false
+}
+{{- end}}
+
 func rawAtPath(obj map[string]json.RawMessage, path string) (json.RawMessage, bool) {
 	if raw, ok := obj[path]; ok {
 		return raw, true
@@ -829,17 +993,47 @@ func filterFieldsRec(data json.RawMessage, paths [][]string) json.RawMessage {
 			}
 		}
 		filtered := map[string]json.RawMessage{}
+		matchedAny := false
 		for k, v := range obj {
 			matched := matchSelectSegment(k, keepWhole, subPaths)
 			if matched == "" {
 				continue
 			}
+			matchedAny = true
 			if keepWhole[matched] {
 				filtered[k] = v
 				continue
 			}
 			if subs := subPaths[matched]; subs != nil {
 				filtered[k] = filterFieldsRec(v, subs)
+			}
+		}
+		// Envelope fallback: when no top-level keys matched but at least one
+		// sibling is a non-null array, treat the object as a list envelope
+		// (`{"items":[...]}`, `{"data":[...]}`, `{"total_count":N,"items":[...]}`)
+		// and apply the selector inside the array(s). Non-array siblings pass
+		// through verbatim so envelope metadata (counts, null pagination
+		// cursors) stays visible. The foundArray guard preserves the prior
+		// empty-object result for flat objects where no key matches and no
+		// array exists. The `arr != nil` check rejects JSON null, which
+		// json.Unmarshal otherwise accepts into a []json.RawMessage as a
+		// nil slice and would coerce to `[]`.
+		if !matchedAny {
+			pending := map[string]json.RawMessage{}
+			foundArray := false
+			for k, v := range obj {
+				var arr []json.RawMessage
+				if json.Unmarshal(v, &arr) == nil && arr != nil {
+					foundArray = true
+					pending[k] = filterFieldsRec(v, paths)
+				} else {
+					pending[k] = v
+				}
+			}
+			if foundArray {
+				for k, v := range pending {
+					filtered[k] = v
+				}
 			}
 		}
 		result, _ := json.Marshal(filtered)

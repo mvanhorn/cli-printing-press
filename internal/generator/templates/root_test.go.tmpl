@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -73,5 +74,132 @@ func TestExitCode_UsageError_WrappedAsCode2(t *testing.T) {
 	wrapped := usageErr(errors.New("unknown flag: --foob"))
 	if got := ExitCode(wrapped); got != 2 {
 		t.Errorf("ExitCode(usageErr(...)) = %d, want 2 (POSIX usage convention)", got)
+	}
+}
+
+// TestFilterFields covers --select projection against the four payload
+// shapes printed CLIs see in practice: bare arrays, direct objects,
+// list envelopes (Stripe/GitHub/Notion-style wrapper + array), and
+// flat objects. The envelope cases guard against a regression where
+// wrapper-key + array responses returned `{}` because the selector
+// heads matched the inner record fields, not the wrapper key.
+func TestFilterFields(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		input  string
+		fields string
+		want   string
+	}{
+		{
+			name:   "bare array element-wise",
+			input:  `[{"id":"a","name":"x","other":"y"},{"id":"b","name":"z","other":"w"}]`,
+			fields: "id,name",
+			want:   `[{"id":"a","name":"x"},{"id":"b","name":"z"}]`,
+		},
+		{
+			name:   "direct object top-level match",
+			input:  `{"id":"a","name":"b","other":"c"}`,
+			fields: "id,name",
+			want:   `{"id":"a","name":"b"}`,
+		},
+		{
+			name:   "envelope single array sibling (orgo {projects:[...]})",
+			input:  `{"projects":[{"id":"a","name":"x","other":"y"}]}`,
+			fields: "id,name",
+			want:   `{"projects":[{"id":"a","name":"x"}]}`,
+		},
+		{
+			name:   "envelope with metadata sibling (github {total_count,items:[...]})",
+			input:  `{"total_count":2,"items":[{"id":"a","name":"x","other":"y"},{"id":"b","name":"z","other":"w"}]}`,
+			fields: "id,name",
+			want:   `{"items":[{"id":"a","name":"x"},{"id":"b","name":"z"}],"total_count":2}`,
+		},
+		{
+			name:   "envelope with metadata sibling (stripe {object,data:[...]})",
+			input:  `{"object":"list","data":[{"id":"a","name":"x","other":"y"}]}`,
+			fields: "id,name",
+			want:   `{"data":[{"id":"a","name":"x"}],"object":"list"}`,
+		},
+		{
+			name:   "selector matches envelope key (no descent into array)",
+			input:  `{"projects":[{"id":"a","name":"x","other":"y"}]}`,
+			fields: "projects",
+			want:   `{"projects":[{"id":"a","name":"x","other":"y"}]}`,
+		},
+		{
+			name:   "dotted-path through envelope key still descends",
+			input:  `{"projects":[{"id":"a","name":"x","other":"y"}]}`,
+			fields: "projects.id",
+			want:   `{"projects":[{"id":"a"}]}`,
+		},
+		{
+			name:   "flat object no match returns empty (no array fallback)",
+			input:  `{"a":1,"b":2}`,
+			fields: "c",
+			want:   `{}`,
+		},
+		{
+			// Null pagination cursors are common envelope metadata.
+			// json.Unmarshal accepts JSON null into []json.RawMessage as
+			// a nil slice without error, so the array check must reject
+			// nil explicitly or null siblings would be coerced to `[]`.
+			name:   "envelope preserves null sibling verbatim",
+			input:  `{"items":[{"id":"a","name":"x"}],"next_cursor":null}`,
+			fields: "id,name",
+			want:   `{"items":[{"id":"a","name":"x"}],"next_cursor":null}`,
+		},
+		{
+			// Without a real array sibling the envelope fallback does not
+			// fire, so a flat object whose only "extra" key is null still
+			// returns {} for a non-matching selector.
+			name:   "flat object with null sibling no match returns empty",
+			input:  `{"a":1,"b":null}`,
+			fields: "c",
+			want:   `{}`,
+		},
+		{
+			// Multiple array siblings at the same level each receive the
+			// selector independently. Documents that the projection fans
+			// out across every array, not just the first one found.
+			name:   "envelope with two array siblings filters both",
+			input:  `{"events":[{"id":"e1","other":"x"}],"speakers":[{"id":"s1","other":"y"}]}`,
+			fields: "id",
+			want:   `{"events":[{"id":"e1"}],"speakers":[{"id":"s1"}]}`,
+		},
+		{
+			// Envelope fallback is intentionally one level deep. A nested
+			// object envelope like {"data":{"items":[...]}} surfaces no
+			// array at the outer level, so the fallback does not fire and
+			// the result is the empty-object that flat-no-match would
+			// produce. Pins the boundary so a future deeper-walk change
+			// is an explicit decision, not an accident.
+			name:   "nested object envelope returns empty (one-level only)",
+			input:  `{"data":{"items":[{"id":"a","other":"y"}]}}`,
+			fields: "id",
+			want:   `{}`,
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := filterFields(json.RawMessage(tc.input), tc.fields)
+			// Normalize both sides through json.Unmarshal+Marshal so
+			// map-iteration order does not produce false negatives.
+			var gotV, wantV interface{}
+			if err := json.Unmarshal(got, &gotV); err != nil {
+				t.Fatalf("got is invalid json: %v (raw=%s)", err, string(got))
+			}
+			if err := json.Unmarshal([]byte(tc.want), &wantV); err != nil {
+				t.Fatalf("want is invalid json: %v (raw=%s)", err, tc.want)
+			}
+			gotBytes, _ := json.Marshal(gotV)
+			wantBytes, _ := json.Marshal(wantV)
+			if string(gotBytes) != string(wantBytes) {
+				t.Errorf("filterFields(%q, %q) = %s, want %s",
+					tc.input, tc.fields, string(gotBytes), string(wantBytes))
+			}
+		})
 	}
 }

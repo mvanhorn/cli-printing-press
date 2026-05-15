@@ -383,15 +383,10 @@ func newGenerateCmd() *cobra.Command {
 				fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 			}
 
-			// Archive the input spec alongside the CLI for reproducibility.
-			// The spec_url may change or disappear; this local copy is the
-			// only guaranteed way to regenerate from the exact same input.
-			if len(specRawBytes) > 0 {
-				archiveName := "spec.yaml"
-				if json.Valid(specRawBytes[0]) {
-					archiveName = "spec.json"
-				}
-				data := artifacts.RedactArchivedSpecSecrets(specRawBytes[0])
+			// Archive a snapshot of the spec alongside the CLI; multi-spec
+			// runs use the merged form (see archiveSpecBytes for why).
+			if archiveBytes, archiveName, ok := archiveSpecBytes(apiSpec, specs, specRawBytes); ok {
+				data := artifacts.RedactArchivedSpecSecrets(archiveBytes)
 				if err := os.WriteFile(filepath.Join(absOut, archiveName), data, 0o644); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not archive spec: %v\n", err)
 				}
@@ -708,6 +703,43 @@ func parseOpenAPISpec(specFile string, data []byte, lenient bool) (*spec.APISpec
 		return openapi.ParseWithPathLenient(data, specFile)
 	}
 	return openapi.ParseWithPath(data, specFile)
+}
+
+// archiveSpecBytes picks the bytes and filename for the spec snapshot that
+// generate writes alongside the CLI. Single-spec runs preserve the user's
+// original input (post-redaction at the call site) so audit/replay round-trip
+// against the same bytes the parser saw. Multi-spec runs serialize the merged
+// APISpec — its union of paths, merged title, and merged x-mcp config — so
+// downstream consumers that re-read this snapshot operate on the surface the
+// generator actually emitted rather than on whichever input happened to be
+// passed first.
+//
+// Returns ok=false when there is nothing to archive (no inputs) or when
+// marshalling the merged spec failed; the call site logs and continues so a
+// transient archive failure does not abort generation.
+func archiveSpecBytes(apiSpec *spec.APISpec, specs []*spec.APISpec, specRawBytes [][]byte) ([]byte, string, bool) {
+	if len(specs) > 1 {
+		// json.MarshalIndent on a nil pointer succeeds with the literal
+		// "null" bytes, which would write a syntactically-valid but
+		// useless snapshot. Surface the precondition explicitly.
+		if apiSpec == nil {
+			return nil, "", false
+		}
+		data, err := json.MarshalIndent(apiSpec, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not marshal merged spec for archive: %v\n", err)
+			return nil, "", false
+		}
+		return data, "spec.json", true
+	}
+	if len(specRawBytes) == 0 {
+		return nil, "", false
+	}
+	raw := specRawBytes[0]
+	if json.Valid(raw) {
+		return raw, "spec.json", true
+	}
+	return raw, "spec.yaml", true
 }
 
 func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {

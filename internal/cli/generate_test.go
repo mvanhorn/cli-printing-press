@@ -1017,6 +1017,181 @@ resources:
 
 }
 
+// TestGenerateArchivesMergedSpecForMultiSpec asserts that a generate run
+// with multiple --spec inputs archives the merged in-memory APISpec — with
+// the merged title and the union of resources — rather than just the first
+// input's raw bytes.
+func TestGenerateArchivesMergedSpecForMultiSpec(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	coreSpecPath := filepath.Join(dir, "core.yaml")
+	wikiSpecPath := filepath.Join(dir, "wiki.yaml")
+	outputDir := filepath.Join(dir, "combo")
+	require.NoError(t, os.WriteFile(coreSpecPath, []byte(`name: core
+description: Core API
+version: 0.1.0
+base_url: https://tenant.example.com
+auth:
+  type: none
+resources:
+  projects:
+    description: Projects
+    endpoints:
+      list:
+        method: GET
+        path: /projects
+        description: List projects
+`), 0o644))
+	require.NoError(t, os.WriteFile(wikiSpecPath, []byte(`name: wiki
+description: Wiki API
+version: 0.1.0
+base_url: https://tenant.example.com/wiki/api/v2
+auth:
+  type: none
+resources:
+  pages:
+    description: Pages
+    endpoints:
+      list:
+        method: GET
+        path: /pages
+        description: List pages
+`), 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", coreSpecPath,
+		"--spec", wikiSpecPath,
+		"--name", "combo",
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+	})
+	require.NoError(t, cmd.Execute())
+
+	// Multi-spec must archive as spec.json (canonical JSON of merged APISpec),
+	// not spec.yaml (which would be the first input verbatim).
+	assert.NoFileExists(t, filepath.Join(outputDir, "spec.yaml"))
+	archived, err := os.ReadFile(filepath.Join(outputDir, "spec.json"))
+	require.NoError(t, err)
+
+	parsed, err := spec.ParseBytes(archived)
+	require.NoError(t, err, "archived merged spec must round-trip through spec.ParseBytes")
+
+	// The merged title is the --name, not "core" (the first input).
+	assert.Equal(t, "combo", parsed.Name)
+
+	// The merged BaseURL pins the archive to the merged struct rather than to
+	// either input alone — both inputs share https://tenant.example.com as the
+	// host, and that is what mergeSpecs resolves to.
+	assert.Equal(t, "https://tenant.example.com", parsed.BaseURL, "archived merged spec carries the merged BaseURL")
+
+	// Both inputs' resources are present in the archived snapshot.
+	assert.Contains(t, parsed.Resources, "projects", "first-input resource preserved")
+	assert.Contains(t, parsed.Resources, "pages", "second-input resource present in merged archive")
+}
+
+// TestArchiveSpecBytesBranches covers each branch of archiveSpecBytes
+// directly, including the json-input single-spec arm that the integration
+// tests above don't exercise (their fixtures are YAML).
+func TestArchiveSpecBytesBranches(t *testing.T) {
+	t.Parallel()
+
+	t.Run("multi-spec marshals merged APISpec as JSON", func(t *testing.T) {
+		merged := &spec.APISpec{
+			Name:      "combo",
+			Version:   "0.1.0",
+			BaseURL:   "https://example.com",
+			Resources: map[string]spec.Resource{"things": {Description: "Things"}},
+		}
+		specs := []*spec.APISpec{
+			{Name: "a", Resources: map[string]spec.Resource{}},
+			{Name: "b", Resources: map[string]spec.Resource{}},
+		}
+		data, name, ok := archiveSpecBytes(merged, specs, [][]byte{[]byte("a"), []byte("b")})
+		require.True(t, ok)
+		assert.Equal(t, "spec.json", name)
+		assert.True(t, json.Valid(data), "multi-spec archive must be valid JSON")
+		assert.Contains(t, string(data), `"name": "combo"`)
+	})
+
+	t.Run("single-spec JSON input returns raw bytes as spec.json", func(t *testing.T) {
+		jsonInput := []byte(`{"name":"solo","resources":{}}`)
+		data, name, ok := archiveSpecBytes(nil, []*spec.APISpec{{Name: "solo"}}, [][]byte{jsonInput})
+		require.True(t, ok)
+		assert.Equal(t, "spec.json", name)
+		assert.Equal(t, jsonInput, data, "single-spec JSON archive is byte-identical to input")
+	})
+
+	t.Run("single-spec YAML input returns raw bytes as spec.yaml", func(t *testing.T) {
+		yamlInput := []byte("name: solo\nresources: {}\n")
+		data, name, ok := archiveSpecBytes(nil, []*spec.APISpec{{Name: "solo"}}, [][]byte{yamlInput})
+		require.True(t, ok)
+		assert.Equal(t, "spec.yaml", name)
+		assert.Equal(t, yamlInput, data, "single-spec YAML archive is byte-identical to input")
+	})
+
+	t.Run("no inputs returns ok=false", func(t *testing.T) {
+		_, _, ok := archiveSpecBytes(nil, nil, nil)
+		assert.False(t, ok)
+	})
+
+	t.Run("multi-spec with nil apiSpec returns ok=false", func(t *testing.T) {
+		specs := []*spec.APISpec{
+			{Name: "a"},
+			{Name: "b"},
+		}
+		_, _, ok := archiveSpecBytes(nil, specs, [][]byte{[]byte("a"), []byte("b")})
+		assert.False(t, ok, "nil apiSpec must not silently archive the literal 'null'")
+	})
+}
+
+// TestGenerateArchivesRawSpecForSingleSpec asserts that single-spec runs
+// archive the user's original input bytes verbatim (post-redaction), the
+// negative case complementing the multi-spec merged-archive behavior.
+func TestGenerateArchivesRawSpecForSingleSpec(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "solo")
+	input := []byte(`name: solo
+description: Solo API
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  things:
+    description: Things
+    endpoints:
+      list:
+        method: GET
+        path: /things
+        description: List things
+`)
+	require.NoError(t, os.WriteFile(specPath, input, 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", specPath,
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+	})
+	require.NoError(t, cmd.Execute())
+
+	// YAML input archives as spec.yaml (not spec.json).
+	assert.NoFileExists(t, filepath.Join(outputDir, "spec.json"))
+	archived, err := os.ReadFile(filepath.Join(outputDir, "spec.yaml"))
+	require.NoError(t, err)
+
+	// Single-spec archive is byte-identical to the input (this spec contains
+	// no secrets, so redaction is a no-op).
+	assert.Equal(t, input, archived, "single-spec archive must preserve original bytes")
+}
+
 func TestMergeSpecsPrefersReplayableBrowserTransportOverUnshippablePageContext(t *testing.T) {
 	t.Parallel()
 

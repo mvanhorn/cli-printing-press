@@ -25,7 +25,7 @@ var templateVarPattern = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
 // back to a generic "template variable {x} unresolved" message.
 var templateVarEnvNames = map[string]string{
 {{- range .EndpointTemplateVars}}
-	"{{.}}": "{{envName $.Name}}_{{upper .}}",
+	"{{.}}": "{{endpointTemplateEnvName .}}",
 {{- end}}
 }
 

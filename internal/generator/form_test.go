@@ -89,7 +89,7 @@ func TestGenerateFormRequestBodyUsesFormClient(t *testing.T) {
 	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	assert.Contains(t, mcpSrc, `RequestContentType: "application/x-www-form-urlencoded"`)
 	assert.Contains(t, mcpSrc, `formFields := url.Values{}`)
-	assert.Contains(t, mcpSrc, `data, _, err = c.PostForm(path, formFields)`)
+	assert.Contains(t, mcpSrc, `data, _, err = c.PostFormWithParams(path, params, formFields)`)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")

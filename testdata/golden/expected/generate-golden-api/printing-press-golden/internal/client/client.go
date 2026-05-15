@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -83,6 +84,30 @@ func (c *Client) GetWithHeaders(path string, params map[string]string, headers m
 	return result, err
 }
 
+// GetNoCache issues a GET that bypasses the cache read for this call only,
+// then refreshes the cache with the fresh response on success. Use for
+// polling-until-terminal patterns where every call must reflect current
+// server state; the same (path, params) pair returning a stale
+// "in-progress" snapshot from cache would lock the poll loop on the
+// initial response. Writing-back on success means subsequent c.Get calls
+// (e.g. a follow-up `... get <id>` after WaitForJob returns) see the
+// terminal value, not the stale non-terminal snapshot left behind by the
+// first poll.
+func (c *Client) GetNoCache(path string, params map[string]string) (json.RawMessage, error) {
+	return c.GetWithHeadersNoCache(path, params, nil)
+}
+
+// GetWithHeadersNoCache is GetWithHeaders that skips the cache read but
+// still writes the fresh response on success. See GetNoCache for when to
+// prefer this over Get/GetWithHeaders.
+func (c *Client) GetWithHeadersNoCache(path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+	result, _, err := c.do("GET", path, params, nil, headers)
+	if err == nil && !c.NoCache && !c.DryRun && c.cacheDir != "" {
+		c.writeCache(path, params, result)
+	}
+	return result, err
+}
+
 func (c *Client) ProbeGet(path string) (int, error) {
 	_, status, err := c.do("GET", path, nil, nil, nil)
 	return status, err
@@ -94,7 +119,7 @@ func (c *Client) cacheKey(path string, params map[string]string) string {
 	if c.Config != nil {
 		key += "|auth_source=" + c.Config.AuthSource
 		if authHeader := c.Config.AuthHeader(); authHeader != "" {
-			authHash := sha256.Sum256([]byte(c.Config.AuthHeader()))
+			authHash := sha256.Sum256([]byte(authHeader))
 			key += "|auth=" + hex.EncodeToString(authHash[:8])
 		}
 		if c.Config.Path != "" {
@@ -150,12 +175,43 @@ func (c *Client) PostWithHeaders(path string, body any, headers map[string]strin
 	return c.do("POST", path, nil, body, headers)
 }
 
+func (c *Client) PostWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.do("POST", path, params, body, nil)
+}
+
+func (c *Client) PostWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, params, body, headers)
+}
+func (c *Client) PostMultipart(path string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PostMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
+func (c *Client) PostMultipartWithParams(path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PostMultipartWithParamsAndHeaders(path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
 func (c *Client) Delete(path string) (json.RawMessage, int, error) {
 	return c.do("DELETE", path, nil, nil, nil)
 }
 
 func (c *Client) DeleteWithHeaders(path string, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do("DELETE", path, nil, nil, headers)
+}
+
+func (c *Client) DeleteWithParams(path string, params map[string]string) (json.RawMessage, int, error) {
+	return c.do("DELETE", path, params, nil, nil)
+}
+
+func (c *Client) DeleteWithParamsAndHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("DELETE", path, params, nil, headers)
 }
 
 func (c *Client) Put(path string, body any) (json.RawMessage, int, error) {
@@ -166,6 +222,29 @@ func (c *Client) PutWithHeaders(path string, body any, headers map[string]string
 	return c.do("PUT", path, nil, body, headers)
 }
 
+func (c *Client) PutWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.do("PUT", path, params, body, nil)
+}
+
+func (c *Client) PutWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, params, body, headers)
+}
+func (c *Client) PutMultipart(path string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PutMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
+func (c *Client) PutMultipartWithParams(path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PutMultipartWithParamsAndHeaders(path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
 func (c *Client) Patch(path string, body any) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, nil, body, nil)
 }
@@ -174,18 +253,94 @@ func (c *Client) PatchWithHeaders(path string, body any, headers map[string]stri
 	return c.do("PATCH", path, nil, body, headers)
 }
 
+func (c *Client) PatchWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, params, body, nil)
+}
+
+func (c *Client) PatchWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, params, body, headers)
+}
+func (c *Client) PatchMultipart(path string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PatchMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
+func (c *Client) PatchMultipartWithParams(path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PatchMultipartWithParamsAndHeaders(path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
+}
+
+type multipartRequestBody struct {
+	Fields     map[string]string
+	FileFields map[string]string
+}
+
+func encodeMultipartBody(body multipartRequestBody) ([]byte, string, error) {
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	for fieldName, value := range body.Fields {
+		if err := writer.WriteField(fieldName, value); err != nil {
+			_ = writer.Close()
+			return nil, "", fmt.Errorf("writing multipart field %q: %w", fieldName, err)
+		}
+	}
+	for fieldName, filePath := range body.FileFields {
+		file, err := os.Open(filePath)
+		if err != nil {
+			_ = writer.Close()
+			return nil, "", fmt.Errorf("opening multipart file field %q (%q): %w", fieldName, filePath, err)
+		}
+		part, err := writer.CreateFormFile(fieldName, filepath.Base(filePath))
+		if err != nil {
+			_ = file.Close()
+			_ = writer.Close()
+			return nil, "", fmt.Errorf("creating multipart file field %q (%q): %w", fieldName, filePath, err)
+		}
+		if _, err := io.Copy(part, file); err != nil {
+			_ = file.Close()
+			_ = writer.Close()
+			return nil, "", fmt.Errorf("copying multipart file field %q (%q): %w", fieldName, filePath, err)
+		}
+		if err := file.Close(); err != nil {
+			_ = writer.Close()
+			return nil, "", fmt.Errorf("closing multipart file field %q (%q): %w", fieldName, filePath, err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", fmt.Errorf("finalizing multipart body: %w", err)
+	}
+	return buf.Bytes(), writer.FormDataContentType(), nil
+}
+
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
 	targetURL := c.BaseURL + path
 
 	var bodyBytes []byte
+	var contentType string
 	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return nil, 0, fmt.Errorf("marshaling body: %w", err)
+		if multipartBody, ok := body.(multipartRequestBody); ok {
+			b, ct, err := encodeMultipartBody(multipartBody)
+			if err != nil {
+				return nil, 0, err
+			}
+			bodyBytes = b
+			contentType = ct
+		} else {
+			b, err := json.Marshal(body)
+			if err != nil {
+				return nil, 0, fmt.Errorf("marshaling body: %w", err)
+			}
+			bodyBytes = b
+			contentType = "application/json"
 		}
-		bodyBytes = b
 	}
 
 	// Resolve auth material before the dry-run branch so --dry-run can preview
@@ -218,7 +373,7 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 			return nil, 0, fmt.Errorf("creating request: %w", err)
 		}
 		if bodyBytes != nil {
-			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Type", contentType)
 		}
 
 		if params != nil {
@@ -408,9 +563,9 @@ func maskToken(token string) string {
 }
 
 func truncateBody(b []byte) string {
-	s := string(b)
-	if len(s) > 200 {
-		return s[:200] + "..."
+	const maxBytes = 4096
+	if len(b) <= maxBytes {
+		return string(b)
 	}
-	return s
+	return strings.ToValidUTF8(string(b[:maxBytes]), "") + "..."
 }

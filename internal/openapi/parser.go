@@ -52,7 +52,20 @@ const (
 	extensionProxyRoutes           = "x-proxy-routes"
 	extensionOrigin                = "x-origin"
 	extensionProviderName          = "x-providerName"
+	// extensionTenantEnvVar declares the env-var name that resolves the
+	// {tenant} path-positional template in multi-tenant SaaS APIs (every
+	// path is /tenant/{tenant}/...). When set, the parser registers
+	// "tenant" as an EndpointTemplateVar with this env var as the override,
+	// so the profiler treats /tenant/{tenant}/<resource> paths as standalone
+	// sync resources rather than parent-context-dependent.
+	extensionTenantEnvVar = "x-tenant-env-var"
 )
+
+// tenantPlaceholderName is the canonical placeholder that x-tenant-env-var
+// maps to. Kept narrow on purpose — when this generalizes beyond ServiceTitan
+// (Atlassian {workspace}, GitHub {org}), promote to a list-shaped extension
+// rather than overloading this constant.
+const tenantPlaceholderName = "tenant"
 
 // SetMaxResources overrides the default resource limit. When not called,
 // the parser uses a default of 500 which accommodates all known APIs.
@@ -387,20 +400,24 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 		return nil, err
 	}
 
+	templateVars, templateEnvOverrides := parseEndpointTemplateExtensions(doc)
+
 	result := &spec.APISpec{
-		Name:                        name,
-		DisplayName:                 displayName,
-		DisplayNameDerivedFromTitle: displayNameDerivedFromTitle,
-		Description:                 description,
-		Version:                     version,
-		BaseURL:                     baseURL,
-		BaseURLIsPlaceholder:        baseURLIsPlaceholder,
-		BasePath:                    basePath,
-		WebsiteURL:                  websiteURL,
-		ProxyRoutes:                 proxyRoutes,
-		Auth:                        auth,
-		TierRouting:                 tierRouting,
-		MCP:                         mcpConfig,
+		Name:                         name,
+		DisplayName:                  displayName,
+		DisplayNameDerivedFromTitle:  displayNameDerivedFromTitle,
+		Description:                  description,
+		Version:                      version,
+		BaseURL:                      baseURL,
+		BaseURLIsPlaceholder:         baseURLIsPlaceholder,
+		BasePath:                     basePath,
+		WebsiteURL:                   websiteURL,
+		ProxyRoutes:                  proxyRoutes,
+		Auth:                         auth,
+		TierRouting:                  tierRouting,
+		MCP:                          mcpConfig,
+		EndpointTemplateVars:         templateVars,
+		EndpointTemplateEnvOverrides: templateEnvOverrides,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -437,6 +454,31 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 	}
 
 	return result, nil
+}
+
+// parseEndpointTemplateExtensions collects spec-declared endpoint template
+// placeholders and their env-var name overrides. Returns nil/nil for specs
+// that declare neither so existing generated outputs are byte-identical.
+//
+// Today only x-tenant-env-var lands here — it maps the implicit {tenant}
+// placeholder to an explicit env var (e.g. ST_TENANT_ID). When more
+// placeholders join (Atlassian {workspace}, GitHub {org}), prefer adding a
+// generic x-path-template-env-vars map-shaped extension over piling on
+// per-scope extensions.
+func parseEndpointTemplateExtensions(doc *openapi3.T) ([]string, map[string]string) {
+	raw, ok := lookupOpenAPIInfoExtension(doc, extensionTenantEnvVar)
+	if !ok {
+		return nil, nil
+	}
+	envName, ok := raw.(string)
+	if !ok {
+		return nil, nil
+	}
+	envName = strings.TrimSpace(envName)
+	if envName == "" {
+		return nil, nil
+	}
+	return []string{tenantPlaceholderName}, map[string]string{tenantPlaceholderName: envName}
 }
 
 // parseTypedExtension bridges kin-openapi's untyped any-tree to a typed
@@ -621,7 +663,99 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	applyAuthEnvVarDefaults(&auth, envPrefix)
 	applyAuthVarsRichOverride(&auth, scheme.Extensions, fmt.Sprintf("components.securitySchemes.%s.%s", schemeName, extensionAuthVars))
 	applyAuthCompanionFromInfo(&auth, doc)
+	auth.AdditionalHeaders = collectAdditionalAuthHeaders(doc, schemeName)
 	return auth
+}
+
+// collectAdditionalAuthHeaders scans AND-group siblings of the winning
+// security scheme for x-auth-vars per_call entries. Composed auth shapes
+// (apiKey + OAuth bearer, Stripe-Signature + bearer, ST-App-Key + bearer)
+// declare the apiKey scheme in the same security requirement object as the
+// bearer; selectSecurityScheme picks the bearer half, and without this sweep
+// the apiKey half is silently dropped.
+//
+// AND vs OR matters: OpenAPI security is a list of requirement objects, where
+// each object is an AND-group (all schemes named must be satisfied) and the
+// list itself is OR (any one object suffices). A spec offering BearerAuth and
+// ApiKeyAuth as alternatives (each in its own requirement object) must NOT
+// promote the unused alternative as a sibling — that would emit a spurious
+// header on every Bearer-authenticated request. Only schemes co-located with
+// the winner in a requirement object are promoted.
+//
+// Only apiKey-typed siblings with `in: header` and an `x-auth-vars` per_call
+// declaration are considered. When doc.Security is empty (no root-level AND
+// grouping declared), no siblings are promoted: without an explicit
+// requirement object the AND/OR relationship is ambiguous and conservative
+// behavior is to emit nothing.
+func collectAdditionalAuthHeaders(doc *openapi3.T, winner string) []spec.AdditionalAuthHeader {
+	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) <= 1 {
+		return nil
+	}
+	if winner == "" || len(doc.Security) == 0 {
+		return nil
+	}
+
+	siblingSet := map[string]struct{}{}
+	var siblings []string
+	for _, req := range doc.Security {
+		if _, ok := req[winner]; !ok {
+			continue
+		}
+		for name := range req {
+			if name == winner {
+				continue
+			}
+			if _, dup := siblingSet[name]; dup {
+				continue
+			}
+			siblingSet[name] = struct{}{}
+			siblings = append(siblings, name)
+		}
+	}
+	sort.Strings(siblings)
+
+	var headers []spec.AdditionalAuthHeader
+	for _, name := range siblings {
+		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
+		if scheme == nil {
+			continue
+		}
+		if !strings.EqualFold(scheme.Type, "apiKey") {
+			continue
+		}
+		header := strings.TrimSpace(scheme.Name)
+		if header == "" {
+			continue
+		}
+		// apiKey schemes must declare `in` per OpenAPI 3.x; an empty value is a
+		// spec authoring mistake and would otherwise silently emit a header.
+		if !strings.EqualFold(strings.TrimSpace(scheme.In), "header") {
+			continue
+		}
+		raw, ok := scheme.Extensions[extensionAuthVars]
+		if !ok || raw == nil {
+			continue
+		}
+		envVars, err := authVarsExtension(raw)
+		if err != nil || len(envVars) == 0 {
+			continue
+		}
+		for _, ev := range envVars {
+			if ev.EffectiveKind() != spec.AuthEnvVarKindPerCall {
+				continue
+			}
+			if strings.TrimSpace(ev.Name) == "" {
+				continue
+			}
+			headers = append(headers, spec.AdditionalAuthHeader{
+				Header: header,
+				In:     "header",
+				Scheme: name,
+				EnvVar: ev,
+			})
+		}
+	}
+	return headers
 }
 
 func isGenericAPIKeySchemeSuffix(suffix string) bool {
@@ -1943,6 +2077,12 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			endpoint.Response, endpoint.ResponsePath = mapResponse(op, targetResourceName+"_"+endpointName, out)
 			if strings.ToUpper(method) == "GET" {
 				endpoint.Pagination = detectPagination(endpoint.Params, op)
+				// Only single-resource fetches (GET /resource/{id}) can carry
+				// embedded paged sub-resources; list endpoints ARE the paged
+				// endpoint themselves and don't need a companion helper.
+				if strings.Contains(path, "{") {
+					endpoint.EmbeddedPagedSubresources = detectEmbeddedPagedSubresources(op, path)
+				}
 			}
 			endpoint.NoAuth = operationAllowsAnonymous(op, doc)
 
@@ -2423,7 +2563,11 @@ func tagDescriptionKeys(name string) []string {
 }
 
 func resolveEndpointName(method, path string, op *openapi3.Operation, existing map[string]spec.Endpoint, resourceName, basePath string, commonPrefix []string) string {
-	name := operationIDToName(operationID(op), resourceName, commonPrefix)
+	opID := operationID(op)
+	var name string
+	if !isFrameworkAutoGeneratedOperationID(opID, path) {
+		name = operationIDToName(opID, resourceName, commonPrefix)
+	}
 	if name == "" {
 		name = defaultEndpointName(method, path)
 	}
@@ -4061,6 +4205,94 @@ func operationIDToName(operationID, resourceName string, commonPrefix []string) 
 	return strings.ReplaceAll(name, "_", "-")
 }
 
+// isFrameworkAutoGeneratedOperationID reports whether operationID was
+// auto-generated by a framework (API Platform / Symfony, etc.) that names
+// operations by concatenating path segments and appending the HTTP method.
+// Two signals must both fire:
+//
+//  1. The operationId, snake-cased and tokenized on underscores, ends with
+//     a framework verb suffix (_post, _put, _patch, _delete, _get_collection,
+//     _get_subresource). Hand-curated ids that ship CRUD verbs as English
+//     words (list, create, search) and Google Discovery dotted ids
+//     (run.projects.locations.services.create) miss this gate.
+//  2. The same token list contains a token equal to the concatenation
+//     (no separator) of two consecutive non-routing, non-path-param path
+//     segments. Path-param segments are excluded so a hand-curated id
+//     that happens to contain a "{paramName}+nextSegment" concat does not
+//     trip the detector.
+//
+// When both fire, callers skip operationIDToName so name derivation falls
+// back to verb + path-collision-suffix rather than emitting unreadable
+// command names like "paymentsubscriptions-get-collection".
+func isFrameworkAutoGeneratedOperationID(operationID, path string) bool {
+	if operationID == "" || path == "" {
+		return false
+	}
+	opTokens := strings.Split(toSnakeCase(operationID), "_")
+	if len(opTokens) < 2 {
+		return false
+	}
+	if !hasFrameworkVerbSuffix(opTokens) {
+		return false
+	}
+
+	segs := splitPath(path)
+	normSegs := make([]string, 0, len(segs))
+	for _, s := range segs {
+		if isVersionSegment(s) || isGenericAPIPrefix(s) || isPathParamSegment(s) {
+			continue
+		}
+		n := strings.ReplaceAll(toSnakeCase(s), "_", "")
+		if n == "" {
+			continue
+		}
+		normSegs = append(normSegs, n)
+	}
+	if len(normSegs) < 2 {
+		return false
+	}
+
+	// frameworkConcatMinLen guards against accidental matches on very short
+	// segment pairs. 8 chars is comfortably above any plausible single
+	// path segment and below every concatenation we have seen in the wild
+	// (paymentsubscriptions, communitycommunities, schoolenrollments).
+	const frameworkConcatMinLen = 8
+
+	for i := range len(normSegs) - 1 {
+		cand := normSegs[i] + normSegs[i+1]
+		if len(cand) < frameworkConcatMinLen {
+			continue
+		}
+		if slices.Contains(opTokens, cand) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasFrameworkVerbSuffix reports whether opTokens ends with a verb suffix
+// that frameworks like API Platform emit as a marker of auto-generation:
+// the bare HTTP method (post/put/patch/delete) or one of the well-known
+// composite suffixes (get_collection, get_subresource). Hand-curated ids
+// ship English CRUD verbs (list, create, update) and do not match.
+func hasFrameworkVerbSuffix(opTokens []string) bool {
+	if len(opTokens) == 0 {
+		return false
+	}
+	last := opTokens[len(opTokens)-1]
+	switch last {
+	case "post", "put", "patch", "delete":
+		return true
+	}
+	if len(opTokens) >= 2 && opTokens[len(opTokens)-2] == "get" {
+		switch last {
+		case "collection", "subresource":
+			return true
+		}
+	}
+	return false
+}
+
 func googleOperationIDEndpointName(operationID, resourceName string) string {
 	chain, verb, ok := googleOperationIDResourceChain(operationID, true, true)
 	if !ok {
@@ -4793,6 +5025,180 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	}
 
 	return &pag
+}
+
+// itemsFieldNames lists JSON property names that, when typed as an array,
+// signal "this object is a paged envelope" — matches the runtime
+// extractPaginatedItems helper in templates/helpers.go.tmpl so detect-time
+// and runtime walks agree on what counts as a page of items.
+var itemsFieldNames = []string{"data", "items", "results", "messages", "members", "values"}
+
+// nextFieldURLNames lists string properties that carry a full URL to
+// the next page (resolvable directly with GET). The runtime helper
+// follows these without API-specific cursor arithmetic.
+var nextFieldURLNames = []string{"next", "next_url", "nexturl"}
+
+// nextFieldCursorNames lists string properties that carry an opaque
+// cursor token (e.g. next_page_token, next_cursor). These cannot be
+// followed without knowing which query parameter to set on the next
+// request — metadata the embedded envelope does not provide — so the
+// runtime helper treats their presence the same way it treats
+// has_more=true: fetch page 1, then emit a truncation event so callers
+// know data is incomplete.
+var nextFieldCursorNames = []string{"next_cursor", "nextcursor", "next_page_token", "nextpagetoken", "cursor"}
+
+// nextFieldBoolNames lists boolean-typed "more pages" flags.
+var nextFieldBoolNames = []string{"has_more", "hasmore"}
+
+// detectEmbeddedPagedSubresources walks the success-response schema of a
+// GET operation looking for top-level properties whose nested shape is a
+// paged envelope. Each match yields a companion-helper candidate; the
+// caller stores the result on Endpoint.EmbeddedPagedSubresources and the
+// generator emits fetchFull<Endpoint><Property> helpers from there.
+// Returns nil when nothing matches so callers can compare against nil.
+//
+// Detection is a two-part heuristic: the property schema must be
+// object-shaped AND carry both an array items field (items/data/
+// results/...) and a next-page signal (cursor/URL string or has_more-
+// style bool).
+func detectEmbeddedPagedSubresources(op *openapi3.Operation, parentPath string) []spec.EmbeddedPagedSubresource {
+	if op == nil || op.Responses == nil {
+		return nil
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil {
+		return nil
+	}
+	schemaRef := selectResponseSchema(success.Value)
+	if schemaRef == nil || schemaRef.Value == nil {
+		return nil
+	}
+
+	var out []spec.EmbeddedPagedSubresource
+	propNames := make([]string, 0, len(schemaRef.Value.Properties))
+	for name := range schemaRef.Value.Properties {
+		propNames = append(propNames, name)
+	}
+	sort.Strings(propNames)
+
+	for _, propName := range propNames {
+		propRef := schemaRef.Value.Properties[propName]
+		if propRef == nil || propRef.Value == nil {
+			continue
+		}
+		propSchema := propRef.Value
+		if !schemaHasObjectShape(propSchema) {
+			continue
+		}
+		lowered := loweredPropertyMap(propSchema)
+		itemsField, ok := findItemsField(propSchema, lowered)
+		if !ok {
+			continue
+		}
+		nextField, kind := findNextField(lowered)
+		if kind == nextKindNone {
+			continue
+		}
+		out = append(out, spec.EmbeddedPagedSubresource{
+			Property:      propName,
+			ChildPath:     joinChildPath(parentPath, propName),
+			ItemsField:    itemsField,
+			NextField:     nextField,
+			NextIsURL:     kind == nextKindURL,
+			NextIsBoolean: kind == nextKindBoolean,
+		})
+	}
+	return out
+}
+
+func schemaHasObjectShape(s *openapi3.Schema) bool {
+	if s == nil {
+		return false
+	}
+	if s.Type != nil && s.Type.Is("object") {
+		return true
+	}
+	// Some specs omit `type: object` but declare properties anyway —
+	// treat that as object-shaped for detection purposes.
+	return len(s.Properties) > 0
+}
+
+// loweredPropertyMap returns a case-insensitive lookup from canonical
+// lowercase property name to the wire-side name actually declared on the
+// schema, so detection survives vendors that capitalize fields ("Items",
+// "NextPageToken") while preserving the original casing for emission.
+func loweredPropertyMap(s *openapi3.Schema) map[string]string {
+	out := make(map[string]string, len(s.Properties))
+	for name := range s.Properties {
+		out[strings.ToLower(name)] = name
+	}
+	return out
+}
+
+func findItemsField(s *openapi3.Schema, lowered map[string]string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	for _, candidate := range itemsFieldNames {
+		actual, ok := lowered[candidate]
+		if !ok {
+			continue
+		}
+		ref := s.Properties[actual]
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		if ref.Value.Type != nil && ref.Value.Type.Is("array") {
+			return actual, true
+		}
+	}
+	return "", false
+}
+
+// nextFieldKind classifies the detected next-page signal so the
+// runtime can decide whether to follow it (URL) or stop and warn
+// (cursor / has_more bool).
+type nextFieldKind int
+
+const (
+	nextKindNone nextFieldKind = iota
+	nextKindURL
+	nextKindCursor
+	nextKindBoolean
+)
+
+func findNextField(lowered map[string]string) (string, nextFieldKind) {
+	for _, candidate := range nextFieldURLNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindURL
+		}
+	}
+	for _, candidate := range nextFieldCursorNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindCursor
+		}
+	}
+	for _, candidate := range nextFieldBoolNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindBoolean
+		}
+	}
+	return "", nextKindNone
+}
+
+// joinChildPath returns parentPath + "/" + property — the conventional
+// URL shape for the dedicated child endpoint of an embedded paged
+// sub-resource (e.g. <api>/resource/{id}/<subresource>). APIs that
+// publish the sub-resource at a non-conventional URL must override via
+// the spec field after parsing.
+func joinChildPath(parentPath, property string) string {
+	if parentPath == "" || property == "" {
+		return ""
+	}
+	if strings.HasSuffix(parentPath, "/") {
+		return parentPath + property
+	}
+	return parentPath + "/" + property
 }
 
 func humanizeEndpointName(name string) string {

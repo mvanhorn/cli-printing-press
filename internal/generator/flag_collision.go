@@ -304,13 +304,21 @@ func validatePublicFlagEntry(resKey, epName string, entry publicFlagEntry, reser
 // identifiers (via camel) or cobra flag names (via flagName). It is
 // IdentName when populated by the dedup pass and Name otherwise. The
 // resulting string must never be used for wire-side serialization;
-// callers writing URL params, JSON keys, or path substitutions read
-// Name directly.
+// callers writing URL params read paramWireName, while JSON keys, or
+// path substitutions read Name directly.
 func paramIdent(p spec.Param) string {
 	if p.IdentName != "" {
 		return p.IdentName
 	}
 	return p.Name
+}
+
+// paramWireName returns the URL query-key for this param. URLName overrides
+// when set (e.g., "$limit" for Socrata APIs); otherwise Name. Used by
+// generator templates for URL emission only — not for JSON body keys or
+// path substitution.
+func paramWireName(p spec.Param) string {
+	return p.WireName()
 }
 
 func publicFlagName(p spec.Param) string {

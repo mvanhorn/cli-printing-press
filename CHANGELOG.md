@@ -1,5 +1,57 @@
 # Changelog
 
+## [4.6.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.6.0...v4.6.1) (2026-05-14)
+
+
+### Bug Fixes
+
+* **cli:** coerce number-typed --limit param to int ([#1370](https://github.com/mvanhorn/cli-printing-press/issues/1370)) ([80f5bc6](https://github.com/mvanhorn/cli-printing-press/commit/80f5bc6ca5d1c5aae2ca0880d19a5cd2396046ab)), closes [#1082](https://github.com/mvanhorn/cli-printing-press/issues/1082)
+* **cli:** consume x-tenant-env-var so per-tenant sync paths ship populated ([#1368](https://github.com/mvanhorn/cli-printing-press/issues/1368)) ([51b758c](https://github.com/mvanhorn/cli-printing-press/commit/51b758c713f3c4252697d38d8355a9f3bb4b81f2))
+* **cli:** detect cross-cutting novel features in dogfood scorer ([#1364](https://github.com/mvanhorn/cli-printing-press/issues/1364)) ([a601038](https://github.com/mvanhorn/cli-printing-press/commit/a60103844391e29535b12d8a416d558944086192))
+* **cli:** drop MCP handler pre-marshal that base64-encoded mutating bodies ([#1357](https://github.com/mvanhorn/cli-printing-press/issues/1357)) ([1fc5f62](https://github.com/mvanhorn/cli-printing-press/commit/1fc5f62bef9c21716e27c092545ed2ca8c6f1aca))
+* **cli:** percent-encode path param values in replacePathParam ([#1366](https://github.com/mvanhorn/cli-printing-press/issues/1366)) ([77fce43](https://github.com/mvanhorn/cli-printing-press/commit/77fce43f42bf32c3c9d286ed69b506d93b3635da))
+* **cli:** refuse publish package --dest overlay when mirror diverges from source ([#1371](https://github.com/mvanhorn/cli-printing-press/issues/1371)) ([1ff6853](https://github.com/mvanhorn/cli-printing-press/commit/1ff685373907ac9966ceacdea7628a69edf7c235))
+* **cli:** skip framework-auto-generated operationIds when deriving command names ([#1367](https://github.com/mvanhorn/cli-printing-press/issues/1367)) ([d697eb5](https://github.com/mvanhorn/cli-printing-press/commit/d697eb5ae9ee18804c77022996f71058c972982d))
+* **cli:** strip embedded .git/ and .gitmodules in pipeline.CopyDir ([#1358](https://github.com/mvanhorn/cli-printing-press/issues/1358)) ([0f8dc98](https://github.com/mvanhorn/cli-printing-press/commit/0f8dc989616797be1c1a326dc6d420dc8426289d)), closes [#1304](https://github.com/mvanhorn/cli-printing-press/issues/1304)
+* **cli:** wire composed apiKey + bearer sibling headers through parser, templates, and MCP manifest ([#1359](https://github.com/mvanhorn/cli-printing-press/issues/1359)) ([2437cab](https://github.com/mvanhorn/cli-printing-press/commit/2437cab76049ef0cbf81a6e49cf53595c31c8649)), closes [#1303](https://github.com/mvanhorn/cli-printing-press/issues/1303)
+
+## [4.6.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.5.2...v4.6.0) (2026-05-13)
+
+
+### Features
+
+* **cli:** emit fetchFull&lt;X&gt; companion for GET-embedded paged sub-resources ([#1301](https://github.com/mvanhorn/cli-printing-press/issues/1301)) ([900b335](https://github.com/mvanhorn/cli-printing-press/commit/900b335ce15efab58b8007a8cdb80de2de80ff4e))
+
+
+### Bug Fixes
+
+* **ci:** collapse Mergify two-step CI to enable in-place mode ([#1336](https://github.com/mvanhorn/cli-printing-press/issues/1336)) ([5ac1de7](https://github.com/mvanhorn/cli-printing-press/commit/5ac1de7c5823ef6b90a210a4ca2135ede7ae1449))
+* **cli:** close ResolveByName json_extract injection + dedupe cacheKey AuthHeader call ([#1278](https://github.com/mvanhorn/cli-printing-press/issues/1278)) ([e21feae](https://github.com/mvanhorn/cli-printing-press/commit/e21feae6854f272d8a1d3c12d581da49ec739fb9))
+* **cli:** hide const-default query flags from --help ([#1287](https://github.com/mvanhorn/cli-printing-press/issues/1287)) ([ee3638b](https://github.com/mvanhorn/cli-printing-press/commit/ee3638b2e846e38c3fa7f23e4de82aac6d781332)), closes [#1273](https://github.com/mvanhorn/cli-printing-press/issues/1273)
+* **cli:** promote write-endpoint params to body when body is empty ([#791](https://github.com/mvanhorn/cli-printing-press/issues/791)) ([ff13530](https://github.com/mvanhorn/cli-printing-press/commit/ff1353099491ede69491a2694763ec88c856eccc))
+* **cli:** propagate --timeout to surf transport ResponseHeaderTimeout ([#1212](https://github.com/mvanhorn/cli-printing-press/issues/1212)) ([69cefbe](https://github.com/mvanhorn/cli-printing-press/commit/69cefbe9db5219d8c6e03e51e74f218a36c567f8))
+* **cli:** raise API error body truncation cap from 200 to 4096 bytes ([#1285](https://github.com/mvanhorn/cli-printing-press/issues/1285)) ([513ae01](https://github.com/mvanhorn/cli-printing-press/commit/513ae01d9afa7e8a3b7d850db7824d596d118c61))
+* **cli:** route in:query params to URL on PUT/DELETE/POST/PATCH handlers ([#1279](https://github.com/mvanhorn/cli-printing-press/issues/1279)) ([b8488ee](https://github.com/mvanhorn/cli-printing-press/commit/b8488ee422472772141c9137b869ae5cbee3492c))
+* **cli:** support $-prefixed pagination params for Socrata-style APIs ([#1204](https://github.com/mvanhorn/cli-printing-press/issues/1204)) ([3819b67](https://github.com/mvanhorn/cli-printing-press/commit/3819b67f8118617725671467a7a0f6ee712c4304))
+* **skills:** extend retro pre-upload scrub with jurisdiction-specific PII patterns ([#1302](https://github.com/mvanhorn/cli-printing-press/issues/1302)) ([42093ad](https://github.com/mvanhorn/cli-printing-press/commit/42093ad854a0c2505104aba03f92d418c04d3f59)), closes [#1291](https://github.com/mvanhorn/cli-printing-press/issues/1291)
+* **skills:** skip publish-validate in mid-pipeline polish ([#1300](https://github.com/mvanhorn/cli-printing-press/issues/1300)) ([8cc7e65](https://github.com/mvanhorn/cli-printing-press/commit/8cc7e655ff4475070ba906f9891682d88ffedfa7))
+
+## [4.5.2](https://github.com/mvanhorn/cli-printing-press/compare/v4.5.1...v4.5.2) (2026-05-12)
+
+
+### Bug Fixes
+
+* **ci:** fold skill docs into lint gate ([#1226](https://github.com/mvanhorn/cli-printing-press/issues/1226)) ([7010c10](https://github.com/mvanhorn/cli-printing-press/commit/7010c102c0e52860cad09dd745065b16919aedb2))
+* **cli:** always quote SQL identifiers emitted by safeSQLName ([#1228](https://github.com/mvanhorn/cli-printing-press/issues/1228)) ([c05d3bc](https://github.com/mvanhorn/cli-printing-press/commit/c05d3bc75d9f098e9a99d6b5cd22ce07cf4e220c))
+* **cli:** default Accept to application/json instead of */* ([#1229](https://github.com/mvanhorn/cli-printing-press/issues/1229)) ([e40389e](https://github.com/mvanhorn/cli-printing-press/commit/e40389efd8e3fcfcc673d95accdef6678c455dc9)), closes [#1119](https://github.com/mvanhorn/cli-printing-press/issues/1119)
+* **cli:** gate refreshAccessToken emission on Auth.TokenURL non-empty ([#1244](https://github.com/mvanhorn/cli-printing-press/issues/1244)) ([5c359ba](https://github.com/mvanhorn/cli-printing-press/commit/5c359ba6813f20cbcf75d9910bfb70f7aa75935a))
+* **cli:** guard nil Phases in LoadState to prevent lock promote panic ([#1193](https://github.com/mvanhorn/cli-printing-press/issues/1193)) ([28e2fa1](https://github.com/mvanhorn/cli-printing-press/commit/28e2fa1b44740135699e1bf4502411ae9e363db6)), closes [#1189](https://github.com/mvanhorn/cli-printing-press/issues/1189)
+* **cli:** make .printing-press.json authoritative for parsed.Name in mcp-sync ([#1252](https://github.com/mvanhorn/cli-printing-press/issues/1252)) ([bb9b9cb](https://github.com/mvanhorn/cli-printing-press/commit/bb9b9cb3a71a3fea95df2075c515ae62bec44553))
+* **cli:** populate parent FK in generated UpsertBatch typed-table test fixture ([#1253](https://github.com/mvanhorn/cli-printing-press/issues/1253)) ([9e0fe96](https://github.com/mvanhorn/cli-printing-press/commit/9e0fe96c8488f04a81f1de413a55d7244559679b)), closes [#1063](https://github.com/mvanhorn/cli-printing-press/issues/1063)
+* **cli:** prioritize bearer + apply root-security filter in scheme selection ([#1238](https://github.com/mvanhorn/cli-printing-press/issues/1238)) ([09d72e6](https://github.com/mvanhorn/cli-printing-press/commit/09d72e68455d0ff1b720d6de369349d45c30112a)), closes [#979](https://github.com/mvanhorn/cli-printing-press/issues/979)
+* **cli:** skip dogfood --live error_path probe for mutating commands ([#1225](https://github.com/mvanhorn/cli-printing-press/issues/1225)) ([f1246ee](https://github.com/mvanhorn/cli-printing-press/commit/f1246ee145ea765f8ee66714e35ad14b6a859f4e)), closes [#1219](https://github.com/mvanhorn/cli-printing-press/issues/1219)
+* **skills:** generate absolute manuscript URLs in publish PR body ([#1235](https://github.com/mvanhorn/cli-printing-press/issues/1235)) ([a8ad982](https://github.com/mvanhorn/cli-printing-press/commit/a8ad9820e89070e3adf084299c73bb2a5a5b797e))
+
 ## [4.5.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.5.0...v4.5.1) (2026-05-12)
 
 
