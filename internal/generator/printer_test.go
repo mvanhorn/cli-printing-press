@@ -11,11 +11,9 @@ import (
 )
 
 // stubBinaryDir creates a temp dir with fake `git` and `gh` shell scripts and
-// replaces PATH entirely with it. ghScript is the body emitted by the `gh`
-// stub (must include a shebang); pass an empty string to omit gh so
-// exec.LookPath fails. Note: replacing PATH (rather than prepending) means
-// any other binary called transitively from the code under test will also
-// fail to resolve — keep scope to functions that only exec git/gh.
+// prepends it to PATH so the stubs shadow real binaries but other binaries
+// remain reachable. ghScript is the body emitted by the `gh` stub (must
+// include a shebang); pass an empty string to omit gh so exec.LookPath fails.
 func stubBinaryDir(t *testing.T, gitScript, ghScript string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -26,7 +24,7 @@ func stubBinaryDir(t *testing.T, gitScript, ghScript string) string {
 	if ghScript != "" {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(ghScript), 0o755))
 	}
-	t.Setenv("PATH", dir)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return dir
 }
 
@@ -148,6 +146,17 @@ func TestResolvePrinterForNewReturnsEmptyWhenBothUnset(t *testing.T) {
 	stubBinaryDir(t,
 		"#!/bin/sh\nexit 1\n",
 		"#!/bin/sh\nexit 1\n",
+	)
+	assert.Empty(t, resolvePrinterForNew())
+}
+
+// TestResolvePrinterForNewRejectsGhNullOutput guards against jq emitting the
+// literal string "null" when the API response lacks `.login` — accepting it
+// would set printer to "null" and still fail publish-validate downstream.
+func TestResolvePrinterForNewRejectsGhNullOutput(t *testing.T) {
+	stubBinaryDir(t,
+		"#!/bin/sh\nexit 0\n",
+		"#!/bin/sh\necho null\n",
 	)
 	assert.Empty(t, resolvePrinterForNew())
 }

@@ -434,7 +434,10 @@ func resolvePrinterForNew() string {
 		}
 	}
 	if out, err := exec.Command("gh", "api", "user", "--jq", ".login").Output(); err == nil {
-		if v := strings.TrimSpace(string(out)); v != "" {
+		// jq emits the literal string "null" when .login is absent or JSON null;
+		// filter that explicitly so it doesn't survive into the printer field
+		// and re-fail publish-validate the way an empty printer would.
+		if v := strings.TrimSpace(string(out)); v != "" && v != "null" {
 			return v
 		}
 	}
