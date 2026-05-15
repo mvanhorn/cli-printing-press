@@ -253,7 +253,7 @@ Run `{{.Name}}-pp-cli --help` for the full command reference and flag list.
 
 {{$resource.Description}}
 {{range $eName, $endpoint := $resource.Endpoints}}
-- **`{{$.Name}}-pp-cli {{$name}} {{$eName}}`** - {{$endpoint.Description}}
+- **`{{$.Name}}-pp-cli {{$name}} {{kebab $eName}}`** - {{$endpoint.Description}}
 {{- end}}
 {{end}}
 
