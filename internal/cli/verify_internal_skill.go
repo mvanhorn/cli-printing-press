@@ -180,7 +180,7 @@ func splitFrontmatter(s string) (string, string, bool) {
 
 // hasH1Heading reports whether body contains at least one line starting with `# `.
 func hasH1Heading(body string) bool {
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if strings.HasPrefix(line, "# ") {
 			return true
 		}
