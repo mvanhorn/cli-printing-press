@@ -321,6 +321,61 @@ func TestUpsertBatch_Populates{{pascal .Name}}Table(t *testing.T) {
 		t.Fatalf("{{.Name}} count = %d, want %d (typed table not populated by UpsertBatch)", typed, len(items))
 	}
 }
+{{- if $parentFKCol }}
+
+// TestUpsertBatch_TypedFailureDoesNotStrand{{pascal .Name}}Generic exercises
+// the savepoint isolation around the typed-table dispatch. The fixture omits
+// the NOT NULL parent FK column so the typed insert fails; the savepoint
+// rolls back only the typed projection. The generic resources row inserted
+// just before must survive. Regression for issue #1392, where a single
+// outer transaction caused typed-table failures to cascade and silently
+// discard every successfully fetched API row.
+func TestUpsertBatch_TypedFailureDoesNotStrand{{pascal .Name}}Generic(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	// Items deliberately omit "{{$parentFKCol}}" so the typed NOT NULL
+	// constraint fires.
+	items := []json.RawMessage{
+		json.RawMessage(`{"id": "orphan-001"}`),
+		json.RawMessage(`{"id": "orphan-002"}`),
+		json.RawMessage(`{"id": "orphan-003"}`),
+	}
+	stored, extractFailures, err := s.UpsertBatch("{{.Resource}}", items)
+	if err != nil {
+		t.Fatalf("UpsertBatch: %v (typed-table failure must not propagate)", err)
+	}
+	if stored != len(items) {
+		t.Fatalf("stored = %d, want %d (generic resources rows must land even when typed table fails)", stored, len(items))
+	}
+	if extractFailures != 0 {
+		t.Fatalf("extractFailures = %d, want 0", extractFailures)
+	}
+
+	db := s.DB()
+
+	var generic int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM resources WHERE resource_type = ?`, "{{.Resource}}").Scan(&generic); err != nil {
+		t.Fatalf("count resources: %v", err)
+	}
+	if generic != len(items) {
+		t.Fatalf("resources count = %d, want %d (savepoint rollback must not undo generic insert)", generic, len(items))
+	}
+
+	var typed int
+	typedQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, "{{.Name}}")
+	if err := db.QueryRow(typedQuery).Scan(&typed); err != nil {
+		t.Fatalf("count {{.Name}}: %v", err)
+	}
+	if typed != 0 {
+		t.Fatalf("{{.Name}} count = %d, want 0 (typed insert violated NOT NULL on %q)", typed, "{{$parentFKCol}}")
+	}
+}
+{{- end}}
 {{- if $hasParentID }}
 
 // TestUpsertBatch_Sets{{pascal .Name}}ParentID verifies that dependent-resource

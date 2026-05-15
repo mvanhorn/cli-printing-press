@@ -76,6 +76,13 @@ func Execute() error {
 		if idx := strings.Index(msg, "unknown flag: "); idx >= 0 {
 			flagStr := strings.TrimSpace(msg[idx+len("unknown flag: "):])
 			if suggestion := suggestFlag(flagStr, rootCmd); suggestion != "" {
+				// Cobra already printed `Error: unknown flag: --foob` before
+				// returning; the wrap below attaches the hint to err.Error()
+				// for downstream consumers and exit-code classification, but
+				// would never reach stderr now that main.go no longer prints
+				// err. Emit the hint explicitly so the suggestion still
+				// shows up under Cobra's error line.
+				fmt.Fprintf(os.Stderr, "hint: did you mean --%s?\n", suggestion)
 				err = fmt.Errorf("%w\nhint: did you mean --%s?", err, suggestion)
 			}
 		}

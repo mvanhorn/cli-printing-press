@@ -1,8 +1,10 @@
 package browsersniff
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -368,6 +370,436 @@ func TestDetectAuth_FallsBackToHeaderInference(t *testing.T) {
 
 	assert.Equal(t, "bearer_token", auth.Type)
 	assert.Equal(t, "Authorization", auth.Header)
+}
+
+func TestObservedAuthHeaders(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		entries []EnrichedEntry
+		want    []string
+	}{
+		{
+			name: "single authorization header",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{"Authorization": "Bearer eyJabc"}},
+			},
+			want: []string{"authorization"},
+		},
+		{
+			name: "multiple distinct auth headers in one sample",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{
+					"Authorization": "Bearer t",
+					"X-CSRF-Token":  "abc",
+					"Cookie":        "session=x",
+				}},
+			},
+			want: []string{"authorization", "cookie", "x-csrf-token"},
+		},
+		{
+			name: "mixed across samples - union, presence not requirement",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{"Authorization": "Bearer t"}},
+				{RequestHeaders: map[string]string{"Accept": "application/json"}},
+			},
+			want: []string{"authorization"},
+		},
+		{
+			name: "no auth headers - nil result for omitempty",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{"Accept": "application/json", "User-Agent": "x"}},
+			},
+			want: nil,
+		},
+		{
+			name: "case-insensitive merge",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{"Authorization": "x"}},
+				{RequestHeaders: map[string]string{"AUTHORIZATION": "y"}},
+				{RequestHeaders: map[string]string{"authorization": "z"}},
+			},
+			want: []string{"authorization"},
+		},
+		{
+			name: "values never leak - only names emitted",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{"Authorization": "Bearer eyJ.SECRET.token"}},
+			},
+			want: []string{"authorization"},
+		},
+		{
+			name: "api-key and api_key variants",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{"X-Api-Key": "k1"}},
+				{RequestHeaders: map[string]string{"x_api_key": "k2"}},
+			},
+			want: []string{"x-api-key", "x_api_key"},
+		},
+		{
+			name: "contains-token contains-secret contains-signature patterns",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{
+					"X-Auth-Token":    "t",
+					"X-Hub-Secret":    "s",
+					"X-Sig-Signature": "g",
+				}},
+			},
+			want: []string{"x-auth-token", "x-hub-secret", "x-sig-signature"},
+		},
+		{
+			name:    "empty entries",
+			entries: []EnrichedEntry{},
+			want:    nil,
+		},
+		{
+			name: "non-auth headers ignored",
+			entries: []EnrichedEntry{
+				{RequestHeaders: map[string]string{
+					"Accept":     "application/json",
+					"User-Agent": "ua/1.0",
+					"Referer":    "https://example.com",
+				}},
+			},
+			want: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := observedAuthHeaders(tc.entries)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestAnalyzeCapture_PopulatesObservedAuthOnSpecEndpoint(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders: map[string]string{
+					"Authorization": "Bearer eyJtoken",
+					"Accept":        "application/json",
+				},
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":2}`,
+				RequestHeaders: map[string]string{
+					"Accept": "application/json",
+				},
+			},
+		},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+
+	var found bool
+	for _, resource := range apiSpec.Resources {
+		for _, endpoint := range resource.Endpoints {
+			if endpoint.Method == "GET" && endpoint.Path == "/v1/items" {
+				assert.Equal(t, []string{"authorization"}, endpoint.ObservedAuth)
+				found = true
+			}
+		}
+	}
+	assert.True(t, found, "expected GET /v1/items endpoint")
+}
+
+func TestAnalyzeCapture_OmitsObservedAuthWhenAbsent(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/public",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"ok":true}`,
+				RequestHeaders:      map[string]string{"Accept": "application/json"},
+			},
+		},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+
+	for _, resource := range apiSpec.Resources {
+		for _, endpoint := range resource.Endpoints {
+			assert.Nil(t, endpoint.ObservedAuth, "endpoint %s %s should have nil ObservedAuth", endpoint.Method, endpoint.Path)
+		}
+	}
+}
+
+func TestAnalyzeCapture_PopulatesObservedAuthOnGraphQLEndpoint(t *testing.T) {
+	t.Parallel()
+
+	postsEntry := graphqlBFFEntry("PostsToday", `{"date":"2026-04-22"}`, "aaa111")
+	postsEntry.RequestHeaders["Authorization"] = "Bearer eyJtoken"
+	launchesEntry := graphqlBFFEntry("ProductPageLaunches", `{"slug":"sample-product"}`, "bbb222")
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://www.example.com",
+		Entries:   []EnrichedEntry{postsEntry, launchesEntry, postsEntry},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+
+	posts, ok := apiSpec.Resources["posts"]
+	require.True(t, ok, "expected posts resource from PostsToday operation")
+	postsToday, ok := posts.Endpoints["today"]
+	require.True(t, ok, "expected today endpoint from PostsToday operation")
+	assert.Equal(t, []string{"authorization"}, postsToday.ObservedAuth)
+
+	products, ok := apiSpec.Resources["products"]
+	require.True(t, ok, "expected products resource from ProductPageLaunches operation")
+	launches, ok := products.Endpoints["launches"]
+	require.True(t, ok, "expected launches endpoint")
+	assert.Nil(t, launches.ObservedAuth, "launches operation had no auth headers")
+}
+
+func TestSampleFilename_DeterministicAcrossReruns(t *testing.T) {
+	t.Parallel()
+
+	group := EndpointGroup{Method: "GET", NormalizedPath: "/v1/items/{id}"}
+	first := sampleFilename(group)
+	second := sampleFilename(group)
+	assert.Equal(t, first, second, "filename hash must be deterministic")
+	assert.Regexp(t, `^get__v1_items_id__[0-9a-f]{8}\.json$`, first)
+}
+
+func TestSampleFilename_MethodVariesHash(t *testing.T) {
+	t.Parallel()
+
+	getName := sampleFilename(EndpointGroup{Method: "GET", NormalizedPath: "/v1/items"})
+	postName := sampleFilename(EndpointGroup{Method: "POST", NormalizedPath: "/v1/items"})
+	assert.NotEqual(t, getName, postName, "method change must change the filename")
+}
+
+func TestSampleFilename_StripsBraces(t *testing.T) {
+	t.Parallel()
+
+	got := sampleFilename(EndpointGroup{Method: "POST", NormalizedPath: "/v1/orders/{orderId}/items/{itemId}"})
+	assert.NotContains(t, got, "{")
+	assert.NotContains(t, got, "}")
+	assert.Contains(t, got, "orders_orderId_items_itemId")
+}
+
+func TestSelectSampleEntry_PrefersMostRecentSuccess(t *testing.T) {
+	t.Parallel()
+
+	entries := []EnrichedEntry{
+		{URL: "/a", ResponseStatus: 200, ResponseBody: `{"first":true}`},
+		{URL: "/a", ResponseStatus: 200, ResponseBody: `{"second":true}`},
+		{URL: "/a", ResponseStatus: 500, ResponseBody: `{"oops":true}`},
+		{URL: "/a", ResponseStatus: 200, ResponseBody: `{"third":true}`},
+		{URL: "/a", ResponseStatus: 404, ResponseBody: `{"notfound":true}`},
+	}
+	got := selectSampleEntry(entries)
+	assert.Equal(t, `{"third":true}`, got.ResponseBody, "most-recent 2xx should win over later 4xx/5xx")
+}
+
+func TestSelectSampleEntry_FallsBackToNonError(t *testing.T) {
+	t.Parallel()
+
+	entries := []EnrichedEntry{
+		{URL: "/a", ResponseStatus: 500, ResponseBody: `{"oops":true}`},
+		{URL: "/a", ResponseStatus: 404, ResponseBody: `{"notfound":true}`},
+		{URL: "/a", ResponseStatus: 502, ResponseBody: `{"badgw":true}`},
+	}
+	got := selectSampleEntry(entries)
+	assert.Equal(t, `{"notfound":true}`, got.ResponseBody, "404 should be the most-recent non-5xx")
+}
+
+func TestSelectSampleEntry_FallsBackToMostRecentWhenAllErrors(t *testing.T) {
+	t.Parallel()
+
+	entries := []EnrichedEntry{
+		{URL: "/a", ResponseStatus: 500, ResponseBody: `{"first":true}`},
+		{URL: "/a", ResponseStatus: 502, ResponseBody: `{"second":true}`},
+	}
+	got := selectSampleEntry(entries)
+	assert.Equal(t, `{"second":true}`, got.ResponseBody)
+}
+
+func TestWriteSamples_WritesOneFilePerEndpointGroup(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items/42",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":42,"api_key":"sk_secret"}`,
+				RequestHeaders: map[string]string{
+					"Authorization": "Bearer eyJtoken",
+					"Accept":        "application/json",
+				},
+			},
+			{
+				Method:              "POST",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      201,
+				ResponseContentType: "application/json",
+				RequestBody:         `{"name":"widget","password":"p"}`,
+				ResponseBody:        `{"id":43}`,
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+			},
+		},
+	}
+
+	written, err := WriteSamples(capture, dir)
+	require.NoError(t, err)
+	assert.Equal(t, 2, written)
+
+	files, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+
+	var foundGET, foundPOST bool
+	for _, f := range files {
+		assert.Regexp(t, `^[a-z]+__[a-zA-Z0-9_]+__[0-9a-f]{8}\.json$`, f.Name())
+		data, err := os.ReadFile(filepath.Join(dir, f.Name()))
+		require.NoError(t, err)
+
+		var sample SampleFile
+		require.NoError(t, json.Unmarshal(data, &sample))
+
+		switch sample.Method {
+		case "GET":
+			foundGET = true
+			assert.Equal(t, "GET /v1/items/{id}", sample.Endpoint)
+			assert.Equal(t, 200, sample.Status)
+			assert.True(t, sample.ResponseBodyKnown)
+			assert.Equal(t, RedactedSentinel, sample.RequestHeaders["Authorization"])
+			assert.Equal(t, "application/json", sample.RequestHeaders["Accept"])
+			body, ok := sample.ResponseBody.(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, RedactedSentinel, body["api_key"])
+			assert.Contains(t, sample.Redactions, "request_headers.authorization")
+			assert.Contains(t, sample.Redactions, "response_body.api_key")
+		case "POST":
+			foundPOST = true
+			assert.Equal(t, 201, sample.Status)
+			reqBody, ok := sample.RequestBody.(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, RedactedSentinel, reqBody["password"])
+			assert.Contains(t, sample.Redactions, "request_body.password")
+		}
+	}
+	assert.True(t, foundGET, "GET sample should be present")
+	assert.True(t, foundPOST, "POST sample should be present")
+}
+
+func TestWriteSamples_OmitsResponseBodyKnownWhenAbsent(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/no-body",
+				ResponseStatus:      204,
+				ResponseContentType: "application/json",
+				ResponseBody:        "",
+				RequestHeaders:      map[string]string{"Accept": "application/json"},
+			},
+		},
+	}
+
+	written, err := WriteSamples(capture, dir)
+	require.NoError(t, err)
+	require.Equal(t, 1, written)
+
+	files, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	data, err := os.ReadFile(filepath.Join(dir, files[0].Name()))
+	require.NoError(t, err)
+
+	var sample SampleFile
+	require.NoError(t, json.Unmarshal(data, &sample))
+	assert.False(t, sample.ResponseBodyKnown)
+	assert.Nil(t, sample.ResponseBody)
+}
+
+func TestWriteSamples_TruncatesOversizedBodies(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	// Build an oversized JSON-shaped body so the classifier keeps it as an
+	// API endpoint. HTML-shaped surfaces are discovered separately by
+	// AnalyzeCapture and are not yet covered by WriteSamples; that is
+	// follow-up work (see plan deferred section).
+	bigValue := strings.Repeat("x", sampleBodyMaxBytes+1000)
+	bigBody := `{"blob":"` + bigValue + `"}`
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/blob",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        bigBody,
+				RequestHeaders:      map[string]string{"Accept": "application/json"},
+			},
+		},
+	}
+
+	written, err := WriteSamples(capture, dir)
+	require.NoError(t, err)
+	require.Equal(t, 1, written)
+
+	files, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	data, err := os.ReadFile(filepath.Join(dir, files[0].Name()))
+	require.NoError(t, err)
+
+	var sample SampleFile
+	require.NoError(t, json.Unmarshal(data, &sample))
+	assert.True(t, sample.ResponseBodyTruncated, "oversized body should set truncated flag")
+	// After truncation the body is no longer parseable JSON, so it lands as
+	// a raw string in the sample.
+	body, ok := sample.ResponseBody.(string)
+	require.True(t, ok, "truncated body falls back to raw string")
+	assert.LessOrEqual(t, len(body), sampleBodyMaxBytes)
+}
+
+func TestDefaultSamplesPath(t *testing.T) {
+	t.Parallel()
+
+	got := DefaultSamplesPath("/tmp/cache/example-spec.yaml")
+	assert.Equal(t, "/tmp/cache/example-spec-samples", got)
+
+	got2 := DefaultSamplesPath("api.yml")
+	assert.Equal(t, "api-samples", got2)
 }
 
 func TestWriteEnrichedCaptureUsesPrivatePermissions(t *testing.T) {

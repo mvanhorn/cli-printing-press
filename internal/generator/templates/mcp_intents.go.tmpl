@@ -33,13 +33,7 @@ func RegisterIntents(s *server.MCPServer) {
 		mcplib.NewTool("{{.Name}}",
 			mcplib.WithDescription({{printf "%q" .Description}}),
 {{- range .Params}}
-{{- if eq .Type "integer"}}
-			mcplib.WithNumber("{{.Name}}"{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})),
-{{- else if eq .Type "boolean"}}
-			mcplib.WithBoolean("{{.Name}}"{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})),
-{{- else}}
-			mcplib.WithString("{{.Name}}"{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})),
-{{- end}}
+			mcplib.{{mcpBindingFunc .Type}}("{{.Name}}"{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})),
 {{- end}}
 		),
 		handle{{pascal .Name}},

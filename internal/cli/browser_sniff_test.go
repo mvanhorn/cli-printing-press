@@ -110,7 +110,7 @@ func TestWriteBrowserSniffOutputsRestoresExistingFilesWhenSpecPublishFails(t *te
 		Types:       map[string]spec.TypeDef{},
 	}
 
-	err := writeBrowserSniffOutputs(apiSpec, &browsersniff.TrafficAnalysis{Version: "1"}, blockingDir, analysisPath)
+	_, err := writeBrowserSniffOutputs(apiSpec, &browsersniff.TrafficAnalysis{Version: "1"}, nil, blockingDir, analysisPath, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "preparing spec publish:")
 
@@ -119,6 +119,102 @@ func TestWriteBrowserSniffOutputsRestoresExistingFilesWhenSpecPublishFails(t *te
 	assert.Equal(t, "old analysis", string(data))
 	assert.DirExists(t, blockingDir)
 	assert.FileExists(t, filepath.Join(blockingDir, "marker"))
+}
+
+func TestWriteBrowserSniffOutputsWritesSamplesDirectory(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "out-spec.yaml")
+	analysisPath := browsersniff.DefaultTrafficAnalysisPath(specPath)
+	samplesPath := browsersniff.DefaultSamplesPath(specPath)
+
+	capture := &browsersniff.EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []browsersniff.EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders: map[string]string{
+					"Authorization": "Bearer eyJ.t.x",
+					"Accept":        "application/json",
+				},
+			},
+		},
+	}
+
+	apiSpec, err := browsersniff.AnalyzeCapture(capture)
+	require.NoError(t, err)
+	trafficAnalysis, err := browsersniff.AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	written, err := writeBrowserSniffOutputs(apiSpec, trafficAnalysis, capture, specPath, analysisPath, samplesPath)
+	require.NoError(t, err)
+	assert.Positive(t, written, "at least one sample file should be written")
+
+	assert.FileExists(t, specPath)
+	assert.FileExists(t, analysisPath)
+	assert.DirExists(t, samplesPath)
+
+	entries, err := os.ReadDir(samplesPath)
+	require.NoError(t, err)
+	assert.NotEmpty(t, entries, "samples directory should have at least one file")
+	for _, entry := range entries {
+		data, err := os.ReadFile(filepath.Join(samplesPath, entry.Name()))
+		require.NoError(t, err)
+		assert.Contains(t, string(data), browsersniff.RedactedSentinel, "Authorization should be redacted")
+		assert.NotContains(t, string(data), "eyJ.t.x", "raw token must not leak")
+	}
+}
+
+func TestWriteBrowserSniffOutputsRestoresSamplesDirOnSpecFailure(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "out-spec.yaml")
+	analysisPath := browsersniff.DefaultTrafficAnalysisPath(specPath)
+	samplesPath := browsersniff.DefaultSamplesPath(specPath)
+
+	// Pre-existing samples directory with a marker file. A subsequent failure
+	// during spec publish must restore the pre-existing samples directory
+	// intact (no half-overwritten state).
+	require.NoError(t, os.MkdirAll(samplesPath, 0o755))
+	markerPath := filepath.Join(samplesPath, "pre-existing.txt")
+	require.NoError(t, os.WriteFile(markerPath, []byte("keep me"), 0o600))
+
+	// Block spec publish by creating a non-empty directory at outputPath.
+	require.NoError(t, os.MkdirAll(specPath, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(specPath, "blocker"), []byte("x"), 0o600))
+
+	capture := &browsersniff.EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []browsersniff.EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders:      map[string]string{"Accept": "application/json"},
+			},
+		},
+	}
+	apiSpec, err := browsersniff.AnalyzeCapture(capture)
+	require.NoError(t, err)
+	trafficAnalysis, err := browsersniff.AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	_, err = writeBrowserSniffOutputs(apiSpec, trafficAnalysis, capture, specPath, analysisPath, samplesPath)
+	require.Error(t, err, "should fail because outputPath is a non-empty directory")
+
+	// Pre-existing samples directory must be restored intact.
+	assert.DirExists(t, samplesPath)
+	preserved, readErr := os.ReadFile(markerPath)
+	require.NoError(t, readErr)
+	assert.Equal(t, "keep me", string(preserved))
 }
 
 // newRootCmdForTest mirrors Execute()'s command tree construction for test-level

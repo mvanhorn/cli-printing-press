@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"printing-press-golden-pp-cli/internal/client"
@@ -196,6 +197,32 @@ func detectPartialFailure(data []byte) *partialFailureReport {
 // See SKILL.md "Phase 3: Build The GOAT" for the full pattern.
 func dryRunOK(flags *rootFlags) bool {
 	return flags != nil && flags.dryRun
+}
+
+// parentNoSubcommandRunE returns a RunE that handles parents invoked without a
+// subcommand. In machine output (--json/--agent) the parent emits a structured
+// error to stdout listing valid subcommands and exits 2; otherwise cobra's
+// default help text is printed. Without this, agents driving the CLI in
+// --agent mode received only human-readable help on stdout and exit 0, with no
+// signal that the invocation was incomplete.
+func parentNoSubcommandRunE(flags *rootFlags) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		if flags != nil && flags.asJSON {
+			subs := make([]string, 0, len(cmd.Commands()))
+			for _, c := range cmd.Commands() {
+				if c.IsAvailableCommand() && c.Name() != "help" {
+					subs = append(subs, c.Name())
+				}
+			}
+			sort.Strings(subs)
+			_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+				"error":             "subcommand required",
+				"valid_subcommands": subs,
+			})
+			return usageErr(fmt.Errorf("subcommand required for %q", cmd.CommandPath()))
+		}
+		return cmd.Help()
+	}
 }
 
 // accessWarning describes an API access-denial that sync converts into a
@@ -454,8 +481,11 @@ func truncate(s string, max int) string {
 func newTabWriter(w io.Writer) *tabwriter.Writer {
 	return tabwriter.NewWriter(w, 2, 4, 2, ' ', 0)
 }
+
+// replacePathParam percent-encodes value so path-reserved characters in
+// user input do not collapse into extra path segments.
 func replacePathParam(path, name, value string) string {
-	return strings.ReplaceAll(path, "{"+name+"}", value)
+	return strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(value))
 }
 
 // paginatedGet fetches pages and concatenates array results. The headers
@@ -707,17 +737,47 @@ func filterFieldsRec(data json.RawMessage, paths [][]string) json.RawMessage {
 			}
 		}
 		filtered := map[string]json.RawMessage{}
+		matchedAny := false
 		for k, v := range obj {
 			matched := matchSelectSegment(k, keepWhole, subPaths)
 			if matched == "" {
 				continue
 			}
+			matchedAny = true
 			if keepWhole[matched] {
 				filtered[k] = v
 				continue
 			}
 			if subs := subPaths[matched]; subs != nil {
 				filtered[k] = filterFieldsRec(v, subs)
+			}
+		}
+		// Envelope fallback: when no top-level keys matched but at least one
+		// sibling is a non-null array, treat the object as a list envelope
+		// (`{"items":[...]}`, `{"data":[...]}`, `{"total_count":N,"items":[...]}`)
+		// and apply the selector inside the array(s). Non-array siblings pass
+		// through verbatim so envelope metadata (counts, null pagination
+		// cursors) stays visible. The foundArray guard preserves the prior
+		// empty-object result for flat objects where no key matches and no
+		// array exists. The `arr != nil` check rejects JSON null, which
+		// json.Unmarshal otherwise accepts into a []json.RawMessage as a
+		// nil slice and would coerce to `[]`.
+		if !matchedAny {
+			pending := map[string]json.RawMessage{}
+			foundArray := false
+			for k, v := range obj {
+				var arr []json.RawMessage
+				if json.Unmarshal(v, &arr) == nil && arr != nil {
+					foundArray = true
+					pending[k] = filterFieldsRec(v, paths)
+				} else {
+					pending[k] = v
+				}
+			}
+			if foundArray {
+				for k, v := range pending {
+					filtered[k] = v
+				}
 			}
 		}
 		result, _ := json.Marshal(filtered)

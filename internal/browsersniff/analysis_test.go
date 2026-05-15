@@ -45,6 +45,273 @@ func TestAnalyzeTraffic_EmptyAndNilCapture(t *testing.T) {
 	assert.Contains(t, warningTypes(analysis.Warnings), "empty_capture")
 }
 
+func TestComputeNormalizationFlags(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name             string
+		method           string
+		sampleCount      int
+		statuses         []int
+		contentTypes     []string
+		requestBodyCount int
+		want             []string
+	}{
+		{
+			name:         "single sample triggers single-sample and single-status",
+			method:       "GET",
+			sampleCount:  1,
+			statuses:     []int{200},
+			contentTypes: []string{"application/json"},
+			want:         []string{"single-sample", "single-status"},
+		},
+		{
+			name:         "five samples all-200 still single-status",
+			method:       "GET",
+			sampleCount:  5,
+			statuses:     []int{200},
+			contentTypes: []string{"application/json"},
+			want:         []string{"single-status"},
+		},
+		{
+			name:         "ten samples multi-status clean",
+			method:       "GET",
+			sampleCount:  10,
+			statuses:     []int{200, 404},
+			contentTypes: []string{"application/json"},
+			want:         nil,
+		},
+		{
+			name:             "POST body inconsistent fires only when some samples have body",
+			method:           "POST",
+			sampleCount:      3,
+			statuses:         []int{200, 201},
+			contentTypes:     []string{"application/json"},
+			requestBodyCount: 2,
+			want:             []string{"request-body-only-on-some-samples"},
+		},
+		{
+			name:             "POST all samples have body does not fire flag",
+			method:           "POST",
+			sampleCount:      3,
+			statuses:         []int{200, 201},
+			contentTypes:     []string{"application/json"},
+			requestBodyCount: 3,
+			want:             nil,
+		},
+		{
+			name:             "GET with body samples does not fire request-body flag",
+			method:           "GET",
+			sampleCount:      3,
+			statuses:         []int{200, 304},
+			contentTypes:     []string{"application/json"},
+			requestBodyCount: 2,
+			want:             nil,
+		},
+		{
+			name:         "mixed content types fires only on real media-type drift",
+			method:       "GET",
+			sampleCount:  4,
+			statuses:     []int{200, 404},
+			contentTypes: []string{"application/json", "text/html"},
+			want:         []string{"mixed-content-types"},
+		},
+		{
+			name:         "json charset variants do not count as mixed",
+			method:       "GET",
+			sampleCount:  4,
+			statuses:     []int{200, 404},
+			contentTypes: []string{"application/json", "application/json; charset=utf-8"},
+			want:         nil,
+		},
+		{
+			name:         "zero samples treated as single-sample edge",
+			method:       "GET",
+			sampleCount:  0,
+			statuses:     []int{},
+			contentTypes: nil,
+			want:         []string{"single-sample"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := computeNormalizationFlags(tc.method, tc.sampleCount, tc.statuses, tc.contentTypes, tc.requestBodyCount)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestBucketConfidence(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name        string
+		sampleCount int
+		statuses    []int
+		flags       []string
+		want        string
+	}{
+		{name: "single sample with flag -> low", sampleCount: 1, statuses: []int{200}, flags: []string{"single-sample"}, want: "low"},
+		{name: "two samples no flags -> low", sampleCount: 2, statuses: []int{200, 404}, flags: nil, want: "low"},
+		{name: "three samples no flags -> medium", sampleCount: 3, statuses: []int{200, 404}, flags: nil, want: "medium"},
+		{name: "nine samples no flags -> medium", sampleCount: 9, statuses: []int{200, 404}, flags: nil, want: "medium"},
+		{name: "ten samples multi-status no flags -> high", sampleCount: 10, statuses: []int{200, 404}, flags: nil, want: "high"},
+		{name: "ten samples single status -> medium not high", sampleCount: 10, statuses: []int{200}, flags: nil, want: "medium"},
+		{name: "twenty samples with flag -> low overrides count", sampleCount: 20, statuses: []int{200, 404}, flags: []string{"mixed-content-types"}, want: "low"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := bucketConfidence(tc.sampleCount, tc.statuses, tc.flags)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestAnalyzeTraffic_PopulatesConfidenceAndFlagsOnClusters(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders:      map[string]string{"Accept": "application/json"},
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+	require.NotEmpty(t, analysis.EndpointClusters)
+
+	cluster := analysis.EndpointClusters[0]
+	assert.Equal(t, 1, cluster.Count)
+	assert.Equal(t, "low", cluster.Confidence)
+	assert.Contains(t, cluster.NormalizationFlags, "single-sample")
+	assert.Contains(t, cluster.NormalizationFlags, "single-status")
+}
+
+func TestAnalyzeTraffic_ClusterConfidenceRoundTripsThroughSidecar(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders:      map[string]string{"Accept": "application/json"},
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	tmp := filepath.Join(t.TempDir(), "spec-traffic-analysis.json")
+	require.NoError(t, WriteTrafficAnalysis(analysis, tmp))
+
+	roundTrip, err := ReadTrafficAnalysis(tmp)
+	require.NoError(t, err)
+	require.NotEmpty(t, roundTrip.EndpointClusters)
+	assert.Equal(t, analysis.EndpointClusters[0].Confidence, roundTrip.EndpointClusters[0].Confidence)
+	assert.Equal(t, analysis.EndpointClusters[0].NormalizationFlags, roundTrip.EndpointClusters[0].NormalizationFlags)
+}
+
+func TestAnalyzeTraffic_PopulatesObservedAuthOnEndpointCluster(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders: map[string]string{
+					"Authorization": "Bearer eyJtoken",
+					"Cookie":        "session=x",
+				},
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/public",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"ok":true}`,
+				RequestHeaders:      map[string]string{"Accept": "application/json"},
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	var authedCluster *EndpointCluster
+	var publicCluster *EndpointCluster
+	for i := range analysis.EndpointClusters {
+		c := &analysis.EndpointClusters[i]
+		switch c.Path {
+		case "/v1/items":
+			authedCluster = c
+		case "/v1/public":
+			publicCluster = c
+		}
+	}
+	require.NotNil(t, authedCluster, "expected /v1/items cluster")
+	require.NotNil(t, publicCluster, "expected /v1/public cluster")
+
+	assert.Equal(t, []string{"authorization", "cookie"}, authedCluster.ObservedAuth)
+	assert.Nil(t, publicCluster.ObservedAuth, "public endpoint should omit observed_auth")
+}
+
+func TestAnalyzeTraffic_ObservedAuthCanonicalizesAcrossSamples(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/me",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders:      map[string]string{"AUTHORIZATION": "Bearer a"},
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/me",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders:      map[string]string{"authorization": "Bearer b", "X-API-Key": "k"},
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, analysis.EndpointClusters)
+	cluster := analysis.EndpointClusters[0]
+	assert.Equal(t, "/v1/me", cluster.Path)
+	assert.Equal(t, []string{"authorization", "x-api-key"}, cluster.ObservedAuth)
+}
+
 func TestAnalyzeTraffic_RedactsAuthSignals(t *testing.T) {
 	t.Parallel()
 

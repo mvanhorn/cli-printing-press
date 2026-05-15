@@ -136,6 +136,13 @@ type LiveCheckOptions struct {
 // check doesn't penalize the CLI.
 func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 	out := &LiveCheckResult{RanAt: time.Now().UTC()}
+	releaseHome, err := scopeSubprocessHome()
+	if err != nil {
+		out.Unable = true
+		out.Reason = err.Error()
+		return out
+	}
+	defer releaseHome()
 
 	if opts.CLIDir == "" {
 		out.Unable = true
@@ -388,6 +395,7 @@ func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.
 
 	cmd := exec.CommandContext(ctx, binaryPath, args...)
 	cmd.Dir = cliDir
+	applyDefaultSubprocessEnv(cmd)
 	// Capture stdout into a bounded buffer. An unbounded `cmd.Output()` call
 	// would let a misbehaving feature exhaust the scorecard's memory.
 	stdoutCap := &bytes.Buffer{}

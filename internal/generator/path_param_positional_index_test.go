@@ -226,6 +226,143 @@ func TestPromotedCommandPathParamArgsIndexUsesPositionalOrdinal(t *testing.T) {
 		"promoted command: must not emit a stale len-check derived from the full-Params index")
 }
 
+// TestPathParamArgsIndexFlagExposedPathParam pins the variant of the
+// indexing bug reported in #1308: when one path param is flag-exposed
+// (PathParam=true, Positional=false) and another is positional, the
+// positional must still resolve to its Positional-only ordinal — not
+// the full-Params index inflated by the flag-exposed predecessor. The
+// shape is the dominant pattern in REST APIs with scoping containers
+// (`/groups/{groupId}/reports/{reportId}`, where groupId is provided
+// via `--group-id` and reportId is positional).
+//
+// Distinct from TestPathParamArgsIndexUsesPositionalOrdinal: that test
+// pins non-path (query/header) params preceding a positional path
+// param; this one pins a *path* param preceding it, which routes
+// through a different template branch in the path-substitution loop.
+func TestPathParamArgsIndexFlagExposedPathParam(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "flagpath",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/flagpath-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"reports": {
+				Description: "Reports under a workspace group",
+				Endpoints: map[string]spec.Endpoint{
+					// Two-endpoint resource avoids the single-endpoint promotion
+					// path so this exercises command_endpoint.go.tmpl. groupId
+					// is flag-exposed (PathParam=true, Positional=false) and
+					// declared first; reportId is the sole positional and
+					// declared second.
+					"get-pages-in-group": {
+						Method:      "GET",
+						Path:        "/v1/groups/{groupId}/reports/{reportId}/pages",
+						Description: "List pages of a report in a group",
+						Params: []spec.Param{
+							{Name: "groupId", Type: "string", Required: true, PathParam: true},
+							{Name: "reportId", Type: "string", Required: true, Positional: true},
+						},
+					},
+					"list": {
+						Method:      "GET",
+						Path:        "/v1/reports",
+						Description: "List reports",
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	src, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "reports_get-pages-in-group.go"))
+	require.NoError(t, err)
+	body := string(src)
+
+	assert.Contains(t, body,
+		`path = replacePathParam(path, "reportId", args[0])`,
+		"positional path param must resolve to args[0] when a flag-exposed path param precedes it in Params")
+	assert.Contains(t, body,
+		`path = replacePathParam(path, "groupId", fmt.Sprintf("%v", flagGroupId))`,
+		"flag-exposed path param must continue to substitute from its flag, not args[]")
+	assert.NotContains(t, body,
+		`args[1]`,
+		"must not interpolate the full-Params index (1) for the sole positional")
+	assert.NotContains(t, body,
+		`if len(args) < 2`,
+		"must not emit a stale len-check derived from the full-Params index")
+}
+
+// TestPromotedCommandPathParamArgsIndexFlagExposedPathParam is the
+// promoted-command counterpart of TestPathParamArgsIndexFlagExposedPathParam.
+// The promoted template emits the len-check unconditionally and has the
+// same Params iteration shape, so the same args[] indexing contract
+// must hold.
+func TestPromotedCommandPathParamArgsIndexFlagExposedPathParam(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "promoflagpath",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/promoflagpath-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			// Single-endpoint resource — promotes to a top-level command.
+			"reports": {
+				Description: "Reports under a workspace group",
+				Endpoints: map[string]spec.Endpoint{
+					"get-pages-in-group": {
+						Method:      "GET",
+						Path:        "/v1/groups/{groupId}/reports/{reportId}/pages",
+						Description: "List pages of a report in a group",
+						Params: []spec.Param{
+							{Name: "groupId", Type: "string", Required: true, PathParam: true},
+							{Name: "reportId", Type: "string", Required: true, Positional: true},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	matches, err := filepath.Glob(filepath.Join(outputDir, "internal", "cli", "promoted_*.go"))
+	require.NoError(t, err)
+	require.Lenf(t, matches, 1, "expected exactly one promoted_*.go file, got %v", matches)
+	data, err := os.ReadFile(matches[0])
+	require.NoError(t, err)
+	src := string(data)
+
+	assert.Contains(t, src,
+		`path = replacePathParam(path, "reportId", args[0])`,
+		"promoted command: positional path param must resolve to args[0] when a flag-exposed path param precedes it")
+	assert.Contains(t, src,
+		`path = replacePathParam(path, "groupId", fmt.Sprintf("%v", flagGroupId))`,
+		"promoted command: flag-exposed path param must continue to substitute from its flag")
+	assert.Contains(t, src,
+		`if len(args) < 1`,
+		"promoted command: len-check for the sole positional must derive from its ordinal+1")
+	assert.NotContains(t, src,
+		`args[1]`,
+		"promoted command: must not interpolate the full-Params index (1) for the sole positional")
+	assert.NotContains(t, src,
+		`if len(args) < 2`,
+		"promoted command: must not emit a stale len-check derived from the full-Params index")
+}
+
 func TestPositionalIndexHelper(t *testing.T) {
 	t.Parallel()
 
