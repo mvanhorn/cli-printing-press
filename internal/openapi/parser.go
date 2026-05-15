@@ -2151,11 +2151,15 @@ func resolveServerURLTemplate(server *openapi3.Server) (baseURL, basePath string
 			}
 			defaults[name] = variable.Default
 		}
-		// Second pass: substitute defaults for any `{var}` markers that the
-		// first pass did not flag for runtime substitution. Preserves
-		// backward compatibility for specs that declare variables but don't
-		// need per-tenant overrides (e.g., a `{version}: v2` with a single
-		// sensible default).
+		// Second pass: bake in the default for any Variables entry the first
+		// pass did NOT register for runtime substitution. The first pass
+		// only registers names that match templateVarPattern's identifier
+		// regex (`[a-zA-Z_][a-zA-Z0-9_]*`); a variable with a hyphenated or
+		// digit-leading name (`{server-id}`, `{2nd-host}` — OpenAPI 3.0
+		// places no character restriction on variable names) falls through
+		// here so its default is substituted in place. Without this, the
+		// strip pass below would delete the placeholder entirely and the
+		// resulting URL would DNS-fail with no actionable hint.
 		for varName, variable := range server.Variables {
 			if _, runtime := defaults[varName]; runtime {
 				continue
