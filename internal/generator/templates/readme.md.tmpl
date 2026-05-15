@@ -22,7 +22,7 @@ Printed by [@{{.Printer}}](https://github.com/{{.Printer}}){{if .PrinterName}} (
 
 ## Install
 
-The recommended path installs both the `{{.Name}}-pp-cli` binary and the `pp-{{.Name}}` agent skill in one shot:
+The recommended path installs both the `{{.Name}}-pp-cli` binary and the `pp-{{.Name}}` agent skill (Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot, and other agents supported by the upstream [`skills`](https://github.com/vercel-labs/skills) CLI) in one shot:
 
 ```bash
 npx -y @mvanhorn/printing-press install {{.Name}}
@@ -32,6 +32,19 @@ For CLI only (no skill):
 
 ```bash
 npx -y @mvanhorn/printing-press install {{.Name}} --cli-only
+```
+
+For skill only — installs the skill into the same agents as the default command above, but skips the CLI binary (use this to update or reinstall just the skill):
+
+```bash
+npx -y @mvanhorn/printing-press install {{.Name}} --skill-only
+```
+
+To constrain the skill install to one or more specific agents (repeatable — agent names match the [`skills`](https://github.com/vercel-labs/skills) CLI):
+
+```bash
+npx -y @mvanhorn/printing-press install {{.Name}} --agent claude-code
+npx -y @mvanhorn/printing-press install {{.Name}} --agent claude-code --agent codex
 ```
 
 {{ if .Category}}
@@ -76,6 +89,75 @@ Tell your OpenClaw agent (copy this):
 ```
 Install the pp-{{.Name}} skill from https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/pp-{{.Name}}. The skill defines how its required CLI can be installed.
 ```
+
+## Use with Claude Desktop
+
+This CLI ships an [MCPB](https://github.com/modelcontextprotocol/mcpb) bundle — Claude Desktop's standard format for one-click MCP extension installs (no JSON config required).
+{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
+
+The bundle reuses your local browser session — set it up first if you haven't:
+
+```bash
+{{.Name}}-pp-cli auth login --chrome
+```
+{{- else if eq .Auth.Type "oauth2"}}
+
+The bundle reuses your local OAuth tokens — authenticate first if you haven't:
+
+```bash
+{{.Name}}-pp-cli auth login
+```
+{{- else if and (eq .Auth.Type "bearer_token") (not $canonicalEnvVar)}}
+
+Store your token first if you haven't:
+
+```bash
+{{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE
+```
+{{- end}}
+
+To install:
+
+1. Download the `.mcpb` for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/{{.Name}}-current).
+2. Double-click the `.mcpb` file. Claude Desktop opens and walks you through the install.
+{{- if and $canonicalEnvVar (ne .Auth.Type "none") (ne .Auth.Type "cookie") (ne .Auth.Type "composed")}}
+3. Fill in `{{$canonicalEnvVar.Name}}` when Claude Desktop prompts you.
+{{- end}}
+
+Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple Silicon (`darwin-arm64`) and Windows (`amd64`, `arm64`); for other platforms, use the manual config below.
+
+<details>
+<summary>Manual JSON config (advanced)</summary>
+
+If you can't use the MCPB bundle (older Claude Desktop, unsupported platform), install the MCP binary and configure it manually.
+
+{{ if .Category}}
+```bash
+go install github.com/mvanhorn/printing-press-library/library/{{.Category}}/{{.Name}}/cmd/{{.Name}}-pp-mcp@latest
+```
+{{- else}}
+Install the MCP binary from this CLI's published public-library entry or pre-built release.
+{{- end}}
+
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "{{.Name}}": {
+      "command": "{{.Name}}-pp-mcp"{{- if and $canonicalEnvVar (ne .Auth.Type "none") (ne .Auth.Type "cookie") (ne .Auth.Type "composed")}},
+      "env": {
+{{- range .EndpointTemplateVars}}
+        "{{envName $.Name}}_{{upper .}}": "{{if eq . "shop"}}<your-store>.myshopify.com{{else if eq . "api_version"}}{{$.Version}}{{else}}<{{.}}>{{end}}",
+{{- end}}
+        "{{$canonicalEnvVar.Name}}": "<your-key>"
+      }{{- end}}
+    }
+  }
+}
+```
+
+</details>
 {{- if and .Narrative .Narrative.AuthNarrative}}
 
 {{if .Auth.Optional}}## Optional: API Key{{else}}## Authentication{{end}}
@@ -346,142 +428,6 @@ Base URL: `{{.BaseURL}}`
 GraphQL path: `{{.GraphQLEndpointPath}}`
 {{- end}}
 {{- end}}
-
-## Use with Claude Code
-
-Install the focused skill — it auto-installs the CLI on first invocation:
-
-```bash
-npx skills add mvanhorn/printing-press-library/cli-skills/pp-{{.Name}} -g
-```
-
-Then invoke `/pp-{{.Name}} <query>` in Claude Code. The skill is the most efficient path — Claude Code drives the CLI directly without an MCP server in the middle.
-
-<details>
-<summary>Use as an MCP server in Claude Code (advanced)</summary>
-
-If you'd rather register this CLI as an MCP server in Claude Code, install the MCP binary first:
-
-{{ if .Category}}
-```bash
-go install github.com/mvanhorn/printing-press-library/library/{{.Category}}/{{.Name}}/cmd/{{.Name}}-pp-mcp@latest
-```
-{{- else}}
-Install the MCP binary from this CLI's published public-library entry or pre-built release.
-{{- end}}
-
-Then register it:
-{{- if and (eq .Auth.Type "api_key") $canonicalEnvVar}}
-
-```bash
-claude mcp add {{.Name}} {{.Name}}-pp-mcp{{range .EndpointTemplateVars}} -e {{envName $.Name}}_{{upper .}}={{if eq . "shop"}}<your-store>.myshopify.com{{else if eq . "api_version"}}{{$.Version}}{{else}}<{{.}}>{{end}}{{end}} -e {{$canonicalEnvVar.Name}}=<your-key>
-```
-{{- else if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
-
-```bash
-# Some tools work without auth. For full access, set up auth first:
-{{.Name}}-pp-cli auth login --chrome
-
-claude mcp add {{.Name}} {{.Name}}-pp-mcp
-```
-{{- else if eq .Auth.Type "oauth2"}}
-
-```bash
-# Set up auth first:
-{{.Name}}-pp-cli auth login
-
-claude mcp add {{.Name}} {{.Name}}-pp-mcp
-```
-{{- else if and (eq .Auth.Type "bearer_token") $canonicalEnvVar}}
-
-```bash
-claude mcp add {{.Name}} {{.Name}}-pp-mcp -e {{$canonicalEnvVar.Name}}=<your-token>
-```
-{{- else if eq .Auth.Type "bearer_token"}}
-
-```bash
-# Set up auth first:
-{{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE
-
-claude mcp add {{.Name}} {{.Name}}-pp-mcp
-```
-{{- else}}
-
-```bash
-claude mcp add {{.Name}} {{.Name}}-pp-mcp
-```
-{{- end}}
-
-</details>
-
-## Use with Claude Desktop
-
-This CLI ships an [MCPB](https://github.com/modelcontextprotocol/mcpb) bundle — Claude Desktop's standard format for one-click MCP extension installs (no JSON config required).
-{{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
-
-The bundle reuses your local browser session — set it up first if you haven't:
-
-```bash
-{{.Name}}-pp-cli auth login --chrome
-```
-{{- else if eq .Auth.Type "oauth2"}}
-
-The bundle reuses your local OAuth tokens — authenticate first if you haven't:
-
-```bash
-{{.Name}}-pp-cli auth login
-```
-{{- else if and (eq .Auth.Type "bearer_token") (not $canonicalEnvVar)}}
-
-Store your token first if you haven't:
-
-```bash
-{{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE
-```
-{{- end}}
-
-To install:
-
-1. Download the `.mcpb` for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/{{.Name}}-current).
-2. Double-click the `.mcpb` file. Claude Desktop opens and walks you through the install.
-{{- if and $canonicalEnvVar (ne .Auth.Type "none") (ne .Auth.Type "cookie") (ne .Auth.Type "composed")}}
-3. Fill in `{{$canonicalEnvVar.Name}}` when Claude Desktop prompts you.
-{{- end}}
-
-Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple Silicon (`darwin-arm64`) and Windows (`amd64`, `arm64`); for other platforms, use the manual config below.
-
-<details>
-<summary>Manual JSON config (advanced)</summary>
-
-If you can't use the MCPB bundle (older Claude Desktop, unsupported platform), install the MCP binary and configure it manually.
-
-{{ if .Category}}
-```bash
-go install github.com/mvanhorn/printing-press-library/library/{{.Category}}/{{.Name}}/cmd/{{.Name}}-pp-mcp@latest
-```
-{{- else}}
-Install the MCP binary from this CLI's published public-library entry or pre-built release.
-{{- end}}
-
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "{{.Name}}": {
-      "command": "{{.Name}}-pp-mcp"{{- if and $canonicalEnvVar (ne .Auth.Type "none") (ne .Auth.Type "cookie") (ne .Auth.Type "composed")}},
-      "env": {
-{{- range .EndpointTemplateVars}}
-        "{{envName $.Name}}_{{upper .}}": "{{if eq . "shop"}}<your-store>.myshopify.com{{else if eq . "api_version"}}{{$.Version}}{{else}}<{{.}}>{{end}}",
-{{- end}}
-        "{{$canonicalEnvVar.Name}}": "<your-key>"
-      }{{- end}}
-    }
-  }
-}
-```
-
-</details>
 
 ## Health Check
 

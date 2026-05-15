@@ -6,7 +6,7 @@ Printed by [@printing-press-golden](https://github.com/printing-press-golden) (p
 
 ## Install
 
-The recommended path installs both the `public-param-golden-pp-cli` binary and the `pp-public-param-golden` agent skill in one shot:
+The recommended path installs both the `public-param-golden-pp-cli` binary and the `pp-public-param-golden` agent skill (Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot, and other agents supported by the upstream [`skills`](https://github.com/vercel-labs/skills) CLI) in one shot:
 
 ```bash
 npx -y @mvanhorn/printing-press install public-param-golden
@@ -16,6 +16,19 @@ For CLI only (no skill):
 
 ```bash
 npx -y @mvanhorn/printing-press install public-param-golden --cli-only
+```
+
+For skill only — installs the skill into the same agents as the default command above, but skips the CLI binary (use this to update or reinstall just the skill):
+
+```bash
+npx -y @mvanhorn/printing-press install public-param-golden --skill-only
+```
+
+To constrain the skill install to one or more specific agents (repeatable — agent names match the [`skills`](https://github.com/vercel-labs/skills) CLI):
+
+```bash
+npx -y @mvanhorn/printing-press install public-param-golden --agent claude-code
+npx -y @mvanhorn/printing-press install public-param-golden --agent claude-code --agent codex
 ```
 
 
@@ -49,6 +62,39 @@ Tell your OpenClaw agent (copy this):
 ```
 Install the pp-public-param-golden skill from https://github.com/mvanhorn/printing-press-library/tree/main/cli-skills/pp-public-param-golden. The skill defines how its required CLI can be installed.
 ```
+
+## Use with Claude Desktop
+
+This CLI ships an [MCPB](https://github.com/modelcontextprotocol/mcpb) bundle — Claude Desktop's standard format for one-click MCP extension installs (no JSON config required).
+
+To install:
+
+1. Download the `.mcpb` for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/public-param-golden-current).
+2. Double-click the `.mcpb` file. Claude Desktop opens and walks you through the install.
+
+Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple Silicon (`darwin-arm64`) and Windows (`amd64`, `arm64`); for other platforms, use the manual config below.
+
+<details>
+<summary>Manual JSON config (advanced)</summary>
+
+If you can't use the MCPB bundle (older Claude Desktop, unsupported platform), install the MCP binary and configure it manually.
+
+
+Install the MCP binary from this CLI's published public-library entry or pre-built release.
+
+Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "public-param-golden": {
+      "command": "public-param-golden-pp-mcp"
+    }
+  }
+}
+```
+
+</details>
 
 ## Quick Start
 
@@ -117,65 +163,6 @@ This CLI is designed for AI agent consumption:
 - **Agent-safe by default** - no colors or formatting unless `--human-friendly` is set
 
 Exit codes: `0` success, `2` usage error, `3` not found, `5` API error, `7` rate limited, `10` config error.
-
-## Use with Claude Code
-
-Install the focused skill — it auto-installs the CLI on first invocation:
-
-```bash
-npx skills add mvanhorn/printing-press-library/cli-skills/pp-public-param-golden -g
-```
-
-Then invoke `/pp-public-param-golden <query>` in Claude Code. The skill is the most efficient path — Claude Code drives the CLI directly without an MCP server in the middle.
-
-<details>
-<summary>Use as an MCP server in Claude Code (advanced)</summary>
-
-If you'd rather register this CLI as an MCP server in Claude Code, install the MCP binary first:
-
-
-Install the MCP binary from this CLI's published public-library entry or pre-built release.
-
-Then register it:
-
-```bash
-claude mcp add public-param-golden public-param-golden-pp-mcp
-```
-
-</details>
-
-## Use with Claude Desktop
-
-This CLI ships an [MCPB](https://github.com/modelcontextprotocol/mcpb) bundle — Claude Desktop's standard format for one-click MCP extension installs (no JSON config required).
-
-To install:
-
-1. Download the `.mcpb` for your platform from the [latest release](https://github.com/mvanhorn/printing-press-library/releases/tag/public-param-golden-current).
-2. Double-click the `.mcpb` file. Claude Desktop opens and walks you through the install.
-
-Requires Claude Desktop 1.0.0 or later. Pre-built bundles ship for macOS Apple Silicon (`darwin-arm64`) and Windows (`amd64`, `arm64`); for other platforms, use the manual config below.
-
-<details>
-<summary>Manual JSON config (advanced)</summary>
-
-If you can't use the MCPB bundle (older Claude Desktop, unsupported platform), install the MCP binary and configure it manually.
-
-
-Install the MCP binary from this CLI's published public-library entry or pre-built release.
-
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "public-param-golden": {
-      "command": "public-param-golden-pp-mcp"
-    }
-  }
-}
-```
-
-</details>
 
 ## Health Check
 

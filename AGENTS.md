@@ -63,6 +63,18 @@ Run `scripts/golden.sh verify` whenever a change may affect CLI command output, 
 Never update goldens just to make a failing check pass. Run `scripts/golden.sh update` only when the behavior change is intentional, then inspect the diff and explain it in your final response. See [`docs/GOLDEN.md`](docs/GOLDEN.md) for the decision rubric, fixture conventions, and failure handling.
 When adding a new deterministic CLI behavior or generated artifact contract, explicitly decide whether the golden suite needs a new or expanded fixture. A passing `scripts/golden.sh verify` on existing cases does not prove coverage for new auth, pagination, MCP, manifest, naming, or similar deterministic generation behavior.
 
+## Cross-repo dependency: published-library sweep tool
+
+When a change to `internal/generator/templates/readme.md.tmpl` or `skill.md.tmpl` shifts canonical published-library shape — install-block structure, top-of-README section ordering, presence or removal of `## ` sections, frontmatter top-level field set, install command syntax — also update `tools/sweep-canonical/main.go` in [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) so the already-published CLIs can be retrofitted to match. Fresh prints from this generator will produce the new shape automatically, but every existing entry in the public library silently drifts from canonical shape until the sweep retrofit runs.
+
+If you can't make the matching sweep change in the same session, file a tracking issue at https://github.com/mvanhorn/printing-press-library/issues/new before merging the template PR. The issue should include:
+
+1. A link to the template PR here.
+2. The shape change(s) the sweep needs to handle. Sweep changes must be idempotent (second run produces zero textual diff) — name the heading boundaries, regex anchors, or section markers the sweep can hang off.
+3. Any test additions needed in `tools/sweep-canonical/main_test.go`.
+
+Without the sweep update or a tracking issue, the divergence between fresh prints and existing entries is invisible until someone notices a specific published README looks "old" relative to the rest. The downstream side of this contract (the published library's stance on when to run the sweep, how to scope it, and the `-readme-only` + author-preservation safeties on the sweep tool) is documented in `printing-press-library/AGENTS.md` under "Bulk SKILL.md/README.md retrofits".
+
 ## Project Structure
 - `cmd/printing-press/` - CLI entry point
 - `internal/spec/` - Internal YAML spec parser

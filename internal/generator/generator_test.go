@@ -774,48 +774,6 @@ func TestGenerateOAuth2RefreshTokenMechanism(t *testing.T) {
 	})
 }
 
-func TestGeneratedOutput_READMEBearerTokenMCPSetup(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := &spec.APISpec{
-		Name:    "bearer",
-		Version: "0.1.0",
-		BaseURL: "https://api.example.com",
-		Auth: spec.AuthConfig{
-			Type:    "bearer_token",
-			Header:  "Authorization",
-			Format:  "Bearer {token}",
-			EnvVars: []string{"BEARER_TOKEN"},
-		},
-		Config: spec.ConfigSpec{
-			Format: "toml",
-			Path:   "~/.config/bearer-pp-cli/config.toml",
-		},
-		Resources: map[string]spec.Resource{
-			"items": {
-				Description: "Manage items",
-				Endpoints: map[string]spec.Endpoint{
-					"list": {
-						Method:      "GET",
-						Path:        "/items",
-						Description: "List items",
-					},
-				},
-			},
-		},
-	}
-
-	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
-	gen := New(apiSpec, outputDir)
-	require.NoError(t, gen.Generate())
-
-	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
-	require.NoError(t, err)
-	content := string(readme)
-	assert.Contains(t, content, "claude mcp add bearer bearer-pp-mcp -e BEARER_TOKEN=<your-token>")
-	assert.NotContains(t, content, "bearer-pp-cli auth login\n\nclaude mcp add bearer bearer-pp-mcp")
-}
-
 func TestGenerateBearerRefreshDoctorCommand(t *testing.T) {
 	t.Parallel()
 
