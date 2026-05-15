@@ -3964,9 +3964,11 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, `"action":`)
 	assert.Contains(t, content, `"resource":`)
 	assert.Contains(t, content, `"status":   statusCode`)
-	// Mutate envelope's success now depends on both HTTP status and absence
-	// of a body-level partial-failure (e.g. Google Ads partialFailureError).
-	assert.Contains(t, content, `"success":  statusCode >= 200 && statusCode < 300 && partialFailure == nil`)
+	// Mutate envelope's success depends on HTTP status AND the absence of a
+	// body-level partial-failure (e.g. Google Ads partialFailureError), unless
+	// the caller opted in via --allow-partial-failure (flags.allowPartialFailure)
+	// in which case the envelope agrees with the exit-code 0.
+	assert.Contains(t, content, `"success":  statusCode >= 200 && statusCode < 300 && (partialFailure == nil || flags.allowPartialFailure)`)
 	// Detection runs before any output-mode branch so the exit code is
 	// consistent across table, JSON envelope, and raw output paths.
 	assert.Contains(t, content, `detectPartialFailure(data)`)

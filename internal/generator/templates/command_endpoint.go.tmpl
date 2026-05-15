@@ -714,7 +714,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 					"resource": "{{.ResourceName}}",
 					"path":     path,
 					"status":   statusCode,
-					"success":  statusCode >= 200 && statusCode < 300 && partialFailure == nil,
+					"success":  statusCode >= 200 && statusCode < 300 && (partialFailure == nil || flags.allowPartialFailure),
 				}
 				if partialFailure != nil {
 					envelope["partial_failure"] = partialFailure

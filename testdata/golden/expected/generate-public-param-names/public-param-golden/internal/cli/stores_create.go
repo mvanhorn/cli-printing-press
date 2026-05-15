@@ -122,7 +122,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 					"resource": "stores",
 					"path":     path,
 					"status":   statusCode,
-					"success":  statusCode >= 200 && statusCode < 300 && partialFailure == nil,
+					"success":  statusCode >= 200 && statusCode < 300 && (partialFailure == nil || flags.allowPartialFailure),
 				}
 				if partialFailure != nil {
 					envelope["partial_failure"] = partialFailure
