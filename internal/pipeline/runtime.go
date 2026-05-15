@@ -540,7 +540,15 @@ func runBrowserSessionProofTest(binary string, auth apispec.AuthConfig) CommandR
 		return result
 	}
 
-	output, err := runCLIWithOutput(binary, []string{"doctor", "--json"}, subprocessEnv(), 20*time.Second)
+	// cliutil.IsVerifyEnv() drives doctor's synthetic browser-session
+	// proof short-circuit. Without PRINTING_PRESS_VERIFY=1 the probe
+	// asks the CLI to validate against a real session, which a clean
+	// shipcheck environment doesn't have — every cookie-auth CLI then
+	// scores 0 even when the synthetic proof would have passed. Match
+	// the env-augmentation buildEnv() uses for the other mock-mode
+	// probes so this probe is self-contained.
+	env := append(subprocessEnv(), "PRINTING_PRESS_VERIFY=1")
+	output, err := runCLIWithOutput(binary, []string{"doctor", "--json"}, env, 20*time.Second)
 	if err != nil {
 		result.Error = fmt.Sprintf("doctor --json failed: %v", err)
 		result.Score = 0
