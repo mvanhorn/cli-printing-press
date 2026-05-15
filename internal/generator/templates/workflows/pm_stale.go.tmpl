@@ -37,17 +37,24 @@ var staleTimestampFields = []string{
 
 // buildStaleTimestampPredicate emits SQL clauses (with the same `?`
 // placeholder consumed for every field) that match a row whose
-// modification timestamp is older than cutoff or sort by the earliest
-// such timestamp. Centralising the field list keeps WHERE / ORDER BY /
-// in-Go scan in lockstep.
+// modification timestamp is older than cutoff and sort rows by the
+// earliest non-null timestamp the row exposes. The ORDER BY uses
+// COALESCE rather than a multi-column sort because SQLite places NULLs
+// first under ASC, so a multi-column list would float rows from APIs
+// that don't populate the leading field above rows that do, breaking
+// the oldest-first guarantee in any mixed-API store.
+// Centralising the field list keeps WHERE / ORDER BY / in-Go scan in
+// lockstep.
 func buildStaleTimestampPredicate() (whereClause, orderClause string, placeholders int) {
 	whereParts := make([]string, 0, len(staleTimestampFields))
-	orderParts := make([]string, 0, len(staleTimestampFields))
+	coalesceArgs := make([]string, 0, len(staleTimestampFields))
 	for _, f := range staleTimestampFields {
 		whereParts = append(whereParts, fmt.Sprintf("json_extract(data, '$.%s') < ?", f))
-		orderParts = append(orderParts, fmt.Sprintf("json_extract(data, '$.%s') ASC", f))
+		coalesceArgs = append(coalesceArgs, fmt.Sprintf("json_extract(data, '$.%s')", f))
 	}
-	return strings.Join(whereParts, " OR "), strings.Join(orderParts, ", "), len(whereParts)
+	return strings.Join(whereParts, " OR "),
+		"COALESCE(" + strings.Join(coalesceArgs, ", ") + ") ASC",
+		len(whereParts)
 }
 
 func newStaleCmd(flags *rootFlags) *cobra.Command {

@@ -10280,6 +10280,7 @@ func TestStaleTemplateCoversCommonTimestampFields(t *testing.T) {
 	for _, field := range []string{
 		"updatedAt",
 		"updated_at",
+		"updatedDate",
 		"modifiedAt",
 		"modified_at",
 		"lastModified",
@@ -10299,6 +10300,13 @@ func TestStaleTemplateCoversCommonTimestampFields(t *testing.T) {
 	// must update one place, not three.
 	assert.Contains(t, body, "buildStaleTimestampPredicate()",
 		"pm_stale.go.tmpl should build SQL from staleTimestampFields instead of hardcoding columns")
+
+	// Pin the COALESCE-based ORDER BY so a future refactor doesn't
+	// regress to a multi-column sort, which SQLite's NULL-first ASC
+	// ordering would corrupt for rows from APIs that don't populate the
+	// leading field.
+	assert.Contains(t, body, `"COALESCE(" + strings.Join(coalesceArgs, ", ") + ") ASC"`,
+		"pm_stale.go.tmpl ORDER BY must COALESCE across staleTimestampFields, not sort multi-column")
 }
 
 // TestSearchTemplateEmitsEmptyJSONEnvelope pins the contract: the
