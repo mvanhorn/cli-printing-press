@@ -637,6 +637,56 @@ func TestDeriveRunIDFromResearchDir(t *testing.T) {
 	}
 }
 
+func TestLoadAPINameFromResearchDir(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns api_name when state.json present", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "state.json"),
+			[]byte(`{"api_name":"canvas","run_id":"20260514-070718"}`),
+			0o644,
+		))
+		assert.Equal(t, "canvas", LoadAPINameFromResearchDir(dir))
+	})
+
+	t.Run("trims whitespace from api_name", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "state.json"),
+			[]byte(`{"api_name":"  canvas  "}`),
+			0o644,
+		))
+		assert.Equal(t, "canvas", LoadAPINameFromResearchDir(dir))
+	})
+
+	t.Run("empty string when researchDir empty", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, "", LoadAPINameFromResearchDir(""))
+	})
+
+	t.Run("empty string when state.json absent", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, "", LoadAPINameFromResearchDir(t.TempDir()))
+	})
+
+	t.Run("empty string when state.json malformed", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "state.json"), []byte(`not json`), 0o644))
+		assert.Equal(t, "", LoadAPINameFromResearchDir(dir))
+	})
+
+	t.Run("empty string when api_name field missing", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{"run_id":"20260514-070718"}`), 0o644))
+		assert.Equal(t, "", LoadAPINameFromResearchDir(dir))
+	})
+}
+
 func TestArchiveRunArtifactsCopiesDiscovery(t *testing.T) {
 	home := setPressTestEnv(t)
 

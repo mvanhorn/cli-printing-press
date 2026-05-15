@@ -304,9 +304,17 @@ func newGenerateCmd() *cobra.Command {
 			var apiSpec *spec.APISpec
 			if len(specs) == 1 {
 				apiSpec = specs[0]
-				// Override spec-derived name when --name is explicitly provided
+				// Override spec-derived name when --name is explicitly provided.
+				// When --name is empty but --research-dir points at a state.json
+				// whose api_name slug differs from the title-derived name (e.g.
+				// "Canvas LMS API" → `canvas-lms` vs the user's intended
+				// `canvas`), prefer the state.json slug so the generated
+				// cmd/<slug>-pp-cli matches what manifest/publish-validate look
+				// for. Explicit --name still wins.
 				if cliName != "" {
 					apiSpec.Name = cliName
+				} else if researchName := pipeline.LoadAPINameFromResearchDir(researchDir); researchName != "" {
+					apiSpec.Name = researchName
 				}
 			} else {
 				if cliName == "" {

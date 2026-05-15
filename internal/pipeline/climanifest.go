@@ -560,6 +560,32 @@ func DeriveRunIDFromResearchDir(researchDir string) string {
 	return ""
 }
 
+// LoadAPINameFromResearchDir reads `<researchDir>/state.json` and returns the
+// recorded api_name slug, or "" when the file is absent, unreadable, malformed,
+// or has no api_name. The generate command uses this as an implicit --name
+// override so a spec whose `info.title` derives to something different from
+// the user's intended slug (e.g. "Canvas LMS API" vs `canvas`) still produces
+// the slug-keyed cmd/ directory the rest of the pipeline expects. Explicit
+// --name wins over this; an absent or unreadable state.json silently yields
+// to the title-derived default.
+func LoadAPINameFromResearchDir(researchDir string) string {
+	if researchDir == "" {
+		return ""
+	}
+	statePath := filepath.Join(researchDir, "state.json")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return ""
+	}
+	var probe struct {
+		APIName string `json:"api_name"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(probe.APIName)
+}
+
 // WriteManifestForGenerate writes a .printing-press.json manifest into the
 // generated CLI directory. This is the generate-command counterpart of
 // writeCLIManifestForPublish (which operates on PipelineState).
