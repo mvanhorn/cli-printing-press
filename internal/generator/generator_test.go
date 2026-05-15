@@ -10318,9 +10318,9 @@ func TestStaleTemplateCoversCommonTimestampFields(t *testing.T) {
 		"pm_stale.go.tmpl must bind a numeric cutoff alongside the RFC 3339 cutoff for integer-typed timestamps")
 }
 
-// TestSyncTemplateShortCircuitsOnDryRunSentinel pins #1382: client.dryRun
-// returns `{"dry_run": true}` instead of a real response, and the sync
-// loop must detect this with isDryRunResponse and emit a synthetic
+// TestSyncTemplateShortCircuitsOnDryRunSentinel: client.dryRun returns
+// `{"dry_run": true}` instead of a real response, and the sync loop
+// must detect this with isDryRunResponse and emit a synthetic
 // sync_dryrun event before falling through to upsertSingleObject —
 // otherwise validate-narrative --full-examples (which auto-appends
 // --dry-run) blocks shipcheck on a spurious "missing id for <resource>"
