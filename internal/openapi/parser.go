@@ -3320,7 +3320,8 @@ func readWalkerExtension(extensions map[string]any, context string) *spec.Walker
 
 // resolveIDFieldFromResponseSchema implements tiers 2-5 of the IDField fallback
 // chain: prefer "id", then a resource-prefixed key (`<singular>_id` /
-// `_uuid` / `_guid`), then "name", then the first scalar field listed in the
+// `_uuid` / `_guid`), then a vendor identifier (`gid` / `sid` / `uid` /
+// `uuid` / `guid`), then "name", then the first scalar field listed in the
 // response schema's `required:` array (walking properties in their schema order).
 // Returns "" when no field qualifies; templates fall through to runtime list
 // scanning. Tier 1 (`x-resource-id` extension) is handled separately by the

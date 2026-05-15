@@ -4340,6 +4340,15 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
 			wantID: "uuid",
 		},
 		{
+			name: "tier 3.5: guid wins over name",
+			schemaYAML: `                  type: object
+                  properties:
+                    guid: {type: string}
+                    name: {type: string}
+`,
+			wantID: "guid",
+		},
+		{
 			name: "tier 3.5: id wins over gid (tier 2 takes precedence)",
 			schemaYAML: `                  type: object
                   properties:
