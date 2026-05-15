@@ -714,9 +714,15 @@ def check_flag_names(cli_dir: Path, sources: list[Path], cli_binary: str, report
     # the prose (npx installers, gh, go, curl, ...) don't get reported as
     # missing declarations on the printed CLI. extract_recipes already
     # filters to lines starting with `cli_binary + " "`.
+    #
+    # The `seen` set is scoped per source: a flag undeclared in SKILL.md
+    # is reported separately from the same flag undeclared in README.md
+    # so users see both surfaces and don't get a false "fixed" signal
+    # after editing only the first source. Matches check_flag_commands's
+    # per-source emission policy.
     all_files = list((cli_dir / "internal/cli").glob("*.go"))
-    seen: set[str] = set()
     for src in sources:
+        seen: set[str] = set()
         for cmd_path, _positional, flags in extract_recipes(src, cli_binary, cli_dir):
             for raw_flag in flags:
                 flag = raw_flag.lstrip("-")
