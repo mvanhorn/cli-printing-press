@@ -35,6 +35,33 @@ func TestClearTokensClearsEmittedCredentialFields(t *testing.T) {
 	assert.Contains(t, body, "c.PrintingPressApikey = \"\"", "env-var-derived API key field should be cleared")
 }
 
+// TestClearTokensClearsOAuth2ClientCredentials pins that ClientID and
+// ClientSecret are zeroed on logout. SaveTokens (called from the
+// oauth2 auth-code and client_credentials flows) persists them to disk,
+// so leaving them after `auth logout` would let `auth login` re-mint a
+// new access token unattended — not a true logout.
+func TestClearTokensClearsOAuth2ClientCredentials(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("oauth2-cc-logout")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:        "oauth2",
+		TokenURL:    "https://api.example.com/oauth/token",
+		OAuth2Grant: "client_credentials",
+		EnvVars:     []string{"OAUTH2_CC_LOGOUT_CLIENT_ID", "OAUTH2_CC_LOGOUT_CLIENT_SECRET"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "oauth2-cc-logout-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	configSrc := readGeneratedFile(t, outputDir, "internal", "config", "config.go")
+	body := extractClearTokensBody(t, configSrc)
+
+	assert.Contains(t, body, "c.ClientID = \"\"", "ClientID must be cleared so auth login can't re-mint headlessly")
+	assert.Contains(t, body, "c.ClientSecret = \"\"", "ClientSecret must be cleared so auth login can't re-mint headlessly")
+}
+
 // TestClearTokensSkipsBuiltinCollisions pins that env vars whose
 // placeholder collides with a builtin Config tag (e.g. *_ACCESS_TOKEN
 // resolves to AccessToken) don't produce a duplicate clear: the OAuth-trio
