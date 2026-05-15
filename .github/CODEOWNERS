@@ -1,0 +1,7 @@
+# Code owners for security-sensitive paths.
+# A malicious PR that modifies these paths could exfiltrate secrets at workflow
+# runtime or weaken the merge-gate; require an explicit maintainer review.
+# See: docs.github.com/en/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
+
+.github/workflows/  @tmchow @mvanhorn
+.github/CODEOWNERS  @tmchow @mvanhorn
