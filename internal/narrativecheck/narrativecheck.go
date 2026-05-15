@@ -199,7 +199,13 @@ func classify(ctx context.Context, binaryPath string, section Section, command s
 		}
 	}
 	if len(segments) <= 1 {
-		return classifySegment(ctx, binaryPath, section, command, opts)
+		seg := command
+		if len(segments) == 1 {
+			seg = segments[0]
+		}
+		r := classifySegment(ctx, binaryPath, section, seg, opts)
+		r.Command = command
+		return r
 	}
 
 	var last Result

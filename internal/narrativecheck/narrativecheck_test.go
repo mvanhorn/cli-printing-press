@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -289,7 +290,15 @@ func TestSplitShellChain(t *testing.T) {
 			if hasPipe != tc.hasPipe {
 				t.Errorf("hasPipe = %v, want %v", hasPipe, tc.hasPipe)
 			}
-			if strings.Join(segs, "|") != strings.Join(tc.segments, "|") {
+			want := tc.segments
+			if want == nil {
+				want = []string{}
+			}
+			got := segs
+			if got == nil {
+				got = []string{}
+			}
+			if !reflect.DeepEqual(got, want) {
 				t.Errorf("segments = %q, want %q", segs, tc.segments)
 			}
 		})
@@ -357,6 +366,30 @@ func TestValidateWithOptions_ChainedRecipeRunsBothFullExamples(t *testing.T) {
 	}
 	if report.Walked != 1 || report.HasFailures() {
 		t.Fatalf("chained full-example recipe should pass, got %+v", report)
+	}
+}
+
+// TestValidate_TrailingOperatorDoesNotLeakIntoArgs covers the
+// single-segment fast path: when splitShellChain trims a trailing `&&`,
+// classify must hand the trimmed segment (not the original) to
+// classifySegment so FullExamples mode doesn't pass `&&` as a positional
+// arg to the binary.
+func TestValidate_TrailingOperatorDoesNotLeakIntoArgs(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"recipes":[
+			{"command":"stub widgets list &&"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, binary, Options{FullExamples: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Walked != 1 || report.HasFailures() {
+		t.Fatalf("trailing && should be trimmed and the lone segment should pass, got %+v", report)
 	}
 }
 
