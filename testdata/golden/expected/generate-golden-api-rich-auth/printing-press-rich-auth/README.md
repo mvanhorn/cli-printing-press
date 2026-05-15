@@ -90,7 +90,7 @@ Run `printing-press-rich-pp-cli --help` for the full command reference and flag 
 
 Manage items
 
-- **`printing-press-rich-pp-cli items list`** - List items
+- **`printing-press-rich-pp-cli items`** - List items
 
 
 ## Output Formats

@@ -107,3 +107,39 @@ func TestSkillAndReadmeSingleWordEndpointsUnchanged(t *testing.T) {
 		})
 	}
 }
+
+// TestReadmePromotionGuardMirrorsSkill asserts that the README "Commands"
+// section honors PromotedResourceNames the same way SKILL.md's "Command
+// Reference" does. A single-endpoint resource that cobra promotes to a
+// top-level command must not advertise the pre-promotion `<cli> resource
+// endpoint` path in the README -- the binary only knows `<cli> resource`.
+func TestReadmePromotionGuardMirrorsSkill(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("promo")
+	apiSpec.Resources["qr"] = spec.Resource{
+		Description: "Generate QR codes",
+		Endpoints: map[string]spec.Endpoint{
+			"get_qrcode": {Method: "GET", Path: "/qr", Description: "Retrieve a QR code"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "promo-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	for _, file := range []string{"SKILL.md", "README.md"} {
+		t.Run(file, func(t *testing.T) {
+			body, err := os.ReadFile(filepath.Join(outputDir, file))
+			require.NoError(t, err)
+			content := string(body)
+
+			assert.Contains(t, content, "promo-pp-cli qr`",
+				"promoted single-op resource should advertise the leaf form")
+			assert.NotContains(t, content, "promo-pp-cli qr get_qrcode",
+				"phantom snake_case path must not appear in docs")
+			assert.NotContains(t, content, "promo-pp-cli qr get-qrcode",
+				"phantom kebab path must not appear in docs for promoted resource")
+		})
+	}
+}

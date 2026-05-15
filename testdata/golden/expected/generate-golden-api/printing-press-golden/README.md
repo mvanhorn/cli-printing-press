@@ -90,7 +90,7 @@ Run `printing-press-golden-pp-cli --help` for the full command reference and fla
 
 Manage currencies
 
-- **`printing-press-golden-pp-cli currencies list`** - List supported currencies
+- **`printing-press-golden-pp-cli currencies`** - List supported currencies
 
 ### projects
 
@@ -104,7 +104,7 @@ Manage projects
 
 Manage public
 
-- **`printing-press-golden-pp-cli public get-status`** - Get public service status
+- **`printing-press-golden-pp-cli public`** - Get public service status
 
 ### reports
 
