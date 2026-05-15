@@ -90,6 +90,22 @@ func (c *Client) GetWithHeaders(path string, params map[string]string, headers m
 	return result, err
 }
 
+// GetNoCache issues a GET that bypasses both cache read and cache write for
+// this call only, without mutating c.NoCache. Use for polling-until-terminal
+// patterns where every call must reflect current server state; the same
+// (path, params) pair returning a stale "in-progress" snapshot from cache
+// would lock the poll loop on the initial response.
+func (c *Client) GetNoCache(path string, params map[string]string) (json.RawMessage, error) {
+	return c.GetWithHeadersNoCache(path, params, nil)
+}
+
+// GetWithHeadersNoCache is GetWithHeaders without cache read or write. See
+// GetNoCache for when to prefer this over Get/GetWithHeaders.
+func (c *Client) GetWithHeadersNoCache(path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+	result, _, err := c.do("GET", path, params, nil, headers)
+	return result, err
+}
+
 func (c *Client) ProbeGet(path string) (int, error) {
 	_, status, err := c.do("GET", path, nil, nil, nil)
 	return status, err

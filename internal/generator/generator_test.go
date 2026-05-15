@@ -9287,6 +9287,59 @@ func assertNewMCPClientSkipsCache(t *testing.T, specSource string) {
 		"newMCPClient must disable the response cache so MCP-driven reads see fresh state across mutations")
 }
 
+// TestGenerateWaitForJobBypassesResponseCache proves that the polling loop
+// in WaitForJob uses GetNoCache, not Get. The response cache is keyed by
+// (path, params), so a cached non-terminal status (Pending/Busy/Running)
+// from the first poll would be returned to every subsequent poll for the
+// cache TTL, locking the loop on the initial response even after the
+// server-side job has completed. The fix exposes per-call GetNoCache /
+// GetWithHeadersNoCache helpers on the generated client so polling code
+// can bypass the cache without mutating the global c.NoCache toggle.
+func TestGenerateWaitForJobBypassesResponseCache(t *testing.T) {
+	t.Parallel()
+
+	// Build a spec that triggers async-job detection (POST returning
+	// {job_id, status} + sibling GET status endpoint) so jobs.go is
+	// emitted; minimalSpec alone has no async surface.
+	apiSpec := minimalSpec("asyncpoll")
+	apiSpec.Types = map[string]spec.TypeDef{
+		"RenderJob": {Fields: []spec.TypeField{
+			{Name: "job_id", Type: "string"},
+			{Name: "status", Type: "string"},
+		}},
+	}
+	apiSpec.Resources = map[string]spec.Resource{
+		"renders": {
+			Description: "Async render jobs",
+			Endpoints: map[string]spec.Endpoint{
+				"submit": {Method: "POST", Path: "/renders", Description: "Submit a render", Response: spec.ResponseDef{Type: "object", Item: "RenderJob"}},
+				"get":    {Method: "GET", Path: "/renders/{id}", Description: "Get a render", Response: spec.ResponseDef{Type: "object", Item: "RenderJob"}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientData, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientBody := string(clientData)
+
+	assert.Contains(t, clientBody, "func (c *Client) GetNoCache(",
+		"client.go must expose GetNoCache so polling callers can bypass cache without mutating c.NoCache")
+	assert.Contains(t, clientBody, "func (c *Client) GetWithHeadersNoCache(",
+		"client.go must expose GetWithHeadersNoCache for header-bearing polling fetches")
+
+	jobsData, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "jobs.go"))
+	require.NoError(t, err)
+	jobsBody := string(jobsData)
+
+	assert.Contains(t, jobsBody, "c.GetNoCache(path, nil)",
+		"WaitForJob must poll with GetNoCache to avoid locking on the cached initial response")
+	assert.NotContains(t, jobsBody, "c.Get(path, nil)",
+		"WaitForJob must not call c.Get(path, nil); cached non-terminal status would lock the poll")
+}
+
 // TestGenerateMCPHandlerPreservesQueryPositionals proves the makeAPIHandler
 // body in generated MCP tools.go distinguishes real URL path placeholders
 // (e.g. /movie/{movieId}) from CLI positional args that map to query
