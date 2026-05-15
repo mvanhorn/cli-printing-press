@@ -48,6 +48,7 @@ func runStructuralVerify(cfg VerifyConfig) (*VerifyReport, error) {
 		report.DataPipelineDetail = "FAIL (version command)"
 	}
 	report.Freshness = runFreshnessContractTest(cfg.Dir)
+	report.PathParamProbes = runPathParamProbes(binaryPath, subprocessEnv(), nil)
 
 	finalizeVerifyReport(report, cfg.Threshold, false)
 
