@@ -7523,9 +7523,12 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 
 // assertVerifyEnvConcurrencyPin pins the verify-mode worker-pool override
 // in generated sync.go: cliutil import present, IsVerifyEnv() guard pins
-// concurrency to 1, and the guard sits AFTER the default-resolution block
-// (otherwise `if concurrency < 1 { concurrency = 4 }` would reset the pin
-// on every call).
+// concurrency to 1, and the guard sits after the default-resolution block.
+// Ordering is not load-bearing for correctness today (the default block's
+// `if concurrency < 1 { concurrency = 4 }` is a no-op when concurrency is
+// already 1), but pinning it as a defensive guard prevents future template
+// churn from drifting the placement and obscuring the worker-pool comment
+// block this override controls.
 func assertVerifyEnvConcurrencyPin(t *testing.T, syncContent, cliutilImportPath, label string) {
 	t.Helper()
 	assert.Contains(t, syncContent, `"`+cliutilImportPath+`"`,
@@ -7542,7 +7545,7 @@ func assertVerifyEnvConcurrencyPin(t *testing.T, syncContent, cliutilImportPath,
 	require.NotEqual(t, -1, defaultIdx, label+": default-resolution block must be present")
 	require.NotEqual(t, -1, verifyIdx, label+": verify-env block must be present")
 	assert.Less(t, defaultIdx, verifyIdx,
-		label+": verify-env override must sit AFTER the default-resolution block")
+		label+": verify-env override must sit after the default-resolution block (as shipped)")
 }
 
 // TestGeneratedSyncForcesSingleWorkerUnderVerifyEnv pins the verify-mode
