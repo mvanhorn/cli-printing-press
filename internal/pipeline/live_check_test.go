@@ -536,6 +536,27 @@ func TestLiveCheckBinaryCandidatesPreferBuildStageBin(t *testing.T) {
 		"staged build/stage/bin path must be tried before cliDir legacy path, got order %v", cands)
 }
 
+func TestLiveCheck_FindsBinaryInBuildStageBin(t *testing.T) {
+	// Verify that RunLiveCheck finds and executes a binary placed at
+	// <cliDir>/build/stage/bin/<name> — the canonical layout written by the
+	// generator's --validate "build runnable binary" gate (post-v4.5.1).
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+	dir := t.TempDir()
+	stagedBinDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedBinDir, 0o755))
+	stub := filepath.Join(stagedBinDir, "stub")
+	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\necho '{\"data\":[{\"id\":\"1\"}]}'\n"), 0o755))
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "List items", Command: "items list", Example: "stub items list --json"},
+	})
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second})
+	require.False(t, result.Unable, "check was Unable: %s", result.Reason)
+	require.Equal(t, 1, result.Checked())
+	assert.Equal(t, 1, result.Passed, "expected binary at build/stage/bin/ to be found and run")
+}
+
 func TestLiveCheckBinaryCandidatesIncludeHostExecutableName(t *testing.T) {
 	t.Parallel()
 
