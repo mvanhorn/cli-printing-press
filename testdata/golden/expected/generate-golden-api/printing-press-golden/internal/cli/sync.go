@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"net/url"
 	"os"
+	"printing-press-golden-pp-cli/internal/cliutil"
 	"printing-press-golden-pp-cli/internal/store"
 	"regexp"
 	"strconv"
@@ -184,6 +185,13 @@ Resource scoping:
 			// Worker pool: produce resources, N workers consume
 			if concurrency < 1 {
 				concurrency = 4
+			}
+			// Under PRINTING_PRESS_VERIFY=1 (mock/dry-run), all goroutines
+			// reach SQLite without the natural serialization that network
+			// latency provides in real syncs, so the worker pool races on
+			// the writer and trips SQLITE_BUSY despite _busy_timeout.
+			if cliutil.IsVerifyEnv() {
+				concurrency = 1
 			}
 
 			started := time.Now()

@@ -7521,6 +7521,103 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// assertVerifyEnvConcurrencyPin pins the verify-mode worker-pool override
+// in generated sync.go: cliutil import present, IsVerifyEnv() guard pins
+// concurrency to 1, and the guard sits AFTER the default-resolution block
+// (otherwise `if concurrency < 1 { concurrency = 4 }` would reset the pin
+// on every call).
+func assertVerifyEnvConcurrencyPin(t *testing.T, syncContent, cliutilImportPath, label string) {
+	t.Helper()
+	assert.Contains(t, syncContent, `"`+cliutilImportPath+`"`,
+		label+": sync.go must import internal/cliutil to call IsVerifyEnv")
+	assert.Contains(t, syncContent, "if cliutil.IsVerifyEnv() {",
+		label+": sync.go must consult cliutil.IsVerifyEnv() before starting the worker pool")
+	assert.Regexp(t,
+		`if cliutil\.IsVerifyEnv\(\) \{\s*concurrency = 1\s*\}`,
+		syncContent,
+		label+": verify-env block must pin concurrency to 1")
+
+	defaultIdx := strings.Index(syncContent, "concurrency = 4")
+	verifyIdx := strings.Index(syncContent, "cliutil.IsVerifyEnv()")
+	require.NotEqual(t, -1, defaultIdx, label+": default-resolution block must be present")
+	require.NotEqual(t, -1, verifyIdx, label+": verify-env block must be present")
+	assert.Less(t, defaultIdx, verifyIdx,
+		label+": verify-env override must sit AFTER the default-resolution block")
+}
+
+// TestGeneratedSyncForcesSingleWorkerUnderVerifyEnv pins the verify-mode
+// override in the REST sync template. Without it, the worker pool races on
+// SQLite writes once network latency disappears, tripping SQLITE_BUSY
+// despite _busy_timeout — which fails validate-narrative --full-examples
+// for any quickstart or recipe that exercises sync.
+func TestGeneratedSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "verifysync",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"VERIFYSYNC_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/verifysync-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Description: "Manage channels",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels",
+						Description: "List channels",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+
+	assertVerifyEnvConcurrencyPin(t, string(syncGo), naming.CLI(apiSpec.Name)+"/internal/cliutil", "REST sync.go")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+// TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv pins the same
+// override in the GraphQL sync template. graphql_sync.go.tmpl drives
+// sync.go when isGraphQLSpec selects it; the race-on-SQLite problem under
+// PRINTING_PRESS_VERIFY=1 applies the same way.
+func TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
+	t.Parallel()
+
+	gqlSpec, err := graphql.ParseSDL(filepath.Join("..", "..", "testdata", "graphql", "test.graphql"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(gqlSpec.Name))
+	gen := New(gqlSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+
+	assertVerifyEnvConcurrencyPin(t, string(syncGo), naming.CLI(gqlSpec.Name)+"/internal/cliutil", "GraphQL sync.go")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 // TestGeneratedSyncGatesSinceParamPerResource pins the fix for issue #900:
 // generators must only inject the incremental-cursor query parameter on
 // resources whose list endpoint actually declares it. Resources that don't
