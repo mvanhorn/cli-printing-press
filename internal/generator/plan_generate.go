@@ -423,10 +423,20 @@ func readManifestPrinter(outputDir string) string {
 	return readManifestField(outputDir, "printer")
 }
 
-// resolvePrinterForNew returns "" instead of a sentinel when github.user is unset.
+// resolvePrinterForNew returns the printer @handle for a brand-new print.
+// Tries `git config github.user`, then `gh api user --jq .login` so a
+// logged-in `gh` covers machines without `git config github.user`. Returns
+// "" instead of a sentinel when both are unset.
 func resolvePrinterForNew() string {
-	if out, err := exec.Command("git", "config", "github.user").Output(); err == nil && len(out) > 0 {
-		return strings.TrimSpace(string(out))
+	if out, err := exec.Command("git", "config", "github.user").Output(); err == nil {
+		if v := strings.TrimSpace(string(out)); v != "" {
+			return v
+		}
+	}
+	if out, err := exec.Command("gh", "api", "user", "--jq", ".login").Output(); err == nil {
+		if v := strings.TrimSpace(string(out)); v != "" {
+			return v
+		}
 	}
 	return ""
 }

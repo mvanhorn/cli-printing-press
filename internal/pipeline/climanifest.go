@@ -540,6 +540,10 @@ type GenerateManifestParams struct {
 // a real run_id; otherwise fall back to empty (and warn at the call site).
 var runIDPattern = regexp.MustCompile(`^\d{8}-\d{6}$`)
 
+// runIDTimeFormat is the canonical YYYYMMDD-HHMMSS layout matched by
+// runIDPattern. Kept as a const so the format and pattern can't drift.
+const runIDTimeFormat = "20060102-150405"
+
 // DeriveRunIDFromResearchDir extracts a canonical run_id from a research-dir
 // path, or returns "" when no valid run_id can be derived. The standalone
 // generate command does not load a PipelineState, so it cannot reach
@@ -559,14 +563,24 @@ func DeriveRunIDFromResearchDir(researchDir string) string {
 // WriteManifestForGenerate writes a .printing-press.json manifest into the
 // generated CLI directory. This is the generate-command counterpart of
 // writeCLIManifestForPublish (which operates on PipelineState).
+//
+// An empty p.RunID is auto-filled with a fresh timestamp so the emitted
+// manifest satisfies publish-validate's required-run_id contract. Phase 5
+// dogfood acceptance still needs the original research-dir-derived run_id,
+// and the root.go --research-dir warning informs phase5 callers of that gap.
 func WriteManifestForGenerate(p GenerateManifestParams) error {
+	now := time.Now().UTC()
+	runID := p.RunID
+	if runID == "" {
+		runID = now.Format(runIDTimeFormat)
+	}
 	m := CLIManifest{
 		SchemaVersion:        CurrentCLIManifestSchemaVersion,
-		GeneratedAt:          time.Now().UTC(),
+		GeneratedAt:          now,
 		PrintingPressVersion: version.Version,
 		APIName:              p.APIName,
 		CLIName:              naming.CLI(p.APIName),
-		RunID:                p.RunID,
+		RunID:                runID,
 		Owner:                p.Owner,
 		Printer:              p.Printer,
 		PrinterName:          p.PrinterName,

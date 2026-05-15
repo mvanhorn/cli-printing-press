@@ -596,7 +596,7 @@ func TestWriteManifestForGenerateStampsRunID(t *testing.T) {
 	assert.Equal(t, "20260504-190931", got.RunID)
 }
 
-func TestWriteManifestForGenerateOmitsEmptyRunID(t *testing.T) {
+func TestWriteManifestForGenerateAutoFillsEmptyRunID(t *testing.T) {
 	dir := t.TempDir()
 
 	err := WriteManifestForGenerate(GenerateManifestParams{
@@ -607,8 +607,12 @@ func TestWriteManifestForGenerateOmitsEmptyRunID(t *testing.T) {
 
 	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
 	require.NoError(t, err)
-	// run_id has the omitempty tag; empty value must not appear in serialized JSON.
-	assert.NotContains(t, string(data), `"run_id"`)
+	// publish-validate requires run_id to be non-empty. When the caller has no
+	// research-dir-derived run_id, the emitter falls back to a fresh
+	// YYYYMMDD-HHMMSS so the manifest contract still holds.
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Regexp(t, `^\d{8}-\d{6}$`, got.RunID)
 }
 
 func TestDeriveRunIDFromResearchDir(t *testing.T) {

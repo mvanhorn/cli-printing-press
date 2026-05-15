@@ -41,9 +41,14 @@ normalize_json() {
 
   case "$file" in
     */.printing-press.json)
+      # run_id is auto-filled from time.Now() when the caller doesn't supply
+      # one (the standalone `generate` path the golden harness exercises).
+      # Normalize alongside generated_at / printing_press_version so the
+      # golden doesn't drift on every run.
       jq -S '
         .generated_at = "<GENERATED_AT>"
         | .printing_press_version = "<PRINTING_PRESS_VERSION>"
+        | (if has("run_id") then .run_id = "<RUN_ID>" else . end)
       ' "$file" | normalize_text
       ;;
     */manifest.json)
