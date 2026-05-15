@@ -2511,6 +2511,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 
 **RunE skeleton — store-query shape** (offline data via the local SQLite):
 
+The generic `resources` table is keyed by `resource_type`. Flat resources synced from `/<resource>` land as `resource_type='<resource>'`. **Hierarchical resources** synced from `/<parents>/{id}/<children>` land as `resource_type='<parent>_<child>'` — e.g., `projects_tasks` (Asana), `repos_issues` / `repos_pulls` (GitHub) — *not* the bare `<child>` name. A novel feature that filters by the bare name returns zero rows against a real DB. Use `IN (...)` to catch both shapes so the same code works whether the API exposes the resource flat or only parent-scoped.
+
 ```go
 // Declare these alongside the cmd literal, before return cmd:
 //   var dbPath string
@@ -2525,11 +2527,16 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer db.Close()
-	// Replace the query with your aggregation. The store schema mirrors
-	// the synced resources; `printing-press dogfood --json` shows the
-	// table list. SQL must be SELECT-only; the search/sql gates reject
-	// mutating statements.
-	rows, err := db.DB().QueryContext(cmd.Context(), `SELECT id, data FROM <table> WHERE ...`)
+	// Filter resources by both the flat and hierarchical naming so the
+	// query catches rows synced via /<resource> AND rows synced via
+	// /<parents>/{id}/<children>. Drop the parent-scoped entry if the
+	// API only exposes the resource flat; add a <resource_singular>
+	// entry for APIs that toggle plural/singular casing. SQL must be
+	// SELECT-only; the search/sql gates reject mutating statements.
+	rows, err := db.DB().QueryContext(cmd.Context(), `
+		SELECT id, data FROM resources
+		WHERE resource_type IN ('<resource>', '<parent>_<resource>')
+		  AND ...`)
 	if err != nil {
 		return fmt.Errorf("query: %w", err)
 	}
@@ -2544,6 +2551,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	return nil
 },
 ```
+
+For flat-only resources, the typed FTS/upsert tables the generator emits (e.g., `tasks_fts`, `projects`) work too — `SELECT id, data FROM <typed-table>` is the fast path. The `IN (...)` pattern above is the safe default whenever the resource may be hierarchical; `printing-press dogfood --json` shows the actual `resource_type` distribution so you can confirm without running raw SQL.
 
 For features that combine both (cache an API response in the store, or fall through to live when the local store is stale), nest one skeleton inside the other and use the `--data-source auto/local/live` flag pattern from the generated `sync` command.
 
