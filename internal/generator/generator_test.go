@@ -10203,8 +10203,11 @@ func TestSearchTemplateEmptyTypeQueriesGenericFTS(t *testing.T) {
 	caseEmptyIdx := strings.Index(body, `case "":`)
 	require.GreaterOrEqual(t, caseEmptyIdx, 0, "search.go.tmpl must have a case \"\": branch")
 
-	defaultIdx := strings.Index(body[caseEmptyIdx:], "default:")
-	require.GreaterOrEqual(t, defaultIdx, 0, "search.go.tmpl must have a default: after case \"\":")
+	// Anchor on the column-zero `default:` that closes the empty-type
+	// branch, so a stray "default:" inside a comment can't shift the
+	// slice boundary.
+	defaultIdx := strings.Index(body[caseEmptyIdx:], "\n\t\t\tdefault:")
+	require.GreaterOrEqual(t, defaultIdx, 0, "search.go.tmpl must have a tab-indented default: after case \"\":")
 	emptyBranch := body[caseEmptyIdx : caseEmptyIdx+defaultIdx]
 
 	assert.Contains(t, emptyBranch, "db.Search(query, limit)",
