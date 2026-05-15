@@ -523,11 +523,33 @@ func (c *Config) SaveBearerToken(accessToken string, refreshedAt time.Time) erro
 {{- end}}
 
 func (c *Config) ClearTokens() error {
+	// AuthHeader() falls back to the env-var-derived fields when AuthHeaderVal
+	// and AccessToken are empty, so dropping the working credential requires
+	// zeroing every emitted credential field, not just the OAuth trio.
+	c.AuthHeaderVal = ""
 	c.AccessToken = ""
 	c.RefreshToken = ""
 	c.TokenExpiry = time.Time{}
 {{- if .BearerRefresh.Enabled}}
 	c.BearerTokenRefreshedAt = time.Time{}
+{{- end}}
+{{- if .Auth.EnvVarSpecs}}
+{{- range .Auth.EnvVarSpecs}}
+{{- if not (envVarIsBuiltinField .Name)}}
+	c.{{envVarField .Name}} = ""
+{{- end}}
+{{- end}}
+{{- else if .Auth.EnvVars}}
+{{- range .Auth.EnvVars}}
+{{- if not (envVarIsBuiltinField .)}}
+	c.{{envVarField .}} = ""
+{{- end}}
+{{- end}}
+{{- end}}
+{{- range .Auth.AdditionalHeaders}}
+{{- if not (envVarIsBuiltinField .EnvVar.Name)}}
+	c.{{envVarField .EnvVar.Name}} = ""
+{{- end}}
 {{- end}}
 	return c.save()
 }

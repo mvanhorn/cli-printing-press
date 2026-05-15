@@ -179,9 +179,20 @@ func (c *Config) SaveCredential(token string) error {
 }
 
 func (c *Config) ClearTokens() error {
+	// AuthHeader() falls back to the env-var-derived fields when AuthHeaderVal
+	// and AccessToken are empty, so dropping the working credential requires
+	// zeroing every emitted credential field, not just the OAuth trio.
+	c.AuthHeaderVal = ""
 	c.AccessToken = ""
 	c.RefreshToken = ""
 	c.TokenExpiry = time.Time{}
+	c.RichAuthApiKey = ""
+	c.RichAuthClientId = ""
+	c.RichAuthClientSecret = ""
+	c.RichAuthSessionCookie = ""
+	c.RichAuthOptionalToken = ""
+	c.RichAuthBotToken = ""
+	c.RichAuthUserToken = ""
 	return c.save()
 }
 
