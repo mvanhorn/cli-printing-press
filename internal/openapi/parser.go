@@ -360,8 +360,15 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 
 	baseURL := ""
 	basePath := ""
+	// serverTemplatePlaceholders / serverTemplateDefaults carry the placeholder
+	// names and their spec-declared defaults when the top-level server URL is
+	// a multi-tenant template (e.g. `https://{domain}/api/v2`). Empty for
+	// static specs so per-tenant runtime substitution stays opt-in and the
+	// existing byte-compat goldens for single-host APIs don't churn.
+	var serverTemplatePlaceholders []string
+	var serverTemplateDefaults map[string]string
 	if len(doc.Servers) > 0 && doc.Servers[0] != nil {
-		baseURL, basePath = resolveServerURL(doc.Servers[0])
+		baseURL, basePath, serverTemplatePlaceholders, serverTemplateDefaults = resolveServerURLTemplate(doc.Servers[0])
 	}
 	if baseURL == "" && basePath == "" {
 		// No top-level servers — walk per-operation `servers:` blocks. Specs
@@ -400,6 +407,12 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 	}
 
 	templateVars, templateEnvOverrides := parseEndpointTemplateExtensions(doc)
+	// Merge server-URL template placeholders into the endpoint-template-var
+	// bucket. The downstream config.Load template walks EndpointTemplateVars
+	// to emit per-variable env-var lookups; without this merge a spec like
+	// `https://{domain}/api/v2` would lose `{domain}` between the parser and
+	// the generator and the CLI would DNS-fail on every call.
+	templateVars, templateDefaults := mergeServerTemplatePlaceholders(templateVars, serverTemplatePlaceholders, serverTemplateDefaults)
 
 	result := &spec.APISpec{
 		Name:                         name,
@@ -417,6 +430,7 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 		MCP:                          mcpConfig,
 		EndpointTemplateVars:         templateVars,
 		EndpointTemplateEnvOverrides: templateEnvOverrides,
+		EndpointTemplateVarDefaults:  templateDefaults,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -2098,6 +2112,133 @@ func operationAllowsAnonymous(op *openapi3.Operation, doc *openapi3.T) bool {
 	return false
 }
 
+// resolveServerURLTemplate is the top-level entry point used for
+// `doc.Servers[0]`. It preserves `{var}` placeholders for variables that the
+// spec declares an explicit Variables entry for, so the generator can emit a
+// runtime substitution path (env var > spec default) in config.Load() rather
+// than baking the default into BaseURL at generate time. Returns the same
+// (baseURL, basePath) pair as resolveServerURL plus the placeholder names
+// that survived substitution and a map of their declared defaults. Variables
+// without an explicit Variables entry (e.g. dangling `{foo}` markers in a
+// hand-written spec) fall through to the legacy strip-unresolved behavior so
+// stale specs don't suddenly require an env var that doesn't exist.
+func resolveServerURLTemplate(server *openapi3.Server) (baseURL, basePath string, placeholders []string, defaults map[string]string) {
+	if server == nil {
+		return "", "", nil, nil
+	}
+	serverURL := strings.TrimRight(strings.TrimSpace(server.URL), "/")
+	if strings.Contains(serverURL, "{") && server.Variables != nil {
+		// First pass: identify which `{var}` markers are backed by an explicit
+		// variable definition. These get preserved for runtime substitution.
+		// Order placeholders by left-to-right appearance in the URL so the
+		// generated EndpointTemplateVars slice has a stable, intuitive shape;
+		// Go map iteration would otherwise produce nondeterministic ordering.
+		matches := templateVarPattern.FindAllStringSubmatch(serverURL, -1)
+		seen := map[string]bool{}
+		for _, m := range matches {
+			name := m[1]
+			if seen[name] {
+				continue
+			}
+			variable, ok := server.Variables[name]
+			if !ok || variable == nil {
+				continue
+			}
+			seen[name] = true
+			placeholders = append(placeholders, name)
+			if defaults == nil {
+				defaults = map[string]string{}
+			}
+			defaults[name] = variable.Default
+		}
+		// Second pass: substitute defaults for any `{var}` markers that the
+		// first pass did not flag for runtime substitution. Preserves
+		// backward compatibility for specs that declare variables but don't
+		// need per-tenant overrides (e.g., a `{version}: v2` with a single
+		// sensible default).
+		for varName, variable := range server.Variables {
+			if _, runtime := defaults[varName]; runtime {
+				continue
+			}
+			if variable != nil && variable.Default != "" {
+				serverURL = strings.ReplaceAll(serverURL, "{"+varName+"}", variable.Default)
+			}
+		}
+	}
+	// Strip any remaining unresolved placeholders that don't have a runtime
+	// substitution path (matches the legacy resolveServerURL behavior).
+	// Runtime placeholders are left in place so the printed CLI's buildURL
+	// can substitute them per request.
+	serverURL = templateVarPattern.ReplaceAllStringFunc(serverURL, func(match string) string {
+		name := match[1 : len(match)-1]
+		if _, runtime := defaults[name]; runtime {
+			return match
+		}
+		return ""
+	})
+	serverURL = normalizeURLSlashes(serverURL)
+	serverURL = strings.TrimRight(serverURL, "/")
+	if serverURL == "" {
+		return "", "", placeholders, defaults
+	}
+	lowerURL := strings.ToLower(serverURL)
+	if strings.HasPrefix(lowerURL, "http://") || strings.HasPrefix(lowerURL, "https://") {
+		return serverURL, "", placeholders, defaults
+	}
+	return "", serverURL, placeholders, defaults
+}
+
+// templateVarPattern mirrors the regex used by the generated `buildURL` helper
+// so the parser and the runtime substitute the same set of placeholder names.
+var templateVarPattern = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
+
+func normalizeURLSlashes(s string) string {
+	s = strings.ReplaceAll(s, "//", "/")
+	s = strings.Replace(s, "http:/", "http://", 1)
+	s = strings.Replace(s, "https:/", "https://", 1)
+	return s
+}
+
+// mergeServerTemplatePlaceholders folds the placeholders the parser pulled
+// off `doc.Servers[0].Variables` into the existing EndpointTemplateVars list
+// (today populated only by x-tenant-env-var). Order: extension-declared
+// placeholders first, then server-URL placeholders in spec order, deduped.
+func mergeServerTemplatePlaceholders(existing []string, serverPlaceholders []string, serverDefaults map[string]string) ([]string, map[string]string) {
+	if len(serverPlaceholders) == 0 && len(serverDefaults) == 0 {
+		return existing, nil
+	}
+	seen := make(map[string]bool, len(existing)+len(serverPlaceholders))
+	out := make([]string, 0, len(existing)+len(serverPlaceholders))
+	for _, name := range existing {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, name := range serverPlaceholders {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	var defaults map[string]string
+	if len(serverDefaults) > 0 {
+		defaults = make(map[string]string, len(serverDefaults))
+		for name, val := range serverDefaults {
+			if val == "" {
+				continue
+			}
+			defaults[name] = val
+		}
+		if len(defaults) == 0 {
+			defaults = nil
+		}
+	}
+	return out, defaults
+}
+
 // resolveServerURL applies template-variable substitution and protocol
 // normalization to an OpenAPI Server, returning either an absolute http(s)
 // base URL or a relative base path. Empty strings indicate the server entry
@@ -2124,10 +2265,7 @@ func resolveServerURL(server *openapi3.Server) (baseURL, basePath string) {
 		}
 		serverURL = serverURL[:start] + serverURL[end+1:]
 	}
-	serverURL = strings.ReplaceAll(serverURL, "//", "/")
-	// Restore protocol double-slash if normalization collapsed it.
-	serverURL = strings.Replace(serverURL, "http:/", "http://", 1)
-	serverURL = strings.Replace(serverURL, "https:/", "https://", 1)
+	serverURL = normalizeURLSlashes(serverURL)
 	serverURL = strings.TrimRight(serverURL, "/")
 	if serverURL == "" {
 		return "", ""
@@ -2136,7 +2274,7 @@ func resolveServerURL(server *openapi3.Server) (baseURL, basePath string) {
 	if strings.HasPrefix(lowerURL, "http://") || strings.HasPrefix(lowerURL, "https://") {
 		return serverURL, ""
 	}
-	// Relative URL — caller will need to surface as basePath.
+	// Relative URL; caller will need to surface as basePath.
 	return "", serverURL
 }
 

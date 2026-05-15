@@ -348,6 +348,24 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointTemplateEnvName": func(placeholder string) string {
 			return s.EndpointTemplateEnvName(placeholder)
 		},
+		// endpointTemplateDefault returns the spec-declared default value for
+		// a placeholder (e.g. server-URL variables' `default:` value), or ""
+		// when none. Templates branch on the empty case to skip the runtime
+		// fallback path and preserve byte-compat with placeholders that have
+		// no spec-level default (path-positional templates like {tenant}).
+		"endpointTemplateDefault": func(placeholder string) string {
+			return s.EndpointTemplateDefault(placeholder)
+		},
+		// Predicates the config.Load template branches on. Splitting on
+		// has-default vs has-undefaulted preserves byte-compat for CLIs whose
+		// placeholders are all path-positional (no defaults): without the
+		// split, every prior CLI would regenerate just to emit unused helpers.
+		"endpointTemplateVarsHasDefault": func(vars []string) bool {
+			return endpointTemplateVarsAny(vars, s, func(v string) bool { return v != "" })
+		},
+		"endpointTemplateVarsHasUndefaulted": func(vars []string) bool {
+			return endpointTemplateVarsAny(vars, s, func(v string) bool { return v == "" })
+		},
 		"safeName":                       safeSQLName,
 		"resourceIDFieldOverrideEntries": resourceIDFieldOverrideEntries,
 		"criticalResourceEntries":        criticalResourceEntries,
@@ -530,6 +548,15 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"firstCommandExample":  firstCommandExample,
 	}
 	return g
+}
+
+func endpointTemplateVarsAny(vars []string, s *spec.APISpec, predicate func(string) bool) bool {
+	for _, name := range vars {
+		if predicate(s.EndpointTemplateDefault(name)) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildWhichFallbackEntries(resources map[string]spec.Resource) []NovelFeature {

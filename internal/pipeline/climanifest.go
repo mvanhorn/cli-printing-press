@@ -83,6 +83,12 @@ type CLIManifest struct {
 	AuthAdditionalHeaders        []spec.AdditionalAuthHeader `json:"auth_additional_headers,omitempty"`
 	EndpointTemplateVars         []string                    `json:"endpoint_template_vars,omitempty"`
 	EndpointTemplateEnvOverrides map[string]string           `json:"endpoint_template_env_overrides,omitempty"`
+	// EndpointTemplateVarDefaults mirrors APISpec.EndpointTemplateVarDefaults
+	// so a regenerating run, the MCPB manifest's user_config default fill,
+	// and the public-library republish path all see the same fallback values
+	// the parser captured from the spec. Empty for path-positional templates
+	// (x-tenant-env-var style) since those have no spec-level default.
+	EndpointTemplateVarDefaults map[string]string `json:"endpoint_template_var_defaults,omitempty"`
 	// AuthKeyURL is the page where users register for an API key. Used by
 	// downstream emitters (MCPB manifest user_config descriptions, doctor
 	// hints) to point users at the right credential source.
@@ -417,6 +423,7 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.AuthAdditionalHeaders = parsed.Auth.AdditionalHeaders
 	m.EndpointTemplateVars = parsed.EndpointTemplateVars
 	m.EndpointTemplateEnvOverrides = parsed.EndpointTemplateEnvOverrides
+	m.EndpointTemplateVarDefaults = parsed.EndpointTemplateVarDefaults
 	m.AuthKeyURL = parsed.Auth.KeyURL
 	m.AuthTitle = parsed.Auth.Title
 	m.AuthDescription = parsed.Auth.Description

@@ -8739,6 +8739,190 @@ func TestLoadTemplateVarsRealEnvWinsOverPlaceholder(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestLoadTemplateVars")
 }
 
+// freshserviceTemplateVarsTestSpec returns a Freshservice-shape APISpec
+// used by EndpointTemplateVars-with-defaults tests. The `{domain}`
+// placeholder carries a spec-declared default so config.Load can fall
+// back to a real URL when the user's env var is unset.
+func freshserviceTemplateVarsTestSpec() *spec.APISpec {
+	return &spec.APISpec{
+		Name:                        "freshservice",
+		Description:                 "Freshservice (test fixture)",
+		Version:                     "v2",
+		BaseURL:                     "https://{domain}/api/v2",
+		EndpointTemplateVars:        []string{"domain"},
+		EndpointTemplateVarDefaults: map[string]string{"domain": "yourcompany.freshservice.com"},
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "X-Api-Key",
+			EnvVars: []string{"FRESHSERVICE_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/freshservice-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"tickets": {
+				Description: "Tickets",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:       "GET",
+						Path:         "/tickets",
+						Description:  "List tickets",
+						ResponsePath: "tickets",
+						Response:     spec.ResponseDef{Type: "array", Item: "Ticket"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Ticket": {Fields: []spec.TypeField{
+				{Name: "id", Type: "string"},
+				{Name: "subject", Type: "string"},
+			}},
+		},
+	}
+}
+
+// TestGenerateEndpointTemplateVarsDefaultFallback covers the multi-tenant
+// base-URL substitution path. When servers[0].url declares a `{var}`
+// placeholder with a `default:` value, config.Load must:
+//   - substitute the env-var value (normalized) into Config.TemplateVars
+//     when the env var is set, and
+//   - fall back to the spec-declared default when the env var is unset,
+//
+// so doctor and verify probe a real-shaped URL instead of one with a
+// literal {domain} in it. The normalizer strips scheme + trailing slash
+// because users routinely paste browser-bar URLs into shell exports.
+func TestGenerateEndpointTemplateVarsDefaultFallback(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := freshserviceTemplateVarsTestSpec()
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	configGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	configGoStr := string(configGo)
+	assert.Contains(t, configGoStr, `cfg.TemplateVars["domain"] = "yourcompany.freshservice.com"`,
+		"config.Load must bake the spec default as the env-var-unset fallback")
+	assert.Contains(t, configGoStr, "normalizeEndpointTemplateValue",
+		"config.go must emit the normalizer helper when a server-URL default is present")
+	assert.NotContains(t, configGoStr, `BaseURL: "https://yourcompany.freshservice.com/api/v2"`,
+		"BaseURL must keep the {domain} placeholder, not bake the default into the constant")
+	assert.Contains(t, configGoStr, `BaseURL: "https://{domain}/api/v2"`,
+		"BaseURL constant must carry the placeholder for runtime substitution")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+
+	behaviorTest := `package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func clearFreshserviceEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{"FRESHSERVICE_DOMAIN", "FRESHSERVICE_BASE_URL", "FRESHSERVICE_CONFIG", "PRINTING_PRESS_VERIFY"} {
+		t.Setenv(k, "")
+		_ = os.Unsetenv(k)
+	}
+}
+
+func TestLoadDomainDefaultFallback(t *testing.T) {
+	clearFreshserviceEnv(t)
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.TemplateVars["domain"]; got != "yourcompany.freshservice.com" {
+		t.Errorf("unset env var should fall back to spec default; got %q", got)
+	}
+}
+
+func TestLoadDomainEnvVarOverridesDefault(t *testing.T) {
+	clearFreshserviceEnv(t)
+	t.Setenv("FRESHSERVICE_DOMAIN", "acme.freshservice.com")
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.TemplateVars["domain"]; got != "acme.freshservice.com" {
+		t.Errorf("env var should beat default; got %q", got)
+	}
+}
+
+func TestLoadDomainNormalizesPastedURL(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"acme.freshservice.com", "acme.freshservice.com"},
+		{"https://acme.freshservice.com", "acme.freshservice.com"},
+		{"https://acme.freshservice.com/", "acme.freshservice.com"},
+		{"http://acme.freshservice.com//", "acme.freshservice.com"},
+		{"  acme.freshservice.com  ", "acme.freshservice.com"},
+		{"HTTPS://acme.freshservice.com", "acme.freshservice.com"},
+		{"Https://acme.freshservice.com/", "acme.freshservice.com"},
+		{"HTTP://acme.freshservice.com", "acme.freshservice.com"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			clearFreshserviceEnv(t)
+			t.Setenv("FRESHSERVICE_DOMAIN", tc.input)
+			cfgPath := filepath.Join(t.TempDir(), "config.toml")
+			cfg, err := Load(cfgPath)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.TemplateVars["domain"]; got != tc.want {
+				t.Errorf("Load(%q): TemplateVars[\"domain\"] = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "config", "domain_fallback_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestLoadDomain")
+}
+
+// TestGenerateEndpointTemplateDefaultIsEscaped guards against a malicious
+// or hand-edited OpenAPI spec whose server-variable default contains Go
+// string-literal syntax (a stray double quote, backslash, or newline).
+// Without proper %q escaping the generator emits invalid Go and the
+// printed CLI fails to compile — or worse, the default becomes a vector
+// for injecting Go statements into config.Load() that run on every CLI
+// invocation.
+func TestGenerateEndpointTemplateDefaultIsEscaped(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := freshserviceTemplateVarsTestSpec()
+	apiSpec.EndpointTemplateVarDefaults = map[string]string{
+		"domain": `evil"; os.Exit(1); //`,
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	configGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	got := string(configGo)
+	assert.Contains(t, got, `cfg.TemplateVars["domain"] = "evil\"; os.Exit(1); //"`,
+		"%q escaping must quote internal double quotes so the default can never close the Go string literal")
+	assert.NotContains(t, got, `cfg.TemplateVars["domain"] = "evil"; os.Exit(1); //`,
+		"unescaped emission would close the string and execute os.Exit on every Load")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 // TestGenerateNoEndpointTemplateVarsByteCompat guards the byte-compat
 // promise: a spec that doesn't declare EndpointTemplateVars must regenerate
 // without url.go and with the original c.BaseURL+path concat in client.do().

@@ -822,16 +822,40 @@ func TestWriteMCPBManifest(t *testing.T) {
 		shop, ok := got.UserConfig["shopify_shop"]
 		require.True(t, ok)
 		assert.Equal(t, "SHOPIFY_SHOP", shop.Title)
-		assert.True(t, shop.Required)
+		assert.True(t, shop.Required, "{shop} has no spec-level default; user must supply it")
 		assert.False(t, shop.Sensitive)
 		assert.Contains(t, shop.Description, "{shop}")
 
 		apiVersion, ok := got.UserConfig["shopify_api_version"]
 		require.True(t, ok)
 		assert.Equal(t, "SHOPIFY_API_VERSION", apiVersion.Title)
-		assert.True(t, apiVersion.Required)
+		assert.False(t, apiVersion.Required, "spec-defaulted vars are optional in MCPB user_config; presenting Required+Default together is contradictory and causes strict MCPB hosts to block install with the default pre-filled")
 		assert.Equal(t, "2026-04", apiVersion.Default)
 		assert.Contains(t, apiVersion.Description, "{api_version}")
+	})
+
+	t.Run("endpoint template var with spec-declared default is optional in user_config", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:                     "freshservice",
+			DisplayName:                 "Freshservice",
+			MCPBinary:                   "freshservice-pp-mcp",
+			MCPReady:                    "full",
+			AuthType:                    "api_key",
+			AuthEnvVars:                 []string{"FRESHSERVICE_API_KEY"},
+			EndpointTemplateVars:        []string{"domain"},
+			EndpointTemplateVarDefaults: map[string]string{"domain": "yourcompany.freshservice.com"},
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		domain, ok := got.UserConfig["freshservice_domain"]
+		require.True(t, ok)
+		assert.Equal(t, "yourcompany.freshservice.com", domain.Default,
+			"spec-declared default flows through to MCPB user_config")
+		assert.False(t, domain.Required,
+			"Required: false avoids the install-blocking contradiction when MCPB hosts honor `required` strictly")
 	})
 
 	t.Run("composed auth emits optional user_config fields", func(t *testing.T) {
