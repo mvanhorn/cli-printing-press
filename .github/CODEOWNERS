@@ -2,6 +2,13 @@
 # A malicious PR that modifies these paths could exfiltrate secrets at workflow
 # runtime or weaken the merge-gate; require an explicit maintainer review.
 # See: docs.github.com/en/repositories/managing-your-repositorys-settings-and-security/customizing-your-repository/about-code-owners
+#
+# Coverage rationale: anything a workflow can `run:` is effectively part of
+# the workflow's trust boundary. That includes workflow YAML, scripts checked
+# into the repo that workflows invoke, and CODEOWNERS itself (so a malicious
+# PR cannot strip the gate before exploiting it).
 
 .github/workflows/  @tmchow @mvanhorn
+.github/scripts/    @tmchow @mvanhorn
+scripts/            @tmchow @mvanhorn
 .github/CODEOWNERS  @tmchow @mvanhorn
