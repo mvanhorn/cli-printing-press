@@ -31,7 +31,6 @@ npx -y @mvanhorn/printing-press install printing-press-rich --agent claude-code
 npx -y @mvanhorn/printing-press install printing-press-rich --agent claude-code --agent codex
 ```
 
-
 ### Without Node
 
 The generated install path is category-agnostic until this CLI is published. If `npx` is not available before publish, install Node or use the category-specific Go fallback from the public-library entry after publish.

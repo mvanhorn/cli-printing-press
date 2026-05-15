@@ -774,6 +774,67 @@ func TestGenerateOAuth2RefreshTokenMechanism(t *testing.T) {
 	})
 }
 
+// TestGeneratedOutput_READMEBearerTokenClaudeDesktop covers the
+// bearer_token rendering inside the `## Use with Claude Desktop`
+// section (the canonicalEnvVar-present branch). Restored after the
+// earlier `## Use with Claude Code` section — and its dedicated test —
+// were removed; the bearer_token MCP-config branches still need a
+// regression test since neither the api_key nor the rich-auth golden
+// fixtures exercise the bearer_token paths.
+func TestGeneratedOutput_READMEBearerTokenClaudeDesktop(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "bearer",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "bearer_token",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"BEARER_TOKEN"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/bearer-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/items",
+						Description: "List items",
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	content := string(readme)
+
+	// canonicalEnvVar-present branch: step 3 of the install list asks
+	// the user to fill in the env var name when Claude Desktop prompts.
+	assert.Contains(t, content, "Fill in `BEARER_TOKEN` when Claude Desktop prompts you.",
+		"bearer_token + canonical env var must render the step-3 prompt naming the env var")
+
+	// Manual JSON config <details> emits the env var in the mcpServers block.
+	assert.Contains(t, content, `"BEARER_TOKEN": "<your-key>"`,
+		"bearer_token + canonical env var must render the env var in the Manual JSON config block")
+
+	// Negative: the canonicalEnvVar-absent preamble must NOT appear when a
+	// canonical env var is set (that branch is mutually exclusive).
+	assert.NotContains(t, content, "Store your token first if you haven't:",
+		"bearer_token + canonical env var must not emit the auth-set-token preamble")
+}
+
 func TestGenerateBearerRefreshDoctorCommand(t *testing.T) {
 	t.Parallel()
 
