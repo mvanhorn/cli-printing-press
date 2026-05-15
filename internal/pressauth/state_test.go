@@ -191,9 +191,7 @@ func TestSaveIsAtomic(t *testing.T) {
 	var reads atomic.Int64
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for !stop.Load() {
 			data, err := os.ReadFile(path)
 			if err != nil {
@@ -209,9 +207,9 @@ func TestSaveIsAtomic(t *testing.T) {
 				partialReads.Add(1)
 			}
 		}
-	}()
+	})
 
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		st := sampleState(domain, time.Now().UTC().Add(time.Duration(i)*time.Second))
 		if err := Save(st); err != nil {
 			stop.Store(true)

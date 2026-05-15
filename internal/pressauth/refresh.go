@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strings"
@@ -243,9 +244,7 @@ func resolveRefreshURL(domain, endpoint string) (string, error) {
 // preserved. The input map is never mutated.
 func mergeCookies(existing map[string]string, setCookies []*http.Cookie) map[string]string {
 	out := make(map[string]string, len(existing)+len(setCookies))
-	for k, v := range existing {
-		out[k] = v
-	}
+	maps.Copy(out, existing)
 	for _, c := range setCookies {
 		if c == nil || c.Name == "" {
 			continue

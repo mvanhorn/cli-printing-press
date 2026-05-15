@@ -78,7 +78,7 @@ func TestListPopulatedSortsByDomain(t *testing.T) {
 	// Sort check: domain indexes must be ascending.
 	want := []string{domA, domB, domC}
 	// Compute the lex-sorted order of the random domain names.
-	for i := 0; i < len(want); i++ {
+	for i := range want {
 		for j := i + 1; j < len(want); j++ {
 			if want[i] > want[j] {
 				want[i], want[j] = want[j], want[i]

@@ -12,7 +12,6 @@ package pressauth
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/spf13/cobra"
 )
@@ -108,15 +107,4 @@ prompt per domain — click Always Allow to skip future prompts.`,
 	rootCmd.AddCommand(newForgetCmd(gf))
 
 	return rootCmd
-}
-
-// notImplementedExit is the shared shape every stub returns. It wraps
-// ErrNotImplemented with the subcommand name so the user can tell which
-// path is stubbed, and tags it with ExitUnknownError so the process exits
-// non-zero.
-func notImplementedExit(subcommand string) error {
-	return &ExitError{
-		Code: ExitUnknownError,
-		Err:  fmt.Errorf("%s: %w", subcommand, ErrNotImplemented),
-	}
 }

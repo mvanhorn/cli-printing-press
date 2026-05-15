@@ -268,8 +268,7 @@ func cookieDomainMatches(cookieDomain, target string) bool {
 	if cookieDomain == "" {
 		return true
 	}
-	if strings.HasPrefix(cookieDomain, ".") {
-		bare := strings.TrimPrefix(cookieDomain, ".")
+	if bare, ok := strings.CutPrefix(cookieDomain, "."); ok {
 		if target == bare {
 			return true
 		}
