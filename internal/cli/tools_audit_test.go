@@ -2,6 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"strings"
 	"testing"
 	"time"
@@ -455,6 +458,131 @@ func TestTruncate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := truncate(tc.in, tc.n); got != tc.want {
 				t.Errorf("truncate(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAuditCommandFieldsExplicitReadOnlyFalse pins #891: an explicit
+// `mcp:read-only: false` annotation suppresses the missing-read-only
+// finding for read-shaped names, treating it identically to `true`.
+// Only a genuinely absent annotation should still fire.
+func TestAuditCommandFieldsExplicitReadOnlyFalse(t *testing.T) {
+	cases := []struct {
+		name                string
+		fields              commandFields
+		wantMissingReadOnly bool
+	}{
+		{
+			name: "explicit true suppresses missing-read-only",
+			fields: commandFields{
+				use:                 "report",
+				short:               "Generate a report",
+				hasExplicitReadOnly: true,
+				hasRunE:             true,
+			},
+			wantMissingReadOnly: false,
+		},
+		{
+			name: "explicit false also suppresses missing-read-only",
+			fields: commandFields{
+				use: "report",
+				// "report" matches the read-shape heuristic, but the
+				// author has correctly classified the command as not
+				// read-only via an explicit annotation. The audit must
+				// honor that opt-out the same way it honors "true".
+				short:               "Generate and persist a report",
+				hasExplicitReadOnly: true,
+				hasRunE:             true,
+			},
+			wantMissingReadOnly: false,
+		},
+		{
+			name: "absent annotation fires the finding",
+			fields: commandFields{
+				use:                 "report",
+				short:               "Generate a report",
+				hasExplicitReadOnly: false,
+				hasRunE:             true,
+			},
+			wantMissingReadOnly: true,
+		},
+		{
+			name: "non-read-shaped names never fire regardless of annotation",
+			fields: commandFields{
+				use:                 "post",
+				short:               "Post a message",
+				hasExplicitReadOnly: false,
+				hasRunE:             true,
+			},
+			wantMissingReadOnly: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := auditCommandFields("internal/cli/x.go", 1, tc.fields)
+			var got bool
+			for _, f := range findings {
+				if f.Kind == kindMissingReadOnly {
+					got = true
+					break
+				}
+			}
+			if got != tc.wantMissingReadOnly {
+				t.Fatalf("missing-read-only fired = %v, want %v (findings: %+v)", got, tc.wantMissingReadOnly, findings)
+			}
+		})
+	}
+}
+
+// TestInspectAnnotationsExplicitReadOnlyFalse pins the AST-level
+// helper: any value for `mcp:read-only` — including "false" — sets
+// hasExplicitReadOnly. The old behavior treated "false" as absent.
+func TestInspectAnnotationsExplicitReadOnlyFalse(t *testing.T) {
+	cases := []struct {
+		name      string
+		src       string
+		wantSetRO bool
+	}{
+		{
+			name:      "explicit true",
+			src:       `package x; var _ = map[string]string{"mcp:read-only": "true"}`,
+			wantSetRO: true,
+		},
+		{
+			name:      "explicit false",
+			src:       `package x; var _ = map[string]string{"mcp:read-only": "false"}`,
+			wantSetRO: true,
+		},
+		{
+			name:      "absent",
+			src:       `package x; var _ = map[string]string{}`,
+			wantSetRO: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "x.go", tc.src, 0)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			var lit *ast.CompositeLit
+			ast.Inspect(file, func(n ast.Node) bool {
+				if c, ok := n.(*ast.CompositeLit); ok {
+					if _, ok := c.Type.(*ast.MapType); ok {
+						lit = c
+						return false
+					}
+				}
+				return true
+			})
+			if lit == nil {
+				t.Fatalf("no map literal found")
+			}
+			gotRO, _ := inspectAnnotations(lit)
+			if gotRO != tc.wantSetRO {
+				t.Errorf("hasExplicitReadOnly = %v, want %v", gotRO, tc.wantSetRO)
 			}
 		})
 	}
