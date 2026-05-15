@@ -420,6 +420,35 @@ func (s *APISpec) UsesBrowserManagedUserAgent() bool {
 	}
 }
 
+// UsesBrowserLikeUserAgent reports whether the generated CLI should
+// default to a browser-shaped User-Agent rather than the
+// `<cli>-pp-cli/<version>` script identifier. Triggered by:
+//   - Kind: synthetic — browser-sniffed specs typically talk to
+//     origins whose WAFs (Wordfence, Imperva, Akamai bot-mode,
+//     DataDome, Cloudflare bot-fight) flag the script-shaped UA as a
+//     bot and answer with 5xx, 403, or a challenge redirect.
+//   - Auth.Type in {cookie, composed, session_handshake} — same
+//     bot-detection surface; these CLIs are almost always speaking to
+//     a website-itself rather than a public API.
+//
+// The browser-managed transports (chrome, chrome-h3) handle their own
+// UA already — UsesBrowserManagedUserAgent short-circuits the template
+// emission entirely there. This method only matters for the standard
+// Go HTTP client path.
+func (s *APISpec) UsesBrowserLikeUserAgent() bool {
+	if s == nil {
+		return false
+	}
+	if s.Kind == KindSynthetic {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(s.Auth.Type)) {
+	case "cookie", "composed", "session_handshake":
+		return true
+	}
+	return false
+}
+
 func (s *APISpec) HasRequiredHeader(name string) bool {
 	if s == nil {
 		return false

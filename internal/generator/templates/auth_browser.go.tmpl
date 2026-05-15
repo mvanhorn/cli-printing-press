@@ -1328,7 +1328,14 @@ func validateComposedAuth(authHeader string) error {
 {{- end}}
 {{- if not .UsesBrowserManagedUserAgent}}
 	if req.Header.Get("User-Agent") == "" {
+{{- if .UsesBrowserLikeUserAgent}}
+		// Browser-shaped UA matches the main client default; WAF fingerprint
+		// checks on the auth-verify call have to clear the same bar as the
+		// per-resource calls or the user can't log in to begin with.
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
+{{- else}}
 		req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+{{- end}}
 	}
 {{- end}}
 

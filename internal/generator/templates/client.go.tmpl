@@ -994,7 +994,19 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		}
 {{- if not .UsesBrowserManagedUserAgent}}
 		if req.Header.Get("User-Agent") == "" {
+{{- if .UsesBrowserLikeUserAgent}}
+			// Browser-shaped UA: synthetic specs and cookie/composed/
+			// session_handshake auth almost always target website-itself
+			// origins whose WAFs (Wordfence, Imperva, Akamai bot-mode,
+			// DataDome, Cloudflare bot-fight) bucket the script-shaped
+			// `<cli>-pp-cli/<version>` string as a bot and answer with
+			// empty 5xx or a challenge. RequiredHeaders or per-endpoint
+			// headerOverrides still win, and any caller that wants the
+			// CLI-flavored UA can set it on the request explicitly.
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
+{{- else}}
 			req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+{{- end}}
 		}
 		// Go's net/http omits Accept by default; browsers, curl, and other
 		// stdlibs always send it. Fingerprint-checking WAFs (Imperva, Akamai,
