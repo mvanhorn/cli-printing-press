@@ -10318,6 +10318,35 @@ func TestStaleTemplateCoversCommonTimestampFields(t *testing.T) {
 		"pm_stale.go.tmpl must bind a numeric cutoff alongside the RFC 3339 cutoff for integer-typed timestamps")
 }
 
+// TestSyncTemplateShortCircuitsOnDryRunSentinel pins #1382: client.dryRun
+// returns `{"dry_run": true}` instead of a real response, and the sync
+// loop must detect this with isDryRunResponse and emit a synthetic
+// sync_dryrun event before falling through to upsertSingleObject —
+// otherwise validate-narrative --full-examples (which auto-appends
+// --dry-run) blocks shipcheck on a spurious "missing id for <resource>"
+// error.
+func TestSyncTemplateShortCircuitsOnDryRunSentinel(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("templates", "sync.go.tmpl"))
+	require.NoError(t, err)
+	body := string(data)
+
+	assert.Contains(t, body, "func isDryRunResponse(data json.RawMessage) bool",
+		"sync.go.tmpl must define isDryRunResponse helper that detects the client.dryRun sentinel")
+	assert.Contains(t, body, `"sync_dryrun"`,
+		"sync.go.tmpl must emit a sync_dryrun event on the short-circuit path so validate-narrative sees a structured success")
+
+	// Ordering pin: the dry-run check must run BEFORE upsertSingleObject,
+	// otherwise the sentinel reaches the upsert path and triggers a spurious
+	// "missing id for <resource>" error.
+	dryRunCheckIdx := strings.Index(body, "if isDryRunResponse(data)")
+	upsertSingleIdx := strings.Index(body, "if err := upsertSingleObject(db, resource, data)")
+	require.GreaterOrEqual(t, dryRunCheckIdx, 0, "sync.go.tmpl must call isDryRunResponse on the response")
+	require.GreaterOrEqual(t, upsertSingleIdx, 0, "sync.go.tmpl must still call upsertSingleObject for live single-object responses")
+	assert.Less(t, dryRunCheckIdx, upsertSingleIdx,
+		"isDryRunResponse check must run before upsertSingleObject so the dry-run sentinel doesn't fall through to the missing-id error")
+}
+
 // TestSearchTemplateEmitsEmptyJSONEnvelope pins the contract: the
 // generated `search` command in --json (or piped) mode must always emit
 // a valid JSON envelope, including on no matches. Agents pipe stdout
