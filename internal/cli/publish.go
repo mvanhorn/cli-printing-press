@@ -361,6 +361,19 @@ func newPublishPackageCmd() *cobra.Command {
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping build dir: %w", err)}
 			}
 
+			// Strip root-level binaries that local `go build ./cmd/...` (or
+			// `make build` / `make build-mcp` without `-o bin/...`) drops at
+			// the CLI dir root. The skill cleanup line tries to catch these
+			// after the copy, but routinely misses `<api-slug>-pp-mcp`; this
+			// strip applies the same convention before the copy so the staged
+			// tree is binary-free regardless of which path the operator took.
+			for _, name := range stagedBinaryNames(cliName, dirName) {
+				if err := os.Remove(filepath.Join(outCLIDir, name)); err != nil && !os.IsNotExist(err) {
+					cleanupOnFailure()
+					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping staged binary %s: %w", name, err)}
+				}
+			}
+
 			// Rewrite go.mod module path if --module-path is set
 			if modulePath != "" {
 				oldModPath := cliName // generated CLIs use bare CLI name as module path
@@ -992,6 +1005,35 @@ func buildArtifactCandidates(dir, cliName string) []string {
 		filepath.Join(dir, cliName),
 		filepath.Join(dir, "cmd", cliName, cliName),
 	}
+}
+
+// stagedBinaryNames returns the root-level filenames that local builds
+// (`go build ./cmd/...`, `make build`, `make build-mcp` without `-o`)
+// drop alongside the source tree. The Makefile template emits
+// `<api-slug>-pp-cli` and `<api-slug>-pp-mcp` peers, and verifier paths
+// may also leave a bare `<api-slug>` artifact. The list is intentionally
+// a small, named superset rather than a glob so the strip step never
+// removes a tracked source file by accident.
+func stagedBinaryNames(cliName, apiSlug string) []string {
+	seen := map[string]struct{}{}
+	var names []string
+	add := func(n string) {
+		if n == "" {
+			return
+		}
+		if _, ok := seen[n]; ok {
+			return
+		}
+		seen[n] = struct{}{}
+		names = append(names, n)
+	}
+	add(apiSlug)
+	add(cliName)
+	if apiSlug != "" {
+		add(apiSlug + "-pp-cli")
+		add(apiSlug + "-pp-mcp")
+	}
+	return names
 }
 
 type fileSnapshot struct {
