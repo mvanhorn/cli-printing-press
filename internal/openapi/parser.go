@@ -3362,6 +3362,18 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName strin
 		return id
 	}
 
+	// Tier 3.5: vendor-specific identifier names. Asana keys every resource
+	// on `gid`, Twilio on `sid`, others on `uid`/`uuid`/`guid`. These are
+	// scalar primary keys by convention; without this tier the heuristic
+	// falls through to Tier 4 and picks `name` (a display field), so the
+	// generated CLI upserts on names and sync paths like
+	// `/workspaces/<workspace>/users` get a name where the API expects a gid.
+	for _, key := range []string{"gid", "sid", "uid", "uuid", "guid"} {
+		if _, ok := itemSchema.Properties[key]; ok {
+			return key
+		}
+	}
+
 	// Tier 4: explicit `name`
 	if _, ok := itemSchema.Properties["name"]; ok {
 		return "name"

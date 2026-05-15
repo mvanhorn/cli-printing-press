@@ -8115,9 +8115,11 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 	// (b) Generic fallback list reduced — kalshi-specific names dropped.
 	// The user owns the kalshi CLI and will regenerate with x-resource-id
 	// annotations; no other public-library CLIs depend on these names.
+	// Vendor identifiers (gid, sid, uid, uuid, guid) precede `name` so
+	// APIs like Asana don't fall through to a display field — see #1394.
 	assert.Contains(t, storeContent,
-		`var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}`,
-		"store.go genericIDFieldFallbacks must be the reduced WU-2 U3 list")
+		`var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "name", "slug", "key", "code"}`,
+		"store.go genericIDFieldFallbacks must include vendor identifiers before name")
 	// Negative: kalshi-specific names must not be in the fallback list.
 	// We assert a robust shape: no occurrence of "ticker" inside the fallback
 	// declaration. The generic check below also pins the absence at a

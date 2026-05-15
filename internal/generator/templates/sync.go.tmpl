@@ -1428,8 +1428,11 @@ var resourceIDFieldOverrides = map[string]string{
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did
 // NOT receive a templated IDField. API-specific names belong in spec
-// annotations (x-resource-id), not this list.
-var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}
+// annotations (x-resource-id), not this list. Order matters: vendor
+// identifier names (gid, sid, uid, uuid, guid) take precedence over `name`
+// so APIs like Asana (gid) and Twilio (sid) don't fall through to a display
+// field and upsert on names — see #1394.
+var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "name", "slug", "key", "code"}
 
 // pageItemKeys is scanned in priority order; lowercase REST-convention keys
 // come first, PascalCase .NET variants second. Without the PascalCase row,

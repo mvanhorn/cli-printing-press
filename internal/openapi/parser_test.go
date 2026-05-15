@@ -4302,6 +4302,54 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
 			wantID: "id",
 		},
 		{
+			name: "tier 3.5: gid wins over name (Asana shape)",
+			schemaYAML: `                  type: object
+                  properties:
+                    gid: {type: string}
+                    name: {type: string}
+                    resource_type: {type: string}
+`,
+			wantID: "gid",
+		},
+		{
+			name: "tier 3.5: sid wins over name (Twilio shape)",
+			schemaYAML: `                  type: object
+                  properties:
+                    sid: {type: string}
+                    name: {type: string}
+                    friendly_name: {type: string}
+`,
+			wantID: "sid",
+		},
+		{
+			name: "tier 3.5: uid wins over name",
+			schemaYAML: `                  type: object
+                  properties:
+                    uid: {type: string}
+                    name: {type: string}
+`,
+			wantID: "uid",
+		},
+		{
+			name: "tier 3.5: uuid wins over name",
+			schemaYAML: `                  type: object
+                  properties:
+                    uuid: {type: string}
+                    name: {type: string}
+`,
+			wantID: "uuid",
+		},
+		{
+			name: "tier 3.5: id wins over gid (tier 2 takes precedence)",
+			schemaYAML: `                  type: object
+                  properties:
+                    id: {type: string}
+                    gid: {type: string}
+                    name: {type: string}
+`,
+			wantID: "id",
+		},
+		{
 			name: "tier 3: name when id absent",
 			schemaYAML: `                  type: object
                   properties:
