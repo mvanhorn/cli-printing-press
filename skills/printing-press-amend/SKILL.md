@@ -103,31 +103,414 @@ After capturing the binary path, check binary version compatibility. Read the `m
 
 ## Phase 1 — Friction Capture
 
-(To be filled in by U2: read the active Claude Code session transcript at `~/.claude/projects/<dir>/<session>.jsonl`, extract friction signals, categorize each as bug or feature, auto-detect target CLI, confirm with user via `AskUserQuestion`. See `references/transcript-parsing.md`.)
+Read `references/transcript-parsing.md` for the full procedure. Summary of what this phase does:
+
+1. **Resolve the active session transcript file** — derive `<project-dir-slug>` from the current working directory, list `~/.claude/projects/<slug>/*.jsonl` by mtime, pick the most-recently-modified. ALWAYS confirm the resolved path with the user via `AskUserQuestion` before reading — wrong-file selection ingests friction from the wrong session.
+
+2. **Walk the transcript and extract friction signals** — non-zero exit codes, error messages, hand-rolled API payloads (e.g. direct `curl` POSTs that should be a CLI command), retry-after-failure patterns, agent commentary like "X doesn't exist" / "X returns 400", missing-flag references, silent-null returns, auth confusion. Each signal carries timestamp + category + verbatim evidence + the `<slug>-pp-cli` it references.
+
+3. **Classify each signal as bug or feature** with a one-line rationale. Bug = CLI behavior is wrong; feature = CLI behavior is missing. The classification is the agent's best read; the user confirms or overrides at the U4 scope checkpoint.
+
+4. **Auto-detect target CLI** — count occurrences of each `<slug>-pp-cli` in the signals, propose the most-touched CLI as the default. Confirm with `AskUserQuestion` (single CLI: simple yes/no; multiple close: pick from list). When the user passed an explicit `<cli-name-or-path>` argument, skip auto-detect.
+
+5. **Resolve target paths** — accept short name, full name, or absolute path (per R4). Look up the public-library category by walking `~/printing-press-library/library/*/` for a matching directory. The category is needed by U7's PR open phase and is captured here so it doesn't have to be re-derived.
+
+Output flows into Phase 2 as a structured finding list (see `references/transcript-parsing.md` for the schema).
 
 ## Phase 2 — Pre-Checkpoint Guards
 
-(To be filled in by U3: cross-reference open + recently-merged PRs in `mvanhorn/printing-press-library` to suppress duplicates, check the printed CLI binary against the library's published `.printing-press.json` version.)
+Two guards run before the user sees the scope menu. Either can suppress findings or abort the run.
 
-## Phase 3 — Scope Confirmation Checkpoint
+### 2a. PR cross-reference (suppress duplicate proposals)
 
-(To be filled in by U4: tier the surviving findings, `AskUserQuestion` for scope, persist excluded findings to a deferred-list file at `$PRESS_MANUSCRIPTS/<api-slug>/<run-id>/proofs/<timestamp>-amend-<cli-name>-deferred.md`.)
+For each finding from Phase 1, search open + recently-merged PRs in `mvanhorn/printing-press-library` for matches. The duplicate-detection criteria (in priority order): (1) the target CLI's directory path overlaps the PR's changed-file list, (2) keywords from the finding's category + rationale match the PR title or body.
 
-## Phase 4 — Plan + Execute + Validate
+```bash
+# Replace <PRINTING_PRESS_BIN> use with the absolute path captured at setup.
+# This phase uses gh, not the press binary.
 
-(To be filled in by U5: write per-run plan doc, edit files inside `$PRESS_HOME/.publish-repo-$PRESS_SCOPE/library/<category>/<api-slug>/` (the managed clone of the public library — same one `/printing-press-publish` uses), update `.printing-press-patches.json` and add `// PATCH(<short reason>)` source comments at every changed site, run `<PRINTING_PRESS_BIN> publish validate --dir <managed-clone-cli-dir> --json`, retry up to 3 iterations on failure.)
+# Open PRs touching this CLI
+gh pr list --repo mvanhorn/printing-press-library \
+  --search "in:title,body <slug>" --state open --limit 20 \
+  --json number,title,state,headRefName,files
+
+# Recently merged PRs (last 90 days) touching this CLI
+gh pr list --repo mvanhorn/printing-press-library \
+  --search "in:title,body <slug> merged:>$(date -v-90d +%Y-%m-%d)" \
+  --state merged --limit 20 \
+  --json number,title,state,mergedAt,headRefName,files
+```
+
+For each finding with a possible-duplicate match, present inline:
+
+> "Finding `F<n>` (`<category>`) may already be addressed by PR #<num> — `<title>` (<state>, <date>). Skip this finding?"
+
+User options: skip (drops to deferred), keep, or "show me PR #<num>" (opens `gh pr view <num> --repo mvanhorn/printing-press-library --web`). The default for clearly-merged matches is "skip"; for open PRs, default is "keep" (the user may want to add to the in-flight PR rather than open a new one).
+
+This guard catches the canonical failure mode from the 2026-05-15 dogfood: proposing auto-refresh for a Printing Press CLI when a similar PR had already shipped on a sibling CLI a few hours earlier. The cost of a false skip is low (the user can re-add via custom selection at U4); the cost of a false-negative duplicate is a rejected PR + reviewer time.
+
+### 2b. Stale-binary check (abort if the dogfooded binary lags published)
+
+Read the public library's `.printing-press.json` for the target CLI to find the published version. Compare to what the local printed CLI binary reports.
+
+```bash
+# Read published version (managed clone if available, else gh api)
+if [ -f "$HOME/printing-press-library/library/<category>/<slug>/.printing-press.json" ]; then
+  published=$(jq -r '.version // empty' "$HOME/printing-press-library/library/<category>/<slug>/.printing-press.json")
+else
+  published=$(gh api repos/mvanhorn/printing-press-library/contents/library/<category>/<slug>/.printing-press.json \
+    --jq '.content' | base64 -d | jq -r '.version // empty')
+fi
+
+# Read local binary version (if installed; the user dogfooded with this binary)
+local_ver=$(<slug>-pp-cli version --json 2>/dev/null | jq -r '.version // empty' || echo "")
+```
+
+If `local_ver` is older than `published` (semver comparison), abort cleanly:
+
+> "The `<slug>-pp-cli` binary you dogfooded is v`<local_ver>`, but the published library version is v`<published>`. The friction you hit may already be fixed in the published version. Run:
+>
+>     go install github.com/mvanhorn/<slug>-pp-cli@latest
+>
+> ...then re-run `/printing-press-amend` after re-dogfooding. Aborting this run."
+
+Edge cases: if `.printing-press.json` is missing or has no `version` field, skip the stale check with a note. If the CLI is local-only (not yet published), skip the check.
+
+### Output
+
+Phase 2 emits the (possibly trimmed) finding list to Phase 3:
+
+```yaml
+findings_kept:
+  - <finding from Phase 1>
+findings_suppressed:
+  - id: F3
+    reason: "Duplicate of PR #571 (merged 2026-05-13)"
+target_binary_check: { local: "1.0.0", published: "1.0.0", status: "current" }
+```
+
+## Phase 3 — Scope Confirmation Checkpoint (User-in-Loop #1)
+
+This is the first of two user checkpoints. Everything until now has been read-only discovery; this checkpoint commits scope.
+
+### Tier the surviving findings
+
+Group findings into three tiers:
+
+- **Tier 1 — Bugs** — every finding with `classification: bug`. CLI behavior is wrong; fixes restore correctness.
+- **Tier 2 — Missing features that solve immediate session pain** — `classification: feature` findings tied to a hand-rolled workaround the user actually built during the session (i.e. the user clearly needed it now, not theoretically).
+- **Tier 3 — Polish / architecture** — remaining `classification: feature` findings that are nice-to-have or architectural improvements without an immediate workaround in the session.
+
+Display the tiered list inline before the question:
+
+```
+Friction found for <slug>-pp-cli (12 signals, 2 suppressed as duplicates):
+
+Tier 1 — Bugs (4)
+  F1  drafts list returns 400 silently
+  F4  messages query returns data: null
+  F7  refresh-token expiry not surfaced in errors
+  F11 ai --query returns code 500
+
+Tier 2 — Missing features that solve session pain (4)
+  F2  no `drafts new` command (user hand-rolled writeMessage payload)
+  F5  no `--type sent` for threads list (user worked around with messages query)
+  F8  no `--remind-in <duration>` flag for send (user manually re-flagged drafts)
+  F10 no `bootstrap` to local SQLite (user did 50+ thread API calls)
+
+Tier 3 — Polish / architecture (2)
+  F12 `auth status` doesn't link to `auth login` when refresh expired
+  F13 doctor doesn't surface stale-binary warning vs. published version
+```
+
+### Pick scope via AskUserQuestion
+
+```
+Which scope should this patch cover?
+  1. Bugs only (Tier 1) — 4 findings
+  2. Bugs + immediate features (Tier 1 + Tier 2) — 8 findings
+  3. All tiers (Tier 1 + Tier 2 + Tier 3) — 10 findings
+  4. Custom selection — pick individual findings
+```
+
+The `AskUserQuestion` options must be self-contained (each label must convey what it does without relying on description text — some harnesses hide the description).
+
+For the **custom selection** path: present a multi-select with each finding's id + category + one-line rationale; confirm the user-checked subset before proceeding.
+
+### Persist the excluded findings
+
+For every finding NOT in the confirmed scope, append to a deferred-list markdown file at:
+
+```
+$PRESS_MANUSCRIPTS/<api-slug>/<run-id>/proofs/<timestamp>-amend-<cli-name>-deferred.md
+```
+
+The `<run-id>` is a fresh timestamped id for this amend run (e.g. `amend-2026-05-15T1432`). Format the deferred file as a YAML preamble + a finding-per-section markdown body so a future `/printing-press-amend` run on the same CLI can re-surface the items.
+
+```yaml
+---
+date: 2026-05-15
+target_cli: superhuman-pp-cli
+amend_run_id: amend-2026-05-15T1432
+deferred_count: 2
+---
+```
+
+Then one section per deferred finding with: id, category, classification, rationale, evidence, reason-deferred (e.g. "user picked Tier 1 only"), and `still_relevant: unknown`.
+
+On a subsequent `/printing-press-amend` run, Phase 3 should look in `$PRESS_MANUSCRIPTS/<api-slug>/` for the most-recent `*-deferred.md` and offer the user the option to include any items still relevant in this run's scope. (Implementation note: this re-surfacing logic ships in v0.1; do not silently re-add — always present and confirm.)
+
+### Edge case: nothing to do
+
+If Phase 2 suppressed every finding (everything was a duplicate), Phase 3 reports cleanly and exits without opening the menu:
+
+> "All findings from this session were addressed by existing PRs. No novel patches found."
+
+### Output
+
+Phase 3 emits to Phase 4:
+
+```yaml
+scope_tier: bugs+features            # or bugs|all|custom
+findings_active: [...]               # the user-confirmed subset
+findings_deferred_path: <path>       # where the deferred file landed
+```
+
+## Phase 4 — Plan + Execute + Validate (Autonomous)
+
+This phase runs unattended between checkpoints 1 and 2. The user does not see fix-by-fix details; they review the final diff at the Phase 6 PR-draft checkpoint.
+
+### Step 1 — Set up the managed clone
+
+Per the Pre-Implementation Decision in the plan: this skill operates DIRECTLY on the managed clone of `mvanhorn/printing-press-library` rather than on `$PRESS_LIBRARY/<slug>/`. The managed clone is at:
+
+```
+$PRESS_HOME/.publish-repo-$PRESS_SCOPE
+```
+
+This is the same clone `/printing-press-publish` uses (Step 5 of that skill). Reuse it:
+
+```bash
+PUBLISH_REPO_DIR="$PRESS_HOME/.publish-repo-$PRESS_SCOPE"
+PUBLISH_CONFIG="$PRESS_HOME/.publish-config-$PRESS_SCOPE.json"
+
+if [ ! -d "$PUBLISH_REPO_DIR/.git" ]; then
+  # First-time setup: see references/library-pr-plumbing.md for the full
+  # detection (push-vs-fork access via gh api .../permissions.push,
+  # SSH-vs-HTTPS protocol detection, scoped-clone cleanup loop).
+  echo "Managed clone not present — bootstrapping..."
+  # ... (see library-pr-plumbing.md)
+else
+  # Refresh from upstream
+  cd "$PUBLISH_REPO_DIR"
+  git fetch upstream main
+  git checkout main
+  git reset --hard upstream/main
+fi
+```
+
+The CLI's directory inside the managed clone is `$PUBLISH_REPO_DIR/library/<category>/<slug>/`. The category was resolved in Phase 1 (or look it up with `find "$PUBLISH_REPO_DIR/library" -maxdepth 2 -name "<slug>" -type d`).
+
+```bash
+CLI_DIR="$PUBLISH_REPO_DIR/library/<category>/<slug>"
+```
+
+All edits in this phase happen INSIDE `$CLI_DIR`. Never touch `$PRESS_LIBRARY/<slug>/` — that's a different working copy and editing it would not flow to the PR.
+
+### Step 2 — Write the per-run plan doc
+
+Before editing code, materialize a plan markdown at:
+
+```
+$PRESS_MANUSCRIPTS/<slug>/<run-id>/proofs/<timestamp>-amend-<cli-name>.md
+```
+
+Mirror to `/tmp/printing-press/amend/` for quick reference. The plan doc carries:
+
+- Frontmatter: `date`, `target_cli`, `amend_run_id`, `scope_tier`, `findings_count`
+- One section per active finding: id, category, classification, rationale, target files (`$CLI_DIR/...` paths), expected behavior change, test scenarios for this finding
+- Risks and dependencies between findings (if any)
+
+The plan is decision-shape, not execution-shape — implementer-time sequencing happens during Step 3.
+
+### Step 3 — Execute the plan (with the patch contract)
+
+For each finding in dependency order:
+
+1. Edit the target files under `$CLI_DIR/`. Honor AGENTS.md anti-reimplementation rules (no hand-rolled response builders; novel commands must call the real endpoint or read from the local store via `// pp:client-call` / `// pp:novel-static-reference` opt-outs only when truly justified).
+
+2. Add a `// PATCH(<short reason>)` source comment at every changed site. Format examples:
+
+   ```go
+   // PATCH(amend-2026-05-15: surface refresh-token expiry to user) — was silently retrying
+   func (c *Client) Refresh(ctx context.Context) error {
+       ...
+   }
+   ```
+
+3. Update `$CLI_DIR/.printing-press-patches.json`. Append an entry under `patches[]`:
+
+   ```json
+   {
+     "date": "2026-05-15",
+     "amend_run_id": "amend-2026-05-15T1432",
+     "summary": "fix(superhuman): surface refresh-token expiry; add drafts new + --type sent",
+     "files": [
+       "internal/auth/refresh.go",
+       "internal/cli/drafts.go",
+       "internal/cli/threads.go"
+     ],
+     "findings_addressed": ["F1", "F2", "F5", "F7"],
+     "patch_count": <total // PATCH comments added in this run>
+   }
+   ```
+
+   Both halves of the contract — `// PATCH(...)` source comments AND `.printing-press-patches.json` entries — are MANDATORY. The library's `verify-library-conventions` workflow rejects PRs where one is present without the other. See `~/printing-press-library/AGENTS.md` "How to record a hand-edit" for the authoritative spec.
+
+4. **Machine-vs-printed-CLI judgment** (per AGENTS.md): when a finding's fix would generalize to every printed CLI (e.g. "the generator should emit `--type sent` for any threads list command"), surface as a borderline case:
+
+   > "Finding F5 (`--type sent` missing) looks like a machine-level fix — the generator template `internal/generator/templates/threads.go.tmpl` should emit it for every CLI with this endpoint shape, not just `<slug>-pp-cli`. Defer to a `/printing-press-retro` follow-up, or proceed CLI-specific?"
+
+   When deferred, drop into the deferred-list with classification `machine-level`. When kept, add a comment in the patch noting the generalize-eventually intent.
+
+### Step 4 — Validate
+
+After all edits land, run the consolidated validator (replace `<PRINTING_PRESS_BIN>` with the absolute path captured at setup):
+
+```bash
+<PRINTING_PRESS_BIN> publish validate --dir "$CLI_DIR" --json > /tmp/amend-validate.json
+exit_code=$?
+```
+
+`publish validate` runs manifest, phase5, govulncheck (scoped to this CLI's module), `go vet`, `go build`, `--help`, `--version`. Exit 0 = clean.
+
+### Step 5 — Retry on failure (up to 3 iterations)
+
+If `publish validate` reports failures, parse the error categories from the JSON, attempt targeted fixes, re-run validate. Maximum 3 iterations total. After iteration 3:
+
+```bash
+# Save the in-progress plan + diff to a holding location
+HELD_PATH="$PRESS_MANUSCRIPTS/<slug>/<run-id>/proofs/<timestamp>-amend-<cli-name>-INCOMPLETE.md"
+git -C "$PUBLISH_REPO_DIR" diff > "${HELD_PATH%.md}.diff"
+cp "$PLAN_PATH" "$HELD_PATH"
+```
+
+Surface the final error log to the user, do NOT auto-open the PR, exit. The user can resume by re-invoking the skill (Phase 1 detects the held plan and offers to resume).
+
+### Step 6 — Caveat: validate doesn't enforce the patch contract
+
+`publish validate` does NOT check `.printing-press-patches.json` ↔ `// PATCH(...)` parity. That contract is enforced by the public library's `verify-library-conventions` workflow only after the PR opens. To catch it locally, run a quick parity check before proceeding to Phase 5:
+
+```bash
+patch_marker_count=$(grep -rc "// PATCH(" "$CLI_DIR" --include="*.go" | awk -F: '{s+=$2} END {print s+0}')
+patches_entry=$(jq '.patches[-1].patch_count // 0' "$CLI_DIR/.printing-press-patches.json")
+if [ "$patch_marker_count" -lt "$patches_entry" ]; then
+  echo "ERROR: .printing-press-patches.json claims $patches_entry patch markers, found $patch_marker_count // PATCH(...) comments."
+  exit 1
+fi
+```
+
+Mismatched contract → fix locally before continuing. (A follow-up retro item: lift this check into `printing-press publish validate` so future amend runs catch it natively.)
+
+### Output
+
+Phase 4 emits to Phase 5:
+
+```yaml
+plan_doc_path: <path>
+managed_clone_dir: <path>
+cli_dir_in_clone: <path>
+findings_addressed: [...]
+build_status: PASS|FAIL
+test_status: PASS|FAIL
+validate_iterations: <n>
+patch_marker_count: <n>
+```
 
 ## Phase 5 — PII Scrub
 
-(To be filled in by U6: scrub plan doc, PR title/body, and any test fixtures with shape-preserving tokens. Reuse `/printing-press-retro`'s secret-scrubbing patterns for credentials. User-maintained company/person stop-list at `~/.printing-press/amend-config.yaml`. See `references/pii-scrubbing.md`.)
+Read `references/pii-scrubbing.md` for the full procedure. Summary:
 
-## Phase 6 — PR Draft Review Checkpoint
+The scrub has three layers, each operating on temp staging copies (NOT on the user's session transcript or the in-progress source code):
 
-(To be filled in by U7: assemble the PR title/body/labels/diff-summary, show inline before any `gh` command fires, `AskUserQuestion` to open / edit / hold / abort.)
+1. **Credentials** — reuse the regex patterns from `skills/printing-press-retro/references/secret-scrubbing.md` (Stripe, GitHub PATs, bearer tokens, AWS keys, etc.) plus amend-specific additions for `Authorization`/`Cookie`/`X-API-Key` headers in hand-rolled API payloads quoted from the session transcript.
+2. **Entities** — companies, people, emails matched against the user-maintained stop-list at `~/.printing-press/amend-config.yaml`. Replace with shape-preserving tokens (`<company-1>`, `<person-1>`, `<email-1>`) that maintain identity across the artifact set so reviewers can still parse intent.
+3. **First-mention defense** — walk each artifact for capitalized phrases that look like proper nouns and were NOT in the stop-list. Surface to the user inline before the Phase 6 PR-draft display: "Found `Esper Labs` (3x in plan doc, 1x in PR body) — add to stop-list and scrub, or accept?"
 
-## Phase 7 — PR Open
+Targets, in priority order: PR title/body draft, per-run plan doc, deferred-findings list, any test fixtures or example outputs newly added to `$CLI_DIR`. For each target, copy to `<path>.pre-pii-scrub` BEFORE scrubbing so the user can audit what was changed.
 
-(To be filled in by U7: issue ownership search, fork-clone-branch-commit-push-PR via `references/library-pr-plumbing.md` patterns, apply `comp:<api-slug>` and `priority:P<n>` labels.)
+**Defense-in-depth**: walk every `*.go` file in `$CLI_DIR` for stop-list matches. If any match is found, treat as BLOCKING — pause and require user resolution before Phase 6. The agent should never have introduced PII into Go source; this check exists to catch agent error.
+
+**Stop-list creation**: if `~/.printing-press/amend-config.yaml` doesn't exist, the skill creates a default with a starter list and a comment explaining the format. File-mode validation (warn on world-writable, abort on alien-owned).
+
+The scrub report is written to `$PRESS_MANUSCRIPTS/<slug>/<run-id>/scrub-report.json` (NOT committed; for the user's audit). The user-facing summary at the end of the phase: "X tokens replaced across Y artifacts."
+
+## Phase 6 — PR Draft Review Checkpoint (User-in-Loop #2)
+
+This is the second and final user checkpoint. Everything that follows is unattended (push + PR-open + labels + RESULT block). Show the user EVERYTHING that's about to ship before any `gh` command fires.
+
+### Assemble the draft
+
+Compose the PR title, body, labels, and diff summary in memory. Title format follows the public library convention:
+
+- `fix(<api-slug>): <one-line summary>` when the scope is bugs-only
+- `feat(<api-slug>): <one-line summary>` when the scope includes features
+- `feat(<api-slug>): <one-line summary>` when mixed (feature wins because it's the bigger contract change)
+
+The `<one-line summary>` is composed from the most important 1-3 findings (e.g. `surface refresh-token expiry; add drafts new + --type sent`).
+
+PR body sections (per origin R27):
+
+1. **Summary** — 1-3 sentences naming the user pain and the shape of the fix
+2. **Findings** — table with ID, category, type (bug/feature), rationale
+3. **Changes** — output of `git diff --stat upstream/main..HEAD`
+4. **Verification** — build/test/dogfood/validate status from Phase 4
+5. **Evidence** — full GitHub URLs to the per-run plan doc and `.printing-press-patches.json` at the PR's HEAD SHA (captured AFTER push so links don't 404)
+6. **Closes #N** footer when an issue match was found in Step 6 of `library-pr-plumbing.md`
+
+Labels: `comp:<api-slug>` always; `priority:P1` for bugs-only scope, `priority:P2` for bugs+features, `priority:P3` for all-tiers.
+
+### Display before gh fires
+
+Show the user the title, body, label list, and `git diff --stat`. If Phase 5 surfaced unrecognized capitalized phrases that the user accepted as legitimate, RE-DISPLAY those inline now with the sentence each appears in:
+
+> "Reminder: PR body references `<phrase>` (you accepted as legitimate during Phase 5). Confirm before opening."
+
+### AskUserQuestion: open / edit / hold / abort
+
+```
+PR draft ready. What now?
+  1. Open PR as drafted (recommended)
+  2. Edit then open — drop into an interactive review of title/body
+  3. Hold — save plan + diff for later resume; nothing pushed
+  4. Abort — discard everything, no record kept
+```
+
+For **edit then open**: present the title and body as separate editable blocks, accept the user's revisions, re-display the full draft, confirm before proceeding.
+
+For **hold**: save the plan + diff to `$PRESS_MANUSCRIPTS/<slug>/<run-id>/proofs/<timestamp>-amend-<cli-name>-HELD.md` and `${path%.md}.diff`. Emit a RESULT block with `status: held` and the resume path. A future `/printing-press-amend` run can detect held files and offer to resume.
+
+For **abort**: emit a brief confirmation. Plan doc from U5 stays (with `status: aborted` written into the frontmatter) so the user has a record of what was found, but nothing else is preserved. Managed clone is reset on next run.
+
+## Phase 7 — PR Open (Autonomous)
+
+If the user picked open or edit-then-open, run `references/library-pr-plumbing.md` Steps 5-7:
+
+1. **Step 5** — `git add "$CLI_DIR"` + commit with conventional message + the findings list
+2. **Step 6** — search for an existing issue matching the findings; link or open new; self-assign best-effort
+3. **Step 7** — push the branch (push-vs-fork access mode determined in Step 1), `gh pr create` with `--body-file`, capture HEAD_SHA, apply labels
+
+The fork/access detection, branch collision handling, and managed-clone refresh patterns are documented in detail in `references/library-pr-plumbing.md`. Do NOT inline those patterns here — the reference is the authoritative source.
+
+After the PR opens, surface the URL + Greptile note in the user-facing summary:
+
+> "PR open: <url>
+>
+> Greptile will review within ~2 minutes. Check inline comments:
+>
+>     gh api repos/mvanhorn/printing-press-library/pulls/<N>/comments
+>
+> P0/P1 findings are worth addressing before requesting human review."
 
 ## Phase 8 — Output
 
