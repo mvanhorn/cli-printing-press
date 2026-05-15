@@ -10189,6 +10189,30 @@ func TestProjectManagementWorkflowsEmitReadOnlyAnnotations(t *testing.T) {
 	}
 }
 
+// TestSearchTemplateEmptyTypeQueriesGenericFTS pins #1390 — the
+// no-type branch must include a generic db.Search(query, limit) call
+// alongside the per-table typed Search<Resource> loop. Rows indexed
+// only in resources_fts (not in any typed FTS table) otherwise return
+// zero on the default search path.
+func TestSearchTemplateEmptyTypeQueriesGenericFTS(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("templates", "search.go.tmpl"))
+	require.NoError(t, err)
+	body := string(data)
+
+	caseEmptyIdx := strings.Index(body, `case "":`)
+	require.GreaterOrEqual(t, caseEmptyIdx, 0, "search.go.tmpl must have a case \"\": branch")
+
+	defaultIdx := strings.Index(body[caseEmptyIdx:], "default:")
+	require.GreaterOrEqual(t, defaultIdx, 0, "search.go.tmpl must have a default: after case \"\":")
+	emptyBranch := body[caseEmptyIdx : caseEmptyIdx+defaultIdx]
+
+	assert.Contains(t, emptyBranch, "db.Search(query, limit)",
+		"case \"\": must call db.Search(query, limit) so rows indexed only in resources_fts (not in a typed FTS table) are returned")
+	assert.Contains(t, emptyBranch, `"search resources_fts failed:`,
+		"the generic-search error path must mention resources_fts so the failure is debuggable")
+}
+
 // TestSearchTemplateEmitsEmptyJSONEnvelope pins the contract: the
 // generated `search` command in --json (or piped) mode must always emit
 // a valid JSON envelope, including on no matches. Agents pipe stdout
