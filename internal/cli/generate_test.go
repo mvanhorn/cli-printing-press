@@ -1136,6 +1136,15 @@ func TestArchiveSpecBytesBranches(t *testing.T) {
 		_, _, ok := archiveSpecBytes(nil, nil, nil)
 		assert.False(t, ok)
 	})
+
+	t.Run("multi-spec with nil apiSpec returns ok=false", func(t *testing.T) {
+		specs := []*spec.APISpec{
+			{Name: "a"},
+			{Name: "b"},
+		}
+		_, _, ok := archiveSpecBytes(nil, specs, [][]byte{[]byte("a"), []byte("b")})
+		assert.False(t, ok, "nil apiSpec must not silently archive the literal 'null'")
+	})
 }
 
 // TestGenerateArchivesRawSpecForSingleSpec asserts that single-spec runs

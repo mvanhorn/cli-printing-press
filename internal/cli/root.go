@@ -719,6 +719,12 @@ func parseOpenAPISpec(specFile string, data []byte, lenient bool) (*spec.APISpec
 // transient archive failure does not abort generation.
 func archiveSpecBytes(apiSpec *spec.APISpec, specs []*spec.APISpec, specRawBytes [][]byte) ([]byte, string, bool) {
 	if len(specs) > 1 {
+		// json.MarshalIndent on a nil pointer succeeds with the literal
+		// "null" bytes, which would write a syntactically-valid but
+		// useless snapshot. Surface the precondition explicitly.
+		if apiSpec == nil {
+			return nil, "", false
+		}
 		data, err := json.MarshalIndent(apiSpec, "", "  ")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not marshal merged spec for archive: %v\n", err)
