@@ -2755,12 +2755,12 @@ func TestUsesBrowserLikeUserAgent(t *testing.T) {
 
 	cases := []struct {
 		name string
-		spec APISpec
+		spec *APISpec
 		want bool
 	}{
 		{
 			name: "documented JSON API stays script-shaped",
-			spec: APISpec{
+			spec: &APISpec{
 				Name:    "stripe",
 				BaseURL: "https://api.stripe.com",
 				Auth:    AuthConfig{Type: "bearer"},
@@ -2769,7 +2769,7 @@ func TestUsesBrowserLikeUserAgent(t *testing.T) {
 		},
 		{
 			name: "kind: synthetic flips to browser-shaped",
-			spec: APISpec{
+			spec: &APISpec{
 				Name:    "bbquality",
 				BaseURL: "https://bbquality.nl",
 				Kind:    KindSynthetic,
@@ -2779,7 +2779,7 @@ func TestUsesBrowserLikeUserAgent(t *testing.T) {
 		},
 		{
 			name: "cookie auth flips to browser-shaped",
-			spec: APISpec{
+			spec: &APISpec{
 				Name:    "marktplaats",
 				BaseURL: "https://www.marktplaats.nl",
 				Auth:    AuthConfig{Type: "cookie"},
@@ -2788,7 +2788,7 @@ func TestUsesBrowserLikeUserAgent(t *testing.T) {
 		},
 		{
 			name: "composed auth flips to browser-shaped",
-			spec: APISpec{
+			spec: &APISpec{
 				Name:    "picnic",
 				BaseURL: "https://storefront-prod.nl.picnicinternational.com",
 				Auth:    AuthConfig{Type: "composed"},
@@ -2797,7 +2797,7 @@ func TestUsesBrowserLikeUserAgent(t *testing.T) {
 		},
 		{
 			name: "session_handshake auth flips to browser-shaped",
-			spec: APISpec{
+			spec: &APISpec{
 				Name:    "openart",
 				BaseURL: "https://openart.ai",
 				Auth:    AuthConfig{Type: "session_handshake"},
@@ -2806,7 +2806,7 @@ func TestUsesBrowserLikeUserAgent(t *testing.T) {
 		},
 		{
 			name: "auth.type casing is normalized",
-			spec: APISpec{
+			spec: &APISpec{
 				Name:    "cookieUpper",
 				BaseURL: "https://example.com",
 				Auth:    AuthConfig{Type: "  Cookie  "},
@@ -2814,20 +2814,18 @@ func TestUsesBrowserLikeUserAgent(t *testing.T) {
 			want: true,
 		},
 		{
+			// Nil spec must reach the nil-receiver guard; dispatching via
+			// a typed pointer (not a name-string comparison) ensures the
+			// guard stays under test even if the case name is renamed.
 			name: "nil spec is safe and returns false",
+			spec: nil,
+			want: false,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			var got bool
-			if tc.name == "nil spec is safe and returns false" {
-				var s *APISpec
-				got = s.UsesBrowserLikeUserAgent()
-			} else {
-				got = tc.spec.UsesBrowserLikeUserAgent()
-			}
-			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.want, tc.spec.UsesBrowserLikeUserAgent())
 		})
 	}
 }

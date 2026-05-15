@@ -10237,24 +10237,32 @@ func TestSearchTemplateEmptyTypeQueriesGenericFTS(t *testing.T) {
 		"the generic-search error path must mention resources_fts so the failure is debuggable")
 }
 
-// TestClientTemplateBrowserLikeUserAgent pins that the client template
-// branches User-Agent emission on UsesBrowserLikeUserAgent so that
-// cookie/composed/session_handshake auth and Kind: synthetic ship a
-// Chrome-shaped UA instead of the script-flavored `<cli>-pp-cli/<ver>`.
-// Otherwise WAFs (Wordfence, Imperva, Akamai bot-mode, DataDome,
-// Cloudflare bot-fight) bucket every CLI request as bot traffic.
-func TestClientTemplateBrowserLikeUserAgent(t *testing.T) {
+// TestBrowserLikeUserAgentTemplates pins that BOTH the client.go.tmpl
+// and auth_browser.go.tmpl branch User-Agent emission on
+// UsesBrowserLikeUserAgent so that cookie/composed/session_handshake
+// auth and Kind: synthetic ship a Chrome-shaped UA instead of the
+// script-flavored `<cli>-pp-cli/<ver>`. Otherwise WAFs (Wordfence,
+// Imperva, Akamai bot-mode, DataDome, Cloudflare bot-fight) bucket
+// every CLI request as bot traffic — including the auth-verify call,
+// which must clear the same bar or the user can't bootstrap session
+// state.
+func TestBrowserLikeUserAgentTemplates(t *testing.T) {
 	t.Parallel()
-	data, err := os.ReadFile(filepath.Join("templates", "client.go.tmpl"))
-	require.NoError(t, err)
-	body := string(data)
+	for _, tmpl := range []string{"client.go.tmpl", "auth_browser.go.tmpl"} {
+		t.Run(tmpl, func(t *testing.T) {
+			t.Parallel()
+			data, err := os.ReadFile(filepath.Join("templates", tmpl))
+			require.NoError(t, err)
+			body := string(data)
 
-	assert.Contains(t, body, "{{- if .UsesBrowserLikeUserAgent}}",
-		"client.go.tmpl must branch UA emission on UsesBrowserLikeUserAgent")
-	assert.Contains(t, body, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
-		"client.go.tmpl must emit a Chrome UA string on the browser-like branch")
-	assert.Contains(t, body, `"{{.Name}}-pp-cli/{{.Version}}"`,
-		"client.go.tmpl must keep the script-flavored UA on the default branch so documented APIs stay identifiable")
+			assert.Contains(t, body, "{{- if .UsesBrowserLikeUserAgent}}",
+				"%s must branch UA emission on UsesBrowserLikeUserAgent", tmpl)
+			assert.Contains(t, body, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+				"%s must emit a Chrome UA string on the browser-like branch", tmpl)
+			assert.Contains(t, body, `"{{.Name}}-pp-cli/{{.Version}}"`,
+				"%s must keep the script-flavored UA on the default branch so documented APIs stay identifiable", tmpl)
+		})
+	}
 }
 
 // TestSearchTemplateEmitsEmptyJSONEnvelope pins the contract: the
