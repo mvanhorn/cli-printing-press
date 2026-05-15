@@ -536,8 +536,13 @@ STAMP="$(date +%Y-%m-%d-%H%M%S)"
 SESSION_DIR="${TMPDIR:-/tmp}/printing-press/session/$RUN_ID"
 SESSION_STATE_FILE="$SESSION_DIR/session-state.json"
 
-mkdir -p "$RESEARCH_DIR" "$PROOFS_DIR" "$PIPELINE_DIR" "$CLI_WORK_DIR" "$SESSION_DIR"
-chmod 700 "$SESSION_DIR" 2>/dev/null || true
+mkdir -p "$RESEARCH_DIR" "$PROOFS_DIR" "$PIPELINE_DIR" "$CLI_WORK_DIR"
+# Create $SESSION_DIR inside a subshell with a tight umask so it lands at 0700
+# at creation, not after a follow-up chmod. The two-step `mkdir; chmod` form
+# leaves a TOCTOU window where a concurrent process could open the directory
+# (and any session-state.json written into it) while perms are still
+# umask-derived (typically 0755 on Linux).
+(umask 077 && mkdir -p "$SESSION_DIR")
 STATE_FILE="$API_RUN_DIR/state.json"
 ```
 
