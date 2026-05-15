@@ -1637,6 +1637,15 @@ func (g *Generator) Generate() error {
 				"Set `git config github.user` (your GitHub @handle) to populate this correctly before publishing.\n",
 		)
 	}
+	// Auth.VerifyPath drives the doctor's credentials probe. Derive it before
+	// HealthCheckPath so HealthCheckPath's fallback chain can pick up the
+	// derived value (mirroring how an operator-set auth.verify_path already
+	// flows through). Without this, specs that ship a me-shaped endpoint but
+	// no explicit auth.verify_path generate a doctor that reports credentials
+	// as merely "present (not verified)" instead of probing the API.
+	if g.Spec.Auth.VerifyPath == "" {
+		g.Spec.Auth.VerifyPath = deriveAuthVerifyPath(g.Spec)
+	}
 	if g.Spec.HealthCheckPath == "" {
 		g.Spec.HealthCheckPath = deriveHealthCheckPath(g.Spec)
 	}
