@@ -71,7 +71,7 @@ Exit codes & warnings:
   non-zero when every selected resource failed, regardless of --strict.
 
 Resource scoping:
-  --resources runs the named flat resources, plus any parent-keyed
+  --resources runs the named top-level resources, plus any parent-keyed
   dependent whose own name is listed OR whose parent table is listed.
   Naming a parent therefore cascades to its dependents (so "sync this
   parent and its children" works without listing every nested resource
