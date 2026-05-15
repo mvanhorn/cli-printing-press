@@ -363,10 +363,11 @@ func newPublishPackageCmd() *cobra.Command {
 
 			// Strip root-level binaries that local `go build ./cmd/...` (or
 			// `make build` / `make build-mcp` without `-o bin/...`) drops at
-			// the CLI dir root. The skill cleanup line tries to catch these
-			// after the copy, but routinely misses `<api-slug>-pp-mcp`; this
-			// strip applies the same convention before the copy so the staged
-			// tree is binary-free regardless of which path the operator took.
+			// the CLI dir root. The skill's downstream `cp -r ... PUBLISH_REPO_DIR`
+			// has a parallel `rm -f` line that historically missed
+			// `<api-slug>-pp-mcp`; doing the strip here on the staged copy
+			// makes the publish path binary-free regardless of which downstream
+			// step (skill or other tooling) the operator runs next.
 			for _, name := range stagedBinaryNames(cliName, dirName) {
 				if err := os.Remove(filepath.Join(outCLIDir, name)); err != nil && !os.IsNotExist(err) {
 					cleanupOnFailure()

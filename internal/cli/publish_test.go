@@ -579,7 +579,7 @@ func TestPublishPackageStripsRootBinaries(t *testing.T) {
 	for _, name := range []string{
 		"test",        // phantom bare-slug binary
 		"test-pp-cli", // primary CLI binary
-		"test-pp-mcp", // MCP peer binary the skill cleanup currently misses
+		"test-pp-mcp", // MCP peer binary (now covered by both code-level strip and skill cleanup)
 	} {
 		require.NoError(t, os.WriteFile(filepath.Join(cliDir, name), []byte("\x7fELF"), 0o755))
 	}
