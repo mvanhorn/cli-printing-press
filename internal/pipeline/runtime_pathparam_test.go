@@ -101,15 +101,15 @@ func TestPathParamRequiredSentinel(t *testing.T) {
 // buildPathParamProbeFixture builds a tiny CLI binary that simulates a
 // nested cobra tree with three leaf commands plus a top-level leaf:
 //
-//   - `tags contacts list <tagId>` — "broken": prints `Error: tagId is
+//   - `tags contacts list <tagId>`: broken. Prints `Error: tagId is
 //     required` and exits 1 no matter what positionals the caller
-//     supplies. This is the failure shape #1199 shipped.
-//   - `tags contacts get <id>` — "working": accepts a positional and
+//     supplies. This is the failure shape the probe targets.
+//   - `tags contacts get <id>`: working. Accepts a positional and
 //     prints a fake URL on `--dry-run`.
-//   - `tags contacts ping <id>` — "unrelated failure": exits 1 with
+//   - `tags contacts ping <id>`: unrelated failure. Exits 1 with
 //     `connection refused` regardless of positionals. The probe must
 //     NOT flag this as a path-param failure (false-positive guard).
-//   - `recipe <url>` — top-level placeholder-bearing leaf, deliberately
+//   - `recipe <url>`: top-level placeholder-bearing leaf, deliberately
 //     broken in the same shape as `list`. The probe must skip it
 //     because depth-1 leaves are already exercised by the existing
 //     matrix via inferPositionalArgs.
@@ -245,7 +245,7 @@ Flags:
 }
 
 func printRecipeLeafHelp() {
-	fmt.Println(`+"`"+`Fetch a recipe (top-level leaf — depth 1)
+	fmt.Println(`+"`"+`Fetch a recipe (top-level leaf at depth 1)
 
 Usage:
   test-cli recipe <url> [flags]
@@ -304,7 +304,7 @@ func TestRunPathParamProbes_DistinguishesFailureModes(t *testing.T) {
 
 	unrelated := byCommand["tags contacts ping"]
 	assert.True(t, unrelated.Passed,
-		"leaf that fails for an unrelated reason ('connection refused') must NOT be flagged — that's a different check's bug")
+		"leaf that fails for an unrelated reason ('connection refused') must NOT be flagged; that's a different check's bug")
 	assert.Empty(t, unrelated.Reason)
 }
 

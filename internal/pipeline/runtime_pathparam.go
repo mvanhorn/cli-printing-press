@@ -9,12 +9,12 @@ import (
 	"time"
 )
 
-// pathParamProbe identifies a cobra leaf command — by its full path from
-// root — whose Usage line carries one or more <placeholder> positional
+// pathParamProbe identifies a cobra leaf command (by its full path from
+// root) whose Usage line carries one or more <placeholder> positional
 // tokens. The existing verify matrix only probes top-level commands, so
 // nested leaves never get their positionals exercised; a generator-
-// emitted args[]-indexing bug (see #1199 / #1211) therefore ships
-// silently with verify reporting 100% pass.
+// emitted args[]-indexing bug therefore ships silently with verify
+// reporting 100% pass.
 type pathParamProbe struct {
 	path         []string
 	placeholders []string
@@ -146,11 +146,10 @@ func runPathParamProbes(binary string, env []string, paramDefaults map[string]st
 			Passed:  true,
 		}
 		// Only the "missing positional" sentinel counts as a probe failure.
-		// Other errors (auth, transient, intentional non-zero) are not
-		// false positives — they belong to other checks.
-		// Timeouts are inconclusive: leave Passed=true so a hung --dry-run
-		// does not flip verdict (the existing matrix's 10s timeout will
-		// flag the same command independently).
+		// Other errors (auth, transient, intentional non-zero) belong to
+		// other checks. Timeouts are inconclusive: leave Passed=true so a
+		// hung --dry-run does not flip the verdict; the existing matrix's
+		// 10s timeout flags the same command independently.
 		if err != nil && pathParamRequiredSentinelRe.MatchString(string(out)) && !isContextDeadlineErr(err) {
 			result.Passed = false
 			result.Reason = `command rejected the call with "is required" despite the supplied positional args; regenerate with the current generator (path-param positional binding fix)`

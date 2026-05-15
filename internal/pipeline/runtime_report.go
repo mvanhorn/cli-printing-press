@@ -15,9 +15,10 @@ func finalizeVerifyReport(report *VerifyReport, threshold int, requireDataPipeli
 	// Path-param probes catch the failure mode where a nested leaf command
 	// exits with a "<positional> is required" usage error even though the
 	// caller supplied the positionals. The existing per-command matrix
-	// only probes top-level commands, so this gap is what made #1199 ship
-	// silently with verify reporting 100% pass. Each failing probe is a
-	// critical failure: the command is unusable as shipped.
+	// only probes top-level commands, so this gap let a generator codegen
+	// bug (mis-indexed args[] in path-param emit) ship silently with
+	// verify reporting 100% pass. Each failing probe is a critical
+	// failure: the command is unusable as shipped.
 	for _, probe := range report.PathParamProbes {
 		report.Total++
 		if probe.Passed {
