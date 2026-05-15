@@ -2886,7 +2886,7 @@ func TestGeneratedSyncSerializesUnderVerifyEnv(t *testing.T) {
 		"sync.go must consult cliutil.IsVerifyEnv() so verify-mode runs short-circuit the worker pool")
 	// `\b` after the `1` rejects `concurrency = 10`/`= 100` survivals if a
 	// future refactor widens the literal while keeping the call-site shape.
-	assert.Regexp(t, `(?s)cliutil\.IsVerifyEnv\(\)\s*\{[^}]*concurrency\s*=\s*1\b`, codeOnly,
+	assert.Regexp(t, `cliutil\.IsVerifyEnv\(\)\s*\{[^}]*concurrency\s*=\s*1\b`, codeOnly,
 		"sync.go must clamp concurrency to 1 when IsVerifyEnv() is true so dry-run sync serializes SQLite writes")
 }
 
@@ -2911,7 +2911,7 @@ func TestGeneratedGraphQLSyncSerializesUnderVerifyEnv(t *testing.T) {
 
 	assert.Contains(t, codeOnly, "cliutil.IsVerifyEnv()",
 		"graphql_sync.go must consult cliutil.IsVerifyEnv() so verify-mode runs short-circuit the worker pool")
-	assert.Regexp(t, `(?s)cliutil\.IsVerifyEnv\(\)\s*\{[^}]*concurrency\s*=\s*1\b`, codeOnly,
+	assert.Regexp(t, `cliutil\.IsVerifyEnv\(\)\s*\{[^}]*concurrency\s*=\s*1\b`, codeOnly,
 		"graphql_sync.go must clamp concurrency to 1 when IsVerifyEnv() is true")
 }
 
