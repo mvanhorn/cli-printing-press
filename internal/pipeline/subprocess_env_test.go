@@ -90,7 +90,10 @@ func TestScopeSubprocessHomeInstallsAndRestores(t *testing.T) {
 }
 
 func TestApplyDefaultSubprocessEnvPreservesExplicitEnv(t *testing.T) {
-	cleanup, _ := scopeSubprocessHome()
+	cleanup, err := scopeSubprocessHome()
+	if err != nil {
+		t.Fatalf("scopeSubprocessHome: %v", err)
+	}
 	defer cleanup()
 
 	cmd := &exec.Cmd{Env: []string{"FOO=bar"}}
@@ -101,7 +104,10 @@ func TestApplyDefaultSubprocessEnvPreservesExplicitEnv(t *testing.T) {
 }
 
 func TestApplyDefaultSubprocessEnvInstallsScopedHome(t *testing.T) {
-	cleanup, _ := scopeSubprocessHome()
+	cleanup, err := scopeSubprocessHome()
+	if err != nil {
+		t.Fatalf("scopeSubprocessHome: %v", err)
+	}
 	defer cleanup()
 	home := currentSubprocessHome()
 

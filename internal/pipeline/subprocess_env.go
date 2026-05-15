@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // Subprocess HOME / XDG_CONFIG_HOME scoping for verify, dogfood, live-dogfood,
@@ -98,20 +99,33 @@ func isScopedConfigHomeEntry(kv string) bool {
 }
 
 // scopedHomeDir holds the active scoped home for child invocations of
-// the printed CLI. Verify, dogfood, and workflow-verify are top-level
-// CLI commands so they don't run concurrently in the same process; no
-// locking needed.
-var scopedHomeDir string
+// the printed CLI. Production entry points run sequentially, but
+// pipeline tests use t.Parallel(), so the mutex protects against the
+// data race go test -race detects without it.
+var (
+	scopedHomeDirMu sync.RWMutex
+	scopedHomeDir   string
+)
 
 // currentSubprocessHome returns the active scoped home or "" if none.
-func currentSubprocessHome() string { return scopedHomeDir }
+func currentSubprocessHome() string {
+	scopedHomeDirMu.RLock()
+	defer scopedHomeDirMu.RUnlock()
+	return scopedHomeDir
+}
 
 // installScopedSubprocessHome installs homeDir as the active scoped
 // home and returns a restore function the caller defers.
 func installScopedSubprocessHome(homeDir string) func() {
+	scopedHomeDirMu.Lock()
 	prev := scopedHomeDir
 	scopedHomeDir = homeDir
-	return func() { scopedHomeDir = prev }
+	scopedHomeDirMu.Unlock()
+	return func() {
+		scopedHomeDirMu.Lock()
+		scopedHomeDir = prev
+		scopedHomeDirMu.Unlock()
+	}
 }
 
 // scopeSubprocessHome installs a fresh scoped home for the current
