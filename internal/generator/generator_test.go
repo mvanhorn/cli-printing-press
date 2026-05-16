@@ -3648,6 +3648,233 @@ func TestWriteThroughCachePopulatesTypedTable(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCachePopulatesTypedTable", "./internal/cli")
 }
 
+// TestWriteThroughCacheNonIDPrimaryKeyResponse guards #1439: the previous
+// `envelope["id"]` guard silently dropped single-object detail responses
+// whose primary key field was named anything other than "id" (PCGS uses
+// CertNo, Stripe uses object ids prefixed with their type, many ERP APIs
+// use sku / invoiceId / etc.). After the fix the row reaches UpsertBatch
+// and the existing resourceIDFieldOverrides path resolves the PK.
+func TestLiveFetchWriteThroughCacheNonIDPrimaryKeyResponse(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "pcgs",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/pcgs-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"certs": {
+				Description: "Look up coin certs by CertNo",
+				Endpoints: map[string]spec.Endpoint{
+					// list endpoint triggers typed-table emission (UpsertBatch
+					// dispatches to it); lookup endpoint is the single-object
+					// detail path the bug fires on at runtime.
+					"list": {
+						Method:      "GET",
+						Path:        "/certs",
+						Description: "List recent certs",
+						IDField:     "CertNo",
+						Response:    spec.ResponseDef{Type: "array", Item: "Cert"},
+					},
+					"lookup": {
+						Method:      "GET",
+						Path:        "/certs/{cert_no}",
+						Description: "Fetch a single cert by CertNo",
+						IDField:     "CertNo",
+						Response:    spec.ResponseDef{Type: "object", Item: "Cert"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Cert": {
+				Fields: []spec.TypeField{
+					{Name: "CertNo", Type: "string"},
+					{Name: "PCGSNo", Type: "string"},
+					{Name: "Grade", Type: "string"},
+				},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
+	require.NoError(t, gen.Generate())
+
+	inlineTest := `package cli
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+func TestWriteThroughCacheNonIDPrimaryKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Single-object detail response keyed by CertNo (not "id"). Before
+	// #1439, the envelope["id"] guard caused writeThroughCache to drop
+	// this on the floor. After the fix the row reaches UpsertBatch and
+	// the resourceIDFieldOverrides mechanism resolves the PK.
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{"CertNo":"12345678","PCGSNo":"7280","Grade":"MS65"}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var typedCount int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs WHERE id = '12345678'` + "`" + `).Scan(&typedCount); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if typedCount != 1 {
+		t.Fatalf("typed certs count = %d, want 1 (non-id primary key was dropped)", typedCount)
+	}
+}
+
+// TestWriteThroughCacheSkipsEmptyListEnvelope guards the tighter
+// single-object branch from misfiring on list responses whose array
+// happened to be empty. {"items": []} must NOT write a row keyed by
+// the entire envelope; the existing wrapper-key loop already handled
+// this implicitly and the relaxed guard must preserve the invariant.
+func TestWriteThroughCacheSkipsEmptyListEnvelope(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{"items": []}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("certs count after empty-list envelope = %d, want 0 (envelope must not be upserted as a single object)", count)
+	}
+}
+
+// TestWriteThroughCacheCachesObjectWithListWrapperFieldName guards the
+// list-envelope guard from a field-name collision: a detail object whose
+// own field happens to be named "data" / "results" / "items" with a
+// scalar value (not an array) is a regular response, not an empty list
+// envelope, and must still be cached. Skipping it would be a regression
+// from the prior envelope["id"] path.
+func TestWriteThroughCacheCachesObjectWithListWrapperFieldName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// "data" key is present but holds a string. Old code would have written
+	// this via the id guard; new guard must still write it because the
+	// wrapper key isn't a list.
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{"CertNo":"55555","data":"opaque-token","Grade":"AU58"}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs WHERE id = '55555'` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("certs count after field-name-collision response = %d, want 1 (scalar-valued wrapper-named field must not trip the list-envelope skip)", count)
+	}
+}
+
+// TestWriteThroughCacheCachesObjectWithNullWrapperFieldName guards the
+// specific JSON-null case Greptile flagged: json.Unmarshal("null", &arr)
+// succeeds with arr=nil, so without an explicit arr != nil check the
+// guard would misclassify {"CertNo":"x","items":null} as an empty-list
+// envelope and silently drop the row.
+func TestWriteThroughCacheCachesObjectWithNullWrapperFieldName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{"CertNo":"77777","items":null,"Grade":"PR70"}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs WHERE id = '77777'` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("certs count after null-wrapper-field response = %d, want 1 (JSON null is not an empty array)", count)
+	}
+}
+
+// TestWriteThroughCacheCachesObjectWithEmptyListWrapperAndOtherFields
+// covers the multi-key case Greptile flagged in round 3: a detail object
+// with real per-row fields PLUS a wrapper-named field that happens to be
+// an empty array. The skip branch must only fire when EVERY top-level
+// key is a list wrapper or known pagination metadata.
+func TestWriteThroughCacheCachesObjectWithEmptyListWrapperAndOtherFields(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{"CertNo":"88888","items":[],"Grade":"PR69"}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs WHERE id = '88888'` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("certs count after detail-with-empty-wrapper-field response = %d, want 1 (envelope has real per-row fields and must be cached)", count)
+	}
+}
+
+// TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata guards the
+// flip side: a real list envelope with pagination metadata fields
+// (next_cursor, has_more, etc.) plus an empty array must still skip
+// the single-object upsert path. The metadata allowlist is what keeps
+// these envelopes recognized as lists.
+func TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{"items":[],"next_cursor":"","has_more":false}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("certs count after list-envelope-with-metadata response = %d, want 0 (no real per-row data, must skip)", count)
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "write_through_cache_non_id_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCacheNonIDPrimaryKey|TestWriteThroughCacheSkipsEmptyListEnvelope|TestWriteThroughCacheCachesObjectWithListWrapperFieldName|TestWriteThroughCacheCachesObjectWithNullWrapperFieldName|TestWriteThroughCacheCachesObjectWithEmptyListWrapperAndOtherFields|TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata", "./internal/cli")
+}
+
 func TestSyncDiscriminatorDispatchRoutesMixedItemsToTypedTables(t *testing.T) {
 	t.Parallel()
 
