@@ -650,7 +650,11 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Fetch all pages")
 {{- end}}
 {{- if and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) (not $isMultipart) (not $isForm)}}
+{{- if bodyExceedsFlagDepth .Endpoint}}
+	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin (use this for deeply nested fields not exposed as flags)")
+{{- else}}
 	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin")
+{{- end}}
 {{- end}}
 {{- if .IsAsync}}
 	cmd.Flags().BoolVar(&flagWait, "wait", false, "Block until the submitted job reaches a terminal status")

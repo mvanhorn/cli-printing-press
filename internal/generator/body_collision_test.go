@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -262,6 +263,13 @@ func TestGenerateDeduplicatesNestedTreesCollapsedToSameIdent(t *testing.T) {
 // unique identifiers (bodyProjectCustomerName vs
 // bodyProjectPostalAddressCustomerName) without falling back on the _N
 // suffix.
+//
+// maxBodyFlagDepth truncates the deeper
+// Project.PostalAddress.Customer.name leaf (depth 3); only the shallower
+// Project.Customer.name (depth 2) emits. The dedup behavior is still
+// exercised: were the cap raised, the parent-prefix walker would
+// uniquify both leaves without collision. Truncation is verified via
+// the deeper identifier's absence and the --stdin help text rewrite.
 func TestGenerateDeduplicatesConvergentNestedBodyPaths(t *testing.T) {
 	t.Parallel()
 
@@ -304,12 +312,12 @@ func TestGenerateDeduplicatesConvergentNestedBodyPaths(t *testing.T) {
 		"convergent nested paths must produce distinct Go identifiers")
 	assertNoDuplicates(t, flagBindings,
 		"convergent nested paths must register distinct cobra flag names")
-	require.Len(t, bodyVars, 2,
-		"both convergent name leaves must survive as distinct Go identifiers")
+	require.Len(t, bodyVars, 1,
+		"only the shallower project.customer.name survives the depth cap")
 	assert.Contains(t, bodyVars, "bodyProjectCustomerName",
-		"the direct project.customer.name leaf produces this identifier")
-	assert.Contains(t, bodyVars, "bodyProjectPostalAddressCustomerName",
-		"the project.postalAddress.customer.name leaf produces this identifier via path-prefix joining")
+		"the depth-2 project.customer.name leaf still emits its identifier")
+	assert.NotContains(t, bodyVars, "bodyProjectPostalAddressCustomerName",
+		"the depth-3 project.postalAddress.customer.name leaf is truncated by the cap")
 }
 
 // TestGenerateDeduplicatesCyclicRefBodyShape drives the full OpenAPI
@@ -420,17 +428,94 @@ components:
 	assertNoDuplicates(t, flagBindings,
 		"cyclic-ref body shape must register distinct cobra flag names")
 
-	// The cycle-cut shape produces three leaves: the direct
-	// project.customer.name string and two cycle-cut customer objects
-	// at distinct paths.
-	require.Len(t, bodyVars, 3,
-		"every direct and cycle-cut leaf must survive dedup as a distinct Go identifier")
+	// maxBodyFlagDepth truncates the cycle-cut leaves at depth 3+; only
+	// the direct project.customer.name leaf at depth 2 survives as a
+	// per-field flag. The dedup pass remains the line of defense for any
+	// identifier collisions inside the surviving depth window. Deeper
+	// leaves are reachable via --stdin (the template's help text is
+	// rewritten to advertise the fallback when truncation fires; see
+	// bodyExceedsFlagDepth).
+	require.Len(t, bodyVars, 1,
+		"only the shallow project.customer.name survives the depth cap")
 	assert.Contains(t, bodyVars, "bodyProjectCustomerName",
-		"the direct project.customer.name leaf must emit bodyProjectCustomerName")
-	assert.Contains(t, bodyVars, "bodyProjectCustomerLedgerAccountVatTypeCustomer",
-		"the ledgerAccount.vatType.customer cycle-cut leaf must emit a unique identifier under its full path")
-	assert.Contains(t, bodyVars, "bodyProjectCustomerPostalAddressCustomer",
-		"the postalAddress.customer cycle-cut leaf must emit a unique identifier under its full path")
+		"the direct depth-2 project.customer.name leaf still emits bodyProjectCustomerName")
+	assert.NotContains(t, bodyVars, "bodyProjectCustomerLedgerAccountVatTypeCustomer",
+		"the depth-5 ledgerAccount.vatType.customer cycle-cut leaf is truncated by the cap")
+	assert.NotContains(t, bodyVars, "bodyProjectCustomerPostalAddressCustomer",
+		"the depth-4 postalAddress.customer cycle-cut leaf is truncated by the cap")
+
+	// The template's --stdin help text must be rewritten to advertise
+	// the fallback when truncation fires, so an operator inspecting
+	// `--help` sees the affordance without needing to read the issue
+	// tracker.
+	src, err := os.ReadFile(postFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(src),
+		`"Read request body as JSON from stdin (use this for deeply nested fields not exposed as flags)"`,
+		"--stdin help text must reflect truncation when bodyExceedsFlagDepth is true")
+}
+
+// TestGenerateBodyDepthCapPreventsCompilerExplosion guards the
+// regression a spec whose request body recurses past the depth cap
+// must not balloon the emitted Go file. Without the cap, deeply
+// recursive bodies produce 40k+ line files that OOM-kill the Go
+// compiler.
+func TestGenerateBodyDepthCapPreventsCompilerExplosion(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("deep-body-cap")
+	// Build a body with reasonable fan-out (4 fields per level) nested
+	// 6 levels deep. Without the cap, this produces 4^6 = 4096 leaves
+	// and the corresponding flag/var/map blocks. With cap=3, only
+	// 4 + 4 + 4 + 4 = 16 leaves at depths 0..2 plus the depth-2
+	// objects that recurse one level deeper but skip the recursion.
+	build := func(depth int) []spec.Param {
+		var current []spec.Param
+		current = []spec.Param{
+			{Name: "field0", Type: "string"},
+			{Name: "field1", Type: "string"},
+			{Name: "field2", Type: "string"},
+			{Name: "field3", Type: "string"},
+		}
+		for i := depth - 1; i >= 0; i-- {
+			nested := append([]spec.Param{}, current...)
+			current = []spec.Param{
+				{Name: "field0", Type: "string"},
+				{Name: "field1", Type: "string"},
+				{Name: "field2", Type: "string"},
+				{Name: "level" + strconv.Itoa(i), Type: "object", Fields: nested},
+			}
+		}
+		return current
+	}
+
+	apiSpec.Resources["payloads"] = spec.Resource{
+		Description: "Deep payloads",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/payloads",
+				Description: "Submit a deeply nested payload",
+				Body:        build(6),
+			},
+			"get": {Method: "GET", Path: "/payloads/{id}", Description: "Get one"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "deep-body-cap-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	postFile := filepath.Join(outputDir, "internal", "cli", "payloads_create.go")
+
+	// Exact-count assertion catches off-by-one cap regressions that a
+	// file-size threshold would miss. Fixture has 3 scalar siblings at
+	// each of depths 0, 1, 2 = 9 body-var declarations under cap=3.
+	// Cap=2 would drop to 6; cap=4 would jump to 12; no cap at all
+	// produces 4 + (3 leaves * 5 inner levels) + 4 = 23 leaves down the
+	// single deep chain, and far more in the general fan-out shape.
+	bodyVars, _ := parseBodyDeclarations(t, postFile)
+	require.Len(t, bodyVars, 9,
+		"cap=3 must produce exactly 9 body-var declarations (3 leaves at each of depths 0, 1, 2)")
 }
 
 // TestFlattenCollidingBodyFields_NestedPrefixShape covers the Atlassian
