@@ -1531,12 +1531,19 @@ func TestNormalizeHTTPTransportAllowsBrowserChromeH3(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, spec.HTTPTransportBrowserHTTP, got)
 
+	got, err = normalizeHTTPTransport(spec.HTTPTransportBrowserChromeH2)
+	require.NoError(t, err)
+	assert.Equal(t, spec.HTTPTransportBrowserChromeH2, got)
+
 	got, err = normalizeHTTPTransport(spec.HTTPTransportBrowserChromeH3)
 	require.NoError(t, err)
 	assert.Equal(t, spec.HTTPTransportBrowserChromeH3, got)
 
 	_, err = normalizeHTTPTransport("browser-chrome-http3")
 	require.ErrorContains(t, err, "browser-chrome-h3")
+
+	_, err = normalizeHTTPTransport("browser-chrome-http2")
+	require.ErrorContains(t, err, "browser-chrome-h2")
 
 	_, err = normalizeHTTPTransport("browser-runtime")
 	require.ErrorContains(t, err, "--transport must be one of")
