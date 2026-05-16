@@ -165,7 +165,7 @@ jobs:
               (.comments.nodes[0].author.login // "unknown") + "`" +
               (if .isOutdated then " *(outdated — line no longer exists; likely addressed by a later commit)*" else "" end)
             ] | join("\n")) +
-            (if $count > 10 then "\n\n_… and " + ($count - 10 | tostring) + " more._" else "")
+            (if $count > 10 then "\n\n_… and " + ($count - 10 | tostring) + " more._" else "" end)
           ' "${threads_json}")"
 
           if [ "${unresolved_active}" -gt 0 ] && [ "${unresolved_outdated}" -gt 0 ]; then
