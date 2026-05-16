@@ -42,6 +42,10 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 				return usageErr(fmt.Errorf("taskId is required\nUsage: %s <%s>", cmd.CommandPath(), "taskId"))
 			}
 			path = replacePathParam(path, "taskId", args[1])
+			params := map[string]string{}
+			if flagNotify != false {
+				params["notify"] = fmt.Sprintf("%v", flagNotify)
+			}
 			var body map[string]any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
@@ -64,10 +68,6 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 				if bodyTitle != "" {
 					body["title"] = bodyTitle
 				}
-			}
-			params := map[string]string{}
-			if flagNotify != false {
-				params["notify"] = fmt.Sprintf("%v", flagNotify)
 			}
 			data, statusCode, err := c.PatchWithParams(path, params, body)
 			if err != nil {

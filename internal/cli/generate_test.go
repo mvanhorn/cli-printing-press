@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
@@ -1815,11 +1816,12 @@ resources:
 }
 
 func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {
-	apiSpec := &spec.APISpec{Name: "test-api"}
+	apiSpec := &spec.APISpec{Name: "test-api", BaseURL: spec.PlaceholderBaseURL, BaseURLIsPlaceholder: true}
 
 	enrichSpecFromCatalogEntry(apiSpec, &catalog.Entry{
 		DisplayName: "Test.API",
 		OwnerName:   "Trevin Chow",
+		BaseURL:     "https://api.example.com/",
 		MCP: spec.MCPConfig{
 			Transport:     []string{"stdio", "http"},
 			Orchestration: "code",
@@ -1829,9 +1831,27 @@ func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {
 
 	assert.Equal(t, "Test.API", apiSpec.DisplayName)
 	assert.Equal(t, "Trevin Chow", apiSpec.OwnerName)
+	assert.Equal(t, "https://api.example.com", apiSpec.BaseURL)
+	assert.False(t, apiSpec.BaseURLIsPlaceholder)
 	assert.Equal(t, []string{"stdio", "http"}, apiSpec.MCP.Transport)
 	assert.Equal(t, "code", apiSpec.MCP.Orchestration)
 	assert.Equal(t, "hidden", apiSpec.MCP.EndpointTools)
+}
+
+func TestRebaseAuthEnvPrefix(t *testing.T) {
+	auth := spec.AuthConfig{
+		EnvVars: []string{"ELEVENLABS_DOCUMENTATION_API_KEY", "UNCHANGED_TOKEN"},
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "ELEVENLABS_DOCUMENTATION_CLIENT_ID"},
+			{Name: "CUSTOM_SECRET"},
+		},
+	}
+
+	catalogmeta.RebaseAuthEnvPrefix(&auth, "elevenlabs-documentation", "elevenlabs")
+
+	assert.Equal(t, []string{"ELEVENLABS_API_KEY", "UNCHANGED_TOKEN"}, auth.EnvVars)
+	assert.Equal(t, "ELEVENLABS_CLIENT_ID", auth.EnvVarSpecs[0].Name)
+	assert.Equal(t, "CUSTOM_SECRET", auth.EnvVarSpecs[1].Name)
 }
 
 func TestEnrichSpecFromCatalogMatchesSpecURLWhenSlugDiffers(t *testing.T) {

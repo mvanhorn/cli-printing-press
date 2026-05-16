@@ -1,3 +1,6 @@
+ai:
+  elevenlabs           Generate, transform, transcribe, dub, and manage AI audio, voices, music, and conversational agents with ElevenLabs.
+
 auth:
   stytch               Authentication and user management API
 

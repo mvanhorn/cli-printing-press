@@ -33,6 +33,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			path := "/stores"
+			params := map[string]string{}
 			var body map[string]any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
@@ -50,7 +51,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 					body["store_code"] = bodyStoreCode
 				}
 			}
-			data, statusCode, err := c.Post(path, body)
+			data, statusCode, err := c.PostWithParams(path, params, body)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

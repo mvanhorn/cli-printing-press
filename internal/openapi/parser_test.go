@@ -3590,6 +3590,34 @@ func TestInferOperationLevelBearer(t *testing.T) {
 	})
 }
 
+func TestInferHeaderParamAPIKeyAuth(t *testing.T) {
+	t.Parallel()
+
+	doc := &openapi3.T{
+		Info:  &openapi3.Info{Title: "test", Description: "no auth keywords"},
+		Paths: &openapi3.Paths{},
+	}
+	for _, path := range []string{"/a", "/b", "/c", "/d"} {
+		doc.Paths.Set(path, &openapi3.PathItem{
+			Get: &openapi3.Operation{
+				Responses: openapi3.NewResponses(),
+				Parameters: openapi3.Parameters{
+					&openapi3.ParameterRef{Value: &openapi3.Parameter{
+						Name: "xi-api-key", In: "header", Required: false,
+					}},
+				},
+			},
+		})
+	}
+
+	result := mapAuth(doc, "elevenlabs")
+	assert.Equal(t, "api_key", result.Type)
+	assert.Equal(t, "header", result.In)
+	assert.Equal(t, "xi-api-key", result.Header)
+	assert.Equal(t, []string{"ELEVENLABS_API_KEY"}, result.EnvVars)
+	assert.True(t, result.Inferred)
+}
+
 func TestAuthTierPrecedence(t *testing.T) {
 	t.Parallel()
 
@@ -5550,6 +5578,37 @@ paths:
 	assert.Equal(t, "binary", byName["assetData"].Format)
 	assert.True(t, byName["assetData"].Required)
 	assert.True(t, byName["filename"].Required)
+}
+
+func TestParseBinaryResponseFormat(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.1.0
+info:
+  title: Audio API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /v1/audio:
+    post:
+      operationId: createAudio
+      responses:
+        "200":
+          description: Audio bytes
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/v1/audio")
+	assert.Equal(t, spec.ResponseFormatBinary, endpoint.ResponseFormat)
+	assert.True(t, endpoint.UsesBinaryResponse())
 }
 
 func TestParseFormUrlencodedRequestBodyPreservesContentType(t *testing.T) {

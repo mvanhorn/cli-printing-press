@@ -23,6 +23,8 @@ import (
 	"time"
 )
 
+const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
+
 type Client struct {
 	BaseURL    string
 	Config     *config.Config
@@ -177,12 +179,12 @@ func (c *Client) Post(path string, body any) (json.RawMessage, int, error) {
 	return c.do("POST", path, nil, body, nil)
 }
 
-func (c *Client) PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("POST", path, nil, body, headers)
-}
-
 func (c *Client) PostWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
 	return c.do("POST", path, params, body, nil)
+}
+
+func (c *Client) PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, nil, body, headers)
 }
 
 func (c *Client) PostWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
@@ -193,12 +195,12 @@ func (c *Client) Delete(path string) (json.RawMessage, int, error) {
 	return c.do("DELETE", path, nil, nil, nil)
 }
 
-func (c *Client) DeleteWithHeaders(path string, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("DELETE", path, nil, nil, headers)
-}
-
 func (c *Client) DeleteWithParams(path string, params map[string]string) (json.RawMessage, int, error) {
 	return c.do("DELETE", path, params, nil, nil)
+}
+
+func (c *Client) DeleteWithHeaders(path string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("DELETE", path, nil, nil, headers)
 }
 
 func (c *Client) DeleteWithParamsAndHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, int, error) {
@@ -209,12 +211,12 @@ func (c *Client) Put(path string, body any) (json.RawMessage, int, error) {
 	return c.do("PUT", path, nil, body, nil)
 }
 
-func (c *Client) PutWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("PUT", path, nil, body, headers)
-}
-
 func (c *Client) PutWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
 	return c.do("PUT", path, params, body, nil)
+}
+
+func (c *Client) PutWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, nil, body, headers)
 }
 
 func (c *Client) PutWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
@@ -225,12 +227,12 @@ func (c *Client) Patch(path string, body any) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, nil, body, nil)
 }
 
-func (c *Client) PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("PATCH", path, nil, body, headers)
-}
-
 func (c *Client) PatchWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, params, body, nil)
+}
+
+func (c *Client) PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, nil, body, headers)
 }
 
 func (c *Client) PatchWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
@@ -306,6 +308,10 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		for k, v := range headerOverrides {
 			req.Header.Set(k, v)
 		}
+		binaryResponse := strings.EqualFold(req.Header.Get(BinaryResponseHeader), "true")
+		if binaryResponse {
+			req.Header.Del(BinaryResponseHeader)
+		}
 		if req.Header.Get("User-Agent") == "" {
 			req.Header.Set("User-Agent", "printing-press-oauth2-pp-cli/1.0.0")
 		}
@@ -321,7 +327,11 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		// per-endpoint headerOverrides, both of which run before this
 		// if-empty default.
 		if req.Header.Get("Accept") == "" {
-			req.Header.Set("Accept", "application/json")
+			if binaryResponse {
+				req.Header.Set("Accept", "*/*")
+			} else {
+				req.Header.Set("Accept", "application/json")
+			}
 		}
 
 		resp, err := c.HTTPClient.Do(req)
@@ -335,7 +345,9 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		if err != nil {
 			return nil, 0, fmt.Errorf("reading response: %w", err)
 		}
-		respBody = sanitizeJSONResponse(respBody)
+		if !binaryResponse {
+			respBody = sanitizeJSONResponse(respBody)
+		}
 
 		// Success
 		if resp.StatusCode < 400 {
