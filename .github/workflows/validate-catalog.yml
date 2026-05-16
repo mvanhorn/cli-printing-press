@@ -110,6 +110,8 @@ jobs:
 
             ./printing-press generate \
               --spec "$SPEC_FILE" \
+              --spec-url "$SPEC_URL" \
+              --name "$NAME" \
               --output "$OUT_DIR" \
               --validate \
               "${AUTH_PREFERENCE_ARG[@]}"

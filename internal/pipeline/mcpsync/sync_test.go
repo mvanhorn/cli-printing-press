@@ -1247,6 +1247,18 @@ func TestApplyManifestNameOverrideReplacesParsedName(t *testing.T) {
 
 	parsed := &spec.APISpec{
 		Name: "telegram-bot",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "X-API-Key",
+			EnvVars: []string{"TELEGRAM_BOT_API_KEY"},
+			EnvVarSpecs: []spec.AuthEnvVar{{
+				Name:      "TELEGRAM_BOT_API_KEY",
+				Kind:      spec.AuthEnvVarKindPerCall,
+				Required:  true,
+				Sensitive: true,
+				Inferred:  true,
+			}},
+		},
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   "~/.config/telegram-bot-pp-cli/config.toml",
@@ -1257,6 +1269,34 @@ func TestApplyManifestNameOverrideReplacesParsedName(t *testing.T) {
 	assert.Equal(t, "telegram", parsed.Name, "parsed.Name should adopt the manifest's api_name")
 	assert.Equal(t, "~/.config/telegram-pp-cli/config.toml", parsed.Config.Path,
 		"spec-derived Config.Path must follow the override so README's Config file: line tracks the binary")
+	assert.Equal(t, []string{"TELEGRAM_API_KEY"}, parsed.Auth.EnvVars,
+		"inferred auth env vars should follow the manifest api_name")
+	require.Len(t, parsed.Auth.EnvVarSpecs, 1)
+	assert.Equal(t, "TELEGRAM_API_KEY", parsed.Auth.EnvVarSpecs[0].Name,
+		"inferred auth env var specs should follow the manifest api_name")
+}
+
+func TestApplyCatalogMetadataUsesCatalogBaseURL(t *testing.T) {
+	t.Parallel()
+
+	parsed := &spec.APISpec{
+		Name:                 "elevenlabs",
+		BaseURL:              spec.PlaceholderBaseURL,
+		BaseURLIsPlaceholder: true,
+		Auth: spec.AuthConfig{
+			Type:   "api_key",
+			Header: "xi-api-key",
+		},
+	}
+
+	applyCatalogMetadata(parsed)
+
+	assert.Equal(t, "https://api.elevenlabs.io", parsed.BaseURL)
+	assert.False(t, parsed.BaseURLIsPlaceholder)
+	assert.Equal(t, "ElevenLabs", parsed.DisplayName)
+	assert.Equal(t, "https://elevenlabs.io/app/settings/api-keys", parsed.Auth.KeyURL)
+	assert.Equal(t, "standard", parsed.HTTPTransport)
+	assert.Equal(t, "official", parsed.SpecSource)
 }
 
 // TestApplyManifestNameOverrideNoOpWhenManifestAgrees — most CLIs are

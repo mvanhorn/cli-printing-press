@@ -1,3 +1,6 @@
+ai:
+  elevenlabs           Generate, transform, transcribe, dub, and manage AI audio, voices, music, and conversational agents with ElevenLabs.
+
 auth:
   stytch               Authentication and user management API
 
@@ -12,6 +15,9 @@ developer-tools:
 
 example:
   petstore             Canonical OpenAPI example - pet store management
+
+maps:
+  openrouteservice     Open-source routing, geocoding, matrix, isochrones, and VRP optimization on OpenStreetMap data.
 
 marketing:
   producthunt          Find, monitor, and export Product Hunt launches for launch research, scouting, and competitive tracking without requiring a Product Hunt API application.

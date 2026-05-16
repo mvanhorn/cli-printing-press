@@ -32,8 +32,9 @@ const (
 )
 
 const (
-	ResponseFormatJSON = "json"
-	ResponseFormatHTML = "html"
+	ResponseFormatJSON   = "json"
+	ResponseFormatHTML   = "html"
+	ResponseFormatBinary = "binary"
 )
 
 const (
@@ -772,6 +773,24 @@ func (c *AuthConfig) CanonicalEnvVar() *AuthEnvVar {
 	return nil
 }
 
+// NewORCaseEnvVarSpecs builds the EnvVarSpecs slice for the OR-case shape
+// IsAuthEnvVarORCase validates: each entry is per_call, non-required, and
+// sensitive. The runtime tries each in turn and returns the first non-empty
+// value. Distinct from the per_call construction in NormalizeEnvVarSpecs,
+// which defaults to Required=true for the canonical-credential shape.
+func NewORCaseEnvVarSpecs(names []string) []AuthEnvVar {
+	specs := make([]AuthEnvVar, 0, len(names))
+	for _, name := range names {
+		specs = append(specs, AuthEnvVar{
+			Name:      name,
+			Kind:      AuthEnvVarKindPerCall,
+			Required:  false,
+			Sensitive: true,
+		})
+	}
+	return specs
+}
+
 // IsAuthEnvVarORCase reports whether all EnvVarSpecs are non-required per_call vars.
 // In this shape, no single var is the canonical credential; the runtime tries each
 // in turn and returns the first non-empty value. Returns false when EnvVarSpecs has
@@ -1270,6 +1289,10 @@ func (e Endpoint) UsesHTMLResponse() bool {
 	return e.EffectiveResponseFormat() == ResponseFormatHTML
 }
 
+func (e Endpoint) UsesBinaryResponse() bool {
+	return e.EffectiveResponseFormat() == ResponseFormatBinary
+}
+
 type HTMLExtract struct {
 	Mode         string   `yaml:"mode,omitempty" json:"mode,omitempty"`                   // page (default), links, or embedded-json
 	LinkPrefixes []string `yaml:"link_prefixes,omitempty" json:"link_prefixes,omitempty"` // URL path prefixes to keep when extracting links (mode: links)
@@ -1517,7 +1540,7 @@ func ParseBytes(data []byte) (*APISpec, error) {
 		return nil, fmt.Errorf("parsing yaml: %w", yamlErr)
 	}
 	s.expandOperations()
-	s.enrichPathParams()
+	s.EnrichPathParams()
 	s.promoteParamsToBodyForWriteEndpoints()
 	if err := s.validateReservedNames(); err != nil {
 		return nil, err
@@ -1674,7 +1697,7 @@ var pathParamRe = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 var orGroupTokenRe = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
 
-// enrichPathParams walks every resource and sub-resource endpoint and ensures
+// EnrichPathParams walks every resource and sub-resource endpoint and ensures
 // each `{paramName}` placeholder in the endpoint path is represented in
 // Endpoint.Params with Positional: true, Required: true. The expandOperations
 // path already populates these for shorthand-generated endpoints; explicit
@@ -1690,7 +1713,7 @@ var orGroupTokenRe = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
 // Order is preserved: placeholders are appended in the order they appear in
 // the path so generated cobra `Args: cobra.ExactArgs(N)` sites and the
 // matching `replacePathParam(...args[i])` calls line up.
-func (s *APISpec) enrichPathParams() {
+func (s *APISpec) EnrichPathParams() {
 	for resourceName, r := range s.Resources {
 		s.enrichResourcePathParams(&r)
 		s.Resources[resourceName] = r
@@ -2581,9 +2604,9 @@ func validateTierRoutingResource(s *APISpec, resourcePath string, resource Resou
 
 func validateEndpointResponseFormat(e Endpoint) error {
 	switch e.ResponseFormat {
-	case "", ResponseFormatJSON, ResponseFormatHTML:
+	case "", ResponseFormatJSON, ResponseFormatHTML, ResponseFormatBinary:
 	default:
-		return fmt.Errorf("response_format must be one of: json, html")
+		return fmt.Errorf("response_format must be one of: json, html, binary")
 	}
 	if !e.UsesHTMLResponse() {
 		return nil

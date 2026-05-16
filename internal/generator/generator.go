@@ -2602,7 +2602,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			IsReadOnly:      endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
 			APISpec:         g.Spec,
 		}
-		promotedPath := filepath.Join("internal", "cli", "promoted_"+pc.PromotedName+".go")
+		promotedPath := filepath.Join("internal", "cli", safeResourceFileStem("promoted_"+pc.PromotedName)+".go")
 		if err := g.renderTemplate("command_promoted.go.tmpl", promotedPath, promotedData); err != nil {
 			return fmt.Errorf("rendering promoted command %s: %w", pc.PromotedName, err)
 		}
@@ -3470,6 +3470,21 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identP
 			fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
 			fmt.Fprintf(b, "%s\t}\n", indent)
 			fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.Name, rhs)
+			fmt.Fprintf(b, "%s}\n", indent)
+			continue
+		}
+		if p.Type == "boolean" || p.Type == "bool" {
+			// Booleans gate on cmd.Flags().Changed instead of a zero-guard.
+			// The zero-guard (body != false) drops user-set false values,
+			// letting the server's default (often true) silently invert
+			// intent. Unconditionally emitting flips the bug: PATCH bodies
+			// would carry "field: false" for every untouched flag and
+			// overwrite server state. Changed distinguishes "user set
+			// false" from "user did not touch the flag" and is correct
+			// for POST, PUT, and PATCH. Internal YAML specs use "boolean";
+			// the OpenAPI parser normalizes to "bool".
+			fmt.Fprintf(b, "%sif cmd.Flags().Changed(%q) {\n", indent, flag)
+			fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.Name, ident)
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}

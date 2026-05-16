@@ -10,6 +10,9 @@ import (
 	"regexp"
 	"strings"
 
+	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpoverrides"
@@ -80,6 +83,7 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	if prior := applyManifestNameOverride(cliDir, parsed); prior != "" {
 		fmt.Fprintf(os.Stderr, "mcp-sync: using manifest api_name %q over spec-derived slug %q\n", parsed.Name, prior)
 	}
+	applyCatalogMetadata(parsed)
 	// Validate that spec.yaml.name matches the directory's basename.
 	// Older library CLIs sometimes have drift (weather-goat's
 	// spec.yaml.name = "weather"; open-meteo's name diverges similarly)
@@ -511,8 +515,20 @@ func applyManifestNameOverride(cliDir string, parsed *spec.APISpec) string {
 	if parsed.Config.Path == fmt.Sprintf(defaultConfigPathFormat, naming.CLI(prior)) {
 		parsed.Config.Path = fmt.Sprintf(defaultConfigPathFormat, naming.CLI(m.APIName))
 	}
+	catalogmeta.RebaseAuthEnvPrefix(&parsed.Auth, prior, m.APIName)
 	parsed.Name = m.APIName
 	return prior
+}
+
+func applyCatalogMetadata(parsed *spec.APISpec) {
+	if parsed == nil {
+		return
+	}
+	entry, err := catalog.LookupFS(catalogfs.FS, parsed.Name)
+	if err != nil {
+		return
+	}
+	catalogmeta.ApplyRuntimeMetadata(parsed, entry)
 }
 
 // readExistingManifestDisplayName returns the display_name from an

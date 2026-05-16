@@ -41,6 +41,9 @@ Hand-written novel commands that perform visible actions (open browser tabs, sen
 1. Print by default; require explicit opt-in (`--launch`, `--send`, `--play`, etc.) to actually act.
 2. Short-circuit when `cliutil.IsVerifyEnv()` is true. The verifier sets `PRINTING_PRESS_VERIFY=1` in every mock-mode subprocess; this env-var check is the floor that catches any side-effect command the verifier's heuristic classifier misses.
 
+### Long-running commands under live-dogfood
+Hand-written novel commands whose happy path is an expensive network operation (full sync loops, content crawlers, bulk archive walks) MUST curtail work when `cliutil.IsDogfoodEnv()` returns true. The `printing-press dogfood --live` runner sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess and applies a flat 30s per-command timeout; without a short-circuit, the happy-path test trips the timeout and the matrix verdict flips to FAIL even when the command itself is healthy. Unlike `IsVerifyEnv`, this does NOT mean "don't hit the network" — dogfood is a real-API matrix. Use it to bound work (paginate once, fetch a bounded sample, honor a smaller `--limit` default), never to substitute mock data for real calls.
+
 ### Generator-reserved namespaces
 `internal/cliutil/` and `internal/mcp/cobratree/` are generator-owned packages emitted into every printed CLI. Do not hand-author code in them and do not name agent-authored helpers that collide with their exports — regen will overwrite the work. Novel-feature code goes in command packages and may import from `cliutil`.
 
@@ -173,11 +176,13 @@ When adding or editing `catalog/*.yaml`, first decide whether the entry belongs 
 - The entry must pass `internal/catalog` validation.
 - Required fields: `name`, `display_name`, `description`, `category`, and `tier`, plus `spec_url` and `spec_format` unless the entry is wrapper-only (`wrapper_libraries` is set and `spec_url` is omitted).
 - `spec_url`, when present, must use HTTPS.
-- `category` must be one of `ai`, `auth`, `cloud`, `commerce`, `developer-tools`, `devices`, `food-and-dining`, `marketing`, `media-and-entertainment`, `monitoring`, `payments`, `productivity`, `project-management`, `sales-and-crm`, `social-and-messaging`, `travel`, or `other`. The validator also accepts `example` as a test-only catch-all; do not use it for real catalog entries.
+- `category` must be one of `ai`, `auth`, `cloud`, `commerce`, `developer-tools`, `devices`, `food-and-dining`, `maps`, `marketing`, `media-and-entertainment`, `monitoring`, `payments`, `productivity`, `project-management`, `sales-and-crm`, `social-and-messaging`, `travel`, or `other`. The validator also accepts `example` as a test-only catch-all; do not use it for real catalog entries.
 - `tier` must be `official` or `community`.
 - `bearer_refresh`, when present, must include `bundle_url` and `pattern`; `bundle_url` must use HTTPS, and `pattern` must compile as a Go regexp.
 - `auth_key_url`, when present, must use HTTPS. It overrides any URL inferred from the spec and surfaces in the printed CLI as `Get a key at: <URL>`.
 - `auth_instructions`, when present, is a one-line string rendered under the URL. It overrides any `x-auth-instructions` value from the spec.
+- `auth_env_vars`, when present, is an ordered list of canonical credential env var names (`^[A-Z][A-Z0-9_]*$`, no duplicates, no empties). The generator merges them in front of the parser's name-derived default and emits `config.go` reading each in order. Ignored for HTTP Basic auth.
+- `base_url`, when present, must use HTTPS. Use it only when the upstream spec omits `servers:` and the correct API origin is known.
 - Rebuild the binary after editing; `catalog.FS` is a Go embed.
 See [`docs/CATALOG.md`](docs/CATALOG.md) for the inclusion rubric, evidence checklist, validation rationale, wrapper-only entry shape, and bearer-refresh metadata.
 
@@ -195,9 +200,9 @@ Generated artifacts live under `~/printing-press/`, not in this repo: `library/<
 
 ## Publishing to the Public Library
 The only supported path for **publishing a generated CLI** (adding or updating an entry under `library/<category>/<api-slug>/` in [mvanhorn/printing-press-library](https://github.com/mvanhorn/printing-press-library)) is to invoke the `/printing-press-publish` skill. The skill runs the required `gh`/`git` commands itself; do not reproduce them by hand.
-- Invoke `/printing-press-publish` and let it drive the fork, branch, manifest checks, `cli-skills/pp-<api-slug>/SKILL.md` regen, push, and PR creation. Following its prompts is the supported flow.
+- Invoke `/printing-press-publish` and let it drive the fork, branch, manifest checks, push, and PR creation. Following its prompts is the supported flow.
 - Do not skip the skill and improvise the same steps from scratch (manual `gh repo fork` / `cp -r` into a library clone / `gh pr create --repo mvanhorn/printing-press-library …` / branch push to a fork without the skill driving it). The commands look similar; the difference is the preflight checks and conventions the skill enforces before they run.
-- Do not edit `registry.json` or README catalog cells in a publish PR — the public library refreshes those post-merge from `.printing-press.json` / `manifest.json`.
+- Do not edit `registry.json`, README catalog cells, or `cli-skills/pp-<api-slug>/SKILL.md` in a publish PR — the public library refreshes those post-merge (registry and READMEs from `.printing-press.json` / `manifest.json`; the cli-skills mirror via the library's `generate-skills.yml` workflow). The library's `Guard against hand-edits to cli-skills mirror` check rejects any fork PR whose commits touch the mirror, so committing it pre-rejects the publish before review.
 
 Why this matters: the publish skill enforces preflight checks (printer sentinel validation, manifest shape, vendor-spec PII scope, govulncheck scoped to the changed module) and mirrors the public library's own `AGENTS.md` requirements. An agent operating in this repo's CWD never loads the public library's `AGENTS.md`, so those rules are invisible unless the skill is the entry point.
 

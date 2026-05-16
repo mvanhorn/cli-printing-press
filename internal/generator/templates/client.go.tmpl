@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -37,6 +38,8 @@ import (
 	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/config"
 )
+
+const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
 
 type Client struct {
 	BaseURL    string
@@ -322,7 +325,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	sess := newSessionManager(timeout)
 	httpClient := newHTTPClient(timeout, sess.CookieJar())
 	sess.AttachTo(httpClient)
-	return &Client{
+	c := &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 {{- if .BasePath}}
 		BasePath:   normalizeBasePath(cfg.BasePath),
@@ -348,7 +351,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	}
 {{- else}}
 	httpClient := newHTTPClient(timeout, nil)
-	return &Client{
+	c := &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 {{- if .BasePath}}
 		BasePath:   normalizeBasePath(cfg.BasePath),
@@ -372,6 +375,55 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- end}}
 	}
 {{- end}}
+	// CheckRedirect re-derives auth on each hop. Go's default replays the
+	// original Authorization header verbatim, which breaks nonce-bound
+	// schemes (OAuth 1.0a PLAINTEXT, SigV4, Hawk): the duplicate nonce
+	// trips the server's replay detector with a 401. c.authHeader()
+	// returns a fresh value for those schemes and the same static value
+	// for Bearer/api_key, so post-redirect headers are byte-identical for
+	// static auth and freshly-signed for nonce-bound auth.
+	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			// Match Go's defaultCheckRedirect: a plain error so Client.Do
+			// returns it through do()'s err != nil branch. ErrUseLastResponse
+			// would cause Do to return the 3xx with nil error, which do()
+			// would then classify as a successful response and hand the HTML
+			// "Moved Permanently" body back to the caller.
+			return errors.New("stopped after 10 redirects")
+		}
+{{- if .HasTierRouting}}
+		// Tier routing picks header vs query at runtime via authForRequest;
+		// re-deriving here would duplicate that selection logic. Cap depth
+		// only and let Go's default header replay handle static credentials.
+{{- else if eq .Auth.Type "session_handshake"}}
+{{- if eq .Auth.TokenParamIn "header"}}
+		// Same-host gate mirrors Go's shouldCopyHeaderOnRedirect: a
+		// cross-domain 3xx (open redirect or partner handoff) must not
+		// receive the auth credential, even though we are inside
+		// CheckRedirect where Go's automatic stripping has already run.
+		if req.URL.Host == via[0].URL.Host {
+			if h, err := c.authHeader(); err == nil && h != "" {
+				req.Header.Set("{{.Auth.TokenParamName}}", h)
+			}
+		}
+{{- end}}
+{{- else if and .Auth .Auth.In (eq .Auth.In "query")}}
+		// Auth lives on URL query; Go preserves the query on relative
+		// redirects, so nothing to re-derive.
+{{- else}}
+		// Same-host gate mirrors Go's shouldCopyHeaderOnRedirect: a
+		// cross-domain 3xx (open redirect or partner handoff) must not
+		// receive the auth credential, even though we are inside
+		// CheckRedirect where Go's automatic stripping has already run.
+		if req.URL.Host == via[0].URL.Host {
+			if h, err := c.authHeader(); err == nil && h != "" {
+				req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", h)
+			}
+		}
+{{- end}}
+		return nil
+	}
+	return c
 }
 
 // RateLimit returns the current effective rate limit in req/s. Returns 0 if disabled.
@@ -505,12 +557,12 @@ func (c *Client) Post(path string, body any) (json.RawMessage, int, error) {
 	return c.do("POST", path, nil, body, nil)
 }
 
-func (c *Client) PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("POST", path, nil, body, headers)
-}
-
 func (c *Client) PostWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
 	return c.do("POST", path, params, body, nil)
+}
+
+func (c *Client) PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, nil, body, headers)
 }
 
 func (c *Client) PostWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
@@ -522,12 +574,12 @@ func (c *Client) PostMultipart(path string, fields map[string]string, fileFields
 	return c.do("POST", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
 }
 
-func (c *Client) PostMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("POST", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
-}
-
 func (c *Client) PostMultipartWithParams(path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
 	return c.do("POST", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PostMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
 }
 
 func (c *Client) PostMultipartWithParamsAndHeaders(path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
@@ -540,12 +592,12 @@ func (c *Client) PostForm(path string, fields url.Values) (json.RawMessage, int,
 	return c.do("POST", path, nil, formRequestBody{Fields: fields}, nil)
 }
 
-func (c *Client) PostFormWithHeaders(path string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("POST", path, nil, formRequestBody{Fields: fields}, headers)
-}
-
 func (c *Client) PostFormWithParams(path string, params map[string]string, fields url.Values) (json.RawMessage, int, error) {
 	return c.do("POST", path, params, formRequestBody{Fields: fields}, nil)
+}
+
+func (c *Client) PostFormWithHeaders(path string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, nil, formRequestBody{Fields: fields}, headers)
 }
 
 func (c *Client) PostFormWithParamsAndHeaders(path string, params map[string]string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
@@ -558,12 +610,12 @@ func (c *Client) Delete(path string) (json.RawMessage, int, error) {
 	return c.do("DELETE", path, nil, nil, nil)
 }
 
-func (c *Client) DeleteWithHeaders(path string, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("DELETE", path, nil, nil, headers)
-}
-
 func (c *Client) DeleteWithParams(path string, params map[string]string) (json.RawMessage, int, error) {
 	return c.do("DELETE", path, params, nil, nil)
+}
+
+func (c *Client) DeleteWithHeaders(path string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("DELETE", path, nil, nil, headers)
 }
 
 func (c *Client) DeleteWithParamsAndHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, int, error) {
@@ -574,12 +626,12 @@ func (c *Client) Put(path string, body any) (json.RawMessage, int, error) {
 	return c.do("PUT", path, nil, body, nil)
 }
 
-func (c *Client) PutWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("PUT", path, nil, body, headers)
-}
-
 func (c *Client) PutWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
 	return c.do("PUT", path, params, body, nil)
+}
+
+func (c *Client) PutWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, nil, body, headers)
 }
 
 func (c *Client) PutWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
@@ -591,12 +643,12 @@ func (c *Client) PutMultipart(path string, fields map[string]string, fileFields 
 	return c.do("PUT", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
 }
 
-func (c *Client) PutMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("PUT", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
-}
-
 func (c *Client) PutMultipartWithParams(path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
 	return c.do("PUT", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PutMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
 }
 
 func (c *Client) PutMultipartWithParamsAndHeaders(path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
@@ -609,12 +661,12 @@ func (c *Client) PutForm(path string, fields url.Values) (json.RawMessage, int, 
 	return c.do("PUT", path, nil, formRequestBody{Fields: fields}, nil)
 }
 
-func (c *Client) PutFormWithHeaders(path string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("PUT", path, nil, formRequestBody{Fields: fields}, headers)
-}
-
 func (c *Client) PutFormWithParams(path string, params map[string]string, fields url.Values) (json.RawMessage, int, error) {
 	return c.do("PUT", path, params, formRequestBody{Fields: fields}, nil)
+}
+
+func (c *Client) PutFormWithHeaders(path string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, nil, formRequestBody{Fields: fields}, headers)
 }
 
 func (c *Client) PutFormWithParamsAndHeaders(path string, params map[string]string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
@@ -627,12 +679,12 @@ func (c *Client) Patch(path string, body any) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, nil, body, nil)
 }
 
-func (c *Client) PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("PATCH", path, nil, body, headers)
-}
-
 func (c *Client) PatchWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, params, body, nil)
+}
+
+func (c *Client) PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, nil, body, headers)
 }
 
 func (c *Client) PatchWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
@@ -644,12 +696,12 @@ func (c *Client) PatchMultipart(path string, fields map[string]string, fileField
 	return c.do("PATCH", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
 }
 
-func (c *Client) PatchMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("PATCH", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
-}
-
 func (c *Client) PatchMultipartWithParams(path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PatchMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
 }
 
 func (c *Client) PatchMultipartWithParamsAndHeaders(path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
@@ -662,12 +714,12 @@ func (c *Client) PatchForm(path string, fields url.Values) (json.RawMessage, int
 	return c.do("PATCH", path, nil, formRequestBody{Fields: fields}, nil)
 }
 
-func (c *Client) PatchFormWithHeaders(path string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("PATCH", path, nil, formRequestBody{Fields: fields}, headers)
-}
-
 func (c *Client) PatchFormWithParams(path string, params map[string]string, fields url.Values) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, params, formRequestBody{Fields: fields}, nil)
+}
+
+func (c *Client) PatchFormWithHeaders(path string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, nil, formRequestBody{Fields: fields}, headers)
 }
 
 func (c *Client) PatchFormWithParamsAndHeaders(path string, params map[string]string, fields url.Values, headers map[string]string) (json.RawMessage, int, error) {
@@ -992,6 +1044,10 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		for k, v := range headerOverrides {
 			req.Header.Set(k, v)
 		}
+		binaryResponse := strings.EqualFold(req.Header.Get(BinaryResponseHeader), "true")
+		if binaryResponse {
+			req.Header.Del(BinaryResponseHeader)
+		}
 {{- if not .UsesBrowserManagedUserAgent}}
 		if req.Header.Get("User-Agent") == "" {
 {{- if .UsesBrowserLikeUserAgent}}
@@ -1020,7 +1076,11 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		// per-endpoint headerOverrides, both of which run before this
 		// if-empty default.
 		if req.Header.Get("Accept") == "" {
-			req.Header.Set("Accept", "application/json")
+			if binaryResponse {
+				req.Header.Set("Accept", "*/*")
+			} else {
+				req.Header.Set("Accept", "application/json")
+			}
 		}
 {{- end}}
 
@@ -1035,7 +1095,9 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		if err != nil {
 			return nil, 0, fmt.Errorf("reading response: %w", err)
 		}
-		respBody = sanitizeJSONResponse(respBody)
+		if !binaryResponse {
+			respBody = sanitizeJSONResponse(respBody)
+		}
 
 		// Success
 		if resp.StatusCode < 400 {

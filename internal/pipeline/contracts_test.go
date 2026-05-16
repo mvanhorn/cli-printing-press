@@ -151,22 +151,21 @@ func TestPublishSkillTracksCanonicalUpstreamAndOverwriteFlow(t *testing.T) {
 	assert.Contains(t, skill, "git push --force-with-lease")
 }
 
-func TestPublishSkillUsesLibraryTreeForCliSkillsMirror(t *testing.T) {
+func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
 
-	assert.Contains(t, skill, "Do not\nedit `registry.json`")
-	assert.Contains(t, skill, "fix the\nlibrary mirror generator to discover from `library/`")
-	assert.Contains(t, skill, "# Regenerate the flat cli-skills mirror from the library tree")
-	assert.Contains(t, skill, "git add library/ cli-skills/")
+	assert.Contains(t, skill, "Do not\nedit `registry.json`, README catalog cells, or `cli-skills/pp-<api-slug>/SKILL.md`")
+	assert.Contains(t, skill, "Guard against hand-edits to cli-skills mirror")
+	assert.Contains(t, skill, "Do NOT regenerate or commit `cli-skills/pp-<api-slug>/SKILL.md` here")
+	assert.Contains(t, skill, "git add library/\ngit commit")
+	assert.NotContains(t, skill, "git add library/ cli-skills/")
 	assert.NotContains(t, skill, "git add library/ cli-skills/ registry.json")
 	assert.NotContains(t, skill, "REGISTRY_HAS_ENTRY")
 	assert.NotContains(t, skill, "seed one registry")
+	assert.NotContains(t, skill, "go run ./tools/generate-skills/main.go")
 
 	copyIntoLibrary := strings.Index(skill, `cp -r "$STAGING_DIR/library/<category>/<api-slug>"`)
-	mirrorRun := strings.Index(skill, "go run ./tools/generate-skills/main.go")
 	require.NotEqual(t, -1, copyIntoLibrary)
-	require.NotEqual(t, -1, mirrorRun)
-	assert.Less(t, copyIntoLibrary, mirrorRun)
 }
 
 func TestPolishSkillHardGatesPublishValidate(t *testing.T) {

@@ -483,6 +483,15 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL, authPrefere
 	result.RequiredHeaders, perEndpointHeaders = detectRequiredHeaders(doc, result.Auth)
 	applyHeaderOverrides(result, perEndpointHeaders)
 
+	// Synthesize Params entries for {placeholder} tokens in the path template
+	// that the operation never declared in `parameters` (or via a path-item /
+	// $ref shared parameter). Real-world specs frequently omit these — the
+	// path template is the source of truth, but without a matching Param
+	// entry the generator emits a URL with literal `{name}` segments and the
+	// request returns 404. Same pass the YAML loader uses, applied uniformly
+	// here so OpenAPI-parsed specs get the same guarantee.
+	result.EnrichPathParams()
+
 	if err := result.Validate(); err != nil {
 		return nil, fmt.Errorf("validating parsed spec: %w", err)
 	}
@@ -569,6 +578,9 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	schemeName, scheme := selectSecurityScheme(doc, authPreference)
 	if scheme == nil {
 		result := inferQueryParamAuth(doc, name, auth)
+		if result.Type == "none" {
+			result = inferHeaderParamAPIKeyAuth(doc, name, result)
+		}
 		if result.Type == "none" && allowDescriptionInference {
 			result = inferDescriptionAuth(doc, name, result)
 		}
@@ -1230,6 +1242,22 @@ var commonAuthQueryParams = map[string]bool{
 	"token":        true,
 }
 
+func authLikeHeaderName(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "" {
+		return false
+	}
+	switch normalized {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie":
+		return false
+	}
+	compact := strings.NewReplacer("-", "", "_", "", " ", "").Replace(normalized)
+	if strings.Contains(compact, "apikey") || strings.Contains(compact, "authkey") {
+		return true
+	}
+	return strings.Contains(compact, "token") && (strings.Contains(compact, "auth") || strings.Contains(compact, "access"))
+}
+
 // inferQueryParamAuth scans all operations for query parameters that look like
 // API keys. If more than 30% of operations carry one, we infer query-param auth.
 // This handles specs that omit securitySchemes but pass keys via query string.
@@ -1275,7 +1303,13 @@ func inferQueryParamAuth(doc *openapi3.T, name string, fallback spec.AuthConfig)
 	// Find the most common auth-like param name.
 	var best string
 	var bestCount int
-	for pName, cnt := range paramCounts {
+	paramNames := make([]string, 0, len(paramCounts))
+	for pName := range paramCounts {
+		paramNames = append(paramNames, pName)
+	}
+	sort.Strings(paramNames)
+	for _, pName := range paramNames {
+		cnt := paramCounts[pName]
 		if cnt > bestCount {
 			best = pName
 			bestCount = cnt
@@ -1292,6 +1326,71 @@ func inferQueryParamAuth(doc *openapi3.T, name string, fallback spec.AuthConfig)
 		In:      "query",
 		Header:  best,
 		EnvVars: []string{envPrefix + "_API_KEY"},
+	}
+}
+
+// inferHeaderParamAPIKeyAuth handles OpenAPI specs that omit securitySchemes
+// but repeat an API-key-shaped header parameter across the operation surface.
+func inferHeaderParamAPIKeyAuth(doc *openapi3.T, name string, fallback spec.AuthConfig) spec.AuthConfig {
+	if doc == nil || doc.Paths == nil || hasTopLevelSecurityDeclaration(doc) {
+		return fallback
+	}
+
+	paramCounts := map[string]int{}
+	totalOps := 0
+
+	for _, pathKey := range doc.Paths.InMatchingOrder() {
+		pathItem := doc.Paths.Value(pathKey)
+		if pathItem == nil {
+			continue
+		}
+		for _, op := range pathItem.Operations() {
+			if op == nil {
+				continue
+			}
+			totalOps++
+			seen := false
+			for _, p := range mergeParameters(pathItem, op) {
+				if p == nil || p.In != openapi3.ParameterInHeader || seen {
+					continue
+				}
+				if authLikeHeaderName(p.Name) {
+					paramCounts[p.Name]++
+					seen = true
+				}
+			}
+		}
+	}
+
+	if totalOps == 0 {
+		return fallback
+	}
+
+	var best string
+	var bestCount int
+	paramNames := make([]string, 0, len(paramCounts))
+	for pName := range paramCounts {
+		paramNames = append(paramNames, pName)
+	}
+	sort.Strings(paramNames)
+	for _, pName := range paramNames {
+		cnt := paramCounts[pName]
+		if cnt > bestCount {
+			best = pName
+			bestCount = cnt
+		}
+	}
+	if bestCount == 0 || float64(bestCount)/float64(totalOps) <= 0.3 {
+		return fallback
+	}
+
+	envPrefix := naming.EnvPrefix(name)
+	return spec.AuthConfig{
+		Type:     "api_key",
+		In:       "header",
+		Header:   best,
+		EnvVars:  []string{envPrefix + "_API_KEY"},
+		Inferred: true,
 	}
 }
 
@@ -2068,6 +2167,9 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			// response-schema inference. Resolution happens at parse time so
 			// the profiler sees a single resolved value per endpoint and
 			// templates do not re-walk schemas at generation time.
+			if responseUsesBinary(op) {
+				endpoint.ResponseFormat = spec.ResponseFormatBinary
+			}
 			if pathResourceIDOverride != "" {
 				endpoint.IDField = pathResourceIDOverride
 			} else {
@@ -3251,6 +3353,49 @@ func selectResponseSchema(response *openapi3.Response) *openapi3.SchemaRef {
 	}
 
 	return nil
+}
+
+func responseUsesBinary(op *openapi3.Operation) bool {
+	if op == nil || op.Responses == nil {
+		return false
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil || success.Value.Content == nil {
+		return false
+	}
+	for _, contentType := range sortedContentTypes(success.Value.Content) {
+		media := success.Value.Content[contentType]
+		if media == nil {
+			continue
+		}
+		if schema := schemaRefValue(media.Schema); schema != nil {
+			if schema.Type != nil && schema.Type.Includes(openapi3.TypeString) && strings.EqualFold(schemaFormat(schema), "binary") {
+				return true
+			}
+		}
+		if binaryContentType(contentType) {
+			return true
+		}
+	}
+	return false
+}
+
+func binaryContentType(contentType string) bool {
+	base := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	if base == "" {
+		return false
+	}
+	if strings.HasPrefix(base, "audio/") ||
+		strings.HasPrefix(base, "video/") ||
+		strings.HasPrefix(base, "image/") {
+		return true
+	}
+	switch base {
+	case "application/octet-stream", "application/zip", "application/x-zip", "application/x-zip-compressed", "application/pdf", "multipart/mixed":
+		return true
+	default:
+		return false
+	}
 }
 
 // readPathItemResourceID reads the `x-resource-id` extension from a path item
