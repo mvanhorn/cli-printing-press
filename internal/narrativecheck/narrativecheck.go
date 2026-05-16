@@ -196,14 +196,26 @@ func classify(ctx context.Context, binaryPath string, section Section, command s
 		}
 	}
 
+	// Walk segments left-to-right, emitting notes in the order they appear
+	// in the original command so authors can reconstruct the recipe by
+	// reading down the Notes slice.
 	var notes []string
-	var runnable []chainSegment
-	for _, seg := range segments {
+	type runnableSegment struct {
+		index   int
+		text    string
+		cleaned string
+	}
+	var runnable []runnableSegment
+	for i, seg := range segments {
 		if seg.AfterPipe {
 			notes = append(notes, "pipe-skipped: "+seg.Text)
 			continue
 		}
-		runnable = append(runnable, seg)
+		cleaned, redirects := stripRedirects(seg.Text)
+		for _, r := range redirects {
+			notes = append(notes, "redirect-stripped: "+r)
+		}
+		runnable = append(runnable, runnableSegment{index: i, text: seg.Text, cleaned: cleaned})
 	}
 
 	finish := func(r Result) Result {
@@ -225,14 +237,10 @@ func classify(ctx context.Context, binaryPath string, section Section, command s
 
 	var last Result
 	for i, seg := range runnable {
-		cleaned, redirects := stripRedirects(seg.Text)
-		for _, r := range redirects {
-			notes = append(notes, "redirect-stripped: "+r)
-		}
-		sub := classifySegment(ctx, binaryPath, section, cleaned, opts)
+		sub := classifySegment(ctx, binaryPath, section, seg.cleaned, opts)
 		if sub.Status != StatusOK {
 			if len(runnable) > 1 {
-				sub.Error = fmt.Sprintf("segment %d (%q): %s", i+1, cleaned, sub.Error)
+				sub.Error = fmt.Sprintf("segment %d (%q): %s", i+1, seg.cleaned, sub.Error)
 			}
 			return finish(sub)
 		}

@@ -270,6 +270,8 @@ func TestSplitShellChain(t *testing.T) {
 		{"top-level pipe splits, tail is AfterPipe", "stub list | grep foo", []chainSegment{{Text: "stub list"}, {Text: "grep foo", AfterPipe: true}}, false},
 		{"pipe chain with three commands marks all tails AfterPipe", "stub list | jq | head", []chainSegment{{Text: "stub list"}, {Text: "jq", AfterPipe: true}, {Text: "head", AfterPipe: true}}, false},
 		{"and after pipe resets the pipeline", "stub list | jq && stub show 42", []chainSegment{{Text: "stub list"}, {Text: "jq", AfterPipe: true}, {Text: "stub show 42"}}, false},
+		{"or after pipe resets the pipeline", "stub list | jq || stub show 42", []chainSegment{{Text: "stub list"}, {Text: "jq", AfterPipe: true}, {Text: "stub show 42"}}, false},
+		{"semicolon after pipe resets the pipeline", "stub list | jq ; stub show 42", []chainSegment{{Text: "stub list"}, {Text: "jq", AfterPipe: true}, {Text: "stub show 42"}}, false},
 		{"and inside double quotes", `stub run --msg "a && b"`, []chainSegment{{Text: `stub run --msg "a && b"`}}, false},
 		{"semicolon inside single quotes", "stub run --msg 'a ; b'", []chainSegment{{Text: "stub run --msg 'a ; b'"}}, false},
 		{"pipe inside quotes is not top-level", `stub run --msg "a | b"`, []chainSegment{{Text: `stub run --msg "a | b"`}}, false},
@@ -426,6 +428,37 @@ func TestValidate_PipeRecipeValidatesLeadingSegment(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Notes, wantNotes) {
 		t.Errorf("Notes = %q, want %q", got.Notes, wantNotes)
+	}
+}
+
+// TestValidate_MixedRedirectAndPipeNotesAreLeftToRight pins the textual
+// ordering of Result.Notes: a recipe whose leading segment owns a redirect
+// and whose tail is piped should record the redirect-stripped note before
+// the pipe-skipped note, matching the order tokens appear in the source.
+func TestValidate_MixedRedirectAndPipeNotesAreLeftToRight(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"recipes":[
+			{"command":"stub widgets list < keywords.txt | jq '.'"}
+		]
+	}}`)
+
+	report, err := Validate(context.Background(), research, binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.HasFailures() {
+		t.Fatalf("mixed redirect+pipe recipe should validate, got %+v", report)
+	}
+	got := report.Results[0]
+	wantNotes := []string{
+		"redirect-stripped: < keywords.txt",
+		"pipe-skipped: jq '.'",
+	}
+	if !reflect.DeepEqual(got.Notes, wantNotes) {
+		t.Errorf("Notes = %q, want %q (left-to-right textual order)", got.Notes, wantNotes)
 	}
 }
 
