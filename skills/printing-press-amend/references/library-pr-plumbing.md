@@ -118,10 +118,17 @@ existing_open=$(gh pr list --repo mvanhorn/printing-press-library \
 existing_local=$(git branch --list "$BRANCH_NAME" | wc -l)
 
 if [ "$(echo "$existing_open" | jq 'length')" -gt 0 ]; then
-  # Open PR exists from this branch — surface to user
-  echo "WARNING: open PR already exists from $BRANCH_NAME:"
+  # Open PR exists from this branch — surface to user and stop the shell flow.
+  # The calling skill must then resolve the conflict via AskUserQuestion
+  # (amend the existing PR by pushing to the same branch, or open new with
+  # a timestamped branch) before re-entering this snippet with the chosen path.
+  echo "ERROR: open PR already exists from $BRANCH_NAME:"
   echo "$existing_open" | jq -r '.[0] | "  PR #\(.number): \(.title)"'
-  # AskUserQuestion: amend the existing PR (push to same branch) or open new (timestamp the branch)?
+  echo ""
+  echo "Resolve before continuing:"
+  echo "  1. Amend the existing PR — push to $BRANCH_NAME (skip this snippet's checkout)"
+  echo "  2. Open a new PR — re-run with a timestamp suffix on the branch name"
+  exit 1
 fi
 
 if [ "$existing_local" -gt 0 ]; then
@@ -132,6 +139,8 @@ fi
 
 git checkout -b "$BRANCH_NAME"
 ```
+
+When the skill driver sees a non-zero exit from this block, it must invoke `AskUserQuestion` to surface the two-option choice (amend the existing PR vs. open a new timestamped one), then re-enter the snippet with the chosen path. The hard `exit 1` exists so a literal shell-flow execution stops here rather than failing later with a confusing `git checkout -b` error when the local branch already exists.
 
 Reference: publish SKILL.md Step 7 (lines 488-650) for the full collision matrix (open PR + own merged + zombie + branch-timestamping).
 
