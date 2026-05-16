@@ -496,7 +496,9 @@ func syncResource(c interface {
 		// ?page=N and emits no body cursor, treat a full page as a signal
 		// to advance numerically. Without this the loop breaks after page
 		// 1 even though more pages exist (the original symptom in #1296).
-		if pageSize.cursorParam == "page" && nextCursor == "" && len(items) >= pageSize.limit {
+		// Guard on cursorType, not cursorParam name, so all canonical
+		// spellings (page / page_number / pageNumber / page[number]) work.
+		if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit {
 			currentPage, _ := strconv.Atoi(cursor)
 			if currentPage < 1 {
 				currentPage = 1
@@ -662,6 +664,7 @@ func syncResource(c interface {
 // paginationDefaults holds the resolved pagination parameter names and page size.
 type paginationDefaults struct {
 	cursorParam string
+	cursorType  string // paginator class: "", "cursor", "page_token", "offset", "page"
 	limitParam  string
 	limit       int
 }
@@ -671,6 +674,7 @@ type paginationDefaults struct {
 func determinePaginationDefaults() paginationDefaults {
 	return paginationDefaults{
 		cursorParam: "after",
+		cursorType:  "",
 		limitParam:  "limit",
 		limit:       100,
 	}
@@ -1205,7 +1209,8 @@ func syncDependentResource(c interface {
 
 			// Page-int paginator fallback: mirrors syncResource so dependent
 			// resources on integer ?page=N APIs also advance past page 1.
-			if pageSize.cursorParam == "page" && nextCursor == "" && len(items) >= pageSize.limit {
+			// Guard on cursorType to cover every canonical spelling.
+			if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit {
 				currentPage, _ := strconv.Atoi(cursor)
 				if currentPage < 1 {
 					currentPage = 1

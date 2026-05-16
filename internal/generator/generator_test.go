@@ -2854,61 +2854,84 @@ func TestExtractPageItemsNoCursor(t *testing.T) {
 // TestSyncPageIntPaginationAdvancesAfterFullPage guards #1296: APIs that
 // paginate by integer ?page=N (Freshworks, HubSpot, Atlassian, …) emit
 // no body cursor, so extractPageItems returns ("", false). The runtime
-// must detect cursorParam == "page" and advance the integer counter
-// when the page is full, otherwise sync stops after page 1.
+// must detect the paginator type (not the raw param name) and advance
+// the integer counter when the page is full, otherwise sync stops after
+// page 1. Parametrized over every canonical page-int spelling so all
+// four variants share the same guard regardless of casing.
 func TestSyncPageIntPaginationAdvancesAfterFullPage(t *testing.T) {
 	t.Parallel()
 
-	apiSpec := &spec.APISpec{
-		Name:    "freshy",
-		Version: "0.1.0",
-		BaseURL: "https://freshy.example.com",
-		Auth:    spec.AuthConfig{Type: "none"},
-		Config: spec.ConfigSpec{
-			Format: "toml",
-			Path:   "~/.config/freshy-pp-cli/config.toml",
-		},
-		Resources: map[string]spec.Resource{
-			"tickets": {
-				Description: "Tickets",
-				Endpoints: map[string]spec.Endpoint{
-					"list": {
-						Method:      "GET",
-						Path:        "/tickets",
-						Description: "List tickets",
-						Response:    spec.ResponseDef{Type: "array"},
-						Params: []spec.Param{
-							{Name: "page", Type: "integer"},
-							{Name: "per_page", Type: "integer"},
-						},
-						Pagination: &spec.Pagination{
-							Type:        "page",
-							CursorParam: "page",
-							LimitParam:  "per_page",
+	cases := []struct {
+		name      string
+		paramName string
+	}{
+		{"plain page", "page"},
+		{"snake_case page_number", "page_number"},
+		{"camelCase pageNumber", "pageNumber"},
+		{"json:api page[number]", "page[number]"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := &spec.APISpec{
+				Name:    "freshy",
+				Version: "0.1.0",
+				BaseURL: "https://freshy.example.com",
+				Auth:    spec.AuthConfig{Type: "none"},
+				Config: spec.ConfigSpec{
+					Format: "toml",
+					Path:   "~/.config/freshy-pp-cli/config.toml",
+				},
+				Resources: map[string]spec.Resource{
+					"tickets": {
+						Description: "Tickets",
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:      "GET",
+								Path:        "/tickets",
+								Description: "List tickets",
+								Response:    spec.ResponseDef{Type: "array"},
+								Params: []spec.Param{
+									{Name: tc.paramName, Type: "integer"},
+									{Name: "per_page", Type: "integer"},
+								},
+								Pagination: &spec.Pagination{
+									Type:        "page",
+									CursorParam: tc.paramName,
+									LimitParam:  "per_page",
+								},
+							},
 						},
 					},
 				},
-			},
-		},
+			}
+
+			outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+			gen := New(apiSpec, outputDir)
+			gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+			require.NoError(t, gen.Generate())
+
+			syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+			require.NoError(t, err)
+			src := string(syncSrc)
+
+			// The guard must compare on cursorType so every canonical
+			// page-int spelling (page, page_number, pageNumber,
+			// page[number]) fires the fallback.
+			assert.Contains(t, src, `pageSize.cursorType == "page"`,
+				"sync.go must guard the page-int fallback on cursorType, not the raw param name")
+			assert.Contains(t, src, `strconv.Itoa(currentPage + 1)`,
+				"page-int fallback must increment the integer cursor")
+			assert.Contains(t, src, `cursorType:  "page"`,
+				"determinePaginationDefaults must emit cursorType \"page\" when the profile selects it")
+			// CursorParam still carries the original-case param name so
+			// the HTTP request key matches the spec.
+			assert.Contains(t, src, `cursorParam: "`+tc.paramName+`"`,
+				"determinePaginationDefaults must preserve the original-case page-int param name")
+		})
 	}
-
-	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
-	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
-	require.NoError(t, gen.Generate())
-
-	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
-	require.NoError(t, err)
-	src := string(syncSrc)
-
-	// Tier 1: emission canary. The page-int fallback branch must ship so
-	// page-int APIs advance numerically when no body cursor is extracted.
-	assert.Contains(t, src, `pageSize.cursorParam == "page"`,
-		"sync.go must emit the page-int paginator fallback branch")
-	assert.Contains(t, src, `strconv.Itoa(currentPage + 1)`,
-		"page-int fallback must increment the integer cursor")
-	assert.Contains(t, src, `cursorParam: "page"`,
-		"determinePaginationDefaults must emit cursorParam \"page\" when the profile selects it")
 }
 
 // TestGeneratedSyncHandlesPascalCaseDotNetShape verifies the generated sync +
