@@ -1499,15 +1499,16 @@ The prose showcase and the `AskUserQuestion` are two separate turns. Print the s
 
 **Part 1: Prose showcase (print before the AskUserQuestion)**
 
-The showcase exists so the user can decide approve / trim / add ideas without asking a follow-up. Cover three things:
+The showcase exists so the user can decide approve / trim / add ideas without asking a follow-up. Cover four things:
 
 1. **Scope** — how many features absorbed across which tools, how many novel on top, how that stacks up against the best existing tool.
 2. **Per-novel-feature readout** — one line each: feature name, what the user gets, and the specific evidence or persona that makes it worth building.
-3. **Anything the user should worry about before approving** — stubs, risky dependencies, expensive endpoints, low-confidence ideas.
+3. **Hand-code commitment** — of the M novel features, K will require hand-written Go after generate (each ~50-150 LoC plus `root.go` wiring). State the hand-code count and the auto-emitted count, then list the names of the hand-code features. The subagent's `Buildability` column (see [references/novel-features-subagent.md](references/novel-features-subagent.md) "Output contract") is the source of truth: count rows tagged `hand-code`; `spec-emits` rows are excluded from the hand-code total. Approving commits the agent to that scope, so the user must see it explicitly before the AskUserQuestion.
+4. **Anything else the user should worry about before approving** — stubs, risky dependencies, expensive endpoints, low-confidence ideas.
 
 Show every novel feature that scored ≥5/10. Group by theme if there are more than ~12; never hide features behind "Plus N more" or "see full manifest." If zero qualified, say so plainly: "No novel features scored high enough to recommend. The absorbed features cover the landscape well."
 
-Format is otherwise yours — markdown headings, prose, a numbered list, whatever reads cleanly. The must-haves are the three things above and the ≥5/10 coverage rule.
+Format is otherwise yours — markdown headings, prose, a numbered list, whatever reads cleanly. The must-haves are the four things above and the ≥5/10 coverage rule.
 
 **Part 2: AskUserQuestion**
 
