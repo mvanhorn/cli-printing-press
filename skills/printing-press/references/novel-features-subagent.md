@@ -227,9 +227,9 @@ order:
    inline kill/keep verdicts from the rubric.
 3. `## Survivors and kills`
    - `### Survivors` — features scoring >= 5/10, formatted as a
-     transcendence table that extends the rubric's "Transcendence Table
-     Format" section with one additional column **Buildability**
-     (`spec-emits` or `hand-code` per Pass 3 question 5). Include score,
+     transcendence table matching the rubric's "Transcendence Table
+     Format" section (which includes the **Buildability** column,
+     `spec-emits` or `hand-code` per Pass 3 question 5). Include score,
      persona-served, the one-sentence buildability proof per the rubric,
      and the buildability tag.
    - `### Killed candidates` — table with columns: feature, kill reason,
