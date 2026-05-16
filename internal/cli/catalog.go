@@ -117,6 +117,9 @@ func newCatalogShowCmd() *cobra.Command {
 			if entry.OpenAPIVersion != "" {
 				fmt.Printf("OpenAPI:        %s\n", entry.OpenAPIVersion)
 			}
+			if entry.BaseURL != "" {
+				fmt.Printf("Base URL:       %s\n", entry.BaseURL)
+			}
 			if entry.Homepage != "" {
 				fmt.Printf("Homepage:       %s\n", entry.Homepage)
 			}

@@ -93,7 +93,7 @@ func parsePublicParamAuditSpec(specFiles []string, cliName string, lenient bool)
 
 		var apiSpec *spec.APISpec
 		if openapi.IsOpenAPI(data) {
-			apiSpec, err = parseOpenAPISpec(specFile, data, lenient)
+			apiSpec, err = parseOpenAPISpec(specFile, data, lenient, "")
 		} else if graphql.IsGraphQLSDL(data) {
 			apiSpec, err = graphql.ParseSDLBytes(specFile, data)
 		} else {

@@ -72,7 +72,7 @@ func TestGenerateFormRequestBodyUsesFormClient(t *testing.T) {
 	assert.Contains(t, endpointSrc, `fields := url.Values{}`)
 	assert.Contains(t, endpointSrc, `fields.Set("grant_type", bodyGrantType)`)
 	assert.Contains(t, endpointSrc, `fields.Set("client_id", bodyClientId)`)
-	assert.Contains(t, endpointSrc, `c.PostForm(path, fields)`)
+	assert.Contains(t, endpointSrc, `c.PostFormWithParams(path, params, fields)`)
 	assert.NotContains(t, endpointSrc, `var stdinBody bool`)
 	assert.NotContains(t, endpointSrc, `c.Post(path, body)`)
 	// Required-flag check should fire at top-level, not inside `if !stdinBody`.
@@ -84,7 +84,7 @@ func TestGenerateFormRequestBodyUsesFormClient(t *testing.T) {
 	venuesSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_venues.go")
 	assert.Contains(t, venuesSrc, `if !json.Valid([]byte(bodyStructData))`)
 	assert.Contains(t, venuesSrc, `fields.Set("struct_data", bodyStructData)`)
-	assert.Contains(t, venuesSrc, `c.PostForm(path, fields)`)
+	assert.Contains(t, venuesSrc, `c.PostFormWithParams(path, params, fields)`)
 
 	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
 	assert.Contains(t, mcpSrc, `RequestContentType: "application/x-www-form-urlencoded"`)

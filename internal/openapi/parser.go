@@ -163,62 +163,83 @@ func stripBrokenRefs(data []byte, errMsg string) []byte {
 
 // Parse parses an OpenAPI spec strictly. Use ParseLenient for specs with broken $refs.
 func Parse(data []byte) (*spec.APISpec, error) {
-	return parse(data, false)
+	return ParseWithOptions(data, ParseOptions{})
 }
 
 // ParseFile parses an OpenAPI spec from a file and resolves local external
 // refs relative to that file.
 func ParseFile(path string) (*spec.APISpec, error) {
-	return parseFile(path, false)
+	return parseFileWithOptions(path, ParseOptions{})
 }
 
 // ParseWithPath parses OpenAPI spec bytes and resolves local external refs
 // relative to the given file path.
 func ParseWithPath(data []byte, path string) (*spec.APISpec, error) {
-	return parseWithPath(data, path, false)
+	return ParseWithOptions(data, ParseOptions{Path: path})
 }
 
 // ParseLenient parses an OpenAPI spec, skipping validation errors from broken $refs.
 // It logs warnings to stderr for any issues found but continues parsing.
 func ParseLenient(data []byte) (*spec.APISpec, error) {
-	return parse(data, true)
+	return ParseWithOptions(data, ParseOptions{Lenient: true})
 }
 
 // ParseFileLenient parses an OpenAPI spec from a file and skips validation
 // errors from broken $refs after resolving local external refs relative to
 // that file.
 func ParseFileLenient(path string) (*spec.APISpec, error) {
-	return parseFile(path, true)
+	return parseFileWithOptions(path, ParseOptions{Lenient: true})
 }
 
 // ParseWithPathLenient parses OpenAPI spec bytes, resolving local external refs
 // relative to the given file path and skipping validation errors from broken
 // refs.
 func ParseWithPathLenient(data []byte, path string) (*spec.APISpec, error) {
-	return parseWithPath(data, path, true)
+	return ParseWithOptions(data, ParseOptions{Path: path, Lenient: true})
 }
 
-func parseFile(path string, lenient bool) (*spec.APISpec, error) {
+// ParseOptions carries optional hints that influence parsing without changing
+// the existing single-purpose Parse* signatures. New behavioral knobs (e.g.
+// auth-scheme preference) should be added here rather than as new positional
+// parameters across every entry point.
+type ParseOptions struct {
+	// Path resolves local external refs relative to a file location. Empty
+	// means the spec is treated as remote/in-memory only.
+	Path string
+	// Lenient skips validation errors from broken $refs.
+	Lenient bool
+	// AuthPreference names a security scheme from components.securitySchemes
+	// that should win over the parser's default selection priority. Used when
+	// a spec exposes multiple valid schemes (e.g. OAuth2 + basic) and the
+	// caller knows which one fits the printed CLI's intended auth model.
+	// Unknown names are ignored (default selection runs).
+	AuthPreference string
+}
+
+// ParseWithOptions is the canonical parser entry point; the older Parse* and
+// ParseFile* helpers delegate to it with default ParseOptions plus their own
+// path/lenient settings.
+func ParseWithOptions(data []byte, opts ParseOptions) (*spec.APISpec, error) {
+	if opts.Path == "" {
+		return parseWithLocation(data, opts.Lenient, nil, opts.AuthPreference)
+	}
+	location, err := fileLocation(opts.Path)
+	if err != nil {
+		return nil, err
+	}
+	return parseWithLocation(data, opts.Lenient, location, opts.AuthPreference)
+}
+
+func parseFileWithOptions(path string, opts ParseOptions) (*spec.APISpec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading OpenAPI spec: %w", err)
 	}
-	return parseWithPath(data, path, lenient)
+	opts.Path = path
+	return ParseWithOptions(data, opts)
 }
 
-func parseWithPath(data []byte, path string, lenient bool) (*spec.APISpec, error) {
-	location, err := fileLocation(path)
-	if err != nil {
-		return nil, err
-	}
-	return parseWithLocation(data, lenient, location)
-}
-
-func parse(data []byte, lenient bool) (*spec.APISpec, error) {
-	return parseWithLocation(data, lenient, nil)
-}
-
-func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APISpec, error) {
+func parseWithLocation(data []byte, lenient bool, location *url.URL, authPreference string) (*spec.APISpec, error) {
 	var metadata specDataMetadata
 	if normalized, meta, err := normalizeSpecDataWithMetadata(data); err == nil {
 		data = normalized
@@ -388,7 +409,7 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 		baseURLIsPlaceholder = true
 	}
 
-	auth := mapAuthWithDescriptionInference(doc, name, !metadata.explicitEmptySecuritySchemes)
+	auth := mapAuthWithDescriptionInference(doc, name, !metadata.explicitEmptySecuritySchemes, authPreference)
 	if auth.Type != "none" && allOperationsAllowAnonymous(doc) {
 		auth = spec.AuthConfig{Type: "none"}
 	}
@@ -461,6 +482,15 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 	var perEndpointHeaders map[string]map[string]string
 	result.RequiredHeaders, perEndpointHeaders = detectRequiredHeaders(doc, result.Auth)
 	applyHeaderOverrides(result, perEndpointHeaders)
+
+	// Synthesize Params entries for {placeholder} tokens in the path template
+	// that the operation never declared in `parameters` (or via a path-item /
+	// $ref shared parameter). Real-world specs frequently omit these — the
+	// path template is the source of truth, but without a matching Param
+	// entry the generator emits a URL with literal `{name}` segments and the
+	// request returns 404. Same pass the YAML loader uses, applied uniformly
+	// here so OpenAPI-parsed specs get the same guarantee.
+	result.EnrichPathParams()
 
 	if err := result.Validate(); err != nil {
 		return nil, fmt.Errorf("validating parsed spec: %w", err)
@@ -540,14 +570,17 @@ func lookupOpenAPIInfoExtension(doc *openapi3.T, key string) (any, bool) {
 }
 
 func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
-	return mapAuthWithDescriptionInference(doc, name, true)
+	return mapAuthWithDescriptionInference(doc, name, true, "")
 }
 
-func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescriptionInference bool) spec.AuthConfig {
+func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescriptionInference bool, authPreference string) spec.AuthConfig {
 	auth := spec.AuthConfig{Type: "none"}
-	schemeName, scheme := selectSecurityScheme(doc)
+	schemeName, scheme := selectSecurityScheme(doc, authPreference)
 	if scheme == nil {
 		result := inferQueryParamAuth(doc, name, auth)
+		if result.Type == "none" {
+			result = inferHeaderParamAPIKeyAuth(doc, name, result)
+		}
 		if result.Type == "none" && allowDescriptionInference {
 			result = inferDescriptionAuth(doc, name, result)
 		}
@@ -1209,6 +1242,22 @@ var commonAuthQueryParams = map[string]bool{
 	"token":        true,
 }
 
+func authLikeHeaderName(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "" {
+		return false
+	}
+	switch normalized {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie":
+		return false
+	}
+	compact := strings.NewReplacer("-", "", "_", "", " ", "").Replace(normalized)
+	if strings.Contains(compact, "apikey") || strings.Contains(compact, "authkey") {
+		return true
+	}
+	return strings.Contains(compact, "token") && (strings.Contains(compact, "auth") || strings.Contains(compact, "access"))
+}
+
 // inferQueryParamAuth scans all operations for query parameters that look like
 // API keys. If more than 30% of operations carry one, we infer query-param auth.
 // This handles specs that omit securitySchemes but pass keys via query string.
@@ -1254,7 +1303,13 @@ func inferQueryParamAuth(doc *openapi3.T, name string, fallback spec.AuthConfig)
 	// Find the most common auth-like param name.
 	var best string
 	var bestCount int
-	for pName, cnt := range paramCounts {
+	paramNames := make([]string, 0, len(paramCounts))
+	for pName := range paramCounts {
+		paramNames = append(paramNames, pName)
+	}
+	sort.Strings(paramNames)
+	for _, pName := range paramNames {
+		cnt := paramCounts[pName]
 		if cnt > bestCount {
 			best = pName
 			bestCount = cnt
@@ -1271,6 +1326,71 @@ func inferQueryParamAuth(doc *openapi3.T, name string, fallback spec.AuthConfig)
 		In:      "query",
 		Header:  best,
 		EnvVars: []string{envPrefix + "_API_KEY"},
+	}
+}
+
+// inferHeaderParamAPIKeyAuth handles OpenAPI specs that omit securitySchemes
+// but repeat an API-key-shaped header parameter across the operation surface.
+func inferHeaderParamAPIKeyAuth(doc *openapi3.T, name string, fallback spec.AuthConfig) spec.AuthConfig {
+	if doc == nil || doc.Paths == nil || hasTopLevelSecurityDeclaration(doc) {
+		return fallback
+	}
+
+	paramCounts := map[string]int{}
+	totalOps := 0
+
+	for _, pathKey := range doc.Paths.InMatchingOrder() {
+		pathItem := doc.Paths.Value(pathKey)
+		if pathItem == nil {
+			continue
+		}
+		for _, op := range pathItem.Operations() {
+			if op == nil {
+				continue
+			}
+			totalOps++
+			seen := false
+			for _, p := range mergeParameters(pathItem, op) {
+				if p == nil || p.In != openapi3.ParameterInHeader || seen {
+					continue
+				}
+				if authLikeHeaderName(p.Name) {
+					paramCounts[p.Name]++
+					seen = true
+				}
+			}
+		}
+	}
+
+	if totalOps == 0 {
+		return fallback
+	}
+
+	var best string
+	var bestCount int
+	paramNames := make([]string, 0, len(paramCounts))
+	for pName := range paramCounts {
+		paramNames = append(paramNames, pName)
+	}
+	sort.Strings(paramNames)
+	for _, pName := range paramNames {
+		cnt := paramCounts[pName]
+		if cnt > bestCount {
+			best = pName
+			bestCount = cnt
+		}
+	}
+	if bestCount == 0 || float64(bestCount)/float64(totalOps) <= 0.3 {
+		return fallback
+	}
+
+	envPrefix := naming.EnvPrefix(name)
+	return spec.AuthConfig{
+		Type:     "api_key",
+		In:       "header",
+		Header:   best,
+		EnvVars:  []string{envPrefix + "_API_KEY"},
+		Inferred: true,
 	}
 }
 
@@ -1659,12 +1779,24 @@ func isNegated(text string, keywordIdx int) bool {
 	return false
 }
 
-func selectSecurityScheme(doc *openapi3.T) (string, *openapi3.SecurityScheme) {
+func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *openapi3.SecurityScheme) {
 	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) == 0 {
 		return "", nil
 	}
 
 	candidates := candidateSecuritySchemeNames(doc)
+
+	if pref := strings.TrimSpace(authPreference); pref != "" {
+		for _, name := range candidates {
+			if !strings.EqualFold(name, pref) {
+				continue
+			}
+			scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
+			if scheme != nil {
+				return name, scheme
+			}
+		}
+	}
 
 	bestScore := math.MaxInt
 	var bestName string
@@ -2035,6 +2167,9 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			// response-schema inference. Resolution happens at parse time so
 			// the profiler sees a single resolved value per endpoint and
 			// templates do not re-walk schemas at generation time.
+			if responseUsesBinary(op) {
+				endpoint.ResponseFormat = spec.ResponseFormatBinary
+			}
 			if pathResourceIDOverride != "" {
 				endpoint.IDField = pathResourceIDOverride
 			} else {
@@ -3218,6 +3353,49 @@ func selectResponseSchema(response *openapi3.Response) *openapi3.SchemaRef {
 	}
 
 	return nil
+}
+
+func responseUsesBinary(op *openapi3.Operation) bool {
+	if op == nil || op.Responses == nil {
+		return false
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil || success.Value.Content == nil {
+		return false
+	}
+	for _, contentType := range sortedContentTypes(success.Value.Content) {
+		media := success.Value.Content[contentType]
+		if media == nil {
+			continue
+		}
+		if schema := schemaRefValue(media.Schema); schema != nil {
+			if schema.Type != nil && schema.Type.Includes(openapi3.TypeString) && strings.EqualFold(schemaFormat(schema), "binary") {
+				return true
+			}
+		}
+		if binaryContentType(contentType) {
+			return true
+		}
+	}
+	return false
+}
+
+func binaryContentType(contentType string) bool {
+	base := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	if base == "" {
+		return false
+	}
+	if strings.HasPrefix(base, "audio/") ||
+		strings.HasPrefix(base, "video/") ||
+		strings.HasPrefix(base, "image/") {
+		return true
+	}
+	switch base {
+	case "application/octet-stream", "application/zip", "application/x-zip", "application/x-zip-compressed", "application/pdf", "multipart/mixed":
+		return true
+	default:
+		return false
+	}
 }
 
 // readPathItemResourceID reads the `x-resource-id` extension from a path item
@@ -5075,6 +5253,19 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 			if orig, ok := originalCase[name]; ok {
 				pag.CursorParam = orig
 				pag.Type = "offset"
+				break
+			}
+		}
+	}
+	// Integer page paginator: classify only after the cursor/token/offset
+	// branches above so APIs that mix forms (e.g. cursor + page) keep
+	// cursor semantics. Runtime sync handles type "page" by incrementing
+	// CursorParam as an integer when no body cursor is extracted.
+	if pag.Type == "" {
+		for _, name := range []string{"page", "pagenumber", "page_number", "page[number]"} {
+			if orig, ok := originalCase[name]; ok {
+				pag.CursorParam = orig
+				pag.Type = "page"
 				break
 			}
 		}

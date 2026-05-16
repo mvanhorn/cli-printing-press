@@ -19,6 +19,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/docspec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
@@ -100,6 +101,7 @@ func newGenerateCmd() *cobra.Command {
 	var specURL string
 	var planFile string
 	var trafficAnalysisPath string
+	var authPreference string
 
 	cmd := &cobra.Command{
 		Use:   "generate",
@@ -274,6 +276,8 @@ func newGenerateCmd() *cobra.Command {
 				openapi.SetMaxEndpointsPerResource(maxEndpointsPerResource)
 			}
 
+			openAPIParseAuthPref := openAPIAuthPreferenceForGenerate(authPreference, cliName, specFiles, specURL)
+
 			var specs []*spec.APISpec
 			var specRawBytes [][]byte // raw spec data for archiving
 			for _, specFile := range specFiles {
@@ -285,7 +289,7 @@ func newGenerateCmd() *cobra.Command {
 
 				var apiSpec *spec.APISpec
 				if openapi.IsOpenAPI(data) {
-					apiSpec, err = parseOpenAPISpec(specFile, data, lenient)
+					apiSpec, err = parseOpenAPISpec(specFile, data, lenient, openAPIParseAuthPref)
 				} else if graphql.IsGraphQLSDL(data) {
 					apiSpec, err = graphql.ParseSDLBytes(specFile, data)
 				} else {
@@ -295,6 +299,7 @@ func newGenerateCmd() *cobra.Command {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing spec %s: %w", specFile, err)}
 				}
 
+				enrichSpecFromCatalog(apiSpec, catalogSpecLookupRefs(specFiles, specURL)...)
 				if apiSpec.BaseURLIsPlaceholder {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("spec %s declares no `servers:` block and no per-operation servers; the generator cannot resolve a real base URL and refuses to ship a CLI whose `doctor` would DNS-fail on every call. Add a `servers:` block with the real API host, or run via crowd-sniff with `--base-url` to supply one", specFile)}
 				}
@@ -313,6 +318,7 @@ func newGenerateCmd() *cobra.Command {
 				// cmd/<slug>-pp-cli matches what manifest/publish-validate look
 				// for. Explicit --name still wins.
 				if cliName != "" {
+					catalogmeta.RebaseAuthEnvPrefix(&apiSpec.Auth, apiSpec.Name, cliName)
 					apiSpec.Name = cliName
 				} else if researchName := pipeline.LoadAPINameFromResearchDir(researchDir); researchName != "" {
 					apiSpec.Name = researchName
@@ -439,6 +445,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&specURL, "spec-url", "", "Original spec URL for provenance (use when --spec is a local file downloaded from a URL)")
 	cmd.Flags().StringVar(&planFile, "plan", "", "Path to a markdown plan document for plan-driven generation (instead of --spec)")
 	cmd.Flags().StringVar(&trafficAnalysisPath, "traffic-analysis", "", "Path to browser-sniff traffic-analysis.json for advisory generation context")
+	cmd.Flags().StringVar(&authPreference, "auth-preference", "", "Preferred securityScheme name from the spec (overrides default selection and any catalog auth_preference; useful when a spec advertises multiple schemes such as OAuth2 + HTTP Basic and you want the simpler one). When omitted, a matching embedded catalog entry's auth_preference applies for OpenAPI parsing.")
 
 	return cmd
 }
@@ -701,17 +708,26 @@ func readSpec(specFile string, refresh bool, skipCache bool) ([]byte, error) {
 	return data, nil
 }
 
-func parseOpenAPISpec(specFile string, data []byte, lenient bool) (*spec.APISpec, error) {
-	if openapi.IsRemoteSpecSource(specFile) {
-		if lenient {
-			return openapi.ParseLenient(data)
-		}
-		return openapi.Parse(data)
+func parseOpenAPISpec(specFile string, data []byte, lenient bool, authPreference string) (*spec.APISpec, error) {
+	opts := openapi.ParseOptions{Lenient: lenient, AuthPreference: authPreference}
+	if !openapi.IsRemoteSpecSource(specFile) {
+		opts.Path = specFile
 	}
-	if lenient {
-		return openapi.ParseWithPathLenient(data, specFile)
+	return openapi.ParseWithOptions(data, opts)
+}
+
+// openAPIAuthPreferenceForGenerate resolves AuthPreference for openapi.ParseWithOptions.
+// Explicit --auth-preference wins; otherwise a matching catalog entry's auth_preference
+// is used so catalog-driven generates pick the intended scheme before spec enrichment.
+func openAPIAuthPreferenceForGenerate(cliAuthPref, cliName string, specFiles []string, specURL string) string {
+	if s := strings.TrimSpace(cliAuthPref); s != "" {
+		return s
 	}
-	return openapi.ParseWithPath(data, specFile)
+	entry := lookupCatalogEntryForGenerateSpec(strings.TrimSpace(cliName), catalogSpecLookupRefs(specFiles, specURL))
+	if entry == nil {
+		return ""
+	}
+	return strings.TrimSpace(entry.AuthPreference)
 }
 
 // archiveSpecBytes picks the bytes and filename for the spec snapshot that
@@ -1530,8 +1546,10 @@ func catalogSpecLookupRefs(specFiles []string, specURL string) []string {
 }
 
 func lookupCatalogEntryForGenerateSpec(apiName string, specRefs []string) *catalog.Entry {
-	if entry, err := catalog.LookupFS(catalogfs.FS, apiName); err == nil {
-		return entry
+	if name := strings.TrimSpace(apiName); name != "" {
+		if entry, err := catalog.LookupFS(catalogfs.FS, name); err == nil {
+			return entry
+		}
 	}
 	specURLs := make(map[string]struct{}, len(specRefs))
 	for _, ref := range specRefs {
@@ -1565,6 +1583,10 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	if entry.Homepage != "" && apiSpec.WebsiteURL == "" {
 		apiSpec.WebsiteURL = entry.Homepage
 	}
+	if entry.BaseURL != "" && catalogmeta.IsReplaceableBaseURL(apiSpec.BaseURL, apiSpec.BaseURLIsPlaceholder) {
+		apiSpec.BaseURL = strings.TrimRight(entry.BaseURL, "/")
+		apiSpec.BaseURLIsPlaceholder = false
+	}
 	if entry.Category != "" && apiSpec.Category == "" {
 		apiSpec.Category = entry.Category
 	}
@@ -1596,6 +1618,7 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	if entry.AuthInstructions != "" && apiSpec.Auth.Type != "none" {
 		apiSpec.Auth.Instructions = entry.AuthInstructions
 	}
+	catalogmeta.ApplyCatalogAuthEnvVars(&apiSpec.Auth, entry.AuthEnvVars)
 }
 
 func mcpConfigured(m spec.MCPConfig) bool {

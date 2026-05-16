@@ -1122,12 +1122,23 @@ func extractResponseData(data json.RawMessage) json.RawMessage {
 	}
 }
 
-// compactVerboseFields are the prose-shaped fields stripped by both the
-// list and single-object compact paths. Centralised so the contract stays
-// in lockstep across both helpers.
-var compactVerboseFields = map[string]bool{
+// compactVerboseListFields are prose-shaped fields stripped from list-item
+// projections. On lists, "body"/"content"/"html"/"markdown" are verbose
+// noise and the row's identity is carried by id/name/title/etc.
+var compactVerboseListFields = map[string]bool{
 	"description": true, "body": true, "content": true,
 	"comments": true, "attachments": true, "html": true, "markdown": true,
+}
+
+// compactVerboseObjectFields are metadata fields stripped from single-object
+// responses. "body"/"content"/"html"/"markdown" are intentionally absent:
+// for a `get` command those fields are the primary payload, and stripping
+// them under `--agent`/`--compact` silently emits a useless envelope.
+// Use `--select` to drop them explicitly.
+var compactVerboseObjectFields = map[string]bool{
+	"description": true,
+	"comments":    true,
+	"attachments": true,
 }
 
 // compactFields keeps only the most important fields for agent consumption.
@@ -1194,7 +1205,7 @@ func compactListFields(items []map[string]any) json.RawMessage {
 		keyCounts := map[string]int{}
 		for _, item := range items {
 			for k, v := range item {
-				if compactVerboseFields[k] || !isCompactScalar(v) {
+				if compactVerboseListFields[k] || !isCompactScalar(v) {
 					continue
 				}
 				keyCounts[k]++
@@ -1247,12 +1258,15 @@ func isCompactScalar(v any) bool {
 	}
 }
 
-// compactObjectFields strips known-verbose fields from single-object responses.
-// Uses a blocklist so it works across all API domains (project management, payments, CRM, etc.).
+// compactObjectFields strips known-verbose metadata fields from single-object
+// responses. The blocklist deliberately excludes "body"/"content"/"html"/
+// "markdown" — those fields are payload on `get` commands and stripping them
+// under `--agent`/`--compact` is a silent loss; agents who want to omit them
+// can pass `--select` to specify only the fields they need.
 func compactObjectFields(obj map[string]any) json.RawMessage {
 	compact := map[string]any{}
 	for k, v := range obj {
-		if !compactVerboseFields[k] {
+		if !compactVerboseObjectFields[k] {
 			compact[k] = v
 		}
 	}

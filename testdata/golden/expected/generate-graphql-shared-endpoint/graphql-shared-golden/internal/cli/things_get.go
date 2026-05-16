@@ -33,6 +33,8 @@ func newThingsGetCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/graphql"
 			_ = path
+			params := map[string]string{}
+			params["thing_id"] = args[0]
 			var body map[string]any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
@@ -47,7 +49,7 @@ func newThingsGetCmd(flags *rootFlags) *cobra.Command {
 			} else {
 				body = map[string]any{}
 			}
-			data, statusCode, err := c.Post(path, body)
+			data, statusCode, err := c.PostWithParams(path, params, body)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

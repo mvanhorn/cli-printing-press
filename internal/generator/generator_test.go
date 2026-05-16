@@ -2851,6 +2851,89 @@ func TestExtractPageItemsNoCursor(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractPageItems", "./internal/cli")
 }
 
+// TestSyncPageIntPaginationAdvancesAfterFullPage guards #1296: APIs that
+// paginate by integer ?page=N (Freshworks, HubSpot, Atlassian, …) emit
+// no body cursor, so extractPageItems returns ("", false). The runtime
+// must detect the paginator type (not the raw param name) and advance
+// the integer counter when the page is full, otherwise sync stops after
+// page 1. Parametrized over every canonical page-int spelling so all
+// four variants share the same guard regardless of casing.
+func TestSyncPageIntPaginationAdvancesAfterFullPage(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		paramName string
+	}{
+		{"plain page", "page"},
+		{"snake_case page_number", "page_number"},
+		{"camelCase pageNumber", "pageNumber"},
+		{"json:api page[number]", "page[number]"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := &spec.APISpec{
+				Name:    "freshy",
+				Version: "0.1.0",
+				BaseURL: "https://freshy.example.com",
+				Auth:    spec.AuthConfig{Type: "none"},
+				Config: spec.ConfigSpec{
+					Format: "toml",
+					Path:   "~/.config/freshy-pp-cli/config.toml",
+				},
+				Resources: map[string]spec.Resource{
+					"tickets": {
+						Description: "Tickets",
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:      "GET",
+								Path:        "/tickets",
+								Description: "List tickets",
+								Response:    spec.ResponseDef{Type: "array"},
+								Params: []spec.Param{
+									{Name: tc.paramName, Type: "integer"},
+									{Name: "per_page", Type: "integer"},
+								},
+								Pagination: &spec.Pagination{
+									Type:        "page",
+									CursorParam: tc.paramName,
+									LimitParam:  "per_page",
+								},
+							},
+						},
+					},
+				},
+			}
+
+			outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+			gen := New(apiSpec, outputDir)
+			gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+			require.NoError(t, gen.Generate())
+
+			syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+			require.NoError(t, err)
+			src := string(syncSrc)
+
+			// The guard must compare on cursorType so every canonical
+			// page-int spelling (page, page_number, pageNumber,
+			// page[number]) fires the fallback.
+			assert.Contains(t, src, `pageSize.cursorType == "page"`,
+				"sync.go must guard the page-int fallback on cursorType, not the raw param name")
+			assert.Contains(t, src, `strconv.Itoa(currentPage + 1)`,
+				"page-int fallback must increment the integer cursor")
+			assert.Contains(t, src, `cursorType:  "page"`,
+				"determinePaginationDefaults must emit cursorType \"page\" when the profile selects it")
+			// CursorParam still carries the original-case param name so
+			// the HTTP request key matches the spec.
+			assert.Contains(t, src, `cursorParam: "`+tc.paramName+`"`,
+				"determinePaginationDefaults must preserve the original-case page-int param name")
+		})
+	}
+}
+
 // TestGeneratedSyncHandlesPascalCaseDotNetShape verifies the generated sync +
 // store paths recognize .NET-shape PascalCase envelopes ("Items"), PKs ("Id"),
 // and field keys (LookupFieldValue PascalCase pass). Parser-side tier-5 PK
@@ -4054,10 +4137,67 @@ func TestCompactListFieldsPreservesUnknownShapes(t *testing.T) {
 		"compactListFields must count per-key occurrence so frequent novel-command keys survive")
 	assert.Contains(t, body, "isCompactScalar",
 		"compactListFields must filter the data-driven extension by scalar type so nested objects/arrays don't bloat --compact output")
-	assert.Contains(t, body, "compactVerboseFields",
+	assert.Contains(t, body, "compactVerboseListFields",
 		"compactListFields must exclude description/body/content from the data-driven extension regardless of frequency")
 	assert.Contains(t, body, "threshold",
 		"compactListFields must compute a frequency threshold for the data-driven extension")
+}
+
+// matchClosingBrace walks s from start, finds the first `{`, then returns
+// the index of the matching `}` by counting depth. Returns -1 if either no
+// opening brace exists at/after start or the input is unbalanced.
+func matchClosingBrace(s string, start int) int {
+	depth := 0
+	seenOpen := false
+	for i := start; i < len(s); i++ {
+		switch s[i] {
+		case '{':
+			depth++
+			seenOpen = true
+		case '}':
+			depth--
+			if seenOpen && depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// TestCompactObjectFieldsPreservesPayloadFields pins the contract that
+// single-object `get` responses retain their primary payload fields under
+// `--agent`/`--compact`. The list-path blocklist correctly strips body/
+// content/html/markdown from list items (verbose noise), but applying the
+// same blocklist to single-object responses silently drops the field the
+// caller asked for. Pinned at the template level so the two blocklists stay
+// separate as the helper renders into every printed CLI.
+func TestCompactObjectFieldsPreservesPayloadFields(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join("templates", "helpers.go.tmpl")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err, "template must exist: %s", path)
+	body := string(data)
+
+	require.Contains(t, body, "compactVerboseObjectFields",
+		"compactObjectFields must read from a dedicated object-path blocklist, not the list-path one")
+	require.Contains(t, body, "if !compactVerboseObjectFields[k] {",
+		"compactObjectFields must consult the object-path blocklist when deciding which keys to keep")
+
+	objStart := strings.Index(body, "compactVerboseObjectFields = map[string]bool{")
+	require.GreaterOrEqual(t, objStart, 0, "compactVerboseObjectFields map literal must exist")
+	objEnd := matchClosingBrace(body, objStart)
+	require.GreaterOrEqual(t, objEnd, 0, "compactVerboseObjectFields map literal must close")
+	objBody := body[objStart : objEnd+1]
+
+	for _, payload := range []string{`"body"`, `"content"`, `"html"`, `"markdown"`} {
+		assert.NotContains(t, objBody, payload,
+			"compactVerboseObjectFields must not list %s — those fields are the primary payload on single-object get responses", payload)
+	}
+	for _, metadata := range []string{`"description"`, `"comments"`, `"attachments"`} {
+		assert.Contains(t, objBody, metadata,
+			"compactVerboseObjectFields must still strip %s — that field is metadata on single-object responses, not payload", metadata)
+	}
 }
 
 // The cursor param's "0" must survive paginatedGet's zero-value strip:
@@ -5509,6 +5649,41 @@ func TestGeneratedOutput_PromotedCommandCompiles(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// A resource named `test` produces `promoted_test.go`; Go treats *_test.go as a
+// test file and excludes it from the normal package build, so root.go's
+// reference to newTestPromotedCmd fails to compile. Mirrors the safe-stem fix
+// that #1021 applied to `<resource>_<verb>.go`.
+func TestGeneratedOutput_PromotedCommand_TestResourceCompiles(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "promotedtest",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"PT_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/promotedtest-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"test": {
+				Description: "Single-endpoint resource whose name collides with Go's *_test.go convention",
+				Endpoints: map[string]spec.Endpoint{
+					"generate": {Method: "POST", Path: "/test/generate", Description: "Generate a test"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "promotedtest-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_test.go"),
+		"promoted_test.go is excluded from go build; safeResourceFileStem must rewrite to promoted_test_cmd.go")
+	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_test_cmd.go"))
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 func TestGeneratedOutput_ResourceParentsHiddenWhenAPIBrowserGenerated(t *testing.T) {
 	t.Parallel()
 
@@ -6408,6 +6583,135 @@ func TestGenerate_CookieAuthWindowsCompatibility(t *testing.T) {
 	// Windows users get a workable next step instead of the Unix install hint.
 	assert.Contains(t, content, "auth login --browser")
 	assert.Contains(t, content, "cookie-scoop-cli")
+}
+
+// TestGenerate_CookieAuthFiltersAllowlistOnLogin pins that `auth login --chrome`
+// stores only the cookies named in spec.auth.cookies when an allowlist is
+// declared, and falls back to the unfiltered blob when the allowlist is
+// empty (legacy specs).
+func TestGenerate_CookieAuthFiltersAllowlistOnLogin(t *testing.T) {
+	t.Parallel()
+
+	t.Run("allowlist declared filters extracted cookies", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := &spec.APISpec{
+			Name:    "filterapp",
+			Version: "0.1.0",
+			BaseURL: "https://app.example.com",
+			Auth: spec.AuthConfig{
+				Type:         "cookie",
+				Header:       "Cookie",
+				In:           "cookie",
+				CookieDomain: ".example.com",
+				Cookies:      []string{"session_id"},
+				EnvVars:      []string{"FILTERAPP_COOKIES"},
+			},
+			Config: spec.ConfigSpec{Format: "toml"},
+			Resources: map[string]spec.Resource{
+				"items": {
+					Description: "Manage items",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/api/items", Description: "List items"},
+					},
+				},
+			},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "filterapp-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		auth, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+		require.NoError(t, err)
+		content := string(auth)
+
+		assert.Contains(t, content, `requiredCookies := []string{"session_id"}`)
+		assert.Contains(t, content, "cookieMap := parseCookieString(cookies)")
+		assert.Contains(t, content, `cookies = strings.Join(kept, "; ")`)
+		assert.Contains(t, content, `cookie %q not found for %s`)
+
+		runGoCommand(t, outputDir, "build", "./...")
+	})
+
+	t.Run("empty allowlist preserves legacy behavior", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := &spec.APISpec{
+			Name:    "legacycookieapp",
+			Version: "0.1.0",
+			BaseURL: "https://app.example.com",
+			Auth: spec.AuthConfig{
+				Type:         "cookie",
+				Header:       "Cookie",
+				In:           "cookie",
+				CookieDomain: ".example.com",
+				EnvVars:      []string{"LEGACYCOOKIEAPP_COOKIES"},
+			},
+			Config: spec.ConfigSpec{Format: "toml"},
+			Resources: map[string]spec.Resource{
+				"items": {
+					Description: "Manage items",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/api/items", Description: "List items"},
+					},
+				},
+			},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "legacycookieapp-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		auth, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+		require.NoError(t, err)
+		content := string(auth)
+
+		assert.NotContains(t, content, "requiredCookies := []string{")
+		assert.NotContains(t, content, `cookies = strings.Join(kept, "; ")`)
+	})
+
+	t.Run("refresh path also filters by allowlist", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := &spec.APISpec{
+			Name:    "refreshfilterapp",
+			Version: "0.1.0",
+			BaseURL: "https://app.example.com",
+			Auth: spec.AuthConfig{
+				Type:                           "cookie",
+				Header:                         "Cookie",
+				In:                             "cookie",
+				CookieDomain:                   ".example.com",
+				Cookies:                        []string{"session_id"},
+				EnvVars:                        []string{"REFRESHFILTERAPP_COOKIES"},
+				RequiresBrowserSession:         true,
+				BrowserSessionValidationPath:   "/api/items",
+				BrowserSessionValidationMethod: "GET",
+			},
+			Config: spec.ConfigSpec{Format: "toml"},
+			Resources: map[string]spec.Resource{
+				"items": {
+					Description: "Manage items",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/api/items", Description: "List items"},
+					},
+				},
+			},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "refreshfilterapp-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		auth, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+		require.NoError(t, err)
+		content := string(auth)
+
+		require.Contains(t, content, "func refreshStoredBrowserCookies")
+		_, refresh, _ := strings.Cut(content, "func refreshStoredBrowserCookies")
+		// Without the fix, the refresh body has SaveTokens(cookies) with no
+		// prior filter — the second SaveTokens call would then sit before any
+		// allowlist parsing in the function.
+		assert.Contains(t, refresh, `requiredCookies := []string{"session_id"}`)
+		assert.Contains(t, refresh, `cookies = strings.Join(kept, "; ")`)
+
+		runGoCommand(t, outputDir, "build", "./...")
+	})
 }
 
 func TestGenerate_UserAgentOverrideGatedByBrowserTransport(t *testing.T) {
@@ -8268,7 +8572,7 @@ func TestGenerateOperationRoutingPathParamDefault(t *testing.T) {
 	mcpGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
 	assert.Regexp(t,
-		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/graphql/\{pathQueryId\}/Followers",\s*\[]mcpParamBinding\{.*WireName: "pathQueryId".*\},\s*\[]string\{[^}]*"pathQueryId"`),
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/graphql/\{pathQueryId\}/Followers",\s*false,\s*\[]mcpParamBinding\{.*WireName: "pathQueryId".*\},\s*\[]string\{[^}]*"pathQueryId"`),
 		string(mcpGo),
 		"MCP handler must receive the routing path param so it can substitute the URL")
 }
@@ -9141,9 +9445,9 @@ func TestGenerateResourceBaseURLOverrideRoutesToOverrideHost(t *testing.T) {
 	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
 	mcpToolsStr := string(mcpTools)
-	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search"`,
+	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search", false`,
 		"geocoding MCP endpoint mirror must emit the absolute override URL")
-	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "/forecast"`,
+	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "/forecast", false`,
 		"forecast MCP endpoint mirror must keep the relative path when its resource has no override")
 
 	// Must compile.
@@ -9231,7 +9535,7 @@ func TestGenerateEndpointBaseURLOverrideRoutesToOverrideHost(t *testing.T) {
 
 	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(mcpTools), `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search"`,
+	assert.Contains(t, string(mcpTools), `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search", false`,
 		"typed MCP endpoint tool must use the endpoint override URL")
 }
 
@@ -9694,11 +9998,11 @@ func TestGenerateMCPHandlerPreservesQueryPositionals(t *testing.T) {
 	// Call sites still pass both names — the upstream emit is unchanged;
 	// the fix lives entirely inside the handler body.
 	assert.Regexp(t,
-		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/search/movie",\s*\[]mcpParamBinding\{.*WireName: "query".*\},\s*\[]string\{[^}]*"query"`),
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/search/movie",\s*false,\s*\[]mcpParamBinding\{.*WireName: "query".*\},\s*\[]string\{[^}]*"query"`),
 		tools,
 		"search call site must still pass `query` in positionalParams (handler decides path vs query at runtime)")
 	assert.Regexp(t,
-		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/movie/\{movieId\}",\s*\[]mcpParamBinding\{.*WireName: "movieId".*\},\s*\[]string\{[^}]*"movieId"`),
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/movie/\{movieId\}",\s*false,\s*\[]mcpParamBinding\{.*WireName: "movieId".*\},\s*\[]string\{[^}]*"movieId"`),
 		tools,
 		"get-by-id call site must pass `movieId` in positionalParams")
 
@@ -9833,6 +10137,69 @@ func TestMCPHandlerPassesBodyArgsMap(t *testing.T) {
 		"PUT branch must forward bodyArgs directly to the client")
 	assert.Contains(t, mcpSource, "c.PatchWithParams(path, params, bodyArgs)",
 		"PATCH branch must forward bodyArgs directly to the client")
+}
+
+// TestMCPCodeOrchPassesParamsMap pins the same body-passthrough contract for
+// the code-orchestration handler template (mcp_code_orch.go.tmpl). Sibling of
+// TestMCPHandlerPassesBodyArgsMap: an earlier pre-marshal stored []byte in the
+// body slot, which client.do() then json.Marshaled into a base64-encoded
+// string that strict APIs reject.
+func TestMCPCodeOrchPassesParamsMap(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcp-orch-body-passthrough")
+	apiSpec.MCP = spec.MCPConfig{Orchestration: "code", EndpointTools: "hidden"}
+	apiSpec.Resources["widgets"] = spec.Resource{
+		Description: "Widgets",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/widgets",
+				Description: "Create a widget",
+				Body: []spec.Param{
+					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
+				},
+			},
+			"replace": {
+				Method:      "PUT",
+				Path:        "/widgets/{id}",
+				Description: "Replace a widget",
+				Params: []spec.Param{
+					{Name: "id", Type: "string", Required: true, Description: "Widget id"},
+				},
+				Body: []spec.Param{
+					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
+				},
+			},
+			"update": {
+				Method:      "PATCH",
+				Path:        "/widgets/{id}",
+				Description: "Update a widget",
+				Params: []spec.Param{
+					{Name: "id", Type: "string", Required: true, Description: "Widget id"},
+				},
+				Body: []spec.Param{
+					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "code_orch.go")
+
+	assert.NotContains(t, mcpSource, "json.Marshal(params)",
+		"code-orch handler must not pre-marshal params: client.do() json.Marshals what it receives, "+
+			"so a []byte arrives base64-encoded on the wire and strict APIs reject the payload")
+
+	assert.Contains(t, mcpSource, "c.Post(path, params)",
+		"POST branch must forward params directly to the client")
+	assert.Contains(t, mcpSource, "c.Put(path, params)",
+		"PUT branch must forward params directly to the client")
+	assert.Contains(t, mcpSource, "c.Patch(path, params)",
+		"PATCH branch must forward params directly to the client")
 }
 
 // TestMCPBindingNumericTypesAcrossSpecShapes pins template wiring: both
@@ -10235,6 +10602,116 @@ func TestSearchTemplateEmptyTypeQueriesGenericFTS(t *testing.T) {
 		"case \"\": must call db.Search(query, limit) so rows indexed only in resources_fts (not in a typed FTS table) are returned")
 	assert.Contains(t, emptyBranch, `"search resources_fts failed:`,
 		"the generic-search error path must mention resources_fts so the failure is debuggable")
+}
+
+// TestBrowserLikeUserAgentTemplates pins that BOTH the client.go.tmpl
+// and auth_browser.go.tmpl branch User-Agent emission on
+// UsesBrowserLikeUserAgent so that cookie/composed/session_handshake
+// auth and Kind: synthetic ship a Chrome-shaped UA instead of the
+// script-flavored `<cli>-pp-cli/<ver>`. Otherwise WAFs (Wordfence,
+// Imperva, Akamai bot-mode, DataDome, Cloudflare bot-fight) bucket
+// every CLI request as bot traffic — including the auth-verify call,
+// which must clear the same bar or the user can't bootstrap session
+// state.
+func TestBrowserLikeUserAgentTemplates(t *testing.T) {
+	t.Parallel()
+	for _, tmpl := range []string{"client.go.tmpl", "auth_browser.go.tmpl"} {
+		t.Run(tmpl, func(t *testing.T) {
+			t.Parallel()
+			data, err := os.ReadFile(filepath.Join("templates", tmpl))
+			require.NoError(t, err)
+			body := string(data)
+
+			assert.Contains(t, body, "{{- if .UsesBrowserLikeUserAgent}}",
+				"%s must branch UA emission on UsesBrowserLikeUserAgent", tmpl)
+			assert.Contains(t, body, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+				"%s must emit a Chrome UA string on the browser-like branch", tmpl)
+			assert.Contains(t, body, `"{{.Name}}-pp-cli/{{.Version}}"`,
+				"%s must keep the script-flavored UA on the default branch so documented APIs stay identifiable", tmpl)
+		})
+	}
+}
+
+// TestStaleTemplateCoversCommonTimestampFields pins the timestamp-key
+// list in pm_stale.go.tmpl so APIs that use modified_at (Asana),
+// last_edited_time (Notion), updated (Stripe), and similar variants
+// don't silently return zero stale items. The WHERE/ORDER BY/scan
+// loop all read from the same constant, so testing the constant is
+// the cheap-and-correct way to guard the bug.
+func TestStaleTemplateCoversCommonTimestampFields(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("templates", "workflows", "pm_stale.go.tmpl"))
+	require.NoError(t, err)
+	body := string(data)
+
+	for _, field := range []string{
+		"updatedAt",
+		"updated_at",
+		"updatedDate",
+		"modifiedAt",
+		"modified_at",
+		"lastModified",
+		"last_modified",
+		"lastEditedTime",
+		"last_edited_time",
+		"updated",
+		"last_updated",
+	} {
+		assert.Contains(t, body, `"`+field+`"`,
+			"pm_stale.go.tmpl must list %q as a stale-timestamp field; %s users return zero results otherwise",
+			field, field)
+	}
+
+	// Pin the dynamic-build approach so the WHERE/ORDER BY/scan stay in
+	// lockstep with the field list — a future maintainer adding a field
+	// must update one place, not three.
+	assert.Contains(t, body, "buildStaleTimestampPredicate()",
+		"pm_stale.go.tmpl should build SQL from staleTimestampFields instead of hardcoding columns")
+
+	// Pin the COALESCE-based ORDER BY so a future refactor doesn't
+	// regress to a multi-column sort, which SQLite's NULL-first ASC
+	// ordering would corrupt for rows from APIs that don't populate the
+	// leading field.
+	assert.Contains(t, body, `"COALESCE(" + strings.Join(coalesceArgs, ", ") + ") ASC"`,
+		"pm_stale.go.tmpl ORDER BY must COALESCE across staleTimestampFields, not sort multi-column")
+
+	// Pin the typeof-gated WHERE so integer-typed timestamps (Stripe's
+	// `updated`) compare against an epoch cutoff rather than the
+	// RFC 3339 cutoff. Without the gate SQLite's type-class ordering
+	// makes every numeric row unconditionally match the predicate.
+	assert.Contains(t, body, "typeof(",
+		"pm_stale.go.tmpl WHERE must gate string/numeric comparisons with typeof()")
+	assert.Contains(t, body, "cutoffEpoch",
+		"pm_stale.go.tmpl must bind a numeric cutoff alongside the RFC 3339 cutoff for integer-typed timestamps")
+}
+
+// TestSyncTemplateShortCircuitsOnDryRunSentinel: client.dryRun returns
+// `{"dry_run": true}` instead of a real response, and the sync loop
+// must detect this with isDryRunResponse and emit a synthetic
+// sync_dryrun event before falling through to upsertSingleObject —
+// otherwise validate-narrative --full-examples (which auto-appends
+// --dry-run) blocks shipcheck on a spurious "missing id for <resource>"
+// error.
+func TestSyncTemplateShortCircuitsOnDryRunSentinel(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("templates", "sync.go.tmpl"))
+	require.NoError(t, err)
+	body := string(data)
+
+	assert.Contains(t, body, "func isDryRunResponse(data json.RawMessage) bool",
+		"sync.go.tmpl must define isDryRunResponse helper that detects the client.dryRun sentinel")
+	assert.Contains(t, body, `"sync_dryrun"`,
+		"sync.go.tmpl must emit a sync_dryrun event on the short-circuit path so validate-narrative sees a structured success")
+
+	// Ordering pin: the dry-run check must run BEFORE upsertSingleObject,
+	// otherwise the sentinel reaches the upsert path and triggers a spurious
+	// "missing id for <resource>" error.
+	dryRunCheckIdx := strings.Index(body, "if isDryRunResponse(data)")
+	upsertSingleIdx := strings.Index(body, "if err := upsertSingleObject(db, resource, data)")
+	require.GreaterOrEqual(t, dryRunCheckIdx, 0, "sync.go.tmpl must call isDryRunResponse on the response")
+	require.GreaterOrEqual(t, upsertSingleIdx, 0, "sync.go.tmpl must still call upsertSingleObject for live single-object responses")
+	assert.Less(t, dryRunCheckIdx, upsertSingleIdx,
+		"isDryRunResponse check must run before upsertSingleObject so the dry-run sentinel doesn't fall through to the missing-id error")
 }
 
 // TestSearchTemplateEmitsEmptyJSONEnvelope pins the contract: the

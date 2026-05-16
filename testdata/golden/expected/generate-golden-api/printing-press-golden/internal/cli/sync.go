@@ -475,9 +475,37 @@ func syncResource(c interface {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("fetching %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
+		// Dry-run sentinel: client.dryRun returns `{"dry_run": true}` instead
+		// of a real response when --dry-run is set. The upsert path below
+		// would otherwise fail with "missing id for <resource>" because the
+		// sentinel has no items and no id; emit a synthetic success event so
+		// validate-narrative --full-examples (which auto-appends --dry-run)
+		// sees a clean exit.
+		if isDryRunResponse(data) {
+			if !humanFriendly {
+				fmt.Fprintf(os.Stdout, `{"event":"sync_dryrun","resource":"%s"}`+"\n", resource)
+			}
+			return syncResult{Resource: resource, Count: 0, Duration: time.Since(started)}
+		}
+
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
 		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
+
+		// Page-int paginator fallback: when the API paginates by integer
+		// ?page=N and emits no body cursor, treat a full page as a signal
+		// to advance numerically. Without this the loop breaks after page
+		// 1 even though more pages exist (the original symptom in #1296).
+		// Guard on cursorType, not cursorParam name, so all canonical
+		// spellings (page / page_number / pageNumber / page[number]) work.
+		if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit {
+			currentPage, _ := strconv.Atoi(cursor)
+			if currentPage < 1 {
+				currentPage = 1
+			}
+			nextCursor = strconv.Itoa(currentPage + 1)
+			hasMore = true
+		}
 
 		if len(items) == 0 {
 			if isEmptyPageResponse(data) {
@@ -636,6 +664,7 @@ func syncResource(c interface {
 // paginationDefaults holds the resolved pagination parameter names and page size.
 type paginationDefaults struct {
 	cursorParam string
+	cursorType  string // paginator class: "", "cursor", "page_token", "offset", "page"
 	limitParam  string
 	limit       int
 }
@@ -645,6 +674,7 @@ type paginationDefaults struct {
 func determinePaginationDefaults() paginationDefaults {
 	return paginationDefaults{
 		cursorParam: "cursor",
+		cursorType:  "cursor",
 		limitParam:  "limit",
 		limit:       100,
 	}
@@ -709,6 +739,30 @@ func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessa
 	}
 
 	return nil, "", false
+}
+
+// isDryRunResponse detects the `{"dry_run": true}` sentinel that
+// client.dryRun returns instead of a real API response. The sync loop
+// uses this to short-circuit before the upsert path, which would
+// otherwise fail with "missing id for <resource>" against a sentinel
+// that has no items and no id. The check requires exactly one key
+// (dry_run) so a live API response that happens to include a top-level
+// dry_run field alongside real data isn't misclassified as the
+// sentinel and silently zero out the sync count.
+func isDryRunResponse(data json.RawMessage) bool {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return false
+	}
+	if len(envelope) != 1 {
+		return false
+	}
+	raw, ok := envelope["dry_run"]
+	if !ok {
+		return false
+	}
+	var v bool
+	return json.Unmarshal(raw, &v) == nil && v
 }
 
 func isEmptyPageResponse(data json.RawMessage) bool {
@@ -1160,6 +1214,19 @@ func syncDependentResource(c interface {
 			}
 
 			items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
+
+			// Page-int paginator fallback: mirrors syncResource so dependent
+			// resources on integer ?page=N APIs also advance past page 1.
+			// Guard on cursorType to cover every canonical spelling.
+			if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit {
+				currentPage, _ := strconv.Atoi(cursor)
+				if currentPage < 1 {
+					currentPage = 1
+				}
+				nextCursor = strconv.Itoa(currentPage + 1)
+				hasMore = true
+			}
+
 			if len(items) == 0 {
 				break
 			}

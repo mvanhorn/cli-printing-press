@@ -344,6 +344,15 @@ Rules:
 - When at least one non-empty item is present, the list replaces the parser's
   generated env var names.
 
+Catalog-driven equivalent: when a catalog entry declares `auth_env_vars`, the
+generator layers the canonical names on top of the parser-derived default at
+runtime without editing the upstream spec. The catalog list takes precedence,
+the parser default trails as a backwards-compat fallback, and the rebuilt env
+var list is emitted as an OR-case (any one satisfies auth). The catalog field
+is ignored for HTTP Basic auth (credential-pair shape); declare basic-auth
+env var pairs via `x-auth-env-vars` on the security scheme instead. See
+[`docs/CATALOG.md`](CATALOG.md#auth_env_vars).
+
 ### `x-auth-vars`
 
 Overrides the generated credential environment variable metadata.

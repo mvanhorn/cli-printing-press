@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
@@ -1814,12 +1816,80 @@ resources:
 		"the spec-derived directory must not be created when --output is explicit")
 }
 
+func TestOpenAPIAuthPreferenceForGenerateFromJiraCatalogEntry(t *testing.T) {
+	t.Parallel()
+
+	jira, err := catalog.LookupFS(catalogfs.FS, "jira")
+	require.NoError(t, err)
+	require.Equal(t, "basicAuth", jira.AuthPreference)
+
+	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, ""),
+		"catalog spec_url match should forward auth_preference without --auth-preference")
+	assert.Equal(t, "OAuth2", openAPIAuthPreferenceForGenerate("OAuth2", "", []string{jira.SpecURL}, ""),
+		"explicit --auth-preference must override catalog")
+
+	localSpec := filepath.Join(t.TempDir(), "swagger.json")
+	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "jira", []string{localSpec}, ""),
+		"catalog slug via --name should resolve auth_preference without https spec refs")
+}
+
+func TestOpenAPIAuthPreferenceForGenerateParsesJiraLikeSpecWithCatalogDefault(t *testing.T) {
+	t.Parallel()
+
+	// Mirrors real Jira-style specs: OAuth2 authorizationCode + HTTP Basic; default
+	// parser choice is OAuth2 unless AuthPreference pins basicAuth (see openapi parser tests).
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Atlassian-like
+  version: "1.0"
+servers:
+  - url: https://example.atlassian.net
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            read: read access
+    basicAuth:
+      type: http
+      scheme: basic
+paths:
+  /v1/things:
+    get:
+      operationId: list things
+      security:
+        - basicAuth: []
+        - OAuth2: [read]
+      responses: {"200": {description: ok}}
+`)
+
+	jira, err := catalog.LookupFS(catalogfs.FS, "jira")
+	require.NoError(t, err)
+
+	pref := openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, "")
+	require.Equal(t, "basicAuth", pref)
+
+	parsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec.yaml"), specBytes, false, pref)
+	require.NoError(t, err)
+	assert.Equal(t, "basicAuth", parsed.Auth.Scheme)
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+
+	defaultParsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec2.yaml"), specBytes, false, "")
+	require.NoError(t, err)
+	assert.Equal(t, "OAuth2", defaultParsed.Auth.Scheme, "without catalog-driven preference, OAuth2 wins")
+}
+
 func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {
-	apiSpec := &spec.APISpec{Name: "test-api"}
+	apiSpec := &spec.APISpec{Name: "test-api", BaseURL: spec.PlaceholderBaseURL, BaseURLIsPlaceholder: true}
 
 	enrichSpecFromCatalogEntry(apiSpec, &catalog.Entry{
 		DisplayName: "Test.API",
 		OwnerName:   "Trevin Chow",
+		BaseURL:     "https://api.example.com/",
 		MCP: spec.MCPConfig{
 			Transport:     []string{"stdio", "http"},
 			Orchestration: "code",
@@ -1829,9 +1899,27 @@ func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {
 
 	assert.Equal(t, "Test.API", apiSpec.DisplayName)
 	assert.Equal(t, "Trevin Chow", apiSpec.OwnerName)
+	assert.Equal(t, "https://api.example.com", apiSpec.BaseURL)
+	assert.False(t, apiSpec.BaseURLIsPlaceholder)
 	assert.Equal(t, []string{"stdio", "http"}, apiSpec.MCP.Transport)
 	assert.Equal(t, "code", apiSpec.MCP.Orchestration)
 	assert.Equal(t, "hidden", apiSpec.MCP.EndpointTools)
+}
+
+func TestRebaseAuthEnvPrefix(t *testing.T) {
+	auth := spec.AuthConfig{
+		EnvVars: []string{"ELEVENLABS_DOCUMENTATION_API_KEY", "UNCHANGED_TOKEN"},
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "ELEVENLABS_DOCUMENTATION_CLIENT_ID"},
+			{Name: "CUSTOM_SECRET"},
+		},
+	}
+
+	catalogmeta.RebaseAuthEnvPrefix(&auth, "elevenlabs-documentation", "elevenlabs")
+
+	assert.Equal(t, []string{"ELEVENLABS_API_KEY", "UNCHANGED_TOKEN"}, auth.EnvVars)
+	assert.Equal(t, "ELEVENLABS_CLIENT_ID", auth.EnvVarSpecs[0].Name)
+	assert.Equal(t, "CUSTOM_SECRET", auth.EnvVarSpecs[1].Name)
 }
 
 func TestEnrichSpecFromCatalogMatchesSpecURLWhenSlugDiffers(t *testing.T) {

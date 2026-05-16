@@ -13,6 +13,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/v4/catalog"
 	catalogpkg "github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
@@ -295,6 +296,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			parsed, parseErr = spec.ParseBytes(data)
 		}
 		if parseErr == nil {
+			applyPublishCatalogMetadata(parsed, state.APIName)
 			populateMCPMetadata(&m, parsed)
 		}
 
@@ -371,6 +373,23 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 	}
 
 	return WriteCLIManifest(dir, m)
+}
+
+func applyPublishCatalogMetadata(parsed *spec.APISpec, apiName string) {
+	if parsed == nil || apiName == "" {
+		return
+	}
+	priorName := parsed.Name
+	if priorName != "" && priorName != apiName {
+		catalogmeta.RebaseAuthEnvPrefix(&parsed.Auth, priorName, apiName)
+	}
+	parsed.Name = apiName
+
+	entry, err := catalogpkg.LookupFS(catalog.FS, apiName)
+	if err != nil {
+		return
+	}
+	catalogmeta.ApplyRuntimeMetadata(parsed, entry)
 }
 
 // loadResearchForPromote returns the research.json relevant to the

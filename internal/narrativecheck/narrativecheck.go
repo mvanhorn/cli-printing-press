@@ -57,6 +57,11 @@ type Result struct {
 	Words  string `json:"words,omitempty"`
 	Status Status `json:"status"`
 	Error  string `json:"error,omitempty"`
+	// Notes carries structural annotations about shell pieces that were
+	// excluded from validation. Each entry is shaped `<reason>: <fragment>`,
+	// e.g. `pipe-skipped: jq '.items[]'` or `redirect-stripped: <
+	// keywords.txt`. Empty when the recipe is plain (no pipes, no redirects).
+	Notes []string `json:"notes,omitempty"`
 }
 
 type Report struct {
@@ -181,7 +186,7 @@ func loadCommands(researchPath string) ([]sectionCommand, error) {
 // non-identifier character. Hyphens stay because Cobra subcommands use
 // them (`list-projects`).
 func classify(ctx context.Context, binaryPath string, section Section, command string, opts Options) Result {
-	segments, hasPipe, err := splitShellChain(command)
+	segments, err := splitShellChain(command)
 	if err != nil {
 		return Result{
 			Section: section,
@@ -190,36 +195,58 @@ func classify(ctx context.Context, binaryPath string, section Section, command s
 			Error:   err.Error(),
 		}
 	}
-	if hasPipe {
-		return Result{
-			Section: section,
-			Command: command,
-			Status:  StatusUnsupported,
-			Error:   "pipe-skipped: command contains a top-level `|` which cannot run safely under PRINTING_PRESS_VERIFY=1",
-		}
+
+	// Walk segments left-to-right, emitting notes in the order they appear
+	// in the original command so authors can reconstruct the recipe by
+	// reading down the Notes slice.
+	var notes []string
+	type runnableSegment struct {
+		index   int
+		text    string
+		cleaned string
 	}
-	if len(segments) <= 1 {
-		seg := command
-		if len(segments) == 1 {
-			seg = segments[0]
+	var runnable []runnableSegment
+	for i, seg := range segments {
+		if seg.AfterPipe {
+			notes = append(notes, "pipe-skipped: "+seg.Text)
+			continue
 		}
-		r := classifySegment(ctx, binaryPath, section, seg, opts)
+		cleaned, redirects := stripRedirects(seg.Text)
+		for _, r := range redirects {
+			notes = append(notes, "redirect-stripped: "+r)
+		}
+		runnable = append(runnable, runnableSegment{index: i, text: seg.Text, cleaned: cleaned})
+	}
+
+	finish := func(r Result) Result {
 		r.Command = command
+		r.Notes = append(r.Notes, notes...)
 		return r
 	}
 
+	if len(runnable) == 0 {
+		// Every chained segment landed on the right side of a pipe — there
+		// is no runnable head. Surface this as empty-words so the author
+		// notices, but keep the pipe-skipped notes for context.
+		return finish(Result{
+			Section: section,
+			Status:  StatusEmptyWords,
+			Error:   "command has no runnable segment (every chained segment is pipe-skipped)",
+		})
+	}
+
 	var last Result
-	for i, seg := range segments {
-		sub := classifySegment(ctx, binaryPath, section, seg, opts)
+	for i, seg := range runnable {
+		sub := classifySegment(ctx, binaryPath, section, seg.cleaned, opts)
 		if sub.Status != StatusOK {
-			sub.Command = command
-			sub.Error = fmt.Sprintf("segment %d (%q): %s", i+1, seg, sub.Error)
-			return sub
+			if len(runnable) > 1 {
+				sub.Error = fmt.Sprintf("segment %d (%q): %s", i+1, seg.cleaned, sub.Error)
+			}
+			return finish(sub)
 		}
 		last = sub
 	}
-	last.Command = command
-	return last
+	return finish(last)
 }
 
 func classifySegment(ctx context.Context, binaryPath string, section Section, command string, opts Options) Result {
@@ -344,25 +371,36 @@ func extractSubcommandWords(command string) []string {
 	return words
 }
 
+// chainSegment is one runnable (or pipe-skipped) piece of a recipe command.
+type chainSegment struct {
+	// Text is the segment as it appeared in the source, with surrounding
+	// whitespace trimmed. Pipe and redirect tokens are NOT stripped here —
+	// stripRedirects handles that downstream.
+	Text string
+	// AfterPipe is true when this segment sat to the right of a top-level
+	// `|` operator. The validator skips these segments because their input
+	// would normally arrive over a shell pipe.
+	AfterPipe bool
+}
+
 // splitShellChain walks command and returns the segments separated by
-// top-level `&&`, `||`, or `;` operators. Quoted text is preserved.
-// hasPipe is true when a bare `|` appears at the top level; callers
-// should treat such commands as unrunnable in verify mode rather than
-// attempting to validate the segments around the pipe.
+// top-level `&&`, `||`, `;`, or `|` operators. Quoted text is preserved.
+// Segments after a top-level `|` carry AfterPipe=true; the validator
+// reports those as `pipe-skipped` rather than executing them.
 //
 // Backslash-escapes and quoted-string handling mirror shellargs.Split
 // so the segments are safe to feed back into shellargs.Split.
-func splitShellChain(command string) ([]string, bool, error) {
+func splitShellChain(command string) ([]chainSegment, error) {
 	var (
-		segments []string
-		quote    rune
-		escaped  bool
-		hasPipe  bool
-		start    int
+		segments  []chainSegment
+		quote     rune
+		escaped   bool
+		afterPipe bool
+		start     int
 	)
 	flush := func(end int) {
 		if seg := strings.TrimSpace(command[start:end]); seg != "" {
-			segments = append(segments, seg)
+			segments = append(segments, chainSegment{Text: seg, AfterPipe: afterPipe})
 		}
 	}
 	for i := 0; i < len(command); i++ {
@@ -396,25 +434,162 @@ func splitShellChain(command string) ([]string, bool, error) {
 				flush(i)
 				i++
 				start = i + 1
+				// && resets the pipeline; segments after && start fresh.
+				afterPipe = false
 			}
 		case '|':
 			if i+1 < len(command) && command[i+1] == '|' {
 				flush(i)
 				i++
 				start = i + 1
+				// || resets the pipeline too.
+				afterPipe = false
 				continue
 			}
-			hasPipe = true
+			// Bare `|` ends the current runnable segment and marks every
+			// subsequent segment in this && / || / ; group as pipe-skipped.
+			flush(i)
+			start = i + 1
+			afterPipe = true
 		case ';':
 			flush(i)
 			start = i + 1
+			afterPipe = false
 		}
 	}
 	if quote != 0 {
-		return nil, false, fmt.Errorf("unclosed %s quote in %q", quoteName(quote), command)
+		return nil, fmt.Errorf("unclosed %s quote in %q", quoteName(quote), command)
 	}
 	flush(len(command))
-	return segments, hasPipe, nil
+	return segments, nil
+}
+
+// stripRedirects removes top-level shell redirects (`<file`, `>file`, `>>file`)
+// from a segment and returns the cleaned text plus the human-readable redirect
+// fragments that were excised (e.g. `< keywords.txt`). The validator records
+// the fragments as `redirect-stripped` notes so authors see what the runtime
+// dropped. Redirects inside quoted strings and `2>&1`-style fd duplications
+// are left alone.
+func stripRedirects(segment string) (string, []string) {
+	var (
+		cleaned   strings.Builder
+		redirects []string
+		quote     rune
+		escaped   bool
+	)
+	cleaned.Grow(len(segment))
+	bytes := []byte(segment)
+	i := 0
+	for i < len(bytes) {
+		c := bytes[i]
+		if escaped {
+			cleaned.WriteByte(c)
+			escaped = false
+			i++
+			continue
+		}
+		if quote != 0 {
+			cleaned.WriteByte(c)
+			switch {
+			case quote == '\'' && c == '\'':
+				quote = 0
+			case quote == '"' && c == '\\':
+				escaped = true
+			case quote == '"' && c == '"':
+				quote = 0
+			}
+			i++
+			continue
+		}
+		switch c {
+		case '\\':
+			cleaned.WriteByte(c)
+			escaped = true
+			i++
+		case '\'', '"':
+			cleaned.WriteByte(c)
+			quote = rune(c)
+			i++
+		case '<', '>':
+			// fd duplication like `2>&1` is signaled by a preceding digit AND
+			// a following `&`. Bare `>&file` is `&>file` shorthand (a real
+			// redirect target) and must still be stripped, so the guard only
+			// fires when both signals are present.
+			prevIsDigit := cleaned.Len() > 0 && cleaned.String()[cleaned.Len()-1] >= '0' && cleaned.String()[cleaned.Len()-1] <= '9'
+			if c == '>' && prevIsDigit && i+1 < len(bytes) && bytes[i+1] == '&' {
+				cleaned.WriteByte(c)
+				i++
+				continue
+			}
+			op := string(c)
+			if c == '>' && i+1 < len(bytes) && bytes[i+1] == '>' {
+				op = ">>"
+				i++
+			}
+			i++
+			for i < len(bytes) && (bytes[i] == ' ' || bytes[i] == '\t') {
+				i++
+			}
+			fileStart := i
+			fileQuote := rune(0)
+			fileEsc := false
+			for i < len(bytes) {
+				b := bytes[i]
+				if fileEsc {
+					fileEsc = false
+					i++
+					continue
+				}
+				if fileQuote == '\'' {
+					if b == '\'' {
+						fileQuote = 0
+					}
+					i++
+					continue
+				}
+				if fileQuote == '"' {
+					switch b {
+					case '\\':
+						fileEsc = true
+					case '"':
+						fileQuote = 0
+					}
+					i++
+					continue
+				}
+				switch b {
+				case '\'', '"':
+					fileQuote = rune(b)
+					i++
+					continue
+				case '\\':
+					fileEsc = true
+					i++
+					continue
+				case ' ', '\t':
+					goto fileDone
+				}
+				i++
+			}
+		fileDone:
+			fragment := strings.TrimSpace(op + " " + string(bytes[fileStart:i]))
+			redirects = append(redirects, fragment)
+			// Skip any whitespace that follows the file token so a
+			// redirect-stripped span sandwiched between two flags collapses
+			// to a single space.
+			for i < len(bytes) && (bytes[i] == ' ' || bytes[i] == '\t') {
+				i++
+			}
+			trimmed := strings.TrimRight(cleaned.String(), " \t")
+			cleaned.Reset()
+			cleaned.WriteString(trimmed)
+			cleaned.WriteByte(' ')
+		default:
+			cleaned.WriteByte(c)
+			i++
+		}
+	}
+	return strings.TrimSpace(cleaned.String()), redirects
 }
 
 func quoteName(r rune) string {

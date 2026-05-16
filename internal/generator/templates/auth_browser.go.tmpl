@@ -270,7 +270,32 @@ profile by name when the installed backend supports it.`,
 			fmt.Fprintf(w, "Session saved to %s\n", cfg.Path)
 			return nil
 {{- else}}
-			// Step 4: Save to config
+{{- if .Auth.Cookies}}
+			// Unfiltered, the persisted blob carries every cookie the target
+			// domain has set (CSRF, WAF, anti-bot fingerprints, etc.) into the
+			// Cookie header on every request, which routinely trips upstream
+			// WAFs and shadows the real credential.
+			cookieMap := parseCookieString(cookies)
+			requiredCookies := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }
+			kept := make([]string, 0, len(requiredCookies))
+			for _, name := range requiredCookies {
+				v, ok := cookieMap[name]
+				if !ok {
+					loginURL := "https://" + strings.TrimPrefix(domain, ".")
+					fmt.Fprintf(w, "\n%s Cookie %q not found for %s.\n", red("ERROR"), name, domain)
+					fmt.Fprintln(w, "")
+					fmt.Fprintln(w, "Log in to your account:")
+					fmt.Fprintf(w, "\n  %s\n\n", loginURL)
+					fmt.Fprintln(w, "Then run this command again:")
+					fmt.Fprintf(w, "\n  {{.Name}}-pp-cli auth login --chrome\n")
+					return authErr(fmt.Errorf("cookie %q not found for %s", name, domain))
+				}
+				kept = append(kept, name+"="+v)
+			}
+			cookies = strings.Join(kept, "; ")
+{{- end}}
+
+			// Step 5: Save to config
 			cfg, err := config.Load(flags.configPath)
 			if err != nil {
 				return configErr(err)
@@ -595,6 +620,22 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 	}
 	fmt.Fprintf(w, "Updated stored browser auth from %d cookies.\n", len(requiredCookies))
 {{- else}}
+{{- if .Auth.Cookies}}
+	// Refresh runs unattended, so silently saving the raw blob here would
+	// overwrite the filtered token that login just persisted. Apply the same
+	// allowlist filter as newAuthLoginCmd's non-composed branch.
+	cookieMap := parseCookieString(cookies)
+	requiredCookies := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }
+	kept := make([]string, 0, len(requiredCookies))
+	for _, name := range requiredCookies {
+		v, ok := cookieMap[name]
+		if !ok {
+			return fmt.Errorf("cookie %q not found for %s", name, domain)
+		}
+		kept = append(kept, name+"="+v)
+	}
+	cookies = strings.Join(kept, "; ")
+{{- end}}
 	if err := cfg.SaveTokens("", "", cookies, "", time.Time{}); err != nil {
 		return configErr(fmt.Errorf("saving cookies: %w", err))
 	}
@@ -1328,7 +1369,14 @@ func validateComposedAuth(authHeader string) error {
 {{- end}}
 {{- if not .UsesBrowserManagedUserAgent}}
 	if req.Header.Get("User-Agent") == "" {
+{{- if .UsesBrowserLikeUserAgent}}
+		// Browser-shaped UA matches the main client default; WAF fingerprint
+		// checks on the auth-verify call have to clear the same bar as the
+		// per-resource calls or the user can't log in to begin with.
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
+{{- else}}
 		req.Header.Set("User-Agent", "{{.Name}}-pp-cli/{{.Version}}")
+{{- end}}
 	}
 {{- end}}
 

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -259,25 +260,28 @@ func TestSplitShellChain(t *testing.T) {
 	cases := []struct {
 		name     string
 		in       string
-		segments []string
-		hasPipe  bool
+		segments []chainSegment
 		wantErr  bool
 	}{
-		{"plain command", "stub widgets list", []string{"stub widgets list"}, false, false},
-		{"and-chain", "stub sync && stub list --within 60d", []string{"stub sync", "stub list --within 60d"}, false, false},
-		{"semicolon-chain", "stub sync ; stub list", []string{"stub sync", "stub list"}, false, false},
-		{"or-chain", "stub sync || stub list", []string{"stub sync", "stub list"}, false, false},
-		{"top-level pipe sets flag, leaves segments unsplit", "stub list | grep foo", []string{"stub list | grep foo"}, true, false},
-		{"and inside double quotes", `stub run --msg "a && b"`, []string{`stub run --msg "a && b"`}, false, false},
-		{"semicolon inside single quotes", "stub run --msg 'a ; b'", []string{"stub run --msg 'a ; b'"}, false, false},
-		{"pipe inside quotes is not top-level", `stub run --msg "a | b"`, []string{`stub run --msg "a | b"`}, false, false},
-		{"empty trailing segment dropped", "stub sync &&", []string{"stub sync"}, false, false},
-		{"unclosed quote errors", `stub run --msg "open`, nil, false, true},
+		{"plain command", "stub widgets list", []chainSegment{{Text: "stub widgets list"}}, false},
+		{"and-chain", "stub sync && stub list --within 60d", []chainSegment{{Text: "stub sync"}, {Text: "stub list --within 60d"}}, false},
+		{"semicolon-chain", "stub sync ; stub list", []chainSegment{{Text: "stub sync"}, {Text: "stub list"}}, false},
+		{"or-chain", "stub sync || stub list", []chainSegment{{Text: "stub sync"}, {Text: "stub list"}}, false},
+		{"top-level pipe splits, tail is AfterPipe", "stub list | grep foo", []chainSegment{{Text: "stub list"}, {Text: "grep foo", AfterPipe: true}}, false},
+		{"pipe chain with three commands marks all tails AfterPipe", "stub list | jq | head", []chainSegment{{Text: "stub list"}, {Text: "jq", AfterPipe: true}, {Text: "head", AfterPipe: true}}, false},
+		{"and after pipe resets the pipeline", "stub list | jq && stub show 42", []chainSegment{{Text: "stub list"}, {Text: "jq", AfterPipe: true}, {Text: "stub show 42"}}, false},
+		{"or after pipe resets the pipeline", "stub list | jq || stub show 42", []chainSegment{{Text: "stub list"}, {Text: "jq", AfterPipe: true}, {Text: "stub show 42"}}, false},
+		{"semicolon after pipe resets the pipeline", "stub list | jq ; stub show 42", []chainSegment{{Text: "stub list"}, {Text: "jq", AfterPipe: true}, {Text: "stub show 42"}}, false},
+		{"and inside double quotes", `stub run --msg "a && b"`, []chainSegment{{Text: `stub run --msg "a && b"`}}, false},
+		{"semicolon inside single quotes", "stub run --msg 'a ; b'", []chainSegment{{Text: "stub run --msg 'a ; b'"}}, false},
+		{"pipe inside quotes is not top-level", `stub run --msg "a | b"`, []chainSegment{{Text: `stub run --msg "a | b"`}}, false},
+		{"empty trailing segment dropped", "stub sync &&", []chainSegment{{Text: "stub sync"}}, false},
+		{"unclosed quote errors", `stub run --msg "open`, nil, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			segs, hasPipe, err := splitShellChain(tc.in)
+			segs, err := splitShellChain(tc.in)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("splitShellChain(%q) = nil error, want error", tc.in)
@@ -287,19 +291,16 @@ func TestSplitShellChain(t *testing.T) {
 			if err != nil {
 				t.Fatalf("splitShellChain(%q) errored: %v", tc.in, err)
 			}
-			if hasPipe != tc.hasPipe {
-				t.Errorf("hasPipe = %v, want %v", hasPipe, tc.hasPipe)
-			}
 			want := tc.segments
 			if want == nil {
-				want = []string{}
+				want = []chainSegment{}
 			}
 			got := segs
 			if got == nil {
-				got = []string{}
+				got = []chainSegment{}
 			}
 			if !reflect.DeepEqual(got, want) {
-				t.Errorf("segments = %q, want %q", segs, tc.segments)
+				t.Errorf("segments = %+v, want %+v", got, want)
 			}
 		})
 	}
@@ -393,13 +394,17 @@ func TestValidate_TrailingOperatorDoesNotLeakIntoArgs(t *testing.T) {
 	}
 }
 
-func TestValidate_PipeRecipeSkipsWithReason(t *testing.T) {
+// TestValidate_PipeRecipeValidatesLeadingSegment pins the issue #1455 contract:
+// recipes that pipe their CLI output into jq/head/xargs are now validated by
+// running the leading segment only and recording each pipe tail as a
+// `pipe-skipped:` note. Trailing pipes no longer disqualify the whole recipe.
+func TestValidate_PipeRecipeValidatesLeadingSegment(t *testing.T) {
 	t.Parallel()
 
 	binary := buildStubBinary(t)
 	research := writeFile(t, `{"narrative":{
 		"recipes":[
-			{"command":"stub widgets list | jq ."}
+			{"command":"stub widgets list | jq '.items[]' | head -c 2000"}
 		]
 	}}`)
 
@@ -407,12 +412,82 @@ func TestValidate_PipeRecipeSkipsWithReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Unsupported != 1 {
-		t.Fatalf("piped recipe should classify as Unsupported, got %+v", report)
+	if report.HasFailures() {
+		t.Fatalf("piped recipe should validate cleanly on the leading segment, got %+v", report)
+	}
+	if report.Walked != 1 {
+		t.Fatalf("Walked = %d, want 1", report.Walked)
 	}
 	got := report.Results[0]
-	if !strings.Contains(got.Error, "pipe-skipped") {
-		t.Errorf("error should explain the pipe skip: %s", got.Error)
+	if got.Status != StatusOK {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusOK)
+	}
+	wantNotes := []string{
+		"pipe-skipped: jq '.items[]'",
+		"pipe-skipped: head -c 2000",
+	}
+	if !reflect.DeepEqual(got.Notes, wantNotes) {
+		t.Errorf("Notes = %q, want %q", got.Notes, wantNotes)
+	}
+}
+
+// TestValidate_MixedRedirectAndPipeNotesAreLeftToRight pins the textual
+// ordering of Result.Notes: a recipe whose leading segment owns a redirect
+// and whose tail is piped should record the redirect-stripped note before
+// the pipe-skipped note, matching the order tokens appear in the source.
+func TestValidate_MixedRedirectAndPipeNotesAreLeftToRight(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"recipes":[
+			{"command":"stub widgets list < keywords.txt | jq '.'"}
+		]
+	}}`)
+
+	report, err := Validate(context.Background(), research, binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.HasFailures() {
+		t.Fatalf("mixed redirect+pipe recipe should validate, got %+v", report)
+	}
+	got := report.Results[0]
+	wantNotes := []string{
+		"redirect-stripped: < keywords.txt",
+		"pipe-skipped: jq '.'",
+	}
+	if !reflect.DeepEqual(got.Notes, wantNotes) {
+		t.Errorf("Notes = %q, want %q (left-to-right textual order)", got.Notes, wantNotes)
+	}
+}
+
+// TestValidate_RedirectStripValidatesCleanedHead covers the second leg of
+// issue #1455: a `<file` input redirect is excised from the leading segment
+// before validation and recorded as a `redirect-stripped:` note.
+func TestValidate_RedirectStripValidatesCleanedHead(t *testing.T) {
+	t.Parallel()
+
+	binary := buildStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"recipes":[
+			{"command":"stub widgets list < keywords.txt"}
+		]
+	}}`)
+
+	report, err := Validate(context.Background(), research, binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.HasFailures() {
+		t.Fatalf("recipe with input redirect should validate the stripped command, got %+v", report)
+	}
+	got := report.Results[0]
+	if got.Status != StatusOK {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusOK)
+	}
+	if !slices.Contains(got.Notes, "redirect-stripped: < keywords.txt") {
+		t.Errorf("Notes should record the stripped redirect, got %q", got.Notes)
 	}
 }
 
@@ -501,4 +576,85 @@ func main() {
 		t.Fatal(stubErr)
 	}
 	return stubPath
+}
+
+func TestStripRedirects(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		in        string
+		wantText  string
+		wantPaths []string
+	}{
+		{
+			name:     "no redirects",
+			in:       "stub widgets list --json",
+			wantText: "stub widgets list --json",
+		},
+		{
+			name:      "trailing input redirect",
+			in:        "stub bulk --stdin --json < keywords.txt",
+			wantText:  "stub bulk --stdin --json",
+			wantPaths: []string{"< keywords.txt"},
+		},
+		{
+			name:      "trailing output redirect",
+			in:        "stub export > out.json",
+			wantText:  "stub export",
+			wantPaths: []string{"> out.json"},
+		},
+		{
+			name:      "append redirect",
+			in:        "stub log >> session.log",
+			wantText:  "stub log",
+			wantPaths: []string{">> session.log"},
+		},
+		{
+			name:      "leading flag is preserved when redirect interleaves",
+			in:        "stub run < in.txt --json",
+			wantText:  "stub run --json",
+			wantPaths: []string{"< in.txt"},
+		},
+		{
+			name:     "fd duplication is left alone",
+			in:       "stub run 2>&1",
+			wantText: "stub run 2>&1",
+		},
+		{
+			name:      "bare >&file is a real redirect target (no digit prefix)",
+			in:        "stub run >&combined.log",
+			wantText:  "stub run",
+			wantPaths: []string{"> &combined.log"},
+		},
+		{
+			name:      "single-quoted filename with spaces stays whole",
+			in:        "stub bulk --stdin < 'file with spaces.txt'",
+			wantText:  "stub bulk --stdin",
+			wantPaths: []string{"< 'file with spaces.txt'"},
+		},
+		{
+			name:      "double-quoted filename with spaces stays whole",
+			in:        `stub export > "out file.json"`,
+			wantText:  "stub export",
+			wantPaths: []string{`> "out file.json"`},
+		},
+		{
+			name:     "redirect inside single quote preserved",
+			in:       "stub run --msg 'a < b > c'",
+			wantText: "stub run --msg 'a < b > c'",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gotText, gotPaths := stripRedirects(tc.in)
+			if gotText != tc.wantText {
+				t.Errorf("text = %q, want %q", gotText, tc.wantText)
+			}
+			if !reflect.DeepEqual(gotPaths, tc.wantPaths) {
+				t.Errorf("paths = %q, want %q", gotPaths, tc.wantPaths)
+			}
+		})
+	}
 }
