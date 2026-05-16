@@ -252,7 +252,7 @@ components:
       description: |
         Free key from https://openrouteservice.org/dev/#/signup. Pass the raw key
         as the `Authorization` header value (no `Bearer ` prefix). The CLI reads
-        the key from `ORS_API_KEY` or `OPENROUTESERVICE_API_KEY`.
+        the key from the `ORS_API_KEY` environment variable.
 
   parameters:
     Profile:
