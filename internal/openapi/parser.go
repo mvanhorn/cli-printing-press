@@ -462,6 +462,15 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 	result.RequiredHeaders, perEndpointHeaders = detectRequiredHeaders(doc, result.Auth)
 	applyHeaderOverrides(result, perEndpointHeaders)
 
+	// Synthesize Params entries for {placeholder} tokens in the path template
+	// that the operation never declared in `parameters` (or via a path-item /
+	// $ref shared parameter). Real-world specs frequently omit these — the
+	// path template is the source of truth, but without a matching Param
+	// entry the generator emits a URL with literal `{name}` segments and the
+	// request returns 404. Same pass the YAML loader uses, applied uniformly
+	// here so OpenAPI-parsed specs get the same guarantee.
+	result.EnrichPathParams()
+
 	if err := result.Validate(); err != nil {
 		return nil, fmt.Errorf("validating parsed spec: %w", err)
 	}

@@ -1540,7 +1540,7 @@ func ParseBytes(data []byte) (*APISpec, error) {
 		return nil, fmt.Errorf("parsing yaml: %w", yamlErr)
 	}
 	s.expandOperations()
-	s.enrichPathParams()
+	s.EnrichPathParams()
 	s.promoteParamsToBodyForWriteEndpoints()
 	if err := s.validateReservedNames(); err != nil {
 		return nil, err
@@ -1697,7 +1697,7 @@ var pathParamRe = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 var orGroupTokenRe = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
 
-// enrichPathParams walks every resource and sub-resource endpoint and ensures
+// EnrichPathParams walks every resource and sub-resource endpoint and ensures
 // each `{paramName}` placeholder in the endpoint path is represented in
 // Endpoint.Params with Positional: true, Required: true. The expandOperations
 // path already populates these for shorthand-generated endpoints; explicit
@@ -1713,7 +1713,7 @@ var orGroupTokenRe = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
 // Order is preserved: placeholders are appended in the order they appear in
 // the path so generated cobra `Args: cobra.ExactArgs(N)` sites and the
 // matching `replacePathParam(...args[i])` calls line up.
-func (s *APISpec) enrichPathParams() {
+func (s *APISpec) EnrichPathParams() {
 	for resourceName, r := range s.Resources {
 		s.enrichResourcePathParams(&r)
 		s.Resources[resourceName] = r
