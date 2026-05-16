@@ -1701,6 +1701,81 @@ func TestGenerateBrowserChromeH3Transport(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/client")
 }
 
+// TestGenerateBrowserChromeH2Transport pins the explicit
+// browser-chrome-h2 enum: the client emits ForceHTTP2() and no
+// ForceHTTP3(). Separate from the bare browser-chrome case (no version
+// force) so a future refactor cannot collapse the two without a failing
+// test.
+func TestGenerateBrowserChromeH2Transport(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:          "websurfaceh2",
+		Version:       "0.1.0",
+		BaseURL:       "https://www.example.com",
+		HTTPTransport: spec.HTTPTransportBrowserChromeH2,
+		Auth:          spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/websurfaceh2-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"posts": {
+				Description: "Browse posts",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/", Description: "List posts"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "websurfaceh2-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
+	assert.Contains(t, string(clientGo), "ForceHTTP2()")
+	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
+}
+
+// TestGenerateBrowserChromeNoVersionForce pins the bare browser-chrome
+// enum (no -h2 / -h3 suffix): the surf client is used but no
+// ForceHTTPN() call is emitted, so Chrome's negotiated version wins.
+// Operators who want an explicit H/2 force must set browser-chrome-h2.
+func TestGenerateBrowserChromeNoVersionForce(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:          "websurfacenoforce",
+		Version:       "0.1.0",
+		BaseURL:       "https://www.example.com",
+		HTTPTransport: spec.HTTPTransportBrowserChrome,
+		Auth:          spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/websurfacenoforce-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"posts": {
+				Description: "Browse posts",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/", Description: "List posts"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "websurfacenoforce-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
+	assert.NotContains(t, string(clientGo), "ForceHTTP2()")
+	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
+}
+
 func TestGenerateBrowserHTTPTransportDisablesHTTP2(t *testing.T) {
 	t.Parallel()
 

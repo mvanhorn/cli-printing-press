@@ -714,7 +714,8 @@ resources:
   "summary": {
     "target_url": "https://www.producthunt.com",
     "entry_count": 1,
-    "api_entry_count": 1
+    "api_entry_count": 1,
+    "http_version_distribution": {"h2": 9}
   },
   "reachability": {
     "mode": "browser_clearance_http",
@@ -753,6 +754,9 @@ resources:
 	require.NoError(t, err)
 	assert.NotContains(t, string(clientGo), `req.Header.Set("User-Agent"`)
 	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
+	// HAR distribution declares H/2 majority -> ForceHTTP2 is emitted and
+	// ForceHTTP3 is not. With an empty distribution the bare browser-chrome
+	// enum would emit neither; the fixture above pins the HAR-driven path.
 	assert.Contains(t, string(clientGo), "ForceHTTP2()")
 	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
 	assert.NotContains(t, string(clientGo), "runBrowserUseFetch")
@@ -807,7 +811,8 @@ resources:
   "summary": {
     "target_url": "https://www.producthunt.com",
     "entry_count": 1,
-    "api_entry_count": 1
+    "api_entry_count": 1,
+    "http_version_distribution": {"h2": 9}
   },
   "reachability": {
     "mode": "browser_clearance_http",
@@ -831,6 +836,7 @@ resources:
 	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
+	// HAR distribution declares H/2 majority -> ForceHTTP2 emits.
 	assert.Contains(t, string(clientGo), "ForceHTTP2()")
 	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
 	assert.NotContains(t, string(clientGo), "runBrowserUseFetch")

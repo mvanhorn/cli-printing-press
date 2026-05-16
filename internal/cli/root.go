@@ -495,8 +495,17 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	if opts.rejectUnshippablePageContextTraffic && trafficAnalysisRequiresUnshippablePageContext(trafficAnalysis) {
 		return nil, false, &ExitError{Code: ExitInputError, Err: fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")}
 	}
-	applyHTTPTransportDefault(apiSpec, trafficAnalysis)
+	// ApplyReachabilityDefaults runs first so its HAR-driven HTTP-version
+	// mapping wins for browser_http / browser_clearance_http modes.
+	// applyHTTPTransportDefault then fills the cases reachability does
+	// not cover (no reachability section, hint-only signals, browser_required)
+	// because its own no-op-when-set guard short-circuits in the populated
+	// case. The two functions cover disjoint reachability modes, so the
+	// short-circuit is the only thing keeping a write-write conflict
+	// impossible today; preserve that invariant if either function's
+	// mode coverage widens.
 	browsersniff.ApplyReachabilityDefaults(apiSpec, trafficAnalysis)
+	applyHTTPTransportDefault(apiSpec, trafficAnalysis)
 	gen.TrafficAnalysis = trafficAnalysis
 	if err := gen.Generate(); err != nil {
 		return nil, false, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}

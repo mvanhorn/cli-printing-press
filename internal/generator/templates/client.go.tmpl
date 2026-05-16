@@ -284,7 +284,7 @@ func newHTTPClient(timeout time.Duration, jar http.CookieJar) *http.Client {
 		Timeout(timeout)
 {{- if .UsesBrowserHTTP3Transport}}
 	builder = builder.ForceHTTP3()
-{{- else}}
+{{- else if .UsesBrowserHTTP2Transport}}
 	builder = builder.ForceHTTP2()
 {{- end}}
 	if jar == nil {
