@@ -37,6 +37,24 @@ func TestBodyMap(t *testing.T) {
 				"\t\t\t}\n",
 		},
 		{
+			// Booleans bypass the zero-guard: the user's false is a
+			// legitimate choice, and omitting the field lets the server
+			// default (often true for "private", "enabled") silently
+			// invert intent. See issue #1298.
+			name:   "scalar boolean (internal spec form) always emits, no zero-guard",
+			body:   []spec.Param{{Name: "private", Type: "boolean"}},
+			indent: "\t\t\t",
+			want:   "\t\t\tbody[\"private\"] = bodyPrivate\n",
+		},
+		{
+			// The OpenAPI parser normalizes "boolean" -> "bool", so the
+			// renderer must match both forms or fail open on OpenAPI specs.
+			name:   "scalar bool (OpenAPI-normalized form) always emits, no zero-guard",
+			body:   []spec.Param{{Name: "enabled", Type: "bool"}},
+			indent: "\t\t\t",
+			want:   "\t\t\tbody[\"enabled\"] = bodyEnabled\n",
+		},
+		{
 			name:   "object branch parses JSON and stores parsed value",
 			body:   []spec.Param{{Name: "metadata", Type: "object"}},
 			indent: "\t\t\t",

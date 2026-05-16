@@ -3473,6 +3473,15 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identP
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
+		if p.Type == "boolean" || p.Type == "bool" {
+			// Booleans bypass the zero-guard: false is a legitimate user
+			// choice, not a sentinel for "unset". Omitting the field
+			// defers to the server's default, which often disagrees with
+			// false and silently inverts the user's intent. Internal YAML
+			// specs use "boolean"; the OpenAPI parser normalizes to "bool".
+			fmt.Fprintf(b, "%s%s[%q] = body%s\n", indent, mapVar, p.Name, ident)
+			continue
+		}
 		fmt.Fprintf(b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
 		fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.Name, ident)
 		fmt.Fprintf(b, "%s}\n", indent)
