@@ -240,8 +240,9 @@ $(git diff --stat upstream/main..HEAD)
 
 ## Evidence
 
-- Plan doc: https://github.com/$gh_user/printing-press-library/blob/$HEAD_SHA/library/$category/$slug/.printing-press-patches.json
-- Per-finding evidence: see the plan doc at the path above (PII-scrubbed)
+- Patch record: https://github.com/$gh_user/printing-press-library/blob/$HEAD_SHA/library/$category/$slug/.printing-press-patches.json
+- Per-finding rationale: see the per-finding evidence captured in the patch record above and the Findings table earlier in this PR body
+- Local plan doc (not in the PR — PII-scrubbed local artifact): \`\$PRESS_MANUSCRIPTS/$slug/<run-id>/proofs/<timestamp>-amend-$slug.md\` (path provided here for the original printer's reference; the artifact stays local by design)
 
 $PR_BODY_FOOTER
 EOF
