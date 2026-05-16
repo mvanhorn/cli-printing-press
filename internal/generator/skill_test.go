@@ -421,6 +421,15 @@ func TestSkillRendersExtraCommands(t *testing.T) {
 		assert.NotContains(t, afterHeading, name,
 			"extra command %q must not appear under Command Reference; the unknown-command walker would flag it", name)
 	}
+
+	// Markdown nests every `###` under the most recent `##`. Placing
+	// `## Hand-written Extensions` BEFORE `### Finding the right command`
+	// would silently reparent that subsection. Assert the ordering so a
+	// future template edit doesn't regress the structure.
+	findingIdx := strings.Index(content, "### Finding the right command")
+	require.NotEqual(t, -1, findingIdx, "Finding the right command subsection should exist")
+	require.Greater(t, extIdx, findingIdx,
+		"Hand-written Extensions must come after ### Finding the right command so it doesn't reparent that subsection")
 }
 
 // TestSkillFrontmatterMetadataIsClawHubCompliantNestedYAML asserts that the
