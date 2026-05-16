@@ -465,9 +465,8 @@ fi
 # check, which fails on any non-bot commit touching the mirror. Same-repo PRs
 # are auto-handled by the library's `Commit generated convention fixes` step,
 # which is gated on `head.repo.full_name == github.repository`. Do not
-# re-introduce a mirror-regenerator invocation here without first resolving
-# the Guard check on the library side (tracked at
-# https://github.com/mvanhorn/printing-press-library/issues/590).
+# re-introduce a mirror-regenerator invocation here unless the library's
+# Guard check has been loosened to accept publish-flow commits.
 
 # Verify this changed/new CLI builds and has no reachable Go vulnerabilities from the publish repo
 cd "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" \
