@@ -989,6 +989,184 @@ paths:
 	assert.Equal(t, "https://example.com/auth", parsed.Auth.AuthorizationURL)
 }
 
+func TestParseAuthPreferenceSelectsNamedScheme(t *testing.T) {
+	t.Parallel()
+
+	// Many real-world specs (Atlassian Jira, Confluence, Bitbucket, GitLab)
+	// advertise both OAuth2 (with full authorizationCode flow) and HTTP Basic.
+	// The default selector picks OAuth2 — correct for hosted multi-tenant
+	// integrations but wrong for personal-token CLIs. AuthPreference lets the
+	// catalog (or a generate caller) pin the simpler scheme.
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Atlassian-like
+  version: "1.0"
+servers:
+  - url: https://example.atlassian.net
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            read: read access
+    basicAuth:
+      type: http
+      scheme: basic
+paths:
+  /v1/things:
+    get:
+      operationId: list things
+      security:
+        - basicAuth: []
+        - OAuth2: [read]
+      responses: {"200": {description: ok}}
+`)
+
+	defaultParsed, err := Parse(specBytes)
+	require.NoError(t, err)
+	assert.Equal(t, "OAuth2", defaultParsed.Auth.Scheme, "without preference, OAuth2+AC wins by design")
+	assert.Equal(t, "bearer_token", defaultParsed.Auth.Type)
+
+	preferred, err := ParseWithOptions(specBytes, ParseOptions{AuthPreference: "basicAuth"})
+	require.NoError(t, err)
+	assert.Equal(t, "api_key", preferred.Auth.Type, "preference pins HTTP Basic")
+	assert.Equal(t, "basicAuth", preferred.Auth.Scheme)
+	assert.Equal(t, "Basic {username}:{password}", preferred.Auth.Format)
+}
+
+func TestParseAuthPreferenceCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Mixed
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.example.com/authorize
+          tokenUrl: https://api.example.com/token
+          scopes:
+            read: read
+    BasicAuth:
+      type: http
+      scheme: basic
+paths:
+  /v1/things:
+    get:
+      operationId: list things
+      security:
+        - BasicAuth: []
+        - OAuth2: [read]
+      responses: {"200": {description: ok}}
+`)
+
+	preferred, err := ParseWithOptions(specBytes, ParseOptions{AuthPreference: "basicauth"})
+	require.NoError(t, err)
+	assert.Equal(t, "api_key", preferred.Auth.Type)
+	assert.Equal(t, "BasicAuth", preferred.Auth.Scheme, "match is case-insensitive but result preserves spec casing")
+}
+
+func TestParseAuthPreferenceUnknownNameFallsBackToDefault(t *testing.T) {
+	t.Parallel()
+
+	// An unknown preference name must not fail parse; it falls through to the
+	// default selector so a typo in catalog yaml degrades gracefully.
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Mixed
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.example.com/authorize
+          tokenUrl: https://api.example.com/token
+          scopes:
+            read: read
+    basicAuth:
+      type: http
+      scheme: basic
+paths:
+  /v1/things:
+    get:
+      operationId: list things
+      security:
+        - basicAuth: []
+        - OAuth2: [read]
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := ParseWithOptions(specBytes, ParseOptions{AuthPreference: "doesNotExist"})
+	require.NoError(t, err)
+	assert.Equal(t, "OAuth2", parsed.Auth.Scheme, "unknown preference falls back to default selector")
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+}
+
+func TestParseBearerPreservedOverOAuth2AuthCode(t *testing.T) {
+	t.Parallel()
+
+	// GitHub-style shape: an http/bearer scheme alongside a full OAuth2
+	// authorizationCode flow. The scoring system in schemePriorityScore
+	// pins schemePriorityBearer = 0 < schemePriorityOAuth2AuthCode = 200
+	// precisely because Bearer is the simplest scheme for a CLI to use.
+	// Default selection must keep Bearer; AuthPreference must still let
+	// callers opt into OAuth2 when they want the 3LO dance.
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: GitHub-like
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            read: read access
+paths:
+  /v1/things:
+    get:
+      operationId: list things
+      security:
+        - BearerAuth: []
+        - OAuth2: [read]
+      responses: {"200": {description: ok}}
+`)
+
+	defaultParsed, err := Parse(specBytes)
+	require.NoError(t, err)
+	assert.Equal(t, "BearerAuth", defaultParsed.Auth.Scheme, "default selection must keep Bearer over OAuth2+AC")
+	assert.Equal(t, "bearer_token", defaultParsed.Auth.Type)
+
+	preferred, err := ParseWithOptions(specBytes, ParseOptions{AuthPreference: "OAuth2"})
+	require.NoError(t, err)
+	assert.Equal(t, "OAuth2", preferred.Auth.Scheme, "AuthPreference must still let callers opt into OAuth2")
+	assert.Equal(t, "bearer_token", preferred.Auth.Type)
+	assert.Equal(t, "https://auth.example.com/authorize", preferred.Auth.AuthorizationURL)
+	assert.Equal(t, "https://auth.example.com/token", preferred.Auth.TokenURL)
+}
+
 func TestBearerSchemeNameCanSpecializeEnvVar(t *testing.T) {
 	t.Parallel()
 

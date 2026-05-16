@@ -163,62 +163,83 @@ func stripBrokenRefs(data []byte, errMsg string) []byte {
 
 // Parse parses an OpenAPI spec strictly. Use ParseLenient for specs with broken $refs.
 func Parse(data []byte) (*spec.APISpec, error) {
-	return parse(data, false)
+	return ParseWithOptions(data, ParseOptions{})
 }
 
 // ParseFile parses an OpenAPI spec from a file and resolves local external
 // refs relative to that file.
 func ParseFile(path string) (*spec.APISpec, error) {
-	return parseFile(path, false)
+	return parseFileWithOptions(path, ParseOptions{})
 }
 
 // ParseWithPath parses OpenAPI spec bytes and resolves local external refs
 // relative to the given file path.
 func ParseWithPath(data []byte, path string) (*spec.APISpec, error) {
-	return parseWithPath(data, path, false)
+	return ParseWithOptions(data, ParseOptions{Path: path})
 }
 
 // ParseLenient parses an OpenAPI spec, skipping validation errors from broken $refs.
 // It logs warnings to stderr for any issues found but continues parsing.
 func ParseLenient(data []byte) (*spec.APISpec, error) {
-	return parse(data, true)
+	return ParseWithOptions(data, ParseOptions{Lenient: true})
 }
 
 // ParseFileLenient parses an OpenAPI spec from a file and skips validation
 // errors from broken $refs after resolving local external refs relative to
 // that file.
 func ParseFileLenient(path string) (*spec.APISpec, error) {
-	return parseFile(path, true)
+	return parseFileWithOptions(path, ParseOptions{Lenient: true})
 }
 
 // ParseWithPathLenient parses OpenAPI spec bytes, resolving local external refs
 // relative to the given file path and skipping validation errors from broken
 // refs.
 func ParseWithPathLenient(data []byte, path string) (*spec.APISpec, error) {
-	return parseWithPath(data, path, true)
+	return ParseWithOptions(data, ParseOptions{Path: path, Lenient: true})
 }
 
-func parseFile(path string, lenient bool) (*spec.APISpec, error) {
+// ParseOptions carries optional hints that influence parsing without changing
+// the existing single-purpose Parse* signatures. New behavioral knobs (e.g.
+// auth-scheme preference) should be added here rather than as new positional
+// parameters across every entry point.
+type ParseOptions struct {
+	// Path resolves local external refs relative to a file location. Empty
+	// means the spec is treated as remote/in-memory only.
+	Path string
+	// Lenient skips validation errors from broken $refs.
+	Lenient bool
+	// AuthPreference names a security scheme from components.securitySchemes
+	// that should win over the parser's default selection priority. Used when
+	// a spec exposes multiple valid schemes (e.g. OAuth2 + basic) and the
+	// caller knows which one fits the printed CLI's intended auth model.
+	// Unknown names are ignored (default selection runs).
+	AuthPreference string
+}
+
+// ParseWithOptions is the canonical parser entry point; the older Parse* and
+// ParseFile* helpers delegate to it with default ParseOptions plus their own
+// path/lenient settings.
+func ParseWithOptions(data []byte, opts ParseOptions) (*spec.APISpec, error) {
+	if opts.Path == "" {
+		return parseWithLocation(data, opts.Lenient, nil, opts.AuthPreference)
+	}
+	location, err := fileLocation(opts.Path)
+	if err != nil {
+		return nil, err
+	}
+	return parseWithLocation(data, opts.Lenient, location, opts.AuthPreference)
+}
+
+func parseFileWithOptions(path string, opts ParseOptions) (*spec.APISpec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading OpenAPI spec: %w", err)
 	}
-	return parseWithPath(data, path, lenient)
+	opts.Path = path
+	return ParseWithOptions(data, opts)
 }
 
-func parseWithPath(data []byte, path string, lenient bool) (*spec.APISpec, error) {
-	location, err := fileLocation(path)
-	if err != nil {
-		return nil, err
-	}
-	return parseWithLocation(data, lenient, location)
-}
-
-func parse(data []byte, lenient bool) (*spec.APISpec, error) {
-	return parseWithLocation(data, lenient, nil)
-}
-
-func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APISpec, error) {
+func parseWithLocation(data []byte, lenient bool, location *url.URL, authPreference string) (*spec.APISpec, error) {
 	var metadata specDataMetadata
 	if normalized, meta, err := normalizeSpecDataWithMetadata(data); err == nil {
 		data = normalized
@@ -388,7 +409,7 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 		baseURLIsPlaceholder = true
 	}
 
-	auth := mapAuthWithDescriptionInference(doc, name, !metadata.explicitEmptySecuritySchemes)
+	auth := mapAuthWithDescriptionInference(doc, name, !metadata.explicitEmptySecuritySchemes, authPreference)
 	if auth.Type != "none" && allOperationsAllowAnonymous(doc) {
 		auth = spec.AuthConfig{Type: "none"}
 	}
@@ -549,12 +570,12 @@ func lookupOpenAPIInfoExtension(doc *openapi3.T, key string) (any, bool) {
 }
 
 func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
-	return mapAuthWithDescriptionInference(doc, name, true)
+	return mapAuthWithDescriptionInference(doc, name, true, "")
 }
 
-func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescriptionInference bool) spec.AuthConfig {
+func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescriptionInference bool, authPreference string) spec.AuthConfig {
 	auth := spec.AuthConfig{Type: "none"}
-	schemeName, scheme := selectSecurityScheme(doc)
+	schemeName, scheme := selectSecurityScheme(doc, authPreference)
 	if scheme == nil {
 		result := inferQueryParamAuth(doc, name, auth)
 		if result.Type == "none" {
@@ -1758,12 +1779,24 @@ func isNegated(text string, keywordIdx int) bool {
 	return false
 }
 
-func selectSecurityScheme(doc *openapi3.T) (string, *openapi3.SecurityScheme) {
+func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *openapi3.SecurityScheme) {
 	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) == 0 {
 		return "", nil
 	}
 
 	candidates := candidateSecuritySchemeNames(doc)
+
+	if pref := strings.TrimSpace(authPreference); pref != "" {
+		for _, name := range candidates {
+			if !strings.EqualFold(name, pref) {
+				continue
+			}
+			scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
+			if scheme != nil {
+				return name, scheme
+			}
+		}
+	}
 
 	bestScore := math.MaxInt
 	var bestName string
