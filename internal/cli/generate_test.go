@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
@@ -1547,6 +1548,47 @@ func TestNormalizeHTTPTransportAllowsBrowserChromeH3(t *testing.T) {
 
 	_, err = normalizeHTTPTransport("browser-runtime")
 	require.ErrorContains(t, err, "--transport must be one of")
+}
+
+// TestApplyHTTPTransportDefaultPreservesH2ForProtectionPath pins the
+// protection-driven branch (Cloudflare/DataDome/html_scrape/browser
+// hints without a reachability mode). Pre-fix the template's else
+// branch unconditionally emitted ForceHTTP2 for bare browser-chrome;
+// post-fix the bare enum means "no force" so this path must opt into
+// the -h2 variant explicitly to keep shipped CLIs on these origins
+// behaving identically.
+func TestApplyHTTPTransportDefaultPreservesH2ForProtectionPath(t *testing.T) {
+	t.Parallel()
+	apiSpec := &spec.APISpec{
+		Name:    "cloudflareapp",
+		BaseURL: "https://www.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+	}
+	analysis := &browsersniff.TrafficAnalysis{
+		Protections: []browsersniff.ProtectionObservation{{Label: "cloudflare"}},
+	}
+	applyHTTPTransportDefault(apiSpec, analysis)
+	assert.Equal(t, spec.HTTPTransportBrowserChromeH2, apiSpec.HTTPTransport,
+		"protection-driven path must write browser-chrome-h2 so the generated client still forces HTTP/2")
+}
+
+// TestApplyHTTPTransportDefaultExplicitH3WinsOverProtection pins that
+// an explicit H/3 hint still wins over the protection heuristic when
+// both fire; the H/3 force preempts the H/2 fallback.
+func TestApplyHTTPTransportDefaultExplicitH3WinsOverProtection(t *testing.T) {
+	t.Parallel()
+	apiSpec := &spec.APISpec{
+		Name:    "cloudflareh3app",
+		BaseURL: "https://www.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+	}
+	analysis := &browsersniff.TrafficAnalysis{
+		Protections:     []browsersniff.ProtectionObservation{{Label: "cloudflare"}},
+		GenerationHints: []string{"prefer_http3"},
+	}
+	applyHTTPTransportDefault(apiSpec, analysis)
+	assert.Equal(t, spec.HTTPTransportBrowserChromeH3, apiSpec.HTTPTransport,
+		"explicit H/3 hint must beat the protection-driven H/2 default")
 }
 
 func TestGenerateCmdInfersTrafficAnalysisForSniffedSpec(t *testing.T) {

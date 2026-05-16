@@ -605,7 +605,14 @@ func applyHTTPTransportDefault(apiSpec *spec.APISpec, analysis *browsersniff.Tra
 		return
 	}
 	if trafficAnalysisRecommendsBrowserTransport(analysis) {
-		apiSpec.HTTPTransport = spec.HTTPTransportBrowserChrome
+		// Surface the implicit H/2 force the pre-template-change else-branch
+		// provided. ApplyReachabilityDefaults handles the browser_http /
+		// browser_clearance_http modes with HAR-driven precision; everything
+		// this branch covers (Cloudflare/DataDome/Akamai protections, html_scrape
+		// protocol, generic browser/scrape hints) lacks HAR HTTP-version data,
+		// so default to -h2 instead of bare browser-chrome (no force) to keep
+		// shipped CLIs on origins these heuristics flag behaving identically.
+		apiSpec.HTTPTransport = spec.HTTPTransportBrowserChromeH2
 	}
 }
 
