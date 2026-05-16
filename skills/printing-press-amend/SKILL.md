@@ -541,10 +541,18 @@ Surface the final error log to the user, do NOT auto-open the PR, exit. The user
 `publish validate` does NOT check `.printing-press-patches.json` ↔ `// PATCH(...)` parity. That contract is enforced by the public library's `verify-library-conventions` workflow only after the PR opens. To catch it locally, run a quick parity check before proceeding to Phase 5:
 
 ```bash
-patch_marker_count=$(grep -rc "// PATCH(" "$CLI_DIR" --include="*.go" | awk -F: '{s+=$2} END {print s+0}')
+# Count only NEW // PATCH(...) markers added in this run by diffing against upstream.
+# A naive grep -rc over $CLI_DIR also counts markers added by prior amend runs,
+# which lets a zero-new-markers run pass when prior history makes the cumulative
+# count meet or exceed the per-run declared count.
+# format-patch --stdout is used (not `git diff`) so the parse stays robust against
+# tooling that intercepts `git diff` (delta pager, token-shim wrappers) and
+# reformats the output away from unified-diff shape.
+new_patch_markers=$(git -C "$PUBLISH_REPO_DIR" format-patch --stdout upstream/main..HEAD -- "$CLI_DIR" \
+  | grep -cE '^\+.*// PATCH\(')
 patches_entry=$(jq '.patches[-1].patch_count // 0' "$CLI_DIR/.printing-press-patches.json")
-if [ "$patch_marker_count" -lt "$patches_entry" ]; then
-  echo "ERROR: .printing-press-patches.json claims $patches_entry patch markers, found $patch_marker_count // PATCH(...) comments."
+if [ "$new_patch_markers" -lt "$patches_entry" ]; then
+  echo "ERROR: .printing-press-patches.json claims $patches_entry patch markers added this run, found $new_patch_markers new // PATCH(...) comments in the diff."
   exit 1
 fi
 ```
