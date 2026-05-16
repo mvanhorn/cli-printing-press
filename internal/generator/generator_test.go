@@ -4054,10 +4054,46 @@ func TestCompactListFieldsPreservesUnknownShapes(t *testing.T) {
 		"compactListFields must count per-key occurrence so frequent novel-command keys survive")
 	assert.Contains(t, body, "isCompactScalar",
 		"compactListFields must filter the data-driven extension by scalar type so nested objects/arrays don't bloat --compact output")
-	assert.Contains(t, body, "compactVerboseFields",
+	assert.Contains(t, body, "compactVerboseListFields",
 		"compactListFields must exclude description/body/content from the data-driven extension regardless of frequency")
 	assert.Contains(t, body, "threshold",
 		"compactListFields must compute a frequency threshold for the data-driven extension")
+}
+
+// TestCompactObjectFieldsPreservesPayloadFields pins the contract that
+// single-object `get` responses retain their primary payload fields under
+// `--agent`/`--compact`. The list-path blocklist correctly strips body/
+// content/html/markdown from list items (verbose noise), but applying the
+// same blocklist to single-object responses silently drops the field the
+// caller asked for. Pinned at the template level so the two blocklists stay
+// separate as the helper renders into every printed CLI.
+func TestCompactObjectFieldsPreservesPayloadFields(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join("templates", "helpers.go.tmpl")
+	data, err := os.ReadFile(path)
+	require.NoError(t, err, "template must exist: %s", path)
+	body := string(data)
+
+	require.Contains(t, body, "compactVerboseObjectFields",
+		"compactObjectFields must read from a dedicated object-path blocklist, not the list-path one")
+	require.Contains(t, body, "if !compactVerboseObjectFields[k] {",
+		"compactObjectFields must consult the object-path blocklist when deciding which keys to keep")
+
+	objStart := strings.Index(body, "compactVerboseObjectFields = map[string]bool{")
+	require.GreaterOrEqual(t, objStart, 0, "compactVerboseObjectFields map literal must exist")
+	objEnd := strings.Index(body[objStart:], "}")
+	require.GreaterOrEqual(t, objEnd, 0, "compactVerboseObjectFields map literal must close")
+	objBody := body[objStart : objStart+objEnd]
+
+	for _, payload := range []string{`"body"`, `"content"`, `"html"`, `"markdown"`} {
+		assert.NotContains(t, objBody, payload,
+			"compactVerboseObjectFields must not list %s — those fields are the primary payload on single-object get responses", payload)
+	}
+	for _, metadata := range []string{`"description"`, `"comments"`, `"attachments"`} {
+		assert.Contains(t, objBody, metadata,
+			"compactVerboseObjectFields must still strip %s — that field is metadata on single-object responses, not payload", metadata)
+	}
 }
 
 // The cursor param's "0" must survive paginatedGet's zero-value strip:
