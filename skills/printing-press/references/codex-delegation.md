@@ -32,16 +32,19 @@ When `CODEX_MODE` is true, delegate code-writing tasks to Codex CLI. Claude stil
      -
    ```
 
-   e. **Validate** — Check the completion marker first, then the build:
+   e. **Validate** — Check the completion marker first (self-describing on failure), then the build:
    ```bash
-   cd "$PRESS_LIBRARY/<api>-pp-cli" && \
-     [ -f _codex-result.json ] && \
-     [ "$(jq -r '.status // empty' _codex-result.json 2>/dev/null)" = "complete" ] && \
+   cd "$PRESS_LIBRARY/<api>-pp-cli"
+   if [ ! -f _codex-result.json ] || [ "$(jq -r '.status // empty' _codex-result.json 2>/dev/null)" != "complete" ]; then
+     echo "codex output marker missing — partial work may be present in $PWD; review before continuing" >&2
+     false
+   else
      go build ./... && go vet ./...
+   fi
    ```
    Also verify `git diff --stat` shows a non-empty diff.
 
-   If `_codex-result.json` is missing or `status != "complete"`, Codex exited before finishing the prompt (sandbox abort, OOM, SIGINT, internal toolchain crash). Surface `codex output marker missing — partial work may be present in <dir>; review before continuing` and fall through to step (g) as a failure. Do NOT proceed to the next priority task with whatever Codex managed to write before bailing.
+   A missing or non-complete marker means Codex exited before finishing the prompt (sandbox abort, OOM, SIGINT, internal toolchain crash); the `if` branch prints the diagnostic itself so the agent does not have to second-guess which arm failed. Fall through to step (g) as a failure. Do NOT proceed to the next priority task with whatever Codex managed to write before bailing.
 
    f. **On success** — Discard the restore point and reset the failure counter:
    ```bash
@@ -238,14 +241,17 @@ When `CODEX_MODE` is true, delegate each bug fix to Codex. The shipcheck tools t
      -
    ```
 
-5. **Validate** — same as Phase 3: check the completion marker first, then build and vet:
+5. **Validate** — same as Phase 3: check the completion marker first (self-describing on failure), then build and vet:
    ```bash
-   cd "$PRESS_LIBRARY/<api>-pp-cli" && \
-     [ -f _codex-result.json ] && \
-     [ "$(jq -r '.status // empty' _codex-result.json 2>/dev/null)" = "complete" ] && \
+   cd "$PRESS_LIBRARY/<api>-pp-cli"
+   if [ ! -f _codex-result.json ] || [ "$(jq -r '.status // empty' _codex-result.json 2>/dev/null)" != "complete" ]; then
+     echo "codex output marker missing — partial work may be present in $PWD; review before continuing" >&2
+     false
+   else
      go build ./... && go vet ./...
+   fi
    ```
-   Also verify `git diff --stat` shows a non-empty diff. Missing marker or `status != "complete"` is a Codex failure — surface `codex output marker missing — partial work may be present in <dir>; review before continuing` and fall through to step 7.
+   Also verify `git diff --stat` shows a non-empty diff. The `if` branch prints the diagnostic itself before exiting non-zero, so the agent does not have to second-guess which arm failed; fall through to step 7.
 
 6. **On success** — `git stash drop`, reset `CODEX_CONSECUTIVE_FAILURES=0`.
 
