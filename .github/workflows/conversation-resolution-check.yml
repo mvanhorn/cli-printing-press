@@ -97,21 +97,23 @@ jobs:
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
           EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
         run: |
           set -euo pipefail
 
           owner="${GITHUB_REPOSITORY%/*}"
           repo="${GITHUB_REPOSITORY#*/}"
 
-          # Synchronize event fires the moment a push lands, but GitHub
-          # marks threads outdated/resolved asynchronously based on the
-          # new file content. Querying immediately races that resolution
-          # and can report a stale "1 unresolved" for a thread that is
-          # about to flip resolved a second later (printing-press-library
-          # #587 hit this; #623 backed the fix into the downstream copy
-          # of this workflow). Short settle delay on push only; other
-          # event types don't race.
-          if [ "${EVENT_NAME}" = "pull_request_target" ]; then
+          # synchronize fires the moment a push lands, but GitHub marks
+          # threads outdated/resolved asynchronously based on the new
+          # file content. Querying immediately races that resolution and
+          # can report a stale "1 unresolved" for a thread that is about
+          # to flip resolved a second later (printing-press-library #587
+          # hit this). Short settle delay lets the auto-resolution land.
+          # Scoped to synchronize only — opened, reopened, ready_for_review
+          # don't move the commit pointer so they can't have new
+          # auto-resolutions in flight (greptile P2 on #623).
+          if [ "${EVENT_NAME}" = "pull_request_target" ] && [ "${EVENT_ACTION}" = "synchronize" ]; then
             sleep 8
           fi
 
@@ -198,7 +200,12 @@ jobs:
             --jq '[.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | .[-1].id // empty')"
 
           if [ -n "${existing_id}" ]; then
-            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${existing_id}" --input "${payload}" >/dev/null
+            # head_sha is a POST-only field for /check-runs; PATCH rejects
+            # unknown body params with 422, which would `set -e` us out
+            # (greptile P1 on #623).
+            patch_payload="$(mktemp)"
+            jq 'del(.head_sha)' "${payload}" > "${patch_payload}"
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/check-runs/${existing_id}" --input "${patch_payload}" >/dev/null
             echo "Updated existing check_run ${existing_id}: ${title} (${conclusion}) on ${HEAD_SHA}"
           else
             gh api -X POST "repos/${GITHUB_REPOSITORY}/check-runs" --input "${payload}" >/dev/null
