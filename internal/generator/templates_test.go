@@ -249,3 +249,140 @@ func TestAuthHeaderTokenEnvVarsDoNotEmitDuplicateMapKeys(t *testing.T) {
 		})
 	}
 }
+
+// TestAuthHeaderComposedAndCookieApplySchemePrefix pins the fix for #1419:
+// composed and cookie auth types must apply the spec's HeaderPrefix (defaulting
+// to "Bearer ") when emitting AuthHeader(), so env-var and chrome-composed
+// token paths don't return raw tokens that the upstream API will reject as
+// "Authorization: <raw>" instead of "Authorization: Bearer <raw>".
+func TestAuthHeaderComposedAndCookieApplySchemePrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		authType   string
+		envVar     string
+		envField   string
+		authSource string
+	}{
+		{
+			name:       "composed-single-env-var",
+			authType:   "composed",
+			envVar:     "SUNO_TOKEN",
+			envField:   "SunoToken",
+			authSource: "chrome-composed",
+		},
+		{
+			name:       "cookie-single-env-var",
+			authType:   "cookie",
+			envVar:     "NOTION_TOKEN",
+			envField:   "NotionToken",
+			authSource: "browser",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec(tt.name)
+			apiSpec.Auth = spec.AuthConfig{
+				Type:    tt.authType,
+				Header:  "Authorization",
+				Format:  "Bearer {token}",
+				EnvVars: []string{tt.envVar},
+			}
+
+			outputDir := filepath.Join(t.TempDir(), tt.name+"-pp-cli")
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			configSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+			require.NoError(t, err)
+			content := string(configSrc)
+
+			// Env-var branch must apply the Bearer prefix, not return the raw token.
+			envCheck := `if c.` + tt.envField + ` != ""`
+			envIdx := strings.Index(content, envCheck)
+			require.NotEqual(t, -1, envIdx, "AuthHeader should contain env-var branch:\n%s", content)
+			afterEnv := content[envIdx:]
+			rawReturn := `return c.` + tt.envField
+			require.NotContains(t, afterEnv[:findReturnEnd(afterEnv)], rawReturn,
+				"%s auth must not return raw env-var token without scheme prefix:\n%s", tt.authType, content)
+
+			// AccessToken branch must apply the Bearer prefix, not return the raw access token.
+			atIdx := strings.Index(content, `if c.AccessToken != ""`)
+			require.NotEqual(t, -1, atIdx, "AuthHeader should contain AccessToken branch:\n%s", content)
+			afterAT := content[atIdx:]
+			require.NotContains(t, afterAT[:findReturnEnd(afterAT)], "return c.AccessToken\n",
+				"%s auth must not return raw AccessToken without scheme prefix:\n%s", tt.authType, content)
+
+			// Confirm AuthSource label preserved (no behavior regression on which branch we took).
+			require.Contains(t, content, `c.AuthSource = "`+tt.authSource+`"`)
+
+			// Generated config must compile and pass its own tests.
+			runGoCommand(t, outputDir, "test", "./internal/config")
+		})
+	}
+}
+
+// findReturnEnd returns the index just past the first "return" line in s,
+// scoped to the first branch the caller is inspecting.
+func findReturnEnd(s string) int {
+	i := strings.Index(s, "return ")
+	if i == -1 {
+		return len(s)
+	}
+	end := strings.Index(s[i:], "\n")
+	if end == -1 {
+		return len(s)
+	}
+	return i + end + 1
+}
+
+// TestAuthHeaderComposedSchemeHelperHandlesPreprefixedTokens compiles a
+// composed-auth CLI and exercises the emitted ensureAuthScheme helper through
+// AuthHeader() to confirm the positive (Bearer prefix applied) and negative
+// (no double prefix when the user pre-prefixes the env var) cases.
+func TestAuthHeaderComposedSchemeHelperHandlesPreprefixedTokens(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("composed-auth-runtime")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:    "composed",
+		Header:  "Authorization",
+		Format:  "Bearer {token}",
+		EnvVars: []string{"FOO_TOKEN"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "composed-auth-runtime-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	testFile := filepath.Join(outputDir, "internal", "config", "auth_scheme_runtime_test.go")
+	require.NoError(t, os.WriteFile(testFile, []byte(`package config
+
+import "testing"
+
+func TestEnsureAuthSchemeAppliesBearerPrefix(t *testing.T) {
+	c := &Config{FooToken: "eyJxxx"}
+	if got := c.AuthHeader(); got != "Bearer eyJxxx" {
+		t.Fatalf("expected Bearer-prefixed header, got %q", got)
+	}
+}
+
+func TestEnsureAuthSchemeDoesNotDoublePrefix(t *testing.T) {
+	c := &Config{FooToken: "Bearer eyJxxx"}
+	if got := c.AuthHeader(); got != "Bearer eyJxxx" {
+		t.Fatalf("expected single Bearer prefix, got %q", got)
+	}
+}
+
+func TestEnsureAuthSchemeBlankReturnsEmpty(t *testing.T) {
+	c := &Config{}
+	if got := c.AuthHeader(); got != "" {
+		t.Fatalf("expected empty header for blank config, got %q", got)
+	}
+}
+`), 0o644))
+
+	runGoCommand(t, outputDir, "test", "./internal/config")
+}
