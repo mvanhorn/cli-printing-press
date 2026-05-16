@@ -513,6 +513,7 @@ components:
                   - driving-car
                   - driving-hgv
                   - cycling-regular
+                  - cycling-mountain
                   - cycling-road
                   - cycling-electric
                   - foot-walking
