@@ -3474,12 +3474,18 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identP
 			continue
 		}
 		if p.Type == "boolean" || p.Type == "bool" {
-			// Booleans bypass the zero-guard: false is a legitimate user
-			// choice, not a sentinel for "unset". Omitting the field
-			// defers to the server's default, which often disagrees with
-			// false and silently inverts the user's intent. Internal YAML
-			// specs use "boolean"; the OpenAPI parser normalizes to "bool".
-			fmt.Fprintf(b, "%s%s[%q] = body%s\n", indent, mapVar, p.Name, ident)
+			// Booleans gate on cmd.Flags().Changed instead of a zero-guard.
+			// The zero-guard (body != false) drops user-set false values,
+			// letting the server's default (often true) silently invert
+			// intent. Unconditionally emitting flips the bug: PATCH bodies
+			// would carry "field: false" for every untouched flag and
+			// overwrite server state. Changed distinguishes "user set
+			// false" from "user did not touch the flag" and is correct
+			// for POST, PUT, and PATCH. Internal YAML specs use "boolean";
+			// the OpenAPI parser normalizes to "bool".
+			fmt.Fprintf(b, "%sif cmd.Flags().Changed(%q) {\n", indent, flag)
+			fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.Name, ident)
+			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
 		fmt.Fprintf(b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))

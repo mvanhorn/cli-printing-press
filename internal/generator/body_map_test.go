@@ -37,22 +37,26 @@ func TestBodyMap(t *testing.T) {
 				"\t\t\t}\n",
 		},
 		{
-			// Booleans bypass the zero-guard: the user's false is a
-			// legitimate choice, and omitting the field lets the server
-			// default (often true for "private", "enabled") silently
-			// invert intent. See issue #1298.
-			name:   "scalar boolean (internal spec form) always emits, no zero-guard",
+			// Booleans gate on cmd.Flags().Changed instead of the
+			// scalar zero-guard so user-set false reaches the wire
+			// AND untouched flags don't overwrite server state on
+			// PATCH endpoints. See issue #1298.
+			name:   "scalar boolean (internal spec form) gates on Changed, not zero-guard",
 			body:   []spec.Param{{Name: "private", Type: "boolean"}},
 			indent: "\t\t\t",
-			want:   "\t\t\tbody[\"private\"] = bodyPrivate\n",
+			want: "\t\t\tif cmd.Flags().Changed(\"private\") {\n" +
+				"\t\t\t\tbody[\"private\"] = bodyPrivate\n" +
+				"\t\t\t}\n",
 		},
 		{
 			// The OpenAPI parser normalizes "boolean" -> "bool", so the
 			// renderer must match both forms or fail open on OpenAPI specs.
-			name:   "scalar bool (OpenAPI-normalized form) always emits, no zero-guard",
+			name:   "scalar bool (OpenAPI-normalized form) gates on Changed",
 			body:   []spec.Param{{Name: "enabled", Type: "bool"}},
 			indent: "\t\t\t",
-			want:   "\t\t\tbody[\"enabled\"] = bodyEnabled\n",
+			want: "\t\t\tif cmd.Flags().Changed(\"enabled\") {\n" +
+				"\t\t\t\tbody[\"enabled\"] = bodyEnabled\n" +
+				"\t\t\t}\n",
 		},
 		{
 			name:   "object branch parses JSON and stores parsed value",
@@ -192,6 +196,35 @@ func TestBodyMap_NestedObject(t *testing.T) {
 		"\t}\n"
 	if got != want {
 		t.Errorf("bodyMap nested mismatch.\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestBodyMap_NestedObject_BooleanLeaf verifies the boolean Changed
+// gate threads through the nested-object recursion: an untouched
+// boolean leaf adds nothing to the inner map, so len(nestedMap) > 0
+// stays false and the parent object key is not emitted. Without this,
+// every PATCH whose body declares a nested object with a boolean leaf
+// would silently send the parent with field=false on every call.
+func TestBodyMap_NestedObject_BooleanLeaf(t *testing.T) {
+	t.Parallel()
+	got := bodyMap([]spec.Param{{
+		Name: "settings",
+		Type: "object",
+		Fields: []spec.Param{
+			{Name: "private", Type: "boolean"},
+		},
+	}}, "\t")
+	want := "\t{\n" +
+		"\t\tnestedSettings := map[string]any{}\n" +
+		"\t\tif cmd.Flags().Changed(\"settings-private\") {\n" +
+		"\t\t\tnestedSettings[\"private\"] = bodySettingsPrivate\n" +
+		"\t\t}\n" +
+		"\t\tif len(nestedSettings) > 0 {\n" +
+		"\t\t\tbody[\"settings\"] = nestedSettings\n" +
+		"\t\t}\n" +
+		"\t}\n"
+	if got != want {
+		t.Errorf("bodyMap nested boolean leaf mismatch.\n got:\n%s\nwant:\n%s", got, want)
 	}
 }
 
