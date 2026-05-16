@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -70,7 +71,12 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	// static auth and freshly-signed for nonce-bound auth.
 	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 10 {
-			return http.ErrUseLastResponse
+			// Match Go's defaultCheckRedirect: a plain error so Client.Do
+			// returns it through do()'s err != nil branch. ErrUseLastResponse
+			// would cause Do to return the 3xx with nil error, which do()
+			// would then classify as a successful response and hand the HTML
+			// "Moved Permanently" body back to the caller.
+			return errors.New("stopped after 10 redirects")
 		}
 		if h, err := c.authHeader(); err == nil && h != "" {
 			req.Header.Set("X-API-Key", h)
