@@ -6502,6 +6502,89 @@ func TestGenerate_CookieAuthWindowsCompatibility(t *testing.T) {
 	assert.Contains(t, content, "cookie-scoop-cli")
 }
 
+// TestGenerate_CookieAuthFiltersAllowlistOnLogin pins that `auth login --chrome`
+// stores only the cookies named in spec.auth.cookies when an allowlist is
+// declared, and falls back to the unfiltered blob when the allowlist is
+// empty (legacy specs).
+func TestGenerate_CookieAuthFiltersAllowlistOnLogin(t *testing.T) {
+	t.Parallel()
+
+	t.Run("allowlist declared filters extracted cookies", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := &spec.APISpec{
+			Name:    "filterapp",
+			Version: "0.1.0",
+			BaseURL: "https://app.example.com",
+			Auth: spec.AuthConfig{
+				Type:         "cookie",
+				Header:       "Cookie",
+				In:           "cookie",
+				CookieDomain: ".example.com",
+				Cookies:      []string{"session_id"},
+				EnvVars:      []string{"FILTERAPP_COOKIES"},
+			},
+			Config: spec.ConfigSpec{Format: "toml"},
+			Resources: map[string]spec.Resource{
+				"items": {
+					Description: "Manage items",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/api/items", Description: "List items"},
+					},
+				},
+			},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "filterapp-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		auth, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+		require.NoError(t, err)
+		content := string(auth)
+
+		assert.Contains(t, content, `requiredCookies := []string{"session_id"}`)
+		assert.Contains(t, content, "cookieMap := parseCookieString(cookies)")
+		assert.Contains(t, content, `cookies = strings.Join(kept, "; ")`)
+		assert.Contains(t, content, `cookie %q not found for %s`)
+
+		runGoCommand(t, outputDir, "build", "./...")
+	})
+
+	t.Run("empty allowlist preserves legacy behavior", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := &spec.APISpec{
+			Name:    "legacycookieapp",
+			Version: "0.1.0",
+			BaseURL: "https://app.example.com",
+			Auth: spec.AuthConfig{
+				Type:         "cookie",
+				Header:       "Cookie",
+				In:           "cookie",
+				CookieDomain: ".example.com",
+				EnvVars:      []string{"LEGACYCOOKIEAPP_COOKIES"},
+			},
+			Config: spec.ConfigSpec{Format: "toml"},
+			Resources: map[string]spec.Resource{
+				"items": {
+					Description: "Manage items",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/api/items", Description: "List items"},
+					},
+				},
+			},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "legacycookieapp-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		auth, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+		require.NoError(t, err)
+		content := string(auth)
+
+		assert.NotContains(t, content, "requiredCookies := []string{")
+		assert.NotContains(t, content, `cookies = strings.Join(kept, "; ")`)
+	})
+}
+
 func TestGenerate_UserAgentOverrideGatedByBrowserTransport(t *testing.T) {
 	t.Parallel()
 
