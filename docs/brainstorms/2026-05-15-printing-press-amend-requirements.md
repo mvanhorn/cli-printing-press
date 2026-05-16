@@ -101,6 +101,14 @@ The skill lives in this repo (the machine) and acts on a printed CLI in the publ
 - [Affects R25][Technical] Which helpers in `/printing-press-publish` are extractable into shared scripts vs need to stay in that skill? May require refactor in publish.
 - [Affects R29][Process] Does `mvanhorn/printing-press-library`'s contributor convention require an issue before the PR? Confirm against that repo's AGENTS.md.
 
+## v0.2 Amendment — direct-input mode (2026-05-16)
+
+The original brainstorm above frames the skill as dogfood-only — Phase 1 always mines the active session transcript for friction. The 2026-05-16 Digg-CLI amend surfaced a gap: when the user already knows what they want changed (rename a command, add named feeds, sniff for new endpoints), the dogfood-only framing fails. The skill auto-selects an unrelated recent transcript, produces a noisy or empty finding list, and halts at the transcript-confirmation modal.
+
+The skill is extended to a second input mode (`direct-input`) plus a first-class sniff finding type. Both modes converge at Phase 2 onward — the typed finding list is mode-agnostic. The original dogfood-mode behavior is preserved bit-for-bit.
+
+New requirements R34-R38 and the design are captured in `docs/plans/2026-05-16-002-feat-printing-press-amend-direct-input-mode-plan.md`. The expansion lands in the same PR (#1490) — the v0.1 skill had not merged yet.
+
 ## Next Steps
 
 `/ce-plan` (which is what just got invoked) — implementation planning for this skill.

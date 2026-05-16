@@ -405,3 +405,13 @@ The skill ships when:
 - A real-session smoke test against a captured fixture (the 2026-05-15 Superhuman session is the canonical case) produces a valid PR draft against a test fork of the public library, with PII scrubbed and patch records present
 - The PR diff written by the smoke test passes `verify-library-conventions` workflow on the public library
 - `docs/SKILLS.md` and README list the new skill (U8)
+
+---
+
+## v0.2 Amendment — direct-input mode (2026-05-16)
+
+This plan documents the v0.1 design (dogfood-only). The 2026-05-16 Digg-CLI amend revealed that dogfood-only is too narrow: when the user already knows the changes they want, the transcript-mining path fails to capture them.
+
+A v0.2 amendment adds a second input mode (`direct-input`) plus a first-class sniff finding type. Both modes converge at Phase 2 onward. The v0.1 dogfood behavior is preserved bit-for-bit; the expansion is additive.
+
+See `docs/plans/2026-05-16-002-feat-printing-press-amend-direct-input-mode-plan.md` for the v0.2 design, new requirements R34-R38, and the implementation units (U1-U6) that land alongside the v0.1 commits on the same PR (#1490).
