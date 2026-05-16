@@ -42,6 +42,7 @@ type DomainSignals struct {
 // PaginationProfile describes the detected pagination patterns across the API.
 type PaginationProfile struct {
 	CursorParam     string `json:"cursor_param"`      // most common cursor param name (after, cursor, page_token, offset)
+	CursorType      string `json:"cursor_type"`       // most common paginator class (cursor, page_token, offset, page); drives runtime iteration strategy
 	PageSizeParam   string `json:"page_size_param"`   // most common page size param (limit, per_page, page_size, first)
 	SinceParam      string `json:"since_param"`       // temporal filter param (since, updated_after, modified_since)
 	DateRangeParam  string `json:"date_range_param"`  // date-range filter param (dates, date_range, dateRange)
@@ -217,6 +218,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 	var hasSearchEndpoint bool
 
 	cursorParams := make(map[string]int)
+	cursorTypes := make(map[string]int)
 	pageSizeParams := make(map[string]int)
 	sinceParams := make(map[string]int)
 	dateRangeParams := make(map[string]int)
@@ -404,6 +406,9 @@ func Profile(s *spec.APISpec) *APIProfile {
 				if endpoint.Pagination.CursorParam != "" {
 					cursorParams[endpoint.Pagination.CursorParam]++
 				}
+				if endpoint.Pagination.Type != "" {
+					cursorTypes[endpoint.Pagination.Type]++
+				}
 				if endpoint.Pagination.LimitParam != "" {
 					pageSizeParams[endpoint.Pagination.LimitParam]++
 				}
@@ -508,6 +513,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 
 	p.Pagination = PaginationProfile{
 		CursorParam:     mostCommon(cursorParams, "after"),
+		CursorType:      mostCommon(cursorTypes, ""),
 		PageSizeParam:   mostCommon(pageSizeParams, "limit"),
 		SinceParam:      mostCommon(sinceParams, ""),
 		DateRangeParam:  mostCommon(dateRangeParams, ""),
