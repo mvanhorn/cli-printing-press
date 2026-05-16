@@ -10056,6 +10056,69 @@ func TestMCPHandlerPassesBodyArgsMap(t *testing.T) {
 		"PATCH branch must forward bodyArgs directly to the client")
 }
 
+// TestMCPCodeOrchPassesParamsMap pins the same body-passthrough contract for
+// the code-orchestration handler template (mcp_code_orch.go.tmpl). Sibling of
+// TestMCPHandlerPassesBodyArgsMap: an earlier pre-marshal stored []byte in the
+// body slot, which client.do() then json.Marshaled into a base64-encoded
+// string that strict APIs reject.
+func TestMCPCodeOrchPassesParamsMap(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcp-orch-body-passthrough")
+	apiSpec.MCP = spec.MCPConfig{Orchestration: "code", EndpointTools: "hidden"}
+	apiSpec.Resources["widgets"] = spec.Resource{
+		Description: "Widgets",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/widgets",
+				Description: "Create a widget",
+				Body: []spec.Param{
+					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
+				},
+			},
+			"replace": {
+				Method:      "PUT",
+				Path:        "/widgets/{id}",
+				Description: "Replace a widget",
+				Params: []spec.Param{
+					{Name: "id", Type: "string", Required: true, Description: "Widget id"},
+				},
+				Body: []spec.Param{
+					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
+				},
+			},
+			"update": {
+				Method:      "PATCH",
+				Path:        "/widgets/{id}",
+				Description: "Update a widget",
+				Params: []spec.Param{
+					{Name: "id", Type: "string", Required: true, Description: "Widget id"},
+				},
+				Body: []spec.Param{
+					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "code_orch.go")
+
+	assert.NotContains(t, mcpSource, "json.Marshal(params)",
+		"code-orch handler must not pre-marshal params: client.do() json.Marshals what it receives, "+
+			"so a []byte arrives base64-encoded on the wire and strict APIs reject the payload")
+
+	assert.Contains(t, mcpSource, "c.Post(path, params)",
+		"POST branch must forward params directly to the client")
+	assert.Contains(t, mcpSource, "c.Put(path, params)",
+		"PUT branch must forward params directly to the client")
+	assert.Contains(t, mcpSource, "c.Patch(path, params)",
+		"PATCH branch must forward params directly to the client")
+}
+
 // TestMCPBindingNumericTypesAcrossSpecShapes pins template wiring: both
 // OpenAPI-parsed shapes ("int", "bool") and internal-spec literals
 // ("integer", "boolean") flow through mcpBindingFunc to WithNumber /
