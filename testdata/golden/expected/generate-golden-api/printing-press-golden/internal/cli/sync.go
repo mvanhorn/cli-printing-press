@@ -48,6 +48,7 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var strict bool
 	var paramFlags []string
 	var resourceParamFlags []string
+	var globalParamFlags []string
 
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -97,7 +98,7 @@ Resource scoping:
   # Latest-only: refresh head of each resource, no historical backfill
   printing-press-golden-pp-cli sync --latest-only`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			userParams, err := parseSyncUserParams(paramFlags, resourceParamFlags)
+			userParams, err := parseSyncUserParams(paramFlags, resourceParamFlags, globalParamFlags)
 			if err != nil {
 				return usageErr(err)
 			}
@@ -333,8 +334,9 @@ Resource scoping:
 	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero).")
-	cmd.Flags().StringArrayVar(&paramFlags, "param", nil, "Extra query param to inject into every sync request (repeatable, key=value). Use for APIs whose spec marks a filter optional but the endpoint rejects calls without it (e.g. --param mine=true). Avoid pagination keys (limit/since/cursor) — overriding them corrupts resume state.")
-	cmd.Flags().StringArrayVar(&resourceParamFlags, "resource-param", nil, "Per-resource extra query param (repeatable, resource:key=value). Wins over --param when both define the same key.")
+	cmd.Flags().StringArrayVar(&paramFlags, "param", nil, "Extra query param to inject into flat-list sync requests (repeatable, key=value). Skipped on path-scoped dependent requests so a top-level scope like workspace=<id> does not double up on /parents/<id>/children calls. Use --global-param to inject everywhere. Avoid pagination keys (limit/since/cursor) — overriding them corrupts resume state.")
+	cmd.Flags().StringArrayVar(&resourceParamFlags, "resource-param", nil, "Per-resource extra query param (repeatable, resource:key=value). Wins over --param and --global-param when keys conflict.")
+	cmd.Flags().StringArrayVar(&globalParamFlags, "global-param", nil, "Extra query param to inject into every sync request including dependent path-scoped calls (repeatable, key=value). Use when an API requires a scope on every call regardless of path nesting.")
 
 	return cmd
 }
@@ -458,7 +460,7 @@ func syncResource(c interface {
 		// Apply user-supplied --param / --resource-param overrides last so they
 		// win over spec-derived defaults (e.g. forcing mine=true on a list
 		// endpoint whose OpenAPI spec marks the filter optional).
-		userParams.applyTo(resource, params)
+		userParams.applyTo(resource, params, false)
 
 		data, err := c.Get(path, params)
 		if err != nil {
@@ -1184,7 +1186,9 @@ func syncDependentResource(c interface {
 			}
 
 			// Apply user flags last so they win over spec-derived cursor/since/limit.
-			userParams.applyTo(dep.Name, params)
+			// Dependent path: --param is skipped (already scoped by the parent path
+			// segment); --global-param and --resource-param still apply.
+			userParams.applyTo(dep.Name, params, true)
 
 			data, err := c.Get(path, params)
 			if err != nil {

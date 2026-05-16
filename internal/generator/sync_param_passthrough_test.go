@@ -15,10 +15,11 @@ import (
 )
 
 // TestGenerateSyncParamPassthrough verifies the sync template emits the
-// --param / --resource-param flags, parses them through parseSyncUserParams,
-// and applies them after spec-derived params. Some APIs mark filter params
-// optional in the spec but reject requests without them at runtime; without
-// this passthrough, the only workaround is hand-editing the generated client.
+// --param / --resource-param / --global-param flags, parses them through
+// parseSyncUserParams, and applies them after spec-derived params. Some
+// APIs mark filter params optional in the spec but reject requests
+// without them at runtime; without this passthrough, the only workaround
+// is hand-editing the generated client.
 func TestGenerateSyncParamPassthrough(t *testing.T) {
 	t.Parallel()
 
@@ -37,6 +38,8 @@ func TestGenerateSyncParamPassthrough(t *testing.T) {
 		"sync should expose a repeatable --param flag")
 	assert.Contains(t, syncSrc, `cmd.Flags().StringArrayVar(&resourceParamFlags, "resource-param"`,
 		"sync should expose a repeatable --resource-param flag")
+	assert.Contains(t, syncSrc, `cmd.Flags().StringArrayVar(&globalParamFlags, "global-param"`,
+		"sync should expose a repeatable --global-param flag for the apply-everywhere semantic")
 	assert.Contains(t, syncSrc, "key=value",
 		"--param help text should describe the key=value shape")
 	assert.Contains(t, syncSrc, "resource:key=value",
@@ -44,9 +47,9 @@ func TestGenerateSyncParamPassthrough(t *testing.T) {
 
 	// Parsing runs before client construction so a malformed flag fails fast
 	// (and as usageErr, not a generic runtime error).
-	assert.Contains(t, syncSrc, "parseSyncUserParams(paramFlags, resourceParamFlags)",
-		"sync must parse user params at RunE entry")
-	parseIdx := strings.Index(syncSrc, "parseSyncUserParams(paramFlags, resourceParamFlags)")
+	assert.Contains(t, syncSrc, "parseSyncUserParams(paramFlags, resourceParamFlags, globalParamFlags)",
+		"sync must parse user params at RunE entry with all three flag slices")
+	parseIdx := strings.Index(syncSrc, "parseSyncUserParams(paramFlags, resourceParamFlags, globalParamFlags)")
 	newClientIdx := strings.Index(syncSrc, "flags.newClient()")
 	require.NotEqual(t, -1, parseIdx)
 	require.NotEqual(t, -1, newClientIdx)
@@ -62,7 +65,7 @@ func TestGenerateSyncParamPassthrough(t *testing.T) {
 	// applyTo is called in the page loop AFTER cursor/since/limit are set,
 	// so user flags win on conflict.
 	loopIdx := strings.Index(syncSrc, "params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)")
-	applyIdx := strings.Index(syncSrc, "userParams.applyTo(resource, params)")
+	applyIdx := strings.Index(syncSrc, "userParams.applyTo(resource, params, false)")
 	require.NotEqual(t, -1, loopIdx, "page loop should set the limit param")
 	require.NotEqual(t, -1, applyIdx, "syncResource should apply user params before c.Get")
 	assert.Less(t, loopIdx, applyIdx,
@@ -74,6 +77,89 @@ func TestGenerateSyncParamPassthrough(t *testing.T) {
 		"sync should validate --resource-param keys against the known resource set")
 	assert.Contains(t, syncSrc, "func knownSyncResourceNames() []string",
 		"knownSyncResourceNames helper must be emitted alongside defaultSyncResources")
+}
+
+// dependentResourceSpec builds a minimal spec with a parent + child
+// resource so syncDependentResource is actually emitted. The
+// dependent-resource profiler requires paginated list endpoints (not
+// bare GETs) with a parameterized child path for the child to be
+// classified as syncable.
+func dependentResourceSpec(name string) *spec.APISpec {
+	paginated := func(path string) spec.Endpoint {
+		return spec.Endpoint{
+			Method:     "GET",
+			Path:       path,
+			Response:   spec.ResponseDef{Type: "array"},
+			Pagination: &spec.Pagination{Type: "cursor", LimitParam: "limit", CursorParam: "after"},
+		}
+	}
+	apiSpec := minimalSpec(name)
+	apiSpec.Resources = map[string]spec.Resource{
+		"projects": {
+			Description: "Projects",
+			Endpoints:   map[string]spec.Endpoint{"list": paginated("/projects")},
+		},
+		"tasks": {
+			Description: "Tasks (child of projects)",
+			Endpoints:   map[string]spec.Endpoint{"list": paginated("/projects/{project_id}/tasks")},
+		},
+	}
+	return apiSpec
+}
+
+// TestGenerateSyncDependentSkipsFlatGlobalParam verifies the dependent-
+// resource sync path calls applyTo with isDependent=true so --param
+// (flatGlobal) is skipped on path-scoped requests. Without this gate, a
+// top-level scope flag like --param workspace=<gid> double-applies to
+// dependent calls like /projects/<gid>/tasks, and Asana-style APIs
+// reject the call ("Must specify exactly one of project, tag, ...").
+func TestGenerateSyncDependentSkipsFlatGlobalParam(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := dependentResourceSpec("dependent-param")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncSrc := string(syncGo)
+
+	require.Contains(t, syncSrc, "func syncDependentResource(",
+		"dependent-resource sync should render when the spec has a {parent_id} child path")
+	assert.Contains(t, syncSrc, "userParams.applyTo(dep.Name, params, true)",
+		"dependent-resource call site must pass isDependent=true so --param is skipped on path-scoped calls")
+	assert.Contains(t, syncSrc, "userParams.applyTo(resource, params, false)",
+		"flat-list call site must pass isDependent=false so --param applies as before")
+}
+
+// TestGenerateSyncUserParamsHelperRespectsFlatVsTrueGlobal pins the
+// emitted applyTo helper: flatGlobal entries (--param) skip when
+// isDependent=true, while trueGlobal entries (--global-param) and
+// perResource entries always apply.
+func TestGenerateSyncUserParamsHelperRespectsFlatVsTrueGlobal(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("scope-helper")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	helpersSrc := string(helpersGo)
+
+	require.Contains(t, helpersSrc, "type syncUserParams struct",
+		"syncUserParams struct must render")
+	for _, want := range []string{
+		"flatGlobal  map[string]string",
+		"trueGlobal  map[string]string",
+		"perResource map[string]map[string]string",
+	} {
+		assert.Contains(t, helpersSrc, want, "syncUserParams field %q must render", want)
+	}
+	assert.Contains(t, helpersSrc, "func (p *syncUserParams) applyTo(resource string, params map[string]string, isDependent bool)",
+		"applyTo signature must include the isDependent flag")
+	assert.Contains(t, helpersSrc, "if !isDependent {",
+		"applyTo must gate flatGlobal on isDependent=false")
 }
 
 // TestGenerateSyncErrorJSONIncludesAPIBody verifies that the sync_error JSON
@@ -128,50 +214,7 @@ func TestGenerateSyncErrorJSONIncludesAPIBody(t *testing.T) {
 func TestGenerateSyncDependentErrorNotSilent(t *testing.T) {
 	t.Parallel()
 
-	// Build a spec with a parent + child resource so syncDependentResource
-	// is actually emitted. The dependent-resource profiler requires paginated
-	// list endpoints (not bare GETs) for the parameterized child path to be
-	// classified as syncable; see profiler.detectDependentResources.
-	paginated := func(path string) spec.Endpoint {
-		return spec.Endpoint{
-			Method:     "GET",
-			Path:       path,
-			Response:   spec.ResponseDef{Type: "array"},
-			Pagination: &spec.Pagination{Type: "cursor", LimitParam: "limit", CursorParam: "after"},
-		}
-	}
-	apiSpec := &spec.APISpec{
-		Name:      "dependent-err",
-		Version:   "0.1.0",
-		BaseURL:   "https://api.example.test/v1",
-		Owner:     "test-owner",
-		OwnerName: "Test Author",
-		Auth: spec.AuthConfig{
-			Type:    "api_key",
-			Header:  "Authorization",
-			Format:  "Bearer {token}",
-			EnvVars: []string{"DEPENDENT_ERR_API_KEY"},
-		},
-		Config: spec.ConfigSpec{
-			Format: "toml",
-			Path:   "~/.config/dependent-err-pp-cli/config.toml",
-		},
-		Resources: map[string]spec.Resource{
-			"teams": {
-				Description: "Teams",
-				Endpoints: map[string]spec.Endpoint{
-					"list": paginated("/teams"),
-				},
-			},
-			"players": {
-				Description: "Players (child of teams)",
-				Endpoints: map[string]spec.Endpoint{
-					"list": paginated("/teams/{team_id}/players"),
-				},
-			},
-		},
-	}
-
+	apiSpec := dependentResourceSpec("dependent-err")
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
 	require.NoError(t, gen.Generate())
