@@ -452,10 +452,13 @@ if [ ! -d "$PUBLISH_REPO_DIR/.git" ]; then
   echo "Managed clone not present — bootstrapping..."
   # ... (see library-pr-plumbing.md)
 else
-  # Refresh from upstream
+  # Refresh from upstream. -f on checkout discards any local edits left behind
+  # by a prior run that aborted between Phase 4's edits and Phase 7's commit —
+  # without -f, those uncommitted changes block the checkout and the subsequent
+  # reset --hard never runs.
   cd "$PUBLISH_REPO_DIR"
   git fetch upstream main
-  git checkout main
+  git checkout -f main
   git reset --hard upstream/main
 fi
 ```

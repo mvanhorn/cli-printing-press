@@ -78,15 +78,19 @@ if [ ! -d "$PUBLISH_REPO_DIR/.git" ]; then
     git remote add upstream "https://github.com/mvanhorn/printing-press-library.git"
   fi
 else
-  # Refresh from upstream
+  # Refresh from upstream. -f on checkout discards any local edits left behind
+  # by a prior run that aborted between Phase 4's edits and Phase 7's commit —
+  # without -f, those uncommitted changes block the checkout and the subsequent
+  # reset --hard never runs, leaving the clone permanently stuck on an amend
+  # branch with conflicting state.
   cd "$PUBLISH_REPO_DIR"
   git fetch upstream main
-  git checkout main
+  git checkout -f main
   git reset --hard upstream/main
 fi
 ```
 
-The reset-hard on refresh is intentional: the managed clone is treated as a scratch surface, never as long-term local-state storage.
+The reset-hard + force-checkout on refresh is intentional: the managed clone is treated as a scratch surface, never as long-term local-state storage. Any local edits in it are by definition leftover state from an aborted run and must be discarded before the next run reuses the clone.
 
 ---
 
