@@ -25,7 +25,14 @@ queue_rules:
           - head = release-please--branches--main
           - "title ~= ^chore\\(main\\): release"
     merge_method: squash
-    update_method: rebase
+    # `update_method: merge` instead of `rebase` so the queue can update
+    # fork PRs without `update_bot_account`. Mergify deprecated the
+    # `rebase` + `update_bot_account` combination for fork PRs on
+    # 2026-04-21 (removal 2026-07-01); the published migration path is
+    # update_method=merge. The PR branch picks up a merge commit while
+    # in the queue, but `merge_method: squash` collapses it on the way
+    # to main, so the on-main history is unchanged.
+    update_method: merge
     # OSS plan: batch_size and max_parallel_checks must both be 1.
     batch_size: 1
     checks_timeout: 60m
