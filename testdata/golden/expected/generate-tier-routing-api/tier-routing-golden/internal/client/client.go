@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -147,7 +148,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	homeDir, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(homeDir, ".cache", "tier-routing-golden-pp-cli", "http")
 	httpClient := newHTTPClient(timeout, nil)
-	return &Client{
+	c := &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 		Config:     cfg,
 		HTTPClient: httpClient,
@@ -155,6 +156,28 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
 		limiters:   newTierLimiters(rateLimit),
 	}
+	// CheckRedirect re-derives auth on each hop. Go's default replays the
+	// original Authorization header verbatim, which breaks nonce-bound
+	// schemes (OAuth 1.0a PLAINTEXT, SigV4, Hawk): the duplicate nonce
+	// trips the server's replay detector with a 401. c.authHeader()
+	// returns a fresh value for those schemes and the same static value
+	// for Bearer/api_key, so post-redirect headers are byte-identical for
+	// static auth and freshly-signed for nonce-bound auth.
+	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			// Match Go's defaultCheckRedirect: a plain error so Client.Do
+			// returns it through do()'s err != nil branch. ErrUseLastResponse
+			// would cause Do to return the 3xx with nil error, which do()
+			// would then classify as a successful response and hand the HTML
+			// "Moved Permanently" body back to the caller.
+			return errors.New("stopped after 10 redirects")
+		}
+		// Tier routing picks header vs query at runtime via authForRequest;
+		// re-deriving here would duplicate that selection logic. Cap depth
+		// only and let Go's default header replay handle static credentials.
+		return nil
+	}
+	return c
 }
 
 // RateLimit returns the current effective rate limit in req/s. Returns 0 if disabled.

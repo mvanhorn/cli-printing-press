@@ -173,12 +173,69 @@ var excludedFiles = map[string]bool{
 // addresses) are documentation, not customer PII, so a Stripe/Zendesk/
 // GitHub spec doesn't false-fail every promote. Exemption is depth-1
 // only; a spec.yaml nested under .manuscripts/ or testdata/ is captured
-// content and stays in scope. Mirrors findArchivedSpec()'s candidate
-// set in internal/pipeline/climanifest.go.
+// content and stays in scope unless content-detection identifies it as
+// an archived vendor spec (see manuscriptsDir + looksLikeVendorAPISpec).
+// Mirrors findArchivedSpec()'s candidate set in
+// internal/pipeline/climanifest.go.
 var rootVendorSpecFiles = map[string]bool{
 	"spec.json": true,
 	"spec.yaml": true,
 	"spec.yml":  true,
+}
+
+// manuscriptsDir is the path component that scopes the content-detected
+// vendor-spec exemption. Vendor specs archived under any depth inside
+// .manuscripts/ — research/, discovery/, or freeform subdirs — are
+// reproducible from the upstream URL and contain documentation `example:`
+// values, not customer PII. Limiting the content exemption to manuscripts
+// keeps the bypass off non-archive paths (committed docs/, generated
+// internal/, etc.) so a hand-edited file at docs/api.yaml still scans.
+const manuscriptsDir = ".manuscripts"
+
+// vendorSpecMarkers are the OpenAPI/Swagger version-marker patterns
+// looksLikeVendorAPISpec probes for in a file's head bytes. The two-form
+// shape (JSON quoted-key vs YAML unquoted-key) is required because vendor
+// docs ship both formats. Both forms anchor the key to the document
+// start: JSON requires `openapi`/`swagger` as the first key after the
+// opening brace; YAML requires it as the first content line after any
+// allowed lead-in (YAML directive `%...`, document marker `---`,
+// comments, blank lines). Without these anchors, a non-spec file with
+// PII in earlier keys could bypass scanning when it happened to also
+// contain an `openapi`/`swagger` marker deeper in the payload — a
+// response envelope, captured config blob, or research-notes YAML that
+// listed real values before the version field. Version constraints
+// (2.x or 3.x) avoid matching freeform mentions like "openapi: future".
+var vendorSpecMarkers = []*regexp.Regexp{
+	// JSON: {"openapi": "3.x.x" — openapi must be the first key.
+	regexp.MustCompile(`\A\s*\{\s*"openapi"\s*:\s*"[23]\.`),
+	regexp.MustCompile(`\A\s*\{\s*"swagger"\s*:\s*"2\.`),
+	// YAML: optional %directives, `---` document marker, comments, and
+	// blank lines may precede the marker, but no other content key can
+	// appear before `openapi`/`swagger` at column 0.
+	regexp.MustCompile(`\A(?:(?:%[^\n]*|---[ \t]*|[ \t]*#[^\n]*|[ \t]*)\n)*openapi\s*:\s*['"]?[23]\.`),
+	regexp.MustCompile(`\A(?:(?:%[^\n]*|---[ \t]*|[ \t]*#[^\n]*|[ \t]*)\n)*swagger\s*:\s*['"]?2\.`),
+}
+
+// looksLikeVendorAPISpec reports whether the first few KB of a file
+// match an OpenAPI 2.x/3.x or Swagger 2.0 root-document marker. Content
+// detection beats filename heuristics because vendors ship spec source
+// under arbitrary basenames (`apps/calendars.json`, `pushpress-v3.yaml`)
+// that no glob would reliably cover. Restricted at the call site to
+// files under .manuscripts/ so non-archive paths cannot bypass scanning
+// by embedding a stray version marker.
+func looksLikeVendorAPISpec(probe []byte) bool {
+	for _, re := range vendorSpecMarkers {
+		if re.Match(probe) {
+			return true
+		}
+	}
+	return false
+}
+
+// isUnderManuscripts reports whether the slash-separated relative path
+// lives anywhere inside a .manuscripts/ subtree.
+func isUnderManuscripts(relSlash string) bool {
+	return slices.Contains(strings.Split(relSlash, "/"), manuscriptsDir)
 }
 
 // skippedDirs are subtree names the walker never descends into at the
@@ -306,6 +363,15 @@ func scanPIIFile(root, path string) ([]PIIFinding, error) {
 		return nil, err
 	}
 	relSlash := filepath.ToSlash(rel)
+
+	// Vendor-published OpenAPI/Swagger source archived under .manuscripts/
+	// carries documentation `example:` values, not customer PII. Mirrors
+	// the depth-1 rootVendorSpecFiles exemption for the case where the
+	// spec source lives nested in research/, discovery/, or freeform
+	// archive subdirs and the basename isn't `spec.{json,yaml,yml}`.
+	if isUnderManuscripts(relSlash) && looksLikeVendorAPISpec(probe) {
+		return nil, nil
+	}
 
 	var findings []PIIFinding
 	lineNumber := 0
