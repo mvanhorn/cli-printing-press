@@ -193,27 +193,41 @@ func syncErrorJSON(resource, parent string, err error) string {
 	return string(out)
 }
 
-// syncUserParams carries user-supplied query parameters injected into every
-// sync HTTP request. perResource entries win over global on key conflict.
+// syncUserParams carries user-supplied query parameters injected into sync
+// HTTP requests. flatGlobal entries come from --param and inject into
+// flat-list requests only; trueGlobal entries come from --global-param and
+// inject into every request including dependent path-scoped calls.
+// perResource entries win over both on key conflict.
+//
+// The flat/dependent split avoids a real failure mode: a top-level scope
+// like workspace=<gid> belongs on flat-list requests (/projects, /tags) but
+// re-injecting it onto a path-scoped dependent request
+// (/projects/<gid>/tasks?workspace=<gid>) makes APIs like Asana reject the
+// call ("Must specify exactly one of project, tag, ..."). Operators who
+// need the old "apply everywhere" semantic opt back in with --global-param.
 type syncUserParams struct {
-	global      map[string]string
+	flatGlobal  map[string]string
+	trueGlobal  map[string]string
 	perResource map[string]map[string]string
 }
 
-// parseSyncUserParams parses the repeatable --param key=value and
-// --resource-param resource:key=value flags. Returns usage errors keyed on the
-// specific invalid token so the user sees which entry was rejected.
-func parseSyncUserParams(globalFlags, perResourceFlags []string) (*syncUserParams, error) {
-	p := &syncUserParams{
-		global:      map[string]string{},
-		perResource: map[string]map[string]string{},
+// parseSyncUserParams parses the repeatable --param key=value,
+// --global-param key=value, and --resource-param resource:key=value flags.
+// Returns usage errors keyed on the specific invalid token so the user
+// sees which entry was rejected.
+func parseSyncUserParams(flatGlobalFlags, perResourceFlags, trueGlobalFlags []string) (*syncUserParams, error) {
+	flatGlobal, err := parseSyncKVFlags(flatGlobalFlags, "--param")
+	if err != nil {
+		return nil, err
 	}
-	for _, kv := range globalFlags {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok || k == "" {
-			return nil, fmt.Errorf("invalid --param %q: expected key=value", kv)
-		}
-		p.global[k] = v
+	trueGlobal, err := parseSyncKVFlags(trueGlobalFlags, "--global-param")
+	if err != nil {
+		return nil, err
+	}
+	p := &syncUserParams{
+		flatGlobal:  flatGlobal,
+		trueGlobal:  trueGlobal,
+		perResource: map[string]map[string]string{},
 	}
 	for _, spec := range perResourceFlags {
 		resource, kv, ok := strings.Cut(spec, ":")
@@ -232,13 +246,36 @@ func parseSyncUserParams(globalFlags, perResourceFlags []string) (*syncUserParam
 	return p, nil
 }
 
-// applyTo merges user params into the request map. Called after spec-derived
-// params (cursor, since, page-size, dates) so user flags can override them.
-func (p *syncUserParams) applyTo(resource string, params map[string]string) {
+// parseSyncKVFlags parses a slice of "key=value" tokens into a map. The
+// flagName label flows into the usage error so a malformed entry tells
+// the user which flag was at fault.
+func parseSyncKVFlags(flags []string, flagName string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, kv := range flags {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("invalid %s %q: expected key=value", flagName, kv)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+// applyTo merges user params into the request map. Called after
+// spec-derived params (cursor, since, page-size, dates) so user flags can
+// override them. isDependent=true skips flatGlobal (--param), which
+// targets flat-list endpoints; trueGlobal (--global-param) and perResource
+// always apply.
+func (p *syncUserParams) applyTo(resource string, params map[string]string, isDependent bool) {
 	if p == nil {
 		return
 	}
-	for k, v := range p.global {
+	if !isDependent {
+		for k, v := range p.flatGlobal {
+			params[k] = v
+		}
+	}
+	for k, v := range p.trueGlobal {
 		params[k] = v
 	}
 	for k, v := range p.perResource[resource] {
