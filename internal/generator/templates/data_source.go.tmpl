@@ -187,9 +187,22 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 					}
 				}
 			}
-			// Single object with an id field (e.g., detail response)
-			if items == nil {
-				if _, ok := envelope["id"]; ok {
+			// Single object detail response: let UpsertBatch's existing
+			// resourceIDFieldOverrides mechanism resolve the primary key.
+			// Guarding on envelope["id"] dropped any API whose PK is named
+			// CertNo / sku / invoiceId / etc. on the floor (#1439). Skip
+			// when the envelope carries a known list-wrapper key — that's
+			// a list response whose array happened to be empty, not a
+			// detail object — and when the envelope is empty (malformed).
+			if items == nil && len(envelope) > 0 {
+				isEmptyListEnvelope := false
+				for _, key := range []string{"results", "data", "items"} {
+					if _, ok := envelope[key]; ok {
+						isEmptyListEnvelope = true
+						break
+					}
+				}
+				if !isEmptyListEnvelope {
 					_, _, _ = db.UpsertBatch(resourceType, []json.RawMessage{data})
 					return
 				}
