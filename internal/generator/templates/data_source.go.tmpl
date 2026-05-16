@@ -204,8 +204,13 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 					if !ok {
 						continue
 					}
+					// json.Unmarshal("null", &arr) succeeds with arr=nil,
+					// so the unmarshal check alone misclassifies null-valued
+					// fields as list envelopes. Requiring arr != nil keeps
+					// true empty arrays [] in the skip branch while leaving
+					// scalar/null/object values as regular field collisions.
 					var arr []json.RawMessage
-					if json.Unmarshal(raw, &arr) == nil {
+					if json.Unmarshal(raw, &arr) == nil && arr != nil {
 						isEmptyListEnvelope = true
 						break
 					}

@@ -3717,12 +3717,37 @@ func TestWriteThroughCacheCachesObjectWithListWrapperFieldName(t *testing.T) {
 		t.Fatalf("certs count after field-name-collision response = %d, want 1 (scalar-valued wrapper-named field must not trip the list-envelope skip)", count)
 	}
 }
+
+// TestWriteThroughCacheCachesObjectWithNullWrapperFieldName guards the
+// specific JSON-null case Greptile flagged: json.Unmarshal("null", &arr)
+// succeeds with arr=nil, so without an explicit arr != nil check the
+// guard would misclassify {"CertNo":"x","items":null} as an empty-list
+// envelope and silently drop the row.
+func TestWriteThroughCacheCachesObjectWithNullWrapperFieldName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{"CertNo":"77777","items":null,"Grade":"PR70"}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs WHERE id = '77777'` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("certs count after null-wrapper-field response = %d, want 1 (JSON null is not an empty array)", count)
+	}
+}
 `
 	testPath := filepath.Join(outputDir, "internal", "cli", "write_through_cache_non_id_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCacheNonIDPrimaryKey|TestWriteThroughCacheSkipsEmptyListEnvelope|TestWriteThroughCacheCachesObjectWithListWrapperFieldName", "./internal/cli")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCacheNonIDPrimaryKey|TestWriteThroughCacheSkipsEmptyListEnvelope|TestWriteThroughCacheCachesObjectWithListWrapperFieldName|TestWriteThroughCacheCachesObjectWithNullWrapperFieldName", "./internal/cli")
 }
 
 func TestSyncDiscriminatorDispatchRoutesMixedItemsToTypedTables(t *testing.T) {
