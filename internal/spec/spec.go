@@ -756,6 +756,35 @@ func (c AuthConfig) HeaderPrefix() string {
 	return "Bearer"
 }
 
+// OverrideEnvVars replaces the env-var list from an authoritative outer source
+// (catalog metadata, x-auth-env-vars extension). It clones the input slice,
+// resets EnvVarSpecs so NormalizeEnvVarSpecs rebuilds them from the new names,
+// and remaps any single-token placeholder embedded in auth.Format. Safe to
+// call before EnvVarSpecs has been populated -- the reset is a no-op then.
+func (c *AuthConfig) OverrideEnvVars(envVars []string) {
+	if c == nil || len(envVars) == 0 {
+		return
+	}
+	oldEnvVars := append([]string(nil), c.EnvVars...)
+	next := append([]string(nil), envVars...)
+	c.EnvVars = next
+	c.EnvVarSpecs = nil
+	remapAuthFormatForEnvOverride(c, oldEnvVars, next)
+}
+
+func remapAuthFormatForEnvOverride(auth *AuthConfig, oldEnvVars, newEnvVars []string) {
+	if auth.Format == "" || len(oldEnvVars) != 1 || len(newEnvVars) != 1 {
+		return
+	}
+	oldPlaceholder := naming.EnvVarPlaceholder(oldEnvVars[0])
+	newPlaceholder := naming.EnvVarPlaceholder(newEnvVars[0])
+	if oldPlaceholder == "" || newPlaceholder == "" {
+		return
+	}
+	auth.Format = strings.ReplaceAll(auth.Format, "{"+oldPlaceholder+"}", "{"+newPlaceholder+"}")
+	auth.Format = strings.ReplaceAll(auth.Format, "{"+oldEnvVars[0]+"}", "{"+newPlaceholder+"}")
+}
+
 // CanonicalEnvVar returns the deterministic canonical entry for human-prose surfaces.
 func (c *AuthConfig) CanonicalEnvVar() *AuthEnvVar {
 	if c == nil {

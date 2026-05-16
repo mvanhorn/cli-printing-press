@@ -875,10 +875,10 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 		return
 	}
 	if envVars := stringListExtension(extensions, extensionAuthEnvVars); len(envVars) > 0 {
-		applyAuthEnvVars(auth, envVars)
+		auth.OverrideEnvVars(envVars)
 	} else if len(auth.EnvVars) == 1 {
 		if envVar := envVarExtension(extensions, extensionSpeakeasyExample); envVar != "" {
-			applyAuthEnvVars(auth, []string{envVar})
+			auth.OverrideEnvVars([]string{envVar})
 		}
 	}
 	if optional, ok := boolExtension(extensions, extensionAuthOptional); ok {
@@ -1089,25 +1089,6 @@ func requiredStringField(m map[string]any, name string) (string, bool) {
 		return "", false
 	}
 	return s, true
-}
-
-func applyAuthEnvVars(auth *spec.AuthConfig, envVars []string) {
-	oldEnvVars := append([]string(nil), auth.EnvVars...)
-	auth.EnvVars = envVars
-	remapAuthFormatForEnvOverride(auth, oldEnvVars, envVars)
-}
-
-func remapAuthFormatForEnvOverride(auth *spec.AuthConfig, oldEnvVars, newEnvVars []string) {
-	if auth.Format == "" || len(oldEnvVars) != 1 || len(newEnvVars) != 1 {
-		return
-	}
-	oldPlaceholder := naming.EnvVarPlaceholder(oldEnvVars[0])
-	newPlaceholder := naming.EnvVarPlaceholder(newEnvVars[0])
-	if oldPlaceholder == "" || newPlaceholder == "" {
-		return
-	}
-	auth.Format = strings.ReplaceAll(auth.Format, "{"+oldPlaceholder+"}", "{"+newPlaceholder+"}")
-	auth.Format = strings.ReplaceAll(auth.Format, "{"+oldEnvVars[0]+"}", "{"+newPlaceholder+"}")
 }
 
 func envVarExtension(extensions map[string]any, name string) string {

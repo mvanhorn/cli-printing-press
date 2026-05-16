@@ -4328,3 +4328,53 @@ resources:
 		assert.Equal(t, "title", ep.Body[0].Name)
 	})
 }
+
+func TestAuthConfigOverrideEnvVars(t *testing.T) {
+	t.Run("replaces env vars and clears already-built specs", func(t *testing.T) {
+		auth := &AuthConfig{
+			EnvVars: []string{"FOO_BEARER_AUTH"},
+			EnvVarSpecs: []AuthEnvVar{
+				{Name: "FOO_BEARER_AUTH", Kind: AuthEnvVarKindPerCall, Required: true, Sensitive: true, Inferred: true},
+			},
+		}
+
+		auth.OverrideEnvVars([]string{"FOO_API_TOKEN", "FOO_LEGACY_TOKEN"})
+
+		assert.Equal(t, []string{"FOO_API_TOKEN", "FOO_LEGACY_TOKEN"}, auth.EnvVars)
+		assert.Empty(t, auth.EnvVarSpecs)
+	})
+
+	t.Run("remaps single placeholder in auth.Format", func(t *testing.T) {
+		// Format strings reference env vars by placeholder form
+		// (naming.EnvVarPlaceholder strips the leading prefix segment and
+		// lowercases the rest, so FOO_BEARER_AUTH becomes {bearer_auth}).
+		auth := &AuthConfig{
+			Format:  "Token {bearer_auth}",
+			EnvVars: []string{"FOO_BEARER_AUTH"},
+		}
+
+		auth.OverrideEnvVars([]string{"FOO_SECRET_KEY"})
+
+		assert.Equal(t, "Token {secret_key}", auth.Format)
+	})
+
+	t.Run("remap is no-op for multi-element overrides", func(t *testing.T) {
+		auth := &AuthConfig{
+			Format:  "Token {bearer_auth}",
+			EnvVars: []string{"FOO_BEARER_AUTH"},
+		}
+
+		auth.OverrideEnvVars([]string{"FOO_SECRET_KEY", "FOO_API_KEY"})
+
+		assert.Equal(t, "Token {bearer_auth}", auth.Format)
+	})
+
+	t.Run("nil receiver and empty list are no-ops", func(t *testing.T) {
+		var nilAuth *AuthConfig
+		nilAuth.OverrideEnvVars([]string{"FOO_TOKEN"})
+
+		auth := &AuthConfig{EnvVars: []string{"FOO_BEARER_AUTH"}}
+		auth.OverrideEnvVars(nil)
+		assert.Equal(t, []string{"FOO_BEARER_AUTH"}, auth.EnvVars)
+	})
+}

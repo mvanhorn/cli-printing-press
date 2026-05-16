@@ -56,6 +56,9 @@ func ApplyRuntimeMetadata(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	if entry.AuthInstructions != "" {
 		apiSpec.Auth.Instructions = entry.AuthInstructions
 	}
+	if len(entry.AuthEnvVars) > 0 {
+		apiSpec.Auth.OverrideEnvVars(entry.AuthEnvVars)
+	}
 	if entry.ClientPattern != "" {
 		apiSpec.ClientPattern = entry.ClientPattern
 	}

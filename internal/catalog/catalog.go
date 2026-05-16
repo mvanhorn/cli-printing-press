@@ -15,6 +15,11 @@ import (
 
 var namePattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
+// authEnvVarPattern matches the same shape the OpenAPI parser accepts for
+// x-auth-env-vars entries: uppercase letters, digits, and underscores, with a
+// non-digit leading character.
+var authEnvVarPattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+
 // Public categories first, alphabetized. "other" and "example" are explicitly
 // special (catch-all / test-only) and kept at the end.
 var validCategories = map[string]struct{}{
@@ -142,6 +147,19 @@ type Entry struct {
 	// rather than a deep link to the keys UI. Overrides any spec-supplied
 	// x-auth-instructions value.
 	AuthInstructions string `yaml:"auth_instructions,omitempty"`
+	// AuthEnvVars lists the canonical environment variable names the printed
+	// CLI should read credentials from, in priority order. First entry wins
+	// when multiple are set. Catalog-mode workflows feed the spec straight
+	// into generate without the SKILL's pre-generation enrichment step, so
+	// this field is the structured replacement for that manual edit: declare
+	// each API's well-known SDK env var here (STRIPE_SECRET_KEY,
+	// GITHUB_TOKEN, DISCORD_BOT_TOKEN, ...) so the printed config.go reads
+	// them instead of the mechanical <API>_BEARER_AUTH default. Overrides any
+	// names supplied by the spec's x-auth-env-vars extension or parser
+	// inference. Names must be uppercase, may contain digits and underscores,
+	// and cannot start with a digit -- matching the spec parser's
+	// isUpperEnvVarName rule for x-auth-env-vars.
+	AuthEnvVars []string `yaml:"auth_env_vars,omitempty"`
 	// ClientPattern describes the HTTP client pattern needed. Empty defaults to "rest".
 	// Values: rest, proxy-envelope, graphql.
 	ClientPattern string `yaml:"client_pattern,omitempty"`
@@ -320,6 +338,11 @@ func (e *Entry) Validate() error {
 	}
 	if e.AuthKeyURL != "" && !strings.HasPrefix(e.AuthKeyURL, "https://") {
 		return fmt.Errorf(`auth_key_url must start with "https://"`)
+	}
+	for i, envVar := range e.AuthEnvVars {
+		if !authEnvVarPattern.MatchString(envVar) {
+			return fmt.Errorf("auth_env_vars[%d] %q must be uppercase letters, digits, and underscores (non-digit first character)", i, envVar)
+		}
 	}
 
 	return nil

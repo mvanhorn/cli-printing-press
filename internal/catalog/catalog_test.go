@@ -183,6 +183,20 @@ func TestValidateEntry(t *testing.T) {
 			},
 			wantErr: `auth_key_url must start with "https://"`,
 		},
+		{
+			name: "auth_env_vars lowercase rejected",
+			mutate: func(e *Entry) {
+				e.AuthEnvVars = []string{"stripe_secret_key"}
+			},
+			wantErr: "auth_env_vars[0]",
+		},
+		{
+			name: "auth_env_vars leading digit rejected",
+			mutate: func(e *Entry) {
+				e.AuthEnvVars = []string{"VALID_TOKEN", "1BAD"}
+			},
+			wantErr: "auth_env_vars[1]",
+		},
 	}
 
 	for _, tt := range tests {
@@ -320,6 +334,24 @@ func TestOptionalFieldsOmittedValid(t *testing.T) {
 	assert.Empty(t, entry.ClientPattern)
 	assert.Empty(t, entry.HTTPTransport)
 	assert.Empty(t, entry.BearerRefresh.BundleURL)
+}
+
+func TestAuthEnvVarsParse(t *testing.T) {
+	data := []byte(`
+name: stripe
+display_name: Stripe
+description: Payments and subscriptions
+category: payments
+spec_url: https://example.com/stripe.json
+spec_format: json
+tier: official
+auth_env_vars:
+  - STRIPE_SECRET_KEY
+  - STRIPE_API_KEY
+`)
+	entry, err := ParseEntry(data)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"STRIPE_SECRET_KEY", "STRIPE_API_KEY"}, entry.AuthEnvVars)
 }
 
 func TestBearerRefreshValid(t *testing.T) {
