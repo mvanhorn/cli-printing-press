@@ -316,6 +316,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"bodyVarDecls":          bodyVarDecls,
 		"bodyFlagRegs":          bodyFlagRegs,
 		"bodyRequiredChecks":    bodyRequiredChecks,
+		"bodyExceedsFlagDepth":  bodyExceedsFlagDepth,
 		"multipartBodyMaps":     multipartBodyMaps,
 		"endpointUsesMultipart": endpointUsesMultipart,
 		"endpointHasQueryFlags": endpointHasQueryFlags,
@@ -3383,6 +3384,21 @@ func endpointNeedsClientLimit(endpoint spec.Endpoint) bool {
 	return false
 }
 
+// maxBodyFlagDepth caps how many levels of nested-object recursion the
+// body-flag emitters expand into per-field Cobra flags. A Param at
+// depth 0 is a top-level body field; its object children are at depth 1
+// and recurse with depth+1. When the next depth would meet or exceed
+// the cap, the object's subtree is skipped uniformly across renderBodyMap,
+// renderBodyVarDecls, renderBodyFlagRegs, and renderBodyRequiredChecks.
+// The user reaches truncated fields via the existing `--stdin` flag on
+// POST/PUT/PATCH commands, which reads the full JSON body from stdin.
+//
+// Default 3 covers typical CRUD schemas (resource.object.field) without
+// the recursive explosion seen on enterprise/ERP specs that self-reference
+// through 6+ layers and produce 40k-line command files the Go compiler
+// OOMs on.
+const maxBodyFlagDepth = 3
+
 // bodyMap renders the per-flag body-building block shared by the
 // POST/PUT/PATCH branches in command_endpoint.go.tmpl and the body
 // branch in command_promoted.go.tmpl. The four sites generated the
@@ -3395,10 +3411,11 @@ func endpointNeedsClientLimit(endpoint spec.Endpoint) bool {
 // recurses: each leaf field becomes its own flag (parent-prefixed in
 // the generated identifier so `start.dateTime` and `end.dateTime` do
 // not collide), and the parent's wire-side key receives a built-up
-// map[string]any rather than a single JSON-string flag.
+// map[string]any rather than a single JSON-string flag. Recursion stops
+// at maxBodyFlagDepth; deeper subtrees are only reachable via `--stdin`.
 func bodyMap(body []spec.Param, indent string) string {
 	var b strings.Builder
-	renderBodyMap(&b, flattenCollidingBodyFields(body), indent, "body", "", "")
+	renderBodyMap(&b, flattenCollidingBodyFields(body), 0, indent, "body", "", "")
 	return b.String()
 }
 
@@ -3439,16 +3456,19 @@ func bodyJSONFallbackMap(indent string) string {
 	return b.String()
 }
 
-func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identPrefix, flagPrefix string) {
+func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, mapVar, identPrefix, flagPrefix string) {
 	for _, p := range body {
 		id := paramIdent(p)
 		ident := identPrefix + toCamel(id)
 		flag := joinFlag(flagPrefix, publicFlagName(p))
 		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
 			nestedMap := "nested" + ident
 			fmt.Fprintf(b, "%s{\n", indent)
 			fmt.Fprintf(b, "%s\t%s := map[string]any{}\n", indent, nestedMap)
-			renderBodyMap(b, p.Fields, indent+"\t", nestedMap, ident, flag)
+			renderBodyMap(b, p.Fields, depth+1, indent+"\t", nestedMap, ident, flag)
 			fmt.Fprintf(b, "%s\tif len(%s) > 0 {\n", indent, nestedMap)
 			fmt.Fprintf(b, "%s\t\t%s[%q] = %s\n", indent, mapVar, p.Name, nestedMap)
 			fmt.Fprintf(b, "%s\t}\n", indent)
@@ -3518,7 +3538,7 @@ func bodyVarDecls(endpoint spec.Endpoint) string {
 		}
 		return b.String()
 	}
-	renderBodyVarDecls(&b, flattenCollidingBodyFields(endpoint.Body), "")
+	renderBodyVarDecls(&b, flattenCollidingBodyFields(endpoint.Body), 0, "")
 	return b.String()
 }
 
@@ -3531,11 +3551,14 @@ func bodyUsesFlatEmission(endpoint spec.Endpoint) bool {
 	return endpointUsesMultipart(endpoint) || endpointUsesForm(endpoint)
 }
 
-func renderBodyVarDecls(b *strings.Builder, body []spec.Param, identPrefix string) {
+func renderBodyVarDecls(b *strings.Builder, body []spec.Param, depth int, identPrefix string) {
 	for _, p := range body {
 		ident := identPrefix + toCamel(paramIdent(p))
 		if p.Type == "object" && len(p.Fields) > 0 {
-			renderBodyVarDecls(b, p.Fields, ident)
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
+			renderBodyVarDecls(b, p.Fields, depth+1, ident)
 			continue
 		}
 		fmt.Fprintf(b, "\n\tvar body%s %s", ident, goType(p.Type))
@@ -3560,16 +3583,19 @@ func bodyFlagRegs(endpoint spec.Endpoint) string {
 		}
 		return b.String()
 	}
-	renderBodyFlagRegs(&b, flattenCollidingBodyFields(endpoint.Body), "", "", true)
+	renderBodyFlagRegs(&b, flattenCollidingBodyFields(endpoint.Body), 0, "", "", true)
 	return b.String()
 }
 
-func renderBodyFlagRegs(b *strings.Builder, body []spec.Param, identPrefix, flagPrefix string, topLevel bool) {
+func renderBodyFlagRegs(b *strings.Builder, body []spec.Param, depth int, identPrefix, flagPrefix string, topLevel bool) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
 			ident := identPrefix + toCamel(paramIdent(p))
 			flag := joinFlag(flagPrefix, publicFlagName(p))
-			renderBodyFlagRegs(b, p.Fields, ident, flag, false)
+			renderBodyFlagRegs(b, p.Fields, depth+1, ident, flag, false)
 			continue
 		}
 		renderFlatBodyFlagReg(b, p, identPrefix, flagPrefix, topLevel)
@@ -3622,19 +3648,53 @@ func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
 		}
 		return b.String()
 	}
-	renderBodyRequiredChecks(&b, flattenCollidingBodyFields(endpoint.Body), indent, "", true)
+	renderBodyRequiredChecks(&b, flattenCollidingBodyFields(endpoint.Body), 0, indent, "", true)
 	return b.String()
 }
 
-func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, indent, flagPrefix string, topLevel bool) {
+func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, depth int, indent, flagPrefix string, topLevel bool) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
 			flag := joinFlag(flagPrefix, publicFlagName(p))
-			renderBodyRequiredChecks(b, p.Fields, indent, flag, false)
+			renderBodyRequiredChecks(b, p.Fields, depth+1, indent, flag, false)
 			continue
 		}
 		renderFlatBodyRequiredCheck(b, p, indent, flagPrefix, topLevel)
 	}
+}
+
+// bodyExceedsFlagDepth reports whether emitting per-field body flags for
+// the endpoint would have truncated any nested-object subtree under
+// maxBodyFlagDepth. Multipart/form endpoints stay flat and never
+// truncate; BodyJSONFallback endpoints route through a single
+// --body-json flag and never reach the per-field path.
+func bodyExceedsFlagDepth(endpoint spec.Endpoint) bool {
+	if endpoint.BodyJSONFallback || bodyUsesFlatEmission(endpoint) {
+		return false
+	}
+	return walkBodyExceedsDepth(endpoint.Body, 0)
+}
+
+// walkBodyExceedsDepth returns true as soon as any nested-object subtree
+// at depth >= maxBodyFlagDepth-1 is found. The walk is bounded by the
+// same depth check the emitters use, so a Param graph that
+// intentionally self-references (cyclic spec) does not loop here.
+func walkBodyExceedsDepth(body []spec.Param, depth int) bool {
+	for _, p := range body {
+		if p.Type != "object" || len(p.Fields) == 0 {
+			continue
+		}
+		if depth+1 >= maxBodyFlagDepth {
+			return true
+		}
+		if walkBodyExceedsDepth(p.Fields, depth+1) {
+			return true
+		}
+	}
+	return false
 }
 
 func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagPrefix string, topLevel bool) {
