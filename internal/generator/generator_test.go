@@ -3688,12 +3688,41 @@ func TestWriteThroughCacheSkipsEmptyListEnvelope(t *testing.T) {
 		t.Fatalf("certs count after empty-list envelope = %d, want 0 (envelope must not be upserted as a single object)", count)
 	}
 }
+
+// TestWriteThroughCacheCachesObjectWithListWrapperFieldName guards the
+// list-envelope guard from a field-name collision: a detail object whose
+// own field happens to be named "data" / "results" / "items" with a
+// scalar value (not an array) is a regular response, not an empty list
+// envelope, and must still be cached. Skipping it would be a regression
+// from the prior envelope["id"] path.
+func TestWriteThroughCacheCachesObjectWithListWrapperFieldName(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// "data" key is present but holds a string. Old code would have written
+	// this via the id guard; new guard must still write it because the
+	// wrapper key isn't a list.
+	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{"CertNo":"55555","data":"opaque-token","Grade":"AU58"}` + "`" + `))
+
+	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
+	if err != nil {
+		t.Fatalf("open cache store: %v", err)
+	}
+	defer db.Close()
+
+	var count int
+	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs WHERE id = '55555'` + "`" + `).Scan(&count); err != nil {
+		t.Fatalf("query certs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("certs count after field-name-collision response = %d, want 1 (scalar-valued wrapper-named field must not trip the list-envelope skip)", count)
+	}
+}
 `
 	testPath := filepath.Join(outputDir, "internal", "cli", "write_through_cache_non_id_test.go")
 	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
 
 	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCacheNonIDPrimaryKey|TestWriteThroughCacheSkipsEmptyListEnvelope", "./internal/cli")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCacheNonIDPrimaryKey|TestWriteThroughCacheSkipsEmptyListEnvelope|TestWriteThroughCacheCachesObjectWithListWrapperFieldName", "./internal/cli")
 }
 
 func TestSyncDiscriminatorDispatchRoutesMixedItemsToTypedTables(t *testing.T) {

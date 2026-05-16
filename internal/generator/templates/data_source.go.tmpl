@@ -191,13 +191,21 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 			// resourceIDFieldOverrides mechanism resolve the primary key.
 			// Guarding on envelope["id"] dropped any API whose PK is named
 			// CertNo / sku / invoiceId / etc. on the floor (#1439). Skip
-			// when the envelope carries a known list-wrapper key — that's
-			// a list response whose array happened to be empty, not a
-			// detail object — and when the envelope is empty (malformed).
+			// only when the envelope carries a list-wrapper KEY whose
+			// VALUE is an array — that's a list response whose array
+			// happened to be empty, not a detail object. A wrapper-named
+			// field whose value is a scalar/object/null is a regular
+			// field name collision (e.g. {"id":"x","data":"<base64>"})
+			// and the row still needs to be cached.
 			if items == nil && len(envelope) > 0 {
 				isEmptyListEnvelope := false
 				for _, key := range []string{"results", "data", "items"} {
-					if _, ok := envelope[key]; ok {
+					raw, ok := envelope[key]
+					if !ok {
+						continue
+					}
+					var arr []json.RawMessage
+					if json.Unmarshal(raw, &arr) == nil {
 						isEmptyListEnvelope = true
 						break
 					}
