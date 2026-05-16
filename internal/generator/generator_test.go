@@ -6583,6 +6583,52 @@ func TestGenerate_CookieAuthFiltersAllowlistOnLogin(t *testing.T) {
 		assert.NotContains(t, content, "requiredCookies := []string{")
 		assert.NotContains(t, content, `cookies = strings.Join(kept, "; ")`)
 	})
+
+	t.Run("refresh path also filters by allowlist", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := &spec.APISpec{
+			Name:    "refreshfilterapp",
+			Version: "0.1.0",
+			BaseURL: "https://app.example.com",
+			Auth: spec.AuthConfig{
+				Type:                           "cookie",
+				Header:                         "Cookie",
+				In:                             "cookie",
+				CookieDomain:                   ".example.com",
+				Cookies:                        []string{"session_id"},
+				EnvVars:                        []string{"REFRESHFILTERAPP_COOKIES"},
+				RequiresBrowserSession:         true,
+				BrowserSessionValidationPath:   "/api/items",
+				BrowserSessionValidationMethod: "GET",
+			},
+			Config: spec.ConfigSpec{Format: "toml"},
+			Resources: map[string]spec.Resource{
+				"items": {
+					Description: "Manage items",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/api/items", Description: "List items"},
+					},
+				},
+			},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "refreshfilterapp-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		auth, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+		require.NoError(t, err)
+		content := string(auth)
+
+		require.Contains(t, content, "func refreshStoredBrowserCookies")
+		_, refresh, _ := strings.Cut(content, "func refreshStoredBrowserCookies")
+		// Without the fix, the refresh body has SaveTokens(cookies) with no
+		// prior filter — the second SaveTokens call would then sit before any
+		// allowlist parsing in the function.
+		assert.Contains(t, refresh, `requiredCookies := []string{"session_id"}`)
+		assert.Contains(t, refresh, `cookies = strings.Join(kept, "; ")`)
+
+		runGoCommand(t, outputDir, "build", "./...")
+	})
 }
 
 func TestGenerate_UserAgentOverrideGatedByBrowserTransport(t *testing.T) {

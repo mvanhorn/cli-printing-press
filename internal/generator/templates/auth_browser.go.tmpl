@@ -620,6 +620,22 @@ func refreshStoredBrowserCookies(cfg *config.Config, w io.Writer) error {
 	}
 	fmt.Fprintf(w, "Updated stored browser auth from %d cookies.\n", len(requiredCookies))
 {{- else}}
+{{- if .Auth.Cookies}}
+	// Refresh runs unattended, so silently saving the raw blob here would
+	// overwrite the filtered token that login just persisted. Apply the same
+	// allowlist filter as newAuthLoginCmd's non-composed branch.
+	cookieMap := parseCookieString(cookies)
+	requiredCookies := []string{ {{- range $i, $c := .Auth.Cookies}}{{if $i}}, {{end}}"{{$c}}"{{- end}} }
+	kept := make([]string, 0, len(requiredCookies))
+	for _, name := range requiredCookies {
+		v, ok := cookieMap[name]
+		if !ok {
+			return fmt.Errorf("cookie %q not found for %s", name, domain)
+		}
+		kept = append(kept, name+"="+v)
+	}
+	cookies = strings.Join(kept, "; ")
+{{- end}}
 	if err := cfg.SaveTokens("", "", cookies, "", time.Time{}); err != nil {
 		return configErr(fmt.Errorf("saving cookies: %w", err))
 	}
