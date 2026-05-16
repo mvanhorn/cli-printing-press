@@ -5509,6 +5509,41 @@ func TestGeneratedOutput_PromotedCommandCompiles(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// A resource named `test` produces `promoted_test.go`; Go treats *_test.go as a
+// test file and excludes it from the normal package build, so root.go's
+// reference to newTestPromotedCmd fails to compile. Mirrors the safe-stem fix
+// that #1021 applied to `<resource>_<verb>.go`.
+func TestGeneratedOutput_PromotedCommand_TestResourceCompiles(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "promotedtest",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"PT_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/promotedtest-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"test": {
+				Description: "Single-endpoint resource whose name collides with Go's *_test.go convention",
+				Endpoints: map[string]spec.Endpoint{
+					"generate": {Method: "POST", Path: "/test/generate", Description: "Generate a test"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "promotedtest-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_test.go"),
+		"promoted_test.go is excluded from go build; safeResourceFileStem must rewrite to promoted_test_cmd.go")
+	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_test_cmd.go"))
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 func TestGeneratedOutput_ResourceParentsHiddenWhenAPIBrowserGenerated(t *testing.T) {
 	t.Parallel()
 
