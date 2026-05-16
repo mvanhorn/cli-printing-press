@@ -146,6 +146,18 @@ When you're happy with a CLI, publish it to the library:
 
 </details>
 
+<details>
+<summary><b>Amend a published CLI from a dogfood session</b></summary>
+
+After dogfooding a published CLI in a Claude Code session, turn the friction you hit (missing flags, hand-rolled API payloads, silent-null returns) into a PR for the public library. Mines the active session transcript, scopes the patch with you, plans + executes the fix autonomously, scrubs PII, and opens a PR — two checkpoints (scope, PR draft):
+
+```bash
+/printing-press-amend                # auto-detect target CLI from session
+/printing-press-amend superhuman     # explicit target
+```
+
+</details>
+
 ## Why these CLIs win
 
 Most generators wrap endpoints and stop. Printing Press generates CLIs that understand the domain.

@@ -51,6 +51,7 @@ func Execute() error {
 	rootCmd.AddCommand(newValidateNarrativeCmd())
 	rootCmd.AddCommand(newVerifyCmd())
 	rootCmd.AddCommand(newVerifySkillCmd())
+	rootCmd.AddCommand(newVerifyInternalSkillCmd())
 	rootCmd.AddCommand(newEmbossCmd())
 	rootCmd.AddCommand(newPatchCmd())
 	rootCmd.AddCommand(newVisionCmd())
