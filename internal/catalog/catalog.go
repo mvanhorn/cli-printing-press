@@ -354,13 +354,16 @@ func validateAuthEnvVars(envVars []string) error {
 		if trimmed == "" {
 			return fmt.Errorf("auth_env_vars[%d] must not be empty", i)
 		}
-		if !authEnvVarPattern.MatchString(trimmed) {
+		if trimmed != name {
+			return fmt.Errorf("auth_env_vars[%d] %q must not have leading or trailing whitespace", i, name)
+		}
+		if !authEnvVarPattern.MatchString(name) {
 			return fmt.Errorf("auth_env_vars[%d] %q must be uppercase letters, digits, or underscores starting with a letter", i, name)
 		}
-		if _, dup := seen[trimmed]; dup {
+		if _, dup := seen[name]; dup {
 			return fmt.Errorf("auth_env_vars[%d] %q is a duplicate", i, name)
 		}
-		seen[trimmed] = struct{}{}
+		seen[name] = struct{}{}
 	}
 	return nil
 }

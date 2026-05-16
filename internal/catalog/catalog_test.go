@@ -191,6 +191,20 @@ func TestValidateEntry(t *testing.T) {
 			wantErr: "auth_env_vars[1] must not be empty",
 		},
 		{
+			name: "auth_env_vars leading whitespace rejected",
+			mutate: func(e *Entry) {
+				e.AuthEnvVars = []string{"  STRIPE_KEY"}
+			},
+			wantErr: "must not have leading or trailing whitespace",
+		},
+		{
+			name: "auth_env_vars trailing whitespace rejected",
+			mutate: func(e *Entry) {
+				e.AuthEnvVars = []string{"STRIPE_KEY  "}
+			},
+			wantErr: "must not have leading or trailing whitespace",
+		},
+		{
 			name: "auth_env_vars lowercase rejected",
 			mutate: func(e *Entry) {
 				e.AuthEnvVars = []string{"stripe_secret_key"}
