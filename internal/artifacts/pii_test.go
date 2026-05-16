@@ -403,6 +403,7 @@ func TestLooksLikeVendorAPISpec(t *testing.T) {
 		{"openapi-3.1-json", `{"openapi":"3.1.0"}`, true},
 		{"openapi-2.0-json", `{"openapi": "2.0"}`, true},
 		{"swagger-2.0-json", `{"swagger": "2.0"}`, true},
+		{"openapi-3.0-json-pretty", "{\n  \"openapi\": \"3.0.3\",\n  \"info\": {}\n}", true},
 		{"openapi-yaml", "openapi: 3.0.0\ninfo:\n  title: x", true},
 		{"openapi-yaml-quoted", `openapi: "3.0.0"`, true},
 		{"swagger-yaml", "swagger: '2.0'\ninfo:\n  title: x", true},
@@ -411,12 +412,41 @@ func TestLooksLikeVendorAPISpec(t *testing.T) {
 		{"prose-mentioning-openapi", "This file describes the openapi: 3.0 schema we built.", false},
 		{"openapi-mid-line-yaml", "  openapi: 3.0", false},
 		{"openapi-future-version-string", `{"openapi": "4.0"}`, false},
+		// Anchor regressions: only root-level keys may signal a vendor
+		// spec. A non-spec JSON file whose nested payload contains an
+		// `openapi`/`swagger` field must not trip the exemption.
+		{"json-nested-openapi-field", `{"user_data": {"extras": {"openapi": "3.0.0", "email": "real@user.com"}}}`, false},
+		{"json-info-before-openapi", `{"info": {"title": "x"}, "openapi": "3.0.0"}`, false},
+		{"json-swagger-nested", `{"meta": {"swagger": "2.0"}}`, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, looksLikeVendorAPISpec([]byte(tt.probe)))
 		})
 	}
+}
+
+// Anchor regression at the file walk level: a JSON file under
+// .manuscripts/ whose first 8 KB contains a nested "openapi": "3.0.0"
+// (but no root-level marker) must still scan. Pins the JSON anchor's
+// intent so a future weakening of the regex surfaces here as a real
+// PII gate regression instead of a silent bypass.
+func TestFindPII_NestedOpenAPIFieldStillScans(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".manuscripts", "run1", "research"), 0755))
+	nestedJSON := `{
+  "captured_at": "2026-05-15",
+  "payload": {
+    "request": {"openapi": "3.0.0"},
+    "response": {"email": "real@user.com", "phone": "(415) 555-0123"}
+  }
+}`
+	write(t, filepath.Join(root, ".manuscripts", "run1", "research", "captured.json"), nestedJSON)
+
+	findings, err := FindPII(root)
+	require.NoError(t, err)
+	assert.Contains(t, uniqueFiles(findings), ".manuscripts/run1/research/captured.json",
+		"nested openapi field must not bypass PII scanning")
 }
 
 func TestFindPII_BinaryFileSkip(t *testing.T) {

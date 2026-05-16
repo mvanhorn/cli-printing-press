@@ -195,12 +195,17 @@ const manuscriptsDir = ".manuscripts"
 // vendorSpecMarkers are the OpenAPI/Swagger version-marker patterns
 // looksLikeVendorAPISpec probes for in a file's head bytes. The two-form
 // shape (JSON quoted-key vs YAML unquoted-key) is required because vendor
-// docs ship both formats. Version constraints (2.x or 3.x) avoid matching
-// freeform mentions like "openapi: future" in proofs/markdown.
+// docs ship both formats. Both forms anchor the key to document root:
+// JSON requires `openapi`/`swagger` as the first key after the opening
+// brace, YAML requires it at column 0. Without the anchors, a non-spec
+// file with a nested `openapi`/`swagger` field deep in its payload
+// (response envelope, captured config blob, metadata wrapper) would
+// silently bypass PII scanning. Version constraints (2.x or 3.x) avoid
+// matching freeform mentions like "openapi: future" in proofs/markdown.
 var vendorSpecMarkers = []*regexp.Regexp{
-	// JSON: "openapi": "3.x.x" or "swagger": "2.0"
-	regexp.MustCompile(`"openapi"\s*:\s*"[23]\.`),
-	regexp.MustCompile(`"swagger"\s*:\s*"2\.`),
+	// JSON: {"openapi": "3.x.x" — openapi must be the first key.
+	regexp.MustCompile(`\A\s*\{\s*"openapi"\s*:\s*"[23]\.`),
+	regexp.MustCompile(`\A\s*\{\s*"swagger"\s*:\s*"2\.`),
 	// YAML: openapi: 3.x or swagger: "2.0" at column 0 of any line.
 	regexp.MustCompile(`(?m)^openapi\s*:\s*['"]?[23]\.`),
 	regexp.MustCompile(`(?m)^swagger\s*:\s*['"]?2\.`),
