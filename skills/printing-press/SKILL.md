@@ -2339,6 +2339,13 @@ After building each command in Priority 1 and Priority 2, verify these 10 princi
      }
      ```
    This is defense-in-depth: the verifier also runs a heuristic side-effect classifier, but it can miss commands whose `--help` text and source don't match the heuristics. The env-var check is the floor.
+   - **Long-running commands curtail work under live-dogfood.** Any hand-written command whose happy path is an expensive network operation (full sync loops, content crawlers, bulk archive walks) MUST check `cliutil.IsDogfoodEnv()` and curtail work to fit inside the matrix's flat 30s per-command timeout. `printing-press dogfood --live` sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess. Pattern:
+     ```go
+     if cliutil.IsDogfoodEnv() {
+         return crawl(ctx, opts.WithMaxPages(1))
+     }
+     ```
+     Distinct from `IsVerifyEnv`: dogfood is a real-API matrix, so curtail work (paginate once, smaller `--limit`), never substitute mock data for real calls.
 10. **Per-source rate limiting**: any hand-written client in a sibling internal package (`internal/source/<name>/`, `internal/recipes/`, `internal/phgraphql/`, etc. — anything not generator-emitted) that makes outbound HTTP calls MUST use `cliutil.AdaptiveLimiter` and surface `*cliutil.RateLimitError` when 429 retries are exhausted. Empty-on-throttle is indistinguishable from "no data exists" and silently corrupts downstream queries. Read [references/per-source-rate-limiting.md](references/per-source-rate-limiting.md) when authoring a sibling client. Enforced at generation time by dogfood's `source_client_check`.
 
 #### Verify-friendly RunE template

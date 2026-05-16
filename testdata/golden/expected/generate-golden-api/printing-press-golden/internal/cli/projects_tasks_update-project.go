@@ -59,7 +59,7 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 				body = jsonBody
 			} else {
 				body = map[string]any{}
-				if bodyCompleted != false {
+				if cmd.Flags().Changed("completed") {
 					body["completed"] = bodyCompleted
 				}
 				if bodyPriority != "" {
