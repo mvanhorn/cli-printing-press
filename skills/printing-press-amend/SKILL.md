@@ -582,9 +582,12 @@ cli_dir_in_clone: <path>
 findings_addressed: [...]
 build_status: PASS|FAIL
 test_status: PASS|FAIL
+dogfood_status: PASS|FAIL|N/A    # PASS|FAIL when MODE=dogfood (or "both"); always N/A when MODE=direct
 validate_iterations: <n>
 patch_marker_count: <n>
 ```
+
+**`dogfood_status` per mode.** When `MODE=dogfood`, the value reflects the result of the dogfood validation step that consumed the transcript-derived findings (PASS if the run produced a clean fix, FAIL if it surfaced a regression). When `MODE=direct`, there is no transcript to dogfood against — set `dogfood_status=N/A`. When `MODE=both`, dogfood validation still runs against the transcript half of the findings; set PASS/FAIL accordingly. This default must be set at the latest by the end of Phase 4 so Phase 7's PR body and Phase 8's RESULT block never emit an empty value.
 
 ## Phase 5 — PII Scrub
 
