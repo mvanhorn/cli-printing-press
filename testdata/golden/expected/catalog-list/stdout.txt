@@ -16,6 +16,9 @@ developer-tools:
 example:
   petstore             Canonical OpenAPI example - pet store management
 
+maps:
+  openrouteservice     Open-source routing, geocoding, matrix, isochrones, and VRP optimization on OpenStreetMap data.
+
 marketing:
   producthunt          Find, monitor, and export Product Hunt launches for launch research, scouting, and competitive tracking without requiring a Product Hunt API application.
 
