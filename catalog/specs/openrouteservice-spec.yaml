@@ -372,11 +372,12 @@ components:
           description: All locations participating in the matrix.
         sources:
           type: array
-          items: { oneOf: [{ type: integer }, { type: string, enum: [all] }] }
-          description: Indices into `locations` to use as origins. `["all"]` defaults.
+          items: { type: integer }
+          description: Indices into `locations` to use as origins. Omit to use all locations.
         destinations:
           type: array
-          items: { oneOf: [{ type: integer }, { type: string, enum: [all] }] }
+          items: { type: integer }
+          description: Indices into `locations` to use as destinations. Omit to use all locations.
         metrics:
           type: array
           items: { type: string, enum: [duration, distance] }
