@@ -1,5 +1,22 @@
 # Changelog
 
+## [4.8.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.7.0...v4.8.0) (2026-05-16)
+
+
+### Features
+
+* **cli:** add ElevenLabs generation support ([#1307](https://github.com/mvanhorn/cli-printing-press/issues/1307)) ([5f43de5](https://github.com/mvanhorn/cli-printing-press/commit/5f43de505252859e2ebbe846a4ecffb598e7655d))
+
+
+### Bug Fixes
+
+* **ci:** switch queue update_method to merge so fork PRs can queue ([#1492](https://github.com/mvanhorn/cli-printing-press/issues/1492)) ([2d0ad5a](https://github.com/mvanhorn/cli-printing-press/commit/2d0ad5ae7a6007034d8e743bebc8515383490aa3))
+* **cli:** doctor preserves configured User-Agent when API uses UA as auth credential ([#1361](https://github.com/mvanhorn/cli-printing-press/issues/1361)) ([3bb6d37](https://github.com/mvanhorn/cli-printing-press/commit/3bb6d37bfbe94e675051bc6c453dd32ad9985e07))
+* **cli:** expand pm_stale timestamp-field list for non-updated_at APIs ([#1461](https://github.com/mvanhorn/cli-printing-press/issues/1461)) ([55f5b26](https://github.com/mvanhorn/cli-printing-press/commit/55f5b26b0a45e30c3917bd6b14c400e0c5450dad))
+* **cli:** probe nested path-param leaves so verify catches `args[]` index bugs ([#1434](https://github.com/mvanhorn/cli-printing-press/issues/1434)) ([5460c32](https://github.com/mvanhorn/cli-printing-press/commit/5460c32aa10373023060fffeceb7f8ada1fcfd5f))
+* **cli:** short-circuit sync on dry-run sentinel response ([#1471](https://github.com/mvanhorn/cli-printing-press/issues/1471)) ([f8d3ba8](https://github.com/mvanhorn/cli-printing-press/commit/f8d3ba803f0b483305737ef5259c8e09c3e26c86))
+* **cli:** use Chrome User-Agent for synthetic/cookie/composed/session_handshake CLIs ([#1479](https://github.com/mvanhorn/cli-printing-press/issues/1479)) ([d7ccd85](https://github.com/mvanhorn/cli-printing-press/commit/d7ccd8502e41eca152f03e88985527ec2338b839)), closes [#1293](https://github.com/mvanhorn/cli-printing-press/issues/1293)
+
 ## [4.7.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.6.1...v4.7.0) (2026-05-15)
 
 
