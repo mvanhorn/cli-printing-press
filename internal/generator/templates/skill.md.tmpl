@@ -146,7 +146,9 @@ This CLI was generated with browser-observed traffic context.
 {{end}}
 {{- if .ExtraCommands}}
 
-**Hand-written commands**
+## Hand-written Extensions
+
+These commands are declared by the spec author and require separate hand-written wiring; the generator does not emit Cobra registration for them. They are listed here for discoverability and are intentionally outside `## Command Reference` so the verify-skill unknown-command check does not treat them as generator-owned paths.
 {{range .ExtraCommands}}
 - `{{$.Name}}-pp-cli {{.Name}}{{if .Args}} {{.Args}}{{end}}` — {{oneline .Description}}
 {{- end}}
