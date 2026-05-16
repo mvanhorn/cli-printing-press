@@ -14,8 +14,6 @@ auth_required: true
 auth_instructions: Free signup at https://openrouteservice.org/dev/#/signup. Pass the key as the raw Authorization header value (no Bearer prefix).
 auth_env_vars:
   - ORS_API_KEY
-  - OPENROUTESERVICE_API_KEY
-sandbox_endpoint: https://api.openrouteservice.org
 notes: |
   Single vendor covers everything a backend dispatch / routing workflow needs:
 
