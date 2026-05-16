@@ -466,6 +466,21 @@ func syncResource(c interface {
 		// Strategy: try array first, then common wrapper keys.
 		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
 
+		// Page-int paginator fallback: when the API paginates by integer
+		// ?page=N and emits no body cursor, treat a full page as a signal
+		// to advance numerically. Without this the loop breaks after page
+		// 1 even though more pages exist (the original symptom in #1296).
+		// Guard on cursorType, not cursorParam name, so all canonical
+		// spellings (page / page_number / pageNumber / page[number]) work.
+		if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit {
+			currentPage, _ := strconv.Atoi(cursor)
+			if currentPage < 1 {
+				currentPage = 1
+			}
+			nextCursor = strconv.Itoa(currentPage + 1)
+			hasMore = true
+		}
+
 		if len(items) == 0 {
 			if isEmptyPageResponse(data) {
 				break
@@ -623,6 +638,7 @@ func syncResource(c interface {
 // paginationDefaults holds the resolved pagination parameter names and page size.
 type paginationDefaults struct {
 	cursorParam string
+	cursorType  string // paginator class: "", "cursor", "page_token", "offset", "page"
 	limitParam  string
 	limit       int
 }
@@ -632,6 +648,7 @@ type paginationDefaults struct {
 func determinePaginationDefaults() paginationDefaults {
 	return paginationDefaults{
 		cursorParam: "cursor",
+		cursorType:  "cursor",
 		limitParam:  "limit",
 		limit:       100,
 	}

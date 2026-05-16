@@ -1458,9 +1458,9 @@ type ResponseDiscriminator struct {
 }
 
 type Pagination struct {
-	Type           string `yaml:"type" json:"type"`                         // cursor, offset, page_token
+	Type           string `yaml:"type" json:"type"`                         // cursor, offset, page_token, page
 	LimitParam     string `yaml:"limit_param" json:"limit_param"`           // query param name for page size (limit, maxResults, pageSize)
-	CursorParam    string `yaml:"cursor_param" json:"cursor_param"`         // query param name for cursor (after, pageToken, offset)
+	CursorParam    string `yaml:"cursor_param" json:"cursor_param"`         // query param name for cursor (after, pageToken, offset, page)
 	NextCursorPath string `yaml:"next_cursor_path" json:"next_cursor_path"` // response field with next cursor (nextPageToken, cursor)
 	HasMoreField   string `yaml:"has_more_field" json:"has_more_field"`     // response field indicating more pages (has_more)
 }
