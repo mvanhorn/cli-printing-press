@@ -760,6 +760,34 @@ func TestBodyExceedsFlagDepth_BodyJSONFallback(t *testing.T) {
 	}
 }
 
+// TestBodyExceedsFlagDepth_CollisionFlattenedSubtree pins the
+// interaction with flattenCollidingBodyFields. When dot-flattened
+// identifier collision clears an object's Fields, the emitters treat
+// that subtree as a JSON-string leaf and never recurse past it -- no
+// depth-cap truncation occurs. The predicate must read the same
+// flattened tree the emitters render, or the --stdin help text reverts
+// to the truncation-warning variant when every field is in fact a
+// per-field flag.
+func TestBodyExceedsFlagDepth_CollisionFlattenedSubtree(t *testing.T) {
+	t.Parallel()
+	// Top-level scalar 'outerInnerLeaf' collides with the dot-flattened
+	// nested leaf outer.inner.leaf (both camelize to bodyOuterInnerLeaf
+	// at depth 3). flattenCollidingBodyFields clears outer.Fields so the
+	// emitters render outer as a JSON-string leaf at depth 0; no part of
+	// the rendered tree exceeds the cap.
+	body := []spec.Param{
+		{Name: "outerInnerLeaf", Type: "string"},
+		{Name: "outer", Type: "object", Fields: []spec.Param{
+			{Name: "inner", Type: "object", Fields: []spec.Param{
+				{Name: "leaf", Type: "string"},
+			}},
+		}},
+	}
+	if bodyExceedsFlagDepth(spec.Endpoint{Body: body}) {
+		t.Error("collision-flattened subtree must not report truncation; emitters see a flat tree")
+	}
+}
+
 // TestBodyExceedsFlagDepth_Multipart returns false for multipart
 // endpoints regardless of nested-object depth: bodyUsesFlatEmission
 // keeps multipart and form-encoded bodies one-flag-per-top-level-param,

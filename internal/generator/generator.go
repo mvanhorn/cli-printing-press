@@ -3671,11 +3671,18 @@ func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, depth int, 
 // maxBodyFlagDepth. Multipart/form endpoints stay flat and never
 // truncate; BodyJSONFallback endpoints route through a single
 // --body-json flag and never reach the per-field path.
+//
+// The walk uses flattenCollidingBodyFields because that is what the
+// emitters render. Collision-flattening clears `Fields` on an object
+// whose dot-flattened subtree would clash with a sibling identifier,
+// turning it into a JSON-string leaf the user passes as a single flag.
+// Walking the raw body would falsely report truncation in that case
+// and rewrite the --stdin help text even when every field is exposed.
 func bodyExceedsFlagDepth(endpoint spec.Endpoint) bool {
 	if endpoint.BodyJSONFallback || bodyUsesFlatEmission(endpoint) {
 		return false
 	}
-	return walkBodyExceedsDepth(endpoint.Body, 0)
+	return walkBodyExceedsDepth(flattenCollidingBodyFields(endpoint.Body), 0)
 }
 
 // walkBodyExceedsDepth returns true as soon as any nested-object subtree
