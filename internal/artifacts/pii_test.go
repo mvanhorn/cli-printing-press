@@ -418,6 +418,17 @@ func TestLooksLikeVendorAPISpec(t *testing.T) {
 		{"json-nested-openapi-field", `{"user_data": {"extras": {"openapi": "3.0.0", "email": "real@user.com"}}}`, false},
 		{"json-info-before-openapi", `{"info": {"title": "x"}, "openapi": "3.0.0"}`, false},
 		{"json-swagger-nested", `{"meta": {"swagger": "2.0"}}`, false},
+		// YAML anchor regressions: PII-shaped values in earlier root
+		// keys must not be exempted just because a later root key looks
+		// like an OpenAPI/Swagger version marker.
+		{"yaml-pii-before-openapi", "captured_at: 2026-05-15\nuser_email: real@user.com\nopenapi: 3.0.0", false},
+		{"yaml-swagger-after-meta", "tenant: acme\nswagger: '2.0'", false},
+		// YAML lead-in allowed: optional document marker, directives,
+		// comment lines, and blank lines before the version marker.
+		{"yaml-with-document-marker", "---\nopenapi: 3.0.0", true},
+		{"yaml-with-comment-prefix", "# Vendor-published OpenAPI spec\nopenapi: 3.0.0", true},
+		{"yaml-with-directive-and-marker", "%YAML 1.2\n---\nopenapi: 3.0.0", true},
+		{"yaml-with-blank-lead", "\nopenapi: 3.0.0", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -447,6 +458,27 @@ func TestFindPII_NestedOpenAPIFieldStillScans(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, uniqueFiles(findings), ".manuscripts/run1/research/captured.json",
 		"nested openapi field must not bypass PII scanning")
+}
+
+// YAML parallel: a research-notes YAML under .manuscripts/ that lists
+// real captured PII in earlier root keys and a later `openapi: 3.0.0`
+// root key must still scan. Without the document-start anchor on the
+// YAML marker, the column-0 `openapi:` line would trip the exemption
+// and silently exempt the PII above it.
+func TestFindPII_YAMLPIIBeforeOpenAPIStillScans(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".manuscripts", "run1", "research"), 0755))
+	notes := `captured_at: 2026-05-15
+user_email: real@user.com
+phone: (415) 555-0123
+openapi: 3.0.0
+`
+	write(t, filepath.Join(root, ".manuscripts", "run1", "research", "notes.yaml"), notes)
+
+	findings, err := FindPII(root)
+	require.NoError(t, err)
+	assert.Contains(t, uniqueFiles(findings), ".manuscripts/run1/research/notes.yaml",
+		"YAML with PII before a root-level openapi marker must not bypass PII scanning")
 }
 
 func TestFindPII_BinaryFileSkip(t *testing.T) {

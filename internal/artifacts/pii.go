@@ -195,20 +195,25 @@ const manuscriptsDir = ".manuscripts"
 // vendorSpecMarkers are the OpenAPI/Swagger version-marker patterns
 // looksLikeVendorAPISpec probes for in a file's head bytes. The two-form
 // shape (JSON quoted-key vs YAML unquoted-key) is required because vendor
-// docs ship both formats. Both forms anchor the key to document root:
-// JSON requires `openapi`/`swagger` as the first key after the opening
-// brace, YAML requires it at column 0. Without the anchors, a non-spec
-// file with a nested `openapi`/`swagger` field deep in its payload
-// (response envelope, captured config blob, metadata wrapper) would
-// silently bypass PII scanning. Version constraints (2.x or 3.x) avoid
-// matching freeform mentions like "openapi: future" in proofs/markdown.
+// docs ship both formats. Both forms anchor the key to the document
+// start: JSON requires `openapi`/`swagger` as the first key after the
+// opening brace; YAML requires it as the first content line after any
+// allowed lead-in (YAML directive `%...`, document marker `---`,
+// comments, blank lines). Without these anchors, a non-spec file with
+// PII in earlier keys could bypass scanning when it happened to also
+// contain an `openapi`/`swagger` marker deeper in the payload — a
+// response envelope, captured config blob, or research-notes YAML that
+// listed real values before the version field. Version constraints
+// (2.x or 3.x) avoid matching freeform mentions like "openapi: future".
 var vendorSpecMarkers = []*regexp.Regexp{
 	// JSON: {"openapi": "3.x.x" — openapi must be the first key.
 	regexp.MustCompile(`\A\s*\{\s*"openapi"\s*:\s*"[23]\.`),
 	regexp.MustCompile(`\A\s*\{\s*"swagger"\s*:\s*"2\.`),
-	// YAML: openapi: 3.x or swagger: "2.0" at column 0 of any line.
-	regexp.MustCompile(`(?m)^openapi\s*:\s*['"]?[23]\.`),
-	regexp.MustCompile(`(?m)^swagger\s*:\s*['"]?2\.`),
+	// YAML: optional %directives, `---` document marker, comments, and
+	// blank lines may precede the marker, but no other content key can
+	// appear before `openapi`/`swagger` at column 0.
+	regexp.MustCompile(`\A(?:(?:%[^\n]*|---[ \t]*|[ \t]*#[^\n]*|[ \t]*)\n)*openapi\s*:\s*['"]?[23]\.`),
+	regexp.MustCompile(`\A(?:(?:%[^\n]*|---[ \t]*|[ \t]*#[^\n]*|[ \t]*)\n)*swagger\s*:\s*['"]?2\.`),
 }
 
 // looksLikeVendorAPISpec reports whether the first few KB of a file
