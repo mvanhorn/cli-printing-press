@@ -324,7 +324,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	sess := newSessionManager(timeout)
 	httpClient := newHTTPClient(timeout, sess.CookieJar())
 	sess.AttachTo(httpClient)
-	return &Client{
+	c := &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 {{- if .BasePath}}
 		BasePath:   normalizeBasePath(cfg.BasePath),
@@ -350,7 +350,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	}
 {{- else}}
 	httpClient := newHTTPClient(timeout, nil)
-	return &Client{
+	c := &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 {{- if .BasePath}}
 		BasePath:   normalizeBasePath(cfg.BasePath),
@@ -374,6 +374,38 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 {{- end}}
 	}
 {{- end}}
+	// CheckRedirect re-derives auth on each hop. Go's default replays the
+	// original Authorization header verbatim, which breaks nonce-bound
+	// schemes (OAuth 1.0a PLAINTEXT, SigV4, Hawk): the duplicate nonce
+	// trips the server's replay detector with a 401. c.authHeader()
+	// returns a fresh value for those schemes and the same static value
+	// for Bearer/api_key, so post-redirect headers are byte-identical for
+	// static auth and freshly-signed for nonce-bound auth.
+	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return http.ErrUseLastResponse
+		}
+{{- if .HasTierRouting}}
+		// Tier routing picks header vs query at runtime via authForRequest;
+		// re-deriving here would duplicate that selection logic. Cap depth
+		// only and let Go's default header replay handle static credentials.
+{{- else if eq .Auth.Type "session_handshake"}}
+{{- if eq .Auth.TokenParamIn "header"}}
+		if h, err := c.authHeader(); err == nil && h != "" {
+			req.Header.Set("{{.Auth.TokenParamName}}", h)
+		}
+{{- end}}
+{{- else if and .Auth .Auth.In (eq .Auth.In "query")}}
+		// Auth lives on URL query; Go preserves the query on relative
+		// redirects, so nothing to re-derive.
+{{- else}}
+		if h, err := c.authHeader(); err == nil && h != "" {
+			req.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", h)
+		}
+{{- end}}
+		return nil
+	}
+	return c
 }
 
 // RateLimit returns the current effective rate limit in req/s. Returns 0 if disabled.

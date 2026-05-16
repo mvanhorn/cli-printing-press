@@ -54,13 +54,30 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	homeDir, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(homeDir, ".cache", "printing-press-golden-pp-cli", "http")
 	httpClient := newHTTPClient(timeout, nil)
-	return &Client{
+	c := &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 		Config:     cfg,
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
 		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
 	}
+	// CheckRedirect re-derives auth on each hop. Go's default replays the
+	// original Authorization header verbatim, which breaks nonce-bound
+	// schemes (OAuth 1.0a PLAINTEXT, SigV4, Hawk): the duplicate nonce
+	// trips the server's replay detector with a 401. c.authHeader()
+	// returns a fresh value for those schemes and the same static value
+	// for Bearer/api_key, so post-redirect headers are byte-identical for
+	// static auth and freshly-signed for nonce-bound auth.
+	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return http.ErrUseLastResponse
+		}
+		if h, err := c.authHeader(); err == nil && h != "" {
+			req.Header.Set("X-API-Key", h)
+		}
+		return nil
+	}
+	return c
 }
 
 // RateLimit returns the current effective rate limit in req/s. Returns 0 if disabled.
