@@ -1336,15 +1336,18 @@ model → 2× candidates → adversarial cut. Step 1.5c is the motivation; do no
 generate transcendence features inline here.
 
 The transcendence table in the manifest (Step 1.5d) renders rows in this shape,
-which the subagent's `### Survivors` output already matches:
+which mirrors the subagent's `### Survivors` output. The `Buildability` column
+tags each row `spec-emits` or `hand-code` per
+[references/novel-features-subagent.md](references/novel-features-subagent.md)
+so the Phase Gate 1.5 hand-code count has a source of truth in the manifest:
 
 ```markdown
 ### Transcendence (only possible with our approach)
-| # | Feature | Command | Why Only We Can Do This |
-|---|---------|---------|------------------------|
-| 1 | Bottleneck detection | bottleneck | Requires local join across issues + assignees + cycle data |
-| 2 | Velocity trends | velocity --weeks 4 | Requires historical cycle snapshots in SQLite |
-| 3 | What did I miss | since 2h | Requires time-windowed aggregation no single API call provides |
+| # | Feature | Command | Buildability | Why Only We Can Do This |
+|---|---------|---------|--------------|------------------------|
+| 1 | Bottleneck detection | bottleneck | hand-code | Requires local join across issues + assignees + cycle data |
+| 2 | Velocity trends | velocity --weeks 4 | hand-code | Requires historical cycle snapshots in SQLite |
+| 3 | What did I miss | since 2h | hand-code | Requires time-windowed aggregation no single API call provides |
 ```
 
 Minimum 5 transcendence features. These are the commands that differentiate the CLI.
