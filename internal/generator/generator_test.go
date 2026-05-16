@@ -4060,6 +4060,27 @@ func TestCompactListFieldsPreservesUnknownShapes(t *testing.T) {
 		"compactListFields must compute a frequency threshold for the data-driven extension")
 }
 
+// matchClosingBrace walks s from start, finds the first `{`, then returns
+// the index of the matching `}` by counting depth. Returns -1 if either no
+// opening brace exists at/after start or the input is unbalanced.
+func matchClosingBrace(s string, start int) int {
+	depth := 0
+	seenOpen := false
+	for i := start; i < len(s); i++ {
+		switch s[i] {
+		case '{':
+			depth++
+			seenOpen = true
+		case '}':
+			depth--
+			if seenOpen && depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
 // TestCompactObjectFieldsPreservesPayloadFields pins the contract that
 // single-object `get` responses retain their primary payload fields under
 // `--agent`/`--compact`. The list-path blocklist correctly strips body/
@@ -4082,9 +4103,9 @@ func TestCompactObjectFieldsPreservesPayloadFields(t *testing.T) {
 
 	objStart := strings.Index(body, "compactVerboseObjectFields = map[string]bool{")
 	require.GreaterOrEqual(t, objStart, 0, "compactVerboseObjectFields map literal must exist")
-	objEnd := strings.Index(body[objStart:], "}")
+	objEnd := matchClosingBrace(body, objStart)
 	require.GreaterOrEqual(t, objEnd, 0, "compactVerboseObjectFields map literal must close")
-	objBody := body[objStart : objStart+objEnd]
+	objBody := body[objStart : objEnd+1]
 
 	for _, payload := range []string{`"body"`, `"content"`, `"html"`, `"markdown"`} {
 		assert.NotContains(t, objBody, payload,
