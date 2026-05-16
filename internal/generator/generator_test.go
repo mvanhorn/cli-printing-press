@@ -6585,6 +6585,135 @@ func TestGenerate_CookieAuthWindowsCompatibility(t *testing.T) {
 	assert.Contains(t, content, "cookie-scoop-cli")
 }
 
+// TestGenerate_CookieAuthFiltersAllowlistOnLogin pins that `auth login --chrome`
+// stores only the cookies named in spec.auth.cookies when an allowlist is
+// declared, and falls back to the unfiltered blob when the allowlist is
+// empty (legacy specs).
+func TestGenerate_CookieAuthFiltersAllowlistOnLogin(t *testing.T) {
+	t.Parallel()
+
+	t.Run("allowlist declared filters extracted cookies", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := &spec.APISpec{
+			Name:    "filterapp",
+			Version: "0.1.0",
+			BaseURL: "https://app.example.com",
+			Auth: spec.AuthConfig{
+				Type:         "cookie",
+				Header:       "Cookie",
+				In:           "cookie",
+				CookieDomain: ".example.com",
+				Cookies:      []string{"session_id"},
+				EnvVars:      []string{"FILTERAPP_COOKIES"},
+			},
+			Config: spec.ConfigSpec{Format: "toml"},
+			Resources: map[string]spec.Resource{
+				"items": {
+					Description: "Manage items",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/api/items", Description: "List items"},
+					},
+				},
+			},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "filterapp-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		auth, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+		require.NoError(t, err)
+		content := string(auth)
+
+		assert.Contains(t, content, `requiredCookies := []string{"session_id"}`)
+		assert.Contains(t, content, "cookieMap := parseCookieString(cookies)")
+		assert.Contains(t, content, `cookies = strings.Join(kept, "; ")`)
+		assert.Contains(t, content, `cookie %q not found for %s`)
+
+		runGoCommand(t, outputDir, "build", "./...")
+	})
+
+	t.Run("empty allowlist preserves legacy behavior", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := &spec.APISpec{
+			Name:    "legacycookieapp",
+			Version: "0.1.0",
+			BaseURL: "https://app.example.com",
+			Auth: spec.AuthConfig{
+				Type:         "cookie",
+				Header:       "Cookie",
+				In:           "cookie",
+				CookieDomain: ".example.com",
+				EnvVars:      []string{"LEGACYCOOKIEAPP_COOKIES"},
+			},
+			Config: spec.ConfigSpec{Format: "toml"},
+			Resources: map[string]spec.Resource{
+				"items": {
+					Description: "Manage items",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/api/items", Description: "List items"},
+					},
+				},
+			},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "legacycookieapp-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		auth, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+		require.NoError(t, err)
+		content := string(auth)
+
+		assert.NotContains(t, content, "requiredCookies := []string{")
+		assert.NotContains(t, content, `cookies = strings.Join(kept, "; ")`)
+	})
+
+	t.Run("refresh path also filters by allowlist", func(t *testing.T) {
+		t.Parallel()
+		apiSpec := &spec.APISpec{
+			Name:    "refreshfilterapp",
+			Version: "0.1.0",
+			BaseURL: "https://app.example.com",
+			Auth: spec.AuthConfig{
+				Type:                           "cookie",
+				Header:                         "Cookie",
+				In:                             "cookie",
+				CookieDomain:                   ".example.com",
+				Cookies:                        []string{"session_id"},
+				EnvVars:                        []string{"REFRESHFILTERAPP_COOKIES"},
+				RequiresBrowserSession:         true,
+				BrowserSessionValidationPath:   "/api/items",
+				BrowserSessionValidationMethod: "GET",
+			},
+			Config: spec.ConfigSpec{Format: "toml"},
+			Resources: map[string]spec.Resource{
+				"items": {
+					Description: "Manage items",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/api/items", Description: "List items"},
+					},
+				},
+			},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "refreshfilterapp-pp-cli")
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		auth, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+		require.NoError(t, err)
+		content := string(auth)
+
+		require.Contains(t, content, "func refreshStoredBrowserCookies")
+		_, refresh, _ := strings.Cut(content, "func refreshStoredBrowserCookies")
+		// Without the fix, the refresh body has SaveTokens(cookies) with no
+		// prior filter — the second SaveTokens call would then sit before any
+		// allowlist parsing in the function.
+		assert.Contains(t, refresh, `requiredCookies := []string{"session_id"}`)
+		assert.Contains(t, refresh, `cookies = strings.Join(kept, "; ")`)
+
+		runGoCommand(t, outputDir, "build", "./...")
+	})
+}
+
 func TestGenerate_UserAgentOverrideGatedByBrowserTransport(t *testing.T) {
 	t.Parallel()
 
@@ -10008,6 +10137,69 @@ func TestMCPHandlerPassesBodyArgsMap(t *testing.T) {
 		"PUT branch must forward bodyArgs directly to the client")
 	assert.Contains(t, mcpSource, "c.PatchWithParams(path, params, bodyArgs)",
 		"PATCH branch must forward bodyArgs directly to the client")
+}
+
+// TestMCPCodeOrchPassesParamsMap pins the same body-passthrough contract for
+// the code-orchestration handler template (mcp_code_orch.go.tmpl). Sibling of
+// TestMCPHandlerPassesBodyArgsMap: an earlier pre-marshal stored []byte in the
+// body slot, which client.do() then json.Marshaled into a base64-encoded
+// string that strict APIs reject.
+func TestMCPCodeOrchPassesParamsMap(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("mcp-orch-body-passthrough")
+	apiSpec.MCP = spec.MCPConfig{Orchestration: "code", EndpointTools: "hidden"}
+	apiSpec.Resources["widgets"] = spec.Resource{
+		Description: "Widgets",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/widgets",
+				Description: "Create a widget",
+				Body: []spec.Param{
+					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
+				},
+			},
+			"replace": {
+				Method:      "PUT",
+				Path:        "/widgets/{id}",
+				Description: "Replace a widget",
+				Params: []spec.Param{
+					{Name: "id", Type: "string", Required: true, Description: "Widget id"},
+				},
+				Body: []spec.Param{
+					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
+				},
+			},
+			"update": {
+				Method:      "PATCH",
+				Path:        "/widgets/{id}",
+				Description: "Update a widget",
+				Params: []spec.Param{
+					{Name: "id", Type: "string", Required: true, Description: "Widget id"},
+				},
+				Body: []spec.Param{
+					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "code_orch.go")
+
+	assert.NotContains(t, mcpSource, "json.Marshal(params)",
+		"code-orch handler must not pre-marshal params: client.do() json.Marshals what it receives, "+
+			"so a []byte arrives base64-encoded on the wire and strict APIs reject the payload")
+
+	assert.Contains(t, mcpSource, "c.Post(path, params)",
+		"POST branch must forward params directly to the client")
+	assert.Contains(t, mcpSource, "c.Put(path, params)",
+		"PUT branch must forward params directly to the client")
+	assert.Contains(t, mcpSource, "c.Patch(path, params)",
+		"PATCH branch must forward params directly to the client")
 }
 
 // TestMCPBindingNumericTypesAcrossSpecShapes pins template wiring: both

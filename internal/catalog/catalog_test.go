@@ -53,6 +53,28 @@ notes: Example fixture.
 	assert.Equal(t, "Example fixture.", entry.Notes)
 }
 
+func TestParseEntryAuthPreference(t *testing.T) {
+	// auth_preference is optional; when set it carries the upstream
+	// securityScheme name verbatim through the parser → generator pipeline.
+	data := []byte(`
+name: jira-like
+display_name: Jira-like
+description: Multi-scheme spec
+category: project-management
+spec_url: https://example.com/openapi.yaml
+spec_format: json
+openapi_version: "3.0"
+tier: official
+verified_date: "2026-05-09"
+homepage: https://example.com
+auth_preference: basicAuth
+`)
+
+	entry, err := ParseEntry(data)
+	require.NoError(t, err)
+	assert.Equal(t, "basicAuth", entry.AuthPreference)
+}
+
 func TestValidateEntry(t *testing.T) {
 	base := Entry{
 		Name:        "test-api",

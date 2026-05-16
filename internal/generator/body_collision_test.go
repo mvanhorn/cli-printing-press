@@ -433,6 +433,122 @@ components:
 		"the postalAddress.customer cycle-cut leaf must emit a unique identifier under its full path")
 }
 
+// TestFlattenCollidingBodyFields_NestedPrefixShape covers the Atlassian
+// ProjectComponent shape: a top-level scalar `leadAccountId` plus a
+// sibling `lead` object whose nested `accountId` would expand to the
+// same Go identifier `bodyLeadAccountId`. The parser-side seenCamelNames
+// dedup only checks top-level names, so the collision surfaces in the
+// generator. flattenCollidingBodyFields must clear the offending
+// parent's Fields so it falls through to the JSON-blob branch.
+func TestFlattenCollidingBodyFields_NestedPrefixShape(t *testing.T) {
+	t.Parallel()
+
+	body := []spec.Param{
+		{Name: "leadAccountId", Type: "string"},
+		{
+			Name: "lead",
+			Type: "object",
+			Fields: []spec.Param{
+				{Name: "accountId", Type: "string"},
+				{Name: "displayName", Type: "string"},
+			},
+		},
+	}
+
+	got := flattenCollidingBodyFields(body)
+
+	require.Len(t, got, 2)
+	assert.Equal(t, "leadAccountId", got[0].Name)
+	assert.Empty(t, got[0].Fields, "top-level scalar is untouched")
+	assert.Equal(t, "lead", got[1].Name)
+	assert.Empty(t, got[1].Fields,
+		"colliding parent must have Fields cleared so it falls through to JSON-blob")
+}
+
+// TestFlattenCollidingBodyFields_NoCollisionPassesThrough guards the
+// common case: when nested expansion is collision-free the helper must
+// not strip Fields. Two unrelated objects with non-colliding leaf names
+// (the canonical start/end DateTimeTimeZone example from #957) must
+// round-trip with Fields intact.
+func TestFlattenCollidingBodyFields_NoCollisionPassesThrough(t *testing.T) {
+	t.Parallel()
+
+	body := []spec.Param{
+		{
+			Name: "start",
+			Type: "object",
+			Fields: []spec.Param{
+				{Name: "dateTime", Type: "string"},
+				{Name: "timeZone", Type: "string"},
+			},
+		},
+		{
+			Name: "end",
+			Type: "object",
+			Fields: []spec.Param{
+				{Name: "dateTime", Type: "string"},
+				{Name: "timeZone", Type: "string"},
+			},
+		},
+	}
+
+	got := flattenCollidingBodyFields(body)
+
+	require.Len(t, got, 2)
+	for _, p := range got {
+		assert.Len(t, p.Fields, 2, "nested object %q keeps its 2 Fields", p.Name)
+	}
+}
+
+// TestGenerateProjectComponentShapeCompiles is the end-to-end regression
+// for the Atlassian Jira validate-catalog failure: a POST endpoint whose
+// body contains both `leadAccountId` (scalar) and `lead` (object with
+// nested `accountId`) must produce a generated CLI that compiles. Before
+// the flattenCollidingBodyFields pass, this shape emitted two
+// `var bodyLeadAccountId string` declarations and failed govulncheck's
+// load step with "redeclared in this block".
+func TestGenerateProjectComponentShapeCompiles(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("collide-nested")
+	apiSpec.Resources["components"] = spec.Resource{
+		Description: "Components",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/components",
+				Description: "Create a component (Jira ProjectComponent shape)",
+				Body: []spec.Param{
+					{Name: "leadAccountId", Type: "string", Description: "Lead user account ID (top-level)"},
+					{
+						Name:        "lead",
+						Type:        "object",
+						Description: "Lead user details (nested object)",
+						Fields: []spec.Param{
+							{Name: "accountId", Type: "string", Description: "Account ID inside the lead object"},
+							{Name: "displayName", Type: "string", Description: "Display name"},
+						},
+					},
+				},
+			},
+			"get": {
+				Method:      "GET",
+				Path:        "/components/{id}",
+				Description: "Get one component",
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "collide-nested-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	bodyVars, _ := parseBodyDeclarations(t,
+		filepath.Join(outputDir, "internal", "cli", "components_create.go"))
+
+	assertNoDuplicates(t, bodyVars,
+		"nested-prefix collision must not produce duplicate `var body<X>` declarations")
+}
+
 // parseBodyDeclarations returns the names of all `var bodyXxx` declarations
 // and the literal cobra flag names registered. Cobra registrations may come
 // from either flag<X> or body<X> Go identifiers, so the flag-binding return
