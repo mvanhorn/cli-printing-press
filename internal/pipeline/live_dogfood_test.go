@@ -131,6 +131,12 @@ func TestRunLiveDogfoodProcessSetsDogfoodEnvVar(t *testing.T) {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
 
+	// Unset before the call so a CI runner that happens to have
+	// PRINTING_PRESS_DOGFOOD pre-set in its environment can't make the
+	// assertion pass via inheritance — the test must prove the runner's
+	// own append line is what gets the var into the subprocess.
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
+
 	dir := t.TempDir()
 	binPath := filepath.Join(dir, "echo-env")
 	script := "#!/bin/sh\nprintf '%s' \"${PRINTING_PRESS_DOGFOOD:-}\"\n"
