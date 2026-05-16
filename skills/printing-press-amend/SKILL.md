@@ -147,11 +147,17 @@ Phase 0 emits one line to Phase 1:
 mode: <dogfood|direct|both>
 ```
 
-Phase 1 branches on this value (the dogfood path follows immediately below; the direct-input path is introduced in v0.2 by U3 of this plan as a peer sub-section). Phase 2 onward ignores the mode entirely — the finding list is the contract.
+Phase 1 branches on this value — dogfood findings flow through `### 1a`, direct-input findings flow through `### 1b`, and combined runs execute both sub-sections in sequence. Phase 2 onward ignores the mode entirely — the finding list is the contract.
 
-## Phase 1 — Friction Capture
+## Phase 1 — Capture
 
-Read `references/transcript-parsing.md` for the full procedure. Summary of what this phase does:
+This phase produces a typed finding list. The list shape is identical across modes: each finding carries `id`, `kind`, `category`, `classification` (bug or feature), `evidence`, `target_cli`, `rationale`, and `provenance` (`transcript` for dogfood, `user-ask` for direct, `sniff` for sniff-derived). Phase 2 consumes the list verbatim.
+
+When `MODE=dogfood`, run only `### 1a`. When `MODE=direct`, run only `### 1b`. When `MODE=both`, run `### 1a` first, then `### 1b`, and merge the two finding lists with non-colliding IDs (1b continues numbering where 1a left off).
+
+### 1a. Dogfood mode (MODE=dogfood)
+
+Read `references/transcript-parsing.md` for the full procedure. Summary of what this sub-section does:
 
 1. **Resolve the active session transcript file** — derive `<project-dir-slug>` from the current working directory, list `~/.claude/projects/<slug>/*.jsonl` by mtime, pick the most-recently-modified. ALWAYS confirm the resolved path with the user via `AskUserQuestion` before reading — wrong-file selection ingests friction from the wrong session.
 
@@ -163,7 +169,33 @@ Read `references/transcript-parsing.md` for the full procedure. Summary of what 
 
 5. **Resolve target paths** — accept short name, full name, or absolute path (per R4). Look up the public-library category by walking `~/printing-press-library/library/*/` for a matching directory. The category is needed by U7's PR open phase and is captured here so it doesn't have to be re-derived.
 
-Output flows into Phase 2 as a structured finding list (see `references/transcript-parsing.md` for the schema).
+Each finding emitted by 1a carries `provenance: transcript`. Output flows into Phase 2 as the structured finding list documented in `references/transcript-parsing.md`.
+
+### 1b. Direct-input mode (MODE=direct)
+
+Read `references/direct-input-parsing.md` for the full procedure (introduced in v0.2). Summary of what this sub-section does:
+
+1. **Read the slash-command prompt body** plus the immediate agent-message turn that fired the skill — these carry the user's verbatim asks (e.g., "rename Digg 1000 to Digg, add these four feeds: ..., sniff for new endpoints"). There is no transcript to confirm; skip the U1 transcript-path modal that 1a runs.
+
+2. **Resolve the target CLI** — same name-resolution rules as 1a step 4-5 (per R4), but the CLI is normally already named in the prompt itself. Extract via regex (`<slug>-pp-cli` or "the <slug> CLI"); if absent, ask the user.
+
+3. **Parse the asks into structured findings** using the rubric in `references/direct-input-parsing.md`. Each ask maps to one finding with a typed `kind` field:
+   - `rename` — "rename X to Y" / "call it X instead of Y" → `classification: feature`
+   - `add-command` — "add command X" / "add subcommand X" → `classification: feature`
+   - `add-feed` — "add feed <url>" / enumerated URLs the user wants added (one finding per URL) → `classification: feature`
+   - `add-endpoint` — "add endpoint <url>" / explicit API path → `classification: feature`
+   - `fix-bug` — "fix X" / "X is broken" / "X returns null" → `classification: bug`
+   - `sniff` — "sniff for new APIs" / "find new endpoints" / "discover more" → routes to the sniff subroutine in `### 1b.i`
+
+4. **Each finding records the user's verbatim phrasing** in `evidence` so the U4 scope confirmation modal shows the user what they actually wrote.
+
+5. **Edge cases** — multi-CLI asks split into two separate runs (out of scope for v0.2; ask the user to pick one). Ambiguous verbs (`update X` without specifics) trigger an `AskUserQuestion` clarification rather than a guess.
+
+Each finding emitted by 1b carries `provenance: user-ask` (or `provenance: sniff` for findings produced by the sniff subroutine). Output flows into Phase 2 as the same structured finding list shape used by 1a.
+
+### 1b.i. Sniff-finding subroutine
+
+[The sniff subroutine is documented in the next section, added by U4 of the v0.2 plan.]
 
 ## Phase 2 — Pre-Checkpoint Guards
 

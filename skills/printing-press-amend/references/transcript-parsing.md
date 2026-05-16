@@ -1,6 +1,8 @@
 # Transcript Parsing — Friction Capture for `/printing-press-amend`
 
-This reference is loaded by Phase 1 of `printing-press-amend`. It defines how the agent reads a Claude Code session transcript and extracts friction signals tied to a specific printed CLI invocation.
+**Scope:** This reference applies when `MODE=dogfood` (Phase 0 detected a session-friction invocation) or when running the dogfood half of `MODE=both`. For direct-input mode (`MODE=direct`), see `direct-input-parsing.md` instead — that mode parses the user's prompt and never touches the transcript.
+
+This reference is loaded by Phase 1's `### 1a. Dogfood mode` sub-section of `printing-press-amend`. It defines how the agent reads a Claude Code session transcript and extracts friction signals tied to a specific printed CLI invocation.
 
 ## Where the active session transcript lives
 
