@@ -273,9 +273,21 @@ gh pr list --repo mvanhorn/printing-press-library \
   --search "in:title,body <slug>" --state open --limit 20 \
   --json number,title,state,headRefName,files
 
-# Recently merged PRs (last 90 days) touching this CLI
+# Recently merged PRs (last 90 days) touching this CLI.
+# Compute "90 days ago" portably — `date -v-90d` is BSD/macOS only, `date -d`
+# is GNU/Linux only. Try GNU first, fall back to BSD, then to python3. If
+# every form fails, abort with an explicit error rather than letting the
+# dedup guard silently drop out with an empty `merged:>` qualifier.
+ninety_days_ago=$(date -u -d '90 days ago' +%Y-%m-%d 2>/dev/null \
+  || date -u -v-90d +%Y-%m-%d 2>/dev/null \
+  || python3 -c 'import datetime; print((datetime.datetime.now(datetime.UTC).date() - datetime.timedelta(days=90)).isoformat())' 2>/dev/null)
+if [ -z "$ninety_days_ago" ]; then
+  echo "ERROR: cannot compute 90-days-ago date — no GNU date, BSD date, or python3 available."
+  exit 1
+fi
+
 gh pr list --repo mvanhorn/printing-press-library \
-  --search "in:title,body <slug> merged:>$(date -v-90d +%Y-%m-%d)" \
+  --search "in:title,body <slug> merged:>$ninety_days_ago" \
   --state merged --limit 20 \
   --json number,title,state,mergedAt,headRefName,files
 ```
