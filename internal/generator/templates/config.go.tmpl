@@ -445,20 +445,20 @@ func (c *Config) AuthHeader() string {
 {{- range .Auth.EnvVarSpecs}}
 	if c.{{resolveEnvVarField .Name}} != "" {
 		c.AuthSource = "env:{{.Name}}"
-		return c.{{resolveEnvVarField .Name}}
+		return ensureAuthScheme("{{$.Auth.HeaderPrefix}}", c.{{resolveEnvVarField .Name}})
 	}
 {{- end}}
 {{- else}}
 	{{- with $canonicalEnvVar}}
 	if c.{{resolveEnvVarField .Name}} != "" {
 		c.AuthSource = "env:{{.Name}}"
-		return c.{{resolveEnvVarField .Name}}
+		return ensureAuthScheme("{{$.Auth.HeaderPrefix}}", c.{{resolveEnvVarField .Name}})
 	}
 	{{- end}}
 {{- end}}
 	if c.AccessToken != "" {
 		c.AuthSource = "browser"
-		return c.AccessToken
+		return ensureAuthScheme("{{.Auth.HeaderPrefix}}", c.AccessToken)
 	}
 	return ""
 {{- else if eq .Auth.Type "composed"}}
@@ -467,20 +467,20 @@ func (c *Config) AuthHeader() string {
 {{- range .Auth.EnvVarSpecs}}
 	if c.{{resolveEnvVarField .Name}} != "" {
 		c.AuthSource = "env:{{.Name}}"
-		return c.{{resolveEnvVarField .Name}}
+		return ensureAuthScheme("{{$.Auth.HeaderPrefix}}", c.{{resolveEnvVarField .Name}})
 	}
 {{- end}}
 {{- else}}
 	{{- with $canonicalEnvVar}}
 	if c.{{resolveEnvVarField .Name}} != "" {
 		c.AuthSource = "env:{{.Name}}"
-		return c.{{resolveEnvVarField .Name}}
+		return ensureAuthScheme("{{$.Auth.HeaderPrefix}}", c.{{resolveEnvVarField .Name}})
 	}
 	{{- end}}
 {{- end}}
 	if c.AccessToken != "" {
 		c.AuthSource = "chrome-composed"
-		return c.AccessToken
+		return ensureAuthScheme("{{.Auth.HeaderPrefix}}", c.AccessToken)
 	}
 	return ""
 {{- else}}
@@ -500,6 +500,27 @@ func applyAuthFormat(format string, replacements map[string]string) string {
 	}
 	return format
 }
+
+{{- if or (eq .Auth.Type "composed") (eq .Auth.Type "cookie")}}
+
+// ensureAuthScheme returns "<scheme> <token>" but skips the prefix when the
+// token already carries it case-insensitively, so a user who exports the
+// env var with the scheme already attached doesn't end up double-prefixed.
+// Empty scheme returns the token as-is.
+func ensureAuthScheme(scheme, token string) string {
+	if token == "" {
+		return ""
+	}
+	if scheme == "" {
+		return token
+	}
+	schemeWithSpace := scheme + " "
+	if len(token) >= len(schemeWithSpace) && strings.EqualFold(token[:len(schemeWithSpace)], schemeWithSpace) {
+		return token
+	}
+	return schemeWithSpace + token
+}
+{{- end}}
 
 {{- if .HasAuthCommand}}
 
