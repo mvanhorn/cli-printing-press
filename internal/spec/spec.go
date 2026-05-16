@@ -773,6 +773,24 @@ func (c *AuthConfig) CanonicalEnvVar() *AuthEnvVar {
 	return nil
 }
 
+// NewORCaseEnvVarSpecs builds the EnvVarSpecs slice for the OR-case shape
+// IsAuthEnvVarORCase validates: each entry is per_call, non-required, and
+// sensitive. The runtime tries each in turn and returns the first non-empty
+// value. Distinct from the per_call construction in NormalizeEnvVarSpecs,
+// which defaults to Required=true for the canonical-credential shape.
+func NewORCaseEnvVarSpecs(names []string) []AuthEnvVar {
+	specs := make([]AuthEnvVar, 0, len(names))
+	for _, name := range names {
+		specs = append(specs, AuthEnvVar{
+			Name:      name,
+			Kind:      AuthEnvVarKindPerCall,
+			Required:  false,
+			Sensitive: true,
+		})
+	}
+	return specs
+}
+
 // IsAuthEnvVarORCase reports whether all EnvVarSpecs are non-required per_call vars.
 // In this shape, no single var is the canonical credential; the runtime tries each
 // in turn and returns the first non-empty value. Returns false when EnvVarSpecs has
