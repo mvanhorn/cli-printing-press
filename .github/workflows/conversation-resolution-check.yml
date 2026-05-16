@@ -1,0 +1,170 @@
+name: Conversation resolution check
+
+# Surfaces unresolved review threads as a status check on the PR head SHA.
+# Not an enforcement gate — Mergify's `#review-threads-unresolved = 0`
+# condition in .mergify.yml is what actually blocks the merge queue. This
+# workflow exists for pre-label visibility: Mergify's `Mergify Merge
+# Protections` check_run is the most readable surface for "what's missing"
+# AFTER `ready-to-merge` is applied, but pre-label it just says
+# "skipping" / "no merge protections matched" and gives no specific
+# signal about thread state.
+#
+# So an author waiting on review who already pushed a fix but didn't
+# click "Resolve conversation" sees green CI checks, a green Greptile
+# Review, and no specific cue that unresolved threads are the holdup.
+# This workflow puts that cue in the same place authors look — the
+# status checks list — and keeps it there regardless of label state.
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created, deleted]
+  # Note: GitHub Actions does NOT support a `pull_request_review_thread`
+  # event trigger (despite that event existing in the webhook payload set).
+  # So clicking "Resolve conversation" in the UI does not auto-fire this
+  # workflow. The check_run will refresh on the next push, review, or
+  # comment event. workflow_dispatch is the manual escape hatch.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to evaluate
+        required: true
+
+permissions:
+  checks: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  evaluate:
+    name: All conversations resolved
+    # Skip drafts across every event source. The original guard only
+    # covered pull_request_target, but pull_request_review and
+    # pull_request_review_comment events also carry a pull_request
+    # object with .draft, and a review/comment on an in-progress draft
+    # should not post a failure check_run. workflow_dispatch has no
+    # pull_request in the payload, so we fall through and let the
+    # job run; manual dispatch is an explicit ask.
+    if: github.event.pull_request == null || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Coalesce bursts (a push + Greptile review + several thread resolves can
+    # fire within seconds). Latest run wins; older runs are cancelled.
+    concurrency:
+      group: conversation-resolution-${{ github.event.pull_request.number || inputs.pr || github.run_id }}
+      cancel-in-progress: true
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Resolve PR number + head SHA
+        id: pr
+        env:
+          DISPATCH_PR: ${{ inputs.pr }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "${EVENT_PR_NUMBER:-}" ] && [ -n "${EVENT_HEAD_SHA:-}" ]; then
+            echo "number=${EVENT_PR_NUMBER}" >> "${GITHUB_OUTPUT}"
+            echo "head_sha=${EVENT_HEAD_SHA}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if ! [[ "${DISPATCH_PR:-}" =~ ^[0-9]+$ ]]; then
+            echo "::error::PR number not in event payload and 'pr' input is not a positive integer."
+            exit 1
+          fi
+          pr_json="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${DISPATCH_PR}")"
+          echo "number=$(jq -r '.number' <<<"${pr_json}")" >> "${GITHUB_OUTPUT}"
+          echo "head_sha=$(jq -r '.head.sha' <<<"${pr_json}")" >> "${GITHUB_OUTPUT}"
+
+      - name: Evaluate review threads and post check_run
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+
+          owner="${GITHUB_REPOSITORY%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
+
+          threads_json="$(mktemp)"
+          gh api graphql --paginate \
+            -F owner="${owner}" -F repo="${repo}" -F number="${PR_NUMBER}" \
+            -f query='
+              query($owner: String!, $repo: String!, $number: Int!, $endCursor: String) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $number) {
+                    reviewThreads(first: 100, after: $endCursor) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        isResolved
+                        isOutdated
+                        path
+                        line
+                        comments(first: 1) { nodes { author { login } } }
+                      }
+                    }
+                  }
+                }
+              }
+            ' \
+            --jq '.data.repository.pullRequest.reviewThreads.nodes[]' \
+            | jq -s '.' > "${threads_json}"
+
+          total=$(jq 'length' "${threads_json}")
+          unresolved=$(jq '[.[] | select(.isResolved == false)] | length' "${threads_json}")
+          unresolved_active=$(jq '[.[] | select(.isResolved == false and .isOutdated == false)] | length' "${threads_json}")
+          unresolved_outdated=$((unresolved - unresolved_active))
+
+          echo "total=${total} unresolved=${unresolved} (active=${unresolved_active} outdated=${unresolved_outdated})"
+
+          if [ "${unresolved}" -eq 0 ]; then
+            conclusion="success"
+            title="All ${total} conversation(s) resolved"
+            summary=$'No unresolved review threads on this PR.'
+          else
+            conclusion="failure"
+            if [ "${unresolved_active}" -gt 0 ] && [ "${unresolved_outdated}" -gt 0 ]; then
+              title="${unresolved} unresolved (${unresolved_active} on current code, ${unresolved_outdated} outdated)"
+            elif [ "${unresolved_active}" -gt 0 ]; then
+              title="${unresolved} unresolved conversation(s)"
+            else
+              title="${unresolved} unresolved on outdated lines (likely addressed)"
+            fi
+
+            summary=$(jq -r '
+              def listing:
+                [.[] | select(.isResolved == false)] as $u |
+                ($u | length) as $count |
+                "**" + ($count|tostring) + " unresolved review thread(s):**\n\n" +
+                ([$u[0:10] | .[] |
+                  "- `" + .path + (if .line then ":" + (.line | tostring) else "" end) + "` by `" +
+                  (.comments.nodes[0].author.login // "unknown") + "`" +
+                  (if .isOutdated then " *(outdated — line no longer exists; likely addressed by a later commit)*" else "" end)
+                ] | join("\n")) +
+                (if $count > 10 then "\n\n_… and " + ($count - 10 | tostring) + " more._" else "" end) +
+                "\n\n---\n\n**To unblock the merge**, click \"Resolve conversation\" on each unresolved thread in the GitHub UI. Per repo convention every Greptile finding should be resolved (in code, or with a concrete reply explaining the deferral) before merge."
+              ;
+              listing
+            ' "${threads_json}")
+          fi
+
+          payload="$(mktemp)"
+          jq -n \
+            --arg name "All conversations resolved" \
+            --arg head_sha "${HEAD_SHA}" \
+            --arg conclusion "${conclusion}" \
+            --arg title "${title}" \
+            --arg summary "${summary}" \
+            '{name: $name, head_sha: $head_sha, status: "completed", conclusion: $conclusion, output: {title: $title, summary: $summary}}' \
+            > "${payload}"
+
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/check-runs" --input "${payload}" >/dev/null
+          echo "Posted check_run: ${title} (${conclusion}) on ${HEAD_SHA}"

@@ -9,6 +9,12 @@ queue_rules:
     # timing out waiting for Greptile.
     queue_conditions:
       - base = main
+      # All Greptile/human inline review threads must be resolved before
+      # the PR enters the queue. Greptile Review's check_run going green
+      # only reflects the confidence score, not whether inline findings
+      # are addressed; without this condition a PR with unresolved P0/P1
+      # findings would auto-merge as soon as `ready-to-merge` is applied.
+      - "#review-threads-unresolved = 0"
       - check-success = build-and-test
       - check-success = generated-test
       - check-success = go-lint
@@ -58,6 +64,10 @@ merge_protections:
         - and:
           - head = release-please--branches--main
           - "title ~= ^chore\\(main\\): release"
+      # Mirrors the queue_conditions rule. Belt-and-suspenders so a queued
+      # PR that picks up new Greptile findings during the queue's CI re-run
+      # is held until those threads are resolved.
+      - "#review-threads-unresolved = 0"
       - check-success = build-and-test
       - check-success = generated-test
       - check-success = go-lint
