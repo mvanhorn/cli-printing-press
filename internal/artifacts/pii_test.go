@@ -233,6 +233,10 @@ func TestFindPII_RootVendorSpecExempt(t *testing.T) {
 //   - arbitrary subdirs (output/) match via the *.yaml entry in
 //     highRiskFileGlobs; pinned here as a regression guard against a
 //     future tweak that broadens the exemption from depth-1 to all paths
+//
+// The companion exemption added in #1356 only triggers when the file
+// looks like an OpenAPI/Swagger root document. Files without that
+// marker still scan even when nested under .manuscripts/.
 func TestFindPII_NestedSpecYamlStillScans(t *testing.T) {
 	root := t.TempDir()
 	pii := `"email": "captured@victim.com"`
@@ -250,6 +254,231 @@ func TestFindPII_NestedSpecYamlStillScans(t *testing.T) {
 	assert.Contains(t, files, ".manuscripts/run1/research/spec.yaml")
 	assert.Contains(t, files, "testdata/spec.yaml")
 	assert.Contains(t, files, "output/spec.yaml")
+}
+
+// #1356: Vendor-published OpenAPI/Swagger specs archived under
+// .manuscripts/ are documentation source — `example:` values look like
+// PII but are public. The content-based exemption triggers off the
+// version-marker shape so basenames like apps/calendars.json or
+// pushpress-v3.yaml (which no filename glob would reliably cover) are
+// also exempted.
+func TestFindPII_ManuscriptsVendorSpecExempt(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".manuscripts", "run1", "research", "apps"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".manuscripts", "run1", "research"), 0755))
+
+	// OpenAPI 3.x JSON with documentation-shape PII.
+	openapiJSON := `{
+  "openapi": "3.0.3",
+  "info": {"title": "Calendars"},
+  "paths": {
+    "/users": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {"email": "user1@testemail.com", "phone": "(415) 555-0123"}
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+	write(t, filepath.Join(root, ".manuscripts", "run1", "research", "apps", "calendars.json"), openapiJSON)
+
+	// OpenAPI 3.x YAML with documentation-shape PII.
+	openapiYAML := `openapi: 3.0.0
+info:
+  title: PushPress v3
+paths:
+  /bookings:
+    post:
+      requestBody:
+        content:
+          application/json:
+            example:
+              email: info@acme.com
+              phone: 1-800-555-1234
+              address: 123 Main Street
+`
+	write(t, filepath.Join(root, ".manuscripts", "run1", "research", "pushpress-v3.yaml"), openapiYAML)
+
+	// Swagger 2.0 JSON with documentation-shape PII.
+	swaggerJSON := `{
+  "swagger": "2.0",
+  "info": {"title": "Legacy"},
+  "paths": {"/u": {"get": {"responses": {"200": {"examples": {"application/json": {"email": "x@y.com"}}}}}}}
+}`
+	write(t, filepath.Join(root, ".manuscripts", "run1", "research", "legacy.json"), swaggerJSON)
+
+	findings, err := FindPII(root)
+	require.NoError(t, err)
+
+	files := uniqueFiles(findings)
+	assert.NotContains(t, files, ".manuscripts/run1/research/apps/calendars.json",
+		"OpenAPI 3.x JSON in manuscripts must be exempt")
+	assert.NotContains(t, files, ".manuscripts/run1/research/pushpress-v3.yaml",
+		"OpenAPI 3.x YAML in manuscripts must be exempt")
+	assert.NotContains(t, files, ".manuscripts/run1/research/legacy.json",
+		"Swagger 2.0 JSON in manuscripts must be exempt")
+}
+
+// Negative regression: vendor-spec content detection only applies inside
+// .manuscripts/. A file at docs/api.yaml or testdata/openapi.json with
+// OpenAPI markers still scans — those are committed, hand-curated
+// artifacts that could legitimately accumulate real PII.
+func TestFindPII_VendorSpecOutsideManuscriptsStillScans(t *testing.T) {
+	root := t.TempDir()
+	openapiYAML := `openapi: 3.0.0
+info:
+  title: Public API
+paths:
+  /u:
+    post:
+      requestBody:
+        content:
+          application/json:
+            example:
+              email: leaked@victim.com
+`
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "docs"), 0755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "testdata"), 0755))
+	write(t, filepath.Join(root, "docs", "api.yaml"), openapiYAML)
+	write(t, filepath.Join(root, "testdata", "openapi.json"), `{"openapi":"3.0.0","info":{"title":"x"},"paths":{"/u":{"post":{"requestBody":{"content":{"application/json":{"example":{"email":"leaked@victim.com"}}}}}}}}`)
+
+	findings, err := FindPII(root)
+	require.NoError(t, err)
+
+	files := uniqueFiles(findings)
+	assert.Contains(t, files, "docs/api.yaml",
+		"vendor-spec exemption must not bypass docs/ committed artifacts")
+	assert.Contains(t, files, "testdata/openapi.json",
+		"vendor-spec exemption must not bypass testdata fixtures")
+}
+
+// Negative regression: HARs and session-state captures under
+// .manuscripts/ keep scanning. They have no OpenAPI marker, so
+// looksLikeVendorAPISpec returns false and the exemption never fires.
+func TestFindPII_NonSpecManuscriptCapturesStillScan(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".manuscripts", "run1", "discovery"), 0755))
+
+	har := `{
+  "log": {
+    "version": "1.2",
+    "entries": [
+      {"request": {"url": "https://api.example.com"}, "response": {"content": {"text": "{\"email\":\"real@user.com\",\"phone\":\"(415) 555-0123\"}"}}}
+    ]
+  }
+}`
+	write(t, filepath.Join(root, ".manuscripts", "run1", "discovery", "session.har"), har)
+
+	sessionState := `{
+  "cookies": [{"name": "auth_token", "value": "secret"}],
+  "user": {"email": "real@user.com", "address": "1234 Main Street"}
+}`
+	write(t, filepath.Join(root, ".manuscripts", "run1", "discovery", "session-state.json"), sessionState)
+
+	findings, err := FindPII(root)
+	require.NoError(t, err)
+
+	files := uniqueFiles(findings)
+	assert.Contains(t, files, ".manuscripts/run1/discovery/session.har")
+	assert.Contains(t, files, ".manuscripts/run1/discovery/session-state.json")
+}
+
+// The exemption probes a head window for the marker. A file that buries
+// `openapi: 3.0` deep past the probe window does not bypass scanning —
+// the head-window bound is intentional so an attacker (or large
+// hand-edited proof) cannot smuggle PII past the gate by prepending
+// arbitrary unrelated content.
+func TestLooksLikeVendorAPISpec(t *testing.T) {
+	tests := []struct {
+		name  string
+		probe string
+		want  bool
+	}{
+		{"openapi-3.0-json", `{"openapi": "3.0.3"}`, true},
+		{"openapi-3.1-json", `{"openapi":"3.1.0"}`, true},
+		{"openapi-2.0-json", `{"openapi": "2.0"}`, true},
+		{"swagger-2.0-json", `{"swagger": "2.0"}`, true},
+		{"openapi-3.0-json-pretty", "{\n  \"openapi\": \"3.0.3\",\n  \"info\": {}\n}", true},
+		{"openapi-yaml", "openapi: 3.0.0\ninfo:\n  title: x", true},
+		{"openapi-yaml-quoted", `openapi: "3.0.0"`, true},
+		{"swagger-yaml", "swagger: '2.0'\ninfo:\n  title: x", true},
+		{"plain-json", `{"users": [{"email": "x@y.com"}]}`, false},
+		{"plain-yaml", "users:\n  - email: x@y.com\n", false},
+		{"prose-mentioning-openapi", "This file describes the openapi: 3.0 schema we built.", false},
+		{"openapi-mid-line-yaml", "  openapi: 3.0", false},
+		{"openapi-future-version-string", `{"openapi": "4.0"}`, false},
+		// Anchor regressions: only root-level keys may signal a vendor
+		// spec. A non-spec JSON file whose nested payload contains an
+		// `openapi`/`swagger` field must not trip the exemption.
+		{"json-nested-openapi-field", `{"user_data": {"extras": {"openapi": "3.0.0", "email": "real@user.com"}}}`, false},
+		{"json-info-before-openapi", `{"info": {"title": "x"}, "openapi": "3.0.0"}`, false},
+		{"json-swagger-nested", `{"meta": {"swagger": "2.0"}}`, false},
+		// YAML anchor regressions: PII-shaped values in earlier root
+		// keys must not be exempted just because a later root key looks
+		// like an OpenAPI/Swagger version marker.
+		{"yaml-pii-before-openapi", "captured_at: 2026-05-15\nuser_email: real@user.com\nopenapi: 3.0.0", false},
+		{"yaml-swagger-after-meta", "tenant: acme\nswagger: '2.0'", false},
+		// YAML lead-in allowed: optional document marker, directives,
+		// comment lines, and blank lines before the version marker.
+		{"yaml-with-document-marker", "---\nopenapi: 3.0.0", true},
+		{"yaml-with-comment-prefix", "# Vendor-published OpenAPI spec\nopenapi: 3.0.0", true},
+		{"yaml-with-directive-and-marker", "%YAML 1.2\n---\nopenapi: 3.0.0", true},
+		{"yaml-with-blank-lead", "\nopenapi: 3.0.0", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, looksLikeVendorAPISpec([]byte(tt.probe)))
+		})
+	}
+}
+
+// Anchor regression at the file walk level: a JSON file under
+// .manuscripts/ whose first 8 KB contains a nested "openapi": "3.0.0"
+// (but no root-level marker) must still scan. Pins the JSON anchor's
+// intent so a future weakening of the regex surfaces here as a real
+// PII gate regression instead of a silent bypass.
+func TestFindPII_NestedOpenAPIFieldStillScans(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".manuscripts", "run1", "research"), 0755))
+	nestedJSON := `{
+  "captured_at": "2026-05-15",
+  "payload": {
+    "request": {"openapi": "3.0.0"},
+    "response": {"email": "real@user.com", "phone": "(415) 555-0123"}
+  }
+}`
+	write(t, filepath.Join(root, ".manuscripts", "run1", "research", "captured.json"), nestedJSON)
+
+	findings, err := FindPII(root)
+	require.NoError(t, err)
+	assert.Contains(t, uniqueFiles(findings), ".manuscripts/run1/research/captured.json",
+		"nested openapi field must not bypass PII scanning")
+}
+
+// YAML parallel: a research-notes YAML under .manuscripts/ that lists
+// real captured PII in earlier root keys and a later `openapi: 3.0.0`
+// root key must still scan. Without the document-start anchor on the
+// YAML marker, the column-0 `openapi:` line would trip the exemption
+// and silently exempt the PII above it.
+func TestFindPII_YAMLPIIBeforeOpenAPIStillScans(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".manuscripts", "run1", "research"), 0755))
+	notes := `captured_at: 2026-05-15
+user_email: real@user.com
+phone: (415) 555-0123
+openapi: 3.0.0
+`
+	write(t, filepath.Join(root, ".manuscripts", "run1", "research", "notes.yaml"), notes)
+
+	findings, err := FindPII(root)
+	require.NoError(t, err)
+	assert.Contains(t, uniqueFiles(findings), ".manuscripts/run1/research/notes.yaml",
+		"YAML with PII before a root-level openapi marker must not bypass PII scanning")
 }
 
 func TestFindPII_BinaryFileSkip(t *testing.T) {
