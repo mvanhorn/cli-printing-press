@@ -556,14 +556,21 @@ Surface the final error log to the user, do NOT auto-open the PR, exit. The user
 `publish validate` does NOT check `.printing-press-patches.json` ↔ `// PATCH(...)` parity. That contract is enforced by the public library's `verify-library-conventions` workflow only after the PR opens. To catch it locally, run a quick parity check before proceeding to Phase 5:
 
 ```bash
-# Count only NEW // PATCH(...) markers added in this run by diffing against upstream.
-# A naive grep -rc over $CLI_DIR also counts markers added by prior amend runs,
-# which lets a zero-new-markers run pass when prior history makes the cumulative
-# count meet or exceed the per-run declared count.
-# format-patch --stdout is used (not `git diff`) so the parse stays robust against
-# tooling that intercepts `git diff` (delta pager, token-shim wrappers) and
-# reformats the output away from unified-diff shape.
-new_patch_markers=$(git -C "$PUBLISH_REPO_DIR" format-patch --stdout upstream/main..HEAD -- "$CLI_DIR" \
+# Count only NEW // PATCH(...) markers added in this run by diffing against
+# upstream. A naive `grep -rc` over $CLI_DIR also counts markers added by
+# prior amend runs, which lets a zero-new-markers run pass when prior history
+# makes the cumulative count meet or exceed the per-run declared count.
+#
+# This check runs in Phase 4 Step 6 — BEFORE the Phase 7 commit. The edits
+# are still in the working tree, not in any commit, so `git diff` against
+# upstream/main (working-tree diff) is the right tool. `format-patch
+# upstream/main..HEAD` would scan committed history only, find no commits,
+# and emit nothing — silently returning 0 markers for every valid run.
+#
+# --no-pager + --no-color + --no-ext-diff defeats colorized output and any
+# configured `diff.external` tool that would reformat the diff away from
+# unified-diff shape and break the grep parse.
+new_patch_markers=$(git -C "$PUBLISH_REPO_DIR" --no-pager diff --no-color --no-ext-diff upstream/main -- "$CLI_DIR" \
   | grep -cE '^\+.*// PATCH\(')
 patches_entry=$(jq '.patches[-1].patch_count // 0' "$CLI_DIR/.printing-press-patches.json")
 if [ "$new_patch_markers" -lt "$patches_entry" ]; then
