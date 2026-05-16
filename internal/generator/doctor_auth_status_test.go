@@ -163,8 +163,8 @@ func TestDoctorPreservesConfiguredUserAgentWhenAuthInIsEmpty(t *testing.T) {
 
 	apiSpec := minimalSpec("ua-auth-empty-in")
 	apiSpec.Auth = spec.AuthConfig{
-		Type:       "api_key",
-		Header:     "User-Agent",
+		Type:   "api_key",
+		Header: "User-Agent",
 		// Auth.In intentionally left empty to exercise the default.
 		VerifyPath: "/alerts/active",
 		EnvVars:    []string{"UA_AUTH_EMPTY_IN_USER_AGENT"},
