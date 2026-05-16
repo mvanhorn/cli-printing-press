@@ -216,7 +216,7 @@ type syncUserParams struct {
 // --global-param key=value, and --resource-param resource:key=value flags.
 // Returns usage errors keyed on the specific invalid token so the user
 // sees which entry was rejected.
-func parseSyncUserParams(flatGlobalFlags, perResourceFlags, trueGlobalFlags []string) (*syncUserParams, error) {
+func parseSyncUserParams(flatGlobalFlags, resourceParamFlags, trueGlobalFlags []string) (*syncUserParams, error) {
 	flatGlobal, err := parseSyncKVFlags(flatGlobalFlags, "--param")
 	if err != nil {
 		return nil, err
@@ -230,7 +230,7 @@ func parseSyncUserParams(flatGlobalFlags, perResourceFlags, trueGlobalFlags []st
 		trueGlobal:  trueGlobal,
 		perResource: map[string]map[string]string{},
 	}
-	for _, spec := range perResourceFlags {
+	for _, spec := range resourceParamFlags {
 		resource, kv, ok := strings.Cut(spec, ":")
 		if !ok || resource == "" {
 			return nil, fmt.Errorf("invalid --resource-param %q: expected resource:key=value", spec)
