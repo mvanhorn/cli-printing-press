@@ -43,6 +43,13 @@ const reasonNoLiveSignal = "no live happy/json pass; credential-unavailable skip
 const reasonUnavailableRunnerCredentials = "unavailable for runner credentials"
 const reasonFileFixtureRequired = "file fixture required"
 
+// dogfoodEnvVar is the env signal every live-dogfood subprocess
+// inherits. Generated commands with a long-running happy path detect
+// this via cliutil.IsDogfoodEnv() and curtail work (paginate once,
+// honor a smaller --limit) so the matrix's per-command timeout
+// doesn't kill an otherwise healthy run.
+const dogfoodEnvVar = "PRINTING_PRESS_DOGFOOD"
+
 type LiveDogfoodOptions struct {
 	CLIDir              string
 	BinaryName          string
@@ -859,6 +866,7 @@ func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout tim
 	cmd := exec.CommandContext(ctx, binaryPath, args...)
 	cmd.Dir = cliDir
 	applyDefaultSubprocessEnv(cmd)
+	cmd.Env = append(cmd.Env, dogfoodEnvVar+"=1")
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	cmd.Stdout = &limitedWriter{w: stdout, remaining: MaxOutputBytes}

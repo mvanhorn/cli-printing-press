@@ -12,6 +12,13 @@ import "os"
 // spamming the user's environment during verify runs.
 const VerifyEnvVar = "PRINTING_PRESS_VERIFY"
 
+// DogfoodEnvVar is the env var the printing-press live-dogfood runner
+// sets in every subprocess. Distinct from VerifyEnvVar because dogfood
+// is a real-network matrix: commands may still perform actual API
+// calls, just curtailed (paginate-once, bounded crawl, etc.) so the
+// runner's flat 30s per-command timeout doesn't trip.
+const DogfoodEnvVar = "PRINTING_PRESS_DOGFOOD"
+
 // IsVerifyEnv reports whether the current process is running under the
 // printing-press verifier in mock mode. Generated commands with side
 // effects pair this check with print-by-default + explicit opt-in
@@ -27,4 +34,22 @@ const VerifyEnvVar = "PRINTING_PRESS_VERIFY"
 //	}
 func IsVerifyEnv() bool {
 	return os.Getenv(VerifyEnvVar) == "1"
+}
+
+// IsDogfoodEnv reports whether the current process is running under
+// the printing-press live-dogfood matrix. Long-running commands (full
+// sync loops, content crawlers, bulk archive walks) should use this
+// to curtail work so the flat 30s per-command timeout doesn't kill an
+// otherwise healthy happy_path test. Typical pattern: paginate once,
+// fetch a bounded sample, or honor a smaller --limit default.
+//
+//	if cliutil.IsDogfoodEnv() {
+//	    return crawl(ctx, opts.WithMaxPages(1))
+//	}
+//
+// Unlike IsVerifyEnv this does NOT mean "don't hit the network" —
+// dogfood is a real-API matrix. Use this only to bound work, never to
+// substitute mock data for real calls.
+func IsDogfoodEnv() bool {
+	return os.Getenv(DogfoodEnvVar) == "1"
 }
