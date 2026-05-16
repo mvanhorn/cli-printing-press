@@ -589,6 +589,24 @@ func TestStripRedirects(t *testing.T) {
 			wantText: "stub run 2>&1",
 		},
 		{
+			name:      "bare >&file is a real redirect target (no digit prefix)",
+			in:        "stub run >&combined.log",
+			wantText:  "stub run",
+			wantPaths: []string{"> &combined.log"},
+		},
+		{
+			name:      "single-quoted filename with spaces stays whole",
+			in:        "stub bulk --stdin < 'file with spaces.txt'",
+			wantText:  "stub bulk --stdin",
+			wantPaths: []string{"< 'file with spaces.txt'"},
+		},
+		{
+			name:      "double-quoted filename with spaces stays whole",
+			in:        `stub export > "out file.json"`,
+			wantText:  "stub export",
+			wantPaths: []string{`> "out file.json"`},
+		},
+		{
 			name:     "redirect inside single quote preserved",
 			in:       "stub run --msg 'a < b > c'",
 			wantText: "stub run --msg 'a < b > c'",

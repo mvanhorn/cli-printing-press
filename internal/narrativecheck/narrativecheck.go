@@ -503,9 +503,12 @@ func stripRedirects(segment string) (string, []string) {
 			quote = rune(c)
 			i++
 		case '<', '>':
-			// fd duplication like `2>&1` is signaled by a preceding digit and
-			// a following `&`. Leave those alone — they're not file redirects.
-			if c == '>' && i+1 < len(bytes) && bytes[i+1] == '&' {
+			// fd duplication like `2>&1` is signaled by a preceding digit AND
+			// a following `&`. Bare `>&file` is `&>file` shorthand (a real
+			// redirect target) and must still be stripped, so the guard only
+			// fires when both signals are present.
+			prevIsDigit := cleaned.Len() > 0 && cleaned.String()[cleaned.Len()-1] >= '0' && cleaned.String()[cleaned.Len()-1] <= '9'
+			if c == '>' && prevIsDigit && i+1 < len(bytes) && bytes[i+1] == '&' {
 				cleaned.WriteByte(c)
 				i++
 				continue
@@ -520,13 +523,47 @@ func stripRedirects(segment string) (string, []string) {
 				i++
 			}
 			fileStart := i
+			fileQuote := rune(0)
+			fileEsc := false
 			for i < len(bytes) {
 				b := bytes[i]
-				if b == ' ' || b == '\t' {
-					break
+				if fileEsc {
+					fileEsc = false
+					i++
+					continue
+				}
+				if fileQuote == '\'' {
+					if b == '\'' {
+						fileQuote = 0
+					}
+					i++
+					continue
+				}
+				if fileQuote == '"' {
+					switch b {
+					case '\\':
+						fileEsc = true
+					case '"':
+						fileQuote = 0
+					}
+					i++
+					continue
+				}
+				switch b {
+				case '\'', '"':
+					fileQuote = rune(b)
+					i++
+					continue
+				case '\\':
+					fileEsc = true
+					i++
+					continue
+				case ' ', '\t':
+					goto fileDone
 				}
 				i++
 			}
+		fileDone:
 			fragment := strings.TrimSpace(op + " " + string(bytes[fileStart:i]))
 			redirects = append(redirects, fragment)
 			// Skip any whitespace that follows the file token so a
