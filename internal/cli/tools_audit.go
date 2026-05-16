@@ -278,11 +278,16 @@ func auditMCPManifest(m *pipeline.ToolsManifest) []ToolsAuditFinding {
 }
 
 type commandFields struct {
-	use         string
-	short       string
-	hasReadOnly bool
-	hasEndpoint bool
-	hasRunE     bool // true when the literal declares Run or RunE; parent groupers omit both
+	use   string
+	short string
+	// hasExplicitReadOnly is true when the mcp:read-only annotation is
+	// present with ANY value (including "false"). The audit's
+	// missing-read-only finding fires only when the annotation is
+	// genuinely absent — an author who has explicitly opted out by
+	// writing "false" has done the right thing and shouldn't be flagged.
+	hasExplicitReadOnly bool
+	hasEndpoint         bool
+	hasRunE             bool // true when the literal declares Run or RunE; parent groupers omit both
 }
 
 func isCobraCommandType(expr ast.Expr) bool {
@@ -319,7 +324,7 @@ func extractCommandFields(lit *ast.CompositeLit) commandFields {
 		case "Short":
 			f.short = stringLit(kv.Value)
 		case "Annotations":
-			f.hasReadOnly, f.hasEndpoint = inspectAnnotations(kv.Value)
+			f.hasExplicitReadOnly, f.hasEndpoint = inspectAnnotations(kv.Value)
 		case "Run", "RunE":
 			f.hasRunE = true
 		}
@@ -338,7 +343,16 @@ func stringLit(e ast.Expr) string {
 	return bl.Value
 }
 
-func inspectAnnotations(e ast.Expr) (hasReadOnly, hasEndpoint bool) {
+// inspectAnnotations returns whether the literal declares the named
+// annotations at all (regardless of value). hasExplicitReadOnly is true
+// when `mcp:read-only` is present with ANY value — including "false",
+// which is the author's explicit opt-out for a read-shaped name that
+// actually mutates state. Collapsing "false" and absent into the same
+// signal makes the audit's missing-read-only finding fire on commands
+// the author already classified correctly; the audit's job is to flag
+// unannotated commands, not to enforce that every read-shaped name be
+// read-only.
+func inspectAnnotations(e ast.Expr) (hasExplicitReadOnly, hasEndpoint bool) {
 	lit, ok := e.(*ast.CompositeLit)
 	if !ok {
 		return false, false
@@ -350,12 +364,12 @@ func inspectAnnotations(e ast.Expr) (hasReadOnly, hasEndpoint bool) {
 		}
 		switch stringLit(kv.Key) {
 		case "mcp:read-only":
-			hasReadOnly = stringLit(kv.Value) == "true"
+			hasExplicitReadOnly = true
 		case "pp:endpoint":
 			hasEndpoint = stringLit(kv.Value) != ""
 		}
 	}
-	return hasReadOnly, hasEndpoint
+	return hasExplicitReadOnly, hasEndpoint
 }
 
 func auditCommandFields(file string, line int, f commandFields) []ToolsAuditFinding {
@@ -398,7 +412,7 @@ func auditCommandFields(file string, line int, f commandFields) []ToolsAuditFind
 	// missing-read-only applies only to commands that become shell-out
 	// MCP tools (typed endpoint tools get classification from the spec
 	// method; framework commands don't register at all).
-	if isShellOut && !f.hasReadOnly && readShapedName(name) {
+	if isShellOut && !f.hasExplicitReadOnly && readShapedName(name) {
 		out = append(out, ToolsAuditFinding{
 			Kind: kindMissingReadOnly, Command: name, File: file, Line: line,
 			Evidence: "name matches read heuristic; no mcp:read-only annotation",

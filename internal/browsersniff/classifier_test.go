@@ -234,3 +234,160 @@ func emptyStrings(values []string) []string {
 
 	return values
 }
+
+func TestIncludeListRescuesBlockedHost(t *testing.T) {
+	// Not t.Parallel: mutates the package-level include-list state.
+	SetAdditionalIncludeList([]string{"google-analytics.com"})
+	defer SetAdditionalIncludeList(nil)
+
+	// google-analytics.com is on the DefaultBlocklist and would normally
+	// score negative. The include match should force a positive score.
+	entries := []EnrichedEntry{
+		{
+			Method:              "GET",
+			URL:                 "https://www.google-analytics.com/collect?v=1",
+			ResponseContentType: "image/gif",
+			ResponseBody:        "",
+		},
+	}
+	api, noise := ClassifyEntries(entries)
+	assert.Len(t, api, 1, "include match should rescue google-analytics endpoint")
+	assert.Empty(t, noise)
+}
+
+func TestIncludeListRescuesStaticAssetByPath(t *testing.T) {
+	SetAdditionalIncludeList([]string{"/track/important"})
+	defer SetAdditionalIncludeList(nil)
+
+	entries := []EnrichedEntry{
+		{
+			Method:              "GET",
+			URL:                 "https://example.com/track/important.js",
+			ResponseContentType: "application/javascript",
+			ResponseBody:        "",
+		},
+	}
+	api, noise := ClassifyEntries(entries)
+	assert.Len(t, api, 1, "include path match should rescue static asset")
+	assert.Empty(t, noise)
+}
+
+func TestIncludeListEmptyPreservesDefaultBehavior(t *testing.T) {
+	SetAdditionalIncludeList(nil)
+
+	entries := []EnrichedEntry{
+		{
+			Method:              "GET",
+			URL:                 "https://www.google-analytics.com/collect",
+			ResponseContentType: "image/gif",
+		},
+	}
+	api, noise := ClassifyEntries(entries)
+	assert.Empty(t, api, "without include, analytics endpoint stays in noise")
+	assert.Len(t, noise, 1)
+}
+
+func TestIncludeListWinsOverBlocklistOverlap(t *testing.T) {
+	SetAdditionalBlocklist([]string{"api.partner.com"})
+	SetAdditionalIncludeList([]string{"api.partner.com"})
+	defer SetAdditionalBlocklist(nil)
+	defer SetAdditionalIncludeList(nil)
+
+	entries := []EnrichedEntry{
+		{
+			Method:              "GET",
+			URL:                 "https://api.partner.com/v1/data",
+			ResponseContentType: "application/json",
+			ResponseBody:        `{"ok":true}`,
+		},
+	}
+	api, _ := ClassifyEntries(entries)
+	assert.Len(t, api, 1, "include should win over overlapping blocklist entry")
+}
+
+func TestFilterEndpointsByMinSamples_DropsSingletons(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/popular",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders:      map[string]string{"Accept": "application/json"},
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/popular",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":2}`,
+				RequestHeaders:      map[string]string{"Accept": "application/json"},
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/rare",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders:      map[string]string{"Accept": "application/json"},
+			},
+		},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dropped := FilterEndpointsByMinSamples(apiSpec, capture, 2)
+	assert.Equal(t, 1, dropped, "rare endpoint with single sample should drop")
+
+	// The rare endpoint should be gone from the spec, popular should remain.
+	found := map[string]bool{}
+	for _, resource := range apiSpec.Resources {
+		for _, endpoint := range resource.Endpoints {
+			found[endpoint.Path] = true
+		}
+	}
+	assert.True(t, found["/v1/popular"], "popular endpoint should remain")
+	assert.False(t, found["/v1/rare"], "rare endpoint should be filtered")
+}
+
+func TestFilterEndpointsByMinSamples_DefaultIsNoop(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":1}`,
+				RequestHeaders:      map[string]string{"Accept": "application/json"},
+			},
+		},
+	}
+	apiSpec, err := AnalyzeCapture(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := 0
+	for _, r := range apiSpec.Resources {
+		before += len(r.Endpoints)
+	}
+
+	dropped := FilterEndpointsByMinSamples(apiSpec, capture, 1)
+	assert.Zero(t, dropped, "--min-samples=1 (default) must be a no-op")
+
+	after := 0
+	for _, r := range apiSpec.Resources {
+		after += len(r.Endpoints)
+	}
+	assert.Equal(t, before, after, "endpoint count must not change with default min-samples")
+}

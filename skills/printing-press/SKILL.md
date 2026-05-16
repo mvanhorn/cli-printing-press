@@ -177,6 +177,46 @@ if ! command -v go >/dev/null 2>&1; then
   return 1 2>/dev/null || exit 1
 fi
 
+# Resolve and emit the absolute path the agent must use for every later
+# `printing-press` invocation. `export PATH` above only affects this one
+# Bash tool call; subsequent calls open a fresh shell and resolve bare
+# `printing-press` against the user's default PATH. When a global is
+# installed at a stale version, that silently shadows the local build the
+# preflight just chose. Handing the agent an absolute path eliminates the
+# shadow.
+if [ "$_press_repo" = "true" ] && [ -x "$_scope_dir/printing-press" ]; then
+  PRINTING_PRESS_BIN="$_scope_dir/printing-press"
+else
+  PRINTING_PRESS_BIN="$(command -v printing-press 2>/dev/null || true)"
+fi
+echo "PRINTING_PRESS_BIN=$PRINTING_PRESS_BIN"
+
+# Shadow detector (advisory). When a local build is in use, surface any
+# differing global so the user can see at a glance that the two binaries
+# disagree. Detect-only: the absolute path emitted above is the one the
+# agent will actually invoke; this warning does not change selection.
+if [ "$_press_repo" = "true" ] && [ -x "$_scope_dir/printing-press" ]; then
+  _global_bin=""
+  for _candidate in "$HOME/go/bin/printing-press" "/usr/local/bin/printing-press" "/opt/homebrew/bin/printing-press"; do
+    if [ -x "$_candidate" ] && [ "$_candidate" != "$_scope_dir/printing-press" ]; then
+      _global_bin="$_candidate"
+      break
+    fi
+  done
+  if [ -n "$_global_bin" ]; then
+    _local_v="$("$_scope_dir/printing-press" version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')"
+    _global_v="$("$_global_bin" version --json 2>/dev/null | sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p')"
+    if [ -n "$_local_v" ] && [ -n "$_global_v" ] && [ "$_local_v" != "$_global_v" ]; then
+      echo ""
+      echo "[binary-shadow] local build v$_local_v differs from global v$_global_v at $_global_bin"
+      echo "PRESS_BIN_LOCAL_VERSION=$_local_v"
+      echo "PRESS_BIN_GLOBAL_VERSION=$_global_v"
+      echo "PRESS_BIN_GLOBAL_PATH=$_global_bin"
+      echo ""
+    fi
+  fi
+fi
+
 PRESS_BASE="$(basename "$_scope_dir" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"
 if [ -z "$PRESS_BASE" ]; then
   PRESS_BASE="workspace"
@@ -333,9 +373,11 @@ CODEX_CONSECUTIVE_FAILURES=0
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles five signals the contract emits to stdout: `[setup-error]` (refuse to run, surface the install instructions), `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), the min-binary-version compatibility check (hard stop if binary is too old), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), and `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, or hit a mid-flight install prompt if browser-sniff is later needed. Do not skip.
+**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles six signals the contract emits to stdout: `[setup-error]` (refuse to run, surface the install instructions), `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), the min-binary-version compatibility check (hard stop if binary is too old), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), `[browser-tools-missing]` (interactive `AskUserQuestion` prompt + optional install of browser-use and/or agent-browser), and the `PRINTING_PRESS_BIN=<abs-path>` marker plus optional `[binary-shadow]` warning (capture the path; use it for every subsequent `printing-press` invocation). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary, hit a mid-flight install prompt if browser-sniff is later needed, or invoke the wrong binary because a stale global on `PATH` shadowed the local build. Do not skip.
 
-Only after preflight completes successfully (no `[setup-error]`; any `[repo-upgrade-available]`, `[upgrade-available]`, or `[browser-tools-missing]` was offered to the user) should you proceed to the Orientation & Briefing section below.
+**Absolute-path rule.** The preflight contract always emits `PRINTING_PRESS_BIN=<absolute path>` to stdout. Capture this value and substitute it (the resolved absolute path, not the literal `$PRINTING_PRESS_BIN` token) for every subsequent `printing-press ...` invocation in this skill, references, and any sub-skill you delegate to. The `export PATH=...` line inside the contract only affects the single Bash tool call it runs in; later Bash tool calls open fresh shells and resolve bare `printing-press` against the user's default `PATH`, where a stale globally-installed binary (`$HOME/go/bin/printing-press`, Homebrew copy, etc.) will silently shadow the local build the preflight just chose. Bash code examples below are written `printing-press generate ...` for readability — replace `printing-press` with the captured absolute path each time you actually run one.
+
+Only after preflight completes successfully (no `[setup-error]`; any `[repo-upgrade-available]`, `[upgrade-available]`, or `[browser-tools-missing]` was offered to the user; `PRINTING_PRESS_BIN` is captured) should you proceed to the Orientation & Briefing section below.
 
 ## Orientation & Briefing
 
@@ -487,7 +529,28 @@ DISCOVERY_DIR="$API_RUN_DIR/discovery"
 CLI_WORK_DIR="$API_RUN_DIR/working/<api>-pp-cli"
 STAMP="$(date +%Y-%m-%d-%H%M%S)"
 
+# Session state (live cookies, CSRF tokens captured during authenticated
+# browser-sniff) lives OUTSIDE $API_RUN_DIR so the Phase 5.5 archive
+# `cp -r "$DISCOVERY_DIR"` cannot pick it up. Containment by location, not by
+# manual rm-before-archive.
+#
+# Base prefix is user-scoped (`printing-press-$(id -u)`) so that on a Linux
+# host with a shared /tmp, the umask-077 subshell below does not lock the
+# top-level `printing-press` directory to a single user. macOS already gives
+# us a per-user $TMPDIR; the $(id -u) suffix keeps semantics identical there.
+SESSION_BASE="${TMPDIR:-/tmp}/printing-press-$(id -u)"
+SESSION_DIR="$SESSION_BASE/session/$RUN_ID"
+SESSION_STATE_FILE="$SESSION_DIR/session-state.json"
+
 mkdir -p "$RESEARCH_DIR" "$PROOFS_DIR" "$PIPELINE_DIR" "$CLI_WORK_DIR"
+# Create $SESSION_DIR inside a subshell with a tight umask so it lands at 0700
+# at creation, not after a follow-up chmod. The two-step `mkdir; chmod` form
+# leaves a TOCTOU window where a concurrent process could open the directory
+# (and any session-state.json written into it) while perms are still
+# umask-derived (typically 0755 on Linux). The umask propagates to every
+# directory `mkdir -p` creates; the user-scoped $SESSION_BASE above is what
+# keeps that from blocking other users on the same host.
+(umask 077 && mkdir -p "$SESSION_DIR")
 STATE_FILE="$API_RUN_DIR/state.json"
 ```
 
@@ -1579,6 +1642,72 @@ name in `env_vars`; do not add guessed slug-based aliases. For OpenAPI specs,
 prefer `x-auth-env-vars` on the selected security scheme when the wrapper slug
 differs from the underlying API brand.
 
+**If auth IS present** in the spec but Phase 1 evidence shows the slug-derived
+env var will differ from the canonical name users have already set for this
+API, enrich the spec with the canonical name before generation. The
+slug-derivation rule (security-scheme slug uppercased plus `_TOKEN` /
+`_API_KEY` / `_OAUTH2` per type) rarely matches the canonical name for
+established APIs. Common shapes:
+
+- Stripe (bearer): canonical `STRIPE_SECRET_KEY`, not slug-derived `STRIPE_OAUTH2`
+- HubSpot (bearer): canonical `HUBSPOT_PRIVATE_APP_TOKEN`, not slug-derived `HUBSPOT_API_KEY`
+- Twilio (HTTP Basic, two-var pair): canonical `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN`, not slug-derived `TWILIO_USERNAME` + `TWILIO_PASSWORD`
+- Keap (OAuth2 authorization-code): canonical `KEAP_SERVICE_ACCOUNT_KEY`, not slug-derived `KEAP_OAUTH2`
+
+Walk through:
+
+1. Compute the slug-derived env var the generator will pick (security-scheme
+   slug, uppercased, plus the type-suffix above; HTTP Basic produces a
+   `_USERNAME` + `_PASSWORD` pair; OAuth2 `client_credentials` produces a
+   `_CLIENT_ID` + `_CLIENT_SECRET` pair).
+2. Check Phase 1 research, Phase 1.5a MCP source code analysis, and community
+   wrapper READMEs for a canonical env var name documented by the vendor or
+   in widespread use.
+3. If they differ, add `x-auth-env-vars` on the selected security scheme
+   (OpenAPI) or set `auth.env_vars` to the canonical name (internal YAML).
+   Use only the canonical name; do not retain the slug-derived form as an
+   alias. For HTTP Basic, supply the full two-entry canonical pair
+   (username position first, password position second). For OAuth2
+   `client_credentials`, the parser silently re-applies the
+   `CLIENT_ID`/`CLIENT_SECRET` default when `x-auth-env-vars` has fewer
+   than two entries (see `applyAuthEnvVarDefaults` in
+   `internal/openapi/parser.go`); if the canonical secret is a single
+   service-account token for a `client_credentials` flow, use
+   `x-auth-vars` instead (next section) so the override is preserved.
+4. If research surfaces no canonical name distinct from the slug-derived
+   form, do nothing. The slug-derived name is fine, and a spurious
+   `x-auth-env-vars` would just shadow it with the same value.
+
+```yaml
+# Bearer / API-key single-token case (Stripe, HubSpot, Keap on
+# authorization-code grant, most apiKey schemes).
+components:
+  securitySchemes:
+    keapOAuth2:
+      type: oauth2
+      flows:
+        authorizationCode: { ... }
+      x-auth-env-vars:
+        - KEAP_SERVICE_ACCOUNT_KEY
+```
+
+```yaml
+# HTTP Basic two-var canonical pair (Twilio).
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      x-auth-env-vars:
+        - TWILIO_ACCOUNT_SID
+        - TWILIO_AUTH_TOKEN
+```
+
+Skipping this step pushes the agent into hand-patching
+`internal/config/config.go` Load and `internal/cli/doctor.go` env-var
+checks after a `doctor` FAIL against the operator's real environment.
+Enriching the spec avoids that round-trip.
+
 For OpenAPI specs that need richer env-var metadata (kind classification,
 optional credentials, OR-group relationships), use `x-auth-vars` on the
 security scheme. See `docs/SPEC-EXTENSIONS.md` for the canonical schema.
@@ -1718,6 +1847,13 @@ Detection signals:
   documented as paid, partner, premium, or quota-gated.
 - Browser/crowd sniffing found public endpoints and SDK/MCP research found a
   separate credential for expanded coverage.
+- Sniffed specs carry per-endpoint `observed_auth` (a list of lowercased request
+  header names observed during capture, e.g. `[authorization]` or `[x-api-key]`).
+  An empty or missing `observed_auth` on an endpoint is evidence that the request
+  went anonymously; a populated list is evidence the endpoint required auth. The
+  same per-endpoint signal is mirrored on `TrafficAnalysis.endpoint_clusters[].observed_auth`
+  in the traffic-analysis sidecar. Treat both as observation-only — not a security
+  scheme declaration — and corroborate with documentation before declaring a tier.
 
 Action:
 - Internal YAML: add `tier_routing` plus `tier` on the affected resource or
@@ -2375,6 +2511,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 
 **RunE skeleton — store-query shape** (offline data via the local SQLite):
 
+The generic `resources` table is keyed by `resource_type`. Flat resources synced from `/<resource>` land as `resource_type='<resource>'`. **Hierarchical resources** synced from `/<parents>/{id}/<resource>` land as `resource_type='<parent>_<resource>'` — e.g., `projects_tasks` (Asana), `repos_issues` / `repos_pulls` (GitHub) — *not* the bare `<resource>` name. A novel feature that filters by the bare name returns zero rows against a real DB. Use `IN (...)` to catch both shapes so the same code works whether the API exposes the resource flat or only parent-scoped.
+
 ```go
 // Declare these alongside the cmd literal, before return cmd:
 //   var dbPath string
@@ -2389,11 +2527,16 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer db.Close()
-	// Replace the query with your aggregation. The store schema mirrors
-	// the synced resources; `printing-press dogfood --json` shows the
-	// table list. SQL must be SELECT-only; the search/sql gates reject
-	// mutating statements.
-	rows, err := db.DB().QueryContext(cmd.Context(), `SELECT id, data FROM <table> WHERE ...`)
+	// Filter resources by both the flat and hierarchical naming so the
+	// query catches rows synced via /<resource> AND rows synced via
+	// /<parents>/{id}/<children>. Drop the parent-scoped entry if the
+	// API only exposes the resource flat; add a <resource_singular>
+	// entry for APIs that toggle plural/singular casing. SQL must be
+	// SELECT-only; the search/sql gates reject mutating statements.
+	rows, err := db.DB().QueryContext(cmd.Context(), `
+		SELECT id, data FROM resources
+		WHERE resource_type IN ('<resource>', '<parent>_<resource>')
+		  AND ...`)
 	if err != nil {
 		return fmt.Errorf("query: %w", err)
 	}
@@ -2408,6 +2551,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	return nil
 },
 ```
+
+For flat-only resources, the typed FTS/upsert tables the generator emits (e.g., `tasks_fts`, `projects`) work too — `SELECT id, data FROM <typed-table>` is the fast path. The `IN (...)` pattern above is the safe default whenever the resource may be hierarchical; `printing-press dogfood --json` shows the actual `resource_type` distribution so you can confirm without running raw SQL.
 
 For features that combine both (cache an API response in the store, or fall through to live when the local store is stale), nest one skeleton inside the other and use the `--data-source auto/local/live` flag pattern from the generated `sync` command.
 
@@ -2921,8 +3066,10 @@ cp -f "$API_RUN_DIR/research.json" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/researc
 cp -r "$PROOFS_DIR" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs" 2>/dev/null || true
 
 # Archive discovery artifacts (browser-sniff captures, URL lists, traffic analysis, browser-sniff report).
-# Remove session state before archiving — contains authentication cookies/tokens.
-rm -f "$DISCOVERY_DIR/session-state.json"
+# Session state lives outside $DISCOVERY_DIR (see Run Initialization), so the
+# archive cannot pick it up. The legacy rm is a no-op safety net for an
+# in-flight $DISCOVERY_DIR carried over from a pre-isolation run.
+rm -f "$DISCOVERY_DIR/session-state.json" 2>/dev/null || true
 
 # Strip response bodies from HAR before archiving to control size.
 if [ -d "$DISCOVERY_DIR" ]; then
@@ -2933,6 +3080,11 @@ if [ -d "$DISCOVERY_DIR" ]; then
   done
   cp -r "$DISCOVERY_DIR" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/discovery" 2>/dev/null || true
 fi
+
+# Wipe live-auth scratch dir now that the run is archived. The directory lives
+# under ${TMPDIR:-/tmp}, so OS-level tmp reaping is the long-tail fallback, but
+# we clean explicitly so back-to-back runs do not accumulate session state.
+rm -rf "$SESSION_DIR" 2>/dev/null || true
 ```
 
 **MANDATORY: After archiving, you MUST proceed to Phase 6 below. Do not print a summary and stop. Do not treat archiving as the end of the run. The run ends when the user has been asked about next steps via the ship-path or hold-path menu.**

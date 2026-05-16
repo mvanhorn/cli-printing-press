@@ -1,0 +1,33 @@
+name: graphql-shared-golden
+description: Golden fixture for GraphQL specs where every endpoint POSTs to a single shared /graphql path. Locks the import-block shape for the GraphQL POST branch so future template edits cannot silently re-introduce an unused `internal/client` import that breaks `go build` of the generated CLI.
+version: "0.1.0"
+base_url: https://api.graphql-shared.example
+auth:
+  type: bearer_token
+  header: Authorization
+  env_vars:
+    - GRAPHQL_SHARED_GOLDEN_TOKEN
+resources:
+  things:
+    description: GraphQL-backed things
+    endpoints:
+      list:
+        method: POST
+        path: /graphql
+        description: List things via GraphQL
+        response:
+          type: array
+          item: Thing
+      get:
+        method: POST
+        path: /graphql
+        description: Get a thing via GraphQL
+        params:
+          - name: thing_id
+            type: string
+            required: true
+            positional: true
+            description: Thing ID
+        response:
+          type: object
+          item: Thing

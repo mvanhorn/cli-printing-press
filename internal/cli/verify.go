@@ -147,6 +147,21 @@ func printVerifyReport(report *pipeline.VerifyReport) {
 			r.Score)
 	}
 
+	if len(report.PathParamProbes) > 0 {
+		fmt.Println()
+		fmt.Println("Path-Param Probes (nested commands with <positional> args):")
+		for _, probe := range report.PathParamProbes {
+			status := "PASS"
+			if !probe.Passed {
+				status = "FAIL"
+			}
+			fmt.Printf("  %-4s %s\n", status, probe.Command)
+			if !probe.Passed && probe.Reason != "" {
+				fmt.Printf("       %s\n", probe.Reason)
+			}
+		}
+	}
+
 	fmt.Println()
 	if report.DataPipelineDetail != "" {
 		fmt.Printf("Data Pipeline: %s\n", report.DataPipelineDetail)

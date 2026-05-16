@@ -46,7 +46,9 @@ _scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 _scope_dir="$(cd "$_scope_dir" && pwd -P)"
 
 # Prefer local build when running from inside the printing-press repo.
+_press_repo=false
 if [ -x "$_scope_dir/printing-press" ] && [ -d "$_scope_dir/cmd/printing-press" ]; then
+  _press_repo=true
   export PATH="$_scope_dir:$PATH"
   echo "Using local build: $_scope_dir/printing-press"
 elif ! command -v printing-press >/dev/null 2>&1; then
@@ -59,6 +61,19 @@ elif ! command -v printing-press >/dev/null 2>&1; then
   fi
   return 1 2>/dev/null || exit 1
 fi
+
+# Resolve and emit the absolute path the agent must use for every later
+# `printing-press` invocation. `export PATH` above only affects this one
+# Bash tool call; subsequent calls open a fresh shell and resolve bare
+# `printing-press` against the user's default PATH, where a stale global
+# can silently shadow the local build. The agent captures this marker and
+# substitutes the absolute path into every later invocation.
+if [ "$_press_repo" = "true" ]; then
+  PRINTING_PRESS_BIN="$_scope_dir/printing-press"
+else
+  PRINTING_PRESS_BIN="$(command -v printing-press 2>/dev/null || true)"
+fi
+echo "PRINTING_PRESS_BIN=$PRINTING_PRESS_BIN"
 
 PRESS_BASE="$(basename "$_scope_dir" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"
 if [ -z "$PRESS_BASE" ]; then
@@ -76,7 +91,9 @@ mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-After running the setup contract, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest` to update."
+After running the setup contract, capture the `PRINTING_PRESS_BIN=<abs-path>` line from stdout. **Every subsequent `printing-press ...` invocation in this skill must use that absolute path** (substitute the value, not the literal `$PRINTING_PRESS_BIN` token) — `export PATH` above only affects the single Bash tool call it runs in, so later calls open a fresh shell where bare `printing-press` resolves against the user's default `PATH` and a stale global can shadow the local build.
+
+After capturing the binary path, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `<PRINTING_PRESS_BIN> version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest` to update."
 
 ## Configuration
 
@@ -417,10 +434,15 @@ Then copy the staged CLI into the publish repo, replacing any existing version:
 rm -rf "$PUBLISH_REPO_DIR/library"/*/"<api-slug>"
 
 # Copy staged CLI into publish repo (slug-keyed directory)
-cp -r "$STAGING_DIR/library/<category>/<cli-name>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>"
+cp -r "$STAGING_DIR/library/<category>/<api-slug>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>"
 
-# Remove binaries (should not be committed)
-rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>"
+# Remove root-level binaries (should not be committed). publish package
+# already strips these before the copy; this rm -f is belt-and-suspenders
+# for the agent path. Cover all three names the Makefile/`go build ./cmd/...`
+# can drop: bare slug, CLI binary, MCP peer.
+rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" \
+      "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>" \
+      "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>-pp-mcp"
 
 # Defense-in-depth: validate printer attribution before README and registry surfaces.
 PRINTER=$(jq -r '.printer // ""' "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press.json")
@@ -462,7 +484,7 @@ directory:
 rm -rf "$STAGING_PARENT"
 ```
 
-Note: `staged_dir` uses the CLI name (e.g., `espn-pp-cli`) but the publish repo uses the API slug (e.g., `espn`). The copy step handles this rename.
+Note: `staged_dir` is keyed by the API slug (e.g., `espn`), matching the publish repo's directory layout. The copy step is a same-name copy, not a rename.
 
 ## Step 7: Collision Detection & Resolution
 

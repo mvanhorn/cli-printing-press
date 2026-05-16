@@ -94,6 +94,12 @@ type liveDogfoodRun struct {
 }
 
 func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
+	releaseHome, err := scopeSubprocessHome()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseHome()
+
 	if strings.TrimSpace(opts.CLIDir) == "" {
 		return nil, fmt.Errorf("CLIDir is required")
 	}
@@ -852,6 +858,7 @@ func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout tim
 
 	cmd := exec.CommandContext(ctx, binaryPath, args...)
 	cmd.Dir = cliDir
+	applyDefaultSubprocessEnv(cmd)
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	cmd.Stdout = &limitedWriter{w: stdout, remaining: MaxOutputBytes}

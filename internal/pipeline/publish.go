@@ -249,6 +249,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			m.AuthEnvVarSpecs = existing.AuthEnvVarSpecs
 			m.EndpointTemplateVars = existing.EndpointTemplateVars
 			m.EndpointTemplateEnvOverrides = existing.EndpointTemplateEnvOverrides
+			m.EndpointTemplateVarDefaults = existing.EndpointTemplateVarDefaults
 			m.AuthKeyURL = existing.AuthKeyURL
 			m.AuthTitle = existing.AuthTitle
 			m.AuthDescription = existing.AuthDescription

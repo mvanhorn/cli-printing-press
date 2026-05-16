@@ -1,0 +1,7 @@
+# Locks the async-job emission contract: when DetectAsyncJobs fires
+# (POST returns a job_id-shaped response + sibling status GET), the
+# generator emits jobs.go with WaitForJob polling via GetNoCache.
+# Without async detection, none of these files are emitted; without
+# the cache-bypass fix from #1136, the WaitForJob body would call
+# c.Get instead of c.GetNoCache, locking polling on the initial response.
+async-job-api/internal/cli/jobs.go
