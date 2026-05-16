@@ -10,15 +10,17 @@ info:
     The full ORS surface (POIs, snap-to-road, elevation, optimization advanced
     constraints) can be added incrementally — see notes in the catalog entry.
 
-    The hosted free API (`https://api.openrouteservice.org`) and any self-hosted
-    ORS Docker instance speak the same paths. Swap the server URL to switch.
+    The hosted free API (`https://api.openrouteservice.org`) exposes routing,
+    matrix, isochrones, optimization, and geocoding. Self-hosted ORS Docker
+    covers the ORS backend endpoints (routing, matrix, isochrones, optimization);
+    geocoding is hosted-public-API only.
 
     Auth: pass the API key in the `Authorization` header. Sign up free at
     https://openrouteservice.org/dev/#/signup.
 
     Rate limits (free plan, hosted): 2,000 directions/day, 500 matrix/day,
     500 optimization/day, 500 isochrones/day, 1,000 geocode/day, 40/min on
-    most endpoints. Self-hosted: no limits.
+    most endpoints. Self-hosted backend endpoints: no hosted request caps.
   version: "v2"
   contact:
     name: OpenRouteService

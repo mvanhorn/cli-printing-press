@@ -11,16 +11,7 @@ verified_date: "2026-05-16"
 homepage: https://openrouteservice.org
 auth_key_url: https://openrouteservice.org/dev/#/signup
 auth_required: true
-auth_instructions: |
-  Free signup at https://openrouteservice.org/dev/#/signup. Pass the key
-  as the raw `Authorization` header value (no `Bearer ` prefix).
-
-  Free-plan limits (hosted): 2,000 directions/day, 500 matrix/day,
-  500 optimization/day, 500 isochrones/day, 1,000 geocode/day, 40/min
-  on most endpoints. Self-hostable via Docker
-  (`docker run -p 8080:8080 openrouteservice/openrouteservice:latest`)
-  with no per-request caps — the CLI's `--base-url` flag switches between
-  hosted and self-hosted instances without code changes.
+auth_instructions: Free signup at https://openrouteservice.org/dev/#/signup. Pass the key as the raw Authorization header value (no Bearer prefix).
 auth_env_vars:
   - ORS_API_KEY
   - OPENROUTESERVICE_API_KEY
@@ -35,6 +26,12 @@ notes: |
     - isochrones/{profile} — reachable-area polygons; service-zone definitions
     - /optimization (Vroom) — built-in VRP solver; alternative to running
       or-tools locally for small (≤50 jobs, ≤3 vehicles) problems
+
+  Hosted free-plan limits: 2,000 directions/day, 500 matrix/day,
+  500 optimization/day, 500 isochrones/day, 1,000 geocode/day, 40/min on
+  most endpoints. Self-hosted ORS Docker removes request caps for routing,
+  matrix, isochrones, and optimization; geocoding is hosted-public-API only
+  and is not available on a stock self-hosted ORS instance.
 
   Profiles include driving-car, driving-hgv (service vans / utility vehicles —
   respects bridge weight, low-clearance, large-vehicle turn restrictions),
@@ -51,5 +48,5 @@ notes: |
   `http://localhost:8080/ors/v2/api-docs` to refresh this spec, then re-print
   via /printing-press-reprint openrouteservice.
 
-  Hosted free API and a self-hosted ORS Docker instance speak the same paths.
-  The same printed binary works against both via --base-url.
+  The same printed binary can target hosted ORS or a self-hosted ORS backend
+  via --base-url for routing, matrix, isochrones, and optimization endpoints.
