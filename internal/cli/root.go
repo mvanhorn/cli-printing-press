@@ -1602,6 +1602,7 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	if entry.AuthInstructions != "" && apiSpec.Auth.Type != "none" {
 		apiSpec.Auth.Instructions = entry.AuthInstructions
 	}
+	catalogmeta.ApplyCatalogAuthEnvVars(&apiSpec.Auth, entry.AuthEnvVars)
 }
 
 func mcpConfigured(m spec.MCPConfig) bool {

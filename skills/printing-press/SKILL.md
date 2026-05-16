@@ -1630,7 +1630,11 @@ auth signals, enrich the spec before generation:
 3. Check Phase 1.6 Pre-Browser-Sniff Auth Intelligence results (if the user confirmed auth)
 
 If any source identified auth, **edit the spec YAML** to add the auth section before
-running generate. For internal YAML specs:
+running generate. Catalog-mode runs (`printing-press generate <name>` where `<name>`
+is in `catalog/`) can skip the spec edit when the catalog entry declares
+`auth_env_vars` — those canonical names are applied automatically and the
+parser's name-derived default name is retained as a trailing fallback so
+operators on existing setups don't need a rename. For internal YAML specs:
 
 ```yaml
 auth:

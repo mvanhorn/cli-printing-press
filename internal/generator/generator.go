@@ -2602,7 +2602,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			IsReadOnly:      endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
 			APISpec:         g.Spec,
 		}
-		promotedPath := filepath.Join("internal", "cli", "promoted_"+pc.PromotedName+".go")
+		promotedPath := filepath.Join("internal", "cli", safeResourceFileStem("promoted_"+pc.PromotedName)+".go")
 		if err := g.renderTemplate("command_promoted.go.tmpl", promotedPath, promotedData); err != nil {
 			return fmt.Errorf("rendering promoted command %s: %w", pc.PromotedName, err)
 		}

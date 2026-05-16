@@ -15,6 +15,12 @@ import (
 
 var namePattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
+// authEnvVarPattern matches POSIX-shell-shaped environment variable names:
+// uppercase ASCII letters, digits, and underscores, starting with a letter.
+// Catalog-declared auth env vars feed directly into generated config.go reads,
+// so the validator rejects shapes the generator could not emit safely.
+var authEnvVarPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+
 // Public categories first, alphabetized. "other" and "example" are explicitly
 // special (catch-all / test-only) and kept at the end.
 var validCategories = map[string]struct{}{
@@ -142,6 +148,16 @@ type Entry struct {
 	// rather than a deep link to the keys UI. Overrides any spec-supplied
 	// x-auth-instructions value.
 	AuthInstructions string `yaml:"auth_instructions,omitempty"`
+	// AuthEnvVars lists canonical credential env var names this API's
+	// ecosystem already uses (e.g. STRIPE_SECRET_KEY for stripe-cli /
+	// stripe-go / stripe-node / stripe-python). The generator emits config.go
+	// reads in declared order so an operator who exports any one of them
+	// satisfies auth. Catalog-mode generation bypasses the spec-edit step
+	// that x-auth-env-vars covers, so this is the only place to declare the
+	// canonical names without hand-editing the generated CLI. The generator
+	// appends its name-derived fallback (e.g. STRIPE_BEARER_AUTH) as the last
+	// entry so operators on existing setups don't need a migration.
+	AuthEnvVars []string `yaml:"auth_env_vars,omitempty"`
 	// ClientPattern describes the HTTP client pattern needed. Empty defaults to "rest".
 	// Values: rest, proxy-envelope, graphql.
 	ClientPattern string `yaml:"client_pattern,omitempty"`
@@ -321,7 +337,34 @@ func (e *Entry) Validate() error {
 	if e.AuthKeyURL != "" && !strings.HasPrefix(e.AuthKeyURL, "https://") {
 		return fmt.Errorf(`auth_key_url must start with "https://"`)
 	}
+	if err := validateAuthEnvVars(e.AuthEnvVars); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+func validateAuthEnvVars(envVars []string) error {
+	if len(envVars) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(envVars))
+	for i, name := range envVars {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			return fmt.Errorf("auth_env_vars[%d] must not be empty", i)
+		}
+		if trimmed != name {
+			return fmt.Errorf("auth_env_vars[%d] %q must not have leading or trailing whitespace", i, name)
+		}
+		if !authEnvVarPattern.MatchString(name) {
+			return fmt.Errorf("auth_env_vars[%d] %q must be uppercase letters, digits, or underscores starting with a letter", i, name)
+		}
+		if _, dup := seen[name]; dup {
+			return fmt.Errorf("auth_env_vars[%d] %q is a duplicate", i, name)
+		}
+		seen[name] = struct{}{}
+	}
 	return nil
 }
 
