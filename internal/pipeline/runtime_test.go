@@ -128,6 +128,36 @@ func TestRunBrowserSessionProofTestPassesValidDoctorProof(t *testing.T) {
 	assert.Empty(t, result.Error)
 }
 
+// TestRunBrowserSessionProofTestPropagatesVerifyEnv guards the fix for
+// shipcheck FAIL-ing on cookie-auth CLIs: doctor must see
+// PRINTING_PRESS_VERIFY=1 so its synthetic browser-session proof
+// short-circuit fires. The stub binary returns a valid proof only when
+// the env var is set; without the probe's env augmentation it would
+// score 0.
+func TestRunBrowserSessionProofTestPropagatesVerifyEnv(t *testing.T) {
+	binary := buildVerifyEnvDoctorBinary(t)
+	// Fully unset PRINTING_PRESS_VERIFY for the duration of the test
+	// rather than t.Setenv(key, ""), which would leave PRINTING_PRESS_VERIFY=
+	// in os.Environ() and let it shadow the probe's later "=1" entry on
+	// platforms where the first env occurrence wins.
+	prev, had := os.LookupEnv("PRINTING_PRESS_VERIFY")
+	require.NoError(t, os.Unsetenv("PRINTING_PRESS_VERIFY"))
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv("PRINTING_PRESS_VERIFY", prev)
+		}
+	})
+
+	result := runBrowserSessionProofTest(binary, apispec.AuthConfig{
+		RequiresBrowserSession:       true,
+		BrowserSessionValidationPath: "/api/items",
+	})
+
+	assert.Equal(t, 3, result.Score)
+	assert.True(t, result.Execute)
+	assert.Empty(t, result.Error)
+}
+
 func TestRunCommandTestsExecutesMockReadCommands(t *testing.T) {
 	binary := buildCommandProbeBinary(t)
 	cmd := discoveredCommand{Name: "items", Kind: "read"}
@@ -136,6 +166,41 @@ func TestRunCommandTestsExecutesMockReadCommands(t *testing.T) {
 	assert.True(t, result.Help)
 	assert.True(t, result.DryRun)
 	assert.False(t, result.Execute)
+}
+
+// buildVerifyEnvDoctorBinary builds a stub printed-CLI binary whose
+// `doctor --json` returns a valid browser-session proof only when its
+// process sees PRINTING_PRESS_VERIFY=1; otherwise it reports the proof
+// as missing. Used to verify env propagation from the verify probe.
+func buildVerifyEnvDoctorBinary(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, `package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	if len(os.Args) >= 3 && os.Args[1] == "doctor" && os.Args[2] == "--json" {
+		if os.Getenv("PRINTING_PRESS_VERIFY") == "1" {
+			fmt.Println(`+"`"+`{"browser_session_proof":"valid","browser_session_proof_detail":"synthetic"}`+"`"+`)
+			return
+		}
+		fmt.Println(`+"`"+`{"browser_session_proof":"missing","browser_session_proof_detail":"PRINTING_PRESS_VERIFY not set"}`+"`"+`)
+		return
+	}
+	os.Exit(1)
+}
+`)
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
 }
 
 func buildDoctorJSONBinary(t *testing.T, payload string) string {

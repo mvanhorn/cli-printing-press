@@ -18,6 +18,7 @@ category: developer-tools
 spec_url: https://example.com/openapi.yaml
 spec_format: yaml
 openapi_version: "3.0"
+base_url: https://api.example.com
 tier: community
 verified_date: "2026-03-23"
 homepage: https://example.com
@@ -40,6 +41,7 @@ notes: Example fixture.
 	assert.Equal(t, "https://example.com/openapi.yaml", entry.SpecURL)
 	assert.Equal(t, "yaml", entry.SpecFormat)
 	assert.Equal(t, "3.0", entry.OpenAPIVersion)
+	assert.Equal(t, "https://api.example.com", entry.BaseURL)
 	assert.Equal(t, "community", entry.Tier)
 	assert.Equal(t, "2026-03-23", entry.VerifiedDate)
 	assert.Equal(t, "https://example.com", entry.Homepage)
@@ -143,6 +145,13 @@ func TestValidateEntry(t *testing.T) {
 				e.HTTPTransport = "lynx"
 			},
 			wantErr: "http_transport must be one of",
+		},
+		{
+			name: "non https base url",
+			mutate: func(e *Entry) {
+				e.BaseURL = "http://api.example.com"
+			},
+			wantErr: `base_url must start with "https://"`,
 		},
 		{
 			name: "bearer refresh missing bundle URL",

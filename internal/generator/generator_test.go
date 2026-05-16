@@ -774,7 +774,14 @@ func TestGenerateOAuth2RefreshTokenMechanism(t *testing.T) {
 	})
 }
 
-func TestGeneratedOutput_READMEBearerTokenMCPSetup(t *testing.T) {
+// TestGeneratedOutput_READMEBearerTokenClaudeDesktop covers the
+// bearer_token rendering inside the `## Use with Claude Desktop`
+// section (the canonicalEnvVar-present branch). Restored after the
+// earlier `## Use with Claude Code` section — and its dedicated test —
+// were removed; the bearer_token MCP-config branches still need a
+// regression test since neither the api_key nor the rich-auth golden
+// fixtures exercise the bearer_token paths.
+func TestGeneratedOutput_READMEBearerTokenClaudeDesktop(t *testing.T) {
 	t.Parallel()
 
 	apiSpec := &spec.APISpec{
@@ -812,8 +819,20 @@ func TestGeneratedOutput_READMEBearerTokenMCPSetup(t *testing.T) {
 	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 	require.NoError(t, err)
 	content := string(readme)
-	assert.Contains(t, content, "claude mcp add bearer bearer-pp-mcp -e BEARER_TOKEN=<your-token>")
-	assert.NotContains(t, content, "bearer-pp-cli auth login\n\nclaude mcp add bearer bearer-pp-mcp")
+
+	// canonicalEnvVar-present branch: step 3 of the install list asks
+	// the user to fill in the env var name when Claude Desktop prompts.
+	assert.Contains(t, content, "Fill in `BEARER_TOKEN` when Claude Desktop prompts you.",
+		"bearer_token + canonical env var must render the step-3 prompt naming the env var")
+
+	// Manual JSON config <details> emits the env var in the mcpServers block.
+	assert.Contains(t, content, `"BEARER_TOKEN": "<your-key>"`,
+		"bearer_token + canonical env var must render the env var in the Manual JSON config block")
+
+	// Negative: the canonicalEnvVar-absent preamble must NOT appear when a
+	// canonical env var is set (that branch is mutually exclusive).
+	assert.NotContains(t, content, "Store your token first if you haven't:",
+		"bearer_token + canonical env var must not emit the auth-set-token preamble")
 }
 
 func TestGenerateBearerRefreshDoctorCommand(t *testing.T) {
@@ -7521,6 +7540,106 @@ func TestGeneratedSyncMaxPagesAndStickyCursor(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+// assertVerifyEnvConcurrencyPin pins the verify-mode worker-pool override
+// in generated sync.go: cliutil import present, IsVerifyEnv() guard pins
+// concurrency to 1, and the guard sits after the default-resolution block.
+// Ordering is not load-bearing for correctness today (the default block's
+// `if concurrency < 1 { concurrency = 4 }` is a no-op when concurrency is
+// already 1), but pinning it as a defensive guard prevents future template
+// churn from drifting the placement and obscuring the worker-pool comment
+// block this override controls.
+func assertVerifyEnvConcurrencyPin(t *testing.T, syncContent, cliutilImportPath, label string) {
+	t.Helper()
+	assert.Contains(t, syncContent, `"`+cliutilImportPath+`"`,
+		label+": sync.go must import internal/cliutil to call IsVerifyEnv")
+	assert.Contains(t, syncContent, "if cliutil.IsVerifyEnv() {",
+		label+": sync.go must consult cliutil.IsVerifyEnv() before starting the worker pool")
+	assert.Regexp(t,
+		`if cliutil\.IsVerifyEnv\(\) \{\s*concurrency = 1\s*\}`,
+		syncContent,
+		label+": verify-env block must pin concurrency to 1")
+
+	defaultIdx := strings.Index(syncContent, "concurrency = 4")
+	verifyIdx := strings.Index(syncContent, "cliutil.IsVerifyEnv()")
+	require.NotEqual(t, -1, defaultIdx, label+": default-resolution block must be present")
+	require.NotEqual(t, -1, verifyIdx, label+": verify-env block must be present")
+	assert.Less(t, defaultIdx, verifyIdx,
+		label+": verify-env override must sit after the default-resolution block (as shipped)")
+}
+
+// TestGeneratedSyncForcesSingleWorkerUnderVerifyEnv pins the verify-mode
+// override in the REST sync template. Without it, the worker pool races on
+// SQLite writes once network latency disappears, tripping SQLITE_BUSY
+// despite _busy_timeout — which fails validate-narrative --full-examples
+// for any quickstart or recipe that exercises sync.
+func TestGeneratedSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "verifysync",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"VERIFYSYNC_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/verifysync-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"channels": {
+				Description: "Manage channels",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels",
+						Description: "List channels",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+
+	assertVerifyEnvConcurrencyPin(t, string(syncGo), naming.CLI(apiSpec.Name)+"/internal/cliutil", "REST sync.go")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+// TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv pins the same
+// override in the GraphQL sync template. graphql_sync.go.tmpl drives
+// sync.go when isGraphQLSpec selects it; the race-on-SQLite problem under
+// PRINTING_PRESS_VERIFY=1 applies the same way.
+func TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
+	t.Parallel()
+
+	gqlSpec, err := graphql.ParseSDL(filepath.Join("..", "..", "testdata", "graphql", "test.graphql"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(gqlSpec.Name))
+	gen := New(gqlSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+
+	assertVerifyEnvConcurrencyPin(t, string(syncGo), naming.CLI(gqlSpec.Name)+"/internal/cliutil", "GraphQL sync.go")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 // TestGeneratedSyncGatesSinceParamPerResource pins the fix for issue #900:
 // generators must only inject the incremental-cursor query parameter on
 // resources whose list endpoint actually declares it. Resources that don't
@@ -8015,9 +8134,11 @@ func TestGeneratedSyncIDFieldOverridesAndProbes(t *testing.T) {
 	// (b) Generic fallback list reduced — kalshi-specific names dropped.
 	// The user owns the kalshi CLI and will regenerate with x-resource-id
 	// annotations; no other public-library CLIs depend on these names.
+	// Vendor identifiers (gid, sid, uid, uuid, guid) precede `name` so
+	// APIs like Asana don't fall through to a display field — see #1394.
 	assert.Contains(t, storeContent,
-		`var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}`,
-		"store.go genericIDFieldFallbacks must be the reduced WU-2 U3 list")
+		`var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "name", "slug", "key", "code"}`,
+		"store.go genericIDFieldFallbacks must include vendor identifiers before name")
 	// Negative: kalshi-specific names must not be in the fallback list.
 	// We assert a robust shape: no occurrence of "ticker" inside the fallback
 	// declaration. The generic check below also pins the absence at a
@@ -8147,7 +8268,7 @@ func TestGenerateOperationRoutingPathParamDefault(t *testing.T) {
 	mcpGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
 	assert.Regexp(t,
-		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/graphql/\{pathQueryId\}/Followers",\s*\[]mcpParamBinding\{.*WireName: "pathQueryId".*\},\s*\[]string\{[^}]*"pathQueryId"`),
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/graphql/\{pathQueryId\}/Followers",\s*false,\s*\[]mcpParamBinding\{.*WireName: "pathQueryId".*\},\s*\[]string\{[^}]*"pathQueryId"`),
 		string(mcpGo),
 		"MCP handler must receive the routing path param so it can substitute the URL")
 }
@@ -8739,6 +8860,190 @@ func TestLoadTemplateVarsRealEnvWinsOverPlaceholder(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestLoadTemplateVars")
 }
 
+// freshserviceTemplateVarsTestSpec returns a Freshservice-shape APISpec
+// used by EndpointTemplateVars-with-defaults tests. The `{domain}`
+// placeholder carries a spec-declared default so config.Load can fall
+// back to a real URL when the user's env var is unset.
+func freshserviceTemplateVarsTestSpec() *spec.APISpec {
+	return &spec.APISpec{
+		Name:                        "freshservice",
+		Description:                 "Freshservice (test fixture)",
+		Version:                     "v2",
+		BaseURL:                     "https://{domain}/api/v2",
+		EndpointTemplateVars:        []string{"domain"},
+		EndpointTemplateVarDefaults: map[string]string{"domain": "yourcompany.freshservice.com"},
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "X-Api-Key",
+			EnvVars: []string{"FRESHSERVICE_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/freshservice-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"tickets": {
+				Description: "Tickets",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:       "GET",
+						Path:         "/tickets",
+						Description:  "List tickets",
+						ResponsePath: "tickets",
+						Response:     spec.ResponseDef{Type: "array", Item: "Ticket"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Ticket": {Fields: []spec.TypeField{
+				{Name: "id", Type: "string"},
+				{Name: "subject", Type: "string"},
+			}},
+		},
+	}
+}
+
+// TestGenerateEndpointTemplateVarsDefaultFallback covers the multi-tenant
+// base-URL substitution path. When servers[0].url declares a `{var}`
+// placeholder with a `default:` value, config.Load must:
+//   - substitute the env-var value (normalized) into Config.TemplateVars
+//     when the env var is set, and
+//   - fall back to the spec-declared default when the env var is unset,
+//
+// so doctor and verify probe a real-shaped URL instead of one with a
+// literal {domain} in it. The normalizer strips scheme + trailing slash
+// because users routinely paste browser-bar URLs into shell exports.
+func TestGenerateEndpointTemplateVarsDefaultFallback(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := freshserviceTemplateVarsTestSpec()
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	configGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	configGoStr := string(configGo)
+	assert.Contains(t, configGoStr, `cfg.TemplateVars["domain"] = "yourcompany.freshservice.com"`,
+		"config.Load must bake the spec default as the env-var-unset fallback")
+	assert.Contains(t, configGoStr, "normalizeEndpointTemplateValue",
+		"config.go must emit the normalizer helper when a server-URL default is present")
+	assert.NotContains(t, configGoStr, `BaseURL: "https://yourcompany.freshservice.com/api/v2"`,
+		"BaseURL must keep the {domain} placeholder, not bake the default into the constant")
+	assert.Contains(t, configGoStr, `BaseURL: "https://{domain}/api/v2"`,
+		"BaseURL constant must carry the placeholder for runtime substitution")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+
+	behaviorTest := `package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func clearFreshserviceEnv(t *testing.T) {
+	t.Helper()
+	for _, k := range []string{"FRESHSERVICE_DOMAIN", "FRESHSERVICE_BASE_URL", "FRESHSERVICE_CONFIG", "PRINTING_PRESS_VERIFY"} {
+		t.Setenv(k, "")
+		_ = os.Unsetenv(k)
+	}
+}
+
+func TestLoadDomainDefaultFallback(t *testing.T) {
+	clearFreshserviceEnv(t)
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.TemplateVars["domain"]; got != "yourcompany.freshservice.com" {
+		t.Errorf("unset env var should fall back to spec default; got %q", got)
+	}
+}
+
+func TestLoadDomainEnvVarOverridesDefault(t *testing.T) {
+	clearFreshserviceEnv(t)
+	t.Setenv("FRESHSERVICE_DOMAIN", "acme.freshservice.com")
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.TemplateVars["domain"]; got != "acme.freshservice.com" {
+		t.Errorf("env var should beat default; got %q", got)
+	}
+}
+
+func TestLoadDomainNormalizesPastedURL(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"acme.freshservice.com", "acme.freshservice.com"},
+		{"https://acme.freshservice.com", "acme.freshservice.com"},
+		{"https://acme.freshservice.com/", "acme.freshservice.com"},
+		{"http://acme.freshservice.com//", "acme.freshservice.com"},
+		{"  acme.freshservice.com  ", "acme.freshservice.com"},
+		{"HTTPS://acme.freshservice.com", "acme.freshservice.com"},
+		{"Https://acme.freshservice.com/", "acme.freshservice.com"},
+		{"HTTP://acme.freshservice.com", "acme.freshservice.com"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.input, func(t *testing.T) {
+			clearFreshserviceEnv(t)
+			t.Setenv("FRESHSERVICE_DOMAIN", tc.input)
+			cfgPath := filepath.Join(t.TempDir(), "config.toml")
+			cfg, err := Load(cfgPath)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.TemplateVars["domain"]; got != tc.want {
+				t.Errorf("Load(%q): TemplateVars[\"domain\"] = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "config", "domain_fallback_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestLoadDomain")
+}
+
+// TestGenerateEndpointTemplateDefaultIsEscaped guards against a malicious
+// or hand-edited OpenAPI spec whose server-variable default contains Go
+// string-literal syntax (a stray double quote, backslash, or newline).
+// Without proper %q escaping the generator emits invalid Go and the
+// printed CLI fails to compile — or worse, the default becomes a vector
+// for injecting Go statements into config.Load() that run on every CLI
+// invocation.
+func TestGenerateEndpointTemplateDefaultIsEscaped(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := freshserviceTemplateVarsTestSpec()
+	apiSpec.EndpointTemplateVarDefaults = map[string]string{
+		"domain": `evil"; os.Exit(1); //`,
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	configGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+	require.NoError(t, err)
+	got := string(configGo)
+	assert.Contains(t, got, `cfg.TemplateVars["domain"] = "evil\"; os.Exit(1); //"`,
+		"%q escaping must quote internal double quotes so the default can never close the Go string literal")
+	assert.NotContains(t, got, `cfg.TemplateVars["domain"] = "evil"; os.Exit(1); //`,
+		"unescaped emission would close the string and execute os.Exit on every Load")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 // TestGenerateNoEndpointTemplateVarsByteCompat guards the byte-compat
 // promise: a spec that doesn't declare EndpointTemplateVars must regenerate
 // without url.go and with the original c.BaseURL+path concat in client.do().
@@ -8836,9 +9141,9 @@ func TestGenerateResourceBaseURLOverrideRoutesToOverrideHost(t *testing.T) {
 	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
 	mcpToolsStr := string(mcpTools)
-	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search"`,
+	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search", false`,
 		"geocoding MCP endpoint mirror must emit the absolute override URL")
-	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "/forecast"`,
+	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "/forecast", false`,
 		"forecast MCP endpoint mirror must keep the relative path when its resource has no override")
 
 	// Must compile.
@@ -8926,7 +9231,7 @@ func TestGenerateEndpointBaseURLOverrideRoutesToOverrideHost(t *testing.T) {
 
 	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(mcpTools), `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search"`,
+	assert.Contains(t, string(mcpTools), `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search", false`,
 		"typed MCP endpoint tool must use the endpoint override URL")
 }
 
@@ -9287,6 +9592,59 @@ func assertNewMCPClientSkipsCache(t *testing.T, specSource string) {
 		"newMCPClient must disable the response cache so MCP-driven reads see fresh state across mutations")
 }
 
+// TestGenerateWaitForJobBypassesResponseCache proves that the polling loop
+// in WaitForJob uses GetNoCache, not Get. The response cache is keyed by
+// (path, params), so a cached non-terminal status (Pending/Busy/Running)
+// from the first poll would be returned to every subsequent poll for the
+// cache TTL, locking the loop on the initial response even after the
+// server-side job has completed. The fix exposes per-call GetNoCache /
+// GetWithHeadersNoCache helpers on the generated client so polling code
+// can bypass the cache without mutating the global c.NoCache toggle.
+func TestGenerateWaitForJobBypassesResponseCache(t *testing.T) {
+	t.Parallel()
+
+	// Build a spec that triggers async-job detection (POST returning
+	// {job_id, status} + sibling GET status endpoint) so jobs.go is
+	// emitted; minimalSpec alone has no async surface.
+	apiSpec := minimalSpec("asyncpoll")
+	apiSpec.Types = map[string]spec.TypeDef{
+		"RenderJob": {Fields: []spec.TypeField{
+			{Name: "job_id", Type: "string"},
+			{Name: "status", Type: "string"},
+		}},
+	}
+	apiSpec.Resources = map[string]spec.Resource{
+		"renders": {
+			Description: "Async render jobs",
+			Endpoints: map[string]spec.Endpoint{
+				"submit": {Method: "POST", Path: "/renders", Description: "Submit a render", Response: spec.ResponseDef{Type: "object", Item: "RenderJob"}},
+				"get":    {Method: "GET", Path: "/renders/{id}", Description: "Get a render", Response: spec.ResponseDef{Type: "object", Item: "RenderJob"}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	clientData, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+	require.NoError(t, err)
+	clientBody := string(clientData)
+
+	assert.Contains(t, clientBody, "func (c *Client) GetNoCache(",
+		"client.go must expose GetNoCache so polling callers can bypass cache without mutating c.NoCache")
+	assert.Contains(t, clientBody, "func (c *Client) GetWithHeadersNoCache(",
+		"client.go must expose GetWithHeadersNoCache for header-bearing polling fetches")
+
+	jobsData, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "jobs.go"))
+	require.NoError(t, err)
+	jobsBody := string(jobsData)
+
+	assert.Contains(t, jobsBody, "c.GetNoCache(path, nil)",
+		"WaitForJob must poll with GetNoCache to avoid locking on the cached initial response")
+	assert.NotContains(t, jobsBody, "c.Get(path, nil)",
+		"WaitForJob must not call c.Get(path, nil); cached non-terminal status would lock the poll")
+}
+
 // TestGenerateMCPHandlerPreservesQueryPositionals proves the makeAPIHandler
 // body in generated MCP tools.go distinguishes real URL path placeholders
 // (e.g. /movie/{movieId}) from CLI positional args that map to query
@@ -9336,11 +9694,11 @@ func TestGenerateMCPHandlerPreservesQueryPositionals(t *testing.T) {
 	// Call sites still pass both names — the upstream emit is unchanged;
 	// the fix lives entirely inside the handler body.
 	assert.Regexp(t,
-		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/search/movie",\s*\[]mcpParamBinding\{.*WireName: "query".*\},\s*\[]string\{[^}]*"query"`),
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/search/movie",\s*false,\s*\[]mcpParamBinding\{.*WireName: "query".*\},\s*\[]string\{[^}]*"query"`),
 		tools,
 		"search call site must still pass `query` in positionalParams (handler decides path vs query at runtime)")
 	assert.Regexp(t,
-		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/movie/\{movieId\}",\s*\[]mcpParamBinding\{.*WireName: "movieId".*\},\s*\[]string\{[^}]*"movieId"`),
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/movie/\{movieId\}",\s*false,\s*\[]mcpParamBinding\{.*WireName: "movieId".*\},\s*\[]string\{[^}]*"movieId"`),
 		tools,
 		"get-by-id call site must pass `movieId` in positionalParams")
 
@@ -9850,6 +10208,143 @@ func TestProjectManagementWorkflowsEmitReadOnlyAnnotations(t *testing.T) {
 		assert.Len(t, annotationRE.FindAllString(string(data), -1), 1,
 			"%s should emit exactly one mcp:read-only annotation", file)
 	}
+}
+
+// TestSearchTemplateEmptyTypeQueriesGenericFTS pins #1390 — the
+// no-type branch must include a generic db.Search(query, limit) call
+// alongside the per-table typed Search<Resource> loop. Rows indexed
+// only in resources_fts (not in any typed FTS table) otherwise return
+// zero on the default search path.
+func TestSearchTemplateEmptyTypeQueriesGenericFTS(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("templates", "search.go.tmpl"))
+	require.NoError(t, err)
+	body := string(data)
+
+	caseEmptyIdx := strings.Index(body, `case "":`)
+	require.GreaterOrEqual(t, caseEmptyIdx, 0, "search.go.tmpl must have a case \"\": branch")
+
+	// Anchor on the column-zero `default:` that closes the empty-type
+	// branch, so a stray "default:" inside a comment can't shift the
+	// slice boundary.
+	defaultIdx := strings.Index(body[caseEmptyIdx:], "\n\t\t\tdefault:")
+	require.GreaterOrEqual(t, defaultIdx, 0, "search.go.tmpl must have a tab-indented default: after case \"\":")
+	emptyBranch := body[caseEmptyIdx : caseEmptyIdx+defaultIdx]
+
+	assert.Contains(t, emptyBranch, "db.Search(query, limit)",
+		"case \"\": must call db.Search(query, limit) so rows indexed only in resources_fts (not in a typed FTS table) are returned")
+	assert.Contains(t, emptyBranch, `"search resources_fts failed:`,
+		"the generic-search error path must mention resources_fts so the failure is debuggable")
+}
+
+// TestBrowserLikeUserAgentTemplates pins that BOTH the client.go.tmpl
+// and auth_browser.go.tmpl branch User-Agent emission on
+// UsesBrowserLikeUserAgent so that cookie/composed/session_handshake
+// auth and Kind: synthetic ship a Chrome-shaped UA instead of the
+// script-flavored `<cli>-pp-cli/<ver>`. Otherwise WAFs (Wordfence,
+// Imperva, Akamai bot-mode, DataDome, Cloudflare bot-fight) bucket
+// every CLI request as bot traffic — including the auth-verify call,
+// which must clear the same bar or the user can't bootstrap session
+// state.
+func TestBrowserLikeUserAgentTemplates(t *testing.T) {
+	t.Parallel()
+	for _, tmpl := range []string{"client.go.tmpl", "auth_browser.go.tmpl"} {
+		t.Run(tmpl, func(t *testing.T) {
+			t.Parallel()
+			data, err := os.ReadFile(filepath.Join("templates", tmpl))
+			require.NoError(t, err)
+			body := string(data)
+
+			assert.Contains(t, body, "{{- if .UsesBrowserLikeUserAgent}}",
+				"%s must branch UA emission on UsesBrowserLikeUserAgent", tmpl)
+			assert.Contains(t, body, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+				"%s must emit a Chrome UA string on the browser-like branch", tmpl)
+			assert.Contains(t, body, `"{{.Name}}-pp-cli/{{.Version}}"`,
+				"%s must keep the script-flavored UA on the default branch so documented APIs stay identifiable", tmpl)
+		})
+	}
+}
+
+// TestStaleTemplateCoversCommonTimestampFields pins the timestamp-key
+// list in pm_stale.go.tmpl so APIs that use modified_at (Asana),
+// last_edited_time (Notion), updated (Stripe), and similar variants
+// don't silently return zero stale items. The WHERE/ORDER BY/scan
+// loop all read from the same constant, so testing the constant is
+// the cheap-and-correct way to guard the bug.
+func TestStaleTemplateCoversCommonTimestampFields(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("templates", "workflows", "pm_stale.go.tmpl"))
+	require.NoError(t, err)
+	body := string(data)
+
+	for _, field := range []string{
+		"updatedAt",
+		"updated_at",
+		"updatedDate",
+		"modifiedAt",
+		"modified_at",
+		"lastModified",
+		"last_modified",
+		"lastEditedTime",
+		"last_edited_time",
+		"updated",
+		"last_updated",
+	} {
+		assert.Contains(t, body, `"`+field+`"`,
+			"pm_stale.go.tmpl must list %q as a stale-timestamp field; %s users return zero results otherwise",
+			field, field)
+	}
+
+	// Pin the dynamic-build approach so the WHERE/ORDER BY/scan stay in
+	// lockstep with the field list — a future maintainer adding a field
+	// must update one place, not three.
+	assert.Contains(t, body, "buildStaleTimestampPredicate()",
+		"pm_stale.go.tmpl should build SQL from staleTimestampFields instead of hardcoding columns")
+
+	// Pin the COALESCE-based ORDER BY so a future refactor doesn't
+	// regress to a multi-column sort, which SQLite's NULL-first ASC
+	// ordering would corrupt for rows from APIs that don't populate the
+	// leading field.
+	assert.Contains(t, body, `"COALESCE(" + strings.Join(coalesceArgs, ", ") + ") ASC"`,
+		"pm_stale.go.tmpl ORDER BY must COALESCE across staleTimestampFields, not sort multi-column")
+
+	// Pin the typeof-gated WHERE so integer-typed timestamps (Stripe's
+	// `updated`) compare against an epoch cutoff rather than the
+	// RFC 3339 cutoff. Without the gate SQLite's type-class ordering
+	// makes every numeric row unconditionally match the predicate.
+	assert.Contains(t, body, "typeof(",
+		"pm_stale.go.tmpl WHERE must gate string/numeric comparisons with typeof()")
+	assert.Contains(t, body, "cutoffEpoch",
+		"pm_stale.go.tmpl must bind a numeric cutoff alongside the RFC 3339 cutoff for integer-typed timestamps")
+}
+
+// TestSyncTemplateShortCircuitsOnDryRunSentinel: client.dryRun returns
+// `{"dry_run": true}` instead of a real response, and the sync loop
+// must detect this with isDryRunResponse and emit a synthetic
+// sync_dryrun event before falling through to upsertSingleObject —
+// otherwise validate-narrative --full-examples (which auto-appends
+// --dry-run) blocks shipcheck on a spurious "missing id for <resource>"
+// error.
+func TestSyncTemplateShortCircuitsOnDryRunSentinel(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("templates", "sync.go.tmpl"))
+	require.NoError(t, err)
+	body := string(data)
+
+	assert.Contains(t, body, "func isDryRunResponse(data json.RawMessage) bool",
+		"sync.go.tmpl must define isDryRunResponse helper that detects the client.dryRun sentinel")
+	assert.Contains(t, body, `"sync_dryrun"`,
+		"sync.go.tmpl must emit a sync_dryrun event on the short-circuit path so validate-narrative sees a structured success")
+
+	// Ordering pin: the dry-run check must run BEFORE upsertSingleObject,
+	// otherwise the sentinel reaches the upsert path and triggers a spurious
+	// "missing id for <resource>" error.
+	dryRunCheckIdx := strings.Index(body, "if isDryRunResponse(data)")
+	upsertSingleIdx := strings.Index(body, "if err := upsertSingleObject(db, resource, data)")
+	require.GreaterOrEqual(t, dryRunCheckIdx, 0, "sync.go.tmpl must call isDryRunResponse on the response")
+	require.GreaterOrEqual(t, upsertSingleIdx, 0, "sync.go.tmpl must still call upsertSingleObject for live single-object responses")
+	assert.Less(t, dryRunCheckIdx, upsertSingleIdx,
+		"isDryRunResponse check must run before upsertSingleObject so the dry-run sentinel doesn't fall through to the missing-id error")
 }
 
 // TestSearchTemplateEmitsEmptyJSONEnvelope pins the contract: the

@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"net/url"
 	"os"
+	"printing-press-golden-pp-cli/internal/cliutil"
 	"printing-press-golden-pp-cli/internal/store"
 	"regexp"
 	"strconv"
@@ -67,7 +68,17 @@ Exit codes & warnings:
   emit {"event":"sync_warning","reason":"exit_policy_default_changed",
   ...} so callers can detect that a partial failure was tolerated. Pass
   --strict to exit non-zero on any per-resource failure. Exit is always
-  non-zero when every selected resource failed, regardless of --strict.`,
+  non-zero when every selected resource failed, regardless of --strict.
+
+Resource scoping:
+  --resources runs the named top-level resources, plus any parent-keyed
+  dependent whose own name is listed OR whose parent table is listed.
+  Naming a parent therefore cascades to its dependents (so "sync this
+  parent and its children" works without listing every nested resource
+  by hand). There is no flag today to suppress the cascade for a named
+  parent. To run a dependent without re-syncing its parent, list only
+  the dependent by name; the parent table must already be populated
+  from a prior sync.`,
 		Example: `  # Sync all resources
   printing-press-golden-pp-cli sync
 
@@ -174,6 +185,13 @@ Exit codes & warnings:
 			// Worker pool: produce resources, N workers consume
 			if concurrency < 1 {
 				concurrency = 4
+			}
+			// Under PRINTING_PRESS_VERIFY=1 (mock/dry-run), all goroutines
+			// reach SQLite without the natural serialization that network
+			// latency provides in real syncs, so the worker pool races on
+			// the writer and trips SQLITE_BUSY despite _busy_timeout.
+			if cliutil.IsVerifyEnv() {
+				concurrency = 1
 			}
 
 			started := time.Now()
@@ -307,7 +325,7 @@ Exit codes & warnings:
 		},
 	}
 
-	cmd.Flags().StringSliceVar(&resources, "resources", nil, "Comma-separated resource types to sync")
+	cmd.Flags().StringSliceVar(&resources, "resources", nil, "Comma-separated resource types to sync. Naming a parent also runs its parent-keyed dependents (see Long help for scoping).")
 	cmd.Flags().BoolVar(&full, "full", false, "Full resync (ignore previous checkpoint)")
 	cmd.Flags().StringVar(&since, "since", "", "Incremental sync duration (e.g. 7d, 24h, 1w, 30m)")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 4, "Number of parallel sync workers")
@@ -455,6 +473,19 @@ func syncResource(c interface {
 				fmt.Fprintln(os.Stdout, syncErrorJSON(resource, "", err))
 			}
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("fetching %s: %w", resource, err), Duration: time.Since(started)}
+		}
+
+		// Dry-run sentinel: client.dryRun returns `{"dry_run": true}` instead
+		// of a real response when --dry-run is set. The upsert path below
+		// would otherwise fail with "missing id for <resource>" because the
+		// sentinel has no items and no id; emit a synthetic success event so
+		// validate-narrative --full-examples (which auto-appends --dry-run)
+		// sees a clean exit.
+		if isDryRunResponse(data) {
+			if !humanFriendly {
+				fmt.Fprintf(os.Stdout, `{"event":"sync_dryrun","resource":"%s"}`+"\n", resource)
+			}
+			return syncResult{Resource: resource, Count: 0, Duration: time.Since(started)}
 		}
 
 		// Try to extract items from the response.
@@ -691,6 +722,30 @@ func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessa
 	}
 
 	return nil, "", false
+}
+
+// isDryRunResponse detects the `{"dry_run": true}` sentinel that
+// client.dryRun returns instead of a real API response. The sync loop
+// uses this to short-circuit before the upsert path, which would
+// otherwise fail with "missing id for <resource>" against a sentinel
+// that has no items and no id. The check requires exactly one key
+// (dry_run) so a live API response that happens to include a top-level
+// dry_run field alongside real data isn't misclassified as the
+// sentinel and silently zero out the sync count.
+func isDryRunResponse(data json.RawMessage) bool {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return false
+	}
+	if len(envelope) != 1 {
+		return false
+	}
+	raw, ok := envelope["dry_run"]
+	if !ok {
+		return false
+	}
+	var v bool
+	return json.Unmarshal(raw, &v) == nil && v
 }
 
 func isEmptyPageResponse(data json.RawMessage) bool {
@@ -1268,8 +1323,11 @@ var resourceIDFieldOverrides = map[string]string{
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did
 // NOT receive a templated IDField. API-specific names belong in spec
-// annotations (x-resource-id), not this list.
-var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}
+// annotations (x-resource-id), not this list. Order matters: vendor
+// identifier names (gid, sid, uid, uuid, guid) take precedence over `name`
+// so APIs like Asana (gid) and Twilio (sid) don't fall through to a display
+// field and upsert on names — see #1394.
+var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "name", "slug", "key", "code"}
 
 // pageItemKeys is scanned in priority order; lowercase REST-convention keys
 // come first, PascalCase .NET variants second. Without the PascalCase row,

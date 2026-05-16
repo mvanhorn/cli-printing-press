@@ -33,6 +33,10 @@ func newProjectsAvatarUploadProjectCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/projects/{projectId}/avatar"
 			path = replacePathParam(path, "projectId", args[0])
+			params := map[string]string{}
+			if flagOverwrite != false {
+				params["overwrite"] = fmt.Sprintf("%v", flagOverwrite)
+			}
 			fields := map[string]string{}
 			fileFields := map[string]string{}
 			if bodyCaption != "" {
@@ -42,10 +46,6 @@ func newProjectsAvatarUploadProjectCmd(flags *rootFlags) *cobra.Command {
 				fileFields["file"] = bodyFile
 			}
 
-			params := map[string]string{}
-			if flagOverwrite != false {
-				params["overwrite"] = fmt.Sprintf("%v", flagOverwrite)
-			}
 			data, statusCode, err := c.PutMultipartWithParams(path, params, fields, fileFields)
 			if err != nil {
 				return classifyAPIError(err, flags)

@@ -41,6 +41,9 @@ Hand-written novel commands that perform visible actions (open browser tabs, sen
 1. Print by default; require explicit opt-in (`--launch`, `--send`, `--play`, etc.) to actually act.
 2. Short-circuit when `cliutil.IsVerifyEnv()` is true. The verifier sets `PRINTING_PRESS_VERIFY=1` in every mock-mode subprocess; this env-var check is the floor that catches any side-effect command the verifier's heuristic classifier misses.
 
+### Long-running commands under live-dogfood
+Hand-written novel commands whose happy path is an expensive network operation (full sync loops, content crawlers, bulk archive walks) MUST curtail work when `cliutil.IsDogfoodEnv()` returns true. The `printing-press dogfood --live` runner sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess and applies a flat 30s per-command timeout; without a short-circuit, the happy-path test trips the timeout and the matrix verdict flips to FAIL even when the command itself is healthy. Unlike `IsVerifyEnv`, this does NOT mean "don't hit the network" — dogfood is a real-API matrix. Use it to bound work (paginate once, fetch a bounded sample, honor a smaller `--limit` default), never to substitute mock data for real calls.
+
 ### Generator-reserved namespaces
 `internal/cliutil/` and `internal/mcp/cobratree/` are generator-owned packages emitted into every printed CLI. Do not hand-author code in them and do not name agent-authored helpers that collide with their exports — regen will overwrite the work. Novel-feature code goes in command packages and may import from `cliutil`.
 
@@ -62,6 +65,18 @@ Always use relative paths for build output. Never build to `/tmp` or another sha
 Run `scripts/golden.sh verify` whenever a change may affect CLI command output, catalog rendering, browser-sniff or crowd-sniff output, generated specs or generated printed CLI files, templates under `internal/generator/templates/`, naming, endpoint derivation, auth emission, manifest generation, scorecard output, or pipeline artifacts.
 Never update goldens just to make a failing check pass. Run `scripts/golden.sh update` only when the behavior change is intentional, then inspect the diff and explain it in your final response. See [`docs/GOLDEN.md`](docs/GOLDEN.md) for the decision rubric, fixture conventions, and failure handling.
 When adding a new deterministic CLI behavior or generated artifact contract, explicitly decide whether the golden suite needs a new or expanded fixture. A passing `scripts/golden.sh verify` on existing cases does not prove coverage for new auth, pagination, MCP, manifest, naming, or similar deterministic generation behavior.
+
+## Cross-repo dependency: published-library sweep tool
+
+When a change to `internal/generator/templates/readme.md.tmpl` or `skill.md.tmpl` shifts canonical published-library shape — install-block structure, top-of-README section ordering, presence or removal of `## ` sections, frontmatter top-level field set, install command syntax — also update `tools/sweep-canonical/main.go` in [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) so the already-published CLIs can be retrofitted to match. Fresh prints from this generator will produce the new shape automatically, but every existing entry in the public library silently drifts from canonical shape until the sweep retrofit runs.
+
+If you can't make the matching sweep change in the same session, file a tracking issue at https://github.com/mvanhorn/printing-press-library/issues/new before merging the template PR. The issue should include:
+
+1. A link to the template PR here.
+2. The shape change(s) the sweep needs to handle. Sweep changes must be idempotent (second run produces zero textual diff) — name the heading boundaries, regex anchors, or section markers the sweep can hang off.
+3. Any test additions needed in `tools/sweep-canonical/main_test.go`.
+
+Without the sweep update or a tracking issue, the divergence between fresh prints and existing entries is invisible until someone notices a specific published README looks "old" relative to the rest. The downstream side of this contract (the published library's stance on when to run the sweep, how to scope it, and the `-readme-only` + author-preservation safeties on the sweep tool) is documented in `printing-press-library/AGENTS.md` under "Bulk SKILL.md/README.md retrofits".
 
 ## Project Structure
 - `cmd/printing-press/` - CLI entry point
@@ -97,7 +112,9 @@ See [`docs/GLOSSARY.md`](docs/GLOSSARY.md) for the full term table and disambigu
 **`Printer` (slug @handle) vs `PrinterName` (display) — parallel pair, distinct from Owner/OwnerName.** `APISpec` and `CLIManifest` carry a second slug-vs-display pair for printer attribution. `Printer` is the GitHub @handle of the human who originally ran the press (e.g. `mvanhorn`), drives the per-CLI README byline link and the library-side registry attribution, and reads `git config github.user`. `PrinterName` is the prose-shaped display name (e.g. `Matt Van Horn`), rendered as the README byline parenthetical, and reads raw `git config user.name`. Resolution is tiered for both: the existing manifest wins over git config, so regens by other contributors do not overwrite the original printer (mirrors `resolveOwnerForExisting`'s preserve-on-regen guarantee). When `Printer` is unset at `Generate()` time, the generator emits a stderr warning and leaves it empty; the publish skill (Step 6) refuses to publish empty or literal `"USER"`/`"user"` sentinel values. Distinct from `Owner`/`OwnerName` (which carry the API-spec / wrapper-author identity); the printer is the human, the owner is the API vendor or wrapper author.
 
 ## Issue Work Ownership
-When starting work from a GitHub issue, claim it before implementation — not after the fix is ready: assign the issue to yourself (or to the GitHub user you are explicitly working on behalf of) and post a short comment stating you are picking it up. Claim *before* you start coding so duplicate work is prevented at the moment it would otherwise begin; claiming after a PR is open is too late.
+Contributor agents without maintainer or admin access must make sure a GitHub issue exists before fixing a bug or behavior change. Maintainers and admins may bypass these issue-ownership rules for maintainer-owned direct work. Do not treat a private plan, external doc, review artifact, or PR body as the only problem statement. Search open and recently closed issues first; reuse an existing issue when one matches instead of filing a duplicate. If no issue exists, open one with enough context for maintainers to understand the bug, scope, and intended fix.
+
+Before implementation, claim the issue: assign it to yourself (or to the GitHub user you are explicitly working on behalf of) and post a short comment stating you are picking it up. Assignment may fail because of permissions; that is fine, but still leave the claim comment. Claim *before* you start coding so duplicate work is prevented at the moment it would otherwise begin; claiming after a PR is open is too late.
 
 If the issue already has an assignee, treat that as active ownership until you can determine otherwise from recent activity or direct confirmation. For a plausibly stale assignment, ask the current assignee by tagging them in an issue comment before taking over or reassigning the issue.
 
@@ -164,6 +181,7 @@ When adding or editing `catalog/*.yaml`, first decide whether the entry belongs 
 - `bearer_refresh`, when present, must include `bundle_url` and `pattern`; `bundle_url` must use HTTPS, and `pattern` must compile as a Go regexp.
 - `auth_key_url`, when present, must use HTTPS. It overrides any URL inferred from the spec and surfaces in the printed CLI as `Get a key at: <URL>`.
 - `auth_instructions`, when present, is a one-line string rendered under the URL. It overrides any `x-auth-instructions` value from the spec.
+- `base_url`, when present, must use HTTPS. Use it only when the upstream spec omits `servers:` and the correct API origin is known.
 - Rebuild the binary after editing; `catalog.FS` is a Go embed.
 See [`docs/CATALOG.md`](docs/CATALOG.md) for the inclusion rubric, evidence checklist, validation rationale, wrapper-only entry shape, and bearer-refresh metadata.
 
@@ -190,12 +208,11 @@ Why this matters: the publish skill enforces preflight checks (printer sentinel 
 If `/printing-press-publish` fails, fix the underlying issue (or report it as a machine bug) — do not bypass the skill to land a CLI-publish PR.
 
 ## Internal Skills
-`.claude/skills/` contains internal skills for developing the Printing Press itself (for example `printing-press-retro`). These load automatically when Claude Code is started from inside this repo.
-If you are running Claude Code from a different directory and need these skills available, install them globally:
+`skills/` at the repo root contains the Printing Press skills (for example `printing-press-retro`). To make them available to Claude Code regardless of working directory, install them globally:
 ```bash
 .claude/scripts/install-internal-skills.sh
 ```
-This copies the internal skills to `~/.claude/skills/`.
+This copies the skills to `~/.claude/skills/`.
 
 ## Skill Authoring
 When a machine change alters what an agent should do or what a command guarantees, update the relevant `SKILL.md` in the same change; do not leave the skill as a stale manual workaround for behavior the machine now owns.

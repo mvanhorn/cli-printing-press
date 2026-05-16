@@ -360,8 +360,15 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 
 	baseURL := ""
 	basePath := ""
+	// serverTemplatePlaceholders / serverTemplateDefaults carry the placeholder
+	// names and their spec-declared defaults when the top-level server URL is
+	// a multi-tenant template (e.g. `https://{domain}/api/v2`). Empty for
+	// static specs so per-tenant runtime substitution stays opt-in and the
+	// existing byte-compat goldens for single-host APIs don't churn.
+	var serverTemplatePlaceholders []string
+	var serverTemplateDefaults map[string]string
 	if len(doc.Servers) > 0 && doc.Servers[0] != nil {
-		baseURL, basePath = resolveServerURL(doc.Servers[0])
+		baseURL, basePath, serverTemplatePlaceholders, serverTemplateDefaults = resolveServerURLTemplate(doc.Servers[0])
 	}
 	if baseURL == "" && basePath == "" {
 		// No top-level servers — walk per-operation `servers:` blocks. Specs
@@ -400,6 +407,12 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 	}
 
 	templateVars, templateEnvOverrides := parseEndpointTemplateExtensions(doc)
+	// Merge server-URL template placeholders into the endpoint-template-var
+	// bucket. The downstream config.Load template walks EndpointTemplateVars
+	// to emit per-variable env-var lookups; without this merge a spec like
+	// `https://{domain}/api/v2` would lose `{domain}` between the parser and
+	// the generator and the CLI would DNS-fail on every call.
+	templateVars, templateDefaults := mergeServerTemplatePlaceholders(templateVars, serverTemplatePlaceholders, serverTemplateDefaults)
 
 	result := &spec.APISpec{
 		Name:                         name,
@@ -417,6 +430,7 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 		MCP:                          mcpConfig,
 		EndpointTemplateVars:         templateVars,
 		EndpointTemplateEnvOverrides: templateEnvOverrides,
+		EndpointTemplateVarDefaults:  templateDefaults,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -534,6 +548,9 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	schemeName, scheme := selectSecurityScheme(doc)
 	if scheme == nil {
 		result := inferQueryParamAuth(doc, name, auth)
+		if result.Type == "none" {
+			result = inferHeaderParamAPIKeyAuth(doc, name, result)
+		}
 		if result.Type == "none" && allowDescriptionInference {
 			result = inferDescriptionAuth(doc, name, result)
 		}
@@ -1195,6 +1212,22 @@ var commonAuthQueryParams = map[string]bool{
 	"token":        true,
 }
 
+func authLikeHeaderName(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "" {
+		return false
+	}
+	switch normalized {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie":
+		return false
+	}
+	compact := strings.NewReplacer("-", "", "_", "", " ", "").Replace(normalized)
+	if strings.Contains(compact, "apikey") || strings.Contains(compact, "authkey") {
+		return true
+	}
+	return strings.Contains(compact, "token") && (strings.Contains(compact, "auth") || strings.Contains(compact, "access"))
+}
+
 // inferQueryParamAuth scans all operations for query parameters that look like
 // API keys. If more than 30% of operations carry one, we infer query-param auth.
 // This handles specs that omit securitySchemes but pass keys via query string.
@@ -1240,7 +1273,13 @@ func inferQueryParamAuth(doc *openapi3.T, name string, fallback spec.AuthConfig)
 	// Find the most common auth-like param name.
 	var best string
 	var bestCount int
-	for pName, cnt := range paramCounts {
+	paramNames := make([]string, 0, len(paramCounts))
+	for pName := range paramCounts {
+		paramNames = append(paramNames, pName)
+	}
+	sort.Strings(paramNames)
+	for _, pName := range paramNames {
+		cnt := paramCounts[pName]
 		if cnt > bestCount {
 			best = pName
 			bestCount = cnt
@@ -1257,6 +1296,71 @@ func inferQueryParamAuth(doc *openapi3.T, name string, fallback spec.AuthConfig)
 		In:      "query",
 		Header:  best,
 		EnvVars: []string{envPrefix + "_API_KEY"},
+	}
+}
+
+// inferHeaderParamAPIKeyAuth handles OpenAPI specs that omit securitySchemes
+// but repeat an API-key-shaped header parameter across the operation surface.
+func inferHeaderParamAPIKeyAuth(doc *openapi3.T, name string, fallback spec.AuthConfig) spec.AuthConfig {
+	if doc == nil || doc.Paths == nil || hasTopLevelSecurityDeclaration(doc) {
+		return fallback
+	}
+
+	paramCounts := map[string]int{}
+	totalOps := 0
+
+	for _, pathKey := range doc.Paths.InMatchingOrder() {
+		pathItem := doc.Paths.Value(pathKey)
+		if pathItem == nil {
+			continue
+		}
+		for _, op := range pathItem.Operations() {
+			if op == nil {
+				continue
+			}
+			totalOps++
+			seen := false
+			for _, p := range mergeParameters(pathItem, op) {
+				if p == nil || p.In != openapi3.ParameterInHeader || seen {
+					continue
+				}
+				if authLikeHeaderName(p.Name) {
+					paramCounts[p.Name]++
+					seen = true
+				}
+			}
+		}
+	}
+
+	if totalOps == 0 {
+		return fallback
+	}
+
+	var best string
+	var bestCount int
+	paramNames := make([]string, 0, len(paramCounts))
+	for pName := range paramCounts {
+		paramNames = append(paramNames, pName)
+	}
+	sort.Strings(paramNames)
+	for _, pName := range paramNames {
+		cnt := paramCounts[pName]
+		if cnt > bestCount {
+			best = pName
+			bestCount = cnt
+		}
+	}
+	if bestCount == 0 || float64(bestCount)/float64(totalOps) <= 0.3 {
+		return fallback
+	}
+
+	envPrefix := naming.EnvPrefix(name)
+	return spec.AuthConfig{
+		Type:     "api_key",
+		In:       "header",
+		Header:   best,
+		EnvVars:  []string{envPrefix + "_API_KEY"},
+		Inferred: true,
 	}
 }
 
@@ -2021,6 +2125,9 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			// response-schema inference. Resolution happens at parse time so
 			// the profiler sees a single resolved value per endpoint and
 			// templates do not re-walk schemas at generation time.
+			if responseUsesBinary(op) {
+				endpoint.ResponseFormat = spec.ResponseFormatBinary
+			}
 			if pathResourceIDOverride != "" {
 				endpoint.IDField = pathResourceIDOverride
 			} else {
@@ -2098,6 +2205,137 @@ func operationAllowsAnonymous(op *openapi3.Operation, doc *openapi3.T) bool {
 	return false
 }
 
+// resolveServerURLTemplate is the top-level entry point used for
+// `doc.Servers[0]`. It preserves `{var}` placeholders for variables that the
+// spec declares an explicit Variables entry for, so the generator can emit a
+// runtime substitution path (env var > spec default) in config.Load() rather
+// than baking the default into BaseURL at generate time. Returns the same
+// (baseURL, basePath) pair as resolveServerURL plus the placeholder names
+// that survived substitution and a map of their declared defaults. Variables
+// without an explicit Variables entry (e.g. dangling `{foo}` markers in a
+// hand-written spec) fall through to the legacy strip-unresolved behavior so
+// stale specs don't suddenly require an env var that doesn't exist.
+func resolveServerURLTemplate(server *openapi3.Server) (baseURL, basePath string, placeholders []string, defaults map[string]string) {
+	if server == nil {
+		return "", "", nil, nil
+	}
+	serverURL := strings.TrimRight(strings.TrimSpace(server.URL), "/")
+	if strings.Contains(serverURL, "{") && server.Variables != nil {
+		// First pass: identify which `{var}` markers are backed by an explicit
+		// variable definition. These get preserved for runtime substitution.
+		// Order placeholders by left-to-right appearance in the URL so the
+		// generated EndpointTemplateVars slice has a stable, intuitive shape;
+		// Go map iteration would otherwise produce nondeterministic ordering.
+		matches := templateVarPattern.FindAllStringSubmatch(serverURL, -1)
+		seen := map[string]bool{}
+		for _, m := range matches {
+			name := m[1]
+			if seen[name] {
+				continue
+			}
+			variable, ok := server.Variables[name]
+			if !ok || variable == nil {
+				continue
+			}
+			seen[name] = true
+			placeholders = append(placeholders, name)
+			if defaults == nil {
+				defaults = map[string]string{}
+			}
+			defaults[name] = variable.Default
+		}
+		// Second pass: bake in the default for any Variables entry the first
+		// pass did NOT register for runtime substitution. The first pass
+		// only registers names that match templateVarPattern's identifier
+		// regex (`[a-zA-Z_][a-zA-Z0-9_]*`); a variable with a hyphenated or
+		// digit-leading name (`{server-id}`, `{2nd-host}` — OpenAPI 3.0
+		// places no character restriction on variable names) falls through
+		// here so its default is substituted in place. Without this, the
+		// strip pass below would delete the placeholder entirely and the
+		// resulting URL would DNS-fail with no actionable hint.
+		for varName, variable := range server.Variables {
+			if _, runtime := defaults[varName]; runtime {
+				continue
+			}
+			if variable != nil && variable.Default != "" {
+				serverURL = strings.ReplaceAll(serverURL, "{"+varName+"}", variable.Default)
+			}
+		}
+	}
+	// Strip any remaining unresolved placeholders that don't have a runtime
+	// substitution path (matches the legacy resolveServerURL behavior).
+	// Runtime placeholders are left in place so the printed CLI's buildURL
+	// can substitute them per request.
+	serverURL = templateVarPattern.ReplaceAllStringFunc(serverURL, func(match string) string {
+		name := match[1 : len(match)-1]
+		if _, runtime := defaults[name]; runtime {
+			return match
+		}
+		return ""
+	})
+	serverURL = normalizeURLSlashes(serverURL)
+	serverURL = strings.TrimRight(serverURL, "/")
+	if serverURL == "" {
+		return "", "", placeholders, defaults
+	}
+	lowerURL := strings.ToLower(serverURL)
+	if strings.HasPrefix(lowerURL, "http://") || strings.HasPrefix(lowerURL, "https://") {
+		return serverURL, "", placeholders, defaults
+	}
+	return "", serverURL, placeholders, defaults
+}
+
+// templateVarPattern mirrors the regex used by the generated `buildURL` helper
+// so the parser and the runtime substitute the same set of placeholder names.
+var templateVarPattern = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
+
+func normalizeURLSlashes(s string) string {
+	s = strings.ReplaceAll(s, "//", "/")
+	s = strings.Replace(s, "http:/", "http://", 1)
+	s = strings.Replace(s, "https:/", "https://", 1)
+	return s
+}
+
+// mergeServerTemplatePlaceholders folds the placeholders the parser pulled
+// off `doc.Servers[0].Variables` into the existing EndpointTemplateVars list
+// (today populated only by x-tenant-env-var). Order: extension-declared
+// placeholders first, then server-URL placeholders in spec order, deduped.
+func mergeServerTemplatePlaceholders(existing []string, serverPlaceholders []string, serverDefaults map[string]string) ([]string, map[string]string) {
+	if len(serverPlaceholders) == 0 && len(serverDefaults) == 0 {
+		return existing, nil
+	}
+	seen := make(map[string]bool, len(existing)+len(serverPlaceholders))
+	out := make([]string, 0, len(existing)+len(serverPlaceholders))
+	for _, name := range existing {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, name := range serverPlaceholders {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	var defaults map[string]string
+	if len(serverDefaults) > 0 {
+		defaults = make(map[string]string, len(serverDefaults))
+		for name, val := range serverDefaults {
+			if val == "" {
+				continue
+			}
+			defaults[name] = val
+		}
+		if len(defaults) == 0 {
+			defaults = nil
+		}
+	}
+	return out, defaults
+}
+
 // resolveServerURL applies template-variable substitution and protocol
 // normalization to an OpenAPI Server, returning either an absolute http(s)
 // base URL or a relative base path. Empty strings indicate the server entry
@@ -2124,10 +2362,7 @@ func resolveServerURL(server *openapi3.Server) (baseURL, basePath string) {
 		}
 		serverURL = serverURL[:start] + serverURL[end+1:]
 	}
-	serverURL = strings.ReplaceAll(serverURL, "//", "/")
-	// Restore protocol double-slash if normalization collapsed it.
-	serverURL = strings.Replace(serverURL, "http:/", "http://", 1)
-	serverURL = strings.Replace(serverURL, "https:/", "https://", 1)
+	serverURL = normalizeURLSlashes(serverURL)
 	serverURL = strings.TrimRight(serverURL, "/")
 	if serverURL == "" {
 		return "", ""
@@ -2136,7 +2371,7 @@ func resolveServerURL(server *openapi3.Server) (baseURL, basePath string) {
 	if strings.HasPrefix(lowerURL, "http://") || strings.HasPrefix(lowerURL, "https://") {
 		return serverURL, ""
 	}
-	// Relative URL — caller will need to surface as basePath.
+	// Relative URL; caller will need to surface as basePath.
 	return "", serverURL
 }
 
@@ -3078,6 +3313,49 @@ func selectResponseSchema(response *openapi3.Response) *openapi3.SchemaRef {
 	return nil
 }
 
+func responseUsesBinary(op *openapi3.Operation) bool {
+	if op == nil || op.Responses == nil {
+		return false
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil || success.Value.Content == nil {
+		return false
+	}
+	for _, contentType := range sortedContentTypes(success.Value.Content) {
+		media := success.Value.Content[contentType]
+		if media == nil {
+			continue
+		}
+		if schema := schemaRefValue(media.Schema); schema != nil {
+			if schema.Type != nil && schema.Type.Includes(openapi3.TypeString) && strings.EqualFold(schemaFormat(schema), "binary") {
+				return true
+			}
+		}
+		if binaryContentType(contentType) {
+			return true
+		}
+	}
+	return false
+}
+
+func binaryContentType(contentType string) bool {
+	base := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	if base == "" {
+		return false
+	}
+	if strings.HasPrefix(base, "audio/") ||
+		strings.HasPrefix(base, "video/") ||
+		strings.HasPrefix(base, "image/") {
+		return true
+	}
+	switch base {
+	case "application/octet-stream", "application/zip", "application/x-zip", "application/x-zip-compressed", "application/pdf", "multipart/mixed":
+		return true
+	default:
+		return false
+	}
+}
+
 // readPathItemResourceID reads the `x-resource-id` extension from a path item
 // and returns the resolved field name. Accepts only string values; non-string
 // values (numbers, booleans, malformed YAML) emit a warning and return "".
@@ -3178,7 +3456,8 @@ func readWalkerExtension(extensions map[string]any, context string) *spec.Walker
 
 // resolveIDFieldFromResponseSchema implements tiers 2-5 of the IDField fallback
 // chain: prefer "id", then a resource-prefixed key (`<singular>_id` /
-// `_uuid` / `_guid`), then "name", then the first scalar field listed in the
+// `_uuid` / `_guid`), then a vendor identifier (`gid` / `sid` / `uid` /
+// `uuid` / `guid`), then "name", then the first scalar field listed in the
 // response schema's `required:` array (walking properties in their schema order).
 // Returns "" when no field qualifies; templates fall through to runtime list
 // scanning. Tier 1 (`x-resource-id` extension) is handled separately by the
@@ -3218,6 +3497,18 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName strin
 	// `auth-tokens`/`auth_token_id` match through the same comparison.
 	if id := resourcePrefixedIDField(itemSchema, resourceName); id != "" {
 		return id
+	}
+
+	// Tier 3.5: vendor-specific identifier names. Asana keys every resource
+	// on `gid`, Twilio on `sid`, others on `uid`/`uuid`/`guid`. These are
+	// scalar primary keys by convention; without this tier the heuristic
+	// falls through to Tier 4 and picks `name` (a display field), so the
+	// generated CLI upserts on names and sync paths like
+	// `/workspaces/<workspace>/users` get a name where the API expects a gid.
+	for _, key := range []string{"gid", "sid", "uid", "uuid", "guid"} {
+		if _, ok := itemSchema.Properties[key]; ok {
+			return key
+		}
 	}
 
 	// Tier 4: explicit `name`
@@ -4879,25 +5170,28 @@ func selectDescription(summary, description string) string {
 }
 
 func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Pagination {
-	paramNames := map[string]struct{}{}
+	// Map lowercase parameter name back to the spec's original casing so
+	// the detected LimitParam/CursorParam preserves whatever the API
+	// expects (e.g. Google APIs reject `pagesize` but accept `pageSize`).
+	originalCase := map[string]string{}
 	for _, p := range params {
-		paramNames[strings.ToLower(p.Name)] = struct{}{}
+		originalCase[strings.ToLower(p.Name)] = p.Name
 	}
 
 	var pag spec.Pagination
 
 	// Detect limit param
 	for _, name := range []string{"limit", "maxresults", "pagesize", "page_size", "max_results", "per_page", "page[size]"} {
-		if _, ok := paramNames[name]; ok {
-			pag.LimitParam = name
+		if orig, ok := originalCase[name]; ok {
+			pag.LimitParam = orig
 			break
 		}
 	}
 
 	// Detect cursor param and pagination type
 	for _, name := range []string{"pagetoken", "page_token"} {
-		if _, ok := paramNames[name]; ok {
-			pag.CursorParam = name
+		if orig, ok := originalCase[name]; ok {
+			pag.CursorParam = orig
 			pag.Type = "page_token"
 			pag.NextCursorPath = "nextPageToken"
 			break
@@ -4905,8 +5199,8 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	}
 	if pag.Type == "" {
 		for _, name := range []string{"after", "cursor", "page[cursor]"} {
-			if _, ok := paramNames[name]; ok {
-				pag.CursorParam = name
+			if orig, ok := originalCase[name]; ok {
+				pag.CursorParam = orig
 				pag.Type = "cursor"
 				break
 			}
@@ -4914,8 +5208,8 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	}
 	if pag.Type == "" {
 		for _, name := range []string{"offset"} {
-			if _, ok := paramNames[name]; ok {
-				pag.CursorParam = name
+			if orig, ok := originalCase[name]; ok {
+				pag.CursorParam = orig
 				pag.Type = "offset"
 				break
 			}

@@ -2750,6 +2750,86 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 	require.ErrorContains(t, invalid.Validate(), "http_transport must be one of")
 }
 
+func TestUsesBrowserLikeUserAgent(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		spec *APISpec
+		want bool
+	}{
+		{
+			name: "documented JSON API stays script-shaped",
+			spec: &APISpec{
+				Name:    "stripe",
+				BaseURL: "https://api.stripe.com",
+				Auth:    AuthConfig{Type: "bearer"},
+			},
+			want: false,
+		},
+		{
+			name: "kind: synthetic flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "bbquality",
+				BaseURL: "https://bbquality.nl",
+				Kind:    KindSynthetic,
+				Auth:    AuthConfig{Type: "bearer"},
+			},
+			want: true,
+		},
+		{
+			name: "cookie auth flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "marktplaats",
+				BaseURL: "https://www.marktplaats.nl",
+				Auth:    AuthConfig{Type: "cookie"},
+			},
+			want: true,
+		},
+		{
+			name: "composed auth flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "picnic",
+				BaseURL: "https://storefront-prod.nl.picnicinternational.com",
+				Auth:    AuthConfig{Type: "composed"},
+			},
+			want: true,
+		},
+		{
+			name: "session_handshake auth flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "openart",
+				BaseURL: "https://openart.ai",
+				Auth:    AuthConfig{Type: "session_handshake"},
+			},
+			want: true,
+		},
+		{
+			name: "auth.type casing is normalized",
+			spec: &APISpec{
+				Name:    "cookieUpper",
+				BaseURL: "https://example.com",
+				Auth:    AuthConfig{Type: "  Cookie  "},
+			},
+			want: true,
+		},
+		{
+			// Nil spec must reach the nil-receiver guard; dispatching via
+			// a typed pointer (not a name-string comparison) ensures the
+			// guard stays under test even if the case name is renamed.
+			name: "nil spec is safe and returns false",
+			spec: nil,
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.spec.UsesBrowserLikeUserAgent())
+		})
+	}
+}
+
 func TestHTMLResponseExtractionValidation(t *testing.T) {
 	t.Parallel()
 

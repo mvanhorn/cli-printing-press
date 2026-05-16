@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -21,6 +22,8 @@ import (
 	"strings"
 	"time"
 )
+
+const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
 
 type Client struct {
 	BaseURL    string
@@ -52,13 +55,41 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	homeDir, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(homeDir, ".cache", "printing-press-golden-pp-cli", "http")
 	httpClient := newHTTPClient(timeout, nil)
-	return &Client{
+	c := &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 		Config:     cfg,
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
 		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
 	}
+	// CheckRedirect re-derives auth on each hop. Go's default replays the
+	// original Authorization header verbatim, which breaks nonce-bound
+	// schemes (OAuth 1.0a PLAINTEXT, SigV4, Hawk): the duplicate nonce
+	// trips the server's replay detector with a 401. c.authHeader()
+	// returns a fresh value for those schemes and the same static value
+	// for Bearer/api_key, so post-redirect headers are byte-identical for
+	// static auth and freshly-signed for nonce-bound auth.
+	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			// Match Go's defaultCheckRedirect: a plain error so Client.Do
+			// returns it through do()'s err != nil branch. ErrUseLastResponse
+			// would cause Do to return the 3xx with nil error, which do()
+			// would then classify as a successful response and hand the HTML
+			// "Moved Permanently" body back to the caller.
+			return errors.New("stopped after 10 redirects")
+		}
+		// Same-host gate mirrors Go's shouldCopyHeaderOnRedirect: a
+		// cross-domain 3xx (open redirect or partner handoff) must not
+		// receive the auth credential, even though we are inside
+		// CheckRedirect where Go's automatic stripping has already run.
+		if req.URL.Host == via[0].URL.Host {
+			if h, err := c.authHeader(); err == nil && h != "" {
+				req.Header.Set("X-API-Key", h)
+			}
+		}
+		return nil
+	}
+	return c
 }
 
 // RateLimit returns the current effective rate limit in req/s. Returns 0 if disabled.
@@ -77,6 +108,30 @@ func (c *Client) GetWithHeaders(path string, params map[string]string, headers m
 			return cached, nil
 		}
 	}
+	result, _, err := c.do("GET", path, params, nil, headers)
+	if err == nil && !c.NoCache && !c.DryRun && c.cacheDir != "" {
+		c.writeCache(path, params, result)
+	}
+	return result, err
+}
+
+// GetNoCache issues a GET that bypasses the cache read for this call only,
+// then refreshes the cache with the fresh response on success. Use for
+// polling-until-terminal patterns where every call must reflect current
+// server state; the same (path, params) pair returning a stale
+// "in-progress" snapshot from cache would lock the poll loop on the
+// initial response. Writing-back on success means subsequent c.Get calls
+// (e.g. a follow-up `... get <id>` after WaitForJob returns) see the
+// terminal value, not the stale non-terminal snapshot left behind by the
+// first poll.
+func (c *Client) GetNoCache(path string, params map[string]string) (json.RawMessage, error) {
+	return c.GetWithHeadersNoCache(path, params, nil)
+}
+
+// GetWithHeadersNoCache is GetWithHeaders that skips the cache read but
+// still writes the fresh response on success. See GetNoCache for when to
+// prefer this over Get/GetWithHeaders.
+func (c *Client) GetWithHeadersNoCache(path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
 	result, _, err := c.do("GET", path, params, nil, headers)
 	if err == nil && !c.NoCache && !c.DryRun && c.cacheDir != "" {
 		c.writeCache(path, params, result)
@@ -147,12 +202,12 @@ func (c *Client) Post(path string, body any) (json.RawMessage, int, error) {
 	return c.do("POST", path, nil, body, nil)
 }
 
-func (c *Client) PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("POST", path, nil, body, headers)
-}
-
 func (c *Client) PostWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
 	return c.do("POST", path, params, body, nil)
+}
+
+func (c *Client) PostWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, nil, body, headers)
 }
 
 func (c *Client) PostWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
@@ -162,12 +217,12 @@ func (c *Client) PostMultipart(path string, fields map[string]string, fileFields
 	return c.do("POST", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
 }
 
-func (c *Client) PostMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("POST", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
-}
-
 func (c *Client) PostMultipartWithParams(path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
 	return c.do("POST", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PostMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("POST", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
 }
 
 func (c *Client) PostMultipartWithParamsAndHeaders(path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
@@ -178,12 +233,12 @@ func (c *Client) Delete(path string) (json.RawMessage, int, error) {
 	return c.do("DELETE", path, nil, nil, nil)
 }
 
-func (c *Client) DeleteWithHeaders(path string, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("DELETE", path, nil, nil, headers)
-}
-
 func (c *Client) DeleteWithParams(path string, params map[string]string) (json.RawMessage, int, error) {
 	return c.do("DELETE", path, params, nil, nil)
+}
+
+func (c *Client) DeleteWithHeaders(path string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("DELETE", path, nil, nil, headers)
 }
 
 func (c *Client) DeleteWithParamsAndHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, int, error) {
@@ -194,12 +249,12 @@ func (c *Client) Put(path string, body any) (json.RawMessage, int, error) {
 	return c.do("PUT", path, nil, body, nil)
 }
 
-func (c *Client) PutWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("PUT", path, nil, body, headers)
-}
-
 func (c *Client) PutWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
 	return c.do("PUT", path, params, body, nil)
+}
+
+func (c *Client) PutWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, nil, body, headers)
 }
 
 func (c *Client) PutWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
@@ -209,12 +264,12 @@ func (c *Client) PutMultipart(path string, fields map[string]string, fileFields 
 	return c.do("PUT", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
 }
 
-func (c *Client) PutMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("PUT", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
-}
-
 func (c *Client) PutMultipartWithParams(path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
 	return c.do("PUT", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PutMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PUT", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
 }
 
 func (c *Client) PutMultipartWithParamsAndHeaders(path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
@@ -225,12 +280,12 @@ func (c *Client) Patch(path string, body any) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, nil, body, nil)
 }
 
-func (c *Client) PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("PATCH", path, nil, body, headers)
-}
-
 func (c *Client) PatchWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, params, body, nil)
+}
+
+func (c *Client) PatchWithHeaders(path string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, nil, body, headers)
 }
 
 func (c *Client) PatchWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
@@ -240,12 +295,12 @@ func (c *Client) PatchMultipart(path string, fields map[string]string, fileField
 	return c.do("PATCH", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
 }
 
-func (c *Client) PatchMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
-	return c.do("PATCH", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
-}
-
 func (c *Client) PatchMultipartWithParams(path string, params map[string]string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
 	return c.do("PATCH", path, params, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
+}
+
+func (c *Client) PatchMultipartWithHeaders(path string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do("PATCH", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, headers)
 }
 
 func (c *Client) PatchMultipartWithParamsAndHeaders(path string, params map[string]string, fields map[string]string, fileFields map[string]string, headers map[string]string) (json.RawMessage, int, error) {
@@ -375,6 +430,10 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		for k, v := range headerOverrides {
 			req.Header.Set(k, v)
 		}
+		binaryResponse := strings.EqualFold(req.Header.Get(BinaryResponseHeader), "true")
+		if binaryResponse {
+			req.Header.Del(BinaryResponseHeader)
+		}
 		if req.Header.Get("User-Agent") == "" {
 			req.Header.Set("User-Agent", "printing-press-golden-pp-cli/2026.04")
 		}
@@ -390,7 +449,11 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		// per-endpoint headerOverrides, both of which run before this
 		// if-empty default.
 		if req.Header.Get("Accept") == "" {
-			req.Header.Set("Accept", "application/json")
+			if binaryResponse {
+				req.Header.Set("Accept", "*/*")
+			} else {
+				req.Header.Set("Accept", "application/json")
+			}
 		}
 
 		resp, err := c.HTTPClient.Do(req)
@@ -404,7 +467,9 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		if err != nil {
 			return nil, 0, fmt.Errorf("reading response: %w", err)
 		}
-		respBody = sanitizeJSONResponse(respBody)
+		if !binaryResponse {
+			respBody = sanitizeJSONResponse(respBody)
+		}
 
 		// Success
 		if resp.StatusCode < 400 {

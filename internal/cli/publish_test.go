@@ -566,6 +566,63 @@ func TestPublishPackageStripsBuildDir(t *testing.T) {
 	assert.ErrorIs(t, stagedErr, os.ErrNotExist, "staged dir must not include build/")
 }
 
+func TestPublishPackageStripsRootBinaries(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	// Simulate an operator who ran `go build ./cmd/...` (or `make build` /
+	// `make build-mcp` without `-o bin/...`): binaries land at the CLI
+	// dir root, named per the generator convention. None of these should
+	// reach the staged tree, regardless of which one the publish skill's
+	// rm -f line happened to enumerate.
+	for _, name := range []string{
+		"test",        // phantom bare-slug binary
+		"test-pp-cli", // primary CLI binary
+		"test-pp-mcp", // MCP peer binary (now covered by both code-level strip and skill cleanup)
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(cliDir, name), []byte("\x7fELF"), 0o755))
+	}
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+
+	// Source binaries stay — we don't mutate the operator's working tree.
+	for _, name := range []string{"test", "test-pp-cli", "test-pp-mcp"} {
+		_, srcErr := os.Stat(filepath.Join(cliDir, name))
+		assert.NoError(t, srcErr, "package must not delete source-tree binary %s", name)
+	}
+
+	// Staged tree must have none of them.
+	for _, name := range []string{"test", "test-pp-cli", "test-pp-mcp"} {
+		_, stagedErr := os.Stat(filepath.Join(result.StagedDir, name))
+		assert.ErrorIs(t, stagedErr, os.ErrNotExist, "staged dir must not include root-level binary %s", name)
+	}
+}
+
+func TestStagedBinaryNamesDeduplicates(t *testing.T) {
+	t.Parallel()
+
+	got := stagedBinaryNames("foo-pp-cli", "foo")
+	want := []string{"foo", "foo-pp-cli", "foo-pp-mcp"}
+	assert.Equal(t, want, got)
+
+	// Empty slug returns only the cliName (no -pp-cli/-pp-mcp suffix expansion).
+	got = stagedBinaryNames("custom-binary", "")
+	want = []string{"custom-binary"}
+	assert.Equal(t, want, got)
+
+	// Empty both is empty.
+	assert.Empty(t, stagedBinaryNames("", ""))
+}
+
 func TestPublishPackageFailsWhenManuscriptsCopyFails(t *testing.T) {
 	skipIfRootCannotSimulateUnreadable(t)
 	home := setLibraryTestEnv(t)

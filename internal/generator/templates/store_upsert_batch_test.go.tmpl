@@ -184,7 +184,7 @@ func TestUpsertBatch_GenericFallbackList(t *testing.T) {
 	}
 	defer s.Close()
 
-	for _, key := range []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"} {
+	for _, key := range []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "name", "slug", "key", "code"} {
 		t.Run(key, func(t *testing.T) {
 			rt := "fallback_" + key
 			items := []json.RawMessage{

@@ -423,6 +423,94 @@ func Execute() error { return (&cobra.Command{Use: "`+name+`-pp-cli"}).Execute()
 	return dir
 }
 
+// TestVerifySkill_DetectsBadCommandInReadme is the regression guard for
+// issue #1152: README Quick Start blocks frequently contain
+// `<cli> <cmd> --flag` examples that drift from the shipped command tree.
+// Previously the verifier only scanned SKILL.md, so a broken README
+// example passed shipcheck and only surfaced later (or never). Verify the
+// scanner now walks README.md too and reports findings tagged with the
+// source file so users can locate the offending block.
+func TestVerifySkill_DetectsBadCommandInReadme(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli search \"x\" --limit 5\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"search.go": `package cli
+import "github.com/spf13/cobra"
+func newSearchCmd() *cobra.Command {
+	var limit int
+	cmd := &cobra.Command{Use: "search <query>"}
+	cmd.Flags().IntVar(&limit, "limit", 10, "Max results")
+	return cmd
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newSearchCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	readme := "# Quick Start\n\n```bash\nfixture-pp-cli nonexistent-cmd --bad-flag\n```\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o644))
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir).CombinedOutput()
+	require.Error(t, err, "README example referencing a missing command must fail verify-skill: %s", string(out))
+	combined := string(out)
+	require.Contains(t, combined, "--bad-flag", "diagnostic must name the offending flag")
+	require.Contains(t, combined, "nonexistent-cmd", "diagnostic must name the offending command")
+	require.Contains(t, combined, "README.md", "diagnostic must indicate the source file so users can locate the bad block")
+}
+
+// TestVerifySkill_PerSourceDedupSurfacesBothFiles is the regression guard
+// for PR #1430 review (Greptile P2): the flag-names `seen` set was
+// originally scoped across all sources, so a flag undeclared in both
+// SKILL.md and README.md was reported only once (tagged SKILL.md). That
+// surfaced as a false "fixed" signal when a user edited SKILL.md but
+// left the same broken example in README.md. The dedup is now scoped
+// per source, matching check_flag_commands's per-source emission policy.
+func TestVerifySkill_PerSourceDedupSurfacesBothFiles(t *testing.T) {
+	t.Parallel()
+
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli search --bogus-flag\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"search.go": `package cli
+import "github.com/spf13/cobra"
+func newSearchCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "search"}
+	return cmd
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newSearchCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	readme := "# Quick Start\n\n```bash\nfixture-pp-cli search --bogus-flag\n```\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o644))
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir, "--json").CombinedOutput()
+	require.Error(t, err, "undeclared flag must fail: %s", string(out))
+	flagNamesHits := strings.Count(string(out), `"check": "flag-names"`)
+	require.GreaterOrEqual(t, flagNamesHits, 2, "expected at least one flag-names finding per source so users see both files; got: %s", string(out))
+	require.Contains(t, string(out), "SKILL.md")
+	require.Contains(t, string(out), "README.md")
+}
+
 // TestVerifySkill_RejectsMissingInputs confirms usage errors (code 2).
 func TestVerifySkill_RejectsMissingInputs(t *testing.T) {
 	t.Parallel()

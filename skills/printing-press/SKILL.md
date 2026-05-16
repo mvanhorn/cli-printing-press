@@ -529,7 +529,28 @@ DISCOVERY_DIR="$API_RUN_DIR/discovery"
 CLI_WORK_DIR="$API_RUN_DIR/working/<api>-pp-cli"
 STAMP="$(date +%Y-%m-%d-%H%M%S)"
 
+# Session state (live cookies, CSRF tokens captured during authenticated
+# browser-sniff) lives OUTSIDE $API_RUN_DIR so the Phase 5.5 archive
+# `cp -r "$DISCOVERY_DIR"` cannot pick it up. Containment by location, not by
+# manual rm-before-archive.
+#
+# Base prefix is user-scoped (`printing-press-$(id -u)`) so that on a Linux
+# host with a shared /tmp, the umask-077 subshell below does not lock the
+# top-level `printing-press` directory to a single user. macOS already gives
+# us a per-user $TMPDIR; the $(id -u) suffix keeps semantics identical there.
+SESSION_BASE="${TMPDIR:-/tmp}/printing-press-$(id -u)"
+SESSION_DIR="$SESSION_BASE/session/$RUN_ID"
+SESSION_STATE_FILE="$SESSION_DIR/session-state.json"
+
 mkdir -p "$RESEARCH_DIR" "$PROOFS_DIR" "$PIPELINE_DIR" "$CLI_WORK_DIR"
+# Create $SESSION_DIR inside a subshell with a tight umask so it lands at 0700
+# at creation, not after a follow-up chmod. The two-step `mkdir; chmod` form
+# leaves a TOCTOU window where a concurrent process could open the directory
+# (and any session-state.json written into it) while perms are still
+# umask-derived (typically 0755 on Linux). The umask propagates to every
+# directory `mkdir -p` creates; the user-scoped $SESSION_BASE above is what
+# keeps that from blocking other users on the same host.
+(umask 077 && mkdir -p "$SESSION_DIR")
 STATE_FILE="$API_RUN_DIR/state.json"
 ```
 
@@ -1315,15 +1336,18 @@ model → 2× candidates → adversarial cut. Step 1.5c is the motivation; do no
 generate transcendence features inline here.
 
 The transcendence table in the manifest (Step 1.5d) renders rows in this shape,
-which the subagent's `### Survivors` output already matches:
+which mirrors the subagent's `### Survivors` output. The `Buildability` column
+tags each row `spec-emits` or `hand-code` per
+[references/novel-features-subagent.md](references/novel-features-subagent.md)
+so the Phase Gate 1.5 hand-code count has a source of truth in the manifest:
 
 ```markdown
 ### Transcendence (only possible with our approach)
-| # | Feature | Command | Why Only We Can Do This |
-|---|---------|---------|------------------------|
-| 1 | Bottleneck detection | bottleneck | Requires local join across issues + assignees + cycle data |
-| 2 | Velocity trends | velocity --weeks 4 | Requires historical cycle snapshots in SQLite |
-| 3 | What did I miss | since 2h | Requires time-windowed aggregation no single API call provides |
+| # | Feature | Command | Buildability | Why Only We Can Do This |
+|---|---------|---------|--------------|------------------------|
+| 1 | Bottleneck detection | bottleneck | hand-code | Requires local join across issues + assignees + cycle data |
+| 2 | Velocity trends | velocity --weeks 4 | hand-code | Requires historical cycle snapshots in SQLite |
+| 3 | What did I miss | since 2h | hand-code | Requires time-windowed aggregation no single API call provides |
 ```
 
 Minimum 5 transcendence features. These are the commands that differentiate the CLI.
@@ -1478,15 +1502,16 @@ The prose showcase and the `AskUserQuestion` are two separate turns. Print the s
 
 **Part 1: Prose showcase (print before the AskUserQuestion)**
 
-The showcase exists so the user can decide approve / trim / add ideas without asking a follow-up. Cover three things:
+The showcase exists so the user can decide approve / trim / add ideas without asking a follow-up. Cover four things:
 
 1. **Scope** — how many features absorbed across which tools, how many novel on top, how that stacks up against the best existing tool.
 2. **Per-novel-feature readout** — one line each: feature name, what the user gets, and the specific evidence or persona that makes it worth building.
-3. **Anything the user should worry about before approving** — stubs, risky dependencies, expensive endpoints, low-confidence ideas.
+3. **Hand-code commitment** — of the M novel features, K will require hand-written Go after generate (each ~50-150 LoC plus `root.go` wiring). State the hand-code count and the auto-emitted count, then list the names of the hand-code features. The manifest transcendence table's `Buildability` column (populated from the subagent per [references/novel-features-subagent.md](references/novel-features-subagent.md) "Output contract") is the source of truth: count rows tagged `hand-code`; `spec-emits` rows are excluded from the hand-code total. Approving commits the agent to that scope, so the user must see it explicitly before the AskUserQuestion.
+4. **Anything else the user should worry about before approving** — stubs, risky dependencies, expensive endpoints, low-confidence ideas.
 
 Show every novel feature that scored ≥5/10. Group by theme if there are more than ~12; never hide features behind "Plus N more" or "see full manifest." If zero qualified, say so plainly: "No novel features scored high enough to recommend. The absorbed features cover the landscape well."
 
-Format is otherwise yours — markdown headings, prose, a numbered list, whatever reads cleanly. The must-haves are the three things above and the ≥5/10 coverage rule.
+Format is otherwise yours — markdown headings, prose, a numbered list, whatever reads cleanly. The must-haves are the four things above and the ≥5/10 coverage rule.
 
 **Part 2: AskUserQuestion**
 
@@ -1620,6 +1645,72 @@ When research or source metadata names a real env var, use only that canonical
 name in `env_vars`; do not add guessed slug-based aliases. For OpenAPI specs,
 prefer `x-auth-env-vars` on the selected security scheme when the wrapper slug
 differs from the underlying API brand.
+
+**If auth IS present** in the spec but Phase 1 evidence shows the slug-derived
+env var will differ from the canonical name users have already set for this
+API, enrich the spec with the canonical name before generation. The
+slug-derivation rule (security-scheme slug uppercased plus `_TOKEN` /
+`_API_KEY` / `_OAUTH2` per type) rarely matches the canonical name for
+established APIs. Common shapes:
+
+- Stripe (bearer): canonical `STRIPE_SECRET_KEY`, not slug-derived `STRIPE_OAUTH2`
+- HubSpot (bearer): canonical `HUBSPOT_PRIVATE_APP_TOKEN`, not slug-derived `HUBSPOT_API_KEY`
+- Twilio (HTTP Basic, two-var pair): canonical `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN`, not slug-derived `TWILIO_USERNAME` + `TWILIO_PASSWORD`
+- Keap (OAuth2 authorization-code): canonical `KEAP_SERVICE_ACCOUNT_KEY`, not slug-derived `KEAP_OAUTH2`
+
+Walk through:
+
+1. Compute the slug-derived env var the generator will pick (security-scheme
+   slug, uppercased, plus the type-suffix above; HTTP Basic produces a
+   `_USERNAME` + `_PASSWORD` pair; OAuth2 `client_credentials` produces a
+   `_CLIENT_ID` + `_CLIENT_SECRET` pair).
+2. Check Phase 1 research, Phase 1.5a MCP source code analysis, and community
+   wrapper READMEs for a canonical env var name documented by the vendor or
+   in widespread use.
+3. If they differ, add `x-auth-env-vars` on the selected security scheme
+   (OpenAPI) or set `auth.env_vars` to the canonical name (internal YAML).
+   Use only the canonical name; do not retain the slug-derived form as an
+   alias. For HTTP Basic, supply the full two-entry canonical pair
+   (username position first, password position second). For OAuth2
+   `client_credentials`, the parser silently re-applies the
+   `CLIENT_ID`/`CLIENT_SECRET` default when `x-auth-env-vars` has fewer
+   than two entries (see `applyAuthEnvVarDefaults` in
+   `internal/openapi/parser.go`); if the canonical secret is a single
+   service-account token for a `client_credentials` flow, use
+   `x-auth-vars` instead (next section) so the override is preserved.
+4. If research surfaces no canonical name distinct from the slug-derived
+   form, do nothing. The slug-derived name is fine, and a spurious
+   `x-auth-env-vars` would just shadow it with the same value.
+
+```yaml
+# Bearer / API-key single-token case (Stripe, HubSpot, Keap on
+# authorization-code grant, most apiKey schemes).
+components:
+  securitySchemes:
+    keapOAuth2:
+      type: oauth2
+      flows:
+        authorizationCode: { ... }
+      x-auth-env-vars:
+        - KEAP_SERVICE_ACCOUNT_KEY
+```
+
+```yaml
+# HTTP Basic two-var canonical pair (Twilio).
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      x-auth-env-vars:
+        - TWILIO_ACCOUNT_SID
+        - TWILIO_AUTH_TOKEN
+```
+
+Skipping this step pushes the agent into hand-patching
+`internal/config/config.go` Load and `internal/cli/doctor.go` env-var
+checks after a `doctor` FAIL against the operator's real environment.
+Enriching the spec avoids that round-trip.
 
 For OpenAPI specs that need richer env-var metadata (kind classification,
 optional credentials, OR-group relationships), use `x-auth-vars` on the
@@ -1760,6 +1851,13 @@ Detection signals:
   documented as paid, partner, premium, or quota-gated.
 - Browser/crowd sniffing found public endpoints and SDK/MCP research found a
   separate credential for expanded coverage.
+- Sniffed specs carry per-endpoint `observed_auth` (a list of lowercased request
+  header names observed during capture, e.g. `[authorization]` or `[x-api-key]`).
+  An empty or missing `observed_auth` on an endpoint is evidence that the request
+  went anonymously; a populated list is evidence the endpoint required auth. The
+  same per-endpoint signal is mirrored on `TrafficAnalysis.endpoint_clusters[].observed_auth`
+  in the traffic-analysis sidecar. Treat both as observation-only — not a security
+  scheme declaration — and corroborate with documentation before declaring a tier.
 
 Action:
 - Internal YAML: add `tier_routing` plus `tier` on the affected resource or
@@ -2245,6 +2343,13 @@ After building each command in Priority 1 and Priority 2, verify these 10 princi
      }
      ```
    This is defense-in-depth: the verifier also runs a heuristic side-effect classifier, but it can miss commands whose `--help` text and source don't match the heuristics. The env-var check is the floor.
+   - **Long-running commands curtail work under live-dogfood.** Any hand-written command whose happy path is an expensive network operation (full sync loops, content crawlers, bulk archive walks) MUST check `cliutil.IsDogfoodEnv()` and curtail work to fit inside the matrix's flat 30s per-command timeout. `printing-press dogfood --live` sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess. Pattern:
+     ```go
+     if cliutil.IsDogfoodEnv() {
+         return crawl(ctx, opts.WithMaxPages(1))
+     }
+     ```
+     Distinct from `IsVerifyEnv`: dogfood is a real-API matrix, so curtail work (paginate once, smaller `--limit`), never substitute mock data for real calls.
 10. **Per-source rate limiting**: any hand-written client in a sibling internal package (`internal/source/<name>/`, `internal/recipes/`, `internal/phgraphql/`, etc. — anything not generator-emitted) that makes outbound HTTP calls MUST use `cliutil.AdaptiveLimiter` and surface `*cliutil.RateLimitError` when 429 retries are exhausted. Empty-on-throttle is indistinguishable from "no data exists" and silently corrupts downstream queries. Read [references/per-source-rate-limiting.md](references/per-source-rate-limiting.md) when authoring a sibling client. Enforced at generation time by dogfood's `source_client_check`.
 
 #### Verify-friendly RunE template
@@ -2417,6 +2522,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 
 **RunE skeleton — store-query shape** (offline data via the local SQLite):
 
+The generic `resources` table is keyed by `resource_type`. Flat resources synced from `/<resource>` land as `resource_type='<resource>'`. **Hierarchical resources** synced from `/<parents>/{id}/<resource>` land as `resource_type='<parent>_<resource>'` — e.g., `projects_tasks` (Asana), `repos_issues` / `repos_pulls` (GitHub) — *not* the bare `<resource>` name. A novel feature that filters by the bare name returns zero rows against a real DB. Use `IN (...)` to catch both shapes so the same code works whether the API exposes the resource flat or only parent-scoped.
+
 ```go
 // Declare these alongside the cmd literal, before return cmd:
 //   var dbPath string
@@ -2431,11 +2538,16 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer db.Close()
-	// Replace the query with your aggregation. The store schema mirrors
-	// the synced resources; `printing-press dogfood --json` shows the
-	// table list. SQL must be SELECT-only; the search/sql gates reject
-	// mutating statements.
-	rows, err := db.DB().QueryContext(cmd.Context(), `SELECT id, data FROM <table> WHERE ...`)
+	// Filter resources by both the flat and hierarchical naming so the
+	// query catches rows synced via /<resource> AND rows synced via
+	// /<parents>/{id}/<children>. Drop the parent-scoped entry if the
+	// API only exposes the resource flat; add a <resource_singular>
+	// entry for APIs that toggle plural/singular casing. SQL must be
+	// SELECT-only; the search/sql gates reject mutating statements.
+	rows, err := db.DB().QueryContext(cmd.Context(), `
+		SELECT id, data FROM resources
+		WHERE resource_type IN ('<resource>', '<parent>_<resource>')
+		  AND ...`)
 	if err != nil {
 		return fmt.Errorf("query: %w", err)
 	}
@@ -2450,6 +2562,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 	return nil
 },
 ```
+
+For flat-only resources, the typed FTS/upsert tables the generator emits (e.g., `tasks_fts`, `projects`) work too — `SELECT id, data FROM <typed-table>` is the fast path. The `IN (...)` pattern above is the safe default whenever the resource may be hierarchical; `printing-press dogfood --json` shows the actual `resource_type` distribution so you can confirm without running raw SQL.
 
 For features that combine both (cache an API response in the store, or fall through to live when the local store is stale), nest one skeleton inside the other and use the `--data-source auto/local/live` flag pattern from the generated `sync` command.
 
@@ -2963,8 +3077,10 @@ cp -f "$API_RUN_DIR/research.json" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/researc
 cp -r "$PROOFS_DIR" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/proofs" 2>/dev/null || true
 
 # Archive discovery artifacts (browser-sniff captures, URL lists, traffic analysis, browser-sniff report).
-# Remove session state before archiving — contains authentication cookies/tokens.
-rm -f "$DISCOVERY_DIR/session-state.json"
+# Session state lives outside $DISCOVERY_DIR (see Run Initialization), so the
+# archive cannot pick it up. The legacy rm is a no-op safety net for an
+# in-flight $DISCOVERY_DIR carried over from a pre-isolation run.
+rm -f "$DISCOVERY_DIR/session-state.json" 2>/dev/null || true
 
 # Strip response bodies from HAR before archiving to control size.
 if [ -d "$DISCOVERY_DIR" ]; then
@@ -2975,6 +3091,11 @@ if [ -d "$DISCOVERY_DIR" ]; then
   done
   cp -r "$DISCOVERY_DIR" "$PRESS_MANUSCRIPTS/$API_SLUG/$RUN_ID/discovery" 2>/dev/null || true
 fi
+
+# Wipe live-auth scratch dir now that the run is archived. The directory lives
+# under ${TMPDIR:-/tmp}, so OS-level tmp reaping is the long-tail fallback, but
+# we clean explicitly so back-to-back runs do not accumulate session state.
+rm -rf "$SESSION_DIR" 2>/dev/null || true
 ```
 
 **MANDATORY: After archiving, you MUST proceed to Phase 6 below. Do not print a summary and stop. Do not treat archiving as the end of the run. The run ends when the user has been asked about next steps via the ship-path or hold-path menu.**

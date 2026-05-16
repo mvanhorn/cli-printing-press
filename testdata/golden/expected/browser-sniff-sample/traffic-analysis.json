@@ -55,6 +55,7 @@
   ],
   "endpoint_clusters": [
     {
+      "confidence": "low",
       "content_types": [
         "application/json"
       ],
@@ -72,6 +73,10 @@
       ],
       "host": "httpbin.org",
       "method": "GET",
+      "normalization_flags": [
+        "single-sample",
+        "single-status"
+      ],
       "path": "/get",
       "request_shape": {},
       "response_shape": {},
@@ -81,6 +86,7 @@
       ]
     },
     {
+      "confidence": "low",
       "content_types": [
         "application/json"
       ],
@@ -98,6 +104,10 @@
       ],
       "host": "httpbin.org",
       "method": "GET",
+      "normalization_flags": [
+        "single-sample",
+        "single-status"
+      ],
       "path": "/headers",
       "request_shape": {},
       "response_shape": {},
@@ -107,6 +117,7 @@
       ]
     },
     {
+      "confidence": "low",
       "content_types": [
         "application/json"
       ],
@@ -124,6 +135,10 @@
       ],
       "host": "httpbin.org",
       "method": "GET",
+      "normalization_flags": [
+        "single-sample",
+        "single-status"
+      ],
       "path": "/ip",
       "request_shape": {},
       "response_shape": {},
