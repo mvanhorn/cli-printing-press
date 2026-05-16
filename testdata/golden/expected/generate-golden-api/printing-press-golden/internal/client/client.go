@@ -78,8 +78,14 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 			// "Moved Permanently" body back to the caller.
 			return errors.New("stopped after 10 redirects")
 		}
-		if h, err := c.authHeader(); err == nil && h != "" {
-			req.Header.Set("X-API-Key", h)
+		// Same-host gate mirrors Go's shouldCopyHeaderOnRedirect: a
+		// cross-domain 3xx (open redirect or partner handoff) must not
+		// receive the auth credential, even though we are inside
+		// CheckRedirect where Go's automatic stripping has already run.
+		if req.URL.Host == via[0].URL.Host {
+			if h, err := c.authHeader(); err == nil && h != "" {
+				req.Header.Set("X-API-Key", h)
+			}
 		}
 		return nil
 	}

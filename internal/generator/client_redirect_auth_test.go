@@ -36,6 +36,8 @@ func TestClientCheckRedirectReappliesAuth(t *testing.T) {
 			"CheckRedirect must call c.authHeader() so nonce-bound schemes get a fresh signature")
 		require.Contains(t, closure, `req.Header.Set("Authorization", h)`,
 			"bearer auth must re-set Authorization on redirect to refresh nonce-bound headers")
+		require.Contains(t, closure, "req.URL.Host == via[0].URL.Host",
+			"auth re-stamp must be gated on same-host so a cross-domain 3xx (open redirect or partner handoff) does not leak the credential — Go's automatic Authorization stripping has already run by the time CheckRedirect is called, and any header set here is sent verbatim")
 	})
 
 	t.Run("api_key in custom header re-sets that header, not Authorization", func(t *testing.T) {
@@ -53,6 +55,8 @@ func TestClientCheckRedirectReappliesAuth(t *testing.T) {
 			"api_key in custom header must re-set that header on redirect, not Authorization")
 		require.NotContains(t, closure, `req.Header.Set("Authorization", h)`,
 			"must not also stamp Authorization when the spec uses a custom header")
+		require.Contains(t, closure, "req.URL.Host == via[0].URL.Host",
+			"custom-header auth must also be same-host gated to avoid leaking credentials across domains")
 	})
 
 	t.Run("api_key in query parameter skips header re-set", func(t *testing.T) {
