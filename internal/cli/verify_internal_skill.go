@@ -211,10 +211,6 @@ Distinct from verify-skill, which validates a printed CLI's SKILL.md against the
 		Example: `  printing-press verify-internal-skill --dir skills/printing-press-polish
   printing-press verify-internal-skill --dir skills/printing-press-amend --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if dir == "" {
-				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
-			}
-
 			report, hasError, err := runVerifyInternalSkillChecks(dir)
 			if err != nil {
 				return err
@@ -256,6 +252,7 @@ Distinct from verify-skill, which validates a printed CLI's SKILL.md against the
 	}
 
 	cmd.Flags().StringVar(&dir, "dir", "", "Path to the internal-skill directory (contains SKILL.md)")
+	_ = cmd.MarkFlagRequired("dir")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
