@@ -492,6 +492,19 @@ func syncResource(c interface {
 		// Strategy: try array first, then common wrapper keys.
 		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
 
+		// Page-int paginator fallback: when the API paginates by integer
+		// ?page=N and emits no body cursor, treat a full page as a signal
+		// to advance numerically. Without this the loop breaks after page
+		// 1 even though more pages exist (the original symptom in #1296).
+		if pageSize.cursorParam == "page" && nextCursor == "" && len(items) >= pageSize.limit {
+			currentPage, _ := strconv.Atoi(cursor)
+			if currentPage < 1 {
+				currentPage = 1
+			}
+			nextCursor = strconv.Itoa(currentPage + 1)
+			hasMore = true
+		}
+
 		if len(items) == 0 {
 			if isEmptyPageResponse(data) {
 				break
@@ -1197,6 +1210,18 @@ func syncDependentResource(c interface {
 			}
 
 			items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
+
+			// Page-int paginator fallback: mirrors syncResource so dependent
+			// resources on integer ?page=N APIs also advance past page 1.
+			if pageSize.cursorParam == "page" && nextCursor == "" && len(items) >= pageSize.limit {
+				currentPage, _ := strconv.Atoi(cursor)
+				if currentPage < 1 {
+					currentPage = 1
+				}
+				nextCursor = strconv.Itoa(currentPage + 1)
+				hasMore = true
+			}
+
 			if len(items) == 0 {
 				break
 			}

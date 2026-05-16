@@ -6276,3 +6276,63 @@ func TestDetectPaginationPreservesCursorParamCase(t *testing.T) {
 		})
 	}
 }
+
+// TestDetectPaginationRecognizesPageIntCursor guards #1296: APIs that
+// paginate by integer ?page=N (Freshworks family, Atlassian, HubSpot,
+// etc.) used to fall through to the "after" cursor default. Detection
+// now classifies a `page`/`pageNumber`/`page[number]` request param as
+// a Type="page" paginator so the sync template's page-int fallback
+// can advance numerically.
+func TestDetectPaginationRecognizesPageIntCursor(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		paramName string
+		wantParam string
+	}{
+		{"plain page", "page", "page"},
+		{"snake_case page_number", "page_number", "page_number"},
+		{"camelCase pageNumber", "pageNumber", "pageNumber"},
+		{"json:api page[number]", "page[number]", "page[number]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pag := detectPagination([]spec.Param{{Name: tc.paramName}, {Name: "per_page"}}, nil)
+			require.NotNil(t, pag, "detector should classify %q as a paginator", tc.paramName)
+			assert.Equal(t, tc.wantParam, pag.CursorParam)
+			assert.Equal(t, "page", pag.Type)
+			assert.Equal(t, "per_page", pag.LimitParam)
+		})
+	}
+}
+
+// TestDetectPaginationCursorBeatsPage guards mixed-form specs: when an
+// API declares both `cursor` and `page` (rare but real), cursor must
+// win so existing cursor-based sync loops stay on the body-cursor
+// extraction path. Regression guard for #1296.
+func TestDetectPaginationCursorBeatsPage(t *testing.T) {
+	t.Parallel()
+
+	pag := detectPagination([]spec.Param{
+		{Name: "cursor"}, {Name: "page"}, {Name: "limit"},
+	}, nil)
+	require.NotNil(t, pag)
+	assert.Equal(t, "cursor", pag.CursorParam, "cursor must win over page when both declared")
+	assert.Equal(t, "cursor", pag.Type)
+	assert.Equal(t, "limit", pag.LimitParam)
+}
+
+// TestDetectPaginationOffsetBeatsPage guards offset-based APIs (Atlassian
+// older endpoints, etc.) against the new page branch.
+func TestDetectPaginationOffsetBeatsPage(t *testing.T) {
+	t.Parallel()
+
+	pag := detectPagination([]spec.Param{
+		{Name: "offset"}, {Name: "page"}, {Name: "limit"},
+	}, nil)
+	require.NotNil(t, pag)
+	assert.Equal(t, "offset", pag.CursorParam)
+	assert.Equal(t, "offset", pag.Type)
+}

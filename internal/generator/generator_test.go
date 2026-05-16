@@ -2851,6 +2851,66 @@ func TestExtractPageItemsNoCursor(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractPageItems", "./internal/cli")
 }
 
+// TestSyncPageIntPaginationAdvancesAfterFullPage guards #1296: APIs that
+// paginate by integer ?page=N (Freshworks, HubSpot, Atlassian, …) emit
+// no body cursor, so extractPageItems returns ("", false). The runtime
+// must detect cursorParam == "page" and advance the integer counter
+// when the page is full, otherwise sync stops after page 1.
+func TestSyncPageIntPaginationAdvancesAfterFullPage(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "freshy",
+		Version: "0.1.0",
+		BaseURL: "https://freshy.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/freshy-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"tickets": {
+				Description: "Tickets",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/tickets",
+						Description: "List tickets",
+						Response:    spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "page", Type: "integer"},
+							{Name: "per_page", Type: "integer"},
+						},
+						Pagination: &spec.Pagination{
+							Type:        "page",
+							CursorParam: "page",
+							LimitParam:  "per_page",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	src := string(syncSrc)
+
+	// Tier 1: emission canary. The page-int fallback branch must ship so
+	// page-int APIs advance numerically when no body cursor is extracted.
+	assert.Contains(t, src, `pageSize.cursorParam == "page"`,
+		"sync.go must emit the page-int paginator fallback branch")
+	assert.Contains(t, src, `strconv.Itoa(currentPage + 1)`,
+		"page-int fallback must increment the integer cursor")
+	assert.Contains(t, src, `cursorParam: "page"`,
+		"determinePaginationDefaults must emit cursorParam \"page\" when the profile selects it")
+}
+
 // TestGeneratedSyncHandlesPascalCaseDotNetShape verifies the generated sync +
 // store paths recognize .NET-shape PascalCase envelopes ("Items"), PKs ("Id"),
 // and field keys (LookupFieldValue PascalCase pass). Parser-side tier-5 PK

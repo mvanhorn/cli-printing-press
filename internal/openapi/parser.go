@@ -5224,6 +5224,19 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 			}
 		}
 	}
+	// Integer page paginator: classify only after the cursor/token/offset
+	// branches above so APIs that mix forms (e.g. cursor + page) keep
+	// cursor semantics. Runtime sync handles type "page" by incrementing
+	// CursorParam as an integer when no body cursor is extracted.
+	if pag.Type == "" {
+		for _, name := range []string{"page", "pagenumber", "page_number", "page[number]"} {
+			if orig, ok := originalCase[name]; ok {
+				pag.CursorParam = orig
+				pag.Type = "page"
+				break
+			}
+		}
+	}
 
 	// Also check for has_more in response schemas
 	if op != nil && op.Responses != nil {
