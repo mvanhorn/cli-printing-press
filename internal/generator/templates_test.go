@@ -289,7 +289,6 @@ func TestAuthHeaderComposedAndCookieApplySchemePrefix(t *testing.T) {
 			apiSpec.Auth = spec.AuthConfig{
 				Type:    tt.authType,
 				Header:  "Authorization",
-				Format:  "Bearer {token}",
 				EnvVars: []string{tt.envVar},
 			}
 
@@ -300,21 +299,21 @@ func TestAuthHeaderComposedAndCookieApplySchemePrefix(t *testing.T) {
 			require.NoError(t, err)
 			content := string(configSrc)
 
-			// Env-var branch must apply the Bearer prefix, not return the raw token.
-			envCheck := `if c.` + tt.envField + ` != ""`
-			envIdx := strings.Index(content, envCheck)
-			require.NotEqual(t, -1, envIdx, "AuthHeader should contain env-var branch:\n%s", content)
-			afterEnv := content[envIdx:]
-			rawReturn := `return c.` + tt.envField
-			require.NotContains(t, afterEnv[:findReturnEnd(afterEnv)], rawReturn,
+			// The raw-return literal must appear nowhere in the emitted config — every
+			// composed/cookie return path now flows through ensureAuthScheme. Whole-file
+			// NotContains avoids depending on a fragile slice boundary.
+			require.NotContains(t, content, "return c."+tt.envField+"\n",
 				"%s auth must not return raw env-var token without scheme prefix:\n%s", tt.authType, content)
-
-			// AccessToken branch must apply the Bearer prefix, not return the raw access token.
-			atIdx := strings.Index(content, `if c.AccessToken != ""`)
-			require.NotEqual(t, -1, atIdx, "AuthHeader should contain AccessToken branch:\n%s", content)
-			afterAT := content[atIdx:]
-			require.NotContains(t, afterAT[:findReturnEnd(afterAT)], "return c.AccessToken\n",
+			require.NotContains(t, content, "return c.AccessToken\n",
 				"%s auth must not return raw AccessToken without scheme prefix:\n%s", tt.authType, content)
+
+			// The replacement ensureAuthScheme call must be the wrapper for both paths.
+			require.Contains(t, content,
+				`return ensureAuthScheme("Bearer", c.`+tt.envField+")",
+				"%s auth env-var path should wrap return in ensureAuthScheme:\n%s", tt.authType, content)
+			require.Contains(t, content,
+				`return ensureAuthScheme("Bearer", c.AccessToken)`,
+				"%s auth AccessToken path should wrap return in ensureAuthScheme:\n%s", tt.authType, content)
 
 			// Confirm AuthSource label preserved (no behavior regression on which branch we took).
 			require.Contains(t, content, `c.AuthSource = "`+tt.authSource+`"`)
@@ -323,20 +322,6 @@ func TestAuthHeaderComposedAndCookieApplySchemePrefix(t *testing.T) {
 			runGoCommand(t, outputDir, "test", "./internal/config")
 		})
 	}
-}
-
-// findReturnEnd returns the index just past the first "return" line in s,
-// scoped to the first branch the caller is inspecting.
-func findReturnEnd(s string) int {
-	i := strings.Index(s, "return ")
-	if i == -1 {
-		return len(s)
-	}
-	end := strings.Index(s[i:], "\n")
-	if end == -1 {
-		return len(s)
-	}
-	return i + end + 1
 }
 
 // TestAuthHeaderSchemeHelperHandlesPreprefixedTokens compiles a composed-auth
