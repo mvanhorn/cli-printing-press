@@ -242,7 +242,7 @@ func TestValidateEntry(t *testing.T) {
 func TestAllPublicCategoriesAreValid(t *testing.T) {
 	publicCategories := []string{
 		"ai", "auth", "cloud", "commerce", "developer-tools", "devices",
-		"food-and-dining", "marketing", "media-and-entertainment", "monitoring",
+		"food-and-dining", "maps", "marketing", "media-and-entertainment", "monitoring",
 		"payments", "productivity", "project-management", "sales-and-crm",
 		"social-and-messaging", "travel", "other",
 	}

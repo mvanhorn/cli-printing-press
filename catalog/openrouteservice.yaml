@@ -1,0 +1,55 @@
+name: openrouteservice
+display_name: OpenRouteService
+description: Open-source routing, geocoding, matrix, isochrones, and VRP optimization on OpenStreetMap data.
+category: maps
+spec_url: https://raw.githubusercontent.com/mvanhorn/cli-printing-press/main/catalog/specs/openrouteservice-spec.yaml
+spec_format: yaml
+openapi_version: "3.0"
+tier: community
+spec_source: docs
+verified_date: "2026-05-16"
+homepage: https://openrouteservice.org
+auth_key_url: https://openrouteservice.org/dev/#/signup
+auth_required: true
+auth_instructions: |
+  Free signup at https://openrouteservice.org/dev/#/signup. Pass the key
+  as the raw `Authorization` header value (no `Bearer ` prefix).
+
+  Free-plan limits (hosted): 2,000 directions/day, 500 matrix/day,
+  500 optimization/day, 500 isochrones/day, 1,000 geocode/day, 40/min
+  on most endpoints. Self-hostable via Docker
+  (`docker run -p 8080:8080 openrouteservice/openrouteservice:latest`)
+  with no per-request caps — the CLI's `--base-url` flag switches between
+  hosted and self-hosted instances without code changes.
+auth_env_vars:
+  - ORS_API_KEY
+  - OPENROUTESERVICE_API_KEY
+sandbox_endpoint: https://api.openrouteservice.org
+notes: |
+  Single vendor covers everything a backend dispatch / routing workflow needs:
+
+    - geocode/search, geocode/reverse (Pelias) — address ↔ coordinate
+    - directions/{profile} — single route + ETA + geometry
+    - matrix/{profile} — N×M duration / distance matrix; the primary input for
+      VRP solvers like or-tools VRPTW
+    - isochrones/{profile} — reachable-area polygons; service-zone definitions
+    - /optimization (Vroom) — built-in VRP solver; alternative to running
+      or-tools locally for small (≤50 jobs, ≤3 vehicles) problems
+
+  Profiles include driving-car, driving-hgv (service vans / utility vehicles —
+  respects bridge weight, low-clearance, large-vehicle turn restrictions),
+  cycling-* (regular / mountain / road / electric), foot-* (walking / hiking),
+  and wheelchair.
+
+  Spec sourcing: the spec checked in at catalog/specs/openrouteservice-spec.yaml
+  is hand-crafted from the public API reference at
+  https://giscience.github.io/openrouteservice/api-reference/ and covers the
+  high-leverage endpoints listed above. ORS itself generates a SpringDoc spec
+  at runtime — for the full surface (POIs, snap-to-road, elevation, advanced
+  optimization constraints), run `docker run -p 8080:8080
+  openrouteservice/openrouteservice:latest` and fetch
+  `http://localhost:8080/ors/v2/api-docs` to refresh this spec, then re-print
+  via /printing-press-reprint openrouteservice.
+
+  Hosted free API and a self-hosted ORS Docker instance speak the same paths.
+  The same printed binary works against both via --base-url.
