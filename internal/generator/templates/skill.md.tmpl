@@ -140,7 +140,7 @@ This CLI was generated with browser-observed traffic context.
 {{- if index $.PromotedResourceNames $name}}
 - `{{$.Name}}-pp-cli {{$name}}{{positionalArgs $endpoint}}` — {{oneline $endpoint.Description}}
 {{- else}}
-- `{{$.Name}}-pp-cli {{$name}} {{$eName}}` — {{oneline $endpoint.Description}}
+- `{{$.Name}}-pp-cli {{$name}} {{kebab $eName}}` — {{oneline $endpoint.Description}}
 {{- end}}
 {{- end}}
 {{end}}

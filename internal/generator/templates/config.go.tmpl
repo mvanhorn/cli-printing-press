@@ -207,11 +207,23 @@ func Load(configPath string) (*Config, error) {
 	// the printing-press verifier in every mock subprocess), an unset
 	// template var falls through to "<name>_placeholder" so dry-run legs
 	// reach Cobra instead of hitting buildURL's actionable error first.
+	// Placeholders with a spec-declared default (server-URL variables) skip
+	// the verify branch; the default is a real value that lets verify probe
+	// a real-shaped URL.
 	if cfg.TemplateVars == nil {
 		cfg.TemplateVars = map[string]string{}
 	}
+{{- if endpointTemplateVarsHasUndefaulted .EndpointTemplateVars}}
 	verifyMode := os.Getenv("PRINTING_PRESS_VERIFY") == "1"
+{{- end}}
 {{- range .EndpointTemplateVars}}
+{{- if endpointTemplateDefault .}}
+	if v := strings.TrimSpace(os.Getenv("{{endpointTemplateEnvName .}}")); v != "" {
+		cfg.TemplateVars["{{.}}"] = normalizeEndpointTemplateValue(v)
+	} else {
+		cfg.TemplateVars["{{.}}"] = {{printf "%q" (endpointTemplateDefault .)}}
+	}
+{{- else}}
 	if v := strings.TrimSpace(os.Getenv("{{endpointTemplateEnvName .}}")); v != "" {
 		cfg.TemplateVars["{{.}}"] = v
 	} else if verifyMode {
@@ -219,8 +231,32 @@ func Load(configPath string) (*Config, error) {
 	}
 {{- end}}
 {{- end}}
+{{- end}}
 	return cfg, nil
 }
+
+{{- if endpointTemplateVarsHasDefault .EndpointTemplateVars}}
+
+// normalizeEndpointTemplateValue cleans up a server-URL template value the
+// user has likely pasted from a browser address bar; drops the scheme prefix
+// and trailing slash so a placeholder like {domain} resolves to a bare host
+// whether the user typed `acme.example.com`, `https://acme.example.com`, or
+// `https://acme.example.com/`. Applied only to placeholders carrying a
+// spec-declared default (server-URL variables); path-positional placeholders
+// like {tenant} pass through unchanged because their accepted shapes are
+// API-specific.
+func normalizeEndpointTemplateValue(v string) string {
+	// Strip scheme prefix case-insensitively: users paste `HTTPS://` from
+	// some browsers' address bars, and Go's TrimPrefix is exact-match.
+	// Callers TrimSpace the env-var value before passing it in.
+	if len(v) >= 8 && strings.EqualFold(v[:8], "https://") {
+		v = v[8:]
+	} else if len(v) >= 7 && strings.EqualFold(v[:7], "http://") {
+		v = v[7:]
+	}
+	return strings.TrimRight(v, "/")
+}
+{{- end}}
 
 func (c *Config) AuthHeader() string {
 {{- $canonicalEnvVar := .Auth.CanonicalEnvVar}}
@@ -523,11 +559,39 @@ func (c *Config) SaveBearerToken(accessToken string, refreshedAt time.Time) erro
 {{- end}}
 
 func (c *Config) ClearTokens() error {
+	// AuthHeader() falls back to the env-var-derived fields when AuthHeaderVal
+	// and AccessToken are empty, so dropping the working credential requires
+	// zeroing every emitted credential field, not just the OAuth trio.
+	// ClientID/ClientSecret persist to disk via SaveTokens for the oauth2
+	// and oauth2-cc flows, so logout must wipe them too; otherwise
+	// `auth login` can re-mint a new access token unattended.
+	c.AuthHeaderVal = ""
 	c.AccessToken = ""
 	c.RefreshToken = ""
 	c.TokenExpiry = time.Time{}
+	c.ClientID = ""
+	c.ClientSecret = ""
 {{- if .BearerRefresh.Enabled}}
 	c.BearerTokenRefreshedAt = time.Time{}
+{{- end}}
+{{- if .Auth.EnvVarSpecs}}
+{{- range .Auth.EnvVarSpecs}}
+{{- if not (envVarIsBuiltinField .Name)}}
+	c.{{envVarField .Name}} = ""
+{{- end}}
+{{- end}}
+{{- else if .Auth.EnvVars}}
+	// fallback to legacy EnvVars when EnvVarSpecs is empty
+{{- range .Auth.EnvVars}}
+{{- if not (envVarIsBuiltinField .)}}
+	c.{{envVarField .}} = ""
+{{- end}}
+{{- end}}
+{{- end}}
+{{- range .Auth.AdditionalHeaders}}
+{{- if not (envVarIsBuiltinField .EnvVar.Name)}}
+	c.{{envVarField .EnvVar.Name}} = ""
+{{- end}}
 {{- end}}
 	return c.save()
 }

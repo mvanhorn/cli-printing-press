@@ -318,8 +318,13 @@ func buildMCPBEnv(m CLIManifest) map[string]string {
 // auth type: composed/cookie flows mean some tools work unauthenticated, so
 // we keep the field optional and let the user skip it; api_key/bearer_token
 // mean the API needs the credential to do anything useful, so we mark
-// required. Endpoint template vars are always required because unresolved
-// placeholders make every request URL invalid.
+// required. Endpoint template vars are required only when the spec offers
+// no fallback default: path-positional placeholders (Shopify {shop},
+// ServiceTitan {tenant}) have no spec-level default and must be supplied,
+// but a server-URL variable carrying a `default:` value resolves at runtime
+// without user input, so marking it Required = true alongside a Default
+// presents Claude Desktop with a contradictory user_config (required field
+// pre-filled with a vendor-placeholder value the user is unlikely to want).
 func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
 	authEnvVarSpecs := mcpbUserConfigAuthEnvVars(m)
 	if len(authEnvVarSpecs) == 0 && len(m.EndpointTemplateVars) == 0 {
@@ -340,12 +345,13 @@ func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
 	}
 	for _, templateVar := range m.EndpointTemplateVars {
 		name := endpointTemplateEnvVar(m, templateVar)
+		defaultValue := endpointTemplateDefault(m, templateVar)
 		vars[userConfigKey(name)] = MCPBVar{
 			Type:        mcpbVarTypeString,
 			Title:       name,
 			Description: endpointTemplateVarDescription(templateVar, name),
-			Required:    true,
-			Default:     endpointTemplateDefault(m, templateVar),
+			Required:    defaultValue == "",
+			Default:     defaultValue,
 		}
 	}
 	return vars
@@ -438,6 +444,9 @@ func authUserConfigText(m CLIManifest, envVar spec.AuthEnvVar, required bool, si
 }
 
 func endpointTemplateDefault(m CLIManifest, templateVar string) string {
+	if v := m.EndpointTemplateVarDefaults[templateVar]; v != "" {
+		return v
+	}
 	if strings.EqualFold(templateVar, "api_version") {
 		return m.APIVersion
 	}

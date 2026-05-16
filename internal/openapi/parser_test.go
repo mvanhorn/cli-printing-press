@@ -4480,6 +4480,63 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
 			wantID: "id",
 		},
 		{
+			name: "tier 3.5: gid wins over name (Asana shape)",
+			schemaYAML: `                  type: object
+                  properties:
+                    gid: {type: string}
+                    name: {type: string}
+                    resource_type: {type: string}
+`,
+			wantID: "gid",
+		},
+		{
+			name: "tier 3.5: sid wins over name (Twilio shape)",
+			schemaYAML: `                  type: object
+                  properties:
+                    sid: {type: string}
+                    name: {type: string}
+                    friendly_name: {type: string}
+`,
+			wantID: "sid",
+		},
+		{
+			name: "tier 3.5: uid wins over name",
+			schemaYAML: `                  type: object
+                  properties:
+                    uid: {type: string}
+                    name: {type: string}
+`,
+			wantID: "uid",
+		},
+		{
+			name: "tier 3.5: uuid wins over name",
+			schemaYAML: `                  type: object
+                  properties:
+                    uuid: {type: string}
+                    name: {type: string}
+`,
+			wantID: "uuid",
+		},
+		{
+			name: "tier 3.5: guid wins over name",
+			schemaYAML: `                  type: object
+                  properties:
+                    guid: {type: string}
+                    name: {type: string}
+`,
+			wantID: "guid",
+		},
+		{
+			name: "tier 3.5: id wins over gid (tier 2 takes precedence)",
+			schemaYAML: `                  type: object
+                  properties:
+                    id: {type: string}
+                    gid: {type: string}
+                    name: {type: string}
+`,
+			wantID: "id",
+		},
+		{
 			name: "tier 3: name when id absent",
 			schemaYAML: `                  type: object
                   properties:
@@ -6005,4 +6062,284 @@ paths:
 		assert.Empty(t, parsed.EndpointTemplateVars, "whitespace-only extension must not register a template var")
 		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
 	})
+}
+
+// TestParseServerURLVariablesAsTemplateVars covers the multi-tenant SaaS
+// case: when servers[0].url declares a `{var}` placeholder backed by a
+// Variables block, the parser must preserve the placeholder in BaseURL,
+// register the variable as an EndpointTemplateVar, and capture its
+// `default:` value so the generator can fall back at runtime when the
+// user's env var is unset. Without this, the generator bakes the default
+// into BaseURL at generate time and the printed CLI DNS-fails on every
+// call against any tenant other than the spec author's example.
+func TestParseServerURLVariablesAsTemplateVars(t *testing.T) {
+	t.Parallel()
+
+	t.Run("single placeholder with default registers template var", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Freshservice
+  version: 1.0.0
+servers:
+  - url: "https://{domain}/api/v2"
+    variables:
+      domain:
+        default: "yourcompany.freshservice.com"
+paths:
+  /tickets:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "https://{domain}/api/v2", parsed.BaseURL,
+			"placeholder must survive to BaseURL so the runtime can substitute env-var values")
+		assert.Equal(t, []string{"domain"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, "yourcompany.freshservice.com", parsed.EndpointTemplateVarDefaults["domain"],
+			"variable default must be captured for runtime fallback")
+		assert.Equal(t, "FRESHSERVICE_DOMAIN", parsed.EndpointTemplateEnvName("domain"),
+			"env var follows the conventional <APINAME>_<UPPER_PLACEHOLDER> rule")
+	})
+
+	t.Run("static server URL leaves new fields empty", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Static API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com/v1
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "https://api.example.com/v1", parsed.BaseURL)
+		assert.Empty(t, parsed.EndpointTemplateVars)
+		assert.Empty(t, parsed.EndpointTemplateVarDefaults)
+	})
+
+	t.Run("variable without explicit Variables entry strips legacy placeholder", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Dangling Placeholder API
+  version: 1.0.0
+servers:
+  - url: "https://{foo}.example.com"
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "https://.example.com", parsed.BaseURL,
+			"dangling placeholders without Variables entries strip away (legacy behavior)")
+		assert.Empty(t, parsed.EndpointTemplateVars)
+		assert.Empty(t, parsed.EndpointTemplateVarDefaults)
+	})
+
+	t.Run("multiple placeholders preserve order and defaults", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Two Var API
+  version: 1.0.0
+servers:
+  - url: "https://{tenant}.example.com/api/{version}"
+    variables:
+      tenant:
+        default: "demo"
+      version:
+        default: "v1"
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "https://{tenant}.example.com/api/{version}", parsed.BaseURL)
+		assert.Equal(t, []string{"tenant", "version"}, parsed.EndpointTemplateVars,
+			"placeholders must be ordered by left-to-right appearance in the URL")
+		assert.Equal(t, "demo", parsed.EndpointTemplateVarDefaults["tenant"])
+		assert.Equal(t, "v1", parsed.EndpointTemplateVarDefaults["version"])
+	})
+
+	t.Run("placeholder with empty default registers var but no default entry", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Empty Default API
+  version: 1.0.0
+servers:
+  - url: "https://{host}/api"
+    variables:
+      host:
+        default: ""
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "https://{host}/api", parsed.BaseURL,
+			"placeholder still survives so the env var is required at runtime")
+		assert.Equal(t, []string{"host"}, parsed.EndpointTemplateVars)
+		assert.Empty(t, parsed.EndpointTemplateVarDefaults,
+			"empty defaults must not pollute the defaults map — env var becomes the only fallback")
+	})
+
+	t.Run("x-tenant-env-var override coexists with server-URL placeholder", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Combo API
+  version: 1.0.0
+  x-tenant-env-var: COMBO_TENANT_ID
+servers:
+  - url: "https://{domain}/api/v2"
+    variables:
+      domain:
+        default: "demo.example.com"
+paths:
+  /tenant/{tenant}/items:
+    get:
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"tenant", "domain"}, parsed.EndpointTemplateVars,
+			"extension-declared placeholders come first, server-URL placeholders follow")
+		assert.Equal(t, "COMBO_TENANT_ID", parsed.EndpointTemplateEnvName("tenant"))
+		assert.Equal(t, "COMBO_DOMAIN", parsed.EndpointTemplateEnvName("domain"))
+		assert.Equal(t, "demo.example.com", parsed.EndpointTemplateVarDefaults["domain"])
+		assert.Empty(t, parsed.EndpointTemplateVarDefaults["tenant"],
+			"path-positional templates from x-tenant-env-var have no spec-level default")
+	})
+
+	t.Run("dangling placeholder after runtime placeholder still gets stripped", func(t *testing.T) {
+		// `{api_version}` has no Variables entry — it must strip away rather
+		// than survive into BaseURL. The earlier `{domain}` is a runtime
+		// placeholder; the strip loop must walk past it (cursor advance),
+		// not terminate, or any later dangling marker leaks into every URL.
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Mixed Placeholder API
+  version: 1.0.0
+servers:
+  - url: "https://{domain}/api/{api_version}"
+    variables:
+      domain:
+        default: "demo.example.com"
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "https://{domain}/api", parsed.BaseURL,
+			"`{domain}` preserved for runtime; `{api_version}` stripped because it has no Variables entry (trailing slash trimmed)")
+		assert.Equal(t, []string{"domain"}, parsed.EndpointTemplateVars)
+		assert.NotContains(t, parsed.BaseURL, "{api_version}",
+			"dangling placeholders after a runtime placeholder must not survive into BaseURL")
+	})
+
+	t.Run("default with shell-sensitive characters is captured verbatim", func(t *testing.T) {
+		// Defaults flow through to the generated config.go as Go string
+		// literals; the generator must escape them so a default containing
+		// `"`, `\`, or a newline cannot break the printed CLI's compile.
+		// Parser-side it stays verbatim — escape is the emit-time concern.
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Quoted Default API
+  version: 1.0.0
+servers:
+  - url: "https://{host}/api"
+    variables:
+      host:
+        default: "a\"b\\c"
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, `a"b\c`, parsed.EndpointTemplateVarDefaults["host"],
+			"default captured verbatim; generator must use %q to escape at emit time")
+	})
+}
+
+// TestDetectPaginationPreservesParameterCase guards #1353 — Google APIs
+// declare `pageSize` (camelCase) and reject the lowercased `pagesize`
+// the detector previously stored. The detector matches case-insensitively
+// but must store the parameter name as it appears in the spec.
+func TestDetectPaginationPreservesParameterCase(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		paramName string
+		wantLimit string
+	}{
+		{"google camelCase pageSize", "pageSize", "pageSize"},
+		{"snake_case page_size", "page_size", "page_size"},
+		{"plain lowercase limit", "limit", "limit"},
+		{"mixed-case maxResults", "maxResults", "maxResults"},
+		{"per_page", "per_page", "per_page"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pag := detectPagination([]spec.Param{{Name: tc.paramName}}, nil)
+			require.NotNil(t, pag, "detector should classify %q as a paginator", tc.paramName)
+			assert.Equal(t, tc.wantLimit, pag.LimitParam)
+		})
+	}
+}
+
+func TestDetectPaginationPreservesCursorParamCase(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		paramName string
+		wantParam string
+		wantType  string
+	}{
+		{"google camelCase pageToken", "pageToken", "pageToken", "page_token"},
+		{"snake_case page_token", "page_token", "page_token", "page_token"},
+		{"plain after", "after", "after", "cursor"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pag := detectPagination([]spec.Param{{Name: tc.paramName}}, nil)
+			require.NotNil(t, pag, "detector should classify %q as a cursor paginator", tc.paramName)
+			assert.Equal(t, tc.wantParam, pag.CursorParam)
+			assert.Equal(t, tc.wantType, pag.Type)
+		})
+	}
 }

@@ -21,6 +21,8 @@ var (
 	numericPattern      = regexp.MustCompile(`^\d+$`)
 	blocklistMu         sync.RWMutex
 	additionalBlocklist []string
+	includeListMu       sync.RWMutex
+	additionalInclude   []string
 )
 
 func ClassifyEntries(entries []EnrichedEntry) (api []EnrichedEntry, noise []EnrichedEntry) {
@@ -32,8 +34,9 @@ func ClassifyEntries(entries []EnrichedEntry) (api []EnrichedEntry, noise []Enri
 	blocklistMu.RUnlock()
 
 	blocklist := append(DefaultBlocklist(), extraBlocklist...)
+	include := includePatterns()
 	for _, entry := range entries {
-		score := scoreEntry(entry, blocklist)
+		score := scoreEntry(entry, blocklist, include)
 		classified := entry
 		if score > 0 {
 			classified.Classification = "api"
@@ -55,6 +58,50 @@ func SetAdditionalBlocklist(domains []string) {
 	defer blocklistMu.Unlock()
 
 	additionalBlocklist = append([]string(nil), domains...)
+}
+
+// SetAdditionalIncludeList stores operator-supplied include patterns that
+// force a positive score in classification regardless of blocklist matches
+// or static-asset suffix demotion. Patterns are matched as case-insensitive
+// substrings against the URL's host and path. Include wins over blocklist.
+func SetAdditionalIncludeList(patterns []string) {
+	includeListMu.Lock()
+	defer includeListMu.Unlock()
+
+	additionalInclude = append([]string(nil), patterns...)
+}
+
+func includePatterns() []string {
+	includeListMu.RLock()
+	defer includeListMu.RUnlock()
+	if len(additionalInclude) == 0 {
+		return nil
+	}
+	out := make([]string, len(additionalInclude))
+	copy(out, additionalInclude)
+	return out
+}
+
+// matchesIncludePattern returns true when any include pattern is a
+// case-insensitive substring of host or path. Substring matching keeps the
+// flag friendly to operators: --include "/track/important" or
+// --include "api.partner.com" both work without quoting regex metacharacters.
+func matchesIncludePattern(host string, path string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	lowerHost := strings.ToLower(host)
+	lowerPath := strings.ToLower(path)
+	for _, pattern := range patterns {
+		p := strings.ToLower(strings.TrimSpace(pattern))
+		if p == "" {
+			continue
+		}
+		if strings.Contains(lowerHost, p) || strings.Contains(lowerPath, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func DefaultBlocklist() []string {
@@ -117,13 +164,22 @@ func DeduplicateEndpoints(entries []EnrichedEntry) []EndpointGroup {
 	return groups
 }
 
-func scoreEntry(entry EnrichedEntry, blocklist []string) int {
+func scoreEntry(entry EnrichedEntry, blocklist []string, include []string) int {
 	score := 0
 	responseType := strings.ToLower(entry.ResponseContentType)
 	requestType := strings.ToLower(getHeaderValue(entry.RequestHeaders, "Content-Type"))
 	path := strings.ToLower(extractPath(entry.URL))
 	host := strings.ToLower(extractHost(entry.URL))
 	urlLower := strings.ToLower(entry.URL)
+
+	// Operator-supplied include patterns short-circuit the rest of scoring:
+	// a match forces a strong positive score, bypassing blocklist demotion,
+	// static-asset suffix demotion, and the response-content-type penalty.
+	// Used to rescue a specific endpoint or host that default heuristics
+	// would otherwise drop.
+	if matchesIncludePattern(host, path, include) {
+		return 10
+	}
 
 	if strings.Contains(responseType, "application/json") {
 		score += 2

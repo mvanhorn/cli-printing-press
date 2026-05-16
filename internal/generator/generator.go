@@ -348,6 +348,24 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointTemplateEnvName": func(placeholder string) string {
 			return s.EndpointTemplateEnvName(placeholder)
 		},
+		// endpointTemplateDefault returns the spec-declared default value for
+		// a placeholder (e.g. server-URL variables' `default:` value), or ""
+		// when none. Templates branch on the empty case to skip the runtime
+		// fallback path and preserve byte-compat with placeholders that have
+		// no spec-level default (path-positional templates like {tenant}).
+		"endpointTemplateDefault": func(placeholder string) string {
+			return s.EndpointTemplateDefault(placeholder)
+		},
+		// Predicates the config.Load template branches on. Splitting on
+		// has-default vs has-undefaulted preserves byte-compat for CLIs whose
+		// placeholders are all path-positional (no defaults): without the
+		// split, every prior CLI would regenerate just to emit unused helpers.
+		"endpointTemplateVarsHasDefault": func(vars []string) bool {
+			return endpointTemplateVarsAny(vars, s, func(v string) bool { return v != "" })
+		},
+		"endpointTemplateVarsHasUndefaulted": func(vars []string) bool {
+			return endpointTemplateVarsAny(vars, s, func(v string) bool { return v == "" })
+		},
 		"safeName":                       safeSQLName,
 		"resourceIDFieldOverrideEntries": resourceIDFieldOverrideEntries,
 		"criticalResourceEntries":        criticalResourceEntries,
@@ -530,6 +548,15 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"firstCommandExample":  firstCommandExample,
 	}
 	return g
+}
+
+func endpointTemplateVarsAny(vars []string, s *spec.APISpec, predicate func(string) bool) bool {
+	for _, name := range vars {
+		if predicate(s.EndpointTemplateDefault(name)) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildWhichFallbackEntries(resources map[string]spec.Resource) []NovelFeature {
@@ -1637,6 +1664,15 @@ func (g *Generator) Generate() error {
 				"Set `git config github.user` (your GitHub @handle) to populate this correctly before publishing.\n",
 		)
 	}
+	// Auth.VerifyPath drives the doctor's credentials probe. Derive it before
+	// HealthCheckPath so HealthCheckPath's fallback chain can pick up the
+	// derived value (mirroring how an operator-set auth.verify_path already
+	// flows through). Without this, specs that ship a me-shaped endpoint but
+	// no explicit auth.verify_path generate a doctor that reports credentials
+	// as merely "present (not verified)" instead of probing the API.
+	if g.Spec.Auth.VerifyPath == "" {
+		g.Spec.Auth.VerifyPath = deriveAuthVerifyPath(g.Spec)
+	}
 	if g.Spec.HealthCheckPath == "" {
 		g.Spec.HealthCheckPath = deriveHealthCheckPath(g.Spec)
 	}
@@ -2734,7 +2770,7 @@ func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
 		return err
 	}
 
-	return os.WriteFile(fullPath, normalizeRendered(buf.Bytes(), outPath), 0o644)
+	return os.WriteFile(fullPath, normalizeRendered(buf.Bytes(), tmplName, outPath), 0o644)
 }
 
 // normalizeRendered prepares template-rendered bytes for disk: trims trailing
@@ -2744,9 +2780,12 @@ func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
 // print surfaces hundreds of phantom diffs on the first `gofmt -w`. Falls
 // through with a stderr warning rather than fail-hard so a malformed template
 // surfaces as a compile error downstream instead of an opaque emit failure.
-func normalizeRendered(raw []byte, outPath string) []byte {
+func normalizeRendered(raw []byte, tmplName, outPath string) []byte {
 	rendered := bytes.TrimRight(raw, " \t\r\n")
 	rendered = append(rendered, '\n')
+	if tmplName == "command_endpoint.go.tmpl" {
+		rendered = pruneUnusedClientImport(rendered)
+	}
 	if filepath.Ext(outPath) != ".go" {
 		return rendered
 	}
@@ -2756,6 +2795,64 @@ func normalizeRendered(raw []byte, outPath string) []byte {
 		return rendered
 	}
 	return formatted
+}
+
+// pruneUnusedClientImport drops the `<module>/internal/client` import line
+// from a rendered command_endpoint.go file when the body never references
+// the `client` package as a qualifier. The endpoint template emits this
+// import for the GraphQL list/get path, but other branches (notably
+// POST /graphql for GraphQL specs whose author wrote method: POST) reach
+// the rendered file without producing a `client.X` reference, leaving an
+// unused import that breaks `go build`.
+func pruneUnusedClientImport(src []byte) []byte {
+	// Find the import block.
+	importStart := bytes.Index(src, []byte("\nimport (\n"))
+	if importStart < 0 {
+		return src
+	}
+	importBlockStart := importStart + len("\nimport (\n")
+	importEnd := bytes.Index(src[importBlockStart:], []byte("\n)"))
+	if importEnd < 0 {
+		return src
+	}
+	importEnd += importBlockStart
+
+	// Body is everything after the closing `)` of the import block.
+	body := src[importEnd:]
+	// A `client.X` reference is the only way the import is used inside the
+	// rendered body.
+	if bytes.Contains(body, []byte("client.")) {
+		return src
+	}
+
+	// Locate the line `"<...>/internal/client"` inside the import block and
+	// remove it (including its trailing newline). The literal suffix is
+	// stable across all module paths because it's emitted as
+	// `"{{modulePath}}/internal/client"` from the template.
+	importBlock := src[importBlockStart:importEnd]
+	suffix := []byte(`/internal/client"`)
+	rel := bytes.Index(importBlock, suffix)
+	if rel < 0 {
+		return src
+	}
+	abs := importBlockStart + rel
+	// Walk back to the start of the line.
+	lineStart := abs
+	for lineStart > 0 && src[lineStart-1] != '\n' {
+		lineStart--
+	}
+	// Walk forward to the end of the line, including the trailing newline.
+	lineEnd := abs
+	for lineEnd < len(src) && src[lineEnd] != '\n' {
+		lineEnd++
+	}
+	if lineEnd < len(src) {
+		lineEnd++
+	}
+	out := make([]byte, 0, len(src)-(lineEnd-lineStart))
+	out = append(out, src[:lineStart]...)
+	out = append(out, src[lineEnd:]...)
+	return out
 }
 
 func validateRenderedArtifact(outPath, content string) error {

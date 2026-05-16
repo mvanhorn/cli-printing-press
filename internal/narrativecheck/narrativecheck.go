@@ -181,6 +181,48 @@ func loadCommands(researchPath string) ([]sectionCommand, error) {
 // non-identifier character. Hyphens stay because Cobra subcommands use
 // them (`list-projects`).
 func classify(ctx context.Context, binaryPath string, section Section, command string, opts Options) Result {
+	segments, hasPipe, err := splitShellChain(command)
+	if err != nil {
+		return Result{
+			Section: section,
+			Command: command,
+			Status:  StatusExampleFailed,
+			Error:   err.Error(),
+		}
+	}
+	if hasPipe {
+		return Result{
+			Section: section,
+			Command: command,
+			Status:  StatusUnsupported,
+			Error:   "pipe-skipped: command contains a top-level `|` which cannot run safely under PRINTING_PRESS_VERIFY=1",
+		}
+	}
+	if len(segments) <= 1 {
+		seg := command
+		if len(segments) == 1 {
+			seg = segments[0]
+		}
+		r := classifySegment(ctx, binaryPath, section, seg, opts)
+		r.Command = command
+		return r
+	}
+
+	var last Result
+	for i, seg := range segments {
+		sub := classifySegment(ctx, binaryPath, section, seg, opts)
+		if sub.Status != StatusOK {
+			sub.Command = command
+			sub.Error = fmt.Sprintf("segment %d (%q): %s", i+1, seg, sub.Error)
+			return sub
+		}
+		last = sub
+	}
+	last.Command = command
+	return last
+}
+
+func classifySegment(ctx context.Context, binaryPath string, section Section, command string, opts Options) Result {
 	words := extractSubcommandWords(command)
 	r := Result{Section: section, Command: command, Words: strings.Join(words, " ")}
 
@@ -300,6 +342,86 @@ func extractSubcommandWords(command string) []string {
 		words = append(words, tok)
 	}
 	return words
+}
+
+// splitShellChain walks command and returns the segments separated by
+// top-level `&&`, `||`, or `;` operators. Quoted text is preserved.
+// hasPipe is true when a bare `|` appears at the top level; callers
+// should treat such commands as unrunnable in verify mode rather than
+// attempting to validate the segments around the pipe.
+//
+// Backslash-escapes and quoted-string handling mirror shellargs.Split
+// so the segments are safe to feed back into shellargs.Split.
+func splitShellChain(command string) ([]string, bool, error) {
+	var (
+		segments []string
+		quote    rune
+		escaped  bool
+		hasPipe  bool
+		start    int
+	)
+	flush := func(end int) {
+		if seg := strings.TrimSpace(command[start:end]); seg != "" {
+			segments = append(segments, seg)
+		}
+	}
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if quote == '\'' {
+			if c == '\'' {
+				quote = 0
+			}
+			continue
+		}
+		if quote == '"' {
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\\':
+			escaped = true
+		case '\'', '"':
+			quote = rune(c)
+		case '&':
+			if i+1 < len(command) && command[i+1] == '&' {
+				flush(i)
+				i++
+				start = i + 1
+			}
+		case '|':
+			if i+1 < len(command) && command[i+1] == '|' {
+				flush(i)
+				i++
+				start = i + 1
+				continue
+			}
+			hasPipe = true
+		case ';':
+			flush(i)
+			start = i + 1
+		}
+	}
+	if quote != 0 {
+		return nil, false, fmt.Errorf("unclosed %s quote in %q", quoteName(quote), command)
+	}
+	flush(len(command))
+	return segments, hasPipe, nil
+}
+
+func quoteName(r rune) string {
+	if r == '\'' {
+		return "single"
+	}
+	return "double"
 }
 
 // isIdentifierToken reports whether s contains only ASCII alphanumerics,
