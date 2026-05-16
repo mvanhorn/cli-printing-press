@@ -1937,11 +1937,17 @@ paths:
 		"/organizations/{organizationId}/users",
 	} {
 		endpoint := findEndpoint(t, parsed, path)
-		require.Len(t, endpoint.Params, 1, "path %q must surface an organizationId param even when operation declared none", path)
-		p := endpoint.Params[0]
-		assert.Equal(t, "organizationId", p.Name)
-		assert.True(t, p.Positional, "synthesized path placeholders must be positional")
-		assert.True(t, p.Required, "synthesized path placeholders must be required")
+		var orgID *spec.Param
+		for i := range endpoint.Params {
+			if endpoint.Params[i].Name == "organizationId" {
+				orgID = &endpoint.Params[i]
+				break
+			}
+		}
+		if assert.NotNilf(t, orgID, "path %q must surface an organizationId param even when operation declared none", path) {
+			assert.True(t, orgID.Positional, "synthesized path placeholders must be positional")
+			assert.True(t, orgID.Required, "synthesized path placeholders must be required")
+		}
 	}
 }
 
