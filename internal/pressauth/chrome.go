@@ -317,11 +317,5 @@ func classifyChromeErr(stage string, err error) error {
 	if err == nil {
 		return nil
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("%s: %w", stage, err)
-	}
-	if errors.Is(err, context.Canceled) {
-		return fmt.Errorf("%s: %w", stage, err)
-	}
 	return fmt.Errorf("%s: %w", stage, err)
 }
