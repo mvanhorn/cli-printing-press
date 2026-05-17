@@ -124,9 +124,20 @@ scrub_body() {
   perl -i -pe 's/\b([A-Za-z0-9._%+-]+)@(?!example\.(?:com|net|org|invalid)\b|[^\s]*\.(?:test|localhost|example)\b)([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b/<REDACTED:email>/g' "$out" 2>/dev/null
 
   # NANP US phone (excluding 555-01XX fictional range). Matches 10-digit forms
-  # with or without dashes/parens/spaces; the (?!555-?01) lookahead carves out
-  # the fictional range.
-  perl -i -pe 's/(?<![0-9])(?!555[-\s.]?01)(\+?1[-\s.]?)?\(?[2-9][0-9]{2}\)?[-\s.]?[0-9]{3}[-\s.]?[0-9]{4}(?![0-9])/<REDACTED:phone-us>/g' "$out" 2>/dev/null
+  # with or without dashes/parens/spaces. The 555-01XX exclusion can't use a
+  # single negative lookahead anchored at the start because the optional `(`
+  # and optional country-code prefix shift the area-code position — when the
+  # number is written `(555) 012-3456`, the position before the `(` is not
+  # where the `555` lives, so the lookahead never fires. Instead, capture the
+  # area code ($1) and exchange ($2) and decide inline via `/e`.
+  #
+  # Perl gotcha: $& and $1..$N are global variables that get rewritten by
+  # every successful regex match — including the inner `$e =~ /^01/` test
+  # inside the replacement callback. Snapshot $&, $1, $2 into lexical
+  # variables ($w, $a, $e) BEFORE running the inner regex, otherwise the
+  # carve-out path returns `"01"` (the inner match) instead of the whole
+  # original phone string.
+  perl -i -pe 's{(?<![0-9])(?:\+?1[-\s.]?)?\(?([2-9][0-9]{2})\)?[-\s.]?([0-9]{3})[-\s.]?[0-9]{4}(?![0-9])}{my $w=$&; my $a=$1; my $e=$2; ($a eq "555" && $e =~ /^01/) ? $w : "<REDACTED:phone-us>"}ge' "$out" 2>/dev/null
 
   # ZIP+4 (5 digits, dash, 4 digits). Bare 5-digit ZIPs are too noisy to redact
   # safely (false-positives on order IDs, line counts, etc.); ZIP+4 is the
