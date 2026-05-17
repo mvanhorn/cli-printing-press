@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -493,6 +494,11 @@ func main() {
 			return
 		}
 		stubPath = filepath.Join(dir, "stub")
+		// On Windows the built binary must include the .exe suffix so
+		// subsequent exec calls referencing the explicit path find it.
+		if runtime.GOOS == "windows" {
+			stubPath += ".exe"
+		}
 		if out, err := exec.Command("go", "build", "-o", stubPath, srcPath).CombinedOutput(); err != nil {
 			stubErr = fmt.Errorf("building stub: %v\n%s", err, out)
 		}
