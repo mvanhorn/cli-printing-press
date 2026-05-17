@@ -1,6 +1,15 @@
+// Deprecated: the module path moved to github.com/mvanhorn/cli-printing-press/v4
+// after the v4 release. Install the current binary with:
+//   go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest
 module github.com/mvanhorn/cli-printing-press
 
 go 1.26.1
+
+// Retract every release on the legacy v1 module path. `go install ...@latest`
+// against the unversioned path silently resolves here and installs a year-old
+// binary - the deprecation notice above plus these retractions make Go warn
+// loudly and steer users to the /v4 path.
+retract [v1.0.0, v1.3.2]
 
 require (
 	github.com/getkin/kin-openapi v0.133.0
