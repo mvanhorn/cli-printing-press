@@ -42,9 +42,10 @@ the user at the login subcommand.`,
 				return &ExitError{Code: ExitUnknownError, Err: err}
 			}
 
-			// Lazy refresh applies only to JWT-backed sessions. Cookie-only
-			// captures have no JWT expiry, so a zero JWTExpiry is expected.
-			if state.JWTCarrierCookie != "" && (state.JWTExpiry.IsZero() || time.Until(state.JWTExpiry) <= expiryRefreshWindow) {
+			// Lazy refresh applies only when refresh metadata is complete.
+			// Cookie-only captures, including JWT-cookie sessions without a
+			// refresh endpoint, should still print the stored cookie header.
+			if state.JWTCarrierCookie != "" && state.RefreshEndpoint != "" && (state.JWTExpiry.IsZero() || time.Until(state.JWTExpiry) <= expiryRefreshWindow) {
 				refreshed, refErr := Refresh(cmd.Context(), state)
 				if refErr != nil {
 					return refErr

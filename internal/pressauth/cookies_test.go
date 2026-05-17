@@ -184,6 +184,34 @@ func TestCookiesCookieOnlySessionSkipsLazyRefresh(t *testing.T) {
 	}
 }
 
+func TestCookiesJWTCarrierWithoutRefreshEndpointSkipsLazyRefresh(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("requires macOS keychain")
+	}
+	domain := uniqueDomain(t)
+	useTempHome(t, domain)
+
+	st := &State{
+		Domain:           domain,
+		CapturedAt:       time.Now().UTC(),
+		Cookies:          map[string]string{"session": "jwt-cookie"},
+		JWTCarrierCookie: "session",
+		// RefreshEndpoint intentionally omitted: the flag is optional.
+		// Zero JWTExpiry is the shape Capture persists before a refresh call.
+	}
+	if err := Save(st); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+
+	out, _, err := runCookiesCmd(domain)
+	if err != nil {
+		t.Fatalf("cookies cmd: %v", err)
+	}
+	if !strings.Contains(out, "session=jwt-cookie") {
+		t.Errorf("output missing stored JWT cookie: %q", out)
+	}
+}
+
 func TestCookiesMissingStateExits2(t *testing.T) {
 	useTempHome(t)
 	_, _, err := runCookiesCmd("never-saved.example.invalid")
