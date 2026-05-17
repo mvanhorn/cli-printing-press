@@ -58,7 +58,7 @@ JWT session you want press-auth to refresh lazily on expiry.`,
 
 	cmd.Flags().StringVar(&lf.LoginURL, "login-url", "", "URL press-auth opens in the controlled Chrome window for you to log in")
 	cmd.Flags().StringVar(&lf.CompleteSelector, "complete-selector", "", "Optional CSS selector that signals login is complete (e.g. \"a[href*=signout]\")")
-	cmd.Flags().StringVar(&lf.RefreshEndpoint, "refresh-endpoint", "", "API path press-auth POSTs to when refreshing an expiring JWT (e.g. /account/token)")
+	cmd.Flags().StringVar(&lf.RefreshEndpoint, "refresh-endpoint", "", "API path press-auth GETs to refresh an expiring JWT (e.g. /account/token)")
 	cmd.Flags().StringVar(&lf.JWTCarrierCookie, "jwt-carrier-cookie", "", "Name of the cookie that holds the JWT; its exp claim drives refresh timing")
 	cmd.Flags().BoolVar(&lf.Force, "force", false, "Overwrite existing state for <domain> without prompting")
 
