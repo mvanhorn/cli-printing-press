@@ -67,18 +67,18 @@ func TestGenerateMultipartRequestBodyUsesMultipartClient(t *testing.T) {
 	assert.Contains(t, endpointSrc, `fileFields["assetData"] = bodyAssetData`)
 	assert.Contains(t, endpointSrc, `fields["filename"] = bodyFilename`)
 	assert.Contains(t, endpointSrc, `fields["metadata"] = bodyMetadata`)
-	assert.Contains(t, endpointSrc, `c.PostMultipart(path, fields, fileFields)`)
+	assert.Contains(t, endpointSrc, `c.PostMultipartWithParams(path, params, fields, fileFields)`)
 	assert.NotContains(t, endpointSrc, `"stdin"`)
 
 	promotedSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_avatars.go")
 	assert.Contains(t, promotedSrc, `return fmt.Errorf("required flag \"%s\" not set", "image")`)
 	assert.Contains(t, promotedSrc, `fileFields["image"] = bodyImage`)
 	assert.Contains(t, promotedSrc, `fields["label"] = bodyLabel`)
-	assert.Contains(t, promotedSrc, `c.PostMultipart(path, fields, fileFields)`)
+	assert.Contains(t, promotedSrc, `c.PostMultipartWithParams(path, params, fields, fileFields)`)
 	assert.NotContains(t, promotedSrc, `"stdin"`)
 
 	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
-	assert.Contains(t, mcpSrc, `makeAPIHandler("POST", "/assets", []mcpParamBinding`)
+	assert.Contains(t, mcpSrc, `makeAPIHandler("POST", "/assets", false, []mcpParamBinding`)
 	assert.Contains(t, mcpSrc, `Format: "binary"`)
 	assert.Contains(t, mcpSrc, `RequestContentType: "multipart/form-data"`)
 	assert.Contains(t, mcpSrc, `multipartFileFields[binding.WireName] = fmt.Sprintf("%v", v)`)
@@ -86,4 +86,33 @@ func TestGenerateMultipartRequestBodyUsesMultipartClient(t *testing.T) {
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGenerateBinaryResponseWritesRawBytes(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("audioapi")
+	apiSpec.Resources = map[string]spec.Resource{
+		"audio": {
+			Description: "Audio",
+			Endpoints: map[string]spec.Endpoint{
+				"create": {
+					Method:         "POST",
+					Path:           "/audio",
+					Description:    "Create audio",
+					ResponseFormat: spec.ResponseFormatBinary,
+					Body: []spec.Param{
+						{Name: "text", Type: "string", Required: true, Description: "Text"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_audio.go")
+	assert.Contains(t, endpointSrc, `binary response cannot be rendered as structured output`)
+	assert.Contains(t, endpointSrc, `cmd.OutOrStdout().Write(data)`)
 }

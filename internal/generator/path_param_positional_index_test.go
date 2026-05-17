@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -389,4 +390,50 @@ func TestPositionalIndexHelper(t *testing.T) {
 	assert.Equal(t, 1, positionalIndex(multi, "course"))
 	assert.Equal(t, -1, positionalIndex(multi, "missing"),
 		"unknown name should return -1, not panic")
+}
+
+// TestUndeclaredPathPlaceholderEmitsPositional pins the end-to-end repair for
+// real-world OpenAPI specs whose path templates carry a {placeholder} the
+// operation never declares in `parameters`. Without the spec-level enrichment,
+// the generator emits a literal `{organizationId}` URL segment and every
+// request to a parent-scoped resource 404s silently.
+func TestUndeclaredPathPlaceholderEmitsPositional(t *testing.T) {
+	t.Parallel()
+
+	yaml := `openapi: 3.0.0
+info:
+  title: Hierarchical
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /organizations/{organizationId}/invites:
+    get:
+      summary: List organization invites
+      responses:
+        "200": {description: ok}
+  /organizations/{organizationId}/users:
+    get:
+      summary: List organization users
+      responses:
+        "200": {description: ok}
+`
+	apiSpec, err := openapi.Parse([]byte(yaml))
+	require.NoError(t, err)
+	apiSpec.Owner = "test-owner"
+	apiSpec.OwnerName = "Test"
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	matches, err := filepath.Glob(filepath.Join(outputDir, "internal", "cli", "promoted_invites*.go"))
+	require.NoError(t, err)
+	require.Lenf(t, matches, 1, "expected one promoted_invites*.go, got %v", matches)
+	src, err := os.ReadFile(matches[0])
+	require.NoError(t, err)
+	body := string(src)
+	assert.Contains(t, body, `Use:         "invites <organizationId>"`,
+		"positional must appear in cobra Use so --help is honest")
+	assert.Contains(t, body, `replacePathParam(path, "organizationId", args[0])`,
+		"undeclared path placeholder must still drive URL substitution")
 }

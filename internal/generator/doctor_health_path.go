@@ -51,6 +51,43 @@ func deriveHealthCheckPath(s *spec.APISpec) string {
 	if s.Auth.VerifyPath != "" {
 		return s.Auth.VerifyPath
 	}
+	return findMeShapedEndpointPath(s)
+}
+
+// deriveAuthVerifyPath chooses the path the generated `doctor` command should
+// hit for its authenticated credentials probe. Mirrors deriveHealthCheckPath
+// but for the auth-required side of the doctor report: a verify path that
+// returns 401 on bad credentials and 2xx on good ones lets doctor distinguish
+// "credentials accepted" from "credentials silently present but never tested."
+//
+// Priority:
+//  1. Auth.VerifyPath when set (explicit user override, never clobbered).
+//  2. A heuristic me-shaped GET endpoint discovered in the spec. Me-shaped
+//     endpoints (`/users/me`, `/account`, `/viewer`, etc.) describe the
+//     calling identity and almost universally require auth, which is exactly
+//     the contract the credentials probe needs.
+//  3. Empty string. The doctor template falls back to reporting credentials
+//     as "present (not verified — set auth.verify_path in spec for an API
+//     acceptance check)" rather than fabricating a verdict from `/`.
+//
+// Returning empty in case 3 keeps the template's existing "not verified"
+// branch authoritative; the goal is to skip that branch whenever the spec
+// gives us a defensible me-shaped path to probe, not to invent one.
+func deriveAuthVerifyPath(s *spec.APISpec) string {
+	if s == nil {
+		return ""
+	}
+	if s.Auth.VerifyPath != "" {
+		return s.Auth.VerifyPath
+	}
+	return findMeShapedEndpointPath(s)
+}
+
+// findMeShapedEndpointPath walks the spec for the first GET endpoint whose
+// path matches one of meShapedPathTails (most-specific tail first). Returns
+// "" when no candidate qualifies — used as the shared heuristic step inside
+// the two derivation helpers above.
+func findMeShapedEndpointPath(s *spec.APISpec) string {
 	for _, tail := range meShapedPathTails {
 		if e, ok := findEndpointMatch(s, func(e spec.Endpoint) bool {
 			return isMeShapedEndpoint(e, tail)

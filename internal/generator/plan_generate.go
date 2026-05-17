@@ -105,7 +105,7 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 			return fmt.Errorf("executing template %s: %w", tmplName, err)
 		}
 		fullPath := filepath.Join(outputDir, outPath)
-		return os.WriteFile(fullPath, normalizeRendered(buf.Bytes(), outPath), 0o644)
+		return os.WriteFile(fullPath, normalizeRendered(buf.Bytes(), tmplName, outPath), 0o644)
 	}
 
 	// Partition commands into top-level and subcommands
@@ -423,10 +423,23 @@ func readManifestPrinter(outputDir string) string {
 	return readManifestField(outputDir, "printer")
 }
 
-// resolvePrinterForNew returns "" instead of a sentinel when github.user is unset.
+// resolvePrinterForNew returns the printer @handle for a brand-new print.
+// Tries `git config github.user`, then `gh api user --jq .login` so a
+// logged-in `gh` covers machines without `git config github.user`. Returns
+// "" instead of a sentinel when both are unset.
 func resolvePrinterForNew() string {
-	if out, err := exec.Command("git", "config", "github.user").Output(); err == nil && len(out) > 0 {
-		return strings.TrimSpace(string(out))
+	if out, err := exec.Command("git", "config", "github.user").Output(); err == nil {
+		if v := strings.TrimSpace(string(out)); v != "" {
+			return v
+		}
+	}
+	if out, err := exec.Command("gh", "api", "user", "--jq", ".login").Output(); err == nil {
+		// jq emits the literal string "null" when .login is absent or JSON null;
+		// filter that explicitly so it doesn't survive into the printer field
+		// and re-fail publish-validate the way an empty printer would.
+		if v := strings.TrimSpace(string(out)); v != "" && v != "null" {
+			return v
+		}
 	}
 	return ""
 }

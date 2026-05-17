@@ -38,6 +38,7 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			path := "/projects"
+			params := map[string]string{}
 			var body map[string]any
 			if stdinBody {
 				stdinData, err := io.ReadAll(os.Stdin)
@@ -61,7 +62,7 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 					body["visibility"] = bodyVisibility
 				}
 			}
-			data, statusCode, err := c.Post(path, body)
+			data, statusCode, err := c.PostWithParams(path, params, body)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

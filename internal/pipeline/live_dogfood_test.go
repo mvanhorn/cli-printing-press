@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -102,6 +104,49 @@ func TestRunLiveDogfoodDoesNotWriteAcceptanceMarkerOnFail(t *testing.T) {
 
 	_, statErr := os.Stat(markerPath)
 	assert.True(t, os.IsNotExist(statErr), "failed live dogfood must not write an acceptance marker")
+}
+
+// TestDogfoodEnvVarMatchesEmittedTemplate guards against the runner-side
+// const and the emitted-CLI helper drifting apart. They live in
+// separate Go modules so a shared import is impossible; this test reads
+// the template as text and asserts the literal matches dogfoodEnvVar.
+// Without it, a typo on either side would silently break every
+// IsDogfoodEnv() short-circuit in printed CLIs.
+func TestDogfoodEnvVarMatchesEmittedTemplate(t *testing.T) {
+	content, err := generator.TemplateFS.ReadFile("templates/cliutil_verifyenv.go.tmpl")
+	require.NoError(t, err)
+
+	re := regexp.MustCompile(`const\s+DogfoodEnvVar\s*=\s*"([^"]+)"`)
+	match := re.FindStringSubmatch(string(content))
+	require.Len(t, match, 2, "DogfoodEnvVar const not found in cliutil_verifyenv.go.tmpl")
+	assert.Equal(t, dogfoodEnvVar, match[1], "runner-side dogfoodEnvVar must match template-side DogfoodEnvVar literal")
+}
+
+// TestRunLiveDogfoodProcessSetsDogfoodEnvVar asserts the live-dogfood
+// subprocess inherits PRINTING_PRESS_DOGFOOD=1 so long-running commands
+// can short-circuit via cliutil.IsDogfoodEnv() to fit inside the
+// matrix's per-command timeout.
+func TestRunLiveDogfoodProcessSetsDogfoodEnvVar(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	// Unset before the call so a CI runner that happens to have
+	// PRINTING_PRESS_DOGFOOD pre-set in its environment can't make the
+	// assertion pass via inheritance — the test must prove the runner's
+	// own append line is what gets the var into the subprocess.
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
+
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "echo-env")
+	script := "#!/bin/sh\nprintf '%s' \"${PRINTING_PRESS_DOGFOOD:-}\"\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	run := runLiveDogfoodProcess(binPath, dir, nil, 5*time.Second)
+	require.NoError(t, run.err, "fixture: %s", run.stderr)
+	assert.Equal(t, "1", run.stdout, "live-dogfood subprocess should see PRINTING_PRESS_DOGFOOD=1")
 }
 
 func TestRunLiveDogfoodErrorPathAcceptsExpectedNonZeroExit(t *testing.T) {

@@ -140,15 +140,8 @@ This CLI was generated with browser-observed traffic context.
 {{- if index $.PromotedResourceNames $name}}
 - `{{$.Name}}-pp-cli {{$name}}{{positionalArgs $endpoint}}` — {{oneline $endpoint.Description}}
 {{- else}}
-- `{{$.Name}}-pp-cli {{$name}} {{$eName}}` — {{oneline $endpoint.Description}}
+- `{{$.Name}}-pp-cli {{$name}} {{kebab $eName}}` — {{oneline $endpoint.Description}}
 {{- end}}
-{{- end}}
-{{end}}
-{{- if .ExtraCommands}}
-
-**Hand-written commands**
-{{range .ExtraCommands}}
-- `{{$.Name}}-pp-cli {{.Name}}{{if .Args}} {{.Args}}{{end}}` — {{oneline .Description}}
 {{- end}}
 {{end}}
 {{- if and .HasDataLayer .Cache.Enabled}}
@@ -176,6 +169,15 @@ When you know what you want to do but not which command does it, ask the CLI dir
 ```
 
 `which` resolves a natural-language capability query to the best matching command from this CLI's curated feature index. Exit code `0` means at least one match; exit code `2` means no confident match — fall back to `--help` or use a narrower query.
+{{- if .ExtraCommands}}
+
+## Hand-written Extensions
+
+These commands are declared by the spec author and require separate hand-written wiring; the generator does not emit Cobra registration for them. They are listed here for discoverability and are intentionally outside `## Command Reference` so the verify-skill unknown-command check does not treat them as generator-owned paths.
+{{range .ExtraCommands}}
+- `{{$.Name}}-pp-cli {{.Name}}{{if .Args}} {{.Args}}{{end}}` — {{oneline .Description}}
+{{- end}}
+{{- end}}
 {{- if and .Narrative .Narrative.Recipes}}
 
 ## Recipes

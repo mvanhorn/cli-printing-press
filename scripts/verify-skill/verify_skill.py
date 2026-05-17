@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
-"""verify_skill.py — validate that SKILL.md matches the shipped CLI source.
+"""verify_skill.py — validate that SKILL.md and README.md match the shipped CLI source.
 
 Four checks run in sequence:
 
   1. flag-names — every `--flag` used on a `<cli_binary> ...` invocation in
-     SKILL.md is declared as a cobra flag somewhere in internal/cli/*.go.
-     Flags on lines that invoke other tools (npx installers, gh, go,
-     curl, etc.) are out of scope and ignored.
+     a prose source (SKILL.md, plus README.md when present) is declared as
+     a cobra flag somewhere in internal/cli/*.go. Flags on lines that invoke
+     other tools (npx installers, gh, go, curl, etc.) are out of scope and
+     ignored.
   2. flag-commands — every `--flag` used on a specific command is declared
      on that command (or as a persistent/root flag).
   3. positional-args — positional args in bash recipes match the command's
      `Use:` field signature (required + optional + variadic).
-  4. unknown-command — every command path referenced in SKILL.md (in bash
-     recipes and inline backticks under `## Command Reference`) maps to a
-     real cobra `Use:` declaration in internal/cli/*.go. Catches docs that
-     promise commands the binary does not implement (e.g. SKILL.md lists
-     `qr get-qrcode` but the CLI only registers a leaf `qr` after promotion).
+  4. unknown-command — every command path referenced in a prose source (in
+     bash recipes from SKILL.md and README.md, plus inline backticks under
+     SKILL.md's `## Command Reference`) maps to a real cobra `Use:`
+     declaration in internal/cli/*.go. Catches docs that promise commands
+     the binary does not implement (e.g. SKILL.md lists `qr get-qrcode` but
+     the CLI only registers a leaf `qr` after promotion).
 
 The checks are pattern-matching heuristics against Go AST-adjacent text.
 False positives are possible for edge cases:
@@ -707,126 +709,136 @@ def extract_recipes(skill: Path, cli_binary: str, cli_dir: Path | None = None) -
 # ---------------------------------------------------------------------------
 
 
-def check_flag_names(cli_dir: Path, skill: Path, cli_binary: str, report: Report) -> None:
+def check_flag_names(cli_dir: Path, sources: list[Path], cli_binary: str, report: Report) -> None:
     # Scoped to recipes so flags belonging to other tools invoked from
-    # SKILL.md (npx installers, gh, go, curl, ...) don't get reported as
+    # the prose (npx installers, gh, go, curl, ...) don't get reported as
     # missing declarations on the printed CLI. extract_recipes already
     # filters to lines starting with `cli_binary + " "`.
+    #
+    # The `seen` set is scoped per source: a flag undeclared in SKILL.md
+    # is reported separately from the same flag undeclared in README.md
+    # so users see both surfaces and don't get a false "fixed" signal
+    # after editing only the first source. Matches check_flag_commands's
+    # per-source emission policy.
     all_files = list((cli_dir / "internal/cli").glob("*.go"))
-    recipes = extract_recipes(skill, cli_binary, cli_dir)
-    seen: set[str] = set()
-    for cmd_path, _positional, flags in recipes:
-        for raw_flag in flags:
-            flag = raw_flag.lstrip("-")
-            if flag in COMMON_FLAGS or flag in seen:
+    for src in sources:
+        seen: set[str] = set()
+        for cmd_path, _positional, flags in extract_recipes(src, cli_binary, cli_dir):
+            for raw_flag in flags:
+                flag = raw_flag.lstrip("-")
+                if flag in COMMON_FLAGS or flag in seen:
+                    continue
+                if flag_declared_in(all_files, flag):
+                    continue
+                seen.add(flag)
+                path_str = " ".join(cmd_path)
+                report.findings.append(
+                    Finding(
+                        check="flag-names",
+                        severity="error",
+                        command=f"{cli_binary} {path_str}",
+                        detail=f"--{flag} is referenced in {src.name} but not declared in any internal/cli/*.go",
+                        evidence=src.name,
+                    )
+                )
+
+
+def check_flag_commands(cli_dir: Path, sources: list[Path], cli_binary: str, report: Report) -> None:
+    all_files = list((cli_dir / "internal/cli").glob("*.go"))
+    for src in sources:
+        for cmd_path, _positional, flags in extract_recipes(src, cli_binary, cli_dir):
+            for raw_flag in flags:
+                flag = raw_flag.lstrip("-")
+                if flag in COMMON_FLAGS:
+                    continue
+                cmd_files, _, _ = find_command_source(cli_dir, cmd_path)
+                if cmd_files and flag_declared_in(cmd_files, flag):
+                    continue
+                if persistent_flag_declared(cli_dir, flag):
+                    continue
+                if cmd_files and flag_declared_via_helper(cli_dir, cmd_files, flag):
+                    continue
+                path_str = " ".join(cmd_path)
+                if flag_declared_in(all_files, flag):
+                    report.findings.append(
+                        Finding(
+                            check="flag-commands",
+                            severity="error",
+                            command=f"{cli_binary} {path_str}",
+                            detail=f"--{flag} is declared elsewhere but not on {path_str}",
+                            evidence=src.name,
+                        )
+                    )
+                else:
+                    report.findings.append(
+                        Finding(
+                            check="flag-commands",
+                            severity="error",
+                            command=f"{cli_binary} {path_str}",
+                            detail=f"--{flag} is not declared anywhere",
+                            evidence=src.name,
+                        )
+                    )
+
+
+def check_positional_args(cli_dir: Path, sources: list[Path], cli_binary: str, report: Report) -> None:
+    for src in sources:
+        for cmd_path, positional, _flags in extract_recipes(src, cli_binary, cli_dir):
+            report.recipes_checked += 1
+            _files, use_str, args_info = find_command_source(cli_dir, cmd_path)
+            if not use_str:
+                continue  # command not found — not our job to flag here
+            _, required, optional, variadic = parse_use(use_str)
+            min_ok = required
+            max_ok = float("inf") if variadic else required + optional
+            if args_info:
+                validator, arg = args_info
+                try:
+                    n = int(arg) if arg else 0
+                except ValueError:
+                    n = 0
+                if validator == "ExactArgs":
+                    min_ok = max_ok = n
+                elif validator == "MinimumNArgs":
+                    min_ok = n
+                    max_ok = float("inf")
+                elif validator == "MaximumNArgs":
+                    min_ok = 0
+                    max_ok = n
+                elif validator == "NoArgs":
+                    min_ok = max_ok = 0
+            actual = len(positional)
+            if min_ok <= actual <= max_ok:
                 continue
-            if flag_declared_in(all_files, flag):
-                continue
-            seen.add(flag)
+
             path_str = " ".join(cmd_path)
+            # Classify common false-positive patterns.
+            # FP-1: shell command-substitution residue inside an --arg value
+            # (parser may have kept `$(dub-pp-cli links stale ...)` contents).
+            # FP-2: parent command whose first positional arg happens to be a
+            # valid cobra subcommand name (e.g., `associations companies`).
+            fp = False
+            if any(p.startswith("$") for p in positional):
+                fp = True
+            # For single-token cmd_path where positional[0] is lowercase+alpha,
+            # the parser may have under-counted cmd_path. Accept hyphens AND
+            # underscores so snake_case subcommands (e.g. category_page_query
+            # from a GraphQL BFF expansion) classify as false positives.
+            if len(cmd_path) == 1 and positional and re.match(r"^[a-z][a-z0-9_-]+$", positional[0]):
+                fp = True
+
+            max_display = "∞" if max_ok == float("inf") else int(max_ok)
+            evidence_args = " ".join(positional) or "(none)"
             report.findings.append(
                 Finding(
-                    check="flag-names",
-                    severity="error",
+                    check="positional-args",
+                    severity="error" if not fp else "warning",
                     command=f"{cli_binary} {path_str}",
-                    detail=f"--{flag} is referenced in SKILL.md but not declared in any internal/cli/*.go",
+                    detail=f'got {actual} positional args; Use: "{use_str}" expects {min_ok}–{max_display}',
+                    evidence=f"{src.name}: {evidence_args}",
+                    likely_false_positive=fp,
                 )
             )
-
-
-def check_flag_commands(cli_dir: Path, skill: Path, cli_binary: str, report: Report) -> None:
-    all_files = list((cli_dir / "internal/cli").glob("*.go"))
-    recipes = extract_recipes(skill, cli_binary, cli_dir)
-    for cmd_path, _positional, flags in recipes:
-        for raw_flag in flags:
-            flag = raw_flag.lstrip("-")
-            if flag in COMMON_FLAGS:
-                continue
-            cmd_files, _, _ = find_command_source(cli_dir, cmd_path)
-            if cmd_files and flag_declared_in(cmd_files, flag):
-                continue
-            if persistent_flag_declared(cli_dir, flag):
-                continue
-            if cmd_files and flag_declared_via_helper(cli_dir, cmd_files, flag):
-                continue
-            path_str = " ".join(cmd_path)
-            if flag_declared_in(all_files, flag):
-                report.findings.append(
-                    Finding(
-                        check="flag-commands",
-                        severity="error",
-                        command=f"{cli_binary} {path_str}",
-                        detail=f"--{flag} is declared elsewhere but not on {path_str}",
-                    )
-                )
-            else:
-                report.findings.append(
-                    Finding(
-                        check="flag-commands",
-                        severity="error",
-                        command=f"{cli_binary} {path_str}",
-                        detail=f"--{flag} is not declared anywhere",
-                    )
-                )
-
-
-def check_positional_args(cli_dir: Path, skill: Path, cli_binary: str, report: Report) -> None:
-    recipes = extract_recipes(skill, cli_binary, cli_dir)
-    report.recipes_checked = len(recipes)
-    for cmd_path, positional, _flags in recipes:
-        _files, use_str, args_info = find_command_source(cli_dir, cmd_path)
-        if not use_str:
-            continue  # command not found — not our job to flag here
-        _, required, optional, variadic = parse_use(use_str)
-        min_ok = required
-        max_ok = float("inf") if variadic else required + optional
-        if args_info:
-            validator, arg = args_info
-            try:
-                n = int(arg) if arg else 0
-            except ValueError:
-                n = 0
-            if validator == "ExactArgs":
-                min_ok = max_ok = n
-            elif validator == "MinimumNArgs":
-                min_ok = n
-                max_ok = float("inf")
-            elif validator == "MaximumNArgs":
-                min_ok = 0
-                max_ok = n
-            elif validator == "NoArgs":
-                min_ok = max_ok = 0
-        actual = len(positional)
-        if min_ok <= actual <= max_ok:
-            continue
-
-        path_str = " ".join(cmd_path)
-        # Classify common false-positive patterns.
-        # FP-1: shell command-substitution residue inside an --arg value
-        # (parser may have kept `$(dub-pp-cli links stale ...)` contents).
-        # FP-2: parent command whose first positional arg happens to be a
-        # valid cobra subcommand name (e.g., `associations companies`).
-        fp = False
-        if any(p.startswith("$") for p in positional):
-            fp = True
-        # For single-token cmd_path where positional[0] is lowercase+alpha,
-        # the parser may have under-counted cmd_path. Accept hyphens AND
-        # underscores so snake_case subcommands (e.g. category_page_query
-        # from a GraphQL BFF expansion) classify as false positives.
-        if len(cmd_path) == 1 and positional and re.match(r"^[a-z][a-z0-9_-]+$", positional[0]):
-            fp = True
-
-        max_display = "∞" if max_ok == float("inf") else int(max_ok)
-        report.findings.append(
-            Finding(
-                check="positional-args",
-                severity="error" if not fp else "warning",
-                command=f"{cli_binary} {path_str}",
-                detail=f'got {actual} positional args; Use: "{use_str}" expects {min_ok}–{max_display}',
-                evidence=" ".join(positional) or "(none)",
-                likely_false_positive=fp,
-            )
-        )
 
 
 def _extract_inline_commands(skill_text: str, cli_binary: str) -> list[list[str]]:
@@ -867,31 +879,36 @@ def _extract_inline_commands(skill_text: str, cli_binary: str) -> list[list[str]
     return paths
 
 
-def check_unknown_commands(cli_dir: Path, skill: Path, cli_binary: str, report: Report) -> None:
-    """Report command paths in SKILL.md that have no matching cobra Use:
-    declaration in internal/cli/*.go. Source paths come from two surfaces:
+def check_unknown_commands(cli_dir: Path, sources: list[Path], cli_binary: str, report: Report) -> None:
+    """Report command paths in prose sources that have no matching cobra
+    Use: declaration in internal/cli/*.go. Surfaces walked:
 
-      - Bash recipes (extract_recipes), which the other checks already walk
-        but skip silently when the command is missing
-      - Inline backtick references inside the `## Command Reference` section
+      - Bash recipes (extract_recipes) from every prose source, which the
+        other checks already walk but skip silently when the command is
+        missing
+      - Inline backtick references inside SKILL.md's `## Command Reference`
+        section (SKILL.md-specific structural surface; README.md has no
+        equivalent canonical section)
 
-    Each unique cmd_path is reported at most once per SKILL.md.
+    Each unique cmd_path is reported at most once across all sources.
 
     Uses the in-repo find_command_source which walks the rootCmd.AddCommand
     graph and resolves multi-level command paths (e.g., `links stale` vs
     `profile save`) without false-positive collisions on shared leaf names.
     """
-    skill_text = read_utf8(skill)
     seen: set[tuple[str, ...]] = set()
-    sources: list[tuple[list[str], str]] = []
+    refs: list[tuple[list[str], str]] = []
 
-    for cmd_path, _pos, _flags in extract_recipes(skill, cli_binary, cli_dir):
-        if cmd_path:
-            sources.append((cmd_path, "bash recipe"))
-    for cmd_path in _extract_inline_commands(skill_text, cli_binary):
-        sources.append((cmd_path, "Command Reference inline"))
+    for src in sources:
+        for cmd_path, _pos, _flags in extract_recipes(src, cli_binary, cli_dir):
+            if cmd_path:
+                refs.append((cmd_path, f"bash recipe ({src.name})"))
+        if src.name == "SKILL.md":
+            skill_text = read_utf8(src)
+            for cmd_path in _extract_inline_commands(skill_text, cli_binary):
+                refs.append((cmd_path, "Command Reference inline (SKILL.md)"))
 
-    for cmd_path, surface in sources:
+    for cmd_path, surface in refs:
         if not cmd_path:
             continue
         head = cmd_path[0]
@@ -951,6 +968,21 @@ def derive_cli_binary(cli_dir: Path) -> str:
     return cli_dir.name + "-pp-cli"
 
 
+def prose_sources(cli_dir: Path) -> list[Path]:
+    """Return the ordered prose files to scan for bash recipes referencing
+    the CLI binary. SKILL.md is required (validated by run_checks);
+    README.md is scanned when present because Quick Start blocks and other
+    user-facing examples there can drift the same way SKILL.md does, and
+    catching them at shipcheck time prevents broken copy-paste examples
+    from reaching the published library.
+    """
+    sources = [cli_dir / "SKILL.md"]
+    readme = cli_dir / "README.md"
+    if readme.exists():
+        sources.append(readme)
+    return sources
+
+
 def run_checks(cli_dir: Path, only: set[str] | None) -> Report:
     skill = cli_dir / "SKILL.md"
     if not skill.exists():
@@ -962,20 +994,21 @@ def run_checks(cli_dir: Path, only: set[str] | None) -> Report:
 
     cli_binary = derive_cli_binary(cli_dir)
     report = Report(cli_dir=str(cli_dir), skill_path=str(skill))
+    sources = prose_sources(cli_dir)
 
     checks = only or {"flag-names", "flag-commands", "positional-args", "unknown-command"}
     if "flag-names" in checks:
         report.checks_run.append("flag-names")
-        check_flag_names(cli_dir, skill, cli_binary, report)
+        check_flag_names(cli_dir, sources, cli_binary, report)
     if "flag-commands" in checks:
         report.checks_run.append("flag-commands")
-        check_flag_commands(cli_dir, skill, cli_binary, report)
+        check_flag_commands(cli_dir, sources, cli_binary, report)
     if "positional-args" in checks:
         report.checks_run.append("positional-args")
-        check_positional_args(cli_dir, skill, cli_binary, report)
+        check_positional_args(cli_dir, sources, cli_binary, report)
     if "unknown-command" in checks:
         report.checks_run.append("unknown-command")
-        check_unknown_commands(cli_dir, skill, cli_binary, report)
+        check_unknown_commands(cli_dir, sources, cli_binary, report)
     return report
 
 

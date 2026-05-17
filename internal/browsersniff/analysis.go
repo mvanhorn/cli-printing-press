@@ -134,14 +134,15 @@ func unmarshalGenerationHints(data []byte) ([]string, error) {
 }
 
 type TrafficAnalysisSummary struct {
-	TargetURL        string         `json:"target_url,omitempty"`
-	CapturedAt       string         `json:"captured_at,omitempty"`
-	EntryCount       int            `json:"entry_count"`
-	APIEntryCount    int            `json:"api_entry_count"`
-	NoiseEntryCount  int            `json:"noise_entry_count"`
-	HostDistribution map[string]int `json:"host_distribution,omitempty"`
-	TimeStart        string         `json:"time_start,omitempty"`
-	TimeEnd          string         `json:"time_end,omitempty"`
+	TargetURL               string         `json:"target_url,omitempty"`
+	CapturedAt              string         `json:"captured_at,omitempty"`
+	EntryCount              int            `json:"entry_count"`
+	APIEntryCount           int            `json:"api_entry_count"`
+	NoiseEntryCount         int            `json:"noise_entry_count"`
+	HostDistribution        map[string]int `json:"host_distribution,omitempty"`
+	HTTPVersionDistribution map[string]int `json:"http_version_distribution,omitempty"`
+	TimeStart               string         `json:"time_start,omitempty"`
+	TimeEnd                 string         `json:"time_end,omitempty"`
 }
 
 // EvidenceRef cites a piece of evidence for an observation. Two flavors:
@@ -599,12 +600,13 @@ func entryClassificationKey(entry EnrichedEntry) string {
 
 func buildTrafficSummary(capture *EnrichedCapture, apiEntries []EnrichedEntry, noiseEntries []EnrichedEntry) TrafficAnalysisSummary {
 	summary := TrafficAnalysisSummary{
-		TargetURL:        capture.TargetURL,
-		CapturedAt:       capture.CapturedAt,
-		EntryCount:       len(capture.Entries),
-		APIEntryCount:    len(apiEntries),
-		NoiseEntryCount:  len(noiseEntries),
-		HostDistribution: map[string]int{},
+		TargetURL:               capture.TargetURL,
+		CapturedAt:              capture.CapturedAt,
+		EntryCount:              len(capture.Entries),
+		APIEntryCount:           len(apiEntries),
+		NoiseEntryCount:         len(noiseEntries),
+		HostDistribution:        map[string]int{},
+		HTTPVersionDistribution: map[string]int{},
 	}
 	var start *time.Time
 	var end *time.Time
@@ -612,6 +614,9 @@ func buildTrafficSummary(capture *EnrichedCapture, apiEntries []EnrichedEntry, n
 		host := extractHost(entry.URL)
 		if host != "" {
 			summary.HostDistribution[host]++
+		}
+		if v := NormalizeHTTPVersion(entry.HTTPVersion); v != "" {
+			summary.HTTPVersionDistribution[v]++
 		}
 		parsed, ok := parseEntryTime(entry.StartedDateTime)
 		if !ok {
@@ -628,6 +633,9 @@ func buildTrafficSummary(capture *EnrichedCapture, apiEntries []EnrichedEntry, n
 	}
 	if len(summary.HostDistribution) == 0 {
 		summary.HostDistribution = nil
+	}
+	if len(summary.HTTPVersionDistribution) == 0 {
+		summary.HTTPVersionDistribution = nil
 	}
 	if start != nil {
 		summary.TimeStart = start.Format(time.RFC3339Nano)

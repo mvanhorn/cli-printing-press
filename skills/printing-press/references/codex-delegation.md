@@ -24,19 +24,27 @@ When `CODEX_MODE` is true, delegate code-writing tasks to Codex CLI. Claude stil
 
    c. **Assemble prompt** — Build a CODEX_PROMPT using the appropriate task type template (see below).
 
-   d. **Delegate** — Pipe to Codex:
+   d. **Delegate** — Remove any stale completion marker from a prior task, then pipe to Codex:
    ```bash
    # Model and reasoning effort inherit from ~/.codex/config.toml. Do not pin -m / -c here.
-   cd "$PRESS_LIBRARY/<api>-pp-cli" && echo "$CODEX_PROMPT" | codex exec \
+   cd "$PRESS_LIBRARY/<api>-pp-cli" && rm -f _codex-result.json && echo "$CODEX_PROMPT" | codex exec \
      --yolo \
      -
    ```
 
-   e. **Validate** — Check the result:
+   e. **Validate** — Check the completion marker first (self-describing on failure), then the build:
    ```bash
-   cd "$PRESS_LIBRARY/<api>-pp-cli" && go build ./... && go vet ./...
+   cd "$PRESS_LIBRARY/<api>-pp-cli"
+   if [ ! -f _codex-result.json ] || [ "$(jq -r '.status // empty' _codex-result.json 2>/dev/null)" != "complete" ]; then
+     echo "codex output marker missing — partial work may be present in $PWD; review before continuing" >&2
+     false
+   else
+     go build ./... && go vet ./...
+   fi
    ```
    Also verify `git diff --stat` shows a non-empty diff.
+
+   A missing or non-complete marker means Codex exited before finishing the prompt (sandbox abort, OOM, SIGINT, internal toolchain crash); the `if` branch prints the diagnostic itself so the agent does not have to second-guess which arm failed. Fall through to step (g) as a failure. Do NOT proceed to the next priority task with whatever Codex managed to write before bailing.
 
    f. **On success** — Discard the restore point and reset the failure counter:
    ```bash
@@ -92,6 +100,10 @@ CONSTRAINTS:
 
 VERIFY: After making changes, run:
   cd . && go build ./... && go vet ./...
+
+COMPLETION MARKER: After VERIFY succeeds (build green, vet clean), and only then, write a JSON object to _codex-result.json in the cwd:
+  {"status":"complete","files_written":["internal/store/store.go"],"timestamp":"<ISO 8601 UTC, e.g. 2026-05-16T12:00:00Z>"}
+If you bail, hit a fatal error, or VERIFY fails, do NOT write this file. The parent skill uses its presence and "status":"complete" as the only signal that the prompt ran end-to-end; missing marker is treated as a partial-completion failure regardless of process exit code.
 ```
 
 **Workflow command task:**
@@ -129,6 +141,10 @@ CONSTRAINTS:
 
 VERIFY: After making changes, run:
   cd . && go build ./... && go vet ./...
+
+COMPLETION MARKER: After VERIFY succeeds (build green, vet clean), and only then, write a JSON object to _codex-result.json in the cwd:
+  {"status":"complete","files_written":["internal/cli/<command>.go","internal/cli/root.go"],"timestamp":"<ISO 8601 UTC>"}
+If you bail, hit a fatal error, or VERIFY fails, do NOT write this file. The parent skill uses its presence and "status":"complete" as the only signal that the prompt ran end-to-end; missing marker is treated as a partial-completion failure regardless of process exit code.
 ```
 
 **Transcendence command task:**
@@ -164,6 +180,10 @@ CONSTRAINTS:
 
 VERIFY: After making changes, run:
   cd . && go build ./... && go vet ./...
+
+COMPLETION MARKER: After VERIFY succeeds (build green, vet clean), and only then, write a JSON object to _codex-result.json in the cwd:
+  {"status":"complete","files_written":["internal/cli/<command>.go","internal/cli/root.go"],"timestamp":"<ISO 8601 UTC>"}
+If you bail, hit a fatal error, or VERIFY fails, do NOT write this file. The parent skill uses its presence and "status":"complete" as the only signal that the prompt ran end-to-end; missing marker is treated as a partial-completion failure regardless of process exit code.
 ```
 
 ## Phase 4: Codex Delegation (Fixes)
@@ -208,16 +228,30 @@ When `CODEX_MODE` is true, delegate each bug fix to Codex. The shipcheck tools t
 
    VERIFY: After making changes, run:
      cd . && go build ./... && go vet ./...
+
+   COMPLETION MARKER: After VERIFY succeeds (build green, vet clean), and only then, write a JSON object to _codex-result.json in the cwd:
+     {"status":"complete","files_written":["<exact file path>"],"timestamp":"<ISO 8601 UTC>"}
+   If you bail, hit a fatal error, or VERIFY fails, do NOT write this file. The parent skill uses its presence and "status":"complete" as the only signal that the prompt ran end-to-end; missing marker is treated as a partial-completion failure regardless of process exit code.
    ```
 
    ```bash
    # Model and reasoning effort inherit from ~/.codex/config.toml. Do not pin -m / -c here.
-   cd "$PRESS_LIBRARY/<api>-pp-cli" && echo "$CODEX_PROMPT" | codex exec \
+   cd "$PRESS_LIBRARY/<api>-pp-cli" && rm -f _codex-result.json && echo "$CODEX_PROMPT" | codex exec \
      --yolo \
      -
    ```
 
-5. **Validate** — same as Phase 3: `go build`, `go vet`, non-empty diff.
+5. **Validate** — same as Phase 3: check the completion marker first (self-describing on failure), then build and vet:
+   ```bash
+   cd "$PRESS_LIBRARY/<api>-pp-cli"
+   if [ ! -f _codex-result.json ] || [ "$(jq -r '.status // empty' _codex-result.json 2>/dev/null)" != "complete" ]; then
+     echo "codex output marker missing — partial work may be present in $PWD; review before continuing" >&2
+     false
+   else
+     go build ./... && go vet ./...
+   fi
+   ```
+   Also verify `git diff --stat` shows a non-empty diff. The `if` branch prints the diagnostic itself before exiting non-zero, so the agent does not have to second-guess which arm failed; fall through to step 7.
 
 6. **On success** — `git stash drop`, reset `CODEX_CONSECUTIVE_FAILURES=0`.
 

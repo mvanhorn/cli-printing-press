@@ -27,13 +27,15 @@ const (
 const (
 	HTTPTransportStandard        = "standard"          // default for official API clients
 	HTTPTransportBrowserHTTP     = "browser-http"      // stdlib transport with HTTP/2 disabled for browser-facing web surfaces
-	HTTPTransportBrowserChrome   = "browser-chrome"    // Chrome-impersonated transport for browser-facing web surfaces
+	HTTPTransportBrowserChrome   = "browser-chrome"    // Chrome-impersonated transport for browser-facing web surfaces (no version force; Chrome negotiates)
+	HTTPTransportBrowserChromeH2 = "browser-chrome-h2" // Chrome-impersonated transport forced through HTTP/2 for origins that serve H/2 but not H/3
 	HTTPTransportBrowserChromeH3 = "browser-chrome-h3" // Chrome-impersonated transport forced through HTTP/3 for stricter bot screens
 )
 
 const (
-	ResponseFormatJSON = "json"
-	ResponseFormatHTML = "html"
+	ResponseFormatJSON   = "json"
+	ResponseFormatHTML   = "html"
+	ResponseFormatBinary = "binary"
 )
 
 const (
@@ -126,31 +128,40 @@ type APISpec struct {
 	// the API-name convention (e.g. {tenant} resolved from ST_TENANT_ID
 	// across every ServiceTitan module). Populated from the OpenAPI
 	// `info.x-tenant-env-var` extension or set directly in internal YAML.
-	EndpointTemplateEnvOverrides map[string]string   `yaml:"endpoint_template_env_overrides,omitempty" json:"endpoint_template_env_overrides,omitempty"`
-	Owner                        string              `yaml:"owner,omitempty" json:"owner,omitempty"`                   // GitHub owner for import paths and Homebrew tap
-	OwnerName                    string              `yaml:"owner_name,omitempty" json:"owner_name,omitempty"`         // Display name (e.g. "Trevin Chow") for prose surfaces — Hermes author:, README byline. Distinct from Owner (slug) which drives module paths and copyright headers.
-	Printer                      string              `yaml:"printer,omitempty" json:"printer,omitempty"`               // GitHub @handle of the human who ran the press for this CLI. Drives the per-CLI README byline link and the registry-side attribution. Distinct from Owner (the API-spec owner / wrapper-author identity).
-	PrinterName                  string              `yaml:"printer_name,omitempty" json:"printer_name,omitempty"`     // Display name of the printer (e.g. "Matt Van Horn") for prose surfaces — README byline parenthetical. Resolution path mirrors OwnerName: raw git config user.name, no slug fallback, no "USER" sentinel.
-	Kind                         string              `yaml:"kind,omitempty" json:"kind,omitempty"`                     // "rest" (default) or "synthetic" — synthetic CLIs aggregate multiple sources beyond the spec; dogfood's path-validity check is relaxed accordingly
-	SpecSource                   string              `yaml:"spec_source,omitempty" json:"spec_source,omitempty"`       // official, community, sniffed, docs — affects generated client defaults
-	ClientPattern                string              `yaml:"client_pattern,omitempty" json:"client_pattern,omitempty"` // rest (default), proxy-envelope — affects generated HTTP client
-	HTTPTransport                string              `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-http, browser-chrome, or browser-chrome-h3
-	HealthCheckPath              string              `yaml:"health_check_path,omitempty" json:"health_check_path,omitempty"`
-	ProxyRoutes                  map[string]string   `yaml:"proxy_routes,omitempty" json:"proxy_routes,omitempty"`    // path prefix → service name for proxy-envelope routing
-	BearerRefresh                BearerRefreshConfig `yaml:"bearer_refresh,omitempty" json:"bearer_refresh,omitzero"` // live-source metadata for rotating public client bearer tokens
-	WebsiteURL                   string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`      // product/company website (not the API base URL)
-	Category                     string              `yaml:"category,omitempty" json:"category,omitempty"`            // catalog category (e.g., productivity, developer-tools) — used for library install path
-	Auth                         AuthConfig          `yaml:"auth" json:"auth"`
-	TierRouting                  TierRoutingConfig   `yaml:"tier_routing,omitempty" json:"tier_routing,omitzero"`
-	RequiredHeaders              []RequiredHeader    `yaml:"required_headers,omitempty" json:"required_headers,omitempty"`
-	Config                       ConfigSpec          `yaml:"config" json:"config"`
-	Resources                    map[string]Resource `yaml:"resources" json:"resources"`
-	Types                        map[string]TypeDef  `yaml:"types" json:"types"`
-	ExtraCommands                []ExtraCommand      `yaml:"extra_commands,omitempty" json:"extra_commands,omitempty"` // hand-written cobra commands declared so SKILL.md can document them; spec-only metadata, no code generated
-	Cache                        CacheConfig         `yaml:"cache,omitempty" json:"cache"`                             // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
-	Share                        ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
-	MCP                          MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, the emitted MCP binary is stdio-only (today's default). Opting into http adds a --transport/--addr flag surface so the same binary can serve cloud-hosted agents.
-	Throttling                   ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
+	EndpointTemplateEnvOverrides map[string]string `yaml:"endpoint_template_env_overrides,omitempty" json:"endpoint_template_env_overrides,omitempty"`
+	// EndpointTemplateVarDefaults maps a placeholder in EndpointTemplateVars
+	// to a spec-declared default value. Populated for server-URL variables
+	// (OpenAPI `servers[0].url.variables.<name>.default`) so the generator
+	// can emit a runtime fallback in config.Load() — when the user's env
+	// var is unset, the default substitutes into BaseURL and doctor still
+	// has a real URL to probe. Path-positional templates (x-tenant-env-var
+	// style) leave this empty; there is no spec-level default for a
+	// tenant ID.
+	EndpointTemplateVarDefaults map[string]string   `yaml:"endpoint_template_var_defaults,omitempty" json:"endpoint_template_var_defaults,omitempty"`
+	Owner                       string              `yaml:"owner,omitempty" json:"owner,omitempty"`                   // GitHub owner for import paths and Homebrew tap
+	OwnerName                   string              `yaml:"owner_name,omitempty" json:"owner_name,omitempty"`         // Display name (e.g. "Trevin Chow") for prose surfaces — Hermes author:, README byline. Distinct from Owner (slug) which drives module paths and copyright headers.
+	Printer                     string              `yaml:"printer,omitempty" json:"printer,omitempty"`               // GitHub @handle of the human who ran the press for this CLI. Drives the per-CLI README byline link and the registry-side attribution. Distinct from Owner (the API-spec owner / wrapper-author identity).
+	PrinterName                 string              `yaml:"printer_name,omitempty" json:"printer_name,omitempty"`     // Display name of the printer (e.g. "Matt Van Horn") for prose surfaces — README byline parenthetical. Resolution path mirrors OwnerName: raw git config user.name, no slug fallback, no "USER" sentinel.
+	Kind                        string              `yaml:"kind,omitempty" json:"kind,omitempty"`                     // "rest" (default) or "synthetic" — synthetic CLIs aggregate multiple sources beyond the spec; dogfood's path-validity check is relaxed accordingly
+	SpecSource                  string              `yaml:"spec_source,omitempty" json:"spec_source,omitempty"`       // official, community, sniffed, docs — affects generated client defaults
+	ClientPattern               string              `yaml:"client_pattern,omitempty" json:"client_pattern,omitempty"` // rest (default), proxy-envelope — affects generated HTTP client
+	HTTPTransport               string              `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-http, browser-chrome, browser-chrome-h2, or browser-chrome-h3
+	HealthCheckPath             string              `yaml:"health_check_path,omitempty" json:"health_check_path,omitempty"`
+	ProxyRoutes                 map[string]string   `yaml:"proxy_routes,omitempty" json:"proxy_routes,omitempty"`    // path prefix → service name for proxy-envelope routing
+	BearerRefresh               BearerRefreshConfig `yaml:"bearer_refresh,omitempty" json:"bearer_refresh,omitzero"` // live-source metadata for rotating public client bearer tokens
+	WebsiteURL                  string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`      // product/company website (not the API base URL)
+	Category                    string              `yaml:"category,omitempty" json:"category,omitempty"`            // catalog category (e.g., productivity, developer-tools) — used for library install path
+	Auth                        AuthConfig          `yaml:"auth" json:"auth"`
+	TierRouting                 TierRoutingConfig   `yaml:"tier_routing,omitempty" json:"tier_routing,omitzero"`
+	RequiredHeaders             []RequiredHeader    `yaml:"required_headers,omitempty" json:"required_headers,omitempty"`
+	Config                      ConfigSpec          `yaml:"config" json:"config"`
+	Resources                   map[string]Resource `yaml:"resources" json:"resources"`
+	Types                       map[string]TypeDef  `yaml:"types" json:"types"`
+	ExtraCommands               []ExtraCommand      `yaml:"extra_commands,omitempty" json:"extra_commands,omitempty"` // hand-written cobra commands declared so SKILL.md can document them; spec-only metadata, no code generated
+	Cache                       CacheConfig         `yaml:"cache,omitempty" json:"cache"`                             // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
+	Share                       ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
+	MCP                         MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, the emitted MCP binary is stdio-only (today's default). Opting into http adds a --transport/--addr flag surface so the same binary can serve cloud-hosted agents.
+	Throttling                  ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
 }
 
 type TierRoutingConfig struct {
@@ -195,6 +206,16 @@ func (s *APISpec) EndpointTemplateEnvName(placeholder string) string {
 // manifest emitter can reuse the same rule without importing the generator.
 func DefaultEndpointTemplateEnvName(apiName, placeholder string) string {
 	return strings.ToUpper(strings.ReplaceAll(naming.Snake(apiName), "-", "_") + "_" + strings.ReplaceAll(naming.Snake(placeholder), "-", "_"))
+}
+
+// EndpointTemplateDefault returns the spec-declared default value for the
+// given placeholder, or "" when none is registered. Empty for path-positional
+// templates that have no spec-level fallback.
+func (s *APISpec) EndpointTemplateDefault(placeholder string) string {
+	if s == nil {
+		return ""
+	}
+	return s.EndpointTemplateVarDefaults[placeholder]
 }
 
 // IsEndpointTemplateVar reports whether the given placeholder name appears
@@ -352,15 +373,22 @@ func (s *APISpec) EffectiveHTTPTransport() string {
 		return HTTPTransportStandard
 	}
 	switch s.HTTPTransport {
-	case HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
+	case HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH2, HTTPTransportBrowserChromeH3:
 		return s.HTTPTransport
 	}
+	// Defaults map to the explicit -h2 variant. The bare "browser-chrome"
+	// enum means "no version force"; default-sniffed and
+	// browser-auth-for-HTML specs surface their H/2 force through the
+	// explicit "-h2" enum so the spec field always names the wire
+	// protocol the runtime will pick. browser-sniff overrides this with
+	// HAR-driven mapping in ApplyReachabilityDefaults before
+	// EffectiveHTTPTransport runs.
 	if s.usesBrowserAuthForHTML() {
-		return HTTPTransportBrowserChrome
+		return HTTPTransportBrowserChromeH2
 	}
 	switch s.SpecSource {
 	case "community", "sniffed":
-		return HTTPTransportBrowserChrome
+		return HTTPTransportBrowserChromeH2
 	default:
 		return HTTPTransportStandard
 	}
@@ -377,7 +405,7 @@ func (s *APISpec) usesBrowserAuthForHTML() bool {
 
 func (s *APISpec) UsesBrowserHTTPTransport() bool {
 	switch s.EffectiveHTTPTransport() {
-	case HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
+	case HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH2, HTTPTransportBrowserChromeH3:
 		return true
 	default:
 		return false
@@ -388,17 +416,50 @@ func (s *APISpec) UsesBrowserHTTP3Transport() bool {
 	return s.EffectiveHTTPTransport() == HTTPTransportBrowserChromeH3
 }
 
+func (s *APISpec) UsesBrowserHTTP2Transport() bool {
+	return s.EffectiveHTTPTransport() == HTTPTransportBrowserChromeH2
+}
+
 func (s *APISpec) UsesHTTP2DisabledTransport() bool {
 	return s.EffectiveHTTPTransport() == HTTPTransportBrowserHTTP
 }
 
 func (s *APISpec) UsesBrowserManagedUserAgent() bool {
 	switch s.EffectiveHTTPTransport() {
-	case HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
+	case HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH2, HTTPTransportBrowserChromeH3:
 		return true
 	default:
 		return false
 	}
+}
+
+// UsesBrowserLikeUserAgent reports whether the generated CLI should
+// default to a browser-shaped User-Agent rather than the
+// `<cli>-pp-cli/<version>` script identifier. Triggered by:
+//   - Kind: synthetic — browser-sniffed specs typically talk to
+//     origins whose WAFs (Wordfence, Imperva, Akamai bot-mode,
+//     DataDome, Cloudflare bot-fight) flag the script-shaped UA as a
+//     bot and answer with 5xx, 403, or a challenge redirect.
+//   - Auth.Type in {cookie, composed, session_handshake} — same
+//     bot-detection surface; these CLIs are almost always speaking to
+//     a website-itself rather than a public API.
+//
+// The browser-managed transports (chrome, chrome-h3) handle their own
+// UA already — UsesBrowserManagedUserAgent short-circuits the template
+// emission entirely there. This method only matters for the standard
+// Go HTTP client path.
+func (s *APISpec) UsesBrowserLikeUserAgent() bool {
+	if s == nil {
+		return false
+	}
+	if s.Kind == KindSynthetic {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(s.Auth.Type)) {
+	case "cookie", "composed", "session_handshake":
+		return true
+	}
+	return false
 }
 
 func (s *APISpec) HasRequiredHeader(name string) bool {
@@ -722,6 +783,24 @@ func (c *AuthConfig) CanonicalEnvVar() *AuthEnvVar {
 		return &c.EnvVarSpecs[0]
 	}
 	return nil
+}
+
+// NewORCaseEnvVarSpecs builds the EnvVarSpecs slice for the OR-case shape
+// IsAuthEnvVarORCase validates: each entry is per_call, non-required, and
+// sensitive. The runtime tries each in turn and returns the first non-empty
+// value. Distinct from the per_call construction in NormalizeEnvVarSpecs,
+// which defaults to Required=true for the canonical-credential shape.
+func NewORCaseEnvVarSpecs(names []string) []AuthEnvVar {
+	specs := make([]AuthEnvVar, 0, len(names))
+	for _, name := range names {
+		specs = append(specs, AuthEnvVar{
+			Name:      name,
+			Kind:      AuthEnvVarKindPerCall,
+			Required:  false,
+			Sensitive: true,
+		})
+	}
+	return specs
 }
 
 // IsAuthEnvVarORCase reports whether all EnvVarSpecs are non-required per_call vars.
@@ -1222,6 +1301,10 @@ func (e Endpoint) UsesHTMLResponse() bool {
 	return e.EffectiveResponseFormat() == ResponseFormatHTML
 }
 
+func (e Endpoint) UsesBinaryResponse() bool {
+	return e.EffectiveResponseFormat() == ResponseFormatBinary
+}
+
 type HTMLExtract struct {
 	Mode         string   `yaml:"mode,omitempty" json:"mode,omitempty"`                   // page (default), links, or embedded-json
 	LinkPrefixes []string `yaml:"link_prefixes,omitempty" json:"link_prefixes,omitempty"` // URL path prefixes to keep when extracting links (mode: links)
@@ -1387,9 +1470,9 @@ type ResponseDiscriminator struct {
 }
 
 type Pagination struct {
-	Type           string `yaml:"type" json:"type"`                         // cursor, offset, page_token
+	Type           string `yaml:"type" json:"type"`                         // cursor, offset, page_token, page
 	LimitParam     string `yaml:"limit_param" json:"limit_param"`           // query param name for page size (limit, maxResults, pageSize)
-	CursorParam    string `yaml:"cursor_param" json:"cursor_param"`         // query param name for cursor (after, pageToken, offset)
+	CursorParam    string `yaml:"cursor_param" json:"cursor_param"`         // query param name for cursor (after, pageToken, offset, page)
 	NextCursorPath string `yaml:"next_cursor_path" json:"next_cursor_path"` // response field with next cursor (nextPageToken, cursor)
 	HasMoreField   string `yaml:"has_more_field" json:"has_more_field"`     // response field indicating more pages (has_more)
 }
@@ -1469,7 +1552,7 @@ func ParseBytes(data []byte) (*APISpec, error) {
 		return nil, fmt.Errorf("parsing yaml: %w", yamlErr)
 	}
 	s.expandOperations()
-	s.enrichPathParams()
+	s.EnrichPathParams()
 	s.promoteParamsToBodyForWriteEndpoints()
 	if err := s.validateReservedNames(); err != nil {
 		return nil, err
@@ -1626,7 +1709,7 @@ var pathParamRe = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 var orGroupTokenRe = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
 
-// enrichPathParams walks every resource and sub-resource endpoint and ensures
+// EnrichPathParams walks every resource and sub-resource endpoint and ensures
 // each `{paramName}` placeholder in the endpoint path is represented in
 // Endpoint.Params with Positional: true, Required: true. The expandOperations
 // path already populates these for shorthand-generated endpoints; explicit
@@ -1642,7 +1725,7 @@ var orGroupTokenRe = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
 // Order is preserved: placeholders are appended in the order they appear in
 // the path so generated cobra `Args: cobra.ExactArgs(N)` sites and the
 // matching `replacePathParam(...args[i])` calls line up.
-func (s *APISpec) enrichPathParams() {
+func (s *APISpec) EnrichPathParams() {
 	for resourceName, r := range s.Resources {
 		s.enrichResourcePathParams(&r)
 		s.Resources[resourceName] = r
@@ -1915,9 +1998,9 @@ func (s *APISpec) Validate() error {
 		return fmt.Errorf("at least one resource is required")
 	}
 	switch s.HTTPTransport {
-	case "", HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
+	case "", HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH2, HTTPTransportBrowserChromeH3:
 	default:
-		return fmt.Errorf("http_transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h3")
+		return fmt.Errorf("http_transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h2, browser-chrome-h3")
 	}
 	if err := validateExtraCommands(s.ExtraCommands); err != nil {
 		return err
@@ -2533,9 +2616,9 @@ func validateTierRoutingResource(s *APISpec, resourcePath string, resource Resou
 
 func validateEndpointResponseFormat(e Endpoint) error {
 	switch e.ResponseFormat {
-	case "", ResponseFormatJSON, ResponseFormatHTML:
+	case "", ResponseFormatJSON, ResponseFormatHTML, ResponseFormatBinary:
 	default:
-		return fmt.Errorf("response_format must be one of: json, html")
+		return fmt.Errorf("response_format must be one of: json, html, binary")
 	}
 	if !e.UsesHTMLResponse() {
 		return nil

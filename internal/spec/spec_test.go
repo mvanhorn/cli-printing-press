@@ -2681,7 +2681,7 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 
 	sniffed := base
 	sniffed.SpecSource = "sniffed"
-	assert.Equal(t, HTTPTransportBrowserChrome, sniffed.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, sniffed.EffectiveHTTPTransport())
 	require.NoError(t, sniffed.Validate())
 
 	browserHTTP := base
@@ -2694,13 +2694,31 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 
 	community := base
 	community.SpecSource = "community"
-	assert.Equal(t, HTTPTransportBrowserChrome, community.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, community.EffectiveHTTPTransport())
+
+	browserChrome := base
+	browserChrome.HTTPTransport = HTTPTransportBrowserChrome
+	assert.Equal(t, HTTPTransportBrowserChrome, browserChrome.EffectiveHTTPTransport())
+	assert.True(t, browserChrome.UsesBrowserHTTPTransport())
+	assert.False(t, browserChrome.UsesBrowserHTTP2Transport())
+	assert.False(t, browserChrome.UsesBrowserHTTP3Transport())
+	require.NoError(t, browserChrome.Validate())
+
+	h2 := base
+	h2.HTTPTransport = HTTPTransportBrowserChromeH2
+	assert.Equal(t, HTTPTransportBrowserChromeH2, h2.EffectiveHTTPTransport())
+	assert.True(t, h2.UsesBrowserHTTPTransport())
+	assert.True(t, h2.UsesBrowserHTTP2Transport())
+	assert.False(t, h2.UsesBrowserHTTP3Transport())
+	assert.True(t, h2.UsesBrowserManagedUserAgent())
+	require.NoError(t, h2.Validate())
 
 	h3 := base
 	h3.HTTPTransport = HTTPTransportBrowserChromeH3
 	assert.Equal(t, HTTPTransportBrowserChromeH3, h3.EffectiveHTTPTransport())
 	assert.True(t, h3.UsesBrowserHTTPTransport())
 	assert.True(t, h3.UsesBrowserHTTP3Transport())
+	assert.False(t, h3.UsesBrowserHTTP2Transport())
 	assert.True(t, h3.UsesBrowserManagedUserAgent())
 	require.NoError(t, h3.Validate())
 
@@ -2718,11 +2736,11 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 			},
 		},
 	}
-	assert.Equal(t, HTTPTransportBrowserChrome, cookieHTML.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, cookieHTML.EffectiveHTTPTransport())
 
 	composedHTML := cookieHTML
 	composedHTML.Auth.Type = "composed"
-	assert.Equal(t, HTTPTransportBrowserChrome, composedHTML.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, composedHTML.EffectiveHTTPTransport())
 
 	jsonCookie := cookieHTML
 	jsonCookie.Resources = map[string]Resource{
@@ -2748,6 +2766,86 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 	invalid := base
 	invalid.HTTPTransport = "lynx"
 	require.ErrorContains(t, invalid.Validate(), "http_transport must be one of")
+}
+
+func TestUsesBrowserLikeUserAgent(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		spec *APISpec
+		want bool
+	}{
+		{
+			name: "documented JSON API stays script-shaped",
+			spec: &APISpec{
+				Name:    "stripe",
+				BaseURL: "https://api.stripe.com",
+				Auth:    AuthConfig{Type: "bearer"},
+			},
+			want: false,
+		},
+		{
+			name: "kind: synthetic flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "bbquality",
+				BaseURL: "https://bbquality.nl",
+				Kind:    KindSynthetic,
+				Auth:    AuthConfig{Type: "bearer"},
+			},
+			want: true,
+		},
+		{
+			name: "cookie auth flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "marktplaats",
+				BaseURL: "https://www.marktplaats.nl",
+				Auth:    AuthConfig{Type: "cookie"},
+			},
+			want: true,
+		},
+		{
+			name: "composed auth flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "picnic",
+				BaseURL: "https://storefront-prod.nl.picnicinternational.com",
+				Auth:    AuthConfig{Type: "composed"},
+			},
+			want: true,
+		},
+		{
+			name: "session_handshake auth flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "openart",
+				BaseURL: "https://openart.ai",
+				Auth:    AuthConfig{Type: "session_handshake"},
+			},
+			want: true,
+		},
+		{
+			name: "auth.type casing is normalized",
+			spec: &APISpec{
+				Name:    "cookieUpper",
+				BaseURL: "https://example.com",
+				Auth:    AuthConfig{Type: "  Cookie  "},
+			},
+			want: true,
+		},
+		{
+			// Nil spec must reach the nil-receiver guard; dispatching via
+			// a typed pointer (not a name-string comparison) ensures the
+			// guard stays under test even if the case name is renamed.
+			name: "nil spec is safe and returns false",
+			spec: nil,
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.spec.UsesBrowserLikeUserAgent())
+		})
+	}
 }
 
 func TestHTMLResponseExtractionValidation(t *testing.T) {

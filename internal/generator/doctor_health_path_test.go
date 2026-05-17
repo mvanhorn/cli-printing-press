@@ -327,6 +327,140 @@ func TestGeneratedDoctor_KeepsExplicitHealthCheckPath(t *testing.T) {
 	assert.Contains(t, string(doctorGo), `healthPath := "api/marketStatus"`)
 }
 
+func TestDeriveAuthVerifyPath_PrioritizesExplicitOverride(t *testing.T) {
+	t.Parallel()
+
+	s := minimalSpec("explicit-verify")
+	s.Auth.VerifyPath = "/operator-vetted"
+	// Add a me-shaped endpoint that would otherwise win.
+	s.Resources["users"] = spec.Resource{
+		Endpoints: map[string]spec.Endpoint{
+			"me": {Method: "GET", Path: "/users/me"},
+		},
+	}
+
+	assert.Equal(t, "/operator-vetted", deriveAuthVerifyPath(s),
+		"explicit Auth.VerifyPath must not be overwritten by the me-shaped heuristic")
+}
+
+func TestDeriveAuthVerifyPath_PicksMeShapedEndpoint(t *testing.T) {
+	t.Parallel()
+
+	s := minimalSpec("me-fallback")
+	s.Resources["users"] = spec.Resource{
+		Endpoints: map[string]spec.Endpoint{
+			"me": {Method: "GET", Path: "/users/me"},
+		},
+	}
+
+	assert.Equal(t, "/users/me", deriveAuthVerifyPath(s),
+		"a me-shaped GET should be discovered when Auth.VerifyPath is unset")
+}
+
+func TestDeriveAuthVerifyPath_FallsBackToEmpty(t *testing.T) {
+	t.Parallel()
+
+	// minimalSpec's only endpoint is /items — not me-shaped. The function
+	// must return "" so the doctor template keeps emitting the existing
+	// "present (not verified)" branch rather than fabricating a probe.
+	s := minimalSpec("no-candidate")
+	assert.Equal(t, "", deriveAuthVerifyPath(s),
+		"no me-shaped tail match must surface as empty so the template fallback wins")
+}
+
+func TestDeriveAuthVerifyPath_NilSpec(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "", deriveAuthVerifyPath(nil))
+}
+
+// TestGeneratedDoctor_DerivesAuthVerifyPathFromMeEndpoint wires the helper
+// through Generate(): a spec with a me-shaped GET and no explicit
+// Auth.VerifyPath must emit a doctor.go that actually probes that endpoint
+// for credential validity, not the "present (not verified)" placeholder.
+func TestGeneratedDoctor_DerivesAuthVerifyPathFromMeEndpoint(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("derive-verify-me")
+	apiSpec.Resources["users"] = spec.Resource{
+		Description: "Users",
+		Endpoints: map[string]spec.Endpoint{
+			"me": {Method: "GET", Path: "/users/me", Description: "Get current user"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "derive-verify-me-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	doctorGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	content := string(doctorGo)
+
+	assert.Contains(t, content, `verifyPath := "/users/me"`,
+		"doctor should probe the derived me-shaped path for credential validity")
+	assert.Contains(t, content, `c.GetWithHeaders(verifyPath`,
+		"doctor should issue the authenticated probe through the configured client")
+	assert.NotContains(t, content, `"present (not verified — set auth.verify_path in spec for an API acceptance check)"`,
+		"the no-verify-path placeholder branch must not be rendered once a path is derived")
+	assert.Equal(t, "/users/me", apiSpec.Auth.VerifyPath,
+		"derived value should be visible on spec after Generate()")
+}
+
+// TestGeneratedDoctor_KeepsExplicitAuthVerifyPath guards the override path:
+// an operator-supplied auth.verify_path must survive Generate() even when the
+// spec also ships a me-shaped endpoint that the heuristic would otherwise pick.
+func TestGeneratedDoctor_KeepsExplicitAuthVerifyPath(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("explicit-verify-override")
+	apiSpec.Auth.VerifyPath = "/operator-vetted"
+	apiSpec.Resources["users"] = spec.Resource{
+		Description: "Users",
+		Endpoints: map[string]spec.Endpoint{
+			"me": {Method: "GET", Path: "/users/me", Description: "Get current user"},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "explicit-verify-override-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	doctorGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	content := string(doctorGo)
+
+	assert.Contains(t, content, `verifyPath := "/operator-vetted"`)
+	assert.NotContains(t, content, `verifyPath := "/users/me"`)
+}
+
+// TestGenerate_AuthVerifyPathDerivationIsIdempotent pins re-entry behavior:
+// regen-merge and mcp-sync re-invoke Generate() on a spec that already saw
+// the derivation pass; the second call must observe the populated value and
+// emit byte-identical output.
+func TestGenerate_AuthVerifyPathDerivationIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("verify-idempotent")
+	apiSpec.Resources["users"] = spec.Resource{
+		Endpoints: map[string]spec.Endpoint{
+			"me": {Method: "GET", Path: "/users/me"},
+		},
+	}
+
+	firstDir := filepath.Join(t.TempDir(), "first")
+	require.NoError(t, New(apiSpec, firstDir).Generate())
+	first, err := os.ReadFile(filepath.Join(firstDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+
+	secondDir := filepath.Join(t.TempDir(), "second")
+	require.NoError(t, New(apiSpec, secondDir).Generate())
+	second, err := os.ReadFile(filepath.Join(secondDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+
+	assert.Equal(t, string(first), string(second),
+		"second Generate() must emit byte-identical doctor.go")
+	assert.Equal(t, "/users/me", apiSpec.Auth.VerifyPath,
+		"derived value should persist on spec across Generate() calls")
+}
+
 // TestGeneratedDoctor_NoCandidateFallsBackToRoot keeps the negative case
 // stable: a spec with nothing me-shaped renders the `/`-probe branch the
 // pre-derivation template has always emitted.

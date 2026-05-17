@@ -25,13 +25,11 @@ Publish a generated CLI from your local library to the [printing-press-library](
 
 The public library treats `library/<category>/<api-slug>/.printing-press.json`
 and `manifest.json` as the source of truth for registry-display fields. Do not
-edit `registry.json` or README catalog cells in publish PRs; the library's
-post-merge workflow refreshes them from the CLI tree. Do regenerate and commit
-the `cli-skills/pp-<api-slug>/SKILL.md` mirror from
-`library/<category>/<api-slug>/SKILL.md` because PR CI verifies mirror parity.
-If a brand-new CLI's mirror is pruned because `registry.json` is behind, fix the
-library mirror generator to discover from `library/`; do not add a registry
-entry solely to satisfy mirror parity.
+edit `registry.json`, README catalog cells, or `cli-skills/pp-<api-slug>/SKILL.md`
+in publish PRs; all three are bot-regenerated post-merge by the library's own
+workflows. The library's `Guard against hand-edits to cli-skills mirror` check
+rejects any fork PR whose commits touch the mirror, so a publish that includes
+the mirror is pre-rejected before review.
 
 ## Setup
 
@@ -434,10 +432,15 @@ Then copy the staged CLI into the publish repo, replacing any existing version:
 rm -rf "$PUBLISH_REPO_DIR/library"/*/"<api-slug>"
 
 # Copy staged CLI into publish repo (slug-keyed directory)
-cp -r "$STAGING_DIR/library/<category>/<cli-name>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>"
+cp -r "$STAGING_DIR/library/<category>/<api-slug>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>"
 
-# Remove binaries (should not be committed)
-rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>"
+# Remove root-level binaries (should not be committed). publish package
+# already strips these before the copy; this rm -f is belt-and-suspenders
+# for the agent path. Cover all three names the Makefile/`go build ./cmd/...`
+# can drop: bare slug, CLI binary, MCP peer.
+rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" \
+      "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>" \
+      "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>-pp-mcp"
 
 # Defense-in-depth: validate printer attribution before README and registry surfaces.
 PRINTER=$(jq -r '.printer // ""' "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press.json")
@@ -455,10 +458,15 @@ if [ -z "$PRINTER_NAME" ]; then
   exit 1
 fi
 
-# Regenerate the flat cli-skills mirror from the library tree so library PR CI passes mirror parity.
-if [ -f "$PUBLISH_REPO_DIR/tools/generate-skills/main.go" ]; then
-  (cd "$PUBLISH_REPO_DIR" && go run ./tools/generate-skills/main.go)
-fi
+# Do NOT regenerate or commit `cli-skills/pp-<api-slug>/SKILL.md` here. The
+# mirror is auto-regenerated post-merge by the library's `generate-skills.yml`
+# workflow via a `[skip ci]` bot commit. Including the mirror in a fork PR is
+# pre-rejected by the library's `Guard against hand-edits to cli-skills mirror`
+# check, which fails on any non-bot commit touching the mirror. Same-repo PRs
+# are auto-handled by the library's `Commit generated convention fixes` step,
+# which is gated on `head.repo.full_name == github.repository`. Do not
+# re-introduce a mirror-regenerator invocation here unless the library's
+# Guard check has been loosened to accept publish-flow commits.
 
 # Verify this changed/new CLI builds and has no reachable Go vulnerabilities from the publish repo
 cd "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" \
@@ -479,7 +487,7 @@ directory:
 rm -rf "$STAGING_PARENT"
 ```
 
-Note: `staged_dir` uses the CLI name (e.g., `espn-pp-cli`) but the publish repo uses the API slug (e.g., `espn`). The copy step handles this rename.
+Note: `staged_dir` is keyed by the API slug (e.g., `espn`), matching the publish repo's directory layout. The copy step is a same-name copy, not a rename.
 
 ## Step 7: Collision Detection & Resolution
 
@@ -727,7 +735,7 @@ git checkout -B feat/<api-slug>
 
 ```bash
 cd "$PUBLISH_REPO_DIR"
-git add library/ cli-skills/
+git add library/
 git commit -m "feat(<api-slug>): add <api-slug>"
 ```
 
@@ -780,7 +788,7 @@ Build the PR description from:
 
 Read `novel_features` from
 `$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press.json` after
-packaging and mirror regeneration. Preserve the manifest order. Do not derive
+packaging. Preserve the manifest order. Do not derive
 this section from README prose, SKILL prose, root help, or memory of the run:
 those surfaces may be summarized or hand-edited, while the packaged manifest is
 the publish-time source of truth. For each entry, include the command, name, and
