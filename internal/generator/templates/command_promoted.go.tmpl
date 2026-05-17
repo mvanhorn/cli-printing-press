@@ -127,6 +127,14 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 
+{{- if .Endpoint.HeaderOverrides}}
+			headerOverrides := map[string]string{
+{{- range .Endpoint.HeaderOverrides}}
+				"{{.Name}}": "{{.Value}}",
+{{- end}}
+			}
+{{- end}}
+
 {{- if .Endpoint.Pagination}}
 {{- if .HasStore}}
 			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", path, map[string]string{
@@ -138,7 +146,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				"{{.Name}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, nil, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
+			}, {{if .Endpoint.HeaderOverrides}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- else}}
 			data, err := paginatedGet(c, path, map[string]string{
 {{- range .Endpoint.Params}}
@@ -149,7 +157,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				"{{.Name}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, nil, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
+			}, {{if .Endpoint.HeaderOverrides}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- end}}
 {{- else}}
 {{- if or (eq (upper .Endpoint.Method) "GET") (eq (upper .Endpoint.Method) "HEAD") (eq (upper .Endpoint.Method) "OPTIONS")}}
@@ -166,9 +174,13 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- if and .HasStore (eq (upper .Endpoint.Method) "GET")}}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, nil)
+			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, {{if .Endpoint.HeaderOverrides}}headerOverrides{{else}}nil{{end}})
 {{- else if eq (upper .Endpoint.Method) "GET"}}
+{{- if .Endpoint.HeaderOverrides}}
+			data, err := c.GetWithHeaders(path, params, headerOverrides)
+{{- else}}
 			data, err := c.Get(path, params)
+{{- end}}
 {{- else if eq (upper .Endpoint.Method) "DELETE"}}
 			data, _, err := c.Delete(path)
 {{- else if or (eq (upper .Endpoint.Method) "POST") (eq (upper .Endpoint.Method) "PUT") (eq (upper .Endpoint.Method) "PATCH")}}
@@ -193,7 +205,11 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			// HEAD/OPTIONS and unknown verbs fall back to GET so generation
 			// stays compileable. Spec authors who genuinely need these verbs
 			// should add a typed client method and a dedicated template branch.
+{{- if .Endpoint.HeaderOverrides}}
+			data, err := c.GetWithHeaders(path, params, headerOverrides)
+{{- else}}
 			data, err := c.Get(path, params)
+{{- end}}
 {{- end}}
 {{- if and .HasStore (ne (upper .Endpoint.Method) "GET")}}
 			prov := attachFreshness(DataProvenance{Source: "live"}, flags)

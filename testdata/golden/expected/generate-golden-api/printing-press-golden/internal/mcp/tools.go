@@ -101,6 +101,16 @@ func RegisterTools(s *server.MCPServer) {
 		makeAPIHandler("GET", "/public/status", []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
+		mcplib.NewTool("reports_export_report-year",
+			mcplib.WithDescription("Download the annual report as a binary file. Required: year."),
+			mcplib.WithString("year", mcplib.Required(), mcplib.Description("Year")),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
+		),
+		makeAPIHandler("GET", "/reports/{year}/export", []mcpParamBinding{{PublicName: "year", WireName: "year", Location: "path"}}, []string{"year"}),
+	)
+	s.AddTool(
 		mcplib.NewTool("reports_summary_get-report-year",
 			mcplib.WithDescription("Get a report summary for a year. Required: year."),
 			mcplib.WithString("year", mcplib.Required(), mcplib.Description("Year")),
@@ -439,7 +449,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 		"api":         "printing-press-golden",
 		"description": "Purpose-built fixture for golden generation coverage.",
 		"archetype":   "project-management",
-		"tool_count":  8,
+		"tool_count":  9,
 		// tool_surface tells agents which surface a capability lives on.
 		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion printing-press-golden-pp-cli binary.",
 		"auth": map[string]any{

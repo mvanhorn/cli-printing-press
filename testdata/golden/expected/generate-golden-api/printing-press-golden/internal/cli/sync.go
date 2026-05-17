@@ -922,6 +922,8 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 		return db.UpsertProjects(data)
 	case "tasks":
 		return db.UpsertTasks(data)
+	case "export":
+		return db.UpsertExport(data)
 	case "summary":
 		return db.UpsertSummary(data)
 	default:

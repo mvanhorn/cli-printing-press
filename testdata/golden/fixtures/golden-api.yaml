@@ -292,3 +292,23 @@ paths:
       responses:
         "200":
           description: OK
+  /reports/{year}/export:
+    get:
+      tags: [reports]
+      operationId: exportReportYear
+      summary: Download the annual report as a binary file
+      parameters:
+        - $ref: "#/components/parameters/ApiVersion"
+        - name: year
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: byte
