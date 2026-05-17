@@ -6,6 +6,7 @@ package client
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -467,9 +468,6 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		if err != nil {
 			return nil, 0, fmt.Errorf("reading response: %w", err)
 		}
-		if !binaryResponse {
-			respBody = sanitizeJSONResponse(respBody)
-		}
 
 		// Success
 		if resp.StatusCode < 400 {
@@ -477,7 +475,22 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 			if method != http.MethodGet && !c.DryRun {
 				c.invalidateCache()
 			}
-			return json.RawMessage(respBody), resp.StatusCode, nil
+			// Non-textual bodies (PDF, zip, image, octet-stream) must not be
+			// run through the JSON sanitizer or returned as raw json.RawMessage
+			// — return a self-describing base64 envelope instead. Textual and
+			// JSON responses fall through to the unchanged path.
+			if isBinaryResponseContentType(resp.Header.Get("Content-Type")) {
+				env, encErr := wrapBinaryResponse(resp.Header.Get("Content-Type"), respBody)
+				if encErr != nil {
+					return nil, 0, encErr
+				}
+				return env, resp.StatusCode, nil
+			}
+			return json.RawMessage(sanitizeJSONResponse(respBody)), resp.StatusCode, nil
+		}
+
+		if !binaryResponse {
+			respBody = sanitizeJSONResponse(respBody)
 		}
 
 		apiErr := &APIError{
@@ -565,6 +578,63 @@ func (c *Client) authHeader() (string, error) {
 		return "", nil
 	}
 	return c.Config.AuthHeader(), nil
+}
+
+// binaryResponseEnvelope wraps a non-textual success body so it survives the
+// json.RawMessage contract every consumer (CLI output, --json, MCP tools)
+// depends on. Without it, raw bytes (PDF, zip, image) are corrupted by
+// sanitizeJSONResponse and emitted as invalid JSON. The _pp_binary
+// discriminator lets callers and agents detect and base64-decode the payload.
+type binaryResponseEnvelope struct {
+	PPBinary    bool   `json:"_pp_binary"`
+	ContentType string `json:"content_type"`
+	Encoding    string `json:"encoding"`
+	Bytes       int    `json:"bytes"`
+	Data        string `json:"data"`
+}
+
+// isBinaryResponseContentType reports whether a successful response with this
+// Content-Type must be base64-wrapped instead of treated as text/JSON. It is
+// deliberately narrow: JSON, */*, XML, and every text/* type (including
+// text/html, so response_format:html CLIs are untouched) pass through
+// unchanged. Only genuinely binary payloads are wrapped.
+func isBinaryResponseContentType(ct string) bool {
+	mt := strings.ToLower(strings.TrimSpace(ct))
+	if i := strings.IndexByte(mt, ';'); i >= 0 {
+		mt = strings.TrimSpace(mt[:i])
+	}
+	if mt == "" {
+		return false
+	}
+	switch {
+	case mt == "application/json", mt == "text/json", mt == "*/*":
+		return false
+	case strings.HasPrefix(mt, "text/"):
+		return false
+	case strings.HasSuffix(mt, "+json"), strings.HasSuffix(mt, "+xml"):
+		return false
+	case mt == "application/xml", mt == "application/xhtml+xml":
+		return false
+	case mt == "application/javascript", mt == "application/ecmascript",
+		mt == "application/x-www-form-urlencoded", mt == "application/graphql":
+		return false
+	}
+	return true
+}
+
+// wrapBinaryResponse marshals body into a self-describing base64 envelope.
+func wrapBinaryResponse(ct string, body []byte) (json.RawMessage, error) {
+	out, err := json.Marshal(binaryResponseEnvelope{
+		PPBinary:    true,
+		ContentType: ct,
+		Encoding:    "base64",
+		Bytes:       len(body),
+		Data:        base64.StdEncoding.EncodeToString(body),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encoding binary response: %w", err)
+	}
+	return json.RawMessage(out), nil
 }
 
 // sanitizeJSONResponse strips known JSONP/XSSI prefixes and UTF-8 BOM from

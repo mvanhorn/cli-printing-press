@@ -35,6 +35,7 @@ var whichIndex = []whichEntry{
 	{Command: "projects tasks list-project", Description: "List project tasks", Group: "projects"},
 	{Command: "projects tasks update-project", Description: "Update project task", Group: "projects"},
 	{Command: "public get-status", Description: "Get public service status", Group: "public"},
+	{Command: "reports export report-year", Description: "Download the annual report as a binary file", Group: "reports"},
 	{Command: "reports summary get-report-year", Description: "Get a report summary for a year", Group: "reports"},
 }
 
