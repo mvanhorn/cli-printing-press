@@ -46,10 +46,14 @@ issue is an action surface. Optimize the issue path for speed and signal:
   to fix it. No priority prefix (`[P1]`), no WU ordinal (`WU-1`) — both
   belong on labels and in the user-facing summary, not in the title that
   someone scans across retros.
-- **Generate bodies inline, never via the Write tool.** Use shell heredocs
-  into variables in a single `Bash` invocation. Writing each body to a file
-  and passing `--body-file` adds a tool round-trip per issue and is the
-  single largest source of perceived latency the skill historically had.
+- **Build bodies inline; never via the Write tool.** Use shell heredocs
+  into variables (or `printf` into bash-resident temp files inside a single
+  `Bash` invocation). Per-WU `Write` tool round-trips are the single largest
+  source of perceived latency the skill historically had. *Bash-resident
+  temp files passed to `gh ... --body-file` are fine* — they're written and
+  consumed inside one Bash call with no tool round-trip and unblock the
+  Phase 6 Step 3 scrub step (`scrub_body` needs a file input/output, and
+  `gh --body-file` is the natural consumer of the scrubbed output).
 - **Run issue creates and comments in parallel.** Each WU's filing is
   independent of every other WU. Background subshells writing to indexed
   temp files, then `wait`, then read in order — the pattern is in Step 3.
@@ -472,7 +476,21 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
   esac
 done
 
-rm -rf "$ISSUE_TMPDIR"
+# Cleanup is conditional on scrub-failed WUs. Those WUs' body files are the
+# canonical hand-redaction source the failure message points at — wiping
+# $ISSUE_TMPDIR would destroy the recovery path. Keep the dir alive when any
+# WU scrub-failed; the agent (or user) can read the body file, hand-redact,
+# and re-run the affected WUs without re-deriving the body. The dir is in
+# $(mktemp -d) so it self-cleans on OS reboot / `tmpwatch` regardless.
+SCRUB_FAILED_COUNT=0
+for KIND in "${OUTCOME_KIND[@]}"; do
+  [ "$KIND" = "scrub-failed" ] && SCRUB_FAILED_COUNT=$((SCRUB_FAILED_COUNT + 1))
+done
+if [ "$SCRUB_FAILED_COUNT" -eq 0 ]; then
+  rm -rf "$ISSUE_TMPDIR"
+else
+  echo "NOTE: $SCRUB_FAILED_COUNT WU body file(s) preserved at $ISSUE_TMPDIR for hand-redaction. Delete manually after retrying the affected WU(s)." >&2
+fi
 ```
 
 Failure modes:
