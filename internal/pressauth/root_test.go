@@ -3,6 +3,8 @@ package pressauth
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -139,5 +141,26 @@ func TestGlobalFlagsRegistered(t *testing.T) {
 		if cmd.PersistentFlags().Lookup(name) == nil {
 			t.Errorf("expected persistent flag --%s on root command", name)
 		}
+	}
+}
+
+func TestConfigFlagOverridesStateDirectory(t *testing.T) {
+	envDir := t.TempDir()
+	configDir := t.TempDir()
+	t.Setenv(stateHomeEnv, envDir)
+
+	if err := os.WriteFile(filepath.Join(envDir, "env-only.example.json"), []byte(`{`), 0o600); err != nil {
+		t.Fatalf("seed env state file: %v", err)
+	}
+
+	stdout, _, err := runCmd([]string{"--config", configDir, "list"})
+	if err != nil {
+		t.Fatalf("list with --config: %v", err)
+	}
+	if strings.Contains(stdout, "env-only.example") {
+		t.Fatalf("--config did not override %s; stdout:\n%s", stateHomeEnv, stdout)
+	}
+	if !strings.Contains(stdout, listEmptyMessage) {
+		t.Fatalf("expected empty config dir output, got:\n%s", stdout)
 	}
 }

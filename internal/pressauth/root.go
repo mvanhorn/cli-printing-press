@@ -12,6 +12,8 @@ package pressauth
 
 import (
 	"errors"
+	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 )
@@ -93,6 +95,15 @@ encryption keys. On first write you'll see a one-time "Always Allow"
 prompt per domain — click Always Allow to skip future prompts.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			if gf.ConfigPath == "" {
+				return nil
+			}
+			if err := os.Setenv(stateHomeEnv, gf.ConfigPath); err != nil {
+				return &ExitError{Code: ExitUsageError, Err: fmt.Errorf("setting state directory: %w", err)}
+			}
+			return nil
+		},
 	}
 
 	rootCmd.PersistentFlags().BoolVar(&gf.JSON, "json", false, "Emit machine-readable JSON instead of human text")

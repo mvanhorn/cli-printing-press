@@ -158,6 +158,32 @@ func TestCookiesZeroExpiryTriggersRefresh(t *testing.T) {
 	}
 }
 
+func TestCookiesCookieOnlySessionSkipsLazyRefresh(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("requires macOS keychain")
+	}
+	domain := uniqueDomain(t)
+	useTempHome(t, domain)
+
+	st := &State{
+		Domain:     domain,
+		CapturedAt: time.Now().UTC(),
+		Cookies:    map[string]string{"session": "cookie-only", "csrftoken": "csrf"},
+		// No JWTCarrierCookie and zero JWTExpiry is the normal cookie-only shape.
+	}
+	if err := Save(st); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+
+	out, _, err := runCookiesCmd(domain)
+	if err != nil {
+		t.Fatalf("cookies cmd: %v", err)
+	}
+	if !strings.Contains(out, "session=cookie-only") {
+		t.Errorf("output missing cookie-only session: %q", out)
+	}
+}
+
 func TestCookiesMissingStateExits2(t *testing.T) {
 	useTempHome(t)
 	_, _, err := runCookiesCmd("never-saved.example.invalid")

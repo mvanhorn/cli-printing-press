@@ -864,12 +864,12 @@ func (c AuthConfig) EffectiveOAuth2Grant() string {
 	return c.OAuth2Grant
 }
 
-// HasCompanionHints reports whether the spec carries the minimum set of
-// press-auth companion hints needed for the generated CLI to run
-// `press-auth login` non-interactively. LoginCompleteSelector is optional
-// and so is not required to return true.
+// HasCompanionHints reports whether the spec carries enough press-auth
+// companion data for the generated CLI to offer login integration. The
+// JWT carrier and completion selector are optional because cookie-only
+// sessions do not need refresh metadata.
 func (c AuthConfig) HasCompanionHints() bool {
-	return strings.TrimSpace(c.LoginURL) != "" && strings.TrimSpace(c.JWTCarrierCookie) != ""
+	return strings.TrimSpace(c.LoginURL) != ""
 }
 
 // validateAuthCompanion enforces the small set of guardrails on the

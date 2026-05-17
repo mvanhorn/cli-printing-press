@@ -4139,9 +4139,8 @@ func TestAPISpecValidate_RejectsBadLoginURL(t *testing.T) {
 }
 
 // TestAuthHasCompanionHints documents the partial-hint state.
-// LoginCompleteSelector is optional, so HasCompanionHints only requires
-// LoginURL + JWTCarrierCookie. Either of the two required hints missing
-// makes HasCompanionHints return false.
+// LoginCompleteSelector and JWTCarrierCookie are optional, so LoginURL
+// alone is enough to enable cookie-only companion login integration.
 func TestAuthHasCompanionHints(t *testing.T) {
 	tests := []struct {
 		name string
@@ -4150,7 +4149,7 @@ func TestAuthHasCompanionHints(t *testing.T) {
 	}{
 		{name: "all fields set", auth: AuthConfig{LoginURL: "https://example.com/login", JWTCarrierCookie: "session", LoginCompleteSelector: "a"}, want: true},
 		{name: "login_url and carrier set, selector omitted", auth: AuthConfig{LoginURL: "https://example.com/login", JWTCarrierCookie: "session"}, want: true},
-		{name: "login_url only", auth: AuthConfig{LoginURL: "https://example.com/login"}, want: false},
+		{name: "login_url only", auth: AuthConfig{LoginURL: "https://example.com/login"}, want: true},
 		{name: "carrier only", auth: AuthConfig{JWTCarrierCookie: "session"}, want: false},
 		{name: "empty", auth: AuthConfig{}, want: false},
 		{name: "whitespace-only login_url", auth: AuthConfig{LoginURL: "   ", JWTCarrierCookie: "session"}, want: false},
