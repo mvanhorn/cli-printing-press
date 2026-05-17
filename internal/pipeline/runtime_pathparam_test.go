@@ -3,6 +3,7 @@ package pipeline
 import (
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -256,6 +257,9 @@ Flags:
 }
 `)
 	binaryPath := filepath.Join(dir, "test-cli")
+	if runtime.GOOS == "windows" {
+		binaryPath += ".exe"
+	}
 	out, err := exec.Command("go", "build", "-o", binaryPath, mainFile).CombinedOutput()
 	require.NoError(t, err, "building probe fixture: %s", string(out))
 	return binaryPath
@@ -364,6 +368,9 @@ Flags:
 }
 `)
 	binaryPath := filepath.Join(dir, "cli")
+	if runtime.GOOS == "windows" {
+		binaryPath += ".exe"
+	}
 	out, err := exec.Command("go", "build", "-o", binaryPath, mainFile).CombinedOutput()
 	require.NoError(t, err, "build fixture: %s", string(out))
 	return binaryPath

@@ -18,6 +18,7 @@ func TestClassifyPostmanExploreFixture(t *testing.T) {
 	t.Parallel()
 
 	pubDir, freshDir := postmanFixture(t)
+	// ... (rest of the file is unchanged)
 
 	report, err := Classify(pubDir, freshDir, Options{Force: true})
 	require.NoError(t, err)

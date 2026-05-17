@@ -1336,18 +1336,15 @@ model → 2× candidates → adversarial cut. Step 1.5c is the motivation; do no
 generate transcendence features inline here.
 
 The transcendence table in the manifest (Step 1.5d) renders rows in this shape,
-which mirrors the subagent's `### Survivors` output. The `Buildability` column
-tags each row `spec-emits` or `hand-code` per
-[references/novel-features-subagent.md](references/novel-features-subagent.md)
-so the Phase Gate 1.5 hand-code count has a source of truth in the manifest:
+which the subagent's `### Survivors` output already matches:
 
 ```markdown
 ### Transcendence (only possible with our approach)
-| # | Feature | Command | Buildability | Why Only We Can Do This |
-|---|---------|---------|--------------|------------------------|
-| 1 | Bottleneck detection | bottleneck | hand-code | Requires local join across issues + assignees + cycle data |
-| 2 | Velocity trends | velocity --weeks 4 | hand-code | Requires historical cycle snapshots in SQLite |
-| 3 | What did I miss | since 2h | hand-code | Requires time-windowed aggregation no single API call provides |
+| # | Feature | Command | Why Only We Can Do This |
+|---|---------|---------|------------------------|
+| 1 | Bottleneck detection | bottleneck | Requires local join across issues + assignees + cycle data |
+| 2 | Velocity trends | velocity --weeks 4 | Requires historical cycle snapshots in SQLite |
+| 3 | What did I miss | since 2h | Requires time-windowed aggregation no single API call provides |
 ```
 
 Minimum 5 transcendence features. These are the commands that differentiate the CLI.
@@ -1502,16 +1499,15 @@ The prose showcase and the `AskUserQuestion` are two separate turns. Print the s
 
 **Part 1: Prose showcase (print before the AskUserQuestion)**
 
-The showcase exists so the user can decide approve / trim / add ideas without asking a follow-up. Cover four things:
+The showcase exists so the user can decide approve / trim / add ideas without asking a follow-up. Cover three things:
 
 1. **Scope** — how many features absorbed across which tools, how many novel on top, how that stacks up against the best existing tool.
 2. **Per-novel-feature readout** — one line each: feature name, what the user gets, and the specific evidence or persona that makes it worth building.
-3. **Hand-code commitment** — of the M novel features, K will require hand-written Go after generate (each ~50-150 LoC plus `root.go` wiring). State the hand-code count and the auto-emitted count, then list the names of the hand-code features. The manifest transcendence table's `Buildability` column (populated from the subagent per [references/novel-features-subagent.md](references/novel-features-subagent.md) "Output contract") is the source of truth: count rows tagged `hand-code`; `spec-emits` rows are excluded from the hand-code total. Approving commits the agent to that scope, so the user must see it explicitly before the AskUserQuestion.
-4. **Anything else the user should worry about before approving** — stubs, risky dependencies, expensive endpoints, low-confidence ideas.
+3. **Anything the user should worry about before approving** — stubs, risky dependencies, expensive endpoints, low-confidence ideas.
 
 Show every novel feature that scored ≥5/10. Group by theme if there are more than ~12; never hide features behind "Plus N more" or "see full manifest." If zero qualified, say so plainly: "No novel features scored high enough to recommend. The absorbed features cover the landscape well."
 
-Format is otherwise yours — markdown headings, prose, a numbered list, whatever reads cleanly. The must-haves are the four things above and the ≥5/10 coverage rule.
+Format is otherwise yours — markdown headings, prose, a numbered list, whatever reads cleanly. The must-haves are the three things above and the ≥5/10 coverage rule.
 
 **Part 2: AskUserQuestion**
 
@@ -1630,11 +1626,7 @@ auth signals, enrich the spec before generation:
 3. Check Phase 1.6 Pre-Browser-Sniff Auth Intelligence results (if the user confirmed auth)
 
 If any source identified auth, **edit the spec YAML** to add the auth section before
-running generate. Catalog-mode runs (`printing-press generate <name>` where `<name>`
-is in `catalog/`) can skip the spec edit when the catalog entry declares
-`auth_env_vars` — those canonical names are applied automatically and the
-parser's name-derived default name is retained as a trailing fallback so
-operators on existing setups don't need a rename. For internal YAML specs:
+running generate. For internal YAML specs:
 
 ```yaml
 auth:
@@ -2556,11 +2548,6 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("query: %w", err)
 	}
 	defer rows.Close()
-	// Scan each row. id/data on the resources table are NOT NULL so bare
-	// strings are safe; ANY optional field selected via json_extract or
-	// pulled from a typed FTS/upsert table can be NULL — use sql.Null*
-	// scan targets (or COALESCE in the SQL) for those, see the NULL-safe
-	// scans paragraph below.
 	var results []yourRowType // scan rows into the slice
 	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
 		enc := json.NewEncoder(cmd.OutOrStdout())
@@ -2579,25 +2566,6 @@ For features that combine both (cache an API response in the store, or fall thro
 **Shared helpers available to novel code:** The generator emits `internal/cliutil/` in every CLI. When authoring novel commands, prefer `cliutil.FanoutRun` for any aggregation command (any `--site`/`--source`/`--region` CSV fan-out) and `cliutil.CleanText` for any text extracted from HTML or schema.org JSON-LD. Re-implementing these inline is how recipe-goat's trending silent-drop and `&#39;` entity bugs shipped.
 
 **Streaming frame normalizers MUST use `cliutil.ExtractNumber` / `cliutil.ExtractInt` rather than raw `float64`/`int64` struct fields.** Real-world WebSocket and streaming JSON feeds (Binance, Coinbase, Kraken, Stripe `*_decimal`, vendor-specific market-data feeds) commonly encode numeric values as JSON-encoded strings (`"price":"1.91"`). `json.Unmarshal` of a JSON string into a `float64` field returns no error and silently leaves the field at 0; combined with NULL-on-zero patterns this discards the entire numeric feed with no error signal anywhere in the pipeline. The helpers accept both shapes (JSON number or JSON-encoded string), report `ok=false` on missing/null/unparseable, and are the canonical extraction path for `map[string]json.RawMessage` decoders. Re-implementing this inline as a `float64` struct field is the silent-aggregation-failure bug class.
-
-**NULL-safe SQL scans MUST use `sql.Null*` scan targets (or `COALESCE(<col>, <zero>)` in the query) for any column that can be NULL.** SQLite returns NULL for any absent JSON field selected via `json_extract(data, '$.optional_field')`, for any nullable column in a typed FTS/upsert table the generator emits, and for any field the API omits from a particular response. `database/sql`'s `rows.Scan` into a bare `string`/`int64`/`float64` returns a non-nil error on NULL (`Scan error on column index N: converting NULL to string is unsupported`) — and the surrounding `for rows.Next()` loop typically `continue`s on scan error, silently dropping every row. The result: queries return zero records, no error reaches the caller, the feature looks healthy because the API call succeeded. Use `var v sql.NullString` (or `NullInt64` / `NullFloat64` / `NullTime`) as the scan target and copy `.String` / `.Int64` / `.Float64` / `.Time` into your row struct, accepting the zero value as the missing-field representation. Re-implementing this inline as bare-string scans is the silent-row-drop bug class.
-
-```go
-// Wrong — every NULL column kills the row.
-var name string
-if err := rows.Scan(&id, &name); err != nil { continue }
-
-// Right — NULL becomes the zero value, no row is lost.
-var name sql.NullString
-if err := rows.Scan(&id, &name); err != nil { continue }
-result.Name = name.String
-```
-
-Also right: push the default into the query so the scan target stays bare.
-
-```sql
-SELECT id, COALESCE(json_extract(data, '$.name'), '') FROM resources WHERE ...
-```
 
 **Typed exit-code verification:** If a novel command intentionally returns a non-zero code for a non-error control-flow result, add `cmd.Annotations["pp:typed-exit-codes"] = "0,<code>"` (or the equivalent `Annotations: map[string]string{...}` literal) and document the same command-specific codes in its help. Do not list the global failure palette in command help unless those exits should count as a verify pass for that command; keep general exit-code troubleshooting in README/SKILL prose.
 

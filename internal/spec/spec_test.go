@@ -2681,7 +2681,7 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 
 	sniffed := base
 	sniffed.SpecSource = "sniffed"
-	assert.Equal(t, HTTPTransportBrowserChromeH2, sniffed.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChrome, sniffed.EffectiveHTTPTransport())
 	require.NoError(t, sniffed.Validate())
 
 	browserHTTP := base
@@ -2694,31 +2694,13 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 
 	community := base
 	community.SpecSource = "community"
-	assert.Equal(t, HTTPTransportBrowserChromeH2, community.EffectiveHTTPTransport())
-
-	browserChrome := base
-	browserChrome.HTTPTransport = HTTPTransportBrowserChrome
-	assert.Equal(t, HTTPTransportBrowserChrome, browserChrome.EffectiveHTTPTransport())
-	assert.True(t, browserChrome.UsesBrowserHTTPTransport())
-	assert.False(t, browserChrome.UsesBrowserHTTP2Transport())
-	assert.False(t, browserChrome.UsesBrowserHTTP3Transport())
-	require.NoError(t, browserChrome.Validate())
-
-	h2 := base
-	h2.HTTPTransport = HTTPTransportBrowserChromeH2
-	assert.Equal(t, HTTPTransportBrowserChromeH2, h2.EffectiveHTTPTransport())
-	assert.True(t, h2.UsesBrowserHTTPTransport())
-	assert.True(t, h2.UsesBrowserHTTP2Transport())
-	assert.False(t, h2.UsesBrowserHTTP3Transport())
-	assert.True(t, h2.UsesBrowserManagedUserAgent())
-	require.NoError(t, h2.Validate())
+	assert.Equal(t, HTTPTransportBrowserChrome, community.EffectiveHTTPTransport())
 
 	h3 := base
 	h3.HTTPTransport = HTTPTransportBrowserChromeH3
 	assert.Equal(t, HTTPTransportBrowserChromeH3, h3.EffectiveHTTPTransport())
 	assert.True(t, h3.UsesBrowserHTTPTransport())
 	assert.True(t, h3.UsesBrowserHTTP3Transport())
-	assert.False(t, h3.UsesBrowserHTTP2Transport())
 	assert.True(t, h3.UsesBrowserManagedUserAgent())
 	require.NoError(t, h3.Validate())
 
@@ -2736,11 +2718,11 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 			},
 		},
 	}
-	assert.Equal(t, HTTPTransportBrowserChromeH2, cookieHTML.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChrome, cookieHTML.EffectiveHTTPTransport())
 
 	composedHTML := cookieHTML
 	composedHTML.Auth.Type = "composed"
-	assert.Equal(t, HTTPTransportBrowserChromeH2, composedHTML.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChrome, composedHTML.EffectiveHTTPTransport())
 
 	jsonCookie := cookieHTML
 	jsonCookie.Resources = map[string]Resource{

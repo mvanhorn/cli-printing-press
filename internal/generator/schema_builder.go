@@ -64,64 +64,7 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 
 	for _, name := range resourceNames {
 		resource := s.Resources[name]
-		fields := collectResponseFields(s, resource)
-		gravity := computeDataGravity(resource, fields)
-		tableName := toSnakeCase(name)
-
-		table := TableDef{
-			Name:     tableName,
-			Resource: name,
-			Columns:  append([]ColumnDef(nil), baseTableColumns...),
-		}
-
-		if gravity >= 2 {
-			seenColumns := map[string]bool{}
-			for _, c := range baseTableColumns {
-				seenColumns[c.Name] = true
-			}
-			seenIndexes := map[string]bool{}
-			for _, f := range fields {
-				colName := toSnakeCase(f.Name)
-				if isScalarTypeField(f) && !seenColumns[colName] {
-					seenColumns[colName] = true
-					table.Columns = append(table.Columns, ColumnDef{
-						Name: colName,
-						Type: sqliteType(f.Type, f.Format),
-					})
-				}
-				if strings.HasSuffix(strings.ToLower(f.Name), "_id") {
-					idxName := "idx_" + tableName + "_" + colName
-					if !seenIndexes[idxName] {
-						seenIndexes[idxName] = true
-						table.Indexes = append(table.Indexes, IndexDef{
-							Name:      idxName,
-							TableName: tableName,
-							Columns:   colName,
-						})
-					}
-				}
-			}
-			for _, temporal := range []string{"created_at", "updated_at"} {
-				if hasTypeField(fields, temporal) {
-					table.Indexes = append(table.Indexes, IndexDef{
-						Name:      "idx_" + tableName + "_" + temporal,
-						TableName: tableName,
-						Columns:   temporal,
-					})
-				}
-			}
-		}
-
-		textFields := collectTextFieldNamesFromFields(fields)
-		if len(textFields) >= 2 && gravity >= 2 {
-			table.FTS5 = true
-			table.FTS5Fields = textFields
-			// Only use content-sync triggers when ALL FTS fields are
-			// actual extracted columns on the table. Otherwise the
-			// triggers reference non-existent columns and fail.
-			table.FTS5Triggers = true
-		}
-
+		table := buildTable(s, name, resource)
 		tables = append(tables, table)
 
 		// Same determinism concern as the outer loop: sub-resources from the
@@ -132,14 +75,13 @@ func BuildSchema(s *spec.APISpec) []TableDef {
 		}
 		sort.Strings(subNames)
 		for _, subName := range subNames {
-			subResource := resource.SubResources[subName]
 			// effectiveName is sharded only when the leaf collides; bare
 			// otherwise keeps existing CLIs byte-identical.
 			effectiveName := subName
 			if subResourceShards.IsSharded(subName) {
 				effectiveName = spec.ShardedSubResourceTableName(name, subName)
 			}
-			subTable := buildSubResourceTable(effectiveName, subResource, tableName)
+			subTable := buildSubResourceTable(effectiveName, table.Name)
 			tables = append(tables, subTable)
 		}
 	}
@@ -367,22 +309,84 @@ func hasTypeField(fields []spec.TypeField, name string) bool {
 	return false
 }
 
-// buildSubResourceTable creates a table definition for a sub-resource with
-// a foreign key column referencing the parent table. Sub-resources share
-// the base id/data/synced_at shape with top-level tables and add a
-// parent_id column between id and data.
-func buildSubResourceTable(name string, r spec.Resource, parentTable string) TableDef {
+func buildTable(s *spec.APISpec, name string, r spec.Resource) TableDef {
+	tableName := toSnakeCase(name)
+	fields := collectResponseFields(s, r)
+	gravity := computeDataGravity(r, fields)
+
+	columns := append([]ColumnDef(nil), baseTableColumns...)
+	table := TableDef{
+		Name:     tableName,
+		Resource: name,
+		Columns:  columns,
+	}
+
+	if gravity >= 2 {
+		seenColumns := map[string]bool{}
+		for _, c := range columns {
+			seenColumns[c.Name] = true
+		}
+		seenIndexes := map[string]bool{}
+		for _, f := range fields {
+			colName := toSnakeCase(f.Name)
+			if isScalarTypeField(f) && !seenColumns[colName] {
+				seenColumns[colName] = true
+				table.Columns = append(table.Columns, ColumnDef{
+					Name: colName,
+					Type: sqliteType(f.Type, f.Format),
+				})
+			}
+			if strings.HasSuffix(strings.ToLower(f.Name), "_id") {
+				idxName := "idx_" + tableName + "_" + colName
+				if !seenIndexes[idxName] {
+					seenIndexes[idxName] = true
+					table.Indexes = append(table.Indexes, IndexDef{
+						Name:      idxName,
+						TableName: tableName,
+						Columns:   colName,
+					})
+				}
+			}
+		}
+		for _, temporal := range []string{"created_at", "updated_at"} {
+			if hasTypeField(fields, temporal) {
+				table.Indexes = append(table.Indexes, IndexDef{
+					Name:      "idx_" + tableName + "_" + temporal,
+					TableName: tableName,
+					Columns:   temporal,
+				})
+			}
+		}
+	}
+
+	textFields := collectTextFieldNamesFromFields(fields)
+	if len(textFields) >= 2 && gravity >= 2 {
+		table.FTS5 = true
+		table.FTS5Fields = textFields
+		table.FTS5Triggers = true
+	}
+
+	return table
+}
+
+// buildSubResourceTable creates a fixed 4-column table for a sub-resource.
+// Sub-resources always use a simplified schema (id, parent_id, data, synced_at)
+// to avoid complex schema-drift migrations on update; they do not gain
+// response-derived typed columns or FTS5 indices.
+func buildSubResourceTable(name string, parentTable string) TableDef {
 	tableName := toSnakeCase(name)
 	parentCol := parentTable + "_id"
 
-	columns := make([]ColumnDef, 0, len(baseTableColumns)+1)
-	columns = append(columns, baseTableColumns[0]) // id
-	columns = append(columns, ColumnDef{Name: parentCol, Type: "TEXT", NotNull: true})
-	columns = append(columns, baseTableColumns[1:]...) // data, synced_at
+	columns := []ColumnDef{
+		baseTableColumns[0], // id
+		{Name: parentCol, Type: "TEXT", NotNull: true},
+		baseTableColumns[1], // data
+		baseTableColumns[2], // synced_at
+	}
 
 	return TableDef{
 		Name:     tableName,
-		Resource: tableName,
+		Resource: name,
 		Columns:  columns,
 		Indexes: []IndexDef{
 			{

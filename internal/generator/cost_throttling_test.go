@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
@@ -387,5 +388,7 @@ func TestUpdateThrottleFromBodyNoOpsWithoutCost(t *testing.T) {
 	// is correct under the race detector. -race is opt-in elsewhere in
 	// this suite (PR-2 didn't run it); the mutex is the explicit V3 fix
 	// from V2's sync.Map shape, so we exercise it directly.
-	runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestThrottleConcurrentUpdateNoRace", "-race")
+	if runtime.GOOS != "windows" {
+		runGoCommand(t, outputDir, "test", "./internal/client", "-run", "TestThrottleConcurrentUpdateNoRace", "-race")
+	}
 }

@@ -10,9 +10,6 @@ verified_date: "2026-03-23"
 homepage: https://docs.github.com/en/rest
 auth_key_url: https://github.com/settings/tokens
 auth_instructions: "Generate a fine-grained personal access token (or classic) with the scopes your workflow needs."
-auth_env_vars:
-  - GITHUB_TOKEN  # canonical: gh CLI, every GitHub SDK
-  - GH_TOKEN      # gh CLI alias
 notes: Very large spec. Generator truncates significantly.
 known_alternatives:
   - name: gh

@@ -22,7 +22,7 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 		Use:         "create",
 		Short:       "Create project",
 		Example:     "  printing-press-golden-pp-cli projects create --name example-resource",
-		Annotations: map[string]string{"pp:endpoint": "projects.create", "pp:method": "POST", "pp:path": "/projects"},
+		Annotations: map[string]string{"pp:endpoint": "projects.create", "pp:method": "POST", "pp:path": "/v1/projects"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {
 				if !cmd.Flags().Changed("name") && !flags.dryRun {
@@ -37,7 +37,14 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			var (
+				data   json.RawMessage
+				status int
+			)
+			_ = c
+
 			path := "/projects"
+			_ = path
 			params := map[string]string{}
 			var body map[string]any
 			if stdinBody {
@@ -62,7 +69,7 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 					body["visibility"] = bodyVisibility
 				}
 			}
-			data, statusCode, err := c.PostWithParams(path, params, body)
+			data, status, err = c.PostWithParams(path, params, body)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -106,8 +113,8 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 					"action":   "post",
 					"resource": "projects",
 					"path":     path,
-					"status":   statusCode,
-					"success":  statusCode >= 200 && statusCode < 300,
+					"status":   status,
+					"success":  status >= 200 && status < 300,
 				}
 				if flags.dryRun {
 					envelope["dry_run"] = true
@@ -126,6 +133,7 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 				}
 				return printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)
 			}
+			_ = status
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}

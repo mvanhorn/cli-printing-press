@@ -122,7 +122,7 @@ type WaitOptions struct {
 //
 //	done, complete, completed, success, succeeded, finished,
 //	failed, errored, cancelled, canceled
-func WaitForJob(ctx context.Context, c *client.Client, statusPath string, jobID string, opts WaitOptions) (map[string]any, error) {
+func WaitForJob(ctx context.Context, c *client.Client, statusPath string, jobID string, opts WaitOptions) (map[string]any, int, error) {
 	interval := opts.Interval
 	if interval <= 0 {
 		interval = 2 * time.Second
@@ -138,21 +138,21 @@ func WaitForJob(ctx context.Context, c *client.Client, statusPath string, jobID 
 
 	for {
 		if !deadline.IsZero() && time.Now().After(deadline) {
-			return nil, fmt.Errorf("wait timed out after %s (job %s)", opts.Timeout, jobID)
+			return nil, 0, fmt.Errorf("wait timed out after %s (job %s)", opts.Timeout, jobID)
 		}
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 
 		// GetNoCache: the cache is keyed by (path, params), so a cached
 		// non-terminal status would lock the poll on the initial response
 		// for the cache TTL.
-		resp, err := c.GetNoCache(path, nil)
+		resp, status, err := c.GetNoCache(path, nil)
 		if err == nil {
 			var body map[string]any
 			if uerr := json.Unmarshal(resp, &body); uerr == nil {
 				if isJobTerminal(body) {
-					return body, nil
+					return body, status, nil
 				}
 			}
 		}
@@ -162,7 +162,7 @@ func WaitForJob(ctx context.Context, c *client.Client, statusPath string, jobID 
 		select {
 		case <-time.After(interval + jitter):
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, 0, ctx.Err()
 		}
 
 		// Exponential-ish growth with cap.

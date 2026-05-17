@@ -3,7 +3,6 @@ package generator
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -359,11 +358,11 @@ func TestSkillRendersAuthBranchPerType(t *testing.T) {
 }
 
 // TestSkillRendersExtraCommands asserts that hand-written commands declared
-// in spec.ExtraCommands appear in their own `## Hand-written Extensions`
-// section (NOT inside `## Command Reference`), with binary prefix and optional
-// args. The separate section keeps verify-skill's unknown-command walker
-// (scoped to ## Command Reference) from treating extra_commands as canonical
-// Cobra paths — that drift was the root cause of #1451.
+// in spec.ExtraCommands appear in the generated SKILL.md Command Reference,
+// after the spec-driven resources, with binary prefix and optional args.
+// This closes the drift class where SKILL.md silently omitted hand-written
+// commands like `today`, `streak`, `rivals` because the template only iterated
+// .Resources.
 func TestSkillRendersExtraCommands(t *testing.T) {
 	t.Parallel()
 
@@ -381,55 +380,16 @@ func TestSkillRendersExtraCommands(t *testing.T) {
 	require.NoError(t, err)
 	content := string(skill)
 
-	assert.Contains(t, content, "## Hand-written Extensions",
-		"ExtraCommands should be surfaced in their own top-level section, not under ## Command Reference")
+	assert.Contains(t, content, "**Hand-written commands**",
+		"Command Reference should include a Hand-written commands subsection when ExtraCommands present")
 	assert.Contains(t, content, "`sports-pp-cli trending`",
-		"extra command without args should render as binary + name in the Extensions section")
+		"extra command without args should render as just binary + name")
 	assert.Contains(t, content, "`sports-pp-cli boxscore <event_id>`",
 		"extra command with args should render args after the name")
 	assert.Contains(t, content, "Most-followed athletes and teams across all leagues",
 		"extra command description should appear in the rendered output")
 	assert.Contains(t, content, "`sports-pp-cli h2h <team1> <team2>`",
 		"extra command with multi-arg signature should render verbatim")
-
-	// Regression guard for #1451: the Extensions section must live OUTSIDE
-	// the Command Reference section so verify-skill's _extract_inline_commands
-	// walker (scoped to ## Command Reference) does not flag these as
-	// unknown-command findings. Asserted by locating each section's offset
-	// and confirming Extensions starts after Reference ends.
-	cmdRefIdx := strings.Index(content, "## Command Reference")
-	require.NotEqual(t, -1, cmdRefIdx, "Command Reference section is expected to exist")
-	extIdx := strings.Index(content, "## Hand-written Extensions")
-	require.NotEqual(t, -1, extIdx)
-	require.Greater(t, extIdx, cmdRefIdx,
-		"Hand-written Extensions must be a sibling section after Command Reference, not nested inside it")
-
-	// Belt-and-suspenders: confirm the Command Reference section body
-	// (everything between its heading and the next top-level heading)
-	// does NOT contain any extra_commands path. Mirrors the Python
-	// walker's scoping (regex in scripts/verify-skill/verify_skill.py:74)
-	// without lookahead, which Go's RE2 doesn't support.
-	cmdRefHeadingRE := regexp.MustCompile(`(?m)^##\s+Command\s+Reference\s*$`)
-	nextSectionRE := regexp.MustCompile(`(?m)^##\s+`)
-	loc := cmdRefHeadingRE.FindStringIndex(content)
-	require.NotNil(t, loc, "Command Reference section heading should match the walker's regex")
-	afterHeading := content[loc[1]:]
-	if next := nextSectionRE.FindStringIndex(afterHeading); next != nil {
-		afterHeading = afterHeading[:next[0]]
-	}
-	for _, name := range []string{"sports-pp-cli trending", "sports-pp-cli boxscore", "sports-pp-cli h2h"} {
-		assert.NotContains(t, afterHeading, name,
-			"extra command %q must not appear under Command Reference; the unknown-command walker would flag it", name)
-	}
-
-	// Markdown nests every `###` under the most recent `##`. Placing
-	// `## Hand-written Extensions` BEFORE `### Finding the right command`
-	// would silently reparent that subsection. Assert the ordering so a
-	// future template edit doesn't regress the structure.
-	findingIdx := strings.Index(content, "### Finding the right command")
-	require.NotEqual(t, -1, findingIdx, "Finding the right command subsection should exist")
-	require.Greater(t, extIdx, findingIdx,
-		"Hand-written Extensions must come after ### Finding the right command so it doesn't reparent that subsection")
 }
 
 // TestSkillFrontmatterMetadataIsClawHubCompliantNestedYAML asserts that the

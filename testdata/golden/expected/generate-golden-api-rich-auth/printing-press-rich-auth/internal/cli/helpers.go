@@ -193,43 +193,29 @@ func syncErrorJSON(resource, parent string, err error) string {
 	return string(out)
 }
 
-// syncUserParams carries user-supplied query parameters injected into sync
-// HTTP requests. flatGlobal entries come from --param and inject into
-// flat-list requests only; trueGlobal entries come from --global-param and
-// inject into every request including dependent path-scoped calls.
-// perResource entries win over both on key conflict.
-//
-// The flat/dependent split avoids a real failure mode: a top-level scope
-// like workspace=<gid> belongs on flat-list requests (/projects, /tags) but
-// re-injecting it onto a path-scoped dependent request
-// (/projects/<gid>/tasks?workspace=<gid>) makes APIs like Asana reject the
-// call ("Must specify exactly one of project, tag, ..."). Operators who
-// need the old "apply everywhere" semantic opt back in with --global-param.
+// syncUserParams carries user-supplied query parameters injected into every
+// sync HTTP request. perResource entries win over global on key conflict.
 type syncUserParams struct {
-	flatGlobal  map[string]string
-	trueGlobal  map[string]string
+	global      map[string]string
 	perResource map[string]map[string]string
 }
 
-// parseSyncUserParams parses the repeatable --param key=value,
-// --global-param key=value, and --resource-param resource:key=value flags.
-// Returns usage errors keyed on the specific invalid token so the user
-// sees which entry was rejected.
-func parseSyncUserParams(flatGlobalFlags, resourceParamFlags, trueGlobalFlags []string) (*syncUserParams, error) {
-	flatGlobal, err := parseSyncKVFlags(flatGlobalFlags, "--param")
-	if err != nil {
-		return nil, err
-	}
-	trueGlobal, err := parseSyncKVFlags(trueGlobalFlags, "--global-param")
-	if err != nil {
-		return nil, err
-	}
+// parseSyncUserParams parses the repeatable --param key=value and
+// --resource-param resource:key=value flags. Returns usage errors keyed on the
+// specific invalid token so the user sees which entry was rejected.
+func parseSyncUserParams(globalFlags, perResourceFlags []string) (*syncUserParams, error) {
 	p := &syncUserParams{
-		flatGlobal:  flatGlobal,
-		trueGlobal:  trueGlobal,
+		global:      map[string]string{},
 		perResource: map[string]map[string]string{},
 	}
-	for _, spec := range resourceParamFlags {
+	for _, kv := range globalFlags {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("invalid --param %q: expected key=value", kv)
+		}
+		p.global[k] = v
+	}
+	for _, spec := range perResourceFlags {
 		resource, kv, ok := strings.Cut(spec, ":")
 		if !ok || resource == "" {
 			return nil, fmt.Errorf("invalid --resource-param %q: expected resource:key=value", spec)
@@ -246,36 +232,13 @@ func parseSyncUserParams(flatGlobalFlags, resourceParamFlags, trueGlobalFlags []
 	return p, nil
 }
 
-// parseSyncKVFlags parses a slice of "key=value" tokens into a map. The
-// flagName label flows into the usage error so a malformed entry tells
-// the user which flag was at fault.
-func parseSyncKVFlags(flags []string, flagName string) (map[string]string, error) {
-	out := map[string]string{}
-	for _, kv := range flags {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok || k == "" {
-			return nil, fmt.Errorf("invalid %s %q: expected key=value", flagName, kv)
-		}
-		out[k] = v
-	}
-	return out, nil
-}
-
-// applyTo merges user params into the request map. Called after
-// spec-derived params (cursor, since, page-size, dates) so user flags can
-// override them. isDependent=true skips flatGlobal (--param), which
-// targets flat-list endpoints; trueGlobal (--global-param) and perResource
-// always apply.
-func (p *syncUserParams) applyTo(resource string, params map[string]string, isDependent bool) {
+// applyTo merges user params into the request map. Called after spec-derived
+// params (cursor, since, page-size, dates) so user flags can override them.
+func (p *syncUserParams) applyTo(resource string, params map[string]string) {
 	if p == nil {
 		return
 	}
-	if !isDependent {
-		for k, v := range p.flatGlobal {
-			params[k] = v
-		}
-	}
-	for k, v := range p.trueGlobal {
+	for k, v := range p.global {
 		params[k] = v
 	}
 	for k, v := range p.perResource[resource] {
@@ -407,19 +370,20 @@ func classifyAPIError(err error, flags *rootFlags) error {
 		writeAPIErrorEnvelope(flags, classified, ExitCode(classified))
 		return classified
 	case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
-		return authErr(fmt.Errorf("%w\nhint: the API rejected the request — this usually means auth is missing or invalid."+
-			"\n      Set your API key: export RICH_AUTH_API_KEY=<your-key>"+
-			"\n      Run 'printing-press-rich-pp-cli doctor' to check auth status."+
-			"\n      Response: "+cliutil.SanitizeErrorBody(msg), err))
+		hints := []string{"the API rejected the request — this usually means auth is missing or invalid."}
+		hints = append(hints, "Set your API key: export RICH_AUTH_API_KEY=<your-key>")
+		hints = append(hints, "Run 'printing-press-rich-pp-cli doctor' to check auth status.")
+		return authErr(fmt.Errorf("%w\nhint: %s\n      Response: %s", err, strings.Join(hints, "\n      "), cliutil.SanitizeErrorBody(msg)))
 	case strings.Contains(msg, "HTTP 401"):
-		return authErr(fmt.Errorf("%w\nhint: check your API key."+
-			" Set it with: export RICH_AUTH_API_KEY=<your-key>"+
-			"\n      Run 'printing-press-rich-pp-cli doctor' to check auth status.", err))
+		hints := []string{"check your API key."}
+		hints = append(hints, "Set it with: export RICH_AUTH_API_KEY=<your-key>")
+		hints = append(hints, "Run 'printing-press-rich-pp-cli doctor' to check auth status.")
+		return authErr(fmt.Errorf("%w\nhint: %s", err, strings.Join(hints, "\n      ")))
 	case strings.Contains(msg, "HTTP 403"):
-		return authErr(fmt.Errorf("%w\nhint: permission denied. Your credentials are valid but lack access to this resource."+
-			"\n      Check that your API key has the required permissions."+
-			"\n      Set it with: export RICH_AUTH_API_KEY=<your-key>"+
-			"\n      Run 'printing-press-rich-pp-cli doctor' to check auth status.", err))
+		hints := []string{"permission denied. Your credentials are valid but lack access to this resource.", "Check that your API key has the required permissions."}
+		hints = append(hints, "Set it with: export RICH_AUTH_API_KEY=<your-key>")
+		hints = append(hints, "Run 'printing-press-rich-pp-cli doctor' to check auth status.")
+		return authErr(fmt.Errorf("%w\nhint: %s", err, strings.Join(hints, "\n      ")))
 	case strings.Contains(msg, "HTTP 404"):
 		return notFoundErr(fmt.Errorf("%w\nhint: resource not found. Run the 'list' command to see available items", err))
 	case strings.Contains(msg, "HTTP 429"):
@@ -448,8 +412,8 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 // must be sent on every page request, including the first; pass nil when the
 // endpoint has no per-endpoint header overrides.
 func paginatedGet(c interface {
-	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
-}, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
+	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, int, error)
+}, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, int, error) {
 	// Cursor params are exempt from the "0"/"false" strip: offset-paginated
 	// APIs send offset=0 on the first page.
 	clean := map[string]string{}
@@ -463,12 +427,12 @@ func paginatedGet(c interface {
 	}
 
 	if !fetchAll {
-		data, err := c.GetWithHeaders(path, clean, headers)
+		data, statusCode, err := c.GetWithHeaders(path, clean, headers)
 		if err != nil {
-			return nil, err
+			return nil, statusCode, err
 		}
 		emitTruncationWarning(data, nextCursorPath, hasMoreField)
-		return data, nil
+		return data, statusCode, nil
 	}
 
 	// Fetch all pages
@@ -482,9 +446,9 @@ func paginatedGet(c interface {
 			fmt.Fprintf(os.Stderr, `{"event":"page_fetch","page":%d}`+"\n", page)
 		}
 
-		data, err := c.GetWithHeaders(path, clean, headers)
+		data, statusCode, err := c.GetWithHeaders(path, clean, headers)
 		if err != nil {
-			return nil, err
+			return nil, statusCode, err
 		}
 
 		// Try to extract items array
@@ -534,7 +498,7 @@ func paginatedGet(c interface {
 		fmt.Fprintf(os.Stderr, `{"event":"complete","total":%d,"pages":%d}`+"\n", len(allItems), page)
 	}
 	result, _ := json.Marshal(allItems)
-	return json.RawMessage(result), nil
+	return json.RawMessage(result), 200, nil
 }
 
 // Silent page-1 truncation is the worst-possible mode for agents,
@@ -821,23 +785,12 @@ func extractResponseData(data json.RawMessage) json.RawMessage {
 	}
 }
 
-// compactVerboseListFields are prose-shaped fields stripped from list-item
-// projections. On lists, "body"/"content"/"html"/"markdown" are verbose
-// noise and the row's identity is carried by id/name/title/etc.
-var compactVerboseListFields = map[string]bool{
+// compactVerboseFields are the prose-shaped fields stripped by both the
+// list and single-object compact paths. Centralised so the contract stays
+// in lockstep across both helpers.
+var compactVerboseFields = map[string]bool{
 	"description": true, "body": true, "content": true,
 	"comments": true, "attachments": true, "html": true, "markdown": true,
-}
-
-// compactVerboseObjectFields are metadata fields stripped from single-object
-// responses. "body"/"content"/"html"/"markdown" are intentionally absent:
-// for a `get` command those fields are the primary payload, and stripping
-// them under `--agent`/`--compact` silently emits a useless envelope.
-// Use `--select` to drop them explicitly.
-var compactVerboseObjectFields = map[string]bool{
-	"description": true,
-	"comments":    true,
-	"attachments": true,
 }
 
 // compactFields keeps only the most important fields for agent consumption.
@@ -904,7 +857,7 @@ func compactListFields(items []map[string]any) json.RawMessage {
 		keyCounts := map[string]int{}
 		for _, item := range items {
 			for k, v := range item {
-				if compactVerboseListFields[k] || !isCompactScalar(v) {
+				if compactVerboseFields[k] || !isCompactScalar(v) {
 					continue
 				}
 				keyCounts[k]++
@@ -957,15 +910,12 @@ func isCompactScalar(v any) bool {
 	}
 }
 
-// compactObjectFields strips known-verbose metadata fields from single-object
-// responses. The blocklist deliberately excludes "body"/"content"/"html"/
-// "markdown" — those fields are payload on `get` commands and stripping them
-// under `--agent`/`--compact` is a silent loss; agents who want to omit them
-// can pass `--select` to specify only the fields they need.
+// compactObjectFields strips known-verbose fields from single-object responses.
+// Uses a blocklist so it works across all API domains (project management, payments, CRM, etc.).
 func compactObjectFields(obj map[string]any) json.RawMessage {
 	compact := map[string]any{}
 	for k, v := range obj {
-		if !compactVerboseObjectFields[k] {
+		if !compactVerboseFields[k] {
 			compact[k] = v
 		}
 	}

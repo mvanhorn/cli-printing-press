@@ -20,7 +20,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 		Use:         "create",
 		Short:       "Create a store record",
 		Example:     "  public-param-golden-pp-cli stores create --store-code example-value",
-		Annotations: map[string]string{"pp:endpoint": "stores.create", "pp:method": "POST", "pp:path": "/stores"},
+		Annotations: map[string]string{"pp:endpoint": "stores.create", "pp:method": "POST", "pp:path": "/v1/stores"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !stdinBody {
 				if !(cmd.Flags().Changed("store-code") || cmd.Flags().Changed("code")) && !flags.dryRun {
@@ -32,7 +32,14 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			var (
+				data   json.RawMessage
+				status int
+			)
+			_ = c
+
 			path := "/stores"
+			_ = path
 			params := map[string]string{}
 			var body map[string]any
 			if stdinBody {
@@ -51,7 +58,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 					body["store_code"] = bodyStoreCode
 				}
 			}
-			data, statusCode, err := c.PostWithParams(path, params, body)
+			data, status, err = c.PostWithParams(path, params, body)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -95,8 +102,8 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 					"action":   "post",
 					"resource": "stores",
 					"path":     path,
-					"status":   statusCode,
-					"success":  statusCode >= 200 && statusCode < 300,
+					"status":   status,
+					"success":  status >= 200 && status < 300,
 				}
 				if flags.dryRun {
 					envelope["dry_run"] = true
@@ -115,6 +122,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 				}
 				return printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)
 			}
+			_ = status
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}

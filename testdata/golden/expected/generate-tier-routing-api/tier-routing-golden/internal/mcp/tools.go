@@ -118,24 +118,10 @@ func makeAPIHandler(method, pathTemplate, tier string, binaryResponse bool, bind
 				continue
 			}
 			switch binding.Location {
-			case "path":
-				placeholder := "{" + binding.WireName + "}"
-				pathParams[binding.PublicName] = true
-				path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)
 			case "body":
 				bodyArgs[binding.WireName] = v
 			default:
 				params[binding.WireName] = fmt.Sprintf("%v", v)
-			}
-		}
-		for _, p := range positionalParams {
-			placeholder := "{" + p + "}"
-			if !strings.Contains(pathTemplate, placeholder) {
-				continue
-			}
-			pathParams[p] = true
-			if v, ok := args[p]; ok {
-				path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)
 			}
 		}
 
@@ -155,10 +141,10 @@ func makeAPIHandler(method, pathTemplate, tier string, binaryResponse bool, bind
 		switch method {
 		case "GET":
 			if binaryResponse {
-				data, err = c.GetWithHeaders(path, params, headers)
+				data, _, err = c.GetWithHeaders(path, params, headers)
 				break
 			}
-			data, err = c.Get(path, params)
+			data, _, err = c.Get(path, params)
 		case "POST":
 			if binaryResponse {
 				data, _, err = c.PostWithParamsAndHeaders(path, params, bodyArgs, headers)

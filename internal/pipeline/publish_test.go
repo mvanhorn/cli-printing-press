@@ -9,7 +9,19 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"runtime"
 )
+
+func skipIfNoSymlink(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		tmp := t.TempDir()
+		err := os.Symlink("target", filepath.Join(tmp, "link"))
+		if err != nil {
+			t.Skip("Skipping symlink test: required privilege is not held by the client (Windows)")
+		}
+	}
+}
 
 func TestCopyDir(t *testing.T) {
 	tests := []struct {
@@ -35,6 +47,7 @@ func TestCopyDir(t *testing.T) {
 		{
 			name: "internal file symlink preserved as symlink",
 			setup: func(t *testing.T, src string) {
+				skipIfNoSymlink(t)
 				target := filepath.Join(src, "target.txt")
 				require.NoError(t, os.WriteFile(target, []byte("target"), 0o644))
 				require.NoError(t, os.Symlink("target.txt", filepath.Join(src, "link.txt")))
@@ -49,6 +62,7 @@ func TestCopyDir(t *testing.T) {
 		{
 			name: "internal directory symlink preserved as symlink",
 			setup: func(t *testing.T, src string) {
+				skipIfNoSymlink(t)
 				targetDir := filepath.Join(src, "target-dir")
 				require.NoError(t, os.MkdirAll(targetDir, 0o755))
 				require.NoError(t, os.WriteFile(filepath.Join(targetDir, "big.bin"), []byte("data"), 0o644))
@@ -134,6 +148,7 @@ func TestCopyDirStripsGitFileAndSymlink(t *testing.T) {
 	})
 
 	t.Run("git as external symlink", func(t *testing.T) {
+		skipIfNoSymlink(t)
 		root := t.TempDir()
 		src := filepath.Join(root, "src")
 		dst := filepath.Join(root, "dst")
@@ -172,6 +187,7 @@ func TestCopyDirRejectsExternalSymlinks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			skipIfNoSymlink(t)
 			root := t.TempDir()
 			src := filepath.Join(root, "src")
 			dst := filepath.Join(root, "dst")

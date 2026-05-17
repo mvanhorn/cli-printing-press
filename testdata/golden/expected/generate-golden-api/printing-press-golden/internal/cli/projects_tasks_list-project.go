@@ -6,6 +6,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -22,9 +23,9 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 		Aliases:     []string{"get"},
 		Short:       "List project tasks",
 		Example:     "  printing-press-golden-pp-cli projects tasks list-project 550e8400-e29b-41d4-a716-446655440000",
-		Annotations: map[string]string{"pp:endpoint": "tasks.list-project", "pp:method": "GET", "pp:path": "/projects/{projectId}/tasks", "mcp:read-only": "true"},
+		Annotations: map[string]string{"pp:endpoint": "tasks.list-project", "pp:method": "GET", "pp:path": "/v1/projects/{projectId}/tasks", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
+			if len(args) < 1 {
 				return cmd.Help()
 			}
 			if cmd.Flags().Changed("priority") {
@@ -45,9 +46,17 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			var (
+				data   json.RawMessage
+				status int
+				prov   DataProvenance
+			)
+			_ = c
+
 			path := "/projects/{projectId}/tasks"
-			path = replacePathParam(path, "projectId", args[0])
-			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "tasks", path, map[string]string{
+			_ = path
+			path = replacePathParam(path, "projectId", url.PathEscape(args[0]))
+			data, status, prov, err = resolvePaginatedRead(cmd.Context(), c, flags, "tasks", path, map[string]string{
 				"priority": fmt.Sprintf("%v", flagPriority),
 				"limit":    fmt.Sprintf("%v", flagLimit),
 				"cursor":   fmt.Sprintf("%v", flagCursor),
@@ -96,6 +105,7 @@ func newProjectsTasksListProjectCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
+			_ = status
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}

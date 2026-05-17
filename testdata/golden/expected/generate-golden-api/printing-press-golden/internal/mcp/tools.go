@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,6 +78,30 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("PUT", "/projects/{projectId}/avatar", false, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path", RequestContentType: "multipart/form-data"}, {PublicName: "overwrite", WireName: "overwrite", Location: "query", RequestContentType: "multipart/form-data"}, {PublicName: "caption", WireName: "caption", Location: "body", RequestContentType: "multipart/form-data"}, {PublicName: "file", WireName: "file", Location: "body", Format: "binary", RequestContentType: "multipart/form-data"}}, []string{"projectId"}),
+	)
+	s.AddTool(
+		mcplib.NewTool("projects_mixed-tasks_list",
+			mcplib.WithDescription("List tasks with mixed params. Required: projectId. Optional: priority, limit, offset. Returns array of Task."),
+			mcplib.WithString("priority", mcplib.Description("Priority")),
+			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
+			mcplib.WithNumber("limit", mcplib.Description("Limit")),
+			mcplib.WithNumber("offset", mcplib.Description("Offset")),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
+		),
+		makeAPIHandler("GET", "/projects/{projectId}/mixed-tasks", false, []mcpParamBinding{{PublicName: "priority", WireName: "priority", Location: "query"}, {PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "limit", WireName: "limit", Location: "query"}, {PublicName: "offset", WireName: "offset", Location: "query"}}, []string{"projectId"}),
+	)
+	s.AddTool(
+		mcplib.NewTool("projects_search_project-tasks",
+			mcplib.WithDescription("Search project tasks. Required: q, projectId."),
+			mcplib.WithString("q", mcplib.Required(), mcplib.Description("Q")),
+			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
+		),
+		makeAPIHandler("GET", "/projects/{projectId}/search", false, []mcpParamBinding{{PublicName: "q", WireName: "q", Location: "query"}, {PublicName: "projectId", WireName: "projectId", Location: "path"}}, []string{"q", "projectId"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_tasks_list-project",
@@ -220,7 +245,7 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, bindings [
 			case "path":
 				placeholder := "{" + binding.WireName + "}"
 				pathParams[binding.PublicName] = true
-				path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)
+				path = strings.Replace(path, placeholder, url.PathEscape(fmt.Sprintf("%v", v)), 1)
 			case "body":
 				bodyArgs[binding.WireName] = v
 				if multipart {
@@ -241,7 +266,7 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, bindings [
 			}
 			pathParams[p] = true
 			if v, ok := args[p]; ok {
-				path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)
+				path = strings.Replace(path, placeholder, url.PathEscape(fmt.Sprintf("%v", v)), 1)
 			}
 		}
 
@@ -264,10 +289,10 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, bindings [
 		switch method {
 		case "GET":
 			if binaryResponse {
-				data, err = c.GetWithHeaders(path, params, headers)
+				data, _, err = c.GetWithHeaders(path, params, headers)
 				break
 			}
-			data, err = c.Get(path, params)
+			data, _, err = c.Get(path, params)
 		case "POST":
 			if multipart {
 				if binaryResponse {
@@ -533,7 +558,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 		"api":         "printing-press-golden",
 		"description": "Purpose-built fixture for golden generation coverage.",
 		"archetype":   "project-management",
-		"tool_count":  9,
+		"tool_count":  11,
 		// tool_surface tells agents which surface a capability lives on.
 		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion printing-press-golden-pp-cli binary.",
 		"auth": map[string]any{

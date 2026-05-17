@@ -229,7 +229,9 @@ func TestSameAuthEnvVarNamesIgnoresOrder(t *testing.T) {
 }
 
 func TestClassifyEnvVarSpecsKindAwareReporting(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	m := &pipeline.ToolsManifest{
 		Auth: pipeline.ManifestAuth{
@@ -262,7 +264,9 @@ func TestClassifyEnvVarSpecsKindAwareReporting(t *testing.T) {
 }
 
 func TestClassifyHarvestedBearerEnvVarDoesNotSuggestChrome(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	m := &pipeline.ToolsManifest{
 		Auth: pipeline.ManifestAuth{
@@ -291,6 +295,7 @@ func TestClassifyHarvestedBearerEnvVarDoesNotSuggestChrome(t *testing.T) {
 func TestClassifyHarvestedEnvVarUsesAuthFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	configDir := filepath.Join(home, ".config", "cookie-api-pp-cli")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatal(err)

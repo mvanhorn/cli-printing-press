@@ -93,35 +93,35 @@ func attachFreshness(prov DataProvenance, flags *rootFlags) DataProvenance {
 //     declares no per-endpoint header overrides. Without this parameter, store-backed
 //     reads on per-endpoint-versioned APIs silently get the wrong response shape
 //     (cal-com retro #334 F1).
-func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, isList bool, path string, params map[string]string, headers map[string]string) (json.RawMessage, DataProvenance, error) {
+func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, isList bool, path string, params map[string]string, headers map[string]string) (json.RawMessage, int, DataProvenance, error) {
 	switch flags.dataSource {
 	case "local":
 		data, prov, err := resolveLocal(ctx, resourceType, isList, path, params, "user_requested")
-		return data, attachFreshness(prov, flags), err
+		return data, 200, attachFreshness(prov, flags), err
 
 	case "live":
-		data, err := c.GetWithHeaders(path, params, headers)
+		data, statusCode, err := c.GetWithHeaders(path, params, headers)
 		if err != nil {
-			return nil, DataProvenance{}, err
+			return nil, statusCode, DataProvenance{}, err
 		}
-		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
+		return data, statusCode, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 
 	default: // "auto"
-		data, err := c.GetWithHeaders(path, params, headers)
+		data, statusCode, err := c.GetWithHeaders(path, params, headers)
 		if err == nil {
 			writeThroughCache(ctx, resourceType, data)
-			return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
+			return data, statusCode, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 		}
 		if !isNetworkError(err) {
 			// HTTP 4xx/5xx errors propagate — not a fallback case
-			return nil, DataProvenance{}, err
+			return nil, statusCode, DataProvenance{}, err
 		}
 		// Network error — try local fallback
 		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, resourceType, isList, path, params, "api_unreachable")
 		if fallbackErr != nil {
-			return nil, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run '{{.Name}}-pp-cli sync' to enable offline access.\n\nOriginal error: %w", err)
+			return nil, 0, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run '{{.Name}}-pp-cli sync' to enable offline access.\n\nOriginal error: %w", err)
 		}
-		return fallbackData, attachFreshness(fallbackProv, flags), nil
+		return fallbackData, 200, attachFreshness(fallbackProv, flags), nil
 	}
 }
 
@@ -129,64 +129,34 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 // or local store. When local, skips pagination and returns all synced data. The
 // headers argument carries per-endpoint required headers; pass nil when the
 // endpoint declares no overrides.
-func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, DataProvenance, error) {
+func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, int, DataProvenance, error) {
 	switch flags.dataSource {
 	case "local":
 		data, prov, err := resolveLocal(ctx, resourceType, true, path, params, "user_requested")
-		return data, attachFreshness(prov, flags), err
+		return data, 200, attachFreshness(prov, flags), err
 
 	case "live":
-		data, err := paginatedGet(c, path, params, headers, fetchAll, cursorParam, nextCursorPath, hasMoreField)
+		data, statusCode, err := paginatedGet(c, path, params, headers, fetchAll, cursorParam, nextCursorPath, hasMoreField)
 		if err != nil {
-			return nil, DataProvenance{}, err
+			return nil, statusCode, DataProvenance{}, err
 		}
-		return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
+		return data, statusCode, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 
 	default: // "auto"
-		data, err := paginatedGet(c, path, params, headers, fetchAll, cursorParam, nextCursorPath, hasMoreField)
+		data, statusCode, err := paginatedGet(c, path, params, headers, fetchAll, cursorParam, nextCursorPath, hasMoreField)
 		if err == nil {
 			writeThroughCache(ctx, resourceType, data)
-			return data, attachFreshness(DataProvenance{Source: "live"}, flags), nil
+			return data, statusCode, attachFreshness(DataProvenance{Source: "live"}, flags), nil
 		}
 		if !isNetworkError(err) {
-			return nil, DataProvenance{}, err
+			return nil, statusCode, DataProvenance{}, err
 		}
 		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, resourceType, true, path, params, "api_unreachable")
 		if fallbackErr != nil {
-			return nil, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run '{{.Name}}-pp-cli sync' to enable offline access.\n\nOriginal error: %w", err)
+			return nil, 0, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run '{{.Name}}-pp-cli sync' to enable offline access.\n\nOriginal error: %w", err)
 		}
-		return fallbackData, attachFreshness(fallbackProv, flags), nil
+		return fallbackData, 200, attachFreshness(fallbackProv, flags), nil
 	}
-}
-
-// listEnvelopeMetadataKeys are top-level keys that, when accompanying a
-// list-wrapper array, suggest the response is a paginated list envelope
-// rather than a detail object. Used by writeThroughCache to decide
-// whether to upsert a single-object body. Any envelope key NOT in this
-// set (and not a list wrapper itself) signals real per-row data, and
-// the envelope is treated as a detail object even when one of its
-// wrapper-named fields happens to be an empty array.
-var listEnvelopeMetadataKeys = map[string]bool{
-	// list wrappers themselves
-	"results": true, "data": true, "items": true,
-	// pagination cursors / tokens
-	"next_cursor": true, "nextCursor": true,
-	"next_page_token": true, "nextPageToken": true,
-	"page_token": true, "pageToken": true,
-	"end_cursor": true, "endCursor": true,
-	"start_cursor": true, "startCursor": true,
-	"cursor": true, "after": true, "before": true,
-	// has-more flags and page numbers
-	"has_more": true, "hasMore": true, "has_next": true, "hasNext": true,
-	"next_page": true, "previous_page": true,
-	"page": true, "page_size": true, "per_page": true,
-	// counts / totals
-	"total": true, "count": true, "size": true, "total_count": true, "totalCount": true,
-	// wrapper objects
-	"links": true, "meta": true, "pagination": true,
-	"response_metadata": true, "paging": true,
-	// links shape
-	"next": true, "prev": true, "previous": true, "first": true, "last": true,
 }
 
 // writeThroughCache upserts live API results into the local SQLite store so
@@ -217,45 +187,9 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 					}
 				}
 			}
-			// Single object detail response: let UpsertBatch's existing
-			// resourceIDFieldOverrides mechanism resolve the primary key.
-			// Guarding on envelope["id"] dropped any API whose PK is named
-			// CertNo / sku / invoiceId / etc. on the floor (#1439).
-			//
-			// Treat the envelope as a list-shaped response only when EVERY
-			// top-level key is either a list-wrapper (results/data/items)
-			// holding a real array, or a known pagination-metadata key.
-			// A detail object that happens to carry an empty wrapper-named
-			// field alongside real data (e.g. {"id":"order","items":[],
-			// "status":"pending"}) must still cache as a single row.
-			if items == nil && len(envelope) > 0 {
-				looksLikeListEnvelope := false
-				hasListWrapperArray := false
-				for _, key := range []string{"results", "data", "items"} {
-					raw, ok := envelope[key]
-					if !ok {
-						continue
-					}
-					// json.Unmarshal("null", &arr) succeeds with arr=nil,
-					// so require arr != nil to keep true empty arrays in
-					// the skip branch while letting scalar/null values fall
-					// through as regular field-name collisions.
-					var arr []json.RawMessage
-					if json.Unmarshal(raw, &arr) == nil && arr != nil {
-						hasListWrapperArray = true
-						break
-					}
-				}
-				if hasListWrapperArray {
-					looksLikeListEnvelope = true
-					for k := range envelope {
-						if !listEnvelopeMetadataKeys[k] {
-							looksLikeListEnvelope = false
-							break
-						}
-					}
-				}
-				if !looksLikeListEnvelope {
+			// Single object with an id field (e.g., detail response)
+			if items == nil {
+				if _, ok := envelope["id"]; ok {
 					_, _, _ = db.UpsertBatch(resourceType, []json.RawMessage{data})
 					return
 				}

@@ -1,0 +1,8 @@
+* text=auto eol=lf
+*.go text eol=lf
+*.tmpl text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+*.md text eol=lf
+*.sh text eol=lf

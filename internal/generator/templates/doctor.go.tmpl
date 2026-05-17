@@ -366,9 +366,10 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					if !strings.HasPrefix(healthPath, "/") {
 						healthPath = "/" + healthPath
 					}
-					reachBody, reachErr := c.Get(healthPath, nil)
+					reachBody, _, reachErr := c.Get(healthPath, nil)
 {{- else}}
-					reachBody, reachErr := c.Get("/", nil)
+					reachBody, _, reachErr := c.Get("/", nil)
+
 {{- end}}
 					var reachAPIErr *client.APIError
 					switch {
@@ -445,7 +446,8 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- if and (not .UsesBrowserManagedUserAgent) (not (.HasRequiredHeader "User-Agent")) (not $authUsesUA)}}
 						authHeaders["User-Agent"] = "{{.Name}}-pp-cli"
 {{- end}}
-						_, authErr := c.GetWithHeaders(verifyPath, authParams, authHeaders)
+						_, _, authErr := c.GetWithHeaders(verifyPath, authParams, authHeaders)
+
 						var authAPIErr *client.APIError
 						switch {
 						case authErr == nil:

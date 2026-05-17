@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -795,8 +796,8 @@ func TestWriteSamples_TruncatesOversizedBodies(t *testing.T) {
 func TestDefaultSamplesPath(t *testing.T) {
 	t.Parallel()
 
-	got := DefaultSamplesPath("/tmp/cache/example-spec.yaml")
-	assert.Equal(t, "/tmp/cache/example-spec-samples", got)
+	got := DefaultSamplesPath(filepath.FromSlash("/tmp/cache/example-spec.yaml"))
+	assert.Equal(t, filepath.FromSlash("/tmp/cache/example-spec-samples"), got)
 
 	got2 := DefaultSamplesPath("api.yml")
 	assert.Equal(t, "api-samples", got2)
@@ -817,5 +818,7 @@ func TestWriteEnrichedCaptureUsesPrivatePermissions(t *testing.T) {
 
 	info, err := os.Stat(outputPath)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
 }

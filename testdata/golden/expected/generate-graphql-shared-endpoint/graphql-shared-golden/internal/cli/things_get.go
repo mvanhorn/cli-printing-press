@@ -21,7 +21,7 @@ func newThingsGetCmd(flags *rootFlags) *cobra.Command {
 		Example:     "  graphql-shared-golden-pp-cli things get 550e8400-e29b-41d4-a716-446655440000",
 		Annotations: map[string]string{"pp:endpoint": "things.get", "pp:method": "POST", "pp:path": "/graphql", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
+			if len(args) < 1 {
 				return cmd.Help()
 			}
 			if !stdinBody {
@@ -31,7 +31,14 @@ func newThingsGetCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			var (
+				data   json.RawMessage
+				status int
+			)
+			_ = c
+
 			path := "/graphql"
+			_ = path
 			_ = path
 			params := map[string]string{}
 			params["thing_id"] = args[0]
@@ -49,7 +56,7 @@ func newThingsGetCmd(flags *rootFlags) *cobra.Command {
 			} else {
 				body = map[string]any{}
 			}
-			data, statusCode, err := c.PostWithParams(path, params, body)
+			data, status, err = c.PostWithParams(path, params, body)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -93,8 +100,8 @@ func newThingsGetCmd(flags *rootFlags) *cobra.Command {
 					"action":   "post",
 					"resource": "things",
 					"path":     path,
-					"status":   statusCode,
-					"success":  statusCode >= 200 && statusCode < 300,
+					"status":   status,
+					"success":  status >= 200 && status < 300,
 				}
 				if flags.dryRun {
 					envelope["dry_run"] = true
@@ -113,6 +120,7 @@ func newThingsGetCmd(flags *rootFlags) *cobra.Command {
 				}
 				return printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)
 			}
+			_ = status
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}

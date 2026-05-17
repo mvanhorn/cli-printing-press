@@ -1,2 +1,2 @@
 warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it
-Generated embedded-paged at <ARTIFACT_DIR>/generate-embedded-paged-api/embedded-paged-api
+Generated embedded-paged at C:\Users\adria\git\cli-printing-press\.gotmp\golden\actual\generate-embedded-paged-api\embedded-paged-api

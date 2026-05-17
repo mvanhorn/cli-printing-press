@@ -6,6 +6,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -21,9 +22,9 @@ func newProjectsAvatarUploadProjectCmd(flags *rootFlags) *cobra.Command {
 		Aliases:     []string{"update"},
 		Short:       "Upload project avatar",
 		Example:     "  printing-press-golden-pp-cli projects avatar upload-project 550e8400-e29b-41d4-a716-446655440000",
-		Annotations: map[string]string{"pp:endpoint": "avatar.upload-project", "pp:method": "PUT", "pp:path": "/projects/{projectId}/avatar"},
+		Annotations: map[string]string{"pp:endpoint": "avatar.upload-project", "pp:method": "PUT", "pp:path": "/v1/projects/{projectId}/avatar"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
+			if len(args) < 1 {
 				return cmd.Help()
 			}
 			c, err := flags.newClient()
@@ -31,8 +32,15 @@ func newProjectsAvatarUploadProjectCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			var (
+				data   json.RawMessage
+				status int
+			)
+			_ = c
+
 			path := "/projects/{projectId}/avatar"
-			path = replacePathParam(path, "projectId", args[0])
+			_ = path
+			path = replacePathParam(path, "projectId", url.PathEscape(args[0]))
 			params := map[string]string{}
 			if flagOverwrite != false {
 				params["overwrite"] = fmt.Sprintf("%v", flagOverwrite)
@@ -46,7 +54,7 @@ func newProjectsAvatarUploadProjectCmd(flags *rootFlags) *cobra.Command {
 				fileFields["file"] = bodyFile
 			}
 
-			data, statusCode, err := c.PutMultipartWithParams(path, params, fields, fileFields)
+			data, status, err = c.PutMultipartWithParams(path, params, fields, fileFields)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -90,8 +98,8 @@ func newProjectsAvatarUploadProjectCmd(flags *rootFlags) *cobra.Command {
 					"action":   "put",
 					"resource": "avatar",
 					"path":     path,
-					"status":   statusCode,
-					"success":  statusCode >= 200 && statusCode < 300,
+					"status":   status,
+					"success":  status >= 200 && status < 300,
 				}
 				if flags.dryRun {
 					envelope["dry_run"] = true
@@ -110,6 +118,7 @@ func newProjectsAvatarUploadProjectCmd(flags *rootFlags) *cobra.Command {
 				}
 				return printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)
 			}
+			_ = status
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}

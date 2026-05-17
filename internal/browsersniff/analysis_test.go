@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -518,10 +519,7 @@ func TestApplyReachabilityDefaultsAddsBrowserClearanceCookieAuth(t *testing.T) {
 		Resources: map[string]spec.Resource{"posts": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/posts"}}}},
 	}
 	analysis := &TrafficAnalysis{
-		Summary: TrafficAnalysisSummary{
-			TargetURL:               "https://www.producthunt.com",
-			HTTPVersionDistribution: map[string]int{"h3": 12},
-		},
+		Summary: TrafficAnalysisSummary{TargetURL: "https://www.producthunt.com"},
 		Reachability: &ReachabilityAnalysis{
 			Mode:       "browser_clearance_http",
 			Confidence: 0.9,
@@ -554,10 +552,7 @@ func TestApplyReachabilityDefaultsDoesNotRequireProofWithoutValidationPath(t *te
 		}}}},
 	}
 	analysis := &TrafficAnalysis{
-		Summary: TrafficAnalysisSummary{
-			TargetURL:               "https://www.producthunt.com",
-			HTTPVersionDistribution: map[string]int{"h3": 12},
-		},
+		Summary: TrafficAnalysisSummary{TargetURL: "https://www.producthunt.com"},
 		Reachability: &ReachabilityAnalysis{
 			Mode:       "browser_clearance_http",
 			Confidence: 0.9,
@@ -730,7 +725,9 @@ func TestWriteTrafficAnalysisAndDefaultPath(t *testing.T) {
 	assert.True(t, strings.HasSuffix(string(data), "\n"))
 	info, err := os.Stat(outputPath)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
 	assert.Equal(t, filepath.Join("/tmp", "example-spec-traffic-analysis.json"), DefaultTrafficAnalysisPath(filepath.Join("/tmp", "example-spec.yaml")))
 }
 

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -129,7 +130,11 @@ func TestClientBasePathLiveRequest(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	runGoCommand(t, outputDir, "mod", "tidy")
-	binaryPath := filepath.Join(outputDir, "bplive-pp-cli")
+	binaryName := "bplive-pp-cli"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binaryPath := filepath.Join(outputDir, binaryName)
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/bplive-pp-cli")
 
 	cmd := exec.Command(binaryPath, "things", "list", "--json")

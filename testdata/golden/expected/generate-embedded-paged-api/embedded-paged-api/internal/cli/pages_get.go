@@ -6,6 +6,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -17,9 +18,9 @@ func newPagesGetCmd(flags *rootFlags) *cobra.Command {
 		Use:         "get <id>",
 		Short:       "Get",
 		Example:     "  embedded-paged-pp-cli pages get 550e8400-e29b-41d4-a716-446655440000",
-		Annotations: map[string]string{"pp:endpoint": "pages.get", "pp:method": "GET", "pp:path": "/pages/{id}", "mcp:read-only": "true"},
+		Annotations: map[string]string{"pp:endpoint": "pages.get", "pp:method": "GET", "pp:path": "/v1/pages/{id}", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
+			if len(args) < 1 {
 				return cmd.Help()
 			}
 			c, err := flags.newClient()
@@ -27,10 +28,18 @@ func newPagesGetCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			var (
+				data   json.RawMessage
+				status int
+				prov   DataProvenance
+			)
+			_ = c
+
 			path := "/pages/{id}"
-			path = replacePathParam(path, "id", args[0])
+			_ = path
+			path = replacePathParam(path, "id", url.PathEscape(args[0]))
 			params := map[string]string{}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "pages", false, path, params, nil)
+			data, status, prov, err = resolveRead(cmd.Context(), c, flags, "pages", false, path, params, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -75,6 +84,7 @@ func newPagesGetCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
+			_ = status
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}
@@ -90,7 +100,7 @@ func newPagesGetCmd(flags *rootFlags) *cobra.Command {
 // exhausted. pathParams must include every {placeholder} in the parent
 // path (e.g. {"id": "<value>"}).
 func fetchFullPagesGetChildren(c interface {
-	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, int, error)
 }, pathParams map[string]string) ([]json.RawMessage, error) {
 	childPath := "/pages/{id}/children"
 	for name, val := range pathParams {

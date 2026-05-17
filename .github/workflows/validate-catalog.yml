@@ -98,23 +98,12 @@ jobs:
             NAME=$(grep '^name:' "$file" | head -1 | sed 's/name: *//')
             OUT_DIR="${RUNNER_TEMP:-/tmp}/${NAME}-cli"
 
-            # Forward auth_preference when the entry sets one so the generated
-            # CLI matches what `printing-press generate <name>` would produce.
-            # Use yq so quoted values, trailing comments, and indentation are
-            # handled correctly (grep+sed silently mangled those).
-            AUTH_PREFERENCE_ARG=()
-            AUTH_PREF=$(yq e '.auth_preference // ""' "$file")
-            if [ -n "$AUTH_PREF" ]; then
-              AUTH_PREFERENCE_ARG=(--auth-preference "$AUTH_PREF")
-            fi
-
             ./printing-press generate \
               --spec "$SPEC_FILE" \
               --spec-url "$SPEC_URL" \
               --name "$NAME" \
               --output "$OUT_DIR" \
-              --validate \
-              "${AUTH_PREFERENCE_ARG[@]}"
+              --validate
 
             echo "PASS: Generated CLI compiles"
             rm -rf "$OUT_DIR" "$SPEC_FILE"

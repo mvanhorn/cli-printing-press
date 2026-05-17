@@ -55,7 +55,7 @@ func TestGenerateBinaryPaginatedPromotedThreadsHeader(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_voices.go")
-	assert.Contains(t, endpointSrc, `headerOverrides := map[string]string{"X-Printing-Press-Binary-Response": "true"}`,
+	assert.Contains(t, endpointSrc, "headerOverrides := map[string]string{\n\t\t\t\t\"X-Printing-Press-Binary-Response\": \"true\",\n\t\t\t}",
 		"binary paginated promoted must declare headerOverrides")
 	assert.Contains(t, endpointSrc, `paginatedGet(c, path, map[string]string{`,
 		"non-HasStore pagination must use paginatedGet")
@@ -94,7 +94,7 @@ func TestGenerateBinaryStoreBackedPromotedThreadsHeader(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_voices.go")
-	assert.Contains(t, endpointSrc, `headerOverrides := map[string]string{"X-Printing-Press-Binary-Response": "true"}`,
+	assert.Contains(t, endpointSrc, "headerOverrides := map[string]string{\n\t\t\t\t\"X-Printing-Press-Binary-Response\": \"true\",\n\t\t\t}",
 		"store-backed binary GET must declare headerOverrides")
 	assert.Contains(t, endpointSrc, `resolveRead(cmd.Context(), c, flags, "voices", false, path, params, headerOverrides)`,
 		"store-backed binary GET must thread headerOverrides through resolveRead")

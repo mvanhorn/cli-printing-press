@@ -1,2 +1,2 @@
 warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it
-Generated printing-press-oauth2 at <ARTIFACT_DIR>/generate-golden-api-oauth2-cc/printing-press-oauth2-cc
+Generated printing-press-oauth2 at C:\Users\adria\git\cli-printing-press\.gotmp\golden\actual\generate-golden-api-oauth2-cc\printing-press-oauth2-cc

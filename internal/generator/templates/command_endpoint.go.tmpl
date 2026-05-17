@@ -15,7 +15,7 @@ import (
 {{- if and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) (not $isMultipart) (not $isForm)}}
 	"io"
 {{- end}}
-{{- if and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) $isForm}}
+{{- if usesURL .Endpoint $isForm}}
 	"net/url"
 {{- end}}
 	"os"
@@ -30,10 +30,8 @@ import (
 )
 
 func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra.Command {
-{{- range .Endpoint.Params}}
-{{- if not .Positional}}
+{{- range .Endpoint.Flags}}
 	var flag{{camel (paramIdent .)}} {{goTypeForParam .Name .Type}}
-{{- end}}
 {{- end}}
 {{- bodyVarDecls .Endpoint}}
 {{- if .Endpoint.Pagination}}
@@ -54,23 +52,23 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 		Aliases: []string{"{{.Endpoint.Alias}}"},
 {{- end}}
 		Short: "{{oneline .Endpoint.Description}}",
-		Example: "{{exampleLine .CommandPath .EndpointName .Endpoint}}",
-		Annotations: map[string]string{"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, "pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .EffectivePath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}},
+		Example: "{{exampleLine .CommandPath (kebab .EndpointName) .Endpoint}}",
+		Annotations: map[string]string{"pp:endpoint": {{printf "%q" (printf "%s.%s" .ResourceName .EndpointName)}}, "pp:method": {{printf "%q" (upper .Endpoint.Method)}}, "pp:path": {{printf "%q" .AbsoluteURLPath}}{{if .IsReadOnly}}, "mcp:read-only": "true"{{end}}},
 		RunE: func(cmd *cobra.Command, args []string) error {
-{{- if positionalArgs .Endpoint}}
-			if len(args) == 0 {
+{{- if .Endpoint.Args}}
+			if len(args) < {{len .Endpoint.Args}} {
 				return cmd.Help()
 			}
 {{- end}}
-{{- range .Endpoint.Params}}
-{{- if and .Required (not .Positional) (not .Default)}}
+{{- range .Endpoint.Flags}}
+{{- if and .Required (not .Default)}}
 			if !{{flagChangedExpr .}} && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "{{publicFlagName .}}")
 			}
 {{- end}}
 {{- end}}
-{{- range .Endpoint.Params}}
-{{- if and .Enum (not .Positional) (eq .Type "string")}}
+{{- range .Endpoint.Flags}}
+{{- if and .Enum (eq .Type "string")}}
 			if {{flagChangedExpr .}} {
 				allowed{{camel (paramIdent .)}} := []string{ {{enumLiteral .Enum}} }
 				valid{{camel (paramIdent .)}} := false
@@ -85,9 +83,24 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				}
 			}
 {{- end}}
+{{- if and .Enum (eq .Type "integer")}}
+			if {{flagChangedExpr .}} {
+				allowed{{camel (paramIdent .)}} := []int{ {{enumIntLiteral .Enum}} }
+				valid{{camel (paramIdent .)}} := false
+				for _, v := range allowed{{camel (paramIdent .)}} {
+					if flag{{camel (paramIdent .)}} == int(v) {
+						valid{{camel (paramIdent .)}} = true
+						break
+					}
+				}
+				if !valid{{camel (paramIdent .)}} {
+					fmt.Fprintf(os.Stderr, "warning: --%s %d not in allowed set %v\n", "{{publicFlagName .}}", flag{{camel (paramIdent .)}}, allowed{{camel (paramIdent .)}})
+				}
+			}
 {{- end}}
-{{- range .Endpoint.Params}}
-{{- if and (not .Positional) (jsonStringParam .)}}
+{{- end}}
+{{- range .Endpoint.Flags}}
+{{- if jsonStringParam .}}
 {{- $param := .}}
 			if {{flagChangedExpr $param}} {
 				var parsed{{camel (paramIdent $param)}} any
@@ -121,36 +134,40 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			c = c.WithTier({{printf "%q" .EffectiveTier}})
 {{- end}}
 
+			var (
+				data json.RawMessage
+				status int
+{{- if and .HasStore (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD") .Endpoint.Pagination $isGraphQLEndpoint)}}
+				prov DataProvenance
+{{- end}}
+			)
+			_ = c
+
 			path := "{{.ResourceBaseURL}}{{.Endpoint.Path}}"{{/* ResourceBaseURL is empty unless the resource or endpoint declares an override; when set it makes path absolute and the client skips the c.BaseURL concat. */}}
-{{- range .Endpoint.Params}}
-{{- if .Positional}}
-{{- $pi := positionalIndex $.Endpoint .Name}}
-{{- if gt $pi 0}}
-			if len(args) < {{add $pi 1}} {
-				return usageErr(fmt.Errorf("{{.Name}} is required\nUsage: %s <%s>", cmd.CommandPath(), "{{.Name}}"))
-			}
-{{- end}}
-{{- if pathContainsParam $.Endpoint.Path .Name}}
-			path = replacePathParam(path, "{{.Name}}", args[{{$pi}}])
-{{- end}}
-{{- end}}
-{{- end}}
-{{- range .Endpoint.Params}}
-{{- if and .PathParam (not .Positional)}}
-			path = replacePathParam(path, "{{.Name}}", fmt.Sprintf("%v", flag{{camel (paramIdent .)}}))
-{{- end}}
-{{- end}}
+			_ = path
+ {{- range .Endpoint.Params}}
+ {{- if and .Positional .PathParam}}
+ 			path = replacePathParam(path, "{{.Name}}", url.PathEscape(args[{{positionalIndex $.Endpoint .Name}}]))
+ {{- end}}
+ {{- end}}
+ {{- range .Endpoint.Flags}}
+ {{- if .PathParam}}
+ 			path = replacePathParam(path, "{{.Name}}", url.PathEscape(fmt.Sprintf("%v", flag{{camel (paramIdent .)}})))
+ {{- end}}
+ {{- end}}
 {{- if $isGraphQLEndpoint}}
 			_ = path
 {{- end}}
 
 {{- if .Endpoint.UsesHTMLResponse}}
 			htmlRequestParams := map[string]string{}
-{{- range .Endpoint.Params}}
-{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+{{- range .Endpoint.Args}}
+{{- if not .PathParam}}
 			htmlRequestParams["{{.Name}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
-{{- if and (not .Positional) (not .PathParam)}}
+{{- end}}
+{{- range .Endpoint.Flags}}
+{{- if not .PathParam}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
 				htmlRequestParams["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
 			}
@@ -160,17 +177,16 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			headerOverrides := map[string]string{
-{{- range .Endpoint.HeaderOverrides}}
-				"{{.Name}}": "{{.Value}}",
-{{- end}}
 {{- if .Endpoint.UsesBinaryResponse}}
 				"X-Printing-Press-Binary-Response": "true",
+{{- end}}
+{{- range .Endpoint.HeaderOverrides}}
+				"{{.Name}}": "{{.Value}}",
 {{- end}}
 			}
 {{- end}}
 
-{{- if or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")}}
-{{- if and $isGraphQLEndpoint (eq .EndpointName "list")}}
+{{- if and (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")) $isGraphQLEndpoint (eq .EndpointName "list")}}
 			variables := map[string]any{
 				"first": flagFirst,
 			}
@@ -178,82 +194,86 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				variables["after"] = flagAfter
 			}
 {{- if .Endpoint.Pagination}}
-			var data json.RawMessage
 			if flagAll && !flags.dryRun {
 				var items []json.RawMessage
-				items, err = c.PaginatedQuery(client.{{pascal .ResourceName}}ListQuery, variables, "{{graphqlQueryField .Endpoint.ResponsePath}}", flagFirst)
+				items, status, err = c.PaginatedQuery(client.{{pascal .ResourceName}}ListQuery, variables, "{{graphqlQueryField .Endpoint.ResponsePath}}", flagFirst)
 				if err == nil {
 					data, err = json.Marshal(items)
 				}
 			} else {
-				data, err = c.Query(client.{{pascal .ResourceName}}ListQuery, variables)
+				data, _, err = c.Query(client.{{pascal .ResourceName}}ListQuery, variables)
 				if err == nil && !flags.dryRun {
 					data, err = extractGraphQLConnection(data, "{{graphqlQueryField .Endpoint.ResponsePath}}")
 				}
 			}
 {{- else}}
-			data, err := c.Query(client.{{pascal .ResourceName}}ListQuery, variables)
+			data, _, err = c.Query(client.{{pascal .ResourceName}}ListQuery, variables)
 			if err == nil && !flags.dryRun {
 				data, err = extractGraphQLConnection(data, "{{graphqlQueryField .Endpoint.ResponsePath}}")
 			}
 {{- end}}
-{{- if .HasStore}}
-			prov := attachFreshness(DataProvenance{Source: "live"}, flags)
+{{- if and .HasStore (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD"))}}
+			prov = attachFreshness(DataProvenance{Source: "live"}, flags)
 {{- end}}
-{{- else if and $isGraphQLEndpoint (eq .EndpointName "get")}}
-			data, err := c.Query(client.{{pascal .ResourceName}}GetQuery, map[string]any{
+{{- else if and (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")) $isGraphQLEndpoint (eq .EndpointName "get")}}
+			data, _, err = c.Query(client.{{pascal .ResourceName}}GetQuery, map[string]any{
 				"id": args[0],
 			})
 			if err == nil && !flags.dryRun {
 				data, err = extractGraphQLObject(data, "{{graphqlQueryField .Endpoint.ResponsePath}}")
 			}
-{{- if .HasStore}}
-			prov := attachFreshness(DataProvenance{Source: "live"}, flags)
+{{- if and .HasStore (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD"))}}
+			prov = attachFreshness(DataProvenance{Source: "live"}, flags)
 {{- end}}
-{{- else if .Endpoint.Pagination}}
+{{- else if and (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")) .Endpoint.Pagination}}
 {{- if .HasStore}}
-			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", path, map[string]string{
-{{- range .Endpoint.Params}}
-{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			data, status, prov, err = resolvePaginatedRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", path, map[string]string{
+{{- range .Endpoint.Args}}
+{{- if not .PathParam}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
 {{- end}}
-{{- if and (not .Positional) (not .PathParam)}}
+{{- end}}
+{{- range .Endpoint.Flags}}
+{{- if not .PathParam}}
 				"{{paramWireName .}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
 			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- else}}
-			data, err := paginatedGet(c, path, map[string]string{
-{{- range .Endpoint.Params}}
-{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			data, status, err = paginatedGet(c, path, map[string]string{
+{{- range .Endpoint.Args}}
+{{- if not .PathParam}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
 {{- end}}
-{{- if and (not .Positional) (not .PathParam)}}
+{{- end}}
+{{- range .Endpoint.Flags}}
+{{- if not .PathParam}}
 				"{{paramWireName .}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
 			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- end}}
-{{- else}}
+{{- else if or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")}}
 			params := map[string]string{}
-{{- range .Endpoint.Params}}
-{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+{{- range .Endpoint.Args}}
+{{- if not .PathParam}}
 			params["{{paramWireName .}}"] = args[{{positionalIndex $.Endpoint .Name}}]
 {{- end}}
-{{- if and (not .Positional) (not .PathParam)}}
+{{- end}}
+{{- range .Endpoint.Flags}}
+{{- if not .PathParam}}
 			if flag{{camel (paramIdent .)}} != {{zeroValForParam .Name .Type}} {
 				params["{{paramWireName .}}"] = fmt.Sprintf("%v", flag{{camel (paramIdent .)}})
 			}
 {{- end}}
 {{- end}}
 {{- if .HasStore}}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}})
+			data, status, prov, err = resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}})
 {{- else}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, err := c.GetWithHeaders(path, params, headerOverrides)
+			data, status, err = c.GetWithHeaders(path, params, headerOverrides)
 {{- else}}
-			data, err := c.Get(path, params)
-{{- end}}
+			data, status, err = c.Get(path, params)
 {{- end}}
 {{- end}}
 {{- else if eq .Endpoint.Method "POST"}}
@@ -273,17 +293,17 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			fileFields := map[string]string{}
 {{multipartBodyMaps .Endpoint.Body "\t\t\t"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, statusCode, err := c.PostMultipartWithParamsAndHeaders(path, params, fields, fileFields, headerOverrides)
+			data, status, err = c.PostMultipartWithParamsAndHeaders(path, params, fields, fileFields, headerOverrides)
 {{- else}}
-			data, statusCode, err := c.PostMultipartWithParams(path, params, fields, fileFields)
+			data, status, err = c.PostMultipartWithParams(path, params, fields, fileFields)
 {{- end}}
 {{- else if $isForm}}
 			fields := url.Values{}
 {{formBodyMaps .Endpoint.Body "\t\t\t"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, statusCode, err := c.PostFormWithParamsAndHeaders(path, params, fields, headerOverrides)
+			data, status, err = c.PostFormWithParamsAndHeaders(path, params, fields, headerOverrides)
 {{- else}}
-			data, statusCode, err := c.PostFormWithParams(path, params, fields)
+			data, status, err = c.PostFormWithParams(path, params, fields)
 {{- end}}
 {{- else}}
 			var body map[string]any
@@ -301,9 +321,9 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				body = map[string]any{}
 {{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, statusCode, err := c.PostWithParamsAndHeaders(path, params, body, headerOverrides)
+			data, status, err = c.PostWithParamsAndHeaders(path, params, body, headerOverrides)
 {{- else}}
-			data, statusCode, err := c.PostWithParams(path, params, body)
+			data, status, err = c.PostWithParams(path, params, body)
 {{- end}}
 {{- end}}
 {{- else if eq .Endpoint.Method "DELETE"}}
@@ -319,9 +339,9 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- end}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, statusCode, err := c.DeleteWithParamsAndHeaders(path, params, headerOverrides)
+			data, status, err = c.DeleteWithParamsAndHeaders(path, params, headerOverrides)
 {{- else}}
-			data, statusCode, err := c.DeleteWithParams(path, params)
+			data, status, err = c.DeleteWithParams(path, params)
 {{- end}}
 {{- else if eq .Endpoint.Method "PUT"}}
 			params := map[string]string{}
@@ -340,17 +360,17 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			fileFields := map[string]string{}
 {{multipartBodyMaps .Endpoint.Body "\t\t\t"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, statusCode, err := c.PutMultipartWithParamsAndHeaders(path, params, fields, fileFields, headerOverrides)
+			data, status, err = c.PutMultipartWithParamsAndHeaders(path, params, fields, fileFields, headerOverrides)
 {{- else}}
-			data, statusCode, err := c.PutMultipartWithParams(path, params, fields, fileFields)
+			data, status, err = c.PutMultipartWithParams(path, params, fields, fileFields)
 {{- end}}
 {{- else if $isForm}}
 			fields := url.Values{}
 {{formBodyMaps .Endpoint.Body "\t\t\t"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, statusCode, err := c.PutFormWithParamsAndHeaders(path, params, fields, headerOverrides)
+			data, status, err = c.PutFormWithParamsAndHeaders(path, params, fields, headerOverrides)
 {{- else}}
-			data, statusCode, err := c.PutFormWithParams(path, params, fields)
+			data, status, err = c.PutFormWithParams(path, params, fields)
 {{- end}}
 {{- else}}
 			var body map[string]any
@@ -368,9 +388,9 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				body = map[string]any{}
 {{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, statusCode, err := c.PutWithParamsAndHeaders(path, params, body, headerOverrides)
+			data, status, err = c.PutWithParamsAndHeaders(path, params, body, headerOverrides)
 {{- else}}
-			data, statusCode, err := c.PutWithParams(path, params, body)
+			data, status, err = c.PutWithParams(path, params, body)
 {{- end}}
 {{- end}}
 {{- else if eq .Endpoint.Method "PATCH"}}
@@ -390,17 +410,17 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			fileFields := map[string]string{}
 {{multipartBodyMaps .Endpoint.Body "\t\t\t"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, statusCode, err := c.PatchMultipartWithParamsAndHeaders(path, params, fields, fileFields, headerOverrides)
+			data, status, err = c.PatchMultipartWithParamsAndHeaders(path, params, fields, fileFields, headerOverrides)
 {{- else}}
-			data, statusCode, err := c.PatchMultipartWithParams(path, params, fields, fileFields)
+			data, status, err = c.PatchMultipartWithParams(path, params, fields, fileFields)
 {{- end}}
 {{- else if $isForm}}
 			fields := url.Values{}
 {{formBodyMaps .Endpoint.Body "\t\t\t"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, statusCode, err := c.PatchFormWithParamsAndHeaders(path, params, fields, headerOverrides)
+			data, status, err = c.PatchFormWithParamsAndHeaders(path, params, fields, headerOverrides)
 {{- else}}
-			data, statusCode, err := c.PatchFormWithParams(path, params, fields)
+			data, status, err = c.PatchFormWithParams(path, params, fields)
 {{- end}}
 {{- else}}
 			var body map[string]any
@@ -418,9 +438,9 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				body = map[string]any{}
 {{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, statusCode, err := c.PatchWithParamsAndHeaders(path, params, body, headerOverrides)
+			data, status, err = c.PatchWithParamsAndHeaders(path, params, body, headerOverrides)
 {{- else}}
-			data, statusCode, err := c.PatchWithParams(path, params, body)
+			data, status, err = c.PatchWithParams(path, params, body)
 {{- end}}
 {{- end}}
 {{- end}}
@@ -437,7 +457,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			_ = json.Valid
 			_ = os.Stderr
 {{- if or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH") (eq .Endpoint.Method "DELETE")}}
-			_ = statusCode
+			_ = status
 {{- end}}
 {{- if and .HasStore (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD") .Endpoint.Pagination $isGraphQLEndpoint)}}
 			_ = prov
@@ -493,7 +513,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 					if ctx == nil {
 						ctx = context.Background()
 					}
-					final, werr := WaitForJob(ctx, c, "{{.Async.StatusPath}}", asyncJobID, WaitOptions{
+					final, _, werr := WaitForJob(ctx, c, "{{.Async.StatusPath}}", asyncJobID, WaitOptions{
 						Interval: flagWaitInterval,
 						Timeout:  flagWaitTimeout,
 					})
@@ -561,8 +581,8 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 					"action":   "{{lower .Endpoint.Method}}",
 					"resource": "{{.ResourceName}}",
 					"path":     path,
-					"status":   statusCode,
-					"success":  statusCode >= 200 && statusCode < 300,
+					"status":   status,
+					"success":  status >= 200 && status < 300,
 				}
 				if flags.dryRun {
 					envelope["dry_run"] = true
@@ -627,13 +647,13 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				}
 			}
 {{- end}}
+			_ = status
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 {{- end}}
 		},
 	}
 
-{{- range .Endpoint.Params}}
-{{- if not .Positional}}
+{{- range .Endpoint.Flags}}
 {{- $param := .}}
 	cmd.Flags().{{cobraFlagFuncForParam .Name .Type}}(&flag{{camel (paramIdent .)}}, "{{publicFlagName .}}", {{defaultValForParam .}}, "{{oneline .Description}}{{enumDescriptionHint .Enum}}")
 {{- if isConstDefault .}}
@@ -644,17 +664,12 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 	_ = cmd.Flags().MarkHidden("{{.}}")
 {{- end}}
 {{- end}}
-{{- end}}
 {{- bodyFlagRegs .Endpoint}}
 {{- if .Endpoint.Pagination}}
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Fetch all pages")
 {{- end}}
 {{- if and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) (not $isMultipart) (not $isForm)}}
-{{- if bodyExceedsFlagDepth .Endpoint}}
-	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin (use this for deeply nested fields not exposed as flags)")
-{{- else}}
 	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin")
-{{- end}}
 {{- end}}
 {{- if .IsAsync}}
 	cmd.Flags().BoolVar(&flagWait, "wait", false, "Block until the submitted job reaches a terminal status")
@@ -679,7 +694,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 // exhausted. pathParams must include every {placeholder} in the parent
 // path (e.g. {"id": "<value>"}).
 func fetchFull{{$funcPrefix}}{{$endpointCamel}}{{$propCamel}}(c interface {
-	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, int, error)
 }, pathParams map[string]string) ([]json.RawMessage, error) {
 	childPath := "{{.ChildPath}}"
 	for name, val := range pathParams {

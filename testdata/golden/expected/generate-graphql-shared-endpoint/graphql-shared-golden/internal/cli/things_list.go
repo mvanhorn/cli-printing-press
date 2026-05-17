@@ -28,7 +28,14 @@ func newThingsListCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			var (
+				data   json.RawMessage
+				status int
+			)
+			_ = c
+
 			path := "/graphql"
+			_ = path
 			_ = path
 			params := map[string]string{}
 			var body map[string]any
@@ -45,7 +52,7 @@ func newThingsListCmd(flags *rootFlags) *cobra.Command {
 			} else {
 				body = map[string]any{}
 			}
-			data, statusCode, err := c.PostWithParams(path, params, body)
+			data, status, err = c.PostWithParams(path, params, body)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -89,8 +96,8 @@ func newThingsListCmd(flags *rootFlags) *cobra.Command {
 					"action":   "post",
 					"resource": "things",
 					"path":     path,
-					"status":   statusCode,
-					"success":  statusCode >= 200 && statusCode < 300,
+					"status":   status,
+					"success":  status >= 200 && status < 300,
 				}
 				if flags.dryRun {
 					envelope["dry_run"] = true
@@ -109,6 +116,7 @@ func newThingsListCmd(flags *rootFlags) *cobra.Command {
 				}
 				return printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)
 			}
+			_ = status
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}

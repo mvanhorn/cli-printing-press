@@ -225,6 +225,65 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Task"
+  /projects/{projectId}/mixed-tasks:
+    get:
+      tags: [tasks]
+      operationId: listMixedTasks
+      summary: List tasks with mixed params
+      parameters:
+        - $ref: "#/components/parameters/ApiVersion"
+        - name: priority
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: projectId
+          in: path
+          required: true
+          x-positional: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Task"
+  /projects/{projectId}/search:
+    get:
+      tags: [projects]
+      operationId: searchProjectTasks
+      summary: Search project tasks
+      parameters:
+        - $ref: "#/components/parameters/ApiVersion"
+        - name: q
+          in: query
+          required: true
+          x-positional: true
+          schema:
+            type: string
+        - name: projectId
+          in: path
+          required: true
+          x-positional: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
   /projects/{projectId}/tasks/{taskId}:
     patch:
       tags: [tasks]

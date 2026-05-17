@@ -25,9 +25,15 @@ func newGamesPromotedCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			var (
+				data   json.RawMessage
+				status int
+				prov   DataProvenance
+			)
+			_ = c
+
 			path := "/games"
-			params := map[string]string{}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "games", false, path, params, nil)
+			_ = path
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -78,6 +84,7 @@ func newGamesPromotedCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
+			_ = status
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}

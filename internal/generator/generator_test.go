@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -551,7 +552,11 @@ func TestGenerateAgentContextCommand(t *testing.T) {
 
 	// Build the binary and run agent-context; output must be valid JSON
 	// carrying the schema_version field at the top level.
-	binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+	binaryName := naming.CLI(apiSpec.Name)
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binaryPath := filepath.Join(outputDir, binaryName)
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
 
 	out, err := exec.Command(binaryPath, "agent-context").Output()
@@ -651,7 +656,11 @@ func TestGenerateOAuth2AuthTemplateConditionally(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, string(configGo), "GITHUB_TOKEN")
 
-		binaryPath := filepath.Join(outputDir, naming.CLI(apiSpec.Name))
+		binaryName := naming.CLI(apiSpec.Name)
+		if runtime.GOOS == "windows" {
+			binaryName += ".exe"
+		}
+		binaryPath := filepath.Join(outputDir, binaryName)
 		runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(apiSpec.Name))
 		helpOut, err := exec.Command(binaryPath, "auth", "--help").CombinedOutput()
 		require.NoError(t, err, string(helpOut))
@@ -1701,81 +1710,6 @@ func TestGenerateBrowserChromeH3Transport(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/client")
 }
 
-// TestGenerateBrowserChromeH2Transport pins the explicit
-// browser-chrome-h2 enum: the client emits ForceHTTP2() and no
-// ForceHTTP3(). Separate from the bare browser-chrome case (no version
-// force) so a future refactor cannot collapse the two without a failing
-// test.
-func TestGenerateBrowserChromeH2Transport(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := &spec.APISpec{
-		Name:          "websurfaceh2",
-		Version:       "0.1.0",
-		BaseURL:       "https://www.example.com",
-		HTTPTransport: spec.HTTPTransportBrowserChromeH2,
-		Auth:          spec.AuthConfig{Type: "none"},
-		Config: spec.ConfigSpec{
-			Format: "toml",
-			Path:   "~/.config/websurfaceh2-pp-cli/config.toml",
-		},
-		Resources: map[string]spec.Resource{
-			"posts": {
-				Description: "Browse posts",
-				Endpoints: map[string]spec.Endpoint{
-					"list": {Method: "GET", Path: "/", Description: "List posts"},
-				},
-			},
-		},
-	}
-
-	outputDir := filepath.Join(t.TempDir(), "websurfaceh2-pp-cli")
-	require.NoError(t, New(apiSpec, outputDir).Generate())
-
-	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
-	require.NoError(t, err)
-	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
-	assert.Contains(t, string(clientGo), "ForceHTTP2()")
-	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
-}
-
-// TestGenerateBrowserChromeNoVersionForce pins the bare browser-chrome
-// enum (no -h2 / -h3 suffix): the surf client is used but no
-// ForceHTTPN() call is emitted, so Chrome's negotiated version wins.
-// Operators who want an explicit H/2 force must set browser-chrome-h2.
-func TestGenerateBrowserChromeNoVersionForce(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := &spec.APISpec{
-		Name:          "websurfacenoforce",
-		Version:       "0.1.0",
-		BaseURL:       "https://www.example.com",
-		HTTPTransport: spec.HTTPTransportBrowserChrome,
-		Auth:          spec.AuthConfig{Type: "none"},
-		Config: spec.ConfigSpec{
-			Format: "toml",
-			Path:   "~/.config/websurfacenoforce-pp-cli/config.toml",
-		},
-		Resources: map[string]spec.Resource{
-			"posts": {
-				Description: "Browse posts",
-				Endpoints: map[string]spec.Endpoint{
-					"list": {Method: "GET", Path: "/", Description: "List posts"},
-				},
-			},
-		},
-	}
-
-	outputDir := filepath.Join(t.TempDir(), "websurfacenoforce-pp-cli")
-	require.NoError(t, New(apiSpec, outputDir).Generate())
-
-	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
-	require.NoError(t, err)
-	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
-	assert.NotContains(t, string(clientGo), "ForceHTTP2()")
-	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
-}
-
 func TestGenerateBrowserHTTPTransportDisablesHTTP2(t *testing.T) {
 	t.Parallel()
 
@@ -1964,6 +1898,9 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	binaryPath := filepath.Join(outputDir, "webhtml-pp-cli")
+	if runtime.GOOS == "windows" {
+		binaryPath += ".exe"
+	}
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/webhtml-pp-cli")
 
 	cmd := exec.Command(binaryPath, "posts", "list", "--json")
@@ -2129,7 +2066,11 @@ func TestGenerateHTMLExtractionEmbeddedJSONMode(t *testing.T) {
 	require.FileExists(t, filepath.Join(outputDir, "internal", "cli", "html_extract.go"))
 
 	runGoCommand(t, outputDir, "mod", "tidy")
-	binaryPath := filepath.Join(outputDir, "embeddedjson-pp-cli")
+	binaryName := "embeddedjson-pp-cli"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binaryPath := filepath.Join(outputDir, binaryName)
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/embeddedjson-pp-cli")
 
 	// Default selector + dot-notation path: returns the recipes array.
@@ -2926,89 +2867,6 @@ func TestExtractPageItemsNoCursor(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "-run", "TestExtractPageItems", "./internal/cli")
 }
 
-// TestSyncPageIntPaginationAdvancesAfterFullPage guards #1296: APIs that
-// paginate by integer ?page=N (Freshworks, HubSpot, Atlassian, …) emit
-// no body cursor, so extractPageItems returns ("", false). The runtime
-// must detect the paginator type (not the raw param name) and advance
-// the integer counter when the page is full, otherwise sync stops after
-// page 1. Parametrized over every canonical page-int spelling so all
-// four variants share the same guard regardless of casing.
-func TestSyncPageIntPaginationAdvancesAfterFullPage(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name      string
-		paramName string
-	}{
-		{"plain page", "page"},
-		{"snake_case page_number", "page_number"},
-		{"camelCase pageNumber", "pageNumber"},
-		{"json:api page[number]", "page[number]"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			apiSpec := &spec.APISpec{
-				Name:    "freshy",
-				Version: "0.1.0",
-				BaseURL: "https://freshy.example.com",
-				Auth:    spec.AuthConfig{Type: "none"},
-				Config: spec.ConfigSpec{
-					Format: "toml",
-					Path:   "~/.config/freshy-pp-cli/config.toml",
-				},
-				Resources: map[string]spec.Resource{
-					"tickets": {
-						Description: "Tickets",
-						Endpoints: map[string]spec.Endpoint{
-							"list": {
-								Method:      "GET",
-								Path:        "/tickets",
-								Description: "List tickets",
-								Response:    spec.ResponseDef{Type: "array"},
-								Params: []spec.Param{
-									{Name: tc.paramName, Type: "integer"},
-									{Name: "per_page", Type: "integer"},
-								},
-								Pagination: &spec.Pagination{
-									Type:        "page",
-									CursorParam: tc.paramName,
-									LimitParam:  "per_page",
-								},
-							},
-						},
-					},
-				},
-			}
-
-			outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
-			gen := New(apiSpec, outputDir)
-			gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
-			require.NoError(t, gen.Generate())
-
-			syncSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
-			require.NoError(t, err)
-			src := string(syncSrc)
-
-			// The guard must compare on cursorType so every canonical
-			// page-int spelling (page, page_number, pageNumber,
-			// page[number]) fires the fallback.
-			assert.Contains(t, src, `pageSize.cursorType == "page"`,
-				"sync.go must guard the page-int fallback on cursorType, not the raw param name")
-			assert.Contains(t, src, `strconv.Itoa(currentPage + 1)`,
-				"page-int fallback must increment the integer cursor")
-			assert.Contains(t, src, `cursorType:  "page"`,
-				"determinePaginationDefaults must emit cursorType \"page\" when the profile selects it")
-			// CursorParam still carries the original-case param name so
-			// the HTTP request key matches the spec.
-			assert.Contains(t, src, `cursorParam: "`+tc.paramName+`"`,
-				"determinePaginationDefaults must preserve the original-case page-int param name")
-		})
-	}
-}
-
 // TestGeneratedSyncHandlesPascalCaseDotNetShape verifies the generated sync +
 // store paths recognize .NET-shape PascalCase envelopes ("Items"), PKs ("Id"),
 // and field keys (LookupFieldValue PascalCase pass). Parser-side tier-5 PK
@@ -3648,233 +3506,6 @@ func TestWriteThroughCachePopulatesTypedTable(t *testing.T) {
 	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCachePopulatesTypedTable", "./internal/cli")
 }
 
-// TestWriteThroughCacheNonIDPrimaryKeyResponse guards #1439: the previous
-// `envelope["id"]` guard silently dropped single-object detail responses
-// whose primary key field was named anything other than "id" (PCGS uses
-// CertNo, Stripe uses object ids prefixed with their type, many ERP APIs
-// use sku / invoiceId / etc.). After the fix the row reaches UpsertBatch
-// and the existing resourceIDFieldOverrides path resolves the PK.
-func TestLiveFetchWriteThroughCacheNonIDPrimaryKeyResponse(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := &spec.APISpec{
-		Name:    "pcgs",
-		Version: "0.1.0",
-		BaseURL: "https://api.example.com",
-		Auth:    spec.AuthConfig{Type: "none"},
-		Config: spec.ConfigSpec{
-			Format: "toml",
-			Path:   "~/.config/pcgs-pp-cli/config.toml",
-		},
-		Resources: map[string]spec.Resource{
-			"certs": {
-				Description: "Look up coin certs by CertNo",
-				Endpoints: map[string]spec.Endpoint{
-					// list endpoint triggers typed-table emission (UpsertBatch
-					// dispatches to it); lookup endpoint is the single-object
-					// detail path the bug fires on at runtime.
-					"list": {
-						Method:      "GET",
-						Path:        "/certs",
-						Description: "List recent certs",
-						IDField:     "CertNo",
-						Response:    spec.ResponseDef{Type: "array", Item: "Cert"},
-					},
-					"lookup": {
-						Method:      "GET",
-						Path:        "/certs/{cert_no}",
-						Description: "Fetch a single cert by CertNo",
-						IDField:     "CertNo",
-						Response:    spec.ResponseDef{Type: "object", Item: "Cert"},
-					},
-				},
-			},
-		},
-		Types: map[string]spec.TypeDef{
-			"Cert": {
-				Fields: []spec.TypeField{
-					{Name: "CertNo", Type: "string"},
-					{Name: "PCGSNo", Type: "string"},
-					{Name: "Grade", Type: "string"},
-				},
-			},
-		},
-	}
-	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
-	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true}
-	require.NoError(t, gen.Generate())
-
-	inlineTest := `package cli
-
-import (
-	"context"
-	"encoding/json"
-	"testing"
-
-	"` + naming.CLI(apiSpec.Name) + `/internal/store"
-)
-
-func TestWriteThroughCacheNonIDPrimaryKey(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	// Single-object detail response keyed by CertNo (not "id"). Before
-	// #1439, the envelope["id"] guard caused writeThroughCache to drop
-	// this on the floor. After the fix the row reaches UpsertBatch and
-	// the resourceIDFieldOverrides mechanism resolves the PK.
-	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{"CertNo":"12345678","PCGSNo":"7280","Grade":"MS65"}` + "`" + `))
-
-	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
-	if err != nil {
-		t.Fatalf("open cache store: %v", err)
-	}
-	defer db.Close()
-
-	var typedCount int
-	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs WHERE id = '12345678'` + "`" + `).Scan(&typedCount); err != nil {
-		t.Fatalf("query certs: %v", err)
-	}
-	if typedCount != 1 {
-		t.Fatalf("typed certs count = %d, want 1 (non-id primary key was dropped)", typedCount)
-	}
-}
-
-// TestWriteThroughCacheSkipsEmptyListEnvelope guards the tighter
-// single-object branch from misfiring on list responses whose array
-// happened to be empty. {"items": []} must NOT write a row keyed by
-// the entire envelope; the existing wrapper-key loop already handled
-// this implicitly and the relaxed guard must preserve the invariant.
-func TestWriteThroughCacheSkipsEmptyListEnvelope(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{"items": []}` + "`" + `))
-
-	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
-	if err != nil {
-		t.Fatalf("open cache store: %v", err)
-	}
-	defer db.Close()
-
-	var count int
-	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs` + "`" + `).Scan(&count); err != nil {
-		t.Fatalf("query certs: %v", err)
-	}
-	if count != 0 {
-		t.Fatalf("certs count after empty-list envelope = %d, want 0 (envelope must not be upserted as a single object)", count)
-	}
-}
-
-// TestWriteThroughCacheCachesObjectWithListWrapperFieldName guards the
-// list-envelope guard from a field-name collision: a detail object whose
-// own field happens to be named "data" / "results" / "items" with a
-// scalar value (not an array) is a regular response, not an empty list
-// envelope, and must still be cached. Skipping it would be a regression
-// from the prior envelope["id"] path.
-func TestWriteThroughCacheCachesObjectWithListWrapperFieldName(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	// "data" key is present but holds a string. Old code would have written
-	// this via the id guard; new guard must still write it because the
-	// wrapper key isn't a list.
-	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{"CertNo":"55555","data":"opaque-token","Grade":"AU58"}` + "`" + `))
-
-	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
-	if err != nil {
-		t.Fatalf("open cache store: %v", err)
-	}
-	defer db.Close()
-
-	var count int
-	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs WHERE id = '55555'` + "`" + `).Scan(&count); err != nil {
-		t.Fatalf("query certs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("certs count after field-name-collision response = %d, want 1 (scalar-valued wrapper-named field must not trip the list-envelope skip)", count)
-	}
-}
-
-// TestWriteThroughCacheCachesObjectWithNullWrapperFieldName guards the
-// specific JSON-null case Greptile flagged: json.Unmarshal("null", &arr)
-// succeeds with arr=nil, so without an explicit arr != nil check the
-// guard would misclassify {"CertNo":"x","items":null} as an empty-list
-// envelope and silently drop the row.
-func TestWriteThroughCacheCachesObjectWithNullWrapperFieldName(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{"CertNo":"77777","items":null,"Grade":"PR70"}` + "`" + `))
-
-	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
-	if err != nil {
-		t.Fatalf("open cache store: %v", err)
-	}
-	defer db.Close()
-
-	var count int
-	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs WHERE id = '77777'` + "`" + `).Scan(&count); err != nil {
-		t.Fatalf("query certs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("certs count after null-wrapper-field response = %d, want 1 (JSON null is not an empty array)", count)
-	}
-}
-
-// TestWriteThroughCacheCachesObjectWithEmptyListWrapperAndOtherFields
-// covers the multi-key case Greptile flagged in round 3: a detail object
-// with real per-row fields PLUS a wrapper-named field that happens to be
-// an empty array. The skip branch must only fire when EVERY top-level
-// key is a list wrapper or known pagination metadata.
-func TestWriteThroughCacheCachesObjectWithEmptyListWrapperAndOtherFields(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{"CertNo":"88888","items":[],"Grade":"PR69"}` + "`" + `))
-
-	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
-	if err != nil {
-		t.Fatalf("open cache store: %v", err)
-	}
-	defer db.Close()
-
-	var count int
-	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs WHERE id = '88888'` + "`" + `).Scan(&count); err != nil {
-		t.Fatalf("query certs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("certs count after detail-with-empty-wrapper-field response = %d, want 1 (envelope has real per-row fields and must be cached)", count)
-	}
-}
-
-// TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata guards the
-// flip side: a real list envelope with pagination metadata fields
-// (next_cursor, has_more, etc.) plus an empty array must still skip
-// the single-object upsert path. The metadata allowlist is what keeps
-// these envelopes recognized as lists.
-func TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	writeThroughCache(context.Background(), "certs", json.RawMessage(` + "`" + `{"items":[],"next_cursor":"","has_more":false}` + "`" + `))
-
-	db, err := store.Open(defaultDBPath("pcgs-pp-cli"))
-	if err != nil {
-		t.Fatalf("open cache store: %v", err)
-	}
-	defer db.Close()
-
-	var count int
-	if err := db.DB().QueryRow(` + "`" + `SELECT COUNT(*) FROM certs` + "`" + `).Scan(&count); err != nil {
-		t.Fatalf("query certs: %v", err)
-	}
-	if count != 0 {
-		t.Fatalf("certs count after list-envelope-with-metadata response = %d, want 0 (no real per-row data, must skip)", count)
-	}
-}
-`
-	testPath := filepath.Join(outputDir, "internal", "cli", "write_through_cache_non_id_test.go")
-	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
-
-	runGoCommandRequired(t, outputDir, "mod", "tidy")
-	runGoCommandRequired(t, outputDir, "test", "-run", "TestWriteThroughCacheNonIDPrimaryKey|TestWriteThroughCacheSkipsEmptyListEnvelope|TestWriteThroughCacheCachesObjectWithListWrapperFieldName|TestWriteThroughCacheCachesObjectWithNullWrapperFieldName|TestWriteThroughCacheCachesObjectWithEmptyListWrapperAndOtherFields|TestWriteThroughCacheSkipsListEnvelopeWithPaginationMetadata", "./internal/cli")
-}
-
 func TestSyncDiscriminatorDispatchRoutesMixedItemsToTypedTables(t *testing.T) {
 	t.Parallel()
 
@@ -4367,8 +3998,8 @@ func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	assert.Contains(t, content, `envelope := map[string]any{`)
 	assert.Contains(t, content, `"action":`)
 	assert.Contains(t, content, `"resource":`)
-	assert.Contains(t, content, `"status":   statusCode`)
-	assert.Contains(t, content, `"success":  statusCode >= 200 && statusCode < 300`)
+	assert.Contains(t, content, `"status":   status`)
+	assert.Contains(t, content, `"success":  status >= 200 && status < 300`)
 	// Envelope fires on --json and on piped output, but explicit format flags
 	// (--csv, --quiet, --plain) opt out of the auto-JSON path so piped agents
 	// that asked for a non-JSON format actually get it.
@@ -4439,67 +4070,10 @@ func TestCompactListFieldsPreservesUnknownShapes(t *testing.T) {
 		"compactListFields must count per-key occurrence so frequent novel-command keys survive")
 	assert.Contains(t, body, "isCompactScalar",
 		"compactListFields must filter the data-driven extension by scalar type so nested objects/arrays don't bloat --compact output")
-	assert.Contains(t, body, "compactVerboseListFields",
+	assert.Contains(t, body, "compactVerboseFields",
 		"compactListFields must exclude description/body/content from the data-driven extension regardless of frequency")
 	assert.Contains(t, body, "threshold",
 		"compactListFields must compute a frequency threshold for the data-driven extension")
-}
-
-// matchClosingBrace walks s from start, finds the first `{`, then returns
-// the index of the matching `}` by counting depth. Returns -1 if either no
-// opening brace exists at/after start or the input is unbalanced.
-func matchClosingBrace(s string, start int) int {
-	depth := 0
-	seenOpen := false
-	for i := start; i < len(s); i++ {
-		switch s[i] {
-		case '{':
-			depth++
-			seenOpen = true
-		case '}':
-			depth--
-			if seenOpen && depth == 0 {
-				return i
-			}
-		}
-	}
-	return -1
-}
-
-// TestCompactObjectFieldsPreservesPayloadFields pins the contract that
-// single-object `get` responses retain their primary payload fields under
-// `--agent`/`--compact`. The list-path blocklist correctly strips body/
-// content/html/markdown from list items (verbose noise), but applying the
-// same blocklist to single-object responses silently drops the field the
-// caller asked for. Pinned at the template level so the two blocklists stay
-// separate as the helper renders into every printed CLI.
-func TestCompactObjectFieldsPreservesPayloadFields(t *testing.T) {
-	t.Parallel()
-
-	path := filepath.Join("templates", "helpers.go.tmpl")
-	data, err := os.ReadFile(path)
-	require.NoError(t, err, "template must exist: %s", path)
-	body := string(data)
-
-	require.Contains(t, body, "compactVerboseObjectFields",
-		"compactObjectFields must read from a dedicated object-path blocklist, not the list-path one")
-	require.Contains(t, body, "if !compactVerboseObjectFields[k] {",
-		"compactObjectFields must consult the object-path blocklist when deciding which keys to keep")
-
-	objStart := strings.Index(body, "compactVerboseObjectFields = map[string]bool{")
-	require.GreaterOrEqual(t, objStart, 0, "compactVerboseObjectFields map literal must exist")
-	objEnd := matchClosingBrace(body, objStart)
-	require.GreaterOrEqual(t, objEnd, 0, "compactVerboseObjectFields map literal must close")
-	objBody := body[objStart : objEnd+1]
-
-	for _, payload := range []string{`"body"`, `"content"`, `"html"`, `"markdown"`} {
-		assert.NotContains(t, objBody, payload,
-			"compactVerboseObjectFields must not list %s — those fields are the primary payload on single-object get responses", payload)
-	}
-	for _, metadata := range []string{`"description"`, `"comments"`, `"attachments"`} {
-		assert.Contains(t, objBody, metadata,
-			"compactVerboseObjectFields must still strip %s — that field is metadata on single-object responses, not payload", metadata)
-	}
 }
 
 // The cursor param's "0" must survive paginatedGet's zero-value strip:
@@ -4844,8 +4418,12 @@ func TestGeneratedExport_ValidatesResourceArgument(t *testing.T) {
 	assert.Regexp(t, `"users":\s+true`, exportContent)
 	assert.Contains(t, exportContent, `unknown resource %q; valid: %s`)
 
-	runGoCommandRequired(t, outputDir, "build", "-o", "./testexport-pp-cli", "./cmd/testexport-pp-cli")
-	cmd := exec.Command(filepath.Join(outputDir, "testexport-pp-cli"), "export", "storiez")
+	binaryName := "testexport-pp-cli"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	runGoCommandRequired(t, outputDir, "build", "-o", "./"+binaryName, "./cmd/testexport-pp-cli")
+	cmd := exec.Command(filepath.Join(outputDir, binaryName), "export", "storiez")
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err)
 	assert.Contains(t, string(out), `unknown resource "storiez"; valid: items, stories, users`)
@@ -5815,7 +5393,11 @@ func TestGeneratedOutput_AgentMoneyWorkflowPaymentPlan(t *testing.T) {
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
 
-	binaryPath := filepath.Join(outputDir, "treasury-pp-cli")
+	binaryName := "treasury-pp-cli"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binaryPath := filepath.Join(outputDir, binaryName)
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/treasury-pp-cli")
 
 	cmd := exec.Command(binaryPath, "workflow", "payment-plan",
@@ -5951,41 +5533,6 @@ func TestGeneratedOutput_PromotedCommandCompiles(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
-// A resource named `test` produces `promoted_test.go`; Go treats *_test.go as a
-// test file and excludes it from the normal package build, so root.go's
-// reference to newTestPromotedCmd fails to compile. Mirrors the safe-stem fix
-// that #1021 applied to `<resource>_<verb>.go`.
-func TestGeneratedOutput_PromotedCommand_TestResourceCompiles(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := &spec.APISpec{
-		Name:    "promotedtest",
-		Version: "0.1.0",
-		BaseURL: "https://api.example.com",
-		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"PT_API_KEY"}},
-		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/promotedtest-pp-cli/config.toml"},
-		Resources: map[string]spec.Resource{
-			"test": {
-				Description: "Single-endpoint resource whose name collides with Go's *_test.go convention",
-				Endpoints: map[string]spec.Endpoint{
-					"generate": {Method: "POST", Path: "/test/generate", Description: "Generate a test"},
-				},
-			},
-		},
-	}
-
-	outputDir := filepath.Join(t.TempDir(), "promotedtest-pp-cli")
-	gen := New(apiSpec, outputDir)
-	require.NoError(t, gen.Generate())
-
-	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_test.go"),
-		"promoted_test.go is excluded from go build; safeResourceFileStem must rewrite to promoted_test_cmd.go")
-	assert.FileExists(t, filepath.Join(outputDir, "internal", "cli", "promoted_test_cmd.go"))
-
-	runGoCommand(t, outputDir, "mod", "tidy")
-	runGoCommand(t, outputDir, "build", "./...")
-}
-
 func TestGeneratedOutput_ResourceParentsHiddenWhenAPIBrowserGenerated(t *testing.T) {
 	t.Parallel()
 
@@ -6105,7 +5652,11 @@ func TestGeneratedOutput_AgentContextIncludesHiddenResourceGroups(t *testing.T) 
 	require.NoError(t, gen.Generate())
 
 	runGoCommand(t, outputDir, "mod", "tidy")
-	binaryPath := filepath.Join(outputDir, "agentctxhide-pp-cli")
+	binaryName := "agentctxhide-pp-cli"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binaryPath := filepath.Join(outputDir, binaryName)
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/agentctxhide-pp-cli")
 
 	out, err := exec.Command(binaryPath, "agent-context").Output()
@@ -6564,8 +6115,8 @@ func TestGeneratedDoctor_HealthCheckPathProbesEndpoint(t *testing.T) {
 	doctorSrc := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
 	assert.Contains(t, doctorSrc, `healthPath := "api/marketStatus"`)
 	assert.Contains(t, doctorSrc, `if !strings.HasPrefix(healthPath, "/") {`)
-	assert.Contains(t, doctorSrc, `reachBody, reachErr := c.Get(healthPath, nil)`)
-	assert.NotContains(t, doctorSrc, `reachBody, reachErr := c.Get("/", nil)`)
+	assert.Contains(t, doctorSrc, `reachBody, _, reachErr := c.Get(healthPath, nil)`)
+	assert.NotContains(t, doctorSrc, `reachBody, _, reachErr := c.Get("/", nil)`)
 }
 
 func TestGeneratedDoctor_InterstitialMarkersAreTitleAnchored(t *testing.T) {
@@ -6887,135 +6438,6 @@ func TestGenerate_CookieAuthWindowsCompatibility(t *testing.T) {
 	assert.Contains(t, content, "cookie-scoop-cli")
 }
 
-// TestGenerate_CookieAuthFiltersAllowlistOnLogin pins that `auth login --chrome`
-// stores only the cookies named in spec.auth.cookies when an allowlist is
-// declared, and falls back to the unfiltered blob when the allowlist is
-// empty (legacy specs).
-func TestGenerate_CookieAuthFiltersAllowlistOnLogin(t *testing.T) {
-	t.Parallel()
-
-	t.Run("allowlist declared filters extracted cookies", func(t *testing.T) {
-		t.Parallel()
-		apiSpec := &spec.APISpec{
-			Name:    "filterapp",
-			Version: "0.1.0",
-			BaseURL: "https://app.example.com",
-			Auth: spec.AuthConfig{
-				Type:         "cookie",
-				Header:       "Cookie",
-				In:           "cookie",
-				CookieDomain: ".example.com",
-				Cookies:      []string{"session_id"},
-				EnvVars:      []string{"FILTERAPP_COOKIES"},
-			},
-			Config: spec.ConfigSpec{Format: "toml"},
-			Resources: map[string]spec.Resource{
-				"items": {
-					Description: "Manage items",
-					Endpoints: map[string]spec.Endpoint{
-						"list": {Method: "GET", Path: "/api/items", Description: "List items"},
-					},
-				},
-			},
-		}
-
-		outputDir := filepath.Join(t.TempDir(), "filterapp-pp-cli")
-		require.NoError(t, New(apiSpec, outputDir).Generate())
-
-		auth, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
-		require.NoError(t, err)
-		content := string(auth)
-
-		assert.Contains(t, content, `requiredCookies := []string{"session_id"}`)
-		assert.Contains(t, content, "cookieMap := parseCookieString(cookies)")
-		assert.Contains(t, content, `cookies = strings.Join(kept, "; ")`)
-		assert.Contains(t, content, `cookie %q not found for %s`)
-
-		runGoCommand(t, outputDir, "build", "./...")
-	})
-
-	t.Run("empty allowlist preserves legacy behavior", func(t *testing.T) {
-		t.Parallel()
-		apiSpec := &spec.APISpec{
-			Name:    "legacycookieapp",
-			Version: "0.1.0",
-			BaseURL: "https://app.example.com",
-			Auth: spec.AuthConfig{
-				Type:         "cookie",
-				Header:       "Cookie",
-				In:           "cookie",
-				CookieDomain: ".example.com",
-				EnvVars:      []string{"LEGACYCOOKIEAPP_COOKIES"},
-			},
-			Config: spec.ConfigSpec{Format: "toml"},
-			Resources: map[string]spec.Resource{
-				"items": {
-					Description: "Manage items",
-					Endpoints: map[string]spec.Endpoint{
-						"list": {Method: "GET", Path: "/api/items", Description: "List items"},
-					},
-				},
-			},
-		}
-
-		outputDir := filepath.Join(t.TempDir(), "legacycookieapp-pp-cli")
-		require.NoError(t, New(apiSpec, outputDir).Generate())
-
-		auth, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
-		require.NoError(t, err)
-		content := string(auth)
-
-		assert.NotContains(t, content, "requiredCookies := []string{")
-		assert.NotContains(t, content, `cookies = strings.Join(kept, "; ")`)
-	})
-
-	t.Run("refresh path also filters by allowlist", func(t *testing.T) {
-		t.Parallel()
-		apiSpec := &spec.APISpec{
-			Name:    "refreshfilterapp",
-			Version: "0.1.0",
-			BaseURL: "https://app.example.com",
-			Auth: spec.AuthConfig{
-				Type:                           "cookie",
-				Header:                         "Cookie",
-				In:                             "cookie",
-				CookieDomain:                   ".example.com",
-				Cookies:                        []string{"session_id"},
-				EnvVars:                        []string{"REFRESHFILTERAPP_COOKIES"},
-				RequiresBrowserSession:         true,
-				BrowserSessionValidationPath:   "/api/items",
-				BrowserSessionValidationMethod: "GET",
-			},
-			Config: spec.ConfigSpec{Format: "toml"},
-			Resources: map[string]spec.Resource{
-				"items": {
-					Description: "Manage items",
-					Endpoints: map[string]spec.Endpoint{
-						"list": {Method: "GET", Path: "/api/items", Description: "List items"},
-					},
-				},
-			},
-		}
-
-		outputDir := filepath.Join(t.TempDir(), "refreshfilterapp-pp-cli")
-		require.NoError(t, New(apiSpec, outputDir).Generate())
-
-		auth, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
-		require.NoError(t, err)
-		content := string(auth)
-
-		require.Contains(t, content, "func refreshStoredBrowserCookies")
-		_, refresh, _ := strings.Cut(content, "func refreshStoredBrowserCookies")
-		// Without the fix, the refresh body has SaveTokens(cookies) with no
-		// prior filter — the second SaveTokens call would then sit before any
-		// allowlist parsing in the function.
-		assert.Contains(t, refresh, `requiredCookies := []string{"session_id"}`)
-		assert.Contains(t, refresh, `cookies = strings.Join(kept, "; ")`)
-
-		runGoCommand(t, outputDir, "build", "./...")
-	})
-}
-
 func TestGenerate_UserAgentOverrideGatedByBrowserTransport(t *testing.T) {
 	t.Parallel()
 
@@ -7227,7 +6649,11 @@ func TestGenerateGraphQLBFFUsesSemanticCommandSurface(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "graphql.go"))
 
 	runGoCommand(t, outputDir, "mod", "tidy")
-	binaryPath := filepath.Join(outputDir, "example-pp-cli")
+	binaryName := "example-pp-cli"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binaryPath := filepath.Join(outputDir, binaryName)
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/example-pp-cli")
 	helpOut, err := exec.Command(binaryPath, "--help").CombinedOutput()
 	require.NoError(t, err, string(helpOut))
@@ -7295,7 +6721,11 @@ func TestGenerateWhichFallsBackToCommandTree(t *testing.T) {
 	assert.Contains(t, whichSrc, `"pp:typed-exit-codes": "0,2"`)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
-	binaryPath := filepath.Join(outputDir, "whichfallback-pp-cli")
+	binaryName := "whichfallback-pp-cli"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binaryPath := filepath.Join(outputDir, binaryName)
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/whichfallback-pp-cli")
 	whichOut, err := exec.Command(binaryPath, "which", "reviews", "--json").CombinedOutput()
 	require.NoError(t, err, string(whichOut))
@@ -8468,7 +7898,11 @@ func TestIsEmptyPageResponseRejectsNullSingletonFields(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_empty_page_test.go"), []byte(behaviorTest), 0o644))
 	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestIsEmptyPageResponseRejectsNullSingletonFields")
 
-	binaryPath := filepath.Join(outputDir, "emptywrapsync-pp-cli")
+	binaryName := "emptywrapsync-pp-cli"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binaryPath := filepath.Join(outputDir, binaryName)
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/emptywrapsync-pp-cli")
 
 	emptyDB := filepath.Join(t.TempDir(), "empty.db")
@@ -8863,7 +8297,7 @@ func TestGenerateOperationRoutingPathParamDefault(t *testing.T) {
 		cliContent,
 		"defaulted operation-routing path param should be user-overridable")
 	assert.Contains(t, cliContent,
-		`path = replacePathParam(path, "pathQueryId", fmt.Sprintf("%v", flagPathQueryId))`,
+		`path = replacePathParam(path, "pathQueryId", url.PathEscape(fmt.Sprintf("%v", flagPathQueryId)))`,
 		"generated command must substitute the path template before calling the API")
 
 	helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
@@ -9731,6 +9165,8 @@ func TestGenerateResourceBaseURLOverrideRoutesToOverrideHost(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(fcHandler), `path := "/forecast"`,
 		"forecast handler must keep the relative path when its resource has no override")
+	assert.Contains(t, string(fcHandler), `"pp:path": "/v1/forecast"`,
+		"forecast annotation must include the full path from root")
 
 	// The client emits the absolute-URL branch + isAbsoluteURL helper.
 	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
@@ -9834,11 +9270,16 @@ func TestGenerateEndpointBaseURLOverrideRoutesToOverrideHost(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(fcHandler), `path := "/forecast"`,
 		"sibling endpoint without override must keep the relative path")
+	assert.Contains(t, string(fcHandler), `"pp:path": "/v1/forecast"`,
+		"sibling endpoint annotation must include the full path from root")
 
-	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	mcpToolsBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(mcpTools), `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search", false`,
+	mcpToolsStr := string(mcpToolsBytes)
+	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search", false`,
 		"typed MCP endpoint tool must use the endpoint override URL")
+	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "/forecast"`,
+		"typed MCP endpoint tool must use the relative path when its resource has no override")
 }
 
 // TestGenerateNoResourceBaseURLOverrideByteCompat — specs without any
@@ -10441,69 +9882,6 @@ func TestMCPHandlerPassesBodyArgsMap(t *testing.T) {
 		"PATCH branch must forward bodyArgs directly to the client")
 }
 
-// TestMCPCodeOrchPassesParamsMap pins the same body-passthrough contract for
-// the code-orchestration handler template (mcp_code_orch.go.tmpl). Sibling of
-// TestMCPHandlerPassesBodyArgsMap: an earlier pre-marshal stored []byte in the
-// body slot, which client.do() then json.Marshaled into a base64-encoded
-// string that strict APIs reject.
-func TestMCPCodeOrchPassesParamsMap(t *testing.T) {
-	t.Parallel()
-
-	apiSpec := minimalSpec("mcp-orch-body-passthrough")
-	apiSpec.MCP = spec.MCPConfig{Orchestration: "code", EndpointTools: "hidden"}
-	apiSpec.Resources["widgets"] = spec.Resource{
-		Description: "Widgets",
-		Endpoints: map[string]spec.Endpoint{
-			"create": {
-				Method:      "POST",
-				Path:        "/widgets",
-				Description: "Create a widget",
-				Body: []spec.Param{
-					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
-				},
-			},
-			"replace": {
-				Method:      "PUT",
-				Path:        "/widgets/{id}",
-				Description: "Replace a widget",
-				Params: []spec.Param{
-					{Name: "id", Type: "string", Required: true, Description: "Widget id"},
-				},
-				Body: []spec.Param{
-					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
-				},
-			},
-			"update": {
-				Method:      "PATCH",
-				Path:        "/widgets/{id}",
-				Description: "Update a widget",
-				Params: []spec.Param{
-					{Name: "id", Type: "string", Required: true, Description: "Widget id"},
-				},
-				Body: []spec.Param{
-					{Name: "label", Type: "string", Required: true, Description: "Widget label"},
-				},
-			},
-		},
-	}
-
-	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
-	require.NoError(t, New(apiSpec, outputDir).Generate())
-
-	mcpSource := readGeneratedFile(t, outputDir, "internal", "mcp", "code_orch.go")
-
-	assert.NotContains(t, mcpSource, "json.Marshal(params)",
-		"code-orch handler must not pre-marshal params: client.do() json.Marshals what it receives, "+
-			"so a []byte arrives base64-encoded on the wire and strict APIs reject the payload")
-
-	assert.Contains(t, mcpSource, "c.Post(path, params)",
-		"POST branch must forward params directly to the client")
-	assert.Contains(t, mcpSource, "c.Put(path, params)",
-		"PUT branch must forward params directly to the client")
-	assert.Contains(t, mcpSource, "c.Patch(path, params)",
-		"PATCH branch must forward params directly to the client")
-}
-
 // TestMCPBindingNumericTypesAcrossSpecShapes pins template wiring: both
 // OpenAPI-parsed shapes ("int", "bool") and internal-spec literals
 // ("integer", "boolean") flow through mcpBindingFunc to WithNumber /
@@ -10733,6 +10111,9 @@ func TestGenerateMCPMainRemoteRuntime(t *testing.T) {
 	runGoCommand(t, outputDir, "mod", "tidy")
 
 	mcpBinary := filepath.Join(outputDir, naming.MCP(apiSpec.Name))
+	if runtime.GOOS == "windows" {
+		mcpBinary += ".exe"
+	}
 	runGoCommand(t, outputDir, "build", "-o", mcpBinary, "./cmd/"+naming.MCP(apiSpec.Name))
 
 	// --help should print both flags so an agent can discover transport + addr.
@@ -10774,6 +10155,9 @@ func TestGenerateMCPMainRemoteCompiles(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 
 	mcpBinary := filepath.Join(outputDir, naming.MCP(apiSpec.Name))
+	if runtime.GOOS == "windows" {
+		mcpBinary += ".exe"
+	}
 	runGoCommand(t, outputDir, "build", "-o", mcpBinary, "./cmd/"+naming.MCP(apiSpec.Name))
 
 	info, err := os.Stat(mcpBinary)

@@ -276,23 +276,13 @@ func liveCheckBinaryCandidatesForGOOS(cliDir, name, goos string) []string {
 		base := filepath.Base(cliDir)
 		names = []string{base + "-pp-cli", base}
 	}
-	// Resolution order (per issue #1150):
-	//   1. <cliDir>/build/stage/bin/<name>           canonical Unix
-	//   2. <cliDir>/build/stage/bin/<name>.exe       canonical Windows
-	//   3. <cliDir>/<name>                           legacy fallback
-	//   4. <cliDir>/<name>.exe                       legacy Windows fallback
-	// The generator's --validate "build runnable binary" gate emits the
-	// binary under build/stage/bin/; older layouts left it at cliDir.
-	stagedDir := filepath.Join(cliDir, "build", "stage", "bin")
-	candidates := make([]string, 0, len(names)*4)
+	candidates := make([]string, 0, len(names)*2)
 	seen := map[string]struct{}{}
 	for _, candidate := range names {
 		if candidate == "" {
 			continue
 		}
 		for _, path := range []string{
-			filepath.Join(stagedDir, candidate),
-			platform.ExecutablePathForGOOS(filepath.Join(stagedDir, candidate), goos),
 			filepath.Join(cliDir, candidate),
 			platform.ExecutablePathForGOOS(filepath.Join(cliDir, candidate), goos),
 		} {

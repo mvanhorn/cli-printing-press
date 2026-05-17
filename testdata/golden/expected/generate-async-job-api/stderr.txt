@@ -1,2 +1,2 @@
 warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it
-Generated async-job at <ARTIFACT_DIR>/generate-async-job-api/async-job-api
+Generated async-job at C:\Users\adria\git\cli-printing-press\.gotmp\golden\actual\generate-async-job-api\async-job-api

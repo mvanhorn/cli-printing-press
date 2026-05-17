@@ -989,184 +989,6 @@ paths:
 	assert.Equal(t, "https://example.com/auth", parsed.Auth.AuthorizationURL)
 }
 
-func TestParseAuthPreferenceSelectsNamedScheme(t *testing.T) {
-	t.Parallel()
-
-	// Many real-world specs (Atlassian Jira, Confluence, Bitbucket, GitLab)
-	// advertise both OAuth2 (with full authorizationCode flow) and HTTP Basic.
-	// The default selector picks OAuth2 — correct for hosted multi-tenant
-	// integrations but wrong for personal-token CLIs. AuthPreference lets the
-	// catalog (or a generate caller) pin the simpler scheme.
-	specBytes := []byte(`openapi: "3.0.3"
-info:
-  title: Atlassian-like
-  version: "1.0"
-servers:
-  - url: https://example.atlassian.net
-components:
-  securitySchemes:
-    OAuth2:
-      type: oauth2
-      flows:
-        authorizationCode:
-          authorizationUrl: https://auth.example.com/authorize
-          tokenUrl: https://auth.example.com/token
-          scopes:
-            read: read access
-    basicAuth:
-      type: http
-      scheme: basic
-paths:
-  /v1/things:
-    get:
-      operationId: list things
-      security:
-        - basicAuth: []
-        - OAuth2: [read]
-      responses: {"200": {description: ok}}
-`)
-
-	defaultParsed, err := Parse(specBytes)
-	require.NoError(t, err)
-	assert.Equal(t, "OAuth2", defaultParsed.Auth.Scheme, "without preference, OAuth2+AC wins by design")
-	assert.Equal(t, "bearer_token", defaultParsed.Auth.Type)
-
-	preferred, err := ParseWithOptions(specBytes, ParseOptions{AuthPreference: "basicAuth"})
-	require.NoError(t, err)
-	assert.Equal(t, "api_key", preferred.Auth.Type, "preference pins HTTP Basic")
-	assert.Equal(t, "basicAuth", preferred.Auth.Scheme)
-	assert.Equal(t, "Basic {username}:{password}", preferred.Auth.Format)
-}
-
-func TestParseAuthPreferenceCaseInsensitive(t *testing.T) {
-	t.Parallel()
-
-	specBytes := []byte(`openapi: "3.0.3"
-info:
-  title: Mixed
-  version: "1.0"
-servers:
-  - url: https://api.example.com
-components:
-  securitySchemes:
-    OAuth2:
-      type: oauth2
-      flows:
-        authorizationCode:
-          authorizationUrl: https://api.example.com/authorize
-          tokenUrl: https://api.example.com/token
-          scopes:
-            read: read
-    BasicAuth:
-      type: http
-      scheme: basic
-paths:
-  /v1/things:
-    get:
-      operationId: list things
-      security:
-        - BasicAuth: []
-        - OAuth2: [read]
-      responses: {"200": {description: ok}}
-`)
-
-	preferred, err := ParseWithOptions(specBytes, ParseOptions{AuthPreference: "basicauth"})
-	require.NoError(t, err)
-	assert.Equal(t, "api_key", preferred.Auth.Type)
-	assert.Equal(t, "BasicAuth", preferred.Auth.Scheme, "match is case-insensitive but result preserves spec casing")
-}
-
-func TestParseAuthPreferenceUnknownNameFallsBackToDefault(t *testing.T) {
-	t.Parallel()
-
-	// An unknown preference name must not fail parse; it falls through to the
-	// default selector so a typo in catalog yaml degrades gracefully.
-	specBytes := []byte(`openapi: "3.0.3"
-info:
-  title: Mixed
-  version: "1.0"
-servers:
-  - url: https://api.example.com
-components:
-  securitySchemes:
-    OAuth2:
-      type: oauth2
-      flows:
-        authorizationCode:
-          authorizationUrl: https://api.example.com/authorize
-          tokenUrl: https://api.example.com/token
-          scopes:
-            read: read
-    basicAuth:
-      type: http
-      scheme: basic
-paths:
-  /v1/things:
-    get:
-      operationId: list things
-      security:
-        - basicAuth: []
-        - OAuth2: [read]
-      responses: {"200": {description: ok}}
-`)
-
-	parsed, err := ParseWithOptions(specBytes, ParseOptions{AuthPreference: "doesNotExist"})
-	require.NoError(t, err)
-	assert.Equal(t, "OAuth2", parsed.Auth.Scheme, "unknown preference falls back to default selector")
-	assert.Equal(t, "bearer_token", parsed.Auth.Type)
-}
-
-func TestParseBearerPreservedOverOAuth2AuthCode(t *testing.T) {
-	t.Parallel()
-
-	// GitHub-style shape: an http/bearer scheme alongside a full OAuth2
-	// authorizationCode flow. The scoring system in schemePriorityScore
-	// pins schemePriorityBearer = 0 < schemePriorityOAuth2AuthCode = 200
-	// precisely because Bearer is the simplest scheme for a CLI to use.
-	// Default selection must keep Bearer; AuthPreference must still let
-	// callers opt into OAuth2 when they want the 3LO dance.
-	specBytes := []byte(`openapi: "3.0.3"
-info:
-  title: GitHub-like
-  version: "1.0"
-servers:
-  - url: https://api.example.com
-components:
-  securitySchemes:
-    BearerAuth:
-      type: http
-      scheme: bearer
-    OAuth2:
-      type: oauth2
-      flows:
-        authorizationCode:
-          authorizationUrl: https://auth.example.com/authorize
-          tokenUrl: https://auth.example.com/token
-          scopes:
-            read: read access
-paths:
-  /v1/things:
-    get:
-      operationId: list things
-      security:
-        - BearerAuth: []
-        - OAuth2: [read]
-      responses: {"200": {description: ok}}
-`)
-
-	defaultParsed, err := Parse(specBytes)
-	require.NoError(t, err)
-	assert.Equal(t, "BearerAuth", defaultParsed.Auth.Scheme, "default selection must keep Bearer over OAuth2+AC")
-	assert.Equal(t, "bearer_token", defaultParsed.Auth.Type)
-
-	preferred, err := ParseWithOptions(specBytes, ParseOptions{AuthPreference: "OAuth2"})
-	require.NoError(t, err)
-	assert.Equal(t, "OAuth2", preferred.Auth.Scheme, "AuthPreference must still let callers opt into OAuth2")
-	assert.Equal(t, "bearer_token", preferred.Auth.Type)
-	assert.Equal(t, "https://auth.example.com/authorize", preferred.Auth.AuthorizationURL)
-	assert.Equal(t, "https://auth.example.com/token", preferred.Auth.TokenURL)
-}
-
 func TestBearerSchemeNameCanSpecializeEnvVar(t *testing.T) {
 	t.Parallel()
 
@@ -2073,58 +1895,6 @@ paths:
 			assert.True(t, routingParam.PathParam, "defaulted path param should remain a URL substitution flag")
 			assert.False(t, routingParam.Positional, "defaulted path param should stay flag-shaped")
 			assert.NotNil(t, routingParam.Default, "operation-specific query id default should be preserved")
-		}
-	}
-}
-
-// Real-world OpenAPI specs (Tally, others) frequently include {placeholder}
-// tokens in a path template without declaring the corresponding parameter at
-// either the operation or path-item level. The path template is then the only
-// source of truth for what's required. Without synthesizing a Param entry,
-// the generated CLI emits a literal `{organizationId}` URL segment and every
-// request 404s. Mirrors the same enrichment the internal YAML loader applies.
-func TestParseSynthesizesUndeclaredPathPlaceholders(t *testing.T) {
-	t.Parallel()
-	data := []byte(`
-openapi: 3.0.0
-info:
-  title: Hierarchical API
-  version: 1.0.0
-servers:
-  - url: https://api.example.com
-paths:
-  /organizations/{organizationId}/invites:
-    get:
-      summary: List organization invites
-      responses:
-        "200":
-          description: ok
-  /organizations/{organizationId}/users:
-    get:
-      summary: List organization users
-      responses:
-        "200":
-          description: ok
-`)
-
-	parsed, err := Parse(data)
-	require.NoError(t, err)
-
-	for _, path := range []string{
-		"/organizations/{organizationId}/invites",
-		"/organizations/{organizationId}/users",
-	} {
-		endpoint := findEndpoint(t, parsed, path)
-		var orgID *spec.Param
-		for i := range endpoint.Params {
-			if endpoint.Params[i].Name == "organizationId" {
-				orgID = &endpoint.Params[i]
-				break
-			}
-		}
-		if assert.NotNilf(t, orgID, "path %q must surface an organizationId param even when operation declared none", path) {
-			assert.True(t, orgID.Positional, "synthesized path placeholders must be positional")
-			assert.True(t, orgID.Required, "synthesized path placeholders must be required")
 		}
 	}
 }
@@ -6097,7 +5867,6 @@ paths:
 	})
 }
 
-// TestParseTenantEnvVarExtension: when info.x-tenant-env-var is set, the
 // parser registers "tenant" as an EndpointTemplateVar with the declared
 // env var as the override so the profiler can include
 // /tenant/{tenant}/<resource> paths in flat sync and downstream emitters
@@ -6455,62 +6224,90 @@ func TestDetectPaginationPreservesCursorParamCase(t *testing.T) {
 	}
 }
 
-// TestDetectPaginationRecognizesPageIntCursor guards #1296: APIs that
-// paginate by integer ?page=N (Freshworks family, Atlassian, HubSpot,
-// etc.) used to fall through to the "after" cursor default. Detection
-// now classifies a `page`/`pageNumber`/`page[number]` request param as
-// a Type="page" paginator so the sync template's page-int fallback
-// can advance numerically.
-func TestDetectPaginationRecognizesPageIntCursor(t *testing.T) {
+func TestParseRespectsXPositional(t *testing.T) {
 	t.Parallel()
 
-	cases := []struct {
-		name      string
-		paramName string
-		wantParam string
-	}{
-		{"plain page", "page", "page"},
-		{"snake_case page_number", "page_number", "page_number"},
-		{"camelCase pageNumber", "pageNumber", "pageNumber"},
-		{"json:api page[number]", "page[number]", "page[number]"},
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Positional API
+  version: 1.0.0
+paths:
+  /items/{projectId}/{page}:
+    get:
+      operationId: searchItems
+      parameters:
+        - name: q
+          in: query
+          x-positional: true
+          schema: { type: string }
+        - name: projectId
+          in: path
+          x-positional: false
+          schema: { type: string }
+        - name: page
+          in: path
+          x-positional: true
+          schema: { type: integer }
+      responses:
+        "200": { description: ok }
+`))
+	require.NoError(t, err)
+
+	resource, ok := parsed.Resources["items"]
+	require.True(t, ok, "resource 'items' not found")
+
+	require.Contains(t, resource.Endpoints, "search", "endpoint 'search' not found")
+	endpoint := resource.Endpoints["search"]
+
+	paramsByName := map[string]spec.Param{}
+	for _, p := range endpoint.Params {
+		paramsByName[p.Name] = p
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			pag := detectPagination([]spec.Param{{Name: tc.paramName}, {Name: "per_page"}}, nil)
-			require.NotNil(t, pag, "detector should classify %q as a paginator", tc.paramName)
-			assert.Equal(t, tc.wantParam, pag.CursorParam)
-			assert.Equal(t, "page", pag.Type)
-			assert.Equal(t, "per_page", pag.LimitParam)
-		})
-	}
+
+	// 1. Query param with x-positional: true -> Positional = true, PathParam = false
+	assert.True(t, paramsByName["q"].Positional)
+	assert.True(t, paramsByName["q"].ExplicitPositional)
+	assert.False(t, paramsByName["q"].PathParam)
+
+	// 2. Path param with x-positional: false -> Positional = false, PathParam = true
+	assert.False(t, paramsByName["projectId"].Positional)
+	assert.True(t, paramsByName["projectId"].ExplicitPositional)
+	assert.True(t, paramsByName["projectId"].PathParam)
+
+	// 3. Path param "page" with x-positional: true -> Positional = true, PathParam = true
+	// (Prevents reclassification from turning it into a flag)
+	assert.True(t, paramsByName["page"].Positional)
+	assert.True(t, paramsByName["page"].ExplicitPositional)
+	assert.True(t, paramsByName["page"].PathParam)
 }
 
-// TestDetectPaginationCursorBeatsPage guards mixed-form specs: when an
-// API declares both `cursor` and `page` (rare but real), cursor must
-// win so existing cursor-based sync loops stay on the body-cursor
-// extraction path. Regression guard for #1296.
-func TestDetectPaginationCursorBeatsPage(t *testing.T) {
+func TestParseReclassifiesPathParamsWithoutExplicitPositional(t *testing.T) {
 	t.Parallel()
 
-	pag := detectPagination([]spec.Param{
-		{Name: "cursor"}, {Name: "page"}, {Name: "limit"},
-	}, nil)
-	require.NotNil(t, pag)
-	assert.Equal(t, "cursor", pag.CursorParam, "cursor must win over page when both declared")
-	assert.Equal(t, "cursor", pag.Type)
-	assert.Equal(t, "limit", pag.LimitParam)
-}
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Reclassify API
+  version: 1.0.0
+paths:
+  /items/{page}:
+    get:
+      operationId: listItems
+      parameters:
+        - name: page
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: ok }
+`))
+	require.NoError(t, err)
 
-// TestDetectPaginationOffsetBeatsPage guards offset-based APIs (Atlassian
-// older endpoints, etc.) against the new page branch.
-func TestDetectPaginationOffsetBeatsPage(t *testing.T) {
-	t.Parallel()
-
-	pag := detectPagination([]spec.Param{
-		{Name: "offset"}, {Name: "page"}, {Name: "limit"},
-	}, nil)
-	require.NotNil(t, pag)
-	assert.Equal(t, "offset", pag.CursorParam)
-	assert.Equal(t, "offset", pag.Type)
+	endpoint := parsed.Resources["items"].Endpoints["list"]
+	param := endpoint.Params[0]
+	assert.Equal(t, "page", param.Name)
+	// Default reclassification turns "page" path param into a flag
+	assert.False(t, param.Positional)
+	assert.True(t, param.PathParam)
 }

@@ -27,8 +27,7 @@ const (
 const (
 	HTTPTransportStandard        = "standard"          // default for official API clients
 	HTTPTransportBrowserHTTP     = "browser-http"      // stdlib transport with HTTP/2 disabled for browser-facing web surfaces
-	HTTPTransportBrowserChrome   = "browser-chrome"    // Chrome-impersonated transport for browser-facing web surfaces (no version force; Chrome negotiates)
-	HTTPTransportBrowserChromeH2 = "browser-chrome-h2" // Chrome-impersonated transport forced through HTTP/2 for origins that serve H/2 but not H/3
+	HTTPTransportBrowserChrome   = "browser-chrome"    // Chrome-impersonated transport for browser-facing web surfaces
 	HTTPTransportBrowserChromeH3 = "browser-chrome-h3" // Chrome-impersonated transport forced through HTTP/3 for stricter bot screens
 )
 
@@ -145,7 +144,7 @@ type APISpec struct {
 	Kind                        string              `yaml:"kind,omitempty" json:"kind,omitempty"`                     // "rest" (default) or "synthetic" — synthetic CLIs aggregate multiple sources beyond the spec; dogfood's path-validity check is relaxed accordingly
 	SpecSource                  string              `yaml:"spec_source,omitempty" json:"spec_source,omitempty"`       // official, community, sniffed, docs — affects generated client defaults
 	ClientPattern               string              `yaml:"client_pattern,omitempty" json:"client_pattern,omitempty"` // rest (default), proxy-envelope — affects generated HTTP client
-	HTTPTransport               string              `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-http, browser-chrome, browser-chrome-h2, or browser-chrome-h3
+	HTTPTransport               string              `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-http, browser-chrome, or browser-chrome-h3
 	HealthCheckPath             string              `yaml:"health_check_path,omitempty" json:"health_check_path,omitempty"`
 	ProxyRoutes                 map[string]string   `yaml:"proxy_routes,omitempty" json:"proxy_routes,omitempty"`    // path prefix → service name for proxy-envelope routing
 	BearerRefresh               BearerRefreshConfig `yaml:"bearer_refresh,omitempty" json:"bearer_refresh,omitzero"` // live-source metadata for rotating public client bearer tokens
@@ -373,22 +372,15 @@ func (s *APISpec) EffectiveHTTPTransport() string {
 		return HTTPTransportStandard
 	}
 	switch s.HTTPTransport {
-	case HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH2, HTTPTransportBrowserChromeH3:
+	case HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
 		return s.HTTPTransport
 	}
-	// Defaults map to the explicit -h2 variant. The bare "browser-chrome"
-	// enum means "no version force"; default-sniffed and
-	// browser-auth-for-HTML specs surface their H/2 force through the
-	// explicit "-h2" enum so the spec field always names the wire
-	// protocol the runtime will pick. browser-sniff overrides this with
-	// HAR-driven mapping in ApplyReachabilityDefaults before
-	// EffectiveHTTPTransport runs.
 	if s.usesBrowserAuthForHTML() {
-		return HTTPTransportBrowserChromeH2
+		return HTTPTransportBrowserChrome
 	}
 	switch s.SpecSource {
 	case "community", "sniffed":
-		return HTTPTransportBrowserChromeH2
+		return HTTPTransportBrowserChrome
 	default:
 		return HTTPTransportStandard
 	}
@@ -405,7 +397,7 @@ func (s *APISpec) usesBrowserAuthForHTML() bool {
 
 func (s *APISpec) UsesBrowserHTTPTransport() bool {
 	switch s.EffectiveHTTPTransport() {
-	case HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH2, HTTPTransportBrowserChromeH3:
+	case HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
 		return true
 	default:
 		return false
@@ -416,17 +408,13 @@ func (s *APISpec) UsesBrowserHTTP3Transport() bool {
 	return s.EffectiveHTTPTransport() == HTTPTransportBrowserChromeH3
 }
 
-func (s *APISpec) UsesBrowserHTTP2Transport() bool {
-	return s.EffectiveHTTPTransport() == HTTPTransportBrowserChromeH2
-}
-
 func (s *APISpec) UsesHTTP2DisabledTransport() bool {
 	return s.EffectiveHTTPTransport() == HTTPTransportBrowserHTTP
 }
 
 func (s *APISpec) UsesBrowserManagedUserAgent() bool {
 	switch s.EffectiveHTTPTransport() {
-	case HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH2, HTTPTransportBrowserChromeH3:
+	case HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
 		return true
 	default:
 		return false
@@ -783,24 +771,6 @@ func (c *AuthConfig) CanonicalEnvVar() *AuthEnvVar {
 		return &c.EnvVarSpecs[0]
 	}
 	return nil
-}
-
-// NewORCaseEnvVarSpecs builds the EnvVarSpecs slice for the OR-case shape
-// IsAuthEnvVarORCase validates: each entry is per_call, non-required, and
-// sensitive. The runtime tries each in turn and returns the first non-empty
-// value. Distinct from the per_call construction in NormalizeEnvVarSpecs,
-// which defaults to Required=true for the canonical-credential shape.
-func NewORCaseEnvVarSpecs(names []string) []AuthEnvVar {
-	specs := make([]AuthEnvVar, 0, len(names))
-	for _, name := range names {
-		specs = append(specs, AuthEnvVar{
-			Name:      name,
-			Kind:      AuthEnvVarKindPerCall,
-			Required:  false,
-			Sensitive: true,
-		})
-	}
-	return specs
 }
 
 // IsAuthEnvVarORCase reports whether all EnvVarSpecs are non-required per_call vars.
@@ -1301,6 +1271,39 @@ func (e Endpoint) UsesHTMLResponse() bool {
 	return e.EffectiveResponseFormat() == ResponseFormatHTML
 }
 
+// Args returns the subset of parameters that are designated as positional CLI arguments.
+func (e Endpoint) Args() []Param {
+	var args []Param
+	for _, p := range e.Params {
+		if p.Positional {
+			args = append(args, p)
+		}
+	}
+	return args
+}
+
+// Flags returns the subset of parameters that are designated as CLI flags.
+func (e Endpoint) Flags() []Param {
+	var flags []Param
+	for _, p := range e.Params {
+		if !p.Positional {
+			flags = append(flags, p)
+		}
+	}
+	return flags
+}
+
+// QueryParams returns the subset of parameters that are neither positional nor path parameters.
+func (e Endpoint) QueryParams() []Param {
+	var params []Param
+	for _, p := range e.Params {
+		if !p.Positional && !p.PathParam {
+			params = append(params, p)
+		}
+	}
+	return params
+}
+
 func (e Endpoint) UsesBinaryResponse() bool {
 	return e.EffectiveResponseFormat() == ResponseFormatBinary
 }
@@ -1343,19 +1346,20 @@ func (h *HTMLExtract) EffectiveScriptSelector() string {
 }
 
 type Param struct {
-	Name        string   `yaml:"name" json:"name"`
-	FlagName    string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
-	URLName     string   `yaml:"url_name,omitempty" json:"url_name,omitempty"` // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
-	Aliases     []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
-	Type        string   `yaml:"type" json:"type"`
-	Required    bool     `yaml:"required" json:"required"`
-	Positional  bool     `yaml:"positional" json:"positional"`
-	PathParam   bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true for path params rendered as flags (e.g., pagination)
-	Default     any      `yaml:"default" json:"default"`
-	Description string   `yaml:"description" json:"description"`
-	Fields      []Param  `yaml:"fields" json:"fields"`                     // for nested objects
-	Enum        []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
-	Format      string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
+	Name               string   `yaml:"name" json:"name"`
+	FlagName           string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
+	URLName            string   `yaml:"url_name,omitempty" json:"url_name,omitempty"` // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
+	Aliases            []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
+	Type               string   `yaml:"type" json:"type"`
+	Required           bool     `yaml:"required" json:"required"`
+	Positional         bool     `yaml:"positional,omitempty" json:"positional,omitempty"`
+	ExplicitPositional bool     `yaml:"explicit_positional,omitempty" json:"explicit_positional,omitempty"`
+	PathParam          bool     `yaml:"path_param,omitempty" json:"path_param,omitempty"` // true if the parameter is a segment in the URL path template (e.g. {id})
+	Default            any      `yaml:"default" json:"default"`
+	Description        string   `yaml:"description" json:"description"`
+	Fields             []Param  `yaml:"fields" json:"fields"`                     // for nested objects
+	Enum               []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
+	Format             string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
 	// IdentName, when set, overrides Name for Go identifier and CLI flag
 	// derivation (camel/flagName). Name remains the wire-side parameter name
 	// used in URLs, JSON keys, and path substitution. Populated by the
@@ -1470,9 +1474,9 @@ type ResponseDiscriminator struct {
 }
 
 type Pagination struct {
-	Type           string `yaml:"type" json:"type"`                         // cursor, offset, page_token, page
+	Type           string `yaml:"type" json:"type"`                         // cursor, offset, page_token
 	LimitParam     string `yaml:"limit_param" json:"limit_param"`           // query param name for page size (limit, maxResults, pageSize)
-	CursorParam    string `yaml:"cursor_param" json:"cursor_param"`         // query param name for cursor (after, pageToken, offset, page)
+	CursorParam    string `yaml:"cursor_param" json:"cursor_param"`         // query param name for cursor (after, pageToken, offset)
 	NextCursorPath string `yaml:"next_cursor_path" json:"next_cursor_path"` // response field with next cursor (nextPageToken, cursor)
 	HasMoreField   string `yaml:"has_more_field" json:"has_more_field"`     // response field indicating more pages (has_more)
 }
@@ -1552,7 +1556,7 @@ func ParseBytes(data []byte) (*APISpec, error) {
 		return nil, fmt.Errorf("parsing yaml: %w", yamlErr)
 	}
 	s.expandOperations()
-	s.EnrichPathParams()
+	s.enrichPathParams()
 	s.promoteParamsToBodyForWriteEndpoints()
 	if err := s.validateReservedNames(); err != nil {
 		return nil, err
@@ -1709,7 +1713,7 @@ var pathParamRe = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 var orGroupTokenRe = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
 
-// EnrichPathParams walks every resource and sub-resource endpoint and ensures
+// enrichPathParams walks every resource and sub-resource endpoint and ensures
 // each `{paramName}` placeholder in the endpoint path is represented in
 // Endpoint.Params with Positional: true, Required: true. The expandOperations
 // path already populates these for shorthand-generated endpoints; explicit
@@ -1725,7 +1729,7 @@ var orGroupTokenRe = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
 // Order is preserved: placeholders are appended in the order they appear in
 // the path so generated cobra `Args: cobra.ExactArgs(N)` sites and the
 // matching `replacePathParam(...args[i])` calls line up.
-func (s *APISpec) EnrichPathParams() {
+func (s *APISpec) enrichPathParams() {
 	for resourceName, r := range s.Resources {
 		s.enrichResourcePathParams(&r)
 		s.Resources[resourceName] = r
@@ -1998,9 +2002,9 @@ func (s *APISpec) Validate() error {
 		return fmt.Errorf("at least one resource is required")
 	}
 	switch s.HTTPTransport {
-	case "", HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH2, HTTPTransportBrowserChromeH3:
+	case "", HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
 	default:
-		return fmt.Errorf("http_transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h2, browser-chrome-h3")
+		return fmt.Errorf("http_transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h3")
 	}
 	if err := validateExtraCommands(s.ExtraCommands); err != nil {
 		return err

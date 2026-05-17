@@ -286,8 +286,10 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			e, _ := lookupEndpointForTemplate(api, ref)
 			return e
 		},
-		"effectiveEndpointPath":    effectiveEndpointPath,
-		"effectiveSubEndpointPath": effectiveSubEndpointPath,
+		"effectiveEndpointPath":       effectiveEndpointPath,
+		"effectiveSubEndpointPath":    effectiveSubEndpointPath,
+		"effectiveEndpointAbsPath":    effectiveEndpointAbsPath,
+		"effectiveSubEndpointAbsPath": effectiveSubEndpointAbsPath,
 		"enumLiteral": func(values []string) string {
 			// Render a string slice as a Go []string literal for template embedding.
 			// Example: ["asc","desc"] → `"asc", "desc"`. Returns empty string when
@@ -301,6 +303,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return strings.Join(parts, ", ")
 		},
+		"enumIntLiteral": enumIntLiteral,
 		"enumDescriptionHint": func(values []string) string {
 			// Appends " (one of: a, b, c)" to a flag description when the param
 			// has enum constraints. Returns empty string when the slice is empty.
@@ -316,7 +319,6 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"bodyVarDecls":          bodyVarDecls,
 		"bodyFlagRegs":          bodyFlagRegs,
 		"bodyRequiredChecks":    bodyRequiredChecks,
-		"bodyExceedsFlagDepth":  bodyExceedsFlagDepth,
 		"multipartBodyMaps":     multipartBodyMaps,
 		"endpointUsesMultipart": endpointUsesMultipart,
 		"endpointHasQueryFlags": endpointHasQueryFlags,
@@ -325,6 +327,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"endpointUsesForm":      endpointUsesForm,
 		"hasFormRequest":        hasFormRequest,
 		"hasBodyJSONFallback":   hasBodyJSONFallback,
+		"hasPathParams":         hasPathParams,
+		"hasPathParamsAPI":      hasPathParamsAPI,
+		"usesURL":               usesURL,
 		"publicFlagName":        publicFlagName,
 		"publicFlagAliases":     publicFlagAliases,
 		"flagChangedExpr":       flagChangedExpr,
@@ -548,6 +553,10 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"whichFallbackEntries": buildWhichFallbackEntries,
 		"firstCommandExample":  firstCommandExample,
 	}
+	// prepare must be the final step in New() to ensure the spec is fully
+	// normalised before any rendering logic (which may depend on the
+	// in-place mutations) is invoked.
+	g.prepare()
 	return g
 }
 
@@ -558,6 +567,62 @@ func endpointTemplateVarsAny(vars []string, s *spec.APISpec, predicate func(stri
 		}
 	}
 	return false
+}
+
+// prepare normalises the APISpec before template rendering. It performs
+// in-place mutation of g.Spec, specifically calculating the Param.PathParam
+// field for every endpoint parameter based on its presence in the URL path
+// template. This ensures that downstream templates and logic can rely on
+// PathParam reflecting the actual spec structure rather than just the
+// reclassified CLI-argument type.
+func (g *Generator) prepare() {
+	if g.Spec == nil {
+		return
+	}
+	var names []string
+	for name := range g.Spec.Resources {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		g.prepareResource(g.Spec.BaseURL, nil, name, g.Spec.Resources[name], g.Spec.Resources)
+	}
+}
+
+// prepareResource recursively normalises PathParam fields for a resource and
+// its sub-resources. Mutates sibling[name] in place.
+func (g *Generator) prepareResource(baseURL string, parent *spec.Resource, name string, r spec.Resource, sibling map[string]spec.Resource) {
+	effectiveBaseURL := r.BaseURL
+	if effectiveBaseURL == "" {
+		effectiveBaseURL = baseURL
+	} else if !strings.HasPrefix(effectiveBaseURL, "http") {
+		effectiveBaseURL = endpointPathWithBase(baseURL, effectiveBaseURL)
+	}
+
+	for eName, e := range r.Endpoints {
+		var fullPath string
+		if parent != nil {
+			fullPath = effectiveSubEndpointFullURL(g.Spec.BaseURL, *parent, r, e)
+		} else {
+			fullPath = effectiveEndpointFullURL(g.Spec.BaseURL, r, e)
+		}
+		for i := range e.Params {
+			// Ensure PathParam is correctly set based on actual presence in the
+			// full path template (including base URL). This normalizes hand-authored
+			// specs and ensures that parameters correctly trigger 'net/url' imports.
+			e.Params[i].PathParam = strings.Contains(fullPath, "{"+e.Params[i].Name+"}")
+		}
+		r.Endpoints[eName] = e
+	}
+	var subNames []string
+	for subName := range r.SubResources {
+		subNames = append(subNames, subName)
+	}
+	sort.Strings(subNames)
+	for _, subName := range subNames {
+		g.prepareResource(effectiveBaseURL, &r, subName, r.SubResources[subName], r.SubResources)
+	}
+	sibling[name] = r
 }
 
 func buildWhichFallbackEntries(resources map[string]spec.Resource) []NovelFeature {
@@ -636,7 +701,7 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 			}
 			positionalCount := 0
 			for _, p := range e.Params {
-				if p.Positional || p.PathParam {
+				if p.PathParam {
 					flags.HasPathParams = true
 				}
 				if p.Positional {
@@ -727,6 +792,7 @@ type endpointTemplateData struct {
 	ResourceName    string
 	ResourceBaseURL string
 	EffectivePath   string
+	AbsoluteURLPath string
 	EffectiveTier   string
 	FuncPrefix      string
 	CommandPath     string
@@ -1828,8 +1894,9 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 			asyncInfo, isAsync := g.AsyncJobs[name+"/"+eName]
 			epData := endpointTemplateData{
 				ResourceName:    name,
-				ResourceBaseURL: effectiveEndpointBaseURL(resource, endpoint),
-				EffectivePath:   effectiveEndpointPath(resource, endpoint),
+				ResourceBaseURL: effectiveEndpointBaseURL(g.Spec.BaseURL, resource, endpoint),
+				EffectivePath:   endpoint.Path,
+				AbsoluteURLPath: effectiveEndpointAbsPath(g.Spec.BaseURL, resource, endpoint),
 				EffectiveTier:   g.Spec.EffectiveTier(resource, endpoint),
 				FuncPrefix:      name,
 				CommandPath:     name,
@@ -1878,8 +1945,11 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				}
 				epData := endpointTemplateData{
 					ResourceName:    subName,
-					ResourceBaseURL: effectiveSubEndpointBaseURL(resource, subResource, endpoint),
-					EffectivePath:   effectiveSubEndpointPath(resource, subResource, endpoint),
+					ResourceBaseURL: effectiveSubEndpointBaseURL(g.Spec.BaseURL, resource, subResource, endpoint),
+					EffectivePath:   endpoint.Path,
+					// AbsoluteURLPath is the full path from the spec root (e.g. /v1/resource/sub/endpoint).
+					// Used for the "pp:path" annotation so agents/verifiers see the canonical path.
+					AbsoluteURLPath: effectiveSubEndpointAbsPath(g.Spec.BaseURL, resource, subResource, endpoint),
 					EffectiveTier:   g.Spec.EffectiveTier(effectiveResource, endpoint),
 					FuncPrefix:      name + "-" + subName,
 					CommandPath:     name + " " + subName,
@@ -2575,13 +2645,14 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 		// `path := <ResourceBaseURL><Endpoint.Path>` concat doesn't
 		// produce `https://x.com/v1//search`.
 		resource := g.Spec.Resources[pc.ResourceName]
-		resourceBaseURL := effectiveEndpointBaseURL(resource, pc.Endpoint)
+		resourceBaseURL := effectiveEndpointBaseURL(g.Spec.BaseURL, resource, pc.Endpoint)
 		promotedData := struct {
 			PromotedName    string
 			ResourceName    string
 			EndpointName    string
 			ResourceBaseURL string
 			EffectivePath   string
+			AbsoluteURLPath string
 			Endpoint        spec.Endpoint
 			EffectiveTier   string
 			HasStore        bool
@@ -2594,7 +2665,8 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			ResourceName:    pc.ResourceName,
 			EndpointName:    pc.EndpointName,
 			ResourceBaseURL: resourceBaseURL,
-			EffectivePath:   effectiveEndpointPath(resource, pc.Endpoint),
+			EffectivePath:   pc.Endpoint.Path,
+			AbsoluteURLPath: effectiveEndpointAbsPath(g.Spec.BaseURL, resource, pc.Endpoint),
 			Endpoint:        pc.Endpoint,
 			EffectiveTier:   g.Spec.EffectiveTier(resource, pc.Endpoint),
 			HasStore:        g.VisionSet.Store,
@@ -2603,7 +2675,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			IsReadOnly:      endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
 			APISpec:         g.Spec,
 		}
-		promotedPath := filepath.Join("internal", "cli", safeResourceFileStem("promoted_"+pc.PromotedName)+".go")
+		promotedPath := filepath.Join("internal", "cli", "promoted_"+pc.PromotedName+".go")
 		if err := g.renderTemplate("command_promoted.go.tmpl", promotedPath, promotedData); err != nil {
 			return fmt.Errorf("rendering promoted command %s: %w", pc.PromotedName, err)
 		}
@@ -3093,6 +3165,19 @@ func camelToJSON(s string) string {
 	return strings.Join(parts, "")
 }
 
+func enumIntLiteral(v []string) string {
+	var out []string
+	for _, val := range v {
+		// Verify it's actually an integer to prevent uncompilable code if the
+		// spec is broken (e.g. string values in an integer enum).
+		if _, err := strconv.Atoi(val); err != nil {
+			continue
+		}
+		out = append(out, val)
+	}
+	return strings.Join(out, ", ")
+}
+
 func columnNames(cols []ColumnDef) string {
 	names := make([]string, 0, len(cols))
 	for _, col := range cols {
@@ -3306,7 +3391,7 @@ func mcpParamBindings(endpoint spec.Endpoint, pathTemplate string) []mcpParamBin
 	}
 	for _, p := range endpoint.Params {
 		loc := "query"
-		if strings.Contains(pathTemplate, "{"+p.Name+"}") {
+		if p.PathParam {
 			loc = "path"
 		}
 		bindings = append(bindings, mcpParamBinding{
@@ -3384,21 +3469,6 @@ func endpointNeedsClientLimit(endpoint spec.Endpoint) bool {
 	return false
 }
 
-// maxBodyFlagDepth caps how many levels of nested-object recursion the
-// body-flag emitters expand into per-field Cobra flags. A Param at
-// depth 0 is a top-level body field; its object children are at depth 1
-// and recurse with depth+1. When the next depth would meet or exceed
-// the cap, the object's subtree is skipped uniformly across renderBodyMap,
-// renderBodyVarDecls, renderBodyFlagRegs, and renderBodyRequiredChecks.
-// The user reaches truncated fields via the existing `--stdin` flag on
-// POST/PUT/PATCH commands, which reads the full JSON body from stdin.
-//
-// Default 3 covers typical CRUD schemas (resource.object.field) without
-// the recursive explosion seen on enterprise/ERP specs that self-reference
-// through 6+ layers and produce 40k-line command files the Go compiler
-// OOMs on.
-const maxBodyFlagDepth = 3
-
 // bodyMap renders the per-flag body-building block shared by the
 // POST/PUT/PATCH branches in command_endpoint.go.tmpl and the body
 // branch in command_promoted.go.tmpl. The four sites generated the
@@ -3411,11 +3481,10 @@ const maxBodyFlagDepth = 3
 // recurses: each leaf field becomes its own flag (parent-prefixed in
 // the generated identifier so `start.dateTime` and `end.dateTime` do
 // not collide), and the parent's wire-side key receives a built-up
-// map[string]any rather than a single JSON-string flag. Recursion stops
-// at maxBodyFlagDepth; deeper subtrees are only reachable via `--stdin`.
+// map[string]any rather than a single JSON-string flag.
 func bodyMap(body []spec.Param, indent string) string {
 	var b strings.Builder
-	renderBodyMap(&b, flattenCollidingBodyFields(body), 0, indent, "body", "", "")
+	renderBodyMap(&b, body, indent, "body", "", "")
 	return b.String()
 }
 
@@ -3456,19 +3525,16 @@ func bodyJSONFallbackMap(indent string) string {
 	return b.String()
 }
 
-func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, mapVar, identPrefix, flagPrefix string) {
+func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identPrefix, flagPrefix string) {
 	for _, p := range body {
 		id := paramIdent(p)
 		ident := identPrefix + toCamel(id)
 		flag := joinFlag(flagPrefix, publicFlagName(p))
 		if p.Type == "object" && len(p.Fields) > 0 {
-			if depth+1 >= maxBodyFlagDepth {
-				continue
-			}
 			nestedMap := "nested" + ident
 			fmt.Fprintf(b, "%s{\n", indent)
 			fmt.Fprintf(b, "%s\t%s := map[string]any{}\n", indent, nestedMap)
-			renderBodyMap(b, p.Fields, depth+1, indent+"\t", nestedMap, ident, flag)
+			renderBodyMap(b, p.Fields, indent+"\t", nestedMap, ident, flag)
 			fmt.Fprintf(b, "%s\tif len(%s) > 0 {\n", indent, nestedMap)
 			fmt.Fprintf(b, "%s\t\t%s[%q] = %s\n", indent, mapVar, p.Name, nestedMap)
 			fmt.Fprintf(b, "%s\t}\n", indent)
@@ -3490,21 +3556,6 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, map
 			fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
 			fmt.Fprintf(b, "%s\t}\n", indent)
 			fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.Name, rhs)
-			fmt.Fprintf(b, "%s}\n", indent)
-			continue
-		}
-		if p.Type == "boolean" || p.Type == "bool" {
-			// Booleans gate on cmd.Flags().Changed instead of a zero-guard.
-			// The zero-guard (body != false) drops user-set false values,
-			// letting the server's default (often true) silently invert
-			// intent. Unconditionally emitting flips the bug: PATCH bodies
-			// would carry "field: false" for every untouched flag and
-			// overwrite server state. Changed distinguishes "user set
-			// false" from "user did not touch the flag" and is correct
-			// for POST, PUT, and PATCH. Internal YAML specs use "boolean";
-			// the OpenAPI parser normalizes to "bool".
-			fmt.Fprintf(b, "%sif cmd.Flags().Changed(%q) {\n", indent, flag)
-			fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.Name, ident)
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
@@ -3538,7 +3589,7 @@ func bodyVarDecls(endpoint spec.Endpoint) string {
 		}
 		return b.String()
 	}
-	renderBodyVarDecls(&b, flattenCollidingBodyFields(endpoint.Body), 0, "")
+	renderBodyVarDecls(&b, endpoint.Body, "")
 	return b.String()
 }
 
@@ -3551,14 +3602,11 @@ func bodyUsesFlatEmission(endpoint spec.Endpoint) bool {
 	return endpointUsesMultipart(endpoint) || endpointUsesForm(endpoint)
 }
 
-func renderBodyVarDecls(b *strings.Builder, body []spec.Param, depth int, identPrefix string) {
+func renderBodyVarDecls(b *strings.Builder, body []spec.Param, identPrefix string) {
 	for _, p := range body {
 		ident := identPrefix + toCamel(paramIdent(p))
 		if p.Type == "object" && len(p.Fields) > 0 {
-			if depth+1 >= maxBodyFlagDepth {
-				continue
-			}
-			renderBodyVarDecls(b, p.Fields, depth+1, ident)
+			renderBodyVarDecls(b, p.Fields, ident)
 			continue
 		}
 		fmt.Fprintf(b, "\n\tvar body%s %s", ident, goType(p.Type))
@@ -3583,19 +3631,16 @@ func bodyFlagRegs(endpoint spec.Endpoint) string {
 		}
 		return b.String()
 	}
-	renderBodyFlagRegs(&b, flattenCollidingBodyFields(endpoint.Body), 0, "", "", true)
+	renderBodyFlagRegs(&b, endpoint.Body, "", "", true)
 	return b.String()
 }
 
-func renderBodyFlagRegs(b *strings.Builder, body []spec.Param, depth int, identPrefix, flagPrefix string, topLevel bool) {
+func renderBodyFlagRegs(b *strings.Builder, body []spec.Param, identPrefix, flagPrefix string, topLevel bool) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
-			if depth+1 >= maxBodyFlagDepth {
-				continue
-			}
 			ident := identPrefix + toCamel(paramIdent(p))
 			flag := joinFlag(flagPrefix, publicFlagName(p))
-			renderBodyFlagRegs(b, p.Fields, depth+1, ident, flag, false)
+			renderBodyFlagRegs(b, p.Fields, ident, flag, false)
 			continue
 		}
 		renderFlatBodyFlagReg(b, p, identPrefix, flagPrefix, topLevel)
@@ -3648,60 +3693,19 @@ func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
 		}
 		return b.String()
 	}
-	renderBodyRequiredChecks(&b, flattenCollidingBodyFields(endpoint.Body), 0, indent, "", true)
+	renderBodyRequiredChecks(&b, endpoint.Body, indent, "", true)
 	return b.String()
 }
 
-func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, depth int, indent, flagPrefix string, topLevel bool) {
+func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, indent, flagPrefix string, topLevel bool) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
-			if depth+1 >= maxBodyFlagDepth {
-				continue
-			}
 			flag := joinFlag(flagPrefix, publicFlagName(p))
-			renderBodyRequiredChecks(b, p.Fields, depth+1, indent, flag, false)
+			renderBodyRequiredChecks(b, p.Fields, indent, flag, false)
 			continue
 		}
 		renderFlatBodyRequiredCheck(b, p, indent, flagPrefix, topLevel)
 	}
-}
-
-// bodyExceedsFlagDepth reports whether emitting per-field body flags for
-// the endpoint would have truncated any nested-object subtree under
-// maxBodyFlagDepth. Multipart/form endpoints stay flat and never
-// truncate; BodyJSONFallback endpoints route through a single
-// --body-json flag and never reach the per-field path.
-//
-// The walk uses flattenCollidingBodyFields because that is what the
-// emitters render. Collision-flattening clears `Fields` on an object
-// whose dot-flattened subtree would clash with a sibling identifier,
-// turning it into a JSON-string leaf the user passes as a single flag.
-// Walking the raw body would falsely report truncation in that case
-// and rewrite the --stdin help text even when every field is exposed.
-func bodyExceedsFlagDepth(endpoint spec.Endpoint) bool {
-	if endpoint.BodyJSONFallback || bodyUsesFlatEmission(endpoint) {
-		return false
-	}
-	return walkBodyExceedsDepth(flattenCollidingBodyFields(endpoint.Body), 0)
-}
-
-// walkBodyExceedsDepth returns true as soon as any nested-object subtree
-// at depth >= maxBodyFlagDepth-1 is found. The walk is bounded by the
-// same depth check the emitters use, so a Param graph that
-// intentionally self-references (cyclic spec) does not loop here.
-func walkBodyExceedsDepth(body []spec.Param, depth int) bool {
-	for _, p := range body {
-		if p.Type != "object" || len(p.Fields) == 0 {
-			continue
-		}
-		if depth+1 >= maxBodyFlagDepth {
-			return true
-		}
-		if walkBodyExceedsDepth(p.Fields, depth+1) {
-			return true
-		}
-	}
-	return false
 }
 
 func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagPrefix string, topLevel bool) {
@@ -3798,6 +3802,28 @@ func endpointUsesBodyJSONFallback(endpoint spec.Endpoint) bool {
 
 func hasBodyJSONFallback(apiSpec *spec.APISpec) bool {
 	return anyEndpointMatches(apiSpec, endpointUsesBodyJSONFallback)
+}
+
+func hasPathParamsAPI(data any) bool {
+	var s *spec.APISpec
+	switch v := data.(type) {
+	case *spec.APISpec:
+		s = v
+	case spec.APISpec:
+		s = &v
+	}
+
+	if s == nil {
+		return false
+	}
+	return anyEndpointMatches(s, hasPathParams)
+}
+
+func usesURL(e spec.Endpoint, isForm bool) bool {
+	if isForm {
+		return true
+	}
+	return hasPathParams(e)
 }
 
 func anyEndpointMatches(apiSpec *spec.APISpec, predicate func(spec.Endpoint) bool) bool {
@@ -4031,10 +4057,8 @@ func zeroVal(t string) string {
 
 func positionalArgs(e spec.Endpoint) string {
 	var args []string
-	for _, p := range e.Params {
-		if p.Positional {
-			args = append(args, "<"+p.Name+">")
-		}
+	for _, p := range e.Args() {
+		args = append(args, "<"+p.Name+">")
 	}
 	if len(args) > 0 {
 		return " " + strings.Join(args, " ")
@@ -4578,8 +4602,16 @@ func graphqlFieldSelection(typeName string, types map[string]spec.TypeDef) []str
 
 type templateEndpoint struct {
 	spec.Endpoint
-	EffectivePath string
-	EffectiveTier string
+	EffectivePath   string
+	AbsoluteURLPath string
+	EffectiveTier   string
+}
+
+func (te templateEndpoint) IntentPath() string {
+	if strings.HasPrefix(te.AbsoluteURLPath, "http://") || strings.HasPrefix(te.AbsoluteURLPath, "https://") {
+		return te.AbsoluteURLPath
+	}
+	return te.EffectivePath
 }
 
 // lookupEndpointForTemplate resolves a dotted "resource.endpoint" (or
@@ -4602,9 +4634,10 @@ func lookupEndpointForTemplate(api *spec.APISpec, ref string) (templateEndpoint,
 			return templateEndpoint{}, false
 		}
 		return templateEndpoint{
-			Endpoint:      e,
-			EffectivePath: effectiveEndpointPath(r, e),
-			EffectiveTier: api.EffectiveTier(r, e),
+			Endpoint:        e,
+			EffectivePath:   e.Path,
+			AbsoluteURLPath: effectiveEndpointAbsPath(api.BaseURL, r, e),
+			EffectiveTier:   api.EffectiveTier(r, e),
 		}, true
 	case 3:
 		r, ok := api.Resources[parts[0]]
@@ -4624,32 +4657,105 @@ func lookupEndpointForTemplate(api *spec.APISpec, ref string) (templateEndpoint,
 			effectiveSub.Tier = r.Tier
 		}
 		return templateEndpoint{
-			Endpoint:      e,
-			EffectivePath: effectiveSubEndpointPath(r, sub, e),
-			EffectiveTier: api.EffectiveTier(effectiveSub, e),
+			Endpoint:        e,
+			EffectivePath:   e.Path,
+			AbsoluteURLPath: effectiveSubEndpointAbsPath(api.BaseURL, r, sub, e),
+			EffectiveTier:   api.EffectiveTier(effectiveSub, e),
 		}, true
 	default:
 		return templateEndpoint{}, false
 	}
 }
 
-func effectiveEndpointPath(resource spec.Resource, endpoint spec.Endpoint) string {
-	return endpointPathWithBase(effectiveEndpointBaseURL(resource, endpoint), endpoint.Path)
+func effectiveEndpointPath(specBaseURL string, resource spec.Resource, endpoint spec.Endpoint) string {
+	base := effectiveEndpointBaseURL(specBaseURL, resource, endpoint)
+	if base == "" {
+		return endpoint.Path
+	}
+	full := endpointPathWithBase(base, endpoint.Path)
+	uFull, err := url.Parse(full)
+	if err != nil || uFull.Scheme == "" {
+		return full
+	}
+	uSpec, err := url.Parse(specBaseURL)
+	if err == nil && uSpec.Scheme != "" && uFull.Scheme == uSpec.Scheme && uFull.Host == uSpec.Host {
+		if strings.HasPrefix(uFull.Path, uSpec.Path) {
+			relPath := strings.TrimPrefix(uFull.Path, uSpec.Path)
+			return "/" + strings.TrimPrefix(relPath, "/")
+		}
+	}
+	return full
 }
 
-func effectiveSubEndpointPath(parent spec.Resource, sub spec.Resource, endpoint spec.Endpoint) string {
-	return endpointPathWithBase(effectiveSubEndpointBaseURL(parent, sub, endpoint), endpoint.Path)
+func effectiveSubEndpointPath(specBaseURL string, parent spec.Resource, sub spec.Resource, endpoint spec.Endpoint) string {
+	base := effectiveSubEndpointBaseURL(specBaseURL, parent, sub, endpoint)
+	if base == "" {
+		return endpoint.Path
+	}
+	full := endpointPathWithBase(base, endpoint.Path)
+	uFull, err := url.Parse(full)
+	if err != nil || uFull.Scheme == "" {
+		return full
+	}
+	uSpec, err := url.Parse(specBaseURL)
+	if err == nil && uSpec.Scheme != "" && uFull.Scheme == uSpec.Scheme && uFull.Host == uSpec.Host {
+		if strings.HasPrefix(uFull.Path, uSpec.Path) {
+			relPath := strings.TrimPrefix(uFull.Path, uSpec.Path)
+			return "/" + strings.TrimPrefix(relPath, "/")
+		}
+	}
+	return full
 }
 
-func effectiveEndpointBaseURL(resource spec.Resource, endpoint spec.Endpoint) string {
+func effectiveEndpointAbsPath(specBaseURL string, resource spec.Resource, endpoint spec.Endpoint) string {
+	base := effectiveEndpointBaseURL(specBaseURL, resource, endpoint)
+	if base == "" {
+		base = specBaseURL
+	}
+	full := endpointPathWithBase(base, endpoint.Path)
+	uFull, err := url.Parse(full)
+	if err != nil || uFull.Scheme == "" {
+		return full
+	}
+	uSpec, err := url.Parse(specBaseURL)
+	if err == nil && uSpec.Scheme != "" && uFull.Scheme == uSpec.Scheme && uFull.Host == uSpec.Host {
+		return uFull.Path
+	}
+	return full
+}
+
+func effectiveSubEndpointAbsPath(specBaseURL string, parent spec.Resource, sub spec.Resource, endpoint spec.Endpoint) string {
+	base := effectiveSubEndpointBaseURL(specBaseURL, parent, sub, endpoint)
+	if base == "" {
+		base = specBaseURL
+	}
+	full := endpointPathWithBase(base, endpoint.Path)
+	uFull, err := url.Parse(full)
+	if err != nil || uFull.Scheme == "" {
+		return full
+	}
+	uSpec, err := url.Parse(specBaseURL)
+	if err == nil && uSpec.Scheme != "" && uFull.Scheme == uSpec.Scheme && uFull.Host == uSpec.Host {
+		return uFull.Path
+	}
+	return full
+}
+
+func effectiveEndpointBaseURL(specBaseURL string, resource spec.Resource, endpoint spec.Endpoint) string {
 	baseURL := endpoint.BaseURL
 	if baseURL == "" {
 		baseURL = resource.BaseURL
 	}
+	if baseURL == "" {
+		return ""
+	}
+	if !strings.HasPrefix(baseURL, "http") {
+		baseURL = endpointPathWithBase(specBaseURL, baseURL)
+	}
 	return strings.TrimRight(baseURL, "/")
 }
 
-func effectiveSubEndpointBaseURL(parent spec.Resource, sub spec.Resource, endpoint spec.Endpoint) string {
+func effectiveSubEndpointBaseURL(specBaseURL string, parent spec.Resource, sub spec.Resource, endpoint spec.Endpoint) string {
 	baseURL := endpoint.BaseURL
 	if baseURL == "" {
 		baseURL = sub.BaseURL
@@ -4657,7 +4763,29 @@ func effectiveSubEndpointBaseURL(parent spec.Resource, sub spec.Resource, endpoi
 	if baseURL == "" {
 		baseURL = parent.BaseURL
 	}
+	if baseURL == "" {
+		return ""
+	}
+	if !strings.HasPrefix(baseURL, "http") {
+		baseURL = endpointPathWithBase(specBaseURL, baseURL)
+	}
 	return strings.TrimRight(baseURL, "/")
+}
+
+func effectiveEndpointFullURL(specBaseURL string, resource spec.Resource, endpoint spec.Endpoint) string {
+	base := effectiveEndpointBaseURL(specBaseURL, resource, endpoint)
+	if base == "" {
+		base = specBaseURL
+	}
+	return endpointPathWithBase(base, endpoint.Path)
+}
+
+func effectiveSubEndpointFullURL(specBaseURL string, parent spec.Resource, sub spec.Resource, endpoint spec.Endpoint) string {
+	base := effectiveSubEndpointBaseURL(specBaseURL, parent, sub, endpoint)
+	if base == "" {
+		base = specBaseURL
+	}
+	return endpointPathWithBase(base, endpoint.Path)
 }
 
 func endpointPathWithBase(baseURL, path string) string {
@@ -4666,4 +4794,15 @@ func endpointPathWithBase(baseURL, path string) string {
 		return path
 	}
 	return baseURL + path
+}
+
+// hasPathParams returns true if the endpoint has any parameters that
+// originate from the URL path.
+func hasPathParams(e spec.Endpoint) bool {
+	for _, p := range e.Params {
+		if p.PathParam {
+			return true
+		}
+	}
+	return false
 }

@@ -36,6 +36,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-critical` | path item | `Endpoint.Critical` | No |
 | `x-tier` | path item or operation | `Endpoint.Tier` | No |
 | `x-pp-sync-walker` | operation | `Endpoint.Walker` | No |
+| `x-positional` | parameter | `Param.Positional` | No |
 
 ## `info` Extensions
 
@@ -343,15 +344,6 @@ Rules:
 - Empty and non-string list items are ignored.
 - When at least one non-empty item is present, the list replaces the parser's
   generated env var names.
-
-Catalog-driven equivalent: when a catalog entry declares `auth_env_vars`, the
-generator layers the canonical names on top of the parser-derived default at
-runtime without editing the upstream spec. The catalog list takes precedence,
-the parser default trails as a backwards-compat fallback, and the rebuilt env
-var list is emitted as an OR-case (any one satisfies auth). The catalog field
-is ignored for HTTP Basic auth (credential-pair shape); declare basic-auth
-env var pairs via `x-auth-env-vars` on the security scheme instead. See
-[`docs/CATALOG.md`](CATALOG.md#auth_env_vars).
 
 ### `x-auth-vars`
 
@@ -746,6 +738,25 @@ Internal YAML emits this as `walker:` on the endpoint with the same
 sub-field names (`parent`, `key_field`, `key_param`). Both surfaces parse
 to the same `WalkerConfig` struct.
 
+## Parameter Extensions
+
+### `x-positional`
+
+Overrides whether a parameter is rendered as a positional argument or a flag.
+
+Parsed field: `Param.Positional`
+
+Rules:
+- Optional.
+- Must be a boolean (or the strings `"true"`/`"false"`).
+- By default, Path parameters are positional and Query/Header parameters are
+  flags.
+- When `true`, the parameter becomes a required positional argument.
+- When `false`, the parameter becomes a flag.
+- Explicitly setting `x-positional: true` on a Path parameter prevents the
+  parser from automatically reclassifying it as a flag (which it normally does
+  for pagination and modifier parameters like `page`, `limit`, or `date`).
+
 Example:
 
 ```yaml
@@ -769,4 +780,19 @@ paths:
           schema: {type: string}
       responses:
         "200": {description: ok}
+```
+
+Example:
+
+```yaml
+paths:
+  /search:
+    get:
+      parameters:
+        - name: q
+          in: query
+          required: true
+          x-positional: true
+          schema:
+            type: string
 ```

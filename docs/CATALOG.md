@@ -98,21 +98,3 @@ Catalog entries may also declare `auth_instructions:` — a one-line string of f
 Catalog `auth_instructions` overrides any value from the spec's [`x-auth-instructions`](SPEC-EXTENSIONS.md#x-auth-instructions) extension. The printed CLI surfaces it in auth prompts, `doctor`, and the new `auth setup` command (which also takes `--launch` to open the URL in a browser).
 
 Catalog entries may declare `base_url:` when the upstream spec intentionally omits `servers:` and the correct API origin is known. The value must be HTTPS and is used only when the parsed spec has no usable base URL.
-
-## `auth_env_vars`
-
-Catalog entries may declare `auth_env_vars:` — an ordered list of canonical credential env var names this API's ecosystem already uses (`STRIPE_SECRET_KEY` for stripe-cli / stripe-go / stripe-node / stripe-python; `GITHUB_TOKEN` for `gh` and every GitHub SDK; `DISCORD_TOKEN` for community Discord libraries; `SENTRY_AUTH_TOKEN` for sentry-cli and the `@sentry/*` SDKs). Catalog-mode generation runs `printing-press generate <name>` straight from the catalog spec URL, bypassing the [Pre-Generation Auth Enrichment](../skills/printing-press/SKILL.md#pre-generation-auth-enrichment) step that would otherwise add [`x-auth-env-vars`](SPEC-EXTENSIONS.md#x-auth-env-vars) to the spec by hand. Declaring the canonical names here applies them automatically on every regen.
-
-Rules:
-- Optional. When empty, the generator's name-derived default (`<API>_BEARER_AUTH` / `<API>_TOKEN` / `<API>_API_KEY` by auth type) is used unchanged.
-- Each entry must match `^[A-Z][A-Z0-9_]*$` (uppercase letters, digits, underscores; must start with a letter). Duplicates and empty entries are rejected at validation time.
-- The catalog list takes precedence; the parser's name-derived default trails as a backwards-compat fallback so operators on existing setups don't need a rename to keep auth working. Generated `config.go` reads each env var in declared order and returns the first non-empty value.
-- The field is ignored for HTTP Basic auth (credential-pair shape, e.g. Twilio's `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN`). Declare basic-auth env var pairs via the spec's [`x-auth-env-vars`](SPEC-EXTENSIONS.md#x-auth-env-vars) extension instead.
-
-Example (`catalog/stripe.yaml`):
-
-```yaml
-auth_env_vars:
-  - STRIPE_SECRET_KEY  # canonical: stripe-cli, stripe-go, stripe-node, stripe-python
-  - STRIPE_API_KEY     # common alias
-```

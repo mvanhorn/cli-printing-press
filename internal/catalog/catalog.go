@@ -15,12 +15,6 @@ import (
 
 var namePattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
-// authEnvVarPattern matches POSIX-shell-shaped environment variable names:
-// uppercase ASCII letters, digits, and underscores, starting with a letter.
-// Catalog-declared auth env vars feed directly into generated config.go reads,
-// so the validator rejects shapes the generator could not emit safely.
-var authEnvVarPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
-
 // Public categories first, alphabetized. "other" and "example" are explicitly
 // special (catch-all / test-only) and kept at the end.
 var validCategories = map[string]struct{}{
@@ -31,7 +25,6 @@ var validCategories = map[string]struct{}{
 	"developer-tools":         {},
 	"devices":                 {},
 	"food-and-dining":         {},
-	"maps":                    {},
 	"marketing":               {},
 	"media-and-entertainment": {},
 	"monitoring":              {},
@@ -72,8 +65,7 @@ var validClientPatterns = map[string]struct{}{
 var validHTTPTransports = map[string]struct{}{
 	"standard":          {}, // Plain net/http, default for official APIs
 	"browser-http":      {}, // Plain net/http with HTTP/2 disabled for browser-facing websites
-	"browser-chrome":    {}, // Browser-compatible transport for web-discovered/non-official APIs (no version force; Chrome negotiates)
-	"browser-chrome-h2": {}, // Chrome-compatible HTTP transport forced through HTTP/2
+	"browser-chrome":    {}, // Browser-compatible transport for web-discovered/non-official APIs
 	"browser-chrome-h3": {}, // Chrome-compatible HTTP transport forced through HTTP/3
 }
 
@@ -150,16 +142,6 @@ type Entry struct {
 	// rather than a deep link to the keys UI. Overrides any spec-supplied
 	// x-auth-instructions value.
 	AuthInstructions string `yaml:"auth_instructions,omitempty"`
-	// AuthEnvVars lists canonical credential env var names this API's
-	// ecosystem already uses (e.g. STRIPE_SECRET_KEY for stripe-cli /
-	// stripe-go / stripe-node / stripe-python). The generator emits config.go
-	// reads in declared order so an operator who exports any one of them
-	// satisfies auth. Catalog-mode generation bypasses the spec-edit step
-	// that x-auth-env-vars covers, so this is the only place to declare the
-	// canonical names without hand-editing the generated CLI. The generator
-	// appends its name-derived fallback (e.g. STRIPE_BEARER_AUTH) as the last
-	// entry so operators on existing setups don't need a migration.
-	AuthEnvVars []string `yaml:"auth_env_vars,omitempty"`
 	// ClientPattern describes the HTTP client pattern needed. Empty defaults to "rest".
 	// Values: rest, proxy-envelope, graphql.
 	ClientPattern string `yaml:"client_pattern,omitempty"`
@@ -179,13 +161,6 @@ type Entry struct {
 	// can use as implementation backing when no official spec exists. When this
 	// list is non-empty, spec_url and spec_format are optional.
 	WrapperLibraries []WrapperLibrary `yaml:"wrapper_libraries,omitempty"`
-	// AuthPreference is the securityScheme name from the upstream spec the
-	// generator should pick when multiple schemes are advertised. Without it
-	// the parser's default selection wins (which favors OAuth2 with a full
-	// authorization-code flow). Set this to a simpler scheme (e.g. "basicAuth")
-	// when the API supports both OAuth2 and HTTP Basic and the printed CLI is
-	// meant for personal API-token use rather than a 3LO web flow.
-	AuthPreference string `yaml:"auth_preference,omitempty"`
 }
 
 // IsWrapperOnly reports whether this entry represents an API reached through
@@ -334,7 +309,7 @@ func (e *Entry) Validate() error {
 	}
 	if e.HTTPTransport != "" {
 		if _, ok := validHTTPTransports[e.HTTPTransport]; !ok {
-			return fmt.Errorf("http_transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h2, browser-chrome-h3")
+			return fmt.Errorf("http_transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h3")
 		}
 	}
 	if e.BaseURL != "" && !strings.HasPrefix(e.BaseURL, "https://") {
@@ -346,34 +321,7 @@ func (e *Entry) Validate() error {
 	if e.AuthKeyURL != "" && !strings.HasPrefix(e.AuthKeyURL, "https://") {
 		return fmt.Errorf(`auth_key_url must start with "https://"`)
 	}
-	if err := validateAuthEnvVars(e.AuthEnvVars); err != nil {
-		return err
-	}
 
-	return nil
-}
-
-func validateAuthEnvVars(envVars []string) error {
-	if len(envVars) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(envVars))
-	for i, name := range envVars {
-		trimmed := strings.TrimSpace(name)
-		if trimmed == "" {
-			return fmt.Errorf("auth_env_vars[%d] must not be empty", i)
-		}
-		if trimmed != name {
-			return fmt.Errorf("auth_env_vars[%d] %q must not have leading or trailing whitespace", i, name)
-		}
-		if !authEnvVarPattern.MatchString(name) {
-			return fmt.Errorf("auth_env_vars[%d] %q must be uppercase letters, digits, or underscores starting with a letter", i, name)
-		}
-		if _, dup := seen[name]; dup {
-			return fmt.Errorf("auth_env_vars[%d] %q is a duplicate", i, name)
-		}
-		seen[name] = struct{}{}
-	}
 	return nil
 }
 

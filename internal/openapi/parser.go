@@ -163,83 +163,62 @@ func stripBrokenRefs(data []byte, errMsg string) []byte {
 
 // Parse parses an OpenAPI spec strictly. Use ParseLenient for specs with broken $refs.
 func Parse(data []byte) (*spec.APISpec, error) {
-	return ParseWithOptions(data, ParseOptions{})
+	return parse(data, false)
 }
 
 // ParseFile parses an OpenAPI spec from a file and resolves local external
 // refs relative to that file.
 func ParseFile(path string) (*spec.APISpec, error) {
-	return parseFileWithOptions(path, ParseOptions{})
+	return parseFile(path, false)
 }
 
 // ParseWithPath parses OpenAPI spec bytes and resolves local external refs
 // relative to the given file path.
 func ParseWithPath(data []byte, path string) (*spec.APISpec, error) {
-	return ParseWithOptions(data, ParseOptions{Path: path})
+	return parseWithPath(data, path, false)
 }
 
 // ParseLenient parses an OpenAPI spec, skipping validation errors from broken $refs.
 // It logs warnings to stderr for any issues found but continues parsing.
 func ParseLenient(data []byte) (*spec.APISpec, error) {
-	return ParseWithOptions(data, ParseOptions{Lenient: true})
+	return parse(data, true)
 }
 
 // ParseFileLenient parses an OpenAPI spec from a file and skips validation
 // errors from broken $refs after resolving local external refs relative to
 // that file.
 func ParseFileLenient(path string) (*spec.APISpec, error) {
-	return parseFileWithOptions(path, ParseOptions{Lenient: true})
+	return parseFile(path, true)
 }
 
 // ParseWithPathLenient parses OpenAPI spec bytes, resolving local external refs
 // relative to the given file path and skipping validation errors from broken
 // refs.
 func ParseWithPathLenient(data []byte, path string) (*spec.APISpec, error) {
-	return ParseWithOptions(data, ParseOptions{Path: path, Lenient: true})
+	return parseWithPath(data, path, true)
 }
 
-// ParseOptions carries optional hints that influence parsing without changing
-// the existing single-purpose Parse* signatures. New behavioral knobs (e.g.
-// auth-scheme preference) should be added here rather than as new positional
-// parameters across every entry point.
-type ParseOptions struct {
-	// Path resolves local external refs relative to a file location. Empty
-	// means the spec is treated as remote/in-memory only.
-	Path string
-	// Lenient skips validation errors from broken $refs.
-	Lenient bool
-	// AuthPreference names a security scheme from components.securitySchemes
-	// that should win over the parser's default selection priority. Used when
-	// a spec exposes multiple valid schemes (e.g. OAuth2 + basic) and the
-	// caller knows which one fits the printed CLI's intended auth model.
-	// Unknown names are ignored (default selection runs).
-	AuthPreference string
-}
-
-// ParseWithOptions is the canonical parser entry point; the older Parse* and
-// ParseFile* helpers delegate to it with default ParseOptions plus their own
-// path/lenient settings.
-func ParseWithOptions(data []byte, opts ParseOptions) (*spec.APISpec, error) {
-	if opts.Path == "" {
-		return parseWithLocation(data, opts.Lenient, nil, opts.AuthPreference)
-	}
-	location, err := fileLocation(opts.Path)
-	if err != nil {
-		return nil, err
-	}
-	return parseWithLocation(data, opts.Lenient, location, opts.AuthPreference)
-}
-
-func parseFileWithOptions(path string, opts ParseOptions) (*spec.APISpec, error) {
+func parseFile(path string, lenient bool) (*spec.APISpec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading OpenAPI spec: %w", err)
 	}
-	opts.Path = path
-	return ParseWithOptions(data, opts)
+	return parseWithPath(data, path, lenient)
 }
 
-func parseWithLocation(data []byte, lenient bool, location *url.URL, authPreference string) (*spec.APISpec, error) {
+func parseWithPath(data []byte, path string, lenient bool) (*spec.APISpec, error) {
+	location, err := fileLocation(path)
+	if err != nil {
+		return nil, err
+	}
+	return parseWithLocation(data, lenient, location)
+}
+
+func parse(data []byte, lenient bool) (*spec.APISpec, error) {
+	return parseWithLocation(data, lenient, nil)
+}
+
+func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APISpec, error) {
 	var metadata specDataMetadata
 	if normalized, meta, err := normalizeSpecDataWithMetadata(data); err == nil {
 		data = normalized
@@ -409,7 +388,7 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL, authPrefere
 		baseURLIsPlaceholder = true
 	}
 
-	auth := mapAuthWithDescriptionInference(doc, name, !metadata.explicitEmptySecuritySchemes, authPreference)
+	auth := mapAuthWithDescriptionInference(doc, name, !metadata.explicitEmptySecuritySchemes)
 	if auth.Type != "none" && allOperationsAllowAnonymous(doc) {
 		auth = spec.AuthConfig{Type: "none"}
 	}
@@ -482,15 +461,6 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL, authPrefere
 	var perEndpointHeaders map[string]map[string]string
 	result.RequiredHeaders, perEndpointHeaders = detectRequiredHeaders(doc, result.Auth)
 	applyHeaderOverrides(result, perEndpointHeaders)
-
-	// Synthesize Params entries for {placeholder} tokens in the path template
-	// that the operation never declared in `parameters` (or via a path-item /
-	// $ref shared parameter). Real-world specs frequently omit these — the
-	// path template is the source of truth, but without a matching Param
-	// entry the generator emits a URL with literal `{name}` segments and the
-	// request returns 404. Same pass the YAML loader uses, applied uniformly
-	// here so OpenAPI-parsed specs get the same guarantee.
-	result.EnrichPathParams()
 
 	if err := result.Validate(); err != nil {
 		return nil, fmt.Errorf("validating parsed spec: %w", err)
@@ -570,12 +540,12 @@ func lookupOpenAPIInfoExtension(doc *openapi3.T, key string) (any, bool) {
 }
 
 func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
-	return mapAuthWithDescriptionInference(doc, name, true, "")
+	return mapAuthWithDescriptionInference(doc, name, true)
 }
 
-func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescriptionInference bool, authPreference string) spec.AuthConfig {
+func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescriptionInference bool) spec.AuthConfig {
 	auth := spec.AuthConfig{Type: "none"}
-	schemeName, scheme := selectSecurityScheme(doc, authPreference)
+	schemeName, scheme := selectSecurityScheme(doc)
 	if scheme == nil {
 		result := inferQueryParamAuth(doc, name, auth)
 		if result.Type == "none" {
@@ -1779,24 +1749,12 @@ func isNegated(text string, keywordIdx int) bool {
 	return false
 }
 
-func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *openapi3.SecurityScheme) {
+func selectSecurityScheme(doc *openapi3.T) (string, *openapi3.SecurityScheme) {
 	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) == 0 {
 		return "", nil
 	}
 
 	candidates := candidateSecuritySchemeNames(doc)
-
-	if pref := strings.TrimSpace(authPreference); pref != "" {
-		for _, name := range candidates {
-			if !strings.EqualFold(name, pref) {
-				continue
-			}
-			scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
-			if scheme != nil {
-				return name, scheme
-			}
-		}
-	}
 
 	bestScore := math.MaxInt
 	var bestName string
@@ -2113,7 +2071,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				description = humanizeEndpointName(endpointName)
 			}
 
-			params := mapParameters(pathItem, op)
+			params := mapParameters(path, pathItem, op)
 			body, requestContentType, bodyJSONFallback, bodyRequired := mapRequestBody(op.RequestBody, method, path)
 
 			// Deduplicate body params that collide with query/path params by flag name
@@ -2834,7 +2792,7 @@ func hasPathParams(path string) bool {
 	return strings.Contains(path, "{") && strings.Contains(path, "}")
 }
 
-func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.Param {
+func mapParameters(path string, pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.Param {
 	merged := mergeParameters(pathItem, op)
 	params := make([]spec.Param, 0, len(merged))
 	for _, parameter := range merged {
@@ -2855,19 +2813,33 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 		if description == "" {
 			description = humanizeFieldName(paramName)
 		}
+		positional := parameter.In == openapi3.ParameterInPath
+		explicitPositional := false
+		if raw, ok := parameter.Extensions["x-positional"]; ok {
+			if b, ok := raw.(bool); ok {
+				positional = b
+				explicitPositional = true
+			} else if s, ok := raw.(string); ok {
+				positional = strings.ToLower(s) == "true" || s == "1"
+				explicitPositional = true
+			}
+		}
+
 		param := spec.Param{
-			Name:        paramName,
-			Type:        mapSchemaType(schema),
-			Required:    parameter.Required,
-			Positional:  parameter.In == openapi3.ParameterInPath,
-			Description: description,
-			Enum:        schemaEnum(schema),
-			Format:      schemaFormat(schema),
+			Name:               paramName,
+			Type:               mapSchemaType(schema),
+			Required:           parameter.Required,
+			Positional:         positional,
+			ExplicitPositional: explicitPositional,
+			PathParam:          strings.Contains(path, "{"+paramName+"}"),
+			Description:        description,
+			Enum:               schemaEnum(schema),
+			Format:             schemaFormat(schema),
 		}
 		if schema != nil && schema.Default != nil {
 			param.Default = schema.Default
 		}
-		if param.Positional {
+		if param.Positional || param.PathParam {
 			param.Required = true
 		}
 		params = append(params, param)
@@ -2902,8 +2874,8 @@ func reclassifyPathParamModifiers(params []spec.Param) {
 
 	for i := range params {
 		p := &params[i]
-		if !p.Positional {
-			continue // only reclassify path params
+		if !p.Positional || p.ExplicitPositional {
+			continue // only reclassify implicit path params
 		}
 		lowerName := strings.ToLower(p.Name)
 
@@ -2944,7 +2916,7 @@ func reclassifyPathParamModifiers(params []spec.Param) {
 
 		if reclassify {
 			p.Positional = false
-			p.PathParam = true
+			p.PathParam = true // set by mapParameters, re-asserted here for completeness
 			// A path param is a URL segment — it can only be optional if a default
 			// value can fill its slot. No default → the user must provide a value.
 			p.Required = p.Default == nil
@@ -5253,19 +5225,6 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 			if orig, ok := originalCase[name]; ok {
 				pag.CursorParam = orig
 				pag.Type = "offset"
-				break
-			}
-		}
-	}
-	// Integer page paginator: classify only after the cursor/token/offset
-	// branches above so APIs that mix forms (e.g. cursor + page) keep
-	// cursor semantics. Runtime sync handles type "page" by incrementing
-	// CursorParam as an integer when no body cursor is extracted.
-	if pag.Type == "" {
-		for _, name := range []string{"page", "pagenumber", "page_number", "page[number]"} {
-			if orig, ok := originalCase[name]; ok {
-				pag.CursorParam = orig
-				pag.Type = "page"
 				break
 			}
 		}

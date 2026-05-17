@@ -53,18 +53,15 @@ func TestClaimOutputDir_MaxRetries(t *testing.T) {
 	assert.Contains(t, err.Error(), "could not claim")
 }
 
-func TestClaimOutputDir_PermissionError(t *testing.T) {
-	if os.Getuid() == 0 {
-		t.Skip("test requires non-root")
-	}
-	// Parent dir that doesn't exist and can't be created — on macOS /proc doesn't exist,
-	// so use a path that will fail os.MkdirAll
-	base := "/nonexistent-root-dir/fakedir/notion-pp-cli"
+func TestClaimOutputDir_ParentIsFile(t *testing.T) {
+	tmp := t.TempDir()
+	parent := filepath.Join(tmp, "parent-file")
+	require.NoError(t, os.WriteFile(parent, []byte("I am a file"), 0o644))
 
+	base := filepath.Join(parent, "child-dir")
 	_, err := ClaimOutputDir(base)
 	assert.Error(t, err)
-	// Should NOT contain "could not claim" — should be the underlying OS error
-	assert.NotContains(t, err.Error(), "could not claim")
+	assert.Contains(t, err.Error(), "creating parent directory")
 }
 
 func TestClaimOutputDir_ConcurrentClaims(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -244,7 +245,11 @@ func TestJSONStringParamRejectsInvalidValueBeforeClient(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 	runGoCommand(t, outputDir, "mod", "tidy")
 
-	binaryPath := filepath.Join(outputDir, "json-runtime-param-pp-cli")
+	binaryName := "json-runtime-param-pp-cli"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	binaryPath := filepath.Join(outputDir, binaryName)
 	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/json-runtime-param-pp-cli")
 
 	cmd := exec.Command(binaryPath, "insights", "search", "--time-range", "last_7d")

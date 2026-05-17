@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
@@ -715,8 +713,7 @@ resources:
   "summary": {
     "target_url": "https://www.producthunt.com",
     "entry_count": 1,
-    "api_entry_count": 1,
-    "http_version_distribution": {"h2": 9}
+    "api_entry_count": 1
   },
   "reachability": {
     "mode": "browser_clearance_http",
@@ -755,9 +752,6 @@ resources:
 	require.NoError(t, err)
 	assert.NotContains(t, string(clientGo), `req.Header.Set("User-Agent"`)
 	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
-	// HAR distribution declares H/2 majority -> ForceHTTP2 is emitted and
-	// ForceHTTP3 is not. With an empty distribution the bare browser-chrome
-	// enum would emit neither; the fixture above pins the HAR-driven path.
 	assert.Contains(t, string(clientGo), "ForceHTTP2()")
 	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
 	assert.NotContains(t, string(clientGo), "runBrowserUseFetch")
@@ -812,8 +806,7 @@ resources:
   "summary": {
     "target_url": "https://www.producthunt.com",
     "entry_count": 1,
-    "api_entry_count": 1,
-    "http_version_distribution": {"h2": 9}
+    "api_entry_count": 1
   },
   "reachability": {
     "mode": "browser_clearance_http",
@@ -837,7 +830,6 @@ resources:
 	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
-	// HAR distribution declares H/2 majority -> ForceHTTP2 emits.
 	assert.Contains(t, string(clientGo), "ForceHTTP2()")
 	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
 	assert.NotContains(t, string(clientGo), "runBrowserUseFetch")
@@ -1532,10 +1524,6 @@ func TestNormalizeHTTPTransportAllowsBrowserChromeH3(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, spec.HTTPTransportBrowserHTTP, got)
 
-	got, err = normalizeHTTPTransport(spec.HTTPTransportBrowserChromeH2)
-	require.NoError(t, err)
-	assert.Equal(t, spec.HTTPTransportBrowserChromeH2, got)
-
 	got, err = normalizeHTTPTransport(spec.HTTPTransportBrowserChromeH3)
 	require.NoError(t, err)
 	assert.Equal(t, spec.HTTPTransportBrowserChromeH3, got)
@@ -1543,52 +1531,8 @@ func TestNormalizeHTTPTransportAllowsBrowserChromeH3(t *testing.T) {
 	_, err = normalizeHTTPTransport("browser-chrome-http3")
 	require.ErrorContains(t, err, "browser-chrome-h3")
 
-	_, err = normalizeHTTPTransport("browser-chrome-http2")
-	require.ErrorContains(t, err, "browser-chrome-h2")
-
 	_, err = normalizeHTTPTransport("browser-runtime")
 	require.ErrorContains(t, err, "--transport must be one of")
-}
-
-// TestApplyHTTPTransportDefaultPreservesH2ForProtectionPath pins the
-// protection-driven branch (Cloudflare/DataDome/html_scrape/browser
-// hints without a reachability mode). Pre-fix the template's else
-// branch unconditionally emitted ForceHTTP2 for bare browser-chrome;
-// post-fix the bare enum means "no force" so this path must opt into
-// the -h2 variant explicitly to keep shipped CLIs on these origins
-// behaving identically.
-func TestApplyHTTPTransportDefaultPreservesH2ForProtectionPath(t *testing.T) {
-	t.Parallel()
-	apiSpec := &spec.APISpec{
-		Name:    "cloudflareapp",
-		BaseURL: "https://www.example.com",
-		Auth:    spec.AuthConfig{Type: "none"},
-	}
-	analysis := &browsersniff.TrafficAnalysis{
-		Protections: []browsersniff.ProtectionObservation{{Label: "cloudflare"}},
-	}
-	applyHTTPTransportDefault(apiSpec, analysis)
-	assert.Equal(t, spec.HTTPTransportBrowserChromeH2, apiSpec.HTTPTransport,
-		"protection-driven path must write browser-chrome-h2 so the generated client still forces HTTP/2")
-}
-
-// TestApplyHTTPTransportDefaultExplicitH3WinsOverProtection pins that
-// an explicit H/3 hint still wins over the protection heuristic when
-// both fire; the H/3 force preempts the H/2 fallback.
-func TestApplyHTTPTransportDefaultExplicitH3WinsOverProtection(t *testing.T) {
-	t.Parallel()
-	apiSpec := &spec.APISpec{
-		Name:    "cloudflareh3app",
-		BaseURL: "https://www.example.com",
-		Auth:    spec.AuthConfig{Type: "none"},
-	}
-	analysis := &browsersniff.TrafficAnalysis{
-		Protections:     []browsersniff.ProtectionObservation{{Label: "cloudflare"}},
-		GenerationHints: []string{"prefer_http3"},
-	}
-	applyHTTPTransportDefault(apiSpec, analysis)
-	assert.Equal(t, spec.HTTPTransportBrowserChromeH3, apiSpec.HTTPTransport,
-		"explicit H/3 hint must beat the protection-driven H/2 default")
 }
 
 func TestGenerateCmdInfersTrafficAnalysisForSniffedSpec(t *testing.T) {
@@ -1869,73 +1813,6 @@ resources:
 		"generated files should land at the user-supplied --output path")
 	assert.NoDirExists(t, derivedDir,
 		"the spec-derived directory must not be created when --output is explicit")
-}
-
-func TestOpenAPIAuthPreferenceForGenerateFromJiraCatalogEntry(t *testing.T) {
-	t.Parallel()
-
-	jira, err := catalog.LookupFS(catalogfs.FS, "jira")
-	require.NoError(t, err)
-	require.Equal(t, "basicAuth", jira.AuthPreference)
-
-	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, ""),
-		"catalog spec_url match should forward auth_preference without --auth-preference")
-	assert.Equal(t, "OAuth2", openAPIAuthPreferenceForGenerate("OAuth2", "", []string{jira.SpecURL}, ""),
-		"explicit --auth-preference must override catalog")
-
-	localSpec := filepath.Join(t.TempDir(), "swagger.json")
-	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "jira", []string{localSpec}, ""),
-		"catalog slug via --name should resolve auth_preference without https spec refs")
-}
-
-func TestOpenAPIAuthPreferenceForGenerateParsesJiraLikeSpecWithCatalogDefault(t *testing.T) {
-	t.Parallel()
-
-	// Mirrors real Jira-style specs: OAuth2 authorizationCode + HTTP Basic; default
-	// parser choice is OAuth2 unless AuthPreference pins basicAuth (see openapi parser tests).
-	specBytes := []byte(`openapi: "3.0.3"
-info:
-  title: Atlassian-like
-  version: "1.0"
-servers:
-  - url: https://example.atlassian.net
-components:
-  securitySchemes:
-    OAuth2:
-      type: oauth2
-      flows:
-        authorizationCode:
-          authorizationUrl: https://auth.example.com/authorize
-          tokenUrl: https://auth.example.com/token
-          scopes:
-            read: read access
-    basicAuth:
-      type: http
-      scheme: basic
-paths:
-  /v1/things:
-    get:
-      operationId: list things
-      security:
-        - basicAuth: []
-        - OAuth2: [read]
-      responses: {"200": {description: ok}}
-`)
-
-	jira, err := catalog.LookupFS(catalogfs.FS, "jira")
-	require.NoError(t, err)
-
-	pref := openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, "")
-	require.Equal(t, "basicAuth", pref)
-
-	parsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec.yaml"), specBytes, false, pref)
-	require.NoError(t, err)
-	assert.Equal(t, "basicAuth", parsed.Auth.Scheme)
-	assert.Equal(t, "api_key", parsed.Auth.Type)
-
-	defaultParsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec2.yaml"), specBytes, false, "")
-	require.NoError(t, err)
-	assert.Equal(t, "OAuth2", defaultParsed.Auth.Scheme, "without catalog-driven preference, OAuth2 wins")
 }
 
 func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {

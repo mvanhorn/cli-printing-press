@@ -199,17 +199,6 @@ For EVERY surviving candidate, force-answer these in writing:
 4. **Sibling kill:** Name the closest candidate you killed and why. If
    you cannot, you didn't generate enough candidates — return to Pass 2
    and add more.
-5. **Buildability:** Will the generator auto-emit this from the spec, or
-   will the agent need to hand-write a Cobra file plus `root.go` wiring
-   after generate? Tag exactly one value:
-   - `spec-emits` — the feature reuses an endpoint already in the spec
-     and the generator's emit path (endpoint mirror or `extra_commands`)
-     produces a working command without hand-edits.
-   - `hand-code` — the feature requires SQLite joins, cross-source
-     synthesis, custom output shapes, or any Go code beyond what the
-     generator emits today (~50-150 LoC per feature plus `root.go`
-     wiring). This is the default for transcendence features; most
-     candidates fall here.
 
 Drop ~half. Target output: 4-8 survivors. Score survivors with the rubric's
 4-dimension score; only keep features scoring >= 5/10.
@@ -227,11 +216,9 @@ order:
    inline kill/keep verdicts from the rubric.
 3. `## Survivors and kills`
    - `### Survivors` — features scoring >= 5/10, formatted as a
-     transcendence table matching the rubric's "Transcendence Table
-     Format" section (which includes the **Buildability** column,
-     `spec-emits` or `hand-code` per Pass 3 question 5). Include score,
-     persona-served, the one-sentence buildability proof per the rubric,
-     and the buildability tag.
+     transcendence table per the rubric's "Transcendence Table Format"
+     section. Include score, persona-served, and the one-sentence
+     buildability proof per the rubric.
    - `### Killed candidates` — table with columns: feature, kill reason,
      closest-surviving-sibling.
 4. `## Reprint verdicts` (REPRINT ONLY) — per-prior-feature: keep / reframe
@@ -247,11 +234,8 @@ Do not propose follow-up work.
 After the subagent returns:
 
 1. **Parse `### Survivors`** — these become the transcendence rows in the
-   absorb manifest (Step 1.5d). The score, buildability proof, and
-   `Buildability` tag flow into the transcendence table; the persona-served
-   column is the audit trail. The `Buildability` column drives Phase Gate
-   1.5's hand-code count: rows tagged `hand-code` are the agent's
-   post-generate scope commitment, rows tagged `spec-emits` are not.
+   absorb manifest (Step 1.5d). The score and buildability proof go into the
+   transcendence table; the persona-served column is the audit trail.
 2. **Parse `## Reprint verdicts`** (if present) — record dropped prior features
    under the transcendence table per the rubric's reprint surface rule, so the
    user can override drops at the Phase 1.5 gate review.

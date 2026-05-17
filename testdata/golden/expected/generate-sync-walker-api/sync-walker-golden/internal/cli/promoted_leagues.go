@@ -6,6 +6,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -20,28 +21,24 @@ func newLeaguesPromotedCmd(flags *rootFlags) *cobra.Command {
 		Example:     "  sync-walker-golden-pp-cli leagues your-token-here",
 		Annotations: map[string]string{"pp:endpoint": "leagues.list", "pp:method": "GET", "pp:path": "/games/{game_key}/leagues", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) < 1 {
+				return cmd.Help()
+			}
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
 
+			var (
+				data   json.RawMessage
+				status int
+				prov   DataProvenance
+			)
+			_ = c
+
 			path := "/games/{game_key}/leagues"
-			if len(args) < 1 {
-				// JSON envelope: {error, usage}. Written first; the
-				// usageErr return preserves exit code 2 across modes.
-				if flags.asJSON {
-					if printErr := printJSONFiltered(cmd.OutOrStdout(), map[string]any{
-						"error": "game_key is required",
-						"usage": fmt.Sprintf("%s <%s>", cmd.CommandPath(), "game_key"),
-					}, flags); printErr != nil {
-						return printErr
-					}
-				}
-				return usageErr(fmt.Errorf("game_key is required\nUsage: %s <%s>", cmd.CommandPath(), "game_key"))
-			}
-			path = replacePathParam(path, "game_key", args[0])
-			params := map[string]string{}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "leagues", false, path, params, nil)
+			_ = path
+			path = replacePathParam(path, "game_key", url.PathEscape(args[0]))
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -92,6 +89,7 @@ func newLeaguesPromotedCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
+			_ = status
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}

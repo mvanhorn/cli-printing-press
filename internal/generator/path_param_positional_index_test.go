@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
-	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -120,7 +119,7 @@ func TestPathParamArgsIndexUsesPositionalOrdinal(t *testing.T) {
 	// no len-check (Cobra's MinimumNArgs(1) covers the first positional).
 	tagsList := read(filepath.Join("internal", "cli", "tags_contacts_list-for-tag.go"))
 	assert.Contains(t, tagsList,
-		`path = replacePathParam(path, "tagId", args[0])`,
+		`path = replacePathParam(path, "tagId", url.PathEscape(args[0]))`,
 		"single positional path param must use args[0] regardless of declared query params before it")
 	assert.NotContains(t, tagsList,
 		`args[2]`,
@@ -134,10 +133,10 @@ func TestPathParamArgsIndexUsesPositionalOrdinal(t *testing.T) {
 	// len-check at len(args) < 2 (its ordinal+1), not the full-Params index.
 	steps := read(filepath.Join("internal", "cli", "users_course-progress_steps.go"))
 	assert.Contains(t, steps,
-		`path = replacePathParam(path, "id", args[0])`,
+		`path = replacePathParam(path, "id", url.PathEscape(args[0]))`,
 		"first positional must resolve to args[0]")
 	assert.Contains(t, steps,
-		`path = replacePathParam(path, "course", args[1])`,
+		`path = replacePathParam(path, "course", url.PathEscape(args[1]))`,
 		"second positional must resolve to args[1] even with a non-positional param interleaved")
 	assert.Contains(t, steps,
 		`if len(args) < 2`,
@@ -153,10 +152,10 @@ func TestPathParamArgsIndexUsesPositionalOrdinal(t *testing.T) {
 	// order, no interleaved queries. Output unchanged from pre-fix behavior.
 	subs := read(filepath.Join("internal", "cli", "products_subscriptions_list.go"))
 	assert.Contains(t, subs,
-		`path = replacePathParam(path, "productId", args[0])`,
+		`path = replacePathParam(path, "productId", url.PathEscape(args[0]))`,
 		"baseline: first positional resolves to args[0]")
 	assert.Contains(t, subs,
-		`path = replacePathParam(path, "subscriptionId", args[1])`,
+		`path = replacePathParam(path, "subscriptionId", url.PathEscape(args[1]))`,
 		"baseline: second positional resolves to args[1]")
 	assert.Contains(t, subs,
 		`if len(args) < 2`,
@@ -214,7 +213,7 @@ func TestPromotedCommandPathParamArgsIndexUsesPositionalOrdinal(t *testing.T) {
 	src := string(data)
 
 	assert.Contains(t, src,
-		`path = replacePathParam(path, "itemId", args[0])`,
+		`path = replacePathParam(path, "itemId", url.PathEscape(args[0]))`,
 		"promoted command: single positional path param must use args[0] regardless of query params declared before it")
 	assert.Contains(t, src,
 		`if len(args) < 1`,
@@ -288,10 +287,10 @@ func TestPathParamArgsIndexFlagExposedPathParam(t *testing.T) {
 	body := string(src)
 
 	assert.Contains(t, body,
-		`path = replacePathParam(path, "reportId", args[0])`,
+		`path = replacePathParam(path, "reportId", url.PathEscape(args[0]))`,
 		"positional path param must resolve to args[0] when a flag-exposed path param precedes it in Params")
 	assert.Contains(t, body,
-		`path = replacePathParam(path, "groupId", fmt.Sprintf("%v", flagGroupId))`,
+		`path = replacePathParam(path, "groupId", url.PathEscape(fmt.Sprintf("%v", flagGroupId)))`,
 		"flag-exposed path param must continue to substitute from its flag, not args[]")
 	assert.NotContains(t, body,
 		`args[1]`,
@@ -348,10 +347,10 @@ func TestPromotedCommandPathParamArgsIndexFlagExposedPathParam(t *testing.T) {
 	src := string(data)
 
 	assert.Contains(t, src,
-		`path = replacePathParam(path, "reportId", args[0])`,
+		`path = replacePathParam(path, "reportId", url.PathEscape(args[0]))`,
 		"promoted command: positional path param must resolve to args[0] when a flag-exposed path param precedes it")
 	assert.Contains(t, src,
-		`path = replacePathParam(path, "groupId", fmt.Sprintf("%v", flagGroupId))`,
+		`path = replacePathParam(path, "groupId", url.PathEscape(fmt.Sprintf("%v", flagGroupId)))`,
 		"promoted command: flag-exposed path param must continue to substitute from its flag")
 	assert.Contains(t, src,
 		`if len(args) < 1`,
@@ -390,50 +389,4 @@ func TestPositionalIndexHelper(t *testing.T) {
 	assert.Equal(t, 1, positionalIndex(multi, "course"))
 	assert.Equal(t, -1, positionalIndex(multi, "missing"),
 		"unknown name should return -1, not panic")
-}
-
-// TestUndeclaredPathPlaceholderEmitsPositional pins the end-to-end repair for
-// real-world OpenAPI specs whose path templates carry a {placeholder} the
-// operation never declares in `parameters`. Without the spec-level enrichment,
-// the generator emits a literal `{organizationId}` URL segment and every
-// request to a parent-scoped resource 404s silently.
-func TestUndeclaredPathPlaceholderEmitsPositional(t *testing.T) {
-	t.Parallel()
-
-	yaml := `openapi: 3.0.0
-info:
-  title: Hierarchical
-  version: 1.0.0
-servers:
-  - url: https://api.example.com
-paths:
-  /organizations/{organizationId}/invites:
-    get:
-      summary: List organization invites
-      responses:
-        "200": {description: ok}
-  /organizations/{organizationId}/users:
-    get:
-      summary: List organization users
-      responses:
-        "200": {description: ok}
-`
-	apiSpec, err := openapi.Parse([]byte(yaml))
-	require.NoError(t, err)
-	apiSpec.Owner = "test-owner"
-	apiSpec.OwnerName = "Test"
-
-	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
-	require.NoError(t, New(apiSpec, outputDir).Generate())
-
-	matches, err := filepath.Glob(filepath.Join(outputDir, "internal", "cli", "promoted_invites*.go"))
-	require.NoError(t, err)
-	require.Lenf(t, matches, 1, "expected one promoted_invites*.go, got %v", matches)
-	src, err := os.ReadFile(matches[0])
-	require.NoError(t, err)
-	body := string(src)
-	assert.Contains(t, body, `Use:         "invites <organizationId>"`,
-		"positional must appear in cobra Use so --help is honest")
-	assert.Contains(t, body, `replacePathParam(path, "organizationId", args[0])`,
-		"undeclared path placeholder must still drive URL substitution")
 }

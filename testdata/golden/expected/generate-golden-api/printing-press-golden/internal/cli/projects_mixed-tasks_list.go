@@ -6,35 +6,27 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/spf13/cobra"
 )
 
-func newProjectsListCmd(flags *rootFlags) *cobra.Command {
-	var flagStatus string
+func newProjectsMixedTasksListCmd(flags *rootFlags) *cobra.Command {
+	var flagPriority string
 	var flagLimit int
-	var flagCursor string
+	var flagOffset string
 	var flagAll bool
 
 	cmd := &cobra.Command{
-		Use:         "list",
-		Short:       "List projects",
-		Example:     "  printing-press-golden-pp-cli projects list",
-		Annotations: map[string]string{"pp:endpoint": "projects.list", "pp:method": "GET", "pp:path": "/v1/projects", "mcp:read-only": "true"},
+		Use:         "list <projectId>",
+		Aliases:     []string{"get"},
+		Short:       "List tasks with mixed params",
+		Example:     "  printing-press-golden-pp-cli projects mixed-tasks list 550e8400-e29b-41d4-a716-446655440000",
+		Annotations: map[string]string{"pp:endpoint": "mixed-tasks.list", "pp:method": "GET", "pp:path": "/v1/projects/{projectId}/mixed-tasks", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if cmd.Flags().Changed("status") {
-				allowedStatus := []string{"draft", "active", "archived"}
-				validStatus := false
-				for _, v := range allowedStatus {
-					if flagStatus == v {
-						validStatus = true
-						break
-					}
-				}
-				if !validStatus {
-					fmt.Fprintf(os.Stderr, "warning: --%s %q not in allowed set %v\n", "status", flagStatus, allowedStatus)
-				}
+			if len(args) < 1 {
+				return cmd.Help()
 			}
 			c, err := flags.newClient()
 			if err != nil {
@@ -48,13 +40,14 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 			)
 			_ = c
 
-			path := "/projects"
+			path := "/projects/{projectId}/mixed-tasks"
 			_ = path
-			data, status, prov, err = resolvePaginatedRead(cmd.Context(), c, flags, "projects", path, map[string]string{
-				"status": fmt.Sprintf("%v", flagStatus),
-				"limit":  fmt.Sprintf("%v", flagLimit),
-				"cursor": fmt.Sprintf("%v", flagCursor),
-			}, nil, flagAll, "cursor", "", "")
+			path = replacePathParam(path, "projectId", url.PathEscape(args[0]))
+			data, status, prov, err = resolvePaginatedRead(cmd.Context(), c, flags, "mixed-tasks", path, map[string]string{
+				"priority": fmt.Sprintf("%v", flagPriority),
+				"limit":    fmt.Sprintf("%v", flagLimit),
+				"offset":   fmt.Sprintf("%v", flagOffset),
+			}, nil, flagAll, "offset", "", "")
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -103,9 +96,9 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}
-	cmd.Flags().StringVar(&flagStatus, "status", "", "Status (one of: draft, active, archived)")
-	cmd.Flags().IntVar(&flagLimit, "limit", 25, "Limit")
-	cmd.Flags().StringVar(&flagCursor, "cursor", "", "Cursor")
+	cmd.Flags().StringVar(&flagPriority, "priority", "", "Priority")
+	cmd.Flags().IntVar(&flagLimit, "limit", 0, "Limit")
+	cmd.Flags().StringVar(&flagOffset, "offset", "", "Offset")
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Fetch all pages")
 
 	return cmd

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
@@ -37,7 +38,11 @@ func initRoot() {
 	assert.Equal(t, "PASS", report.Verdict)
 	assert.FileExists(t, report.Binary)
 
-	assert.FileExists(t, filepath.Join(dir, "sample-cli"))
+	binaryName := "sample-cli"
+	if runtime.GOOS == "windows" {
+		binaryName += ".exe"
+	}
+	assert.FileExists(t, filepath.Join(dir, binaryName))
 	assert.NoDirExists(t, filepath.Join(dir, "cmd", "library"))
 	assert.NoFileExists(t, filepath.Join(dir, ".DS_Store"))
 	assert.DirExists(t, filepath.Join(dir, ".cache"))
@@ -197,6 +202,9 @@ func main() {
 }
 `)
 	binaryPath := filepath.Join(dir, "test-cli")
+	if runtime.GOOS == "windows" {
+		binaryPath += ".exe"
+	}
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
@@ -224,6 +232,9 @@ func main() {
 }
 `)
 	binaryPath := filepath.Join(dir, "test-cli")
+	if runtime.GOOS == "windows" {
+		binaryPath += ".exe"
+	}
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
@@ -251,6 +262,9 @@ func main() {
 }
 `)
 	binaryPath := filepath.Join(dir, "test-cli")
+	if runtime.GOOS == "windows" {
+		binaryPath += ".exe"
+	}
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
@@ -289,6 +303,9 @@ func main() {
 }
 `)
 	binaryPath := filepath.Join(binDir, "test-cli")
+	if runtime.GOOS == "windows" {
+		binaryPath += ".exe"
+	}
 	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
 	out, err := buildCmd.CombinedOutput()
 	require.NoError(t, err, "building test binary: %s", string(out))
@@ -412,7 +429,12 @@ func main() {}
 
 	binaryPath, err := buildCLI(dir)
 	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(dir, "sample-pp-cli-2"), binaryPath)
+
+	expectedBinary := filepath.Join(dir, "sample-pp-cli-2")
+	if runtime.GOOS == "windows" {
+		expectedBinary += ".exe"
+	}
+	assert.Equal(t, expectedBinary, binaryPath)
 	assert.FileExists(t, binaryPath)
 }
 
@@ -640,10 +662,31 @@ func listHandler() error { return nil }`
 func buildHelpScanFixture(t *testing.T, helpText string) string {
 	t.Helper()
 	dir := t.TempDir()
-	scriptPath := filepath.Join(dir, "fixture-pp-cli")
-	script := "#!/bin/sh\ncat <<'EOF'\n" + helpText + "\nEOF\n"
-	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o755))
-	return scriptPath
+	binaryPath := filepath.Join(dir, "fixture-pp-cli")
+	if runtime.GOOS == "windows" {
+		binaryPath += ".exe"
+	}
+
+	srcPath := filepath.Join(dir, "main.go")
+	src := fmt.Sprintf(`package main
+import "fmt"
+import "os"
+func main() {
+	for _, arg := range os.Args {
+		if arg == "--help" {
+			fmt.Println(%q)
+			return
+		}
+	}
+}
+`, helpText)
+	require.NoError(t, os.WriteFile(srcPath, []byte(src), 0o644))
+
+	cmd := exec.Command("go", "build", "-o", binaryPath, srcPath)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	return binaryPath
 }
 
 func TestIsIntentionalStubExit(t *testing.T) {
@@ -765,7 +808,12 @@ func TestTypedSuccessCodesMalformedAnnotationFallsBackToHelp(t *testing.T) {
 }
 
 func TestIsDocumentedSuccessExit(t *testing.T) {
-	err := exec.Command("sh", "-c", "exit 2").Run()
+	var err error
+	if runtime.GOOS == "windows" {
+		err = exec.Command("cmd", "/c", "exit 2").Run()
+	} else {
+		err = exec.Command("sh", "-c", "exit 2").Run()
+	}
 	require.Error(t, err)
 
 	wrapped := fmt.Errorf("exit %w: no confident match", err)

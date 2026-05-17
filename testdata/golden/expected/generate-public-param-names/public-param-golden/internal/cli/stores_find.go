@@ -19,7 +19,7 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 		Use:         "find",
 		Short:       "Find nearby stores by address",
 		Example:     "  public-param-golden-pp-cli stores find --address example-value --city example-value",
-		Annotations: map[string]string{"pp:endpoint": "stores.find", "pp:method": "GET", "pp:path": "/power/store-locator", "mcp:read-only": "true"},
+		Annotations: map[string]string{"pp:endpoint": "stores.find", "pp:method": "GET", "pp:path": "/v1/power/store-locator", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !(cmd.Flags().Changed("address") || cmd.Flags().Changed("s")) && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "address")
@@ -32,7 +32,14 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			var (
+				data   json.RawMessage
+				status int
+			)
+			_ = c
+
 			path := "/power/store-locator"
+			_ = path
 			params := map[string]string{}
 			if flagS != "" {
 				params["s"] = fmt.Sprintf("%v", flagS)
@@ -40,7 +47,7 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 			if flagC != "" {
 				params["c"] = fmt.Sprintf("%v", flagC)
 			}
-			data, err := c.Get(path, params)
+			data, status, err = c.Get(path, params)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -56,6 +63,7 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
+			_ = status
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}

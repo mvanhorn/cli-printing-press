@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 )
 
 func ParseHAR(path string) (*HAR, error) {
@@ -57,7 +56,6 @@ func convertHAREntry(entry HAREntry) EnrichedEntry {
 	return EnrichedEntry{
 		Method:              entry.Request.Method,
 		URL:                 entry.Request.URL,
-		HTTPVersion:         pickHARHTTPVersion(entry),
 		StartedDateTime:     entry.StartedDateTime,
 		DurationMS:          entry.Time,
 		RequestBody:         requestBody,
@@ -67,16 +65,4 @@ func convertHAREntry(entry HAREntry) EnrichedEntry {
 		RequestHeaders:      headers,
 		ResponseHeaders:     responseHeaders,
 	}
-}
-
-// pickHARHTTPVersion returns the response httpVersion when present,
-// falling back to the request httpVersion. HAR exporters vary: Chrome
-// fills both, some intermediaries fill only one. The response wire
-// version is the more accurate signal for "what the origin spoke" so
-// it wins when both are set.
-func pickHARHTTPVersion(entry HAREntry) string {
-	if v := strings.TrimSpace(entry.Response.HTTPVersion); v != "" {
-		return v
-	}
-	return strings.TrimSpace(entry.Request.HTTPVersion)
 }

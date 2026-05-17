@@ -164,19 +164,21 @@ func (c *Client) awaitBudget(ctx context.Context, cost float64) error {
 
 // Query executes a GraphQL query via POST against graphqlEndpointPath and
 // returns the raw data payload.
-func (c *Client) Query(query string, variables map[string]any) (json.RawMessage, error) {
+func (c *Client) Query(query string, variables map[string]any) (json.RawMessage, int, error) {
+
 {{- if .HasCostThrottling}}
 	return c.queryWithThrottle(context.Background(), query, variables)
 {{- else}}
 	req := GraphQLRequest{Query: query, Variables: variables}
-	raw, _, err := c.Post(graphqlEndpointPath, req)
+	raw, status, err := c.Post(graphqlEndpointPath, req)
 	if err != nil {
-		return nil, err
+		return nil, status, err
 	}
+
 
 	var resp GraphQLResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, fmt.Errorf("decoding graphql response: %w", err)
+		return nil, status, fmt.Errorf("decoding graphql response: %w", err)
 	}
 	if len(resp.Errors) > 0 {
 		msgs := make([]string, len(resp.Errors))
@@ -192,11 +194,12 @@ func (c *Client) Query(query string, variables map[string]any) (json.RawMessage,
 			}
 		}
 		if allDenial && len(codes) > 0 {
-			return nil, &GraphQLAccessDeniedError{Codes: codes, Messages: msgs}
+			return nil, status, &GraphQLAccessDeniedError{Codes: codes, Messages: msgs}
 		}
-		return nil, fmt.Errorf("graphql: %s", strings.Join(msgs, "; "))
+		return nil, status, fmt.Errorf("graphql: %s", strings.Join(msgs, "; "))
 	}
-	return resp.Data, nil
+	return resp.Data, status, nil
+
 {{- end}}
 }
 
@@ -209,17 +212,19 @@ func (c *Client) Query(query string, variables map[string]any) (json.RawMessage,
 // codes via HandleThrottleError. HTTP 429s are still handled by the
 // Client.do() layer's existing AdaptiveLimiter retry — this path stacks
 // on top of that without double-handling.
-func (c *Client) queryWithThrottle(ctx context.Context, query string, variables map[string]any) (json.RawMessage, error) {
+func (c *Client) queryWithThrottle(ctx context.Context, query string, variables map[string]any) (json.RawMessage, int, error) {
+
 	req := GraphQLRequest{Query: query, Variables: variables}
 	mode := c.throttleModeOrDefault()
 	for attempt := 0; ; attempt++ {
 		if err := c.awaitBudget(ctx, defaultThrottleQueryCost); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		raw, _, err := c.Post(graphqlEndpointPath, req)
+		raw, status, err := c.Post(graphqlEndpointPath, req)
 		if err != nil {
-			return nil, err
+			return nil, status, err
 		}
+
 		// Update throttle state from extensions.cost regardless of whether
 		// the response carried errors — Shopify includes the bucket even
 		// when reporting a THROTTLED error, and skipping the update would
@@ -228,11 +233,12 @@ func (c *Client) queryWithThrottle(ctx context.Context, query string, variables 
 
 		var resp GraphQLResponse
 		if err := json.Unmarshal(raw, &resp); err != nil {
-			return nil, fmt.Errorf("decoding graphql response: %w", err)
+			return nil, status, fmt.Errorf("decoding graphql response: %w", err)
 		}
 		if len(resp.Errors) == 0 {
-			return resp.Data, nil
+			return resp.Data, status, nil
 		}
+
 
 		// Off-mode skips the THROTTLED retry path entirely so users who
 		// opt out of throttling don't pay an unexpected sleep. The error
@@ -242,7 +248,7 @@ func (c *Client) queryWithThrottle(ctx context.Context, query string, variables 
 			if retry {
 				select {
 				case <-ctx.Done():
-					return nil, ctx.Err()
+					return nil, 0, ctx.Err()
 				case <-time.After(wait):
 				}
 				continue
@@ -262,24 +268,27 @@ func (c *Client) queryWithThrottle(ctx context.Context, query string, variables 
 			}
 		}
 		if allDenial && len(codes) > 0 {
-			return nil, &GraphQLAccessDeniedError{Codes: codes, Messages: msgs}
+			return nil, status, &GraphQLAccessDeniedError{Codes: codes, Messages: msgs}
 		}
-		return nil, fmt.Errorf("graphql: %s", strings.Join(msgs, "; "))
+		return nil, status, fmt.Errorf("graphql: %s", strings.Join(msgs, "; "))
 	}
 }
+
 {{- end}}
 
 // Mutate executes a GraphQL mutation via POST against graphqlEndpointPath and
 // returns the raw data payload. Identical transport to Query; separate method
 // for clarity.
-func (c *Client) Mutate(query string, variables map[string]any) (json.RawMessage, error) {
+func (c *Client) Mutate(query string, variables map[string]any) (json.RawMessage, int, error) {
+
 	return c.Query(query, variables)
 }
 
 // PaginatedQuery fetches all pages of a Connection field using first/after pagination.
 // fieldPath is the top-level field name in the response (e.g., "issues").
 // Returns all collected nodes across all pages.
-func (c *Client) PaginatedQuery(query string, variables map[string]any, fieldPath string, pageSize int) ([]json.RawMessage, error) {
+func (c *Client) PaginatedQuery(query string, variables map[string]any, fieldPath string, pageSize int) ([]json.RawMessage, int, error) {
+
 	if variables == nil {
 		variables = map[string]any{}
 	}
@@ -290,20 +299,23 @@ func (c *Client) PaginatedQuery(query string, variables map[string]any, fieldPat
 
 	var all []json.RawMessage
 	hasNext := true
+	var lastStatus int
 	for hasNext {
-		data, err := c.Query(query, variables)
+		data, status, err := c.Query(query, variables)
+		lastStatus = status
+
 		if err != nil {
-			return all, err
+			return all, lastStatus, err
 		}
 
 		var root map[string]json.RawMessage
 		if err := json.Unmarshal(data, &root); err != nil {
-			return all, fmt.Errorf("parsing paginated root: %w", err)
+			return all, lastStatus, fmt.Errorf("parsing paginated root: %w", err)
 		}
 
 		connRaw, ok := root[fieldPath]
 		if !ok {
-			return all, fmt.Errorf("field %q not found in response", fieldPath)
+			return all, lastStatus, fmt.Errorf("field %q not found in response", fieldPath)
 		}
 
 		var conn struct {
@@ -314,7 +326,7 @@ func (c *Client) PaginatedQuery(query string, variables map[string]any, fieldPat
 			} `json:"pageInfo"`
 		}
 		if err := json.Unmarshal(connRaw, &conn); err != nil {
-			return all, fmt.Errorf("parsing connection %q: %w", fieldPath, err)
+			return all, lastStatus, fmt.Errorf("parsing connection %q: %w", fieldPath, err)
 		}
 
 		all = append(all, conn.Nodes...)
@@ -323,5 +335,5 @@ func (c *Client) PaginatedQuery(query string, variables map[string]any, fieldPat
 			variables["after"] = conn.PageInfo.EndCursor
 		}
 	}
-	return all, nil
+	return all, lastStatus, nil
 }

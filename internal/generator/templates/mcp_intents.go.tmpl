@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
@@ -146,7 +147,7 @@ func callIntentEndpoint(c *client.Client, ref string, params map[string]any) (an
 	for k, v := range params {
 		placeholder := "{" + k + "}"
 		if strings.Contains(path, placeholder) {
-			path = strings.ReplaceAll(path, placeholder, fmt.Sprintf("%v", v))
+			path = strings.ReplaceAll(path, placeholder, url.PathEscape(fmt.Sprintf("%v", v)))
 			continue
 		}
 		query[k] = fmt.Sprintf("%v", v)
@@ -160,7 +161,7 @@ func callIntentEndpoint(c *client.Client, ref string, params map[string]any) (an
 	// code built `query` but never passed it.
 	switch ep.method {
 	case "GET":
-		data, err = c.Get(path, query)
+		data, _, err = c.Get(path, query)
 	case "DELETE":
 		data, _, err = c.DeleteWithParams(path, query)
 	default:
@@ -215,7 +216,9 @@ var intentEndpoints = map[string]intentEndpointMeta{
 {{- range .MCP.Intents}}
 {{- range .Steps}}
 {{- $ep := lookupEndpoint $.APISpec .Endpoint}}
-	{{printf "%q" .Endpoint}}: {method: {{printf "%q" (upper $ep.Method)}}, path: {{printf "%q" $ep.EffectivePath}}{{if $.HasTierRouting}}, tier: {{printf "%q" $ep.EffectiveTier}}{{end}}},
+	{{- /* EffectivePath (relative) is used for the runtime call to c.Get/Post/etc.
+           The client appends the base URL (which includes the /v1 prefix). */ -}}
+	{{printf "%q" .Endpoint}}: {method: {{printf "%q" (upper $ep.Method)}}, path: {{printf "%q" $ep.IntentPath}}{{if $.HasTierRouting}}, tier: {{printf "%q" $ep.EffectiveTier}}{{end}}},
 {{- end}}
 {{- end}}
 }

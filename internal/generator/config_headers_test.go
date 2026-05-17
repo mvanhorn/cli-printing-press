@@ -56,7 +56,7 @@ func TestConfigHeadersAreAppliedBeforeRequestOverrides(t *testing.T) {
 	c := New(cfg, time.Second, 0)
 	c.NoCache = true
 
-	if _, err := c.GetWithHeaders("/items", nil, map[string]string{"x-api-version": "override-version"}); err != nil {
+	if _, _, err := c.GetWithHeaders("/items", nil, map[string]string{"x-api-version": "override-version"}); err != nil {
 		t.Fatalf("GetWithHeaders returned error: %v", err)
 	}
 	if seen != 1 {

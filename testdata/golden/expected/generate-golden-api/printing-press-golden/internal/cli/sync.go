@@ -48,7 +48,6 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var strict bool
 	var paramFlags []string
 	var resourceParamFlags []string
-	var globalParamFlags []string
 
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -98,7 +97,7 @@ Resource scoping:
   # Latest-only: refresh head of each resource, no historical backfill
   printing-press-golden-pp-cli sync --latest-only`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			userParams, err := parseSyncUserParams(paramFlags, resourceParamFlags, globalParamFlags)
+			userParams, err := parseSyncUserParams(paramFlags, resourceParamFlags)
 			if err != nil {
 				return usageErr(err)
 			}
@@ -334,9 +333,8 @@ Resource scoping:
 	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero).")
-	cmd.Flags().StringArrayVar(&paramFlags, "param", nil, "Extra query param to inject into flat-list sync requests (repeatable, key=value). Skipped on path-scoped dependent requests so a top-level scope like workspace=<id> does not double up on /parents/<id>/children calls. Use --global-param to inject everywhere. Avoid pagination keys (limit/since/cursor) — overriding them corrupts resume state.")
-	cmd.Flags().StringArrayVar(&resourceParamFlags, "resource-param", nil, "Per-resource extra query param (repeatable, resource:key=value). Wins over --param and --global-param when keys conflict.")
-	cmd.Flags().StringArrayVar(&globalParamFlags, "global-param", nil, "Extra query param to inject into every sync request including dependent path-scoped calls (repeatable, key=value). Use when an API requires a scope on every call regardless of path nesting.")
+	cmd.Flags().StringArrayVar(&paramFlags, "param", nil, "Extra query param to inject into every sync request (repeatable, key=value). Use for APIs whose spec marks a filter optional but the endpoint rejects calls without it (e.g. --param mine=true). Avoid pagination keys (limit/since/cursor) — overriding them corrupts resume state.")
+	cmd.Flags().StringArrayVar(&resourceParamFlags, "resource-param", nil, "Per-resource extra query param (repeatable, resource:key=value). Wins over --param when both define the same key.")
 
 	return cmd
 }
@@ -346,9 +344,10 @@ Resource scoping:
 // channel_workflow.go.tmpl mirrors the trailing dates arg conditional;
 // keep both call sites in sync if this signature changes.
 func syncResource(c interface {
-	Get(string, map[string]string) (json.RawMessage, error)
+	Get(string, map[string]string) (json.RawMessage, int, error)
 	RateLimit() float64
 }, db *store.Store, resource, sinceTS string, full bool, maxPages int, latestOnly bool, userParams *syncUserParams) syncResult {
+
 	started := time.Now()
 
 	if !humanFriendly {
@@ -460,9 +459,10 @@ func syncResource(c interface {
 		// Apply user-supplied --param / --resource-param overrides last so they
 		// win over spec-derived defaults (e.g. forcing mine=true on a list
 		// endpoint whose OpenAPI spec marks the filter optional).
-		userParams.applyTo(resource, params, false)
+		userParams.applyTo(resource, params)
 
-		data, err := c.Get(path, params)
+		data, _, err := c.Get(path, params)
+
 		if err != nil {
 			if w, ok := isSyncAccessWarning(err); ok {
 				if !humanFriendly {
@@ -493,21 +493,6 @@ func syncResource(c interface {
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
 		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
-
-		// Page-int paginator fallback: when the API paginates by integer
-		// ?page=N and emits no body cursor, treat a full page as a signal
-		// to advance numerically. Without this the loop breaks after page
-		// 1 even though more pages exist (the original symptom in #1296).
-		// Guard on cursorType, not cursorParam name, so all canonical
-		// spellings (page / page_number / pageNumber / page[number]) work.
-		if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit {
-			currentPage, _ := strconv.Atoi(cursor)
-			if currentPage < 1 {
-				currentPage = 1
-			}
-			nextCursor = strconv.Itoa(currentPage + 1)
-			hasMore = true
-		}
 
 		if len(items) == 0 {
 			if isEmptyPageResponse(data) {
@@ -666,7 +651,6 @@ func syncResource(c interface {
 // paginationDefaults holds the resolved pagination parameter names and page size.
 type paginationDefaults struct {
 	cursorParam string
-	cursorType  string // paginator class: "", "cursor", "page_token", "offset", "page"
 	limitParam  string
 	limit       int
 }
@@ -676,7 +660,6 @@ type paginationDefaults struct {
 func determinePaginationDefaults() paginationDefaults {
 	return paginationDefaults{
 		cursorParam: "cursor",
-		cursorType:  "cursor",
 		limitParam:  "limit",
 		limit:       100,
 	}
@@ -996,6 +979,10 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 		return db.UpsertProjects(data)
 	case "avatar":
 		return db.UpsertAvatar(data)
+	case "mixed-tasks":
+		return db.UpsertMixedTasks(data)
+	case "search":
+		return db.UpsertSearch(data)
 	case "tasks":
 		return db.UpsertTasks(data)
 	case "summary":
@@ -1082,6 +1069,7 @@ type dependentResourceDef struct {
 
 func dependentResourceDefs() []dependentResourceDef {
 	return []dependentResourceDef{
+		{Name: "mixed_tasks", ParentTable: "projects", ParentIDParam: "projectId", PathTemplate: "/projects/{projectId}/mixed-tasks", KeyField: ""},
 		{Name: "tasks", ParentTable: "projects", ParentIDParam: "projectId", PathTemplate: "/projects/{projectId}/tasks", KeyField: ""},
 	}
 }
@@ -1090,9 +1078,10 @@ func dependentResourceDefs() []dependentResourceDef {
 // parentFilter mirrors the user's --resources flag (empty = sync everything). A dependent
 // runs when its parent table or its own name appears in the filter.
 func syncDependentResources(c interface {
-	Get(string, map[string]string) (json.RawMessage, error)
+	Get(string, map[string]string) (json.RawMessage, int, error)
 	RateLimit() float64
 }, db *store.Store, sinceTS string, full bool, maxPages int, latestOnly bool, parentFilter []string, userParams *syncUserParams) []syncResult {
+
 	allow := make(map[string]bool, len(parentFilter))
 	for _, r := range parentFilter {
 		allow[r] = true
@@ -1110,9 +1099,10 @@ func syncDependentResources(c interface {
 
 // syncDependentResource syncs a single child resource by iterating all parent IDs.
 func syncDependentResource(c interface {
-	Get(string, map[string]string) (json.RawMessage, error)
+	Get(string, map[string]string) (json.RawMessage, int, error)
 	RateLimit() float64
 }, db *store.Store, dep dependentResourceDef, sinceTS string, full bool, maxPages int, latestOnly bool, userParams *syncUserParams) syncResult {
+
 	started := time.Now()
 
 	// Query parent table for the keys to substitute into the child path.
@@ -1186,11 +1176,10 @@ func syncDependentResource(c interface {
 			}
 
 			// Apply user flags last so they win over spec-derived cursor/since/limit.
-			// Dependent path: --param is skipped (already scoped by the parent path
-			// segment); --global-param and --resource-param still apply.
-			userParams.applyTo(dep.Name, params, true)
+			userParams.applyTo(dep.Name, params)
 
-			data, err := c.Get(path, params)
+			data, _, err := c.Get(path, params)
+
 			if err != nil {
 				// Non-fatal per parent: log and continue to next parent.
 				// Track access-denial separately so an all-denied dependent
@@ -1218,19 +1207,6 @@ func syncDependentResource(c interface {
 			}
 
 			items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
-
-			// Page-int paginator fallback: mirrors syncResource so dependent
-			// resources on integer ?page=N APIs also advance past page 1.
-			// Guard on cursorType to cover every canonical spelling.
-			if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit {
-				currentPage, _ := strconv.Atoi(cursor)
-				if currentPage < 1 {
-					currentPage = 1
-				}
-				nextCursor = strconv.Itoa(currentPage + 1)
-				hasMore = true
-			}
-
 			if len(items) == 0 {
 				break
 			}
@@ -1351,8 +1327,9 @@ func syncDependentResource(c interface {
 // annotations on a child path-item are honored at runtime, not just on
 // flat paths.
 var resourceIDFieldOverrides = map[string]string{
-	"projects": "id",
-	"tasks":    "id",
+	"mixed_tasks": "id",
+	"projects":    "id",
+	"tasks":       "id",
 }
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did

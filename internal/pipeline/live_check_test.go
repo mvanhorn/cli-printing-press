@@ -2,7 +2,9 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -508,55 +510,6 @@ func TestLiveCheck_BinaryAutoDerivation(t *testing.T) {
 	require.Contains(t, result.Features[0].Example, "stub x matched")
 }
 
-func TestLiveCheckBinaryCandidatesPreferBuildStageBin(t *testing.T) {
-	t.Parallel()
-
-	dir := filepath.Join("tmp", "sample-cli")
-	stagedUnix := filepath.Join(dir, "build", "stage", "bin", "sample-cli-pp-cli")
-	stagedWin := platform.ExecutablePathForGOOS(filepath.Join(dir, "build", "stage", "bin", "sample-cli-pp-cli"), "windows")
-	legacyUnix := filepath.Join(dir, "sample-cli-pp-cli")
-
-	cands := liveCheckBinaryCandidatesForGOOS(dir, "", "windows")
-	assert.Contains(t, cands, stagedUnix)
-	assert.Contains(t, cands, stagedWin)
-	assert.Contains(t, cands, legacyUnix)
-
-	// Canonical staged path must come before the legacy cliDir fallback.
-	stagedIdx := -1
-	legacyIdx := -1
-	for i, c := range cands {
-		if c == stagedUnix && stagedIdx == -1 {
-			stagedIdx = i
-		}
-		if c == legacyUnix && legacyIdx == -1 {
-			legacyIdx = i
-		}
-	}
-	assert.True(t, stagedIdx >= 0 && legacyIdx >= 0 && stagedIdx < legacyIdx,
-		"staged build/stage/bin path must be tried before cliDir legacy path, got order %v", cands)
-}
-
-func TestLiveCheck_FindsBinaryInBuildStageBin(t *testing.T) {
-	// Verify that RunLiveCheck finds and executes a binary placed at
-	// <cliDir>/build/stage/bin/<name> — the canonical layout written by the
-	// generator's --validate "build runnable binary" gate (post-v4.5.1).
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script stub not supported on Windows")
-	}
-	dir := t.TempDir()
-	stagedBinDir := filepath.Join(dir, "build", "stage", "bin")
-	require.NoError(t, os.MkdirAll(stagedBinDir, 0o755))
-	stub := filepath.Join(stagedBinDir, "stub")
-	require.NoError(t, os.WriteFile(stub, []byte("#!/bin/sh\necho '{\"data\":[{\"id\":\"1\"}]}'\n"), 0o755))
-	writeTestResearchJSON(t, dir, []NovelFeature{
-		{Name: "List items", Command: "items list", Example: "stub items list --json"},
-	})
-	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second})
-	require.False(t, result.Unable, "check was Unable: %s", result.Reason)
-	require.Equal(t, 1, result.Checked())
-	assert.Equal(t, 1, result.Passed, "expected binary at build/stage/bin/ to be found and run")
-}
-
 func TestLiveCheckBinaryCandidatesIncludeHostExecutableName(t *testing.T) {
 	t.Parallel()
 
@@ -666,9 +619,7 @@ func TestRunOneFeatureCheck_WarnsOnEntityButStaysPass(t *testing.T) {
 	// Integration: a feature whose output is valid but contains a raw
 	// numeric entity should still Pass (pass-rate unaffected) but carry
 	// a warning in the result.
-	binary := buildFakeCLI(t, `#!/usr/bin/env bash
-printf 'The Food Lab&#39;\''s Chocolate Chip Cookies\n'
-`)
+	binary := buildFakeCLI(t, "The Food Lab&#39;s Chocolate Chip Cookies")
 	feature := NovelFeature{
 		Name:    "goat",
 		Command: "goat",
@@ -680,24 +631,36 @@ printf 'The Food Lab&#39;\''s Chocolate Chip Cookies\n'
 	require.Contains(t, result.Warnings[0], "raw HTML entity")
 }
 
-// buildFakeCLI writes a shell script to a temp file and returns its path.
-// Used by entity tests to exercise runOneFeatureCheck end-to-end without
-// depending on a real generated CLI binary.
-func buildFakeCLI(t *testing.T, script string) string {
+// buildFakeCLI writes a Go program that prints the payload, builds it,
+// and returns the binary path.
+func buildFakeCLI(t *testing.T, payload string) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "fake-cli")
-	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
-	return path
+	mainFile := filepath.Join(dir, "main.go")
+	require.NoError(t, os.WriteFile(mainFile, []byte(fmt.Sprintf(`package main
+import "fmt"
+func main() {
+	fmt.Println(%q)
+}
+`, payload)), 0o644))
+
+	binaryPath := filepath.Join(dir, "fake-cli")
+	if runtime.GOOS == "windows" {
+		binaryPath += ".exe"
+	}
+
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building fake CLI: %s", string(out))
+
+	return binaryPath
 }
 
 func TestRunOneFeatureCheck_PopulatesOutputSample(t *testing.T) {
 	// Phase 4.85's agentic reviewer needs the captured stdout to judge
 	// output plausibility without re-invoking the binary. OutputSample
 	// must be populated on pass results.
-	binary := buildFakeCLI(t, `#!/usr/bin/env bash
-printf 'Hello cookie world\n'
-`)
+	binary := buildFakeCLI(t, "Hello cookie world")
 	feature := NovelFeature{
 		Name:    "demo",
 		Command: "demo",

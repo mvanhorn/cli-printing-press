@@ -486,6 +486,8 @@ func TestPromoteWorkingCLI_RetryRestoresBackupBeforeFailure(t *testing.T) {
 	require.NoError(t, os.MkdirAll(workDir, 0o755))
 	outside := filepath.Join(tmp, "outside.txt")
 	require.NoError(t, os.WriteFile(outside, []byte("outside"), 0o644))
+
+	skipIfNoSymlink(t)
 	require.NoError(t, os.Symlink(outside, filepath.Join(workDir, "bad-link.txt")))
 
 	state := NewStateWithRun("test", workDir, "run-004", "test-scope")

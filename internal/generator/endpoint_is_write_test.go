@@ -300,7 +300,7 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 				Path:        "/status",
 				Description: "Probe status",
 			},
-			mustContain: []string{"c.Get(path, params)"},
+			mustContain: []string{"c.GetWithHeaders(path, params, nil)"},
 			mustNotHave: []string{"c.Head(", "c.Options("},
 		},
 	}
@@ -356,7 +356,7 @@ func TestPromotedCommandSubstitutesFlagPathParams(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	src := readPromotedCommandFile(t, outputDir)
-	assert.Contains(t, src, `path = replacePathParam(path, "userId", fmt.Sprintf("%v", flagUserId))`,
+	assert.Contains(t, src, `path = replacePathParam(path, "userId", url.PathEscape(fmt.Sprintf("%v", flagUserId)))`,
 		"promoted command must substitute flag-backed path params before making the request")
 	assert.Contains(t, src, `params["limit"] = fmt.Sprintf("%v", flagLimit)`,
 		"ordinary non-positional flags still belong in query params")

@@ -17,3 +17,10 @@ claude-upgrade-progress.json
 CLAUDE.local.md
 AGENTS.override.md
 .claude/settings.local.json
+
+# Development scratch
+scratch/
+*.test
+golden_out.txt
+last_comment.txt
+

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -24,9 +25,9 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 		Aliases:     []string{"update"},
 		Short:       "Update project task",
 		Example:     "  printing-press-golden-pp-cli projects tasks update-project 550e8400-e29b-41d4-a716-446655440000 550e8400-e29b-41d4-a716-446655440000",
-		Annotations: map[string]string{"pp:endpoint": "tasks.update-project", "pp:method": "PATCH", "pp:path": "/projects/{projectId}/tasks/{taskId}"},
+		Annotations: map[string]string{"pp:endpoint": "tasks.update-project", "pp:method": "PATCH", "pp:path": "/v1/projects/{projectId}/tasks/{taskId}"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
+			if len(args) < 2 {
 				return cmd.Help()
 			}
 			if !stdinBody {
@@ -36,12 +37,16 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 				return err
 			}
 
+			var (
+				data   json.RawMessage
+				status int
+			)
+			_ = c
+
 			path := "/projects/{projectId}/tasks/{taskId}"
-			path = replacePathParam(path, "projectId", args[0])
-			if len(args) < 2 {
-				return usageErr(fmt.Errorf("taskId is required\nUsage: %s <%s>", cmd.CommandPath(), "taskId"))
-			}
-			path = replacePathParam(path, "taskId", args[1])
+			_ = path
+			path = replacePathParam(path, "projectId", url.PathEscape(args[0]))
+			path = replacePathParam(path, "taskId", url.PathEscape(args[1]))
 			params := map[string]string{}
 			if flagNotify != false {
 				params["notify"] = fmt.Sprintf("%v", flagNotify)
@@ -59,7 +64,7 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 				body = jsonBody
 			} else {
 				body = map[string]any{}
-				if cmd.Flags().Changed("completed") {
+				if bodyCompleted != false {
 					body["completed"] = bodyCompleted
 				}
 				if bodyPriority != "" {
@@ -69,7 +74,7 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 					body["title"] = bodyTitle
 				}
 			}
-			data, statusCode, err := c.PatchWithParams(path, params, body)
+			data, status, err = c.PatchWithParams(path, params, body)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -113,8 +118,8 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 					"action":   "patch",
 					"resource": "tasks",
 					"path":     path,
-					"status":   statusCode,
-					"success":  statusCode >= 200 && statusCode < 300,
+					"status":   status,
+					"success":  status >= 200 && status < 300,
 				}
 				if flags.dryRun {
 					envelope["dry_run"] = true
@@ -133,6 +138,7 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 				}
 				return printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)
 			}
+			_ = status
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}

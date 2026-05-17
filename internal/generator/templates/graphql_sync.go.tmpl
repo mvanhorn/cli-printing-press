@@ -283,7 +283,8 @@ func syncResource(c *client.Client, db *store.Store, resource, sinceTS string, f
 			variables["after"] = cursor
 		}
 
-		data, err := c.Query(def.Query, variables)
+		data, _, err := c.Query(def.Query, variables)
+
 		if err != nil {
 			if w, ok := isSyncAccessWarning(err); ok {
 				if !humanFriendly {

@@ -4,6 +4,7 @@
 {{- $hasMultipartRequest := hasMultipartRequest .APISpec}}
 {{- $hasFormRequest := hasFormRequest .APISpec}}
 {{- $hasBodyJSONFallback := hasBodyJSONFallback .APISpec}}
+{{- $hasPathParams := hasPathParamsAPI .APISpec}}
 
 package mcp
 
@@ -12,7 +13,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-{{- if $hasFormRequest}}
+{{- /* net/url is used for url.Values (form encoding) and url.PathEscape (path params).
+       Imported conditionally to prevent "imported and not used" when neither are present. */ -}}
+{{- if or $hasFormRequest $hasPathParams}}
 	"net/url"
 {{- end}}
 	"os"
@@ -71,9 +74,9 @@ func RegisterTools(s *server.MCPServer) {
 {{- end}}
 		),
 {{- if $.HasTierRouting}}
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}, {{printf "%q" (effectiveTier $.APISpec $resource $endpoint)}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, []mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveEndpointPath $resource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $.BaseURL $resource $endpoint)}}, {{printf "%q" (effectiveTier $.APISpec $resource $endpoint)}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, []mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveEndpointPath $.BaseURL $resource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 {{- else}}
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, []mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveEndpointPath $resource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $.BaseURL $resource $endpoint)}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, []mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveEndpointPath $.BaseURL $resource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 {{- end}}
 	)
 {{- end}}
@@ -106,9 +109,9 @@ func RegisterTools(s *server.MCPServer) {
 {{- end}}
 		),
 {{- if $.HasTierRouting}}
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}, {{printf "%q" (effectiveSubTier $.APISpec $resource $subResource $endpoint)}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, []mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $.BaseURL $resource $subResource $endpoint)}}, {{printf "%q" (effectiveSubTier $.APISpec $resource $subResource $endpoint)}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, []mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveSubEndpointPath $.BaseURL $resource $subResource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 {{- else}}
-		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, []mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
+		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $.BaseURL $resource $subResource $endpoint)}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, []mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveSubEndpointPath $.BaseURL $resource $subResource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 {{- end}}
 	)
 {{- end}}
@@ -262,10 +265,12 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, bindings [
 				continue
 			}
 			switch binding.Location {
+{{- if $hasPathParams}}
 			case "path":
 				placeholder := "{" + binding.WireName + "}"
 				pathParams[binding.PublicName] = true
-				path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)
+				path = strings.Replace(path, placeholder, url.PathEscape(fmt.Sprintf("%v", v)), 1)
+{{- end}}
 			case "body":
 				bodyArgs[binding.WireName] = v
 {{- if $hasMultipartRequest}}
@@ -299,6 +304,7 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, bindings [
 				params[binding.WireName] = fmt.Sprintf("%v", v)
 			}
 		}
+{{- if $hasPathParams}}
 		for _, p := range positionalParams {
 			placeholder := "{" + p + "}"
 			if !strings.Contains(pathTemplate, placeholder) {
@@ -306,9 +312,10 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, bindings [
 			}
 			pathParams[p] = true
 			if v, ok := args[p]; ok {
-				path = strings.Replace(path, placeholder, fmt.Sprintf("%v", v), 1)
+				path = strings.Replace(path, placeholder, url.PathEscape(fmt.Sprintf("%v", v)), 1)
 			}
 		}
+{{- end}}
 
 		for k, v := range args {
 			if pathParams[k] || knownArgs[k] {
@@ -336,10 +343,10 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, bindings [
 		switch method {
 		case "GET":
 			if binaryResponse {
-				data, err = c.GetWithHeaders(path, params, headers)
+				data, _, err = c.GetWithHeaders(path, params, headers)
 				break
 			}
-			data, err = c.Get(path, params)
+			data, _, err = c.Get(path, params)
 		case "POST":
 {{- if $hasMultipartRequest}}
 			if multipart {

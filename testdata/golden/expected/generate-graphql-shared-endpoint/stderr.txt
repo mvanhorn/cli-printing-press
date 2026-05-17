@@ -1,2 +1,2 @@
 warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it
-Generated graphql-shared-golden at <ARTIFACT_DIR>/generate-graphql-shared-endpoint/graphql-shared-golden
+Generated graphql-shared-golden at C:\Users\adria\git\cli-printing-press\.gotmp\golden\actual\generate-graphql-shared-endpoint\graphql-shared-golden

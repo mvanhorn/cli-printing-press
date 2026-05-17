@@ -16,11 +16,10 @@ type HAREntry struct {
 }
 
 type HARRequest struct {
-	Method      string       `json:"method"`
-	URL         string       `json:"url"`
-	HTTPVersion string       `json:"httpVersion,omitempty"`
-	Headers     []HARHeader  `json:"headers"`
-	PostData    *HARPostData `json:"postData,omitempty"`
+	Method   string       `json:"method"`
+	URL      string       `json:"url"`
+	Headers  []HARHeader  `json:"headers"`
+	PostData *HARPostData `json:"postData,omitempty"`
 }
 
 type HARPostData struct {
@@ -29,10 +28,9 @@ type HARPostData struct {
 }
 
 type HARResponse struct {
-	Status      int                `json:"status"`
-	HTTPVersion string             `json:"httpVersion,omitempty"`
-	Headers     []HARHeader        `json:"headers,omitempty"`
-	Content     HARResponseContent `json:"content"`
+	Status  int                `json:"status"`
+	Headers []HARHeader        `json:"headers,omitempty"`
+	Content HARResponseContent `json:"content"`
 }
 
 type HARResponseContent struct {
@@ -66,7 +64,6 @@ type AuthCapture struct {
 type EnrichedEntry struct {
 	Method              string            `json:"method"`
 	URL                 string            `json:"url"`
-	HTTPVersion         string            `json:"http_version,omitempty"`
 	StartedDateTime     string            `json:"started_date_time,omitempty"`
 	DurationMS          float64           `json:"duration_ms,omitempty"`
 	RequestBody         string            `json:"request_body"`

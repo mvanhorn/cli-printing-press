@@ -40,3 +40,5 @@ printing-press-golden/internal/cli/sync.go
 printing-press-golden/internal/cli/api_discovery.go
 printing-press-golden/internal/cli/import.go
 printing-press-golden/internal/cli/which.go
+printing-press-golden/internal/cli/projects_mixed-tasks_list.go
+printing-press-golden/internal/cli/projects_search_project-tasks.go

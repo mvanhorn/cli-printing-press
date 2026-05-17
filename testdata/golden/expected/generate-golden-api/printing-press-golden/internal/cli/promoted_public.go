@@ -18,16 +18,22 @@ func newPublicPromotedCmd(flags *rootFlags) *cobra.Command {
 		Short:       "Get public service status",
 		Long:        "Shortcut for 'public get-status'. Get public service status",
 		Example:     "  printing-press-golden-pp-cli public",
-		Annotations: map[string]string{"pp:endpoint": "public.get-status", "pp:method": "GET", "pp:path": "/public/status", "mcp:read-only": "true"},
+		Annotations: map[string]string{"pp:endpoint": "public.get-status", "pp:method": "GET", "pp:path": "/v1/public/status", "mcp:read-only": "true"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
 
+			var (
+				data   json.RawMessage
+				status int
+				prov   DataProvenance
+			)
+			_ = c
+
 			path := "/public/status"
-			params := map[string]string{}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "public", false, path, params, nil)
+			_ = path
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -78,6 +84,7 @@ func newPublicPromotedCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
+			_ = status
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}

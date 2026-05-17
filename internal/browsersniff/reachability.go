@@ -17,15 +17,14 @@ func ApplyReachabilityDefaults(apiSpec *spec.APISpec, analysis *TrafficAnalysis)
 		applyHTMLScrapeExtractionDefaults(apiSpec, analysis.Reachability.HTMLExtractSignature)
 	}
 
-	// browser_required is the "no Go-client replay possible" mode -- the
-	// operator must drive a real browser. It intentionally leaves
-	// HTTPTransport empty so downstream code does not try to wire a surf
-	// client. The HAR-driven transport mapping applies only to modes
-	// where the captured traffic is replayable.
-	switch analysis.Reachability.Mode {
-	case "browser_http", "browser_clearance_http":
+	if analysis.Reachability.Mode == "browser_http" || analysis.Reachability.Mode == "browser_clearance_http" || analysis.Reachability.Mode == "browser_required" {
 		if apiSpec.HTTPTransport == "" {
-			apiSpec.HTTPTransport = browserTransportFromHARVersion(analysis.Summary.HTTPVersionDistribution)
+			switch analysis.Reachability.Mode {
+			case "browser_clearance_http":
+				apiSpec.HTTPTransport = spec.HTTPTransportBrowserChromeH3
+			case "browser_http":
+				apiSpec.HTTPTransport = spec.HTTPTransportBrowserChrome
+			}
 		}
 	}
 

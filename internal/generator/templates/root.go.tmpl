@@ -114,17 +114,9 @@ func Execute() error {
 //   - "unknown flag: --foo"                            (pflag)
 //   - "unknown shorthand flag: 'x' in -x"              (pflag)
 //   - "unknown command \"foo\" for ..."                (Cobra)
-//   - "required flag \"foo\" not set"                  (Cobra, single missing)
-//   - "required flag(s) \"foo\" not set"               (Cobra, multiple missing)
+//   - "required flag(s) \"foo\" not set"               (Cobra MarkFlagRequired)
 //   - "flag needs an argument: --foo"                  (pflag, missing value)
 //   - "invalid argument \"x\" for \"--y\" flag: ..."   (pflag, parse failure)
-//
-// Cobra emits the singular form ("required flag") when exactly one
-// MarkFlagRequired flag is missing, and the plural form ("required
-// flag(s)") only when multiple are missing on the same command. Both
-// shapes must be anchored to avoid matching app-level errors that
-// happen to mention "required flag" as prose; the trailing space + quote
-// (`required flag "`) is the literal punctuation cobra emits.
 //
 // Returns false for nil err.
 func isCobraUsageError(err error) bool {
@@ -135,7 +127,6 @@ func isCobraUsageError(err error) bool {
 	return strings.HasPrefix(msg, "unknown flag") ||
 		strings.HasPrefix(msg, "unknown shorthand flag") ||
 		strings.HasPrefix(msg, "unknown command") ||
-		strings.HasPrefix(msg, `required flag "`) ||
 		strings.HasPrefix(msg, `required flag(s) "`) ||
 		strings.HasPrefix(msg, "flag needs an argument:") ||
 		strings.HasPrefix(msg, `invalid argument "`)

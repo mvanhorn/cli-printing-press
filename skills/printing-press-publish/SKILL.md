@@ -25,11 +25,13 @@ Publish a generated CLI from your local library to the [printing-press-library](
 
 The public library treats `library/<category>/<api-slug>/.printing-press.json`
 and `manifest.json` as the source of truth for registry-display fields. Do not
-edit `registry.json`, README catalog cells, or `cli-skills/pp-<api-slug>/SKILL.md`
-in publish PRs; all three are bot-regenerated post-merge by the library's own
-workflows. The library's `Guard against hand-edits to cli-skills mirror` check
-rejects any fork PR whose commits touch the mirror, so a publish that includes
-the mirror is pre-rejected before review.
+edit `registry.json` or README catalog cells in publish PRs; the library's
+post-merge workflow refreshes them from the CLI tree. Do regenerate and commit
+the `cli-skills/pp-<api-slug>/SKILL.md` mirror from
+`library/<category>/<api-slug>/SKILL.md` because PR CI verifies mirror parity.
+If a brand-new CLI's mirror is pruned because `registry.json` is behind, fix the
+library mirror generator to discover from `library/`; do not add a registry
+entry solely to satisfy mirror parity.
 
 ## Setup
 
@@ -458,15 +460,10 @@ if [ -z "$PRINTER_NAME" ]; then
   exit 1
 fi
 
-# Do NOT regenerate or commit `cli-skills/pp-<api-slug>/SKILL.md` here. The
-# mirror is auto-regenerated post-merge by the library's `generate-skills.yml`
-# workflow via a `[skip ci]` bot commit. Including the mirror in a fork PR is
-# pre-rejected by the library's `Guard against hand-edits to cli-skills mirror`
-# check, which fails on any non-bot commit touching the mirror. Same-repo PRs
-# are auto-handled by the library's `Commit generated convention fixes` step,
-# which is gated on `head.repo.full_name == github.repository`. Do not
-# re-introduce a mirror-regenerator invocation here unless the library's
-# Guard check has been loosened to accept publish-flow commits.
+# Regenerate the flat cli-skills mirror from the library tree so library PR CI passes mirror parity.
+if [ -f "$PUBLISH_REPO_DIR/tools/generate-skills/main.go" ]; then
+  (cd "$PUBLISH_REPO_DIR" && go run ./tools/generate-skills/main.go)
+fi
 
 # Verify this changed/new CLI builds and has no reachable Go vulnerabilities from the publish repo
 cd "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" \
@@ -735,7 +732,7 @@ git checkout -B feat/<api-slug>
 
 ```bash
 cd "$PUBLISH_REPO_DIR"
-git add library/
+git add library/ cli-skills/
 git commit -m "feat(<api-slug>): add <api-slug>"
 ```
 
@@ -788,7 +785,7 @@ Build the PR description from:
 
 Read `novel_features` from
 `$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press.json` after
-packaging. Preserve the manifest order. Do not derive
+packaging and mirror regeneration. Preserve the manifest order. Do not derive
 this section from README prose, SKILL prose, root help, or memory of the run:
 those surfaces may be summarized or hand-edited, while the packaged manifest is
 the publish-time source of truth. For each entry, include the command, name, and

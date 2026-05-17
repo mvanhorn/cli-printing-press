@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 )
 
@@ -31,8 +30,11 @@ func validateInputPath(input string, force bool) error {
 	if force {
 		return nil
 	}
-	if slices.Contains(strings.Split(input, string(filepath.Separator)), "..") {
-		return fmt.Errorf("path %q contains '..' segments; refusing (use --force to override)", input)
+	// Check for .. segments using both forward and backward slashes
+	for _, seg := range strings.FieldsFunc(input, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if seg == ".." {
+			return fmt.Errorf("path %q contains '..' segments; refusing (use --force to override)", input)
+		}
 	}
 	return nil
 }

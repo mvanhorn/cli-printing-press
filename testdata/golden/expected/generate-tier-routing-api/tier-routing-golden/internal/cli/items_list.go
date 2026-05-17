@@ -26,8 +26,16 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 			}
 			c = c.WithTier("free")
 
+			var (
+				data   json.RawMessage
+				status int
+				prov   DataProvenance
+			)
+			_ = c
+
 			path := "/items"
-			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "items", path, map[string]string{}, nil, flagAll, "cursor", "", "")
+			_ = path
+			data, status, prov, err = resolvePaginatedRead(cmd.Context(), c, flags, "items", path, map[string]string{}, nil, flagAll, "cursor", "", "")
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
@@ -72,6 +80,7 @@ func newItemsListCmd(flags *rootFlags) *cobra.Command {
 					return nil
 				}
 			}
+			_ = status
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}
