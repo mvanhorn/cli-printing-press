@@ -217,10 +217,13 @@ func Delete(domain string) error {
 // circuits with the underlying message.
 func getOrCreateKey(domain string) ([]byte, error) {
 	key, err := loadKey(domain)
-	if err == nil && len(key) == aesKeySize {
+	if err == nil {
+		if len(key) != aesKeySize {
+			return nil, fmt.Errorf("keychain entry for %s has unexpected size %d (want %d); re-run press-auth login %s to recapture", domain, len(key), aesKeySize, domain)
+		}
 		return key, nil
 	}
-	if err != nil && !errors.Is(err, errKeyNotFound) {
+	if !errors.Is(err, errKeyNotFound) {
 		return nil, err
 	}
 	key = make([]byte, aesKeySize)
