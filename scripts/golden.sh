@@ -49,7 +49,10 @@ normalize_text() {
     -e "s|$actual_abs_pattern|<ARTIFACT_DIR>|g" \
     -e "s|$actual_root_pattern|<ARTIFACT_DIR>|g" \
     -e "s|$repo_root_pattern|<REPO>|g" \
-    -e "s|$home_pattern|<HOME>|g"
+    -e "s|$home_pattern|<HOME>|g" \
+    -e '/<ARTIFACT_DIR>/s|\\|/|g' \
+    -e '/<REPO>/s|\\|/|g' \
+    -e '/<HOME>/s|\\|/|g'
 }
 
 normalize_json() {
