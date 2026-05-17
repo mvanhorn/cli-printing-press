@@ -35,6 +35,7 @@ if [[ -n "$repo_root_win_forward" ]]; then
   repo_root_win_backward="${repo_root_win_forward//\//\\}"
   actual_abs_win_forward="$repo_root_win_forward/$actual_root"
   actual_abs_win_backward="${actual_abs_win_forward//\//\\}"
+  actual_root_win_backward="${actual_root//\//\\}"
 fi
 
 normalize_text() {
@@ -44,6 +45,7 @@ normalize_text() {
     args+=("-e" "s|$(escape_sed "$actual_abs_win_forward")|<ARTIFACT_DIR>|g")
     args+=("-e" "s|$(escape_sed "$repo_root_win_backward")|<REPO>|g")
     args+=("-e" "s|$(escape_sed "$repo_root_win_forward")|<REPO>|g")
+    args+=("-e" "s|$(escape_sed "$actual_root_win_backward")|<ARTIFACT_DIR>|g")
   fi
   sed "${args[@]}" \
     -e "s|$actual_abs_pattern|<ARTIFACT_DIR>|g" \
@@ -52,7 +54,8 @@ normalize_text() {
     -e "s|$home_pattern|<HOME>|g" \
     -e '/<ARTIFACT_DIR>/s|\\|/|g' \
     -e '/<REPO>/s|\\|/|g' \
-    -e '/<HOME>/s|\\|/|g'
+    -e '/<HOME>/s|\\|/|g' \
+    -e 's/\r//g'
 }
 
 normalize_json() {
@@ -68,6 +71,7 @@ normalize_json() {
         .generated_at = "<GENERATED_AT>"
         | .printing_press_version = "<PRINTING_PRESS_VERSION>"
         | (if has("run_id") then .run_id = "<RUN_ID>" else . end)
+        | (if has("spec_checksum") then .spec_checksum = "<SPEC_CHECKSUM>" else . end)
       ' "$file" | normalize_text
       ;;
     */manifest.json)
@@ -76,7 +80,12 @@ normalize_json() {
       jq -S '.version = "<PRINTING_PRESS_VERSION>"' "$file" | normalize_text
       ;;
     *)
-      jq -S . "$file" | normalize_text
+      # For structural/mock verification results, strip .exe and translate backslashes
+      jq -S '
+        if has("verify") and (.verify | has("binary")) then
+          .verify.binary = (.verify.binary | sub("\\.exe$"; "") | gsub("\\\\"; "/"))
+        else . end
+      ' "$file" | normalize_text
       ;;
   esac
 }

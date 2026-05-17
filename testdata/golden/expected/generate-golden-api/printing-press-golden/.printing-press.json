@@ -18,7 +18,7 @@
   "printing_press_version": "<PRINTING_PRESS_VERSION>",
   "run_id": "<RUN_ID>",
   "schema_version": 1,
-  "spec_checksum": "sha256:c4ca9037741e68e8247b8b9c1ba415fec258ae1e11ef80eef0f06c45cadbabde",
+  "spec_checksum": "<SPEC_CHECKSUM>",
   "spec_format": "openapi3",
   "spec_path": "testdata/golden/fixtures/golden-api.yaml",
   "spec_url": "file://testdata/golden/fixtures/golden-api.yaml"
