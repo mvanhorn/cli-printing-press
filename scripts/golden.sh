@@ -209,14 +209,26 @@ compare_file() {
   local diff_path="$5"
 
   mkdir -p "$(dirname "$diff_path")"
-  if ! diff -u "$expected" "$actual" >"$diff_path"; then
+
+  local expected_clean
+  expected_clean="$(mktemp)"
+  local actual_clean
+  actual_clean="$(mktemp)"
+
+  tr -d '\r' <"$expected" >"$expected_clean"
+  tr -d '\r' <"$actual" >"$actual_clean"
+
+  local diff_status=0
+  if ! diff -u "$expected_clean" "$actual_clean" >"$diff_path"; then
     echo "FAIL $case_name $label"
     echo "  diff: $diff_path"
-    return 1
+    diff_status=1
+  else
+    rm -f "$diff_path"
   fi
 
-  rm -f "$diff_path"
-  return 0
+  rm -f "$expected_clean" "$actual_clean"
+  return "$diff_status"
 }
 
 compare_case() {
