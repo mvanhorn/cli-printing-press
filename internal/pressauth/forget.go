@@ -158,6 +158,9 @@ func deleteIfPresent(domain string) (bool, error) {
 		// Delete is idempotent for missing files but bubbles real errors.
 		// The keychain entry may have been written without a state file;
 		// treat that as a real error worth surfacing.
+		if !existed && isKeychainUnsupported(err) {
+			return false, nil
+		}
 		if !existed && errors.Is(err, os.ErrNotExist) {
 			return false, nil
 		}

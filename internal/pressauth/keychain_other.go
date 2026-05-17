@@ -18,3 +18,5 @@ var errKeychainUnsupported = errors.New("press-auth currently requires macOS —
 func loadKey(_ string) ([]byte, error) { return nil, errKeychainUnsupported }
 func saveKey(_ string, _ []byte) error { return errKeychainUnsupported }
 func deleteKey(_ string) error         { return errKeychainUnsupported }
+
+func isKeychainUnsupported(err error) bool { return errors.Is(err, errKeychainUnsupported) }

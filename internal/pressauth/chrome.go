@@ -19,6 +19,8 @@ import (
 // leave this unset; the launcher then runs headed.
 const headlessEnv = "PRESSAUTH_HEADLESS"
 
+const noSandboxEnv = "PRESSAUTH_CHROME_NO_SANDBOX"
+
 // defaultCaptureTimeout is the upper bound on the interactive login flow.
 // Ten minutes is the documented contract for the user: enough room for
 // multi-factor prompts, password manager dances, and Bitwarden unlocks,
@@ -71,20 +73,28 @@ func Capture(ctx context.Context, opts CaptureOptions) (*State, error) {
 	// temp UserDataDir so we never touch the user's daily Chrome
 	// profile, and a Flag("headless", ...) that the env var can flip
 	// for CI. The Flag override comes after the defaults so it wins.
-	allocOpts := make([]chromedp.ExecAllocatorOption, 0, len(chromedp.DefaultExecAllocatorOptions)+3)
+	allocOpts := make([]chromedp.ExecAllocatorOption, 0, len(chromedp.DefaultExecAllocatorOptions)+4)
 	allocOpts = append(allocOpts, chromedp.DefaultExecAllocatorOptions[:]...)
 	allocOpts = append(allocOpts,
 		chromedp.UserDataDir(userDataDir),
 		chromedp.Flag("headless", isHeadless()),
 	)
+	if shouldDisableChromeSandbox() {
+		allocOpts = append(allocOpts, chromedp.NoSandbox)
+	}
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, allocOpts...)
-	defer cancelAlloc()
 
 	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx)
-	defer cancelBrowser()
 
 	timedCtx, cancelTimeout := context.WithTimeout(browserCtx, timeout)
-	defer cancelTimeout()
+	defer func() {
+		cancelTimeout()
+		shutdownCtx, cancelShutdown := context.WithTimeout(browserCtx, 5*time.Second)
+		defer cancelShutdown()
+		_ = chromedp.Cancel(shutdownCtx)
+		cancelBrowser()
+		cancelAlloc()
+	}()
 
 	if err := chromedp.Run(timedCtx, chromedp.Navigate(opts.LoginURL)); err != nil {
 		return nil, classifyChromeErr("navigate", err)
@@ -281,7 +291,15 @@ func cookieDomainMatches(cookieDomain, target string) bool {
 // (case-insensitive) all turn the controlled window into a headless
 // Chrome process; anything else leaves it visible.
 func isHeadless() bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv(headlessEnv)))
+	return truthyEnv(headlessEnv)
+}
+
+func shouldDisableChromeSandbox() bool {
+	return truthyEnv(noSandboxEnv) || truthyEnv("CI")
+}
+
+func truthyEnv(name string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
 	return v == "1" || v == "true" || v == "yes"
 }
 

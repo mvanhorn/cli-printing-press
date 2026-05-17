@@ -91,3 +91,5 @@ func deleteKey(domain string) error {
 	}
 	return fmt.Errorf("deleting keychain item: %w", err)
 }
+
+func isKeychainUnsupported(error) bool { return false }
