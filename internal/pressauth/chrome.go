@@ -110,15 +110,23 @@ func Capture(ctx context.Context, opts CaptureOptions) (*State, error) {
 	}
 
 	filtered := filterCookies(cookies, opts.Domain)
+	var jwtExpiry time.Time
+	if opts.JWTCarrierCookie != "" {
+		if token, err := ExtractJWT(filtered[opts.JWTCarrierCookie]); err == nil {
+			if claims, err := DecodeJWT(token); err == nil {
+				if exp, err := Exp(claims); err == nil && !exp.IsZero() {
+					jwtExpiry = exp
+				}
+			}
+		}
+	}
 	state := &State{
 		Domain:           opts.Domain,
 		CapturedAt:       time.Now().UTC(),
 		Cookies:          filtered,
 		RefreshEndpoint:  opts.RefreshEndpoint,
 		JWTCarrierCookie: opts.JWTCarrierCookie,
-		// JWTExpiry stays the zero value: the JWT decode helper that
-		// reads opts.JWTCarrierCookie's expiry claim lands in U4. The
-		// refresh path will populate this on its first successful run.
+		JWTExpiry:        jwtExpiry,
 	}
 	return state, nil
 }
