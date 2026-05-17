@@ -2990,7 +2990,8 @@ func (g *Generator) template(tmplName string) (*template.Template, error) {
 		return nil, fmt.Errorf("reading template %s: %w", tmplName, err)
 	}
 
-	tmpl, err := template.New(tmplName).Funcs(g.funcs).Parse(string(content))
+	tmplStr := strings.ReplaceAll(string(content), "\r\n", "\n")
+	tmpl, err := template.New(tmplName).Funcs(g.funcs).Parse(tmplStr)
 	if err != nil {
 		return nil, fmt.Errorf("parsing template %s: %w", tmplName, err)
 	}

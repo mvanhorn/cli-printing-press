@@ -96,7 +96,8 @@ func GenerateFromPlan(planSpec *PlanSpec, outputDir string) error {
 		if err != nil {
 			return fmt.Errorf("reading template %s: %w", tmplName, err)
 		}
-		tmpl, err := template.New(tmplName).Funcs(funcs).Parse(string(content))
+		tmplStr := strings.ReplaceAll(string(content), "\r\n", "\n")
+		tmpl, err := template.New(tmplName).Funcs(funcs).Parse(tmplStr)
 		if err != nil {
 			return fmt.Errorf("parsing template %s: %w", tmplName, err)
 		}

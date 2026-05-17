@@ -261,11 +261,11 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		}
 		switch ep.Method {
 		case "POST":
-			data, _, err = c.Post(path, body)
+			data, _, err = c.Post(path, json.RawMessage(body))
 		case "PUT":
-			data, _, err = c.Put(path, body)
+			data, _, err = c.Put(path, json.RawMessage(body))
 		case "PATCH":
-			data, _, err = c.Patch(path, body)
+			data, _, err = c.Patch(path, json.RawMessage(body))
 		default:
 			return mcplib.NewToolResultError(fmt.Sprintf("unsupported method %q", ep.Method)), nil
 		}
