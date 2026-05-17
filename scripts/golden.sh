@@ -26,10 +26,26 @@ home_pattern="$(escape_sed "$HOME")"
 actual_root_pattern="$(escape_sed "$actual_root")"
 actual_abs_pattern="$(escape_sed "$actual_abs")"
 
-# Keep normalization intentionally narrow. These substitutions remove
-# machine-specific paths while preserving behaviorally meaningful output.
+repo_root_win_forward=""
+if pwd -W >/dev/null 2>&1; then
+  repo_root_win_forward="$(pwd -W)"
+fi
+
+if [[ -n "$repo_root_win_forward" ]]; then
+  repo_root_win_backward="${repo_root_win_forward//\//\\}"
+  actual_abs_win_forward="$repo_root_win_forward/$actual_root"
+  actual_abs_win_backward="${actual_abs_win_forward//\//\\}"
+fi
+
 normalize_text() {
-  sed \
+  local args=()
+  if [[ -n "$repo_root_win_forward" ]]; then
+    args+=("-e" "s|$(escape_sed "$actual_abs_win_backward")|<ARTIFACT_DIR>|g")
+    args+=("-e" "s|$(escape_sed "$actual_abs_win_forward")|<ARTIFACT_DIR>|g")
+    args+=("-e" "s|$(escape_sed "$repo_root_win_backward")|<REPO>|g")
+    args+=("-e" "s|$(escape_sed "$repo_root_win_forward")|<REPO>|g")
+  fi
+  sed "${args[@]}" \
     -e "s|$actual_abs_pattern|<ARTIFACT_DIR>|g" \
     -e "s|$actual_root_pattern|<ARTIFACT_DIR>|g" \
     -e "s|$repo_root_pattern|<REPO>|g" \

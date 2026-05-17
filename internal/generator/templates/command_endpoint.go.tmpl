@@ -456,9 +456,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- if .Endpoint.UsesBinaryResponse}}
 			_ = json.Valid
 			_ = os.Stderr
-{{- if or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH") (eq .Endpoint.Method "DELETE")}}
 			_ = status
-{{- end}}
 {{- if and .HasStore (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD") .Endpoint.Pagination $isGraphQLEndpoint)}}
 			_ = prov
 {{- end}}

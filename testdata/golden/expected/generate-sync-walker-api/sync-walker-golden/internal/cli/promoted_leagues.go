@@ -39,6 +39,9 @@ func newLeaguesPromotedCmd(flags *rootFlags) *cobra.Command {
 			path := "/games/{game_key}/leagues"
 			_ = path
 			path = replacePathParam(path, "game_key", url.PathEscape(args[0]))
+			params := map[string]string{}
+			data, status, prov, err = resolveRead(cmd.Context(), c, flags, "leagues", false, path, params, nil)
+			_ = status
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

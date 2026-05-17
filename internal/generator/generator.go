@@ -3559,6 +3559,13 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identP
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
+		if p.Type == "boolean" || p.Type == "bool" {
+			// Booleans gate on cmd.Flags().Changed instead of a zero-guard.
+			fmt.Fprintf(b, "%sif cmd.Flags().Changed(%q) {\n", indent, flag)
+			fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.Name, ident)
+			fmt.Fprintf(b, "%s}\n", indent)
+			continue
+		}
 		fmt.Fprintf(b, "%sif body%s != %s {\n", indent, ident, zeroVal(p.Type))
 		fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.Name, ident)
 		fmt.Fprintf(b, "%s}\n", indent)

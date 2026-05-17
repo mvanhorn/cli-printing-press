@@ -34,6 +34,9 @@ func newPublicPromotedCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/public/status"
 			_ = path
+			params := map[string]string{}
+			data, status, prov, err = resolveRead(cmd.Context(), c, flags, "public", false, path, params, nil)
+			_ = status
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

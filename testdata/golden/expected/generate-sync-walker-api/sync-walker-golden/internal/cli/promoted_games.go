@@ -34,6 +34,9 @@ func newGamesPromotedCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/games"
 			_ = path
+			params := map[string]string{}
+			data, status, prov, err = resolveRead(cmd.Context(), c, flags, "games", false, path, params, nil)
+			_ = status
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
