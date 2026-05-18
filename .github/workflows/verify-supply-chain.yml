@@ -59,9 +59,19 @@ jobs:
           git remote add pr "https://github.com/${HEAD_REPO}.git" 2>/dev/null || git remote set-url pr "https://github.com/${HEAD_REPO}.git"
           git fetch --no-tags --depth=200 pr "${HEAD_SHA}"
 
-          # Bootstrap case: base branch has no scanner yet (this PR
-          # introduces it). Restore scanner files from PR head so the
-          # gate can run. Becomes a no-op after merge.
+          # Deletion guard: refuse to proceed if the PR deletes scanner
+          # files (closes the staged two-step attack: delete scanner →
+          # re-introduce a patched one that whitelists payload).
+          deleted_scanner=$(git diff --name-status --diff-filter=D HEAD "${HEAD_SHA}" -- .github/scripts/verify-supply-chain/ || true)
+          if [ -n "${deleted_scanner}" ]; then
+            echo "::error::PR deletes supply-chain scanner files. Removing or relocating the scanner requires explicit out-of-band review — automated gate refuses to proceed. Files: ${deleted_scanner}"
+            exit 1
+          fi
+
+          # Bootstrap case: base has no scanner yet (this PR introduces it).
+          # Restore scanner from PR head; no-op after merge. The deletion
+          # guard above ensures only the genuine first-introduction case
+          # reaches this branch.
           if [ ! -f .github/scripts/verify-supply-chain/scan.py ]; then
             echo "::notice::Base branch has no scanner — bootstrap mode, restoring scanner from PR head ${HEAD_SHA}."
             mkdir -p .github/scripts/verify-supply-chain

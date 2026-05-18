@@ -176,7 +176,7 @@ def signal_workflow_trust(change: FileChange) -> list[Finding]:
 # ---------------------------------------------------------------------------
 
 
-_ID_TOKEN_WRITE = re.compile(r"^\s*id-token\s*:\s*write\s*$")
+_ID_TOKEN_WRITE = re.compile(r"^\s*id-token\s*:\s*write\s*(?:#.*)?$")
 
 
 def signal_id_token_outside_allowlist(change: FileChange) -> list[Finding]:
