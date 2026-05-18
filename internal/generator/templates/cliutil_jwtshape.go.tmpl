@@ -71,6 +71,12 @@ func LooksLikeJWT(s string) bool {
 //
 // The length floor in LooksLikeJWT does the heavy lifting here — without it,
 // jar scans on Cloudflare-fronted sites trip on `__cf_bm` and similar.
+//
+// The returned value is the bare token (any leading `Bearer ` is stripped),
+// matching LooksLikeJWT's input normalization. A caller that builds an
+// Authorization header from the result therefore prepends `Bearer ` exactly
+// once; passing the value through verbatim does not produce a double prefix
+// even when the cookie's value carries the Authorization wire form.
 func FindJWTInCookieJar(jar string) string {
 	for _, raw := range strings.Split(jar, ";") {
 		raw = strings.TrimSpace(raw)
@@ -81,7 +87,7 @@ func FindJWTInCookieJar(jar string) string {
 		if eq < 0 {
 			continue
 		}
-		value := raw[eq+1:]
+		value := strings.TrimPrefix(strings.TrimSpace(raw[eq+1:]), "Bearer ")
 		if LooksLikeJWT(value) {
 			return value
 		}

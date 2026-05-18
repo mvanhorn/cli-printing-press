@@ -16,8 +16,17 @@ func TestLooksLikeJWT(t *testing.T) {
 	realAuth0RS256 := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImFvNi1PYzAyQlZHTF9GbnBDeE5JMiJ9." +
 		strings.Repeat("a", 430) + "." + strings.Repeat("b", 344)
 
-	// minimalHS256 has header ≥ 20 chars + payload + signature, total ≥ 150.
-	// Smallest realistic JWT shape we expect to accept.
+	// Exact boundary fixtures. The floor is 150 chars total; these straddle it.
+	//   atFloor149: h×36 + "." + p×72 + "." + s×39 = 36+1+72+1+39 = 149 — must reject.
+	//   atFloor150: h×36 + "." + p×72 + "." + s×40 = 36+1+72+1+40 = 150 — must accept.
+	// A constant change (150 -> 155) or an off-by-one (< vs <=) would flip one
+	// of these and trip the test.
+	atFloor149 := strings.Repeat("h", 36) + "." + strings.Repeat("p", 72) + "." + strings.Repeat("s", 39)
+	atFloor150 := strings.Repeat("h", 36) + "." + strings.Repeat("p", 72) + "." + strings.Repeat("s", 40)
+
+	// minimalHS256 is a realistic minimum-sized JWT (~158 chars). The exact
+	// boundary cases above test the floor; this case exists so a regression
+	// that breaks normal-sized small JWTs surfaces independently.
 	minimalHS256 := strings.Repeat("h", 36) + "." + strings.Repeat("p", 80) + "." + strings.Repeat("s", 40)
 
 	// Factor75 false-positive — Cloudflare-shaped cookie value with 3
@@ -31,9 +40,11 @@ func TestLooksLikeJWT(t *testing.T) {
 		want bool
 	}{
 		{"real Auth0 RS256 token", realAuth0RS256, true},
-		{"minimal HS256 at floor", minimalHS256, true},
+		{"exactly at 150-char floor", atFloor150, true},
+		{"realistic minimum HS256", minimalHS256, true},
 		{"with Bearer prefix", "Bearer " + realAuth0RS256, true},
 
+		{"exactly one char under floor (149)", atFloor149, false},
 		{"factor75 Cloudflare cookie", cfCookieShaped, false},
 		{"empty string", "", false},
 		{"whitespace only", "   \t\n", false},
@@ -43,7 +54,6 @@ func TestLooksLikeJWT(t *testing.T) {
 		{"empty middle segment", strings.Repeat("a", 80) + ".." + strings.Repeat("b", 80), false},
 		{"header segment too short", "aaa." + strings.Repeat("p", 80) + "." + strings.Repeat("s", 80), false},
 		{"invalid charset", strings.Repeat("a", 60) + ".pay!load." + strings.Repeat("s", 80), false},
-		{"length just under floor", strings.Repeat("h", 36) + "." + strings.Repeat("p", 30) + "." + strings.Repeat("s", 40), false},
 	}
 
 	for _, tc := range cases {
@@ -72,6 +82,15 @@ func TestFindJWTInCookieJar(t *testing.T) {
 		{
 			name: "JWT alongside CF tracking cookies",
 			jar:  "__cf_bm=01KRPVRYA2SNQT9BAGD6984WAG_.tt.1; auth_token=" + realJWT + "; csrf=abc123",
+			want: realJWT,
+		},
+		{
+			// A cookie whose value carries the Authorization wire form
+			// ("Bearer eyJ...") must not double-prefix downstream. The
+			// returned value should be the bare token so callers building
+			// an Authorization header always prepend "Bearer " exactly once.
+			name: "cookie value carries Bearer prefix",
+			jar:  "auth=Bearer " + realJWT + "; csrf=abc",
 			want: realJWT,
 		},
 		{
