@@ -59,6 +59,15 @@ jobs:
           git remote add pr "https://github.com/${HEAD_REPO}.git" 2>/dev/null || git remote set-url pr "https://github.com/${HEAD_REPO}.git"
           git fetch --no-tags --depth=200 pr "${HEAD_SHA}"
 
+          # Bootstrap case: base branch has no scanner yet (this PR
+          # introduces it). Restore scanner files from PR head so the
+          # gate can run. Becomes a no-op after merge.
+          if [ ! -f .github/scripts/verify-supply-chain/scan.py ]; then
+            echo "::notice::Base branch has no scanner — bootstrap mode, restoring scanner from PR head ${HEAD_SHA}."
+            mkdir -p .github/scripts/verify-supply-chain
+            git restore --source="${HEAD_SHA}" --worktree -- .github/scripts/verify-supply-chain/
+          fi
+
           python3 .github/scripts/verify-supply-chain/scan.py --base-ref HEAD --head-ref "${HEAD_SHA}"
 
       - name: Run supply-chain scan (manual dispatch)
