@@ -27,9 +27,10 @@ The public library treats `library/<category>/<api-slug>/.printing-press.json`
 and `manifest.json` as the source of truth for registry-display fields. Do not
 edit `registry.json`, README catalog cells, or `cli-skills/pp-<api-slug>/SKILL.md`
 in publish PRs; all three are bot-regenerated post-merge by the library's own
-workflows. The library's `Guard against hand-edits to cli-skills mirror` check
-rejects any fork PR whose commits touch the mirror, so a publish that includes
-the mirror is pre-rejected before review.
+workflows. The library's `Fail on changes to generated artifacts` check in
+`verify-library-conventions.yml` hard-fails any PR — fork or same-repo — whose
+diff against base touches `registry.json` or `cli-skills/pp-*/SKILL.md`, so a
+publish that includes either is pre-rejected before review.
 
 ## Setup
 
@@ -458,15 +459,14 @@ if [ -z "$PRINTER_NAME" ]; then
   exit 1
 fi
 
-# Do NOT regenerate or commit `cli-skills/pp-<api-slug>/SKILL.md` here. The
-# mirror is auto-regenerated post-merge by the library's `generate-skills.yml`
-# workflow via a `[skip ci]` bot commit. Including the mirror in a fork PR is
-# pre-rejected by the library's `Guard against hand-edits to cli-skills mirror`
-# check, which fails on any non-bot commit touching the mirror. Same-repo PRs
-# are auto-handled by the library's `Commit generated convention fixes` step,
-# which is gated on `head.repo.full_name == github.repository`. Do not
-# re-introduce a mirror-regenerator invocation here unless the library's
-# Guard check has been loosened to accept publish-flow commits.
+# Do NOT regenerate or commit `cli-skills/pp-<api-slug>/SKILL.md` or
+# `registry.json` here. Both are regenerated post-merge by the library's
+# `generate-skills.yml` and `generate-registry.yml` workflows via
+# `[skip ci]` bot commits. The library's `Fail on changes to generated
+# artifacts` check in `verify-library-conventions.yml` hard-fails any PR
+# whose diff against base touches these files, regardless of fork vs
+# same-repo origin. The library no longer has an in-PR auto-fix path;
+# do not re-introduce a mirror or registry regen here.
 
 # Verify this changed/new CLI builds and has no reachable Go vulnerabilities from the publish repo
 cd "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" \
@@ -939,7 +939,7 @@ Once the PR is open, it enters the public library repo's review contract. That c
   For each P0/P1/P2 thread, either push a fix or reply with a concrete reason it shouldn't fire — not "won't fix", but *why* the code is right as written or *why* deferral is justified. The 0-5 score is a confidence signal, not a hard gate; 4/5 and 5/5 are both acceptable end states, and the score will land in that range naturally once threads are addressed.
 - **All CI checks must pass.** `verify-library-conventions`, `Govulncheck`, and any other workflow on the PR must be green before merge.
 - **Don't merge with unresolved threads** even when CI is green and the score looks good.
-- **Don't hand-edit `registry.json` or `cli-skills/pp-<api-slug>/SKILL.md` to satisfy a finding** — both are bot-regenerated post-merge by `[skip ci]` commits and your edits will be overwritten.
+- **Don't hand-edit `registry.json` or `cli-skills/pp-<api-slug>/SKILL.md` to satisfy a finding** — both are bot-regenerated post-merge by `[skip ci]` commits, and the library's `Fail on changes to generated artifacts` check pre-rejects any PR that touches them.
 - **Hand off once review-ready.** When all threads are resolved or replied to and CI is green, stop and tell the user. Don't loop polling for the merge; the user owns that decision.
 
 ## Secret & PII Protection
