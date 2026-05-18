@@ -1,24 +1,25 @@
 """Signal catalog for the supply-chain scan (cli-printing-press mirror).
 
 This file is vendored from mvanhorn/printing-press-library's
-.github/scripts/verify-supply-chain/signals.py (source dated 2026-05-17),
-with scope adaptations for the generator repo:
+.github/scripts/verify-supply-chain/signals.py with scope adaptations for
+the generator repo:
 
   - R1 (pull_request_target + PR-head checkout) — applied unchanged.
   - R2 (id-token: write outside allowlist) — applied with an empty
     allowlist. The generator repo does not currently use OIDC anywhere;
     any addition trips the rule. If release.yml migrates to keyless
     cosign with OIDC, allowlist that specific workflow at that time.
-  - R3 (replace directives in library/**/go.mod) — omitted. The
-    generator's testdata fixtures may legitimately use unusual replace
-    shapes for golden tests. R3 already protects published-CLI go.mod
-    files in the published-library repo where it matters.
+  - R3 (replace directives in library/**/go.mod) — omitted.
   - R4 (GOPROXY/GOFLAGS/GONOSUMCHECK in workflows) — applied unchanged.
-  - R5 (npm lifecycle scripts) — omitted. No npm wrapper here.
-  - R6 (module-path drift) — omitted. No published-CLI module paths here.
+  - R5 (npm lifecycle scripts) — omitted.
+  - R6 (module-path drift) — omitted.
 
-Keep this file structurally aligned with the source so future signal
-additions can be cherry-picked across both repos with minimal friction.
+Detection strategy for R1/R2/R4: parse the YAML structurally with pyyaml
+(pre-installed on ubuntu-latest runners) and walk the parsed dict tree.
+The earlier regex approach missed valid YAML forms (block-scalar values
+`ref: >-` with the value on the next line, etc.) and required a separate
+patch for each YAML quirk encountered. Structural parsing eliminates the
+whole class.
 """
 
 from __future__ import annotations
@@ -26,6 +27,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import Any
+
+import yaml
 
 
 # ---------------------------------------------------------------------------
@@ -75,86 +79,215 @@ ID_TOKEN_ALLOWLIST: set[str] = set()
 
 
 # ---------------------------------------------------------------------------
-# R1: pull_request_target + non-default checkout ref (TanStack OIDC theft)
+# YAML parsing helpers (shared by R1, R2, R4)
 # ---------------------------------------------------------------------------
 
 
-# Detects pull_request_target as a YAML trigger declaration in any of YAML's
-# valid forms — block, inline, list, and flow-sequence (`on: [..., ...]`).
-# Anchored so prose mentions inside comments or string values don't false-fire.
-_PR_TARGET_TRIGGER_LINE = re.compile(
-    r"^\s*(?:-\s+|on\s*:\s*)?pull_request_target(?:\s*:|\s*$)",
-    re.MULTILINE,
+def _parse_workflow(content: str | None) -> Any:
+    """Parse a workflow YAML safely. Returns the loaded structure (typically
+    a dict) or None if the content is absent or unparseable. A malformed
+    workflow would also fail to load in GitHub Actions itself, so silently
+    skipping it is safe."""
+    if content is None:
+        return None
+    try:
+        return yaml.safe_load(content)
+    except (yaml.YAMLError, TypeError, ValueError):
+        return None
+
+
+def _workflow_on(parsed: Any) -> Any:
+    """Extract the workflow's `on:` section.
+
+    YAML 1.1 (pyyaml's default) interprets unquoted `on` as the boolean
+    literal True — so `on:` at the top of a workflow becomes the key True
+    after parsing. Check both forms; GitHub Actions accepts either."""
+    if not isinstance(parsed, dict):
+        return None
+    if "on" in parsed:
+        return parsed["on"]
+    if True in parsed:
+        return parsed[True]
+    return None
+
+
+def _has_pr_target_trigger(on_node: Any) -> bool:
+    """Detect pull_request_target in any of YAML's trigger declaration forms:
+    string (`on: pull_request_target`), list (`on: [...]` or
+    `on:\\n  - pull_request_target`), or mapping (`on:\\n  pull_request_target:`)."""
+    if on_node is None:
+        return False
+    if isinstance(on_node, str):
+        return on_node.strip() == "pull_request_target"
+    if isinstance(on_node, list):
+        return any(
+            isinstance(item, str) and item.strip() == "pull_request_target"
+            for item in on_node
+        )
+    if isinstance(on_node, dict):
+        return "pull_request_target" in on_node
+    return False
+
+
+_DANGEROUS_REF_VALUE = re.compile(
+    r"github\.event\.pull_request\.head\.(sha|ref)"
+    # [^\n] (not [^\s]) so the match survives spaces inside `${{ ... }}`
+    # expressions, e.g., refs/pull/${{ github.event.number }}/merge.
+    r"|refs/pull/[^\n]*?/(merge|head)"
 )
-_PR_TARGET_TRIGGER_FLOW = re.compile(
-    r"^\s*on\s*:\s*\[[^\]\n]*\bpull_request_target\b",
-    re.MULTILINE,
-)
 
 
-def _has_pr_target_trigger(content: str) -> bool:
-    return bool(
-        _PR_TARGET_TRIGGER_LINE.search(content) or _PR_TARGET_TRIGGER_FLOW.search(content)
-    )
+def _is_dangerous_ref_value(value: Any) -> bool:
+    """Return True if a checkout step's `ref:` value references the PR head."""
+    if not isinstance(value, str):
+        return False
+    return bool(_DANGEROUS_REF_VALUE.search(value))
 
 
-_CHECKOUT_USES = re.compile(r"^\s*-\s*uses\s*:\s*actions/checkout", re.MULTILINE)
-_DANGEROUS_REF = re.compile(
-    r"ref\s*:\s*[^\n#]*"
-    r"(github\.event\.pull_request\.head\.(sha|ref)|refs/pull/[^\n]*?/(merge|head))",
-)
-
-
-def _lines_to_scan(change: FileChange) -> list[tuple[int, str]]:
-    """Yield lines that should be scanned for new additions. Diff-aware:
-    new files yield every head line; existing files yield only added_lines.
-    Prevents R1/R2/R4 from re-flagging pre-existing patterns on PRs that
-    don't touch them.
-    """
-    if change.head_content is None:
+def _walk_checkout_refs(parsed: Any) -> list[str]:
+    """Walk parsed workflow for actions/checkout steps with dangerous ref
+    values. Returns the list of dangerous ref values found (one per offending
+    step). Inspects every job and every step recursively but only flags the
+    `with.ref` field of `uses: actions/checkout*` steps."""
+    if not isinstance(parsed, dict):
         return []
-    if change.base_content is None:
-        return list(enumerate(change.head_content.splitlines(), start=1))
-    return list(change.added_lines)
+    jobs = parsed.get("jobs")
+    if not isinstance(jobs, dict):
+        return []
+    findings: list[str] = []
+    for job in jobs.values():
+        if not isinstance(job, dict):
+            continue
+        steps = job.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            uses = step.get("uses")
+            if not isinstance(uses, str) or not uses.startswith("actions/checkout"):
+                continue
+            with_block = step.get("with")
+            if not isinstance(with_block, dict):
+                continue
+            ref = with_block.get("ref")
+            if _is_dangerous_ref_value(ref):
+                findings.append(ref.strip())
+    return findings
+
+
+def _walk_id_token_grants(parsed: Any) -> bool:
+    """Return True if the parsed workflow grants `id-token: write` at workflow
+    or job level. (GitHub Actions doesn't honor step-level permissions, so we
+    skip those.)"""
+    if not isinstance(parsed, dict):
+        return False
+    if _permissions_grant_id_token(parsed.get("permissions")):
+        return True
+    jobs = parsed.get("jobs")
+    if isinstance(jobs, dict):
+        for job in jobs.values():
+            if isinstance(job, dict) and _permissions_grant_id_token(job.get("permissions")):
+                return True
+    return False
+
+
+def _permissions_grant_id_token(perm: Any) -> bool:
+    if isinstance(perm, dict):
+        value = perm.get("id-token")
+        return isinstance(value, str) and value.strip() == "write"
+    # A string value of "write-all" grants every permission, including id-token.
+    if isinstance(perm, str) and perm.strip() == "write-all":
+        return True
+    return False
+
+
+_GO_ENV_KEYS = ("GOPROXY", "GOFLAGS", "GONOSUMCHECK", "GOSUMDB", "GONOSUMDB")
+
+
+def _walk_go_env_overrides(parsed: Any) -> list[str]:
+    """Return the list of GOPROXY/GOFLAGS/etc env-variable names set anywhere
+    in the workflow's env blocks (workflow-level, job-level, or step-level)."""
+    found: list[str] = []
+    if not isinstance(parsed, dict):
+        return found
+    _collect_go_env_from(parsed.get("env"), found)
+    jobs = parsed.get("jobs")
+    if isinstance(jobs, dict):
+        for job in jobs.values():
+            if not isinstance(job, dict):
+                continue
+            _collect_go_env_from(job.get("env"), found)
+            steps = job.get("steps")
+            if isinstance(steps, list):
+                for step in steps:
+                    if isinstance(step, dict):
+                        _collect_go_env_from(step.get("env"), found)
+    return found
+
+
+def _collect_go_env_from(env_block: Any, out: list[str]) -> None:
+    if not isinstance(env_block, dict):
+        return
+    for key in env_block:
+        if isinstance(key, str) and key in _GO_ENV_KEYS:
+            out.append(key)
+
+
+def _find_line_in(content: str | None, needle: str) -> int | None:
+    """Best-effort line number lookup. Returns the 1-indexed line where the
+    substring first appears, or None. Used to annotate findings with a line
+    pointer even when the parsed YAML loses position info."""
+    if not content or not needle:
+        return None
+    for idx, line in enumerate(content.splitlines(), start=1):
+        if needle in line:
+            return idx
+    return None
+
+
+# ---------------------------------------------------------------------------
+# R1: pull_request_target + PR-head checkout (TanStack OIDC theft)
+# ---------------------------------------------------------------------------
 
 
 def signal_workflow_trust(change: FileChange) -> list[Finding]:
+    """R1. A workflow that combines pull_request_target with a checkout of
+    the PR head ref is the TanStack mini-Shai-Hulud attack shape — head
+    code runs with the elevated permissions of the base context, including
+    secrets and OIDC.
+
+    Structural diff: fires when head has the bad combo AND base didn't have
+    the same dangerous ref value. (Reformatting the same dangerous YAML in
+    a different style is not a new attack — only newly-introduced danger
+    fires.)"""
     if not is_workflow(change.path) or change.head_content is None:
         return []
 
-    content = change.head_content
-    if not _has_pr_target_trigger(content):
-        return []
-    if not _CHECKOUT_USES.search(content):
+    head = _parse_workflow(change.head_content)
+    if not _has_pr_target_trigger(_workflow_on(head)):
         return []
 
-    danger_match = _DANGEROUS_REF.search(content)
-    if not danger_match:
+    head_refs = _walk_checkout_refs(head)
+    if not head_refs:
         return []
 
-    relevant_lines = _lines_to_scan(change)
-    introduced_here = False
-    danger_line: int | None = None
-    danger_text: str = danger_match.group(0).strip()
-    for line_no, line in relevant_lines:
-        if _DANGEROUS_REF.search(line):
-            introduced_here = True
-            danger_line = line_no
-            danger_text = _DANGEROUS_REF.search(line).group(0).strip()
-            break
-        if _has_pr_target_trigger(line) or _CHECKOUT_USES.search(line):
-            introduced_here = True
+    # Diff-aware: any dangerous ref present on base is pre-existing, not new.
+    base = _parse_workflow(change.base_content)
+    base_refs: set[str] = set()
+    if base is not None and _has_pr_target_trigger(_workflow_on(base)):
+        base_refs = set(_walk_checkout_refs(base))
 
-    if not introduced_here:
+    new_dangerous = [r for r in head_refs if r not in base_refs]
+    if not new_dangerous:
         return []
 
-    if danger_line is None:
-        danger_line = content.count("\n", 0, danger_match.start()) + 1
-
+    danger_text = new_dangerous[0]
+    line = _find_line_in(change.head_content, danger_text)
     return [
         Finding(
             path=change.path,
-            line=danger_line,
+            line=line,
             severity="block",
             signal_id="workflow_trust_pr_head_checkout",
             message=(
@@ -176,38 +309,45 @@ def signal_workflow_trust(change: FileChange) -> list[Finding]:
 # ---------------------------------------------------------------------------
 
 
-_ID_TOKEN_WRITE = re.compile(r"^\s*id-token\s*:\s*write\s*(?:#.*)?$")
-
-
 def signal_id_token_outside_allowlist(change: FileChange) -> list[Finding]:
+    """R2. id-token: write mints OIDC tokens. It must appear only in the
+    workflow(s) that actually publish. Generator repo's allowlist is empty.
+
+    Structural diff: fires only if the head workflow grants id-token: write
+    and the base didn't (or didn't exist)."""
     if not is_workflow(change.path) or change.head_content is None:
         return []
     if change.path in ID_TOKEN_ALLOWLIST:
         return []
 
-    findings: list[Finding] = []
-    for line_no, line_content in _lines_to_scan(change):
-        if not _ID_TOKEN_WRITE.match(line_content):
-            continue
-        allowlist_label = ", ".join(sorted(ID_TOKEN_ALLOWLIST)) or "(none — generator repo has no OIDC workflows on origin/main)"
-        findings.append(
-            Finding(
-                path=change.path,
-                line=line_no,
-                severity="block",
-                signal_id="id_token_outside_allowlist",
-                message=(
-                    "id-token: write is granted in a workflow outside the "
-                    "publishing allowlist (%s)." % allowlist_label
-                ),
-                remediation=(
-                    "Remove the id-token permission. If a publishing workflow "
-                    "with OIDC is being introduced, add it to ID_TOKEN_ALLOWLIST "
-                    "in signals.py in the same PR with reviewer sign-off."
-                ),
-            )
+    head = _parse_workflow(change.head_content)
+    if not _walk_id_token_grants(head):
+        return []
+
+    base = _parse_workflow(change.base_content)
+    if base is not None and _walk_id_token_grants(base):
+        # Pre-existing grant; not introduced by this PR.
+        return []
+
+    line = _find_line_in(change.head_content, "id-token")
+    allowlist_label = ", ".join(sorted(ID_TOKEN_ALLOWLIST)) or "(none — generator repo has no OIDC workflows on origin/main)"
+    return [
+        Finding(
+            path=change.path,
+            line=line,
+            severity="block",
+            signal_id="id_token_outside_allowlist",
+            message=(
+                "id-token: write is granted in a workflow outside the "
+                "publishing allowlist (%s)." % allowlist_label
+            ),
+            remediation=(
+                "Remove the id-token permission. If a publishing workflow "
+                "with OIDC is being introduced, add it to ID_TOKEN_ALLOWLIST "
+                "in signals.py in the same PR with reviewer sign-off."
+            ),
         )
-    return findings
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -215,25 +355,34 @@ def signal_id_token_outside_allowlist(change: FileChange) -> list[Finding]:
 # ---------------------------------------------------------------------------
 
 
-_GO_ENV_OVERRIDE = re.compile(
-    r"^\s*(GOPROXY|GOFLAGS|GONOSUMCHECK|GOSUMDB|GONOSUMDB)\s*:\s*\S"
-)
-
-
 def signal_go_env_override(change: FileChange) -> list[Finding]:
+    """R4. Setting GOPROXY / GOFLAGS / GONOSUMCHECK / GOSUMDB inside a
+    workflow env block lets an attacker redirect module resolution or
+    suppress checksum verification (BufferZoneCorp).
+
+    Structural diff: fires for each go-env key newly set in head that wasn't
+    set in base."""
     if not is_workflow(change.path) or change.head_content is None:
         return []
 
+    head_vars = set(_walk_go_env_overrides(_parse_workflow(change.head_content)))
+    if not head_vars:
+        return []
+
+    base_vars: set[str] = set()
+    if change.base_content is not None:
+        base_vars = set(_walk_go_env_overrides(_parse_workflow(change.base_content)))
+
+    new_vars = head_vars - base_vars
+    if not new_vars:
+        return []
+
     findings: list[Finding] = []
-    for line_no, line_content in _lines_to_scan(change):
-        match = _GO_ENV_OVERRIDE.match(line_content)
-        if not match:
-            continue
-        var = match.group(1)
+    for var in sorted(new_vars):
         findings.append(
             Finding(
                 path=change.path,
-                line=line_no,
+                line=_find_line_in(change.head_content, var),
                 severity="block",
                 signal_id="go_env_override_in_workflow",
                 message=(

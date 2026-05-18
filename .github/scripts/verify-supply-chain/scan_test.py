@@ -101,11 +101,40 @@ class WorkflowTrustSignalTest(unittest.TestCase):
         self.assertTrue(findings[0].is_block())
 
     def test_preexisting_dangerous_ref_unchanged_does_not_fire(self) -> None:
-        """Diff-awareness: pre-existing pattern on base with empty diff → no findings."""
+        """Diff-awareness: pre-existing pattern on base unchanged → no findings."""
         wf = "on:\n  pull_request_target:\njobs:\n  x:\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n"
         change = _fc(".github/workflows/legacy.yml", base=wf, head=wf, added=[])
         findings = signals.signal_workflow_trust(change)
         self.assertEqual(findings, [])
+
+    def test_block_scalar_folded_ref_blocks(self) -> None:
+        """Greptile-flagged bypass: YAML folded block-scalar `ref: >-` with
+        the dangerous expression on the next line evades single-line regex
+        but is semantically identical. Structural YAML parsing catches it."""
+        wf = (
+            "on:\n  pull_request_target:\n"
+            "jobs:\n  x:\n    steps:\n"
+            "      - uses: actions/checkout@v4\n"
+            "        with:\n"
+            "          ref: >-\n"
+            "            ${{ github.event.pull_request.head.sha }}\n"
+        )
+        findings = signals.signal_workflow_trust(_fc(".github/workflows/bad.yml", head=wf))
+        self.assertEqual(len(findings), 1)
+        self.assertTrue(findings[0].is_block())
+
+    def test_block_scalar_literal_ref_blocks(self) -> None:
+        """Literal block-scalar form `|-` same as folded — must also block."""
+        wf = (
+            "on:\n  pull_request_target:\n"
+            "jobs:\n  x:\n    steps:\n"
+            "      - uses: actions/checkout@v4\n"
+            "        with:\n"
+            "          ref: |-\n"
+            "            refs/pull/123/merge\n"
+        )
+        findings = signals.signal_workflow_trust(_fc(".github/workflows/bad.yml", head=wf))
+        self.assertEqual(len(findings), 1)
 
 
 class IdTokenSignalTest(unittest.TestCase):
