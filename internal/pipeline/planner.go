@@ -10,12 +10,13 @@ import (
 
 // PlanContext aggregates outputs from completed phases for dynamic plan generation.
 type PlanContext struct {
-	SeedData  SeedData
-	Research  *ResearchResult
-	Dogfood   *DogfoodReport
-	Scorecard *Scorecard
-	Learnings *LearningsDB
-	Readiness *AgentReadinessReport
+	SeedData     SeedData
+	Research     *ResearchResult
+	Dogfood      *DogfoodReport
+	Scorecard    *Scorecard
+	Learnings    *LearningsDB
+	Readiness    *AgentReadinessReport
+	ReadinessErr error
 }
 
 type AgentReadinessVerdict string
@@ -64,7 +65,7 @@ func GenerateNextPlan(state *PipelineState, nextPhase string) (string, error) {
 	case PhaseComparative:
 		return generateComparativePlan(ctx)
 	case PhaseShip:
-		ctx.Readiness, _ = loadAgentReadinessForPlanState(state)
+		ctx.Readiness, ctx.ReadinessErr = loadAgentReadinessForPlanState(state)
 		return generateShipPlan(ctx)
 	default:
 		// Preflight, Research, AgentReadiness use static seeds
@@ -257,7 +258,11 @@ func writeShipDecision(b *strings.Builder, ctx PlanContext) {
 
 	switch {
 	case ctx.Readiness == nil:
-		b.WriteString("- Agent readiness: HOLD - missing pipeline/agent-readiness.md; run the agent-readiness phase before shipping.\n")
+		if ctx.ReadinessErr != nil && !os.IsNotExist(ctx.ReadinessErr) {
+			fmt.Fprintf(b, "- Agent readiness: HOLD - %s.\n", ctx.ReadinessErr)
+		} else {
+			b.WriteString("- Agent readiness: HOLD - missing pipeline/agent-readiness.md; run the agent-readiness phase before shipping.\n")
+		}
 		ship = false
 	case ctx.Readiness.Verdict == AgentReadinessPass:
 		fmt.Fprintf(b, "- Agent readiness: PASS - %s reports Pass.\n", ctx.Readiness.Path)
@@ -390,7 +395,7 @@ func normalizeAgentReadinessFinding(line string) (string, bool) {
 	switch {
 	case strings.HasPrefix(lower, "- ") || strings.HasPrefix(lower, "* "):
 		finding := strings.TrimSpace(trimmed[2:])
-		return finding, strings.Contains(strings.ToLower(finding), "blocker") || strings.Contains(strings.ToLower(finding), "friction")
+		return finding, finding != ""
 	case strings.HasPrefix(trimmed, "|"):
 		return normalizeAgentReadinessTableFinding(readinessTableCells(trimmed))
 	default:

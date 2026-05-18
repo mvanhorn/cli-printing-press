@@ -225,7 +225,7 @@ A non-Pass verdict such as Degrade must block ship, but this prose is not the ve
 
 	shipPlan, err := GenerateNextPlan(state, PhaseShip)
 	require.NoError(t, err)
-	assert.Contains(t, shipPlan, "Agent readiness: HOLD - missing pipeline/agent-readiness.md")
+	assert.Contains(t, shipPlan, "Agent readiness: HOLD - agent-readiness verdict not found")
 	assert.Contains(t, shipPlan, "**HOLD**")
 	assert.NotContains(t, shipPlan, "**SHIP** - Quality and agent-readiness gates both pass.")
 }
@@ -251,4 +251,19 @@ Phase verdict: Degrade
 	require.NoError(t, err)
 	assert.Equal(t, AgentReadinessDegrade, report.Verdict)
 	assert.Equal(t, []string{"Blocker: mutating commands can run under verify mode"}, report.Findings)
+}
+
+func TestLoadAgentReadinessReportCollectsNonKeywordBulletFindings(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agent-readiness.md"), []byte(`## Agent Readiness
+
+Phase verdict: Degrade
+
+- Fail: command crashes with --json flag
+`), 0o644))
+
+	report, err := LoadAgentReadinessReport(dir)
+	require.NoError(t, err)
+	assert.Equal(t, AgentReadinessDegrade, report.Verdict)
+	assert.Equal(t, []string{"Fail: command crashes with --json flag"}, report.Findings)
 }
