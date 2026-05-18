@@ -23,9 +23,12 @@ func TestFindPII_CardLast4(t *testing.T) {
 		expectKinds []string
 	}{
 		{name: "ending-in", line: `"display": "card ending in 4242"`, expectKinds: []string{PIIKindCardLast4}},
-		{name: "mask-asterisks", line: `"masked": "****-****-****-1234"`, expectKinds: []string{PIIKindCardLast4}},
+		{name: "mask-asterisks", line: `"masked": "****-****-****-4321"`, expectKinds: []string{PIIKindCardLast4}},
 		{name: "mask-x", line: `"masked": "xxxx-xxxx-xxxx-9999"`, expectKinds: []string{PIIKindCardLast4}},
-		{name: "visa-context", line: `"brand": "visa 5678"`, expectKinds: []string{PIIKindCardLast4}},
+		{name: "visa-context", line: `"brand": "visa 9876"`, expectKinds: []string{PIIKindCardLast4}},
+		{name: "numeric-placeholder-a-still-flags", line: `"brand": "visa 1234"`, expectKinds: []string{PIIKindCardLast4}},
+		{name: "numeric-placeholder-b-still-flags", line: `"brand": "amex 5678"`, expectKinds: []string{PIIKindCardLast4}},
+		{name: "non-numeric-last4-placeholder", line: `"brand": "visa LAST4"`, expectKinds: nil},
 		{name: "no-context-bare-4digits", line: `* 1234 changelog bullet`, expectKinds: nil},
 		{name: "no-context-year", line: `"version": "2024"`, expectKinds: nil},
 		{name: "no-context-port", line: `"port": "8080"`, expectKinds: nil},
@@ -38,6 +41,43 @@ func TestFindPII_CardLast4(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := scanLine(t, tt.line, "test.json")
 			assertKinds(t, got, tt.expectKinds, PIIKindCardLast4)
+		})
+	}
+}
+
+func TestFindPII_OrderIDs(t *testing.T) {
+	tests := []struct {
+		name        string
+		line        string
+		expectKinds []string
+	}{
+		{name: "physical-order", line: `"order_id": "123-4567890-1234567"`, expectKinds: []string{PIIKindOrderID}},
+		{name: "digital-order", line: `"order_id": "D01-4567890-1234567"`, expectKinds: []string{PIIKindOrderID}},
+		{name: "synthetic-physical-order", line: `"order_id": "111-1111111-1111111"`, expectKinds: nil},
+		{name: "synthetic-digital-order", line: `"order_id": "D01-1111111-1111111"`, expectKinds: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := scanLine(t, tt.line, "test.json")
+			assertKinds(t, got, tt.expectKinds, PIIKindOrderID)
+		})
+	}
+}
+
+func TestFindPII_ASINs(t *testing.T) {
+	tests := []struct {
+		name        string
+		line        string
+		expectKinds []string
+	}{
+		{name: "real-asin", line: `"asin": "B012345678"`, expectKinds: []string{PIIKindASIN}},
+		{name: "synthetic-asin", line: `"asin": "B0EXAMPLE1"`, expectKinds: nil},
+		{name: "not-asin", line: `"sku": "A012345678"`, expectKinds: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := scanLine(t, tt.line, "test.json")
+			assertKinds(t, got, tt.expectKinds, PIIKindASIN)
 		})
 	}
 }
@@ -126,6 +166,7 @@ func TestFindPII_PostalAddress(t *testing.T) {
 		{name: "main-street-title", line: `"address": "1234 Main Street"`, expectKinds: []string{PIIKindPostalAddress}},
 		{name: "ave-title", line: `"line1": "567 Park Ave"`, expectKinds: []string{PIIKindPostalAddress}},
 		{name: "drive-lowercase-suffix", line: `"line1": "890 Sunset drive"`, expectKinds: []string{PIIKindPostalAddress}},
+		{name: "synthetic-address", line: `"address": "123 Test St, Anytown, ST 12345"`, expectKinds: nil},
 		{name: "no-number", line: `"page": "SEE README.MD"`, expectKinds: nil},
 		{name: "no-suffix", line: `"line": "1234 MAIN"`, expectKinds: nil},
 		// Regression guards: conversational prose where the name words

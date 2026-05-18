@@ -408,10 +408,15 @@ func newPublishPackageCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "warning: no manuscripts found, packaging without them")
 			}
 
-			findings, err := artifacts.FindVendorPrefixSecrets(outCLIDir)
+			cookieNames, err := stagedPackageCookieNames(outCLIDir)
 			if err != nil {
 				cleanupOnFailure()
-				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for vendor-prefix tokens: %w", err)}
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("reading staged package cookie auth metadata: %w", err)}
+			}
+			findings, err := artifacts.FindPackageSecrets(outCLIDir, cookieNames)
+			if err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for secret tokens: %w", err)}
 			}
 
 			piiResult, piiErr := artifacts.RunPIIAudit(outCLIDir)
@@ -1158,6 +1163,22 @@ func hasContent(dir string) bool {
 		}
 	}
 	return false
+}
+
+func stagedPackageCookieNames(dir string) ([]string, error) {
+	manifest, err := pipeline.ReadToolsManifest(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	switch strings.ToLower(strings.TrimSpace(manifest.Auth.Type)) {
+	case "cookie", "composed":
+		return manifest.Auth.Cookies, nil
+	default:
+		return nil, nil
+	}
 }
 
 // formatCombinedScanError composes the publish-time error message from

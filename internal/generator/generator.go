@@ -4275,6 +4275,10 @@ func (g *Generator) mcpParamDescription(p spec.Param) string {
 }
 
 func exampleValue(p spec.Param) string {
+	if value, ok := syntheticExampleValue(p.Name); ok {
+		return value
+	}
+
 	nameLower := strings.ToLower(p.Name)
 
 	// camelCase `*Id` carries an exclusion fence so bool/numeric params
