@@ -314,9 +314,17 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 		"func ensureFreshForResources(",
 		"func ensureFreshForCommand(",
 		"func runAutoRefresh(",
+		"func emitCacheRefreshFailedEvent(",
 		`"freshness-pp-cli dashboard": {`,
 		`"items",`,
 		`envOptOut := "FRESHNESS_NO_AUTO_REFRESH"`,
+		// Refresh failure must emit a structured JSON event to stderr so
+		// agents reading novel-command output that bypasses
+		// wrapWithProvenance still see a parseable degraded-state signal
+		// (issue #1263). The prose warning remains for humans.
+		`emitCacheRefreshFailedEvent(resources, err)`,
+		`Event:     "cache_warning",`,
+		`Reason:    "refresh_failed",`,
 	} {
 		assert.Contains(t, src, snippet, "auto_refresh.go missing %q", snippet)
 	}
@@ -9829,6 +9837,18 @@ func TestGenerateNoEndpointTemplateVarsByteCompat(t *testing.T) {
 	configGo := string(configGoBytes)
 	assert.NotContains(t, configGo, "TemplateVars",
 		"config struct must not carry TemplateVars when EndpointTemplateVars is empty")
+
+	// --path-context is profiler-driven: emitting it on a plain API would
+	// add a flag with nothing to substitute and bloat the help surface for
+	// every printed CLI that does not need it (#1332).
+	syncGoPath := filepath.Join(outputDir, "internal", "cli", "sync.go")
+	if syncGoBytes, syncErr := os.ReadFile(syncGoPath); syncErr == nil {
+		syncGo := string(syncGoBytes)
+		assert.NotContains(t, syncGo, "path-context",
+			"sync must not emit --path-context when EndpointTemplateVars is empty")
+		assert.NotContains(t, syncGo, "pathContextFlags",
+			"sync must not declare pathContextFlags when EndpointTemplateVars is empty")
+	}
 }
 
 // TestGenerateResourceBaseURLOverrideRoutesToOverrideHost — Open-Meteo
@@ -11410,11 +11430,28 @@ func TestGenerateEndpointTemplateEnvOverridesWireThrough(t *testing.T) {
 		"sync must declare the template-var set so the unresolved-key check ignores {tenant}")
 	assert.Contains(t, syncSrc, `slices.DeleteFunc`,
 		"sync must filter template-var placeholders out of the missing-keys list before warning")
+	// --path-context is the runtime override hatch for spec-declared
+	// EndpointTemplateVars (#1332). It must appear on the sync command when
+	// the spec has template-var placeholders so users can fill any {key} at
+	// the call site instead of re-exporting an env var.
+	assert.Contains(t, syncSrc, `&pathContextFlags, "path-context"`,
+		"sync must register the --path-context flag when EndpointTemplateVars is non-empty")
+	assert.Contains(t, syncSrc, `parseSyncKVFlags(pathContextFlags, "--path-context")`,
+		"sync RunE must parse --path-context entries via the shared KV parser")
+	assert.Contains(t, syncSrc, "c.Config.TemplateVars[k] = v",
+		"sync must merge --path-context values into Config.TemplateVars so buildURL substitution picks them up")
 
 	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 	require.NoError(t, err)
 	assert.Contains(t, string(readme), "ST_TENANT_ID",
 		"README must surface the override env var name in the runtime endpoint instructions")
+
+	// Compile the generated tree so the --path-context emission and the
+	// Config.TemplateVars merge land as valid Go; a template-level bracket
+	// mistake would otherwise pass the string-Contains checks above but
+	// blow up at install time for every printed CLI.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
 }
 
 // TestGenerateParentNoSubcommandRunE_WiredOnResourceParents: every generated
