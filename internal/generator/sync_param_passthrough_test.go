@@ -233,3 +233,91 @@ func TestGenerateSyncDependentErrorNotSilent(t *testing.T) {
 	assert.Contains(t, syncSrc, "syncErrorJSON(dep.Name, parentID, err)",
 		"dependent-resource non-warning error must emit a sync_error JSON event with the parent ID")
 }
+
+// noBulkListSpec mirrors the Allrecipes shape (issue #1156): a resource whose
+// only GET endpoints are a parameterized detail page and a search with a
+// required query param. Neither qualifies as a syncable list endpoint, so
+// the generator's profile lands SyncableResources empty.
+func noBulkListSpec(name string) *spec.APISpec {
+	apiSpec := minimalSpec(name)
+	apiSpec.Resources = map[string]spec.Resource{
+		"recipes": {
+			Description: "Recipes",
+			Endpoints: map[string]spec.Endpoint{
+				"get": {
+					Method: "GET",
+					Path:   "/recipe/{recipe_id}/{slug}",
+					Params: []spec.Param{
+						{Name: "recipe_id", PathParam: true, Required: true, Type: "string"},
+						{Name: "slug", PathParam: true, Required: true, Type: "string"},
+					},
+					Response: spec.ResponseDef{Type: "object", Item: "Recipe"},
+				},
+				"search": {
+					Method: "GET",
+					Path:   "/search",
+					Params: []spec.Param{
+						{Name: "q", Required: true, Type: "string"},
+					},
+					Response: spec.ResponseDef{Type: "array"},
+				},
+			},
+		},
+	}
+	return apiSpec
+}
+
+// TestGenerateSyncEmitsEmptyHintWhenNoBulkList covers issue #1156. When a spec
+// has no bulk-list endpoint (only parameterized detail pages and required-
+// query searches), defaultSyncResources renders empty and the runtime sync
+// command is a no-op. The template must emit a clear hint so users and agents
+// understand the silence and can find the population path (single-fetch
+// commands writing to the store).
+func TestGenerateSyncEmitsEmptyHintWhenNoBulkList(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := noBulkListSpec("nobulk")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncSrc := string(syncGo)
+
+	// Sanity: the structural precondition matches Allrecipes shape with both
+	// syncable and dependent slices empty, so defaultSyncResources renders
+	// with an empty body.
+	assert.Regexp(t,
+		`func defaultSyncResources\(\) \[\]string \{\s*return \[\]string\{\}\s*\}`,
+		syncSrc,
+		"defaultSyncResources should be empty for a spec with no bulk-list endpoints",
+	)
+
+	// The runtime hint surfaces in both modes so JSON-driven agents and human
+	// callers both see the explanation instead of a silent total_records:0.
+	assert.Contains(t, syncSrc, "no bulk-list endpoints",
+		"sync should print a stderr hint when defaultSyncResources is empty")
+	assert.Contains(t, syncSrc, `"reason":"no_bulk_list_endpoints"`,
+		"sync should emit a sync_warning JSON event when defaultSyncResources is empty")
+}
+
+// TestGenerateSyncSkipsEmptyHintWhenBulkListExists ensures the template hint
+// is template-time conditional and does not appear when the spec exposes at
+// least one syncable resource. Without this guard, every CLI would carry the
+// dead branch.
+func TestGenerateSyncSkipsEmptyHintWhenBulkListExists(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("withbulk")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncSrc := string(syncGo)
+
+	assert.NotContains(t, syncSrc, "no bulk-list endpoints",
+		"sync should not carry the empty-list hint when a syncable resource exists")
+	assert.NotContains(t, syncSrc, `"reason":"no_bulk_list_endpoints"`,
+		"sync should not emit the no_bulk_list_endpoints event when a syncable resource exists")
+}

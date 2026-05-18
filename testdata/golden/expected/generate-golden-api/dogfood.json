@@ -51,7 +51,9 @@
     "detail": "sync uses domain-specific Upsert methods; search uses generic Search only; 1 domain tables found",
     "domain_tables": 1,
     "search_calls_domain": false,
-    "sync_calls_domain": true
+    "sync_calls_domain": true,
+    "sync_file_emitted": true,
+    "sync_resources_present": true
   },
   "print_json_filtered_check": {
     "checked": 34

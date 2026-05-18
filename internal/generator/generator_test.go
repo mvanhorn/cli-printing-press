@@ -314,6 +314,14 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 		"func ensureFreshForResources(",
 		"func ensureFreshForCommand(",
 		"func runAutoRefresh(",
+		// Refresh failure must emit a structured JSON event to stderr so
+		// agents reading novel-command output that bypasses
+		// wrapWithProvenance still see a parseable degraded-state signal
+		// (issue #1263). The prose warning remains for humans.
+		"func emitCacheRefreshFailedEvent(",
+		`emitCacheRefreshFailedEvent(resources, err)`,
+		`"cache_warning"`,
+		`"refresh_failed"`,
 		`"freshness-pp-cli dashboard": {`,
 		`"items",`,
 		`envOptOut := "FRESHNESS_NO_AUTO_REFRESH"`,
@@ -325,6 +333,26 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 	require.NotEqual(t, -1, optOutIndex, "auto_refresh.go must report env opt-out")
 	require.NotEqual(t, -1, openStoreIndex, "auto_refresh.go must open the store after opt-out checks")
 	assert.Less(t, optOutIndex, openStoreIndex, "env opt-out must be checked before opening/migrating the store")
+
+	// auto_refresh_test.go covers the structured cache_warning emitter so a
+	// Go syntax error in auto_refresh_test.go.tmpl is caught at generation
+	// time rather than propagating silently to every customer CLI (the
+	// golden suite has no cache-enabled case, so the template is otherwise
+	// never compiled by scripts/golden.sh verify).
+	autoRefreshTestPath := filepath.Join(outputDir, "internal", "cli", "auto_refresh_test.go")
+	testData, err := os.ReadFile(autoRefreshTestPath)
+	require.NoError(t, err, "auto_refresh_test.go must be emitted when cache is enabled")
+	testSrc := string(testData)
+	for _, snippet := range []string{
+		"func captureStderr(t *testing.T, fn func()) []byte",
+		"func TestEmitCacheRefreshFailedEvent(t *testing.T)",
+		"func TestEmitCacheRefreshFailedEvent_NilResources(t *testing.T)",
+		`emitCacheRefreshFailedEvent([]string{"items"}`,
+		`"cache_warning"`,
+		`"refresh_failed"`,
+	} {
+		assert.Contains(t, testSrc, snippet, "auto_refresh_test.go missing %q", snippet)
+	}
 
 	dataSource, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "data_source.go"))
 	require.NoError(t, err)
