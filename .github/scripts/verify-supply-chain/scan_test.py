@@ -93,6 +93,20 @@ class WorkflowTrustSignalTest(unittest.TestCase):
         findings = signals.signal_workflow_trust(_fc(".github/workflows/ci.yml", head=wf))
         self.assertEqual(findings, [])
 
+    def test_flow_sequence_trigger_blocks(self) -> None:
+        """Compact YAML flow-sequence trigger form `on: [pull_request_target, push]`."""
+        wf = "on: [pull_request_target, push]\njobs:\n  x:\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n"
+        findings = signals.signal_workflow_trust(_fc(".github/workflows/bad.yml", head=wf))
+        self.assertEqual(len(findings), 1)
+        self.assertTrue(findings[0].is_block())
+
+    def test_preexisting_dangerous_ref_unchanged_does_not_fire(self) -> None:
+        """Diff-awareness: pre-existing pattern on base with empty diff → no findings."""
+        wf = "on:\n  pull_request_target:\njobs:\n  x:\n    steps:\n      - uses: actions/checkout@v4\n        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n"
+        change = _fc(".github/workflows/legacy.yml", base=wf, head=wf, added=[])
+        findings = signals.signal_workflow_trust(change)
+        self.assertEqual(findings, [])
+
 
 class IdTokenSignalTest(unittest.TestCase):
     def test_id_token_in_any_workflow_blocks(self) -> None:
@@ -110,6 +124,14 @@ class IdTokenSignalTest(unittest.TestCase):
         findings = signals.signal_id_token_outside_allowlist(
             _fc(".github/workflows/anything.yml", head=wf)
         )
+        self.assertEqual(findings, [])
+
+    def test_preexisting_id_token_unchanged_does_not_fire(self) -> None:
+        """Diff-aware: a pre-existing id-token grant shouldn't be re-flagged
+        when the diff doesn't touch it."""
+        wf = "permissions:\n  id-token: write\n  contents: read\n"
+        change = _fc(".github/workflows/legacy.yml", base=wf, head=wf, added=[])
+        findings = signals.signal_id_token_outside_allowlist(change)
         self.assertEqual(findings, [])
 
 
@@ -133,6 +155,13 @@ class GoEnvOverrideSignalTest(unittest.TestCase):
     def test_unrelated_env_does_not_fire(self) -> None:
         wf = "env:\n  GO_VERSION: 1.22\n  CGO_ENABLED: 0\n"
         findings = signals.signal_go_env_override(_fc(".github/workflows/ok.yml", head=wf))
+        self.assertEqual(findings, [])
+
+    def test_preexisting_goproxy_unchanged_does_not_fire(self) -> None:
+        """Diff-aware: pre-existing GOPROXY on base shouldn't re-fire."""
+        wf = "env:\n  GOPROXY: https://corp.example/\n"
+        change = _fc(".github/workflows/legacy.yml", base=wf, head=wf, added=[])
+        findings = signals.signal_go_env_override(change)
         self.assertEqual(findings, [])
 
 
