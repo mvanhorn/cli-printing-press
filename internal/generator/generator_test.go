@@ -314,6 +314,14 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 		"func ensureFreshForResources(",
 		"func ensureFreshForCommand(",
 		"func runAutoRefresh(",
+		// Refresh failure must emit a structured JSON event to stderr so
+		// agents reading novel-command output that bypasses
+		// wrapWithProvenance still see a parseable degraded-state signal
+		// (issue #1263). The prose warning remains for humans.
+		"func emitCacheRefreshFailedEvent(",
+		`emitCacheRefreshFailedEvent(resources, err)`,
+		`"cache_warning"`,
+		`"refresh_failed"`,
 		`"freshness-pp-cli dashboard": {`,
 		`"items",`,
 		`envOptOut := "FRESHNESS_NO_AUTO_REFRESH"`,
@@ -325,6 +333,26 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 	require.NotEqual(t, -1, optOutIndex, "auto_refresh.go must report env opt-out")
 	require.NotEqual(t, -1, openStoreIndex, "auto_refresh.go must open the store after opt-out checks")
 	assert.Less(t, optOutIndex, openStoreIndex, "env opt-out must be checked before opening/migrating the store")
+
+	// auto_refresh_test.go covers the structured cache_warning emitter so a
+	// Go syntax error in auto_refresh_test.go.tmpl is caught at generation
+	// time rather than propagating silently to every customer CLI (the
+	// golden suite has no cache-enabled case, so the template is otherwise
+	// never compiled by scripts/golden.sh verify).
+	autoRefreshTestPath := filepath.Join(outputDir, "internal", "cli", "auto_refresh_test.go")
+	testData, err := os.ReadFile(autoRefreshTestPath)
+	require.NoError(t, err, "auto_refresh_test.go must be emitted when cache is enabled")
+	testSrc := string(testData)
+	for _, snippet := range []string{
+		"func captureStderr(t *testing.T, fn func()) []byte",
+		"func TestEmitCacheRefreshFailedEvent(t *testing.T)",
+		"func TestEmitCacheRefreshFailedEvent_NilResources(t *testing.T)",
+		`emitCacheRefreshFailedEvent([]string{"items"}`,
+		`"cache_warning"`,
+		`"refresh_failed"`,
+	} {
+		assert.Contains(t, testSrc, snippet, "auto_refresh_test.go missing %q", snippet)
+	}
 
 	dataSource, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "data_source.go"))
 	require.NoError(t, err)
@@ -9829,6 +9857,18 @@ func TestGenerateNoEndpointTemplateVarsByteCompat(t *testing.T) {
 	configGo := string(configGoBytes)
 	assert.NotContains(t, configGo, "TemplateVars",
 		"config struct must not carry TemplateVars when EndpointTemplateVars is empty")
+
+	// --path-context is profiler-driven: emitting it on a plain API would
+	// add a flag with nothing to substitute and bloat the help surface for
+	// every printed CLI that does not need it (#1332).
+	syncGoPath := filepath.Join(outputDir, "internal", "cli", "sync.go")
+	if syncGoBytes, syncErr := os.ReadFile(syncGoPath); syncErr == nil {
+		syncGo := string(syncGoBytes)
+		assert.NotContains(t, syncGo, "path-context",
+			"sync must not emit --path-context when EndpointTemplateVars is empty")
+		assert.NotContains(t, syncGo, "pathContextFlags",
+			"sync must not declare pathContextFlags when EndpointTemplateVars is empty")
+	}
 }
 
 // TestGenerateResourceBaseURLOverrideRoutesToOverrideHost — Open-Meteo
@@ -11410,11 +11450,28 @@ func TestGenerateEndpointTemplateEnvOverridesWireThrough(t *testing.T) {
 		"sync must declare the template-var set so the unresolved-key check ignores {tenant}")
 	assert.Contains(t, syncSrc, `slices.DeleteFunc`,
 		"sync must filter template-var placeholders out of the missing-keys list before warning")
+	// --path-context is the runtime override hatch for spec-declared
+	// EndpointTemplateVars (#1332). It must appear on the sync command when
+	// the spec has template-var placeholders so users can fill any {key} at
+	// the call site instead of re-exporting an env var.
+	assert.Contains(t, syncSrc, `&pathContextFlags, "path-context"`,
+		"sync must register the --path-context flag when EndpointTemplateVars is non-empty")
+	assert.Contains(t, syncSrc, `parseSyncKVFlags(pathContextFlags, "--path-context")`,
+		"sync RunE must parse --path-context entries via the shared KV parser")
+	assert.Contains(t, syncSrc, "c.Config.TemplateVars[k] = v",
+		"sync must merge --path-context values into Config.TemplateVars so buildURL substitution picks them up")
 
 	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 	require.NoError(t, err)
 	assert.Contains(t, string(readme), "ST_TENANT_ID",
 		"README must surface the override env var name in the runtime endpoint instructions")
+
+	// Compile the generated tree so the --path-context emission and the
+	// Config.TemplateVars merge land as valid Go; a template-level bracket
+	// mistake would otherwise pass the string-Contains checks above but
+	// blow up at install time for every printed CLI.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
 }
 
 // TestGenerateParentNoSubcommandRunE_WiredOnResourceParents: every generated

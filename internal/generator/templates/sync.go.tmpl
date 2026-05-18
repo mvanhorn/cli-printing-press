@@ -69,6 +69,9 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var paramFlags []string
 	var resourceParamFlags []string
 	var globalParamFlags []string
+{{- if .EndpointTemplateVars}}
+	var pathContextFlags []string
+{{- end}}
 {{- if .Pagination.DateRangeParam}}
 	var dates string
 {{- end}}
@@ -129,12 +132,46 @@ Resource scoping:
 			if err != nil {
 				return usageErr(err)
 			}
+{{- if .EndpointTemplateVars}}
+			pathContext, err := parseSyncKVFlags(pathContextFlags, "--path-context")
+			if err != nil {
+				return usageErr(err)
+			}
+{{- end}}
 
 			c, err := flags.newClient()
 			if err != nil {
 				return err
 			}
 			c.NoCache = true
+{{- if .EndpointTemplateVars}}
+			// Merge --path-context values into Config.TemplateVars so the
+			// existing buildURL substitution pipeline picks them up for every
+			// request (both BaseURL and request-path placeholders). Call-site
+			// values win over env-resolved defaults: the flag is the one-off
+			// override hatch when the env variable already holds a different
+			// value, and the only fill mechanism for placeholders the spec
+			// did not annotate with x-tenant-env-var.
+			if len(pathContext) > 0 {
+				if c.Config == nil {
+					return fmt.Errorf("--path-context requires a loaded config (no Config attached to client)")
+				}
+				if c.Config.TemplateVars == nil {
+					c.Config.TemplateVars = map[string]string{}
+				}
+				// Warn on keys outside endpointTemplateVarSet so typos
+				// (e.g. --path-context tneant=...) surface immediately
+				// instead of silently producing a run that used the
+				// env-resolved default. Non-fatal: the merge still proceeds
+				// so callers passing forward-compat keys aren't blocked.
+				for k, v := range pathContext {
+					if !endpointTemplateVarSet[k] {
+						fmt.Fprintf(os.Stderr, "warning: --path-context key %q is not a known endpoint placeholder; this value will not be substituted into any request path\n", k)
+					}
+					c.Config.TemplateVars[k] = v
+				}
+			}
+{{- end}}
 
 			if dbPath == "" {
 				dbPath = defaultDBPath("{{.Name}}-pp-cli")
@@ -391,6 +428,9 @@ Resource scoping:
 	cmd.Flags().StringArrayVar(&paramFlags, "param", nil, "Extra query param to inject into flat-list sync requests (repeatable, key=value). Skipped on path-scoped dependent requests so a top-level scope like workspace=<id> does not double up on /parents/<id>/children calls. Use --global-param to inject everywhere. Avoid pagination keys (limit/since/cursor) — overriding them corrupts resume state.")
 	cmd.Flags().StringArrayVar(&resourceParamFlags, "resource-param", nil, "Per-resource extra query param (repeatable, resource:key=value). Wins over --param and --global-param when keys conflict.")
 	cmd.Flags().StringArrayVar(&globalParamFlags, "global-param", nil, "Extra query param to inject into every sync request including dependent path-scoped calls (repeatable, key=value). Use when an API requires a scope on every call regardless of path nesting.")
+{{- if .EndpointTemplateVars}}
+	cmd.Flags().StringArrayVar(&pathContextFlags, "path-context", nil, "Fill a {key} placeholder in BaseURL or request paths from a supplied value (repeatable, key=value). Wins over env-resolved Config.TemplateVars values, so it doubles as a one-off override at the call site. Use it when an env variable already holds a different value, or when the spec did not annotate the placeholder with an env var.")
+{{- end}}
 {{- if .Pagination.DateRangeParam}}
 	cmd.Flags().StringVar(&dates, "dates", "", "Date or date range to sync (passed as {{.Pagination.DateRangeParam}} query parameter)")
 {{- end}}
