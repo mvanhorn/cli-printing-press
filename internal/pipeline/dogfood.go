@@ -22,10 +22,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// DogfoodSpecSource identifies which spec input RunDogfood actually loaded
+// when both a bundled <dir>/spec.* and a caller-passed --spec are reachable.
+type DogfoodSpecSource string
+
+const (
+	DogfoodSpecSourceBundled DogfoodSpecSource = "bundled"
+	DogfoodSpecSourceCaller  DogfoodSpecSource = "caller"
+)
+
 type DogfoodReport struct {
 	Dir                    string                       `json:"dir"`
 	SpecPath               string                       `json:"spec_path,omitempty"`
-	SpecSource             string                       `json:"spec_source,omitempty"`
+	SpecSource             DogfoodSpecSource            `json:"spec_source,omitempty"`
 	Verdict                string                       `json:"verdict"`
 	PathCheck              PathCheckResult              `json:"path_check"`
 	AuthCheck              AuthCheckResult              `json:"auth_check"`
@@ -629,23 +638,23 @@ func writeDogfoodResults(report *DogfoodReport, dir string) error {
 // for the printed CLI; preferring it over a caller-passed --spec avoids
 // false-negative Path Validity / Auth Protocol regressions when the caller
 // reaches into a multi-spec manuscripts directory and picks the upstream spec
-// instead of the internal one the CLI was actually generated from (#1620).
+// instead of the internal one the CLI was actually generated from.
 //
-// Returns the resolved path, its source ("bundled" / "caller" / ""), and —
-// when bundled won over a different caller path — the caller's overridden
-// path for surfacing in a warning. When neither a bundled nor a caller spec
-// exists, all three return values are empty and downstream checks that
-// require a spec are skipped exactly as before.
-func resolveDogfoodSpec(dir, callerSpec string) (resolved, source, overriddenCaller string) {
+// Returns the resolved path, its DogfoodSpecSource, and — when bundled won
+// over a different caller path — the caller's overridden path for surfacing
+// in a warning. When neither a bundled nor a caller spec exists, all three
+// return values are empty and downstream checks that require a spec are
+// skipped exactly as before.
+func resolveDogfoodSpec(dir, callerSpec string) (resolved string, source DogfoodSpecSource, overriddenCaller string) {
 	bundled := findBundledDogfoodSpec(dir)
 	if bundled != "" {
 		if callerSpec != "" && !samePath(bundled, callerSpec) {
 			overriddenCaller = callerSpec
 		}
-		return bundled, "bundled", overriddenCaller
+		return bundled, DogfoodSpecSourceBundled, overriddenCaller
 	}
 	if callerSpec != "" {
-		return callerSpec, "caller", ""
+		return callerSpec, DogfoodSpecSourceCaller, ""
 	}
 	return "", "", ""
 }
@@ -679,8 +688,8 @@ func absOrSame(p string) string {
 	return p
 }
 
-func specSourceLabel(source string) string {
-	if source == "bundled" {
+func specSourceLabel(source DogfoodSpecSource) string {
+	if source == DogfoodSpecSourceBundled {
 		return "bundled"
 	}
 	return "--spec"

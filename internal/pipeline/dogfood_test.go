@@ -1575,7 +1575,7 @@ func writeTestFile(t *testing.T, path string, content string) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 }
 
-// --- resolveDogfoodSpec (#1620) ---
+// --- resolveDogfoodSpec ---
 
 func TestResolveDogfoodSpec_PrefersBundledOverCallerSpec(t *testing.T) {
 	dir := t.TempDir()
@@ -1587,7 +1587,7 @@ func TestResolveDogfoodSpec_PrefersBundledOverCallerSpec(t *testing.T) {
 
 	resolved, source, overridden := resolveDogfoodSpec(dir, caller)
 	assert.Equal(t, bundled, resolved)
-	assert.Equal(t, "bundled", source)
+	assert.Equal(t, DogfoodSpecSourceBundled, source)
 	assert.Equal(t, caller, overridden)
 }
 
@@ -1598,7 +1598,7 @@ func TestResolveDogfoodSpec_NoOverrideWhenCallerPointsAtBundled(t *testing.T) {
 
 	resolved, source, overridden := resolveDogfoodSpec(dir, bundled)
 	assert.Equal(t, bundled, resolved)
-	assert.Equal(t, "bundled", source)
+	assert.Equal(t, DogfoodSpecSourceBundled, source)
 	assert.Empty(t, overridden, "caller path equal to bundled should not be reported as overridden")
 }
 
@@ -1609,7 +1609,7 @@ func TestResolveDogfoodSpec_FallsThroughWhenNoBundled(t *testing.T) {
 
 	resolved, source, overridden := resolveDogfoodSpec(dir, caller)
 	assert.Equal(t, caller, resolved)
-	assert.Equal(t, "caller", source)
+	assert.Equal(t, DogfoodSpecSourceCaller, source)
 	assert.Empty(t, overridden)
 }
 
@@ -1629,11 +1629,11 @@ func TestResolveDogfoodSpec_PrefersSpecJSONOverSpecYAML(t *testing.T) {
 
 	resolved, source, _ := resolveDogfoodSpec(dir, "")
 	assert.Equal(t, jsonSpec, resolved, "spec.json should win when both archive formats are present (mirrors findArchivedSpec)")
-	assert.Equal(t, "bundled", source)
+	assert.Equal(t, DogfoodSpecSourceBundled, source)
 }
 
 // End-to-end: RunDogfood should score against the bundled spec when the caller
-// passes a different (smaller) spec — the symptom reported in #1620.
+// passes a different (smaller) spec.
 func TestRunDogfood_BundledSpecOverridesCallerSpec(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
@@ -1688,14 +1688,14 @@ func authHeader(token string) string { return "Bearer " + token }
 	require.NoError(t, err)
 
 	assert.Equal(t, bundledSpec, report.SpecPath, "RunDogfood should record the bundled path it actually loaded")
-	assert.Equal(t, "bundled", report.SpecSource)
+	assert.Equal(t, DogfoodSpecSourceBundled, report.SpecSource)
 	assert.Equal(t, 2, report.PathCheck.Tested, "should score against the bundled 2-endpoint spec, not the 1-endpoint caller spec")
 	assert.Equal(t, 2, report.PathCheck.Valid)
 }
 
 // When no spec is archived alongside the CLI, RunDogfood must still honor the
-// caller's --spec exactly as it did before #1620 — no regression for legacy
-// or orphan CLI directories that pre-date publish package's spec-bundling.
+// caller's --spec — no regression for legacy or orphan CLI directories that
+// pre-date publish package's spec-bundling.
 func TestRunDogfood_FallsBackToCallerSpecWhenNoBundle(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
@@ -1728,7 +1728,7 @@ func authHeader(token string) string { return "Bearer " + token }
 	require.NoError(t, err)
 
 	assert.Equal(t, callerSpec, report.SpecPath)
-	assert.Equal(t, "caller", report.SpecSource)
+	assert.Equal(t, DogfoodSpecSourceCaller, report.SpecSource)
 	assert.Equal(t, 1, report.PathCheck.Tested)
 }
 
