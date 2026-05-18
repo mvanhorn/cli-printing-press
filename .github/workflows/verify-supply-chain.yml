@@ -1,0 +1,61 @@
+name: Verify supply chain
+
+# Mirror of the supply-chain hardening gate from
+# mvanhorn/printing-press-library/.github/workflows/verify-supply-chain.yml
+# (2026-05-17). Catches the workflow-trust and Go-module-env attack shapes
+# in PRs against this generator repo.
+#
+# Scope adapted: this repo doesn't have a library/**/go.mod surface, an
+# npm wrapper, or published-CLI module paths, so signals for those are
+# omitted. See .github/scripts/verify-supply-chain/signals.py for the
+# rationale.
+#
+# Informational on landing — promote to a required check via branch
+# protection only after a one-week green window.
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - '.github/scripts/verify-supply-chain/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-supply-chain-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run supply-chain scan
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          git remote add base "https://github.com/${BASE_REPO}.git" 2>/dev/null || git remote set-url base "https://github.com/${BASE_REPO}.git"
+          base_remote_ref="refs/remotes/base/${BASE_REF}"
+          if ! git show-ref --verify --quiet "${base_remote_ref}"; then
+            git fetch --no-tags base "${BASE_REF}:${base_remote_ref}"
+          fi
+
+          python3 .github/scripts/verify-supply-chain/scan.py --base-ref "${base_remote_ref}"
+
+      - name: Run supply-chain scan (manual dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        run: python3 .github/scripts/verify-supply-chain/scan.py --base-ref origin/main
