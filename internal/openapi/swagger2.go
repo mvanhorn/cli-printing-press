@@ -37,14 +37,13 @@ func isSwagger2SpecJSON(data []byte) bool {
 		return false
 	}
 	// Disambiguate from OpenAPI 3 specs that mention "swagger" as a string
-	// value (description text, x-* extension keys). Look for the value form
-	// `"swagger":"2.0"` or `"swagger": "2.0"` produced by encoding/json's
-	// canonical-ish output. encoding/json drops spaces after the colon, but
-	// keep both variants for defensive parsing.
+	// value (description text, x-* extension keys). Match only the canonical
+	// `"2.0"` value form — the Swagger 2.0 spec mandates the version string
+	// exactly. encoding/json drops spaces after the colon, but keep both
+	// variants since this helper may be reached from paths where the input
+	// has been re-serialized by a non-encoding/json marshaller.
 	if bytes.Contains(head, []byte(`"swagger":"2.0"`)) ||
-		bytes.Contains(head, []byte(`"swagger": "2.0"`)) ||
-		bytes.Contains(head, []byte(`"swagger":"2"`)) ||
-		bytes.Contains(head, []byte(`"swagger": "2"`)) {
+		bytes.Contains(head, []byte(`"swagger": "2.0"`)) {
 		return true
 	}
 	return false
@@ -66,8 +65,10 @@ func loadSwagger2AsOpenAPI3(data []byte, lenient bool, location *url.URL) (*open
 		return nil, fmt.Errorf("loading Swagger 2.0 spec: %w", err)
 	}
 
-	loader := openapi3.NewLoader()
-	loader.IsExternalRefsAllowed = lenient || location != nil
+	// Reuse the OpenAPI 3 loader configuration so the conversion path honors
+	// the same external-ref policy (strict file-URI guard + YAML->JSON
+	// normalization for referenced files) as the direct OpenAPI 3 load path.
+	loader := newConfiguredOpenAPI3Loader(lenient, location)
 
 	fmt.Fprintf(os.Stderr, "info: converting Swagger 2.0 spec to OpenAPI 3 before parsing\n")
 

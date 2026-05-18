@@ -38,6 +38,18 @@ func TestIsSwagger2SpecJSON(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "swagger 2 without minor version",
+			// Bare "2" is not a Swagger version string and must not match.
+			data: []byte(`{"swagger":"2","info":{"title":"Demo","version":"1.0.0"},"paths":{}}`),
+			want: false,
+		},
+		{
+			name: "swagger future minor version",
+			// "2.5" is not Swagger 2.0; prefix-match temptation must be avoided.
+			data: []byte(`{"swagger":"2.5","info":{"title":"Demo","version":"1.0.0"},"paths":{}}`),
+			want: false,
+		},
+		{
 			name: "empty",
 			data: []byte{},
 			want: false,
@@ -113,6 +125,12 @@ func TestParseSwagger2WithCircularRefsConverts(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(30 * time.Second):
+		// Note: this intentionally abandons the Parse goroutine when the
+		// regression returns. Parse exposes no cancellation hook, so the
+		// alternative is letting the test run for ~25 minutes and OOM the
+		// CI runner before failing. Leaking one goroutine for the rest of
+		// the test binary's lifetime is the lesser evil; the failure will
+		// surface immediately and the run will end shortly after.
 		t.Fatal("parsing cyclic Swagger 2.0 spec did not complete within 30s; regression of issue #1241")
 	}
 

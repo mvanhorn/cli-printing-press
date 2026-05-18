@@ -1072,6 +1072,19 @@ func loadOpenAPIDoc(data []byte, lenient bool, location *url.URL) (*openapi3.T, 
 		return loadSwagger2AsOpenAPI3(data, lenient, location)
 	}
 
+	loader := newConfiguredOpenAPI3Loader(lenient, location)
+	if location != nil {
+		return loader.LoadFromDataWithPath(data, location)
+	}
+	return loader.LoadFromData(data)
+}
+
+// newConfiguredOpenAPI3Loader returns an openapi3.Loader with the project's
+// standard ReadFromURIFunc installed: the per-ref file-URI guard for strict
+// mode and the YAML->JSON normalization step for referenced files. Shared
+// between the OpenAPI 3 load path and the Swagger 2.0 conversion path so both
+// honor the same external-ref policy.
+func newConfiguredOpenAPI3Loader(lenient bool, location *url.URL) *openapi3.Loader {
 	loader := openapi3.NewLoader()
 	loader.IsExternalRefsAllowed = lenient || location != nil
 	allowLocalExternalRefs := location != nil
@@ -1090,10 +1103,7 @@ func loadOpenAPIDoc(data []byte, lenient bool, location *url.URL) (*openapi3.T, 
 		}
 		return data, nil
 	}
-	if location != nil {
-		return loader.LoadFromDataWithPath(data, location)
-	}
-	return loader.LoadFromData(data)
+	return loader
 }
 
 func isFileURI(location *url.URL) bool {
