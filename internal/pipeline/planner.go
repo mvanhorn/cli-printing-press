@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -13,6 +15,21 @@ type PlanContext struct {
 	Dogfood   *DogfoodReport
 	Scorecard *Scorecard
 	Learnings *LearningsDB
+	Readiness *AgentReadinessReport
+}
+
+type AgentReadinessVerdict string
+
+const (
+	AgentReadinessPass    AgentReadinessVerdict = "Pass"
+	AgentReadinessWarn    AgentReadinessVerdict = "Warn"
+	AgentReadinessDegrade AgentReadinessVerdict = "Degrade"
+)
+
+type AgentReadinessReport struct {
+	Path     string
+	Verdict  AgentReadinessVerdict
+	Findings []string
 }
 
 // GenerateNextPlan writes a dynamic plan for the next phase, informed by
@@ -47,6 +64,7 @@ func GenerateNextPlan(state *PipelineState, nextPhase string) (string, error) {
 	case PhaseComparative:
 		return generateComparativePlan(ctx)
 	case PhaseShip:
+		ctx.Readiness, _ = loadAgentReadinessForPlanState(state)
 		return generateShipPlan(ctx)
 	default:
 		// Preflight, Research, AgentReadiness use static seeds
@@ -212,16 +230,7 @@ func generateShipPlan(ctx PlanContext) (string, error) {
 
 	writePipelineContext(&b, ctx.SeedData)
 
-	// Dynamic: ship/hold decision based on scores
-	if ctx.Scorecard != nil {
-		b.WriteString("## Ship Decision\n\n")
-		if ctx.Scorecard.Steinberger.Percentage >= 65 {
-			fmt.Fprintf(&b, "**SHIP** - Quality score %d%% (grade %s) meets threshold.\n\n", ctx.Scorecard.Steinberger.Percentage, ctx.Scorecard.OverallGrade)
-		} else {
-			fmt.Fprintf(&b, "**HOLD** - Quality score %d%% (grade %s) is below 65%% threshold.\n", ctx.Scorecard.Steinberger.Percentage, ctx.Scorecard.OverallGrade)
-			b.WriteString("Fix the gaps identified in the scorecard before shipping.\n\n")
-		}
-	}
+	writeShipDecision(&b, ctx)
 
 	b.WriteString("## What This Phase Must Produce\n\n")
 	fmt.Fprintf(&b, "- Git repository initialized in %s\n", ctx.SeedData.OutputDir)
@@ -229,6 +238,43 @@ func generateShipPlan(ctx PlanContext) (string, error) {
 	fmt.Fprintf(&b, "- Morning report in %s\n", ctx.SeedData.PipelineDir)
 
 	return b.String(), nil
+}
+
+func writeShipDecision(b *strings.Builder, ctx PlanContext) {
+	b.WriteString("## Ship Decision\n\n")
+
+	ship := true
+	switch {
+	case ctx.Scorecard == nil:
+		b.WriteString("- Quality: HOLD - missing scorecard.json; run the review phase before shipping.\n")
+		ship = false
+	case ctx.Scorecard.Steinberger.Percentage >= 65:
+		fmt.Fprintf(b, "- Quality: PASS - score %d%% (grade %s) meets threshold.\n", ctx.Scorecard.Steinberger.Percentage, ctx.Scorecard.OverallGrade)
+	default:
+		fmt.Fprintf(b, "- Quality: HOLD - score %d%% (grade %s) is below 65%% threshold.\n", ctx.Scorecard.Steinberger.Percentage, ctx.Scorecard.OverallGrade)
+		ship = false
+	}
+
+	switch {
+	case ctx.Readiness == nil:
+		b.WriteString("- Agent readiness: HOLD - missing pipeline/agent-readiness.md; run the agent-readiness phase before shipping.\n")
+		ship = false
+	case ctx.Readiness.Verdict == AgentReadinessPass:
+		fmt.Fprintf(b, "- Agent readiness: PASS - %s reports Pass.\n", ctx.Readiness.Path)
+	default:
+		fmt.Fprintf(b, "- Agent readiness: HOLD - %s reports %s.\n", ctx.Readiness.Path, ctx.Readiness.Verdict)
+		for _, finding := range ctx.Readiness.Findings {
+			fmt.Fprintf(b, "  - %s\n", finding)
+		}
+		b.WriteString("  - To ship anyway, record an explicit maintainer override and cite the readiness findings in the handoff report.\n")
+		ship = false
+	}
+
+	if ship {
+		b.WriteString("\n**SHIP** - Quality and agent-readiness gates both pass.\n\n")
+		return
+	}
+	b.WriteString("\n**HOLD** - Do not package or promote the CLI until the failed gate is resolved or explicitly overridden.\n\n")
 }
 
 // Helper functions
@@ -279,4 +325,70 @@ func loadScorecardForPlanState(state *PipelineState) (*Scorecard, error) {
 		}
 	}
 	return nil, fmt.Errorf("scorecard not found")
+}
+
+func loadAgentReadinessForPlanState(state *PipelineState) (*AgentReadinessReport, error) {
+	return LoadAgentReadinessReport(state.PipelineDir())
+}
+
+func LoadAgentReadinessReport(dir string) (*AgentReadinessReport, error) {
+	path := filepath.Join(dir, "agent-readiness.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	report := &AgentReadinessReport{Path: path}
+	for line := range strings.SplitSeq(string(data), "\n") {
+		trimmed := strings.TrimSpace(strings.Trim(line, "|"))
+		if trimmed == "" {
+			continue
+		}
+		lower := strings.ToLower(strings.TrimSpace(line))
+		if report.Verdict == "" {
+			report.Verdict = parseAgentReadinessVerdict(trimmed)
+		}
+		if isAgentReadinessFindingLine(lower) {
+			report.Findings = append(report.Findings, strings.TrimSpace(line))
+		}
+	}
+	if report.Verdict == "" {
+		return nil, fmt.Errorf("agent-readiness verdict not found in %s", path)
+	}
+	return report, nil
+}
+
+func parseAgentReadinessVerdict(line string) AgentReadinessVerdict {
+	clean := strings.Trim(strings.TrimSpace(line), "*` ")
+	clean = strings.ReplaceAll(clean, "**", "")
+	lower := strings.ToLower(clean)
+	for _, prefix := range []string{"phase verdict:", "verdict:", "phase verdict -", "verdict -"} {
+		if !strings.HasPrefix(lower, prefix) {
+			continue
+		}
+		rest := strings.TrimSpace(clean[len(prefix):])
+		if rest == "" {
+			return ""
+		}
+		token := strings.Trim(strings.Fields(rest)[0], "*`.,;:()[]{} ")
+		switch strings.ToLower(token) {
+		case "pass":
+			return AgentReadinessPass
+		case "warn":
+			return AgentReadinessWarn
+		case "degrade":
+			return AgentReadinessDegrade
+		default:
+			return ""
+		}
+	}
+	return ""
+}
+
+func isAgentReadinessFindingLine(lower string) bool {
+	trimmed := strings.TrimSpace(lower)
+	if !strings.HasPrefix(trimmed, "- ") && !strings.HasPrefix(trimmed, "* ") && !strings.HasPrefix(trimmed, "|") {
+		return false
+	}
+	return strings.Contains(trimmed, "blocker") || strings.Contains(trimmed, "friction")
 }
