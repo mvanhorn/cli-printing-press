@@ -126,7 +126,7 @@ type PipelineResult struct {
 	SyncCallsDomain      bool   `json:"sync_calls_domain"`
 	SearchCallsDomain    bool   `json:"search_calls_domain"`
 	DomainTables         int    `json:"domain_tables"`
-	SyncFileEmitted      bool   `json:"sync_file_emitted,omitempty"`
+	SyncFileEmitted      bool   `json:"sync_file_emitted"`
 	SyncResourcesPresent bool   `json:"sync_resources_present"`
 	Detail               string `json:"detail"`
 }
