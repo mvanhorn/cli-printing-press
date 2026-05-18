@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 
@@ -13,9 +14,7 @@ import (
 )
 
 // isSwagger2SpecJSON reports whether normalized JSON spec bytes describe a
-// Swagger 2.0 (OpenAPI v2) document. The parser pipeline always normalizes
-// spec input to JSON via normalizeSpecData before reaching loadOpenAPIDoc, so
-// a top-level `"swagger": "2.0"` substring is a reliable signal.
+// Swagger 2.0 (OpenAPI v2) document.
 //
 // Real-world Swagger 2.0 specs (Tripletex, NetSuite REST, Salesforce Tooling)
 // frequently contain circular $ref chains through `definitions/`. Routing them
@@ -24,29 +23,74 @@ import (
 // (issue #1241): the conversion rewrites `#/definitions/X` to
 // `#/components/schemas/X` and lets the existing cycle-aware OpenAPI 3 code
 // path do the resolution work.
+//
+// Uses a streaming JSON decoder to find the top-level `swagger` key and stop
+// reading. Substring scanning is unsafe at this stage: normalizeSpecData
+// round-trips through encoding/json, which sorts map keys alphabetically, so
+// "swagger" lands AFTER "definitions" and "paths" in the serialized output —
+// far past any reasonable head window for a multi-MB spec like Tripletex.
 func isSwagger2SpecJSON(data []byte) bool {
-	// Tolerate leading whitespace and a leading `{` before the first key.
-	// normalizeSpecData emits compact JSON via encoding/json so the key order
-	// reflects raw map iteration; sniff for the field anywhere in the first
-	// ~4KB instead of insisting on the first key position.
-	head := data
-	if len(head) > 4096 {
-		head = head[:4096]
-	}
-	if !bytes.Contains(head, []byte(`"swagger"`)) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	// Expect a top-level object.
+	tok, err := dec.Token()
+	if err != nil {
 		return false
 	}
-	// Disambiguate from OpenAPI 3 specs that mention "swagger" as a string
-	// value (description text, x-* extension keys). Match only the canonical
-	// `"2.0"` value form — the Swagger 2.0 spec mandates the version string
-	// exactly. encoding/json drops spaces after the colon, but keep both
-	// variants since this helper may be reached from paths where the input
-	// has been re-serialized by a non-encoding/json marshaller.
-	if bytes.Contains(head, []byte(`"swagger":"2.0"`)) ||
-		bytes.Contains(head, []byte(`"swagger": "2.0"`)) {
-		return true
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return false
+	}
+	// Walk top-level keys. For each key whose value we don't need, skip the
+	// value by reading and discarding tokens until the value's depth balances.
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return false
+		}
+		valTok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		if key == "swagger" {
+			value, ok := valTok.(string)
+			return ok && value == "2.0"
+		}
+		// If the value is a container, drain it. Scalars consumed one token
+		// by the call above and need no further work.
+		if delim, ok := valTok.(json.Delim); ok && (delim == '{' || delim == '[') {
+			if err := skipJSONValue(dec, 1); err != nil {
+				return false
+			}
+		}
 	}
 	return false
+}
+
+// skipJSONValue consumes JSON tokens from dec until the container depth
+// returns to zero. depth must start at 1 because the caller has already read
+// the opening `{` or `[`.
+func skipJSONValue(dec *json.Decoder, depth int) error {
+	for depth > 0 {
+		tok, err := dec.Token()
+		if err != nil {
+			if err == io.EOF {
+				return err
+			}
+			return err
+		}
+		if delim, ok := tok.(json.Delim); ok {
+			switch delim {
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+			}
+		}
+	}
+	return nil
 }
 
 // loadSwagger2AsOpenAPI3 parses normalized Swagger 2.0 JSON bytes into an

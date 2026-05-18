@@ -1,12 +1,41 @@
 package openapi
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// bigSwagger2Spec returns a Swagger 2.0 JSON document with a large
+// `definitions/` block padded so that the `"swagger":"2.0"` marker only
+// appears well past the 4KB mark in the serialized output. Models the real
+// shape produced by normalizeSpecData when fed a vendor Swagger 2.0 spec:
+// encoding/json sorts keys alphabetically, so "definitions" (d) and "paths"
+// (p) precede "swagger" (s) in the wire form.
+func bigSwagger2Spec() []byte {
+	const pad = 8192 // generously past any plausible head-buffer cap
+	definitions := map[string]any{
+		"Padding": map[string]any{
+			"type":        "string",
+			"description": strings.Repeat("x", pad),
+		},
+	}
+	doc := map[string]any{
+		"swagger":     "2.0",
+		"info":        map[string]any{"title": "Big", "version": "1.0.0"},
+		"definitions": definitions,
+		"paths":       map[string]any{},
+	}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		panic(err)
+	}
+	return out
+}
 
 func TestIsSwagger2SpecJSON(t *testing.T) {
 	t.Parallel()
@@ -48,6 +77,17 @@ func TestIsSwagger2SpecJSON(t *testing.T) {
 			// "2.5" is not Swagger 2.0; prefix-match temptation must be avoided.
 			data: []byte(`{"swagger":"2.5","info":{"title":"Demo","version":"1.0.0"},"paths":{}}`),
 			want: false,
+		},
+		{
+			name: "swagger key after large alphabetized definitions block",
+			// normalizeSpecData round-trips through encoding/json, which sorts
+			// keys alphabetically; "swagger" (s) lands after "definitions" (d)
+			// and "paths" (p). A real Swagger 2.0 spec's "swagger" marker is
+			// often far past the start of the serialized JSON. Build a fixture
+			// where definitions[]'s padding pushes "swagger" well past 4KB to
+			// assert the detector still finds it.
+			data: bigSwagger2Spec(),
+			want: true,
 		},
 		{
 			name: "empty",
