@@ -197,15 +197,9 @@ Run `govulncheck` in default mode only, scoped to the generated or publishing CL
 
 ## Supply-chain hardening
 
-PRs are scanned for the workflow-trust and Go-module env attack shapes observed in May 2026 incidents (TanStack mini-Shai-Hulud, BufferZoneCorp, node-ipc). The canonical incident timeline and primary-source citations live in the published-library repo at [docs/solutions/security/2026-05-supply-chain-hardening.md](https://github.com/mvanhorn/printing-press-library/blob/main/docs/solutions/security/2026-05-supply-chain-hardening.md) — single source of truth across both repos.
+PRs touching `.github/workflows/**` are gated by Greptile rules in [`greptile.json`](greptile.json) and a Python scan in [`.github/scripts/verify-supply-chain/`](.github/scripts/verify-supply-chain/) run by `verify-supply-chain.yml`. The signal set is the workflow-trust + Go-env subset of the published-library gate; see `signals.py` for scope adaptations (no library go.mod, no npm wrapper, no published-CLI module paths). Run locally with `python3 .github/scripts/verify-supply-chain/scan.py --base-ref origin/main`; tests are `python3 -m unittest scan_test` from that directory.
 
-Two layers run on every PR touching `.github/workflows/**`:
-
-1. **Greptile rules** in `greptile.json` — flag `pull_request_target` + PR-head checkout, any `id-token: write` grant (empty allowlist here since the generator repo currently uses no OIDC), `GOPROXY`/`GOFLAGS`/`GONOSUMCHECK` overrides, and Go-source credential-path reads in `internal/**/*.go` and `cmd/**/*.go` that aren't justified by the generator's purpose.
-
-2. **`verify-supply-chain.yml`** — deterministic Python scan at [.github/scripts/verify-supply-chain/scan.py](.github/scripts/verify-supply-chain/scan.py). Hard-fails on the mechanical block-tier signals. Vendored from the published-library copy; the orchestration logic is identical and `signals.py` is adapted to the generator-repo signal set (no library CLI go.mod surface, no npm wrapper, no published-CLI module paths). Run locally with `python3 .github/scripts/verify-supply-chain/scan.py --base-ref origin/main`; tests live next to the script (`python3 -m unittest scan_test`).
-
-This workflow runs informationally on landing. Promote to a required check via branch protection only after a one-week green window confirms no false-positive miscalibration on real PRs.
+Runs informationally on landing — promote to a required branch-protection check only after a one-week green window. Canonical incident background lives in the [published-library solutions doc](https://github.com/mvanhorn/printing-press-library/blob/main/docs/solutions/security/2026-05-supply-chain-hardening.md).
 
 ## Local Artifacts
 Generated artifacts live under `~/printing-press/`, not in this repo: `library/<api-slug>/`, `manuscripts/<api-slug>/`, and `.runstate/<scope>/`. The API slug is derived by the generator from the spec title (`cleanSpecName`), and the binary name is `<api-slug>-pp-cli`. Never hardcode an API slug when the generator can derive it. See [`docs/ARTIFACTS.md`](docs/ARTIFACTS.md) for local-vs-public flow and divergence rules.
