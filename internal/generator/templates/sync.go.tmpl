@@ -156,6 +156,22 @@ Resource scoping:
 			if len(resources) == 0 {
 				resources = defaultSyncResources()
 			}
+{{- if and (not .SyncableResources) (not .DependentSyncResources)}}
+
+			// Empty-sync hint: this spec exposed no bulk-list endpoint and no
+			// dependent resources, so `sync` cannot populate the store on its
+			// own. Emit a one-line note so users and agents understand the
+			// runtime no-op instead of seeing only `total_records: 0`. The
+			// store is still populated by single-fetch commands (recipe, get,
+			// fetch, …) that the spec's other resources define.
+			if len(resources) == 0 {
+				if humanFriendly {
+					fmt.Fprintln(os.Stderr, "{{.Name}}-pp-cli sync: no bulk-list endpoints in spec; populate the store via single-fetch commands instead.")
+				} else {
+					fmt.Fprintln(os.Stdout, `{"event":"sync_warning","reason":"no_bulk_list_endpoints","detail":"no bulk-list endpoints in spec; populate the store via single-fetch commands"}`)
+				}
+			}
+{{- end}}
 
 			// Reject --resource-param keys that don't match a known resource.
 			// Validates against the full top-level + dependent set, not the

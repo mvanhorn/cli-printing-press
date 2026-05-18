@@ -10153,17 +10153,20 @@ func TestGenerateResourceBaseURLOverrideRoutesAgentDispatchSurfaces(t *testing.T
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
-// TestGenerateMCPMainStdioDefault confirms that a spec with no mcp: block
-// produces the same stdio-only MCP entry point we've always emitted. Remote
-// transport is opt-in; the default stays on the current behavior so existing
-// published CLIs regenerate byte-compatibly. Guards against the template
-// accidentally pulling in flag / StreamableHTTP imports for stdio-only specs.
-func TestGenerateMCPMainStdioDefault(t *testing.T) {
+// TestGenerateMCPMainSmallAPIDefaultsHTTP confirms that a small-API spec
+// (typed-endpoint count at or below spec.DefaultRemoteTransportEndpointThreshold)
+// with no mcp: block gets http compiled in alongside stdio. The default lifts
+// mcp_remote_transport from 5/10 to 10/10 at zero cost: there's no extra tool,
+// no extra agent-context overhead, and the same binary can now reach
+// cloud-hosted agents that cannot spawn a subprocess. Issue #1603.
+func TestGenerateMCPMainSmallAPIDefaultsHTTP(t *testing.T) {
 	t.Parallel()
 
 	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
 	require.NoError(t, err)
 	require.Empty(t, apiSpec.MCP.Transport, "baseline loops spec should not declare MCP transports")
+	require.LessOrEqual(t, apiSpec.TypedEndpointCount(), spec.DefaultRemoteTransportEndpointThreshold,
+		"loops fixture must stay small enough to exercise the auto-http default")
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
@@ -10174,10 +10177,79 @@ func TestGenerateMCPMainStdioDefault(t *testing.T) {
 	require.NoError(t, err)
 	body := string(data)
 
-	assert.Contains(t, body, "server.ServeStdio(s)", "stdio-only spec must still call ServeStdio")
-	assert.NotContains(t, body, "flag.String", "stdio-only spec must not pull in the flag package")
-	assert.NotContains(t, body, "NewStreamableHTTPServer", "stdio-only spec must not reference the HTTP transport")
-	assert.NotContains(t, body, "PP_MCP_TRANSPORT", "stdio-only spec must not reference the transport env override")
+	for _, want := range []string{
+		`"flag"`,
+		`"strings"`,
+		`server.ServeStdio(s)`,
+		`server.NewStreamableHTTPServer(s)`,
+		`flag.String("transport"`,
+		`PP_MCP_TRANSPORT`,
+	} {
+		assert.Contains(t, body, want, "small-API auto-http default should emit %q", want)
+	}
+}
+
+// TestGenerateMCPMainExplicitStdioOnlyHonored covers the negative half of
+// the issue #1603 acceptance criteria: an explicit `mcp.transport: [stdio]`
+// is honored even at small endpoint counts. The auto-http default only fires
+// when the field is empty; an opt-out should not be silently overridden.
+func TestGenerateMCPMainExplicitStdioOnlyHonored(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	apiSpec.MCP = spec.MCPConfig{Transport: []string{"stdio"}}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	mainPath := filepath.Join(outputDir, "cmd", naming.MCP(apiSpec.Name), "main.go")
+	data, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	body := string(data)
+
+	assert.Contains(t, body, "server.ServeStdio(s)", "explicit stdio-only spec must still call ServeStdio")
+	assert.NotContains(t, body, "flag.String", "explicit stdio-only spec must not pull in the flag package")
+	assert.NotContains(t, body, "NewStreamableHTTPServer", "explicit stdio-only spec must not reference the HTTP transport")
+	assert.NotContains(t, body, "PP_MCP_TRANSPORT", "explicit stdio-only spec must not reference the transport env override")
+}
+
+// TestGenerateMCPMainLargeAPIStaysStdioOnly confirms that the auto-http
+// default only fires for small APIs. Above the endpoint threshold the
+// generator defers to the orchestration-pattern recommendation in
+// warnUnenrichedLargeMCPSurface; auto-extending transport there would be
+// the wrong fix because the dominant problem is tool-count, not reach.
+func TestGenerateMCPMainLargeAPIStaysStdioOnly(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:      "demo",
+		BaseURL:   "https://api.example.com",
+		Auth:      spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{},
+	}
+	// Synthesize an above-threshold typed-endpoint surface.
+	r := spec.Resource{Endpoints: map[string]spec.Endpoint{}}
+	for i := range spec.DefaultRemoteTransportEndpointThreshold + 1 {
+		name := fmt.Sprintf("get_%d", i)
+		r.Endpoints[name] = spec.Endpoint{Method: "GET", Path: fmt.Sprintf("/items/%d", i)}
+	}
+	apiSpec.Resources["items"] = r
+	require.Greater(t, apiSpec.TypedEndpointCount(), spec.DefaultRemoteTransportEndpointThreshold,
+		"synthetic spec must exceed the small-API threshold")
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	mainPath := filepath.Join(outputDir, "cmd", naming.MCP(apiSpec.Name), "main.go")
+	data, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	body := string(data)
+
+	assert.Contains(t, body, "server.ServeStdio(s)", "large-API default must still call ServeStdio")
+	assert.NotContains(t, body, "NewStreamableHTTPServer", "large-API default must not auto-enable http transport")
 }
 
 // TestGenerateMCPMainRemoteOptIn confirms that declaring mcp.transport: [stdio, http]

@@ -2047,7 +2047,10 @@ schema and `info`-level placement option.
 
 **Smaller-surface variants:**
 
-- Just want remote reach? `mcp.transport: [stdio, http]` alone is fine.
+- Just want remote reach? Small APIs (at or under
+  `spec.DefaultRemoteTransportEndpointThreshold` typed endpoints) get `[stdio, http]`
+  by default — no spec edit needed. Set `mcp.transport: [stdio, http]` explicitly only
+  when the API is above the threshold and still wants remote reach.
 - Have 3–5 obvious multi-step workflows but <50 endpoints? Add `mcp.intents`
   without code orchestration; leave `endpoint_tools` at default (visible).
 
