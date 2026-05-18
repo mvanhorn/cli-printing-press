@@ -30,6 +30,10 @@ func captureStderr(t *testing.T, fn func()) []byte {
 		data, _ := io.ReadAll(r)
 		done <- data
 	}()
+	defer func() {
+		_ = w.Close() // no-op in the happy path; unblocks reader on panic
+		os.Stderr = origStderr
+	}()
 	fn()
 	_ = w.Close()
 	os.Stderr = origStderr
