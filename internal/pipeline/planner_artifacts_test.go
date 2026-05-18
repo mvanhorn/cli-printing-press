@@ -78,6 +78,8 @@ Phase verdict: Degrade
 	assert.Contains(t, shipPlan, "Agent readiness: HOLD")
 	assert.Contains(t, shipPlan, "reports Degrade")
 	assert.Contains(t, shipPlan, "Blocker: mutating commands can run under verify mode")
+	assert.Contains(t, shipPlan, "  - Blocker: mutating commands can run under verify mode")
+	assert.NotContains(t, shipPlan, "  - - Blocker:")
 	assert.Contains(t, shipPlan, "**HOLD**")
 	assert.NotContains(t, shipPlan, "**SHIP** - Quality and agent-readiness gates both pass.")
 }

@@ -349,7 +349,10 @@ func LoadAgentReadinessReport(dir string) (*AgentReadinessReport, error) {
 			report.Verdict = parseAgentReadinessVerdict(trimmed)
 		}
 		if isAgentReadinessFindingLine(lower) {
-			report.Findings = append(report.Findings, strings.TrimSpace(line))
+			finding := strings.TrimSpace(line)
+			finding = strings.TrimPrefix(finding, "- ")
+			finding = strings.TrimPrefix(finding, "* ")
+			report.Findings = append(report.Findings, finding)
 		}
 	}
 	if report.Verdict == "" {
