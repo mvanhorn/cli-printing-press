@@ -1573,6 +1573,9 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		if err := g.renderTemplate("auto_refresh.go.tmpl", filepath.Join("internal", "cli", "auto_refresh.go"), autoRefreshData); err != nil {
 			return fmt.Errorf("rendering auto_refresh: %w", err)
 		}
+		if err := g.renderTemplate("auto_refresh_test.go.tmpl", filepath.Join("internal", "cli", "auto_refresh_test.go"), autoRefreshData); err != nil {
+			return fmt.Errorf("rendering auto_refresh_test: %w", err)
+		}
 	}
 
 	// Emit the git-backed share package only when explicitly enabled and
