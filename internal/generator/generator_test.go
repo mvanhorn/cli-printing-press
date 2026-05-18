@@ -59,6 +59,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cliutil/verifyenv.go",
 		"internal/cliutil/extractnumber.go",
 		"internal/cliutil/extractnumber_test.go",
+		"internal/cliutil/jwtshape.go",
+		"internal/cliutil/jwtshape_test.go",
 		"internal/cliutil/cliutil_test.go",
 		"internal/client/client.go",
 		"internal/client/client_test.go",
@@ -81,9 +83,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 60},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 65},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 62},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 62},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 67},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 64},
 	}
 
 	for _, tt := range tests {
@@ -153,6 +155,8 @@ func TestGenerateCliutilPackage(t *testing.T) {
 		{"text.go", "func SanitizeErrorBody("},
 		{"extractnumber.go", "func ExtractNumber("},
 		{"extractnumber.go", "func ExtractInt("},
+		{"jwtshape.go", "func LooksLikeJWT("},
+		{"jwtshape.go", "func FindJWTInCookieJar("},
 	} {
 		data, err := os.ReadFile(filepath.Join(cliutilDir, probe.file))
 		require.NoError(t, err)
