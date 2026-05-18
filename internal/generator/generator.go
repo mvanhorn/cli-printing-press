@@ -618,6 +618,7 @@ type HelperFlags struct {
 	HasDataLayer       bool // CLI has a local store (sync/search) → emit provenance helpers
 	HasClientLimit     bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
 	HasEmbeddedPaged   bool // at least one GET endpoint has detected embedded paged sub-resources → emit fetchEmbeddedPagedSubresource
+	HasResponseUnwrap  bool // at least one generated command can call extractResponseData
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
@@ -1488,6 +1489,7 @@ func (g *Generator) renderSingleFiles() error {
 		case "helpers.go.tmpl":
 			hFlags := computeHelperFlags(g.Spec)
 			hFlags.HasDataLayer = g.VisionSet.Store
+			hFlags.HasResponseUnwrap = g.VisionSet.Store && promotedCommandsCanUnwrapResponse(g.PromotedCommands)
 			data = &helpersTemplateData{
 				APISpec:     g.Spec,
 				HelperFlags: hFlags,
@@ -1783,6 +1785,15 @@ func buildPromotedCommandPlan(apiSpec *spec.APISpec) ([]PromotedCommand, map[str
 	}
 
 	return promotedCommands, promotedResourceNames, promotedEndpointNames
+}
+
+func promotedCommandsCanUnwrapResponse(commands []PromotedCommand) bool {
+	for _, cmd := range commands {
+		if !cmd.Endpoint.UsesBinaryResponse() {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool, promotedEndpointNames map[string]string) error {

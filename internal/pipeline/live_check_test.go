@@ -536,6 +536,23 @@ func TestLiveCheckBinaryCandidatesPreferBuildStageBin(t *testing.T) {
 		"staged build/stage/bin path must be tried before cliDir legacy path, got order %v", cands)
 }
 
+func TestLiveCheckExecutableHonorsWindowsExeExtension(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t,
+		isLiveCheckExecutableForGOOS(`C:\tmp\petstore-pp-cli.exe`, 0o644, "windows"),
+		"Windows executability is extension-based, not POSIX mode-bit-based")
+	assert.False(t,
+		isLiveCheckExecutableForGOOS(`C:\tmp\petstore-pp-cli`, 0o755, "windows"),
+		"Windows live-check should only accept .exe binaries")
+	assert.True(t,
+		isLiveCheckExecutableForGOOS("/tmp/petstore-pp-cli", 0o755, "linux"),
+		"Unix live-check should keep honoring executable bits")
+	assert.False(t,
+		isLiveCheckExecutableForGOOS("/tmp/petstore-pp-cli", 0o644, "linux"),
+		"Unix non-executable files must still be rejected")
+}
+
 func TestLiveCheck_FindsBinaryInBuildStageBin(t *testing.T) {
 	// Verify that RunLiveCheck finds and executes a binary placed at
 	// <cliDir>/build/stage/bin/<name> — the canonical layout written by the

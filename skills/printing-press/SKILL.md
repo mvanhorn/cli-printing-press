@@ -2495,6 +2495,9 @@ func newXxxCmd(flags *rootFlags) *cobra.Command {
 //   issuesCmd := newIssuesCmd(flags)
 //   issuesCmd.AddCommand(newIssuesStaleCmd(flags))
 //   rootCmd.AddCommand(issuesCmd)
+// Leaf commands must declare every non-root flag used in their examples.
+// Do not rely on parent-local flags like --org or --project being accepted by
+// child commands unless the parent registered them with PersistentFlags().
 // Single-word Commands register directly: rootCmd.AddCommand(newXxxCmd(flags)).
 ```
 
