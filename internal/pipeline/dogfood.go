@@ -123,10 +123,12 @@ type DeadCodeResult struct {
 }
 
 type PipelineResult struct {
-	SyncCallsDomain   bool   `json:"sync_calls_domain"`
-	SearchCallsDomain bool   `json:"search_calls_domain"`
-	DomainTables      int    `json:"domain_tables"`
-	Detail            string `json:"detail"`
+	SyncCallsDomain      bool   `json:"sync_calls_domain"`
+	SearchCallsDomain    bool   `json:"search_calls_domain"`
+	DomainTables         int    `json:"domain_tables"`
+	SyncFileEmitted      bool   `json:"sync_file_emitted,omitempty"`
+	SyncResourcesPresent bool   `json:"sync_resources_present"`
+	Detail               string `json:"detail"`
 }
 
 type ExampleCheckResult struct {
@@ -1460,6 +1462,8 @@ func checkPipelineIntegrity(dir string) PipelineResult {
 	result.SyncCallsDomain = domainUpsertRe.MatchString(syncSource)
 	result.SearchCallsDomain = domainSearchRe.MatchString(searchSource)
 	result.DomainTables = countDomainTables(storeSource)
+	result.SyncFileEmitted = syncSource != ""
+	result.SyncResourcesPresent = hasPopulatedSyncResources(syncSource)
 
 	var parts []string
 	switch {
@@ -1484,8 +1488,46 @@ func checkPipelineIntegrity(dir string) PipelineResult {
 		parts = append(parts, fmt.Sprintf("%d domain tables found", result.DomainTables))
 	}
 
+	// When sync.go is emitted but defaultSyncResources() returns an empty list,
+	// the sync command is a no-op at runtime. Store-dependent novel commands
+	// (cookbook, pantry, top-rated, …) then ship with no advertised path to
+	// populate the store. Flag so the absence surfaces at shipcheck time.
+	if syncSource != "" && !result.SyncResourcesPresent {
+		parts = append(parts, "defaultSyncResources empty (sync command is a no-op)")
+	}
+
 	result.Detail = strings.Join(parts, "; ")
 	return result
+}
+
+// defaultSyncResourcesEmptyRe matches the generator's empty-list emission for
+// defaultSyncResources, after gofmt collapses `return []string{\n}` to a single
+// line. Matching the open-brace through the literal "}" keeps the check robust
+// against trailing whitespace and the gofmt-aware "\n\t}" form some emitters
+// produce when the template body has a leading newline.
+var defaultSyncResourcesEmptyRe = regexp.MustCompile(
+	`(?s)func\s+defaultSyncResources\s*\(\s*\)\s*\[\]string\s*\{\s*return\s+\[\]string\{\s*\}\s*\}`,
+)
+
+// hasPopulatedSyncResources reports whether the emitted sync.go declares at
+// least one syncable resource via the defaultSyncResources() helper. Returns
+// true when defaultSyncResources is either absent (hand-rolled or test
+// fixture sync surfaces are not the failure mode this check targets) or
+// present with at least one entry. Returns false only when the helper is
+// emitted with an explicit empty-list body `return []string{}`. Used by
+// dogfood's pipeline check to surface CLIs that emit a sync command with
+// nothing to sync: the failure mode where store-dependent novel commands
+// have no advertised population path.
+func hasPopulatedSyncResources(syncSource string) bool {
+	if syncSource == "" {
+		return false
+	}
+	if !strings.Contains(syncSource, "func defaultSyncResources") {
+		// No generator-emitted helper to inspect. Treat as "not the failure
+		// mode" rather than risking false positives on hand-rolled sync.
+		return true
+	}
+	return !defaultSyncResourcesEmptyRe.MatchString(syncSource)
 }
 
 type dogfoodVerdictRule struct {
@@ -1508,6 +1550,13 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 1 && r.DeadFlags.Dead <= 2 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFuncs.Dead >= 1 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return !r.PipelineCheck.SyncCallsDomain }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool {
+		// Issue #1156: when defaultSyncResources is emitted empty, the sync
+		// command is a runtime no-op and store-dependent novel commands have
+		// no advertised path to populate the store. Promote to WARN so the
+		// gap surfaces at shipcheck time rather than after publish.
+		return r.PipelineCheck.SyncFileEmitted && !r.PipelineCheck.SyncResourcesPresent
+	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.ExampleCheck.InvalidFlags) > 0 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.ExampleCheck.Skipped }},
 	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.WiringCheck.CommandTree.Unregistered) > 0 }},
@@ -1561,6 +1610,9 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 	}
 	if !report.PipelineCheck.SyncCallsDomain {
 		issues = append(issues, "sync uses generic Upsert only")
+	}
+	if report.PipelineCheck.SyncFileEmitted && !report.PipelineCheck.SyncResourcesPresent {
+		issues = append(issues, "defaultSyncResources empty: sync command is a runtime no-op; store-dependent novel commands have no advertised population path")
 	}
 	if report.ExampleCheck.Tested > 0 && (report.ExampleCheck.WithExamples*100/report.ExampleCheck.Tested) < 50 {
 		issues = append(issues, fmt.Sprintf("%d%% example coverage", report.ExampleCheck.WithExamples*100/report.ExampleCheck.Tested))
