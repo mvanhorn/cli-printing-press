@@ -130,7 +130,13 @@ def _has_pr_target_trigger(on_node: Any) -> bool:
 
 
 _DANGEROUS_REF_VALUE = re.compile(
+    # All forms that resolve to PR-author-controlled content under
+    # pull_request_target. github.head_ref is the shorthand alias for
+    # event.pull_request.head.ref (Greptile-flagged); merge_commit_sha
+    # points at GitHub's synthesised merge commit which contains PR code.
     r"github\.event\.pull_request\.head\.(sha|ref)"
+    r"|github\.event\.pull_request\.merge_commit_sha"
+    r"|github\.head_ref"
     # [^\n] (not [^\s]) so the match survives spaces inside `${{ ... }}`
     # expressions, e.g., refs/pull/${{ github.event.number }}/merge.
     r"|refs/pull/[^\n]*?/(merge|head)"
