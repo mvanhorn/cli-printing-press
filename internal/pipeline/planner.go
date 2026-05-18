@@ -344,14 +344,10 @@ func LoadAgentReadinessReport(dir string) (*AgentReadinessReport, error) {
 		if trimmed == "" {
 			continue
 		}
-		lower := strings.ToLower(strings.TrimSpace(line))
 		if report.Verdict == "" {
 			report.Verdict = parseAgentReadinessVerdict(trimmed)
 		}
-		if isAgentReadinessFindingLine(lower) {
-			finding := strings.TrimSpace(line)
-			finding = strings.TrimPrefix(finding, "- ")
-			finding = strings.TrimPrefix(finding, "* ")
+		if finding, ok := normalizeAgentReadinessFinding(line); ok {
 			report.Findings = append(report.Findings, finding)
 		}
 	}
@@ -388,10 +384,94 @@ func parseAgentReadinessVerdict(line string) AgentReadinessVerdict {
 	return ""
 }
 
-func isAgentReadinessFindingLine(lower string) bool {
-	trimmed := strings.TrimSpace(lower)
-	if !strings.HasPrefix(trimmed, "- ") && !strings.HasPrefix(trimmed, "* ") && !strings.HasPrefix(trimmed, "|") {
+func normalizeAgentReadinessFinding(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	lower := strings.ToLower(trimmed)
+	switch {
+	case strings.HasPrefix(lower, "- ") || strings.HasPrefix(lower, "* "):
+		finding := strings.TrimSpace(trimmed[2:])
+		return finding, strings.Contains(strings.ToLower(finding), "blocker") || strings.Contains(strings.ToLower(finding), "friction")
+	case strings.HasPrefix(trimmed, "|"):
+		return normalizeAgentReadinessTableFinding(readinessTableCells(trimmed))
+	default:
+		return "", false
+	}
+}
+
+func readinessTableCells(line string) []string {
+	parts := strings.Split(strings.Trim(line, "|"), "|")
+	cells := make([]string, 0, len(parts))
+	for _, part := range parts {
+		cell := strings.TrimSpace(part)
+		if cell != "" {
+			cells = append(cells, cell)
+		}
+	}
+	return cells
+}
+
+func normalizeAgentReadinessTableFinding(cells []string) (string, bool) {
+	if len(cells) < 2 || isAgentReadinessTableSeparator(cells) || isAgentReadinessTableHeader(cells) {
+		return "", false
+	}
+	for i, cell := range cells {
+		lower := strings.ToLower(cell)
+		for _, severity := range []string{"blocker", "friction"} {
+			if strings.HasPrefix(lower, severity+":") {
+				return cell, true
+			}
+			if lower == severity {
+				rest := nonHeaderTableCells(cells[i+1:])
+				if len(rest) == 0 {
+					return "", false
+				}
+				return capitalizeASCII(severity) + ": " + strings.Join(rest, " - "), true
+			}
+		}
+	}
+	return "", false
+}
+
+func isAgentReadinessTableSeparator(cells []string) bool {
+	for _, cell := range cells {
+		if strings.Trim(cell, "-: ") != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func isAgentReadinessTableHeader(cells []string) bool {
+	for _, cell := range cells {
+		if !isAgentReadinessHeaderCell(cell) {
+			return false
+		}
+	}
+	return true
+}
+
+func isAgentReadinessHeaderCell(cell string) bool {
+	switch strings.ToLower(strings.TrimSpace(cell)) {
+	case "severity", "finding", "description", "tool", "evidence", "impact", "command", "notes", "blocker", "friction":
+		return true
+	default:
 		return false
 	}
-	return strings.Contains(trimmed, "blocker") || strings.Contains(trimmed, "friction")
+}
+
+func nonHeaderTableCells(cells []string) []string {
+	var out []string
+	for _, cell := range cells {
+		if !isAgentReadinessHeaderCell(cell) {
+			out = append(out, cell)
+		}
+	}
+	return out
+}
+
+func capitalizeASCII(s string) string {
+	if s == "" {
+		return ""
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }

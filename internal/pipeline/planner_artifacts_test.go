@@ -84,6 +84,36 @@ Phase verdict: Degrade
 	assert.NotContains(t, shipPlan, "**SHIP** - Quality and agent-readiness gates both pass.")
 }
 
+func TestGenerateShipPlanRendersTableAgentReadinessFindings(t *testing.T) {
+	setPressTestEnv(t)
+
+	state := NewStateWithRun("sample", filepath.Join(t.TempDir(), "sample-pp-cli"), "run-123", "test-scope")
+	require.NoError(t, state.Save())
+	scorecard := &Scorecard{
+		APIName: "sample",
+		Steinberger: SteinerScore{
+			Percentage: 80,
+		},
+		OverallGrade: "A",
+	}
+	require.NoError(t, writeScorecardJSON(scorecard, state.ProofsDir()))
+	require.NoError(t, os.WriteFile(filepath.Join(state.PipelineDir(), "agent-readiness.md"), []byte(`## Agent Readiness
+
+Phase verdict: Degrade
+
+| Blocker | Description |
+|---|---|
+| Blocker | mutating commands can run under verify mode |
+`), 0o644))
+
+	shipPlan, err := GenerateNextPlan(state, PhaseShip)
+	require.NoError(t, err)
+	assert.Contains(t, shipPlan, "  - Blocker: mutating commands can run under verify mode")
+	assert.NotContains(t, shipPlan, "| Blocker | Description |")
+	assert.NotContains(t, shipPlan, "  - |")
+	assert.Contains(t, shipPlan, "**HOLD**")
+}
+
 func TestGenerateShipPlanShipsWhenScorecardAndReadinessPass(t *testing.T) {
 	setPressTestEnv(t)
 
@@ -220,5 +250,5 @@ Phase verdict: Degrade
 	report, err := LoadAgentReadinessReport(dir)
 	require.NoError(t, err)
 	assert.Equal(t, AgentReadinessDegrade, report.Verdict)
-	assert.Contains(t, report.Findings, "| Blocker | mutating commands can run under verify mode |")
+	assert.Equal(t, []string{"Blocker: mutating commands can run under verify mode"}, report.Findings)
 }
