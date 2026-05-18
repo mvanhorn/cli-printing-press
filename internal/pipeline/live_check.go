@@ -258,12 +258,23 @@ func resolveBinaryPath(cliDir, name string) (string, error) {
 		if err != nil {
 			continue
 		}
-		if info.Mode()&0o111 == 0 {
+		if !isLiveCheckExecutable(path, info.Mode()) {
 			return "", fmt.Errorf("binary %q is not executable", path)
 		}
 		return path, nil
 	}
 	return "", fmt.Errorf("no runnable binary found in %q (tried %v)", cliDir, candidates)
+}
+
+func isLiveCheckExecutable(path string, mode os.FileMode) bool {
+	return isLiveCheckExecutableForGOOS(path, mode, runtime.GOOS)
+}
+
+func isLiveCheckExecutableForGOOS(path string, mode os.FileMode, goos string) bool {
+	if goos == "windows" {
+		return strings.EqualFold(filepath.Ext(path), ".exe")
+	}
+	return mode&0o111 != 0
 }
 
 func liveCheckBinaryCandidates(cliDir, name string) []string {

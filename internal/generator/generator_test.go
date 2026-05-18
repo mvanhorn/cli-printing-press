@@ -5656,15 +5656,91 @@ func TestGeneratedOutput_PromotedCommandExists(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), "promtest-pp-cli")
 	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
 	require.NoError(t, gen.Generate())
 
 	// Promoted command file SHOULD exist — it provides a user-friendly shortcut.
 	promotedFile := filepath.Join(outputDir, "internal", "cli", "promoted_users.go")
 	assert.FileExists(t, promotedFile)
 
+	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(helpersSrc), "func extractResponseData(",
+		"promoted commands call extractResponseData, so helpers.go must emit it when a promoted command exists")
+
 	// The resource parent command should NOT be generated — the promoted command replaces it.
 	// Generating both would leave the parent as dead code (never wired to root).
 	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "users.go"))
+}
+
+func TestGeneratedOutput_ExtractResponseDataHelperOnlyForPromotedCommands(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "noprom",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"NO_PROM_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/noprom-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"users": {
+				Description: "Manage users",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/users", Description: "List users"},
+					"get": {
+						Method:      "GET",
+						Path:        "/users/{id}",
+						Description: "Get user",
+						Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "noprom-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(helpersSrc), "func extractResponseData(",
+		"helpers.go must not emit promoted-command-only helpers when no promoted command can call them")
+}
+
+func TestGeneratedOutput_ExtractResponseDataHelperSkippedForPromotedNoStoreCLI(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "promnostore",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"PROM_NO_STORE_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/promnostore-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"users": {
+				Description: "Manage users",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/users", Description: "List all users"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "promnostore-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{MCP: true}
+	require.NoError(t, gen.Generate())
+
+	promotedSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "promoted_users.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(promotedSrc), "extractResponseData(",
+		"promoted commands without a local store do not call the unwrap helper")
+
+	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(helpersSrc), "func extractResponseData(",
+		"helpers.go must not emit extractResponseData when promoted commands cannot call it")
 }
 
 func TestGeneratedOutput_PromotedCommandKeepsSubresourceParents(t *testing.T) {

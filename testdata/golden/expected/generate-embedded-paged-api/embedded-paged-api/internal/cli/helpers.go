@@ -1005,34 +1005,6 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 	return printOutput(w, data, flags.asJSON)
 }
 
-// extractResponseData unwraps common API response envelopes for display.
-// Many APIs return {"status":"success","data":[...]} instead of a bare array.
-// This extracts the inner data for output helpers (filterFields, compactFields,
-// printAutoTable) that expect arrays or flat objects.
-//
-// Only unwraps when a "status" field is present and indicates success — this
-// avoids false positives on APIs where "data" is a regular field (e.g., Stripe
-// returns {"data":[...],"has_more":true} where "data" is the list, not an
-// envelope wrapper).
-func extractResponseData(data json.RawMessage) json.RawMessage {
-	var envelope struct {
-		Status string          `json:"status"`
-		Data   json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return data
-	}
-	if envelope.Data == nil || envelope.Status == "" {
-		return data // No status field = not an envelope, might be regular "data" field
-	}
-	switch envelope.Status {
-	case "success", "ok", "OK", "Success":
-		return envelope.Data
-	default:
-		return data
-	}
-}
-
 // compactVerboseListFields are prose-shaped fields stripped from list-item
 // projections. On lists, "body"/"content"/"html"/"markdown" are verbose
 // noise and the row's identity is carried by id/name/title/etc.
