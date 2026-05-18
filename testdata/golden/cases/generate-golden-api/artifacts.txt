@@ -1,4 +1,5 @@
 printing-press-golden/.printing-press.json
+printing-press-golden/.printing-press-patches.json
 printing-press-golden/manifest.json
 printing-press-golden/go.mod
 printing-press-golden/cmd/printing-press-golden-pp-cli/main.go
