@@ -10,6 +10,13 @@ name: Verify supply chain
 # omitted. See .github/scripts/verify-supply-chain/signals.py for the
 # rationale.
 #
+# IMPORTANT — scan integrity: this workflow checks out the BASE branch
+# (not the PR head) so the scan.py / signals.py that execute are the
+# trusted base versions, not whatever the PR author shipped. The PR head
+# is fetched separately and passed via --head-ref. Prevents a PR from
+# weakening the scanner in the same change that introduces an attack
+# payload — relevant once promoted to a required gate.
+#
 # Informational on landing — promote to a required check via branch
 # protection only after a one-week green window.
 
@@ -33,28 +40,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # Checkout the BASE branch from the base repo — never the PR head.
       - uses: actions/checkout@v6
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          repository: ${{ github.repository }}
+          ref: ${{ github.base_ref || github.ref }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Run supply-chain scan
         if: github.event_name == 'pull_request'
         env:
-          BASE_REF: ${{ github.base_ref }}
-          BASE_REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
 
-          git remote add base "https://github.com/${BASE_REPO}.git" 2>/dev/null || git remote set-url base "https://github.com/${BASE_REPO}.git"
-          base_remote_ref="refs/remotes/base/${BASE_REF}"
-          if ! git show-ref --verify --quiet "${base_remote_ref}"; then
-            git fetch --no-tags base "${BASE_REF}:${base_remote_ref}"
-          fi
+          git remote add pr "https://github.com/${HEAD_REPO}.git" 2>/dev/null || git remote set-url pr "https://github.com/${HEAD_REPO}.git"
+          git fetch --no-tags --depth=200 pr "${HEAD_SHA}"
 
-          python3 .github/scripts/verify-supply-chain/scan.py --base-ref "${base_remote_ref}"
+          python3 .github/scripts/verify-supply-chain/scan.py --base-ref HEAD --head-ref "${HEAD_SHA}"
 
       - name: Run supply-chain scan (manual dispatch)
         if: github.event_name == 'workflow_dispatch'
