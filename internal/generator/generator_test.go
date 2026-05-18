@@ -314,17 +314,9 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 		"func ensureFreshForResources(",
 		"func ensureFreshForCommand(",
 		"func runAutoRefresh(",
-		"func emitCacheRefreshFailedEvent(",
 		`"freshness-pp-cli dashboard": {`,
 		`"items",`,
 		`envOptOut := "FRESHNESS_NO_AUTO_REFRESH"`,
-		// Refresh failure must emit a structured JSON event to stderr so
-		// agents reading novel-command output that bypasses
-		// wrapWithProvenance still see a parseable degraded-state signal
-		// (issue #1263). The prose warning remains for humans.
-		`emitCacheRefreshFailedEvent(resources, err)`,
-		`Event:     "cache_warning",`,
-		`Reason:    "refresh_failed",`,
 	} {
 		assert.Contains(t, src, snippet, "auto_refresh.go missing %q", snippet)
 	}

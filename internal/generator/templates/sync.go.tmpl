@@ -159,7 +159,15 @@ Resource scoping:
 				if c.Config.TemplateVars == nil {
 					c.Config.TemplateVars = map[string]string{}
 				}
+				// Warn on keys outside endpointTemplateVarSet so typos
+				// (e.g. --path-context tneant=...) surface immediately
+				// instead of silently producing a run that used the
+				// env-resolved default. Non-fatal: the merge still proceeds
+				// so callers passing forward-compat keys aren't blocked.
 				for k, v := range pathContext {
+					if !endpointTemplateVarSet[k] {
+						fmt.Fprintf(os.Stderr, "warning: --path-context key %q is not a known endpoint placeholder; this value will not be substituted into any request path\n", k)
+					}
 					c.Config.TemplateVars[k] = v
 				}
 			}
