@@ -19,8 +19,9 @@ func newVerifyCmd() *cobra.Command {
 }
 
 type verifyCmdOptions struct {
-	runVerify  func(pipeline.VerifyConfig) (*pipeline.VerifyReport, error)
-	runFixLoop func(pipeline.VerifyConfig, *pipeline.VerifyReport, int) (*pipeline.FixLoopReport, error)
+	runVerify   func(pipeline.VerifyConfig) (*pipeline.VerifyReport, error)
+	runFixLoop  func(pipeline.VerifyConfig, *pipeline.VerifyReport, int) (*pipeline.FixLoopReport, error)
+	exitProcess func(int)
 }
 
 func newVerifyCmdWithOptions(opts verifyCmdOptions) *cobra.Command {
@@ -29,6 +30,9 @@ func newVerifyCmdWithOptions(opts verifyCmdOptions) *cobra.Command {
 	}
 	if opts.runFixLoop == nil {
 		opts.runFixLoop = pipeline.RunFixLoop
+	}
+	if opts.exitProcess == nil {
+		opts.exitProcess = os.Exit
 	}
 
 	var dir string
@@ -112,6 +116,7 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 				if err := enc.Encode(output); err != nil {
 					return err
 				}
+				cmd.SilenceErrors = true
 				return verifyVerdictError(report, true)
 			}
 
@@ -126,7 +131,7 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 			}
 
 			if report.Verdict == "FAIL" {
-				return verifyVerdictError(report, false)
+				opts.exitProcess(1)
 			}
 			return nil
 		},

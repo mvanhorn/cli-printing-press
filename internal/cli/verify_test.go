@@ -70,3 +70,29 @@ func TestVerifyCmdJSONFailReturnsExitErrorAfterWritingReport(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(output), &payload))
 	assert.Equal(t, "FAIL", payload.Verify.Verdict)
 }
+
+func TestVerifyCmdTextFailExitsWithLegacyCode(t *testing.T) {
+	var exitCode *int
+	cmd := newVerifyCmdWithOptions(verifyCmdOptions{
+		runVerify: func(cfg pipeline.VerifyConfig) (*pipeline.VerifyReport, error) {
+			return &pipeline.VerifyReport{
+				Mode:     "mock",
+				Total:    1,
+				Failed:   1,
+				PassRate: 0,
+				Verdict:  "FAIL",
+				Binary:   filepath.Join(cfg.Dir, "sample-cli"),
+			}, nil
+		},
+		exitProcess: func(code int) {
+			exitCode = &code
+		},
+	})
+	cmd.SetArgs([]string{"--dir", t.TempDir()})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+	require.NotNil(t, exitCode)
+	assert.Equal(t, 1, *exitCode)
+	assert.Contains(t, output, "Verdict: FAIL")
+}
