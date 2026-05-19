@@ -2,12 +2,13 @@
 name: printing-press-reprint
 description: >
   Regenerate an existing printed CLI from scratch under the current Printing
-  Press, with prior research and prior novel features carried into the
-  novel-features subagent's reprint reconciliation rather than dropped on
-  the floor. Pulls the CLI from the public library if it isn't local,
-  recommends reuse-vs-redo of prior research based on age, then hands off
-  to /printing-press with the right context. Use when a machine upgrade
-  would benefit a published CLI more than manual polish.
+  Press, with prior research, prior novel features, and prior patches
+  (post-publish hand-fixes) carried into the writing pipeline as
+  reconciliation context rather than dropped on the floor. Pulls the CLI
+  from the public library if it isn't local, recommends reuse-vs-redo of
+  prior research based on age, then hands off to /printing-press with the
+  right context. Use when a machine upgrade would benefit a published CLI
+  more than manual polish.
   Trigger phrases: "reprint <api>", "regenerate <api>", "redo the <api> CLI",
   "rebuild <api> from scratch", "this CLI would benefit from a reprint".
 allowed-tools:
@@ -59,6 +60,12 @@ fetch the public library `registry.json` once, then exact → normalized →
 fuzzy match. The argument can be an API slug (`notion`), a brand name
 (`cal.com`), an old `<api>-pp-cli` form, or close enough.
 
+Capture from the matched registry entry: `API_SLUG` (from `.name`) and
+`LIB_PATH` (from `.path`, e.g., `library/productivity/cal-com`). Phase B
+uses `$LIB_PATH` for the public patches fetch. For the "present | absent"
+never-published row, `$LIB_PATH` stays empty — Phase B's fetch
+short-circuits on that.
+
 Then check what exists locally and reconcile against the public library by
 reading both provenance manifests' `run_id` and `generated_at`:
 
@@ -75,10 +82,12 @@ When invoking `/printing-press-import`, let it own backup, overwrite,
 build-verify, and module-path-rewrite. Wait for it to return clean before
 continuing.
 
-## Phase B — Verify prior research is reconcilable
+## Phase B — Verify reconcilable prior context
 
-Confirm the two paths the novel-features subagent checks for prior research
-are populated:
+Locate the two artifacts the writing pipeline should be aware of: research
+(drives novel-features Pass 2(d)) and patches (post-publish hand-fixes
+recorded by `/printing-press-amend`, e.g. live-discovered API quirks the
+spec didn't reveal).
 
 ```bash
 LIB_TARGET="$PRESS_LIBRARY/$API_SLUG"
@@ -86,10 +95,12 @@ LIB_RESEARCH="$LIB_TARGET/research.json"
 MAN_RESEARCH=$(ls -1t "$PRESS_MANUSCRIPTS/$API_SLUG"/*/research.json 2>/dev/null | head -1)
 ```
 
-If neither exists, the published CLI predates `research.json` provenance.
-The subagent will treat the run as a first print and Pass 2(d) reprint
-reconciliation will not fire — there is nothing for it to read. Surface
-this and ask:
+### Research absent
+
+If neither research path exists, the published CLI predates `research.json`
+provenance. The subagent will treat the run as a first print and Pass 2(d)
+reprint reconciliation will not fire — there is nothing for it to read.
+Surface this and ask:
 
 > Published `<api>` was built before `research.json` provenance landed.
 > Without it, the novel-features subagent will treat this as a first
@@ -98,6 +109,43 @@ this and ask:
 
 If the user declines, exit. If they continue, record the absence so the
 hand-off prompt notes that this is a degraded reprint.
+
+### Patches discovery
+
+Refresh the local patches file from public when reachable, then read
+locally so downstream references are durable. Amends may have landed
+against the public copy without triggering a regen, so the local file
+can lag even when `run_id` matches; this step closes that gap. The fetch
+writes to a temp file and atomically renames on success, so a partial
+transfer never replaces a good local copy.
+
+```bash
+PATCHES_SOURCE="$LIB_TARGET/.printing-press-patches.json"
+if [[ -n "$LIB_PATH" ]]; then
+  PATCHES_TMP=$(mktemp)
+  if gh api -H "Accept: application/vnd.github.v3.raw" \
+       "repos/mvanhorn/printing-press-library/contents/$LIB_PATH/.printing-press-patches.json" \
+       > "$PATCHES_TMP" 2>/dev/null; then
+    mv "$PATCHES_TMP" "$PATCHES_SOURCE"
+  else
+    rm -f "$PATCHES_TMP"
+  fi
+fi
+PATCH_COUNT=$(jq '.patches | length' "$PATCHES_SOURCE" 2>/dev/null || echo 0)
+```
+
+If `$PATCH_COUNT == 0` or the file is missing entirely (older CLI
+predating the patches contract), skip the rest of this subsection — no
+patches block in the hand-off.
+
+If `$PATCH_COUNT > 0`, surface a one-liner to the user before continuing:
+
+> Public `<api>` has `$PATCH_COUNT` recorded patch(es) against the prior
+> printed CLI. Will carry into the brief as a watch-list (informational,
+> not a re-apply mandate) so the fresh code doesn't silently regress
+> live-validated fixes.
+
+Hold `$PATCHES_SOURCE` and `$PATCH_COUNT` for Phase D.
 
 ## Phase C — Recency recommendation
 
@@ -147,7 +195,7 @@ Ask via `AskUserQuestion`:
 
 ## Phase D — Hand off to `/printing-press`
 
-Invoke `/printing-press <api>` and bundle three things into the prompt:
+Invoke `/printing-press <api>` and bundle these into the prompt:
 
 1. **A header line** stating the user already chose to regenerate, so
    Phase 0's library-check should select "Generate a fresh CLI" and not
@@ -158,6 +206,46 @@ Invoke `/printing-press <api>` and bundle three things into the prompt:
    block. This propagates into the brief as `## User Vision` and becomes
    Pass 2(e) input to the novel-features subagent — the right hook for
    "I want better MCP support" → bias the brainstorm accordingly.
+4. **Prior patches** — only when Phase B found `$PATCH_COUNT > 0`.
+   Include under a `## Prior Patches` heading.
+
+   Lead the section with this framing sentence, verbatim:
+
+   > The following were hand-fixed against the prior printed CLI. They
+   > are informational — the machine may have absorbed some of these
+   > upstream since the patch was applied. Stay aware so the fresh code
+   > doesn't silently regress the underlying API truth or architectural
+   > pattern, but do not treat as a re-apply checklist.
+
+   Then summarize the patches from `$PATCHES_SOURCE`. Lead each entry
+   with the *substance* the patch encodes (the API truth, the
+   architectural pattern, the cross-file convention) drawn from each
+   patch's `reason` and `validated_outcome` — not just `summary`. Patch
+   metadata (`id`, `files`) is fine as parenthetical context but never
+   the headline.
+
+   Scale the section to patch count:
+
+   - **1–3 patches**: one short paragraph per patch — substance first,
+     then how it manifested. Model the shape on:
+     > Linear's personal API keys go in `Authorization: lin_api_…` raw,
+     > with no `Bearer` prefix; OAuth tokens use `Authorization: Bearer
+     > <token>`. The prior CLI shipped with `auth set-token` only
+     > (Bearer-defaulted) and was patched post-publish to add
+     > `auth set-api-key` plus the raw-header path in `config.go`
+     > (`linear-auth-api-key-vs-oauth-token`).
+   - **4–9 patches**: one tight sentence per patch, same substance-first
+     shape.
+   - **10+ patches**: thematic summary by category (auth, pagination,
+     query encoding, MCP additions, helpers, classifiers, error
+     envelopes). Two or three sentences per theme citing 2–3 patch `id`s
+     as evidence. Do not enumerate all entries inline.
+
+   Close the section with a pointer so a downstream agent can drill into
+   any specific patch when working in the relevant area:
+
+   > Full patch detail: `$PATCHES_SOURCE`. Schema:
+   > `PatchesIndex` in `internal/pipeline/climanifest.go`.
 
 Do **not** pass a separate "this is a reprint" marker. The novel-features
 subagent runs unconditionally on every print and discovers prior research
