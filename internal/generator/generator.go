@@ -2489,6 +2489,13 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 			if err := g.renderTemplate("mcp_code_orch.go.tmpl", filepath.Join("internal", "mcp", "code_orch.go"), mcpData); err != nil {
 				return fmt.Errorf("rendering MCP code-orchestration: %w", err)
 			}
+			// Durable regression test for the write-body contracts
+			// (double-marshal object path + bare-array body path).
+			// Gated on code-orchestration so intents-only CLIs, which
+			// have no codeOrchWriteBody/codeOrchArrayBody, still compile.
+			if err := g.renderTemplate("mcp_code_orch_writebody_test.go.tmpl", filepath.Join("internal", "mcp", "code_orch_writebody_test.go"), mcpData); err != nil {
+				return fmt.Errorf("rendering MCP code-orchestration write-body test: %w", err)
+			}
 		}
 	}
 
