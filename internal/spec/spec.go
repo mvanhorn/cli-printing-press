@@ -561,7 +561,8 @@ func (c BearerRefreshConfig) Enabled() bool {
 }
 
 type AuthConfig struct {
-	Type             string       `yaml:"type" json:"type"` // api_key, oauth2, bearer_token, cookie, composed, session_handshake, none
+	Type             string       `yaml:"type" json:"type"`                           // api_key, oauth2, bearer_token, cookie, composed, session_handshake, none
+	Subtype          string       `yaml:"subtype,omitempty" json:"subtype,omitempty"` // optional refinement of Type. Currently used for "auth0_spa_in_memory": bearer_token whose JWT lives in JS heap (Auth0 SPA SDK v2+ with cacheLocation: memory) and is reachable only via CDP runtime interception, not via cookie/localStorage extraction. Mirrors x-auth-subtype on the OpenAPI security scheme.
 	Header           string       `yaml:"header" json:"header"`
 	Prefix           string       `yaml:"prefix,omitempty" json:"prefix,omitempty"` // Authorization scheme word (e.g., "Token", "PRIVATE-TOKEN"); empty defaults to "Bearer". Ignored when Format is set.
 	Format           string       `yaml:"format" json:"format"`
@@ -659,6 +660,16 @@ const (
 	RefreshTokenMechanismKindScope = "scope"
 	RefreshTokenMechanismKindQuery = "query"
 )
+
+// AuthSubtypeAuth0SPAInMemory marks a bearer_token spec whose access token is
+// held in JS heap by the Auth0 SPA SDK (cacheLocation: memory) and is reachable
+// only via Chrome DevTools Protocol runtime interception. The cookie-jar
+// extractor in `auth login --chrome` has no path to such tokens, so the printed
+// CLI emits a `--auth0-spa` flag that drives a CDP-based outbound-Authorization
+// header capture instead. Detected at sniff time when an /oauth/token call
+// returns `access_token` in the JSON body without a JWT-shaped Set-Cookie on
+// the same response (see internal/browsersniff/auth0_spa.go).
+const AuthSubtypeAuth0SPAInMemory = "auth0_spa_in_memory"
 
 // ParsedRefreshTokenMechanism is the decoded form of AuthConfig.RefreshTokenMechanism.
 // Kind is "scope", "query", or "" when the field is empty or malformed. Scope is set
@@ -968,6 +979,30 @@ func validateAuthPrefix(c AuthConfig) error {
 		}
 	}
 	return nil
+}
+
+// validateAuthSubtype rejects unrecognized auth.subtype values so authoring
+// typos fail fast rather than silently bypassing the runtime emission. Only
+// auth0_spa_in_memory is recognized today; the field is otherwise expected to
+// be empty.
+func validateAuthSubtype(c AuthConfig) error {
+	if c.Subtype == "" {
+		return nil
+	}
+	switch c.Subtype {
+	case AuthSubtypeAuth0SPAInMemory:
+		// Subtype refines bearer_token; reject the combination if the
+		// underlying type doesn't fit. Auth0 SPA tokens are always
+		// Authorization: Bearer values.
+		if c.Type != "" && c.Type != "bearer_token" {
+			return fmt.Errorf("auth.subtype %q requires auth.type %q (got %q)",
+				c.Subtype, "bearer_token", c.Type)
+		}
+		return nil
+	default:
+		return fmt.Errorf("auth.subtype %q is not recognized (valid: %q)",
+			c.Subtype, AuthSubtypeAuth0SPAInMemory)
+	}
 }
 
 // AuthConfig.Type is intentionally skipped: the field is ignored for
@@ -2038,6 +2073,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateAuthPrefix(s.Auth); err != nil {
+		return err
+	}
+	if err := validateAuthSubtype(s.Auth); err != nil {
 		return err
 	}
 	if err := validateSessionHandshake(s.Auth); err != nil {

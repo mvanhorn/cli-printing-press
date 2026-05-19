@@ -48,6 +48,7 @@ type planGoModData struct {
 	CLIName   string
 	VisionSet struct{ Store, MCP bool }
 	Config    struct{ Format string }
+	Auth      struct{ Subtype string }
 }
 
 func (planGoModData) UsesBrowserHTTPTransport() bool {

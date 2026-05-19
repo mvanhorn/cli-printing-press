@@ -225,6 +225,16 @@ type ProtocolObservation struct {
 
 type AuthAnalysis struct {
 	Candidates []AuthCandidate `json:"candidates,omitempty"`
+
+	// Auth0SPAInMemory is true when an /oauth/token response carried an
+	// `access_token` in the JSON body without a JWT-shaped Set-Cookie on the
+	// same response — the signature of an Auth0 SPA SDK deployment using
+	// `cacheLocation: memory`. The token lives in JS heap and is reachable
+	// only via CDP runtime interception, so the spec carries
+	// `auth.subtype: auth0_spa_in_memory` and the generated `auth login`
+	// command exposes a `--auth0-spa` CDP path instead of cookie-jar
+	// extraction. See internal/browsersniff/auth0_spa.go.
+	Auth0SPAInMemory bool `json:"auth0_spa_in_memory,omitempty"`
 }
 
 // UnmarshalJSON accepts v2-shape `auth.candidate_types: ["api_key", "none"]`
@@ -233,13 +243,15 @@ type AuthAnalysis struct {
 // as `{type: <s>, confidence: 1.0}`. See issue #474.
 func (a *AuthAnalysis) UnmarshalJSON(data []byte) error {
 	var legacy struct {
-		Candidates     []AuthCandidate `json:"candidates,omitempty"`
-		CandidateTypes []string        `json:"candidate_types,omitempty"`
+		Candidates       []AuthCandidate `json:"candidates,omitempty"`
+		CandidateTypes   []string        `json:"candidate_types,omitempty"`
+		Auth0SPAInMemory bool            `json:"auth0_spa_in_memory,omitempty"`
 	}
 	if err := json.Unmarshal(data, &legacy); err != nil {
 		return err
 	}
 	a.Candidates = legacy.Candidates
+	a.Auth0SPAInMemory = legacy.Auth0SPAInMemory
 	if len(a.Candidates) == 0 && len(legacy.CandidateTypes) > 0 {
 		a.Candidates = make([]AuthCandidate, 0, len(legacy.CandidateTypes))
 		for _, t := range legacy.CandidateTypes {
@@ -808,7 +820,10 @@ func detectTrafficAuth(capture *EnrichedCapture, entries []EnrichedEntry) AuthAn
 		}
 		return out[i].Confidence > out[j].Confidence
 	})
-	return AuthAnalysis{Candidates: out}
+	return AuthAnalysis{
+		Candidates:       out,
+		Auth0SPAInMemory: detectAuth0SPAInMemory(entries),
+	}
 }
 
 func detectProtections(entries []EnrichedEntry) []ProtectionObservation {
@@ -1417,6 +1432,9 @@ func deriveGenerationHints(analysis *TrafficAnalysis) []string {
 		if candidate.Type == "cookie" || candidate.Type == "composed" {
 			hints["requires_browser_auth"] = true
 		}
+	}
+	if analysis.Auth.Auth0SPAInMemory {
+		hints["auth0_spa_in_memory"] = true
 	}
 	for _, warning := range analysis.Warnings {
 		if warning.Type == "weak_schema_evidence" || warning.Type == "raw_protocol_envelope" {
