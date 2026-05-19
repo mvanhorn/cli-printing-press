@@ -10,7 +10,26 @@ import "os"
 // effects (open browser tabs, send notifications, dial out to OS
 // handlers) MUST short-circuit when this env var is "1" to avoid
 // spamming the user's environment during verify runs.
+//
+// The transport layer in internal/client also gates mutating HTTP verbs
+// (DELETE/POST/PUT/PATCH) on this var: under verify mode such requests
+// short-circuit with a synthetic envelope and never dial. The verifier
+// itself opts back in to the real wire path via VerifyLiveHTTPEnvVar
+// so its httptest mock-server flow keeps exercising the real client.
 const VerifyEnvVar = "PRINTING_PRESS_VERIFY"
+
+// VerifyLiveHTTPEnvVar opts a verify-mode subprocess back in to the
+// real HTTP wire path for mutating verbs. It is intentionally
+// asymmetric with VerifyEnvVar: setting LIVE_HTTP=1 alone (with VERIFY
+// unset) has no behavioral effect, because the gate only consults this
+// var when IsVerifyEnv() is also true. The verify pipeline and
+// narrative full-example runner both set BOTH vars in their mock-mode
+// subprocesses (so the httptest server keeps exercising the real wire
+// path); agents and ad-hoc operators leave LIVE_HTTP unset so mutating
+// requests no-op. Live verifiers (live_dogfood, workflow_verify) strip
+// both vars from subprocess env entirely so they cannot inherit a
+// verify-mode short-circuit from the operator's shell.
+const VerifyLiveHTTPEnvVar = "PRINTING_PRESS_VERIFY_LIVE_HTTP"
 
 // DogfoodEnvVar is the env var the printing-press live-dogfood runner
 // sets in every subprocess. Distinct from VerifyEnvVar because dogfood
@@ -34,6 +53,25 @@ const DogfoodEnvVar = "PRINTING_PRESS_DOGFOOD"
 //	}
 func IsVerifyEnv() bool {
 	return os.Getenv(VerifyEnvVar) == "1"
+}
+
+// IsVerifyLiveHTTPEnv reports whether the current process has opted
+// back in to the real HTTP wire path while running under the verifier.
+// Only meaningful when IsVerifyEnv() is also true; on its own this
+// returns true does NOT enable any sandbox behavior — see
+// VerifyLiveHTTPEnvVar's docstring for the asymmetric semantics.
+//
+// The generated client uses this gate as:
+//
+//	if !readOnlyIntent && isMutatingVerb(method) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
+//	    // synthetic envelope, no network call
+//	}
+//
+// readOnlyIntent is set by Client.doRead() callers (the PostQuery*
+// family used by codegen-marked `mcp:read-only` operations on mutating
+// verbs — GraphQL queries, JSON-RPC reads, POST-based search).
+func IsVerifyLiveHTTPEnv() bool {
+	return os.Getenv(VerifyLiveHTTPEnvVar) == "1"
 }
 
 // IsDogfoodEnv reports whether the current process is running under
