@@ -23,9 +23,7 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"{{modulePath}}/internal/cli"
-{{- if and .Auth.Type (ne .Auth.Type "none")}}
 	"{{modulePath}}/internal/cliutil"
-{{- end}}
 	"{{modulePath}}/internal/client"
 	"{{modulePath}}/internal/config"
 	"{{modulePath}}/internal/mcp/cobratree"
@@ -44,8 +42,9 @@ func RegisterTools(s *server.MCPServer) {
 {{- if ne .MCP.EndpointTools "hidden"}}
 {{- range $name, $resource := .Resources}}
 {{- range $eName, $endpoint := $resource.Endpoints}}
-	s.AddTool(
-		mcplib.NewTool({{printf "%q" (printf "%s_%s" (snake $name) (snake $eName))}},
+{{- $toolName := printf "%s_%s" (snake $name) (snake $eName)}}
+	registerProfiledTool(s,
+		mcplib.NewTool({{printf "%q" $toolName}},
 			mcplib.WithDescription({{printf "%q" (privacySensitiveMCPDescription (composeMCPDesc $.APISpec $resource $endpoint $.MCPPublicCount $.MCPTotalCount) $endpoint $eName $name $.APISpec.Types)}}),
 {{- range $endpoint.Params}}
 			mcplib.{{mcpBindingFunc .Type}}({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
@@ -67,6 +66,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithOpenWorldHintAnnotation(true),
 {{- end}}
 		),
+		cliutil.MCPToolSafety{Name: {{printf "%q" $toolName}}, Destructive: {{if endpointMCPDestructive $endpoint}}true{{else}}false{{end}}, PrivacySensitive: {{if endpointPrivacySensitive $endpoint $eName $name $.APISpec.Types}}true{{else}}false{{end}}},
 {{- if $.HasTierRouting}}
 		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveEndpointPath $resource $endpoint)}}, {{printf "%q" (effectiveTier $.APISpec $resource $endpoint)}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, []mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveEndpointPath $resource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 {{- else}}
@@ -76,8 +76,9 @@ func RegisterTools(s *server.MCPServer) {
 {{- end}}
 {{- range $subName, $subResource := $resource.SubResources}}
 {{- range $eName, $endpoint := $subResource.Endpoints}}
-	s.AddTool(
-		mcplib.NewTool({{printf "%q" (printf "%s_%s_%s" (snake $name) (snake $subName) (snake $eName))}},
+{{- $toolName := printf "%s_%s_%s" (snake $name) (snake $subName) (snake $eName)}}
+	registerProfiledTool(s,
+		mcplib.NewTool({{printf "%q" $toolName}},
 			mcplib.WithDescription({{printf "%q" (privacySensitiveMCPDescription (composeMCPSubDesc $.APISpec $resource $subResource $endpoint $.MCPPublicCount $.MCPTotalCount) $endpoint $eName $subName $.APISpec.Types)}}),
 {{- range $endpoint.Params}}
 			mcplib.{{mcpBindingFunc .Type}}({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
@@ -99,6 +100,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithOpenWorldHintAnnotation(true),
 {{- end}}
 		),
+		cliutil.MCPToolSafety{Name: {{printf "%q" $toolName}}, Destructive: {{if endpointMCPDestructive $endpoint}}true{{else}}false{{end}}, PrivacySensitive: {{if endpointPrivacySensitive $endpoint $eName $subName $.APISpec.Types}}true{{else}}false{{end}}},
 {{- if $.HasTierRouting}}
 		makeAPIHandler({{printf "%q" (upper $endpoint.Method)}}, {{printf "%q" (effectiveSubEndpointPath $resource $subResource $endpoint)}}, {{printf "%q" (effectiveSubTier $.APISpec $resource $subResource $endpoint)}}, {{if $endpoint.UsesBinaryResponse}}true{{else}}false{{end}}, []mcpParamBinding{ {{- range mcpParamBindings $endpoint (effectiveSubEndpointPath $resource $subResource $endpoint)}}{PublicName: {{printf "%q" .PublicName}}, WireName: {{printf "%q" .WireName}}, Location: {{printf "%q" .Location}}{{if .Format}}, Format: {{printf "%q" .Format}}{{end}}{{if .RequestContentType}}, RequestContentType: {{printf "%q" .RequestContentType}}{{end}}},{{end}} }, []string{ {{- range $endpoint.Params}}{{if or .Positional .PathParam}}{{printf "%q" .Name}},{{end}}{{end}} }),
 {{- else}}
@@ -117,7 +119,7 @@ func RegisterTools(s *server.MCPServer) {
 
 {{- if .VisionSet.Search}}
 	// Search tool — faster than iterating list endpoints for finding specific items
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("search",
 			mcplib.WithDescription("Full-text search across all synced data. Faster than paginating list endpoints. Requires sync first."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query (supports FTS5 syntax: AND, OR, NOT, quotes for phrases)")),
@@ -125,37 +127,85 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 		),
+		cliutil.MCPToolSafety{Name: "search"},
 		handleSearch,
 	)
 {{- end}}
 
 {{- if .VisionSet.Store}}
 	// SQL tool — ad-hoc analysis on synced data without API calls
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("sql",
 			mcplib.WithDescription("Run read-only SQL against local database. Use for ad-hoc analysis, aggregations, and joins across synced resources. Requires sync first."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("SQL query (SELECT or WITH...SELECT). Tables match resource names.")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 		),
+		cliutil.MCPToolSafety{Name: "sql"},
 		handleSQL,
 	)
 {{- end}}
 
 	// Context tool — front-loaded domain knowledge for agents.
 	// Call this first to understand the API taxonomy, query patterns, and capabilities.
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("context",
 			mcplib.WithDescription("Get API domain context: resource taxonomy, auth requirements, query tips, and unique capabilities. Call this first."),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 		),
+		cliutil.MCPToolSafety{Name: "context"},
 		handleContext,
 	)
 
 	// Runtime Cobra-tree mirror — exposes every user-facing command that is
 	// not already covered by a typed endpoint or framework MCP tool.
-	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
+	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath, registerProfiledTool)
+}
+
+var profileToolSafety = map[string]cliutil.MCPToolSafety{}
+
+func registerProfiledTool(s *server.MCPServer, tool mcplib.Tool, safety cliutil.MCPToolSafety, handler server.ToolHandlerFunc) {
+	if safety.Name == "" {
+		safety.Name = tool.Name
+	}
+	if tool.Annotations.DestructiveHint != nil && *tool.Annotations.DestructiveHint {
+		safety.Destructive = true
+	}
+	profileToolSafety[tool.Name] = safety
+	s.AddTool(tool, profileGuardedHandler(safety, handler))
+}
+
+func profileGuardedHandler(safety cliutil.MCPToolSafety, handler server.ToolHandlerFunc) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+		requestSafety := safety
+		if requestSafety.Name == "" {
+			requestSafety.Name = req.Params.Name
+		}
+		if !cliutil.MCPToolAvailableInProfile(requestSafety) {
+			payload, _ := json.Marshal(map[string]string{"error": cliutil.MCPProfileUnavailableMessage("{{.Name}}-pp-cli")})
+			return mcplib.NewToolResultError(string(payload)), nil
+		}
+		return handler(ctx, req)
+	}
+}
+
+func ProfileToolFilter(ctx context.Context, tools []mcplib.Tool) []mcplib.Tool {
+	_ = ctx
+	if cliutil.CurrentMCPProfile() == cliutil.MCPProfileOperator {
+		return tools
+	}
+	filtered := make([]mcplib.Tool, 0, len(tools))
+	for _, tool := range tools {
+		safety := profileToolSafety[tool.Name]
+		if safety.Name == "" {
+			safety.Name = tool.Name
+		}
+		if cliutil.MCPToolAvailableInProfile(safety) {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
 }
 
 type mcpParamBinding struct {

@@ -1541,6 +1541,8 @@ func (g *Generator) renderSingleFiles() error {
 		"cliutil_fanout.go.tmpl":             filepath.Join("internal", "cliutil", "fanout.go"),
 		"cliutil_text.go.tmpl":               filepath.Join("internal", "cliutil", "text.go"),
 		"cliutil_probe.go.tmpl":              filepath.Join("internal", "cliutil", "probe.go"),
+		"cliutil_profile.go.tmpl":            filepath.Join("internal", "cliutil", "profile.go"),
+		"cliutil_profile_test.go.tmpl":       filepath.Join("internal", "cliutil", "profile_test.go"),
 		"cliutil_ratelimit.go.tmpl":          filepath.Join("internal", "cliutil", "ratelimit.go"),
 		"cliutil_verifyenv.go.tmpl":          filepath.Join("internal", "cliutil", "verifyenv.go"),
 		"cliutil_extractnumber.go.tmpl":      filepath.Join("internal", "cliutil", "extractnumber.go"),
@@ -1835,6 +1837,8 @@ func (g *Generator) GenerateMCPSurface() error {
 		"cliutil_fanout.go.tmpl":             filepath.Join("internal", "cliutil", "fanout.go"),
 		"cliutil_text.go.tmpl":               filepath.Join("internal", "cliutil", "text.go"),
 		"cliutil_probe.go.tmpl":              filepath.Join("internal", "cliutil", "probe.go"),
+		"cliutil_profile.go.tmpl":            filepath.Join("internal", "cliutil", "profile.go"),
+		"cliutil_profile_test.go.tmpl":       filepath.Join("internal", "cliutil", "profile_test.go"),
 		"cliutil_ratelimit.go.tmpl":          filepath.Join("internal", "cliutil", "ratelimit.go"),
 		"cliutil_verifyenv.go.tmpl":          filepath.Join("internal", "cliutil", "verifyenv.go"),
 		"cliutil_extractnumber.go.tmpl":      filepath.Join("internal", "cliutil", "extractnumber.go"),
@@ -2638,6 +2642,9 @@ func (g *Generator) renderMCPToolFiles(schema []TableDef) error {
 		}
 		if err := g.renderTemplate("mcp_tools.go.tmpl", filepath.Join("internal", "mcp", "tools.go"), mcpData); err != nil {
 			return fmt.Errorf("rendering MCP tools: %w", err)
+		}
+		if err := g.renderTemplate("mcp_profile_test.go.tmpl", filepath.Join("internal", "mcp", "profile_test.go"), mcpData); err != nil {
+			return fmt.Errorf("rendering MCP profile tests: %w", err)
 		}
 		if g.VisionSet.Store {
 			if err := g.renderTemplate("mcp_tools_test.go.tmpl", filepath.Join("internal", "mcp", "tools_test.go"), mcpData); err != nil {

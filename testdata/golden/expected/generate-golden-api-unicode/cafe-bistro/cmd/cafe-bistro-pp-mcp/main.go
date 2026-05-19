@@ -28,6 +28,7 @@ func main() {
 		"Café Bistro",
 		"1.0.0",
 		server.WithToolCapabilities(false),
+		server.WithToolFilter(mcptools.ProfileToolFilter),
 	)
 
 	mcptools.RegisterTools(s)

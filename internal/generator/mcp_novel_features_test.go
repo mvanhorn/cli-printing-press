@@ -51,7 +51,7 @@ func TestMCPRegistersCobraTreeMirror(t *testing.T) {
 	assert.Contains(t, content, "func RegisterNovelFeatureTools(s *server.MCPServer) {")
 	assert.Contains(t, content, "_ = s")
 	assert.NotContains(t, content, `shellOutToCLI("snapshot")`)
-	assert.Contains(t, content, "cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)")
+	assert.Contains(t, content, "cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath, registerProfiledTool)")
 
 	cobratreeCLIPath, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "cli_path.go"))
 	require.NoError(t, err)

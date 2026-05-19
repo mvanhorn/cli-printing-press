@@ -23,13 +23,14 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"{{modulePath}}/internal/cliutil"
 )
 
 // RegisterCodeOrchestrationTools registers the two agent-facing tools that
 // cover the whole API surface. Called from RegisterTools in place of the
 // per-endpoint registrations when MCP.Orchestration is "code".
 func RegisterCodeOrchestrationTools(s *server.MCPServer) {
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("{{snake .Name}}_search",
 			mcplib.WithDescription("Search the {{.Name}} API for endpoints matching a natural-language query. Returns a ranked list of {endpoint_id, method, path, summary} entries. Call this first to find the endpoint to execute."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Natural-language description of what you want to do.")),
@@ -37,10 +38,11 @@ func RegisterCodeOrchestrationTools(s *server.MCPServer) {
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 		),
+		cliutil.MCPToolSafety{Name: "{{snake .Name}}_search"},
 		handleCodeOrchSearch,
 	)
 
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("{{snake .Name}}_execute",
 			mcplib.WithDescription("Execute one {{.Name}} API endpoint by its endpoint_id (from {{snake .Name}}_search). Params are passed as a JSON object; path placeholders and query strings are resolved automatically."),
 			mcplib.WithString("endpoint_id", mcplib.Required(), mcplib.Description("Endpoint identifier returned by {{snake .Name}}_search (e.g., \"users.list\").")),
@@ -48,6 +50,7 @@ func RegisterCodeOrchestrationTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(true),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
+		cliutil.MCPToolSafety{Name: "{{snake .Name}}_execute", Destructive: true},
 		handleCodeOrchExecute,
 	)
 }

@@ -17,21 +17,23 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	"public-param-golden-pp-cli/internal/cli"
 	"public-param-golden-pp-cli/internal/client"
+	"public-param-golden-pp-cli/internal/cliutil"
 	"public-param-golden-pp-cli/internal/config"
 	"public-param-golden-pp-cli/internal/mcp/cobratree"
 )
 
 // RegisterTools registers all API operations as MCP tools.
 func RegisterTools(s *server.MCPServer) {
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("stores_create",
 			mcplib.WithDescription("Create a store record. Required: store-code. Returns the new Store."),
 			mcplib.WithString("store-code", mcplib.Required(), mcplib.Description("Store code")),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
+		cliutil.MCPToolSafety{Name: "stores_create", Destructive: false, PrivacySensitive: false},
 		makeAPIHandler("POST", "/stores", false, []mcpParamBinding{{PublicName: "store-code", WireName: "store_code", Location: "body"}}, []string{}),
 	)
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("stores_find",
 			mcplib.WithDescription("Find nearby stores by address. Required: address, city. Returns array of Store."),
 			mcplib.WithString("address", mcplib.Required(), mcplib.Description("Street address")),
@@ -40,23 +42,70 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
+		cliutil.MCPToolSafety{Name: "stores_find", Destructive: false, PrivacySensitive: false},
 		makeAPIHandler("GET", "/power/store-locator", false, []mcpParamBinding{{PublicName: "address", WireName: "s", Location: "query"}, {PublicName: "city", WireName: "c", Location: "query"}}, []string{}),
 	)
 
 	// Context tool — front-loaded domain knowledge for agents.
 	// Call this first to understand the API taxonomy, query patterns, and capabilities.
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("context",
 			mcplib.WithDescription("Get API domain context: resource taxonomy, auth requirements, query tips, and unique capabilities. Call this first."),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 		),
+		cliutil.MCPToolSafety{Name: "context"},
 		handleContext,
 	)
 
 	// Runtime Cobra-tree mirror — exposes every user-facing command that is
 	// not already covered by a typed endpoint or framework MCP tool.
-	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
+	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath, registerProfiledTool)
+}
+
+var profileToolSafety = map[string]cliutil.MCPToolSafety{}
+
+func registerProfiledTool(s *server.MCPServer, tool mcplib.Tool, safety cliutil.MCPToolSafety, handler server.ToolHandlerFunc) {
+	if safety.Name == "" {
+		safety.Name = tool.Name
+	}
+	if tool.Annotations.DestructiveHint != nil && *tool.Annotations.DestructiveHint {
+		safety.Destructive = true
+	}
+	profileToolSafety[tool.Name] = safety
+	s.AddTool(tool, profileGuardedHandler(safety, handler))
+}
+
+func profileGuardedHandler(safety cliutil.MCPToolSafety, handler server.ToolHandlerFunc) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+		requestSafety := safety
+		if requestSafety.Name == "" {
+			requestSafety.Name = req.Params.Name
+		}
+		if !cliutil.MCPToolAvailableInProfile(requestSafety) {
+			payload, _ := json.Marshal(map[string]string{"error": cliutil.MCPProfileUnavailableMessage("public-param-golden-pp-cli")})
+			return mcplib.NewToolResultError(string(payload)), nil
+		}
+		return handler(ctx, req)
+	}
+}
+
+func ProfileToolFilter(ctx context.Context, tools []mcplib.Tool) []mcplib.Tool {
+	_ = ctx
+	if cliutil.CurrentMCPProfile() == cliutil.MCPProfileOperator {
+		return tools
+	}
+	filtered := make([]mcplib.Tool, 0, len(tools))
+	for _, tool := range tools {
+		safety := profileToolSafety[tool.Name]
+		if safety.Name == "" {
+			safety.Name = tool.Name
+		}
+		if cliutil.MCPToolAvailableInProfile(safety) {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
 }
 
 type mcpParamBinding struct {

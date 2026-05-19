@@ -8,14 +8,22 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"os"
+	"{{modulePath}}/internal/cliutil"
 	"github.com/spf13/cobra"
 )
 
+type RegisterToolFunc func(*server.MCPServer, mcplib.Tool, cliutil.MCPToolSafety, server.ToolHandlerFunc)
+
 // RegisterAll walks root's user-facing Cobra commands and registers shell-out
 // MCP tools for commands that are not already covered by typed endpoint tools.
-func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (string, error)) {
+func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (string, error), register RegisterToolFunc) {
 	if root == nil {
 		return
+	}
+	if register == nil {
+		register = func(s *server.MCPServer, tool mcplib.Tool, safety cliutil.MCPToolSafety, handler server.ToolHandlerFunc) {
+			s.AddTool(tool, handler)
+		}
 	}
 	walk(root, nil, func(cmd *cobra.Command, path []string) {
 		switch classify(cmd) {
@@ -38,8 +46,20 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 			options = append(options, mcplib.WithString("args", mcplib.Description("Additional positional arguments or raw CLI flags to append to the command.")))
 		}
 		options = append(options, safetyToolOptions(cmd, path)...)
-		s.AddTool(mcplib.NewTool(toolName, options...), shellOutToCLI(cliPath, path))
+		register(s, mcplib.NewTool(toolName, options...), toolSafety(cmd, path, toolName), shellOutToCLI(cliPath, path))
 	})
+}
+
+func toolSafety(cmd *cobra.Command, path []string, toolName string) cliutil.MCPToolSafety {
+	safety := cliutil.MCPToolSafety{Name: toolName, PrivacySensitive: isMCPPrivacySensitive(cmd)}
+	if isMCPDestructive(cmd) {
+		safety.Destructive = true
+		return safety
+	}
+	if method(cmd) == "DELETE" {
+		safety.Destructive = true
+	}
+	return safety
 }
 
 func safetyToolOptions(cmd *cobra.Command, path []string) []mcplib.ToolOption {

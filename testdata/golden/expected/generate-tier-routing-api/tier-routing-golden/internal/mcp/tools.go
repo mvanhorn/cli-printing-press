@@ -25,58 +25,108 @@ import (
 
 // RegisterTools registers all API operations as MCP tools.
 func RegisterTools(s *server.MCPServer) {
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("items_enterprise",
 			mcplib.WithDescription("List enterprise items."),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
+		cliutil.MCPToolSafety{Name: "items_enterprise", Destructive: false, PrivacySensitive: false},
 		makeAPIHandler("GET", "/items/enterprise", "enterprise", false, []mcpParamBinding{}, []string{}),
 	)
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("items_list",
 			mcplib.WithDescription("List free items. (public)"),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
+		cliutil.MCPToolSafety{Name: "items_list", Destructive: false, PrivacySensitive: false},
 		makeAPIHandler("GET", "/items", "free", false, []mcpParamBinding{}, []string{}),
 	)
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("items_premium",
 			mcplib.WithDescription("List paid items."),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
+		cliutil.MCPToolSafety{Name: "items_premium", Destructive: false, PrivacySensitive: false},
 		makeAPIHandler("GET", "/items/premium", "paid", false, []mcpParamBinding{}, []string{}),
 	)
 	// SQL tool — ad-hoc analysis on synced data without API calls
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("sql",
 			mcplib.WithDescription("Run read-only SQL against local database. Use for ad-hoc analysis, aggregations, and joins across synced resources. Requires sync first."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("SQL query (SELECT or WITH...SELECT). Tables match resource names.")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 		),
+		cliutil.MCPToolSafety{Name: "sql"},
 		handleSQL,
 	)
 
 	// Context tool — front-loaded domain knowledge for agents.
 	// Call this first to understand the API taxonomy, query patterns, and capabilities.
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("context",
 			mcplib.WithDescription("Get API domain context: resource taxonomy, auth requirements, query tips, and unique capabilities. Call this first."),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 		),
+		cliutil.MCPToolSafety{Name: "context"},
 		handleContext,
 	)
 
 	// Runtime Cobra-tree mirror — exposes every user-facing command that is
 	// not already covered by a typed endpoint or framework MCP tool.
-	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
+	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath, registerProfiledTool)
+}
+
+var profileToolSafety = map[string]cliutil.MCPToolSafety{}
+
+func registerProfiledTool(s *server.MCPServer, tool mcplib.Tool, safety cliutil.MCPToolSafety, handler server.ToolHandlerFunc) {
+	if safety.Name == "" {
+		safety.Name = tool.Name
+	}
+	if tool.Annotations.DestructiveHint != nil && *tool.Annotations.DestructiveHint {
+		safety.Destructive = true
+	}
+	profileToolSafety[tool.Name] = safety
+	s.AddTool(tool, profileGuardedHandler(safety, handler))
+}
+
+func profileGuardedHandler(safety cliutil.MCPToolSafety, handler server.ToolHandlerFunc) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+		requestSafety := safety
+		if requestSafety.Name == "" {
+			requestSafety.Name = req.Params.Name
+		}
+		if !cliutil.MCPToolAvailableInProfile(requestSafety) {
+			payload, _ := json.Marshal(map[string]string{"error": cliutil.MCPProfileUnavailableMessage("tier-routing-golden-pp-cli")})
+			return mcplib.NewToolResultError(string(payload)), nil
+		}
+		return handler(ctx, req)
+	}
+}
+
+func ProfileToolFilter(ctx context.Context, tools []mcplib.Tool) []mcplib.Tool {
+	_ = ctx
+	if cliutil.CurrentMCPProfile() == cliutil.MCPProfileOperator {
+		return tools
+	}
+	filtered := make([]mcplib.Tool, 0, len(tools))
+	for _, tool := range tools {
+		safety := profileToolSafety[tool.Name]
+		if safety.Name == "" {
+			safety.Name = tool.Name
+		}
+		if cliutil.MCPToolAvailableInProfile(safety) {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
 }
 
 type mcpParamBinding struct {

@@ -25,16 +25,17 @@ import (
 
 // RegisterTools registers all API operations as MCP tools.
 func RegisterTools(s *server.MCPServer) {
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("currencies_list",
 			mcplib.WithDescription("List supported currencies. Returns array of Currency."),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
+		cliutil.MCPToolSafety{Name: "currencies_list", Destructive: false, PrivacySensitive: false},
 		makeAPIHandler("GET", "/currencies", false, []mcpParamBinding{}, []string{}),
 	)
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("projects_create",
 			mcplib.WithDescription("Create project. Required: name, visibility. Optional: owner_email. Returns the new Project."),
 			mcplib.WithString("name", mcplib.Required(), mcplib.Description("Name")),
@@ -42,9 +43,10 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("visibility", mcplib.Required(), mcplib.Description("Visibility")),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
+		cliutil.MCPToolSafety{Name: "projects_create", Destructive: false, PrivacySensitive: false},
 		makeAPIHandler("POST", "/projects", false, []mcpParamBinding{{PublicName: "name", WireName: "name", Location: "body"}, {PublicName: "owner_email", WireName: "owner_email", Location: "body"}, {PublicName: "visibility", WireName: "visibility", Location: "body"}}, []string{}),
 	)
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("projects_get",
 			mcplib.WithDescription("Get project. Required: projectId."),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
@@ -52,9 +54,10 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
+		cliutil.MCPToolSafety{Name: "projects_get", Destructive: false, PrivacySensitive: false},
 		makeAPIHandler("GET", "/projects/{projectId}", false, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}}, []string{"projectId"}),
 	)
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("projects_list",
 			mcplib.WithDescription("List projects. Optional: status, limit (default: 25), cursor. Returns array of Project."),
 			mcplib.WithString("status", mcplib.Description("Status")),
@@ -64,9 +67,10 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
+		cliutil.MCPToolSafety{Name: "projects_list", Destructive: false, PrivacySensitive: false},
 		makeAPIHandler("GET", "/projects", false, []mcpParamBinding{{PublicName: "status", WireName: "status", Location: "query"}, {PublicName: "limit", WireName: "limit", Location: "query"}, {PublicName: "cursor", WireName: "cursor", Location: "query"}}, []string{}),
 	)
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("projects_avatar_upload-project",
 			mcplib.WithDescription("Upload project avatar. Required: projectId. Optional: overwrite, caption, file."),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
@@ -75,9 +79,10 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("file", mcplib.Description("File")),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
+		cliutil.MCPToolSafety{Name: "projects_avatar_upload-project", Destructive: false, PrivacySensitive: false},
 		makeAPIHandler("PUT", "/projects/{projectId}/avatar", false, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path", RequestContentType: "multipart/form-data"}, {PublicName: "overwrite", WireName: "overwrite", Location: "query", RequestContentType: "multipart/form-data"}, {PublicName: "caption", WireName: "caption", Location: "body", RequestContentType: "multipart/form-data"}, {PublicName: "file", WireName: "file", Location: "body", Format: "binary", RequestContentType: "multipart/form-data"}}, []string{"projectId"}),
 	)
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("projects_tasks_list-project",
 			mcplib.WithDescription("List project tasks. Required: projectId. Optional: priority, limit (default: 50), cursor. Returns array of Task."),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
@@ -88,9 +93,10 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
+		cliutil.MCPToolSafety{Name: "projects_tasks_list-project", Destructive: false, PrivacySensitive: false},
 		makeAPIHandler("GET", "/projects/{projectId}/tasks", false, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "priority", WireName: "priority", Location: "query"}, {PublicName: "limit", WireName: "limit", Location: "query"}, {PublicName: "cursor", WireName: "cursor", Location: "query"}}, []string{"projectId"}),
 	)
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("projects_tasks_update-project",
 			mcplib.WithDescription("Update project task. Required: projectId, taskId. Optional: notify, completed, priority (plus 1 more). Partial update."),
 			mcplib.WithString("projectId", mcplib.Required(), mcplib.Description("Project id")),
@@ -101,18 +107,20 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("title", mcplib.Description("Title")),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
+		cliutil.MCPToolSafety{Name: "projects_tasks_update-project", Destructive: false, PrivacySensitive: false},
 		makeAPIHandler("PATCH", "/projects/{projectId}/tasks/{taskId}", false, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "taskId", WireName: "taskId", Location: "path"}, {PublicName: "notify", WireName: "notify", Location: "query"}, {PublicName: "completed", WireName: "completed", Location: "body"}, {PublicName: "priority", WireName: "priority", Location: "body"}, {PublicName: "title", WireName: "title", Location: "body"}}, []string{"projectId", "taskId"}),
 	)
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("public_get-status",
 			mcplib.WithDescription("Get public service status. (public)"),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
+		cliutil.MCPToolSafety{Name: "public_get-status", Destructive: false, PrivacySensitive: false},
 		makeAPIHandler("GET", "/public/status", false, []mcpParamBinding{}, []string{}),
 	)
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("reports_summary_get-report-year",
 			mcplib.WithDescription("Get a report summary for a year. Required: year."),
 			mcplib.WithNumber("year", mcplib.Required(), mcplib.Description("Year")),
@@ -120,10 +128,11 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
+		cliutil.MCPToolSafety{Name: "reports_summary_get-report-year", Destructive: false, PrivacySensitive: false},
 		makeAPIHandler("GET", "/reports/{year}/summary", false, []mcpParamBinding{{PublicName: "year", WireName: "year", Location: "path"}}, []string{"year"}),
 	)
 	// Search tool — faster than iterating list endpoints for finding specific items
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("search",
 			mcplib.WithDescription("Full-text search across all synced data. Faster than paginating list endpoints. Requires sync first."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query (supports FTS5 syntax: AND, OR, NOT, quotes for phrases)")),
@@ -131,33 +140,81 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 		),
+		cliutil.MCPToolSafety{Name: "search"},
 		handleSearch,
 	)
 	// SQL tool — ad-hoc analysis on synced data without API calls
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("sql",
 			mcplib.WithDescription("Run read-only SQL against local database. Use for ad-hoc analysis, aggregations, and joins across synced resources. Requires sync first."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("SQL query (SELECT or WITH...SELECT). Tables match resource names.")),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 		),
+		cliutil.MCPToolSafety{Name: "sql"},
 		handleSQL,
 	)
 
 	// Context tool — front-loaded domain knowledge for agents.
 	// Call this first to understand the API taxonomy, query patterns, and capabilities.
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("context",
 			mcplib.WithDescription("Get API domain context: resource taxonomy, auth requirements, query tips, and unique capabilities. Call this first."),
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 		),
+		cliutil.MCPToolSafety{Name: "context"},
 		handleContext,
 	)
 
 	// Runtime Cobra-tree mirror — exposes every user-facing command that is
 	// not already covered by a typed endpoint or framework MCP tool.
-	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
+	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath, registerProfiledTool)
+}
+
+var profileToolSafety = map[string]cliutil.MCPToolSafety{}
+
+func registerProfiledTool(s *server.MCPServer, tool mcplib.Tool, safety cliutil.MCPToolSafety, handler server.ToolHandlerFunc) {
+	if safety.Name == "" {
+		safety.Name = tool.Name
+	}
+	if tool.Annotations.DestructiveHint != nil && *tool.Annotations.DestructiveHint {
+		safety.Destructive = true
+	}
+	profileToolSafety[tool.Name] = safety
+	s.AddTool(tool, profileGuardedHandler(safety, handler))
+}
+
+func profileGuardedHandler(safety cliutil.MCPToolSafety, handler server.ToolHandlerFunc) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+		requestSafety := safety
+		if requestSafety.Name == "" {
+			requestSafety.Name = req.Params.Name
+		}
+		if !cliutil.MCPToolAvailableInProfile(requestSafety) {
+			payload, _ := json.Marshal(map[string]string{"error": cliutil.MCPProfileUnavailableMessage("printing-press-golden-pp-cli")})
+			return mcplib.NewToolResultError(string(payload)), nil
+		}
+		return handler(ctx, req)
+	}
+}
+
+func ProfileToolFilter(ctx context.Context, tools []mcplib.Tool) []mcplib.Tool {
+	_ = ctx
+	if cliutil.CurrentMCPProfile() == cliutil.MCPProfileOperator {
+		return tools
+	}
+	filtered := make([]mcplib.Tool, 0, len(tools))
+	for _, tool := range tools {
+		safety := profileToolSafety[tool.Name]
+		if safety.Name == "" {
+			safety.Name = tool.Name
+		}
+		if cliutil.MCPToolAvailableInProfile(safety) {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
 }
 
 type mcpParamBinding struct {

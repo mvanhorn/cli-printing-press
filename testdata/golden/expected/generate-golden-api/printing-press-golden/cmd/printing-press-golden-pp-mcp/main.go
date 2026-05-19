@@ -28,6 +28,7 @@ func main() {
 		"Printing Press Studio",
 		"1.0.0",
 		server.WithToolCapabilities(false),
+		server.WithToolFilter(mcptools.ProfileToolFilter),
 	)
 
 	mcptools.RegisterTools(s)

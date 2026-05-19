@@ -22,6 +22,7 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/client"
 )
 
@@ -29,13 +30,14 @@ import (
 // This is called from RegisterTools when MCP.Intents is non-empty.
 func RegisterIntents(s *server.MCPServer) {
 {{- range .MCP.Intents}}
-	s.AddTool(
+	registerProfiledTool(s,
 		mcplib.NewTool("{{.Name}}",
 			mcplib.WithDescription({{printf "%q" .Description}}),
 {{- range .Params}}
 			mcplib.{{mcpBindingFunc .Type}}("{{.Name}}"{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" .Description}})),
 {{- end}}
 		),
+		cliutil.MCPToolSafety{Name: "{{.Name}}", Destructive: true},
 		handle{{pascal .Name}},
 	)
 {{- end}}
