@@ -474,6 +474,43 @@ func TestShipcheck_JSONEnvelope_AllPass(t *testing.T) {
 	}
 }
 
+func TestShipcheck_JSONEnvelope_RedactsAPIKeyFromCommands(t *testing.T) {
+	h := newShipcheckHarness(t)
+	const secret = "secret-token"
+
+	out := captureStdout(t, func() {
+		if err := runShipcheckCmd(t, "--dir", h.dir, "--json", "--api-key", secret); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	var env shipcheckJSONEnvelope
+	if err := json.Unmarshal([]byte(extractFinalJSONObject(t, out)), &env); err != nil {
+		t.Fatalf("envelope is not valid JSON: %v", err)
+	}
+
+	var verifyCommand string
+	for _, leg := range env.Legs {
+		if strings.Contains(leg.Command, secret) {
+			t.Fatalf("leg %s command leaked API key: %q", leg.Name, leg.Command)
+		}
+		if leg.Name == "verify" {
+			verifyCommand = leg.Command
+		}
+	}
+	if verifyCommand == "" {
+		t.Fatal("envelope missing verify command")
+	}
+	if !strings.Contains(verifyCommand, "--api-key <redacted>") {
+		t.Fatalf("verify command should include redacted API key flag; got %q", verifyCommand)
+	}
+
+	verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+	if !argvHas(verifyArgs, secret) {
+		t.Fatalf("verify subprocess argv should still receive the raw API key; got %v", verifyArgs)
+	}
+}
+
 // TestShipcheck_JSONEnvelope_OneFailure: --json envelope reflects a
 // failing leg with passed=false at the leg and envelope level.
 func TestShipcheck_JSONEnvelope_OneFailure(t *testing.T) {
