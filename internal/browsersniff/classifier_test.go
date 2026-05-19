@@ -252,19 +252,34 @@ func TestDeduplicateEndpoints(t *testing.T) {
 			// Variance pass must disambiguate against placeholders the
 			// per-segment normalizer already placed. Position 2 (`123`/`456`)
 			// becomes `{resource_id}` in per-segment normalization; position
-			// 3 (`AbcDef`/`XyzUvw`) lacks per-segment ID shape but is
-			// promoted by the variance pass. The walker for position 3
-			// would find `resources` again — placeholder emission must see
-			// the existing `{resource_id}` and disambiguate to
-			// `{resource_id_2}` rather than emit a duplicate.
+			// 3 (`abc123`/`xyz456`) is short-opaque-with-digit, not a strong
+			// per-segment ID shape but promoted by the variance pass. The
+			// walker for position 3 would find `resources` again — placeholder
+			// emission must see the existing `{resource_id}` and disambiguate
+			// to `{resource_id_2}` rather than emit a duplicate.
 			name: "variance pass disambiguates against per-segment placeholder",
 			entries: []EnrichedEntry{
-				{Method: "GET", URL: "https://example.com/resources/123/AbcDef"},
-				{Method: "GET", URL: "https://example.com/resources/456/XyzUvw"},
+				{Method: "GET", URL: "https://example.com/resources/123/abc123"},
+				{Method: "GET", URL: "https://example.com/resources/456/xyz456"},
 			},
 			wantMethods:         []string{"GET"},
 			wantNormalizedPaths: []string{"/resources/{resource_id}/{resource_id_2}"},
 			wantGroupSizes:      []int{2},
+		},
+		{
+			// PascalCase route literals (common in ASP.NET, gRPC-HTTP
+			// transcoding) must NOT collapse via the variance pass.
+			// `CreateDocument` and `ListDocuments` are distinct action-style
+			// endpoints, both digit-free; the parameterizability check
+			// requires a digit specifically to avoid this false positive.
+			name: "pascal-case route literals stay separate",
+			entries: []EnrichedEntry{
+				{Method: "GET", URL: "https://example.com/api/CreateDocument"},
+				{Method: "GET", URL: "https://example.com/api/ListDocuments"},
+			},
+			wantMethods:         []string{"GET", "GET"},
+			wantNormalizedPaths: []string{"/api/CreateDocument", "/api/ListDocuments"},
+			wantGroupSizes:      []int{1, 1},
 		},
 	}
 

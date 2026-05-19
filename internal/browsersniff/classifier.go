@@ -513,35 +513,27 @@ func looksLikeIDShape(segment string) bool {
 // looksParameterizable is the weaker gate used by the cross-entry variance
 // pass. By construction, any segment that satisfies looksLikeIDShape would
 // already have been replaced by normalizeEntryPath, so gating on that shape
-// alone makes the variance pass unreachable. The pass exists to catch IDs the
-// per-segment patterns can't classify in isolation — short opaque tokens like
-// `abc123` or `xyz456` that only stand out as IDs when two entries land at the
-// same position with different literal values. A weaker "data-shaped" check
-// (digit present, or mixed case, or hyphen-with-digit, or underscore-with-
-// alnum) catches these without flagging legitimate route literals like
-// `health`, `version`, or `users`.
+// alone makes the variance pass unreachable. The pass exists to catch IDs
+// that the per-segment patterns can't classify in isolation — short opaque
+// tokens like `abc123` or `xyz456` that only stand out as IDs when two
+// entries land at the same position with different literal values.
+//
+// The widening is deliberately narrow: presence of a digit. Pure mixed-case
+// alone (`hasUpper && hasLower`) is not enough — PascalCase is a normal
+// shape for action-style REST routes (`/api/CreateDocument` vs
+// `/api/ListDocuments`, common in ASP.NET / gRPC-HTTP transcoding), and a
+// pure-letter mixed-case check would merge those into `/api/{id}`. The
+// short-opaque IDs the variance pass exists to catch all carry at least one
+// digit; the rare digit-free opaque ID is left for users to parametrize
+// manually rather than risk destroying real route names.
 func looksParameterizable(segment string) bool {
 	if looksLikeIDShape(segment) {
 		return true
 	}
-	hasDigit := false
-	hasUpper := false
-	hasLower := false
 	for _, r := range segment {
-		switch {
-		case r >= '0' && r <= '9':
-			hasDigit = true
-		case r >= 'A' && r <= 'Z':
-			hasUpper = true
-		case r >= 'a' && r <= 'z':
-			hasLower = true
+		if r >= '0' && r <= '9' {
+			return true
 		}
-	}
-	if hasDigit {
-		return true
-	}
-	if hasUpper && hasLower {
-		return true
 	}
 	return false
 }
