@@ -1006,6 +1006,45 @@ func TestAuthPrefixValidate(t *testing.T) {
 	}
 }
 
+func TestAuthSubtypeValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		auth    AuthConfig
+		wantErr string
+	}{
+		{name: "empty subtype is valid", auth: AuthConfig{Type: "bearer_token"}},
+		{
+			name: "auth0_spa_in_memory with bearer_token is valid",
+			auth: AuthConfig{Type: "bearer_token", Subtype: AuthSubtypeAuth0SPAInMemory},
+		},
+		{
+			name: "auth0_spa_in_memory with empty Type is valid",
+			auth: AuthConfig{Subtype: AuthSubtypeAuth0SPAInMemory},
+		},
+		{
+			name:    "auth0_spa_in_memory with api_key is rejected",
+			auth:    AuthConfig{Type: "api_key", Subtype: AuthSubtypeAuth0SPAInMemory},
+			wantErr: `requires auth.type "bearer_token"`,
+		},
+		{
+			name:    "unknown subtype is rejected",
+			auth:    AuthConfig{Type: "bearer_token", Subtype: "auth0_spa_localstorage"},
+			wantErr: "is not recognized",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAuthSubtype(tt.auth)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestAPISpecValidate_RejectsBadAuthPrefix(t *testing.T) {
 	build := func(prefix string) APISpec {
 		return APISpec{
