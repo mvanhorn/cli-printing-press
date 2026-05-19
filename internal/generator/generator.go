@@ -1941,11 +1941,11 @@ func (g *Generator) renderAuthFiles() error {
 		authTmpl = "auth_client_credentials.go.tmpl"
 	case g.Spec.Auth.AuthorizationURL != "":
 		authTmpl = "auth.go.tmpl"
-	case g.Spec.Auth.Type == "cookie" || g.Spec.Auth.Type == "composed" || g.hasTrafficAnalysisHint("graphql_persisted_query"):
-		// Browser-aware auth template for browser-cookie auth or a
-		// persisted-query registry, even for auth.type:none. Query refresh
-		// flows need temporary browser capture support, not a resident
-		// browser transport.
+	case g.Spec.Auth.Type == "cookie" || g.Spec.Auth.Type == "composed" || g.hasTrafficAnalysisHint("graphql_persisted_query") || g.Spec.Auth.Subtype == spec.AuthSubtypeAuth0SPAInMemory:
+		// Browser-aware auth template for browser-cookie auth, a
+		// persisted-query registry, or an Auth0-SPA-in-memory bearer token
+		// (CDP runtime extraction). Query refresh flows need temporary
+		// browser capture support, not a resident browser transport.
 		authTmpl = "auth_browser.go.tmpl"
 	}
 	authData := &authTemplateData{
