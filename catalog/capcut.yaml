@@ -1,0 +1,30 @@
+name: capcut
+display_name: CapCut
+description: Local CapCut and JianYing draft editing by reading and writing project JSON files. No public API.
+category: media-and-entertainment
+tier: community
+verified_date: "2026-05-12"
+homepage: https://www.capcut.com
+notes: |
+  CapCut does not publish a public project-editing API for this workflow. The
+  viable surface is the local desktop draft format: draft_content.json on
+  Windows and draft_info.json on macOS.
+
+  Treat this as local-file implementation backing, not an endpoint-backed API
+  wrapper. Generated or hand-authored commands should preserve user project
+  files carefully: close the project in CapCut before edits, create backups
+  before writes, preserve JSON formatting where possible, and default to
+  machine-readable output for agent use.
+wrapper_libraries:
+  - name: renezander030/capcut-cli
+    url: https://github.com/renezander030/capcut-cli
+    language: typescript
+    license: MIT
+    integration_mode: subprocess
+    notes: |
+      Node CLI published as capcut-cli. It edits CapCut and JianYing project
+      drafts directly, supports JSON output by default, and covers project
+      inspection, subtitles, timing, media insertion, templates, long-form
+      cuts, and JSONL batch edits. A Printing Press-backed CLI can either
+      shell out to this package for parity or port the draft schema handling
+      natively to Go for a single-binary distribution.

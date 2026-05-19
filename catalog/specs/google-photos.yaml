@@ -1,0 +1,453 @@
+name: google-photos
+display_name: Google Photos
+description: Google Photos Library and Picker APIs for app-created media, albums, uploads, and user-selected media.
+cli_description: Manage Google Photos app-created albums and media, upload files, and work with Picker sessions from the terminal.
+version: "0.1.0"
+spec_source: official
+category: media-and-entertainment
+website_url: https://developers.google.com/photos
+base_url: https://photoslibrary.googleapis.com
+http_transport: standard
+
+auth:
+  type: oauth2
+  header: Authorization
+  format: Bearer {token}
+  env_vars:
+    - GOOGLE_PHOTOS_TOKEN
+  authorization_url: https://accounts.google.com/o/oauth2/v2/auth
+  token_url: https://oauth2.googleapis.com/token
+  scopes:
+    - https://www.googleapis.com/auth/photoslibrary.appendonly
+    - https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata
+    - https://www.googleapis.com/auth/photoslibrary.edit.appcreateddata
+    - https://www.googleapis.com/auth/photospicker.mediaitems.readonly
+  key_url: https://console.cloud.google.com/apis/credentials
+  verify_path: /v1/albums?pageSize=1
+
+config:
+  format: toml
+  path: ~/.config/google-photos-pp-cli/config.toml
+
+mcp:
+  transport:
+    - stdio
+    - http
+
+extra_commands:
+  - name: upload file
+    description: Upload raw photo or video bytes and print the upload token for media-items batch-create.
+    args: "<path>"
+  - name: picker wait
+    description: Poll a Picker session until selected media items are ready.
+    args: "<session-id>"
+
+resources:
+  albums:
+    description: Manage app-created Google Photos albums.
+    endpoints:
+      create:
+        method: POST
+        path: /v1/albums
+        description: Create an album in the user's Google Photos library.
+        body:
+          - name: album
+            type: object
+            required: true
+            description: Album JSON object, for example '{"title":"Trip"}'.
+        response:
+          type: object
+          item: Album
+      get:
+        method: GET
+        path: /v1/albums/{albumId}
+        description: Get an app-created album by ID.
+        params:
+          - name: albumId
+            type: string
+            required: true
+            positional: true
+            description: Album ID.
+        response:
+          type: object
+          item: Album
+        meta:
+          mcp:read-only: "true"
+      list:
+        method: GET
+        path: /v1/albums
+        description: List albums created by this app.
+        params:
+          - name: pageSize
+            type: int
+            default: 20
+            description: Maximum albums to return, up to 50.
+          - name: pageToken
+            type: string
+            description: Continuation token from nextPageToken.
+        response:
+          type: array
+          item: Album
+        response_path: albums
+        pagination:
+          type: page_token
+          cursor_param: pageToken
+          next_cursor_path: nextPageToken
+        meta:
+          mcp:read-only: "true"
+      patch:
+        method: PATCH
+        path: /v1/albums/{id}
+        description: Update title or cover photo on an app-created album.
+        params:
+          - name: id
+            type: string
+            required: true
+            positional: true
+            description: Album ID.
+          - name: updateMask
+            type: string
+            required: true
+            description: Comma-separated fields to update, such as title or coverPhotoMediaItemId.
+        body:
+          - name: title
+            type: string
+            description: New album title.
+          - name: coverPhotoMediaItemId
+            type: string
+            description: Media item ID to use as the album cover.
+        response:
+          type: object
+          item: Album
+      add_enrichment:
+        method: POST
+        path: /v1/albums/{albumId}:addEnrichment
+        description: Add text, location, or map enrichment to an app-created album.
+        params:
+          - name: albumId
+            type: string
+            required: true
+            positional: true
+            description: Album ID.
+        body:
+          - name: newEnrichmentItem
+            type: object
+            required: true
+            description: Enrichment JSON object.
+          - name: albumPosition
+            type: object
+            required: true
+            description: Album position JSON object.
+        response:
+          type: object
+          item: AddEnrichmentToAlbumResponse
+      batch_add_media_items:
+        method: POST
+        path: /v1/albums/{albumId}:batchAddMediaItems
+        description: Add app-created media items to an app-created album.
+        params:
+          - name: albumId
+            type: string
+            required: true
+            positional: true
+            description: Album ID.
+        body:
+          - name: mediaItemIds
+            type: array
+            required: true
+            description: JSON array of media item IDs.
+        response:
+          type: object
+          item: BatchAddMediaItemsToAlbumResponse
+      batch_remove_media_items:
+        method: POST
+        path: /v1/albums/{albumId}:batchRemoveMediaItems
+        description: Remove app-created media items from an app-created album.
+        params:
+          - name: albumId
+            type: string
+            required: true
+            positional: true
+            description: Album ID.
+        body:
+          - name: mediaItemIds
+            type: array
+            required: true
+            description: JSON array of media item IDs.
+        response:
+          type: object
+          item: BatchRemoveMediaItemsFromAlbumResponse
+
+  media_items:
+    description: Manage app-created Google Photos media items.
+    endpoints:
+      batch_create:
+        method: POST
+        path: /v1/mediaItems:batchCreate
+        description: Create media items from upload tokens.
+        body:
+          - name: albumId
+            type: string
+            description: Optional app-created album ID to add items to.
+          - name: newMediaItems
+            type: array
+            required: true
+            description: JSON array of new media items containing uploadToken and simpleMediaItem.
+          - name: albumPosition
+            type: object
+            description: Optional album position JSON object.
+        response:
+          type: object
+          item: BatchCreateMediaItemsResponse
+      batch_get:
+        method: GET
+        path: /v1/mediaItems:batchGet
+        description: Get multiple app-created media items by ID.
+        params:
+          - name: mediaItemIds
+            type: string
+            required: true
+            description: Media item IDs. Repeat with comma-separated IDs when using shell wrappers.
+        response:
+          type: array
+          item: MediaItemResult
+        response_path: mediaItemResults
+        meta:
+          mcp:read-only: "true"
+      get:
+        method: GET
+        path: /v1/mediaItems/{mediaItemId}
+        description: Get an app-created media item by ID.
+        params:
+          - name: mediaItemId
+            type: string
+            required: true
+            positional: true
+            description: Media item ID.
+        response:
+          type: object
+          item: MediaItem
+        meta:
+          mcp:read-only: "true"
+      list:
+        method: GET
+        path: /v1/mediaItems
+        description: List media items created by this app.
+        params:
+          - name: pageSize
+            type: int
+            default: 25
+            description: Maximum media items to return.
+          - name: pageToken
+            type: string
+            description: Continuation token from nextPageToken.
+        response:
+          type: array
+          item: MediaItem
+        response_path: mediaItems
+        pagination:
+          type: page_token
+          cursor_param: pageToken
+          next_cursor_path: nextPageToken
+        meta:
+          mcp:read-only: "true"
+      patch:
+        method: PATCH
+        path: /v1/mediaItems/{id}
+        description: Update the description on an app-created media item.
+        params:
+          - name: id
+            type: string
+            required: true
+            positional: true
+            description: Media item ID.
+          - name: updateMask
+            type: string
+            required: true
+            default: description
+            description: Fields to update. Google Photos currently supports description.
+        body:
+          - name: description
+            type: string
+            required: true
+            description: New media item description.
+        response:
+          type: object
+          item: MediaItem
+      search:
+        method: POST
+        path: /v1/mediaItems:search
+        description: Search app-created media items by album or filters.
+        body:
+          - name: albumId
+            type: string
+            description: Optional app-created album ID.
+          - name: filters
+            type: object
+            description: Filters JSON object.
+          - name: orderBy
+            type: string
+            description: Sort expression.
+          - name: pageSize
+            type: int
+            default: 25
+            description: Maximum media items to return.
+          - name: pageToken
+            type: string
+            description: Continuation token from nextPageToken.
+        response:
+          type: array
+          item: MediaItem
+        response_path: mediaItems
+        meta:
+          mcp:read-only: "true"
+
+  picker:
+    description: Create, poll, clean up, and read Google Photos Picker sessions.
+    base_url: https://photospicker.googleapis.com
+    endpoints:
+      create_session:
+        method: POST
+        path: /v1/sessions
+        description: Create a Picker session and return the picker URI.
+        body:
+          - name: pickingConfig
+            type: object
+            description: Optional picking configuration JSON object.
+        response:
+          type: object
+          item: PickingSession
+      get_session:
+        method: GET
+        path: /v1/sessions/{sessionId}
+        description: Get Picker session status.
+        params:
+          - name: sessionId
+            type: string
+            required: true
+            positional: true
+            description: Picker session ID.
+        response:
+          type: object
+          item: PickingSession
+        meta:
+          mcp:read-only: "true"
+      delete_session:
+        method: DELETE
+        path: /v1/sessions/{sessionId}
+        description: Delete a Picker session after selected media bytes have been retrieved.
+        params:
+          - name: sessionId
+            type: string
+            required: true
+            positional: true
+            description: Picker session ID.
+        response:
+          type: object
+          item: Empty
+      list_media_items:
+        method: GET
+        path: /v1/mediaItems
+        description: List media items picked by the user during a Picker session.
+        params:
+          - name: sessionId
+            type: string
+            required: true
+            description: Picker session ID.
+          - name: pageSize
+            type: int
+            default: 25
+            description: Maximum selected media items to return.
+          - name: pageToken
+            type: string
+            description: Continuation token from nextPageToken.
+        response:
+          type: array
+          item: PickedMediaItem
+        response_path: mediaItems
+        pagination:
+          type: page_token
+          cursor_param: pageToken
+          next_cursor_path: nextPageToken
+        meta:
+          mcp:read-only: "true"
+
+types:
+  Empty:
+    fields: []
+  Album:
+    fields:
+      - name: id
+        type: string
+      - name: title
+        type: string
+      - name: productUrl
+        type: string
+      - name: mediaItemsCount
+        type: string
+      - name: coverPhotoBaseUrl
+        type: string
+      - name: coverPhotoMediaItemId
+        type: string
+      - name: isWriteable
+        type: bool
+  MediaItem:
+    fields:
+      - name: id
+        type: string
+      - name: description
+        type: string
+      - name: productUrl
+        type: string
+      - name: baseUrl
+        type: string
+      - name: mimeType
+        type: string
+      - name: filename
+        type: string
+      - name: mediaMetadata
+        type: object
+      - name: contributorInfo
+        type: object
+  MediaItemResult:
+    fields:
+      - name: status
+        type: object
+      - name: mediaItem
+        type: object
+  BatchCreateMediaItemsResponse:
+    fields:
+      - name: newMediaItemResults
+        type: array
+  BatchAddMediaItemsToAlbumResponse:
+    fields: []
+  BatchRemoveMediaItemsFromAlbumResponse:
+    fields: []
+  AddEnrichmentToAlbumResponse:
+    fields:
+      - name: enrichmentItem
+        type: object
+  PickingSession:
+    fields:
+      - name: id
+        type: string
+      - name: pickerUri
+        type: string
+      - name: pollingConfig
+        type: object
+      - name: expireTime
+        type: string
+      - name: pickingConfig
+        type: object
+      - name: mediaItemsSet
+        type: bool
+  PickedMediaItem:
+    fields:
+      - name: id
+        type: string
+      - name: createTime
+        type: string
+      - name: type
+        type: string
+      - name: mediaFile
+        type: object

@@ -1,0 +1,15 @@
+name: kit
+display_name: Kit
+description: Email marketing for creators (formerly ConvertKit) — subscribers, broadcasts, sequences, tags
+category: marketing
+spec_url: https://developers.kit.com/api-reference/v4.json
+spec_format: json
+openapi_version: "3.0"
+tier: official
+verified_date: "2026-05-19"
+homepage: https://developers.kit.com
+auth_key_url: https://app.kit.com/account_settings/developer_settings
+auth_instructions: "Generate a v4 API key in Account Settings → Developer."
+auth_preference: API Key
+auth_env_vars:
+  - KIT_API_KEY

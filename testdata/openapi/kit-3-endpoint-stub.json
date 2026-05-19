@@ -1,0 +1,113 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Kit",
+    "version": "4.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://api.kit.com"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "API Key": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Kit-Api-Key"
+      }
+    },
+    "schemas": {
+      "Account": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string" }
+        }
+      },
+      "Tag": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string" }
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "API Key": []
+    }
+  ],
+  "paths": {
+    "/v4/account": {
+      "get": {
+        "operationId": "getAccount",
+        "tags": ["Account"],
+        "responses": {
+          "200": {
+            "description": "The authenticated account",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Account"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v4/tags": {
+      "get": {
+        "operationId": "listTags",
+        "tags": ["Tags"],
+        "responses": {
+          "200": {
+            "description": "Tags",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Tag"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createTag",
+        "tags": ["Tags"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created tag",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tag"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

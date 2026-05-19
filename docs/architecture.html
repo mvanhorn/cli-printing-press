@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CLI Printing Press — Architecture</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #f5f5f5;
+      color: #2d3142;
+      font-family: 'Geist', sans-serif;
+      padding: 48px 32px 64px;
+    }
+
+    .page { max-width: 840px; margin: 0 auto; }
+
+    .eyebrow {
+      font-family: 'Geist Mono', monospace;
+      font-size: 8px;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: #4f5d75;
+      margin-bottom: 12px;
+    }
+
+    h1 {
+      font-family: 'Instrument Serif', serif;
+      font-size: 40px;
+      font-weight: 400;
+      color: #2d3142;
+      line-height: 1.1;
+      margin-bottom: 8px;
+    }
+
+    .subtitle {
+      font-size: 16px;
+      color: #4f5d75;
+      margin-bottom: 40px;
+    }
+
+    .diagram { width: 100%; margin-bottom: 40px; overflow-x: auto; }
+    .diagram svg { width: 100%; height: auto; display: block; }
+
+    .cards {
+      display: grid;
+      grid-template-columns: 1.1fr 1fr 0.9fr;
+      gap: 16px;
+      margin-bottom: 48px;
+    }
+
+    .card {
+      background: #ffffff;
+      border: 1px solid rgba(45,49,66,0.12);
+      border-radius: 6px;
+      padding: 20px;
+    }
+
+    .card .eyebrow { margin-bottom: 8px; }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .card-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .card-dot.coral { background: #eb6c36; }
+    .card-dot.ink   { background: #2d3142; }
+    .card-dot.muted { background: #4f5d75; }
+
+    .card h3 {
+      font-family: 'Geist', sans-serif;
+      font-size: 12px;
+      font-weight: 600;
+      color: #2d3142;
+    }
+
+    .card ul { list-style: none; }
+
+    .card li {
+      font-size: 12px;
+      color: #4f5d75;
+      padding: 3px 0 3px 12px;
+      position: relative;
+    }
+
+    .card li::before {
+      content: '—';
+      position: absolute;
+      left: 0;
+      color: #7a8399;
+      font-size: 10px;
+    }
+
+    .mono { font-family: 'Geist Mono', monospace; font-size: 11px; }
+
+    .explainer {
+      background: #ffffff;
+      border: 1px solid rgba(45,49,66,0.12);
+      border-radius: 6px;
+      padding: 24px 28px;
+      margin-bottom: 40px;
+    }
+
+    .explainer h2 {
+      font-family: 'Instrument Serif', serif;
+      font-size: 22px;
+      font-weight: 400;
+      color: #2d3142;
+      margin-bottom: 8px;
+    }
+
+    .explainer p {
+      font-size: 14px;
+      color: #4f5d75;
+      line-height: 1.6;
+      margin-bottom: 0;
+    }
+
+    .explainer p + p { margin-top: 12px; }
+
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 48px;
+    }
+
+    .compare-col {
+      border: 1px solid rgba(45,49,66,0.12);
+      border-radius: 6px;
+      padding: 20px;
+    }
+
+    .compare-col.official { background: #ffffff; }
+
+    .compare-col.press {
+      background: #ffffff;
+      border-color: #eb6c36;
+    }
+
+    .compare-col .eyebrow { margin-bottom: 8px; }
+
+    .compare-col h3 {
+      font-family: 'Geist', sans-serif;
+      font-size: 13px;
+      font-weight: 600;
+      color: #2d3142;
+      margin-bottom: 12px;
+    }
+
+    .compare-col ul { list-style: none; }
+
+    .compare-col li {
+      font-size: 12px;
+      color: #4f5d75;
+      padding: 4px 0 4px 16px;
+      position: relative;
+    }
+
+    .compare-col.official li::before {
+      content: '✗';
+      position: absolute;
+      left: 0;
+      color: #bfc0c0;
+      font-size: 11px;
+    }
+
+    .compare-col.press li::before {
+      content: '✓';
+      position: absolute;
+      left: 0;
+      color: #eb6c36;
+      font-size: 11px;
+    }
+
+    footer {
+      border-top: 1px solid rgba(45,49,66,0.12);
+      padding-top: 16px;
+      font-family: 'Geist Mono', monospace;
+      font-size: 8px;
+      letter-spacing: 0.14em;
+      color: #7a8399;
+      text-transform: uppercase;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <p class="eyebrow">Architecture</p>
+      <h1>CLI Printing Press</h1>
+      <p class="subtitle">Feed it a spec. Get back an agent-native CLI.</p>
+    </header>
+
+    <div class="diagram">
+      <svg viewBox="0 0 720 548" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/>
+          </marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/>
+          </marker>
+        </defs>
+
+        <!-- Background -->
+        <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+        <!-- ═══ ARROWS (drawn before boxes) ═══ -->
+
+        <!-- API spec → THE PRESS -->
+        <path d="M 112 84 L 112 120 L 216 120 L 216 156"
+              fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#arrow)"/>
+
+        <!-- browser sniff → THE PRESS (straight) -->
+        <path d="M 360 84 L 360 156"
+              fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#arrow)"/>
+
+        <!-- crowd sniff → THE PRESS -->
+        <path d="M 608 84 L 608 120 L 504 120 L 504 156"
+              fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#arrow)"/>
+
+        <!-- THE PRESS → PRINTED CLI (accent — the key transform) -->
+        <path d="M 360 236 L 360 300"
+              fill="none" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+        <rect x="328" y="260" width="64" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="360" y="269" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.06em">GENERATE</text>
+
+        <!-- PRINTED CLI → two surfaces (parallel lines, not exclusive Y-split) -->
+        <path d="M 260 364 L 260 392 L 132 392 L 132 432"
+              fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#arrow)"/>
+        <path d="M 460 364 L 460 392 L 588 392 L 588 432"
+              fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#arrow)"/>
+
+        <!-- Mirrors dashed connection between the two surfaces -->
+        <path d="M 212 458 L 508 458"
+              fill="none" stroke="#bfc0c0" stroke-width="0.8" stroke-dasharray="4,3"/>
+        <rect x="328" y="452" width="64" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="360" y="461" fill="#bfc0c0" font-size="8" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.06em">MIRRORS</text>
+
+        <!-- ═══ BOXES ═══ -->
+
+        <!-- Floating labels above input boxes -->
+        <text x="112" y="30" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.14em">OFFICIAL</text>
+        <text x="360" y="30" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.14em">DISCOVER</text>
+        <text x="608" y="30" fill="#7a8399" font-size="7" font-family="'Geist Mono', monospace"
+              text-anchor="middle" letter-spacing="0.14em">DISCOVER</text>
+
+        <!-- Official spec (input) -->
+        <rect x="40" y="36" width="144" height="48" rx="6" fill="#f5f5f5"/>
+        <rect x="40" y="36" width="144" height="48" rx="6"
+              fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+        <text x="112" y="60" fill="#2d3142" font-size="12" font-weight="600"
+              font-family="'Geist', sans-serif" text-anchor="middle">API Spec</text>
+        <text x="112" y="74" fill="#7a8399" font-size="9"
+              font-family="'Geist Mono', monospace" text-anchor="middle">OpenAPI · GraphQL</text>
+
+        <!-- Browser sniff (discovered input) -->
+        <rect x="288" y="36" width="144" height="48" rx="6" fill="#f5f5f5"/>
+        <rect x="288" y="36" width="144" height="48" rx="6"
+              fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+        <text x="360" y="60" fill="#2d3142" font-size="12" font-weight="600"
+              font-family="'Geist', sans-serif" text-anchor="middle">Browser Sniff</text>
+        <text x="360" y="74" fill="#7a8399" font-size="9"
+              font-family="'Geist Mono', monospace" text-anchor="middle">unofficial APIs</text>
+
+        <!-- Crowd sniff (discovered input) -->
+        <rect x="536" y="36" width="144" height="48" rx="6" fill="#f5f5f5"/>
+        <rect x="536" y="36" width="144" height="48" rx="6"
+              fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+        <text x="608" y="60" fill="#2d3142" font-size="12" font-weight="600"
+              font-family="'Geist', sans-serif" text-anchor="middle">Crowd Sniff</text>
+        <text x="608" y="74" fill="#7a8399" font-size="9"
+              font-family="'Geist Mono', monospace" text-anchor="middle">community patterns</text>
+
+        <!-- THE PRESS (focal) -->
+        <rect x="160" y="156" width="400" height="80" rx="6" fill="#f5f5f5"/>
+        <rect x="160" y="156" width="400" height="80" rx="6"
+              fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+        <rect x="168" y="164" width="40" height="12" rx="2"
+              fill="transparent" stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+        <text x="188" y="173" fill="rgba(235,108,54,0.8)" font-size="7"
+              font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">PRESS</text>
+        <text x="360" y="200" fill="#2d3142" font-size="12" font-weight="600"
+              font-family="'Geist', sans-serif" text-anchor="middle">The Press</text>
+        <text x="360" y="216" fill="#7a8399" font-size="9"
+              font-family="'Geist Mono', monospace" text-anchor="middle">parser · generator · 9-phase pipeline</text>
+
+        <!-- PRINTED CLI (output) -->
+        <rect x="180" y="300" width="360" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="180" y="300" width="360" height="64" rx="6"
+              fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <rect x="188" y="308" width="24" height="12" rx="2"
+              fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+        <text x="200" y="317" fill="rgba(45,49,66,0.8)" font-size="7"
+              font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">CLI</text>
+        <text x="360" y="336" fill="#2d3142" font-size="12" font-weight="600"
+              font-family="'Geist', sans-serif" text-anchor="middle">Printed CLI</text>
+        <text x="360" y="352" fill="#7a8399" font-size="9"
+              font-family="'Geist Mono', monospace" text-anchor="middle">go binary · cobra · mcp server · sqlite store</text>
+
+        <!-- CLI surface -->
+        <rect x="52" y="432" width="160" height="52" rx="6" fill="#f5f5f5"/>
+        <rect x="52" y="432" width="160" height="52" rx="6"
+              fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <text x="132" y="462" fill="#2d3142" font-size="12" font-weight="600"
+              font-family="'Geist', sans-serif" text-anchor="middle">CLI</text>
+
+        <!-- MCP surface -->
+        <rect x="508" y="432" width="160" height="52" rx="6" fill="#f5f5f5"/>
+        <rect x="508" y="432" width="160" height="52" rx="6"
+              fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <text x="588" y="462" fill="#2d3142" font-size="12" font-weight="600"
+              font-family="'Geist', sans-serif" text-anchor="middle">MCP</text>
+
+        <!-- Legend -->
+        <line x1="32" y1="508" x2="688" y2="508" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+        <text x="32" y="524" fill="#4f5d75" font-size="8"
+              font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+
+        <rect x="96" y="516" width="16" height="12" rx="2"
+              fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="0.8"/>
+        <text x="120" y="525" fill="#4f5d75" font-size="8"
+              font-family="'Geist Mono', monospace">spec / discovered input</text>
+
+        <rect x="256" y="516" width="16" height="12" rx="2"
+              fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="0.8"/>
+        <text x="280" y="525" fill="#4f5d75" font-size="8"
+              font-family="'Geist Mono', monospace">the press (focal)</text>
+
+        <rect x="444" y="516" width="16" height="12" rx="2"
+              fill="#ffffff" stroke="#2d3142" stroke-width="0.8"/>
+        <text x="468" y="525" fill="#4f5d75" font-size="8"
+              font-family="'Geist Mono', monospace">generated output</text>
+
+      </svg>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <p class="eyebrow">The Machine</p>
+        <div class="card-header">
+          <span class="card-dot coral"></span>
+          <h3>THE PRESS</h3>
+        </div>
+        <ul>
+          <li>Reads official specs (OpenAPI 3.0+, GraphQL) — or discovers them itself via browser sniffing and crowd sniffing for APIs with no public spec</li>
+          <li>Derives endpoints, types, auth patterns, and pagination automatically</li>
+          <li>Runs 9 phases: preflight → research → scaffold → enrich → regenerate → review → readiness → ship</li>
+          <li>Enforces quality gates at every phase: <span class="mono">go build</span>, <span class="mono">go vet</span>, <span class="mono">--help</span>, <span class="mono">doctor</span></li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <p class="eyebrow">The Output</p>
+        <div class="card-header">
+          <span class="card-dot ink"></span>
+          <h3>Printed CLI</h3>
+        </div>
+        <ul>
+          <li>A Go binary named <span class="mono">api-slug-pp-cli</span></li>
+          <li>CLI surface (cobra) — operator-first, also usable by agents via shell-out</li>
+          <li>MCP surface — agent-optimized, mirrors every CLI command automatically</li>
+          <li>SQLite store for offline reads and fast sync — no repeated API calls</li>
+          <li>Skills, README, and install section included</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <p class="eyebrow">The Principle</p>
+        <div class="card-header">
+          <span class="card-dot muted"></span>
+          <h3>Machine Before CLI</h3>
+        </div>
+        <ul>
+          <li>Every fix to the Press improves all future CLIs at once</li>
+          <li>Commands call real APIs — no fake stubs or canned responses</li>
+          <li>Any action a human can take, an agent can too</li>
+          <li>Golden fixtures catch regressions across all generated output</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="explainer">
+      <p class="eyebrow">Plain English</p>
+      <h2>What is a CLI, and why does it matter for AI?</h2>
+      <p>A CLI — Command Line Interface — is a text-based tool you use by typing commands in a terminal. Instead of clicking buttons in an app, you type things like <span class="mono">stripe customers list</span> or <span class="mono">github issues create</span>. Every major API ships one so developers can explore and automate without writing code against the API directly.</p>
+      <p>When AI agents need to interact with an external service, they reach for the same tools a developer would. The problem: most official CLIs weren't built with agents in mind. They output text formatted for human eyes — colors, ASCII tables, prose error messages — that agents have to parse, guess at, and burn tokens on. They require interactive auth flows. They hit the network every time, even for data the agent already fetched. They don't expose an MCP surface at all.</p>
+      <p>Token efficiency is the hidden cost. Every time an agent calls an official CLI, it reads back a wall of human-formatted text, figures out which line has the value it needs, then decides what to do next. A Printing Press CLI returns structured output, reads from a local SQLite store when possible, and exposes typed MCP tools where the agent just calls <span class="mono">list_customers(limit: 10)</span> and gets back clean JSON — no parsing, no wasted context.</p>
+    </div>
+
+    <div class="compare">
+      <div class="compare-col official">
+        <p class="eyebrow">Without Printing Press</p>
+        <h3>Most APIs weren't built for agents</h3>
+        <ul>
+          <li>Official CLIs output text for humans — agents parse walls of colored ASCII to extract one value</li>
+          <li>APIs with no CLI require agents to write raw HTTP calls and manage auth from scratch every time</li>
+          <li>APIs with no public spec are completely out of reach — browser-only workflows stay locked</li>
+          <li>No local store — every query hits the network and burns rate limits</li>
+          <li>Auth designed for interactive browser login — breaks headless, in CI, or inside another agent</li>
+          <li>Pagination manual — agents track cursors, loop, and lose state on failure</li>
+          <li>No agent context — agents must reverse-engineer each API individually</li>
+        </ul>
+      </div>
+
+      <div class="compare-col press">
+        <p class="eyebrow">Printing Press CLIs</p>
+        <h3>Token-efficient, agent-native, still great for humans</h3>
+        <ul>
+          <li>MCP surface mirrors every CLI command — agents call typed tools, get clean JSON back, no parsing</li>
+          <li>SQLite store synced locally — most reads never hit the network or rate limits</li>
+          <li>Auth via env vars — works headless, in CI, inside another agent's subprocess</li>
+          <li>Typed exit codes agents branch on without reading stdout</li>
+          <li>Pagination handled internally — agents get the full result in one call</li>
+          <li>Works for unofficial APIs too — browser sniffing builds specs where none exist</li>
+          <li>Skills and context built in — agents start productive immediately</li>
+        </ul>
+      </div>
+    </div>
+
+    <footer>CLI Printing Press · Machine before printed CLI</footer>
+  </div>
+</body>
+</html>

@@ -20,6 +20,7 @@ maps:
   openrouteservice     Open-source routing, geocoding, matrix, isochrones, and VRP optimization on OpenStreetMap data.
 
 marketing:
+  kit                  Email marketing for creators (formerly ConvertKit) — subscribers, broadcasts, sequences, tags
   producthunt          Find, monitor, and export Product Hunt launches for launch research, scouting, and competitive tracking without requiring a Product Hunt API application.
 
 monitoring:
@@ -49,4 +50,3 @@ social-and-messaging:
 
 travel:
   google-flights       Flight search via Google Flights. No public API — reached through community-maintained reverse-engineered wrappers (krisukox in Go, fli in Python).
-
