@@ -234,6 +234,93 @@ func TestClassifyFullExample_ReportsUnsupportedWhenDryRunUnavailable(t *testing.
 	}
 }
 
+func TestRunFullExample_SkipsAuthSetToken(t *testing.T) {
+	t.Parallel()
+
+	got := classifyFullExample(
+		context.Background(),
+		"/not/invoked",
+		"stub auth set-token YOUR_TOKEN_HERE",
+		[]byte("      --dry-run   Show request without sending"),
+		Result{Section: SectionQuickstart, Command: "stub auth set-token YOUR_TOKEN_HERE", Words: "auth set-token YOUR_TOKEN_HERE"},
+	)
+	if got.Status != StatusUnsupported {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusUnsupported)
+	}
+	if got.Error != "full-example validation skipped: command is side-effectful (auth/launch/apply)" {
+		t.Errorf("Error = %q", got.Error)
+	}
+}
+
+func TestRunFullExample_SkipsAuthLogout(t *testing.T) {
+	t.Parallel()
+
+	got := classifyFullExample(
+		context.Background(),
+		"/not/invoked",
+		"stub auth logout",
+		[]byte("      --dry-run   Show request without sending"),
+		Result{Section: SectionRecipes, Command: "stub auth logout", Words: "auth logout"},
+	)
+	if got.Status != StatusUnsupported {
+		t.Fatalf("Status = %q, want %q", got.Status, StatusUnsupported)
+	}
+	if got.Error != "full-example validation skipped: command is side-effectful (auth/launch/apply)" {
+		t.Errorf("Error = %q", got.Error)
+	}
+}
+
+func TestIsSideEffectfulNarrativeExample_UsesExactFlagMatches(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{
+			name: "launch flag is side effectful",
+			args: []string{"widgets", "create", "--launch"},
+			want: true,
+		},
+		{
+			name: "launch true flag is side effectful",
+			args: []string{"widgets", "create", "--launch=true"},
+			want: true,
+		},
+		{
+			name: "launch substring flag is not side effectful",
+			args: []string{"widgets", "create", "--launch-app"},
+			want: false,
+		},
+		{
+			name: "apply without dry run is side effectful",
+			args: []string{"widgets", "create", "--apply"},
+			want: true,
+		},
+		{
+			name: "apply with dry run is not side effectful",
+			args: []string{"widgets", "create", "--apply", "--dry-run"},
+			want: false,
+		},
+		{
+			name: "apply substring flag is not side effectful",
+			args: []string{"widgets", "create", "--apply-template"},
+			want: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := isSideEffectfulNarrativeExample(tc.args)
+			if got != tc.want {
+				t.Fatalf("isSideEffectfulNarrativeExample(%v) = %v, want %v", tc.args, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestValidate_EmptyResearchFlagsResearchEmpty covers the LLM-omitted-
 // both-sections case.
 func TestValidate_EmptyResearchFlagsResearchEmpty(t *testing.T) {

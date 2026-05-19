@@ -444,12 +444,11 @@ func syncResource(c interface {
 	for {
 		params := map[string]string{}
 
-		// Set page size
-		params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
-
-		// Set cursor for resume
-		if cursor != "" {
-			params[pageSize.cursorParam] = cursor
+		if resourceSupportsPagination(resource) {
+			params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
+			if cursor != "" {
+				params[pageSize.cursorParam] = cursor
+			}
 		}
 
 		// Set since filter
@@ -590,12 +589,6 @@ func syncResource(c interface {
 			}
 		}
 
-		// Save cursor after each page for resumability
-		if err := db.SaveSyncState(resource, nextCursor, totalCount); err != nil {
-			// Non-fatal: log and continue
-			fmt.Fprintf(os.Stderr, "\nwarning: failed to save sync state for %s: %v\n", resource, err)
-		}
-
 		pagesFetched++
 
 		// Enforce page ceiling to prevent runaway syncs on large-catalog APIs.
@@ -630,9 +623,30 @@ func syncResource(c interface {
 		}
 		lastNextCursor = nextCursor
 
-		// Determine if there are more pages
-		if !hasMore || len(items) < pageSize.limit || nextCursor == "" {
+		// Determine if there are more pages.
+		if !resourceSupportsPagination(resource) {
 			break
+		}
+		if !hasMore || len(items) < pageSize.limit {
+			break
+		}
+		if nextCursor == "" {
+			if pageSize.cursorParam == "offset" {
+				// Cursor-based APIs return the next cursor in the envelope.
+				// Offset-based APIs carry their pagination position client-side.
+				currentOffset, _ := strconv.Atoi(cursor)
+				nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
+			} else {
+				// A cursor-based API reporting has_more without a next cursor
+				// cannot advance safely; stop instead of looping silently.
+				break
+			}
+		}
+
+		// Save cursor after each page for resumability
+		if err := db.SaveSyncState(resource, nextCursor, totalCount); err != nil {
+			// Non-fatal: log and continue
+			fmt.Fprintf(os.Stderr, "\nwarning: failed to save sync state for %s: %v\n", resource, err)
 		}
 
 		cursor = nextCursor
@@ -680,6 +694,16 @@ func determinePaginationDefaults() paginationDefaults {
 		limitParam:  "limit",
 		limit:       100,
 	}
+}
+
+func resourceSupportsPagination(resource string) bool {
+	switch resource {
+	case "projects":
+		return true
+	case "tasks":
+		return true
+	}
+	return false
 }
 
 // syncResourceSinceParam returns the query parameter name this resource's
@@ -1177,9 +1201,11 @@ func syncDependentResource(c interface {
 
 		for {
 			params := map[string]string{}
-			params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
-			if cursor != "" {
-				params[pageSize.cursorParam] = cursor
+			if resourceSupportsPagination(dep.Name) {
+				params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
+				if cursor != "" {
+					params[pageSize.cursorParam] = cursor
+				}
 			}
 			if depSinceTS != "" {
 				params[depSinceParam] = depSinceTS
@@ -1302,8 +1328,23 @@ func syncDependentResource(c interface {
 				break
 			}
 			lastNextCursor = nextCursor
-			if !hasMore || len(items) < pageSize.limit || nextCursor == "" {
+			if !resourceSupportsPagination(dep.Name) {
 				break
+			}
+			if !hasMore || len(items) < pageSize.limit {
+				break
+			}
+			if nextCursor == "" {
+				if pageSize.cursorParam == "offset" {
+					// Cursor-based APIs return the next cursor in the envelope.
+					// Offset-based APIs carry their pagination position client-side.
+					currentOffset, _ := strconv.Atoi(cursor)
+					nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
+				} else {
+					// A cursor-based API reporting has_more without a next cursor
+					// cannot advance safely; stop instead of looping silently.
+					break
+				}
 			}
 			cursor = nextCursor
 		}

@@ -555,13 +555,14 @@ func DeduplicateTrafficEndpoints(entries []EnrichedEntry) []EndpointGroup {
 
 		indexByKey[key] = len(groups)
 		groups = append(groups, EndpointGroup{
+			Host:           host,
 			Method:         method,
 			NormalizedPath: normalizedPath,
 			Entries:        []EnrichedEntry{entry},
 		})
 	}
 
-	return groups
+	return collapseVariantGroups(groups)
 }
 
 func classifyInCaptureOrder(entries []EnrichedEntry, apiEntries []EnrichedEntry, noiseEntries []EnrichedEntry) []EnrichedEntry {

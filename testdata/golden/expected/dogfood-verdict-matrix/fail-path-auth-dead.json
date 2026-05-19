@@ -78,6 +78,7 @@
     "skipped": true
   },
   "spec_path": "<ARTIFACT_DIR>/dogfood-verdict-matrix/fixtures/fail-path-auth-dead/spec.yaml",
+  "spec_source": "bundled",
   "test_presence": {
     "checked": 0
   },
