@@ -29,6 +29,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-auth-key-url` | `components.securitySchemes.<name>` | `APISpec.Auth.KeyURL` | No |
 | `x-auth-title` | `components.securitySchemes.<name>` | `APISpec.Auth.Title` | No |
 | `x-auth-description` | `components.securitySchemes.<name>` | `APISpec.Auth.Description` | No |
+| `x-auth-subtype` | `components.securitySchemes.<name>` | `APISpec.Auth.Subtype` | No |
 | `x-auth-cookie-domain` | `components.securitySchemes.<name>` | `APISpec.Auth.CookieDomain` | No |
 | `x-auth-cookies` | `components.securitySchemes.<name>` | `APISpec.Auth.Cookies` | No |
 | `x-oauth-refresh-token-mechanism` | `components.securitySchemes.<name>` | `APISpec.Auth.RefreshTokenMechanism` | No |
@@ -512,6 +513,47 @@ components:
       x-auth-key-url: https://flightaware.com/commercial/aeroapi/
       x-auth-title: FlightAware AeroAPI Key
       x-auth-description: Optional FlightAware AeroAPI credential for enriched flight data.
+```
+
+### `x-auth-subtype`
+
+Refines `Auth.Type` for runtime flows that need a different credential-capture
+path than the base type implies. Today the only recognized value is
+`auth0_spa_in_memory`: a bearer-token spec whose access token is held by the
+Auth0 SPA SDK with `cacheLocation: memory`. Cookie/localStorage extractors have
+no path to such a token (it lives in JS heap only), so the generator emits a
+`--auth0-spa` flag on `auth login --chrome` that drives a Chrome DevTools
+Protocol outbound-Authorization interceptor instead.
+
+Parsed field: `APISpec.Auth.Subtype`
+
+Rules:
+
+- Optional.
+- Must be a string.
+- Recognized values: `auth0_spa_in_memory`. Other values are silently dropped
+  by the parser; the in-spec value never round-trips unless it matches a known
+  subtype.
+- Spec-level validation rejects `auth.subtype: auth0_spa_in_memory` paired with
+  any non-empty `auth.type` other than `bearer_token`. Auth0 SPA tokens are
+  always Authorization-bearer values; combining the subtype with `api_key` or
+  `cookie` would silently emit a CDP path against a credential that isn't a
+  JWT.
+- Sniff-time detection (`internal/browsersniff/auth0_spa.go`) sets the subtype
+  automatically when an `/oauth/token` response carries `access_token` in the
+  JSON body without a JWT-shaped Set-Cookie on the same response. Authors
+  rarely need to set it by hand.
+
+Example:
+
+```yaml
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      x-auth-subtype: auth0_spa_in_memory
 ```
 
 ### `x-auth-cookie-domain`

@@ -939,9 +939,17 @@ func inferURLParams(entries []EnrichedEntry, normalizedPath string) []spec.Param
 
 func detectAuth(capture *EnrichedCapture, entries []EnrichedEntry, name string) spec.AuthConfig {
 	envPrefix := strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+	auth0SPA := detectAuth0SPAInMemory(entries)
 	if capture != nil && capture.Auth != nil {
 		auth := detectCapturedAuth(capture.Auth, envPrefix)
 		if auth.Type != "" {
+			// Capture-derived bearer auth with an Auth0-SPA-in-memory signature
+			// gets the subtype annotation so the generator routes to the CDP
+			// extractor; other auth shapes (cookie, composed, api_key) are
+			// reached by their own extractor paths and don't need the hint.
+			if auth0SPA && auth.Type == "bearer_token" {
+				auth.Subtype = spec.AuthSubtypeAuth0SPAInMemory
+			}
 			return auth
 		}
 	}
@@ -951,11 +959,15 @@ func detectAuth(capture *EnrichedCapture, entries []EnrichedEntry, name string) 
 			lowerHeader := strings.ToLower(headerName)
 			switch {
 			case strings.EqualFold(headerName, "Authorization") && strings.HasPrefix(strings.TrimSpace(value), "Bearer "):
-				return spec.AuthConfig{
+				auth := spec.AuthConfig{
 					Type:    "bearer_token",
 					Header:  "Authorization",
 					EnvVars: envVarsOrNil(envPrefix, "TOKEN"),
 				}
+				if auth0SPA {
+					auth.Subtype = spec.AuthSubtypeAuth0SPAInMemory
+				}
+				return auth
 			case strings.Contains(lowerHeader, "api-key") || strings.Contains(lowerHeader, "api_key"):
 				return spec.AuthConfig{
 					Type:    "api_key",

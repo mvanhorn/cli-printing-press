@@ -2832,6 +2832,70 @@ paths:
 	assert.Equal(t, "Optional FlightAware AeroAPI credential for enriched flight data.", parsed.Auth.Description)
 }
 
+// TestOpenAPIAuthSubtype covers the x-auth-subtype extension on a bearer
+// security scheme. The parser accepts the auth0_spa_in_memory value and
+// silently drops unrecognized values (typos surface as the field being
+// empty, not as a confusing later validation error).
+func TestOpenAPIAuthSubtype(t *testing.T) {
+	t.Parallel()
+
+	t.Run("auth0_spa_in_memory round-trips", func(t *testing.T) {
+		t.Parallel()
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: SpaService
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      x-auth-subtype: auth0_spa_in_memory
+paths:
+  /me:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+		assert.Equal(t, "bearer_token", parsed.Auth.Type)
+		assert.Equal(t, "auth0_spa_in_memory", parsed.Auth.Subtype)
+	})
+
+	t.Run("unknown subtype is dropped", func(t *testing.T) {
+		t.Parallel()
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: SpaService
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      x-auth-subtype: some_typo_subtype
+paths:
+  /me:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+		assert.Empty(t, parsed.Auth.Subtype,
+			"unknown subtype values should not round-trip")
+	})
+}
+
 func TestOpenAPIAuthKeyURLInference(t *testing.T) {
 	t.Parallel()
 
