@@ -65,10 +65,11 @@ When you adopt draft_pr mode, structure gating across **three blocks**, each enf
 
 The corrected config gives free throughput we were leaving on the floor. With `max_parallel_checks: 1`, queued PRs serialize behind each other's full CI run. With `max_parallel_checks: 3`, three PRs speculate in parallel via independent draft branches; the first one to land merges immediately, and the others either land in sequence (if still applicable to the new `main`) or re-queue with one less position ahead.
 
-Two non-obvious failure modes to avoid:
+Three non-obvious failure modes to avoid:
 
 - **Raising `max_parallel_checks` without adding `merge_conditions`** — nothing breaks, but nothing speeds up either. Mergify stays in in-place mode and parallel checks have no draft PRs to run against. The change appears to take effect in config review and quietly does nothing.
 - **Putting Greptile or `#review-threads-unresolved = 0` in `merge_conditions`** — the queue stalls forever waiting for signals that will never appear on bot branches. The dequeue message is unhelpful; the symptom looks like Mergify is broken.
+- **Putting `pr-title` (or any title-pattern-skipping workflow) in `merge_conditions`** — if the workflow's skip condition was written for a *batch-mode* draft title prefix (e.g. `startsWith(title, 'merge queue:')`), it won't match `draft_pr`-mode draft titles, and the semantic check may fail on every draft. The source PR's title is already validated at queue entry and cannot change while queued, so the re-check is redundant — omit it from `merge_conditions` rather than try to extend the skip pattern.
 
 ## When to Apply
 

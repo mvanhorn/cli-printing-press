@@ -40,16 +40,21 @@ queue_rules:
         - and:
           - head = release-please--branches--main
           - "title ~= ^chore\\(main\\): release"
-    # Evaluated against the speculative draft PR. Greptile and review-
-    # threads are intentionally absent — Greptile doesn't run on bot
-    # branches, and the source PR's review-thread state is already
-    # gated by queue_conditions + merge_protections.
+    # Evaluated against the speculative draft PR. Intentionally omitted:
+    #   - Greptile / review-threads — Greptile silent-skips bot branches,
+    #     and draft PRs have no review threads; both are re-enforced on
+    #     the source PR via queue_conditions + merge_protections.
+    #   - pr-title — `.github/workflows/pr-title.yml` skips only titles
+    #     starting with `merge queue:` (batch-mode prefix). In draft_pr
+    #     mode the draft title format is not guaranteed to match, which
+    #     would hang the check. Source PR title is already validated at
+    #     queue_conditions entry and cannot change while queued, so the
+    #     re-check on the draft is redundant.
     merge_conditions:
       - check-success = build-and-test
       - check-success = generated-test
       - check-success = go-lint
       - check-success = golden
-      - check-success = pr-title
       - check-success = test
     merge_method: squash
     # `update_method: merge` instead of `rebase` so the queue can update
