@@ -754,7 +754,7 @@ Before new research:
    fi
    ```
 
-   Do not block on a network failure. After step 4 finishes (success or skip), `rm -f "$REGISTRY"`.
+   Do not block on a network failure. After step 4 finishes, clean up the tempfile only if the fetch succeeded: `[ -n "$REGISTRY" ] && rm -f "$REGISTRY"`. The failure branch above already removed it and set `REGISTRY=""`, so an unconditional `rm -f "$REGISTRY"` would run `rm -f ""`.
 
    **Read the registry and reason about matches** — do not gate on string equality alone. The file is small (~88 KB, ~135 entries today); read it directly and use judgment. Each entry has fields `name` (slug), `category`, `api` (brand display), `description`, `path`, `printer`.
 
@@ -789,7 +789,20 @@ Before new research:
    2. **Continue and build a fresh one anyway** — proceed with the current run from scratch. Rare; appropriate only for a deliberate fork or variant.
    3. **Abort** — stop here.
 
-   If two or more entries qualify as **High** (rare — typically only happens when the user's argument is ambiguous between siblings like `slack` and `slack-bot`), fall through to the Medium-match prompt below with the High candidates as options instead.
+   **Multiple High matches — present each candidate, do not use the Medium-match phrasing.** Rare — typically only happens when the user's argument is ambiguous between siblings like `slack` and `slack-bot`. Cap displayed candidates at 2 to stay within the 4-option prompt limit alongside continue/abort. If 3+ High candidates somehow qualify, pick the 2 best by judgment (typically the canonical slug match plus the next-most-likely alternative) and note "(plus N other close matches)" in the prompt body so the user knows the list is truncated.
+
+   > Found multiple matches for **`<api>`** in the public library — each appears to be the same product under a different name:
+   >
+   > - **`<entry1.name>`** (`<entry1.api>`) — `<entry1.description>`
+   > - **`<entry2.name>`** (`<entry2.api>`) — `<entry2.description>`
+   >
+   > Pick one to reprint, or continue/abort.
+
+   Options:
+   1. **Reprint `<entry1.name>`** — invoke `/printing-press-reprint <entry1.name>`.
+   2. **Reprint `<entry2.name>`** — same, for the second candidate.
+   3. **Continue and build a fresh one anyway** — rare; appropriate only for a deliberate fork or variant.
+   4. **Abort** — stop here.
 
    **Medium match — present alternatives.** Cap candidates at 2 to stay within the 4-option prompt limit alongside continue/abort.
 
