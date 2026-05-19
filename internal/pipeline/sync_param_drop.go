@@ -5,9 +5,10 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"net/url"
-	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -123,22 +124,22 @@ func collectSyncSourceFiles(cliDir string) ([]string, error) {
 	}
 	var out []string
 	for _, dir := range candidates {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
+		err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil || entry.IsDir() {
+				return nil
 			}
-			name := e.Name()
+			name := entry.Name()
 			if !strings.HasSuffix(name, ".go") {
-				continue
+				return nil
 			}
 			if strings.HasSuffix(name, "_test.go") {
-				continue
+				return nil
 			}
-			out = append(out, filepath.Join(dir, name))
+			out = append(out, path)
+			return nil
+		})
+		if err != nil {
+			continue
 		}
 	}
 	sort.Strings(out)
@@ -209,7 +210,11 @@ func walkSyncParamDropCalls(fset *token.FileSet, file *ast.File, fileName string
 		for _, comment := range group.List {
 			text := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(comment.Text, "//"), "/*"))
 			if strings.HasPrefix(text, syncParamDropSuppression) {
-				suppressionLines[fset.Position(comment.End()).Line] = true
+				startLine := fset.Position(comment.Pos()).Line
+				endLine := fset.Position(comment.End()).Line
+				for line := startLine; line <= endLine; line++ {
+					suppressionLines[line] = true
+				}
 			}
 		}
 	}
@@ -313,7 +318,7 @@ func receiverLooksLikeHTTPClient(expr ast.Expr) bool {
 		// a frequent name — but `cmd` itself isn't on the short-identifier
 		// allowlist below; only true HTTP-client conventional names.
 		switch strings.ToLower(v.Name) {
-		case "c", "s", "client", "h", "http", "api":
+		case "c", "s", "client", "h", "api":
 			return true
 		}
 		return strings.Contains(strings.ToLower(v.Name), "client")
@@ -351,10 +356,8 @@ func callPassedKeys(args []ast.Expr) []string {
 	}
 	// No composite literal we can read; if the only remaining arg is a
 	// nil-shaped placeholder, that's an explicit empty.
-	for _, arg := range args {
-		if isNilArg(arg) {
-			return []string{}
-		}
+	if slices.ContainsFunc(args, isNilArg) {
+		return []string{}
 	}
 	return nil
 }
