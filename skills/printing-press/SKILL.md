@@ -730,7 +730,85 @@ Before new research:
 
    The prompt forces the user to acknowledge the version delta and explicitly accept (or refuse) re-validation. Skip it entirely on first generation, on same-version regenerations, or when no prior manifest exists.
 
-   If no CLI exists in the library and no lock is active, skip this step and proceed normally.
+   If no CLI exists in the local library and no lock is active, run the **Public-library check** below before proceeding to Phase 1.
+
+   #### Public-library check (registry.json)
+
+   The local library check above only sees CLIs this machine has already printed. A user on a fresh checkout — or one who typed a slightly different name than the published slug (`Slack` vs `slack-bot`, `Cal` vs `cal-com`), or who described what they wanted in their own words (`Hacker News reader`, `Notion clone`, `prediction market`) — will miss CLIs that already exist in the public library. Scan `mvanhorn/printing-press-library/registry.json` to catch those cases before Phase 1 research begins (the expensive 30-60-minute portion of the pipeline).
+
+   **Skip this check entirely when:**
+   - The local-library check above already prompted (mutual exclusion — do not double-ask).
+   - `BROWSER_SNIFF_TARGET_URL` is set (the user is building a from-website CLI; the registry indexes API CLIs and naming collisions are unlikely and intentional).
+   - The user passed `--har <path>` with an explicit `--name <api>` for a private capture.
+
+   **Fetch the registry.** Match the pattern `/printing-press-import` and `/printing-press-reprint` already use:
+
+   ```bash
+   REGISTRY=$(mktemp)
+   if ! gh api -H "Accept: application/vnd.github.v3.raw" \
+        repos/mvanhorn/printing-press-library/contents/registry.json \
+        > "$REGISTRY" 2>/dev/null; then
+     echo "Public-library check skipped: registry.json unreachable. Proceeding to Phase 1."
+     rm -f "$REGISTRY"
+     REGISTRY=""
+   fi
+   ```
+
+   Do not block on a network failure. After step 4 finishes (success or skip), `rm -f "$REGISTRY"`.
+
+   **Read the registry and reason about matches** — do not gate on string equality alone. The file is small (~88 KB, ~135 entries today); read it directly and use judgment. Each entry has fields `name` (slug), `category`, `api` (brand display), `description`, `path`, `printer`.
+
+   The user's argument may arrive in many shapes, and only some are catchable by deterministic match:
+
+   - **Slug or near-slug** — `Notion`, `notion-cli`, `notion-pp-cli`
+   - **Brand with punctuation** — `Cal.com`, `Customer.io`, `Archive.today`, `Trigger.dev`
+   - **Concept or category** — `Hacker News reader`, `Notion clone`, `prediction market`, `prediction-market CLI`
+   - **Adjacent product** — `Polymarket` when the registry has `kalshi` (peer prediction market)
+   - **Genuinely novel** — no useful overlap
+
+   Classify the best match at three confidence levels and act only on the top two:
+
+   - **High** — same product under a different name (slug variant, brand vs slug form, `-cli`/`-pp-cli` suffix variant, well-known alias). Examples: `Cal.com` ↔ `cal-com`, `Notion` ↔ `notion-cli`, `slack` ↔ `slack-bot`.
+   - **Medium** — same category and overlapping function; a reasonable user would want to know before building. Examples: `prediction market` finds `kalshi`, `Hacker News reader` finds `hackernews`, `Polymarket` surfaces `kalshi` as a peer.
+   - **Low** — vaguely adjacent (e.g. "payment gateway" finding every payment-related CLI). Skip silently — false-positive prompts get dismissed reflexively at this gate.
+
+   Resist over-matching on `description` keywords. Most descriptions mention several adjacent concepts; matching liberally on description text produces noise. Use the description to *confirm* a name-or-category candidate, not to *discover* candidates from scratch.
+
+   **High match — prompt strongly.** Under Claude Code, use `AskUserQuestion`; under another harness, use the equivalent native prompt primitive. The option set is the same either way.
+
+   > Found **`<entry.api>`** in the public library (printed by **@`<entry.printer>`**, path `<entry.path>`).
+   >
+   > `<entry.description>`
+   >
+   > URL: `https://github.com/mvanhorn/printing-press-library/tree/main/<entry.path>`
+   >
+   > This CLI already exists. What would you like to do?
+
+   Options:
+   1. **Reprint with the current Printing Press (recommended)** — end this run and invoke `/printing-press-reprint <entry.name>`. That skill pulls the existing CLI, carries prior research and post-publish patches into reconciliation, and regenerates under the current binary. Almost always the right choice when a user discovers the CLI exists.
+   2. **Continue and build a fresh one anyway** — proceed with the current run from scratch. Rare; appropriate only for a deliberate fork or variant.
+   3. **Abort** — stop here.
+
+   If two or more entries qualify as **High** (rare — typically only happens when the user's argument is ambiguous between siblings like `slack` and `slack-bot`), fall through to the Medium-match prompt below with the High candidates as options instead.
+
+   **Medium match — present alternatives.** Cap candidates at 2 to stay within the 4-option prompt limit alongside continue/abort.
+
+   > Found similar entries in the public library that don't exactly match `<api>` but may overlap:
+   >
+   > - **`<entry1.name>`** (`<entry1.api>`) — `<entry1.description>`
+   > - **`<entry2.name>`** (`<entry2.api>`) — `<entry2.description>`
+   >
+   > Continue with `<api>` as planned, or reprint one of these instead?
+
+   Options:
+   1. **Continue with `<api>` as planned** — proceed to Phase 1.
+   2. **Reprint `<entry1.name>` instead** — invoke `/printing-press-reprint <entry1.name>`.
+   3. **Reprint `<entry2.name>` instead** — same, for the second candidate.
+   4. **Abort** — stop here.
+
+   **No High or Medium match:** print nothing, proceed to Phase 1.
+
+   **Combo CLIs.** When `SOURCE_PRIORITY` is set (from the Multi-Source Priority Gate above), classify matches per source. Combine per-source High/Medium hits into a single prompt so the user sees every collision at once rather than answering N separate prompts.
 
 5. **API Key Gate** — Check whether this API requires authentication, then handle accordingly.
 
