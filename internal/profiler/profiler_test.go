@@ -834,6 +834,29 @@ func TestProfileDependentResources(t *testing.T) {
 	assert.Equal(t, "/channels/{channelId}/messages", dep.Path)
 }
 
+func TestProfileSyncableResourceSupportsCursorOnlyPagination(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "cursor-only",
+		Resources: map[string]spec.Resource{
+			"events": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:     "GET",
+						Path:       "/events",
+						Response:   spec.ResponseDef{Type: "array"},
+						Pagination: &spec.Pagination{CursorParam: "starting_after"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	require.Len(t, profile.SyncableResources, 1)
+	assert.Equal(t, "events", profile.SyncableResources[0].Name)
+	assert.True(t, profile.SyncableResources[0].SupportsPagination, "cursor-only pagination must keep sync from stopping after the first page")
+}
+
 // TestProfileDependentResources_SharedSubResourceShardsByParent pins the
 // fix for issue #694. When the same sub-resource leaf name (e.g. "commits")
 // appears under multiple parents (e.g. /gists/{gist_id}/commits and
