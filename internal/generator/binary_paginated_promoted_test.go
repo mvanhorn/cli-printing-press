@@ -55,8 +55,10 @@ func TestGenerateBinaryPaginatedPromotedThreadsHeader(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_voices.go")
-	assert.Contains(t, endpointSrc, `headerOverrides := map[string]string{"X-Printing-Press-Binary-Response": "true"}`,
+	assert.Contains(t, endpointSrc, `headerOverrides := map[string]string{`,
 		"binary paginated promoted must declare headerOverrides")
+	assert.Contains(t, endpointSrc, `"X-Printing-Press-Binary-Response": "true",`,
+		"binary paginated promoted must include the binary sentinel")
 	assert.Contains(t, endpointSrc, `paginatedGet(c, path, map[string]string{`,
 		"non-HasStore pagination must use paginatedGet")
 	assert.NotContains(t, endpointSrc, `}, nil, flagAll,`,
@@ -94,8 +96,47 @@ func TestGenerateBinaryStoreBackedPromotedThreadsHeader(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_voices.go")
-	assert.Contains(t, endpointSrc, `headerOverrides := map[string]string{"X-Printing-Press-Binary-Response": "true"}`,
+	assert.Contains(t, endpointSrc, `headerOverrides := map[string]string{`,
 		"store-backed binary GET must declare headerOverrides")
+	assert.Contains(t, endpointSrc, `"X-Printing-Press-Binary-Response": "true",`,
+		"store-backed binary GET must include the binary sentinel")
 	assert.Contains(t, endpointSrc, `resolveRead(cmd.Context(), c, flags, "voices", false, path, params, headerOverrides)`,
 		"store-backed binary GET must thread headerOverrides through resolveRead")
+}
+
+func TestGenerateBinaryMCPToolsThreadHeaderOverrides(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("audioapi")
+	apiSpec.Resources = map[string]spec.Resource{
+		"voices": {
+			Description: "Voices",
+			Endpoints: map[string]spec.Endpoint{
+				"download": {
+					Method:         "GET",
+					Path:           "/voices/{voice_id}/download",
+					Description:    "Download voice sample",
+					ResponseFormat: spec.ResponseFormatBinary,
+					HeaderOverrides: []spec.RequiredHeader{
+						{Name: "Accept", Value: "application/octet-stream"},
+					},
+					Params: []spec.Param{
+						{Name: "voice_id", Type: "string", Required: true, Positional: true, PathParam: true, Description: "Voice ID"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
+	assert.Contains(t, mcpSrc, `makeAPIHandler("GET", "/voices/{voice_id}/download", true, map[string]string{"Accept": "application/octet-stream"},`,
+		"typed MCP tools must carry per-endpoint header overrides")
+	assert.Contains(t, mcpSrc, `headers[client.BinaryResponseHeader] = "true"`,
+		"typed MCP tools must still add the binary sentinel")
+	assert.Contains(t, mcpSrc, `data, err = c.GetWithHeaders(path, params, headers)`,
+		"typed MCP tools must dispatch through WithHeaders when headers are present")
 }
