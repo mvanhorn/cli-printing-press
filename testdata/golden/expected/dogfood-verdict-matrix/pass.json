@@ -64,6 +64,10 @@
     "checked": 0,
     "skipped": true
   },
+  "sync_param_drop_check": {
+    "checked": 0,
+    "skipped": true
+  },
   "test_presence": {
     "checked": 0
   },

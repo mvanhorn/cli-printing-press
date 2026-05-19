@@ -51,6 +51,7 @@ type DogfoodReport struct {
 	PrintJSONFilteredCheck PrintJSONFilteredCheckResult `json:"print_json_filtered_check"`
 	TestPresence           TestPresenceResult           `json:"test_presence"`
 	NamingCheck            NamingCheckResult            `json:"naming_check"`
+	SyncParamDropCheck     SyncParamDropResult          `json:"sync_param_drop_check"`
 	Issues                 []string                     `json:"issues"`
 }
 
@@ -298,6 +299,7 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	report.PrintJSONFilteredCheck = checkPrintJSONFiltered(dir)
 	report.TestPresence = checkTestPresence(dir)
 	report.NamingCheck = checkNamingConsistency(dir)
+	report.SyncParamDropCheck = CheckSyncParamDrop(dir, resolveTrafficAnalysisPath(cfg, specPath))
 	report.Issues = collectDogfoodIssues(report, spec != nil)
 	report.Verdict = deriveDogfoodVerdict(report, spec != nil)
 
@@ -309,7 +311,8 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 }
 
 type dogfoodConfig struct {
-	researchDir string
+	researchDir         string
+	trafficAnalysisPath string
 }
 
 // DogfoodOption configures optional behavior for RunDogfood.
@@ -321,6 +324,52 @@ func WithResearchDir(dir string) DogfoodOption {
 	return func(c *dogfoodConfig) {
 		c.researchDir = dir
 	}
+}
+
+// WithTrafficAnalysis points dogfood at a browser-sniff traffic-analysis.json
+// so the sync-param-drop gate runs as part of the dogfood suite. When unset,
+// dogfood falls back to the convention path next to the spec
+// (<spec>-traffic-analysis.json); when that also doesn't exist the gate
+// records a Skipped result.
+func WithTrafficAnalysis(path string) DogfoodOption {
+	return func(c *dogfoodConfig) {
+		c.trafficAnalysisPath = path
+	}
+}
+
+// resolveTrafficAnalysisPath returns the explicit override when provided,
+// otherwise the conventional sidecar path next to the spec. Returning an
+// empty string lets the gate's Skipped branch take over without raising.
+func resolveTrafficAnalysisPath(cfg dogfoodConfig, specPath string) string {
+	if path := strings.TrimSpace(cfg.trafficAnalysisPath); path != "" {
+		return path
+	}
+	if strings.TrimSpace(specPath) == "" {
+		return ""
+	}
+	sidecar := defaultTrafficAnalysisSidecar(specPath)
+	if sidecar == "" {
+		return ""
+	}
+	if _, err := os.Stat(sidecar); err != nil {
+		return ""
+	}
+	return sidecar
+}
+
+// defaultTrafficAnalysisSidecar mirrors browsersniff.DefaultTrafficAnalysisPath
+// without importing the package at the dogfood layer — the gate itself owns
+// the browsersniff dependency. Kept narrow: takes a spec path, returns the
+// conventional `<stem>-traffic-analysis.json` neighbor.
+func defaultTrafficAnalysisSidecar(specPath string) string {
+	dir := filepath.Dir(specPath)
+	base := filepath.Base(specPath)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	if stem == "" || stem == "." {
+		stem = "traffic"
+	}
+	return filepath.Join(dir, stem+"-traffic-analysis.json")
 }
 
 func checkMCPSurfaceParity(cliDir string) MCPSurfaceResult {
@@ -1658,6 +1707,7 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	}},
 	// Surface hand-rolled responses without hard-blocking early iteration.
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.ReimplementationCheck.Suspicious) > 0 }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.SyncParamDropCheck.Findings) > 0 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.SourceClientCheck.Findings) > 0 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.PrintJSONFilteredCheck.Findings) > 0 }},
 }
@@ -1740,6 +1790,15 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 		issues = append(issues, fmt.Sprintf("%d/%d novel features look reimplemented: %s",
 			len(report.ReimplementationCheck.Suspicious),
 			report.ReimplementationCheck.Checked,
+			strings.Join(parts, "; ")))
+	}
+	if len(report.SyncParamDropCheck.Findings) > 0 {
+		parts := make([]string, 0, len(report.SyncParamDropCheck.Findings))
+		for _, f := range report.SyncParamDropCheck.Findings {
+			parts = append(parts, FormatSyncParamDropFinding(f))
+		}
+		issues = append(issues, fmt.Sprintf("%d sync call(s) dropping params the live site captures: %s",
+			len(report.SyncParamDropCheck.Findings),
 			strings.Join(parts, "; ")))
 	}
 	if len(report.SourceClientCheck.Findings) > 0 {

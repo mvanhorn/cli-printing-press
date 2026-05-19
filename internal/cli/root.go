@@ -70,6 +70,7 @@ func Execute() error {
 	rootCmd.AddCommand(newMCPAuditCmd())
 	rootCmd.AddCommand(newToolsAuditCmd())
 	rootCmd.AddCommand(newPublicParamAuditCmd())
+	rootCmd.AddCommand(newSyncParamDropCmd())
 	rootCmd.AddCommand(newPIIAuditCmd())
 	rootCmd.AddCommand(newProbeReachabilityCmd())
 	rootCmd.AddCommand(newSchemaCmd())
