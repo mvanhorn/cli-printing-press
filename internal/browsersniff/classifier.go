@@ -380,15 +380,28 @@ func normalizeEntryPath(rawURL string) string {
 // emit a second {resource_id} — instead it becomes {resource_id_2}. This keeps
 // downstream spec generation safe: OpenAPI rejects duplicate path-parameter
 // names within a single path template.
+//
+// The `used` map tracks every concrete placeholder string already emitted in
+// the current path (including suffixed variants). The walk advances the
+// counter as long as the candidate name collides, so chains like
+// {resource_id}/{resource_id_2}/{resource_id_3} stay unique even when the
+// variance pass populates `used` from a path the per-segment normalizer
+// already disambiguated.
 func disambiguatePlaceholder(placeholder string, used map[string]int) string {
-	used[placeholder]++
-	count := used[placeholder]
-	if count == 1 {
+	if used[placeholder] == 0 {
+		used[placeholder] = 1
 		return placeholder
 	}
-	// Strip the surrounding braces, append the counter, and re-wrap.
 	inner := strings.TrimSuffix(strings.TrimPrefix(placeholder, "{"), "}")
-	return "{" + inner + "_" + strconv.Itoa(count) + "}"
+	// Find the next free suffix. Start at 2 (the first collision becomes _2)
+	// and advance until the candidate isn't already in `used`.
+	for n := 2; ; n++ {
+		candidate := "{" + inner + "_" + strconv.Itoa(n) + "}"
+		if used[candidate] == 0 {
+			used[candidate] = 1
+			return candidate
+		}
+	}
 }
 
 // previousMeaningfulSegment walks backwards from index i looking for a segment

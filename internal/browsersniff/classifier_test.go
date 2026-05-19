@@ -281,6 +281,22 @@ func TestDeduplicateEndpoints(t *testing.T) {
 			wantNormalizedPaths: []string{"/api/CreateDocument", "/api/ListDocuments"},
 			wantGroupSizes:      []int{1, 1},
 		},
+		{
+			// Three consecutive same-parent IDs: per-segment normalization
+			// produces /resources/{resource_id}/{resource_id_2}/abc123. The
+			// variance pass then promotes position 4. Naive counter-only
+			// disambiguation would re-emit {resource_id_2} (already in the
+			// path); the implementation must keep advancing the counter past
+			// every existing suffix and land on {resource_id_3}.
+			name: "triple consecutive ids disambiguate to _3",
+			entries: []EnrichedEntry{
+				{Method: "GET", URL: "https://example.com/resources/123/456/abc123"},
+				{Method: "GET", URL: "https://example.com/resources/789/012/xyz456"},
+			},
+			wantMethods:         []string{"GET"},
+			wantNormalizedPaths: []string{"/resources/{resource_id}/{resource_id_2}/{resource_id_3}"},
+			wantGroupSizes:      []int{2},
+		},
 	}
 
 	for _, tt := range tests {
