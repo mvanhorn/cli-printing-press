@@ -269,6 +269,15 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 			// verify. Documented in skills/printing-press/SKILL.md and
 			// AGENTS.md.
 			env = append(env, "PRINTING_PRESS_VERIFY=1")
+			// Verify owns its httptest mock-server and needs the real
+			// wire path to assert against, so it opts back in to the
+			// transport-layer mutating-verb gate that every other
+			// consumer leaves engaged. Without this var, the gate in
+			// generated Client.do() returns a synthetic envelope for
+			// DELETE/POST/PUT/PATCH and the mock server never sees the
+			// request — collapsing verify's pass-rate signal to zero
+			// for those verbs.
+			env = append(env, "PRINTING_PRESS_VERIFY_LIVE_HTTP=1")
 		}
 		return env
 	}
