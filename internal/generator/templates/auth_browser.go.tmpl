@@ -43,6 +43,9 @@ import (
 {{- if .Auth.RequiresBrowserSession}}
 	"{{modulePath}}/internal/client"
 {{- end}}
+{{- if not (eq .Auth.Type "none")}}
+	"{{modulePath}}/internal/cliutil"
+{{- end}}
 	"{{modulePath}}/internal/config"
 	"github.com/spf13/cobra"
 )
@@ -62,6 +65,9 @@ func newAuthCmd(flags *rootFlags) *cobra.Command {
 	cmd.AddCommand(newAuthRefreshQueriesCmd(flags))
 {{- end}}
 	cmd.AddCommand(newAuthStatusCmd(flags))
+{{- if not (eq .Auth.Type "none")}}
+	cmd.AddCommand(newAuthSetTokenCmd(flags))
+{{- end}}
 	cmd.AddCommand(newAuthLogoutCmd(flags))
 
 	return cmd
@@ -902,6 +908,76 @@ func newAuthStatusCmd(flags *rootFlags) *cobra.Command {
 		},
 	}
 }
+
+{{- if not (eq .Auth.Type "none")}}
+
+// newAuthSetTokenCmd is the escape hatch for sites whose access token can't
+// be reached by the cookie-jar extractor in `auth login --chrome` — most
+// commonly Auth0 SPA SDK v2+ deployments using the default in-memory cache,
+// where the JWT lives in JS heap and never touches cookies or localStorage.
+// Users (or agents) grab the bearer from DevTools → Network → Authorization
+// and paste it here instead of hand-editing config.toml.
+//
+// The cliutil.LooksLikeJWT length floor is the cookie-vs-JWT-shape gate from
+// retro #1598 WU-2: short tracking cookies like Cloudflare's `__cf_bm`
+// (~31 chars) happen to have three base64url segments and would otherwise
+// silently land as the access token.
+func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:     "set-token <jwt>",
+		Short:   "Save a bearer JWT pasted from DevTools (escape hatch for in-memory tokens)",
+		Example: "  {{.Name}}-pp-cli auth set-token eyJhbGciOi...",
+		Long: "Save a bearer JWT pasted from DevTools (escape hatch for in-memory tokens).\n\n" +
+			"Use this when `auth login --chrome` can't reach the access token — most\n" +
+			"commonly Auth0 SPA SDK deployments that keep the JWT in JS heap memory.\n" +
+			"Open DevTools → Network → any authenticated request → copy the\n" +
+			"`Authorization: Bearer ...` value and paste the JWT portion here.\n\n" +
+			"The token is validated for JWT shape (three base64url segments, length\n" +
+			"floor) so short tracking cookies don't get saved as credentials.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load(flags.configPath)
+			if err != nil {
+				return configErr(err)
+			}
+
+			token := strings.TrimSpace(args[0])
+			token = strings.TrimPrefix(token, "Bearer ")
+			if !cliutil.LooksLikeJWT(token) {
+				return authErr(fmt.Errorf("argument is not JWT-shaped (three base64url segments, ≥150 chars total). " +
+					"This is the cookie-vs-JWT-shape gate — short tracking cookies like Cloudflare's __cf_bm " +
+					"share the segment shape but aren't credentials. Paste the `Authorization: Bearer ...` value " +
+					"from DevTools → Network, not a cookie jar"))
+			}
+
+			// Clear any legacy auth_header so AuthHeader() falls through to
+			// the newly-saved bearer. Mirrors auth_simple's set-token.
+			cfg.AuthHeaderVal = ""
+			// Pass a zero expiry. We can't decode the JWT to learn its real
+			// lifetime, and preserving a stale cfg.TokenExpiry from a prior
+			// session (the exact case escape-hatch users reach this from)
+			// would later mislead any expiry-aware status check into treating
+			// this fresh token as already expired. Actual expiry surfaces via
+			// 401 on the next API call, same as the rest of the browser-auth
+			// flow. Matches ClearTokens / SaveBearerToken's zero-on-write
+			// invariant in config.go.tmpl.
+			if err := cfg.SaveTokens("", "", token, "", time.Time{}); err != nil {
+				return configErr(fmt.Errorf("saving token: %w", err))
+			}
+
+			// JSON envelope: {saved, config_path}.
+			if flags.asJSON {
+				return printJSONFiltered(cmd.OutOrStdout(), map[string]any{
+					"saved":       true,
+					"config_path": cfg.Path,
+				}, flags)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Token saved to %s\n", cfg.Path)
+			return nil
+		},
+	}
+}
+{{- end}}
 
 func newAuthLogoutCmd(flags *rootFlags) *cobra.Command {
 	return &cobra.Command{
