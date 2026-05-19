@@ -30,7 +30,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("POST", "/stores", false, []mcpParamBinding{{PublicName: "store-code", WireName: "store_code", Location: "body"}}, []string{}),
+		makeAPIHandler("POST", "/stores", false, nil, []mcpParamBinding{{PublicName: "store-code", WireName: "store_code", Location: "body"}}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("stores_find",
@@ -41,7 +41,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/power/store-locator", false, []mcpParamBinding{{PublicName: "address", WireName: "s", Location: "query"}, {PublicName: "city", WireName: "c", Location: "query"}}, []string{}),
+		makeAPIHandler("GET", "/power/store-locator", false, nil, []mcpParamBinding{{PublicName: "address", WireName: "s", Location: "query"}, {PublicName: "city", WireName: "c", Location: "query"}}, []string{}),
 	)
 
 	// Context tool — front-loaded domain knowledge for agents.
@@ -67,7 +67,7 @@ type mcpParamBinding struct {
 }
 
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
-func makeAPIHandler(method, pathTemplate string, binaryResponse bool, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
+func makeAPIHandler(method, pathTemplate string, binaryResponse bool, headerOverrides map[string]string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		c, err := newMCPClient()
 		if err != nil {
@@ -88,8 +88,17 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, bindings [
 		params := make(map[string]string)
 		bodyArgs := make(map[string]any)
 		var headers map[string]string
+		if len(headerOverrides) > 0 {
+			headers = make(map[string]string, len(headerOverrides)+1)
+			for k, v := range headerOverrides {
+				headers[k] = v
+			}
+		}
 		if binaryResponse {
-			headers = map[string]string{client.BinaryResponseHeader: "true"}
+			if headers == nil {
+				headers = map[string]string{}
+			}
+			headers[client.BinaryResponseHeader] = "true"
 		}
 		for _, binding := range bindings {
 			knownArgs[binding.PublicName] = true
@@ -134,31 +143,31 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, bindings [
 		var data json.RawMessage
 		switch method {
 		case "GET":
-			if binaryResponse {
+			if len(headers) > 0 {
 				data, err = c.GetWithHeaders(path, params, headers)
 				break
 			}
 			data, err = c.Get(path, params)
 		case "POST":
-			if binaryResponse {
+			if len(headers) > 0 {
 				data, _, err = c.PostWithParamsAndHeaders(path, params, bodyArgs, headers)
 				break
 			}
 			data, _, err = c.PostWithParams(path, params, bodyArgs)
 		case "PUT":
-			if binaryResponse {
+			if len(headers) > 0 {
 				data, _, err = c.PutWithParamsAndHeaders(path, params, bodyArgs, headers)
 				break
 			}
 			data, _, err = c.PutWithParams(path, params, bodyArgs)
 		case "PATCH":
-			if binaryResponse {
+			if len(headers) > 0 {
 				data, _, err = c.PatchWithParamsAndHeaders(path, params, bodyArgs, headers)
 				break
 			}
 			data, _, err = c.PatchWithParams(path, params, bodyArgs)
 		case "DELETE":
-			if binaryResponse {
+			if len(headers) > 0 {
 				data, _, err = c.DeleteWithParamsAndHeaders(path, params, headers)
 				break
 			}
