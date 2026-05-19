@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -62,6 +64,40 @@ func TestVerifyCmdJSONFailReturnsExitErrorAfterWritingReport(t *testing.T) {
 	var exitErr *ExitError
 	require.True(t, errors.As(err, &exitErr))
 	assert.Equal(t, ExitGenerationError, exitErr.Code)
+	assert.True(t, exitErr.Silent)
+
+	var payload struct {
+		Verify pipeline.VerifyReport `json:"verify"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(output), &payload))
+	assert.Equal(t, "FAIL", payload.Verify.Verdict)
+}
+
+func TestVerifyCmdJSONFailSilencesRootCobraError(t *testing.T) {
+	verifyCmd := newVerifyCmdWithOptions(verifyCmdOptions{
+		runVerify: func(cfg pipeline.VerifyConfig) (*pipeline.VerifyReport, error) {
+			return &pipeline.VerifyReport{
+				Mode:     "mock",
+				Total:    1,
+				Failed:   1,
+				PassRate: 0,
+				Verdict:  "FAIL",
+				Binary:   filepath.Join(cfg.Dir, "sample-cli"),
+			}, nil
+		},
+	})
+	root := &cobra.Command{Use: "printing-press", SilenceUsage: true}
+	var stderr bytes.Buffer
+	root.SetErr(&stderr)
+	root.AddCommand(verifyCmd)
+	root.SetArgs([]string{"verify", "--dir", t.TempDir(), "--json"})
+
+	output, err := runWithCapturedStdout(t, root.Execute)
+	require.Error(t, err)
+	assert.Empty(t, stderr.String())
+
+	var exitErr *ExitError
+	require.True(t, errors.As(err, &exitErr))
 	assert.True(t, exitErr.Silent)
 
 	var payload struct {

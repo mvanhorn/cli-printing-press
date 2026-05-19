@@ -116,7 +116,7 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 				if err := enc.Encode(output); err != nil {
 					return err
 				}
-				cmd.SilenceErrors = true
+				cmd.Root().SilenceErrors = true
 				return verifyVerdictError(report, true)
 			}
 
