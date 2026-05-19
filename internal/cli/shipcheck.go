@@ -318,8 +318,7 @@ type shipcheckJSONEnvelope struct {
 }
 
 // renderShipcheckJSON marshals the envelope to w. Each leg's `command`
-// field shows the full argv as it would be invoked at the shell so an
-// operator can copy-paste-rerun a specific leg from the JSON output.
+// field shows the argv used for that leg with sensitive flag values redacted.
 func renderShipcheckJSON(w *os.File, binPath string, results []shipcheckLegResult, runStartedAt time.Time, runElapsed time.Duration) error {
 	env := shipcheckJSONEnvelope{
 		Passed:    shipcheckUmbrellaCode(results) == 0,
@@ -352,13 +351,10 @@ func redactShipcheckCommandArgv(argv []string) []string {
 	redacted := make([]string, len(argv))
 	copy(redacted, argv)
 	for i, arg := range redacted {
-		switch {
-		case arg == "--api-key":
+		if arg == "--api-key" {
 			if i+1 < len(redacted) {
 				redacted[i+1] = "<redacted>"
 			}
-		case strings.HasPrefix(arg, "--api-key="):
-			redacted[i] = "--api-key=<redacted>"
 		}
 	}
 	return redacted
