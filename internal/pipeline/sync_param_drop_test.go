@@ -160,6 +160,34 @@ func sync(client *Client) error {
 	}
 }
 
+func TestCheckSyncParamDrop_MultilineSuppressionComment_NotFlagged(t *testing.T) {
+	src := `package syncer
+
+type Client struct{}
+
+func (c *Client) Get(path string, params map[string]string) error { return nil }
+
+func sync(client *Client) error {
+	/* pp:sync-params-intentional-subset
+	   reason=plan-preselect-only */
+	return client.Get("/menu", map[string]string{
+		"a": "1", "b": "2",
+	})
+}
+`
+	cliDir, analysisPath := seedSyncParamDropFixture(t, src, makeCapture("GET", "/menu", "a", "b", "c", "d"))
+	got := CheckSyncParamDrop(cliDir, analysisPath)
+	if got.Skipped {
+		t.Fatalf("Skipped: want false, got true")
+	}
+	if got.Suppressed != 1 {
+		t.Errorf("Suppressed: want 1, got %d", got.Suppressed)
+	}
+	if len(got.Findings) != 0 {
+		t.Fatalf("Findings: want 0, got %d (%+v)", len(got.Findings), got.Findings)
+	}
+}
+
 // AC-negative: path does not appear in the capture at all — synthetic /
 // transcendence-only endpoint. No flag.
 func TestCheckSyncParamDrop_UncapturedPath_NotFlagged(t *testing.T) {
@@ -246,6 +274,73 @@ func sync(client *Client) error {
 		if !wantDropped[k] {
 			t.Errorf("unexpected dropped key %q", k)
 		}
+	}
+}
+
+func TestCheckSyncParamDrop_RecursesIntoNestedSyncerPackages(t *testing.T) {
+	root := t.TempDir()
+	nestedDir := filepath.Join(root, "internal", "syncer", "cart")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir nested syncer: %v", err)
+	}
+	src := `package cart
+
+type Client struct{}
+
+func (c *Client) Get(path string, params map[string]string) error { return nil }
+
+func sync(client *Client) error {
+	return client.Get("/cart", map[string]string{
+		"a": "1",
+	})
+}
+`
+	if err := os.WriteFile(filepath.Join(nestedDir, "cart_sync.go"), []byte(src), 0o644); err != nil {
+		t.Fatalf("write nested syncer: %v", err)
+	}
+	analysis := makeCapture("GET", "/cart", "a", "b")
+	analysis.Version = "1"
+	data, err := json.MarshalIndent(analysis, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal analysis: %v", err)
+	}
+	analysisPath := filepath.Join(root, "traffic-analysis.json")
+	if err := os.WriteFile(analysisPath, data, 0o644); err != nil {
+		t.Fatalf("write analysis: %v", err)
+	}
+
+	got := CheckSyncParamDrop(root, analysisPath)
+	if got.Skipped {
+		t.Fatalf("Skipped: want false, got true")
+	}
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Findings) != 1 {
+		t.Fatalf("Findings: want 1, got %d (%+v)", len(got.Findings), got.Findings)
+	}
+}
+
+func TestCheckSyncParamDrop_StdlibHTTPPackageCallIgnored(t *testing.T) {
+	src := `package syncer
+
+import "net/http"
+
+func sync() error {
+	_, err := http.Get("/menu")
+	return err
+}
+`
+	cliDir, analysisPath := seedSyncParamDropFixture(t, src, makeCapture("GET", "/menu", "a", "b"))
+	got := CheckSyncParamDrop(cliDir, analysisPath)
+	if got.Skipped {
+		t.Fatalf("Skipped: want false, got true")
+	}
+	if got.Checked != 0 {
+		t.Fatalf("Checked: want 0, got %d", got.Checked)
+	}
+	if len(got.Findings) != 0 {
+		t.Fatalf("Findings: want 0, got %d (%+v)", len(got.Findings), got.Findings)
 	}
 }
 
