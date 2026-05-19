@@ -318,8 +318,7 @@ type shipcheckJSONEnvelope struct {
 }
 
 // renderShipcheckJSON marshals the envelope to w. Each leg's `command`
-// field shows the full argv as it would be invoked at the shell so an
-// operator can copy-paste-rerun a specific leg from the JSON output.
+// field shows the argv used for that leg with sensitive flag values redacted.
 func renderShipcheckJSON(w *os.File, binPath string, results []shipcheckLegResult, runStartedAt time.Time, runElapsed time.Duration) error {
 	env := shipcheckJSONEnvelope{
 		Passed:    shipcheckUmbrellaCode(results) == 0,
@@ -335,12 +334,30 @@ func renderShipcheckJSON(w *os.File, binPath string, results []shipcheckLegResul
 			Passed:    r.Passed(),
 			StartedAt: r.StartedAt.UTC().Format(time.RFC3339),
 			ElapsedMS: r.Elapsed.Milliseconds(),
-			Command:   strings.Join(append([]string{binPath}, r.Argv...), " "),
+			Command:   renderShipcheckCommand(binPath, r.Argv),
 		})
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(env)
+}
+
+func renderShipcheckCommand(binPath string, argv []string) string {
+	args := append([]string{binPath}, redactShipcheckCommandArgv(argv)...)
+	return strings.Join(args, " ")
+}
+
+func redactShipcheckCommandArgv(argv []string) []string {
+	redacted := make([]string, len(argv))
+	copy(redacted, argv)
+	for i, arg := range redacted {
+		if arg == "--api-key" {
+			if i+1 < len(redacted) {
+				redacted[i+1] = "<redacted>"
+			}
+		}
+	}
+	return redacted
 }
 
 // validateShipcheckDir confirms --dir points at something that looks
