@@ -12,6 +12,13 @@ import (
 )
 
 type EndpointGroup struct {
+	// Host is the originating URL host for this group (lowercased), set by
+	// host-aware dedup paths like DeduplicateTrafficEndpoints. Empty when the
+	// caller doesn't care about host separation (DeduplicateEndpoints flattens
+	// across hosts). The cross-entry variance pass keys on this field so two
+	// groups sharing method/path-shape but coming from different hosts stay
+	// separate.
+	Host           string
 	Method         string
 	NormalizedPath string
 	Entries        []EnrichedEntry
@@ -572,11 +579,13 @@ func collapseVariantGroups(groups []EndpointGroup) []EndpointGroup {
 		return groups
 	}
 
-	// Bucket by (method, segment count, positions of existing placeholders) so
-	// only same-shape paths can collapse together. Group all candidates that
-	// share the same skeleton and differ in literal positions; for each
-	// position with >=2 distinct literals across the bucket, promote it.
+	// Bucket by (host, method, segment count, positions of existing
+	// placeholders) so only same-shape paths from the same host can collapse
+	// together. Two groups from different hosts must stay separate even when
+	// their path shapes coincide — DeduplicateTrafficEndpoints keys by host
+	// upstream, and the variance pass must preserve that separation.
 	type skeletonKey struct {
+		host        string
 		method      string
 		length      int
 		placeholder string // bitmask of positions already holding placeholders
@@ -595,6 +604,7 @@ func collapseVariantGroups(groups []EndpointGroup) []EndpointGroup {
 			}
 		}
 		key := skeletonKey{
+			host:        group.Host,
 			method:      group.Method,
 			length:      len(segments),
 			placeholder: placeholderMask.String(),
@@ -672,7 +682,19 @@ func collapseVariantGroups(groups []EndpointGroup) []EndpointGroup {
 		parent := previousMeaningfulSegment(skeletons[target], pos)
 		placeholder := idPlaceholder(parent, "id")
 		newSegments := append([]string(nil), skeletons[target]...)
-		newSegments[pos] = placeholder
+		// Build the in-path placeholder use count from the existing segments so
+		// the variance-pass emission disambiguates against placeholders the
+		// per-segment normalizer already placed. Without this, a path like
+		// /resources/{resource_id}/AbcDef would have its variance position
+		// resolved by walking back through the existing {resource_id} to find
+		// `resources` again, producing a duplicate `{resource_id}`.
+		used := make(map[string]int)
+		for _, s := range newSegments {
+			if strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}") {
+				used[s]++
+			}
+		}
+		newSegments[pos] = disambiguatePlaceholder(placeholder, used)
 		groups[target].NormalizedPath = strings.Join(newSegments, "/")
 
 		for _, idx := range members {

@@ -248,6 +248,24 @@ func TestDeduplicateEndpoints(t *testing.T) {
 			wantNormalizedPaths: []string{"/resources/{resource_id}/{resource_id_2}"},
 			wantGroupSizes:      []int{2},
 		},
+		{
+			// Variance pass must disambiguate against placeholders the
+			// per-segment normalizer already placed. Position 2 (`123`/`456`)
+			// becomes `{resource_id}` in per-segment normalization; position
+			// 3 (`AbcDef`/`XyzUvw`) lacks per-segment ID shape but is
+			// promoted by the variance pass. The walker for position 3
+			// would find `resources` again — placeholder emission must see
+			// the existing `{resource_id}` and disambiguate to
+			// `{resource_id_2}` rather than emit a duplicate.
+			name: "variance pass disambiguates against per-segment placeholder",
+			entries: []EnrichedEntry{
+				{Method: "GET", URL: "https://example.com/resources/123/AbcDef"},
+				{Method: "GET", URL: "https://example.com/resources/456/XyzUvw"},
+			},
+			wantMethods:         []string{"GET"},
+			wantNormalizedPaths: []string{"/resources/{resource_id}/{resource_id_2}"},
+			wantGroupSizes:      []int{2},
+		},
 	}
 
 	for _, tt := range tests {
@@ -294,6 +312,33 @@ func TestDeduplicateEndpoints_SingleEntryHeuristics(t *testing.T) {
 			assert.Equal(t, tt.wantPath, groups[0].NormalizedPath)
 		})
 	}
+}
+
+// TestDeduplicateTrafficEndpoints_VariancePassRespectsHost verifies that the
+// cross-entry variance pass cannot merge groups from different hosts. The
+// upstream host-aware key keeps them separate at dedup time, but
+// collapseVariantGroups originally bucketed only by (method, length, mask) and
+// would collapse them into a single mixed-host group. The skeleton key now
+// includes Host so this no longer happens.
+func TestDeduplicateTrafficEndpoints_VariancePassRespectsHost(t *testing.T) {
+	t.Parallel()
+
+	entries := []EnrichedEntry{
+		{Method: "GET", URL: "https://api.service1.com/orders/ORD123"},
+		{Method: "GET", URL: "https://api.service2.com/orders/SHP456"},
+	}
+
+	groups := DeduplicateTrafficEndpoints(entries)
+
+	require.Len(t, groups, 2, "different hosts must stay in separate groups")
+	hosts := map[string]struct{}{}
+	for _, g := range groups {
+		hosts[g.Host] = struct{}{}
+	}
+	assert.Equal(t, map[string]struct{}{
+		"api.service1.com": {},
+		"api.service2.com": {},
+	}, hosts)
 }
 
 func entryURLs(entries []EnrichedEntry) []string {
