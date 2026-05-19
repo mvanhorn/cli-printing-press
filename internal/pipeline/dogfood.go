@@ -22,9 +22,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// DogfoodSpecSource identifies which spec input RunDogfood actually loaded
+// when both a bundled <dir>/spec.* and a caller-passed --spec are reachable.
+type DogfoodSpecSource string
+
+const (
+	DogfoodSpecSourceBundled DogfoodSpecSource = "bundled"
+	DogfoodSpecSourceCaller  DogfoodSpecSource = "caller"
+)
+
 type DogfoodReport struct {
 	Dir                    string                       `json:"dir"`
 	SpecPath               string                       `json:"spec_path,omitempty"`
+	SpecSource             DogfoodSpecSource            `json:"spec_source,omitempty"`
 	Verdict                string                       `json:"verdict"`
 	PathCheck              PathCheckResult              `json:"path_check"`
 	AuthCheck              AuthCheckResult              `json:"auth_check"`
@@ -217,10 +227,20 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 		o(&cfg)
 	}
 
+	resolvedSpec, specSource, overriddenCaller := resolveDogfoodSpec(dir, specPath)
+	if resolvedSpec != "" {
+		fmt.Fprintf(os.Stderr, "dogfood: using spec %s (%s)\n", absOrSame(resolvedSpec), specSourceLabel(specSource))
+	}
+	if overriddenCaller != "" {
+		fmt.Fprintf(os.Stderr, "dogfood: caller --spec=%s overridden by bundled %s\n", overriddenCaller, absOrSame(resolvedSpec))
+	}
+	specPath = resolvedSpec
+
 	report := &DogfoodReport{
-		Dir:      dir,
-		SpecPath: specPath,
-		Verdict:  "PASS",
+		Dir:        dir,
+		SpecPath:   specPath,
+		SpecSource: specSource,
+		Verdict:    "PASS",
 	}
 
 	var spec *openAPISpec
@@ -759,6 +779,68 @@ func writeDogfoodResults(report *DogfoodReport, dir string) error {
 	return os.WriteFile(filepath.Join(dir, "dogfood-results.json"), data, 0o644)
 }
 
+// resolveDogfoodSpec picks the spec dogfood should actually load. The spec
+// bundled at <dir>/spec.{json,yaml,yml} by `publish package` is authoritative
+// for the printed CLI; preferring it over a caller-passed --spec avoids
+// false-negative Path Validity / Auth Protocol regressions when the caller
+// reaches into a multi-spec manuscripts directory and picks the upstream spec
+// instead of the internal one the CLI was actually generated from.
+//
+// Returns the resolved path, its DogfoodSpecSource, and — when bundled won
+// over a different caller path — the caller's overridden path for surfacing
+// in a warning. When neither a bundled nor a caller spec exists, all three
+// return values are empty and downstream checks that require a spec are
+// skipped exactly as before.
+func resolveDogfoodSpec(dir, callerSpec string) (resolved string, source DogfoodSpecSource, overriddenCaller string) {
+	bundled := findBundledDogfoodSpec(dir)
+	if bundled != "" {
+		if callerSpec != "" && !samePath(bundled, callerSpec) {
+			overriddenCaller = callerSpec
+		}
+		return bundled, DogfoodSpecSourceBundled, overriddenCaller
+	}
+	if callerSpec != "" {
+		return callerSpec, DogfoodSpecSourceCaller, ""
+	}
+	return "", "", ""
+}
+
+// findBundledDogfoodSpec returns the path to the spec archived alongside a
+// printed CLI by `publish package`, or "" if none is present. Search order
+// mirrors findArchivedSpec: spec.json (JSON inputs), spec.yaml, spec.yml.
+func findBundledDogfoodSpec(dir string) string {
+	for _, name := range []string{"spec.json", "spec.yaml", "spec.yml"} {
+		path := filepath.Join(dir, name)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path
+		}
+	}
+	return ""
+}
+
+func samePath(a, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return filepath.Clean(absA) == filepath.Clean(absB)
+}
+
+func absOrSame(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
+}
+
+func specSourceLabel(source DogfoodSpecSource) string {
+	if source == DogfoodSpecSourceBundled {
+		return "bundled"
+	}
+	return "--spec"
+}
+
 func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
 	data, err := openapiparser.LoadSpecBytes(specPath, false, false)
 	if err != nil {
@@ -994,7 +1076,7 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 	}
 
 	if expectedPrefix == "" {
-		result.Detail = "spec not provided or no bot/bearer/basic scheme detected"
+		result.Detail = "no bot/bearer/basic scheme detected"
 		return result
 	}
 

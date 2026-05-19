@@ -137,6 +137,41 @@ func TestAuthLoginEnvVarsUseShellSafePrefix(t *testing.T) {
 	require.NotContains(t, content, `HYPHEN-API_CLIENT_ID`)
 }
 
+func TestAuthHeader_LegacyEnvVarsList_OrSemantics(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("legacy-env-or")
+	apiSpec.Auth = spec.AuthConfig{
+		Type:    "bearer_token",
+		Header:  "Authorization",
+		EnvVars: []string{"FOO_ACCESS_TOKEN", "FOO_API_KEY", "FOO_TOKEN"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "legacy-env-or-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	const testSrc = `package config
+
+import "testing"
+
+func TestAuthHeaderUsesLegacyAliasEnvVar(t *testing.T) {
+	t.Setenv("FOO_ACCESS_TOKEN", "")
+	t.Setenv("FOO_API_KEY", "alias-token")
+	t.Setenv("FOO_TOKEN", "")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.AuthHeader(); got != "Bearer alias-token" {
+		t.Fatalf("AuthHeader() = %q, want %q", got, "Bearer alias-token")
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "config", "auth_header_legacy_envvars_test.go"), []byte(testSrc), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/config", "-run", "TestAuthHeaderUsesLegacyAliasEnvVar")
+}
+
 // TestAuthHeader_EnvVarWinsOverFileToken pins env-first precedence for
 // the non-client_credentials cases — plain bearer_token (PAT-style),
 // cookie, and composed all follow the env > config convention so a

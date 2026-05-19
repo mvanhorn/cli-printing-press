@@ -28,17 +28,32 @@ type Phase5AuthContext struct {
 }
 
 type Phase5GateMarker struct {
-	SchemaVersion int               `json:"schema_version"`
-	APIName       string            `json:"api_name,omitempty"`
-	RunID         string            `json:"run_id,omitempty"`
-	Status        string            `json:"status"`
-	Level         string            `json:"level,omitempty"`
-	MatrixSize    int               `json:"matrix_size,omitempty"`
-	TestsPassed   int               `json:"tests_passed,omitempty"`
-	TestsSkipped  int               `json:"tests_skipped,omitempty"`
-	TestsFailed   int               `json:"tests_failed,omitempty"`
-	AuthContext   Phase5AuthContext `json:"auth_context,omitzero"`
-	SkipReason    string            `json:"skip_reason,omitempty"`
+	SchemaVersion  int                   `json:"schema_version"`
+	APIName        string                `json:"api_name,omitempty"`
+	RunID          string                `json:"run_id,omitempty"`
+	Status         string                `json:"status"`
+	Level          string                `json:"level,omitempty"`
+	MatrixSize     int                   `json:"matrix_size,omitempty"`
+	TestsPassed    int                   `json:"tests_passed,omitempty"`
+	TestsSkipped   int                   `json:"tests_skipped,omitempty"`
+	TestsFailed    int                   `json:"tests_failed,omitempty"`
+	AuthContext    Phase5AuthContext     `json:"auth_context,omitzero"`
+	SkipReason     string                `json:"skip_reason,omitempty"`
+	FailureSummary *Phase5FailureSummary `json:"failure_summary,omitempty"`
+}
+
+// Phase5FailureSummary groups failed tests by category so a human reviewing
+// a status:"fail" marker can route diagnosis without re-reading the full
+// dogfood-results-v2.json. Populated only when the runner writes a marker
+// on FAIL; absent on PASS markers.
+type Phase5FailureSummary struct {
+	TransportError int      `json:"transport_error,omitempty"`
+	HTTP4xx        int      `json:"http_4xx,omitempty"`
+	HTTP5xx        int      `json:"http_5xx,omitempty"`
+	ExitNonzero    int      `json:"exit_nonzero,omitempty"`
+	OutputMismatch int      `json:"output_mismatch,omitempty"`
+	Other          int      `json:"other,omitempty"`
+	Commands       []string `json:"commands,omitempty"`
 }
 
 type Phase5GateValidation struct {

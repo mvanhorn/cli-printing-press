@@ -84,7 +84,11 @@ func TestRunLiveDogfoodWritesAcceptanceMarkerOnPass(t *testing.T) {
 	assert.True(t, validation.Passed, validation.Detail)
 }
 
-func TestRunLiveDogfoodDoesNotWriteAcceptanceMarkerOnFail(t *testing.T) {
+// TestRunLiveDogfoodWritesFailMarkerOnFail covers the inverted contract from
+// issue #1384: --write-acceptance must emit a marker on every outcome, so the
+// Phase 5.6 gate has something to read (pass → promote, fail → hold-path)
+// instead of forcing operators to hand-author the FAIL marker.
+func TestRunLiveDogfoodWritesFailMarkerOnFail(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
 	}
@@ -102,8 +106,92 @@ func TestRunLiveDogfoodDoesNotWriteAcceptanceMarkerOnFail(t *testing.T) {
 	require.Equal(t, "FAIL", report.Verdict, report.Tests)
 	assert.Greater(t, report.Failed, 0)
 
-	_, statErr := os.Stat(markerPath)
-	assert.True(t, os.IsNotExist(statErr), "failed live dogfood must not write an acceptance marker")
+	data, err := os.ReadFile(markerPath)
+	require.NoError(t, err, "failed live dogfood must still write an acceptance marker for Phase 5.6")
+	var marker Phase5GateMarker
+	require.NoError(t, json.Unmarshal(data, &marker))
+	assert.Equal(t, "fail", marker.Status)
+	assert.Equal(t, report.Failed, marker.TestsFailed)
+	require.NotNil(t, marker.FailureSummary, "fail markers must carry a failure_summary block")
+	// The fixture's failing branch produces exit-nonzero results; the
+	// classifier may also bucket some as http_4xx/5xx depending on the
+	// fixture's emitted reason text. Either way, the aggregate failure
+	// count across all buckets must match report.Failed so no failure is
+	// silently dropped.
+	total := marker.FailureSummary.TransportError + marker.FailureSummary.HTTP4xx +
+		marker.FailureSummary.HTTP5xx + marker.FailureSummary.ExitNonzero +
+		marker.FailureSummary.OutputMismatch + marker.FailureSummary.Other
+	assert.Equal(t, report.Failed, total, "failure_summary buckets must account for every failed test")
+	assert.NotEmpty(t, marker.FailureSummary.Commands, "failure_summary must list at least one failing command")
+
+	// The Phase 5 gate must route this marker to the hold path, not pass it.
+	validation := ValidatePhase5Gate(filepath.Dir(markerPath), CLIManifest{APIName: marker.APIName, RunID: marker.RunID, AuthType: "none"})
+	assert.False(t, validation.Passed)
+	assert.Equal(t, "fail", validation.Status)
+}
+
+// TestClassifyLiveDogfoodFailure covers the per-test bucket assignment. The
+// classifier feeds failure_summary triage hints; missing a bucket silently
+// downgrades the operator signal, so each branch needs an explicit fixture.
+// HTTP ordering and the JSON-mismatch fall-through were Greptile findings on
+// the PR introducing this function and are pinned here as regressions.
+func TestClassifyLiveDogfoodFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		in   LiveDogfoodTestResult
+		want string
+	}{
+		{
+			name: "http_4xx from reason",
+			in:   LiveDogfoodTestResult{Reason: "got HTTP 404 from upstream", ExitCode: 1},
+			want: "http_4xx",
+		},
+		{
+			name: "http_5xx from reason",
+			in:   LiveDogfoodTestResult{Reason: "got HTTP 503 from upstream", ExitCode: 1},
+			want: "http_5xx",
+		},
+		{
+			name: "4xx wins when both appear (retry log shadowing case)",
+			in:   LiveDogfoodTestResult{Reason: "retried http 5 times, status http 404", ExitCode: 1},
+			want: "http_4xx",
+		},
+		{
+			name: "transport_error on connection refused",
+			in:   LiveDogfoodTestResult{Reason: "dial tcp: connection refused", ExitCode: 1},
+			want: "transport_error",
+		},
+		{
+			name: "output_mismatch from bare 'invalid JSON' reason",
+			in:   LiveDogfoodTestResult{Reason: "invalid JSON", OutputSample: "<<not json>>", ExitCode: 1},
+			want: "output_mismatch",
+		},
+		{
+			name: "output_mismatch from 'not json' reason without 'output' word",
+			in:   LiveDogfoodTestResult{Reason: "response was not JSON", ExitCode: 1},
+			want: "output_mismatch",
+		},
+		{
+			name: "output_mismatch from output+mismatch conjunction",
+			in:   LiveDogfoodTestResult{Reason: "output mismatch vs schema", ExitCode: 1},
+			want: "output_mismatch",
+		},
+		{
+			name: "exit_nonzero fall-through",
+			in:   LiveDogfoodTestResult{Reason: "unknown failure", ExitCode: 2},
+			want: "exit_nonzero",
+		},
+		{
+			name: "other when nothing matches and exit code is zero",
+			in:   LiveDogfoodTestResult{Reason: "weird thing happened", ExitCode: 0},
+			want: "other",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, classifyLiveDogfoodFailure(tc.in))
+		})
+	}
 }
 
 // TestDogfoodEnvVarMatchesEmittedTemplate guards against the runner-side

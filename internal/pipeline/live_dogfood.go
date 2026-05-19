@@ -160,7 +160,13 @@ func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
 	}
 
 	finalizeLiveDogfoodReport(report)
-	if report.Verdict == "PASS" && opts.WriteAcceptancePath != "" {
+	// The Phase 5.6 acceptance gate's contract is "marker from the runner on
+	// every outcome": pass → promote, fail → hold-path, missing → "Phase 5
+	// was skipped or not recorded." Writing only on PASS forced operators to
+	// hand-author the FAIL marker, which the SKILL also forbids. Write on
+	// every terminal verdict; phase5_gate.go already routes status:"fail"
+	// to the hold path.
+	if opts.WriteAcceptancePath != "" {
 		if err := writeLiveDogfoodAcceptance(opts, report); err != nil {
 			return nil, err
 		}
@@ -1214,11 +1220,18 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 		authType = "none"
 	}
 
+	status := "pass"
+	var failureSummary *Phase5FailureSummary
+	if report.Verdict != "PASS" {
+		status = "fail"
+		failureSummary = summarizeLiveDogfoodFailures(report)
+	}
+
 	marker := Phase5GateMarker{
 		SchemaVersion: 1,
 		APIName:       apiName,
 		RunID:         runID,
-		Status:        "pass",
+		Status:        status,
 		Level:         report.Level,
 		MatrixSize:    report.MatrixSize,
 		TestsPassed:   report.Passed,
@@ -1228,6 +1241,7 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 			Type:            authType,
 			APIKeyAvailable: opts.AuthEnv != "" && os.Getenv(opts.AuthEnv) != "",
 		},
+		FailureSummary: failureSummary,
 	}
 	data, err := json.MarshalIndent(marker, "", "  ")
 	if err != nil {
@@ -1240,6 +1254,83 @@ func writeLiveDogfoodAcceptance(opts LiveDogfoodOptions, report *LiveDogfoodRepo
 		return fmt.Errorf("writing phase5 acceptance marker: %w", err)
 	}
 	return nil
+}
+
+// summarizeLiveDogfoodFailures groups failed test results by category so the
+// fail-marker carries a one-glance triage hint. Categories mirror the
+// retro's suggested buckets: transport-error, http-4xx, http-5xx,
+// exit-nonzero, output-mismatch, other. Commands lists deduplicated command
+// names that contributed at least one failure.
+func summarizeLiveDogfoodFailures(report *LiveDogfoodReport) *Phase5FailureSummary {
+	if report == nil {
+		return nil
+	}
+	summary := &Phase5FailureSummary{}
+	seen := map[string]bool{}
+	for _, t := range report.Tests {
+		if t.Status != LiveDogfoodStatusFail {
+			continue
+		}
+		switch classifyLiveDogfoodFailure(t) {
+		case "transport_error":
+			summary.TransportError++
+		case "http_4xx":
+			summary.HTTP4xx++
+		case "http_5xx":
+			summary.HTTP5xx++
+		case "exit_nonzero":
+			summary.ExitNonzero++
+		case "output_mismatch":
+			summary.OutputMismatch++
+		default:
+			summary.Other++
+		}
+		if t.Command != "" && !seen[t.Command] {
+			seen[t.Command] = true
+			summary.Commands = append(summary.Commands, t.Command)
+		}
+	}
+	if summary.TransportError == 0 && summary.HTTP4xx == 0 && summary.HTTP5xx == 0 &&
+		summary.ExitNonzero == 0 && summary.OutputMismatch == 0 && summary.Other == 0 {
+		return nil
+	}
+	sort.Strings(summary.Commands)
+	return summary
+}
+
+// classifyLiveDogfoodFailure picks the failure bucket for one test result.
+// The reason string and a small slice of the captured output (already
+// truncated to OutputSample) are the only signals; classification is a
+// best-effort hint, not a contract.
+func classifyLiveDogfoodFailure(t LiveDogfoodTestResult) string {
+	hay := strings.ToLower(t.Reason + " " + t.OutputSample)
+	// 4xx is checked before 5xx: a legitimate 5xx response is unlikely to
+	// also mention "http 4", whereas error strings citing 400/401/403/404
+	// frequently start with digit 4 and would otherwise be shadowed if 5xx
+	// were checked first (e.g., a retry-count log like
+	// "retried http 5 times, status http 404").
+	switch {
+	case strings.Contains(hay, "http 4"):
+		return "http_4xx"
+	case strings.Contains(hay, "http 5"):
+		return "http_5xx"
+	case strings.Contains(hay, "connection refused") ||
+		strings.Contains(hay, "no such host") ||
+		strings.Contains(hay, "timeout") ||
+		strings.Contains(hay, "dial tcp"):
+		return "transport_error"
+	// "invalid json" / "not json" match independently so the runner's own
+	// Reason strings (literal "invalid JSON" at the two emit sites) bucket
+	// here even when neither Reason nor OutputSample contains the word
+	// "output". The "output" + "mismatch" conjunction stays as a separate
+	// match for the schema-mismatch flavor of failure.
+	case strings.Contains(hay, "invalid json") || strings.Contains(hay, "not json") ||
+		(strings.Contains(hay, "output") && strings.Contains(hay, "mismatch")):
+		return "output_mismatch"
+	case t.ExitCode != 0:
+		return "exit_nonzero"
+	}
+	return "other"
 }
 
 // resolveLiveDogfoodAcceptanceIdentity finds the marker's api_name, run_id,

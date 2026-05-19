@@ -1,12 +1,12 @@
 {
   "auth_check": {
-    "detail": "spec not provided; auth protocol check skipped",
-    "generated_format": "",
+    "detail": "no bot/bearer/basic scheme detected",
+    "generated_format": "unknown",
     "match": true,
     "spec_scheme": ""
   },
   "browser_session_check": {
-    "detail": "spec not provided; browser-session auth check skipped",
+    "detail": "browser-session auth not required",
     "pass": true,
     "required": false
   },
@@ -67,6 +67,8 @@
     "checked": 0,
     "skipped": true
   },
+  "spec_path": "<ARTIFACT_DIR>/generate-golden-api/printing-press-golden/spec.yaml",
+  "spec_source": "bundled",
   "test_presence": {
     "checked": 0
   },
