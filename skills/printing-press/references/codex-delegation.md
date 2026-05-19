@@ -71,6 +71,9 @@ When `CODEX_MODE` is true, delegate code-writing tasks to Codex CLI. Claude stil
 
 All templates follow this structure. Paste ACTUAL CODE in the CURRENT CODE section — never descriptions of code.
 
+All CONVENTIONS lists apply the empty-collection rule to every list-shaped
+output: initialize empty result slices so JSON output is `[]`, not `null`.
+
 **Store table task:**
 ```
 TASK: Add <entity> table with Upsert and Search methods to the SQLite store.
@@ -127,6 +130,12 @@ Must support: --json, --select, --compact, --limit, --dry-run (for mutations).
 Must have realistic --help examples with domain-specific values.
 
 CONVENTIONS:
+- EMPTY-COLLECTION CONVENTION:
+  When the command's primary output is a list/array/cluster, declare it
+  as `results := make([]T, 0)` (not `var results []T`). Nil-slice marshals
+  to JSON `null`, which breaks `jq '.[]'` agent pipelines; an initialized
+  empty slice marshals to `[]` and lets downstream consumers iterate
+  uniformly across empty and non-empty results.
 - Package: cli
 - Use cobra.Command pattern matching existing commands
 - Error handling: return fmt.Errorf with context
@@ -168,6 +177,12 @@ This command ONLY works because all data is in local SQLite.
 Must support: --json, --select, --compact, --limit.
 
 CONVENTIONS:
+- EMPTY-COLLECTION CONVENTION:
+  When the command's primary output is a list/array/cluster, declare it
+  as `results := make([]T, 0)` (not `var results []T`). Nil-slice marshals
+  to JSON `null`, which breaks `jq '.[]'` agent pipelines; an initialized
+  empty slice marshals to `[]` and lets downstream consumers iterate
+  uniformly across empty and non-empty results.
 - Package: cli
 - Query across tables using db methods, not raw SQL in CLI layer
 - Format output as a table by default, JSON with --json

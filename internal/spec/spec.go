@@ -785,11 +785,11 @@ func (c *AuthConfig) CanonicalEnvVar() *AuthEnvVar {
 	return nil
 }
 
-// NewORCaseEnvVarSpecs builds the EnvVarSpecs slice for the OR-case shape
-// IsAuthEnvVarORCase validates: each entry is per_call, non-required, and
-// sensitive. The runtime tries each in turn and returns the first non-empty
-// value. Distinct from the per_call construction in NormalizeEnvVarSpecs,
-// which defaults to Required=true for the canonical-credential shape.
+// NewORCaseEnvVarSpecs builds the canonical EnvVarSpecs slice for the OR-case
+// shape: each entry is per_call, non-required, and sensitive. The runtime tries
+// each in turn and returns the first non-empty value. Distinct from the per_call
+// construction in NormalizeEnvVarSpecs, which defaults to Required=true for the
+// canonical-credential shape.
 func NewORCaseEnvVarSpecs(names []string) []AuthEnvVar {
 	specs := make([]AuthEnvVar, 0, len(names))
 	for _, name := range names {
@@ -803,20 +803,28 @@ func NewORCaseEnvVarSpecs(names []string) []AuthEnvVar {
 	return specs
 }
 
-// IsAuthEnvVarORCase reports whether all EnvVarSpecs are non-required per_call vars.
-// In this shape, no single var is the canonical credential; the runtime tries each
-// in turn and returns the first non-empty value. Returns false when EnvVarSpecs has
-// fewer than 2 entries, any entry is Required, or any entry is not Kind=per_call.
+// IsAuthEnvVarORCase reports whether the auth config declares multiple request
+// credential aliases. In this shape, no single var is the canonical credential;
+// the runtime tries each in turn and returns the first non-empty value.
+// Recognizes both the canonical form produced by NewORCaseEnvVarSpecs (per_call,
+// non-required) and the legacy x-auth-env-vars form (EnvVars list, or per_call
+// entries with the default Required=true).
 func (c *AuthConfig) IsAuthEnvVarORCase() bool {
-	if c == nil || len(c.EnvVarSpecs) < 2 {
+	if c == nil {
 		return false
 	}
-	for _, ev := range c.EnvVarSpecs {
-		if !ev.IsRequestCredential() || ev.Required {
+	if len(c.EnvVarSpecs) > 0 {
+		if len(c.EnvVarSpecs) < 2 {
 			return false
 		}
+		for _, ev := range c.EnvVarSpecs {
+			if !ev.IsRequestCredential() {
+				return false
+			}
+		}
+		return true
 	}
-	return true
+	return len(c.EnvVars) >= 2
 }
 
 func (c *AuthConfig) NormalizeEnvVarSpecs(context string) {

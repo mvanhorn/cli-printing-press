@@ -1,1 +1,2 @@
+dogfood: using spec <ARTIFACT_DIR>/dogfood-verdict-matrix/fixtures/fail-path-auth-dead/spec.yaml (bundled)
 warning: no servers defined in spec; generated CLI will require base_url in config
