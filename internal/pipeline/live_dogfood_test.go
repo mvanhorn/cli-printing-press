@@ -130,6 +130,70 @@ func TestRunLiveDogfoodWritesFailMarkerOnFail(t *testing.T) {
 	assert.Equal(t, "fail", validation.Status)
 }
 
+// TestClassifyLiveDogfoodFailure covers the per-test bucket assignment. The
+// classifier feeds failure_summary triage hints; missing a bucket silently
+// downgrades the operator signal, so each branch needs an explicit fixture.
+// HTTP ordering and the JSON-mismatch fall-through were Greptile findings on
+// the PR introducing this function and are pinned here as regressions.
+func TestClassifyLiveDogfoodFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		in   LiveDogfoodTestResult
+		want string
+	}{
+		{
+			name: "http_4xx from reason",
+			in:   LiveDogfoodTestResult{Reason: "got HTTP 404 from upstream", ExitCode: 1},
+			want: "http_4xx",
+		},
+		{
+			name: "http_5xx from reason",
+			in:   LiveDogfoodTestResult{Reason: "got HTTP 503 from upstream", ExitCode: 1},
+			want: "http_5xx",
+		},
+		{
+			name: "4xx wins when both appear (retry log shadowing case)",
+			in:   LiveDogfoodTestResult{Reason: "retried http 5 times, status http 404", ExitCode: 1},
+			want: "http_4xx",
+		},
+		{
+			name: "transport_error on connection refused",
+			in:   LiveDogfoodTestResult{Reason: "dial tcp: connection refused", ExitCode: 1},
+			want: "transport_error",
+		},
+		{
+			name: "output_mismatch from bare 'invalid JSON' reason",
+			in:   LiveDogfoodTestResult{Reason: "invalid JSON", OutputSample: "<<not json>>", ExitCode: 1},
+			want: "output_mismatch",
+		},
+		{
+			name: "output_mismatch from 'not json' reason without 'output' word",
+			in:   LiveDogfoodTestResult{Reason: "response was not JSON", ExitCode: 1},
+			want: "output_mismatch",
+		},
+		{
+			name: "output_mismatch from output+mismatch conjunction",
+			in:   LiveDogfoodTestResult{Reason: "output mismatch vs schema", ExitCode: 1},
+			want: "output_mismatch",
+		},
+		{
+			name: "exit_nonzero fall-through",
+			in:   LiveDogfoodTestResult{Reason: "unknown failure", ExitCode: 2},
+			want: "exit_nonzero",
+		},
+		{
+			name: "other when nothing matches and exit code is zero",
+			in:   LiveDogfoodTestResult{Reason: "weird thing happened", ExitCode: 0},
+			want: "other",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, classifyLiveDogfoodFailure(tc.in))
+		})
+	}
+}
+
 // TestDogfoodEnvVarMatchesEmittedTemplate guards against the runner-side
 // const and the emitted-CLI helper drifting apart. They live in
 // separate Go modules so a shared import is impossible; this test reads

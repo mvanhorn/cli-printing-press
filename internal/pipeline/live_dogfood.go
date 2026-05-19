@@ -1304,17 +1304,28 @@ func summarizeLiveDogfoodFailures(report *LiveDogfoodReport) *Phase5FailureSumma
 // best-effort hint, not a contract.
 func classifyLiveDogfoodFailure(t LiveDogfoodTestResult) string {
 	hay := strings.ToLower(t.Reason + " " + t.OutputSample)
+	// 4xx is checked before 5xx: a legitimate 5xx response is unlikely to
+	// also mention "http 4", whereas error strings citing 400/401/403/404
+	// frequently start with digit 4 and would otherwise be shadowed if 5xx
+	// were checked first (e.g., a retry-count log like
+	// "retried http 5 times, status http 404").
 	switch {
-	case strings.Contains(hay, "http 5"):
-		return "http_5xx"
 	case strings.Contains(hay, "http 4"):
 		return "http_4xx"
+	case strings.Contains(hay, "http 5"):
+		return "http_5xx"
 	case strings.Contains(hay, "connection refused") ||
 		strings.Contains(hay, "no such host") ||
 		strings.Contains(hay, "timeout") ||
 		strings.Contains(hay, "dial tcp"):
 		return "transport_error"
-	case strings.Contains(hay, "output") && (strings.Contains(hay, "mismatch") || strings.Contains(hay, "invalid json") || strings.Contains(hay, "not json")):
+	// "invalid json" / "not json" match independently so the runner's own
+	// Reason strings (literal "invalid JSON" at the two emit sites) bucket
+	// here even when neither Reason nor OutputSample contains the word
+	// "output". The "output" + "mismatch" conjunction stays as a separate
+	// match for the schema-mismatch flavor of failure.
+	case strings.Contains(hay, "invalid json") || strings.Contains(hay, "not json") ||
+		(strings.Contains(hay, "output") && strings.Contains(hay, "mismatch")):
 		return "output_mismatch"
 	case t.ExitCode != 0:
 		return "exit_nonzero"
