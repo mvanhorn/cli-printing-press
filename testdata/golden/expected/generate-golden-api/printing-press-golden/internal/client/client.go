@@ -213,6 +213,21 @@ func (c *Client) PostWithHeaders(path string, body any, headers map[string]strin
 func (c *Client) PostWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do("POST", path, params, body, headers)
 }
+
+// PostQueryWithParams is a POST that does not mutate remote state — used
+// by read-only operations that ride a mutating verb on the wire (GraphQL
+// queries, JSON-RPC reads, POST-based search endpoints). The verify-mode
+// short-circuit does not fire for these calls; the request reaches the
+// real transport even under PRINTING_PRESS_VERIFY=1 without LIVE_HTTP=1.
+func (c *Client) PostQueryWithParams(path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.doRead("POST", path, params, body, nil)
+}
+
+// PostQueryWithParamsAndHeaders is the headers-aware counterpart to
+// PostQueryWithParams. See PostQueryWithParams for the verify-mode rationale.
+func (c *Client) PostQueryWithParamsAndHeaders(path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.doRead("POST", path, params, body, headers)
+}
 func (c *Client) PostMultipart(path string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error) {
 	return c.do("POST", path, nil, multipartRequestBody{Fields: fields, FileFields: fileFields}, nil)
 }
@@ -349,9 +364,78 @@ func encodeMultipartBody(body multipartRequestBody) ([]byte, string, error) {
 	return buf.Bytes(), writer.FormDataContentType(), nil
 }
 
+// isMutatingVerb reports whether the HTTP method writes server state.
+// Used by do()'s verify-mode short-circuit to gate dial-out: under
+// PRINTING_PRESS_VERIFY=1 (without LIVE_HTTP=1 opt-in), generated
+// commands must not actually issue mutating requests, even if a
+// handler-level dry-run check was missed.
+func isMutatingVerb(method string) bool {
+	switch method {
+	case "DELETE", "POST", "PUT", "PATCH":
+		return true
+	}
+	return false
+}
+
+// verifyShortCircuitEnvelope returns the synthetic JSON body that
+// stands in for a real mutating response when do() short-circuits in
+// verify mode. The __pp_verify_synthetic__ sentinel is namespace-
+// reserved (no real API uses __pp_*) so downstream consumers
+// (validate-narrative, agent inspections) can key on one obvious field
+// instead of trying to disambiguate common literals like status:"noop".
+// method and path are echoed back as diagnostic prose for human/agent
+// inspection.
+func verifyShortCircuitEnvelope(method, path string) json.RawMessage {
+	body, _ := json.Marshal(map[string]any{
+		"__pp_verify_synthetic__": true,
+		"status":                  "noop",
+		"reason":                  "verify_short_circuit",
+		"method":                  method,
+		"path":                    path,
+	})
+	return json.RawMessage(body)
+}
+
 // do executes an HTTP request. headerOverrides, when non-nil, override global
 // RequiredHeaders for this specific request (used for per-endpoint API versioning).
 func (c *Client) do(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+	return c.doInternal(method, path, params, body, headerOverrides, false)
+}
+
+// doRead is do() minus the verify-mode mutating-verb gate. Used by the
+// PostQuery* family for read-only operations that ride a mutating verb on
+// the wire (GraphQL queries, JSON-RPC reads, POST-based search endpoints).
+// The wire verb is still POST/PUT/PATCH so the server sees a real request,
+// but the verify-mode short-circuit does not fire because the operation
+// does not mutate remote state.
+func (c *Client) doRead(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {
+	return c.doInternal(method, path, params, body, headerOverrides, true)
+}
+
+// doInternal is the shared implementation behind do() and doRead(). The
+// readOnlyIntent flag is set by doRead() callers (read-only POST/PUT/PATCH
+// operations like GraphQL queries) to skip the mutating-verb verify-mode
+// gate. Plain do() callers leave it false and get the usual short-circuit.
+func (c *Client) doInternal(method, path string, params map[string]string, body any, headerOverrides map[string]string, readOnlyIntent bool) (json.RawMessage, int, error) {
+	// Verify-mode transport-layer gate. When the verifier (or any consumer
+	// that sets PRINTING_PRESS_VERIFY=1) drives a mutating verb without
+	// the LIVE_HTTP=1 opt-in, return a synthetic envelope without dialing,
+	// minting auth, or touching the cache. The verify pipeline itself
+	// sets both env vars in mock mode so its httptest server still sees
+	// real requests; every other consumer gets a safe no-op.
+	//
+	// readOnlyIntent suppresses the gate for read-only operations that
+	// happen to ride a mutating verb on the wire (GraphQL queries, JSON-RPC
+	// reads, POST-based search endpoints). The handler-level annotation
+	// `mcp:read-only: true` drives the codegen choice of doRead() vs do().
+	//
+	// Placement note: this fires BEFORE URL building, auth header
+	// minting, and the success-branch invalidateCache() call below — so
+	// no cache invalidation runs (no remote state changed) and no
+	// client_credentials mint happens unnecessarily.
+	if !readOnlyIntent && isMutatingVerb(method) && cliutil.IsVerifyEnv() && !cliutil.IsVerifyLiveHTTPEnv() {
+		return verifyShortCircuitEnvelope(method, path), http.StatusOK, nil
+	}
 	targetURL := c.BaseURL + path
 
 	var bodyBytes []byte

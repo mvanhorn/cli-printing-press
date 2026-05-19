@@ -108,16 +108,6 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 					}
 					return nil
 				}
-				// Apply --compact and --select to the API response before wrapping.
-				// --select wins when both are set: explicit field choice trumps the
-				// generic high-gravity allow-list. Otherwise --compact still applies
-				// when --agent is on but the user did not name fields.
-				filtered := data
-				if flags.selectFields != "" {
-					filtered = filterFields(filtered, flags.selectFields)
-				} else if flags.compact {
-					filtered = compactFields(filtered)
-				}
 				envelope := map[string]any{
 					"action":   "post",
 					"resource": "stores",
@@ -132,6 +122,33 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 					envelope["dry_run"] = true
 					envelope["status"] = 0
 					envelope["success"] = false
+				}
+				// Verify-mode synthetic envelope detection runs against RAW data
+				// (before --compact/--select filtering) so the sentinel field is
+				// guaranteed to be visible even if the operator passes a filter
+				// flag that would otherwise strip it. Surfaces a top-level
+				// verify_noop signal + flips success to false. Mirrors the dry_run
+				// shape above.
+				if len(data) > 0 {
+					var rawParsed any
+					if err := json.Unmarshal(data, &rawParsed); err == nil {
+						if m, ok := rawParsed.(map[string]any); ok {
+							if v, ok := m["__pp_verify_synthetic__"].(bool); ok && v {
+								envelope["verify_noop"] = true
+								envelope["success"] = false
+							}
+						}
+					}
+				}
+				// Apply --compact and --select to the API response before wrapping.
+				// --select wins when both are set: explicit field choice trumps the
+				// generic high-gravity allow-list. Otherwise --compact still applies
+				// when --agent is on but the user did not name fields.
+				filtered := data
+				if flags.selectFields != "" {
+					filtered = filterFields(filtered, flags.selectFields)
+				} else if flags.compact {
+					filtered = compactFields(filtered)
 				}
 				if len(filtered) > 0 {
 					var parsed any
