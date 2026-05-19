@@ -35,7 +35,7 @@
     "state": "runtime_walking"
   },
   "naming_check": {
-    "checked": 34
+    "checked": 36
   },
   "novel_features_check": {
     "found": 0,
@@ -56,7 +56,7 @@
     "sync_resources_present": true
   },
   "print_json_filtered_check": {
-    "checked": 34
+    "checked": 36
   },
   "reimplementation_check": {
     "checked": 0,
@@ -75,8 +75,8 @@
   "verdict": "WARN",
   "wiring_check": {
     "command_tree": {
-      "defined": 43,
-      "registered": 43
+      "defined": 45,
+      "registered": 45
     },
     "config_consistency": {
       "consistent": true

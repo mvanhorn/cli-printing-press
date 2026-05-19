@@ -131,9 +131,17 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 
-{{- if .Endpoint.UsesBinaryResponse}}
-			headerOverrides := map[string]string{"X-Printing-Press-Binary-Response": "true"}
+{{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
+			headerOverrides := map[string]string{
+{{- range .Endpoint.HeaderOverrides}}
+				"{{.Name}}": "{{.Value}}",
 {{- end}}
+{{- if .Endpoint.UsesBinaryResponse}}
+				"X-Printing-Press-Binary-Response": "true",
+{{- end}}
+			}
+{{- end}}
+
 {{- if .Endpoint.Pagination}}
 {{- if .HasStore}}
 			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", path, map[string]string{
@@ -145,7 +153,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				"{{paramWireName .}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, {{if .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
+			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- else}}
 			data, err := paginatedGet(c, path, map[string]string{
 {{- range .Endpoint.Params}}
@@ -156,7 +164,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				"{{paramWireName .}}": fmt.Sprintf("%v", flag{{camel (paramIdent .)}}),
 {{- end}}
 {{- end}}
-			}, {{if .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
+			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- end}}
 {{- else}}
 			params := map[string]string{}
@@ -171,15 +179,15 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- if and .HasStore (eq (upper .Endpoint.Method) "GET")}}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, {{if .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}})
+			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}})
 {{- else if eq $method "GET"}}
-{{- if .Endpoint.UsesBinaryResponse}}
+{{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			data, err := c.GetWithHeaders(path, params, headerOverrides)
 {{- else}}
 			data, err := c.Get(path, params)
 {{- end}}
 {{- else if eq (upper .Endpoint.Method) "DELETE"}}
-{{- if .Endpoint.UsesBinaryResponse}}
+{{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			data, _, err := c.DeleteWithParamsAndHeaders(path, params, headerOverrides)
 {{- else}}
 			data, _, err := c.DeleteWithParams(path, params)
@@ -189,7 +197,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			fields := map[string]string{}
 			fileFields := map[string]string{}
 {{multipartBodyMaps .Endpoint.Body "\t\t\t"}}
-{{- if .Endpoint.UsesBinaryResponse}}
+{{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			data, _, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParamsAndHeaders(path, params, fields, fileFields, headerOverrides)
 {{- else}}
 			data, _, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParams(path, params, fields, fileFields)
@@ -197,7 +205,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- else if $isForm}}
 			fields := url.Values{}
 {{formBodyMaps .Endpoint.Body "\t\t\t"}}
-{{- if .Endpoint.UsesBinaryResponse}}
+{{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			data, _, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParamsAndHeaders(path, params, fields, headerOverrides)
 {{- else}}
 			data, _, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParams(path, params, fields)
@@ -208,7 +216,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			// body-aware cached read helper is filed as #425 for when a
 			// second store-backed POST-search consumer ships.
 			body := map[string]any{}
-{{bodyMapForEndpoint .Endpoint "\t\t\t"}}{{if .Endpoint.UsesBinaryResponse}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}WithParamsAndHeaders(path, params, body, headerOverrides)
+{{bodyMapForEndpoint .Endpoint "\t\t\t"}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}WithParamsAndHeaders(path, params, body, headerOverrides)
 {{else}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}WithParams(path, params, body)
 {{end}}
 {{- end}}
@@ -216,7 +224,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			// HEAD/OPTIONS and unknown verbs fall back to GET so generation
 			// stays compileable. Spec authors who genuinely need these verbs
 			// should add a typed client method and a dedicated template branch.
-{{- if .Endpoint.UsesBinaryResponse}}
+{{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			data, err := c.GetWithHeaders(path, params, headerOverrides)
 {{- else}}
 			data, err := c.Get(path, params)

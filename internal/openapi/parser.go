@@ -1571,7 +1571,9 @@ func applyHeaderOverrides(s *spec.APISpec, perEndpoint map[string]map[string]str
 		for eName, e := range r.Endpoints {
 			overrides := headerOverridesForPath(e.Path, perEndpoint)
 			if len(overrides) > 0 {
-				e.HeaderOverrides = overrides
+				for _, o := range overrides {
+					e.HeaderOverrides = upsertHeaderOverride(e.HeaderOverrides, o.Name, o.Value)
+				}
 				r.Endpoints[eName] = e
 			}
 		}
@@ -1579,7 +1581,9 @@ func applyHeaderOverrides(s *spec.APISpec, perEndpoint map[string]map[string]str
 			for eName, e := range sub.Endpoints {
 				overrides := headerOverridesForPath(e.Path, perEndpoint)
 				if len(overrides) > 0 {
-					e.HeaderOverrides = overrides
+					for _, o := range overrides {
+						e.HeaderOverrides = upsertHeaderOverride(e.HeaderOverrides, o.Name, o.Value)
+					}
 					sub.Endpoints[eName] = e
 				}
 			}
@@ -2208,6 +2212,14 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			}
 			endpoint.Critical = pathCritical
 			endpoint.Walker = readWalkerExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
+
+			// Binary-only success responses (e.g. PDF/octet-stream downloads)
+			// would otherwise receive the default Accept: application/json and
+			// be rejected with HTTP 406. Pin Accept to what the server
+			// produces; rides the existing per-endpoint header-override path.
+			if accept := binaryResponseAcceptType(op); accept != "" {
+				endpoint.HeaderOverrides = upsertHeaderOverride(endpoint.HeaderOverrides, "Accept", accept)
+			}
 
 			targetEndpoints[endpointName] = endpoint
 
@@ -3427,6 +3439,76 @@ func binaryContentType(contentType string) bool {
 	default:
 		return false
 	}
+}
+
+// binaryResponseAcceptType inspects the operation's selected success response.
+// When every declared media type is concrete and binary-enveloped by the
+// generated client, the server answers the client's default Accept:
+// application/json with HTTP 406. It returns the media type the client must
+// send instead (application/octet-stream when the response offers it, otherwise
+// the lexicographically-first concrete type). Returns "" for JSON, wildcard,
+// text, XML, empty, or mixed responses so the existing application/json default
+// and non-binary response path stay untouched — the vast majority of endpoints.
+func binaryResponseAcceptType(op *openapi3.Operation) string {
+	if op == nil || op.Responses == nil {
+		return ""
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil || len(success.Value.Content) == 0 {
+		return ""
+	}
+	concrete := make([]string, 0, len(success.Value.Content))
+	for ct := range success.Value.Content {
+		mt := strings.ToLower(strings.TrimSpace(strings.SplitN(ct, ";", 2)[0]))
+		if !binaryAcceptContentType(mt) {
+			return ""
+		}
+		concrete = append(concrete, mt)
+	}
+	if len(concrete) == 0 {
+		return ""
+	}
+	sort.Strings(concrete)
+	for _, mt := range concrete {
+		if mt == "application/octet-stream" {
+			return mt
+		}
+	}
+	return concrete[0]
+}
+
+func binaryAcceptContentType(mt string) bool {
+	if mt == "" {
+		return false
+	}
+	switch {
+	case mt == "application/json", mt == "text/json", mt == "*/*":
+		return false
+	case strings.HasPrefix(mt, "text/"):
+		return false
+	case strings.HasSuffix(mt, "+json"), strings.HasSuffix(mt, "+xml"):
+		return false
+	case mt == "application/xml", mt == "application/xhtml+xml":
+		return false
+	case mt == "application/javascript", mt == "application/ecmascript",
+		mt == "application/x-www-form-urlencoded", mt == "application/graphql":
+		return false
+	}
+	return true
+}
+
+// upsertHeaderOverride returns headers with name set to value: replacing an
+// existing case-insensitive match in place, or appending a new entry. Keeps a
+// binary-response Accept override stable when a later pass (applyHeaderOverrides)
+// merges per-endpoint configured headers onto the same endpoint.
+func upsertHeaderOverride(headers []spec.RequiredHeader, name, value string) []spec.RequiredHeader {
+	for i := range headers {
+		if strings.EqualFold(headers[i].Name, name) {
+			headers[i].Value = value
+			return headers
+		}
+	}
+	return append(headers, spec.RequiredHeader{Name: name, Value: value})
 }
 
 // readPathItemResourceID reads the `x-resource-id` extension from a path item
