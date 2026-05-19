@@ -70,7 +70,14 @@ type codeOrchEndpoint struct {
 	// threading these through, the code-orchestration execute path
 	// sends the client's default Accept and binary endpoints 406.
 	HeaderOverrides map[string]string
-	keywords        []string
+	// BodyIsArray marks endpoints whose request body schema root is a
+	// bare top-level JSON array. The execute path then sends a top-level
+	// array (the agent supplies it as params["body"]) instead of the
+	// params object; a strict-mapping API rejects an object at the body
+	// root with HTTP 422 "Invalid json" (e.g. Tripletex [BETA] PUT
+	// /supplierInvoice/voucher/{id}/postings, body [{"posting":{...}}]).
+	BodyIsArray bool
+	keywords    []string
 }
 
 // codeOrchEndpoints is the generator-populated registry covering every
@@ -90,6 +97,9 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
 		QueryParams: []string{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{{printf "%q" .WireName}},{{end}}{{end}} },
+{{- if $endpoint.BodyIsArray}}
+		BodyIsArray: true,
+{{- end}}
 {{- if $endpoint.HeaderOverrides}}
 		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}} },
 {{- end}}
@@ -109,6 +119,9 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
 		QueryParams: []string{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{{printf "%q" .WireName}},{{end}}{{end}} },
+{{- if $endpoint.BodyIsArray}}
+		BodyIsArray: true,
+{{- end}}
 {{- if $endpoint.HeaderOverrides}}
 		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}} },
 {{- end}}
@@ -292,7 +305,15 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		// here makes json.Marshal([]byte) emit a base64 JSON string, which
 		// strict JSON APIs reject (e.g. Tripletex HTTP 422 "Request mapping
 		// failed", wrong type at root). See codeOrchWriteBody + its test.
-		body := codeOrchWriteBody(params)
+		// Endpoints whose body schema root is a bare top-level JSON array
+		// (ep.BodyIsArray) need the array itself, not the params object, or
+		// the API 422s "Invalid json" at the root. See codeOrchArrayBody.
+		var body any
+		if ep.BodyIsArray {
+			body = codeOrchArrayBody(params)
+		} else {
+			body = codeOrchWriteBody(params)
+		}
 		switch ep.Method {
 		case "POST":
 			if len(hdrs) > 0 {
@@ -333,6 +354,24 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 // field "", wrong type at root). GET/DELETE carry no body, so this defect
 // stays latent until the first write attempt.
 func codeOrchWriteBody(params map[string]any) any {
+	return params
+}
+
+// codeOrchArrayBody returns the request body for endpoints whose schema root
+// is a bare top-level JSON array (ep.BodyIsArray). Such a body cannot be
+// expressed as the params object, so the agent supplies the array under the
+// conventional params key "body" (these endpoints have no flattened named
+// params, so there is no collision risk). When present and array-shaped it is
+// sent as the top-level array the API expects. Otherwise params is returned
+// unchanged so a malformed call fails loudly at the API (HTTP 422) instead of
+// silently sending the wrong shape or a partial write — financial mutations
+// are never retried with body-variant guesses (broken-convenience guardrail).
+func codeOrchArrayBody(params map[string]any) any {
+	if v, ok := params["body"]; ok {
+		if arr, ok := v.([]any); ok {
+			return arr
+		}
+	}
 	return params
 }
 

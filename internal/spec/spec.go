@@ -1041,7 +1041,17 @@ type Endpoint struct {
 	// the parser cannot describe at field level (currently used only by
 	// the BodyJSONFallback path). The typed body path uses per-Param
 	// Required flags instead; this field is ignored when Body is populated.
-	BodyRequired       bool              `yaml:"body_required,omitempty" json:"body_required,omitempty"`
+	BodyRequired bool `yaml:"body_required,omitempty" json:"body_required,omitempty"`
+	// BodyIsArray signals that the request body schema root is a bare
+	// top-level JSON array (e.g. Tripletex [BETA] PUT
+	// /supplierInvoice/voucher/{id}/postings, body [{"posting":{...}}]).
+	// Such a body has no object properties to flatten to named params, so
+	// the parser leaves Body empty and sets BodyJSONFallback; this flag
+	// additionally tells the MCP orchestration executors to send the body
+	// as a top-level array (params["body"]) instead of the params object,
+	// which a strict-mapping API would otherwise reject (HTTP 422 "Invalid
+	// json"). Set only for JSON-shaped array-root request bodies.
+	BodyIsArray        bool              `yaml:"body_is_array,omitempty" json:"body_is_array,omitempty"`
 	RequestContentType string            `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
 	Response           ResponseDef       `yaml:"response" json:"response"`
 	ResponseFormat     string            `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html

@@ -1838,7 +1838,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			}
 
 			params := mapParameters(pathItem, op)
-			body, requestContentType, bodyJSONFallback, bodyRequired := mapRequestBody(op.RequestBody, method, path)
+			body, requestContentType, bodyJSONFallback, bodyRequired, bodyIsArray := mapRequestBody(op.RequestBody, method, path)
 
 			// Deduplicate body params that collide with query/path params by flag name
 			if len(body) > 0 && len(params) > 0 {
@@ -1864,6 +1864,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				Body:               body,
 				BodyJSONFallback:   bodyJSONFallback,
 				BodyRequired:       bodyRequired,
+				BodyIsArray:        bodyIsArray,
 				RequestContentType: requestContentType,
 			}
 			endpoint.Tier = readTierExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
@@ -2575,15 +2576,31 @@ func mergeParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []*ope
 	return merged
 }
 
-func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string) ([]spec.Param, string, bool, bool) {
+func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string) ([]spec.Param, string, bool, bool, bool) {
 	requestBody := requestBodyValue(requestBodyRef)
 	if requestBody == nil || requestBody.Content == nil {
-		return nil, "", false, false
+		return nil, "", false, false, false
 	}
 
 	requestContentType, media := requestBodyMediaType(requestBody.Content)
 	if media == nil || media.Schema == nil || media.Schema.Value == nil {
-		return nil, "", false, false
+		return nil, "", false, false, false
+	}
+
+	// Bare top-level array request body: no object properties to flatten to
+	// named params. Handled like the oneOf/anyOf fallback (emit the
+	// --body-json string flag for the CLI) AND flagged so the MCP
+	// orchestration executors send a top-level JSON array instead of the
+	// params object. A strict-mapping API rejects an object at the body root
+	// with HTTP 422 "Invalid json" (e.g. Tripletex [BETA] PUT
+	// /supplierInvoice/voucher/{id}/postings, body [{"posting":{...}}]).
+	if media.Schema.Value.Type != nil && media.Schema.Value.Type.Is(openapi3.TypeArray) {
+		if !isJSONContentType(requestContentType) {
+			warnf("skipping request body for %s %q: array-root body and content type %q is not JSON-shaped", strings.ToUpper(method), path, requestContentType)
+			return nil, "", false, false, false
+		}
+		warnf("request body for %s %q is a bare top-level array; emitting --body-json fallback + array-body marker", strings.ToUpper(method), path)
+		return nil, requestContentType, true, requestBody.Required, true
 	}
 
 	properties := map[string]*openapi3.SchemaRef{}
@@ -2596,14 +2613,14 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		// form-urlencoded encodings.
 		if !isJSONContentType(requestContentType) {
 			warnf("skipping request body for %s %q: contains oneOf/anyOf and content type %q is not JSON-shaped", strings.ToUpper(method), path, requestContentType)
-			return nil, "", false, false
+			return nil, "", false, false, false
 		}
 		warnf("request body for %s %q contains oneOf/anyOf; emitting --body-json fallback", strings.ToUpper(method), path)
-		return nil, requestContentType, true, requestBody.Required
+		return nil, requestContentType, true, requestBody.Required, false
 	}
 
 	if len(properties) == 0 {
-		return nil, "", false, false
+		return nil, "", false, false, false
 	}
 
 	names := make([]string, 0, len(properties))
@@ -2654,7 +2671,7 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		body = append(body, param)
 	}
 
-	return body, requestContentType, false, requestBody.Required
+	return body, requestContentType, false, requestBody.Required, false
 }
 
 // isJSONContentType reports whether ct is a JSON-shaped media type:

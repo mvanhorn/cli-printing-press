@@ -169,8 +169,17 @@ func callIntentEndpoint(c *client.Client, ref string, params map[string]any) (an
 		// Pass STRUCTURED params, not pre-marshaled bytes: the client
 		// marshals the body exactly once. Handing it []byte makes
 		// json.Marshal([]byte) emit a base64 JSON string, which strict
-		// JSON APIs reject (HTTP 422, wrong type at root).
-		body := params
+		// JSON APIs reject (HTTP 422, wrong type at root). Array-root
+		// bodies send the agent-supplied params["body"] array instead of
+		// the params object (else the API 422s "Invalid json" at root).
+		var body any = params
+		if ep.bodyIsArray {
+			if v, ok := params["body"]; ok {
+				if arr, ok := v.([]any); ok {
+					body = arr
+				}
+			}
+		}
 		switch ep.method {
 		case "POST":
 			data, _, err = c.Post(path, body)
@@ -207,6 +216,10 @@ type intentEndpointMeta struct {
 {{- if .HasTierRouting}}
 	tier   string
 {{- end}}
+	// bodyIsArray: the request body schema root is a bare top-level JSON
+	// array; send the agent-supplied params["body"] array, not the params
+	// object, or a strict-mapping API 422s "Invalid json" at the root.
+	bodyIsArray bool
 }
 
 // intentEndpoints is the generator-emitted lookup table covering every
@@ -218,7 +231,7 @@ var intentEndpoints = map[string]intentEndpointMeta{
 {{- range .MCP.Intents}}
 {{- range .Steps}}
 {{- $ep := lookupEndpoint $.APISpec .Endpoint}}
-	{{printf "%q" .Endpoint}}: {method: {{printf "%q" (upper $ep.Method)}}, path: {{printf "%q" $ep.EffectivePath}}{{if $.HasTierRouting}}, tier: {{printf "%q" $ep.EffectiveTier}}{{end}}},
+	{{printf "%q" .Endpoint}}: {method: {{printf "%q" (upper $ep.Method)}}, path: {{printf "%q" $ep.EffectivePath}}{{if $.HasTierRouting}}, tier: {{printf "%q" $ep.EffectiveTier}}{{end}}{{if $ep.BodyIsArray}}, bodyIsArray: true{{end}}},
 {{- end}}
 {{- end}}
 }

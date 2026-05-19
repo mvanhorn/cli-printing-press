@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	neturl "net/url"
 	"sort"
 	"strings"
 
@@ -59,12 +60,24 @@ type codeOrchEndpoint struct {
 	Tier       string
 	Summary    string
 	Positional []string
+	// QueryParams carries the wire names of spec-declared in:query
+	// parameters. Write methods (POST/PUT/PATCH) route these to the query
+	// string instead of dumping them into the JSON body. Derived from the
+	// same mcpParamBindings location data the per-endpoint tools use.
+	QueryParams []string
 	// HeaderOverrides carries per-endpoint request headers (e.g. an
 	// Accept override for binary-only response endpoints). Without
 	// threading these through, the code-orchestration execute path
 	// sends the client's default Accept and binary endpoints 406.
 	HeaderOverrides map[string]string
-	keywords        []string
+	// BodyIsArray marks endpoints whose request body schema root is a
+	// bare top-level JSON array. The execute path then sends a top-level
+	// array (the agent supplies it as params["body"]) instead of the
+	// params object; a strict-mapping API rejects an object at the body
+	// root with HTTP 422 "Invalid json" (e.g. Tripletex [BETA] PUT
+	// /supplierInvoice/voucher/{id}/postings, body [{"posting":{...}}]).
+	BodyIsArray bool
+	keywords    []string
 }
 
 // codeOrchEndpoints is the generator-populated registry covering every
@@ -72,12 +85,13 @@ type codeOrchEndpoint struct {
 // via <api>_search, so hierarchy shows up as dotted IDs, not nested maps.
 var codeOrchEndpoints = []codeOrchEndpoint{
 	{
-		ID:         "items.list",
-		Method:     "GET",
-		Path:       "/items",
-		Summary:    "List items",
-		Positional: []string{},
-		keywords:   codeOrchKeywords("items", "list", "List items", "/items"),
+		ID:          "items.list",
+		Method:      "GET",
+		Path:        "/items",
+		Summary:     "List items",
+		Positional:  []string{},
+		QueryParams: []string{},
+		keywords:    codeOrchKeywords("items", "list", "List items", "/items"),
 	},
 }
 
@@ -212,6 +226,19 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		for k, v := range params {
 			query[k] = fmt.Sprintf("%v", v)
 		}
+	} else {
+		// Route spec-declared in:query params to the query string for write
+		// methods too. Without this, a query param (e.g. sendToLedger on
+		// PUT /ledger/voucher/{id}) wrongly lands in the JSON body and the
+		// API silently ignores it or rejects the request. The remaining
+		// params stay in the map for codeOrchWriteBody (the JSON body).
+		if enc := codeOrchSplitQuery(ep.QueryParams, params); enc != "" {
+			sep := "?"
+			if strings.Contains(path, "?") {
+				sep = "&"
+			}
+			path += sep + enc
+		}
 	}
 
 	hdrs := ep.HeaderOverrides
@@ -230,9 +257,19 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 			data, _, err = c.Delete(path)
 		}
 	default:
-		body, mErr := json.Marshal(params)
-		if mErr != nil {
-			return mcplib.NewToolResultError(fmt.Sprintf("marshaling body: %v", mErr)), nil
+		// Hand the client the STRUCTURED params, never pre-marshaled bytes:
+		// client.do() marshals the body value exactly once. Passing []byte
+		// here makes json.Marshal([]byte) emit a base64 JSON string, which
+		// strict JSON APIs reject (e.g. Tripletex HTTP 422 "Request mapping
+		// failed", wrong type at root). See codeOrchWriteBody + its test.
+		// Endpoints whose body schema root is a bare top-level JSON array
+		// (ep.BodyIsArray) need the array itself, not the params object, or
+		// the API 422s "Invalid json" at the root. See codeOrchArrayBody.
+		var body any
+		if ep.BodyIsArray {
+			body = codeOrchArrayBody(params)
+		} else {
+			body = codeOrchWriteBody(params)
 		}
 		switch ep.Method {
 		case "POST":
@@ -261,4 +298,52 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
 	return mcplib.NewToolResultText(string(data)), nil
+}
+
+// codeOrchWriteBody returns the value handed to the client layer as the
+// request body for write methods (POST/PUT/PATCH). It MUST be the structured
+// params map, never pre-marshaled bytes.
+//
+// client.do() marshals the body value exactly once. Handing it []byte makes
+// json.Marshal([]byte) emit a base64-encoded JSON *string*, so the API
+// receives "eyJ...==" where it expects the request object. Strict JSON APIs
+// reject that (e.g. Tripletex HTTP 422 "Request mapping failed", validation
+// field "", wrong type at root). GET/DELETE carry no body, so this defect
+// stays latent until the first write attempt.
+func codeOrchWriteBody(params map[string]any) any {
+	return params
+}
+
+// codeOrchArrayBody returns the request body for endpoints whose schema root
+// is a bare top-level JSON array (ep.BodyIsArray). Such a body cannot be
+// expressed as the params object, so the agent supplies the array under the
+// conventional params key "body" (these endpoints have no flattened named
+// params, so there is no collision risk). When present and array-shaped it is
+// sent as the top-level array the API expects. Otherwise params is returned
+// unchanged so a malformed call fails loudly at the API (HTTP 422) instead of
+// silently sending the wrong shape or a partial write — financial mutations
+// are never retried with body-variant guesses (broken-convenience guardrail).
+func codeOrchArrayBody(params map[string]any) any {
+	if v, ok := params["body"]; ok {
+		if arr, ok := v.([]any); ok {
+			return arr
+		}
+	}
+	return params
+}
+
+// codeOrchSplitQuery removes spec-declared in:query params from params and
+// returns them URL-encoded for appending to the request path. The remaining
+// entries stay in the map for codeOrchWriteBody (the JSON body), so a write
+// method's query parameters never get buried in the body. Mutates params by
+// design (deletes the consumed query keys).
+func codeOrchSplitQuery(queryParams []string, params map[string]any) string {
+	uv := neturl.Values{}
+	for _, q := range queryParams {
+		if v, ok := params[q]; ok {
+			uv.Set(q, fmt.Sprintf("%v", v))
+			delete(params, q)
+		}
+	}
+	return uv.Encode()
 }
