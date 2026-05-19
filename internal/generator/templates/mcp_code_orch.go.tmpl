@@ -270,22 +270,25 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 			data, _, err = c.DeleteWithParams(ctx, path, query)
 		}
 	case "POST":
+		body := codeOrchWriteBody(params)
 		if len(hdrs) > 0 {
-			data, _, err = c.PostWithHeaders(ctx, path, params, hdrs)
+			data, _, err = c.PostWithHeaders(ctx, path, body, hdrs)
 		} else {
-			data, _, err = c.Post(ctx, path, params)
+			data, _, err = c.Post(ctx, path, body)
 		}
 	case "PUT":
+		body := codeOrchWriteBody(params)
 		if len(hdrs) > 0 {
-			data, _, err = c.PutWithHeaders(ctx, path, params, hdrs)
+			data, _, err = c.PutWithHeaders(ctx, path, body, hdrs)
 		} else {
-			data, _, err = c.Put(ctx, path, params)
+			data, _, err = c.Put(ctx, path, body)
 		}
 	case "PATCH":
+		body := codeOrchWriteBody(params)
 		if len(hdrs) > 0 {
-			data, _, err = c.PatchWithHeaders(ctx, path, params, hdrs)
+			data, _, err = c.PatchWithHeaders(ctx, path, body, hdrs)
 		} else {
-			data, _, err = c.Patch(ctx, path, params)
+			data, _, err = c.Patch(ctx, path, body)
 		}
 	default:
 		return mcplib.NewToolResultError(fmt.Sprintf("unsupported method %q", ep.Method)), nil
@@ -294,4 +297,18 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
 	return mcplib.NewToolResultText(string(data)), nil
+}
+
+// codeOrchWriteBody returns the value handed to the client layer as the
+// request body for write methods (POST/PUT/PATCH). It MUST be the structured
+// params map, never pre-marshaled bytes.
+//
+// client.do() marshals the body value exactly once. Handing it []byte makes
+// json.Marshal([]byte) emit a base64-encoded JSON *string*, so the API
+// receives "eyJ...==" where it expects the request object. Strict JSON APIs
+// reject that (e.g. Tripletex HTTP 422 "Request mapping failed", validation
+// field "", wrong type at root). GET/DELETE carry no body, so this defect
+// stays latent until the first write attempt.
+func codeOrchWriteBody(params map[string]any) any {
+	return params
 }
