@@ -46,7 +46,7 @@ func RegisterTools(s *server.MCPServer) {
 {{- range $eName, $endpoint := $resource.Endpoints}}
 	s.AddTool(
 		mcplib.NewTool({{printf "%q" (printf "%s_%s" (snake $name) (snake $eName))}},
-			mcplib.WithDescription({{printf "%q" (composeMCPDesc $.APISpec $resource $endpoint $.MCPPublicCount $.MCPTotalCount)}}),
+			mcplib.WithDescription({{printf "%q" (privacySensitiveMCPDescription (composeMCPDesc $.APISpec $resource $endpoint $.MCPPublicCount $.MCPTotalCount) $endpoint $eName $name $.APISpec.Types)}}),
 {{- range $endpoint.Params}}
 			mcplib.{{mcpBindingFunc .Type}}({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
 {{- end}}
@@ -56,15 +56,12 @@ func RegisterTools(s *server.MCPServer) {
 {{- if $endpoint.BodyJSONFallback}}
 			mcplib.WithString("body_json"{{if $endpoint.BodyRequired}}, mcplib.Required(){{end}}, mcplib.Description("Request body as a JSON object string (this endpoint accepts a polymorphic schema: oneOf/anyOf)")),
 {{- end}}
-{{- if eq (upper $endpoint.Method) "GET"}}
+{{- if endpointIsReadCommand $endpoint $eName}}
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
-{{- else if eq (upper $endpoint.Method) "DELETE"}}
+{{- else if endpointMCPDestructive $endpoint}}
 			mcplib.WithDestructiveHintAnnotation(true),
-			mcplib.WithOpenWorldHintAnnotation(true),
-{{- else if eq (upper $endpoint.Method) "POST"}}
-			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 {{- else}}
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -81,7 +78,7 @@ func RegisterTools(s *server.MCPServer) {
 {{- range $eName, $endpoint := $subResource.Endpoints}}
 	s.AddTool(
 		mcplib.NewTool({{printf "%q" (printf "%s_%s_%s" (snake $name) (snake $subName) (snake $eName))}},
-			mcplib.WithDescription({{printf "%q" (composeMCPSubDesc $.APISpec $resource $subResource $endpoint $.MCPPublicCount $.MCPTotalCount)}}),
+			mcplib.WithDescription({{printf "%q" (privacySensitiveMCPDescription (composeMCPSubDesc $.APISpec $resource $subResource $endpoint $.MCPPublicCount $.MCPTotalCount) $endpoint $eName $subName $.APISpec.Types)}}),
 {{- range $endpoint.Params}}
 			mcplib.{{mcpBindingFunc .Type}}({{printf "%q" (mcpInputName .)}}{{if .Required}}, mcplib.Required(){{end}}, mcplib.Description({{printf "%q" (mcpParamDesc .)}})),
 {{- end}}
@@ -91,15 +88,12 @@ func RegisterTools(s *server.MCPServer) {
 {{- if $endpoint.BodyJSONFallback}}
 			mcplib.WithString("body_json"{{if $endpoint.BodyRequired}}, mcplib.Required(){{end}}, mcplib.Description("Request body as a JSON object string (this endpoint accepts a polymorphic schema: oneOf/anyOf)")),
 {{- end}}
-{{- if eq (upper $endpoint.Method) "GET"}}
+{{- if endpointIsReadCommand $endpoint $eName}}
 			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
-{{- else if eq (upper $endpoint.Method) "DELETE"}}
+{{- else if endpointMCPDestructive $endpoint}}
 			mcplib.WithDestructiveHintAnnotation(true),
-			mcplib.WithOpenWorldHintAnnotation(true),
-{{- else if eq (upper $endpoint.Method) "POST"}}
-			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 {{- else}}
 			mcplib.WithOpenWorldHintAnnotation(true),

@@ -4,8 +4,10 @@
 package cobratree
 
 import (
+	"fmt"
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"os"
 	"github.com/spf13/cobra"
 )
 
@@ -35,11 +37,27 @@ func RegisterAll(s *server.MCPServer, root *cobra.Command, cliPath func() (strin
 		if commandTakesArgs(cmd) {
 			options = append(options, mcplib.WithString("args", mcplib.Description("Additional positional arguments or raw CLI flags to append to the command.")))
 		}
-		if isMCPReadOnly(cmd) {
-			options = append(options, mcplib.WithReadOnlyHintAnnotation(true), mcplib.WithDestructiveHintAnnotation(false))
-		}
+		options = append(options, safetyToolOptions(cmd, path)...)
 		s.AddTool(mcplib.NewTool(toolName, options...), shellOutToCLI(cliPath, path))
 	})
+}
+
+func safetyToolOptions(cmd *cobra.Command, path []string) []mcplib.ToolOption {
+	if isMCPReadOnly(cmd) {
+		return []mcplib.ToolOption{mcplib.WithReadOnlyHintAnnotation(true), mcplib.WithDestructiveHintAnnotation(false)}
+	}
+	if isMCPDestructive(cmd) {
+		return []mcplib.ToolOption{mcplib.WithDestructiveHintAnnotation(true), mcplib.WithOpenWorldHintAnnotation(true)}
+	}
+	switch method(cmd) {
+	case "GET", "HEAD", "OPTIONS":
+		return []mcplib.ToolOption{mcplib.WithReadOnlyHintAnnotation(true), mcplib.WithDestructiveHintAnnotation(false), mcplib.WithOpenWorldHintAnnotation(true)}
+	case "DELETE":
+		return []mcplib.ToolOption{mcplib.WithDestructiveHintAnnotation(true), mcplib.WithOpenWorldHintAnnotation(true)}
+	case "POST", "PUT", "PATCH":
+		fmt.Fprintf(os.Stderr, "warning: command %s is an unannotated mutation; agents will not see destructive signal - annotate explicitly\n", commandPath(path))
+	}
+	return nil
 }
 
 func walk(cmd *cobra.Command, path []string, visit func(*cobra.Command, []string)) {
@@ -56,11 +74,26 @@ func walk(cmd *cobra.Command, path []string, visit func(*cobra.Command, []string
 }
 
 func descriptionFor(cmd *cobra.Command) string {
+	prefix := ""
+	if isMCPPrivacySensitive(cmd) {
+		prefix = "Privacy-sensitive: may expose PII or financial data. "
+	}
 	if cmd.Long != "" {
-		return cmd.Long
+		return prefix + cmd.Long
 	}
 	if cmd.Short != "" {
-		return cmd.Short
+		return prefix + cmd.Short
 	}
-	return "Run `" + cmd.CommandPath() + "` through the companion CLI binary."
+	return prefix + "Run `" + cmd.CommandPath() + "` through the companion CLI binary."
+}
+
+func commandPath(path []string) string {
+	if len(path) == 0 {
+		return "<root>"
+	}
+	out := path[0]
+	for _, part := range path[1:] {
+		out += " " + part
+	}
+	return out
 }

@@ -288,6 +288,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		},
 		"effectiveEndpointPath":    effectiveEndpointPath,
 		"effectiveSubEndpointPath": effectiveSubEndpointPath,
+		"endpointIsReadCommand":    endpointIsReadCommand,
 		"enumLiteral": func(values []string) string {
 			// Render a string slice as a Go []string literal for template embedding.
 			// Example: ["asc","desc"] → `"asc", "desc"`. Returns empty string when
@@ -309,27 +310,30 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return " (one of: " + strings.Join(values, ", ") + ")"
 		},
-		"jsonStringParam":       isJSONStringParam,
-		"jsonEnumSuggestion":    jsonEnumSuggestion,
-		"bodyMap":               bodyMap,
-		"bodyMapForEndpoint":    bodyMapForEndpoint,
-		"bodyVarDecls":          bodyVarDecls,
-		"bodyFlagRegs":          bodyFlagRegs,
-		"bodyRequiredChecks":    bodyRequiredChecks,
-		"bodyExceedsFlagDepth":  bodyExceedsFlagDepth,
-		"multipartBodyMaps":     multipartBodyMaps,
-		"endpointUsesMultipart": endpointUsesMultipart,
-		"endpointHasQueryFlags": endpointHasQueryFlags,
-		"hasMultipartRequest":   hasMultipartRequest,
-		"formBodyMaps":          formBodyMaps,
-		"endpointUsesForm":      endpointUsesForm,
-		"hasFormRequest":        hasFormRequest,
-		"hasBodyJSONFallback":   hasBodyJSONFallback,
-		"publicFlagName":        publicFlagName,
-		"publicFlagAliases":     publicFlagAliases,
-		"flagChangedExpr":       flagChangedExpr,
-		"mcpInputName":          mcpInputName,
-		"mcpParamBindings":      mcpParamBindings,
+		"jsonStringParam":                isJSONStringParam,
+		"jsonEnumSuggestion":             jsonEnumSuggestion,
+		"bodyMap":                        bodyMap,
+		"bodyMapForEndpoint":             bodyMapForEndpoint,
+		"bodyVarDecls":                   bodyVarDecls,
+		"bodyFlagRegs":                   bodyFlagRegs,
+		"bodyRequiredChecks":             bodyRequiredChecks,
+		"bodyExceedsFlagDepth":           bodyExceedsFlagDepth,
+		"multipartBodyMaps":              multipartBodyMaps,
+		"endpointUsesMultipart":          endpointUsesMultipart,
+		"endpointHasQueryFlags":          endpointHasQueryFlags,
+		"hasMultipartRequest":            hasMultipartRequest,
+		"formBodyMaps":                   formBodyMaps,
+		"endpointUsesForm":               endpointUsesForm,
+		"hasFormRequest":                 hasFormRequest,
+		"hasBodyJSONFallback":            hasBodyJSONFallback,
+		"publicFlagName":                 publicFlagName,
+		"publicFlagAliases":              publicFlagAliases,
+		"flagChangedExpr":                flagChangedExpr,
+		"mcpInputName":                   mcpInputName,
+		"mcpParamBindings":               mcpParamBindings,
+		"endpointMCPDestructive":         endpointMCPDestructive,
+		"endpointPrivacySensitive":       endpointPrivacySensitive,
+		"privacySensitiveMCPDescription": privacySensitiveMCPDescription,
 		// endpointNeedsClientLimit reports whether a list endpoint needs
 		// client-side truncation. True when the endpoint has a `limit`-named
 		// param AND no Pagination block — the spec author asked for a
@@ -1150,6 +1154,83 @@ func endpointIsReadCommand(endpoint spec.Endpoint, opName string) bool {
 	return !endpointIsWriteCommand(endpoint, opName)
 }
 
+func endpointMCPDestructive(endpoint spec.Endpoint) bool {
+	if endpointMetaTrue(endpoint, "mcp:destructive") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(endpoint.Method), "DELETE")
+}
+
+func endpointMetaTrue(endpoint spec.Endpoint, key string) bool {
+	if endpoint.Meta == nil {
+		return false
+	}
+	v := strings.ToLower(strings.TrimSpace(endpoint.Meta[key]))
+	return v == "true" || v == "1" || v == "yes"
+}
+
+func endpointPrivacySensitive(endpoint spec.Endpoint, endpointName, resourceName string, types map[string]spec.TypeDef) bool {
+	method := strings.ToUpper(strings.TrimSpace(endpoint.Method))
+	if method != "GET" && method != "HEAD" && method != "OPTIONS" {
+		return false
+	}
+
+	var parts []string
+	parts = append(parts, endpointName, resourceName, endpoint.Path, endpoint.Description, endpoint.ResponsePath, endpoint.Response.Type, endpoint.Response.Item)
+	for _, p := range endpoint.Params {
+		parts = append(parts, p.Name, p.Description, p.Format)
+	}
+	seen := map[string]bool{}
+	appendTypeFields(&parts, types, endpoint.Response.Type, seen)
+	appendTypeFields(&parts, types, endpoint.Response.Item, seen)
+
+	text := strings.ToLower(strings.Join(parts, " "))
+	if containsAny(text, []string{
+		"attachment", "attachments", "mail body", "email body", "message body",
+		"raw email", "raw message", "mime", "financial", "finance", "commission",
+		"payment", "payments", "bank", "routing", "account number", "ssn",
+		"tax", "income", "salary", "loan", "mortgage", "escrow", "earnest",
+		"wire", "price", "amount", "balance",
+	}) {
+		return true
+	}
+	return false
+}
+
+func privacySensitiveMCPDescription(desc string, endpoint spec.Endpoint, endpointName, resourceName string, types map[string]spec.TypeDef) string {
+	if !endpointPrivacySensitive(endpoint, endpointName, resourceName, types) {
+		return desc
+	}
+	return "Privacy-sensitive: may expose PII or financial data. " + desc
+}
+
+func appendTypeFields(parts *[]string, types map[string]spec.TypeDef, typeName string, seen map[string]bool) {
+	typeName = strings.TrimSpace(typeName)
+	if typeName == "" || seen[typeName] {
+		return
+	}
+	seen[typeName] = true
+	td, ok := types[typeName]
+	if !ok {
+		return
+	}
+	for _, field := range td.Fields {
+		*parts = append(*parts, field.Name, field.Type, field.Format)
+		if field.Type != typeName {
+			appendTypeFields(parts, types, field.Type, seen)
+		}
+	}
+}
+
+func containsAny(value string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(value, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 // camelCaseTokens splits "getOrCreate" → ["get", "Or", "Create"] and
 // "searchAll" → ["search", "All"]. Non-letter runes (digits, separators)
 // stay attached to the preceding token.
@@ -1648,6 +1729,7 @@ func (g *Generator) renderOptionalSupportFiles() error {
 
 func (g *Generator) Generate() error {
 	warnUnenrichedLargeMCPSurface(g.Spec, os.Stderr)
+	warnUnannotatedMutations(g.Spec, os.Stderr)
 	if g.Spec.OwnerName == "" {
 		// OwnerName flows into Hermes `author:` and other prose
 		// surfaces. We don't hard-fail on an empty value because the

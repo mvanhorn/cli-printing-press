@@ -27,7 +27,6 @@ func RegisterTools(s *server.MCPServer) {
 		mcplib.NewTool("stores_create",
 			mcplib.WithDescription("Create a store record. Required: store-code. Returns the new Store."),
 			mcplib.WithString("store-code", mcplib.Required(), mcplib.Description("Store code")),
-			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("POST", "/stores", false, []mcpParamBinding{{PublicName: "store-code", WireName: "store_code", Location: "body"}}, []string{}),

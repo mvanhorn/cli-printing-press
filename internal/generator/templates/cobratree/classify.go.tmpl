@@ -10,8 +10,11 @@ import (
 )
 
 const (
-	EndpointAnnotation = "pp:endpoint"
-	HiddenAnnotation   = "mcp:hidden"
+	EndpointAnnotation          = "pp:endpoint"
+	MethodAnnotation            = "pp:method"
+	HiddenAnnotation            = "mcp:hidden"
+	DestructiveAnnotation       = "mcp:destructive"
+	PrivacySensitiveAnnotation  = "mcp:privacy-sensitive"
 	// ReadOnlyAnnotation, when set on a Cobra command to "true"/"1"/"yes",
 	// causes the runtime walker to register the resulting MCP tool with
 	// readOnlyHint=true. Use for novel CLI commands that don't mutate
@@ -96,6 +99,21 @@ func isMCPHidden(cmd *cobra.Command) bool {
 
 func isMCPReadOnly(cmd *cobra.Command) bool {
 	return annotationIsTrue(cmd, ReadOnlyAnnotation)
+}
+
+func isMCPDestructive(cmd *cobra.Command) bool {
+	return annotationIsTrue(cmd, DestructiveAnnotation)
+}
+
+func isMCPPrivacySensitive(cmd *cobra.Command) bool {
+	return annotationIsTrue(cmd, PrivacySensitiveAnnotation)
+}
+
+func method(cmd *cobra.Command) string {
+	if cmd == nil || cmd.Annotations == nil {
+		return ""
+	}
+	return strings.ToUpper(strings.TrimSpace(cmd.Annotations[MethodAnnotation]))
 }
 
 func annotationIsTrue(cmd *cobra.Command, key string) bool {

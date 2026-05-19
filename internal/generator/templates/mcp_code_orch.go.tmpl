@@ -34,6 +34,8 @@ func RegisterCodeOrchestrationTools(s *server.MCPServer) {
 			mcplib.WithDescription("Search the {{.Name}} API for endpoints matching a natural-language query. Returns a ranked list of {endpoint_id, method, path, summary} entries. Call this first to find the endpoint to execute."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Natural-language description of what you want to do.")),
 			mcplib.WithNumber("limit", mcplib.Description("Max endpoints to return (default 10).")),
+			mcplib.WithReadOnlyHintAnnotation(true),
+			mcplib.WithDestructiveHintAnnotation(false),
 		),
 		handleCodeOrchSearch,
 	)
@@ -43,6 +45,8 @@ func RegisterCodeOrchestrationTools(s *server.MCPServer) {
 			mcplib.WithDescription("Execute one {{.Name}} API endpoint by its endpoint_id (from {{snake .Name}}_search). Params are passed as a JSON object; path placeholders and query strings are resolved automatically."),
 			mcplib.WithString("endpoint_id", mcplib.Required(), mcplib.Description("Endpoint identifier returned by {{snake .Name}}_search (e.g., \"users.list\").")),
 			mcplib.WithObject("params", mcplib.Description("Parameters for the endpoint. Path placeholders match by name; remaining entries become query string on GET/DELETE or JSON body on POST/PUT/PATCH.")),
+			mcplib.WithDestructiveHintAnnotation(true),
+			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		handleCodeOrchExecute,
 	)

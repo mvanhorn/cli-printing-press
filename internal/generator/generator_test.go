@@ -633,6 +633,105 @@ func findAgentContextCommand(root any, match func(map[string]any) bool) map[stri
 	return nil
 }
 
+func TestGenerateMCPPrivacySensitiveAnnotationsAndDescriptions(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:        "privacy-fixture",
+		Description: "Privacy fixture",
+		BaseURL:     "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"Messages": {
+				Endpoints: map[string]spec.Endpoint{
+					"Get": {
+						Method:      "GET",
+						Path:        "/messages/{id}",
+						Description: "Read a message body.",
+						Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+						Response:    spec.ResponseDef{Type: "Message"},
+					},
+				},
+			},
+			"Contacts": {
+				Endpoints: map[string]spec.Endpoint{
+					"List": {
+						Method:      "GET",
+						Path:        "/contacts",
+						Description: "List contacts.",
+						Response:    spec.ResponseDef{Type: "array", Item: "Contact"},
+					},
+				},
+			},
+			"People": {
+				Endpoints: map[string]spec.Endpoint{
+					"Delete": {
+						Method: "DELETE",
+						Path:   "/people/{id}",
+						Params: []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"Message": {Fields: []spec.TypeField{{Name: "body", Type: "string"}}},
+			"Contact": {Fields: []spec.TypeField{{Name: "name", Type: "string"}}},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	messageFiles, err := filepath.Glob(filepath.Join(outputDir, "internal", "cli", "*message*.go"))
+	require.NoError(t, err)
+	require.NotEmpty(t, messageFiles)
+	messagesSrc, err := os.ReadFile(messageFiles[0])
+	require.NoError(t, err)
+	assert.Contains(t, string(messagesSrc), `"mcp:privacy-sensitive": "true"`)
+
+	contactFiles, err := filepath.Glob(filepath.Join(outputDir, "internal", "cli", "*contact*.go"))
+	require.NoError(t, err)
+	require.NotEmpty(t, contactFiles)
+	contactsSrc, err := os.ReadFile(contactFiles[0])
+	require.NoError(t, err)
+	assert.NotContains(t, string(contactsSrc), "mcp:privacy-sensitive")
+
+	peopleFiles, err := filepath.Glob(filepath.Join(outputDir, "internal", "cli", "*people*.go"))
+	require.NoError(t, err)
+	require.NotEmpty(t, peopleFiles)
+	peopleSrc, err := os.ReadFile(peopleFiles[0])
+	require.NoError(t, err)
+	assert.Contains(t, string(peopleSrc), `"mcp:destructive": "true"`)
+
+	toolsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(toolsSrc), "Privacy-sensitive: may expose PII or financial data. Read a message body.")
+	assert.Contains(t, string(toolsSrc), "mcplib.WithDestructiveHintAnnotation(true)")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGenerateCobratreeMethodSafetyDefaults(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	walkerSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "walker.go"))
+	require.NoError(t, err)
+	body := string(walkerSrc)
+
+	assert.Contains(t, body, `case "GET", "HEAD", "OPTIONS":`)
+	assert.Contains(t, body, `case "DELETE":`)
+	assert.Contains(t, body, `case "POST", "PUT", "PATCH":`)
+	assert.Contains(t, body, `is an unannotated mutation; agents will not see destructive signal - annotate explicitly`)
+}
+
 func TestGenerateOAuth2AuthTemplateConditionally(t *testing.T) {
 	t.Parallel()
 
@@ -10436,6 +10535,9 @@ func TestGenerateMCPCodeOrchestrationEmitsSearchExecute(t *testing.T) {
 		`func RegisterCodeOrchestrationTools(`,
 		`mcplib.NewTool("loops_search"`,
 		`mcplib.NewTool("loops_execute"`,
+		`mcplib.WithReadOnlyHintAnnotation(true)`,
+		`mcplib.WithDestructiveHintAnnotation(false)`,
+		`mcplib.WithDestructiveHintAnnotation(true)`,
 		`codeOrchEndpoints = []codeOrchEndpoint`,
 		`func handleCodeOrchSearch(`,
 		`func handleCodeOrchExecute(`,

@@ -96,6 +96,35 @@ func TestWarnUnenrichedLargeMCPSurface(t *testing.T) {
 	}
 }
 
+func TestWarnUnannotatedMutations(t *testing.T) {
+	parsed := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"people": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {Method: "POST", Path: "/people", Body: []spec.Param{{Name: "name", Type: "string"}}},
+					"search": {Method: "POST", Path: "/people/search", Body: []spec.Param{{Name: "query", Type: "string"}}},
+					"delete": {Method: "DELETE", Path: "/people/{id}"},
+					"force":  {Method: "POST", Path: "/people/force", Meta: map[string]string{"mcp:destructive": "true"}},
+					"list":   {Method: "GET", Path: "/people"},
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	warnUnannotatedMutations(parsed, &buf)
+	got := buf.String()
+
+	if !strings.Contains(got, "warning: command people.create is an unannotated mutation") {
+		t.Fatalf("missing create warning:\n%s", got)
+	}
+	for _, unexpected := range []string{"people.search", "people.delete", "people.force", "people.list"} {
+		if strings.Contains(got, unexpected) {
+			t.Fatalf("unexpected warning for %s:\n%s", unexpected, got)
+		}
+	}
+}
+
 func buildSpecWithEndpoints(n int, mcp spec.MCPConfig) *spec.APISpec {
 	endpoints := make(map[string]spec.Endpoint, n)
 	for i := range n {

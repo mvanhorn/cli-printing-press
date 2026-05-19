@@ -1,2 +1,5 @@
+warning: command projects.create is an unannotated mutation; agents will not see destructive signal - annotate explicitly
+warning: command projects.avatar.upload-project is an unannotated mutation; agents will not see destructive signal - annotate explicitly
+warning: command projects.tasks.update-project is an unannotated mutation; agents will not see destructive signal - annotate explicitly
 warning: could not derive run_id from --research-dir; phase5 dogfood acceptance will refuse to write without it
 Generated printing-press-golden at <ARTIFACT_DIR>/generate-golden-api/printing-press-golden

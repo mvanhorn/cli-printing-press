@@ -40,7 +40,6 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("name", mcplib.Required(), mcplib.Description("Name")),
 			mcplib.WithString("owner_email", mcplib.Description("Owner email")),
 			mcplib.WithString("visibility", mcplib.Required(), mcplib.Description("Visibility")),
-			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
 		makeAPIHandler("POST", "/projects", false, []mcpParamBinding{{PublicName: "name", WireName: "name", Location: "body"}, {PublicName: "owner_email", WireName: "owner_email", Location: "body"}, {PublicName: "visibility", WireName: "visibility", Location: "body"}}, []string{}),
