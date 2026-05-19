@@ -112,23 +112,25 @@ hand-off prompt notes that this is a degraded reprint.
 
 ### Patches discovery
 
-Always re-fetch the public patches file. Amends may have landed against
-the public copy without triggering a regen, so the local file can lag
-even when `run_id` matches.
+Refresh the local patches file from public when reachable, then read
+locally so downstream references are durable. Amends may have landed
+against the public copy without triggering a regen, so the local file
+can lag even when `run_id` matches; this step closes that gap. The fetch
+writes to a temp file and atomically renames on success, so a partial
+transfer never replaces a good local copy.
 
 ```bash
-PUBLIC_PATCHES=""
+PATCHES_SOURCE="$LIB_TARGET/.printing-press-patches.json"
 if [[ -n "$LIB_PATH" ]]; then
-  PUBLIC_PATCHES=$(mktemp)
-  if ! gh api -H "Accept: application/vnd.github.v3.raw" \
+  PATCHES_TMP=$(mktemp)
+  if gh api -H "Accept: application/vnd.github.v3.raw" \
        "repos/mvanhorn/printing-press-library/contents/$LIB_PATH/.printing-press-patches.json" \
-       > "$PUBLIC_PATCHES" 2>/dev/null; then
-    rm -f "$PUBLIC_PATCHES"
-    PUBLIC_PATCHES=""
+       > "$PATCHES_TMP" 2>/dev/null; then
+    mv "$PATCHES_TMP" "$PATCHES_SOURCE"
+  else
+    rm -f "$PATCHES_TMP"
   fi
 fi
-
-PATCHES_SOURCE="${PUBLIC_PATCHES:-$LIB_TARGET/.printing-press-patches.json}"
 PATCH_COUNT=$(jq '.patches | length' "$PATCHES_SOURCE" 2>/dev/null || echo 0)
 ```
 
