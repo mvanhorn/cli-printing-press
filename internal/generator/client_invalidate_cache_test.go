@@ -14,12 +14,18 @@ import (
 
 // TestGenerateEmitsInvalidateCacheSymmetry guards #603's two-prong fix:
 // the generated client.go must contain BOTH the invalidateCache method
-// definition AND a c.invalidateCache() call inside do()'s body.
-// Method-presence alone is not enough — a future refactor that drops
-// the call but keeps the method would silently re-introduce the
-// stale-list-after-mutation bug. See
+// definition AND a c.invalidateCache() call inside the do-family
+// implementation's body. Method-presence alone is not enough — a future
+// refactor that drops the call but keeps the method would silently
+// re-introduce the stale-list-after-mutation bug. See
 // docs/solutions/design-patterns/http-client-cache-invalidate-on-mutation-2026-05-05.md
 // for full rationale.
+//
+// After the verify-mode read-only-POST work, do() is a thin wrapper
+// around doInternal(...readOnlyIntent bool), so the cache-invalidation
+// call lives in doInternal(). The assertion follows the single
+// implementation site: a call site OUTSIDE doInternal() would not
+// protect against the stale-list-after-mutation regression.
 func TestGenerateEmitsInvalidateCacheSymmetry(t *testing.T) {
 	t.Parallel()
 
@@ -38,22 +44,29 @@ func TestGenerateEmitsInvalidateCacheSymmetry(t *testing.T) {
 	assert.Contains(t, clientGo, "func (c *Client) invalidateCache()",
 		"client.go must define invalidateCache method (R1)")
 
-	// Prong 2: do() must call invalidateCache. Locate do() and verify the
-	// call is in its body — not just anywhere in the file. The do
-	// function spans from its declaration to the next package-level
-	// `func ` or end of file. A call site OUTSIDE do() would not protect
-	// against the stale-list-after-mutation regression.
-	doStart := strings.Index(clientGo, "func (c *Client) do(")
-	require.NotEqual(t, -1, doStart, "client.go must contain Client.do function")
-	doRest := clientGo[doStart:]
-	// Find the next top-level func declaration to bound do()'s body.
-	nextFunc := strings.Index(doRest[1:], "\nfunc ")
-	doBody := doRest
+	// Prong 2: doInternal() must call invalidateCache. Bound the search
+	// to doInternal()'s body so a call site emitted at file scope (or in
+	// an unrelated helper) does not pass. doInternal() spans from its
+	// declaration to the next package-level `func ` or end of file.
+	implStart := strings.Index(clientGo, "func (c *Client) doInternal(")
+	require.NotEqual(t, -1, implStart, "client.go must contain Client.doInternal function")
+	implRest := clientGo[implStart:]
+	nextFunc := strings.Index(implRest[1:], "\nfunc ")
+	implBody := implRest
 	if nextFunc != -1 {
-		doBody = doRest[:nextFunc+1]
+		implBody = implRest[:nextFunc+1]
 	}
-	assert.Contains(t, doBody, "c.invalidateCache()",
-		"Client.do must call c.invalidateCache() in its success branch (R2)")
+	assert.Contains(t, implBody, "c.invalidateCache()",
+		"Client.doInternal must call c.invalidateCache() in its success branch (R2)")
+
+	// do() and doRead() must remain thin wrappers around doInternal so
+	// the cache-invalidation call site stays single. A future edit that
+	// inlines do()'s implementation back into do() would silently move
+	// the call out of doInternal — pin the wrapper shape here too.
+	assert.Contains(t, clientGo, "func (c *Client) do(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(method, path, params, body, headerOverrides, false)\n}",
+		"Client.do must be a thin wrapper delegating to doInternal(..., false)")
+	assert.Contains(t, clientGo, "func (c *Client) doRead(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(method, path, params, body, headerOverrides, true)\n}",
+		"Client.doRead must be a thin wrapper delegating to doInternal(..., true)")
 
 	// Prong 3: writeCache must still be present (asymmetry diagnostic
 	// from the design-pattern doc — writeCache without invalidateCache
