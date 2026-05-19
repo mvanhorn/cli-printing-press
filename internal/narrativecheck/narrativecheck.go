@@ -304,7 +304,12 @@ func classifyFullExample(ctx context.Context, binaryPath, command string, helpOu
 	}
 
 	cmd := exec.CommandContext(ctx, binaryPath, args...)
-	cmd.Env = append(os.Environ(), "PRINTING_PRESS_VERIFY=1")
+	// Mirror the verify pipeline's mock-mode contract: VERIFY=1 lets
+	// generated commands short-circuit visible side effects, and
+	// VERIFY_LIVE_HTTP=1 opts back in to the real wire path so the
+	// transport-layer mutating-verb gate doesn't collapse narrative
+	// full-example assertions to a synthetic envelope.
+	cmd.Env = append(os.Environ(), "PRINTING_PRESS_VERIFY=1", "PRINTING_PRESS_VERIFY_LIVE_HTTP=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		r.Status = StatusExampleFailed
