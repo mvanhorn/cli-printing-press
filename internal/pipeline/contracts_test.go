@@ -156,8 +156,16 @@ func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
 
 	assert.Contains(t, skill, "Do not\nedit `registry.json`, README catalog cells, or `cli-skills/pp-<api-slug>/SKILL.md`")
-	assert.Contains(t, skill, "Guard against hand-edits to cli-skills mirror")
-	assert.Contains(t, skill, "Do NOT regenerate or commit `cli-skills/pp-<api-slug>/SKILL.md` here")
+	// Post mvanhorn/printing-press-library#659, the library's verify
+	// workflow replaced the Guard + auto-fix + fork-only drift trio
+	// with a single `Fail on changes to generated artifacts` check.
+	// The publish skill must reference the current gate name so an
+	// agent reading it knows what failure to expect, and must still
+	// tell the agent not to regenerate or commit either generated
+	// file (cli-skills/pp-*/SKILL.md or registry.json) — the library
+	// no longer has an in-PR auto-fix path for either.
+	assert.Contains(t, skill, "Fail on changes to generated artifacts")
+	assert.Contains(t, skill, "Do NOT regenerate or commit `cli-skills/pp-<api-slug>/SKILL.md` or")
 	assert.Contains(t, skill, "git add library/\ngit commit")
 	assert.NotContains(t, skill, "git add library/ cli-skills/")
 	assert.NotContains(t, skill, "git add library/ cli-skills/ registry.json")

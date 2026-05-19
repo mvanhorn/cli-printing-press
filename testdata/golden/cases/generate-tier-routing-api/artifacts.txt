@@ -1,4 +1,5 @@
 tier-routing-golden/.printing-press.json
+tier-routing-golden/.printing-press-patches.json
 tier-routing-golden/manifest.json
 tier-routing-golden/internal/client/client.go
 tier-routing-golden/internal/cli/items_list.go

@@ -195,6 +195,12 @@ Run `go test ./...` before considering your work done.
 Generated CLIs must pass 8 gates: `go mod tidy`, `govulncheck`, `go vet`, `go build`, binary build, `--help`, `version`, and `doctor`.
 Run `govulncheck` in default mode only, scoped to the generated or publishing CLI module (`./...` from that CLI directory). Do not use `-show verbose` or a whole public-library scan as a blocking gate; the public library is a historical collection, so its blocking CI should scan only added or changed CLI modules and leave whole-library sweeps to scheduled/reporting workflows.
 
+## Supply-chain hardening
+
+PRs touching `.github/workflows/**` are gated by Greptile rules in [`greptile.json`](greptile.json) and a Python scan in [`.github/scripts/verify-supply-chain/`](.github/scripts/verify-supply-chain/) run by `verify-supply-chain.yml`. The signal set is the workflow-trust + Go-env subset of the published-library gate; see `signals.py` for scope adaptations (no library go.mod, no npm wrapper, no published-CLI module paths). Run locally with `python3 .github/scripts/verify-supply-chain/scan.py --base-ref origin/main`; tests are `python3 -m unittest scan_test` from that directory.
+
+Runs informationally on landing — promote to a required branch-protection check only after a one-week green window. Canonical incident background lives in the [published-library solutions doc](https://github.com/mvanhorn/printing-press-library/blob/main/docs/solutions/security/2026-05-supply-chain-hardening.md).
+
 ## Local Artifacts
 Generated artifacts live under `~/printing-press/`, not in this repo: `library/<api-slug>/`, `manuscripts/<api-slug>/`, and `.runstate/<scope>/`. The API slug is derived by the generator from the spec title (`cleanSpecName`), and the binary name is `<api-slug>-pp-cli`. Never hardcode an API slug when the generator can derive it. See [`docs/ARTIFACTS.md`](docs/ARTIFACTS.md) for local-vs-public flow and divergence rules.
 

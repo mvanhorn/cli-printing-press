@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/piiplaceholders"
 )
 
 // PII gate implementation following the Deterministic Inventory +
@@ -38,6 +40,8 @@ const (
 // changing a value is a backward-incompatible ledger format change.
 const (
 	PIIKindCardLast4     = "card-last-4"
+	PIIKindOrderID       = "order-id"
+	PIIKindASIN          = "asin"
 	PIIKindEmail         = "email"
 	PIIKindPhoneUS       = "phone-us"
 	PIIKindZipPlus4      = "zip-plus-4"
@@ -99,6 +103,19 @@ var piiDetectors = []piiDetector{
 		// mask shapes (xxxx, ****) are non-word so they can't carry
 		// \b but their length and shape are unambiguous.
 		pattern: regexp.MustCompile(`(?i)(?:\b(?:card|visa|mastercard|amex|ending in|last\s+4)|x{4,}|\*{4,})[\s:.\-]{0,5}\d{4}`),
+	},
+	{
+		kind: PIIKindOrderID,
+		// Physical and digital order IDs observed in browser-sniff
+		// captures. The canonical synthetic placeholders are filtered
+		// after matching.
+		pattern: piiplaceholders.OrderIDPattern(),
+	},
+	{
+		kind: PIIKindASIN,
+		// ASIN-shaped product IDs from browser-sniff captures. The
+		// canonical B0EXAMPLE* placeholders are filtered after matching.
+		pattern: piiplaceholders.ASINPattern(),
 	},
 	{
 		kind: PIIKindEmail,
@@ -250,6 +267,19 @@ var skippedDirs = map[string]bool{
 	"build":        true,
 }
 
+func isSyntheticPIIPlaceholder(kind, matched string) bool {
+	switch kind {
+	case PIIKindOrderID:
+		return piiplaceholders.IsSyntheticOrderID(matched)
+	case PIIKindASIN:
+		return piiplaceholders.IsSyntheticASIN(matched)
+	case PIIKindPostalAddress:
+		return piiplaceholders.IsSyntheticPostalAddress(matched)
+	default:
+		return false
+	}
+}
+
 // FindPII walks root, applies the file-scoping rules, and returns all
 // PII-shape matches. Ordering is stable (file, line, column, kind) so
 // the JSON output and ledger reconcile cleanly across runs.
@@ -386,12 +416,16 @@ func scanPIIFile(root, path string) ([]PIIFinding, error) {
 		lineNumber++
 		for _, det := range piiDetectors {
 			for _, match := range det.pattern.FindAllStringIndex(line, -1) {
+				matchedSpan := line[match[0]:match[1]]
+				if isSyntheticPIIPlaceholder(det.kind, matchedSpan) {
+					continue
+				}
 				findings = append(findings, PIIFinding{
 					Kind:        det.kind,
 					File:        relSlash,
 					Line:        lineNumber,
 					Column:      match[0] + 1, // 1-based
-					MatchedSpan: line[match[0]:match[1]],
+					MatchedSpan: matchedSpan,
 				})
 			}
 		}

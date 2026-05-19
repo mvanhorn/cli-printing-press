@@ -51,6 +51,17 @@ normalize_json() {
         | (if has("run_id") then .run_id = "<RUN_ID>" else . end)
       ' "$file" | normalize_text
       ;;
+    */.printing-press-patches.json)
+      # applied_at uses time.Now(); base_run_id and base_printing_press_version
+      # are stamped from the same generate-time sources as .printing-press.json's
+      # run_id / printing_press_version. Normalize the same way so the golden
+      # doesn't drift on every run or release bump.
+      jq -S '
+        .applied_at = "<APPLIED_AT>"
+        | .base_run_id = "<RUN_ID>"
+        | .base_printing_press_version = "<PRINTING_PRESS_VERSION>"
+      ' "$file" | normalize_text
+      ;;
     */manifest.json)
       # MCPB manifest version stamps the printing-press release; normalize
       # so the golden doesn't drift on every release bump.

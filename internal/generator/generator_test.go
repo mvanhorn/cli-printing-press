@@ -59,6 +59,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cliutil/verifyenv.go",
 		"internal/cliutil/extractnumber.go",
 		"internal/cliutil/extractnumber_test.go",
+		"internal/cliutil/jwtshape.go",
+		"internal/cliutil/jwtshape_test.go",
 		"internal/cliutil/cliutil_test.go",
 		"internal/client/client.go",
 		"internal/client/client_test.go",
@@ -81,9 +83,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 60},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 65},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 62},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 62},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 67},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 64},
 	}
 
 	for _, tt := range tests {
@@ -153,6 +155,8 @@ func TestGenerateCliutilPackage(t *testing.T) {
 		{"text.go", "func SanitizeErrorBody("},
 		{"extractnumber.go", "func ExtractNumber("},
 		{"extractnumber.go", "func ExtractInt("},
+		{"jwtshape.go", "func LooksLikeJWT("},
+		{"jwtshape.go", "func FindJWTInCookieJar("},
 	} {
 		data, err := os.ReadFile(filepath.Join(cliutilDir, probe.file))
 		require.NoError(t, err)
@@ -314,6 +318,14 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 		"func ensureFreshForResources(",
 		"func ensureFreshForCommand(",
 		"func runAutoRefresh(",
+		// Refresh failure must emit a structured JSON event to stderr so
+		// agents reading novel-command output that bypasses
+		// wrapWithProvenance still see a parseable degraded-state signal
+		// (issue #1263). The prose warning remains for humans.
+		"func emitCacheRefreshFailedEvent(",
+		`emitCacheRefreshFailedEvent(resources, err)`,
+		`"cache_warning"`,
+		`"refresh_failed"`,
 		`"freshness-pp-cli dashboard": {`,
 		`"items",`,
 		`envOptOut := "FRESHNESS_NO_AUTO_REFRESH"`,
@@ -325,6 +337,26 @@ func TestGenerateFreshnessHelperEmitted(t *testing.T) {
 	require.NotEqual(t, -1, optOutIndex, "auto_refresh.go must report env opt-out")
 	require.NotEqual(t, -1, openStoreIndex, "auto_refresh.go must open the store after opt-out checks")
 	assert.Less(t, optOutIndex, openStoreIndex, "env opt-out must be checked before opening/migrating the store")
+
+	// auto_refresh_test.go covers the structured cache_warning emitter so a
+	// Go syntax error in auto_refresh_test.go.tmpl is caught at generation
+	// time rather than propagating silently to every customer CLI (the
+	// golden suite has no cache-enabled case, so the template is otherwise
+	// never compiled by scripts/golden.sh verify).
+	autoRefreshTestPath := filepath.Join(outputDir, "internal", "cli", "auto_refresh_test.go")
+	testData, err := os.ReadFile(autoRefreshTestPath)
+	require.NoError(t, err, "auto_refresh_test.go must be emitted when cache is enabled")
+	testSrc := string(testData)
+	for _, snippet := range []string{
+		"func captureStderr(t *testing.T, fn func()) []byte",
+		"func TestEmitCacheRefreshFailedEvent(t *testing.T)",
+		"func TestEmitCacheRefreshFailedEvent_NilResources(t *testing.T)",
+		`emitCacheRefreshFailedEvent([]string{"items"}`,
+		`"cache_warning"`,
+		`"refresh_failed"`,
+	} {
+		assert.Contains(t, testSrc, snippet, "auto_refresh_test.go missing %q", snippet)
+	}
 
 	dataSource, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "data_source.go"))
 	require.NoError(t, err)
@@ -5628,15 +5660,91 @@ func TestGeneratedOutput_PromotedCommandExists(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), "promtest-pp-cli")
 	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true}
 	require.NoError(t, gen.Generate())
 
 	// Promoted command file SHOULD exist — it provides a user-friendly shortcut.
 	promotedFile := filepath.Join(outputDir, "internal", "cli", "promoted_users.go")
 	assert.FileExists(t, promotedFile)
 
+	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(helpersSrc), "func extractResponseData(",
+		"promoted commands call extractResponseData, so helpers.go must emit it when a promoted command exists")
+
 	// The resource parent command should NOT be generated — the promoted command replaces it.
 	// Generating both would leave the parent as dead code (never wired to root).
 	assert.NoFileExists(t, filepath.Join(outputDir, "internal", "cli", "users.go"))
+}
+
+func TestGeneratedOutput_ExtractResponseDataHelperOnlyForPromotedCommands(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "noprom",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"NO_PROM_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/noprom-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"users": {
+				Description: "Manage users",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/users", Description: "List users"},
+					"get": {
+						Method:      "GET",
+						Path:        "/users/{id}",
+						Description: "Get user",
+						Params:      []spec.Param{{Name: "id", Type: "string", Required: true, Positional: true}},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "noprom-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(helpersSrc), "func extractResponseData(",
+		"helpers.go must not emit promoted-command-only helpers when no promoted command can call them")
+}
+
+func TestGeneratedOutput_ExtractResponseDataHelperSkippedForPromotedNoStoreCLI(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "promnostore",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"PROM_NO_STORE_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/promnostore-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"users": {
+				Description: "Manage users",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/users", Description: "List all users"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "promnostore-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{MCP: true}
+	require.NoError(t, gen.Generate())
+
+	promotedSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "promoted_users.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(promotedSrc), "extractResponseData(",
+		"promoted commands without a local store do not call the unwrap helper")
+
+	helpersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(helpersSrc), "func extractResponseData(",
+		"helpers.go must not emit extractResponseData when promoted commands cannot call it")
 }
 
 func TestGeneratedOutput_PromotedCommandKeepsSubresourceParents(t *testing.T) {
@@ -10008,6 +10116,18 @@ func TestGenerateNoEndpointTemplateVarsByteCompat(t *testing.T) {
 	configGo := string(configGoBytes)
 	assert.NotContains(t, configGo, "TemplateVars",
 		"config struct must not carry TemplateVars when EndpointTemplateVars is empty")
+
+	// --path-context is profiler-driven: emitting it on a plain API would
+	// add a flag with nothing to substitute and bloat the help surface for
+	// every printed CLI that does not need it (#1332).
+	syncGoPath := filepath.Join(outputDir, "internal", "cli", "sync.go")
+	if syncGoBytes, syncErr := os.ReadFile(syncGoPath); syncErr == nil {
+		syncGo := string(syncGoBytes)
+		assert.NotContains(t, syncGo, "path-context",
+			"sync must not emit --path-context when EndpointTemplateVars is empty")
+		assert.NotContains(t, syncGo, "pathContextFlags",
+			"sync must not declare pathContextFlags when EndpointTemplateVars is empty")
+	}
 }
 
 // TestGenerateResourceBaseURLOverrideRoutesToOverrideHost — Open-Meteo
@@ -10332,17 +10452,20 @@ func TestGenerateResourceBaseURLOverrideRoutesAgentDispatchSurfaces(t *testing.T
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
-// TestGenerateMCPMainStdioDefault confirms that a spec with no mcp: block
-// produces the same stdio-only MCP entry point we've always emitted. Remote
-// transport is opt-in; the default stays on the current behavior so existing
-// published CLIs regenerate byte-compatibly. Guards against the template
-// accidentally pulling in flag / StreamableHTTP imports for stdio-only specs.
-func TestGenerateMCPMainStdioDefault(t *testing.T) {
+// TestGenerateMCPMainSmallAPIDefaultsHTTP confirms that a small-API spec
+// (typed-endpoint count at or below spec.DefaultRemoteTransportEndpointThreshold)
+// with no mcp: block gets http compiled in alongside stdio. The default lifts
+// mcp_remote_transport from 5/10 to 10/10 at zero cost: there's no extra tool,
+// no extra agent-context overhead, and the same binary can now reach
+// cloud-hosted agents that cannot spawn a subprocess. Issue #1603.
+func TestGenerateMCPMainSmallAPIDefaultsHTTP(t *testing.T) {
 	t.Parallel()
 
 	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
 	require.NoError(t, err)
 	require.Empty(t, apiSpec.MCP.Transport, "baseline loops spec should not declare MCP transports")
+	require.LessOrEqual(t, apiSpec.TypedEndpointCount(), spec.DefaultRemoteTransportEndpointThreshold,
+		"loops fixture must stay small enough to exercise the auto-http default")
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
@@ -10353,10 +10476,79 @@ func TestGenerateMCPMainStdioDefault(t *testing.T) {
 	require.NoError(t, err)
 	body := string(data)
 
-	assert.Contains(t, body, "server.ServeStdio(s)", "stdio-only spec must still call ServeStdio")
-	assert.NotContains(t, body, "flag.String", "stdio-only spec must not pull in the flag package")
-	assert.NotContains(t, body, "NewStreamableHTTPServer", "stdio-only spec must not reference the HTTP transport")
-	assert.NotContains(t, body, "PP_MCP_TRANSPORT", "stdio-only spec must not reference the transport env override")
+	for _, want := range []string{
+		`"flag"`,
+		`"strings"`,
+		`server.ServeStdio(s)`,
+		`server.NewStreamableHTTPServer(s)`,
+		`flag.String("transport"`,
+		`PP_MCP_TRANSPORT`,
+	} {
+		assert.Contains(t, body, want, "small-API auto-http default should emit %q", want)
+	}
+}
+
+// TestGenerateMCPMainExplicitStdioOnlyHonored covers the negative half of
+// the issue #1603 acceptance criteria: an explicit `mcp.transport: [stdio]`
+// is honored even at small endpoint counts. The auto-http default only fires
+// when the field is empty; an opt-out should not be silently overridden.
+func TestGenerateMCPMainExplicitStdioOnlyHonored(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "loops.yaml"))
+	require.NoError(t, err)
+	apiSpec.MCP = spec.MCPConfig{Transport: []string{"stdio"}}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	mainPath := filepath.Join(outputDir, "cmd", naming.MCP(apiSpec.Name), "main.go")
+	data, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	body := string(data)
+
+	assert.Contains(t, body, "server.ServeStdio(s)", "explicit stdio-only spec must still call ServeStdio")
+	assert.NotContains(t, body, "flag.String", "explicit stdio-only spec must not pull in the flag package")
+	assert.NotContains(t, body, "NewStreamableHTTPServer", "explicit stdio-only spec must not reference the HTTP transport")
+	assert.NotContains(t, body, "PP_MCP_TRANSPORT", "explicit stdio-only spec must not reference the transport env override")
+}
+
+// TestGenerateMCPMainLargeAPIStaysStdioOnly confirms that the auto-http
+// default only fires for small APIs. Above the endpoint threshold the
+// generator defers to the orchestration-pattern recommendation in
+// warnUnenrichedLargeMCPSurface; auto-extending transport there would be
+// the wrong fix because the dominant problem is tool-count, not reach.
+func TestGenerateMCPMainLargeAPIStaysStdioOnly(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:      "demo",
+		BaseURL:   "https://api.example.com",
+		Auth:      spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{},
+	}
+	// Synthesize an above-threshold typed-endpoint surface.
+	r := spec.Resource{Endpoints: map[string]spec.Endpoint{}}
+	for i := range spec.DefaultRemoteTransportEndpointThreshold + 1 {
+		name := fmt.Sprintf("get_%d", i)
+		r.Endpoints[name] = spec.Endpoint{Method: "GET", Path: fmt.Sprintf("/items/%d", i)}
+	}
+	apiSpec.Resources["items"] = r
+	require.Greater(t, apiSpec.TypedEndpointCount(), spec.DefaultRemoteTransportEndpointThreshold,
+		"synthetic spec must exceed the small-API threshold")
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	mainPath := filepath.Join(outputDir, "cmd", naming.MCP(apiSpec.Name), "main.go")
+	data, err := os.ReadFile(mainPath)
+	require.NoError(t, err)
+	body := string(data)
+
+	assert.Contains(t, body, "server.ServeStdio(s)", "large-API default must still call ServeStdio")
+	assert.NotContains(t, body, "NewStreamableHTTPServer", "large-API default must not auto-enable http transport")
 }
 
 // TestGenerateMCPMainRemoteOptIn confirms that declaring mcp.transport: [stdio, http]
@@ -11517,11 +11709,28 @@ func TestGenerateEndpointTemplateEnvOverridesWireThrough(t *testing.T) {
 		"sync must declare the template-var set so the unresolved-key check ignores {tenant}")
 	assert.Contains(t, syncSrc, `slices.DeleteFunc`,
 		"sync must filter template-var placeholders out of the missing-keys list before warning")
+	// --path-context is the runtime override hatch for spec-declared
+	// EndpointTemplateVars (#1332). It must appear on the sync command when
+	// the spec has template-var placeholders so users can fill any {key} at
+	// the call site instead of re-exporting an env var.
+	assert.Contains(t, syncSrc, `&pathContextFlags, "path-context"`,
+		"sync must register the --path-context flag when EndpointTemplateVars is non-empty")
+	assert.Contains(t, syncSrc, `parseSyncKVFlags(pathContextFlags, "--path-context")`,
+		"sync RunE must parse --path-context entries via the shared KV parser")
+	assert.Contains(t, syncSrc, "c.Config.TemplateVars[k] = v",
+		"sync must merge --path-context values into Config.TemplateVars so buildURL substitution picks them up")
 
 	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 	require.NoError(t, err)
 	assert.Contains(t, string(readme), "ST_TENANT_ID",
 		"README must surface the override env var name in the runtime endpoint instructions")
+
+	// Compile the generated tree so the --path-context emission and the
+	// Config.TemplateVars merge land as valid Go; a template-level bracket
+	// mistake would otherwise pass the string-Contains checks above but
+	// blow up at install time for every printed CLI.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
 }
 
 // TestGenerateParentNoSubcommandRunE_WiredOnResourceParents: every generated

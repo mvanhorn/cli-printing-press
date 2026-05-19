@@ -591,12 +591,12 @@ When `mcp_token_efficiency`, `mcp_tool_design`, `mcp_remote_transport`, or `mcp_
 
 | Weak dim | Spec field that fixes it | What to add to `spec.yaml`'s `mcp:` block |
 |---|---|---|
-| `mcp_remote_transport` | `mcp.transport` | `transport: [stdio, http]` (default is stdio-only; HTTP costs nothing and lets the same binary serve cloud-hosted agents) |
+| `mcp_remote_transport` | `mcp.transport` | `transport: [stdio, http]` (small APIs at or under `spec.DefaultRemoteTransportEndpointThreshold` typed endpoints already get this by default; the override is only needed when the spec opted into a narrower list or the API is above the threshold and still wants remote reach) |
 | `mcp_token_efficiency`, `mcp_surface_strategy` | `mcp.endpoint_tools`, `mcp.orchestration` | `endpoint_tools: hidden` + `orchestration: code` (Cloudflare pattern: ~70 raw endpoint tools collapse to `<api>_search` + `<api>_execute`; all endpoints still reachable via execute) |
 | `mcp_tool_design` | `mcp.intents` | Define multi-step intent compositions for the workflows the API supports |
 | `mcp_description_quality` | `mcp-descriptions.json` (override file at the CLI root) | Per-tool description overrides; thin spec-derived descriptions get richer text without spec edits |
 
-Recommended threshold: at >50 typed endpoints, default to recommending all four (`transport`, `endpoint_tools=hidden`, `orchestration=code`, `intents` for the headline workflows). Below 30, `transport=[stdio, http]` is the only zero-cost win. The full reference is `docs/SPEC-EXTENSIONS.md`.
+Recommended threshold: at >50 typed endpoints, default to recommending all four (`transport`, `endpoint_tools=hidden`, `orchestration=code`, `intents` for the headline workflows). Small APIs (<= `spec.DefaultRemoteTransportEndpointThreshold`) get the http transport by default already, so `mcp_remote_transport` lands at 10/10 without any spec edit — only call it out if the spec explicitly narrowed the list. The full reference is `docs/SPEC-EXTENSIONS.md`.
 
 After editing the spec, regenerate (or `regen-merge` the changes into the published library) so the new `mcp:` block reaches templates. Cobratree-walked novel commands continue to surface as MCP tools either way; they don't need spec changes.
 

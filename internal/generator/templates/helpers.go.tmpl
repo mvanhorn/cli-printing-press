@@ -1206,6 +1206,7 @@ func printOutputWithFlags(w io.Writer, data json.RawMessage, flags *rootFlags) e
 	return printOutput(w, data, flags.asJSON)
 }
 
+{{- if .HasResponseUnwrap}}
 // extractResponseData unwraps common API response envelopes for display.
 // Many APIs return {"status":"success","data":[...]} instead of a bare array.
 // This extracts the inner data for output helpers (filterFields, compactFields,
@@ -1233,6 +1234,7 @@ func extractResponseData(data json.RawMessage) json.RawMessage {
 		return data
 	}
 }
+{{- end}}
 
 // compactVerboseListFields are prose-shaped fields stripped from list-item
 // projections. On lists, "body"/"content"/"html"/"markdown" are verbose

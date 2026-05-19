@@ -47,6 +47,7 @@ type ManifestAuth struct {
 	EnvVarSpecs                    []spec.AuthEnvVar `json:"env_var_specs,omitempty"`
 	KeyURL                         string            `json:"key_url,omitempty"`
 	CookieDomain                   string            `json:"cookie_domain,omitempty"`
+	Cookies                        []string          `json:"cookies,omitempty"`
 	RequiresBrowserSession         bool              `json:"requires_browser_session,omitempty"`
 	BrowserSessionValidationPath   string            `json:"browser_session_validation_path,omitempty"`
 	BrowserSessionValidationMethod string            `json:"browser_session_validation_method,omitempty"`
@@ -230,6 +231,7 @@ func manifestAuth(auth spec.AuthConfig) ManifestAuth {
 		EnvVarSpecs:                    auth.EnvVarSpecs,
 		KeyURL:                         auth.KeyURL,
 		CookieDomain:                   auth.CookieDomain,
+		Cookies:                        auth.Cookies,
 		RequiresBrowserSession:         auth.RequiresBrowserSession,
 		BrowserSessionValidationPath:   auth.BrowserSessionValidationPath,
 		BrowserSessionValidationMethod: auth.BrowserSessionValidationMethod,

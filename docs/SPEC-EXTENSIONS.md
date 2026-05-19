@@ -200,8 +200,11 @@ for large surfaces: `transport: [stdio, http]` + `orchestration: code` +
 Parsed field: `APISpec.MCP` (`spec.MCPConfig`)
 
 Rules:
-- Optional. Specs without `x-mcp` keep today's stdio-only endpoint-mirror
-  behavior.
+- Optional. Specs without `x-mcp` get the endpoint-mirror surface; small APIs
+  (typed-endpoint count at or below `spec.DefaultRemoteTransportEndpointThreshold`,
+  currently 30) also get the http transport compiled in alongside stdio so the
+  same binary can reach cloud-hosted agents. Setting `transport` explicitly
+  (including `transport: [stdio]`) bypasses the default and is honored as-is.
 - May be declared at the OpenAPI root or under `info`. Root takes precedence
   when both are present.
 - Shape mirrors the internal YAML `mcp:` block field-for-field: `transport`,
