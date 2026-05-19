@@ -10,6 +10,18 @@ import (
 
 {{range .Fixtures}}
 func TestCaptured_{{.EndpointName}}_RequestShape(t *testing.T) {
+	sampleParams := map[string]string{
+{{- range .ParamSamples}}
+		{{printf "%q" .Name}}: {{printf "%q" .Value}},
+{{- end}}
+	}
+	sampleBody := map[string]string{
+{{- range .BodySamples}}
+		{{printf "%q" .Name}}: {{printf "%q" .Value}},
+{{- end}}
+	}
+	_, _ = sampleParams, sampleBody
+
 	var capturedReq *http.Request
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedReq = r
