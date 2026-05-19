@@ -101,6 +101,81 @@ func apiErr(err error) error       { return &cliError{code: 5, err: err} }
 func configErr(err error) error    { return &cliError{code: 10, err: err} }
 func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
 
+// partialFailureErr signals that the upstream API returned a 2xx with a
+// body shape indicating some operations in a batch failed (e.g. Google
+// Ads `partialFailureError`, similar shapes from Drive batch, Sheets
+// batchUpdate, Cloud Resource Manager). Distinct from apiErr (HTTP-level
+// failure) so callers can distinguish "request rejected" from "request
+// accepted but some ops failed".
+func partialFailureErr(err error) error { return &cliError{code: 6, err: err} }
+
+// partialFailureReport describes the structured detection result for a
+// mutate-style response body. Emitted in the envelope under
+// "partial_failure" so machine-readable callers can route per-operation
+// remediation.
+type partialFailureReport struct {
+	Field         string   `json:"field"`
+	Message       string   `json:"message,omitempty"`
+	Code          int      `json:"code,omitempty"`
+	Details       any      `json:"details,omitempty"`
+	ResourceNames []string `json:"resource_names,omitempty"`
+}
+
+// detectPartialFailure inspects a mutate-style JSON response for a
+// partial-failure-shaped field. Returns nil when no partial failure is
+// detected. The detector is intentionally generic across APIs that emit
+// 2xx-with-batch-errors. New partial-failure-shaped fields are added to
+// partialFailureFields, not at call sites. When `results[]` is present
+// (Google Ads convention) it extracts per-op `resourceName` so callers
+// can see which operations did succeed.
+func detectPartialFailure(data []byte) *partialFailureReport {
+	if len(data) == 0 {
+		return nil
+	}
+	var top map[string]any
+	if err := json.Unmarshal(data, &top); err != nil {
+		return nil
+	}
+	partialFailureFields := []string{"partialFailureError"}
+	for _, field := range partialFailureFields {
+		raw, ok := top[field]
+		if !ok || raw == nil {
+			continue
+		}
+		obj, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		message, _ := obj["message"].(string)
+		var code int
+		if n, ok := obj["code"].(float64); ok {
+			code = int(n)
+		}
+		// Empty object means partial-failure mode was off or no ops
+		// failed; do not flag.
+		if code == 0 && strings.TrimSpace(message) == "" {
+			continue
+		}
+		report := &partialFailureReport{
+			Field:   field,
+			Message: message,
+			Code:    code,
+			Details: obj["details"],
+		}
+		if results, ok := top["results"].([]any); ok {
+			for _, r := range results {
+				if rm, ok := r.(map[string]any); ok {
+					if name, ok := rm["resourceName"].(string); ok && name != "" {
+						report.ResourceNames = append(report.ResourceNames, name)
+					}
+				}
+			}
+		}
+		return report
+	}
+	return nil
+}
+
 // dryRunOK reports whether the command should short-circuit without doing any
 // real work because --dry-run was set. The verify pipeline probes hand-written
 // commands with --dry-run; commands that put validation in cobra's `Args:` or
@@ -121,6 +196,32 @@ func rateLimitErr(err error) error { return &cliError{code: 7, err: err} }
 // See SKILL.md "Phase 3: Build The GOAT" for the full pattern.
 func dryRunOK(flags *rootFlags) bool {
 	return flags != nil && flags.dryRun
+}
+
+// parentNoSubcommandRunE returns a RunE that handles parents invoked without a
+// subcommand. In machine output (--json/--agent) the parent emits a structured
+// error to stdout listing valid subcommands and exits 2; otherwise cobra's
+// default help text is printed. Without this, agents driving the CLI in
+// --agent mode received only human-readable help on stdout and exit 0, with no
+// signal that the invocation was incomplete.
+func parentNoSubcommandRunE(flags *rootFlags) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, args []string) error {
+		if flags != nil && flags.asJSON {
+			subs := make([]string, 0, len(cmd.Commands()))
+			for _, c := range cmd.Commands() {
+				if c.IsAvailableCommand() && c.Name() != "help" {
+					subs = append(subs, c.Name())
+				}
+			}
+			sort.Strings(subs)
+			_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+				"error":             "subcommand required",
+				"valid_subcommands": subs,
+			})
+			return usageErr(fmt.Errorf("subcommand required for %q", cmd.CommandPath()))
+		}
+		return cmd.Help()
+	}
 }
 
 // accessWarning describes an API access-denial that sync converts into a
@@ -167,29 +268,43 @@ func syncErrorJSON(resource, parent string, err error) string {
 	return string(out)
 }
 
-// syncUserParams carries user-supplied query parameters injected into every
-// sync HTTP request. perResource entries win over global on key conflict.
+// syncUserParams carries user-supplied query parameters injected into sync
+// HTTP requests. flatGlobal entries come from --param and inject into
+// flat-list requests only; trueGlobal entries come from --global-param and
+// inject into every request including dependent path-scoped calls.
+// perResource entries win over both on key conflict.
+//
+// The flat/dependent split avoids a real failure mode: a top-level scope
+// like workspace=<gid> belongs on flat-list requests (/projects, /tags) but
+// re-injecting it onto a path-scoped dependent request
+// (/projects/<gid>/tasks?workspace=<gid>) makes APIs like Asana reject the
+// call ("Must specify exactly one of project, tag, ..."). Operators who
+// need the old "apply everywhere" semantic opt back in with --global-param.
 type syncUserParams struct {
-	global      map[string]string
+	flatGlobal  map[string]string
+	trueGlobal  map[string]string
 	perResource map[string]map[string]string
 }
 
-// parseSyncUserParams parses the repeatable --param key=value and
-// --resource-param resource:key=value flags. Returns usage errors keyed on the
-// specific invalid token so the user sees which entry was rejected.
-func parseSyncUserParams(globalFlags, perResourceFlags []string) (*syncUserParams, error) {
+// parseSyncUserParams parses the repeatable --param key=value,
+// --global-param key=value, and --resource-param resource:key=value flags.
+// Returns usage errors keyed on the specific invalid token so the user
+// sees which entry was rejected.
+func parseSyncUserParams(flatGlobalFlags, resourceParamFlags, trueGlobalFlags []string) (*syncUserParams, error) {
+	flatGlobal, err := parseSyncKVFlags(flatGlobalFlags, "--param")
+	if err != nil {
+		return nil, err
+	}
+	trueGlobal, err := parseSyncKVFlags(trueGlobalFlags, "--global-param")
+	if err != nil {
+		return nil, err
+	}
 	p := &syncUserParams{
-		global:      map[string]string{},
+		flatGlobal:  flatGlobal,
+		trueGlobal:  trueGlobal,
 		perResource: map[string]map[string]string{},
 	}
-	for _, kv := range globalFlags {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok || k == "" {
-			return nil, fmt.Errorf("invalid --param %q: expected key=value", kv)
-		}
-		p.global[k] = v
-	}
-	for _, spec := range perResourceFlags {
+	for _, spec := range resourceParamFlags {
 		resource, kv, ok := strings.Cut(spec, ":")
 		if !ok || resource == "" {
 			return nil, fmt.Errorf("invalid --resource-param %q: expected resource:key=value", spec)
@@ -206,13 +321,36 @@ func parseSyncUserParams(globalFlags, perResourceFlags []string) (*syncUserParam
 	return p, nil
 }
 
-// applyTo merges user params into the request map. Called after spec-derived
-// params (cursor, since, page-size, dates) so user flags can override them.
-func (p *syncUserParams) applyTo(resource string, params map[string]string) {
+// parseSyncKVFlags parses a slice of "key=value" tokens into a map. The
+// flagName label flows into the usage error so a malformed entry tells
+// the user which flag was at fault.
+func parseSyncKVFlags(flags []string, flagName string) (map[string]string, error) {
+	out := map[string]string{}
+	for _, kv := range flags {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("invalid %s %q: expected key=value", flagName, kv)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+// applyTo merges user params into the request map. Called after
+// spec-derived params (cursor, since, page-size, dates) so user flags can
+// override them. isDependent=true skips flatGlobal (--param), which
+// targets flat-list endpoints; trueGlobal (--global-param) and perResource
+// always apply.
+func (p *syncUserParams) applyTo(resource string, params map[string]string, isDependent bool) {
 	if p == nil {
 		return
 	}
-	for k, v := range p.global {
+	if !isDependent {
+		for k, v := range p.flatGlobal {
+			params[k] = v
+		}
+	}
+	for k, v := range p.trueGlobal {
 		params[k] = v
 	}
 	for k, v := range p.perResource[resource] {
@@ -400,7 +538,12 @@ func paginatedGet(c interface {
 	}
 
 	if !fetchAll {
-		return c.GetWithHeaders(path, clean, headers)
+		data, err := c.GetWithHeaders(path, clean, headers)
+		if err != nil {
+			return nil, err
+		}
+		emitTruncationWarning(data, nextCursorPath, hasMoreField)
+		return data, nil
 	}
 
 	// Fetch all pages
@@ -467,6 +610,51 @@ func paginatedGet(c interface {
 	}
 	result, _ := json.Marshal(allItems)
 	return json.RawMessage(result), nil
+}
+
+// Silent page-1 truncation is the worst-possible mode for agents,
+// who otherwise compute totals against an incomplete set without
+// passing --all.
+func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField string) {
+	if nextCursorPath == "" && hasMoreField == "" {
+		return
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return
+	}
+	var nextCursor string
+	if nextCursorPath != "" {
+		if tokenRaw, ok := rawAtPath(obj, nextCursorPath); ok {
+			_ = json.Unmarshal(tokenRaw, &nextCursor)
+		}
+	}
+	var hasMore bool
+	if hasMoreField != "" {
+		if moreRaw, ok := rawAtPath(obj, hasMoreField); ok {
+			_ = json.Unmarshal(moreRaw, &hasMore)
+		}
+	}
+	if nextCursor == "" && !hasMore {
+		return
+	}
+	// --all only advances when a next-cursor is configured. has_more-only
+	// endpoints have no cursor to set on the next page, so the --all loop
+	// re-fetches the same response forever. Don't advertise an escape
+	// hatch that doesn't work for this topology.
+	if nextCursor != "" {
+		if humanFriendly {
+			fmt.Fprintf(os.Stderr, "warning: results truncated; more pages available. Re-run with --all to fetch every page.\n")
+		} else {
+			fmt.Fprintf(os.Stderr, `{"event":"truncated","hint":"pass --all to fetch every page"}`+"\n")
+		}
+		return
+	}
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "warning: results truncated; more pages available.\n")
+	} else {
+		fmt.Fprintf(os.Stderr, `{"event":"truncated"}`+"\n")
+	}
 }
 
 func extractPaginatedItems(obj map[string]json.RawMessage) ([]json.RawMessage, bool) {
@@ -579,17 +767,47 @@ func filterFieldsRec(data json.RawMessage, paths [][]string) json.RawMessage {
 			}
 		}
 		filtered := map[string]json.RawMessage{}
+		matchedAny := false
 		for k, v := range obj {
 			matched := matchSelectSegment(k, keepWhole, subPaths)
 			if matched == "" {
 				continue
 			}
+			matchedAny = true
 			if keepWhole[matched] {
 				filtered[k] = v
 				continue
 			}
 			if subs := subPaths[matched]; subs != nil {
 				filtered[k] = filterFieldsRec(v, subs)
+			}
+		}
+		// Envelope fallback: when no top-level keys matched but at least one
+		// sibling is a non-null array, treat the object as a list envelope
+		// (`{"items":[...]}`, `{"data":[...]}`, `{"total_count":N,"items":[...]}`)
+		// and apply the selector inside the array(s). Non-array siblings pass
+		// through verbatim so envelope metadata (counts, null pagination
+		// cursors) stays visible. The foundArray guard preserves the prior
+		// empty-object result for flat objects where no key matches and no
+		// array exists. The `arr != nil` check rejects JSON null, which
+		// json.Unmarshal otherwise accepts into a []json.RawMessage as a
+		// nil slice and would coerce to `[]`.
+		if !matchedAny {
+			pending := map[string]json.RawMessage{}
+			foundArray := false
+			for k, v := range obj {
+				var arr []json.RawMessage
+				if json.Unmarshal(v, &arr) == nil && arr != nil {
+					foundArray = true
+					pending[k] = filterFieldsRec(v, paths)
+				} else {
+					pending[k] = v
+				}
+			}
+			if foundArray {
+				for k, v := range pending {
+					filtered[k] = v
+				}
 			}
 		}
 		result, _ := json.Marshal(filtered)
@@ -678,12 +896,23 @@ func extractResponseData(data json.RawMessage) json.RawMessage {
 	}
 }
 
-// compactVerboseFields are the prose-shaped fields stripped by both the
-// list and single-object compact paths. Centralised so the contract stays
-// in lockstep across both helpers.
-var compactVerboseFields = map[string]bool{
+// compactVerboseListFields are prose-shaped fields stripped from list-item
+// projections. On lists, "body"/"content"/"html"/"markdown" are verbose
+// noise and the row's identity is carried by id/name/title/etc.
+var compactVerboseListFields = map[string]bool{
 	"description": true, "body": true, "content": true,
 	"comments": true, "attachments": true, "html": true, "markdown": true,
+}
+
+// compactVerboseObjectFields are metadata fields stripped from single-object
+// responses. "body"/"content"/"html"/"markdown" are intentionally absent:
+// for a `get` command those fields are the primary payload, and stripping
+// them under `--agent`/`--compact` silently emits a useless envelope.
+// Use `--select` to drop them explicitly.
+var compactVerboseObjectFields = map[string]bool{
+	"description": true,
+	"comments":    true,
+	"attachments": true,
 }
 
 // compactFields keeps only the most important fields for agent consumption.
@@ -750,7 +979,7 @@ func compactListFields(items []map[string]any) json.RawMessage {
 		keyCounts := map[string]int{}
 		for _, item := range items {
 			for k, v := range item {
-				if compactVerboseFields[k] || !isCompactScalar(v) {
+				if compactVerboseListFields[k] || !isCompactScalar(v) {
 					continue
 				}
 				keyCounts[k]++
@@ -803,12 +1032,15 @@ func isCompactScalar(v any) bool {
 	}
 }
 
-// compactObjectFields strips known-verbose fields from single-object responses.
-// Uses a blocklist so it works across all API domains (project management, payments, CRM, etc.).
+// compactObjectFields strips known-verbose metadata fields from single-object
+// responses. The blocklist deliberately excludes "body"/"content"/"html"/
+// "markdown" — those fields are payload on `get` commands and stripping them
+// under `--agent`/`--compact` is a silent loss; agents who want to omit them
+// can pass `--select` to specify only the fields they need.
 func compactObjectFields(obj map[string]any) json.RawMessage {
 	compact := map[string]any{}
 	for k, v := range obj {
-		if !compactVerboseFields[k] {
+		if !compactVerboseObjectFields[k] {
 			compact[k] = v
 		}
 	}

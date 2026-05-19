@@ -31,6 +31,30 @@ const CLIManifestFilename = ".printing-press.json"
 // CurrentCLIManifestSchemaVersion is the public-library provenance contract.
 const CurrentCLIManifestSchemaVersion = 1
 
+// PatchesIndexFilename is the customizations index written next to
+// CLIManifestFilename for every printed CLI. The public library's Verify
+// CI requires it on every fresh-print publish; agents append entries to
+// patches[] as they apply in-session customizations to the generated code.
+const PatchesIndexFilename = ".printing-press-patches.json"
+
+// CurrentPatchesIndexSchemaVersion is the schema version stamped into
+// newly emitted patches indexes. Matches the shape documented in
+// internal/generator/templates/agents.md.tmpl.
+const CurrentPatchesIndexSchemaVersion = 1
+
+// PatchesIndex is the customizations index emitted alongside CLIManifest
+// for every generated CLI. The Patches field is intentionally
+// []json.RawMessage so an empty index serializes to "patches: []" rather
+// than "patches: null", and agents authoring entries control the per-patch
+// JSON shape directly.
+type PatchesIndex struct {
+	SchemaVersion            int               `json:"schema_version"`
+	AppliedAt                string            `json:"applied_at"` // YYYY-MM-DD
+	BaseRunID                string            `json:"base_run_id"`
+	BasePrintingPressVersion string            `json:"base_printing_press_version"`
+	Patches                  []json.RawMessage `json:"patches"`
+}
+
 // CLIManifest captures provenance metadata for a generated CLI.
 // It is written to the root of each published CLI directory so the
 // folder is self-describing even in isolation.
@@ -58,24 +82,37 @@ type CLIManifest struct {
 	// Printer is the original printer's GitHub handle, preserved across regens.
 	Printer string `json:"printer,omitempty"`
 	// PrinterName is the optional display name rendered beside the printer handle.
-	PrinterName          string            `json:"printer_name,omitempty"`
-	SpecURL              string            `json:"spec_url,omitempty"`
-	SpecPath             string            `json:"spec_path,omitempty"`
-	SpecFormat           string            `json:"spec_format,omitempty"`
-	SpecChecksum         string            `json:"spec_checksum,omitempty"`
-	RunID                string            `json:"run_id,omitempty"`
-	CatalogEntry         string            `json:"catalog_entry,omitempty"`
-	Category             string            `json:"category,omitempty"`
-	Description          string            `json:"description,omitempty"`
-	MCPBinary            string            `json:"mcp_binary,omitempty"`
-	MCPToolCount         int               `json:"mcp_tool_count,omitempty"`
-	MCPPublicToolCount   int               `json:"mcp_public_tool_count,omitempty"`
-	MCPReady             string            `json:"mcp_ready,omitempty"`
-	APIVersion           string            `json:"api_version,omitempty"` // from the spec's info.version — provenance only, not the CLI version
-	AuthType             string            `json:"auth_type,omitempty"`
-	AuthEnvVars          []string          `json:"auth_env_vars,omitempty"`
-	AuthEnvVarSpecs      []spec.AuthEnvVar `json:"auth_env_var_specs,omitempty"`
-	EndpointTemplateVars []string          `json:"endpoint_template_vars,omitempty"`
+	PrinterName        string            `json:"printer_name,omitempty"`
+	SpecURL            string            `json:"spec_url,omitempty"`
+	SpecPath           string            `json:"spec_path,omitempty"`
+	SpecFormat         string            `json:"spec_format,omitempty"`
+	SpecChecksum       string            `json:"spec_checksum,omitempty"`
+	RunID              string            `json:"run_id,omitempty"`
+	CatalogEntry       string            `json:"catalog_entry,omitempty"`
+	Category           string            `json:"category,omitempty"`
+	Description        string            `json:"description,omitempty"`
+	MCPBinary          string            `json:"mcp_binary,omitempty"`
+	MCPToolCount       int               `json:"mcp_tool_count,omitempty"`
+	MCPPublicToolCount int               `json:"mcp_public_tool_count,omitempty"`
+	MCPReady           string            `json:"mcp_ready,omitempty"`
+	APIVersion         string            `json:"api_version,omitempty"` // from the spec's info.version — provenance only, not the CLI version
+	AuthType           string            `json:"auth_type,omitempty"`
+	AuthEnvVars        []string          `json:"auth_env_vars,omitempty"`
+	AuthEnvVarSpecs    []spec.AuthEnvVar `json:"auth_env_var_specs,omitempty"`
+	// AuthAdditionalHeaders mirrors AuthConfig.AdditionalHeaders so the MCPB
+	// manifest's user_config block prompts for sibling-scheme per-call
+	// credentials (e.g. an apiKey header alongside an OAuth bearer). Without
+	// this field, agents installing the printed CLI via Claude Desktop never
+	// see the second credential prompt and every request returns 401.
+	AuthAdditionalHeaders        []spec.AdditionalAuthHeader `json:"auth_additional_headers,omitempty"`
+	EndpointTemplateVars         []string                    `json:"endpoint_template_vars,omitempty"`
+	EndpointTemplateEnvOverrides map[string]string           `json:"endpoint_template_env_overrides,omitempty"`
+	// EndpointTemplateVarDefaults mirrors APISpec.EndpointTemplateVarDefaults
+	// so a regenerating run, the MCPB manifest's user_config default fill,
+	// and the public-library republish path all see the same fallback values
+	// the parser captured from the spec. Empty for path-positional templates
+	// (x-tenant-env-var style) since those have no spec-level default.
+	EndpointTemplateVarDefaults map[string]string `json:"endpoint_template_var_defaults,omitempty"`
 	// AuthKeyURL is the page where users register for an API key. Used by
 	// downstream emitters (MCPB manifest user_config descriptions, doctor
 	// hints) to point users at the right credential source.
@@ -172,6 +209,41 @@ func WriteCLIManifest(dir string, m CLIManifest) error {
 	}
 	if err := os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644); err != nil {
 		return fmt.Errorf("writing CLI manifest: %w", err)
+	}
+	return nil
+}
+
+// WritePatchesIndex emits .printing-press-patches.json into the generated
+// CLI directory. The library's Verify CI rejects fresh-print publishes
+// without this file; emitting an empty index here removes the friction
+// for every future publish without affecting CLIs that already populated
+// the file via in-session customization.
+//
+// Preserves any existing file unchanged so agent-applied patch entries
+// survive regen (parallel to how resolveOwnerForExisting preserves
+// printer/owner metadata across regenerate runs). The os.Stat probe is
+// the simplest reliable preservation signal — the patches index has no
+// "Generated by" header to detect ownership from content.
+func WritePatchesIndex(dir, runID, pressVersion string) error {
+	path := filepath.Join(dir, PatchesIndexFilename)
+	if _, err := os.Stat(path); err == nil {
+		return nil // preserve existing — agent-authored content survives regen
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking patches index: %w", err)
+	}
+	idx := PatchesIndex{
+		SchemaVersion:            CurrentPatchesIndexSchemaVersion,
+		AppliedAt:                time.Now().UTC().Format("2006-01-02"),
+		BaseRunID:                runID,
+		BasePrintingPressVersion: pressVersion,
+		Patches:                  []json.RawMessage{},
+	}
+	data, err := json.MarshalIndent(idx, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling patches index: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("writing patches index: %w", err)
 	}
 	return nil
 }
@@ -304,6 +376,7 @@ func orderedCLIManifestKeys(raw map[string]json.RawMessage) []string {
 		"auth_env_vars",
 		"auth_env_var_specs",
 		"endpoint_template_vars",
+		"endpoint_template_env_overrides",
 		"auth_key_url",
 		"auth_title",
 		"auth_description",
@@ -406,7 +479,10 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	if !spec.AllAuthEnvVarSpecsInferred(envVarSpecs) {
 		m.AuthEnvVarSpecs = envVarSpecs
 	}
+	m.AuthAdditionalHeaders = parsed.Auth.AdditionalHeaders
 	m.EndpointTemplateVars = parsed.EndpointTemplateVars
+	m.EndpointTemplateEnvOverrides = parsed.EndpointTemplateEnvOverrides
+	m.EndpointTemplateVarDefaults = parsed.EndpointTemplateVarDefaults
 	m.AuthKeyURL = parsed.Auth.KeyURL
 	m.AuthTitle = parsed.Auth.Title
 	m.AuthDescription = parsed.Auth.Description
@@ -523,6 +599,10 @@ type GenerateManifestParams struct {
 // a real run_id; otherwise fall back to empty (and warn at the call site).
 var runIDPattern = regexp.MustCompile(`^\d{8}-\d{6}$`)
 
+// runIDTimeFormat is the canonical YYYYMMDD-HHMMSS layout matched by
+// runIDPattern. Kept as a const so the format and pattern can't drift.
+const runIDTimeFormat = "20060102-150405"
+
 // DeriveRunIDFromResearchDir extracts a canonical run_id from a research-dir
 // path, or returns "" when no valid run_id can be derived. The standalone
 // generate command does not load a PipelineState, so it cannot reach
@@ -539,17 +619,53 @@ func DeriveRunIDFromResearchDir(researchDir string) string {
 	return ""
 }
 
+// LoadAPINameFromResearchDir reads `<researchDir>/state.json` and returns the
+// recorded api_name slug, or "" when the file is absent, unreadable, malformed,
+// or has no api_name. The generate command uses this as an implicit --name
+// override so a spec whose `info.title` derives to something different from
+// the user's intended slug (e.g. "Canvas LMS API" vs `canvas`) still produces
+// the slug-keyed cmd/ directory the rest of the pipeline expects. Explicit
+// --name wins over this; an absent or unreadable state.json silently yields
+// to the title-derived default.
+func LoadAPINameFromResearchDir(researchDir string) string {
+	if researchDir == "" {
+		return ""
+	}
+	statePath := filepath.Join(researchDir, "state.json")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return ""
+	}
+	var probe struct {
+		APIName string `json:"api_name"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(probe.APIName)
+}
+
 // WriteManifestForGenerate writes a .printing-press.json manifest into the
 // generated CLI directory. This is the generate-command counterpart of
 // writeCLIManifestForPublish (which operates on PipelineState).
+//
+// An empty p.RunID is auto-filled with a fresh timestamp so the emitted
+// manifest satisfies publish-validate's required-run_id contract. Phase 5
+// dogfood acceptance still needs the original research-dir-derived run_id,
+// and the root.go --research-dir warning informs phase5 callers of that gap.
 func WriteManifestForGenerate(p GenerateManifestParams) error {
+	now := time.Now().UTC()
+	runID := p.RunID
+	if runID == "" {
+		runID = now.Format(runIDTimeFormat)
+	}
 	m := CLIManifest{
 		SchemaVersion:        CurrentCLIManifestSchemaVersion,
-		GeneratedAt:          time.Now().UTC(),
+		GeneratedAt:          now,
 		PrintingPressVersion: version.Version,
 		APIName:              p.APIName,
 		CLIName:              naming.CLI(p.APIName),
-		RunID:                p.RunID,
+		RunID:                runID,
 		Owner:                p.Owner,
 		Printer:              p.Printer,
 		PrinterName:          p.PrinterName,
@@ -631,6 +747,13 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	}
 
 	if err := WriteCLIManifest(p.OutputDir, m); err != nil {
+		return err
+	}
+	// Emit the customizations index alongside .printing-press.json. The
+	// library's Verify CI requires every fresh-print publish to ship one;
+	// preserve-on-regen keeps agent-applied patch entries from being
+	// clobbered by a later generate --force.
+	if err := WritePatchesIndex(p.OutputDir, runID, version.Version); err != nil {
 		return err
 	}
 	// Emit MCPB manifest.json next to .printing-press.json. Pass the

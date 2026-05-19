@@ -6,14 +6,16 @@ import (
 )
 
 // Split tokenizes the simple command examples the Printing Press emits in
-// README/SKILL narrative. It preserves double-quoted tokens and backslash
-// escapes, but intentionally does not perform shell expansion.
+// README/SKILL narrative. It preserves double-quoted and single-quoted
+// tokens and backslash escapes (POSIX semantics: backslashes are literal
+// inside single quotes), but intentionally does not perform shell
+// expansion.
 func Split(s string) ([]string, error) {
 	s = joinLineContinuations(s)
 
 	var tokens []string
 	var current strings.Builder
-	inQuote := false
+	var quoteChar rune // 0 outside quotes; '"' or '\'' while inside.
 	tokenStarted := false
 	escaped := false
 
@@ -30,14 +32,27 @@ func Split(s string) ([]string, error) {
 			escaped = false
 			continue
 		}
+		// Single quotes: everything is literal until the closing quote.
+		// POSIX forbids backslash escapes inside single quotes, so the
+		// '\\' branch must be skipped while quoteChar is '\''.
+		if quoteChar == '\'' {
+			if r == '\'' {
+				quoteChar = 0
+				tokenStarted = true
+				continue
+			}
+			current.WriteRune(r)
+			tokenStarted = true
+			continue
+		}
 		if r == '\\' {
 			escaped = true
 			tokenStarted = true
 			continue
 		}
-		if inQuote {
+		if quoteChar == '"' {
 			if r == '"' {
-				inQuote = false
+				quoteChar = 0
 				tokenStarted = true
 				continue
 			}
@@ -46,9 +61,19 @@ func Split(s string) ([]string, error) {
 			continue
 		}
 		switch r {
-		case '"':
-			inQuote = true
+		case '"', '\'':
+			quoteChar = r
 			tokenStarted = true
+		case '#':
+			if !tokenStarted {
+				// Shell line comment: '#' at the start of a word drops the
+				// rest of the input. Cobra Example fields routinely append
+				// trailing comments ("sync # full refresh"); without this
+				// branch a downstream consumer runs the binary with the
+				// comment text as positional args.
+				return tokens, nil
+			}
+			current.WriteRune(r)
 		case ' ', '\t', '\n', '\r':
 			if tokenStarted {
 				flush()
@@ -61,13 +86,20 @@ func Split(s string) ([]string, error) {
 	if escaped {
 		current.WriteRune('\\')
 	}
-	if inQuote {
-		return nil, fmt.Errorf("unclosed quote in %q", s)
+	if quoteChar != 0 {
+		return nil, fmt.Errorf("unclosed %s quote in %q", quoteName(quoteChar), s)
 	}
 	if tokenStarted {
 		flush()
 	}
 	return tokens, nil
+}
+
+func quoteName(r rune) string {
+	if r == '\'' {
+		return "single"
+	}
+	return "double"
 }
 
 func joinLineContinuations(s string) string {

@@ -10,6 +10,9 @@ import (
 	"regexp"
 	"strings"
 
+	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpoverrides"
@@ -70,6 +73,17 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// The manifest's api_name is the user's chosen identity (set by
+	// generate --name) and outranks the spec's info.title slug. Without
+	// this preempt, downstream emitters (WriteToolsManifest,
+	// populateMCPMetadata, GenerateMCPSurface) regenerate mcp_binary,
+	// api_name, manifest.json's name/entry_point, and
+	// cmd/<slug>-pp-{cli,mcp}/ directories under the title-derived slug
+	// — silently flipping a "telegram" CLI to "telegram-bot" mid-sync.
+	if prior := applyManifestNameOverride(cliDir, parsed); prior != "" {
+		fmt.Fprintf(os.Stderr, "mcp-sync: using manifest api_name %q over spec-derived slug %q\n", parsed.Name, prior)
+	}
+	applyCatalogMetadata(parsed)
 	// Validate that spec.yaml.name matches the directory's basename.
 	// Older library CLIs sometimes have drift (weather-goat's
 	// spec.yaml.name = "weather"; open-meteo's name diverges similarly)
@@ -466,6 +480,55 @@ func newRootCmd(flags *rootFlags) *cobra.Command {
 	src = src[:exitStart] + "\n\treturn rootCmd\n}\n" + src[exitEnd:]
 
 	return writeFileAtomic(path, []byte(src))
+}
+
+// defaultConfigPathFormat is the spec-derived shape the OpenAPI/internal
+// parsers emit for Config.Path. The override only migrates paths matching
+// this shape; hand-customized paths (XDG-style overrides, per-environment
+// roots) are left alone.
+const defaultConfigPathFormat = "~/.config/%s/config.toml"
+
+// applyManifestNameOverride replaces parsed.Name with the existing
+// CLI manifest's api_name when the two diverge. Returns the prior
+// parsed.Name when an override happened, "" otherwise (manifest
+// missing, api_name empty, or values already agreed).
+func applyManifestNameOverride(cliDir string, parsed *spec.APISpec) string {
+	if parsed == nil {
+		return ""
+	}
+	m, err := pipeline.ReadCLIManifest(cliDir)
+	if err != nil {
+		// fs.ErrNotExist is the expected legacy-CLI case — fall through
+		// silently. A JSON parse failure (corrupted/partially-written
+		// manifest) is not expected: it would silently revert to the
+		// pre-fix spec-derived slug with no operator signal, so surface
+		// it on stderr.
+		if !errors.Is(err, fs.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "mcp-sync: could not read .printing-press.json (%v); falling back to spec-derived slug\n", err)
+		}
+		return ""
+	}
+	if m.APIName == "" || m.APIName == parsed.Name {
+		return ""
+	}
+	prior := parsed.Name
+	if parsed.Config.Path == fmt.Sprintf(defaultConfigPathFormat, naming.CLI(prior)) {
+		parsed.Config.Path = fmt.Sprintf(defaultConfigPathFormat, naming.CLI(m.APIName))
+	}
+	catalogmeta.RebaseAuthEnvPrefix(&parsed.Auth, prior, m.APIName)
+	parsed.Name = m.APIName
+	return prior
+}
+
+func applyCatalogMetadata(parsed *spec.APISpec) {
+	if parsed == nil {
+		return
+	}
+	entry, err := catalog.LookupFS(catalogfs.FS, parsed.Name)
+	if err != nil {
+		return
+	}
+	catalogmeta.ApplyRuntimeMetadata(parsed, entry)
 }
 
 // readExistingManifestDisplayName returns the display_name from an

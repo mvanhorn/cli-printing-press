@@ -215,13 +215,126 @@ CREATE TABLE IF NOT EXISTS sync_state (
 	assert.Equal(t, 1, countDomainTables(storeSource))
 }
 
+// TestCheckPipelineIntegritySyncResourcesEmpty asserts that when the generator
+// emits sync.go with an empty defaultSyncResources() body (the structural
+// signature of an API with no bulk-list endpoint, e.g., Allrecipes), dogfood's
+// pipeline check records SyncFileEmitted=true and SyncResourcesPresent=false
+// and surfaces the detail string. Issue #1156.
+func TestCheckPipelineIntegritySyncResourcesEmpty(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "sync.go"), `package cli
+
+func runSync(s interface{ UpsertItems() error }) error {
+	return s.UpsertItems()
+}
+
+func defaultSyncResources() []string {
+	return []string{}
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n")
+
+	result := checkPipelineIntegrity(dir)
+	assert.True(t, result.SyncFileEmitted, "sync.go was written")
+	assert.False(t, result.SyncResourcesPresent, "defaultSyncResources is empty")
+	assert.Contains(t, result.Detail, "defaultSyncResources empty")
+}
+
+// TestCheckPipelineIntegritySyncResourcesPopulated covers the normal case where
+// the generator emits sync.go with one or more resources. Both new fields
+// should be set; the empty-list detail string should not appear.
+func TestCheckPipelineIntegritySyncResourcesPopulated(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "sync.go"), `package cli
+
+func runSync(s interface{ UpsertUsers() error }) error {
+	return s.UpsertUsers()
+}
+
+func defaultSyncResources() []string {
+	return []string{
+		"users",
+	}
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n")
+
+	result := checkPipelineIntegrity(dir)
+	assert.True(t, result.SyncFileEmitted)
+	assert.True(t, result.SyncResourcesPresent)
+	assert.NotContains(t, result.Detail, "defaultSyncResources empty")
+}
+
+func TestHasPopulatedSyncResources(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{
+			name: "empty source",
+			src:  "",
+			want: false,
+		},
+		{
+			name: "helper absent (hand-rolled or fixture)",
+			src:  "package cli\nfunc runSync() {}\n",
+			want: true,
+		},
+		{
+			name: "helper present with empty list",
+			src: `package cli
+func defaultSyncResources() []string {
+	return []string{}
+}
+`,
+			want: false,
+		},
+		{
+			name: "helper present with one entry",
+			src: `package cli
+func defaultSyncResources() []string {
+	return []string{
+		"users",
+	}
+}
+`,
+			want: true,
+		},
+		{
+			name: "helper present with several entries",
+			src: `package cli
+func defaultSyncResources() []string {
+	return []string{
+		"commissions",
+		"customers",
+		"domains",
+	}
+}
+`,
+			want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, hasPopulatedSyncResources(tc.src))
+		})
+	}
+}
+
 func TestDeriveDogfoodVerdict(t *testing.T) {
 	report := &DogfoodReport{
 		PathCheck:     PathCheckResult{Tested: 10, Valid: 10, Pct: 100},
 		AuthCheck:     AuthCheckResult{Match: true},
 		DeadFlags:     DeadCodeResult{Dead: 1},
 		DeadFuncs:     DeadCodeResult{Dead: 0},
-		PipelineCheck: PipelineResult{SyncCallsDomain: true},
+		PipelineCheck: PipelineResult{SyncCallsDomain: true, SyncResourcesPresent: true},
 	}
 	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
 
@@ -234,6 +347,15 @@ func TestDeriveDogfoodVerdict(t *testing.T) {
 	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
 
 	report.PipelineCheck.SyncCallsDomain = true
+	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
+
+	// Issue #1156: when sync.go is emitted but defaultSyncResources is empty,
+	// the sync command is a runtime no-op. Dogfood must flag this as WARN so
+	// the gap surfaces at shipcheck time.
+	report.PipelineCheck.SyncFileEmitted = true
+	report.PipelineCheck.SyncResourcesPresent = false
+	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+	report.PipelineCheck.SyncResourcesPresent = true
 	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
 
 	report.ExampleCheck = ExampleCheckResult{Tested: 10, WithExamples: 4}
@@ -1162,6 +1284,188 @@ func TestCheckNovelFeatures_ZeroSurvivors(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(rootData), "Highlights (not in the official API docs):")
 	assert.NotContains(t, string(rootData), "planned health")
+}
+
+// TestCheckNovelFeatures_CrossCutting pins the cross-cutting-feature
+// fallback added in #1197: planned features whose Command is a
+// parenthetical marker ("(any) --dry-run", "(internal client behavior)",
+// "(any read command, default behavior)") are detected against
+// rootFlags / agent-authored internal packages rather than reported as
+// missing. Flag-named features still report missing when the flag isn't
+// declared anywhere in CLI source.
+func TestCheckNovelFeatures_CrossCutting(t *testing.T) {
+	// Helper: minimal CLI fixture with a single command file plus a
+	// root.go that declares a few persistent flags as string literals.
+	// Optional agentPkg adds an agent-authored internal/<name>/<name>.go.
+	setupCLI := func(t *testing.T, agentPkg string) string {
+		t.Helper()
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "root.go"), strings.Join([]string{
+			`package cli`,
+			``,
+			`func newRootCmd() *cobra.Command {`,
+			`	rootCmd := &cobra.Command{Use: "test-pp-cli"}`,
+			`	rootCmd.PersistentFlags().Bool("dry-run", false, "preview only")`,
+			`	rootCmd.PersistentFlags().String("tier", "", "service tier")`,
+			`	rootCmd.AddCommand(newHealthCmd())`,
+			`	return rootCmd`,
+			`}`,
+			``,
+		}, "\n"))
+		if agentPkg != "" {
+			agentDir := filepath.Join(cliDir, "internal", agentPkg)
+			require.NoError(t, os.MkdirAll(agentDir, 0o755))
+			writeTestFile(t, filepath.Join(agentDir, "request.go"),
+				"package "+agentPkg+"\n\nfunc DoRequest() {}\n")
+		}
+		return cliDir
+	}
+
+	t.Run("global flag declared on rootCmd resolves (any) marker", func(t *testing.T) {
+		cliDir := setupCLI(t, "")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Dry-run mode", Command: "(any) --dry-run"},
+				{Name: "Service tier", Command: "(any) --tier standard"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 2, result.Planned)
+		assert.Equal(t, 2, result.Found)
+		assert.Empty(t, result.Missing)
+	})
+
+	t.Run("undeclared flag reports missing", func(t *testing.T) {
+		cliDir := setupCLI(t, "")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Bogus flag", Command: "(any) --nonexistent-flag"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 0, result.Found)
+		assert.Equal(t, []string{"(any) --nonexistent-flag"}, result.Missing)
+	})
+
+	t.Run("internal marker resolves when an agent-authored package exists", func(t *testing.T) {
+		cliDir := setupCLI(t, "dfs")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Adaptive client", Command: "(internal client behavior)"},
+				{Name: "Config resolution", Command: "(internal config resolution)"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 2, result.Found)
+		assert.Empty(t, result.Missing)
+	})
+
+	t.Run("internal marker reports missing when no agent package exists", func(t *testing.T) {
+		cliDir := setupCLI(t, "")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Adaptive client", Command: "(internal client behavior)"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 0, result.Found)
+		assert.Equal(t, []string{"(internal client behavior)"}, result.Missing)
+	})
+
+	t.Run("any-marker description without flag trusts the planner", func(t *testing.T) {
+		cliDir := setupCLI(t, "")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Default behavior", Command: "(any read command, default behavior)"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 1, result.Found)
+		assert.Empty(t, result.Missing)
+	})
+
+	t.Run("regular commands still reported missing when unbuilt", func(t *testing.T) {
+		// "sql" and "search" don't have command files and don't carry
+		// cross-cutting markers, so they must still appear as missing —
+		// the cross-cutting fallback must not mask genuinely-unbuilt
+		// commands. The "sql --dry-run" variant pins that a real command
+		// verb followed by a globally-declared flag is still reported
+		// missing: the fallback must defer to the regular matcher for
+		// these shapes, not absorb them just because the flag happens to
+		// be quoted in internal/cli/*.go.
+		cliDir := setupCLI(t, "dfs")
+		researchDir := t.TempDir()
+		require.NoError(t, writeResearchJSON(&ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Local SQL", Command: "sql"},
+				{Name: "Local search", Command: "search"},
+				{Name: "SQL dry-run", Command: "sql --dry-run"},
+			},
+		}, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 0, result.Found)
+		assert.ElementsMatch(t, []string{"sql", "search", "sql --dry-run"}, result.Missing)
+	})
+}
+
+// TestMatchCrossCuttingFeature covers the helper's edge cases directly:
+// non-cross-cutting inputs return applied=false so the regular path
+// matcher gets to decide; flag detection extracts =value suffixes and
+// surrounding punctuation; case-folding is consistent.
+func TestMatchCrossCuttingFeature(t *testing.T) {
+	cliDir := t.TempDir()
+	cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+	writeTestFile(t, filepath.Join(cliCodeDir, "root.go"),
+		"package cli\n\nfunc init() {\n\t_ = \"dry-run\"\n\t_ = \"agent\"\n}\n")
+
+	cases := []struct {
+		name    string
+		cmd     string
+		matched bool
+		applied bool
+	}{
+		{"plain command name yields applied=false", "health", false, false},
+		{"space-separated path yields applied=false", "portfolio perf", false, false},
+		{"command followed by flag yields applied=false", "sql --dry-run", false, false},
+		{"bare flag matches declared name", "--dry-run", true, true},
+		{"flag with =value suffix matches", "--dry-run=true", true, true},
+		{"flag with trailing punctuation matches", "--dry-run,", true, true},
+		{"uppercase paren marker normalizes", "(ANY) --dry-run", true, true},
+		{"undeclared flag reports missing", "(any) --no-such-flag", false, true},
+		{"unknown paren marker yields applied=false", "(observation) something", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			matched, applied := matchCrossCuttingFeature(tc.cmd, cliDir)
+			assert.Equal(t, tc.applied, applied, "applied")
+			assert.Equal(t, tc.matched, matched, "matched")
+		})
+	}
 }
 
 func captureStderr[T any](t *testing.T, captured *string, fn func() T) T {

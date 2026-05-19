@@ -80,6 +80,78 @@ func TestCopyDir(t *testing.T) {
 	}
 }
 
+func TestCopyDirStripsGitPlumbing(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "src")
+	dst := filepath.Join(t.TempDir(), "dst")
+	require.NoError(t, os.MkdirAll(src, 0o755))
+
+	// Top-level .git/ from a stray `git init` in a working CLI dir.
+	require.NoError(t, os.MkdirAll(filepath.Join(src, ".git", "objects", "pack"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, ".git", "objects", "pack", "pack-abc.idx"), []byte("idx"), 0o644))
+
+	// Nested .git/ (submodule).
+	require.NoError(t, os.MkdirAll(filepath.Join(src, "vendor", "submod", ".git"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "vendor", "submod", ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "vendor", "submod", "module.go"), []byte("package submod"), 0o644))
+
+	// .gitmodules at the root.
+	require.NoError(t, os.WriteFile(filepath.Join(src, ".gitmodules"), []byte("[submodule \"submod\"]\n\tpath = vendor/submod\n"), 0o644))
+
+	// Legitimate CLI content that must be preserved.
+	require.NoError(t, os.WriteFile(filepath.Join(src, ".gitignore"), []byte("/build\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, ".gitattributes"), []byte("* text=auto\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(src, "main.go"), []byte("package main"), 0o644))
+
+	require.NoError(t, CopyDir(src, dst))
+
+	assert.NoDirExists(t, filepath.Join(dst, ".git"))
+	assert.NoDirExists(t, filepath.Join(dst, "vendor", "submod", ".git"))
+	assert.NoFileExists(t, filepath.Join(dst, ".gitmodules"))
+
+	assert.FileExists(t, filepath.Join(dst, ".gitignore"))
+	assert.FileExists(t, filepath.Join(dst, ".gitattributes"))
+	assert.FileExists(t, filepath.Join(dst, "main.go"))
+	assert.FileExists(t, filepath.Join(dst, "vendor", "submod", "module.go"))
+}
+
+// A worktree-style ".git" can be a regular file pointing at the parent
+// gitdir, or a symlink pointing outside the source tree. CopyDir would
+// otherwise reject the symlink for escaping the source root, defeating the
+// strip. Both shapes must drop silently like the directory shape.
+func TestCopyDirStripsGitFileAndSymlink(t *testing.T) {
+	t.Run("git as regular file", func(t *testing.T) {
+		src := filepath.Join(t.TempDir(), "src")
+		dst := filepath.Join(t.TempDir(), "dst")
+		require.NoError(t, os.MkdirAll(src, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(src, ".git"), []byte("gitdir: /elsewhere\n"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(src, "main.go"), []byte("package main"), 0o644))
+
+		require.NoError(t, CopyDir(src, dst))
+
+		assert.NoFileExists(t, filepath.Join(dst, ".git"))
+		assert.FileExists(t, filepath.Join(dst, "main.go"))
+	})
+
+	t.Run("git as external symlink", func(t *testing.T) {
+		root := t.TempDir()
+		src := filepath.Join(root, "src")
+		dst := filepath.Join(root, "dst")
+		require.NoError(t, os.MkdirAll(src, 0o755))
+
+		outside := filepath.Join(root, "real-gitdir")
+		require.NoError(t, os.MkdirAll(outside, 0o755))
+		require.NoError(t, os.Symlink(outside, filepath.Join(src, ".git")))
+		require.NoError(t, os.WriteFile(filepath.Join(src, "main.go"), []byte("package main"), 0o644))
+
+		require.NoError(t, CopyDir(src, dst))
+
+		_, err := os.Lstat(filepath.Join(dst, ".git"))
+		assert.True(t, os.IsNotExist(err), "external .git symlink should be skipped, not copied or rejected")
+		assert.FileExists(t, filepath.Join(dst, "main.go"))
+	})
+}
+
 func TestCopyDirRejectsExternalSymlinks(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -195,6 +267,47 @@ paths: {}
 
 	m := readPublishedManifest(t, state.WorkingDir)
 	assert.Equal(t, "Product Hunt", m.DisplayName)
+}
+
+func TestWriteCLIManifestForPublishAppliesCatalogMetadataAfterNameOverride(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	state := NewStateWithRun("elevenlabs", filepath.Join(tmp, "working", "elevenlabs-pp-cli"), "20260513-elevenlabs", "test-scope")
+	require.NoError(t, os.MkdirAll(state.WorkingDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(state.WorkingDir, "spec.yaml"), []byte(`
+openapi: "3.1.0"
+info:
+  title: ElevenLabs API Documentation
+  version: "1.0"
+paths:
+  /v1/models:
+    get:
+      operationId: getModels
+      parameters:
+        - name: xi-api-key
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+`), 0o644))
+
+	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+
+	m := readPublishedManifest(t, state.WorkingDir)
+	assert.Equal(t, []string{"ELEVENLABS_API_KEY"}, m.AuthEnvVars)
+	assert.Equal(t, "https://elevenlabs.io/app/settings/api-keys", m.AuthKeyURL)
+
+	tools, err := ReadToolsManifest(state.WorkingDir)
+	require.NoError(t, err)
+	assert.Equal(t, "elevenlabs", tools.APIName)
+	assert.Equal(t, "https://api.elevenlabs.io", tools.BaseURL)
+	assert.Equal(t, []string{"ELEVENLABS_API_KEY"}, tools.Auth.EnvVars)
 }
 
 func TestWriteCLIManifestForPublishPopulatesCategoryFromSpec(t *testing.T) {

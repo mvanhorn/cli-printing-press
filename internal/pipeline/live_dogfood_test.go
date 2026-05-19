@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -104,6 +106,49 @@ func TestRunLiveDogfoodDoesNotWriteAcceptanceMarkerOnFail(t *testing.T) {
 	assert.True(t, os.IsNotExist(statErr), "failed live dogfood must not write an acceptance marker")
 }
 
+// TestDogfoodEnvVarMatchesEmittedTemplate guards against the runner-side
+// const and the emitted-CLI helper drifting apart. They live in
+// separate Go modules so a shared import is impossible; this test reads
+// the template as text and asserts the literal matches dogfoodEnvVar.
+// Without it, a typo on either side would silently break every
+// IsDogfoodEnv() short-circuit in printed CLIs.
+func TestDogfoodEnvVarMatchesEmittedTemplate(t *testing.T) {
+	content, err := generator.TemplateFS.ReadFile("templates/cliutil_verifyenv.go.tmpl")
+	require.NoError(t, err)
+
+	re := regexp.MustCompile(`const\s+DogfoodEnvVar\s*=\s*"([^"]+)"`)
+	match := re.FindStringSubmatch(string(content))
+	require.Len(t, match, 2, "DogfoodEnvVar const not found in cliutil_verifyenv.go.tmpl")
+	assert.Equal(t, dogfoodEnvVar, match[1], "runner-side dogfoodEnvVar must match template-side DogfoodEnvVar literal")
+}
+
+// TestRunLiveDogfoodProcessSetsDogfoodEnvVar asserts the live-dogfood
+// subprocess inherits PRINTING_PRESS_DOGFOOD=1 so long-running commands
+// can short-circuit via cliutil.IsDogfoodEnv() to fit inside the
+// matrix's per-command timeout.
+func TestRunLiveDogfoodProcessSetsDogfoodEnvVar(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	// Unset before the call so a CI runner that happens to have
+	// PRINTING_PRESS_DOGFOOD pre-set in its environment can't make the
+	// assertion pass via inheritance — the test must prove the runner's
+	// own append line is what gets the var into the subprocess.
+	t.Setenv("PRINTING_PRESS_DOGFOOD", "")
+
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "echo-env")
+	script := "#!/bin/sh\nprintf '%s' \"${PRINTING_PRESS_DOGFOOD:-}\"\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	run := runLiveDogfoodProcess(binPath, dir, nil, 5*time.Second)
+	require.NoError(t, run.err, "fixture: %s", run.stderr)
+	assert.Equal(t, "1", run.stdout, "live-dogfood subprocess should see PRINTING_PRESS_DOGFOOD=1")
+}
+
 func TestRunLiveDogfoodErrorPathAcceptsExpectedNonZeroExit(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test uses a shell script as the fake binary; skip on Windows")
@@ -164,6 +209,272 @@ func TestLiveDogfoodCommandMutatesPrefersEndpointMethod(t *testing.T) {
 		Path:        []string{"accounts", "plain-name"},
 		Annotations: map[string]string{"pp:method": "POST"},
 	}))
+}
+
+func TestHappyPathFileFixtureSkip(t *testing.T) {
+	t.Parallel()
+
+	cliDir := t.TempDir()
+	existing := filepath.Join(cliDir, "fixture.csv")
+	require.NoError(t, os.WriteFile(existing, []byte("header\nvalue\n"), 0o600))
+
+	cases := []struct {
+		name       string
+		args       []string
+		wantSkip   bool
+		wantPrefix string
+	}{
+		{
+			name:     "no file flag",
+			args:     []string{"sync", "--limit", "5"},
+			wantSkip: false,
+		},
+		{
+			name:       "missing csv fixture",
+			args:       []string{"vet", "--csv", "prospects.csv"},
+			wantSkip:   true,
+			wantPrefix: "file fixture required: --csv prospects.csv",
+		},
+		{
+			name:       "missing file fixture",
+			args:       []string{"import-csv", "--file", "accounts.csv"},
+			wantSkip:   true,
+			wantPrefix: "file fixture required: --file accounts.csv",
+		},
+		{
+			name:       "missing fixture via --flag=value form",
+			args:       []string{"import-csv", "--file=accounts.csv"},
+			wantSkip:   true,
+			wantPrefix: "file fixture required: --file accounts.csv",
+		},
+		{
+			name:     "existing fixture in cliDir",
+			args:     []string{"vet", "--csv", "fixture.csv"},
+			wantSkip: false,
+		},
+		{
+			name:     "URL value does not trigger skip",
+			args:     []string{"upload", "--file", "https://example.com/data.csv"},
+			wantSkip: false,
+		},
+		{
+			name:     "unrelated flag name ignored",
+			args:     []string{"resolve", "--query", "anything.csv"},
+			wantSkip: false,
+		},
+		{
+			name:     "case-insensitive flag match",
+			args:     []string{"upload", "--CSV", "missing.csv"},
+			wantSkip: true,
+		},
+		{
+			// --profile contains "file" as a substring but is not a file
+			// flag; spurious skips here would silently drop test signal.
+			name:     "profile flag does not trigger skip",
+			args:     []string{"deploy", "--profile", "staging"},
+			wantSkip: false,
+		},
+		{
+			name:     "hyphenated suffix matches",
+			args:     []string{"upload", "--input-file", "missing.txt"},
+			wantSkip: true,
+		},
+		{
+			name:     "underscore suffix matches",
+			args:     []string{"upload", "--output_file", "missing.txt"},
+			wantSkip: true,
+		},
+		{
+			name:     "csv suffix matches",
+			args:     []string{"import", "--import-csv", "missing.csv"},
+			wantSkip: true,
+		},
+		{
+			// --file-format takes a format identifier (csv/json), not a path.
+			// Greptile's suggestion correctly excludes the prefix shape.
+			name:     "file prefix without suffix anchor does not match",
+			args:     []string{"export", "--file-format", "csv"},
+			wantSkip: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := happyPathFileFixtureSkip(tc.args, cliDir)
+			if tc.wantSkip {
+				assert.NotEmpty(t, got, "expected skip reason")
+				if tc.wantPrefix != "" {
+					assert.Equal(t, tc.wantPrefix, got)
+				}
+			} else {
+				assert.Empty(t, got, "expected no skip")
+			}
+		})
+	}
+}
+
+func TestRunLiveDogfoodHappyPathHandlesShellCommentInExample(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodShellCommentScript(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "sync", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected sync happy_path result")
+	assert.Equal(t, LiveDogfoodStatusPass, happy.Status,
+		"trailing '# comment' in Cobra Example must not bleed into happy_path argv (reason=%q)", happy.Reason)
+	assert.Equal(t, []string{"sync"}, happy.Args,
+		"happy_path argv must contain only the subcommand path, not the comment text")
+}
+
+func writeLiveDogfoodShellCommentScript(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"sync"}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "sync" ] && [ "${2:-}" = "--help" ]; then
+  cat <<'HELP'
+Refresh local cache.
+
+Usage:
+  fixture-pp-cli sync [flags]
+
+Examples:
+  fixture-pp-cli sync                       # full schema + records refresh
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "sync" ]; then
+  # Anything past 'sync' means the example's trailing comment leaked into
+  # argv — fail loudly so the test catches the regression.
+  if [ "$#" -gt 1 ] && [ "${2}" != "--json" ]; then
+    echo "unexpected sync args: $*" >&2
+    exit 4
+  fi
+  if [ "${2:-}" = "--json" ]; then
+    echo '{"synced":true}'
+    exit 0
+  fi
+  echo 'synced'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
+func TestRunLiveDogfoodSkipsHappyPathOnMissingFileFixture(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	dir, binaryName := writeLiveDogfoodFileFixtureScript(t)
+	report, err := RunLiveDogfood(LiveDogfoodOptions{
+		CLIDir:     dir,
+		BinaryName: binaryName,
+		Level:      "full",
+		Timeout:    2 * time.Second,
+	})
+	require.NoError(t, err)
+
+	happy := findResultByCommandKind(report, "import-csv", LiveDogfoodTestHappy)
+	require.NotNil(t, happy, "expected import-csv happy_path result")
+	assert.Equal(t, LiveDogfoodStatusSkip, happy.Status)
+	assert.Contains(t, happy.Reason, reasonFileFixtureRequired)
+	assert.Contains(t, happy.Reason, "accounts.csv")
+
+	json := findResultByCommandKind(report, "import-csv", LiveDogfoodTestJSON)
+	require.NotNil(t, json, "expected import-csv json_fidelity result")
+	assert.Equal(t, LiveDogfoodStatusSkip, json.Status)
+	assert.Contains(t, json.Reason, reasonFileFixtureRequired)
+
+	help := findResultByCommandKind(report, "import-csv", LiveDogfoodTestHelp)
+	require.NotNil(t, help, "expected import-csv help result")
+	assert.Equal(t, LiveDogfoodStatusPass, help.Status, "help check must still pass when the only failure is a missing fixture")
+}
+
+func writeLiveDogfoodFileFixtureScript(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"import-csv"}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "import-csv" ] && [ "${2:-}" = "--help" ]; then
+  cat <<'HELP'
+Import accounts from a CSV file.
+
+Usage:
+  fixture-pp-cli import-csv [flags]
+
+Examples:
+  fixture-pp-cli import-csv --file accounts.csv
+
+Flags:
+      --file string   Path to the CSV file
+      --json          Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "import-csv" ]; then
+  # Without a real fixture, this would error out. The test exercises the
+  # skip path; the actual subprocess should never be invoked for happy_path.
+  echo 'open accounts.csv: no such file or directory' >&2
+  exit 1
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
 }
 
 func TestValidLiveDogfoodJSONOutputAcceptsNDJSON(t *testing.T) {
@@ -1948,18 +2259,27 @@ func TestRunLiveDogfoodSearchErrorPathInvalidJSON(t *testing.T) {
 }
 
 func TestRunLiveDogfoodSearchErrorPathMutationFallthrough(t *testing.T) {
-	dir, binaryName, _ := setupRichFixture(t)
+	dir, binaryName, argvLogPath := setupRichFixture(t)
 	report := runRichFixtureMatrix(t, dir, binaryName)
 
-	// widgets delete has no --query flag and no <query> positional, so
-	// commandSupportsSearch returns false. Even if it had --query (it
-	// doesn't), the mutating-leaf deny-list (delete is in mutatingVerbs)
-	// would still suppress search-shape and route to the existing
-	// non-zero-required strategy. Fixture exit 2 → Pass.
+	// widgets delete is a mutating leaf (in mutatingVerbs). The error_path
+	// probe is skipped without invoking the binary so that APIs which would
+	// accept __printing_press_invalid__ as a real id (and queue or perform
+	// the deletion) cannot mutate live data.
 	got := findResultByCommandKind(report, "widgets delete", LiveDogfoodTestError)
 	require.NotNil(t, got)
-	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
-	assert.Equal(t, 2, got.ExitCode)
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status, got.Reason)
+	assert.Equal(t, reasonMutatingErrorPath, got.Reason)
+	assert.Empty(t, got.Args, "skipped error_path must not include executable mutation args")
+	assert.Equal(t, 0, got.ExitCode, "skipped error_path must not record a real exit code")
+
+	// Defense-in-depth: the binary must not have been invoked with the
+	// invalid-id sentinel. Status=Skip alone is structurally distinct from
+	// a Pass that ran the probe, but a direct argv-log check makes the
+	// "no live invocation" invariant explicit.
+	lines := readArgvLog(t, argvLogPath)
+	assert.Equal(t, 0, countArgvLines(lines, "delete", "__printing_press_invalid__"),
+		"error_path probe must not invoke the binary for a mutating command")
 }
 
 // writeLiveDogfoodDryRunFixture builds a CLI binary that exposes three
@@ -1987,6 +2307,12 @@ func writeLiveDogfoodDryRunFixture(t *testing.T) (dir string, binaryName string)
 	binPath := filepath.Join(dir, binaryName)
 	script := `#!/bin/sh
 set -u
+
+# Argv logging side channel — same convention as setupRichFixture. Tests
+# that don't set PRINTING_PRESS_TEST_ARGV_LOG see no behavior change.
+if [ -n "${PRINTING_PRESS_TEST_ARGV_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$PRINTING_PRESS_TEST_ARGV_LOG"
+fi
 
 if [ "$1" = "agent-context" ]; then
   cat <<'JSON'
@@ -2297,6 +2623,37 @@ func TestRunLiveDogfoodErrorPathRealSkipMatchesHappyPathReason(t *testing.T) {
 		"error_path_real skip reason must match happy_path skip reason")
 	assert.Contains(t, errorReal.Reason, "no list companion",
 		"resolve-skipped reason should surface the list-companion gap")
+}
+
+func TestRunLiveDogfoodSkipsErrorPathForMutatorWithDryRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	argvLogPath := filepath.Join(t.TempDir(), "argv.log")
+	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLogPath)
+	dir, binaryName := writeLiveDogfoodDryRunFixture(t)
+	report := runDryRunFixtureMatrix(t, dir, binaryName)
+
+	// widgets update <id> is a mutator that advertises --dry-run and takes a
+	// positional argument. The fixture is wired to exit 99 ("matrix should
+	// have skipped") if invoked. With the fix the error_path probe must
+	// skip outright instead of running `widgets update __printing_press_invalid__`
+	// against the live API — even though --dry-run could be injected, the
+	// error_path's invalid-argument semantics are not compatible with a
+	// dry-run preview, so the safe action is to skip.
+	got := findResultByCommandKind(report, "widgets update", LiveDogfoodTestError)
+	require.NotNil(t, got, "expected widgets update error_path result in matrix")
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status, got.Reason)
+	assert.Equal(t, reasonMutatingErrorPath, got.Reason)
+	assert.Empty(t, got.Args, "skipped error_path must not include executable mutation args")
+
+	// Defense-in-depth: assert the binary was never invoked with the
+	// invalid-id sentinel. The exit-99 sentinel in the fixture already
+	// catches regression via the Status/Args/ExitCode assertions, but
+	// stating the "no live invocation" invariant directly is clearer.
+	lines := readArgvLog(t, argvLogPath)
+	assert.Equal(t, 0, countArgvLines(lines, "update", "__printing_press_invalid__"),
+		"error_path probe must not invoke the binary for a mutating command")
 }
 
 // TestRunLiveDogfoodErrorPathRealReportContribution locks in the matrix

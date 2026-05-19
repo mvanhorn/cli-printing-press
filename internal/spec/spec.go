@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -26,13 +27,15 @@ const (
 const (
 	HTTPTransportStandard        = "standard"          // default for official API clients
 	HTTPTransportBrowserHTTP     = "browser-http"      // stdlib transport with HTTP/2 disabled for browser-facing web surfaces
-	HTTPTransportBrowserChrome   = "browser-chrome"    // Chrome-impersonated transport for browser-facing web surfaces
+	HTTPTransportBrowserChrome   = "browser-chrome"    // Chrome-impersonated transport for browser-facing web surfaces (no version force; Chrome negotiates)
+	HTTPTransportBrowserChromeH2 = "browser-chrome-h2" // Chrome-impersonated transport forced through HTTP/2 for origins that serve H/2 but not H/3
 	HTTPTransportBrowserChromeH3 = "browser-chrome-h3" // Chrome-impersonated transport forced through HTTP/3 for stricter bot screens
 )
 
 const (
-	ResponseFormatJSON = "json"
-	ResponseFormatHTML = "html"
+	ResponseFormatJSON   = "json"
+	ResponseFormatHTML   = "html"
+	ResponseFormatBinary = "binary"
 )
 
 const (
@@ -61,6 +64,12 @@ const (
 //   - Astro:       site-specific; declare per spec
 const DefaultEmbeddedJSONScriptSelector = "script#__NEXT_DATA__"
 
+// PlaceholderBaseURL is the fake host parsers substitute when they cannot
+// resolve a real one. Shared across openapi/graphql/docspec so callers have
+// one canonical sentinel to compare against; the generate command refuses
+// to ship a CLI whose BaseURL is this value.
+const PlaceholderBaseURL = "https://api.example.com"
+
 type APISpec struct {
 	Name string `yaml:"name" json:"name"`
 	// DisplayName is the human-readable brand name used in user-facing
@@ -76,6 +85,10 @@ type APISpec struct {
 	// info.title. Catalog enrichment may replace that fallback, but must not
 	// replace explicit display_name / x-display-name values.
 	DisplayNameDerivedFromTitle bool `yaml:"-" json:"-"`
+	// BaseURLIsPlaceholder is set by parsers that filled BaseURL with the
+	// PlaceholderBaseURL fallback because the source declared no real host.
+	// The generate command refuses to ship in that state — see internal/cli/root.go.
+	BaseURLIsPlaceholder bool `yaml:"-" json:"-"`
 	// Description describes the API itself ("REST API for ordering pizza").
 	// It flows into generated docs and SKILL.md but is intentionally NOT used
 	// as the printed CLI's --help text; that's CLIDescription's job.
@@ -99,36 +112,56 @@ type APISpec struct {
 	// model couldn't represent that without hardcoding "/graphql" in the
 	// generated client.
 	GraphQLEndpointPath string `yaml:"graphql_endpoint_path,omitempty" json:"graphql_endpoint_path,omitempty"`
-	// EndpointTemplateVars lists placeholder names embedded in BaseURL or
-	// GraphQLEndpointPath as {var} (e.g., ["shop", "version"]). The
-	// generator emits per-variable env-var lookups in the printed CLI's
-	// config so users can resolve them at runtime. PR-1 carries this field
-	// as plumbing only; PR-2 wires the runtime substitution.
-	EndpointTemplateVars []string            `yaml:"endpoint_template_vars,omitempty" json:"endpoint_template_vars,omitempty"`
-	Owner                string              `yaml:"owner,omitempty" json:"owner,omitempty"`                   // GitHub owner for import paths and Homebrew tap
-	OwnerName            string              `yaml:"owner_name,omitempty" json:"owner_name,omitempty"`         // Display name (e.g. "Trevin Chow") for prose surfaces — Hermes author:, README byline. Distinct from Owner (slug) which drives module paths and copyright headers.
-	Printer              string              `yaml:"printer,omitempty" json:"printer,omitempty"`               // GitHub @handle of the human who ran the press for this CLI. Drives the per-CLI README byline link and the registry-side attribution. Distinct from Owner (the API-spec owner / wrapper-author identity).
-	PrinterName          string              `yaml:"printer_name,omitempty" json:"printer_name,omitempty"`     // Display name of the printer (e.g. "Matt Van Horn") for prose surfaces — README byline parenthetical. Resolution path mirrors OwnerName: raw git config user.name, no slug fallback, no "USER" sentinel.
-	Kind                 string              `yaml:"kind,omitempty" json:"kind,omitempty"`                     // "rest" (default) or "synthetic" — synthetic CLIs aggregate multiple sources beyond the spec; dogfood's path-validity check is relaxed accordingly
-	SpecSource           string              `yaml:"spec_source,omitempty" json:"spec_source,omitempty"`       // official, community, sniffed, docs — affects generated client defaults
-	ClientPattern        string              `yaml:"client_pattern,omitempty" json:"client_pattern,omitempty"` // rest (default), proxy-envelope — affects generated HTTP client
-	HTTPTransport        string              `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-http, browser-chrome, or browser-chrome-h3
-	HealthCheckPath      string              `yaml:"health_check_path,omitempty" json:"health_check_path,omitempty"`
-	ProxyRoutes          map[string]string   `yaml:"proxy_routes,omitempty" json:"proxy_routes,omitempty"`    // path prefix → service name for proxy-envelope routing
-	BearerRefresh        BearerRefreshConfig `yaml:"bearer_refresh,omitempty" json:"bearer_refresh,omitzero"` // live-source metadata for rotating public client bearer tokens
-	WebsiteURL           string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`      // product/company website (not the API base URL)
-	Category             string              `yaml:"category,omitempty" json:"category,omitempty"`            // catalog category (e.g., productivity, developer-tools) — used for library install path
-	Auth                 AuthConfig          `yaml:"auth" json:"auth"`
-	TierRouting          TierRoutingConfig   `yaml:"tier_routing,omitempty" json:"tier_routing,omitzero"`
-	RequiredHeaders      []RequiredHeader    `yaml:"required_headers,omitempty" json:"required_headers,omitempty"`
-	Config               ConfigSpec          `yaml:"config" json:"config"`
-	Resources            map[string]Resource `yaml:"resources" json:"resources"`
-	Types                map[string]TypeDef  `yaml:"types" json:"types"`
-	ExtraCommands        []ExtraCommand      `yaml:"extra_commands,omitempty" json:"extra_commands,omitempty"` // hand-written cobra commands declared so SKILL.md can document them; spec-only metadata, no code generated
-	Cache                CacheConfig         `yaml:"cache,omitempty" json:"cache"`                             // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
-	Share                ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
-	MCP                  MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, the emitted MCP binary is stdio-only (today's default). Opting into http adds a --transport/--addr flag surface so the same binary can serve cloud-hosted agents.
-	Throttling           ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
+	// EndpointTemplateVars lists placeholder names embedded in BaseURL,
+	// GraphQLEndpointPath, or per-tenant request paths as {var}
+	// (e.g., ["shop", "version"], or ["tenant"] for per-tenant SaaS APIs
+	// where the tenant ID is a path-positional segment). The generator
+	// emits per-variable env-var lookups in the printed CLI's config so
+	// users can resolve them at runtime, and the profiler treats paths
+	// whose only {placeholder}s are template vars as standalone-listable
+	// sync resources (rather than parent-context-dependent).
+	EndpointTemplateVars []string `yaml:"endpoint_template_vars,omitempty" json:"endpoint_template_vars,omitempty"`
+	// EndpointTemplateEnvOverrides maps a placeholder in EndpointTemplateVars
+	// to an explicit env-var name, overriding the default
+	// <APINAME>_<UPPER_PLACEHOLDER> resolution. Used for per-tenant or
+	// per-workspace path-positional templates whose env var doesn't follow
+	// the API-name convention (e.g. {tenant} resolved from ST_TENANT_ID
+	// across every ServiceTitan module). Populated from the OpenAPI
+	// `info.x-tenant-env-var` extension or set directly in internal YAML.
+	EndpointTemplateEnvOverrides map[string]string `yaml:"endpoint_template_env_overrides,omitempty" json:"endpoint_template_env_overrides,omitempty"`
+	// EndpointTemplateVarDefaults maps a placeholder in EndpointTemplateVars
+	// to a spec-declared default value. Populated for server-URL variables
+	// (OpenAPI `servers[0].url.variables.<name>.default`) so the generator
+	// can emit a runtime fallback in config.Load() — when the user's env
+	// var is unset, the default substitutes into BaseURL and doctor still
+	// has a real URL to probe. Path-positional templates (x-tenant-env-var
+	// style) leave this empty; there is no spec-level default for a
+	// tenant ID.
+	EndpointTemplateVarDefaults map[string]string   `yaml:"endpoint_template_var_defaults,omitempty" json:"endpoint_template_var_defaults,omitempty"`
+	Owner                       string              `yaml:"owner,omitempty" json:"owner,omitempty"`                   // GitHub owner for import paths and Homebrew tap
+	OwnerName                   string              `yaml:"owner_name,omitempty" json:"owner_name,omitempty"`         // Display name (e.g. "Trevin Chow") for prose surfaces — Hermes author:, README byline. Distinct from Owner (slug) which drives module paths and copyright headers.
+	Printer                     string              `yaml:"printer,omitempty" json:"printer,omitempty"`               // GitHub @handle of the human who ran the press for this CLI. Drives the per-CLI README byline link and the registry-side attribution. Distinct from Owner (the API-spec owner / wrapper-author identity).
+	PrinterName                 string              `yaml:"printer_name,omitempty" json:"printer_name,omitempty"`     // Display name of the printer (e.g. "Matt Van Horn") for prose surfaces — README byline parenthetical. Resolution path mirrors OwnerName: raw git config user.name, no slug fallback, no "USER" sentinel.
+	Kind                        string              `yaml:"kind,omitempty" json:"kind,omitempty"`                     // "rest" (default) or "synthetic" — synthetic CLIs aggregate multiple sources beyond the spec; dogfood's path-validity check is relaxed accordingly
+	SpecSource                  string              `yaml:"spec_source,omitempty" json:"spec_source,omitempty"`       // official, community, sniffed, docs — affects generated client defaults
+	ClientPattern               string              `yaml:"client_pattern,omitempty" json:"client_pattern,omitempty"` // rest (default), proxy-envelope — affects generated HTTP client
+	HTTPTransport               string              `yaml:"http_transport,omitempty" json:"http_transport,omitempty"` // standard (default for official APIs), browser-http, browser-chrome, browser-chrome-h2, or browser-chrome-h3
+	HealthCheckPath             string              `yaml:"health_check_path,omitempty" json:"health_check_path,omitempty"`
+	ProxyRoutes                 map[string]string   `yaml:"proxy_routes,omitempty" json:"proxy_routes,omitempty"`    // path prefix → service name for proxy-envelope routing
+	BearerRefresh               BearerRefreshConfig `yaml:"bearer_refresh,omitempty" json:"bearer_refresh,omitzero"` // live-source metadata for rotating public client bearer tokens
+	WebsiteURL                  string              `yaml:"website_url,omitempty" json:"website_url,omitempty"`      // product/company website (not the API base URL)
+	Category                    string              `yaml:"category,omitempty" json:"category,omitempty"`            // catalog category (e.g., productivity, developer-tools) — used for library install path
+	Auth                        AuthConfig          `yaml:"auth" json:"auth"`
+	TierRouting                 TierRoutingConfig   `yaml:"tier_routing,omitempty" json:"tier_routing,omitzero"`
+	RequiredHeaders             []RequiredHeader    `yaml:"required_headers,omitempty" json:"required_headers,omitempty"`
+	Config                      ConfigSpec          `yaml:"config" json:"config"`
+	Resources                   map[string]Resource `yaml:"resources" json:"resources"`
+	Types                       map[string]TypeDef  `yaml:"types" json:"types"`
+	ExtraCommands               []ExtraCommand      `yaml:"extra_commands,omitempty" json:"extra_commands,omitempty"` // hand-written cobra commands declared so SKILL.md can document them; spec-only metadata, no code generated
+	Cache                       CacheConfig         `yaml:"cache,omitempty" json:"cache"`                             // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
+	Share                       ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
+	MCP                         MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, small APIs (typed-endpoint count <= DefaultRemoteTransportEndpointThreshold) get stdio+http compiled in by APISpec.EffectiveMCPTransports so the same binary can serve cloud-hosted agents. Larger APIs stay stdio-only by default. Opting into http explicitly adds a --transport/--addr flag surface regardless of size.
+	Throttling                  ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
 }
 
 type TierRoutingConfig struct {
@@ -147,6 +180,52 @@ func (s *APISpec) HasTierRouting() bool {
 		return false
 	}
 	return s.TierRouting.DefaultTier != "" || len(s.TierRouting.Tiers) > 0
+}
+
+// EndpointTemplateEnvName returns the env-var name that resolves the given
+// {placeholder} in EndpointTemplateVars. Overrides win; the default is the
+// existing <APINAME>_<UPPER_PLACEHOLDER> convention so unannotated specs
+// (the common case) regenerate byte-for-byte.
+func (s *APISpec) EndpointTemplateEnvName(placeholder string) string {
+	if s != nil {
+		if override, ok := s.EndpointTemplateEnvOverrides[placeholder]; ok {
+			if trimmed := strings.TrimSpace(override); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	apiName := ""
+	if s != nil {
+		apiName = s.Name
+	}
+	return DefaultEndpointTemplateEnvName(apiName, placeholder)
+}
+
+// DefaultEndpointTemplateEnvName builds the conventional env-var name for a
+// template placeholder when no override applies. Exported so the pipeline
+// manifest emitter can reuse the same rule without importing the generator.
+func DefaultEndpointTemplateEnvName(apiName, placeholder string) string {
+	return strings.ToUpper(strings.ReplaceAll(naming.Snake(apiName), "-", "_") + "_" + strings.ReplaceAll(naming.Snake(placeholder), "-", "_"))
+}
+
+// EndpointTemplateDefault returns the spec-declared default value for the
+// given placeholder, or "" when none is registered. Empty for path-positional
+// templates that have no spec-level fallback.
+func (s *APISpec) EndpointTemplateDefault(placeholder string) string {
+	if s == nil {
+		return ""
+	}
+	return s.EndpointTemplateVarDefaults[placeholder]
+}
+
+// IsEndpointTemplateVar reports whether the given placeholder name appears
+// in EndpointTemplateVars. Used by the profiler to decide whether a path's
+// {placeholder}s are fully resolvable at request time.
+func (s *APISpec) IsEndpointTemplateVar(placeholder string) bool {
+	if s == nil {
+		return false
+	}
+	return slices.Contains(s.EndpointTemplateVars, placeholder)
 }
 
 func (s *APISpec) EffectiveTier(resource Resource, endpoint Endpoint) string {
@@ -294,15 +373,22 @@ func (s *APISpec) EffectiveHTTPTransport() string {
 		return HTTPTransportStandard
 	}
 	switch s.HTTPTransport {
-	case HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
+	case HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH2, HTTPTransportBrowserChromeH3:
 		return s.HTTPTransport
 	}
+	// Defaults map to the explicit -h2 variant. The bare "browser-chrome"
+	// enum means "no version force"; default-sniffed and
+	// browser-auth-for-HTML specs surface their H/2 force through the
+	// explicit "-h2" enum so the spec field always names the wire
+	// protocol the runtime will pick. browser-sniff overrides this with
+	// HAR-driven mapping in ApplyReachabilityDefaults before
+	// EffectiveHTTPTransport runs.
 	if s.usesBrowserAuthForHTML() {
-		return HTTPTransportBrowserChrome
+		return HTTPTransportBrowserChromeH2
 	}
 	switch s.SpecSource {
 	case "community", "sniffed":
-		return HTTPTransportBrowserChrome
+		return HTTPTransportBrowserChromeH2
 	default:
 		return HTTPTransportStandard
 	}
@@ -319,7 +405,7 @@ func (s *APISpec) usesBrowserAuthForHTML() bool {
 
 func (s *APISpec) UsesBrowserHTTPTransport() bool {
 	switch s.EffectiveHTTPTransport() {
-	case HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
+	case HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH2, HTTPTransportBrowserChromeH3:
 		return true
 	default:
 		return false
@@ -330,17 +416,50 @@ func (s *APISpec) UsesBrowserHTTP3Transport() bool {
 	return s.EffectiveHTTPTransport() == HTTPTransportBrowserChromeH3
 }
 
+func (s *APISpec) UsesBrowserHTTP2Transport() bool {
+	return s.EffectiveHTTPTransport() == HTTPTransportBrowserChromeH2
+}
+
 func (s *APISpec) UsesHTTP2DisabledTransport() bool {
 	return s.EffectiveHTTPTransport() == HTTPTransportBrowserHTTP
 }
 
 func (s *APISpec) UsesBrowserManagedUserAgent() bool {
 	switch s.EffectiveHTTPTransport() {
-	case HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
+	case HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH2, HTTPTransportBrowserChromeH3:
 		return true
 	default:
 		return false
 	}
+}
+
+// UsesBrowserLikeUserAgent reports whether the generated CLI should
+// default to a browser-shaped User-Agent rather than the
+// `<cli>-pp-cli/<version>` script identifier. Triggered by:
+//   - Kind: synthetic — browser-sniffed specs typically talk to
+//     origins whose WAFs (Wordfence, Imperva, Akamai bot-mode,
+//     DataDome, Cloudflare bot-fight) flag the script-shaped UA as a
+//     bot and answer with 5xx, 403, or a challenge redirect.
+//   - Auth.Type in {cookie, composed, session_handshake} — same
+//     bot-detection surface; these CLIs are almost always speaking to
+//     a website-itself rather than a public API.
+//
+// The browser-managed transports (chrome, chrome-h3) handle their own
+// UA already — UsesBrowserManagedUserAgent short-circuits the template
+// emission entirely there. This method only matters for the standard
+// Go HTTP client path.
+func (s *APISpec) UsesBrowserLikeUserAgent() bool {
+	if s == nil {
+		return false
+	}
+	if s.Kind == KindSynthetic {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(s.Auth.Type)) {
+	case "cookie", "composed", "session_handshake":
+		return true
+	}
+	return false
 }
 
 func (s *APISpec) HasRequiredHeader(name string) bool {
@@ -512,6 +631,28 @@ type AuthConfig struct {
 	// to a Google-shaped default that silently breaks other providers.
 	// Used by the authorization_code flow only; ignored for other grants.
 	RefreshTokenMechanism string `yaml:"refresh_token_mechanism,omitempty" json:"refresh_token_mechanism,omitempty"`
+
+	// AdditionalHeaders carries per-call credentials from non-winning sibling
+	// security schemes. Composed apiKey + OAuth (or apiKey + bearer) shapes
+	// declare both schemes in components.securitySchemes; selectSecurityScheme
+	// picks one as the primary (Authorization-bearer half) and the parser then
+	// scans the rest for apiKey schemes carrying x-auth-vars[*].kind: per_call,
+	// so the apiKey header gets sent alongside the primary auth. Generator
+	// emits a Config field + os.Getenv loader per entry, plus a req.Header.Set
+	// after the primary auth header on every request.
+	AdditionalHeaders []AdditionalAuthHeader `yaml:"additional_headers,omitempty" json:"additional_headers,omitempty"`
+}
+
+// AdditionalAuthHeader pairs a sibling-scheme header destination with the
+// per-call env var that supplies its value. Only In == "header" is emitted by
+// the generator today; the field is serialized so parsed specs round-trip
+// cleanly and validators can distinguish placements without relying on the
+// destination string.
+type AdditionalAuthHeader struct {
+	Header string     `yaml:"header" json:"header"`
+	In     string     `yaml:"in,omitempty" json:"in,omitempty"`
+	Scheme string     `yaml:"scheme,omitempty" json:"scheme,omitempty"`
+	EnvVar AuthEnvVar `yaml:"env_var" json:"env_var"`
 }
 
 const (
@@ -642,6 +783,24 @@ func (c *AuthConfig) CanonicalEnvVar() *AuthEnvVar {
 		return &c.EnvVarSpecs[0]
 	}
 	return nil
+}
+
+// NewORCaseEnvVarSpecs builds the EnvVarSpecs slice for the OR-case shape
+// IsAuthEnvVarORCase validates: each entry is per_call, non-required, and
+// sensitive. The runtime tries each in turn and returns the first non-empty
+// value. Distinct from the per_call construction in NormalizeEnvVarSpecs,
+// which defaults to Required=true for the canonical-credential shape.
+func NewORCaseEnvVarSpecs(names []string) []AuthEnvVar {
+	specs := make([]AuthEnvVar, 0, len(names))
+	for _, name := range names {
+		specs = append(specs, AuthEnvVar{
+			Name:      name,
+			Kind:      AuthEnvVarKindPerCall,
+			Required:  false,
+			Sensitive: true,
+		})
+	}
+	return specs
 }
 
 // IsAuthEnvVarORCase reports whether all EnvVarSpecs are non-required per_call vars.
@@ -880,8 +1039,15 @@ type ShareConfig struct {
 	DefaultBranch  string   `yaml:"default_branch,omitempty" json:"default_branch,omitempty"`   // optional default branch for push/pull; blank means "main"
 }
 
-// MCPConfig declares how the generated MCP server binary is shaped. When empty
-// the generator emits today's behavior: a stdio-only server via server.ServeStdio.
+// MCPConfig declares how the generated MCP server binary is shaped. When the
+// Transport list is empty, the resolved transport set is computed by
+// APISpec.EffectiveMCPTransports: small APIs (<= DefaultRemoteTransportEndpointThreshold
+// typed endpoints) get [stdio, http] so the same binary can serve cloud-hosted
+// agents at no tool-count cost, and larger APIs fall back to stdio-only so the
+// existing tools-manifest stays untouched until the spec author opts into the
+// orchestration pattern. Setting Transport explicitly bypasses the default and
+// is honored as-is.
+//
 // Opting http into Transport adds a --transport flag (stdio|http) and, for http,
 // an --addr flag so the same binary can also serve an HTTP streamable transport.
 //
@@ -891,11 +1057,13 @@ type ShareConfig struct {
 // Declaring transports in the spec rather than inferring at generate time keeps
 // the decision visible and reviewable in the published CLI's source spec.
 //
-// Allowed Transport values: "stdio", "http". An empty list is treated as
-// ["stdio"] for backward compatibility. Unknown values are rejected at spec
-// load; this prevents silent drift when new transports are introduced.
+// Allowed Transport values: "stdio", "http". An empty Transport list is
+// resolved per the rule above; MCPConfig.EffectiveTransports remains the
+// unconditioned view of just the configured field and still returns ["stdio"]
+// when Transport is empty. Unknown values are rejected at spec load; this
+// prevents silent drift when new transports are introduced.
 type MCPConfig struct {
-	Transport              []string `yaml:"transport,omitempty" json:"transport,omitempty"`                             // allowed transports the generated binary compiles support for; empty == [stdio]. Runtime transport is chosen via the --transport flag and PP_MCP_TRANSPORT env.
+	Transport              []string `yaml:"transport,omitempty" json:"transport,omitempty"`                             // allowed transports the generated binary compiles support for; empty resolves via APISpec.EffectiveMCPTransports (stdio+http for small APIs, stdio-only for larger ones). Runtime transport is chosen via the --transport flag and PP_MCP_TRANSPORT env.
 	Addr                   string   `yaml:"addr,omitempty" json:"addr,omitempty"`                                       // default bind address for the http transport (e.g., ":7777"). Blank means runtime default (":7777"). Ignored unless http is in Transport.
 	Intents                []Intent `yaml:"intents,omitempty" json:"intents,omitempty"`                                 // higher-level MCP tools that compose multiple endpoint calls. The agent sees one intent tool; the generator emits a handler that fans out to the declared endpoints sequentially. Anti-pattern to fight: one-tool-per-endpoint mirrors that force agents to stitch primitives.
 	EndpointTools          string   `yaml:"endpoint_tools,omitempty" json:"endpoint_tools,omitempty"`                   // "visible" (default) keeps the per-endpoint MCP tools; "hidden" suppresses them so only intents + generator-emitted tools appear. Use "hidden" when intents fully cover the surface and raw endpoints would be noise.
@@ -1031,17 +1199,32 @@ type Endpoint struct {
 	// the parser cannot describe at field level (currently used only by
 	// the BodyJSONFallback path). The typed body path uses per-Param
 	// Required flags instead; this field is ignored when Body is populated.
-	BodyRequired       bool              `yaml:"body_required,omitempty" json:"body_required,omitempty"`
-	RequestContentType string            `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
-	Response           ResponseDef       `yaml:"response" json:"response"`
-	ResponseFormat     string            `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
-	HTMLExtract        *HTMLExtract      `yaml:"html_extract,omitempty" json:"html_extract,omitempty"`       // extraction options when response_format is html
-	Pagination         *Pagination       `yaml:"pagination" json:"pagination"`
-	ResponsePath       string            `yaml:"response_path,omitempty" json:"response_path,omitempty"`       // path to extract data array from response (e.g., "data", "results.items")
-	Meta               map[string]string `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
-	HeaderOverrides    []RequiredHeader  `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
-	NoAuth             bool              `yaml:"no_auth,omitempty" json:"no_auth,omitempty"`                   // true when the endpoint does not require authentication
-	Tier               string            `yaml:"tier,omitempty" json:"tier,omitempty"`
+	BodyRequired       bool         `yaml:"body_required,omitempty" json:"body_required,omitempty"`
+	RequestContentType string       `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
+	Response           ResponseDef  `yaml:"response" json:"response"`
+	ResponseFormat     string       `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
+	HTMLExtract        *HTMLExtract `yaml:"html_extract,omitempty" json:"html_extract,omitempty"`       // extraction options when response_format is html
+	Pagination         *Pagination  `yaml:"pagination" json:"pagination"`
+	// EmbeddedPagedSubresources names paged-envelope properties nested
+	// inside this endpoint's success response (e.g. GET /<resource>/{id}
+	// where the API caps the embedded sub-resource at the first page
+	// regardless of the actual total). The generator emits a
+	// fetchFull<Endpoint><Property> companion per entry so callers
+	// needing the full child collection don't silently truncate.
+	EmbeddedPagedSubresources []EmbeddedPagedSubresource `yaml:"embedded_paged_subresources,omitempty" json:"embedded_paged_subresources,omitempty"`
+	ResponsePath              string                     `yaml:"response_path,omitempty" json:"response_path,omitempty"`       // path to extract data array from response (e.g., "data", "results.items")
+	Meta                      map[string]string          `yaml:"meta,omitempty" json:"meta,omitempty"`                         // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
+	HeaderOverrides           []RequiredHeader           `yaml:"header_overrides,omitempty" json:"header_overrides,omitempty"` // per-endpoint header overrides (e.g., different api-version)
+	NoAuth                    bool                       `yaml:"no_auth,omitempty" json:"no_auth,omitempty"`                   // true when the endpoint does not require authentication
+	// ObservedAuth lists the lowercased request header names observed on this
+	// endpoint during browser-sniff capture that match common auth surfaces
+	// (Authorization, Cookie, X-API-Key, etc.). Observation-only — header
+	// values are never recorded. Populated only by sniffed specs; vendor specs
+	// and crowd-sniff leave it empty. Consumers (Phase 2 tier routing, MCP
+	// surface routing) may use it as per-endpoint auth evidence rather than
+	// inferring from spec-level signals.
+	ObservedAuth []string `yaml:"observed_auth,omitempty" json:"observed_auth,omitempty"`
+	Tier         string   `yaml:"tier,omitempty" json:"tier,omitempty"`
 	// IDField is the resolved primary-key field name for items returned by this
 	// endpoint, populated either by a path-item-level `x-resource-id` extension
 	// or, for OpenAPI specs, by walking the response schema (id → name → first
@@ -1063,6 +1246,12 @@ type Endpoint struct {
 	// docs/SPEC-EXTENSIONS.md for the canonical schema.
 	Walker *WalkerConfig `yaml:"walker,omitempty" json:"walker,omitempty"`
 	Alias  string        `yaml:"-" json:"-"` // computed, not from YAML
+	// BodySet reports whether the source spec declared a `body:` key on this
+	// endpoint, distinct from an absent key. Populated by the custom
+	// UnmarshalYAML / UnmarshalJSON below. The params→body promotion pass
+	// reads this to honor an explicit empty `body: []` as an opt-out signal
+	// for write endpoints that genuinely take query params and no JSON body.
+	BodySet bool `yaml:"-" json:"-"`
 }
 
 // WalkerConfig declares a hierarchical-walk dependency for a child endpoint.
@@ -1085,6 +1274,31 @@ type WalkerConfig struct {
 	KeyParam string `yaml:"key_param,omitempty" json:"key_param,omitempty"`
 }
 
+func (e *Endpoint) UnmarshalYAML(value *yaml.Node) error {
+	type endpointAlias Endpoint
+	var out endpointAlias
+	if err := value.Decode(&out); err != nil {
+		return err
+	}
+	*e = Endpoint(out)
+	e.BodySet = yamlMappingHasKey(value, "body")
+	return nil
+}
+
+func (e *Endpoint) UnmarshalJSON(data []byte) error {
+	type endpointAlias Endpoint
+	var out endpointAlias
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	*e = Endpoint(out)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err == nil {
+		_, e.BodySet = raw["body"]
+	}
+	return nil
+}
+
 func (e Endpoint) EffectiveResponseFormat() string {
 	if strings.TrimSpace(e.ResponseFormat) == "" {
 		return ResponseFormatJSON
@@ -1094,6 +1308,10 @@ func (e Endpoint) EffectiveResponseFormat() string {
 
 func (e Endpoint) UsesHTMLResponse() bool {
 	return e.EffectiveResponseFormat() == ResponseFormatHTML
+}
+
+func (e Endpoint) UsesBinaryResponse() bool {
+	return e.EffectiveResponseFormat() == ResponseFormatBinary
 }
 
 type HTMLExtract struct {
@@ -1136,6 +1354,7 @@ func (h *HTMLExtract) EffectiveScriptSelector() string {
 type Param struct {
 	Name        string   `yaml:"name" json:"name"`
 	FlagName    string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
+	URLName     string   `yaml:"url_name,omitempty" json:"url_name,omitempty"` // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
 	Aliases     []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
 	Type        string   `yaml:"type" json:"type"`
 	Required    bool     `yaml:"required" json:"required"`
@@ -1159,6 +1378,18 @@ type Param struct {
 	// It lets validation distinguish an omitted public name from invalid
 	// `flag_name: ""` while still allowing overlays to clear FlagName.
 	FlagNameSet bool `yaml:"-" json:"-"`
+}
+
+// WireName returns the URL query-key name for this param when emitted in a
+// generated HTTP request. URLName takes precedence when set (e.g., "$limit" for
+// Socrata-style APIs that require the literal "$" prefix on pagination + SoQL
+// params); otherwise Name is used. The CLI flag name is independent (derived
+// from FlagName or paramIdent), so this only affects what shows up in the URL.
+func (p Param) WireName() string {
+	if p.URLName != "" {
+		return p.URLName
+	}
+	return p.Name
 }
 
 func (p Param) PublicInputName() string {
@@ -1248,11 +1479,29 @@ type ResponseDiscriminator struct {
 }
 
 type Pagination struct {
-	Type           string `yaml:"type" json:"type"`                         // cursor, offset, page_token
+	Type           string `yaml:"type" json:"type"`                         // cursor, offset, page_token, page
 	LimitParam     string `yaml:"limit_param" json:"limit_param"`           // query param name for page size (limit, maxResults, pageSize)
-	CursorParam    string `yaml:"cursor_param" json:"cursor_param"`         // query param name for cursor (after, pageToken, offset)
+	CursorParam    string `yaml:"cursor_param" json:"cursor_param"`         // query param name for cursor (after, pageToken, offset, page)
 	NextCursorPath string `yaml:"next_cursor_path" json:"next_cursor_path"` // response field with next cursor (nextPageToken, cursor)
 	HasMoreField   string `yaml:"has_more_field" json:"has_more_field"`     // response field indicating more pages (has_more)
+}
+
+// EmbeddedPagedSubresource describes one paged-envelope property nested
+// inside a parent GET response. See Endpoint.EmbeddedPagedSubresources
+// for how this drives fetchFull<X> companion-helper emission.
+//
+// ItemsField records which array key the detector matched; it is
+// detection-provenance metadata, not a runtime override. Generated
+// helpers walk the envelope via extractPaginatedItems, which scans
+// every known items-style key, so a hand-authored spec changing
+// ItemsField does not change runtime behavior.
+type EmbeddedPagedSubresource struct {
+	Property      string `yaml:"property" json:"property"`                                   // JSON property name in the parent response (e.g. "tracks")
+	ChildPath     string `yaml:"child_path" json:"child_path"`                               // sub-resource path; required, populated by the detector (parent.Path + "/" + Property)
+	ItemsField    string `yaml:"items_field" json:"items_field"`                             // array property inside the envelope; detection-provenance metadata only
+	NextField     string `yaml:"next_field" json:"next_field"`                               // next-page signal inside the envelope (URL string, opaque cursor, or has_more-style bool)
+	NextIsURL     bool   `yaml:"next_is_url,omitempty" json:"next_is_url,omitempty"`         // true when NextField carries a full URL the runtime can GET directly (vs an opaque cursor that needs API-specific arithmetic)
+	NextIsBoolean bool   `yaml:"next_is_boolean,omitempty" json:"next_is_boolean,omitempty"` // true when NextField is a has_more-style boolean rather than a cursor/URL string
 }
 
 type TypeDef struct {
@@ -1312,7 +1561,8 @@ func ParseBytes(data []byte) (*APISpec, error) {
 		return nil, fmt.Errorf("parsing yaml: %w", yamlErr)
 	}
 	s.expandOperations()
-	s.enrichPathParams()
+	s.EnrichPathParams()
+	s.promoteParamsToBodyForWriteEndpoints()
 	if err := s.validateReservedNames(); err != nil {
 		return nil, err
 	}
@@ -1468,7 +1718,7 @@ var pathParamRe = regexp.MustCompile(`\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 var orGroupTokenRe = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
 
-// enrichPathParams walks every resource and sub-resource endpoint and ensures
+// EnrichPathParams walks every resource and sub-resource endpoint and ensures
 // each `{paramName}` placeholder in the endpoint path is represented in
 // Endpoint.Params with Positional: true, Required: true. The expandOperations
 // path already populates these for shorthand-generated endpoints; explicit
@@ -1484,7 +1734,7 @@ var orGroupTokenRe = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*\b`)
 // Order is preserved: placeholders are appended in the order they appear in
 // the path so generated cobra `Args: cobra.ExactArgs(N)` sites and the
 // matching `replacePathParam(...args[i])` calls line up.
-func (s *APISpec) enrichPathParams() {
+func (s *APISpec) EnrichPathParams() {
 	for resourceName, r := range s.Resources {
 		s.enrichResourcePathParams(&r)
 		s.Resources[resourceName] = r
@@ -1556,6 +1806,69 @@ func enrichEndpointPathParams(e *Endpoint) {
 			Description: name,
 		})
 	}
+}
+
+// promoteParamsToBodyForWriteEndpoints fills Endpoint.Body for POST/PUT/PATCH
+// endpoints whose source spec did not declare a `body:` key by relocating
+// non-path, non-positional Params there. Internal YAML specs commonly list
+// write-endpoint payload fields under `params:` instead of `body:`. Without
+// this promotion, the generator declares flags and required-flag validation
+// for those params, but the body-assembly branch in command_endpoint.go.tmpl
+// iterates only Endpoint.Body — so the values never reach the request body
+// and the API rejects the call with "missing required field".
+//
+// Author intent wins when `body:` is present in the source, even if empty:
+//   - `body: [...]` (non-empty) preserves the explicit block; remaining
+//     `params:` entries are left as query parameters by design.
+//   - `body: []` (explicit empty) is the escape hatch for write endpoints
+//     that genuinely take only query parameters and carry no JSON body.
+//   - Mixed `params:` + non-empty `body:` is allowed but not auto-merged.
+//     The author is asserting that those `params:` entries are URL query
+//     parameters, not body fields. Authors who want them in the body must
+//     move them under `body:` themselves.
+func (s *APISpec) promoteParamsToBodyForWriteEndpoints() {
+	for resourceName, r := range s.Resources {
+		s.promoteResourceParamsToBody(&r)
+		s.Resources[resourceName] = r
+	}
+}
+
+func (s *APISpec) promoteResourceParamsToBody(r *Resource) {
+	if r.Endpoints != nil {
+		for endpointName, e := range r.Endpoints {
+			promoteEndpointParamsToBody(&e)
+			r.Endpoints[endpointName] = e
+		}
+	}
+	for subName, sub := range r.SubResources {
+		s.promoteResourceParamsToBody(&sub)
+		r.SubResources[subName] = sub
+	}
+}
+
+func promoteEndpointParamsToBody(e *Endpoint) {
+	switch strings.ToUpper(e.Method) {
+	case "POST", "PUT", "PATCH":
+	default:
+		return
+	}
+	if e.BodySet || len(e.Body) > 0 || len(e.Params) == 0 {
+		return
+	}
+	keep := make([]Param, 0, len(e.Params))
+	promote := make([]Param, 0, len(e.Params))
+	for _, p := range e.Params {
+		if p.PathParam || p.Positional {
+			keep = append(keep, p)
+			continue
+		}
+		promote = append(promote, p)
+	}
+	if len(promote) == 0 {
+		return
+	}
+	e.Params = keep
+	e.Body = promote
 }
 
 // expandOperations converts operations shorthand (e.g., [list, get, create])
@@ -1694,9 +2007,9 @@ func (s *APISpec) Validate() error {
 		return fmt.Errorf("at least one resource is required")
 	}
 	switch s.HTTPTransport {
-	case "", HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH3:
+	case "", HTTPTransportStandard, HTTPTransportBrowserHTTP, HTTPTransportBrowserChrome, HTTPTransportBrowserChromeH2, HTTPTransportBrowserChromeH3:
 	default:
-		return fmt.Errorf("http_transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h3")
+		return fmt.Errorf("http_transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h2, browser-chrome-h3")
 	}
 	if err := validateExtraCommands(s.ExtraCommands); err != nil {
 		return err
@@ -1723,6 +2036,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateAuthEnvVarSpecs("auth", s.Auth); err != nil {
+		return err
+	}
+	if err := validateAdditionalAuthHeaders("auth", s.Auth); err != nil {
 		return err
 	}
 	if err := validateTierRouting(s); err != nil {
@@ -1891,6 +2207,48 @@ func validatePublicParamNameList(context string, params []Param) error {
 				return fmt.Errorf("%s: alias %q collides with %s", aliasLabel, alias, previous)
 			}
 			seen[alias] = aliasLabel
+		}
+	}
+	return nil
+}
+
+// validateAdditionalAuthHeaders checks that each composed-auth sibling entry
+// names a destination header and a per_call env var, and that no two siblings
+// (or a sibling and a primary EnvVarSpec) share a header or env-var name.
+// Collisions would emit duplicate Config struct fields or duplicate
+// req.Header.Set calls, so a hard error at parse time is preferable to silent
+// generation drift or a compile failure in the generated CLI.
+func validateAdditionalAuthHeaders(context string, auth AuthConfig) error {
+	seenHeaders := make(map[string]struct{}, len(auth.AdditionalHeaders))
+	primaryNames := make(map[string]struct{}, len(auth.EnvVarSpecs))
+	for _, ev := range auth.EnvVarSpecs {
+		if name := strings.TrimSpace(ev.Name); name != "" {
+			primaryNames[name] = struct{}{}
+		}
+	}
+	seenNames := make(map[string]struct{}, len(auth.AdditionalHeaders))
+	for i, ah := range auth.AdditionalHeaders {
+		header := strings.TrimSpace(ah.Header)
+		if header == "" {
+			return fmt.Errorf("%s.additional_headers[%d].header is required", context, i)
+		}
+		if _, dup := seenHeaders[header]; dup {
+			return fmt.Errorf("%s.additional_headers contains duplicate header %q", context, header)
+		}
+		seenHeaders[header] = struct{}{}
+		name := strings.TrimSpace(ah.EnvVar.Name)
+		if name == "" {
+			return fmt.Errorf("%s.additional_headers[%d].env_var.name is required", context, i)
+		}
+		if _, dup := seenNames[name]; dup {
+			return fmt.Errorf("%s.additional_headers contains duplicate env_var.name %q", context, name)
+		}
+		if _, dup := primaryNames[name]; dup {
+			return fmt.Errorf("%s.additional_headers[%d].env_var.name %q collides with env_var_specs", context, i, name)
+		}
+		seenNames[name] = struct{}{}
+		if ah.EnvVar.EffectiveKind() != AuthEnvVarKindPerCall {
+			return fmt.Errorf("%s.additional_headers[%d].env_var.kind must be %q (got %q)", context, i, AuthEnvVarKindPerCall, ah.EnvVar.Kind)
 		}
 	}
 	return nil
@@ -2267,9 +2625,9 @@ func validateTierRoutingResource(s *APISpec, resourcePath string, resource Resou
 
 func validateEndpointResponseFormat(e Endpoint) error {
 	switch e.ResponseFormat {
-	case "", ResponseFormatJSON, ResponseFormatHTML:
+	case "", ResponseFormatJSON, ResponseFormatHTML, ResponseFormatBinary:
 	default:
-		return fmt.Errorf("response_format must be one of: json, html")
+		return fmt.Errorf("response_format must be one of: json, html, binary")
 	}
 	if !e.UsesHTMLResponse() {
 		return nil
@@ -2485,6 +2843,15 @@ func validateMCP(m MCPConfig, resources map[string]Resource) error {
 // context; code-orchestration covers the full surface in a pair of tools.
 const DefaultOrchestrationThreshold = 50
 
+// DefaultRemoteTransportEndpointThreshold is the typed-endpoint count at or
+// below which the generator auto-enables the http transport alongside stdio
+// when the spec leaves mcp.transport unset. Stdio-only servers cannot reach
+// cloud-hosted agents, and at small surface sizes adding http has no cost in
+// tool count or agent context. The 30-endpoint cutoff matches the polish
+// skill's "zero-cost win at <30 endpoints" guidance. Larger APIs are left to
+// the orchestration-pattern recommendation in warnUnenrichedLargeMCPSurface.
+const DefaultRemoteTransportEndpointThreshold = 30
+
 // EffectiveOrchestrationThreshold returns the resolved threshold, applying
 // the built-in default when the spec leaves it unset.
 func (m MCPConfig) EffectiveOrchestrationThreshold() int {
@@ -2499,6 +2866,61 @@ func (m MCPConfig) EffectiveOrchestrationThreshold() int {
 // <api>_search + <api>_execute instead of the endpoint-mirror.
 func (m MCPConfig) IsCodeOrchestration() bool {
 	return m.Orchestration == "code"
+}
+
+// EffectiveMCPTransports returns the transport list the generated MCP binary
+// should compile support for, taking endpoint count into account. When the
+// spec leaves mcp.transport unset and the typed-endpoint surface is at or
+// below DefaultRemoteTransportEndpointThreshold, both stdio and http are
+// returned so the same binary can reach cloud-hosted agents. Explicit
+// transport lists are passed through unchanged, so a spec that opts into
+// stdio-only is honored even at small endpoint counts.
+//
+// Use this from generator code paths that need the resolved list (templates,
+// metadata renderers). MCPConfig.EffectiveTransports remains the unconditioned
+// view of just the configured field and is still the right helper for spec
+// validation and mcp_audit.
+func (s *APISpec) EffectiveMCPTransports() []string {
+	if s == nil {
+		return []string{"stdio"}
+	}
+	if len(s.MCP.Transport) > 0 {
+		return s.MCP.Transport
+	}
+	if s.TypedEndpointCount() <= DefaultRemoteTransportEndpointThreshold {
+		return []string{"stdio", "http"}
+	}
+	return []string{"stdio"}
+}
+
+// HasMCPTransport reports whether t is among the effective MCP transports for
+// this spec, taking the small-API http default into account. Case-insensitive
+// on the comparison to mirror MCPConfig.HasTransport.
+func (s *APISpec) HasMCPTransport(t string) bool {
+	for _, v := range s.EffectiveMCPTransports() {
+		if strings.EqualFold(v, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// TypedEndpointCount returns the number of typed endpoints across all
+// resources and sub-resources. Shared by EffectiveMCPTransports (small-API
+// auto-http default) and the generator's large-surface MCP-warning emitter
+// so the two endpoint-count thresholds read from a single source of truth.
+func (s *APISpec) TypedEndpointCount() int {
+	if s == nil {
+		return 0
+	}
+	n := 0
+	for _, r := range s.Resources {
+		n += len(r.Endpoints)
+		for _, sub := range r.SubResources {
+			n += len(sub.Endpoints)
+		}
+	}
+	return n
 }
 
 // intentNameRe enforces snake_case for MCP intent tool names so they line up

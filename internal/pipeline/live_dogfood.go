@@ -38,8 +38,17 @@ const (
 // across the matrix builder, the flag help text, and the test fixtures.
 const reasonDestructiveAtAuth = "destructive-at-auth"
 const reasonMutatingDryRunOnly = "mutating command dry-run only"
+const reasonMutatingErrorPath = "mutating command; error_path would call live API without --dry-run"
 const reasonNoLiveSignal = "no live happy/json pass; credential-unavailable skips cannot certify acceptance"
 const reasonUnavailableRunnerCredentials = "unavailable for runner credentials"
+const reasonFileFixtureRequired = "file fixture required"
+
+// dogfoodEnvVar is the env signal every live-dogfood subprocess
+// inherits. Generated commands with a long-running happy path detect
+// this via cliutil.IsDogfoodEnv() and curtail work (paginate once,
+// honor a smaller --limit) so the matrix's per-command timeout
+// doesn't kill an otherwise healthy run.
+const dogfoodEnvVar = "PRINTING_PRESS_DOGFOOD"
 
 type LiveDogfoodOptions struct {
 	CLIDir              string
@@ -92,6 +101,12 @@ type liveDogfoodRun struct {
 }
 
 func RunLiveDogfood(opts LiveDogfoodOptions) (*LiveDogfoodReport, error) {
+	releaseHome, err := scopeSubprocessHome()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseHome()
+
 	if strings.TrimSpace(opts.CLIDir) == "" {
 		return nil, fmt.Errorf("CLIDir is required")
 	}
@@ -673,13 +688,20 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	mutating := liveDogfoodCommandMutates(command)
 	useDryRun := mutating && commandSupportsDryRun(command.Help)
 
+	fixtureSkip := happyPathFileFixtureSkip(happyArgs, ctx.cliDir)
 	resolvedArgs, resolveSkipped, resolveReason := resolveCommandPositionals(command, happyArgs, ctx)
-	if resolveSkipped {
+	switch {
+	case fixtureSkip != "":
+		results = append(results,
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, fixtureSkip),
+			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, fixtureSkip),
+		)
+	case resolveSkipped:
 		results = append(results,
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestHappy, resolveReason),
 			skippedLiveDogfoodResult(commandName, LiveDogfoodTestJSON, resolveReason),
 		)
-	} else {
+	default:
 		happyArgs = resolvedArgs
 
 		runArgs := happyArgs
@@ -721,58 +743,66 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 	}
 
 	if liveDogfoodCommandTakesArg(command.Help) {
-		flagNames := extractFlagNames(command.Help)
-		hasQueryFlag := slices.Contains(flagNames, "query")
-		// Search-shape strategy is suppressed for mutating leaves so a
-		// `delete --query=...` mass-delete is never probed with the
-		// invalid-token sentinel against the live API.
-		isSearch := commandSupportsSearch(command.Help) && !mutating
-		suppliedJSON := slices.Contains(flagNames, "json")
-
-		var errorArgs []string
-		if isSearch {
-			errorArgs = append([]string{}, command.Path...)
-			if hasQueryFlag {
-				errorArgs = append(errorArgs, "--query", "__printing_press_invalid__")
-			} else {
-				errorArgs = append(errorArgs, "__printing_press_invalid__")
-			}
-			if suppliedJSON {
-				errorArgs = appendJSONArg(errorArgs)
-			}
+		if mutating {
+			// Mutating commands cannot run the error_path probe safely: the
+			// __printing_press_invalid__ sentinel is sent as a real argument
+			// and many APIs accept arbitrary string fields (tag names, labels,
+			// notes), turning the probe into a real create/update/delete with
+			// no rollback. --dry-run injection is the happy_path-only safety
+			// net; for the error_path we skip outright, mirroring how
+			// error_path_real already skips below.
+			results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonMutatingErrorPath))
 		} else {
-			errorArgs = append(append([]string{}, command.Path...), "__printing_press_invalid__")
-		}
+			flagNames := extractFlagNames(command.Help)
+			hasQueryFlag := slices.Contains(flagNames, "query")
+			isSearch := commandSupportsSearch(command.Help)
+			suppliedJSON := slices.Contains(flagNames, "json")
 
-		errorRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, errorArgs, ctx.timeout)
-		errorResult := liveDogfoodResult(commandName, LiveDogfoodTestError, errorArgs, errorRun)
-
-		if isSearch {
-			// Real-world feed/content APIs return recent items as a fallback
-			// for unmatched queries, so non-empty results under exit 0 are
-			// not a failure signal. The only fail mode is invalid JSON when
-			// the caller asked for --json.
-			switch {
-			case errorRun.exitCode != 0:
-				errorResult.Status = LiveDogfoodStatusPass
-				errorResult.Reason = ""
-			case suppliedJSON && !json.Valid([]byte(errorRun.stdout)):
-				errorResult.Status = LiveDogfoodStatusFail
-				errorResult.Reason = "invalid JSON under --json"
-			default:
-				errorResult.Status = LiveDogfoodStatusPass
-				errorResult.Reason = ""
-			}
-		} else {
-			if errorRun.exitCode != 0 {
-				errorResult.Status = LiveDogfoodStatusPass
-				errorResult.Reason = ""
+			var errorArgs []string
+			if isSearch {
+				errorArgs = append([]string{}, command.Path...)
+				if hasQueryFlag {
+					errorArgs = append(errorArgs, "--query", "__printing_press_invalid__")
+				} else {
+					errorArgs = append(errorArgs, "__printing_press_invalid__")
+				}
+				if suppliedJSON {
+					errorArgs = appendJSONArg(errorArgs)
+				}
 			} else {
-				errorResult.Status = LiveDogfoodStatusFail
-				errorResult.Reason = "expected non-zero exit for invalid argument"
+				errorArgs = append(append([]string{}, command.Path...), "__printing_press_invalid__")
 			}
+
+			errorRun := runLiveDogfoodProcess(ctx.binaryPath, ctx.cliDir, errorArgs, ctx.timeout)
+			errorResult := liveDogfoodResult(commandName, LiveDogfoodTestError, errorArgs, errorRun)
+
+			if isSearch {
+				// Real-world feed/content APIs return recent items as a fallback
+				// for unmatched queries, so non-empty results under exit 0 are
+				// not a failure signal. The only fail mode is invalid JSON when
+				// the caller asked for --json.
+				switch {
+				case errorRun.exitCode != 0:
+					errorResult.Status = LiveDogfoodStatusPass
+					errorResult.Reason = ""
+				case suppliedJSON && !json.Valid([]byte(errorRun.stdout)):
+					errorResult.Status = LiveDogfoodStatusFail
+					errorResult.Reason = "invalid JSON under --json"
+				default:
+					errorResult.Status = LiveDogfoodStatusPass
+					errorResult.Reason = ""
+				}
+			} else {
+				if errorRun.exitCode != 0 {
+					errorResult.Status = LiveDogfoodStatusPass
+					errorResult.Reason = ""
+				} else {
+					errorResult.Status = LiveDogfoodStatusFail
+					errorResult.Reason = "expected non-zero exit for invalid argument"
+				}
+			}
+			results = append(results, errorResult)
 		}
-		results = append(results, errorResult)
 	} else {
 		results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, "no positional argument"))
 	}
@@ -835,6 +865,8 @@ func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout tim
 
 	cmd := exec.CommandContext(ctx, binaryPath, args...)
 	cmd.Dir = cliDir
+	applyDefaultSubprocessEnv(cmd)
+	cmd.Env = append(cmd.Env, dogfoodEnvVar+"=1")
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	cmd.Stdout = &limitedWriter{w: stdout, remaining: MaxOutputBytes}
@@ -967,6 +999,73 @@ func endpointTargetsAuthResource(endpoint, path string) bool {
 	return slices.ContainsFunc(strings.Split(strings.ToLower(endpoint), "."), func(segment string) bool {
 		return destructiveAuthResources[segment]
 	})
+}
+
+// happyPathFileFixtureSkip returns a skip reason when the parsed Example
+// references a file-flag value that doesn't exist on disk relative to
+// cliDir. Flag names containing "file" or "csv" trigger the check; the
+// motivating cases are `--file accounts.csv` / `--csv prospects.csv` shapes
+// where the example would otherwise fail with `open <path>: no such file
+// or directory`, masking the signal that the command is callable.
+func happyPathFileFixtureSkip(args []string, cliDir string) string {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "--") {
+			continue
+		}
+		name := strings.TrimPrefix(a, "--")
+		var value string
+		if eq := strings.IndexByte(name, '='); eq >= 0 {
+			value = name[eq+1:]
+			name = name[:eq]
+		} else if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+			value = args[i+1]
+			i++
+		}
+		if !flagNameSuggestsFile(name) {
+			continue
+		}
+		if value == "" || strings.Contains(value, "://") {
+			continue
+		}
+		if fileExistsRelativeTo(value, cliDir) {
+			continue
+		}
+		return fmt.Sprintf("%s: --%s %s", reasonFileFixtureRequired, name, value)
+	}
+	return ""
+}
+
+func flagNameSuggestsFile(name string) bool {
+	n := strings.ToLower(name)
+	if n == "file" || n == "csv" {
+		return true
+	}
+	// Anchor on a separator so `--profile` (contains "file") and similar
+	// non-file flags don't trigger spurious skips. Common shapes covered:
+	// `--input-file`, `--output_file`, `--import-csv`, `--config-csv`.
+	return strings.HasSuffix(n, "-file") || strings.HasSuffix(n, "_file") ||
+		strings.HasSuffix(n, "-csv") || strings.HasSuffix(n, "_csv")
+}
+
+func fileExistsRelativeTo(p, cliDir string) bool {
+	if p == "" {
+		return false
+	}
+	if filepath.IsAbs(p) {
+		_, err := os.Stat(p)
+		return err == nil
+	}
+	candidates := []string{p}
+	if cliDir != "" {
+		candidates = append(candidates, filepath.Join(cliDir, p))
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func liveDogfoodHappyArgs(command liveDogfoodCommand) ([]string, bool) {

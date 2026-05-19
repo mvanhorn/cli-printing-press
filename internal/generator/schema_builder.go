@@ -394,52 +394,15 @@ func buildSubResourceTable(name string, r spec.Resource, parentTable string) Tab
 	}
 }
 
-// sqlReservedWords is the set of SQL keywords that must be quoted when used
-// as table or column names. Covers SQLite reserved words plus common SQL
-// keywords that appear as API resource or field names.
-var sqlReservedWords = map[string]bool{
-	"check": true, "default": true, "from": true, "to": true,
-	"order": true, "group": true, "select": true, "where": true,
-	"table": true, "column": true, "index": true, "key": true,
-	"values": true, "references": true, "create": true, "drop": true,
-	"insert": true, "update": true, "delete": true, "set": true,
-	"join": true, "on": true, "in": true, "not": true, "null": true,
-	"primary": true, "foreign": true, "unique": true, "like": true,
-	"between": true, "exists": true, "having": true, "limit": true,
-	"offset": true, "union": true, "except": true, "case": true,
-	"when": true, "then": true, "else": true, "end": true,
-	"as": true, "is": true, "by": true, "and": true, "or": true,
-	"transaction": true, "begin": true, "commit": true, "rollback": true,
-	"trigger": true, "view": true, "replace": true, "match": true,
-}
-
 // safeSQLName returns an identifier that is safe to use in SQLite DDL.
-// SQLite accepts many names when double-quoted, so quote reserved words and
-// anything that is not a valid bare identifier (for example, names beginning
-// with a digit).
+// Always double-quotes the name, escaping any embedded quote. Quoting is
+// harmless for non-keyword identifiers and is the only way to safely emit
+// SQLite strict-reserved keywords like "add", "to", and "from" in CREATE
+// TABLE / CREATE INDEX context, where they otherwise fail at parse time.
+// Maintaining a hand-rolled keyword allowlist diverges from SQLite over
+// time; quoting unconditionally is the durable contract.
 func safeSQLName(name string) string {
-	if sqlReservedWords[strings.ToLower(name)] || !isBareSQLiteIdentifier(name) {
-		return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
-	}
-	return name
-}
-
-func isBareSQLiteIdentifier(name string) bool {
-	if name == "" {
-		return false
-	}
-	for i, r := range name {
-		if i == 0 {
-			if r != '_' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') {
-				return false
-			}
-			continue
-		}
-		if r != '_' && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
-			return false
-		}
-	}
-	return true
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 func sqlStringLiteral(s string) string {

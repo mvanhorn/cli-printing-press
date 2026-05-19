@@ -133,10 +133,12 @@ type DeadCodeResult struct {
 }
 
 type PipelineResult struct {
-	SyncCallsDomain   bool   `json:"sync_calls_domain"`
-	SearchCallsDomain bool   `json:"search_calls_domain"`
-	DomainTables      int    `json:"domain_tables"`
-	Detail            string `json:"detail"`
+	SyncCallsDomain      bool   `json:"sync_calls_domain"`
+	SearchCallsDomain    bool   `json:"search_calls_domain"`
+	DomainTables         int    `json:"domain_tables"`
+	SyncFileEmitted      bool   `json:"sync_file_emitted"`
+	SyncResourcesPresent bool   `json:"sync_resources_present"`
+	Detail               string `json:"detail"`
 }
 
 type ExampleCheckResult struct {
@@ -214,6 +216,12 @@ func (s *openAPISpec) IsSynthetic() bool {
 }
 
 func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, error) {
+	releaseHome, err := scopeSubprocessHome()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseHome()
+
 	cfg := dogfoodConfig{}
 	for _, o := range opts {
 		o(&cfg)
@@ -347,7 +355,13 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 	}
 	built := make([]NovelFeature, 0)
 	for _, nf := range research.NovelFeatures {
-		if matchNovelFeature(nf, paths, leaves) {
+		matched := matchNovelFeature(nf, paths, leaves)
+		if !matched {
+			if cm, applied := matchCrossCuttingFeature(nf.Command, cliDir); applied && cm {
+				matched = true
+			}
+		}
+		if matched {
 			result.Found++
 			built = append(built, nf)
 		} else {
@@ -415,6 +429,138 @@ func matchNovelFeature(nf NovelFeature, paths, leaves map[string]bool) bool {
 	}
 	for _, alias := range nf.Aliases {
 		if ap := commandPath(alias); ap != "" && try(ap) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchCrossCuttingFeature handles novel features whose command string
+// describes cross-cutting code — global flags or internal helpers —
+// rather than naming a CLI command. The regular path/leaf matcher can't
+// see these because they don't appear in the cobra command tree.
+//
+// Returns (matched, applied):
+//   - applied=false means the feature isn't cross-cutting (no flag token,
+//     no recognized parenthetical marker); the caller should fall back
+//     to the regular matcher.
+//   - applied=true, matched=true means a positive signal was found.
+//   - applied=true, matched=false means the feature is genuinely missing
+//     (e.g., a `--<flag>` named explicitly that isn't declared anywhere
+//     in CLI source).
+//
+// Detection strategy is deliberately a "cheap retrofit" (per issue
+// #1197): a literal-string scan of `internal/cli/*.go` for declared
+// flags, and a presence check for agent-authored packages under
+// `internal/` for `(internal ...)` markers. Parenthetical descriptors
+// without a flag to anchor on are trusted rather than reported missing.
+func matchCrossCuttingFeature(cmd, cliDir string) (matched, applied bool) {
+	lc := strings.ToLower(strings.TrimSpace(cmd))
+	flags := extractFlagNames(lc)
+	marker := parenLeadMarker(lc)
+	if marker == "" && len(flags) == 0 {
+		return false, false
+	}
+	// A plain command name followed by a flag ("sql --format") is not a
+	// cross-cutting feature: the verb names the command, and the flag is
+	// only an argument. Without a paren marker the regular path/leaf
+	// matcher is the authority; bailing here keeps the fallback from
+	// silently masking unbuilt commands when a flag name happens to
+	// appear elsewhere in internal/cli/*.go.
+	if marker == "" && commandPath(cmd) != "" {
+		return false, false
+	}
+
+	// Flag-bearing features take the strict path: a declared flag means
+	// found; a named flag with no declaration means genuinely missing.
+	// This preserves the negative-test case for "(any) --nonexistent".
+	if len(flags) > 0 {
+		for _, f := range flags {
+			if flagDeclaredInCLI(f, cliDir) {
+				return true, true
+			}
+		}
+		return false, true
+	}
+
+	// Parenthetical-only feature — no specific flag to anchor on.
+	switch marker {
+	case "internal":
+		return hasAgentInternalPackage(cliDir), true
+	case "global", "any":
+		// Behavioural descriptions like "(any read command, default
+		// behavior)" carry no specific signal. Trust the planner rather
+		// than emit a false-positive missing.
+		return true, true
+	}
+	return false, false
+}
+
+// parenLeadMarker returns the cross-cutting marker word at the start of
+// a feature command — "internal", "any", or "global" — or "" if the
+// feature doesn't begin with one of the known parenthetical markers.
+// Caller passes an already-lowercased and trimmed string.
+func parenLeadMarker(lc string) string {
+	if !strings.HasPrefix(lc, "(") {
+		return ""
+	}
+	inner := lc[1:]
+	end := len(inner)
+	for i, r := range inner {
+		if r == ' ' || r == ')' || r == ',' {
+			end = i
+			break
+		}
+	}
+	switch inner[:end] {
+	case "internal", "any", "global":
+		return inner[:end]
+	}
+	return ""
+}
+
+// flagDeclaredInCLI reports whether name appears as a quoted string
+// literal in any `internal/cli/*.go` file. Cobra registers long-flag
+// names via string literals on Flags()/PersistentFlags() calls, so a
+// `"<name>"` substring match is a reliable cheap signal without parsing
+// Go source.
+func flagDeclaredInCLI(name, cliDir string) bool {
+	if name == "" {
+		return false
+	}
+	needle := `"` + name + `"`
+	for _, f := range listGoFiles(filepath.Join(cliDir, "internal", "cli")) {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(data), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAgentInternalPackage reports whether the CLI carries any
+// agent-authored package directory under internal/ — that is, a
+// subdirectory with at least one .go file that isn't the always-emitted
+// command package (cli) or a generator-reserved package (cliutil, mcp).
+// Used to corroborate "(internal ...)" novel-feature claims when no
+// specific keyword is available to pinpoint a package.
+func hasAgentInternalPackage(cliDir string) bool {
+	entries, err := os.ReadDir(filepath.Join(cliDir, "internal"))
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		switch e.Name() {
+		case "cli", "cliutil", "mcp":
+			continue
+		}
+		if len(listGoFiles(filepath.Join(cliDir, "internal", e.Name()))) > 0 {
 			return true
 		}
 	}
@@ -1398,6 +1544,8 @@ func checkPipelineIntegrity(dir string) PipelineResult {
 	result.SyncCallsDomain = domainUpsertRe.MatchString(syncSource)
 	result.SearchCallsDomain = domainSearchRe.MatchString(searchSource)
 	result.DomainTables = countDomainTables(storeSource)
+	result.SyncFileEmitted = syncSource != ""
+	result.SyncResourcesPresent = hasPopulatedSyncResources(syncSource)
 
 	var parts []string
 	switch {
@@ -1422,8 +1570,46 @@ func checkPipelineIntegrity(dir string) PipelineResult {
 		parts = append(parts, fmt.Sprintf("%d domain tables found", result.DomainTables))
 	}
 
+	// When sync.go is emitted but defaultSyncResources() returns an empty list,
+	// the sync command is a no-op at runtime. Store-dependent novel commands
+	// (cookbook, pantry, top-rated, …) then ship with no advertised path to
+	// populate the store. Flag so the absence surfaces at shipcheck time.
+	if syncSource != "" && !result.SyncResourcesPresent {
+		parts = append(parts, "defaultSyncResources empty (sync command is a no-op)")
+	}
+
 	result.Detail = strings.Join(parts, "; ")
 	return result
+}
+
+// defaultSyncResourcesEmptyRe matches the generator's empty-list emission for
+// defaultSyncResources, after gofmt collapses `return []string{\n}` to a single
+// line. Matching the open-brace through the literal "}" keeps the check robust
+// against trailing whitespace and the gofmt-aware "\n\t}" form some emitters
+// produce when the template body has a leading newline.
+var defaultSyncResourcesEmptyRe = regexp.MustCompile(
+	`(?s)func\s+defaultSyncResources\s*\(\s*\)\s*\[\]string\s*\{\s*return\s+\[\]string\{\s*\}\s*\}`,
+)
+
+// hasPopulatedSyncResources reports whether the emitted sync.go declares at
+// least one syncable resource via the defaultSyncResources() helper. Returns
+// true when defaultSyncResources is either absent (hand-rolled or test
+// fixture sync surfaces are not the failure mode this check targets) or
+// present with at least one entry. Returns false only when the helper is
+// emitted with an explicit empty-list body `return []string{}`. Used by
+// dogfood's pipeline check to surface CLIs that emit a sync command with
+// nothing to sync: the failure mode where store-dependent novel commands
+// have no advertised population path.
+func hasPopulatedSyncResources(syncSource string) bool {
+	if syncSource == "" {
+		return false
+	}
+	if !strings.Contains(syncSource, "func defaultSyncResources") {
+		// No generator-emitted helper to inspect. Treat as "not the failure
+		// mode" rather than risking false positives on hand-rolled sync.
+		return true
+	}
+	return !defaultSyncResourcesEmptyRe.MatchString(syncSource)
 }
 
 type dogfoodVerdictRule struct {
@@ -1446,6 +1632,13 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 1 && r.DeadFlags.Dead <= 2 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFuncs.Dead >= 1 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return !r.PipelineCheck.SyncCallsDomain }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool {
+		// Issue #1156: when defaultSyncResources is emitted empty, the sync
+		// command is a runtime no-op and store-dependent novel commands have
+		// no advertised path to populate the store. Promote to WARN so the
+		// gap surfaces at shipcheck time rather than after publish.
+		return r.PipelineCheck.SyncFileEmitted && !r.PipelineCheck.SyncResourcesPresent
+	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.ExampleCheck.InvalidFlags) > 0 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.ExampleCheck.Skipped }},
 	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.WiringCheck.CommandTree.Unregistered) > 0 }},
@@ -1499,6 +1692,9 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 	}
 	if !report.PipelineCheck.SyncCallsDomain {
 		issues = append(issues, "sync uses generic Upsert only")
+	}
+	if report.PipelineCheck.SyncFileEmitted && !report.PipelineCheck.SyncResourcesPresent {
+		issues = append(issues, "defaultSyncResources empty: sync command is a runtime no-op; store-dependent novel commands have no advertised population path")
 	}
 	if report.ExampleCheck.Tested > 0 && (report.ExampleCheck.WithExamples*100/report.ExampleCheck.Tested) < 50 {
 		issues = append(issues, fmt.Sprintf("%d%% example coverage", report.ExampleCheck.WithExamples*100/report.ExampleCheck.Tested))
@@ -1705,6 +1901,7 @@ func runStdoutOnly(binaryPath string, timeout time.Duration, args ...string) ([]
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binaryPath, args...)
+	applyDefaultSubprocessEnv(cmd)
 	out, err := cmd.Output()
 	if ctx.Err() == context.DeadlineExceeded {
 		return nil, fmt.Errorf("timed out after %s", timeout)
@@ -1820,6 +2017,7 @@ func runDogfoodCmd(binary string, timeout time.Duration, args ...string) (string
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
+	applyDefaultSubprocessEnv(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil && ctx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("timed out after %s", timeout)

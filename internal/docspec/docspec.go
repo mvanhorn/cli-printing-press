@@ -38,7 +38,7 @@ func GenerateFromDocs(docsURL, apiName string) (*spec.APISpec, error) {
 
 	resources := groupByResource(endpoints)
 	auth := detectAuth(body)
-	baseURL := detectBaseURL(body)
+	baseURL, baseURLIsPlaceholder := detectBaseURL(body)
 	params := extractParams(body)
 
 	// Attach extracted params as body params to POST/PUT/PATCH endpoints
@@ -53,11 +53,12 @@ func GenerateFromDocs(docsURL, apiName string) (*spec.APISpec, error) {
 	}
 
 	apiSpec := &spec.APISpec{
-		Name:        apiName,
-		Description: fmt.Sprintf("CLI for %s (generated from docs)", apiName),
-		Version:     "1.0.0",
-		BaseURL:     baseURL,
-		Auth:        auth,
+		Name:                 apiName,
+		Description:          fmt.Sprintf("CLI for %s (generated from docs)", apiName),
+		Version:              "1.0.0",
+		BaseURL:              baseURL,
+		BaseURLIsPlaceholder: baseURLIsPlaceholder,
+		Auth:                 auth,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", apiName),
@@ -259,19 +260,20 @@ func detectAuth(body string) spec.AuthConfig {
 	}
 }
 
-func detectBaseURL(body string) string {
+// The second return is true when no URL matched and the caller is getting
+// the placeholder fallback — used by callers to refuse shipping.
+func detectBaseURL(body string) (string, bool) {
 	matches := baseURLRe.FindAllString(body, -1)
 	if len(matches) > 0 {
-		// Return the first match, preferring longer ones (more specific)
 		best := matches[0]
 		for _, m := range matches[1:] {
 			if len(m) > len(best) {
 				best = m
 			}
 		}
-		return best
+		return best, false
 	}
-	return "https://api.example.com"
+	return spec.PlaceholderBaseURL, true
 }
 
 func extractParams(body string) []spec.Param {
@@ -353,7 +355,18 @@ func GenerateFromDocsLLM(docsURL, apiName string) (*spec.APISpec, error) {
 
 	yamlContent := ExtractYAML(response)
 
-	return spec.ParseBytes([]byte(yamlContent))
+	parsed, err := spec.ParseBytes([]byte(yamlContent))
+	if err != nil {
+		return nil, err
+	}
+	// The prompt template (BuildDocSpecLLMPrompt) seeds base_url with the
+	// PlaceholderBaseURL; an LLM that can't find a real host often echoes
+	// it back. Set the flag here so callers refuse to ship — yaml:"-" on
+	// BaseURLIsPlaceholder means ParseBytes can't carry the flag itself.
+	if parsed.BaseURL == spec.PlaceholderBaseURL {
+		parsed.BaseURLIsPlaceholder = true
+	}
+	return parsed, nil
 }
 
 // BuildDocSpecLLMPrompt constructs a prompt that asks the LLM to read API docs
@@ -366,7 +379,7 @@ The YAML must follow this exact format:
 name: %s
 description: "CLI for %s"
 version: "1.0.0"
-base_url: "https://api.example.com"
+base_url: "`+spec.PlaceholderBaseURL+`"
 auth:
   type: "bearer_token"   # one of: api_key, oauth2, bearer_token, none
   header: "Authorization"

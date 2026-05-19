@@ -184,7 +184,7 @@ func TestUpsertBatch_GenericFallbackList(t *testing.T) {
 	}
 	defer s.Close()
 
-	for _, key := range []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"} {
+	for _, key := range []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "name", "slug", "key", "code"} {
 		t.Run(key, func(t *testing.T) {
 			rt := "fallback_" + key
 			items := []json.RawMessage{
@@ -267,8 +267,18 @@ func TestUpsertBatch_ExtractFailuresReturnedForPerItemMisses(t *testing.T) {
 {{- if $hasTyped }}
 {{- range .Tables}}
 {{- if hasTypedTable .}}
+{{- /* $parentFKCol captures buildSubResourceTable's NOT NULL parent FK
+       (e.g. "domains_id"). The fixture must populate it or the typed
+       insert fails the NOT NULL constraint. The predicate is
+       first-match-wins: buildSubResourceTable emits parentCol second
+       (after id, before data/synced_at), so it wins even if a future
+       schema change introduces another NotNull non-PK column. */ -}}
 {{- $hasParentID := false }}
-{{- range .Columns}}{{if eq .Name "parent_id"}}{{$hasParentID = true}}{{end}}{{end}}
+{{- $parentFKCol := "" }}
+{{- range .Columns}}
+{{- if eq .Name "parent_id"}}{{$hasParentID = true}}{{end}}
+{{- if and .NotNull (not .PrimaryKey) (ne .Name "data") (eq $parentFKCol "")}}{{$parentFKCol = .Name}}{{end}}
+{{- end}}
 
 // TestUpsertBatch_Populates{{pascal .Name}}Table verifies that UpsertBatch
 // dispatches paginated items into both the generic resources table AND the
@@ -284,9 +294,9 @@ func TestUpsertBatch_Populates{{pascal .Name}}Table(t *testing.T) {
 	defer s.Close()
 
 	items := []json.RawMessage{
-		json.RawMessage(`{"id": "test-001"}`),
-		json.RawMessage(`{"id": "test-002"}`),
-		json.RawMessage(`{"id": "test-003"}`),
+		json.RawMessage(`{"id": "test-001"{{if $parentFKCol}}, "{{$parentFKCol}}": "test-parent-001"{{end}}}`),
+		json.RawMessage(`{"id": "test-002"{{if $parentFKCol}}, "{{$parentFKCol}}": "test-parent-001"{{end}}}`),
+		json.RawMessage(`{"id": "test-003"{{if $parentFKCol}}, "{{$parentFKCol}}": "test-parent-001"{{end}}}`),
 	}
 	if _, _, err := s.UpsertBatch("{{.Resource}}", items); err != nil {
 		t.Fatalf("UpsertBatch: %v", err)
@@ -311,6 +321,61 @@ func TestUpsertBatch_Populates{{pascal .Name}}Table(t *testing.T) {
 		t.Fatalf("{{.Name}} count = %d, want %d (typed table not populated by UpsertBatch)", typed, len(items))
 	}
 }
+{{- if $parentFKCol }}
+
+// TestUpsertBatch_TypedFailureDoesNotStrand{{pascal .Name}}Generic exercises
+// the savepoint isolation around the typed-table dispatch. The fixture omits
+// the NOT NULL parent FK column so the typed insert fails; the savepoint
+// rolls back only the typed projection. The generic resources row inserted
+// just before must survive. Regression for issue #1392, where a single
+// outer transaction caused typed-table failures to cascade and silently
+// discard every successfully fetched API row.
+func TestUpsertBatch_TypedFailureDoesNotStrand{{pascal .Name}}Generic(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	// Items deliberately omit "{{$parentFKCol}}" so the typed NOT NULL
+	// constraint fires.
+	items := []json.RawMessage{
+		json.RawMessage(`{"id": "orphan-001"}`),
+		json.RawMessage(`{"id": "orphan-002"}`),
+		json.RawMessage(`{"id": "orphan-003"}`),
+	}
+	stored, extractFailures, err := s.UpsertBatch("{{.Resource}}", items)
+	if err != nil {
+		t.Fatalf("UpsertBatch: %v (typed-table failure must not propagate)", err)
+	}
+	if stored != len(items) {
+		t.Fatalf("stored = %d, want %d (generic resources rows must land even when typed table fails)", stored, len(items))
+	}
+	if extractFailures != 0 {
+		t.Fatalf("extractFailures = %d, want 0", extractFailures)
+	}
+
+	db := s.DB()
+
+	var generic int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM resources WHERE resource_type = ?`, "{{.Resource}}").Scan(&generic); err != nil {
+		t.Fatalf("count resources: %v", err)
+	}
+	if generic != len(items) {
+		t.Fatalf("resources count = %d, want %d (savepoint rollback must not undo generic insert)", generic, len(items))
+	}
+
+	var typed int
+	typedQuery := fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, "{{.Name}}")
+	if err := db.QueryRow(typedQuery).Scan(&typed); err != nil {
+		t.Fatalf("count {{.Name}}: %v", err)
+	}
+	if typed != 0 {
+		t.Fatalf("{{.Name}} count = %d, want 0 (typed insert violated NOT NULL on %q)", typed, "{{$parentFKCol}}")
+	}
+}
+{{- end}}
 {{- if $hasParentID }}
 
 // TestUpsertBatch_Sets{{pascal .Name}}ParentID verifies that dependent-resource

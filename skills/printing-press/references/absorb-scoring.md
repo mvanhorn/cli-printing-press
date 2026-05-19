@@ -48,13 +48,20 @@ Apply to candidates that survive the kill/keep checks.
 Survivors render as rows in the absorb manifest's transcendence table:
 
 ```markdown
-| # | Feature | Command | Score | How It Works | Evidence |
-|---|---------|---------|-------|-------------|----------|
-| N | Player comparison | compare "LeBron" "Curry" | 8/10 | Joins player_stats + team + season tables in local SQLite | ESPN community requests, espn_scraper lacks cross-player queries |
+| # | Feature | Command | Score | Buildability | How It Works | Evidence |
+|---|---------|---------|-------|--------------|--------------|----------|
+| N | Player comparison | compare "LeBron" "Curry" | 8/10 | hand-code | Joins player_stats + team + season tables in local SQLite | ESPN community requests, espn_scraper lacks cross-player queries |
 ```
 
 The "How It Works" column is the buildability proof — one sentence showing the
 specific API endpoint or local data that powers the feature.
+
+The "Buildability" column tags whether the generator auto-emits the feature
+from the spec (`spec-emits`) or whether the agent must hand-write the Cobra
+file plus `root.go` wiring after generate (`hand-code`). See Pass 3 question 5
+in [novel-features-subagent.md](novel-features-subagent.md) for the
+classification rules. The Phase Gate 1.5 prose showcase counts `hand-code`
+rows from this column when reading out the hand-code commitment.
 
 The "Evidence" column MUST cite specific findings from Phase 1 or Phase 1.5
 research. "Power users would love this" is not evidence.

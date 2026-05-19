@@ -56,6 +56,15 @@ func TestExampleValueIDRecognition(t *testing.T) {
 		{"camel movieId uuid type", spec.Param{Name: "movieId", Type: "uuid"}, uuid},
 		{"camel personId guid type", spec.Param{Name: "personId", Type: "guid"}, uuid},
 
+		// Browser-sniff customer-data shapes route to canonical synthetic placeholders.
+		{"asin", spec.Param{Name: "asin", Type: "string"}, "B0EXAMPLE1"},
+		{"card last four", spec.Param{Name: "card_last4", Type: "string"}, "LAST4"},
+		{"recipient", spec.Param{Name: "recipient_name", Type: "string"}, "Test User"},
+		{"address", spec.Param{Name: "shipping_address", Type: "string"}, "123 Test St, Anytown, ST 12345"},
+		{"generic order id stays uuid", spec.Param{Name: "orderId", Type: "string"}, uuid},
+		{"address id stays uuid", spec.Param{Name: "shipping_address_id", Type: "string"}, uuid},
+		{"recipient id stays uuid", spec.Param{Name: "recipient_id", Type: "string"}, uuid},
+
 		// Negative — does not end in `id`.
 		{"userIdentifier", spec.Param{Name: "userIdentifier", Type: "string"}, "example-value"},
 		{"empty name", spec.Param{Name: "", Type: "string"}, "example-value"},

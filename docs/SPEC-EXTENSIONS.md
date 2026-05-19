@@ -200,8 +200,11 @@ for large surfaces: `transport: [stdio, http]` + `orchestration: code` +
 Parsed field: `APISpec.MCP` (`spec.MCPConfig`)
 
 Rules:
-- Optional. Specs without `x-mcp` keep today's stdio-only endpoint-mirror
-  behavior.
+- Optional. Specs without `x-mcp` get the endpoint-mirror surface; small APIs
+  (typed-endpoint count at or below `spec.DefaultRemoteTransportEndpointThreshold`,
+  currently 30) also get the http transport compiled in alongside stdio so the
+  same binary can reach cloud-hosted agents. Setting `transport` explicitly
+  (including `transport: [stdio]`) bypasses the default and is honored as-is.
 - May be declared at the OpenAPI root or under `info`. Root takes precedence
   when both are present.
 - Shape mirrors the internal YAML `mcp:` block field-for-field: `transport`,
@@ -217,6 +220,51 @@ x-mcp:
   transport: [stdio, http]
   orchestration: code
   endpoint_tools: hidden
+```
+
+### `x-tenant-env-var`
+
+Declares the env-var name that resolves the implicit `{tenant}` path
+placeholder for multi-tenant SaaS APIs whose every path is
+`/tenant/{tenant}/<resource>`. Without this annotation, the generator
+classifies tenant-templated paths as parent-context-dependent and emits an
+empty `defaultSyncResources` / `syncResourcePath` map; sync silently no-ops
+and every downstream offline command ships broken.
+
+Parsed fields: `APISpec.EndpointTemplateVars` (`tenant` added) and
+`APISpec.EndpointTemplateEnvOverrides["tenant"]` (env-var name).
+
+Rules:
+- Optional. Specs without `x-tenant-env-var` keep single-tenant behavior;
+  no `{tenant}`-aware emission, no spurious env reads.
+- Declared under `info` only (path-positional templates are spec-wide).
+- Value must be a non-empty string after `TrimSpace`. Whitespace-only
+  values are treated as absent.
+- The placeholder name is `tenant`. Specs that use a different
+  placeholder (`{workspace}`, `{org}`) should set
+  `EndpointTemplateVars` + `EndpointTemplateEnvOverrides` directly in
+  internal YAML until this extension generalizes.
+
+Effect on generated output (when set):
+- The profiler treats `/.../{tenant}/...` paths as standalone-listable, so
+  the resource becomes a flat `SyncableResource` rather than a
+  `DependentSyncResource`.
+- The emitted `config.go` reads the override env-var name (e.g.
+  `ST_TENANT_ID`) into `Config.TemplateVars["tenant"]` at `Load()` time.
+- The emitted `url.go` `buildURL` substitutes `{tenant}` from
+  `Config.TemplateVars` at request time and names the override env var in
+  the actionable error when the value is missing.
+- The emitted `sync.go` filters `{tenant}` out of the unresolved-key
+  warning so per-tenant paths don't get skipped as "requires parent
+  context".
+
+Example:
+
+```yaml
+info:
+  title: ServiceTitan CRM
+  version: 1.0.0
+  x-tenant-env-var: ST_TENANT_ID
 ```
 
 ## Security Scheme Extensions
@@ -298,6 +346,15 @@ Rules:
 - Empty and non-string list items are ignored.
 - When at least one non-empty item is present, the list replaces the parser's
   generated env var names.
+
+Catalog-driven equivalent: when a catalog entry declares `auth_env_vars`, the
+generator layers the canonical names on top of the parser-derived default at
+runtime without editing the upstream spec. The catalog list takes precedence,
+the parser default trails as a backwards-compat fallback, and the rebuilt env
+var list is emitted as an OR-case (any one satisfies auth). The catalog field
+is ignored for HTTP Basic auth (credential-pair shape); declare basic-auth
+env var pairs via `x-auth-env-vars` on the security scheme instead. See
+[`docs/CATALOG.md`](CATALOG.md#auth_env_vars).
 
 ### `x-auth-vars`
 

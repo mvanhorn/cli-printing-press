@@ -13,6 +13,7 @@ import (
 
 	"github.com/mvanhorn/cli-printing-press/v4/catalog"
 	catalogpkg "github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
@@ -247,6 +248,8 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			m.AuthEnvVars = existing.AuthEnvVars
 			m.AuthEnvVarSpecs = existing.AuthEnvVarSpecs
 			m.EndpointTemplateVars = existing.EndpointTemplateVars
+			m.EndpointTemplateEnvOverrides = existing.EndpointTemplateEnvOverrides
+			m.EndpointTemplateVarDefaults = existing.EndpointTemplateVarDefaults
 			m.AuthKeyURL = existing.AuthKeyURL
 			m.AuthTitle = existing.AuthTitle
 			m.AuthDescription = existing.AuthDescription
@@ -293,6 +296,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			parsed, parseErr = spec.ParseBytes(data)
 		}
 		if parseErr == nil {
+			applyPublishCatalogMetadata(parsed, state.APIName)
 			populateMCPMetadata(&m, parsed)
 		}
 
@@ -369,6 +373,23 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 	}
 
 	return WriteCLIManifest(dir, m)
+}
+
+func applyPublishCatalogMetadata(parsed *spec.APISpec, apiName string) {
+	if parsed == nil || apiName == "" {
+		return
+	}
+	priorName := parsed.Name
+	if priorName != "" && priorName != apiName {
+		catalogmeta.RebaseAuthEnvPrefix(&parsed.Auth, priorName, apiName)
+	}
+	parsed.Name = apiName
+
+	entry, err := catalogpkg.LookupFS(catalog.FS, apiName)
+	if err != nil {
+		return
+	}
+	catalogmeta.ApplyRuntimeMetadata(parsed, entry)
 }
 
 // loadResearchForPromote returns the research.json relevant to the
@@ -550,6 +571,21 @@ func CopyDir(src, dst string) error {
 			return walkErr
 		}
 		if path == src {
+			return nil
+		}
+
+		// Drop git plumbing wherever it appears in the tree. A stray .git
+		// from `git init` in a working CLI dir, or a nested submodule, would
+		// otherwise be carried into the library and re-staged downstream as
+		// a submodule pointer when `git add` runs in the publish repo.
+		// .gitignore / .gitattributes are legitimate CLI content and stay.
+		if d.Name() == ".git" {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() == ".gitmodules" {
 			return nil
 		}
 

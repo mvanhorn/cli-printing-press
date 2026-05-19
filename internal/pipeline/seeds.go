@@ -330,7 +330,8 @@ and implement its fixes in a severity-gated loop (max 2 passes) until no Blocker
 
 - Agent readiness reviewer scorecard (7 principles x severity)
 - Fix implementation log (which fixes were applied, which were skipped/reverted)
-- Phase verdict: Pass (zero Blockers and Frictions), Warn (Frictions remain), or Degrade (Blockers remain)
+- {{.PipelineDir}}/agent-readiness.md with a parseable Phase verdict: Pass|Warn|Degrade line
+- Remaining Blocker and Friction findings listed as bullets or table rows in agent-readiness.md
 
 ## Prior Phase Outputs
 
@@ -342,6 +343,7 @@ and implement its fixes in a severity-gated loop (max 2 passes) until no Blocker
 - Reviewer agent: compound-engineering:cli-agent-readiness-reviewer (external plugin)
 - Plugin dependency declared in .claude/settings.json
 - Phase 4.8 analog: SKILL.md Phase 4.8 (Runtime Verification)
+- Ship gate parser: internal/pipeline/planner.go LoadAgentReadinessReport
 - If the run started in codex mode, preserve that mode here: reviewer runs in Claude, but each accepted fix patch is delegated to Codex and then verified in Claude
 `,
 	PhaseShip: `---
@@ -372,12 +374,14 @@ Package the generated CLI output and produce the final handoff report for humans
 ## Prior Phase Outputs
 
 - Review score and review.md from the review phase
+- Agent-readiness verdict from agent-readiness.md
 - Working CLI binary ready for packaging and handoff
 
 ## Codebase Pointers
 
 - Output CLI tree in {{.OutputDir}}
 - Review artifacts in {{.PipelineDir}}
+- Agent-readiness report in {{.PipelineDir}}/agent-readiness.md
 - Morning report format from SKILL.md Workflow 4 Step 6
 `,
 }

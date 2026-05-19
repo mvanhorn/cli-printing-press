@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -214,6 +216,7 @@ func newPublishPackageCmd() *cobra.Command {
 	var target string
 	var dest string
 	var modulePath string
+	var allowMirrorDeletions bool
 	var asJSON bool
 
 	cmd := &cobra.Command{
@@ -245,6 +248,9 @@ func newPublishPackageCmd() *cobra.Command {
 			}
 			if target != "" && dest != "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--target and --dest are mutually exclusive")}
+			}
+			if allowMirrorDeletions && dest == "" {
+				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--allow-mirror-deletions requires --dest (the divergence guard runs only in --dest mode)")}
 			}
 
 			// Cheap existence checks before expensive validation
@@ -297,6 +303,15 @@ func newPublishPackageCmd() *cobra.Command {
 				rootDir = dest
 				outCLIDir = filepath.Join(dest, "library", category, dirName)
 
+				// Scoped to this CLI dir; other categories belong to
+				// category-migration intent, where the operator has
+				// already accepted that the old location goes away.
+				if !allowMirrorDeletions {
+					if err := checkMirrorDivergence(outCLIDir, dir); err != nil {
+						return err
+					}
+				}
+
 				// Move existing CLI dirs aside (don't delete yet — restore on failure)
 				var err error
 				stashedDirs, err = stashExistingCLI(dest, dirName)
@@ -346,6 +361,20 @@ func newPublishPackageCmd() *cobra.Command {
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping build dir: %w", err)}
 			}
 
+			// Strip root-level binaries that local `go build ./cmd/...` (or
+			// `make build` / `make build-mcp` without `-o bin/...`) drops at
+			// the CLI dir root. The skill's downstream `cp -r ... PUBLISH_REPO_DIR`
+			// has a parallel `rm -f` line that historically missed
+			// `<api-slug>-pp-mcp`; doing the strip here on the staged copy
+			// makes the publish path binary-free regardless of which downstream
+			// step (skill or other tooling) the operator runs next.
+			for _, name := range stagedBinaryNames(cliName, dirName) {
+				if err := os.Remove(filepath.Join(outCLIDir, name)); err != nil && !os.IsNotExist(err) {
+					cleanupOnFailure()
+					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping staged binary %s: %w", name, err)}
+				}
+			}
+
 			// Rewrite go.mod module path if --module-path is set
 			if modulePath != "" {
 				oldModPath := cliName // generated CLIs use bare CLI name as module path
@@ -379,10 +408,15 @@ func newPublishPackageCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "warning: no manuscripts found, packaging without them")
 			}
 
-			findings, err := artifacts.FindVendorPrefixSecrets(outCLIDir)
+			cookieNames, err := stagedPackageCookieNames(outCLIDir)
 			if err != nil {
 				cleanupOnFailure()
-				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for vendor-prefix tokens: %w", err)}
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("reading staged package cookie auth metadata: %w", err)}
+			}
+			findings, err := artifacts.FindPackageSecrets(outCLIDir, cookieNames)
+			if err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for secret tokens: %w", err)}
 			}
 
 			piiResult, piiErr := artifacts.RunPIIAudit(outCLIDir)
@@ -420,6 +454,7 @@ func newPublishPackageCmd() *cobra.Command {
 	cmd.Flags().StringVar(&target, "target", "", "Staging directory to create (mutually exclusive with --dest)")
 	cmd.Flags().StringVar(&dest, "dest", "", "Publish repo to write into directly (mutually exclusive with --target)")
 	cmd.Flags().StringVar(&modulePath, "module-path", "", "Go module path to set (e.g., github.com/org/repo/library/category/cli-name)")
+	cmd.Flags().BoolVar(&allowMirrorDeletions, "allow-mirror-deletions", false, "Allow the overlay to delete mirror files that have no source counterpart (use only after manual reconciliation)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
 	return cmd
@@ -475,6 +510,87 @@ func removeStashedDirs(dirs []stashedDir) {
 	for _, d := range dirs {
 		_ = os.RemoveAll(d.stashed)
 	}
+}
+
+// mirrorDivergenceExampleLimit caps how many would-be-deleted paths the
+// divergence error names inline before falling back to a count.
+const mirrorDivergenceExampleLimit = 10
+
+// checkMirrorDivergence returns an ExitInputError naming the first
+// findings if any file under mirrorCLIDir is not present in sourceCLIDir.
+// A non-existent mirrorCLIDir is treated as no divergence.
+func checkMirrorDivergence(mirrorCLIDir, sourceCLIDir string) error {
+	mirrorOnly, err := listMirrorOnlyFiles(mirrorCLIDir, sourceCLIDir)
+	if err != nil {
+		return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning mirror for divergence: %w", err)}
+	}
+	if len(mirrorOnly) == 0 {
+		return nil
+	}
+
+	var msg strings.Builder
+	noun := "files"
+	if len(mirrorOnly) == 1 {
+		noun = "file"
+	}
+	fmt.Fprintf(&msg, "mirror has %d %s not present in source library (likely a direct community PR or independent edit). Publishing now would delete this content. Reconcile manually, then re-run with --allow-mirror-deletions to override.\n", len(mirrorOnly), noun)
+	limit := min(len(mirrorOnly), mirrorDivergenceExampleLimit)
+	for _, p := range mirrorOnly[:limit] {
+		fmt.Fprintf(&msg, "  %s\n", p)
+	}
+	if len(mirrorOnly) > limit {
+		fmt.Fprintf(&msg, "  ... and %d more\n", len(mirrorOnly)-limit)
+	}
+
+	return &ExitError{Code: ExitInputError, Err: errors.New(strings.TrimRight(msg.String(), "\n"))}
+}
+
+// listMirrorOnlyFiles returns slash-separated relative paths under
+// mirrorCLIDir whose corresponding files do not exist under sourceCLIDir.
+// The top-level .manuscripts/ and build/ directories are skipped because
+// the publish flow manages those outputs separately: .manuscripts/ is
+// repopulated per run, and build/ is stripped after the source copy. A
+// non-existent mirrorCLIDir is treated as no divergence.
+func listMirrorOnlyFiles(mirrorCLIDir, sourceCLIDir string) ([]string, error) {
+	var mirrorOnly []string
+	err := filepath.WalkDir(mirrorCLIDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if path == mirrorCLIDir && os.IsNotExist(walkErr) {
+				return fs.SkipAll
+			}
+			return fmt.Errorf("%s: %w", path, walkErr)
+		}
+		if path == mirrorCLIDir {
+			return nil
+		}
+
+		rel, err := filepath.Rel(mirrorCLIDir, path)
+		if err != nil {
+			return err
+		}
+
+		if d.IsDir() {
+			switch rel {
+			case ".manuscripts", "build":
+				return fs.SkipDir
+			}
+			return nil
+		}
+
+		if _, statErr := os.Lstat(filepath.Join(sourceCLIDir, rel)); statErr != nil {
+			if os.IsNotExist(statErr) {
+				mirrorOnly = append(mirrorOnly, filepath.ToSlash(rel))
+				return nil
+			}
+			return statErr
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return mirrorOnly, nil
 }
 
 // resolveManuscripts finds the manuscripts directory and most recent run ID
@@ -897,6 +1013,35 @@ func buildArtifactCandidates(dir, cliName string) []string {
 	}
 }
 
+// stagedBinaryNames returns the root-level filenames that local builds
+// (`go build ./cmd/...`, `make build`, `make build-mcp` without `-o`)
+// drop alongside the source tree. The Makefile template emits
+// `<api-slug>-pp-cli` and `<api-slug>-pp-mcp` peers, and verifier paths
+// may also leave a bare `<api-slug>` artifact. The list is intentionally
+// a small, named superset rather than a glob so the strip step never
+// removes a tracked source file by accident.
+func stagedBinaryNames(cliName, apiSlug string) []string {
+	seen := map[string]struct{}{}
+	var names []string
+	add := func(n string) {
+		if n == "" {
+			return
+		}
+		if _, ok := seen[n]; ok {
+			return
+		}
+		seen[n] = struct{}{}
+		names = append(names, n)
+	}
+	add(apiSlug)
+	add(cliName)
+	if apiSlug != "" {
+		add(apiSlug + "-pp-cli")
+		add(apiSlug + "-pp-mcp")
+	}
+	return names
+}
+
 type fileSnapshot struct {
 	path    string
 	exists  bool
@@ -1018,6 +1163,22 @@ func hasContent(dir string) bool {
 		}
 	}
 	return false
+}
+
+func stagedPackageCookieNames(dir string) ([]string, error) {
+	manifest, err := pipeline.ReadToolsManifest(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	switch strings.ToLower(strings.TrimSpace(manifest.Auth.Type)) {
+	case "cookie", "composed":
+		return manifest.Auth.Cookies, nil
+	default:
+		return nil, nil
+	}
 }
 
 // formatCombinedScanError composes the publish-time error message from

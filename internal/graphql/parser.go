@@ -71,8 +71,10 @@ func parseSDLContent(source, raw string) (*spec.APISpec, error) {
 
 	name := deriveAPIName(source)
 	baseURL, endpointPath, auth := knownGraphQLDefaults(name, source)
+	baseURLIsPlaceholder := false
 	if baseURL == "" {
-		baseURL = "https://api.example.com"
+		baseURL = spec.PlaceholderBaseURL
+		baseURLIsPlaceholder = true
 	}
 	if endpointPath == "" {
 		// Default to the canonical "/graphql" path so existing GraphQL specs
@@ -90,11 +92,12 @@ func parseSDLContent(source, raw string) (*spec.APISpec, error) {
 	}
 
 	apiSpec := &spec.APISpec{
-		Name:                name,
-		Description:         "Generated from GraphQL schema",
-		BaseURL:             baseURL,
-		GraphQLEndpointPath: endpointPath,
-		Auth:                auth,
+		Name:                 name,
+		Description:          "Generated from GraphQL schema",
+		BaseURL:              baseURL,
+		BaseURLIsPlaceholder: baseURLIsPlaceholder,
+		GraphQLEndpointPath:  endpointPath,
+		Auth:                 auth,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),

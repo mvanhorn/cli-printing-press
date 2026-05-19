@@ -105,3 +105,25 @@ func TestParamDescriptionCompactorTruncatesUnicodeSafely(t *testing.T) {
 	assert.LessOrEqual(t, utf8.RuneCountInString(got), sharedParamDescriptionMax)
 	assert.True(t, strings.HasSuffix(got, sharedParamDescriptionTail))
 }
+
+func TestParamDescriptionCompactorSanitizesCapturedExamples(t *testing.T) {
+	description := "Order ID, format XXX-XXXXXXX-XXXXXXX (e.g. 123-4567890-1234567), ASIN B012345678, card ending in 4242."
+	api := &spec.APISpec{
+		Resources: map[string]spec.Resource{
+			"orders": {
+				Endpoints: map[string]spec.Endpoint{
+					"get": {Params: []spec.Param{{Name: "order_id", Type: "string", Description: description}}},
+				},
+			},
+		},
+	}
+
+	got := NewParamDescriptionCompactor(api).Description(spec.Param{Name: "order_id", Type: "string", Description: description})
+
+	assert.Contains(t, got, "e.g. 111-1111111-1111111")
+	assert.Contains(t, got, "ASIN B0EXAMPLE1")
+	assert.Contains(t, got, "card ending in LAST4")
+	assert.NotContains(t, got, "123-4567890-1234567")
+	assert.NotContains(t, got, "B012345678")
+	assert.NotContains(t, got, "4242")
+}

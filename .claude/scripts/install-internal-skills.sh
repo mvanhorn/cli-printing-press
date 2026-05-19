@@ -7,7 +7,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_SKILLS="$SCRIPT_DIR/../skills"
+REPO_SKILLS="$SCRIPT_DIR/../../skills"
 USER_SKILLS="$HOME/.claude/skills"
 
 if [ ! -d "$REPO_SKILLS" ]; then

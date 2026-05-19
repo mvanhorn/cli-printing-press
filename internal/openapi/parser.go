@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -50,7 +51,20 @@ const (
 	extensionProxyRoutes           = "x-proxy-routes"
 	extensionOrigin                = "x-origin"
 	extensionProviderName          = "x-providerName"
+	// extensionTenantEnvVar declares the env-var name that resolves the
+	// {tenant} path-positional template in multi-tenant SaaS APIs (every
+	// path is /tenant/{tenant}/...). When set, the parser registers
+	// "tenant" as an EndpointTemplateVar with this env var as the override,
+	// so the profiler treats /tenant/{tenant}/<resource> paths as standalone
+	// sync resources rather than parent-context-dependent.
+	extensionTenantEnvVar = "x-tenant-env-var"
 )
+
+// tenantPlaceholderName is the canonical placeholder that x-tenant-env-var
+// maps to. Kept narrow on purpose — when this generalizes beyond ServiceTitan
+// (Atlassian {workspace}, GitHub {org}), promote to a list-shaped extension
+// rather than overloading this constant.
+const tenantPlaceholderName = "tenant"
 
 // SetMaxResources overrides the default resource limit. When not called,
 // the parser uses a default of 500 which accommodates all known APIs.
@@ -149,62 +163,83 @@ func stripBrokenRefs(data []byte, errMsg string) []byte {
 
 // Parse parses an OpenAPI spec strictly. Use ParseLenient for specs with broken $refs.
 func Parse(data []byte) (*spec.APISpec, error) {
-	return parse(data, false)
+	return ParseWithOptions(data, ParseOptions{})
 }
 
 // ParseFile parses an OpenAPI spec from a file and resolves local external
 // refs relative to that file.
 func ParseFile(path string) (*spec.APISpec, error) {
-	return parseFile(path, false)
+	return parseFileWithOptions(path, ParseOptions{})
 }
 
 // ParseWithPath parses OpenAPI spec bytes and resolves local external refs
 // relative to the given file path.
 func ParseWithPath(data []byte, path string) (*spec.APISpec, error) {
-	return parseWithPath(data, path, false)
+	return ParseWithOptions(data, ParseOptions{Path: path})
 }
 
 // ParseLenient parses an OpenAPI spec, skipping validation errors from broken $refs.
 // It logs warnings to stderr for any issues found but continues parsing.
 func ParseLenient(data []byte) (*spec.APISpec, error) {
-	return parse(data, true)
+	return ParseWithOptions(data, ParseOptions{Lenient: true})
 }
 
 // ParseFileLenient parses an OpenAPI spec from a file and skips validation
 // errors from broken $refs after resolving local external refs relative to
 // that file.
 func ParseFileLenient(path string) (*spec.APISpec, error) {
-	return parseFile(path, true)
+	return parseFileWithOptions(path, ParseOptions{Lenient: true})
 }
 
 // ParseWithPathLenient parses OpenAPI spec bytes, resolving local external refs
 // relative to the given file path and skipping validation errors from broken
 // refs.
 func ParseWithPathLenient(data []byte, path string) (*spec.APISpec, error) {
-	return parseWithPath(data, path, true)
+	return ParseWithOptions(data, ParseOptions{Path: path, Lenient: true})
 }
 
-func parseFile(path string, lenient bool) (*spec.APISpec, error) {
+// ParseOptions carries optional hints that influence parsing without changing
+// the existing single-purpose Parse* signatures. New behavioral knobs (e.g.
+// auth-scheme preference) should be added here rather than as new positional
+// parameters across every entry point.
+type ParseOptions struct {
+	// Path resolves local external refs relative to a file location. Empty
+	// means the spec is treated as remote/in-memory only.
+	Path string
+	// Lenient skips validation errors from broken $refs.
+	Lenient bool
+	// AuthPreference names a security scheme from components.securitySchemes
+	// that should win over the parser's default selection priority. Used when
+	// a spec exposes multiple valid schemes (e.g. OAuth2 + basic) and the
+	// caller knows which one fits the printed CLI's intended auth model.
+	// Unknown names are ignored (default selection runs).
+	AuthPreference string
+}
+
+// ParseWithOptions is the canonical parser entry point; the older Parse* and
+// ParseFile* helpers delegate to it with default ParseOptions plus their own
+// path/lenient settings.
+func ParseWithOptions(data []byte, opts ParseOptions) (*spec.APISpec, error) {
+	if opts.Path == "" {
+		return parseWithLocation(data, opts.Lenient, nil, opts.AuthPreference)
+	}
+	location, err := fileLocation(opts.Path)
+	if err != nil {
+		return nil, err
+	}
+	return parseWithLocation(data, opts.Lenient, location, opts.AuthPreference)
+}
+
+func parseFileWithOptions(path string, opts ParseOptions) (*spec.APISpec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading OpenAPI spec: %w", err)
 	}
-	return parseWithPath(data, path, lenient)
+	opts.Path = path
+	return ParseWithOptions(data, opts)
 }
 
-func parseWithPath(data []byte, path string, lenient bool) (*spec.APISpec, error) {
-	location, err := fileLocation(path)
-	if err != nil {
-		return nil, err
-	}
-	return parseWithLocation(data, lenient, location)
-}
-
-func parse(data []byte, lenient bool) (*spec.APISpec, error) {
-	return parseWithLocation(data, lenient, nil)
-}
-
-func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APISpec, error) {
+func parseWithLocation(data []byte, lenient bool, location *url.URL, authPreference string) (*spec.APISpec, error) {
 	var metadata specDataMetadata
 	if normalized, meta, err := normalizeSpecDataWithMetadata(data); err == nil {
 		data = normalized
@@ -346,8 +381,15 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 
 	baseURL := ""
 	basePath := ""
+	// serverTemplatePlaceholders / serverTemplateDefaults carry the placeholder
+	// names and their spec-declared defaults when the top-level server URL is
+	// a multi-tenant template (e.g. `https://{domain}/api/v2`). Empty for
+	// static specs so per-tenant runtime substitution stays opt-in and the
+	// existing byte-compat goldens for single-host APIs don't churn.
+	var serverTemplatePlaceholders []string
+	var serverTemplateDefaults map[string]string
 	if len(doc.Servers) > 0 && doc.Servers[0] != nil {
-		baseURL, basePath = resolveServerURL(doc.Servers[0])
+		baseURL, basePath, serverTemplatePlaceholders, serverTemplateDefaults = resolveServerURLTemplate(doc.Servers[0])
 	}
 	if baseURL == "" && basePath == "" {
 		// No top-level servers — walk per-operation `servers:` blocks. Specs
@@ -360,12 +402,14 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 			basePath = perOpPath
 		}
 	}
+	baseURLIsPlaceholder := false
 	if baseURL == "" && basePath == "" {
 		warnf("no servers defined in spec; generated CLI will require base_url in config")
-		baseURL = "https://api.example.com"
+		baseURL = spec.PlaceholderBaseURL
+		baseURLIsPlaceholder = true
 	}
 
-	auth := mapAuthWithDescriptionInference(doc, name, !metadata.explicitEmptySecuritySchemes)
+	auth := mapAuthWithDescriptionInference(doc, name, !metadata.explicitEmptySecuritySchemes, authPreference)
 	if auth.Type != "none" && allOperationsAllowAnonymous(doc) {
 		auth = spec.AuthConfig{Type: "none"}
 	}
@@ -383,19 +427,31 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 		return nil, err
 	}
 
+	templateVars, templateEnvOverrides := parseEndpointTemplateExtensions(doc)
+	// Merge server-URL template placeholders into the endpoint-template-var
+	// bucket. The downstream config.Load template walks EndpointTemplateVars
+	// to emit per-variable env-var lookups; without this merge a spec like
+	// `https://{domain}/api/v2` would lose `{domain}` between the parser and
+	// the generator and the CLI would DNS-fail on every call.
+	templateVars, templateDefaults := mergeServerTemplatePlaceholders(templateVars, serverTemplatePlaceholders, serverTemplateDefaults)
+
 	result := &spec.APISpec{
-		Name:                        name,
-		DisplayName:                 displayName,
-		DisplayNameDerivedFromTitle: displayNameDerivedFromTitle,
-		Description:                 description,
-		Version:                     version,
-		BaseURL:                     baseURL,
-		BasePath:                    basePath,
-		WebsiteURL:                  websiteURL,
-		ProxyRoutes:                 proxyRoutes,
-		Auth:                        auth,
-		TierRouting:                 tierRouting,
-		MCP:                         mcpConfig,
+		Name:                         name,
+		DisplayName:                  displayName,
+		DisplayNameDerivedFromTitle:  displayNameDerivedFromTitle,
+		Description:                  description,
+		Version:                      version,
+		BaseURL:                      baseURL,
+		BaseURLIsPlaceholder:         baseURLIsPlaceholder,
+		BasePath:                     basePath,
+		WebsiteURL:                   websiteURL,
+		ProxyRoutes:                  proxyRoutes,
+		Auth:                         auth,
+		TierRouting:                  tierRouting,
+		MCP:                          mcpConfig,
+		EndpointTemplateVars:         templateVars,
+		EndpointTemplateEnvOverrides: templateEnvOverrides,
+		EndpointTemplateVarDefaults:  templateDefaults,
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -427,11 +483,45 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL) (*spec.APIS
 	result.RequiredHeaders, perEndpointHeaders = detectRequiredHeaders(doc, result.Auth)
 	applyHeaderOverrides(result, perEndpointHeaders)
 
+	// Synthesize Params entries for {placeholder} tokens in the path template
+	// that the operation never declared in `parameters` (or via a path-item /
+	// $ref shared parameter). Real-world specs frequently omit these — the
+	// path template is the source of truth, but without a matching Param
+	// entry the generator emits a URL with literal `{name}` segments and the
+	// request returns 404. Same pass the YAML loader uses, applied uniformly
+	// here so OpenAPI-parsed specs get the same guarantee.
+	result.EnrichPathParams()
+
 	if err := result.Validate(); err != nil {
 		return nil, fmt.Errorf("validating parsed spec: %w", err)
 	}
 
 	return result, nil
+}
+
+// parseEndpointTemplateExtensions collects spec-declared endpoint template
+// placeholders and their env-var name overrides. Returns nil/nil for specs
+// that declare neither so existing generated outputs are byte-identical.
+//
+// Today only x-tenant-env-var lands here — it maps the implicit {tenant}
+// placeholder to an explicit env var (e.g. ST_TENANT_ID). When more
+// placeholders join (Atlassian {workspace}, GitHub {org}), prefer adding a
+// generic x-path-template-env-vars map-shaped extension over piling on
+// per-scope extensions.
+func parseEndpointTemplateExtensions(doc *openapi3.T) ([]string, map[string]string) {
+	raw, ok := lookupOpenAPIInfoExtension(doc, extensionTenantEnvVar)
+	if !ok {
+		return nil, nil
+	}
+	envName, ok := raw.(string)
+	if !ok {
+		return nil, nil
+	}
+	envName = strings.TrimSpace(envName)
+	if envName == "" {
+		return nil, nil
+	}
+	return []string{tenantPlaceholderName}, map[string]string{tenantPlaceholderName: envName}
 }
 
 // parseTypedExtension bridges kin-openapi's untyped any-tree to a typed
@@ -480,14 +570,17 @@ func lookupOpenAPIInfoExtension(doc *openapi3.T, key string) (any, bool) {
 }
 
 func mapAuth(doc *openapi3.T, name string) spec.AuthConfig {
-	return mapAuthWithDescriptionInference(doc, name, true)
+	return mapAuthWithDescriptionInference(doc, name, true, "")
 }
 
-func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescriptionInference bool) spec.AuthConfig {
+func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescriptionInference bool, authPreference string) spec.AuthConfig {
 	auth := spec.AuthConfig{Type: "none"}
-	schemeName, scheme := selectSecurityScheme(doc)
+	schemeName, scheme := selectSecurityScheme(doc, authPreference)
 	if scheme == nil {
 		result := inferQueryParamAuth(doc, name, auth)
+		if result.Type == "none" {
+			result = inferHeaderParamAPIKeyAuth(doc, name, result)
+		}
 		if result.Type == "none" && allowDescriptionInference {
 			result = inferDescriptionAuth(doc, name, result)
 		}
@@ -614,7 +707,99 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	applyAuthOverrideExtensions(&auth, scheme.Extensions)
 	applyAuthEnvVarDefaults(&auth, envPrefix)
 	applyAuthVarsRichOverride(&auth, scheme.Extensions, fmt.Sprintf("components.securitySchemes.%s.%s", schemeName, extensionAuthVars))
+	auth.AdditionalHeaders = collectAdditionalAuthHeaders(doc, schemeName)
 	return auth
+}
+
+// collectAdditionalAuthHeaders scans AND-group siblings of the winning
+// security scheme for x-auth-vars per_call entries. Composed auth shapes
+// (apiKey + OAuth bearer, Stripe-Signature + bearer, ST-App-Key + bearer)
+// declare the apiKey scheme in the same security requirement object as the
+// bearer; selectSecurityScheme picks the bearer half, and without this sweep
+// the apiKey half is silently dropped.
+//
+// AND vs OR matters: OpenAPI security is a list of requirement objects, where
+// each object is an AND-group (all schemes named must be satisfied) and the
+// list itself is OR (any one object suffices). A spec offering BearerAuth and
+// ApiKeyAuth as alternatives (each in its own requirement object) must NOT
+// promote the unused alternative as a sibling — that would emit a spurious
+// header on every Bearer-authenticated request. Only schemes co-located with
+// the winner in a requirement object are promoted.
+//
+// Only apiKey-typed siblings with `in: header` and an `x-auth-vars` per_call
+// declaration are considered. When doc.Security is empty (no root-level AND
+// grouping declared), no siblings are promoted: without an explicit
+// requirement object the AND/OR relationship is ambiguous and conservative
+// behavior is to emit nothing.
+func collectAdditionalAuthHeaders(doc *openapi3.T, winner string) []spec.AdditionalAuthHeader {
+	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) <= 1 {
+		return nil
+	}
+	if winner == "" || len(doc.Security) == 0 {
+		return nil
+	}
+
+	siblingSet := map[string]struct{}{}
+	var siblings []string
+	for _, req := range doc.Security {
+		if _, ok := req[winner]; !ok {
+			continue
+		}
+		for name := range req {
+			if name == winner {
+				continue
+			}
+			if _, dup := siblingSet[name]; dup {
+				continue
+			}
+			siblingSet[name] = struct{}{}
+			siblings = append(siblings, name)
+		}
+	}
+	sort.Strings(siblings)
+
+	var headers []spec.AdditionalAuthHeader
+	for _, name := range siblings {
+		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
+		if scheme == nil {
+			continue
+		}
+		if !strings.EqualFold(scheme.Type, "apiKey") {
+			continue
+		}
+		header := strings.TrimSpace(scheme.Name)
+		if header == "" {
+			continue
+		}
+		// apiKey schemes must declare `in` per OpenAPI 3.x; an empty value is a
+		// spec authoring mistake and would otherwise silently emit a header.
+		if !strings.EqualFold(strings.TrimSpace(scheme.In), "header") {
+			continue
+		}
+		raw, ok := scheme.Extensions[extensionAuthVars]
+		if !ok || raw == nil {
+			continue
+		}
+		envVars, err := authVarsExtension(raw)
+		if err != nil || len(envVars) == 0 {
+			continue
+		}
+		for _, ev := range envVars {
+			if ev.EffectiveKind() != spec.AuthEnvVarKindPerCall {
+				continue
+			}
+			if strings.TrimSpace(ev.Name) == "" {
+				continue
+			}
+			headers = append(headers, spec.AdditionalAuthHeader{
+				Header: header,
+				In:     "header",
+				Scheme: name,
+				EnvVar: ev,
+			})
+		}
+	}
+	return headers
 }
 
 func isGenericAPIKeySchemeSuffix(suffix string) bool {
@@ -878,6 +1063,28 @@ func authVarsExtension(raw any) ([]spec.AuthEnvVar, error) {
 }
 
 func loadOpenAPIDoc(data []byte, lenient bool, location *url.URL) (*openapi3.T, error) {
+	// Swagger 2.0 specs with circular $ref chains (Tripletex, NetSuite, etc.)
+	// burn 15-30 minutes of CPU and OOM the process when fed straight to the
+	// OpenAPI 3 loader. Detect them at the boundary and route through
+	// openapi2conv.ToV3 so the existing OpenAPI 3 code path handles the
+	// resolved spec. See issue #1241 and internal/openapi/swagger2.go.
+	if isSwagger2SpecJSON(data) {
+		return loadSwagger2AsOpenAPI3(data, lenient, location)
+	}
+
+	loader := newConfiguredOpenAPI3Loader(lenient, location)
+	if location != nil {
+		return loader.LoadFromDataWithPath(data, location)
+	}
+	return loader.LoadFromData(data)
+}
+
+// newConfiguredOpenAPI3Loader returns an openapi3.Loader with the project's
+// standard ReadFromURIFunc installed: the per-ref file-URI guard for strict
+// mode and the YAML->JSON normalization step for referenced files. Shared
+// between the OpenAPI 3 load path and the Swagger 2.0 conversion path so both
+// honor the same external-ref policy.
+func newConfiguredOpenAPI3Loader(lenient bool, location *url.URL) *openapi3.Loader {
 	loader := openapi3.NewLoader()
 	loader.IsExternalRefsAllowed = lenient || location != nil
 	allowLocalExternalRefs := location != nil
@@ -896,10 +1103,7 @@ func loadOpenAPIDoc(data []byte, lenient bool, location *url.URL) (*openapi3.T, 
 		}
 		return data, nil
 	}
-	if location != nil {
-		return loader.LoadFromDataWithPath(data, location)
-	}
-	return loader.LoadFromData(data)
+	return loader
 }
 
 func isFileURI(location *url.URL) bool {
@@ -1057,6 +1261,22 @@ var commonAuthQueryParams = map[string]bool{
 	"token":        true,
 }
 
+func authLikeHeaderName(name string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	if normalized == "" {
+		return false
+	}
+	switch normalized {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie":
+		return false
+	}
+	compact := strings.NewReplacer("-", "", "_", "", " ", "").Replace(normalized)
+	if strings.Contains(compact, "apikey") || strings.Contains(compact, "authkey") {
+		return true
+	}
+	return strings.Contains(compact, "token") && (strings.Contains(compact, "auth") || strings.Contains(compact, "access"))
+}
+
 // inferQueryParamAuth scans all operations for query parameters that look like
 // API keys. If more than 30% of operations carry one, we infer query-param auth.
 // This handles specs that omit securitySchemes but pass keys via query string.
@@ -1102,7 +1322,13 @@ func inferQueryParamAuth(doc *openapi3.T, name string, fallback spec.AuthConfig)
 	// Find the most common auth-like param name.
 	var best string
 	var bestCount int
-	for pName, cnt := range paramCounts {
+	paramNames := make([]string, 0, len(paramCounts))
+	for pName := range paramCounts {
+		paramNames = append(paramNames, pName)
+	}
+	sort.Strings(paramNames)
+	for _, pName := range paramNames {
+		cnt := paramCounts[pName]
 		if cnt > bestCount {
 			best = pName
 			bestCount = cnt
@@ -1119,6 +1345,71 @@ func inferQueryParamAuth(doc *openapi3.T, name string, fallback spec.AuthConfig)
 		In:      "query",
 		Header:  best,
 		EnvVars: []string{envPrefix + "_API_KEY"},
+	}
+}
+
+// inferHeaderParamAPIKeyAuth handles OpenAPI specs that omit securitySchemes
+// but repeat an API-key-shaped header parameter across the operation surface.
+func inferHeaderParamAPIKeyAuth(doc *openapi3.T, name string, fallback spec.AuthConfig) spec.AuthConfig {
+	if doc == nil || doc.Paths == nil || hasTopLevelSecurityDeclaration(doc) {
+		return fallback
+	}
+
+	paramCounts := map[string]int{}
+	totalOps := 0
+
+	for _, pathKey := range doc.Paths.InMatchingOrder() {
+		pathItem := doc.Paths.Value(pathKey)
+		if pathItem == nil {
+			continue
+		}
+		for _, op := range pathItem.Operations() {
+			if op == nil {
+				continue
+			}
+			totalOps++
+			seen := false
+			for _, p := range mergeParameters(pathItem, op) {
+				if p == nil || p.In != openapi3.ParameterInHeader || seen {
+					continue
+				}
+				if authLikeHeaderName(p.Name) {
+					paramCounts[p.Name]++
+					seen = true
+				}
+			}
+		}
+	}
+
+	if totalOps == 0 {
+		return fallback
+	}
+
+	var best string
+	var bestCount int
+	paramNames := make([]string, 0, len(paramCounts))
+	for pName := range paramCounts {
+		paramNames = append(paramNames, pName)
+	}
+	sort.Strings(paramNames)
+	for _, pName := range paramNames {
+		cnt := paramCounts[pName]
+		if cnt > bestCount {
+			best = pName
+			bestCount = cnt
+		}
+	}
+	if bestCount == 0 || float64(bestCount)/float64(totalOps) <= 0.3 {
+		return fallback
+	}
+
+	envPrefix := naming.EnvPrefix(name)
+	return spec.AuthConfig{
+		Type:     "api_key",
+		In:       "header",
+		Header:   best,
+		EnvVars:  []string{envPrefix + "_API_KEY"},
+		Inferred: true,
 	}
 }
 
@@ -1507,81 +1798,146 @@ func isNegated(text string, keywordIdx int) bool {
 	return false
 }
 
-func selectSecurityScheme(doc *openapi3.T) (string, *openapi3.SecurityScheme) {
+func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *openapi3.SecurityScheme) {
 	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) == 0 {
 		return "", nil
 	}
 
-	orderedNames := orderedSecuritySchemeNames(doc)
-	for _, name := range orderedNames {
-		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
-		if scheme == nil || !strings.EqualFold(scheme.Type, "oauth2") || scheme.Flows == nil {
-			continue
-		}
-		if ac := scheme.Flows.AuthorizationCode; ac != nil && strings.TrimSpace(ac.AuthorizationURL) != "" && strings.TrimSpace(ac.TokenURL) != "" {
-			return name, scheme
-		}
-	}
+	candidates := candidateSecuritySchemeNames(doc)
 
-	for _, name := range orderedNames {
-		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
-		if scheme == nil {
-			continue
-		}
-		switch strings.ToLower(scheme.Type) {
-		case "apikey", "oauth2":
-			return name, scheme
-		case "http":
-			switch strings.ToLower(scheme.Scheme) {
-			case "bearer", "basic":
+	if pref := strings.TrimSpace(authPreference); pref != "" {
+		for _, name := range candidates {
+			if !strings.EqualFold(name, pref) {
+				continue
+			}
+			scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
+			if scheme != nil {
 				return name, scheme
 			}
 		}
 	}
 
-	for _, name := range orderedNames {
+	bestScore := math.MaxInt
+	var bestName string
+	var bestScheme *openapi3.SecurityScheme
+
+	for _, name := range candidates {
 		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
-		if scheme != nil {
-			return name, scheme
+		if scheme == nil {
+			continue
+		}
+		score := schemePriorityScore(scheme)
+		if score < bestScore {
+			bestScore = score
+			bestName = name
+			bestScheme = scheme
 		}
 	}
 
-	return "", nil
+	return bestName, bestScheme
 }
 
-func orderedSecuritySchemeNames(doc *openapi3.T) []string {
+// Root security is authoritative when present: a components-only scheme
+// (e.g. an OAuth2 marketplace flow the API doesn't actually accept at the
+// document default) must not outrank an apiKey the spec explicitly named.
+// The empty-names guard handles `security: []` and `security: [{}]`
+// no-auth declarations, where falling back to components recovers the
+// previous behavior for inferred-auth specs.
+func candidateSecuritySchemeNames(doc *openapi3.T) []string {
 	seen := map[string]struct{}{}
 	var names []string
 
-	for _, requirement := range doc.Security {
-		var requirementNames []string
-		for name := range requirement {
-			requirementNames = append(requirementNames, name)
-		}
-		sort.Strings(requirementNames)
-		for _, name := range requirementNames {
-			if _, ok := seen[name]; ok {
-				continue
+	if doc.Security != nil {
+		for _, requirement := range doc.Security {
+			var requirementNames []string
+			for name := range requirement {
+				requirementNames = append(requirementNames, name)
 			}
-			seen[name] = struct{}{}
-			names = append(names, name)
+			sort.Strings(requirementNames)
+			for _, name := range requirementNames {
+				if _, ok := seen[name]; ok {
+					continue
+				}
+				seen[name] = struct{}{}
+				names = append(names, name)
+			}
+		}
+		if len(names) > 0 {
+			return names
 		}
 	}
 
-	var all []string
+	all := make([]string, 0, len(doc.Components.SecuritySchemes))
 	for name := range doc.Components.SecuritySchemes {
 		all = append(all, name)
 	}
 	sort.Strings(all)
-	for _, name := range all {
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		seen[name] = struct{}{}
-		names = append(names, name)
-	}
+	return all
+}
 
-	return names
+// Ordering rationale: Bearer is the simplest for CLI use; OAuth2 flows rank
+// by viability for non-interactive runs (cc > authorization_code > password >
+// implicit); apiKey-in-header beats apiKey-in-query because query strings leak
+// to logs; HTTP Basic ranks below standalone apiKey because compound legacy
+// schemes (email + key) surface as basic-ish patterns and shouldn't outrank a
+// modern apiKey alternative when both are offered. Password (ROPC) is
+// deprecated but kept above all apiKey shapes so multi-scheme specs that
+// pair ROPC with an apiKey alternative don't regress vs. the prior selector,
+// which returned any well-formed oauth2 before any apiKey.
+const (
+	schemePriorityBearer          = 0
+	schemePriorityOAuth2CC        = 100
+	schemePriorityOAuth2AuthCode  = 200
+	schemePriorityOAuth2Password  = 250
+	schemePriorityOAuth2Implicit  = 300
+	schemePriorityAPIKeyHeader    = 400
+	schemePriorityAPIKeyQuery     = 450
+	schemePriorityHTTPBasic       = 500
+	schemePriorityAPIKeyCookie    = 600
+	schemePriorityAPIKeyOther     = 700
+	schemePriorityOAuth2Malformed = 800
+	schemePriorityHTTPOther       = 900
+	schemePriorityUnknown         = 1000
+)
+
+func schemePriorityScore(scheme *openapi3.SecurityScheme) int {
+	switch strings.ToLower(scheme.Type) {
+	case "http":
+		switch strings.ToLower(scheme.Scheme) {
+		case "bearer":
+			return schemePriorityBearer
+		case "basic":
+			return schemePriorityHTTPBasic
+		}
+		return schemePriorityHTTPOther
+	case "oauth2":
+		if scheme.Flows != nil {
+			if cc := scheme.Flows.ClientCredentials; cc != nil && strings.TrimSpace(cc.TokenURL) != "" {
+				return schemePriorityOAuth2CC
+			}
+			if ac := scheme.Flows.AuthorizationCode; ac != nil && strings.TrimSpace(ac.AuthorizationURL) != "" && strings.TrimSpace(ac.TokenURL) != "" {
+				return schemePriorityOAuth2AuthCode
+			}
+			if pw := scheme.Flows.Password; pw != nil && strings.TrimSpace(pw.TokenURL) != "" {
+				return schemePriorityOAuth2Password
+			}
+			if ic := scheme.Flows.Implicit; ic != nil && strings.TrimSpace(ic.AuthorizationURL) != "" {
+				return schemePriorityOAuth2Implicit
+			}
+		}
+		return schemePriorityOAuth2Malformed
+	case "apikey":
+		switch strings.ToLower(scheme.In) {
+		case "header":
+			return schemePriorityAPIKeyHeader
+		case "query":
+			return schemePriorityAPIKeyQuery
+		case "cookie":
+			return schemePriorityAPIKeyCookie
+		}
+		return schemePriorityAPIKeyOther
+	}
+	return schemePriorityUnknown
 }
 
 func securitySchemeValue(ref *openapi3.SecuritySchemeRef) *openapi3.SecurityScheme {
@@ -1817,6 +2173,12 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			endpoint.Response, endpoint.ResponsePath = mapResponse(op, targetResourceName+"_"+endpointName, out)
 			if strings.ToUpper(method) == "GET" {
 				endpoint.Pagination = detectPagination(endpoint.Params, op)
+				// Only single-resource fetches (GET /resource/{id}) can carry
+				// embedded paged sub-resources; list endpoints ARE the paged
+				// endpoint themselves and don't need a companion helper.
+				if strings.Contains(path, "{") {
+					endpoint.EmbeddedPagedSubresources = detectEmbeddedPagedSubresources(op, path)
+				}
 			}
 			endpoint.NoAuth = operationAllowsAnonymous(op, doc)
 
@@ -1824,6 +2186,9 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			// response-schema inference. Resolution happens at parse time so
 			// the profiler sees a single resolved value per endpoint and
 			// templates do not re-walk schemas at generation time.
+			if responseUsesBinary(op) {
+				endpoint.ResponseFormat = spec.ResponseFormatBinary
+			}
 			if pathResourceIDOverride != "" {
 				endpoint.IDField = pathResourceIDOverride
 			} else {
@@ -1901,6 +2266,137 @@ func operationAllowsAnonymous(op *openapi3.Operation, doc *openapi3.T) bool {
 	return false
 }
 
+// resolveServerURLTemplate is the top-level entry point used for
+// `doc.Servers[0]`. It preserves `{var}` placeholders for variables that the
+// spec declares an explicit Variables entry for, so the generator can emit a
+// runtime substitution path (env var > spec default) in config.Load() rather
+// than baking the default into BaseURL at generate time. Returns the same
+// (baseURL, basePath) pair as resolveServerURL plus the placeholder names
+// that survived substitution and a map of their declared defaults. Variables
+// without an explicit Variables entry (e.g. dangling `{foo}` markers in a
+// hand-written spec) fall through to the legacy strip-unresolved behavior so
+// stale specs don't suddenly require an env var that doesn't exist.
+func resolveServerURLTemplate(server *openapi3.Server) (baseURL, basePath string, placeholders []string, defaults map[string]string) {
+	if server == nil {
+		return "", "", nil, nil
+	}
+	serverURL := strings.TrimRight(strings.TrimSpace(server.URL), "/")
+	if strings.Contains(serverURL, "{") && server.Variables != nil {
+		// First pass: identify which `{var}` markers are backed by an explicit
+		// variable definition. These get preserved for runtime substitution.
+		// Order placeholders by left-to-right appearance in the URL so the
+		// generated EndpointTemplateVars slice has a stable, intuitive shape;
+		// Go map iteration would otherwise produce nondeterministic ordering.
+		matches := templateVarPattern.FindAllStringSubmatch(serverURL, -1)
+		seen := map[string]bool{}
+		for _, m := range matches {
+			name := m[1]
+			if seen[name] {
+				continue
+			}
+			variable, ok := server.Variables[name]
+			if !ok || variable == nil {
+				continue
+			}
+			seen[name] = true
+			placeholders = append(placeholders, name)
+			if defaults == nil {
+				defaults = map[string]string{}
+			}
+			defaults[name] = variable.Default
+		}
+		// Second pass: bake in the default for any Variables entry the first
+		// pass did NOT register for runtime substitution. The first pass
+		// only registers names that match templateVarPattern's identifier
+		// regex (`[a-zA-Z_][a-zA-Z0-9_]*`); a variable with a hyphenated or
+		// digit-leading name (`{server-id}`, `{2nd-host}` — OpenAPI 3.0
+		// places no character restriction on variable names) falls through
+		// here so its default is substituted in place. Without this, the
+		// strip pass below would delete the placeholder entirely and the
+		// resulting URL would DNS-fail with no actionable hint.
+		for varName, variable := range server.Variables {
+			if _, runtime := defaults[varName]; runtime {
+				continue
+			}
+			if variable != nil && variable.Default != "" {
+				serverURL = strings.ReplaceAll(serverURL, "{"+varName+"}", variable.Default)
+			}
+		}
+	}
+	// Strip any remaining unresolved placeholders that don't have a runtime
+	// substitution path (matches the legacy resolveServerURL behavior).
+	// Runtime placeholders are left in place so the printed CLI's buildURL
+	// can substitute them per request.
+	serverURL = templateVarPattern.ReplaceAllStringFunc(serverURL, func(match string) string {
+		name := match[1 : len(match)-1]
+		if _, runtime := defaults[name]; runtime {
+			return match
+		}
+		return ""
+	})
+	serverURL = normalizeURLSlashes(serverURL)
+	serverURL = strings.TrimRight(serverURL, "/")
+	if serverURL == "" {
+		return "", "", placeholders, defaults
+	}
+	lowerURL := strings.ToLower(serverURL)
+	if strings.HasPrefix(lowerURL, "http://") || strings.HasPrefix(lowerURL, "https://") {
+		return serverURL, "", placeholders, defaults
+	}
+	return "", serverURL, placeholders, defaults
+}
+
+// templateVarPattern mirrors the regex used by the generated `buildURL` helper
+// so the parser and the runtime substitute the same set of placeholder names.
+var templateVarPattern = regexp.MustCompile(`\{([a-zA-Z_][a-zA-Z0-9_]*)\}`)
+
+func normalizeURLSlashes(s string) string {
+	s = strings.ReplaceAll(s, "//", "/")
+	s = strings.Replace(s, "http:/", "http://", 1)
+	s = strings.Replace(s, "https:/", "https://", 1)
+	return s
+}
+
+// mergeServerTemplatePlaceholders folds the placeholders the parser pulled
+// off `doc.Servers[0].Variables` into the existing EndpointTemplateVars list
+// (today populated only by x-tenant-env-var). Order: extension-declared
+// placeholders first, then server-URL placeholders in spec order, deduped.
+func mergeServerTemplatePlaceholders(existing []string, serverPlaceholders []string, serverDefaults map[string]string) ([]string, map[string]string) {
+	if len(serverPlaceholders) == 0 && len(serverDefaults) == 0 {
+		return existing, nil
+	}
+	seen := make(map[string]bool, len(existing)+len(serverPlaceholders))
+	out := make([]string, 0, len(existing)+len(serverPlaceholders))
+	for _, name := range existing {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	for _, name := range serverPlaceholders {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	var defaults map[string]string
+	if len(serverDefaults) > 0 {
+		defaults = make(map[string]string, len(serverDefaults))
+		for name, val := range serverDefaults {
+			if val == "" {
+				continue
+			}
+			defaults[name] = val
+		}
+		if len(defaults) == 0 {
+			defaults = nil
+		}
+	}
+	return out, defaults
+}
+
 // resolveServerURL applies template-variable substitution and protocol
 // normalization to an OpenAPI Server, returning either an absolute http(s)
 // base URL or a relative base path. Empty strings indicate the server entry
@@ -1927,10 +2423,7 @@ func resolveServerURL(server *openapi3.Server) (baseURL, basePath string) {
 		}
 		serverURL = serverURL[:start] + serverURL[end+1:]
 	}
-	serverURL = strings.ReplaceAll(serverURL, "//", "/")
-	// Restore protocol double-slash if normalization collapsed it.
-	serverURL = strings.Replace(serverURL, "http:/", "http://", 1)
-	serverURL = strings.Replace(serverURL, "https:/", "https://", 1)
+	serverURL = normalizeURLSlashes(serverURL)
 	serverURL = strings.TrimRight(serverURL, "/")
 	if serverURL == "" {
 		return "", ""
@@ -1939,7 +2432,7 @@ func resolveServerURL(server *openapi3.Server) (baseURL, basePath string) {
 	if strings.HasPrefix(lowerURL, "http://") || strings.HasPrefix(lowerURL, "https://") {
 		return serverURL, ""
 	}
-	// Relative URL — caller will need to surface as basePath.
+	// Relative URL; caller will need to surface as basePath.
 	return "", serverURL
 }
 
@@ -2297,7 +2790,11 @@ func tagDescriptionKeys(name string) []string {
 }
 
 func resolveEndpointName(method, path string, op *openapi3.Operation, existing map[string]spec.Endpoint, resourceName, basePath string, commonPrefix []string) string {
-	name := operationIDToName(operationID(op), resourceName, commonPrefix)
+	opID := operationID(op)
+	var name string
+	if !isFrameworkAutoGeneratedOperationID(opID, path) {
+		name = operationIDToName(opID, resourceName, commonPrefix)
+	}
 	if name == "" {
 		name = defaultEndpointName(method, path)
 	}
@@ -2877,6 +3374,49 @@ func selectResponseSchema(response *openapi3.Response) *openapi3.SchemaRef {
 	return nil
 }
 
+func responseUsesBinary(op *openapi3.Operation) bool {
+	if op == nil || op.Responses == nil {
+		return false
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil || success.Value.Content == nil {
+		return false
+	}
+	for _, contentType := range sortedContentTypes(success.Value.Content) {
+		media := success.Value.Content[contentType]
+		if media == nil {
+			continue
+		}
+		if schema := schemaRefValue(media.Schema); schema != nil {
+			if schema.Type != nil && schema.Type.Includes(openapi3.TypeString) && strings.EqualFold(schemaFormat(schema), "binary") {
+				return true
+			}
+		}
+		if binaryContentType(contentType) {
+			return true
+		}
+	}
+	return false
+}
+
+func binaryContentType(contentType string) bool {
+	base := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
+	if base == "" {
+		return false
+	}
+	if strings.HasPrefix(base, "audio/") ||
+		strings.HasPrefix(base, "video/") ||
+		strings.HasPrefix(base, "image/") {
+		return true
+	}
+	switch base {
+	case "application/octet-stream", "application/zip", "application/x-zip", "application/x-zip-compressed", "application/pdf", "multipart/mixed":
+		return true
+	default:
+		return false
+	}
+}
+
 // readPathItemResourceID reads the `x-resource-id` extension from a path item
 // and returns the resolved field name. Accepts only string values; non-string
 // values (numbers, booleans, malformed YAML) emit a warning and return "".
@@ -2977,7 +3517,8 @@ func readWalkerExtension(extensions map[string]any, context string) *spec.Walker
 
 // resolveIDFieldFromResponseSchema implements tiers 2-5 of the IDField fallback
 // chain: prefer "id", then a resource-prefixed key (`<singular>_id` /
-// `_uuid` / `_guid`), then "name", then the first scalar field listed in the
+// `_uuid` / `_guid`), then a vendor identifier (`gid` / `sid` / `uid` /
+// `uuid` / `guid`), then "name", then the first scalar field listed in the
 // response schema's `required:` array (walking properties in their schema order).
 // Returns "" when no field qualifies; templates fall through to runtime list
 // scanning. Tier 1 (`x-resource-id` extension) is handled separately by the
@@ -3017,6 +3558,18 @@ func resolveIDFieldFromResponseSchema(op *openapi3.Operation, resourceName strin
 	// `auth-tokens`/`auth_token_id` match through the same comparison.
 	if id := resourcePrefixedIDField(itemSchema, resourceName); id != "" {
 		return id
+	}
+
+	// Tier 3.5: vendor-specific identifier names. Asana keys every resource
+	// on `gid`, Twilio on `sid`, others on `uid`/`uuid`/`guid`. These are
+	// scalar primary keys by convention; without this tier the heuristic
+	// falls through to Tier 4 and picks `name` (a display field), so the
+	// generated CLI upserts on names and sync paths like
+	// `/workspaces/<workspace>/users` get a name where the API expects a gid.
+	for _, key := range []string{"gid", "sid", "uid", "uuid", "guid"} {
+		if _, ok := itemSchema.Properties[key]; ok {
+			return key
+		}
 	}
 
 	// Tier 4: explicit `name`
@@ -3935,6 +4488,94 @@ func operationIDToName(operationID, resourceName string, commonPrefix []string) 
 	return strings.ReplaceAll(name, "_", "-")
 }
 
+// isFrameworkAutoGeneratedOperationID reports whether operationID was
+// auto-generated by a framework (API Platform / Symfony, etc.) that names
+// operations by concatenating path segments and appending the HTTP method.
+// Two signals must both fire:
+//
+//  1. The operationId, snake-cased and tokenized on underscores, ends with
+//     a framework verb suffix (_post, _put, _patch, _delete, _get_collection,
+//     _get_subresource). Hand-curated ids that ship CRUD verbs as English
+//     words (list, create, search) and Google Discovery dotted ids
+//     (run.projects.locations.services.create) miss this gate.
+//  2. The same token list contains a token equal to the concatenation
+//     (no separator) of two consecutive non-routing, non-path-param path
+//     segments. Path-param segments are excluded so a hand-curated id
+//     that happens to contain a "{paramName}+nextSegment" concat does not
+//     trip the detector.
+//
+// When both fire, callers skip operationIDToName so name derivation falls
+// back to verb + path-collision-suffix rather than emitting unreadable
+// command names like "paymentsubscriptions-get-collection".
+func isFrameworkAutoGeneratedOperationID(operationID, path string) bool {
+	if operationID == "" || path == "" {
+		return false
+	}
+	opTokens := strings.Split(toSnakeCase(operationID), "_")
+	if len(opTokens) < 2 {
+		return false
+	}
+	if !hasFrameworkVerbSuffix(opTokens) {
+		return false
+	}
+
+	segs := splitPath(path)
+	normSegs := make([]string, 0, len(segs))
+	for _, s := range segs {
+		if isVersionSegment(s) || isGenericAPIPrefix(s) || isPathParamSegment(s) {
+			continue
+		}
+		n := strings.ReplaceAll(toSnakeCase(s), "_", "")
+		if n == "" {
+			continue
+		}
+		normSegs = append(normSegs, n)
+	}
+	if len(normSegs) < 2 {
+		return false
+	}
+
+	// frameworkConcatMinLen guards against accidental matches on very short
+	// segment pairs. 8 chars is comfortably above any plausible single
+	// path segment and below every concatenation we have seen in the wild
+	// (paymentsubscriptions, communitycommunities, schoolenrollments).
+	const frameworkConcatMinLen = 8
+
+	for i := range len(normSegs) - 1 {
+		cand := normSegs[i] + normSegs[i+1]
+		if len(cand) < frameworkConcatMinLen {
+			continue
+		}
+		if slices.Contains(opTokens, cand) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasFrameworkVerbSuffix reports whether opTokens ends with a verb suffix
+// that frameworks like API Platform emit as a marker of auto-generation:
+// the bare HTTP method (post/put/patch/delete) or one of the well-known
+// composite suffixes (get_collection, get_subresource). Hand-curated ids
+// ship English CRUD verbs (list, create, update) and do not match.
+func hasFrameworkVerbSuffix(opTokens []string) bool {
+	if len(opTokens) == 0 {
+		return false
+	}
+	last := opTokens[len(opTokens)-1]
+	switch last {
+	case "post", "put", "patch", "delete":
+		return true
+	}
+	if len(opTokens) >= 2 && opTokens[len(opTokens)-2] == "get" {
+		switch last {
+		case "collection", "subresource":
+			return true
+		}
+	}
+	return false
+}
+
 func googleOperationIDEndpointName(operationID, resourceName string) string {
 	chain, verb, ok := googleOperationIDResourceChain(operationID, true, true)
 	if !ok {
@@ -4590,25 +5231,28 @@ func selectDescription(summary, description string) string {
 }
 
 func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Pagination {
-	paramNames := map[string]struct{}{}
+	// Map lowercase parameter name back to the spec's original casing so
+	// the detected LimitParam/CursorParam preserves whatever the API
+	// expects (e.g. Google APIs reject `pagesize` but accept `pageSize`).
+	originalCase := map[string]string{}
 	for _, p := range params {
-		paramNames[strings.ToLower(p.Name)] = struct{}{}
+		originalCase[strings.ToLower(p.Name)] = p.Name
 	}
 
 	var pag spec.Pagination
 
 	// Detect limit param
 	for _, name := range []string{"limit", "maxresults", "pagesize", "page_size", "max_results", "per_page", "page[size]"} {
-		if _, ok := paramNames[name]; ok {
-			pag.LimitParam = name
+		if orig, ok := originalCase[name]; ok {
+			pag.LimitParam = orig
 			break
 		}
 	}
 
 	// Detect cursor param and pagination type
 	for _, name := range []string{"pagetoken", "page_token"} {
-		if _, ok := paramNames[name]; ok {
-			pag.CursorParam = name
+		if orig, ok := originalCase[name]; ok {
+			pag.CursorParam = orig
 			pag.Type = "page_token"
 			pag.NextCursorPath = "nextPageToken"
 			break
@@ -4616,8 +5260,8 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	}
 	if pag.Type == "" {
 		for _, name := range []string{"after", "cursor", "page[cursor]"} {
-			if _, ok := paramNames[name]; ok {
-				pag.CursorParam = name
+			if orig, ok := originalCase[name]; ok {
+				pag.CursorParam = orig
 				pag.Type = "cursor"
 				break
 			}
@@ -4625,9 +5269,22 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	}
 	if pag.Type == "" {
 		for _, name := range []string{"offset"} {
-			if _, ok := paramNames[name]; ok {
-				pag.CursorParam = name
+			if orig, ok := originalCase[name]; ok {
+				pag.CursorParam = orig
 				pag.Type = "offset"
+				break
+			}
+		}
+	}
+	// Integer page paginator: classify only after the cursor/token/offset
+	// branches above so APIs that mix forms (e.g. cursor + page) keep
+	// cursor semantics. Runtime sync handles type "page" by incrementing
+	// CursorParam as an integer when no body cursor is extracted.
+	if pag.Type == "" {
+		for _, name := range []string{"page", "pagenumber", "page_number", "page[number]"} {
+			if orig, ok := originalCase[name]; ok {
+				pag.CursorParam = orig
+				pag.Type = "page"
 				break
 			}
 		}
@@ -4667,6 +5324,180 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	}
 
 	return &pag
+}
+
+// itemsFieldNames lists JSON property names that, when typed as an array,
+// signal "this object is a paged envelope" — matches the runtime
+// extractPaginatedItems helper in templates/helpers.go.tmpl so detect-time
+// and runtime walks agree on what counts as a page of items.
+var itemsFieldNames = []string{"data", "items", "results", "messages", "members", "values"}
+
+// nextFieldURLNames lists string properties that carry a full URL to
+// the next page (resolvable directly with GET). The runtime helper
+// follows these without API-specific cursor arithmetic.
+var nextFieldURLNames = []string{"next", "next_url", "nexturl"}
+
+// nextFieldCursorNames lists string properties that carry an opaque
+// cursor token (e.g. next_page_token, next_cursor). These cannot be
+// followed without knowing which query parameter to set on the next
+// request — metadata the embedded envelope does not provide — so the
+// runtime helper treats their presence the same way it treats
+// has_more=true: fetch page 1, then emit a truncation event so callers
+// know data is incomplete.
+var nextFieldCursorNames = []string{"next_cursor", "nextcursor", "next_page_token", "nextpagetoken", "cursor"}
+
+// nextFieldBoolNames lists boolean-typed "more pages" flags.
+var nextFieldBoolNames = []string{"has_more", "hasmore"}
+
+// detectEmbeddedPagedSubresources walks the success-response schema of a
+// GET operation looking for top-level properties whose nested shape is a
+// paged envelope. Each match yields a companion-helper candidate; the
+// caller stores the result on Endpoint.EmbeddedPagedSubresources and the
+// generator emits fetchFull<Endpoint><Property> helpers from there.
+// Returns nil when nothing matches so callers can compare against nil.
+//
+// Detection is a two-part heuristic: the property schema must be
+// object-shaped AND carry both an array items field (items/data/
+// results/...) and a next-page signal (cursor/URL string or has_more-
+// style bool).
+func detectEmbeddedPagedSubresources(op *openapi3.Operation, parentPath string) []spec.EmbeddedPagedSubresource {
+	if op == nil || op.Responses == nil {
+		return nil
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil {
+		return nil
+	}
+	schemaRef := selectResponseSchema(success.Value)
+	if schemaRef == nil || schemaRef.Value == nil {
+		return nil
+	}
+
+	var out []spec.EmbeddedPagedSubresource
+	propNames := make([]string, 0, len(schemaRef.Value.Properties))
+	for name := range schemaRef.Value.Properties {
+		propNames = append(propNames, name)
+	}
+	sort.Strings(propNames)
+
+	for _, propName := range propNames {
+		propRef := schemaRef.Value.Properties[propName]
+		if propRef == nil || propRef.Value == nil {
+			continue
+		}
+		propSchema := propRef.Value
+		if !schemaHasObjectShape(propSchema) {
+			continue
+		}
+		lowered := loweredPropertyMap(propSchema)
+		itemsField, ok := findItemsField(propSchema, lowered)
+		if !ok {
+			continue
+		}
+		nextField, kind := findNextField(lowered)
+		if kind == nextKindNone {
+			continue
+		}
+		out = append(out, spec.EmbeddedPagedSubresource{
+			Property:      propName,
+			ChildPath:     joinChildPath(parentPath, propName),
+			ItemsField:    itemsField,
+			NextField:     nextField,
+			NextIsURL:     kind == nextKindURL,
+			NextIsBoolean: kind == nextKindBoolean,
+		})
+	}
+	return out
+}
+
+func schemaHasObjectShape(s *openapi3.Schema) bool {
+	if s == nil {
+		return false
+	}
+	if s.Type != nil && s.Type.Is("object") {
+		return true
+	}
+	// Some specs omit `type: object` but declare properties anyway —
+	// treat that as object-shaped for detection purposes.
+	return len(s.Properties) > 0
+}
+
+// loweredPropertyMap returns a case-insensitive lookup from canonical
+// lowercase property name to the wire-side name actually declared on the
+// schema, so detection survives vendors that capitalize fields ("Items",
+// "NextPageToken") while preserving the original casing for emission.
+func loweredPropertyMap(s *openapi3.Schema) map[string]string {
+	out := make(map[string]string, len(s.Properties))
+	for name := range s.Properties {
+		out[strings.ToLower(name)] = name
+	}
+	return out
+}
+
+func findItemsField(s *openapi3.Schema, lowered map[string]string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	for _, candidate := range itemsFieldNames {
+		actual, ok := lowered[candidate]
+		if !ok {
+			continue
+		}
+		ref := s.Properties[actual]
+		if ref == nil || ref.Value == nil {
+			continue
+		}
+		if ref.Value.Type != nil && ref.Value.Type.Is("array") {
+			return actual, true
+		}
+	}
+	return "", false
+}
+
+// nextFieldKind classifies the detected next-page signal so the
+// runtime can decide whether to follow it (URL) or stop and warn
+// (cursor / has_more bool).
+type nextFieldKind int
+
+const (
+	nextKindNone nextFieldKind = iota
+	nextKindURL
+	nextKindCursor
+	nextKindBoolean
+)
+
+func findNextField(lowered map[string]string) (string, nextFieldKind) {
+	for _, candidate := range nextFieldURLNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindURL
+		}
+	}
+	for _, candidate := range nextFieldCursorNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindCursor
+		}
+	}
+	for _, candidate := range nextFieldBoolNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindBoolean
+		}
+	}
+	return "", nextKindNone
+}
+
+// joinChildPath returns parentPath + "/" + property — the conventional
+// URL shape for the dedicated child endpoint of an embedded paged
+// sub-resource (e.g. <api>/resource/{id}/<subresource>). APIs that
+// publish the sub-resource at a non-conventional URL must override via
+// the spec field after parsing.
+func joinChildPath(parentPath, property string) string {
+	if parentPath == "" || property == "" {
+		return ""
+	}
+	if strings.HasSuffix(parentPath, "/") {
+		return parentPath + property
+	}
+	return parentPath + "/" + property
 }
 
 func humanizeEndpointName(name string) string {

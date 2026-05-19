@@ -1,8 +1,16 @@
 # Setup Checks
 
-Post-contract checks the skill must run after executing the bash setup contract block in `SKILL.md`. These handle five signals the contract emits to stdout: `[setup-error]`, `[repo-upgrade-available]`, `[upgrade-available]`, `[browser-tools-missing]`, and the `min-binary-version` compatibility check.
+Post-contract checks the skill must run after executing the bash setup contract block in `SKILL.md`. These handle six signals the contract emits to stdout: `[setup-error]`, `[repo-upgrade-available]`, the `min-binary-version` compatibility check, `[upgrade-available]`, `[browser-tools-missing]`, and the always-emitted `PRINTING_PRESS_BIN=<abs-path>` marker (with optional `[binary-shadow]` advisory).
 
-Apply these in order. Each section is conditional — do nothing if its trigger isn't present.
+Apply these in order. The preamble below runs unconditionally; each numbered section after it is conditional — do nothing if its trigger isn't present.
+
+## Preamble: Capture the absolute binary path (unconditional)
+
+Before applying any numbered section below, capture the `PRINTING_PRESS_BIN=<absolute path to the binary>` line the contract emitted to stdout. Every `printing-press ...` invocation referenced anywhere below — including the `version --json` calls in sections 3 and 4 — must be made using that absolute path (substitute the captured value, not the literal `$PRINTING_PRESS_BIN` token). The contract's `export PATH=...` line only affects the single Bash tool call it runs in; later Bash tool calls open fresh shells where bare `printing-press` resolves against the user's default `PATH`, and a stale globally-installed binary (`$HOME/go/bin/printing-press` from an earlier `go install`, a Homebrew copy, etc.) will silently shadow the local repo build the contract selected. Using the absolute path eliminates the shadow.
+
+If `PRINTING_PRESS_BIN` was emitted as an empty value (`PRINTING_PRESS_BIN=`), the contract was unable to resolve a binary; this should have already been surfaced as `[setup-error]` (handled in section 1 below). Treat an empty value here as a setup-error fallback and stop.
+
+This rule applies to *all* `printing-press` references in the rest of this document. Where sections below write `printing-press version --json` or similar, read that as shorthand for `<PRINTING_PRESS_BIN> version --json` with the captured value substituted.
 
 ## 1. Refusal: missing prerequisite
 
@@ -56,7 +64,7 @@ If no `[repo-upgrade-available]` line was emitted, skip this section entirely.
 
 ## 3. Min-binary-version compatibility
 
-Check binary version compatibility against the skill's declared minimum. Read the `min-binary-version` field from the skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules.
+Check binary version compatibility against the skill's declared minimum. Read the `min-binary-version` field from the skill's YAML frontmatter. Run `<PRINTING_PRESS_BIN> version --json` (using the absolute path captured in the preamble — not bare `printing-press`, which would resolve against the user's default `PATH` and could interrogate a stale global) and parse the version from the output. Compare it to `min-binary-version` using semver rules.
 
 If the installed binary is older than the minimum, stop the skill immediately and tell the user:
 
@@ -86,7 +94,19 @@ If the user picks **Yes**, run:
 go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest
 ```
 
-After it completes, confirm with `printing-press version --json` and tell the user `"Upgraded to v<new>."` **Continue this current setup run with the freshly installed binary on disk — do not stop, do not reload the session, do not skip the remaining checks (min-binary-version compatibility, etc.).**
+After `go install` completes, **re-resolve `PRINTING_PRESS_BIN`** before confirming. `go install` writes to `$(go env GOBIN)` if set, otherwise `$(go env GOPATH)/bin` — which may not be the same path the contract originally captured (e.g. when the pre-upgrade binary was at `/opt/homebrew/bin/printing-press` or `/usr/local/bin/printing-press`, the new binary lives at `$GOPATH/bin/printing-press` and the old one is unchanged). Run this re-resolution in a single Bash call so its stdout becomes the new captured value:
+
+```bash
+_gobin="$(go env GOBIN 2>/dev/null)"
+[ -z "$_gobin" ] && _gobin="$(go env GOPATH 2>/dev/null)/bin"
+if [ -x "$_gobin/printing-press" ]; then
+  echo "PRINTING_PRESS_BIN=$_gobin/printing-press"
+else
+  echo "PRINTING_PRESS_BIN=$(command -v printing-press 2>/dev/null || true)"
+fi
+```
+
+Capture the new `PRINTING_PRESS_BIN=<abs-path>` value and use it for every subsequent `printing-press ...` invocation in the rest of this run, overriding the value captured in the preamble. Then confirm with `<PRINTING_PRESS_BIN> version --json` and tell the user `"Upgraded to v<new>."` **Continue this current setup run with the freshly installed binary on disk — do not stop, do not reload the session, do not skip the remaining checks (min-binary-version compatibility, etc.).**
 
 Separately, as out-of-band advice for the user's *next* session (not a stop signal for this run), tell them they can also refresh their installed skill files outside the repo checkout by running one of:
 
@@ -165,3 +185,19 @@ If an install command fails (no Python, no Node.js, network error), surface the 
 If the user picks **Skip for this run**, continue without prompting further this run. The decision is not cached — the prompt re-fires on the next run if the tool is still missing.
 
 If no `[browser-tools-missing]` line was emitted, skip this section entirely.
+
+## 6. Optional shadow advisory
+
+If the setup contract output contains a line starting with `[binary-shadow]`, parse the follow-up lines:
+
+- `PRESS_BIN_LOCAL_VERSION=<version reported by the local build>`
+- `PRESS_BIN_GLOBAL_VERSION=<version reported by the differing global on PATH>`
+- `PRESS_BIN_GLOBAL_PATH=<absolute path to the differing global>`
+
+Surface a single-line note to the user before continuing — informational only, do not prompt:
+
+> "Note: a global printing-press v`<global>` is installed at `<path>` but the local repo build is v`<local>`. This run will use the local build (the absolute path the preflight selected); the global is unchanged."
+
+Then continue. Do not modify or remove the global. The note exists so the user can reconcile the divergence on their own time (typically with `go install ...@latest` once they want the new version everywhere).
+
+If no `[binary-shadow]` line was emitted, skip the advisory and continue.

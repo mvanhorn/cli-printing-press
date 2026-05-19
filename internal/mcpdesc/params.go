@@ -5,6 +5,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/piiplaceholders"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
@@ -59,12 +60,12 @@ func NewParamDescriptionCompactorForEndpoints(endpoints []spec.Endpoint) *ParamD
 func (c *ParamDescriptionCompactor) Description(p spec.Param) string {
 	description := naming.OneLineNormalize(p.Description)
 	if c == nil || description == "" {
-		return description
+		return piiplaceholders.SanitizeCapturedExamples(description)
 	}
 	if compacted, ok := c.compacted[keyForParamDescription(p, description)]; ok {
-		return compacted
+		description = compacted
 	}
-	return description
+	return piiplaceholders.SanitizeCapturedExamples(description)
 }
 
 func appendResourceEndpoints(endpoints []spec.Endpoint, resource spec.Resource) []spec.Endpoint {
