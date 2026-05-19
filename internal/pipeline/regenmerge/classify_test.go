@@ -120,6 +120,47 @@ type Alias = string
 	assert.Contains(t, decls, "Alias")
 }
 
+// TestClassifyVerifyShortCircuitFixture pins regen-merge classification
+// for the verify-mode HTTP-verb gate. Scenario: an operator has hand-added
+// a custom helper method to internal/client/client.go; the fresh template
+// now includes the new short-circuit helpers (isMutatingVerb,
+// verifyShortCircuitEnvelope) plus the gate inside do(). Because the
+// published file carries a top-level decl absent from fresh, the verdict
+// is TEMPLATED-WITH-ADDITIONS — the merge path that preserves the
+// operator's edit AND applies the new short-circuit. A future classifier
+// regression that re-routed this case through TEMPLATED-VALUE-DRIFT would
+// force manual review on every downstream CLI rolling out the verify-mode
+// change; this fixture catches that drift.
+func TestClassifyVerifyShortCircuitFixture(t *testing.T) {
+	t.Parallel()
+
+	pubDir, freshDir := verifyShortCircuitFixture(t)
+
+	report, err := Classify(pubDir, freshDir, Options{Force: true})
+	require.NoError(t, err)
+	require.NotNil(t, report)
+
+	verdicts := verdictMap(report)
+	got, ok := verdicts["internal/client/client.go"]
+	require.True(t, ok, "client.go must appear in the report; got verdicts: %v", verdicts)
+	assert.Equal(t, VerdictTemplatedWithAdditions, got,
+		"published has the hand-added customAnnotateRequest method; classifier must preserve it via TEMPLATED-WITH-ADDITIONS, not silently overwrite via TEMPLATED-VALUE-DRIFT")
+
+	// The delta should explicitly list the operator's added method so the
+	// merge layer knows which decls to carry forward into the merged file.
+	var clientFC *FileClassification
+	for i := range report.Files {
+		if report.Files[i].Path == "internal/client/client.go" {
+			clientFC = &report.Files[i]
+			break
+		}
+	}
+	require.NotNil(t, clientFC, "client.go must appear in the report")
+	require.NotNil(t, clientFC.DeclSetDelta, "TEMPLATED-WITH-ADDITIONS must populate DeclSetDelta")
+	assert.Contains(t, clientFC.DeclSetDelta.InPublishedNotFresh, "(*Client).customAnnotateRequest",
+		"delta must surface the operator's hand-added method so merge can preserve it")
+}
+
 // TestClassifyRejectsTraversal exercises path-validation per
 // docs/solutions/security-issues/filepath-join-traversal-with-user-input-2026-03-29.md.
 func TestClassifyRejectsTraversal(t *testing.T) {
@@ -198,6 +239,15 @@ func ebayAuthFixture(t *testing.T) (string, string) {
 	abs, err := filepath.Abs("testdata/ebay-auth/published")
 	require.NoError(t, err)
 	freshAbs, err := filepath.Abs("testdata/ebay-auth/fresh")
+	require.NoError(t, err)
+	return abs, freshAbs
+}
+
+func verifyShortCircuitFixture(t *testing.T) (string, string) {
+	t.Helper()
+	abs, err := filepath.Abs("testdata/verify-short-circuit/published")
+	require.NoError(t, err)
+	freshAbs, err := filepath.Abs("testdata/verify-short-circuit/fresh")
 	require.NoError(t, err)
 	return abs, freshAbs
 }
