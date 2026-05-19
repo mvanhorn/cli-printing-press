@@ -953,7 +953,15 @@ func newAuthSetTokenCmd(flags *rootFlags) *cobra.Command {
 			// Clear any legacy auth_header so AuthHeader() falls through to
 			// the newly-saved bearer. Mirrors auth_simple's set-token.
 			cfg.AuthHeaderVal = ""
-			if err := cfg.SaveTokens("", "", token, "", cfg.TokenExpiry); err != nil {
+			// Pass a zero expiry. We can't decode the JWT to learn its real
+			// lifetime, and preserving a stale cfg.TokenExpiry from a prior
+			// session (the exact case escape-hatch users reach this from)
+			// would later mislead any expiry-aware status check into treating
+			// this fresh token as already expired. Actual expiry surfaces via
+			// 401 on the next API call, same as the rest of the browser-auth
+			// flow. Matches ClearTokens / SaveBearerToken's zero-on-write
+			// invariant in config.go.tmpl.
+			if err := cfg.SaveTokens("", "", token, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
 
