@@ -1,0 +1,1 @@
+"$BINARY" sync-param-drop --help
