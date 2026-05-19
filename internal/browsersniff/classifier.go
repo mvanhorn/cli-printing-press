@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -326,6 +327,10 @@ func extractPath(rawURL string) string {
 func normalizeEntryPath(rawURL string) string {
 	path := extractPath(rawURL)
 	segments := strings.Split(path, "/")
+	// Track per-path placeholder name use so consecutive IDs that resolve to
+	// the same parent (e.g. /resources/123/456) don't both emit
+	// {resource_id}; the second collision gets a counter suffix.
+	nameCounts := make(map[string]int)
 	for i, segment := range segments {
 		if segment == "" {
 			continue
@@ -333,20 +338,24 @@ func normalizeEntryPath(rawURL string) string {
 		// Skip framing segments (api, /v1) so the placeholder name reflects the
 		// resource the ID belongs to, not the version prefix.
 		parent := previousMeaningfulSegment(segments, i)
+		var placeholder string
 		switch {
 		case numericPattern.MatchString(segment):
-			segments[i] = idPlaceholder(parent, "id")
+			placeholder = idPlaceholder(parent, "id")
 		case uuidSegmentPattern.MatchString(segment):
-			segments[i] = idPlaceholder(parent, "uuid")
+			placeholder = idPlaceholder(parent, "uuid")
 		case hashSegmentPattern.MatchString(segment):
-			segments[i] = idPlaceholder(parent, "hash")
+			placeholder = idPlaceholder(parent, "hash")
 		case prefixedIDPattern.MatchString(segment):
-			segments[i] = idPlaceholder(parent, "id")
+			placeholder = idPlaceholder(parent, "id")
 		case colonCompositePattern.MatchString(segment) && hasNonTrivialToken(segment):
-			segments[i] = idPlaceholder(parent, "id")
+			placeholder = idPlaceholder(parent, "id")
 		case longAlnumIDPattern.MatchString(segment) && looksOpaqueID(segment):
-			segments[i] = idPlaceholder(parent, "id")
+			placeholder = idPlaceholder(parent, "id")
+		default:
+			continue
 		}
+		segments[i] = disambiguatePlaceholder(placeholder, nameCounts)
 	}
 
 	normalized := strings.Join(segments, "/")
@@ -355,6 +364,24 @@ func normalizeEntryPath(rawURL string) string {
 	}
 
 	return normalized
+}
+
+// disambiguatePlaceholder appends a counter suffix when the same placeholder
+// name has already appeared earlier in the current path. For
+// /resources/123/456 the first segment yields {resource_id}; the second walks
+// back past the freshly-emitted placeholder, sees `resources` again, and would
+// emit a second {resource_id} — instead it becomes {resource_id_2}. This keeps
+// downstream spec generation safe: OpenAPI rejects duplicate path-parameter
+// names within a single path template.
+func disambiguatePlaceholder(placeholder string, used map[string]int) string {
+	used[placeholder]++
+	count := used[placeholder]
+	if count == 1 {
+		return placeholder
+	}
+	// Strip the surrounding braces, append the counter, and re-wrap.
+	inner := strings.TrimSuffix(strings.TrimPrefix(placeholder, "{"), "}")
+	return "{" + inner + "_" + strconv.Itoa(count) + "}"
 }
 
 // previousMeaningfulSegment walks backwards from index i looking for a segment
@@ -451,10 +478,9 @@ func hasNonTrivialToken(segment string) bool {
 
 // looksLikeIDShape returns true when a segment matches any of the strong ID
 // heuristics (UUID, hex hash, numeric, prefixed application id, colon
-// composite, or long opaque alphanumeric). Used by the cross-entry variance
-// pass to gate parametrization: two route literals that just happen to differ
-// (e.g. /api/health vs /api/version) won't be flagged because neither
-// segment fits any of these shapes.
+// composite, or long opaque alphanumeric). These are the same shapes the
+// per-segment normalizer recognizes; kept as a named helper so future variance
+// callers can ask the question without inlining the regex list.
 func looksLikeIDShape(segment string) bool {
 	if numericPattern.MatchString(segment) {
 		return true
@@ -472,6 +498,42 @@ func looksLikeIDShape(segment string) bool {
 		return true
 	}
 	if longAlnumIDPattern.MatchString(segment) && looksOpaqueID(segment) {
+		return true
+	}
+	return false
+}
+
+// looksParameterizable is the weaker gate used by the cross-entry variance
+// pass. By construction, any segment that satisfies looksLikeIDShape would
+// already have been replaced by normalizeEntryPath, so gating on that shape
+// alone makes the variance pass unreachable. The pass exists to catch IDs the
+// per-segment patterns can't classify in isolation — short opaque tokens like
+// `abc123` or `xyz456` that only stand out as IDs when two entries land at the
+// same position with different literal values. A weaker "data-shaped" check
+// (digit present, or mixed case, or hyphen-with-digit, or underscore-with-
+// alnum) catches these without flagging legitimate route literals like
+// `health`, `version`, or `users`.
+func looksParameterizable(segment string) bool {
+	if looksLikeIDShape(segment) {
+		return true
+	}
+	hasDigit := false
+	hasUpper := false
+	hasLower := false
+	for _, r := range segment {
+		switch {
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		case r >= 'A' && r <= 'Z':
+			hasUpper = true
+		case r >= 'a' && r <= 'z':
+			hasLower = true
+		}
+	}
+	if hasDigit {
+		return true
+	}
+	if hasUpper && hasLower {
 		return true
 	}
 	return false
@@ -573,22 +635,29 @@ func collapseVariantGroups(groups []EndpointGroup) []EndpointGroup {
 
 		// The diverging segment must look like a parameter candidate at every
 		// member: not a placeholder (filtered already), not a routing keyword.
-		// Conservative: require at least one member's value to match one of the
-		// strong ID heuristics. Cross-entry variance alone (two literals at the
-		// same position) isn't enough to parametrize, because two distinct route
-		// names (e.g. /api/health vs /api/version) also vary without being IDs.
-		anyOpaque := false
+		// Use the weaker looksParameterizable check (digit present, mixed case,
+		// or strong-ID shape) rather than looksLikeIDShape — by construction
+		// any strong-ID-shaped segment was already replaced by
+		// normalizeEntryPath, so gating on that alone makes the pass
+		// unreachable. The looksParameterizable widening catches short opaque
+		// tokens (`abc123` vs `xyz456`) that only stand out as IDs once two
+		// entries land at the same position with different values, while still
+		// rejecting plain route literals like `health`/`version`.
+		anyParameterizable := false
+		allParameterizable := true
 		for _, idx := range members {
 			s := skeletons[idx][pos]
 			if s == "" || s == "api" || isVersionSegment(s) {
+				allParameterizable = false
 				continue
 			}
-			if looksLikeIDShape(s) {
-				anyOpaque = true
-				break
+			if looksParameterizable(s) {
+				anyParameterizable = true
+			} else {
+				allParameterizable = false
 			}
 		}
-		if !anyOpaque {
+		if !anyParameterizable || !allParameterizable {
 			continue
 		}
 

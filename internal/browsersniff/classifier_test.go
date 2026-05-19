@@ -217,6 +217,37 @@ func TestDeduplicateEndpoints(t *testing.T) {
 			wantNormalizedPaths: []string{"/api/health", "/api/version"},
 			wantGroupSizes:      []int{1, 1},
 		},
+		{
+			// Short opaque IDs (`abc123`, `xyz456`) fail every per-segment ID
+			// regex in isolation — they're too short for the long-alnum or
+			// hash patterns and have no type prefix. The cross-entry variance
+			// pass is the only thing that can identify them, because their
+			// id-ness becomes obvious only when two entries land at the same
+			// position with different data-shaped values.
+			name: "short opaque ids parametrize via cross-entry variance",
+			entries: []EnrichedEntry{
+				{Method: "GET", URL: "https://example.com/api/messages/abc123"},
+				{Method: "GET", URL: "https://example.com/api/messages/xyz456"},
+			},
+			wantMethods:         []string{"GET"},
+			wantNormalizedPaths: []string{"/api/messages/{message_id}"},
+			wantGroupSizes:      []int{2},
+		},
+		{
+			// Consecutive numeric ID segments share the same parent
+			// (`resources` for both). Without disambiguation the resulting
+			// path would carry two `{resource_id}` placeholders, which breaks
+			// downstream OpenAPI generation (duplicate path-parameter names
+			// within a single path template are rejected).
+			name: "consecutive ids under same parent get disambiguated names",
+			entries: []EnrichedEntry{
+				{Method: "GET", URL: "https://example.com/resources/123/456"},
+				{Method: "GET", URL: "https://example.com/resources/789/012"},
+			},
+			wantMethods:         []string{"GET"},
+			wantNormalizedPaths: []string{"/resources/{resource_id}/{resource_id_2}"},
+			wantGroupSizes:      []int{2},
+		},
 	}
 
 	for _, tt := range tests {
@@ -251,6 +282,7 @@ func TestDeduplicateEndpoints_SingleEntryHeuristics(t *testing.T) {
 		{"long base62 id under resource", "https://example.com/history/Zu2uNCmGDnmNCel8gbFQ", "/history/{history_id}"},
 		{"literal short segments remain literal", "https://example.com/api/health", "/api/health"},
 		{"version segment retains literal v1 framing", "https://example.com/api/v1/users", "/api/v1/users"},
+		{"consecutive ids under same parent disambiguate", "https://example.com/resources/123/456", "/resources/{resource_id}/{resource_id_2}"},
 	}
 
 	for _, tt := range tests {
