@@ -160,7 +160,7 @@ type APISpec struct {
 	ExtraCommands               []ExtraCommand      `yaml:"extra_commands,omitempty" json:"extra_commands,omitempty"` // hand-written cobra commands declared so SKILL.md can document them; spec-only metadata, no code generated
 	Cache                       CacheConfig         `yaml:"cache,omitempty" json:"cache"`                             // cache freshness + auto-refresh config; when enabled, generated read commands auto-refresh stale local data before serving
 	Share                       ShareConfig         `yaml:"share,omitempty" json:"share"`                             // git-backed snapshot sharing config; when enabled, emits a `share` subcommand that publishes/subscribes to a git repo
-	MCP                         MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, the emitted MCP binary is stdio-only (today's default). Opting into http adds a --transport/--addr flag surface so the same binary can serve cloud-hosted agents.
+	MCP                         MCPConfig           `yaml:"mcp,omitempty" json:"mcp"`                                 // MCP server generation config; when unset, small APIs (typed-endpoint count <= DefaultRemoteTransportEndpointThreshold) get stdio+http compiled in by APISpec.EffectiveMCPTransports so the same binary can serve cloud-hosted agents. Larger APIs stay stdio-only by default. Opting into http explicitly adds a --transport/--addr flag surface regardless of size.
 	Throttling                  ThrottlingConfig    `yaml:"throttling,omitempty" json:"throttling"`                   // cost-based throttling config; when Enabled with a recognized Shape, the generator emits a ThrottleState (generic harness) plus a per-Shape parser that reads the API's cost bucket. Only the "shopify" Shape ships in v1.
 }
 
@@ -1039,8 +1039,15 @@ type ShareConfig struct {
 	DefaultBranch  string   `yaml:"default_branch,omitempty" json:"default_branch,omitempty"`   // optional default branch for push/pull; blank means "main"
 }
 
-// MCPConfig declares how the generated MCP server binary is shaped. When empty
-// the generator emits today's behavior: a stdio-only server via server.ServeStdio.
+// MCPConfig declares how the generated MCP server binary is shaped. When the
+// Transport list is empty, the resolved transport set is computed by
+// APISpec.EffectiveMCPTransports: small APIs (<= DefaultRemoteTransportEndpointThreshold
+// typed endpoints) get [stdio, http] so the same binary can serve cloud-hosted
+// agents at no tool-count cost, and larger APIs fall back to stdio-only so the
+// existing tools-manifest stays untouched until the spec author opts into the
+// orchestration pattern. Setting Transport explicitly bypasses the default and
+// is honored as-is.
+//
 // Opting http into Transport adds a --transport flag (stdio|http) and, for http,
 // an --addr flag so the same binary can also serve an HTTP streamable transport.
 //
@@ -1050,11 +1057,13 @@ type ShareConfig struct {
 // Declaring transports in the spec rather than inferring at generate time keeps
 // the decision visible and reviewable in the published CLI's source spec.
 //
-// Allowed Transport values: "stdio", "http". An empty list is treated as
-// ["stdio"] for backward compatibility. Unknown values are rejected at spec
-// load; this prevents silent drift when new transports are introduced.
+// Allowed Transport values: "stdio", "http". An empty Transport list is
+// resolved per the rule above; MCPConfig.EffectiveTransports remains the
+// unconditioned view of just the configured field and still returns ["stdio"]
+// when Transport is empty. Unknown values are rejected at spec load; this
+// prevents silent drift when new transports are introduced.
 type MCPConfig struct {
-	Transport              []string `yaml:"transport,omitempty" json:"transport,omitempty"`                             // allowed transports the generated binary compiles support for; empty == [stdio]. Runtime transport is chosen via the --transport flag and PP_MCP_TRANSPORT env.
+	Transport              []string `yaml:"transport,omitempty" json:"transport,omitempty"`                             // allowed transports the generated binary compiles support for; empty resolves via APISpec.EffectiveMCPTransports (stdio+http for small APIs, stdio-only for larger ones). Runtime transport is chosen via the --transport flag and PP_MCP_TRANSPORT env.
 	Addr                   string   `yaml:"addr,omitempty" json:"addr,omitempty"`                                       // default bind address for the http transport (e.g., ":7777"). Blank means runtime default (":7777"). Ignored unless http is in Transport.
 	Intents                []Intent `yaml:"intents,omitempty" json:"intents,omitempty"`                                 // higher-level MCP tools that compose multiple endpoint calls. The agent sees one intent tool; the generator emits a handler that fans out to the declared endpoints sequentially. Anti-pattern to fight: one-tool-per-endpoint mirrors that force agents to stitch primitives.
 	EndpointTools          string   `yaml:"endpoint_tools,omitempty" json:"endpoint_tools,omitempty"`                   // "visible" (default) keeps the per-endpoint MCP tools; "hidden" suppresses them so only intents + generator-emitted tools appear. Use "hidden" when intents fully cover the surface and raw endpoints would be noise.
@@ -2834,6 +2843,15 @@ func validateMCP(m MCPConfig, resources map[string]Resource) error {
 // context; code-orchestration covers the full surface in a pair of tools.
 const DefaultOrchestrationThreshold = 50
 
+// DefaultRemoteTransportEndpointThreshold is the typed-endpoint count at or
+// below which the generator auto-enables the http transport alongside stdio
+// when the spec leaves mcp.transport unset. Stdio-only servers cannot reach
+// cloud-hosted agents, and at small surface sizes adding http has no cost in
+// tool count or agent context. The 30-endpoint cutoff matches the polish
+// skill's "zero-cost win at <30 endpoints" guidance. Larger APIs are left to
+// the orchestration-pattern recommendation in warnUnenrichedLargeMCPSurface.
+const DefaultRemoteTransportEndpointThreshold = 30
+
 // EffectiveOrchestrationThreshold returns the resolved threshold, applying
 // the built-in default when the spec leaves it unset.
 func (m MCPConfig) EffectiveOrchestrationThreshold() int {
@@ -2848,6 +2866,61 @@ func (m MCPConfig) EffectiveOrchestrationThreshold() int {
 // <api>_search + <api>_execute instead of the endpoint-mirror.
 func (m MCPConfig) IsCodeOrchestration() bool {
 	return m.Orchestration == "code"
+}
+
+// EffectiveMCPTransports returns the transport list the generated MCP binary
+// should compile support for, taking endpoint count into account. When the
+// spec leaves mcp.transport unset and the typed-endpoint surface is at or
+// below DefaultRemoteTransportEndpointThreshold, both stdio and http are
+// returned so the same binary can reach cloud-hosted agents. Explicit
+// transport lists are passed through unchanged, so a spec that opts into
+// stdio-only is honored even at small endpoint counts.
+//
+// Use this from generator code paths that need the resolved list (templates,
+// metadata renderers). MCPConfig.EffectiveTransports remains the unconditioned
+// view of just the configured field and is still the right helper for spec
+// validation and mcp_audit.
+func (s *APISpec) EffectiveMCPTransports() []string {
+	if s == nil {
+		return []string{"stdio"}
+	}
+	if len(s.MCP.Transport) > 0 {
+		return s.MCP.Transport
+	}
+	if s.TypedEndpointCount() <= DefaultRemoteTransportEndpointThreshold {
+		return []string{"stdio", "http"}
+	}
+	return []string{"stdio"}
+}
+
+// HasMCPTransport reports whether t is among the effective MCP transports for
+// this spec, taking the small-API http default into account. Case-insensitive
+// on the comparison to mirror MCPConfig.HasTransport.
+func (s *APISpec) HasMCPTransport(t string) bool {
+	for _, v := range s.EffectiveMCPTransports() {
+		if strings.EqualFold(v, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// TypedEndpointCount returns the number of typed endpoints across all
+// resources and sub-resources. Shared by EffectiveMCPTransports (small-API
+// auto-http default) and the generator's large-surface MCP-warning emitter
+// so the two endpoint-count thresholds read from a single source of truth.
+func (s *APISpec) TypedEndpointCount() int {
+	if s == nil {
+		return 0
+	}
+	n := 0
+	for _, r := range s.Resources {
+		n += len(r.Endpoints)
+		for _, sub := range r.SubResources {
+			n += len(sub.Endpoints)
+		}
+	}
+	return n
 }
 
 // intentNameRe enforces snake_case for MCP intent tool names so they line up

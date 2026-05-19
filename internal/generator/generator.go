@@ -618,6 +618,7 @@ type HelperFlags struct {
 	HasDataLayer       bool // CLI has a local store (sync/search) → emit provenance helpers
 	HasClientLimit     bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
 	HasEmbeddedPaged   bool // at least one GET endpoint has detected embedded paged sub-resources → emit fetchEmbeddedPagedSubresource
+	HasResponseUnwrap  bool // at least one generated command can call extractResponseData
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
@@ -1490,6 +1491,7 @@ func (g *Generator) renderSingleFiles() error {
 		case "helpers.go.tmpl":
 			hFlags := computeHelperFlags(g.Spec)
 			hFlags.HasDataLayer = g.VisionSet.Store
+			hFlags.HasResponseUnwrap = g.VisionSet.Store && promotedCommandsCanUnwrapResponse(g.PromotedCommands)
 			data = &helpersTemplateData{
 				APISpec:     g.Spec,
 				HelperFlags: hFlags,
@@ -1574,6 +1576,9 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 		if err := g.renderTemplate("auto_refresh.go.tmpl", filepath.Join("internal", "cli", "auto_refresh.go"), autoRefreshData); err != nil {
 			return fmt.Errorf("rendering auto_refresh: %w", err)
+		}
+		if err := g.renderTemplate("auto_refresh_test.go.tmpl", filepath.Join("internal", "cli", "auto_refresh_test.go"), autoRefreshData); err != nil {
+			return fmt.Errorf("rendering auto_refresh_test: %w", err)
 		}
 	}
 
@@ -1784,6 +1789,15 @@ func buildPromotedCommandPlan(apiSpec *spec.APISpec) ([]PromotedCommand, map[str
 	}
 
 	return promotedCommands, promotedResourceNames, promotedEndpointNames
+}
+
+func promotedCommandsCanUnwrapResponse(commands []PromotedCommand) bool {
+	for _, cmd := range commands {
+		if !cmd.Endpoint.UsesBinaryResponse() {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool, promotedEndpointNames map[string]string) error {
@@ -4265,6 +4279,10 @@ func (g *Generator) mcpParamDescription(p spec.Param) string {
 }
 
 func exampleValue(p spec.Param) string {
+	if value, ok := syntheticExampleValue(p.Name); ok {
+		return value
+	}
+
 	nameLower := strings.ToLower(p.Name)
 
 	// camelCase `*Id` carries an exclusion fence so bool/numeric params

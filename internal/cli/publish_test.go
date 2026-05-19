@@ -706,6 +706,31 @@ func TestPublishPackageRejectsVendorPrefixSecretsInStagedCLI(t *testing.T) {
 	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
 }
 
+func TestPublishPackageRejectsSpecDeclaredCookieValuesInStagedCLI(t *testing.T) {
+	for _, authType := range []string{"cookie", "composed"} {
+		t.Run(authType, func(t *testing.T) {
+			home := setLibraryTestEnv(t)
+			cliDir := filepath.Join(home, "library", "test-pp-cli")
+			writePublishableTestCLI(t, cliDir)
+			require.NoError(t, os.WriteFile(filepath.Join(cliDir, "tools-manifest.json"), []byte(`{"auth":{"type":"`+authType+`","cookies":["session-id"]}}`+"\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(cliDir, "README.md"), []byte("Cookie: session-id=actuallyrealcookievaluexyz\n"), 0o644))
+
+			target := filepath.Join(t.TempDir(), "staging")
+			cmd := newPublishCmd()
+			cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "vendor-prefix tokens detected")
+			assert.Contains(t, err.Error(), "README.md:1 cookie-value:session-id")
+			assert.NotContains(t, err.Error(), "actuallyrealcookievaluexyz")
+
+			_, statErr := os.Stat(target)
+			assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
+		})
+	}
+}
+
 func TestPublishPackageRejectsPIIInStagedCLI(t *testing.T) {
 	home := setLibraryTestEnv(t)
 	cliDir := filepath.Join(home, "library", "test-pp-cli")

@@ -2,6 +2,7 @@ package spec
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -2663,6 +2664,65 @@ func TestMCPConfigAcceptsValidShapes(t *testing.T) {
 			require.NoError(t, s.Validate())
 		})
 	}
+}
+
+// TestEffectiveMCPTransportsSmallAPIDefault locks the issue #1603 contract:
+// when mcp.transport is unset and the typed-endpoint surface is small, the
+// resolved transport list adds http alongside stdio so the same binary can
+// reach cloud-hosted agents. Explicit transport lists (including ["stdio"])
+// bypass the default and are honored as-is.
+func TestEffectiveMCPTransportsSmallAPIDefault(t *testing.T) {
+	t.Parallel()
+
+	mkSpec := func(endpoints int, transport []string) *APISpec {
+		s := &APISpec{
+			Name:      "demo",
+			BaseURL:   "https://api.example.com",
+			Auth:      AuthConfig{Type: "none"},
+			Resources: map[string]Resource{},
+			MCP:       MCPConfig{Transport: transport},
+		}
+		r := Resource{Endpoints: map[string]Endpoint{}}
+		for i := range endpoints {
+			r.Endpoints[fmt.Sprintf("get_%d", i)] = Endpoint{Method: "GET", Path: fmt.Sprintf("/items/%d", i)}
+		}
+		s.Resources["items"] = r
+		return s
+	}
+
+	tests := []struct {
+		name      string
+		endpoints int
+		transport []string
+		want      []string
+		wantHTTP  bool
+	}{
+		{name: "small API empty transport gets stdio+http", endpoints: 6, transport: nil, want: []string{"stdio", "http"}, wantHTTP: true},
+		{name: "boundary at threshold still gets http", endpoints: DefaultRemoteTransportEndpointThreshold, transport: nil, want: []string{"stdio", "http"}, wantHTTP: true},
+		{name: "above threshold stays stdio-only", endpoints: DefaultRemoteTransportEndpointThreshold + 1, transport: nil, want: []string{"stdio"}, wantHTTP: false},
+		{name: "explicit stdio is honored even at small scale", endpoints: 6, transport: []string{"stdio"}, want: []string{"stdio"}, wantHTTP: false},
+		{name: "explicit stdio,http passes through", endpoints: 6, transport: []string{"stdio", "http"}, want: []string{"stdio", "http"}, wantHTTP: true},
+		{name: "explicit http-only passes through", endpoints: 100, transport: []string{"http"}, want: []string{"http"}, wantHTTP: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := mkSpec(tt.endpoints, tt.transport)
+			assert.Equal(t, tt.want, s.EffectiveMCPTransports())
+			assert.Equal(t, tt.wantHTTP, s.HasMCPTransport("http"))
+			// Case-insensitive lookup mirrors MCPConfig.HasTransport.
+			assert.Equal(t, tt.wantHTTP, s.HasMCPTransport("HTTP"))
+		})
+	}
+
+	// Nil receiver is safe and returns the stdio fallback.
+	var nilSpec *APISpec
+	assert.Equal(t, []string{"stdio"}, nilSpec.EffectiveMCPTransports())
+	assert.False(t, nilSpec.HasMCPTransport("http"))
+
+	// MCPConfig.EffectiveTransports stays unconditioned on endpoint count;
+	// it's still the right helper for spec validation and mcp_audit.
+	assert.Equal(t, []string{"stdio"}, MCPConfig{}.EffectiveTransports())
 }
 
 func TestHTTPTransportValidationAndDefaults(t *testing.T) {
