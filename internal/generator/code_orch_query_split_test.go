@@ -13,11 +13,10 @@ import (
 // emitted into codeOrchEndpoint.QueryParams and routed to the URL query
 // string by codeOrchSplitQuery — never dumped into the JSON body.
 //
-// Regression guard for the latent defect found alongside the 2026-05-19
-// double-marshal fix: before this, handleCodeOrchExecute only built a query
-// map for GET/DELETE, so a write endpoint's in:query param (e.g.
-// sendToLedger on PUT /ledger/voucher/{id}) silently ended up in the body
-// and the API ignored or rejected it.
+// Regression guard for the latent defect found alongside the write-body fix:
+// before this, handleCodeOrchExecute only built a query map for GET/DELETE,
+// so a write endpoint's in:query param silently ended up in the body and the
+// API ignored or rejected it.
 func TestCodeOrchRoutesQueryParamsOnWriteMethods(t *testing.T) {
 	t.Parallel()
 

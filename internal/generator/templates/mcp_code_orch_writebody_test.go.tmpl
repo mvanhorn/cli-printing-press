@@ -10,26 +10,22 @@ import (
 
 // TestCodeOrchWriteBody_MarshalsToJSONObject pins the write-body contract.
 //
-// Regression context: 2026-05-19, the first-ever write through
-// <api>_execute (PUT /ledger/voucher/{id}) returned HTTP 422
-// "Request mapping failed" with validation field "" and "Verdien er ikke
-// av korrekt type". Root cause: handleCodeOrchExecute pre-marshaled params
-// to []byte (json.Marshal(params)) and passed that []byte to
-// client.{Post,Put,Patch}. client.do() marshals the body value exactly once.
-// json.Marshal([]byte) emits a base64-encoded JSON *string*, so the API
-// received "eyJ...==" where it expected the request object — hence "wrong
-// type at root". GET/DELETE never carry a body, so the defect stayed latent
-// until the first write.
+// Regression context: handleCodeOrchExecute once pre-marshaled params to
+// []byte and passed that []byte to client.{Post,Put,Patch}. client.do()
+// marshals the body value exactly once. json.Marshal([]byte) emits a
+// base64-encoded JSON string, so the API received a string where it expected
+// the request object. GET/DELETE never carry a body, so the defect stayed
+// latent until a write operation exercised the path.
 //
 // The orchestrator must hand the client the structured params map, never
 // pre-marshaled bytes.
 func TestCodeOrchWriteBody_MarshalsToJSONObject(t *testing.T) {
 	params := map[string]any{
-		"date":        "2026-05-13",
-		"description": "Vegfinans AS - Bompasseringer",
-		"voucherType": map[string]any{"id": "4764777"},
-		"postings": []any{
-			map[string]any{"row": 1, "account": map[string]any{"id": "277233639"}, "amountGross": 234},
+		"reference": "example-reference",
+		"notes":     "structured write body",
+		"type":      map[string]any{"id": "type-1"},
+		"items": []any{
+			map[string]any{"row": 1, "account": map[string]any{"id": "account-1"}, "amount": 234},
 		},
 	}
 
@@ -46,7 +42,7 @@ func TestCodeOrchWriteBody_MarshalsToJSONObject(t *testing.T) {
 	if err := json.Unmarshal(wire, &rt); err != nil {
 		t.Fatalf("API would 422 this: body is not a mappable object: %v; wire=%s", err, wire)
 	}
-	if rt["date"] != "2026-05-13" || rt["description"] != "Vegfinans AS - Bompasseringer" {
+	if rt["reference"] != "example-reference" || rt["notes"] != "structured write body" {
 		t.Fatalf("fields lost through write-body path: %#v", rt)
 	}
 
@@ -61,18 +57,15 @@ func TestCodeOrchWriteBody_MarshalsToJSONObject(t *testing.T) {
 
 // TestCodeOrchArrayBody_SendsTopLevelArray pins the bare-array body contract.
 //
-// Regression context: 2026-05-19, the booking primitive
-// supplier-invoice.voucher-postings-put-postings (PUT
-// /supplierInvoice/voucher/{id}/postings) has a request body schema whose
-// root is a bare top-level JSON array ([{"posting":{...}}]). The params
-// object can never serialize to a top-level array, so sending it produced
-// HTTP 422 code 22000 "Invalid json". Endpoints flagged BodyIsArray must
-// send the agent-supplied params["body"] array as the top-level body.
+// Regression context: endpoints whose request body schema is a bare top-level
+// JSON array cannot serialize from the surrounding params object. Endpoints
+// flagged BodyIsArray must send the agent-supplied params["body"] array as the
+// top-level body.
 func TestCodeOrchArrayBody_SendsTopLevelArray(t *testing.T) {
 	params := map[string]any{
 		"body": []any{
-			map[string]any{"posting": map[string]any{
-				"account": map[string]any{"id": "277233639"},
+			map[string]any{"item": map[string]any{
+				"account": map[string]any{"id": "account-1"},
 				"amount":  234,
 			}},
 		},
@@ -90,7 +83,7 @@ func TestCodeOrchArrayBody_SendsTopLevelArray(t *testing.T) {
 	if err := json.Unmarshal(wire, &rt); err != nil {
 		t.Fatalf("API would 422 this: body is not a top-level array: %v; wire=%s", err, wire)
 	}
-	if len(rt) != 1 || rt[0]["posting"] == nil {
+	if len(rt) != 1 || rt[0]["item"] == nil {
 		t.Fatalf("array element lost through array-body path: %#v", rt)
 	}
 
