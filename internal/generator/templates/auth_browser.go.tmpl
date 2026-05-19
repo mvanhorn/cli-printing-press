@@ -438,7 +438,7 @@ when the CDP path is not available (other machine, headless server, etc.).`,
 				return configErr(err)
 			}
 			cfg.AuthHeaderVal = ""
-			if err := cfg.SaveTokens("", "", token, "", cfg.TokenExpiry); err != nil {
+			if err := cfg.SaveTokens("", "", token, "", time.Time{}); err != nil {
 				return configErr(fmt.Errorf("saving token: %w", err))
 			}
 

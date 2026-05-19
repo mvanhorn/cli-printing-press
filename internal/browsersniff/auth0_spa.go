@@ -80,11 +80,10 @@ func responseBodyCarriesAccessToken(body string) bool {
 		}
 		return false
 	}
-	// JSON decode failed — fall back to a textual marker. Require both the
-	// key in JSON-shaped quotes and a non-trivial value indicator (`":`)
-	// so prose mentions of "access_token" in HTML error pages don't match.
-	return strings.Contains(body, `"access_token"`) &&
-		strings.Contains(body, `"access_token":`)
+	// JSON decode failed — fall back to a textual marker. Require the key
+	// in JSON-shaped quotes followed by a value indicator (`":`) so prose
+	// mentions of "access_token" in HTML error pages don't match.
+	return strings.Contains(body, `"access_token":`)
 }
 
 // responseHasJWTShapedSetCookie scans Set-Cookie headers for a value whose
@@ -108,7 +107,7 @@ func responseHasJWTShapedSetCookie(headers map[string]string) bool {
 			continue
 		}
 		// Split on comma to handle the HAR-folded multi-header form.
-		for _, raw := range strings.Split(value, ",") {
+		for raw := range strings.SplitSeq(value, ",") {
 			raw = strings.TrimSpace(raw)
 			if raw == "" {
 				continue
@@ -118,11 +117,11 @@ func responseHasJWTShapedSetCookie(headers map[string]string) bool {
 			if i := strings.IndexByte(pair, ';'); i >= 0 {
 				pair = pair[:i]
 			}
-			eq := strings.IndexByte(pair, '=')
-			if eq < 0 {
+			_, cookieValue, ok := strings.Cut(pair, "=")
+			if !ok {
 				continue
 			}
-			cookieValue := strings.TrimSpace(pair[eq+1:])
+			cookieValue = strings.TrimSpace(cookieValue)
 			if looksLikeJWTShape(cookieValue) {
 				return true
 			}
