@@ -10,8 +10,9 @@ import (
 
 // binaryResponseSpec exercises the four shapes that matter for binary-only
 // response detection: JSON-only (no override), octet-stream-only (override),
-// pdf-only (override to the concrete type), and a mixed octet-stream+JSON
-// response (no override — JSON is reachable with the default Accept).
+// pdf-only (override to the concrete type), text/XML-only (no override because
+// the client does not binary-wrap them), and a mixed octet-stream+JSON response
+// (no override — JSON is reachable with the default Accept).
 const binaryResponseSpec = `
 openapi: 3.0.0
 info:
@@ -80,6 +81,34 @@ paths:
               schema: { type: string, format: byte }
             application/json:
               schema: { type: object }
+  /widgets/{id}/csv:
+    get:
+      operationId: exportWidgetCSV
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: ok
+          content:
+            text/csv:
+              schema: { type: string }
+  /widgets/{id}/xml:
+    get:
+      operationId: exportWidgetXML
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/xml:
+              schema: { type: string }
 `
 
 func acceptOverride(e spec.Endpoint) (string, bool) {
@@ -143,6 +172,20 @@ func TestParseBinaryOnlyResponseEmitsAcceptOverride(t *testing.T) {
 		require.True(t, ok)
 		_, has := acceptOverride(e)
 		assert.False(t, has, "a JSON-reachable response must not be forced to octet-stream")
+	})
+
+	t.Run("text response gets no Accept override", func(t *testing.T) {
+		e, ok := endpointByPath(parsed, "/widgets/{id}/csv")
+		require.True(t, ok)
+		_, has := acceptOverride(e)
+		assert.False(t, has, "text responses must not be forced into the binary response path")
+	})
+
+	t.Run("XML response gets no Accept override", func(t *testing.T) {
+		e, ok := endpointByPath(parsed, "/widgets/{id}/xml")
+		require.True(t, ok)
+		_, has := acceptOverride(e)
+		assert.False(t, has, "XML responses must not be forced into the binary response path")
 	})
 }
 

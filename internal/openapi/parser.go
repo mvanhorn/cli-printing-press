@@ -3430,14 +3430,13 @@ func binaryContentType(contentType string) bool {
 }
 
 // binaryResponseAcceptType inspects the operation's selected success response.
-// When every declared media type is concrete and non-JSON (no
-// application/json, no */*, no *+json), the server answers the client's
-// default Accept: application/json with HTTP 406. It returns the media type
-// the client must send instead (application/octet-stream when the response
-// offers it, otherwise the lexicographically-first concrete type). Returns ""
-// for JSON, wildcard, empty, or JSON-mixed responses so the existing
-// application/json default and JSON response path stay untouched — the vast
-// majority of endpoints.
+// When every declared media type is concrete and binary-enveloped by the
+// generated client, the server answers the client's default Accept:
+// application/json with HTTP 406. It returns the media type the client must
+// send instead (application/octet-stream when the response offers it, otherwise
+// the lexicographically-first concrete type). Returns "" for JSON, wildcard,
+// text, XML, empty, or mixed responses so the existing application/json default
+// and non-binary response path stay untouched — the vast majority of endpoints.
 func binaryResponseAcceptType(op *openapi3.Operation) string {
 	if op == nil || op.Responses == nil {
 		return ""
@@ -3449,10 +3448,7 @@ func binaryResponseAcceptType(op *openapi3.Operation) string {
 	concrete := make([]string, 0, len(success.Value.Content))
 	for ct := range success.Value.Content {
 		mt := strings.ToLower(strings.TrimSpace(strings.SplitN(ct, ";", 2)[0]))
-		if mt == "" {
-			continue
-		}
-		if mt == "application/json" || mt == "text/json" || mt == "*/*" || strings.HasSuffix(mt, "+json") {
+		if !binaryAcceptContentType(mt) {
 			return ""
 		}
 		concrete = append(concrete, mt)
@@ -3467,6 +3463,26 @@ func binaryResponseAcceptType(op *openapi3.Operation) string {
 		}
 	}
 	return concrete[0]
+}
+
+func binaryAcceptContentType(mt string) bool {
+	if mt == "" {
+		return false
+	}
+	switch {
+	case mt == "application/json", mt == "text/json", mt == "*/*":
+		return false
+	case strings.HasPrefix(mt, "text/"):
+		return false
+	case strings.HasSuffix(mt, "+json"), strings.HasSuffix(mt, "+xml"):
+		return false
+	case mt == "application/xml", mt == "application/xhtml+xml":
+		return false
+	case mt == "application/javascript", mt == "application/ecmascript",
+		mt == "application/x-www-form-urlencoded", mt == "application/graphql":
+		return false
+	}
+	return true
 }
 
 // upsertHeaderOverride returns headers with name set to value: replacing an
