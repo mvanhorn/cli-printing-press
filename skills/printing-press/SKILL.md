@@ -2910,8 +2910,10 @@ structured report with pass/fail/skipped counts. Save the JSON report to:
 `$PROOFS_DIR/<stamp>-dogfood-results.json`
 
 If the command exits non-zero, inspect the structured failures, fix the CLI, and
-rerun live dogfood. Do not hand-edit `phase5-acceptance.json`; it must come from
-the runner.
+rerun live dogfood. The runner writes `phase5-acceptance.json` on every outcome
+(`status: "pass"` on success, `status: "fail"` with a `failure_summary` block on
+failure), so the Phase 5.6 gate always has a marker to read. Do not hand-edit
+`phase5-acceptance.json`; it must come from the runner.
 
 **Quick check (auto-selected test subset):**
 1. `doctor` — auth valid, API reachable.
@@ -2988,7 +2990,7 @@ Write:
 
 `$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-acceptance.md`
 
-For `Gate: PASS`, also write:
+For every outcome (PASS or FAIL), the runner writes:
 
 `$PROOFS_DIR/phase5-acceptance.json`
 
@@ -3009,6 +3011,12 @@ For `Gate: PASS`, also write:
   }
 }
 ```
+
+On `Gate: FAIL` the same path is written with `status: "fail"` and a
+`failure_summary` block grouping failures by category
+(`transport_error` / `http_4xx` / `http_5xx` / `exit_nonzero` /
+`output_mismatch` / `other`) plus the list of contributing commands. The
+Phase 5.6 gate routes this marker to the hold path; do not promote.
 
 For `level: "quick"`, `tests_failed` may be `1` only when the Quick Check
 threshold still passed (`matrix_size: 6`, `tests_passed >= 5`) and the miss was

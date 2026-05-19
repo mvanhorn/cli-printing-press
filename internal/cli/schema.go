@@ -198,7 +198,7 @@ const phase5MarkerSchemaJSON = `{
   "title": "CLI Printing Press phase5-acceptance.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "api_name", "run_id", "status", "level", "matrix_size", "tests_passed"],
+  "required": ["schema_version", "api_name", "run_id", "status", "level", "matrix_size"],
   "properties": {
     "schema_version": {"type": "integer", "const": 1},
     "api_name": {"type": "string", "minLength": 1},
@@ -208,13 +208,20 @@ const phase5MarkerSchemaJSON = `{
     "level": {"type": "string", "enum": ["quick", "full"]},
     "matrix_size": {"type": "integer", "minimum": 1},
     "tests_total": {"type": "integer", "minimum": 0},
-    "tests_passed": {"type": "integer", "minimum": 1},
+    "tests_passed": {"type": "integer", "minimum": 0},
     "tests_skipped": {"type": "integer", "minimum": 0},
     "tests_failed": {"type": "integer", "minimum": 0},
     "completed_at": {"type": "string", "format": "date-time"},
     "summary": {"type": "string"},
-    "auth_context": {"$ref": "#/$defs/auth_context"}
+    "auth_context": {"$ref": "#/$defs/auth_context"},
+    "failure_summary": {"$ref": "#/$defs/failure_summary"}
   },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "pass"}}, "required": ["status"]},
+      "then": {"required": ["tests_passed"], "properties": {"tests_passed": {"minimum": 1}}}
+    }
+  ],
   "$defs": {
     "auth_context": {
       "type": "object",
@@ -223,6 +230,19 @@ const phase5MarkerSchemaJSON = `{
         "type": {"type": "string"},
         "api_key_available": {"type": "boolean"},
         "browser_session_available": {"type": "boolean"}
+      }
+    },
+    "failure_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "transport_error": {"type": "integer", "minimum": 0},
+        "http_4xx": {"type": "integer", "minimum": 0},
+        "http_5xx": {"type": "integer", "minimum": 0},
+        "exit_nonzero": {"type": "integer", "minimum": 0},
+        "output_mismatch": {"type": "integer", "minimum": 0},
+        "other": {"type": "integer", "minimum": 0},
+        "commands": {"type": "array", "items": {"type": "string"}}
       }
     }
   }

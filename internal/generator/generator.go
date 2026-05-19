@@ -4283,6 +4283,16 @@ func exampleValue(p spec.Param) string {
 		return value
 	}
 
+	// Enum-constrained params: the API rejects anything outside the set,
+	// so prefer the first declared value over name-shape heuristics.
+	// This wins over name-based branches because a hypothetical
+	// `status_id: [a,b,c]` enum still requires `a`, not a UUID.
+	for _, v := range p.Enum {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+
 	nameLower := strings.ToLower(p.Name)
 
 	// camelCase `*Id` carries an exclusion fence so bool/numeric params

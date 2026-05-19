@@ -88,7 +88,7 @@ func newDogfoodCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&live, "live", false, "Run the Phase 5 live command-tree dogfood matrix")
 	cmd.Flags().StringVar(&level, "level", "full", "Live dogfood depth: quick or full")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "Timeout for each live dogfood test")
-	cmd.Flags().StringVar(&writeAcceptance, "write-acceptance", "", "Write phase5-acceptance.json to this path when live dogfood passes")
+	cmd.Flags().StringVar(&writeAcceptance, "write-acceptance", "", "Write phase5-acceptance.json to this path on every outcome (status:pass on success, status:fail with a failure_summary block on failure)")
 	cmd.Flags().StringVar(&authEnv, "auth-env", "", "Environment variable that proves an API credential was available for the acceptance marker")
 	cmd.Flags().BoolVar(&allowDestructive, "allow-destructive", false, "Re-enable testing of endpoints classified as destructive-at-auth. Default skips them to prevent runner-credential rotation.")
 	_ = cmd.MarkFlagRequired("dir")
@@ -133,9 +133,18 @@ func printDogfoodReport(report *pipeline.DogfoodReport) {
 
 	pathStatus := "SKIP"
 	if report.SpecPath != "" && !report.PathCheck.Skipped {
-		pathStatus = "PASS"
-		if report.PathCheck.Pct < 70 {
+		// An empty matrix (Tested == 0) is cosmetic, not a failure: the
+		// scorecard's Path Validity dimension renders 10/10 in this case, and
+		// the dogfood failure aggregator at FailedIssues guards on Tested > 0
+		// before counting a low-percentage path-validity failure. Render N/A
+		// here to match.
+		switch {
+		case report.PathCheck.Tested == 0:
+			pathStatus = "N/A"
+		case report.PathCheck.Pct < 70:
 			pathStatus = "FAIL"
+		default:
+			pathStatus = "PASS"
 		}
 	}
 	fmt.Printf("Path Validity:     %d/%d valid (%s)\n", report.PathCheck.Valid, report.PathCheck.Tested, pathStatus)
