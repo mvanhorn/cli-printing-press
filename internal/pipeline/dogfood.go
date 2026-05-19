@@ -152,9 +152,10 @@ type dogfoodAgentCommand struct {
 }
 
 type WiringCheckResult struct {
-	CommandTree      CommandTreeResult      `json:"command_tree"`
-	ConfigConsist    ConfigConsistResult    `json:"config_consistency"`
-	WorkflowComplete WorkflowCompleteResult `json:"workflow_completeness"`
+	CommandTree           CommandTreeResult           `json:"command_tree"`
+	ConfigConsist         ConfigConsistResult         `json:"config_consistency"`
+	AgentNamespacePresent AgentNamespacePresentResult `json:"agent_namespace_present"`
+	WorkflowComplete      WorkflowCompleteResult      `json:"workflow_completeness"`
 }
 
 type CommandTreeResult struct {
@@ -168,6 +169,14 @@ type ConfigConsistResult struct {
 	ReadFields  []string `json:"read_fields,omitempty"`
 	Mismatched  []string `json:"mismatched,omitempty"`
 	Consistent  bool     `json:"consistent"`
+}
+
+type AgentNamespacePresentResult struct {
+	Checked             bool     `json:"checked"`
+	Present             bool     `json:"present"`
+	Namespaces          []string `json:"namespaces,omitempty"`
+	MissingMaxStaleness []string `json:"missing_max_staleness,omitempty"`
+	Detail              string   `json:"detail,omitempty"`
 }
 
 type WorkflowCompleteResult struct {
@@ -1563,6 +1572,10 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	{"FAIL", func(r *DogfoodReport, _ bool) bool {
 		return !r.WiringCheck.ConfigConsist.Consistent && len(r.WiringCheck.ConfigConsist.Mismatched) > 0
 	}},
+	{"FAIL", func(r *DogfoodReport, _ bool) bool {
+		check := r.WiringCheck.AgentNamespacePresent
+		return check.Checked && (!check.Present || len(check.MissingMaxStaleness) > 0)
+	}},
 	// Pure-logic packages with zero tests fail shipcheck; prompts alone have not kept this invariant reliable.
 	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.TestPresence.MissingTests) > 0 }},
 	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.NamingCheck.Violations) > 0 }},
@@ -1632,6 +1645,14 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 		issues = append(issues, fmt.Sprintf("config inconsistency: write fields %v vs read fields %v",
 			report.WiringCheck.ConfigConsist.WriteFields,
 			report.WiringCheck.ConfigConsist.ReadFields))
+	}
+	if check := report.WiringCheck.AgentNamespacePresent; check.Checked {
+		if !check.Present {
+			issues = append(issues, "missing agent-* subcommand tree")
+		} else if len(check.MissingMaxStaleness) > 0 {
+			issues = append(issues, fmt.Sprintf("agent-* commands missing max_staleness metadata: %s",
+				strings.Join(check.MissingMaxStaleness, ", ")))
+		}
 	}
 	if len(report.WiringCheck.WorkflowComplete.UnmappedSteps) > 0 {
 		issues = append(issues, fmt.Sprintf("%d unmapped workflow steps: %s",
@@ -2110,10 +2131,91 @@ func containsAny(sources []string, needle string) bool {
 // checkWiring orchestrates all three wiring sub-checks.
 func checkWiring(dir string) WiringCheckResult {
 	return WiringCheckResult{
-		CommandTree:      checkCommandTree(dir),
-		ConfigConsist:    checkConfigConsistency(dir),
-		WorkflowComplete: checkWorkflowCompleteness(dir),
+		CommandTree:           checkCommandTree(dir),
+		ConfigConsist:         checkConfigConsistency(dir),
+		AgentNamespacePresent: checkAgentNamespacePresent(dir),
+		WorkflowComplete:      checkWorkflowCompleteness(dir),
 	}
+}
+
+func checkAgentNamespacePresent(dir string) AgentNamespacePresentResult {
+	result := AgentNamespacePresentResult{Checked: true}
+	cliName := findCLIName(dir)
+	if cliName == "" {
+		result.Detail = "no CLI command directory found"
+		return result
+	}
+	binaryPath, err := buildDogfoodBinary(dir, cliName)
+	if err != nil {
+		result.Detail = fmt.Sprintf("could not build CLI binary: %v", err)
+		return result
+	}
+	defer func() { _ = os.Remove(binaryPath) }()
+
+	out, err := runStdoutOnly(binaryPath, 15*time.Second, "agent-context")
+	if err != nil {
+		result.Detail = fmt.Sprintf("agent-context failed: %v", err)
+		return result
+	}
+	var ctx dogfoodAgentContext
+	if err := json.Unmarshal(out, &ctx); err != nil {
+		result.Detail = fmt.Sprintf("parse agent-context: %v", err)
+		return result
+	}
+	for _, command := range ctx.Commands {
+		if !strings.HasPrefix(command.Name, "agent-") {
+			continue
+		}
+		if len(command.Subcommands) > 0 {
+			result.Present = true
+			result.Namespaces = append(result.Namespaces, command.Name)
+		}
+		if isStoreBackedAgentNamespace(command) {
+			collectMissingAgentMaxStaleness(nil, command, &result.MissingMaxStaleness)
+		}
+	}
+	sort.Strings(result.Namespaces)
+	sort.Strings(result.MissingMaxStaleness)
+	if !result.Present {
+		result.Detail = "no top-level agent-* subcommand tree found"
+	} else if len(result.MissingMaxStaleness) > 0 {
+		result.Detail = "agent-* commands must declare pp:max_staleness"
+	} else {
+		result.Detail = "agent namespace present with max_staleness metadata"
+	}
+	return result
+}
+
+func isStoreBackedAgentNamespace(command dogfoodAgentCommand) bool {
+	if strings.TrimSpace(command.Annotations["mcp:read-only"]) == "true" {
+		return true
+	}
+	return hasMaxStalenessAnnotation(command.Annotations)
+}
+
+func collectMissingAgentMaxStaleness(prefix []string, command dogfoodAgentCommand, missing *[]string) {
+	if command.Name == "" {
+		return
+	}
+	path := append(append([]string{}, prefix...), command.Name)
+	if strings.HasPrefix(path[0], "agent-") && !hasMaxStalenessAnnotation(command.Annotations) {
+		*missing = append(*missing, strings.Join(path, " "))
+	}
+	for _, sub := range command.Subcommands {
+		collectMissingAgentMaxStaleness(path, sub, missing)
+	}
+}
+
+func hasMaxStalenessAnnotation(annotations map[string]string) bool {
+	if len(annotations) == 0 {
+		return false
+	}
+	for _, key := range []string{"pp:max_staleness", "max_staleness"} {
+		if strings.TrimSpace(annotations[key]) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // checkCommandTree scans internal/cli/*.go for command constructor functions

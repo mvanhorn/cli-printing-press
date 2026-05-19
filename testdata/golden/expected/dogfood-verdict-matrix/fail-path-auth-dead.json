@@ -33,7 +33,8 @@
   "issues": [
     "0% path validity against spec",
     "auth protocol mismatch",
-    "3 dead flags found"
+    "3 dead flags found",
+    "missing agent-* subcommand tree"
   ],
   "mcp_surface_parity": {
     "detail": "no internal/mcp/tools.go; CLI does not ship an MCP surface",
@@ -83,6 +84,11 @@
   },
   "verdict": "FAIL",
   "wiring_check": {
+    "agent_namespace_present": {
+      "checked": true,
+      "detail": "no top-level agent-* subcommand tree found",
+      "present": false
+    },
     "command_tree": {
       "defined": 1,
       "registered": 1

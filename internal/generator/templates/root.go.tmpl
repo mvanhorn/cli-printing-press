@@ -309,6 +309,7 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 		if resources, isRead := readCommandResources[cmd.CommandPath()]; isRead {
 			flags.freshnessMeta = autoRefreshIfStale(cmd.Context(), flags, resources)
 		}
+		warnIfAgentCacheStale(cmd.Context(), cmd, flags)
 {{- end}}
 		return nil
 	}

@@ -30,7 +30,8 @@
   },
   "issues": [
     "1 dead helper functions found",
-    "1 unregistered commands: orphan"
+    "1 unregistered commands: orphan",
+    "missing agent-* subcommand tree"
   ],
   "mcp_surface_parity": {
     "detail": "no internal/mcp/tools.go; CLI does not ship an MCP surface",
@@ -76,6 +77,11 @@
   },
   "verdict": "WARN",
   "wiring_check": {
+    "agent_namespace_present": {
+      "checked": true,
+      "detail": "no top-level agent-* subcommand tree found",
+      "present": false
+    },
     "command_tree": {
       "defined": 2,
       "registered": 1,

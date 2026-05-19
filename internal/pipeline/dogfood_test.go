@@ -781,8 +781,23 @@ func TestDeriveDogfoodVerdict_WiringChecks(t *testing.T) {
 	report.WiringCheck.ConfigConsist.Mismatched = []string{"AccessToken", "DominosToken"}
 	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, true))
 
-	// Test that unmapped workflow steps cause WARN
+	// Test that a checked CLI without an agent-* namespace fails
 	report.WiringCheck.ConfigConsist.Consistent = true
+	report.WiringCheck.ConfigConsist.Mismatched = nil
+	report.WiringCheck.AgentNamespacePresent = AgentNamespacePresentResult{Checked: true, Present: false}
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, true))
+
+	// Test that agent-* commands missing max_staleness fail
+	report.WiringCheck.AgentNamespacePresent = AgentNamespacePresentResult{
+		Checked:             true,
+		Present:             true,
+		Namespaces:          []string{"agent-crm"},
+		MissingMaxStaleness: []string{"agent-crm agenda"},
+	}
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, true))
+
+	// Test that unmapped workflow steps cause WARN
+	report.WiringCheck.AgentNamespacePresent = AgentNamespacePresentResult{Checked: true, Present: true, Namespaces: []string{"agent-crm"}}
 	report.WiringCheck.WorkflowComplete = WorkflowCompleteResult{
 		TotalSteps:    2,
 		MappedSteps:   1,
@@ -793,6 +808,31 @@ func TestDeriveDogfoodVerdict_WiringChecks(t *testing.T) {
 	// Test that clean wiring passes
 	report.WiringCheck.WorkflowComplete = WorkflowCompleteResult{Skipped: true}
 	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
+}
+
+func TestAgentNamespaceMaxStalenessParsed(t *testing.T) {
+	missing := []string{}
+	collectMissingAgentMaxStaleness(nil, dogfoodAgentCommand{
+		Name:        "agent-crm",
+		Annotations: map[string]string{"pp:max_staleness": "1h"},
+		Subcommands: []dogfoodAgentCommand{{
+			Name:        "agenda",
+			Annotations: map[string]string{"pp:max_staleness": "1h"},
+			Subcommands: []dogfoodAgentCommand{{
+				Name:        "today",
+				Annotations: map[string]string{"pp:max_staleness": "1h"},
+			}},
+		}},
+	}, &missing)
+	assert.Empty(t, missing)
+
+	missing = []string{}
+	collectMissingAgentMaxStaleness(nil, dogfoodAgentCommand{
+		Name:        "agent-crm",
+		Annotations: map[string]string{"pp:max_staleness": "1h"},
+		Subcommands: []dogfoodAgentCommand{{Name: "agenda"}},
+	}, &missing)
+	assert.Equal(t, []string{"agent-crm agenda"}, missing)
 }
 
 func TestDeriveDogfoodVerdict_PreservesPriority(t *testing.T) {

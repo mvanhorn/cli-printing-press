@@ -25,7 +25,9 @@
     "valid_examples": 1,
     "with_examples": 1
   },
-  "issues": null,
+  "issues": [
+    "missing agent-* subcommand tree"
+  ],
   "mcp_surface_parity": {
     "detail": "MCP surface mirrors the Cobra tree at runtime",
     "pass": true,
@@ -67,8 +69,13 @@
   "test_presence": {
     "checked": 0
   },
-  "verdict": "PASS",
+  "verdict": "FAIL",
   "wiring_check": {
+    "agent_namespace_present": {
+      "checked": true,
+      "detail": "no top-level agent-* subcommand tree found",
+      "present": false
+    },
     "command_tree": {
       "defined": 1,
       "registered": 1

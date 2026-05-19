@@ -27,7 +27,8 @@
     "with_examples": 0
   },
   "issues": [
-    "example check skipped: could not build CLI binary: exit status 1"
+    "example check skipped: could not build CLI binary: exit status 1",
+    "missing agent-* subcommand tree"
   ],
   "mcp_surface_parity": {
     "detail": "MCP surface mirrors the Cobra tree at runtime",
@@ -72,6 +73,11 @@
   },
   "verdict": "WARN",
   "wiring_check": {
+    "agent_namespace_present": {
+      "checked": true,
+      "detail": "could not build CLI binary: exit status 1",
+      "present": false
+    },
     "command_tree": {
       "defined": 43,
       "registered": 43

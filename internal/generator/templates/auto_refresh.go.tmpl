@@ -5,6 +5,7 @@ package cli
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/store"
+	"github.com/spf13/cobra"
 )
 
 // readCommandResources maps command paths ({{backtick}}cmd.CommandPath(){{backtick}}) to the
@@ -196,6 +198,119 @@ func ensureFreshForCommand(ctx context.Context, flags *rootFlags, commandPath st
 		return meta
 	}
 	return ensureFreshForResources(ctx, flags, resources...)
+}
+
+func warnIfAgentCacheStale(ctx context.Context, cmd *cobra.Command, flags *rootFlags) {
+	if cmd == nil || flags == nil || flags.dataSource == "live" {
+		return
+	}
+	max, ok := commandMaxStaleness(cmd)
+	if !ok || max <= 0 {
+		return
+	}
+	dbPath := defaultDBPath("{{.Name}}-pp-cli")
+	db, err := store.OpenWithContext(ctx, dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %s cache freshness unknown for %s (open: %v)\n", "{{.Name}}-pp-cli", cmd.CommandPath(), err)
+		return
+	}
+	defer db.Close()
+	resources := readCommandResources[cmd.CommandPath()]
+	oldest, ok, err := oldestSyncState(ctx, db.DB(), resources)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %s cache freshness unknown for %s (%v)\n", "{{.Name}}-pp-cli", cmd.CommandPath(), err)
+		return
+	}
+	if !ok {
+		fmt.Fprintf(os.Stderr, "warning: %s cache has no sync_state evidence for %s (max_staleness=%s)\n", "{{.Name}}-pp-cli", cmd.CommandPath(), max)
+		return
+	}
+	if age := time.Since(oldest); age > max {
+		fmt.Fprintf(os.Stderr, "warning: %s cache for %s is stale (age=%s, max_staleness=%s)\n", "{{.Name}}-pp-cli", cmd.CommandPath(), age.Round(time.Second), max)
+	}
+}
+
+func commandMaxStaleness(cmd *cobra.Command) (time.Duration, bool) {
+	for c := cmd; c != nil; c = c.Parent() {
+		if c.Annotations == nil {
+			continue
+		}
+		for _, key := range []string{"pp:max_staleness", "max_staleness"} {
+			if raw := strings.TrimSpace(c.Annotations[key]); raw != "" {
+				d, err := time.ParseDuration(raw)
+				return d, err == nil
+			}
+		}
+	}
+	return 0, false
+}
+
+func oldestSyncState(ctx context.Context, db *sql.DB, resources []string) (time.Time, bool, error) {
+	if db == nil {
+		return time.Time{}, false, nil
+	}
+	var row *sql.Row
+	if len(resources) == 0 {
+		row = db.QueryRowContext(ctx, `SELECT MIN(last_synced_at) FROM sync_state`)
+	} else {
+		placeholders := make([]string, len(resources))
+		args := make([]any, len(resources))
+		for i, resource := range resources {
+			placeholders[i] = "?"
+			args[i] = resource
+		}
+		row = db.QueryRowContext(ctx, fmt.Sprintf(`SELECT MIN(last_synced_at) FROM sync_state WHERE resource_type IN (%s)`, strings.Join(placeholders, ",")), args...)
+	}
+	var oldest any
+	if err := row.Scan(&oldest); err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, err
+	}
+	t, ok := parseSyncStateTime(oldest)
+	if !ok {
+		return time.Time{}, false, nil
+	}
+	return t, true, nil
+}
+
+func parseSyncStateTime(value any) (time.Time, bool) {
+	switch v := value.(type) {
+	case nil:
+		return time.Time{}, false
+	case time.Time:
+		return v, true
+	case string:
+		return parseSyncStateTimeString(v)
+	case []byte:
+		return parseSyncStateTimeString(string(v))
+	default:
+		return time.Time{}, false
+	}
+}
+
+func parseSyncStateTimeString(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		time.DateTime,
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999999Z07:00",
+		"2006-01-02 15:04:05.999999999 -0700 MST",
+		"2006-01-02 15:04:05.999999999 -0700",
+		"2006-01-02 15:04:05 -0700 MST",
+		"2006-01-02 15:04:05 -0700",
+	} {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // runAutoRefresh invokes the API-backed refresh path for the stale resources.

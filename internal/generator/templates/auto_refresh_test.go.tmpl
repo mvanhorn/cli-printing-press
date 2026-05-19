@@ -5,12 +5,17 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"{{modulePath}}/internal/store"
+	"github.com/spf13/cobra"
 )
 
 // captureStderr returns the bytes written to os.Stderr while fn runs. Used
@@ -94,5 +99,31 @@ func TestEmitCacheRefreshFailedEvent_NilResources(t *testing.T) {
 	}
 	if _, ok := payload["resources"]; ok {
 		t.Errorf("resources key should be omitted on nil slice, got: %v", payload)
+	}
+}
+
+func TestWarnIfAgentCacheStaleExceeded(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db, err := store.OpenWithContext(context.Background(), defaultDBPath("{{.Name}}-pp-cli"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	old := time.Now().Add(-2 * time.Hour)
+	if _, err := db.DB().Exec(`INSERT INTO sync_state(resource_type, last_synced_at, total_count) VALUES(?, ?, ?)`, "people", old.Format(time.RFC3339Nano), 1); err != nil {
+		t.Fatalf("seed sync_state: %v", err)
+	}
+
+	root := &cobra.Command{Use: "{{.Name}}-pp-cli"}
+	agent := &cobra.Command{Use: "agent-crm", Annotations: map[string]string{"pp:max_staleness": "1h"}}
+	leaf := &cobra.Command{Use: "agenda", Annotations: map[string]string{"pp:max_staleness": "1h"}}
+	agent.AddCommand(leaf)
+	root.AddCommand(agent)
+
+	stderr := captureStderr(t, func() {
+		warnIfAgentCacheStale(context.Background(), leaf, &rootFlags{dataSource: "local"})
+	})
+	if !strings.Contains(string(stderr), "max_staleness=1h0m0s") || !strings.Contains(string(stderr), "is stale") {
+		t.Fatalf("stderr = %q, want stale max_staleness warning", string(stderr))
 	}
 }
