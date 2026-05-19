@@ -19,6 +19,7 @@ import (
 	"printing-press-golden-pp-cli/internal/cliutil"
 	"printing-press-golden-pp-cli/internal/config"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -196,6 +197,37 @@ func (c *Client) invalidateCache() {
 		return
 	}
 	_ = os.RemoveAll(c.cacheDir)
+}
+
+func emitRateLimitAudit(resp *http.Response) {
+	if resp == nil {
+		return
+	}
+	remainingRaw := strings.TrimSpace(resp.Header.Get("X-RateLimit-Remaining"))
+	if remainingRaw == "" {
+		return
+	}
+	remaining, err := strconv.Atoi(remainingRaw)
+	if err != nil {
+		return
+	}
+	fragment := map[string]any{
+		"rate_limit_remaining_after": remaining,
+	}
+	if limitRaw := strings.TrimSpace(resp.Header.Get("X-RateLimit-Limit")); limitRaw != "" {
+		if limit, err := strconv.Atoi(limitRaw); err == nil {
+			fragment["rate_limit_limit"] = limit
+		}
+	}
+	if window := strings.TrimSpace(resp.Header.Get("X-RateLimit-Window")); window != "" {
+		fragment["rate_limit_window"] = window
+	}
+	if context := strings.TrimSpace(resp.Header.Get("X-RateLimit-Context")); context != "" {
+		fragment["rate_limit_context"] = context
+	}
+	if b, err := json.Marshal(fragment); err == nil {
+		fmt.Fprintf(os.Stderr, "[PP-AUDIT] %s\n", string(b))
+	}
 }
 
 func (c *Client) Post(path string, body any) (json.RawMessage, int, error) {
@@ -471,6 +503,7 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 			respBody = sanitizeJSONResponse(respBody)
 		}
 		c.limiter.OnResponse(resp)
+		emitRateLimitAudit(resp)
 
 		// Success
 		if resp.StatusCode < 400 {

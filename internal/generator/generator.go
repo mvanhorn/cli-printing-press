@@ -17,6 +17,7 @@ import (
 	"text/template"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/mcpdesc"
@@ -1185,16 +1186,13 @@ func endpointPrivacySensitive(endpoint spec.Endpoint, endpointName, resourceName
 	appendTypeFields(&parts, types, endpoint.Response.Item, seen)
 
 	text := strings.ToLower(strings.Join(parts, " "))
-	if containsAny(text, []string{
+	return containsAny(text, []string{
 		"attachment", "attachments", "mail body", "email body", "message body",
 		"raw email", "raw message", "mime", "financial", "finance", "commission",
 		"payment", "payments", "bank", "routing", "account number", "ssn",
-		"tax", "income", "salary", "loan", "mortgage", "escrow", "earnest",
+		"income", "salary", "loan", "mortgage", "escrow", "earnest",
 		"wire", "price", "amount", "balance",
-	}) {
-		return true
-	}
-	return false
+	}) || containsAnyWord(text, []string{"tax"})
 }
 
 func privacySensitiveMCPDescription(desc string, endpoint spec.Endpoint, endpointName, resourceName string, types map[string]spec.TypeDef) string {
@@ -1229,6 +1227,37 @@ func containsAny(value string, needles []string) bool {
 		}
 	}
 	return false
+}
+
+func containsAnyWord(value string, needles []string) bool {
+	for _, needle := range needles {
+		needle = strings.TrimSpace(strings.ToLower(needle))
+		if needle == "" {
+			continue
+		}
+		start := 0
+		for {
+			idx := strings.Index(value[start:], needle)
+			if idx == -1 {
+				break
+			}
+			idx += start
+			end := idx + len(needle)
+			if isWordBoundary(value, idx-1) && isWordBoundary(value, end) {
+				return true
+			}
+			start = idx + 1
+		}
+	}
+	return false
+}
+
+func isWordBoundary(value string, idx int) bool {
+	if idx < 0 || idx >= len(value) {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(value[idx:])
+	return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 }
 
 // camelCaseTokens splits "getOrCreate" → ["get", "Or", "Create"] and

@@ -271,6 +271,11 @@ type postgresRateLimitBackend struct {
 	db *sql.DB
 }
 
+var (
+	postgresRateLimitBackendsMu sync.Mutex
+	postgresRateLimitBackends   = map[string]*postgresRateLimitBackend{}
+)
+
 const (
 	ppRateLimitBackendEnv = "PP_RATELIMIT_BACKEND"
 	ppRateLimitPGURLEnv   = "PP_RATELIMIT_PG_URL"
@@ -293,12 +298,25 @@ const (
 func newRateLimitBackendFromEnv() rateLimitBackend {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv(ppRateLimitBackendEnv)), "postgres") {
 		if pgURL := strings.TrimSpace(os.Getenv(ppRateLimitPGURLEnv)); pgURL != "" {
-			if db, err := sql.Open("pgx", pgURL); err == nil {
-				return &postgresRateLimitBackend{db: db}
-			}
+			return sharedPostgresRateLimitBackend(pgURL)
 		}
 	}
 	return newMemoryRateLimitBackend()
+}
+
+func sharedPostgresRateLimitBackend(pgURL string) rateLimitBackend {
+	postgresRateLimitBackendsMu.Lock()
+	defer postgresRateLimitBackendsMu.Unlock()
+	if backend, ok := postgresRateLimitBackends[pgURL]; ok {
+		return backend
+	}
+	db, err := sql.Open("pgx", pgURL)
+	if err != nil {
+		return newMemoryRateLimitBackend()
+	}
+	backend := &postgresRateLimitBackend{db: db}
+	postgresRateLimitBackends[pgURL] = backend
+	return backend
 }
 
 func (b *postgresRateLimitBackend) Update(ctx context.Context, key rateLimitKey, state rateLimitState, mutate func(*rateLimitState)) (rateLimitState, error) {

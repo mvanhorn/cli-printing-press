@@ -715,6 +715,29 @@ func TestGenerateMCPPrivacySensitiveAnnotationsAndDescriptions(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestEndpointPrivacySensitiveRequiresTaxWordBoundary(t *testing.T) {
+	t.Parallel()
+
+	types := map[string]spec.TypeDef{
+		"SyntaxReport": {Fields: []spec.TypeField{{Name: "syntax_error", Type: "string"}}},
+	}
+	syntaxEndpoint := spec.Endpoint{
+		Method:      "GET",
+		Path:        "/queries/syntax",
+		Description: "Check query syntax.",
+		Response:    spec.ResponseDef{Type: "SyntaxReport"},
+	}
+	assert.False(t, endpointPrivacySensitive(syntaxEndpoint, "CheckSyntax", "Queries", types))
+
+	taxEndpoint := spec.Endpoint{
+		Method:      "GET",
+		Path:        "/transactions/{id}/tax-documents",
+		Description: "Read tax documents.",
+		Response:    spec.ResponseDef{Type: "TaxDocument"},
+	}
+	assert.True(t, endpointPrivacySensitive(taxEndpoint, "GetTaxDocuments", "Transactions", types))
+}
+
 func TestGenerateCobratreeMethodSafetyDefaults(t *testing.T) {
 	t.Parallel()
 

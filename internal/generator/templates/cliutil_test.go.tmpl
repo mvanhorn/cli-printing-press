@@ -739,6 +739,9 @@ func TestAdaptiveLimiter_PostgresBackendFromEnv(t *testing.T) {
 	t.Setenv(ppRateLimitBackendEnv, "postgres")
 	t.Setenv(ppRateLimitPGURLEnv, "postgres://user:pass@localhost:5432/theclose?sslmode=disable")
 	t.Setenv(ppRateLimitTenantEnv, "tenant-123")
+	postgresRateLimitBackendsMu.Lock()
+	postgresRateLimitBackends = map[string]*postgresRateLimitBackend{}
+	postgresRateLimitBackendsMu.Unlock()
 
 	l := NewAdaptiveLimiterForHost(8.0, "api.example.com")
 	if _, ok := l.backend.(*postgresRateLimitBackend); !ok {
@@ -746,6 +749,20 @@ func TestAdaptiveLimiter_PostgresBackendFromEnv(t *testing.T) {
 	}
 	if l.key != (rateLimitKey{Host: "api.example.com", TenantID: "tenant-123"}) {
 		t.Fatalf("key = %#v, want host+tenant key", l.key)
+	}
+}
+
+func TestAdaptiveLimiter_PostgresBackendFromEnvSharesPool(t *testing.T) {
+	t.Setenv(ppRateLimitBackendEnv, "postgres")
+	t.Setenv(ppRateLimitPGURLEnv, "postgres://user:pass@localhost:5432/theclose?sslmode=disable")
+	postgresRateLimitBackendsMu.Lock()
+	postgresRateLimitBackends = map[string]*postgresRateLimitBackend{}
+	postgresRateLimitBackendsMu.Unlock()
+
+	l1 := NewAdaptiveLimiterForHost(8.0, "api.example.com")
+	l2 := NewAdaptiveLimiterForHost(8.0, "api2.example.com")
+	if l1.backend != l2.backend {
+		t.Fatalf("Postgres rate-limit backend should share one DB pool per URL")
 	}
 }
 
