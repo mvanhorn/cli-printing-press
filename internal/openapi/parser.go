@@ -39,6 +39,7 @@ const (
 	extensionAuthInstructions      = "x-auth-instructions"
 	extensionAuthTitle             = "x-auth-title"
 	extensionAuthDescription       = "x-auth-description"
+	extensionAuthSubtype           = "x-auth-subtype"
 	extensionOAuthRefreshTokenMech = "x-oauth-refresh-token-mechanism"
 	extensionSpeakeasyExample      = "x-speakeasy-example"
 	extensionTierRouting           = "x-tier-routing"
@@ -925,6 +926,17 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 	}
 	if description := stringExtension(extensions, extensionAuthDescription); description != "" {
 		auth.Description = description
+	}
+	if subtype := stringExtension(extensions, extensionAuthSubtype); subtype != "" {
+		// Only known subtype values are accepted. Unknown values would round-trip
+		// silently and surface later as a confusing "subtype %q is not
+		// recognized" validation error far from the spec source. Filtering here
+		// keeps the error close to the typo, matching how unknown auth types are
+		// handled elsewhere in this parser.
+		switch subtype {
+		case spec.AuthSubtypeAuth0SPAInMemory:
+			auth.Subtype = subtype
+		}
 	}
 	if mech := stringExtension(extensions, extensionOAuthRefreshTokenMech); mech != "" {
 		auth.RefreshTokenMechanism = mech
