@@ -872,6 +872,11 @@ func runLiveDogfoodProcess(binaryPath, cliDir string, args []string, timeout tim
 	cmd := exec.CommandContext(ctx, binaryPath, args...)
 	cmd.Dir = cliDir
 	applyDefaultSubprocessEnv(cmd)
+	// Strip PRINTING_PRESS_VERIFY{,_LIVE_HTTP} from the subprocess env so an
+	// operator who inherited them from a parent shell, CI runner, or
+	// container image cannot silently noop the destructive live path.
+	// The transport-layer short-circuit is for verify mock-mode only.
+	cmd.Env = filterVerifyEnv(cmd.Env)
 	cmd.Env = append(cmd.Env, dogfoodEnvVar+"=1")
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
