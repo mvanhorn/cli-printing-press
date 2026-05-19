@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -718,6 +719,57 @@ func TestAdaptiveLimiter_OnResponseWindowBoundaryRampsUp(t *testing.T) {
 	l.OnResponse(rateLimitResponse("100", "99", "window-2"))
 	if got := l.Rate(); got <= lowRate {
 		t.Fatalf("Rate() after X-RateLimit-Window transition = %v, want above %v", got, lowRate)
+	}
+}
+
+func TestAdaptiveLimiter_DefaultsToMemoryBackend(t *testing.T) {
+	t.Setenv(ppRateLimitBackendEnv, "")
+	t.Setenv(ppRateLimitPGURLEnv, "")
+
+	l := NewAdaptiveLimiterForHost(8.0, "https://api.example.com/v1")
+	if _, ok := l.backend.(*memoryRateLimitBackend); !ok {
+		t.Fatalf("backend = %T, want *memoryRateLimitBackend", l.backend)
+	}
+	if l.key.Host != "api.example.com" {
+		t.Fatalf("host key = %q, want api.example.com", l.key.Host)
+	}
+}
+
+func TestAdaptiveLimiter_PostgresBackendFromEnv(t *testing.T) {
+	t.Setenv(ppRateLimitBackendEnv, "postgres")
+	t.Setenv(ppRateLimitPGURLEnv, "postgres://user:pass@localhost:5432/theclose?sslmode=disable")
+	t.Setenv(ppRateLimitTenantEnv, "tenant-123")
+
+	l := NewAdaptiveLimiterForHost(8.0, "api.example.com")
+	if _, ok := l.backend.(*postgresRateLimitBackend); !ok {
+		t.Fatalf("backend = %T, want *postgresRateLimitBackend", l.backend)
+	}
+	if l.key != (rateLimitKey{Host: "api.example.com", TenantID: "tenant-123"}) {
+		t.Fatalf("key = %#v, want host+tenant key", l.key)
+	}
+}
+
+func TestPostgresRateLimitBackendUsesSelectForUpdate(t *testing.T) {
+	if !strings.Contains(selectRateLimitStateForUpdateSQL, "FOR UPDATE") {
+		t.Fatalf("Postgres rate-limit state query must lock row with SELECT FOR UPDATE: %s", selectRateLimitStateForUpdateSQL)
+	}
+	if !strings.Contains(insertRateLimitStateSQL, "ON CONFLICT (host, tenant_id) DO NOTHING") {
+		t.Fatalf("Postgres rate-limit insert must key row by host and tenant_id: %s", insertRateLimitStateSQL)
+	}
+}
+
+func TestAdaptiveLimiter_SharedBackendSerializesWaitSchedule(t *testing.T) {
+	backend := newMemoryRateLimitBackend()
+	l1 := NewAdaptiveLimiterForHost(10.0, "https://api.example.com")
+	l2 := NewAdaptiveLimiterForHost(10.0, "https://api.example.com")
+	l1.backend = backend
+	l2.backend = backend
+
+	l1.Wait()
+	start := time.Now()
+	l2.Wait()
+	if elapsed := time.Since(start); elapsed < 80*time.Millisecond {
+		t.Fatalf("shared backend second Wait() took %v, want >= 80ms", elapsed)
 	}
 }
 

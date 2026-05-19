@@ -3,6 +3,7 @@ module printing-press-golden-pp-cli
 go 1.26.3
 
 require (
+	github.com/jackc/pgx/v5 v5.9.2
 	github.com/spf13/cobra v1.9.1
 	github.com/pelletier/go-toml/v2 v2.2.4
 )

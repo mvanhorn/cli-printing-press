@@ -60,7 +60,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		Config:     cfg,
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
-		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
+		limiter:    cliutil.NewAdaptiveLimiterForHost(rateLimit, cfg.BaseURL),
 	}
 	// CheckRedirect re-derives auth on each hop. Go's default replays the
 	// original Authorization header verbatim, which breaks nonce-bound

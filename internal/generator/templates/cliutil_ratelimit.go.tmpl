@@ -4,13 +4,19 @@
 package cliutil
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // AdaptiveLimiter paces outbound requests with adaptive ceiling discovery.
@@ -19,6 +25,8 @@ import (
 // to call on a nil receiver.
 type AdaptiveLimiter struct {
 	mu          sync.Mutex
+	key         rateLimitKey
+	backend     rateLimitBackend
 	rate        float64
 	floor       float64
 	ceiling     float64
@@ -34,10 +42,19 @@ type AdaptiveLimiter struct {
 // NewAdaptiveLimiter returns a limiter starting at ratePerSec, or nil when
 // rate-limiting should be disabled. Methods on the nil limiter no-op.
 func NewAdaptiveLimiter(ratePerSec float64) *AdaptiveLimiter {
+	return NewAdaptiveLimiterForHost(ratePerSec, "")
+}
+
+// NewAdaptiveLimiterForHost returns a limiter scoped to a provider host. When
+// PP_RATELIMIT_BACKEND=postgres, state is shared through
+// connector_rate_limit_state using (host, tenant_id) as the row key.
+func NewAdaptiveLimiterForHost(ratePerSec float64, baseURL string) *AdaptiveLimiter {
 	if ratePerSec <= 0 {
 		return nil
 	}
 	return &AdaptiveLimiter{
+		key:       newRateLimitKey(baseURL),
+		backend:   newRateLimitBackendFromEnv(),
 		rate:      ratePerSec,
 		floor:     ratePerSec,
 		rampAfter: 10,
@@ -48,33 +65,47 @@ func (l *AdaptiveLimiter) Wait() {
 	if l == nil {
 		return
 	}
-	l.mu.Lock()
-	delay := time.Duration(float64(time.Second) / l.rate)
-	elapsed := time.Since(l.lastRequest)
-	l.mu.Unlock()
-	if elapsed < delay {
-		time.Sleep(delay - elapsed)
+	var wait time.Duration
+	l.updateState(func(state *rateLimitState) {
+		rate := state.Rate
+		if rate <= 0 {
+			rate = state.Floor
+		}
+		if rate <= 0 {
+			return
+		}
+		delay := time.Duration(float64(time.Second) / rate)
+		now := time.Now()
+		nextRequest := now
+		if !state.LastRequest.IsZero() {
+			minNext := state.LastRequest.Add(delay)
+			if minNext.After(now) {
+				nextRequest = minNext
+			}
+		}
+		wait = time.Until(nextRequest)
+		state.LastRequest = nextRequest
+	})
+	if wait > 0 {
+		time.Sleep(wait)
 	}
-	l.mu.Lock()
-	l.lastRequest = time.Now()
-	l.mu.Unlock()
 }
 
 func (l *AdaptiveLimiter) OnSuccess() {
 	if l == nil {
 		return
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.successes++
-	if l.successes >= l.rampAfter {
-		newRate := l.rate * 1.25
-		if l.ceiling > 0 && newRate > l.ceiling*0.9 {
-			newRate = l.ceiling * 0.9
+	l.updateState(func(state *rateLimitState) {
+		state.Successes++
+		if state.Successes >= l.rampAfter {
+			newRate := state.Rate * 1.25
+			if state.Ceiling > 0 && newRate > state.Ceiling*0.9 {
+				newRate = state.Ceiling * 0.9
+			}
+			state.Rate = newRate
+			state.Successes = 0
 		}
-		l.rate = newRate
-		l.successes = 0
-	}
+	})
 }
 
 // OnResponse reads provider rate-limit response headers on every response and
@@ -89,53 +120,52 @@ func (l *AdaptiveLimiter) OnResponse(resp *http.Response) {
 		return
 	}
 
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	windowTransition := window != "" && l.window != "" && window != l.window
-	if windowTransition {
-		l.ceiling = 0
-		if l.rate < l.floor {
-			l.rate = l.floor
-		} else {
-			l.rate *= 1.25
+	l.updateState(func(state *rateLimitState) {
+		windowTransition := window != "" && state.Window != "" && window != state.Window
+		if windowTransition {
+			state.Ceiling = 0
+			if state.Rate < state.Floor {
+				state.Rate = state.Floor
+			} else {
+				state.Rate *= 1.25
+			}
+			state.Successes = 0
 		}
-		l.successes = 0
-	}
 
-	previousRemaining := l.remaining
-	l.limit = limit
-	l.remaining = remaining
-	l.window = window
-	l.context = context
+		previousRemaining := state.Remaining
+		state.Limit = limit
+		state.Remaining = remaining
+		state.Window = window
+		state.Context = context
 
-	if limit <= 0 {
-		return
-	}
-	lowWatermark := float64(limit) * 0.10
-	remainingDropped := previousRemaining == 0 || remaining < previousRemaining
-	if float64(remaining) < lowWatermark && remainingDropped {
-		l.ceiling = l.rate
-		l.rate = l.rate / 2
-		if l.rate < 0.5 {
-			l.rate = 0.5
+		if limit <= 0 {
+			return
 		}
-		l.successes = 0
-	}
+		lowWatermark := float64(limit) * 0.10
+		remainingDropped := previousRemaining == 0 || remaining < previousRemaining
+		if float64(remaining) < lowWatermark && remainingDropped {
+			state.Ceiling = state.Rate
+			state.Rate = state.Rate / 2
+			if state.Rate < 0.5 {
+				state.Rate = 0.5
+			}
+			state.Successes = 0
+		}
+	})
 }
 
 func (l *AdaptiveLimiter) OnRateLimit() {
 	if l == nil {
 		return
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.ceiling = l.rate
-	l.rate = l.rate / 2
-	if l.rate < 0.5 {
-		l.rate = 0.5
-	}
-	l.successes = 0
+	l.updateState(func(state *rateLimitState) {
+		state.Ceiling = state.Rate
+		state.Rate = state.Rate / 2
+		if state.Rate < 0.5 {
+			state.Rate = 0.5
+		}
+		state.Successes = 0
+	})
 }
 
 func (l *AdaptiveLimiter) Rate() float64 {
@@ -145,6 +175,229 @@ func (l *AdaptiveLimiter) Rate() float64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.rate
+}
+
+func (l *AdaptiveLimiter) updateState(mutate func(*rateLimitState)) {
+	if l == nil || mutate == nil {
+		return
+	}
+	l.mu.Lock()
+	state := l.snapshotLocked()
+	l.mu.Unlock()
+
+	updated, err := l.backend.Update(context.Background(), l.key, state, mutate)
+	if err != nil {
+		l.mu.Lock()
+		state = l.snapshotLocked()
+		mutate(&state)
+		l.applyStateLocked(state)
+		l.mu.Unlock()
+		return
+	}
+
+	l.mu.Lock()
+	l.applyStateLocked(updated)
+	l.mu.Unlock()
+}
+
+func (l *AdaptiveLimiter) snapshotLocked() rateLimitState {
+	return rateLimitState{
+		Rate:        l.rate,
+		Floor:       l.floor,
+		Ceiling:     l.ceiling,
+		Successes:   l.successes,
+		LastRequest: l.lastRequest,
+		Limit:       l.limit,
+		Remaining:   l.remaining,
+		Window:      l.window,
+		Context:     l.context,
+	}
+}
+
+func (l *AdaptiveLimiter) applyStateLocked(state rateLimitState) {
+	l.rate = state.Rate
+	l.floor = state.Floor
+	l.ceiling = state.Ceiling
+	l.successes = state.Successes
+	l.lastRequest = state.LastRequest
+	l.limit = state.Limit
+	l.remaining = state.Remaining
+	l.window = state.Window
+	l.context = state.Context
+}
+
+type rateLimitKey struct {
+	Host     string
+	TenantID string
+}
+
+type rateLimitState struct {
+	Rate        float64
+	Floor       float64
+	Ceiling     float64
+	Successes   int
+	LastRequest time.Time
+	Limit       int
+	Remaining   int
+	Window      string
+	Context     string
+}
+
+type rateLimitBackend interface {
+	Update(ctx context.Context, key rateLimitKey, state rateLimitState, mutate func(*rateLimitState)) (rateLimitState, error)
+}
+
+type memoryRateLimitBackend struct {
+	mu     sync.Mutex
+	states map[rateLimitKey]rateLimitState
+}
+
+func newMemoryRateLimitBackend() *memoryRateLimitBackend {
+	return &memoryRateLimitBackend{states: map[rateLimitKey]rateLimitState{}}
+}
+
+func (b *memoryRateLimitBackend) Update(_ context.Context, key rateLimitKey, state rateLimitState, mutate func(*rateLimitState)) (rateLimitState, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if stored, ok := b.states[key]; ok {
+		state = stored
+	}
+	mutate(&state)
+	b.states[key] = state
+	return state, nil
+}
+
+type postgresRateLimitBackend struct {
+	db *sql.DB
+}
+
+const (
+	ppRateLimitBackendEnv = "PP_RATELIMIT_BACKEND"
+	ppRateLimitPGURLEnv   = "PP_RATELIMIT_PG_URL"
+	ppRateLimitTenantEnv  = "PP_RATELIMIT_TENANT_ID"
+
+	insertRateLimitStateSQL = `INSERT INTO connector_rate_limit_state
+	(host, tenant_id, rate, floor, ceiling, successes, last_request_at, limit_value, remaining, window, context, updated_at)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+	ON CONFLICT (host, tenant_id) DO NOTHING`
+	selectRateLimitStateForUpdateSQL = `SELECT rate, floor, ceiling, successes, last_request_at, limit_value, remaining, window, context
+	FROM connector_rate_limit_state
+	WHERE host = $1 AND tenant_id = $2
+	FOR UPDATE`
+	updateRateLimitStateSQL = `UPDATE connector_rate_limit_state
+	SET rate = $3, floor = $4, ceiling = $5, successes = $6, last_request_at = $7,
+		limit_value = $8, remaining = $9, window = $10, context = $11, updated_at = NOW()
+	WHERE host = $1 AND tenant_id = $2`
+)
+
+func newRateLimitBackendFromEnv() rateLimitBackend {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv(ppRateLimitBackendEnv)), "postgres") {
+		if pgURL := strings.TrimSpace(os.Getenv(ppRateLimitPGURLEnv)); pgURL != "" {
+			if db, err := sql.Open("pgx", pgURL); err == nil {
+				return &postgresRateLimitBackend{db: db}
+			}
+		}
+	}
+	return newMemoryRateLimitBackend()
+}
+
+func (b *postgresRateLimitBackend) Update(ctx context.Context, key rateLimitKey, state rateLimitState, mutate func(*rateLimitState)) (rateLimitState, error) {
+	if b == nil || b.db == nil {
+		mutate(&state)
+		return state, nil
+	}
+	tx, err := b.db.BeginTx(ctx, nil)
+	if err != nil {
+		return state, err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, insertRateLimitStateSQL, key.Host, key.TenantID, state.Rate, state.Floor, state.Ceiling, state.Successes, nullableTime(state.LastRequest), state.Limit, state.Remaining, state.Window, state.Context); err != nil {
+		return state, err
+	}
+	row := tx.QueryRowContext(ctx, selectRateLimitStateForUpdateSQL, key.Host, key.TenantID)
+	if scanned, err := scanRateLimitState(row); err == nil {
+		state = mergeRateLimitDefaults(state, scanned)
+	} else if err != sql.ErrNoRows {
+		return state, err
+	}
+
+	mutate(&state)
+
+	if _, err := tx.ExecContext(ctx, updateRateLimitStateSQL, key.Host, key.TenantID, state.Rate, state.Floor, state.Ceiling, state.Successes, nullableTime(state.LastRequest), state.Limit, state.Remaining, state.Window, state.Context); err != nil {
+		return state, err
+	}
+	if err := tx.Commit(); err != nil {
+		return state, err
+	}
+	return state, nil
+}
+
+type rateLimitScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanRateLimitState(row rateLimitScanner) (rateLimitState, error) {
+	var state rateLimitState
+	var lastRequest sql.NullTime
+	var window, context sql.NullString
+	err := row.Scan(&state.Rate, &state.Floor, &state.Ceiling, &state.Successes, &lastRequest, &state.Limit, &state.Remaining, &window, &context)
+	if err != nil {
+		return state, err
+	}
+	if lastRequest.Valid {
+		state.LastRequest = lastRequest.Time
+	}
+	if window.Valid {
+		state.Window = window.String
+	}
+	if context.Valid {
+		state.Context = context.String
+	}
+	return state, nil
+}
+
+func mergeRateLimitDefaults(initial, stored rateLimitState) rateLimitState {
+	if stored.Rate <= 0 {
+		stored.Rate = initial.Rate
+	}
+	if stored.Floor <= 0 {
+		stored.Floor = initial.Floor
+	}
+	return stored
+}
+
+func nullableTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t.UTC()
+}
+
+func newRateLimitKey(baseURL string) rateLimitKey {
+	host := normalizeRateLimitHost(baseURL)
+	if host == "" {
+		host = "local"
+	}
+	tenantID := strings.TrimSpace(os.Getenv(ppRateLimitTenantEnv))
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	return rateLimitKey{Host: host, TenantID: tenantID}
+}
+
+func normalizeRateLimitHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		return strings.ToLower(u.Host)
+	}
+	if u, err := url.Parse("https://" + raw); err == nil && u.Host != "" {
+		return strings.ToLower(u.Host)
+	}
+	return strings.ToLower(raw)
 }
 
 func parseRateLimitHeaders(header http.Header) (limit int, remaining int, window string, context string, ok bool) {

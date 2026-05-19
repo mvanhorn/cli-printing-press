@@ -52,11 +52,11 @@ func (c *Client) WithTier(tier string) *Client {
 	return &next
 }
 
-func newTierLimiters(rateLimit float64) map[string]*cliutil.AdaptiveLimiter {
+func newTierLimiters(rateLimit float64, defaultBaseURL string) map[string]*cliutil.AdaptiveLimiter {
 	return map[string]*cliutil.AdaptiveLimiter{
-		"enterprise": cliutil.NewAdaptiveLimiter(rateLimit),
-		"free":       cliutil.NewAdaptiveLimiter(rateLimit),
-		"paid":       cliutil.NewAdaptiveLimiter(rateLimit),
+		"enterprise": cliutil.NewAdaptiveLimiterForHost(rateLimit, defaultBaseURL),
+		"free":       cliutil.NewAdaptiveLimiterForHost(rateLimit, defaultBaseURL),
+		"paid":       cliutil.NewAdaptiveLimiterForHost(rateLimit, "https://paid.api.example.com"),
 	}
 }
 
@@ -153,8 +153,8 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		Config:     cfg,
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
-		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
-		limiters:   newTierLimiters(rateLimit),
+		limiter:    cliutil.NewAdaptiveLimiterForHost(rateLimit, cfg.BaseURL),
+		limiters:   newTierLimiters(rateLimit, cfg.BaseURL),
 	}
 	// CheckRedirect re-derives auth on each hop. Go's default replays the
 	// original Authorization header verbatim, which breaks nonce-bound

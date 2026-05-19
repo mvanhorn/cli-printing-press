@@ -109,10 +109,10 @@ func (c *Client) WithTier(tier string) *Client {
 	return &next
 }
 
-func newTierLimiters(rateLimit float64) map[string]*cliutil.AdaptiveLimiter {
+func newTierLimiters(rateLimit float64, defaultBaseURL string) map[string]*cliutil.AdaptiveLimiter {
 	return map[string]*cliutil.AdaptiveLimiter{
-{{- range $tierName, $_ := .TierRouting.Tiers}}
-		{{printf "%q" $tierName}}: cliutil.NewAdaptiveLimiter(rateLimit),
+{{- range $tierName, $tier := .TierRouting.Tiers}}
+		{{printf "%q" $tierName}}: cliutil.NewAdaptiveLimiterForHost(rateLimit, {{if $tier.BaseURL}}{{printf "%q" $tier.BaseURL}}{{else}}defaultBaseURL{{end}}),
 {{- end}}
 	}
 }
@@ -334,9 +334,9 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		Config:     cfg,
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
-		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
+		limiter:    cliutil.NewAdaptiveLimiterForHost(rateLimit, cfg.BaseURL),
 {{- if .HasTierRouting}}
-		limiters:   newTierLimiters(rateLimit),
+		limiters:   newTierLimiters(rateLimit, cfg.BaseURL),
 {{- end}}
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 		ccMu:       &sync.Mutex{},
@@ -360,9 +360,9 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		Config:     cfg,
 		HTTPClient: httpClient,
 		cacheDir:   cacheDir,
-		limiter:    cliutil.NewAdaptiveLimiter(rateLimit),
+		limiter:    cliutil.NewAdaptiveLimiterForHost(rateLimit, cfg.BaseURL),
 {{- if .HasTierRouting}}
-		limiters:   newTierLimiters(rateLimit),
+		limiters:   newTierLimiters(rateLimit, cfg.BaseURL),
 {{- end}}
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 		ccMu:       &sync.Mutex{},
