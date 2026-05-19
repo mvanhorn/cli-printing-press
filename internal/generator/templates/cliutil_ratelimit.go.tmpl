@@ -25,6 +25,10 @@ type AdaptiveLimiter struct {
 	successes   int
 	rampAfter   int
 	lastRequest time.Time // zero-value: first Wait() returns immediately
+	limit       int
+	remaining   int
+	window      string
+	context     string
 }
 
 // NewAdaptiveLimiter returns a limiter starting at ratePerSec, or nil when
@@ -73,6 +77,53 @@ func (l *AdaptiveLimiter) OnSuccess() {
 	}
 }
 
+// OnResponse reads provider rate-limit response headers on every response and
+// adjusts pacing before the provider returns a hard 429. Missing or malformed
+// headers are ignored so existing Retry-After/429 behavior remains the fallback.
+func (l *AdaptiveLimiter) OnResponse(resp *http.Response) {
+	if l == nil || resp == nil {
+		return
+	}
+	limit, remaining, window, context, ok := parseRateLimitHeaders(resp.Header)
+	if !ok {
+		return
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	windowTransition := window != "" && l.window != "" && window != l.window
+	if windowTransition {
+		l.ceiling = 0
+		if l.rate < l.floor {
+			l.rate = l.floor
+		} else {
+			l.rate *= 1.25
+		}
+		l.successes = 0
+	}
+
+	previousRemaining := l.remaining
+	l.limit = limit
+	l.remaining = remaining
+	l.window = window
+	l.context = context
+
+	if limit <= 0 {
+		return
+	}
+	lowWatermark := float64(limit) * 0.10
+	remainingDropped := previousRemaining == 0 || remaining < previousRemaining
+	if float64(remaining) < lowWatermark && remainingDropped {
+		l.ceiling = l.rate
+		l.rate = l.rate / 2
+		if l.rate < 0.5 {
+			l.rate = 0.5
+		}
+		l.successes = 0
+	}
+}
+
 func (l *AdaptiveLimiter) OnRateLimit() {
 	if l == nil {
 		return
@@ -94,6 +145,21 @@ func (l *AdaptiveLimiter) Rate() float64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.rate
+}
+
+func parseRateLimitHeaders(header http.Header) (limit int, remaining int, window string, context string, ok bool) {
+	if header == nil {
+		return 0, 0, "", "", false
+	}
+	limitValue, err := strconv.Atoi(strings.TrimSpace(header.Get("X-RateLimit-Limit")))
+	if err != nil || limitValue <= 0 {
+		return 0, 0, "", "", false
+	}
+	remainingValue, err := strconv.Atoi(strings.TrimSpace(header.Get("X-RateLimit-Remaining")))
+	if err != nil || remainingValue < 0 {
+		return 0, 0, "", "", false
+	}
+	return limitValue, remainingValue, strings.TrimSpace(header.Get("X-RateLimit-Window")), strings.TrimSpace(header.Get("X-RateLimit-Context")), true
 }
 
 // RateLimitError signals an upstream returned 429 after retries were

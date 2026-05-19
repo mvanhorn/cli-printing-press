@@ -679,6 +679,48 @@ func TestAdaptiveLimiter_FloorsAtHalfRPS(t *testing.T) {
 	}
 }
 
+func TestAdaptiveLimiter_OnResponseLowRemainingThrottlesBeforeZero(t *testing.T) {
+	l := NewAdaptiveLimiter(8.0)
+	l.OnResponse(rateLimitResponse("100", "50", "window-1"))
+	startRate := l.Rate()
+
+	l.OnResponse(rateLimitResponse("100", "9", "window-1"))
+	lowRate := l.Rate()
+	if lowRate >= startRate {
+		t.Fatalf("Rate() after Remaining below 10%% = %v, want below %v", lowRate, startRate)
+	}
+
+	l.OnResponse(rateLimitResponse("100", "5", "window-1"))
+	if got := l.Rate(); got >= lowRate {
+		t.Fatalf("Rate() after progressively lower Remaining = %v, want below %v", got, lowRate)
+	}
+}
+
+func TestAdaptiveLimiter_OnResponseMissingHeadersFallsBackTo429Only(t *testing.T) {
+	l := NewAdaptiveLimiter(8.0)
+	l.OnResponse(&http.Response{Header: http.Header{}})
+	if got := l.Rate(); got != 8.0 {
+		t.Fatalf("Rate() after missing X-RateLimit headers = %v, want unchanged 8", got)
+	}
+
+	l.OnRateLimit()
+	if got := l.Rate(); got != 4.0 {
+		t.Fatalf("Rate() after fallback OnRateLimit = %v, want 4", got)
+	}
+}
+
+func TestAdaptiveLimiter_OnResponseWindowBoundaryRampsUp(t *testing.T) {
+	l := NewAdaptiveLimiter(8.0)
+	l.OnResponse(rateLimitResponse("100", "50", "window-1"))
+	l.OnResponse(rateLimitResponse("100", "5", "window-1"))
+	lowRate := l.Rate()
+
+	l.OnResponse(rateLimitResponse("100", "99", "window-2"))
+	if got := l.Rate(); got <= lowRate {
+		t.Fatalf("Rate() after X-RateLimit-Window transition = %v, want above %v", got, lowRate)
+	}
+}
+
 func TestAdaptiveLimiter_WaitEnforcesPacing(t *testing.T) {
 	l := NewAdaptiveLimiter(10.0)
 	l.Wait()
@@ -688,6 +730,15 @@ func TestAdaptiveLimiter_WaitEnforcesPacing(t *testing.T) {
 	if elapsed < 80*time.Millisecond {
 		t.Errorf("second Wait() took %v, want >= 80ms", elapsed)
 	}
+}
+
+func rateLimitResponse(limit, remaining, window string) *http.Response {
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Set("X-RateLimit-Limit", limit)
+	resp.Header.Set("X-RateLimit-Remaining", remaining)
+	resp.Header.Set("X-RateLimit-Window", window)
+	resp.Header.Set("X-RateLimit-Context", "test")
+	return resp
 }
 
 func TestRateLimitError_ErrorMessage(t *testing.T) {

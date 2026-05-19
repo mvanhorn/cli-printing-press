@@ -377,6 +377,7 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		if !binaryResponse {
 			respBody = sanitizeJSONResponse(respBody)
 		}
+		c.limiter.OnResponse(resp)
 
 		// Success
 		if resp.StatusCode < 400 {
