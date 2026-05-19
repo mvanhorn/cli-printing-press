@@ -166,10 +166,11 @@ func callIntentEndpoint(c *client.Client, ref string, params map[string]any) (an
 	case "DELETE":
 		data, _, err = c.Delete(path)
 	default:
-		body, mErr := json.Marshal(params)
-		if mErr != nil {
-			return nil, fmt.Errorf("marshaling body: %w", mErr)
-		}
+		// Pass STRUCTURED params, not pre-marshaled bytes: the client
+		// marshals the body exactly once. Handing it []byte makes
+		// json.Marshal([]byte) emit a base64 JSON string, which strict
+		// JSON APIs reject (HTTP 422, wrong type at root).
+		body := params
 		switch ep.method {
 		case "POST":
 			data, _, err = c.Post(path, body)

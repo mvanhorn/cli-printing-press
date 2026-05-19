@@ -266,10 +266,12 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 			data, _, err = c.Delete(path)
 		}
 	default:
-		body, mErr := json.Marshal(params)
-		if mErr != nil {
-			return mcplib.NewToolResultError(fmt.Sprintf("marshaling body: %v", mErr)), nil
-		}
+		// Hand the client the STRUCTURED params, never pre-marshaled bytes:
+		// client.do() marshals the body value exactly once. Passing []byte
+		// here makes json.Marshal([]byte) emit a base64 JSON string, which
+		// strict JSON APIs reject (e.g. Tripletex HTTP 422 "Request mapping
+		// failed", wrong type at root). See codeOrchWriteBody + its test.
+		body := codeOrchWriteBody(params)
 		switch ep.Method {
 		case "POST":
 			if len(hdrs) > 0 {
@@ -297,4 +299,18 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
 	return mcplib.NewToolResultText(string(data)), nil
+}
+
+// codeOrchWriteBody returns the value handed to the client layer as the
+// request body for write methods (POST/PUT/PATCH). It MUST be the structured
+// params map, never pre-marshaled bytes.
+//
+// client.do() marshals the body value exactly once. Handing it []byte makes
+// json.Marshal([]byte) emit a base64-encoded JSON *string*, so the API
+// receives "eyJ...==" where it expects the request object. Strict JSON APIs
+// reject that (e.g. Tripletex HTTP 422 "Request mapping failed", validation
+// field "", wrong type at root). GET/DELETE carry no body, so this defect
+// stays latent until the first write attempt.
+func codeOrchWriteBody(params map[string]any) any {
+	return params
 }
