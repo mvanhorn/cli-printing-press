@@ -561,7 +561,7 @@ func DeduplicateTrafficEndpoints(entries []EnrichedEntry) []EndpointGroup {
 		})
 	}
 
-	return groups
+	return collapseVariantGroups(groups)
 }
 
 func classifyInCaptureOrder(entries []EnrichedEntry, apiEntries []EnrichedEntry, noiseEntries []EnrichedEntry) []EnrichedEntry {

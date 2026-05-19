@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestClassifyEntries(t *testing.T) {
@@ -157,24 +158,64 @@ func TestDeduplicateEndpoints(t *testing.T) {
 		wantGroupSizes      []int
 	}{
 		{
-			name: "numeric ids normalize to id placeholder",
+			name: "numeric ids normalize to parent-derived id placeholder",
 			entries: []EnrichedEntry{
 				{Method: "GET", URL: "https://example.com/users/123?expand=true"},
 				{Method: "GET", URL: "https://example.com/users/456"},
 			},
 			wantMethods:         []string{"GET"},
-			wantNormalizedPaths: []string{"/users/{id}"},
+			wantNormalizedPaths: []string{"/users/{user_id}"},
 			wantGroupSizes:      []int{2},
 		},
 		{
-			name: "uuid segment normalizes to uuid placeholder",
+			name: "uuid segment normalizes to parent-derived id placeholder",
 			entries: []EnrichedEntry{
 				{Method: "GET", URL: "https://example.com/orders/550e8400-e29b-41d4-a716-446655440000"},
 				{Method: "GET", URL: "https://example.com/orders/123e4567-e89b-12d3-a456-426614174000?include=items"},
 			},
 			wantMethods:         []string{"GET"},
-			wantNormalizedPaths: []string{"/orders/{uuid}"},
+			wantNormalizedPaths: []string{"/orders/{order_id}"},
 			wantGroupSizes:      []int{2},
+		},
+		{
+			name: "prefixed application ids normalize to parent-derived placeholder",
+			entries: []EnrichedEntry{
+				{Method: "GET", URL: "https://example.com/api/v1/tables/t_0t3vswhpKogASf2XZpW"},
+				{Method: "GET", URL: "https://example.com/api/v1/tables/t_zzAAbbCC11223344"},
+			},
+			wantMethods:         []string{"GET"},
+			wantNormalizedPaths: []string{"/api/v1/tables/{table_id}"},
+			wantGroupSizes:      []int{2},
+		},
+		{
+			name: "colon-composite form ids collapse to parent-derived placeholder",
+			entries: []EnrichedEntry{
+				{Method: "POST", URL: "https://example.com/suite/api/forms/creations/create-image:reference:gpt-image-2"},
+				{Method: "POST", URL: "https://example.com/suite/api/forms/creations/create-image:reference:gpt-image-3"},
+			},
+			wantMethods:         []string{"POST"},
+			wantNormalizedPaths: []string{"/suite/api/forms/creations/{creation_id}"},
+			wantGroupSizes:      []int{2},
+		},
+		{
+			name: "long opaque application ids normalize via cross-entry variance",
+			entries: []EnrichedEntry{
+				{Method: "GET", URL: "https://example.com/suite/api/history/Zu2uNCmGDnmNCel8gbFQ"},
+				{Method: "GET", URL: "https://example.com/suite/api/history/AbcDefGhi1234567890X"},
+			},
+			wantMethods:         []string{"GET"},
+			wantNormalizedPaths: []string{"/suite/api/history/{history_id}"},
+			wantGroupSizes:      []int{2},
+		},
+		{
+			name: "static endpoints with distinct literal segments stay separate",
+			entries: []EnrichedEntry{
+				{Method: "GET", URL: "https://example.com/api/health"},
+				{Method: "GET", URL: "https://example.com/api/version"},
+			},
+			wantMethods:         []string{"GET", "GET"},
+			wantNormalizedPaths: []string{"/api/health", "/api/version"},
+			wantGroupSizes:      []int{1, 1},
 		},
 	}
 
@@ -187,6 +228,38 @@ func TestDeduplicateEndpoints(t *testing.T) {
 			assert.Equal(t, tt.wantMethods, groupMethods(groups))
 			assert.Equal(t, tt.wantNormalizedPaths, groupPaths(groups))
 			assert.Equal(t, tt.wantGroupSizes, groupSizes(groups))
+		})
+	}
+}
+
+// TestDeduplicateEndpoints_SingleEntryHeuristics covers the per-segment ID
+// shapes that must parametrize even when only one HAR entry is available, so
+// the cross-entry variance pass has nothing to compare against.
+func TestDeduplicateEndpoints_SingleEntryHeuristics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		url      string
+		wantPath string
+	}{
+		{"uuid v4", "https://example.com/widgets/550e8400-e29b-41d4-a716-446655440000", "/widgets/{widget_id}"},
+		{"long hex hash", "https://example.com/blobs/0123456789abcdef0123456789abcdef", "/blobs/{blob_id}"},
+		{"numeric id under resource", "https://example.com/workspaces/125600", "/workspaces/{workspace_id}"},
+		{"prefixed application id under resource", "https://example.com/records/r_0tf32xmAhEgGSh3TDWR", "/records/{record_id}"},
+		{"colon-composite under resource", "https://example.com/forms/creations/create-image:reference:gpt-image-2", "/forms/creations/{creation_id}"},
+		{"long base62 id under resource", "https://example.com/history/Zu2uNCmGDnmNCel8gbFQ", "/history/{history_id}"},
+		{"literal short segments remain literal", "https://example.com/api/health", "/api/health"},
+		{"version segment retains literal v1 framing", "https://example.com/api/v1/users", "/api/v1/users"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			groups := DeduplicateEndpoints([]EnrichedEntry{{Method: "GET", URL: tt.url}})
+			require.Len(t, groups, 1)
+			assert.Equal(t, tt.wantPath, groups[0].NormalizedPath)
 		})
 	}
 }
