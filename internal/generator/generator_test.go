@@ -1849,6 +1849,81 @@ func TestGenerateBrowserHTTPTransportDisablesHTTP2(t *testing.T) {
 	assert.NotContains(t, gomod, "github.com/enetx/surf")
 }
 
+// TestGenerateCookieAuthEmitsSetTokenSubcommand verifies that the
+// auth_browser template emits the `set-token` subcommand for cookie-auth
+// CLIs. The subcommand is the escape hatch for Auth0-SPA-in-memory sites
+// (retro #1598 WU-3) where `auth login --chrome` can't reach the JWT, so
+// users (or agents) paste the bearer from DevTools instead of hand-editing
+// config.toml. Validation runs through cliutil.LooksLikeJWT (retro #1598
+// WU-2) so short Cloudflare-shaped tracking cookies don't silently land
+// as access tokens.
+func TestGenerateCookieAuthEmitsSetTokenSubcommand(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("settokencookie")
+	apiSpec.BaseURL = "https://www.example.com"
+	apiSpec.Auth = spec.AuthConfig{
+		Type:         "cookie",
+		Header:       "Cookie",
+		In:           "cookie",
+		CookieDomain: ".example.com",
+		EnvVars:      []string{"SETTOKENCOOKIE_COOKIES"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "settokencookie-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authGo := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+	assert.Contains(t, authGo, "func newAuthSetTokenCmd(",
+		"cookie-auth CLI should emit newAuthSetTokenCmd")
+	assert.Contains(t, authGo, "cmd.AddCommand(newAuthSetTokenCmd(flags))",
+		"newAuthCmd should register the set-token subcommand")
+	assert.Contains(t, authGo, "cliutil.LooksLikeJWT(",
+		"set-token should validate via the shared cliutil JWT-shape helper")
+	assert.Contains(t, authGo, "settokencookie-pp-cli/internal/cliutil",
+		"auth.go should import cliutil to call LooksLikeJWT")
+
+	// Help wiring sanity: build the CLI and confirm `auth set-token --help`
+	// exits 0 with the subcommand listed under `auth`.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	binPath := filepath.Join(outputDir, "settokencookie-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binPath, "./cmd/settokencookie-pp-cli")
+	out, err := exec.Command(binPath, "auth", "--help").CombinedOutput()
+	require.NoError(t, err, "auth --help failed: %s", string(out))
+	assert.Contains(t, string(out), "set-token",
+		"set-token should appear in `auth --help` listing")
+}
+
+// TestGenerateNoAuthPersistedQueryOmitsSetToken verifies that the
+// auth_browser template does NOT emit set-token (or import cliutil) when
+// Auth.Type == "none" + a graphql_persisted_query hint routes the spec
+// through auth_browser purely for the query-refresh flow. Saving a token
+// has no meaning when there are no credentials to save; emitting the
+// subcommand would also produce an unused cliutil import and break build.
+func TestGenerateNoAuthPersistedQueryOmitsSetToken(t *testing.T) {
+	t.Parallel()
+
+	// auth.Type "none" alone wouldn't route to auth_browser, so the
+	// generator's persisted-query traffic-analysis hint pulls it into the
+	// browser-aware template purely for the query-refresh flow.
+	apiSpec := minimalSpec("noauthpq")
+	apiSpec.BaseURL = "https://api.example.com"
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+
+	outputDir := filepath.Join(t.TempDir(), "noauthpq-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.TrafficAnalysis = &browsersniff.TrafficAnalysis{GenerationHints: []string{"graphql_persisted_query"}}
+	require.NoError(t, gen.Generate())
+
+	authGo := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+	assert.NotContains(t, authGo, "newAuthSetTokenCmd",
+		"auth.type=none should not emit a set-token subcommand")
+	assert.NotContains(t, authGo, "cliutil.LooksLikeJWT",
+		"auth.type=none should not reference the JWT-shape helper")
+	assert.NotContains(t, authGo, "internal/cliutil\"",
+		"auth.type=none must not import cliutil — would trigger unused-import")
+}
+
 func TestGenerateCookieHTMLDefaultsBrowserChromeTransport(t *testing.T) {
 	t.Parallel()
 
@@ -7055,8 +7130,12 @@ func TestGenerate_CookieAuthUsesBrowserTemplate(t *testing.T) {
 	assert.Contains(t, content, "Complete any login or browser challenge in Chrome")
 	assert.NotContains(t, content, "No browser runtime found.")
 	assert.NotContains(t, content, "newAuthRefreshQueriesCmd")
-	// Should NOT contain simple token template indicators
-	assert.NotContains(t, content, "set-token")
+	// Should NOT contain auth_simple template indicators. newAuthSetupCmd
+	// is the auth_simple signature — auth_browser uses newAuthLoginCmd
+	// for the cookie/chrome flow instead. (set-token used to be the
+	// proxy here, but auth_browser now also emits it as the Auth0-SPA
+	// escape hatch — retro #1598 WU-3a.)
+	assert.NotContains(t, content, "newAuthSetupCmd")
 
 	// Config should have cookie branch in AuthHeader
 	configGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
@@ -7608,8 +7687,11 @@ func TestGenerate_ComposedAuthUsesBrowserTemplate(t *testing.T) {
 	assert.Contains(t, content, "detectCookieTool")
 	assert.Contains(t, content, "extractCookies")
 	assert.Contains(t, content, "pagliacci.com")
-	// Should NOT contain simple token template
-	assert.NotContains(t, content, "set-token")
+	// Should NOT contain auth_simple template signature. newAuthSetupCmd
+	// is auth_simple-only — auth_browser uses newAuthLoginCmd instead.
+	// (set-token used to be the proxy, but auth_browser now also emits
+	// it as the Auth0-SPA escape hatch — retro #1598 WU-3a.)
+	assert.NotContains(t, content, "newAuthSetupCmd")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
