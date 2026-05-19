@@ -335,12 +335,33 @@ func renderShipcheckJSON(w *os.File, binPath string, results []shipcheckLegResul
 			Passed:    r.Passed(),
 			StartedAt: r.StartedAt.UTC().Format(time.RFC3339),
 			ElapsedMS: r.Elapsed.Milliseconds(),
-			Command:   strings.Join(append([]string{binPath}, r.Argv...), " "),
+			Command:   renderShipcheckCommand(binPath, r.Argv),
 		})
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(env)
+}
+
+func renderShipcheckCommand(binPath string, argv []string) string {
+	args := append([]string{binPath}, redactShipcheckCommandArgv(argv)...)
+	return strings.Join(args, " ")
+}
+
+func redactShipcheckCommandArgv(argv []string) []string {
+	redacted := make([]string, len(argv))
+	copy(redacted, argv)
+	for i, arg := range redacted {
+		switch {
+		case arg == "--api-key":
+			if i+1 < len(redacted) {
+				redacted[i+1] = "<redacted>"
+			}
+		case strings.HasPrefix(arg, "--api-key="):
+			redacted[i] = "--api-key=<redacted>"
+		}
+	}
+	return redacted
 }
 
 // validateShipcheckDir confirms --dir points at something that looks
