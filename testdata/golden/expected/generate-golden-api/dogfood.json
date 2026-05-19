@@ -1,6 +1,6 @@
 {
   "auth_check": {
-    "detail": "spec not provided or no bot/bearer/basic scheme detected",
+    "detail": "no bot/bearer/basic scheme detected",
     "generated_format": "unknown",
     "match": true,
     "spec_scheme": ""

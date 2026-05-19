@@ -1076,7 +1076,7 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 	}
 
 	if expectedPrefix == "" {
-		result.Detail = "spec not provided or no bot/bearer/basic scheme detected"
+		result.Detail = "no bot/bearer/basic scheme detected"
 		return result
 	}
 
