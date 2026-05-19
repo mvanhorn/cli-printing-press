@@ -1849,6 +1849,81 @@ func TestGenerateBrowserHTTPTransportDisablesHTTP2(t *testing.T) {
 	assert.NotContains(t, gomod, "github.com/enetx/surf")
 }
 
+// TestGenerateCookieAuthEmitsSetTokenSubcommand verifies that the
+// auth_browser template emits the `set-token` subcommand for cookie-auth
+// CLIs. The subcommand is the escape hatch for Auth0-SPA-in-memory sites
+// (retro #1598 WU-3) where `auth login --chrome` can't reach the JWT, so
+// users (or agents) paste the bearer from DevTools instead of hand-editing
+// config.toml. Validation runs through cliutil.LooksLikeJWT (retro #1598
+// WU-2) so short Cloudflare-shaped tracking cookies don't silently land
+// as access tokens.
+func TestGenerateCookieAuthEmitsSetTokenSubcommand(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("settokencookie")
+	apiSpec.BaseURL = "https://www.example.com"
+	apiSpec.Auth = spec.AuthConfig{
+		Type:         "cookie",
+		Header:       "Cookie",
+		In:           "cookie",
+		CookieDomain: ".example.com",
+		EnvVars:      []string{"SETTOKENCOOKIE_COOKIES"},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "settokencookie-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authGo := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+	assert.Contains(t, authGo, "func newAuthSetTokenCmd(",
+		"cookie-auth CLI should emit newAuthSetTokenCmd")
+	assert.Contains(t, authGo, "cmd.AddCommand(newAuthSetTokenCmd(flags))",
+		"newAuthCmd should register the set-token subcommand")
+	assert.Contains(t, authGo, "cliutil.LooksLikeJWT(",
+		"set-token should validate via the shared cliutil JWT-shape helper")
+	assert.Contains(t, authGo, "settokencookie-pp-cli/internal/cliutil",
+		"auth.go should import cliutil to call LooksLikeJWT")
+
+	// Help wiring sanity: build the CLI and confirm `auth set-token --help`
+	// exits 0 with the subcommand listed under `auth`.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	binPath := filepath.Join(outputDir, "settokencookie-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binPath, "./cmd/settokencookie-pp-cli")
+	out, err := exec.Command(binPath, "auth", "--help").CombinedOutput()
+	require.NoError(t, err, "auth --help failed: %s", string(out))
+	assert.Contains(t, string(out), "set-token",
+		"set-token should appear in `auth --help` listing")
+}
+
+// TestGenerateNoAuthPersistedQueryOmitsSetToken verifies that the
+// auth_browser template does NOT emit set-token (or import cliutil) when
+// Auth.Type == "none" + a graphql_persisted_query hint routes the spec
+// through auth_browser purely for the query-refresh flow. Saving a token
+// has no meaning when there are no credentials to save; emitting the
+// subcommand would also produce an unused cliutil import and break build.
+func TestGenerateNoAuthPersistedQueryOmitsSetToken(t *testing.T) {
+	t.Parallel()
+
+	// auth.Type "none" alone wouldn't route to auth_browser, so the
+	// generator's persisted-query traffic-analysis hint pulls it into the
+	// browser-aware template purely for the query-refresh flow.
+	apiSpec := minimalSpec("noauthpq")
+	apiSpec.BaseURL = "https://api.example.com"
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+
+	outputDir := filepath.Join(t.TempDir(), "noauthpq-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.TrafficAnalysis = &browsersniff.TrafficAnalysis{GenerationHints: []string{"graphql_persisted_query"}}
+	require.NoError(t, gen.Generate())
+
+	authGo := readGeneratedFile(t, outputDir, "internal", "cli", "auth.go")
+	assert.NotContains(t, authGo, "newAuthSetTokenCmd",
+		"auth.type=none should not emit a set-token subcommand")
+	assert.NotContains(t, authGo, "cliutil.LooksLikeJWT",
+		"auth.type=none should not reference the JWT-shape helper")
+	assert.NotContains(t, authGo, "internal/cliutil\"",
+		"auth.type=none must not import cliutil — would trigger unused-import")
+}
+
 func TestGenerateCookieHTMLDefaultsBrowserChromeTransport(t *testing.T) {
 	t.Parallel()
 
@@ -7055,8 +7130,12 @@ func TestGenerate_CookieAuthUsesBrowserTemplate(t *testing.T) {
 	assert.Contains(t, content, "Complete any login or browser challenge in Chrome")
 	assert.NotContains(t, content, "No browser runtime found.")
 	assert.NotContains(t, content, "newAuthRefreshQueriesCmd")
-	// Should NOT contain simple token template indicators
-	assert.NotContains(t, content, "set-token")
+	// Should NOT contain auth_simple template indicators. newAuthSetupCmd
+	// is the auth_simple signature — auth_browser uses newAuthLoginCmd
+	// for the cookie/chrome flow instead. (set-token used to be the
+	// proxy here, but auth_browser now also emits it as the Auth0-SPA
+	// escape hatch — retro #1598 WU-3a.)
+	assert.NotContains(t, content, "newAuthSetupCmd")
 
 	// Config should have cookie branch in AuthHeader
 	configGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
@@ -7608,8 +7687,11 @@ func TestGenerate_ComposedAuthUsesBrowserTemplate(t *testing.T) {
 	assert.Contains(t, content, "detectCookieTool")
 	assert.Contains(t, content, "extractCookies")
 	assert.Contains(t, content, "pagliacci.com")
-	// Should NOT contain simple token template
-	assert.NotContains(t, content, "set-token")
+	// Should NOT contain auth_simple template signature. newAuthSetupCmd
+	// is auth_simple-only — auth_browser uses newAuthLoginCmd instead.
+	// (set-token used to be the proxy, but auth_browser now also emits
+	// it as the Auth0-SPA escape hatch — retro #1598 WU-3a.)
+	assert.NotContains(t, content, "newAuthSetupCmd")
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
@@ -8499,6 +8581,71 @@ func TestGeneratedGraphQLSyncForcesSingleWorkerUnderVerifyEnv(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGeneratedSyncAdvancesOffsetWhenHasMoreWithoutCursor(t *testing.T) {
+	t.Parallel()
+
+	offsetPaged := func(path string) spec.Endpoint {
+		return spec.Endpoint{
+			Method:      "GET",
+			Path:        path,
+			Description: "List records",
+			Response:    spec.ResponseDef{Type: "array"},
+			Pagination:  &spec.Pagination{Type: "offset", CursorParam: "offset", LimitParam: "limit", HasMoreField: "has_more"},
+		}
+	}
+	apiSpec := &spec.APISpec{
+		Name:    "offsetsync",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"OFFSETSYNC_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/offsetsync-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Description: "Accounts",
+				Endpoints: map[string]spec.Endpoint{
+					"list": offsetPaged("/accounts"),
+				},
+			},
+			"transactions": {
+				Description: "Transactions",
+				Endpoints: map[string]spec.Endpoint{
+					"list": offsetPaged("/accounts/{account_id}/transactions"),
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	assert.NotContains(t, syncContent, `if !hasMore || len(items) < pageSize.limit || nextCursor == ""`,
+		"sync loops must not require an API-returned next cursor for offset pagination")
+	assert.Contains(t, syncContent, `if !hasMore || len(items) < pageSize.limit {`,
+		"sync loops must break only on real done signals before handling cursor advancement")
+	assert.Contains(t, syncContent, `if pageSize.cursorParam == "offset" {`,
+		"offset pagination must advance the cursor client-side when has_more is true")
+	assert.Contains(t, syncContent, `nextCursor = strconv.Itoa(currentOffset + pageSize.limit)`,
+		"offset pagination must compute the next offset from the current cursor and limit")
+	assert.GreaterOrEqual(t, strings.Count(syncContent, `currentOffset, _ := strconv.Atoi(cursor)`), 2,
+		"offset advancement must be emitted in both flat and dependent-resource sync loops")
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
 // TestGeneratedSyncGatesSinceParamPerResource pins the fix for issue #900:
 // generators must only inject the incremental-cursor query parameter on
 // resources whose list endpoint actually declares it. Resources that don't
@@ -8584,14 +8731,21 @@ func TestGeneratedSyncGatesSinceParamPerResource(t *testing.T) {
 	assert.Contains(t, syncContent, "func syncResourceSinceParam(resource string) string",
 		"per-resource helper must be emitted")
 
+	sinceHelperStart := strings.Index(syncContent, "func syncResourceSinceParam(resource string) string")
+	require.NotEqual(t, -1, sinceHelperStart, "sync.go must emit syncResourceSinceParam")
+	sinceHelperBody := syncContent[sinceHelperStart:]
+	if nextFunc := strings.Index(sinceHelperBody[1:], "\nfunc "); nextFunc != -1 {
+		sinceHelperBody = sinceHelperBody[:nextFunc+1]
+	}
+
 	// events declares since → switch case present with the literal param name.
-	assert.Contains(t, syncContent, `case "events":`,
+	assert.Contains(t, sinceHelperBody, `case "events":`,
 		"events resource must appear in the per-resource switch")
-	assert.Contains(t, syncContent, `return "since"`,
+	assert.Contains(t, sinceHelperBody, `return "since"`,
 		"events resource must map to its declared param name")
 
 	// users declares no since-like param → no case for it (falls through to "").
-	assert.NotContains(t, syncContent, `case "users":`,
+	assert.NotContains(t, sinceHelperBody, `case "users":`,
 		"users resource has no since-like param and must not appear in the switch — empty result skips the cursor")
 
 	// Pin the full warning JSON shape so future template churn can't silently
@@ -8619,6 +8773,113 @@ func TestGeneratedSyncGatesSinceParamPerResource(t *testing.T) {
 		"dependent path must zero depSinceTS after warning so no cursor leaks through")
 
 	// Build to catch template-syntax / import errors.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGeneratedSyncGatesPaginationParamsPerResource(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "mixedpaging",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"MIXEDPAGING_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/mixedpaging-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Description: "Accounts",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/accounts",
+						Description: "List accounts",
+						Response:    spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "limit", Type: "integer"},
+							{Name: "offset", Type: "integer"},
+						},
+						Pagination: &spec.Pagination{Type: "offset", CursorParam: "offset", LimitParam: "limit"},
+					},
+				},
+			},
+			"transactions": {
+				Description: "Transactions",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/accounts/{account_id}/transactions",
+						Description: "List transactions",
+						Response:    spec.ResponseDef{Type: "array"},
+						Params: []spec.Param{
+							{Name: "limit", Type: "integer"},
+							{Name: "offset", Type: "integer"},
+						},
+						Pagination: &spec.Pagination{Type: "offset", CursorParam: "offset", LimitParam: "limit"},
+					},
+				},
+			},
+			"categories": {
+				Description: "Categories",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/categories",
+						Description: "List categories",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+			"budget_settings": {
+				Description: "Budget settings",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/budgets/settings",
+						Description: "Get budget settings",
+						Response:    spec.ResponseDef{Type: "object"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	helperStart := strings.Index(syncContent, "func resourceSupportsPagination(resource string) bool")
+	require.NotEqual(t, -1, helperStart, "sync.go must emit resourceSupportsPagination")
+	helperBody := syncContent[helperStart:]
+	if nextFunc := strings.Index(helperBody[1:], "\nfunc "); nextFunc != -1 {
+		helperBody = helperBody[:nextFunc+1]
+	}
+
+	assert.Contains(t, helperBody, `case "accounts":`,
+		"accounts declares limit/offset and must opt into pagination params")
+	assert.Contains(t, helperBody, `case "transactions":`,
+		"dependent transactions declares limit/offset and must opt into pagination params")
+	assert.NotContains(t, helperBody, `case "categories":`,
+		"categories declares no limit param and must not receive pagination params")
+	assert.NotContains(t, helperBody, `case "budget_settings":`,
+		"/budgets/settings is non-paginated and must fall through to false")
+	assert.Contains(t, syncContent, `if resourceSupportsPagination(resource) {`,
+		"flat sync loop must gate page-size and cursor params per resource")
+	assert.Contains(t, syncContent, `if resourceSupportsPagination(dep.Name) {`,
+		"dependent sync loop must gate page-size and cursor params per resource")
+
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
 }

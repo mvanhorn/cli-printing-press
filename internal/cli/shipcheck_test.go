@@ -129,8 +129,8 @@ func TestShipcheck_AllLegsPass(t *testing.T) {
 		t.Fatalf("expected %d leg invocations; got %d: %v", len(shipcheckLegs), len(invocations), invocations)
 	}
 
-	// Confirm canonical order: dogfood, verify, workflow-verify, verify-skill, validate-narrative, scorecard.
-	wantOrder := []string{"dogfood", "verify", "workflow-verify", "verify-skill", "validate-narrative", "scorecard"}
+	// Confirm canonical order: verify, validate-narrative, dogfood, workflow-verify, verify-skill, scorecard.
+	wantOrder := []string{"verify", "validate-narrative", "dogfood", "workflow-verify", "verify-skill", "scorecard"}
 	for i, want := range wantOrder {
 		// argv[0] is the stub binary path; argv[1] is the leg name.
 		if len(invocations[i]) < 2 {

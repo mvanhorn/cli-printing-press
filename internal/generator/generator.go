@@ -2110,17 +2110,18 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 
 type visionRenderData struct {
 	*spec.APISpec
-	SyncableResources      []profiler.SyncableResource
-	DependentSyncResources []profiler.DependentResource
-	SearchableFields       map[string][]string
-	Tables                 []TableDef
-	Pagination             profiler.PaginationProfile
-	SearchEndpointPath     string
-	SearchQueryParam       string
-	SearchEndpointMethod   string
-	SearchBodyFields       []profiler.SearchBodyField
-	GraphQLFieldPaths      map[string]string
-	AgentMoneyWorkflow     AgentMoneyWorkflow
+	SyncableResources            []profiler.SyncableResource
+	DependentSyncResources       []profiler.DependentResource
+	PaginationSupportedResources []string
+	SearchableFields             map[string][]string
+	Tables                       []TableDef
+	Pagination                   profiler.PaginationProfile
+	SearchEndpointPath           string
+	SearchQueryParam             string
+	SearchEndpointMethod         string
+	SearchBodyFields             []profiler.SearchBodyField
+	GraphQLFieldPaths            map[string]string
+	AgentMoneyWorkflow           AgentMoneyWorkflow
 }
 
 type resourceIDFieldOverrideEntry struct {
@@ -2184,6 +2185,26 @@ func criticalResourceEntries(syncable []profiler.SyncableResource, dependent []p
 	return entries
 }
 
+func paginationSupportedResources(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []string {
+	supported := map[string]bool{}
+	for _, resource := range syncable {
+		if resource.SupportsPagination {
+			supported[resource.Name] = true
+		}
+	}
+	for _, resource := range dependent {
+		if resource.SupportsPagination {
+			supported[resource.Name] = true
+		}
+	}
+	names := make([]string, 0, len(supported))
+	for name := range supported {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 	gqlFieldPaths := map[string]string{}
 	for rName, r := range g.Spec.Resources {
@@ -2193,18 +2214,19 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 	}
 
 	return visionRenderData{
-		APISpec:                g.Spec,
-		SyncableResources:      g.profile.SyncableResources,
-		DependentSyncResources: g.profile.DependentSyncResources,
-		SearchableFields:       g.profile.SearchableFields,
-		Tables:                 schema,
-		Pagination:             g.profile.Pagination,
-		SearchEndpointPath:     g.profile.SearchEndpointPath,
-		SearchQueryParam:       g.profile.SearchQueryParam,
-		SearchEndpointMethod:   g.profile.SearchEndpointMethod,
-		SearchBodyFields:       g.profile.SearchBodyFields,
-		GraphQLFieldPaths:      gqlFieldPaths,
-		AgentMoneyWorkflow:     detectAgentMoneyWorkflow(g.Spec, g.PromotedEndpointNames),
+		APISpec:                      g.Spec,
+		SyncableResources:            g.profile.SyncableResources,
+		DependentSyncResources:       g.profile.DependentSyncResources,
+		PaginationSupportedResources: paginationSupportedResources(g.profile.SyncableResources, g.profile.DependentSyncResources),
+		SearchableFields:             g.profile.SearchableFields,
+		Tables:                       schema,
+		Pagination:                   g.profile.Pagination,
+		SearchEndpointPath:           g.profile.SearchEndpointPath,
+		SearchQueryParam:             g.profile.SearchQueryParam,
+		SearchEndpointMethod:         g.profile.SearchEndpointMethod,
+		SearchBodyFields:             g.profile.SearchBodyFields,
+		GraphQLFieldPaths:            gqlFieldPaths,
+		AgentMoneyWorkflow:           detectAgentMoneyWorkflow(g.Spec, g.PromotedEndpointNames),
 	}
 }
 
