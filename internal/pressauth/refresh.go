@@ -83,8 +83,15 @@ endpoint via --refresh-endpoint, otherwise this exits with code 6.`,
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Refreshed session for %s; JWT now expires at %s\n",
-				updated.Domain, updated.JWTExpiry.Format(time.RFC3339))
+			if updated.JWTExpiry.IsZero() {
+				// No JWT carrier configured (or no exp claim), so there is
+				// no expiry to report; printing a zero time would read as
+				// "expires 0001-01-01".
+				fmt.Fprintf(cmd.OutOrStdout(), "Refreshed session for %s\n", updated.Domain)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Refreshed session for %s; JWT now expires at %s\n",
+					updated.Domain, updated.JWTExpiry.Format(time.RFC3339))
+			}
 			return nil
 		},
 	}
