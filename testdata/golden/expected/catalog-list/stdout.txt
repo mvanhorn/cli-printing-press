@@ -33,6 +33,9 @@ payments:
   plaid                Banking API for account linking, transactions, identity verification, and income
   stripe               Payment processing and financial infrastructure API
 
+productivity:
+  obsidian             Note-taking knowledge base reached through the official Obsidian CLI shipped in the desktop app (v1.12+). Vault is local; no public network API.
+
 project-management:
   asana                Work management and project tracking API
   jira                 Issue tracking and project management API for Jira Cloud
