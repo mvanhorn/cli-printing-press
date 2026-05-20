@@ -12,22 +12,6 @@ import (
 	"time"
 )
 
-// withTimeout temporarily swaps remoteSpecTimeout for the duration of the test.
-func withTimeout(t *testing.T, d time.Duration) {
-	t.Helper()
-	prev := remoteSpecTimeout
-	remoteSpecTimeout = d
-	t.Cleanup(func() { remoteSpecTimeout = prev })
-}
-
-// withMaxBytes temporarily swaps maxRemoteSpecBytes for the duration of the test.
-func withMaxBytes(t *testing.T, n int64) {
-	t.Helper()
-	prev := maxRemoteSpecBytes
-	maxRemoteSpecBytes = n
-	t.Cleanup(func() { maxRemoteSpecBytes = prev })
-}
-
 func TestLoadSpec_HappyPath(t *testing.T) {
 	body := "openapi: 3.0.0\ninfo:\n  title: tiny\n"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -36,7 +20,7 @@ func TestLoadSpec_HappyPath(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	got, err := loadSpec(srv.URL)
+	got, err := loadSpec(srv.URL, maxRemoteSpecBytes, remoteSpecTimeout)
 	if err != nil {
 		t.Fatalf("loadSpec returned error: %v", err)
 	}
@@ -53,7 +37,7 @@ func TestLoadSpec_LocalFile(t *testing.T) {
 		t.Fatalf("write fixture: %v", err)
 	}
 
-	got, err := loadSpec(path)
+	got, err := loadSpec(path, maxRemoteSpecBytes, remoteSpecTimeout)
 	if err != nil {
 		t.Fatalf("loadSpec returned error: %v", err)
 	}
@@ -68,7 +52,7 @@ func TestLoadSpec_Non200(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	_, err := loadSpec(srv.URL)
+	_, err := loadSpec(srv.URL, maxRemoteSpecBytes, remoteSpecTimeout)
 	if err == nil {
 		t.Fatalf("loadSpec returned nil error for 500 response")
 	}
@@ -80,7 +64,7 @@ func TestLoadSpec_Non200(t *testing.T) {
 // TestLoadSpec_StalledServer verifies the request times out instead of hanging
 // forever when the server flushes headers but never sends the body.
 func TestLoadSpec_StalledServer(t *testing.T) {
-	withTimeout(t, 200*time.Millisecond)
+	shortTimeout := 200 * time.Millisecond
 
 	released := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -101,36 +85,36 @@ func TestLoadSpec_StalledServer(t *testing.T) {
 	})
 
 	start := time.Now()
-	_, err := loadSpec(srv.URL)
+	_, err := loadSpec(srv.URL, maxRemoteSpecBytes, shortTimeout)
 	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Fatalf("loadSpec returned nil error for stalled server")
 	}
 	// Allow generous slack (~3x the configured timeout) for scheduler jitter.
-	if elapsed > 3*remoteSpecTimeout+500*time.Millisecond {
-		t.Fatalf("loadSpec took %v, expected to error within ~3x timeout (%v)", elapsed, remoteSpecTimeout)
+	if elapsed > 3*shortTimeout+500*time.Millisecond {
+		t.Fatalf("loadSpec took %v, expected to error within ~3x timeout (%v)", elapsed, shortTimeout)
 	}
 }
 
-// TestLoadSpec_Oversized verifies that responses larger than maxRemoteSpecBytes
+// TestLoadSpec_Oversized verifies that responses larger than the byte limit
 // produce an explicit oversized-spec error instead of silently truncating.
 func TestLoadSpec_Oversized(t *testing.T) {
-	withMaxBytes(t, 1024)
+	const smallLimit int64 = 1024
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
-		// Stream maxRemoteSpecBytes + 1 bytes so the read sees one byte past the limit.
-		buf := bytes.Repeat([]byte{'a'}, int(maxRemoteSpecBytes)+1)
+		// Stream smallLimit + 1 bytes so the read sees one byte past the limit.
+		buf := bytes.Repeat([]byte{'a'}, int(smallLimit)+1)
 		_, _ = w.Write(buf)
 	}))
 	t.Cleanup(srv.Close)
 
-	_, err := loadSpec(srv.URL)
+	_, err := loadSpec(srv.URL, smallLimit, remoteSpecTimeout)
 	if err == nil {
 		t.Fatalf("loadSpec returned nil error for oversized response")
 	}
-	want := fmt.Sprintf("%d bytes", maxRemoteSpecBytes)
+	want := fmt.Sprintf("%d bytes", smallLimit)
 	if !strings.Contains(err.Error(), want) {
 		t.Fatalf("error %q does not mention byte limit %q", err.Error(), want)
 	}
@@ -141,20 +125,20 @@ func TestLoadSpec_Oversized(t *testing.T) {
 
 // TestLoadSpec_AtLimit verifies a response exactly at the byte limit succeeds.
 func TestLoadSpec_AtLimit(t *testing.T) {
-	withMaxBytes(t, 1024)
+	const smallLimit int64 = 1024
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
-		buf := bytes.Repeat([]byte{'a'}, int(maxRemoteSpecBytes))
+		buf := bytes.Repeat([]byte{'a'}, int(smallLimit))
 		_, _ = w.Write(buf)
 	}))
 	t.Cleanup(srv.Close)
 
-	got, err := loadSpec(srv.URL)
+	got, err := loadSpec(srv.URL, smallLimit, remoteSpecTimeout)
 	if err != nil {
 		t.Fatalf("loadSpec returned error for at-limit response: %v", err)
 	}
-	if int64(len(got)) != maxRemoteSpecBytes {
-		t.Fatalf("loadSpec returned %d bytes, want %d", len(got), maxRemoteSpecBytes)
+	if int64(len(got)) != smallLimit {
+		t.Fatalf("loadSpec returned %d bytes, want %d", len(got), smallLimit)
 	}
 }
