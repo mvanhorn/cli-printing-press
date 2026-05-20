@@ -7,6 +7,8 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"chatbot-factory-pp-cli/internal/store"
 )
 
 // version is set at build time via -ldflags "-X chatbot-factory-pp-cli/internal/cli.version=..."
@@ -50,6 +52,8 @@ func newRootCmd() *cobra.Command {
 
 // Execute runs the CLI and returns any error.
 func Execute() error {
+	dbPath, _ := store.DefaultPath()
+	_ = store.MaybeMigrateLegacy(dbPath)
 	return newRootCmd().Execute()
 }
 
