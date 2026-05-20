@@ -593,6 +593,17 @@ type AuthConfig struct {
 	// still demands credentials in a meaningful context).
 	VerifyPath string `yaml:"verify_path,omitempty" json:"verify_path,omitempty"`
 
+	// VerifyQuery is an optional GraphQL document the doctor command POSTs as
+	// {"query": "<VerifyQuery>"} against base_url to validate credentials.
+	// GraphQL APIs that don't expose a REST verify endpoint can opt in by
+	// setting this to a small viewer-style query (Linear, GitHub, Shopify
+	// conventionally use `{ viewer { id } }`, but the field is opaque to the
+	// generator — any query that 2xx-and-no-`errors` for a valid token works).
+	// When set, the doctor treats HTTP 2xx with no top-level `errors` array
+	// as verified and 401/403 as rejected. Mutually informative with
+	// VerifyPath: if both are set, VerifyPath wins (REST probe is cheaper).
+	VerifyQuery string `yaml:"verify_query,omitempty" json:"verify_query,omitempty"`
+
 	// Browser-session verification fields. Used when a website-facing CLI
 	// depends on browser-derived cookies or clearance state for its required
 	// happy path. The generator emits validation and proof handling, and the
