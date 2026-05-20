@@ -1,0 +1,14 @@
+pre-commit:
+  parallel: true
+  commands:
+    gofmt:
+      glob: "*.go"
+      run: gofmt -l {staged_files}
+    golangci-lint:
+      glob: "*.go"
+      run: golangci-lint run ./...
+    test:
+      run: go test ./...
+    golden:
+      glob: "internal/cli/**/*.go"
+      run: go test ./internal/cli/... -run TestGolden
