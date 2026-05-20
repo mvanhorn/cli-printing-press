@@ -14,6 +14,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -21,11 +22,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
+)
+
+// Tunables for remote spec fetches; var (not const) so tests can override.
+var (
+	maxRemoteSpecBytes int64         = 50 * 1024 * 1024
+	remoteSpecTimeout  time.Duration = 60 * time.Second
 )
 
 func main() {
@@ -112,7 +120,13 @@ func main() {
 
 func loadSpec(source string) ([]byte, error) {
 	if openapi.IsRemoteSpecSource(source) {
-		resp, err := http.Get(source)
+		ctx, cancel := context.WithTimeout(context.Background(), remoteSpecTimeout)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, source, nil)
+		if err != nil {
+			return nil, fmt.Errorf("fetching %s: %w", source, err)
+		}
+		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("fetching %s: %w", source, err)
 		}
@@ -120,7 +134,15 @@ func loadSpec(source string) ([]byte, error) {
 		if resp.StatusCode != 200 {
 			return nil, fmt.Errorf("fetching %s: HTTP %d", source, resp.StatusCode)
 		}
-		return io.ReadAll(io.LimitReader(resp.Body, 50*1024*1024))
+		// Read limit+1 bytes so we can distinguish "exactly at limit" from "exceeds limit".
+		data, err := io.ReadAll(io.LimitReader(resp.Body, maxRemoteSpecBytes+1))
+		if err != nil {
+			return nil, fmt.Errorf("fetching %s: %w", source, err)
+		}
+		if int64(len(data)) > maxRemoteSpecBytes {
+			return nil, fmt.Errorf("fetching %s: spec exceeds %d bytes", source, maxRemoteSpecBytes)
+		}
+		return data, nil
 	}
 	return os.ReadFile(source)
 }
