@@ -582,6 +582,15 @@ type AuthConfig struct {
 	Cookies          []string     `yaml:"cookies,omitempty" json:"cookies,omitempty"`             // named cookies to extract for composed auth (e.g. ["customerId", "authToken"])
 	Inferred         bool         `yaml:"inferred,omitempty" json:"inferred,omitempty"`           // true when auth was inferred from spec description, not declared in securitySchemes
 
+	// press-auth companion hints. When present, the generated CLI's
+	// `auth login --chrome --auto-login` can hand them off to
+	// `press-auth login` without prompting the user. All three are
+	// optional; omit them when the API's login surface is too dynamic
+	// to declare statically (the user will be told what to type instead).
+	LoginURL              string `yaml:"login_url,omitempty" json:"login_url,omitempty"`                             // https URL where the controlled Chrome window should land for login (http allowed only for localhost / 127.0.0.1)
+	LoginCompleteSelector string `yaml:"login_complete_selector,omitempty" json:"login_complete_selector,omitempty"` // optional CSS selector whose appearance signals login is complete (e.g. `a[href*=signout]`); passed through verbatim
+	JWTCarrierCookie      string `yaml:"jwt_carrier_cookie,omitempty" json:"jwt_carrier_cookie,omitempty"`           // name of the cookie carrying the JWT whose exp claim drives lazy refresh; should match one of Cookies
+
 	// VerifyPath is an optional path appended to base_url that the doctor
 	// command probes to validate credentials. Set this to a known-good
 	// authenticated GET endpoint that returns 2xx for any valid token (e.g.
@@ -962,6 +971,66 @@ func (c AuthConfig) EffectiveOAuth2Grant() string {
 		return OAuth2GrantAuthorizationCode
 	}
 	return c.OAuth2Grant
+}
+
+// HasCompanionHints reports whether the spec carries enough press-auth
+// companion data for the generated CLI to offer login integration. The
+// JWT carrier and completion selector are optional because cookie-only
+// sessions do not need refresh metadata.
+func (c AuthConfig) HasCompanionHints() bool {
+	return strings.TrimSpace(c.LoginURL) != ""
+}
+
+// validateAuthCompanion enforces the small set of guardrails on the
+// press-auth companion fields: LoginURL must parse as a URL using https
+// (or http on localhost), LoginCompleteSelector is opaque, and a
+// JWTCarrierCookie that does not match any name in Cookies is surfaced
+// as a stderr warning (typos should not block generation outright).
+func validateAuthCompanion(c AuthConfig) error {
+	loginURL := strings.TrimSpace(c.LoginURL)
+	if loginURL != "" {
+		if err := validateCompanionLoginURL(loginURL); err != nil {
+			return err
+		}
+	}
+	carrier := strings.TrimSpace(c.JWTCarrierCookie)
+	if carrier != "" && len(c.Cookies) > 0 {
+		found := false
+		for _, name := range c.Cookies {
+			if strings.TrimSpace(name) == carrier {
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Fprintf(os.Stderr, "warning: auth.jwt_carrier_cookie %q is not in auth.cookies %v; press-auth refresh will not be wired up\n", carrier, c.Cookies)
+		}
+	}
+	return nil
+}
+
+// validateCompanionLoginURL mirrors the press-auth login URL validation:
+// https://<host> is always accepted, http:// is accepted only for
+// localhost / 127.0.0.1. Plain http elsewhere would silently leak the
+// captured cookies to a network sniffer and the spec author is unlikely
+// to intend it.
+func validateCompanionLoginURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("auth.login_url is not a valid URL: %w", err)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := u.Hostname()
+		if host == "localhost" || host == "127.0.0.1" {
+			return nil
+		}
+		return fmt.Errorf("auth.login_url uses http://; only https:// is allowed (except for localhost/127.0.0.1)")
+	default:
+		return fmt.Errorf("auth.login_url must use http or https, got scheme %q", u.Scheme)
+	}
 }
 
 // validateOAuth2Grant ensures OAuth2Grant is empty or one of the supported
@@ -2090,6 +2159,9 @@ func (s *APISpec) Validate() error {
 		return err
 	}
 	if err := validateSessionHandshake(s.Auth); err != nil {
+		return err
+	}
+	if err := validateAuthCompanion(s.Auth); err != nil {
 		return err
 	}
 	if err := validateAuthEnvVarSpecs("auth", s.Auth); err != nil {

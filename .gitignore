@@ -9,6 +9,7 @@ catalog/specs/*.graphql
 /refactor/artifacts/
 /tests/artifacts/perf/
 /printing-press
+/press-auth
 library/
 dist/
 claude-upgrade-progress.json

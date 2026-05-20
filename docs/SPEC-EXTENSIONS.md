@@ -32,6 +32,7 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-auth-subtype` | `components.securitySchemes.<name>` | `APISpec.Auth.Subtype` | No |
 | `x-auth-cookie-domain` | `components.securitySchemes.<name>` | `APISpec.Auth.CookieDomain` | No |
 | `x-auth-cookies` | `components.securitySchemes.<name>` | `APISpec.Auth.Cookies` | No |
+| `x-auth-companion` | `components.securitySchemes.<name>` or `info` | `APISpec.Auth.LoginURL`, `LoginCompleteSelector`, `JWTCarrierCookie` | No |
 | `x-oauth-refresh-token-mechanism` | `components.securitySchemes.<name>` | `APISpec.Auth.RefreshTokenMechanism` | No |
 | `x-resource-id` | path item | `Endpoint.IDField` | No |
 | `x-critical` | path item | `Endpoint.Critical` | No |
@@ -594,6 +595,82 @@ components:
       x-auth-cookies:
         - session_id
         - csrf_token
+```
+
+### `x-auth-companion`
+
+Declares the deterministic hints the generated CLI needs to hand off to
+`press-auth login` non-interactively. With these set, `auth login --chrome
+--auto-login` shells out to `press-auth login <domain> --login-url ...
+--jwt-carrier-cookie ...` and the user never has to remember those values.
+
+Parsed fields:
+
+- `login_url` -> `APISpec.Auth.LoginURL`
+- `login_complete_selector` -> `APISpec.Auth.LoginCompleteSelector`
+- `jwt_carrier_cookie` -> `APISpec.Auth.JWTCarrierCookie`
+
+Placement:
+
+- Allowed on `components.securitySchemes.<name>` and on `info`. Scheme-level
+  fields win over info-level when both are set. Info-level is intended for
+  specs that declare composed auth without a single named security scheme.
+
+Rules:
+
+- All three sub-fields are optional. When absent, the generated CLI prints
+  a hint instructing the user to invoke `press-auth login` manually.
+- `login_url` must parse as a URL and use `https://` (or `http://localhost`
+  / `http://127.0.0.1`). Plain `http://` against other hosts would leak the
+  captured cookies to a network sniffer; the parser rejects it.
+- `login_complete_selector` is opaque — pass through verbatim as a CSS
+  selector. The parser does not validate it beyond non-emptiness.
+- `jwt_carrier_cookie` should match one of the names listed in `cookies`.
+  A mismatch surfaces as a stderr warning at parse time (typo surfacing)
+  rather than a hard error.
+- Only these three public hints are embedded into the generated CLI's
+  source. Cookie values, JWT tokens, and other user-secret material never
+  appear in generated constants — press-auth captures and stores those
+  itself.
+
+Internal YAML equivalent (under the `auth:` block):
+
+```yaml
+auth:
+  type: composed
+  cookie_domain: example.com
+  cookies:
+    - session_id
+    - guestsession
+  login_url: https://www.example.com/account/login
+  login_complete_selector: "a[href*=signout]"
+  jwt_carrier_cookie: guestsession
+```
+
+OpenAPI security-scheme placement:
+
+```yaml
+components:
+  securitySchemes:
+    browserSession:
+      type: apiKey
+      in: cookie
+      name: guestsession
+      x-auth-companion:
+        login_url: https://www.example.com/account/login
+        login_complete_selector: "a[href*=signout]"
+        jwt_carrier_cookie: guestsession
+```
+
+OpenAPI info-level placement (for specs without a named scheme):
+
+```yaml
+info:
+  title: Example
+  x-auth-companion:
+    login_url: https://www.example.com/account/login
+    login_complete_selector: "a[href*=signout]"
+    jwt_carrier_cookie: guestsession
 ```
 
 ### `x-oauth-refresh-token-mechanism`

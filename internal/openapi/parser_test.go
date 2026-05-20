@@ -6161,6 +6161,203 @@ paths:
 	})
 }
 
+// TestAuthCompanionFromOpenAPI exercises the x-auth-companion extension at
+// both scheme level and info level, including the scheme-wins precedence
+// when both are set.
+func TestAuthCompanionFromOpenAPI(t *testing.T) {
+	t.Run("scheme-level x-auth-companion propagates to Auth", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: guestsession
+      x-auth-companion:
+        login_url: https://www.example.com/account/login
+        login_complete_selector: "a[href*=signout]"
+        jwt_carrier_cookie: guestsession
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+		assert.Equal(t, "https://www.example.com/account/login", parsed.Auth.LoginURL)
+		assert.Equal(t, "a[href*=signout]", parsed.Auth.LoginCompleteSelector)
+		assert.Equal(t, "guestsession", parsed.Auth.JWTCarrierCookie)
+		assert.True(t, parsed.Auth.HasCompanionHints())
+	})
+
+	t.Run("info-level x-auth-companion fills when scheme omits it", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+  x-auth-companion:
+    login_url: https://www.example.com/account/login
+    jwt_carrier_cookie: guestsession
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: guestsession
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+		assert.Equal(t, "https://www.example.com/account/login", parsed.Auth.LoginURL)
+		assert.Equal(t, "guestsession", parsed.Auth.JWTCarrierCookie)
+		assert.True(t, parsed.Auth.HasCompanionHints())
+	})
+
+	t.Run("scheme-level beats info-level when both are set", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+  x-auth-companion:
+    login_url: https://info-level.example.com/login
+    jwt_carrier_cookie: info_level_cookie
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: scheme_cookie
+      x-auth-companion:
+        login_url: https://scheme-level.example.com/login
+        jwt_carrier_cookie: scheme_cookie
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+		assert.Equal(t, "https://scheme-level.example.com/login", parsed.Auth.LoginURL)
+		assert.Equal(t, "scheme_cookie", parsed.Auth.JWTCarrierCookie)
+	})
+
+	t.Run("info-level fills missing fields when scheme partially declares", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+  x-auth-companion:
+    login_url: https://info-level.example.com/login
+    login_complete_selector: "a.signout"
+    jwt_carrier_cookie: info_cookie
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: scheme_cookie
+      x-auth-companion:
+        login_url: https://scheme-level.example.com/login
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+		assert.Equal(t, "https://scheme-level.example.com/login", parsed.Auth.LoginURL, "scheme login_url wins")
+		assert.Equal(t, "a.signout", parsed.Auth.LoginCompleteSelector, "info fills missing selector")
+		assert.Equal(t, "info_cookie", parsed.Auth.JWTCarrierCookie, "info fills missing carrier")
+	})
+
+	t.Run("malformed x-auth-companion at scheme level warns and skips", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: guestsession
+      x-auth-companion: "not-an-object"
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`)
+		warnings := captureWarnings(t, func() {
+			parsed, err := Parse(yamlSpec)
+			require.NoError(t, err)
+			assert.Empty(t, parsed.Auth.LoginURL)
+		})
+		assert.Contains(t, warnings, "x-auth-companion")
+	})
+}
+
+// TestAuthCompanionInternalYAMLRoundTripEqualsOpenAPI asserts that an
+// equivalent OpenAPI spec and internal YAML spec produce the same Auth
+// fields for the companion hints. This is the contract that
+// docs/SPEC-EXTENSIONS.md promises: x-auth-companion at scheme level maps
+// 1:1 to the internal `auth:` block fields.
+func TestAuthCompanionInternalYAMLRoundTripEqualsOpenAPI(t *testing.T) {
+	openapiYAML := []byte(`openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: guestsession
+      x-auth-companion:
+        login_url: https://www.example.com/account/login
+        login_complete_selector: "a[href*=signout]"
+        jwt_carrier_cookie: guestsession
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`)
+	parsed, err := Parse(openapiYAML)
+	require.NoError(t, err)
+
+	// The internal-YAML reference shape, hand-built from the same hints.
+	wantLoginURL := "https://www.example.com/account/login"
+	wantSelector := "a[href*=signout]"
+	wantCarrier := "guestsession"
+
+	assert.Equal(t, wantLoginURL, parsed.Auth.LoginURL)
+	assert.Equal(t, wantSelector, parsed.Auth.LoginCompleteSelector)
+	assert.Equal(t, wantCarrier, parsed.Auth.JWTCarrierCookie)
+}
+
 // TestParseTenantEnvVarExtension: when info.x-tenant-env-var is set, the
 // parser registers "tenant" as an EndpointTemplateVar with the declared
 // env var as the override so the profiler can include

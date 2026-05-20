@@ -39,6 +39,7 @@ const (
 	extensionAuthInstructions      = "x-auth-instructions"
 	extensionAuthTitle             = "x-auth-title"
 	extensionAuthDescription       = "x-auth-description"
+	extensionAuthCompanion         = "x-auth-companion"
 	extensionAuthSubtype           = "x-auth-subtype"
 	extensionOAuthRefreshTokenMech = "x-oauth-refresh-token-mechanism"
 	extensionSpeakeasyExample      = "x-speakeasy-example"
@@ -588,6 +589,7 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 		if result.Type == "none" {
 			result = inferOperationLevelBearer(doc, name, result)
 		}
+		applyAuthCompanionFromInfo(&result, doc)
 		return result
 	}
 
@@ -708,6 +710,7 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	applyAuthOverrideExtensions(&auth, scheme.Extensions)
 	applyAuthEnvVarDefaults(&auth, envPrefix)
 	applyAuthVarsRichOverride(&auth, scheme.Extensions, fmt.Sprintf("components.securitySchemes.%s.%s", schemeName, extensionAuthVars))
+	applyAuthCompanionFromInfo(&auth, doc)
 	auth.AdditionalHeaders = collectAdditionalAuthHeaders(doc, schemeName)
 	return auth
 }
@@ -940,6 +943,72 @@ func applyAuthOverrideExtensions(auth *spec.AuthConfig, extensions map[string]an
 	}
 	if mech := stringExtension(extensions, extensionOAuthRefreshTokenMech); mech != "" {
 		auth.RefreshTokenMechanism = mech
+	}
+	applyAuthCompanionExtension(auth, extensions)
+}
+
+// applyAuthCompanionExtension reads x-auth-companion from a map of OpenAPI
+// extensions and copies its fields into auth. The companion object carries
+// hints that let the generated CLI's `auth login --chrome --auto-login` hand
+// off to `press-auth login` non-interactively. All fields are optional; an
+// individual missing field leaves the corresponding AuthConfig field
+// untouched.
+func applyAuthCompanionExtension(auth *spec.AuthConfig, extensions map[string]any) {
+	if auth == nil || len(extensions) == 0 {
+		return
+	}
+	raw, ok := extensions[extensionAuthCompanion]
+	if !ok {
+		return
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		warnf("%s is malformed: expected an object", extensionAuthCompanion)
+		return
+	}
+	if v, ok := obj["login_url"].(string); ok && strings.TrimSpace(v) != "" {
+		auth.LoginURL = strings.TrimSpace(v)
+	}
+	if v, ok := obj["login_complete_selector"].(string); ok && strings.TrimSpace(v) != "" {
+		auth.LoginCompleteSelector = strings.TrimSpace(v)
+	}
+	if v, ok := obj["jwt_carrier_cookie"].(string); ok && strings.TrimSpace(v) != "" {
+		auth.JWTCarrierCookie = strings.TrimSpace(v)
+	}
+}
+
+// applyAuthCompanionFromInfo reads x-auth-companion at the info-level (or
+// document root) as a fallback for specs that don't declare a single named
+// security scheme. Scheme-level hints win because the per-scheme placement
+// mirrors x-auth-vars / x-auth-instructions, so applyAuthCompanionFromInfo
+// is only used to fill fields that scheme-level didn't set.
+func applyAuthCompanionFromInfo(auth *spec.AuthConfig, doc *openapi3.T) {
+	if auth == nil || doc == nil {
+		return
+	}
+	raw, ok := lookupOpenAPIExtension(doc, extensionAuthCompanion)
+	if !ok {
+		return
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		warnf("info.%s is malformed: expected an object", extensionAuthCompanion)
+		return
+	}
+	if auth.LoginURL == "" {
+		if v, ok := obj["login_url"].(string); ok && strings.TrimSpace(v) != "" {
+			auth.LoginURL = strings.TrimSpace(v)
+		}
+	}
+	if auth.LoginCompleteSelector == "" {
+		if v, ok := obj["login_complete_selector"].(string); ok && strings.TrimSpace(v) != "" {
+			auth.LoginCompleteSelector = strings.TrimSpace(v)
+		}
+	}
+	if auth.JWTCarrierCookie == "" {
+		if v, ok := obj["jwt_carrier_cookie"].(string); ok && strings.TrimSpace(v) != "" {
+			auth.JWTCarrierCookie = strings.TrimSpace(v)
+		}
 	}
 }
 

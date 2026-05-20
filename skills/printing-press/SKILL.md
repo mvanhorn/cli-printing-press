@@ -2092,6 +2092,13 @@ browser-chrome`. If it returns `browser_clearance_http`, return to the
 browser-clearance flow above so the generated CLI has both browser-compatible
 HTTP and reusable browser auth proof.
 
+For cookie/composed-auth CLIs, recommend the `press-auth` companion binary —
+it captures cookies once via a controlled Chrome window and serves them to
+generated CLIs on demand, avoiding the on-disk session-cookie blind spot
+that breaks `auth login --chrome` against a daily Chrome profile. See
+[references/auth-companion.md](references/auth-companion.md) for the
+recommendation flow, install command, and debug playbook.
+
 ### Pre-Generation MCP Enrichment
 
 Before generating, count the spec's MCP tool surface and decide whether to opt

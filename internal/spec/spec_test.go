@@ -4187,6 +4187,181 @@ func TestWalkerConfig_YAMLRoundTrip(t *testing.T) {
 	})
 }
 
+// TestAuthCompanionParseRoundTrip exercises the press-auth companion hints
+// (login_url, login_complete_selector, jwt_carrier_cookie). Round-trips
+// through ParseBytes so the YAML tags are exercised, not just the struct
+// field assignments.
+func TestAuthCompanionParseRoundTrip(t *testing.T) {
+	t.Run("all three companion fields parse cleanly", func(t *testing.T) {
+		yamlSpec := []byte(`name: example-api
+base_url: https://api.example.com
+auth:
+  type: composed
+  format: "Cookie {session}"
+  cookie_domain: example.com
+  cookies:
+    - session
+    - guestsession
+  login_url: https://www.example.com/account/login
+  login_complete_selector: "a[href*=signout]"
+  jwt_carrier_cookie: guestsession
+resources:
+  items:
+    endpoints:
+      list:
+        method: GET
+        path: /items
+`)
+		s, err := ParseBytes(yamlSpec)
+		require.NoError(t, err)
+		assert.Equal(t, "https://www.example.com/account/login", s.Auth.LoginURL)
+		assert.Equal(t, "a[href*=signout]", s.Auth.LoginCompleteSelector)
+		assert.Equal(t, "guestsession", s.Auth.JWTCarrierCookie)
+		assert.True(t, s.Auth.HasCompanionHints())
+	})
+
+	t.Run("no companion fields leaves zero values and HasCompanionHints false", func(t *testing.T) {
+		yamlSpec := []byte(`name: example-api
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [EXAMPLE_API_TOKEN]
+resources:
+  items:
+    endpoints:
+      list:
+        method: GET
+        path: /items
+`)
+		s, err := ParseBytes(yamlSpec)
+		require.NoError(t, err)
+		assert.Empty(t, s.Auth.LoginURL)
+		assert.Empty(t, s.Auth.LoginCompleteSelector)
+		assert.Empty(t, s.Auth.JWTCarrierCookie)
+		assert.False(t, s.Auth.HasCompanionHints())
+	})
+}
+
+func TestAuthCompanionValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		auth    AuthConfig
+		wantErr string
+	}{
+		{
+			name: "https login_url is valid",
+			auth: AuthConfig{LoginURL: "https://example.com/login"},
+		},
+		{
+			name: "http localhost is valid",
+			auth: AuthConfig{LoginURL: "http://localhost:8080/login"},
+		},
+		{
+			name: "http 127.0.0.1 is valid",
+			auth: AuthConfig{LoginURL: "http://127.0.0.1/login"},
+		},
+		{
+			name:    "plain http elsewhere is rejected",
+			auth:    AuthConfig{LoginURL: "http://example.com/login"},
+			wantErr: "only https://",
+		},
+		{
+			name:    "ftp scheme is rejected",
+			auth:    AuthConfig{LoginURL: "ftp://example.com/"},
+			wantErr: "must use http or https",
+		},
+		{
+			name: "empty is valid (companion is optional)",
+			auth: AuthConfig{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAuthCompanion(tt.auth)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+// TestAuthCompanionJWTCarrierCookieNotInCookiesWarns asserts that a
+// jwt_carrier_cookie that isn't in the cookies list surfaces a stderr
+// warning, not a hard error. Plausible typo, surface it but don't block.
+func TestAuthCompanionJWTCarrierCookieNotInCookiesWarns(t *testing.T) {
+	auth := AuthConfig{
+		Type:             "composed",
+		Cookies:          []string{"session", "csrf_token"},
+		JWTCarrierCookie: "guestsesion", // intentional typo
+	}
+	warnings := captureStderr(t, func() {
+		err := validateAuthCompanion(auth)
+		require.NoError(t, err)
+	})
+	assert.Contains(t, warnings, "jwt_carrier_cookie")
+	assert.Contains(t, warnings, "guestsesion")
+}
+
+// TestAPISpecValidate_RejectsBadLoginURL plugs validateAuthCompanion into
+// the full APISpec validation path to confirm a malformed login_url
+// surfaces at Validate() time, not just when the helper is called
+// directly.
+func TestAPISpecValidate_RejectsBadLoginURL(t *testing.T) {
+	build := func(loginURL string) APISpec {
+		return APISpec{
+			Name:    "companion-validate",
+			BaseURL: "https://api.example.com",
+			Auth: AuthConfig{
+				Type:         "composed",
+				CookieDomain: "example.com",
+				Cookies:      []string{"session"},
+				LoginURL:     loginURL,
+				EnvVars:      []string{"COMPANION_VALIDATE_TOKEN"},
+			},
+			Resources: map[string]Resource{
+				"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+			},
+		}
+	}
+
+	t.Run("valid login_url passes Validate()", func(t *testing.T) {
+		s := build("https://example.com/login")
+		require.NoError(t, s.Validate())
+	})
+
+	t.Run("plain http is rejected at APISpec level", func(t *testing.T) {
+		s := build("http://example.com/login")
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "login_url")
+	})
+}
+
+// TestAuthHasCompanionHints documents the partial-hint state.
+// LoginCompleteSelector and JWTCarrierCookie are optional, so LoginURL
+// alone is enough to enable cookie-only companion login integration.
+func TestAuthHasCompanionHints(t *testing.T) {
+	tests := []struct {
+		name string
+		auth AuthConfig
+		want bool
+	}{
+		{name: "all fields set", auth: AuthConfig{LoginURL: "https://example.com/login", JWTCarrierCookie: "session", LoginCompleteSelector: "a"}, want: true},
+		{name: "login_url and carrier set, selector omitted", auth: AuthConfig{LoginURL: "https://example.com/login", JWTCarrierCookie: "session"}, want: true},
+		{name: "login_url only", auth: AuthConfig{LoginURL: "https://example.com/login"}, want: true},
+		{name: "carrier only", auth: AuthConfig{JWTCarrierCookie: "session"}, want: false},
+		{name: "empty", auth: AuthConfig{}, want: false},
+		{name: "whitespace-only login_url", auth: AuthConfig{LoginURL: "   ", JWTCarrierCookie: "session"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.auth.HasCompanionHints())
+		})
+	}
+}
 func TestPromoteParamsToBodyForWriteEndpoints(t *testing.T) {
 	t.Parallel()
 
