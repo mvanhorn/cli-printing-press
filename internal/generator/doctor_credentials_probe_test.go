@@ -36,6 +36,18 @@ func TestGeneratedDoctor_EmitsGraphQLProbeWhenVerifyQuerySet(t *testing.T) {
 		"doctor must distinguish a 2xx-with-errors GraphQL response from a true valid token")
 	assert.NotContains(t, content, `"present, not verified.`,
 		"the unverified-fallback branch must not be rendered when verify_query is set")
+
+	// The GraphQL probe must split 401 from 403 the same way the REST probe
+	// does: 403 means a valid-but-scope-limited token, so telling the operator
+	// to "check your credentials" (replace the token) would be wrong guidance.
+	assert.Contains(t, content, `case gqlAPIErr.StatusCode == 401:`,
+		"GraphQL probe must keep a dedicated 401 branch so an invalid token reads as invalid")
+	assert.Contains(t, content, `case gqlAPIErr.StatusCode == 403:`,
+		"GraphQL probe must split 403 so a scope-limited token is not misreported as invalid")
+	assert.Contains(t, content, `scope-limited (HTTP %d) — credentials are valid but lack permission for this endpoint.`,
+		"GraphQL probe's 403 message must point at scope, not the credential value")
+	assert.NotContains(t, content, `gqlAPIErr.StatusCode == 401 || gqlAPIErr.StatusCode == 403`,
+		"GraphQL probe must not collapse 401 and 403 into a single invalid branch")
 }
 
 // TestGeneratedDoctor_PreferVerifyPathOverVerifyQuery pins the precedence

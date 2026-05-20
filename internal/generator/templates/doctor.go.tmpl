@@ -571,8 +571,10 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 							}
 						case errors.As(gqlErr, &gqlAPIErr):
 							switch {
-							case gqlAPIErr.StatusCode == 401 || gqlAPIErr.StatusCode == 403:
+							case gqlAPIErr.StatusCode == 401:
 								report["credentials"] = fmt.Sprintf("invalid (HTTP %d) — check your credentials", gqlAPIErr.StatusCode)
+							case gqlAPIErr.StatusCode == 403:
+								report["credentials"] = fmt.Sprintf("scope-limited (HTTP %d) — credentials are valid but lack permission for this endpoint. Check your dashboard's API key scope.", gqlAPIErr.StatusCode)
 							default:
 								report["credentials"] = fmt.Sprintf("ok (HTTP %d from GraphQL probe, but auth was accepted)", gqlAPIErr.StatusCode)
 							}
