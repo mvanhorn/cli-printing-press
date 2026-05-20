@@ -46,4 +46,3 @@ wrapper_libraries:
       CLI does not embed the vault parser itself.
 
 auth_env_vars: []
-auth_instructions: "No auth — operates on the locally-mounted vault. The Obsidian desktop app must be running for write and live-search commands."
