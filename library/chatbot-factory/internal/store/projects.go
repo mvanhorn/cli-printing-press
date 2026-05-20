@@ -68,7 +68,11 @@ func (s *Store) ListProjects() ([]Project, error) {
 // DeleteProject removes a project and its phase/env data.
 func (s *Store) DeleteProject(slug string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
-		if err := tx.Bucket([]byte(bucketProjects)).Delete([]byte(slug)); err != nil {
+		b := tx.Bucket([]byte(bucketProjects))
+		if b.Get([]byte(slug)) == nil {
+			return fmt.Errorf("project %q not found", slug)
+		}
+		if err := b.Delete([]byte(slug)); err != nil {
 			return err
 		}
 		for _, bucket := range []string{bucketPhases, bucketEnvVars} {
@@ -83,16 +87,4 @@ func (s *Store) DeleteProject(slug string) error {
 		}
 		return nil
 	})
-}
-
-func hasPrefix(k, prefix []byte) bool {
-	if len(k) < len(prefix) {
-		return false
-	}
-	for i := range prefix {
-		if k[i] != prefix[i] {
-			return false
-		}
-	}
-	return true
 }

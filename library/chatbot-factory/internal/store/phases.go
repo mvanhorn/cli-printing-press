@@ -51,7 +51,7 @@ func (s *Store) GetPhase(slug, phase string) (PhaseState, error) {
 	return out, err
 }
 
-// ListPhases returns all phases for a project, in stored order.
+// ListPhases returns all phases for a project as a name→state map.
 func (s *Store) ListPhases(slug string) (map[string]PhaseState, error) {
 	out := map[string]PhaseState{}
 	prefix := []byte(slug + "/")

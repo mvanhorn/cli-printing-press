@@ -69,3 +69,41 @@ func TestEnvVarsRoundTrip(t *testing.T) {
 		t.Fatalf("want sk-or-abc, got %q", v)
 	}
 }
+
+func TestDeleteProjectCascades(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.UpsertProject(Project{Slug: "fst", Channel: "telegram"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetPhase("fst", "init", PhaseState{Status: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetEnv("fst", "KEY", "val"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteProject("fst"); err != nil {
+		t.Fatalf("DeleteProject: %v", err)
+	}
+	phases, err := s.ListPhases("fst")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(phases) != 0 {
+		t.Fatalf("phases not deleted, got %d", len(phases))
+	}
+	envs, err := s.ListEnv("fst")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(envs) != 0 {
+		t.Fatalf("envs not deleted, got %d", len(envs))
+	}
+}
+
+func TestDeleteProjectNotFound(t *testing.T) {
+	s := newTestStore(t)
+	err := s.DeleteProject("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent project")
+	}
+}

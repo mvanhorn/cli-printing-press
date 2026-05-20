@@ -56,7 +56,20 @@ func (s *Store) Close() error {
 func DefaultPath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("default store path: %w", err)
 	}
 	return filepath.Join(home, ".chatbot-factory", "store.db"), nil
+}
+
+// hasPrefix checks if k starts with the given prefix.
+func hasPrefix(k, prefix []byte) bool {
+	if len(k) < len(prefix) {
+		return false
+	}
+	for i := range prefix {
+		if k[i] != prefix[i] {
+			return false
+		}
+	}
+	return true
 }
