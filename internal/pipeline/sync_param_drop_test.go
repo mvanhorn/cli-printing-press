@@ -131,6 +131,37 @@ func sync(client *Client) error {
 	}
 }
 
+func TestCheckSyncParamDrop_MapIdentifierKeys_UnrecognizedNotFlagged(t *testing.T) {
+	src := `package syncer
+
+const (
+	paramWeek = "week"
+	paramCountry = "country"
+)
+
+type Client struct{}
+
+func (c *Client) Get(path string, params map[string]string) error { return nil }
+
+func sync(client *Client) error {
+	return client.Get("/menu", map[string]string{
+		paramWeek: "w1", paramCountry: "us",
+	})
+}
+`
+	cliDir, analysisPath := seedSyncParamDropFixture(t, src, makeCapture("GET", "/menu", "week", "country"))
+	got := CheckSyncParamDrop(cliDir, analysisPath)
+	if got.Skipped {
+		t.Fatalf("Skipped: want false, got true")
+	}
+	if got.Checked != 0 {
+		t.Fatalf("Checked: want 0, got %d", got.Checked)
+	}
+	if len(got.Findings) != 0 {
+		t.Fatalf("Findings: want 0, got %d (%+v)", len(got.Findings), got.Findings)
+	}
+}
+
 // AC-positive-3: the `// pp:sync-params-intentional-subset` comment on
 // the line above the call suppresses the gate.
 func TestCheckSyncParamDrop_SuppressionComment_NotFlagged(t *testing.T) {
