@@ -144,6 +144,55 @@ func TestLoadWithWrongKeyFailsCleanly(t *testing.T) {
 	}
 }
 
+func TestLoadWrongKeySizeFailsCleanly(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("requires macOS keychain")
+	}
+	domain := uniqueDomain(t)
+	useTempHome(t, domain)
+
+	if err := Save(sampleState(domain, time.Now().UTC())); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Simulate a corrupted keychain entry: a short key reaches Load.
+	// Without the guard this surfaces as a cryptic aes.NewCipher error;
+	// with it, Load reports the actionable size mismatch.
+	if err := saveKey(domain, make([]byte, 16)); err != nil {
+		t.Fatalf("saveKey short: %v", err)
+	}
+
+	_, err := Load(domain)
+	if err == nil {
+		t.Fatalf("Load with wrong-size key should error")
+	}
+	if !strings.Contains(err.Error(), "unexpected size") {
+		t.Errorf("expected size-mismatch error, got: %v", err)
+	}
+}
+
+func TestStateFilePathRejectsTraversal(t *testing.T) {
+	dir := useTempHome(t)
+	clean := filepath.Clean(dir)
+
+	for _, bad := range []string{"../escape", "..", "a/b", "a/../../b", "foo/", "/abs"} {
+		if _, err := stateFilePath(bad); err == nil {
+			t.Errorf("stateFilePath(%q) = nil error, want rejection", bad)
+		}
+	}
+
+	for _, good := range []string{"example.com", "app.example.co.uk", "127.0.0.1", "tenant.example.invalid"} {
+		path, err := stateFilePath(good)
+		if err != nil {
+			t.Errorf("stateFilePath(%q) errored: %v", good, err)
+			continue
+		}
+		if filepath.Dir(path) != clean {
+			t.Errorf("stateFilePath(%q) = %q, not directly under %q", good, path, clean)
+		}
+	}
+}
+
 func TestSaveFileAndDirModes(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("Save requires macOS keychain")

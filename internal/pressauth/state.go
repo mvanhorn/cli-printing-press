@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -77,14 +78,23 @@ func StateDir() (string, error) {
 }
 
 // stateFilePath returns the absolute path of the state file for one
-// domain. Filename is "<domain>.json" — domains are user-supplied but the
-// caller validates them at the Cobra layer; this helper does not sanitize.
+// domain. Filename is "<domain>.json". Domains are user-supplied, so the
+// helper rejects any value that could escape the state directory: a real
+// hostname never contains a path separator or "..", and the joined path
+// must still resolve directly under the state directory.
 func stateFilePath(domain string) (string, error) {
+	if strings.ContainsRune(domain, '/') || strings.ContainsRune(domain, os.PathSeparator) || strings.Contains(domain, "..") {
+		return "", fmt.Errorf("invalid domain %q: must not contain path separators or %q", domain, "..")
+	}
 	dir, err := StateDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, domain+".json"), nil
+	path := filepath.Join(dir, domain+".json")
+	if filepath.Dir(path) != filepath.Clean(dir) {
+		return "", fmt.Errorf("invalid domain %q: resolves outside the state directory", domain)
+	}
+	return path, nil
 }
 
 // Save encrypts s.Cookies with the per-domain key in the macOS keychain
@@ -172,6 +182,11 @@ func Load(domain string) (*State, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading encryption key: %w", err)
 	}
+	if err := validateKeySize(domain, key); err != nil {
+		// Guard before aes.NewCipher so a corrupted keychain entry yields
+		// this actionable message instead of a cryptic cipher-size error.
+		return nil, err
+	}
 
 	cookies, err := decryptCookies(key, wire.CookiesEncrypted)
 	if err != nil {
@@ -215,11 +230,21 @@ func Delete(domain string) error {
 // AES-256 key and stores it in the keychain. A miss returned as (nil, nil)
 // from loadKey is treated as "create one"; a real keychain error short-
 // circuits with the underlying message.
+// validateKeySize rejects a keychain entry that is not a full AES-256 key
+// so the bytes never reach aes.NewCipher and surface as a cryptic cipher
+// error. The message points the user at the recovery command.
+func validateKeySize(domain string, key []byte) error {
+	if len(key) != aesKeySize {
+		return fmt.Errorf("keychain entry for %s has unexpected size %d (want %d); re-run press-auth login %s to recapture", domain, len(key), aesKeySize, domain)
+	}
+	return nil
+}
+
 func getOrCreateKey(domain string) ([]byte, error) {
 	key, err := loadKey(domain)
 	if err == nil {
-		if len(key) != aesKeySize {
-			return nil, fmt.Errorf("keychain entry for %s has unexpected size %d (want %d); re-run press-auth login %s to recapture", domain, len(key), aesKeySize, domain)
+		if err := validateKeySize(domain, key); err != nil {
+			return nil, err
 		}
 		return key, nil
 	}
