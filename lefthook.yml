@@ -22,9 +22,7 @@ pre-commit:
   commands:
     fmt:
       glob: "*.go"
-      run: |
-        files="$(printf '%s\n' {staged_files} | grep -v '^testdata/golden/expected/' || true)"
-        test -z "$files" || { printf '%s\n' "$files" | xargs gofmt -w; printf '%s\n' "$files" | xargs git add; }
+      run: gofmt -w {staged_files}
       stage_fixed: true
     sync-verify-skill:
       # Keep internal/cli/verify_skill_bundled.py byte-identical to the

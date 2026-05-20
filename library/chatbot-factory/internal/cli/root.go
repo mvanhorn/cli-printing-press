@@ -46,6 +46,8 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newProjectsCmd())
 	root.AddCommand(newStyleCmd())
 	root.AddCommand(newEnvCmd())
+	root.AddCommand(newPipelineCmd())
+	root.AddCommand(newMigrateCmd())
 
 	return root
 }
