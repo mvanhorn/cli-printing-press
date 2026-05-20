@@ -1,0 +1,48 @@
+name: obsidian
+display_name: Obsidian
+description: Note-taking knowledge base reached through the official Obsidian CLI shipped in the desktop app (v1.12+). Vault is local; no public network API.
+category: productivity
+tier: official
+verified_date: "2026-05-19"
+homepage: https://obsidian.md
+notes: |
+  Obsidian 1.12+ ships an official command-line interface bundled with the desktop
+  app. The CLI is symlinked at /usr/local/bin/obsidian when "Settings → General →
+  Command line interface" is toggled on. It exposes ~95 commands covering file
+  operations, search, frontmatter properties, backlinks, orphans, deadends,
+  unresolved links, tasks, bases, daily notes, sync, history, plugins, themes,
+  workspaces, and a developer surface (dev:cdp, dev:console, eval).
+
+  No HTTP API; integration is subprocess. The CLI requires Obsidian to be running
+  for write and live-search commands (the CLI dials the running desktop process).
+  Read commands that only consult the local vault filesystem can proceed without
+  Obsidian running when the printed CLI mirrors vault state into a local SQLite
+  store — this is the design path the Printing Press generator should take.
+
+  Known limitation: the underlying markdown-patch path used by Obsidian's write
+  commands has corruption modes when content contains certain edge-case markdown
+  shapes (verified 2026-05 against v1.12.7). Printed CLIs should default to
+  read-only Tier-3 flows (sync, health, stale, decay) and treat Tier-1 write
+  pass-through (append, prepend, create, move, delete, property:set) as a
+  known-limited surface pending upstream fix.
+
+wrapper_libraries:
+  - name: obsidian-official-cli
+    url: https://obsidian.md
+    language: native-app
+    license: proprietary
+    integration_mode: subprocess
+    notes: |
+      Bundled with the Obsidian desktop app v1.12+ and symlinked at
+      /usr/local/bin/obsidian when the in-app Command-Line Interface toggle is on.
+      All commands take ARG=value pairs (not POSIX flags). `file=<name>` resolves
+      wikilink-style; `path=<rel>` is exact. Many commands accept
+      `format=json|tsv|csv` for machine-friendly output. Output defaults to text
+      or TSV depending on the command; JSON is opt-in per command.
+
+      The CLI dials the running Obsidian desktop process for write operations and
+      live search. Read-only commands that consult the local vault filesystem
+      (file metadata, basic listings) also need the running process because the
+      CLI does not embed the vault parser itself.
+
+auth_env_vars: []
