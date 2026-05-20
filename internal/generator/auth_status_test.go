@@ -20,10 +20,17 @@ func TestDoctorWithoutVerifyPathDoesNotClaimCredentialsValid(t *testing.T) {
 	require.NoError(t, err)
 	src := string(doctorSrc)
 
-	require.Contains(t, src, `report["credentials"] = "present (not verified — set auth.verify_path in spec for an API acceptance check)"`,
-		"doctor must not report API credential validity from a bare base URL probe")
-	require.NotContains(t, src, `report["credentials"] = "valid"`,
-		"without auth.verify_path, a 2xx base URL response does not prove the API accepted the credentials")
+	require.Contains(t, src, `"present, not verified. Run `,
+		"doctor must not report API credential validity from a bare base URL probe; the unverified copy must use the new INFO phrasing")
+	require.Contains(t, src, "suggestion := suggestReadCommand(cmd.Root())",
+		"doctor must walk the cobra tree for a runnable read command instead of nagging the user to edit a spec they don't own")
+	require.NotContains(t, src, `set auth.verify_path in spec`,
+		"the old WARN copy that pointed users at a spec field they can't edit must be gone")
+	// Both probe branches (VerifyPath and VerifyQuery) emit `report["credentials"] = "valid"`
+	// when the probe succeeds; anchor on the verify-path-shaped invocation so this
+	// assertion stays specific to "no REST probe ran" rather than "the literal `valid` never appears."
+	require.NotContains(t, src, `c.GetWithHeaders(verifyPath`,
+		"without auth.verify_path, doctor must not emit a REST verification call")
 	require.NotContains(t, src, "but auth was accepted",
 		"without auth.verify_path, non-auth HTTP statuses do not prove the API accepted the credentials")
 }

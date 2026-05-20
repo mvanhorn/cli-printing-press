@@ -6986,11 +6986,15 @@ func TestGeneratedDoctor_NoVerifyPathReportsCredentialsPresent(t *testing.T) {
 	content := string(doctorGo)
 
 	// Without spec verify_path, doctor reports local credential presence
-	// without pretending the API accepted the key.
+	// without pretending the API accepted the key. The "not verified" copy
+	// now suggests a read command (resolved at doctor-time from the cobra
+	// tree) instead of pointing the user at a spec field they don't own.
 	assert.NotContains(t, content, `verifyPath := "/"`)
 	assert.NotContains(t, content, `c.GetWithHeaders(verifyPath`)
 	assert.NotContains(t, content, `&http.Client{`)
-	assert.Contains(t, content, `"present (not verified — set auth.verify_path in spec for an API acceptance check)"`)
+	assert.Contains(t, content, `"present, not verified. Run `)
+	assert.NotContains(t, content, `set auth.verify_path in spec`,
+		"the old WARN copy that scolded the user about a spec field must be gone")
 	assert.NotContains(t, content, `"inconclusive (HTTP %d from base URL — set auth.verify_path in spec for a definitive probe)"`)
 	assert.NotContains(t, content, `"invalid (HTTP %d) — check your credentials"`)
 }
