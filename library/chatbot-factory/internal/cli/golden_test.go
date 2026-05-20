@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"chatbot-factory-pp-cli/internal/pipeline"
 )
 
 var updateGolden = flag.Bool("update-golden", false, "rewrite golden files from current output")
@@ -17,9 +19,10 @@ type goldenCase struct {
 	name  string
 	args  []string
 	stdin string
+	setup func(t *testing.T) string // returns tmpDir path where the CLI should be invoked from
 }
 
-func runCLI(t *testing.T, args []string, stdin string) []byte {
+func runCLI(t *testing.T, args []string, stdin string, workDir string) []byte {
 	t.Helper()
 	// Build a temporary binary in t.TempDir for testing.
 	// This avoids issues with go run flag parsing and Windows path handling.
@@ -48,6 +51,9 @@ func runCLI(t *testing.T, args []string, stdin string) []byte {
 	// Run the binary
 	cmd := exec.Command(binPath, args...)
 	cmd.Stdin = bytes.NewBufferString(stdin)
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -94,10 +100,26 @@ func jsonEqual(t *testing.T, a, b []byte) bool {
 func TestGolden(t *testing.T) {
 	cases := []goldenCase{
 		{name: "version", args: []string{"version", "--json"}},
+		{
+			name: "pipeline-status",
+			args: []string{"pipeline", "status", "--json", "--state", "state.json"},
+			setup: func(t *testing.T) string {
+				dir := t.TempDir()
+				s := pipeline.NewState("fst", "telegram")
+				s.Phases["preflight"] = pipeline.PhaseState{Status: "completed", Plan: "completed"}
+				s.Phases["init"] = pipeline.PhaseState{Status: "completed", Plan: "completed"}
+				_ = s.Save(filepath.Join(dir, "state.json"))
+				return dir
+			},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			out := runCLI(t, c.args, c.stdin)
+			var workDir string
+			if c.setup != nil {
+				workDir = c.setup(t)
+			}
+			out := runCLI(t, c.args, c.stdin, workDir)
 			assertGolden(t, c.name, out)
 		})
 	}
