@@ -930,17 +930,40 @@ Display the full PR URL (e.g., `https://github.com/mvanhorn/printing-press-libra
 
 ## After the PR opens
 
-Once the PR is open, it enters the public library repo's review contract. That contract is owned by [`mvanhorn/printing-press-library` AGENTS.md → "Automated code review with Greptile"](https://github.com/mvanhorn/printing-press-library/blob/main/AGENTS.md#automated-code-review-with-greptile); read it for the canonical version. An agent invoking this skill from `cli-printing-press` will not have loaded the library's AGENTS.md, so the obligations are summarized here:
+Once the PR is open, it enters the public library repo's review contract. That contract is owned by [`mvanhorn/printing-press-library` AGENTS.md → "Automated code review with Greptile"](https://github.com/mvanhorn/printing-press-library/blob/main/AGENTS.md#automated-code-review-with-greptile); read it for the canonical version. An agent invoking this skill from `cli-printing-press` will not have loaded the library's AGENTS.md, so the obligations are summarized here.
 
-- **Resolve every Greptile finding.** Read findings from two surfaces — they don't overlap:
-  - `gh pr view <PR> --repo <owner>/<repo> --comments` returns the top-level issue conversation (Greptile's summary comment, score, CI bots).
-  - `gh api repos/<owner>/<repo>/pulls/<PR>/comments` returns the inline diff-anchored review comments — Greptile posts each P0/P1/P2 finding here, **and these are NOT included in `--comments`**. Skipping this call is how an agent silently declares "all findings resolved" while every inline thread is still open.
+Greptile reviews **incrementally**: every commit you push re-triggers a fresh review, which can surface new findings the previous round didn't. This is a loop, not a single pass — drive the PR to a *stable* green and don't declare done after round one.
 
-  For each P0/P1/P2 thread, either push a fix or reply with a concrete reason it shouldn't fire — not "won't fix", but *why* the code is right as written or *why* deferral is justified. The 0-5 score is a confidence signal, not a hard gate; 4/5 and 5/5 are both acceptable end states, and the score will land in that range naturally once threads are addressed.
-- **All CI checks must pass.** `verify-library-conventions`, `Govulncheck`, and any other workflow on the PR must be green before merge.
-- **Don't merge with unresolved threads** even when CI is green and the score looks good.
-- **Don't hand-edit `registry.json` or `cli-skills/pp-<api-slug>/SKILL.md` to satisfy a finding** — both are bot-regenerated post-merge by `[skip ci]` commits, and the library's `Fail on changes to generated artifacts` check pre-rejects any PR that touches them.
-- **Hand off once review-ready.** When all threads are resolved or replied to and CI is green, stop and tell the user. Don't loop polling for the merge; the user owns that decision.
+### Drive the PR to stable green
+
+Iterate until **all** of these hold, confirmed by the review that your most recent fix commit triggered:
+
+- **Greptile score ≥ 4.** The 0-5 score is a confidence signal, not a hard gate; 4/5 and 5/5 are both acceptable end states, and the score lands there naturally once threads are addressed.
+- **No unresolved review threads.** For each P0/P1/P2 thread, either push a fix or reply with a concrete reason it shouldn't fire — not "won't fix", but *why* the code is right as written or *why* deferral is justified.
+- **All CI checks pass.** `verify-library-conventions`, `Govulncheck`, and any other workflow on the PR.
+
+Read findings from two surfaces — they don't overlap:
+
+- `gh pr view <PR> --repo <owner>/<repo> --comments` returns the top-level issue conversation (Greptile's summary comment, score, CI bots).
+- `gh api repos/<owner>/<repo>/pulls/<PR>/comments` returns the inline diff-anchored review comments — Greptile posts each P0/P1/P2 finding here, **and these are NOT included in `--comments`**. Skipping this call is how an agent silently declares "all findings resolved" while every inline thread is still open.
+
+**Monitoring is the harness's job, not a busy-loop you hand-roll.** Use whatever PR-activity monitoring your environment provides — react to review/CI events as they arrive, or re-check on an interval if it doesn't push events. After each fix push, wait for the re-triggered review to land before judging done; a new round can reopen the gate.
+
+**Don't hand-edit `registry.json` or `cli-skills/pp-<api-slug>/SKILL.md` to satisfy a finding** — both are bot-regenerated post-merge by `[skip ci]` commits, and the library's `Fail on changes to generated artifacts` check pre-rejects any PR that touches them.
+
+### Terminal state — then hand back
+
+Once the PR is stably green, the skill's job is done. **Do not merge it and do not poll waiting for it to merge** — merges into the public library are the maintainer's manual review, not this skill's and (for a fork contributor) not the user's either.
+
+Read `access` from `$PUBLISH_CONFIG` (`jq -r .access "$PUBLISH_CONFIG"`) to determine what to do next:
+
+- **If `access` is `push`** (maintainer/admin with push access): apply the `awaiting-maintainer` label to signal the PR is ready for manual review:
+  ```bash
+  gh pr edit <PR> --repo mvanhorn/printing-press-library --add-label awaiting-maintainer
+  ```
+- **If `access` is `fork`** (community contributor): you cannot merge or label the upstream PR. There is nothing more to do once it's green.
+
+Then **report the terminal state and return control to the caller.** Do not offer a retro or any follow-up menu from this skill — that decision belongs to whoever invoked publish. The `printing-press` pipeline offers retro as its own post-publish tail; a direct human invocation just ends here.
 
 ## Secret & PII Protection
 
