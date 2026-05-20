@@ -62,13 +62,10 @@ def read_utf8(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-COMMON_FLAGS = {
-    "help", "version", "json", "csv", "plain", "quiet", "agent",
-    "select", "compact", "dry-run", "no-cache", "yes", "no-input",
-    "no-color", "human-friendly", "config", "base-url", "rate-limit",
-    "timeout", "data-source", "stdin", "limit", "format", "output",
-    "no-prompt", "days",
-}
+# Cobra supplies these without explicit source-level flag declarations. Other
+# generated/global flags must still be discovered in source so command-scoped
+# copy-paste examples cannot hide missing flags behind this whitelist.
+COMMON_FLAGS = {"help", "version"}
 
 CODEBLOCK_BASH = re.compile(r"```bash\n(.*?)\n```", re.DOTALL)
 COMMAND_REFERENCE_SECTION_RE = re.compile(
@@ -746,10 +743,13 @@ def check_flag_names(cli_dir: Path, sources: list[Path], cli_binary: str, report
 def check_flag_commands(cli_dir: Path, sources: list[Path], cli_binary: str, report: Report) -> None:
     all_files = list((cli_dir / "internal/cli").glob("*.go"))
     for src in sources:
+        seen: set[tuple[str, str]] = set()
         for cmd_path, _positional, flags in extract_recipes(src, cli_binary, cli_dir):
+            path_str = " ".join(cmd_path)
             for raw_flag in flags:
                 flag = raw_flag.lstrip("-")
-                if flag in COMMON_FLAGS:
+                key = (path_str, flag)
+                if flag in COMMON_FLAGS or key in seen:
                     continue
                 cmd_files, _, _ = find_command_source(cli_dir, cmd_path)
                 if cmd_files and flag_declared_in(cmd_files, flag):
@@ -758,7 +758,7 @@ def check_flag_commands(cli_dir: Path, sources: list[Path], cli_binary: str, rep
                     continue
                 if cmd_files and flag_declared_via_helper(cli_dir, cmd_files, flag):
                     continue
-                path_str = " ".join(cmd_path)
+                seen.add(key)
                 if flag_declared_in(all_files, flag):
                     report.findings.append(
                         Finding(
