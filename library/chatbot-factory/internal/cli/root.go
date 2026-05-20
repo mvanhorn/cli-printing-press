@@ -12,7 +12,7 @@ import (
 )
 
 // version is set at build time via -ldflags "-X chatbot-factory-pp-cli/internal/cli.version=..."
-var version = "1.0.0"
+var version = "dev"
 
 // exitError wraps an error with a specific exit code.
 type exitError struct {
