@@ -1,14 +1,31 @@
 queue_rules:
   - name: default
-    # Single condition block (no separate merge_conditions) so Mergify uses
-    # in-place mode instead of draft_pr mode. In-place mode rebases the
-    # source PR's branch directly; CI re-runs on the source PR where
-    # Greptile (and any other PR-only review apps) can actually post.
-    # The draft `mergify/merge-queue/*` mechanism creates bot-owned branches
-    # that Greptile skips, which was the root cause of every queued PR
-    # timing out waiting for Greptile.
+    # Two-block setup (queue_conditions + merge_conditions) intentionally
+    # flips Mergify into draft_pr mode so it can speculate on multiple
+    # PRs in parallel (see merge_queue.max_parallel_checks below).
+    #
+    # The split is what makes draft_pr mode safe for our setup:
+    #   - queue_conditions gate entry on the SOURCE PR -> Greptile and
+    #     review-thread resolution are enforced here, against the human-
+    #     reviewable PR where Greptile actually posts checks.
+    #   - merge_conditions gate the actual merge after the speculative
+    #     draft PR's CI passes -> only the CI checks that run on the
+    #     bot-owned `mergify/merge-queue/*` branch are required. Greptile
+    #     silent-skips bot branches by design (Mergify confirmed this is
+    #     expected), so requiring it here would block every queued PR.
+    #
+    # merge_protections (further down) also gets injected while a source PR is
+    # in the queue. Keep Greptile enforced before queue entry, then trust the
+    # Mergify-managed `queued` state during merge because Greptile intentionally
+    # skips the bot-owned speculative check branches.
     queue_conditions:
       - base = main
+      # All Greptile/human inline review threads must be resolved before
+      # the PR enters the queue. Greptile Review's check_run going green
+      # only reflects the confidence score, not whether inline findings
+      # are addressed; without this condition a PR with unresolved P0/P1
+      # findings would auto-merge as soon as `ready-to-merge` is applied.
+      - "#review-threads-unresolved = 0"
       - check-success = build-and-test
       - check-success = generated-test
       - check-success = go-lint
@@ -24,14 +41,43 @@ queue_rules:
         - and:
           - head = release-please--branches--main
           - "title ~= ^chore\\(main\\): release"
+    # Evaluated against the speculative draft PR. Intentionally omitted:
+    #   - Greptile / review-threads — Greptile silent-skips bot branches,
+    #     and draft PRs have no review threads; both are re-enforced on
+    #     the source PR via queue_conditions + merge_protections.
+    #   - pr-title — `.github/workflows/pr-title.yml` skips only titles
+    #     starting with `merge queue:` (batch-mode prefix). In draft_pr
+    #     mode the draft title format is not guaranteed to match, which
+    #     would hang the check. Source PR title is already validated at
+    #     queue_conditions entry and cannot change while queued, so the
+    #     re-check on the draft is redundant.
+    merge_conditions:
+      - check-success = build-and-test
+      - check-success = generated-test
+      - check-success = go-lint
+      - check-success = golden
+      - check-success = test
     merge_method: squash
-    update_method: rebase
-    # OSS plan: batch_size and max_parallel_checks must both be 1.
+    # `update_method: merge` instead of `rebase` so the queue can update
+    # fork PRs without `update_bot_account`. Mergify deprecated the
+    # `rebase` + `update_bot_account` combination for fork PRs on
+    # 2026-04-21 (removal 2026-07-01); the published migration path is
+    # update_method=merge. The PR branch picks up a merge commit while
+    # in the queue, but `merge_method: squash` collapses it on the way
+    # to main, so the on-main history is unchanged.
+    update_method: merge
+    # OSS plan: batch_size must stay at 1 (raising it triggers the paid
+    # "Merge Queue Batch" feature and dequeues PRs with a billing block).
+    # max_parallel_checks below is a separate knob and is NOT paywalled.
     batch_size: 1
     checks_timeout: 60m
 
 merge_queue:
-  max_parallel_checks: 1
+  # Parallel speculation across queued PRs. Mergify creates up to N
+  # `mergify/merge-queue/*` draft PRs concurrently and runs CI on each.
+  # Free on the OSS plan; the paid feature is `batch_size > 1`, which
+  # groups multiple PRs into one queue position.
+  max_parallel_checks: 3
   queued_label: queued
   dequeued_label: dequeued
   status_comments: outcomes
@@ -51,6 +97,10 @@ merge_protections:
         - and:
           - head = release-please--branches--main
           - "title ~= ^chore\\(main\\): release"
+      # Mirrors the queue_conditions rule. Belt-and-suspenders so a queued
+      # PR that picks up new Greptile findings during the queue's CI re-run
+      # is held until those threads are resolved.
+      - "#review-threads-unresolved = 0"
       - check-success = build-and-test
       - check-success = generated-test
       - check-success = go-lint
@@ -58,6 +108,12 @@ merge_protections:
       - check-success = pr-title
       - check-success = test
       - or:
+        # Source PRs already had to pass Greptile in queue_conditions before
+        # Mergify added this label. During merge, checks are evaluated against
+        # the speculative queue run where Greptile does not post.
+        - label = queued
+        # Defensive fallback for any queue-draft evaluation path.
+        - head ~= ^mergify/merge-queue/
         - check-success = Greptile Review
         - check-neutral = Greptile Review
         - check-skipped = Greptile Review

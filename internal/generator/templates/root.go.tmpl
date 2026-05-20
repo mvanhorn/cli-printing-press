@@ -34,6 +34,11 @@ type rootFlags struct {
 {{- end}}
 	yes          bool
 	agent        bool
+	// allowPartialFailure downgrades a detected response-body partial-failure
+	// (e.g. Google Ads `partialFailureError`) from a non-zero exit to a
+	// stderr warning. Default false so silent partial successes surface as
+	// failures by default.
+	allowPartialFailure bool
 	selectFields string
 	configPath   string
 	profileName  string
@@ -114,9 +119,17 @@ func Execute() error {
 //   - "unknown flag: --foo"                            (pflag)
 //   - "unknown shorthand flag: 'x' in -x"              (pflag)
 //   - "unknown command \"foo\" for ..."                (Cobra)
-//   - "required flag(s) \"foo\" not set"               (Cobra MarkFlagRequired)
+//   - "required flag \"foo\" not set"                  (Cobra, single missing)
+//   - "required flag(s) \"foo\" not set"               (Cobra, multiple missing)
 //   - "flag needs an argument: --foo"                  (pflag, missing value)
 //   - "invalid argument \"x\" for \"--y\" flag: ..."   (pflag, parse failure)
+//
+// Cobra emits the singular form ("required flag") when exactly one
+// MarkFlagRequired flag is missing, and the plural form ("required
+// flag(s)") only when multiple are missing on the same command. Both
+// shapes must be anchored to avoid matching app-level errors that
+// happen to mention "required flag" as prose; the trailing space + quote
+// (`required flag "`) is the literal punctuation cobra emits.
 //
 // Returns false for nil err.
 func isCobraUsageError(err error) bool {
@@ -127,6 +140,7 @@ func isCobraUsageError(err error) bool {
 	return strings.HasPrefix(msg, "unknown flag") ||
 		strings.HasPrefix(msg, "unknown shorthand flag") ||
 		strings.HasPrefix(msg, "unknown command") ||
+		strings.HasPrefix(msg, `required flag "`) ||
 		strings.HasPrefix(msg, `required flag(s) "`) ||
 		strings.HasPrefix(msg, "flag needs an argument:") ||
 		strings.HasPrefix(msg, `invalid argument "`)
@@ -207,6 +221,7 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false, "Disable colored output")
 	rootCmd.PersistentFlags().BoolVar(&humanFriendly, "human-friendly", false, "Enable colored output and rich formatting")
 	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set all agent-friendly defaults (--json --compact --no-input --no-color --yes)")
+	rootCmd.PersistentFlags().BoolVar(&flags.allowPartialFailure, "allow-partial-failure", false, "Downgrade response-body partial-failure (e.g. partialFailureError) to a warning instead of a non-zero exit")
 	rootCmd.PersistentFlags().StringVar(&flags.dataSource, "data-source", "auto", "Data source for read commands: auto (live with local fallback), live (API only), local (synced data only)")
 	rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile (see '{{.Name}}-pp-cli profile list')")
 	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")

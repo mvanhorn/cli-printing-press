@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,7 +32,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/items/enterprise", "enterprise", []mcpParamBinding{}, []string{}),
+		makeAPIHandler("GET", "/items/enterprise", "enterprise", false, nil, []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("items_list",
@@ -40,7 +41,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/items", "free", []mcpParamBinding{}, []string{}),
+		makeAPIHandler("GET", "/items", "free", false, nil, []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("items_premium",
@@ -49,7 +50,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/items/premium", "paid", []mcpParamBinding{}, []string{}),
+		makeAPIHandler("GET", "/items/premium", "paid", false, nil, []mcpParamBinding{}, []string{}),
 	)
 	// SQL tool — ad-hoc analysis on synced data without API calls
 	s.AddTool(
@@ -85,7 +86,7 @@ type mcpParamBinding struct {
 }
 
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
-func makeAPIHandler(method, pathTemplate, tier string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
+func makeAPIHandler(method, pathTemplate, tier string, binaryResponse bool, headerOverrides map[string]string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		c, err := newMCPClient()
 		if err != nil {
@@ -106,6 +107,19 @@ func makeAPIHandler(method, pathTemplate, tier string, bindings []mcpParamBindin
 		pathParams := make(map[string]bool, len(positionalParams))
 		params := make(map[string]string)
 		bodyArgs := make(map[string]any)
+		var headers map[string]string
+		if len(headerOverrides) > 0 {
+			headers = make(map[string]string, len(headerOverrides)+1)
+			for k, v := range headerOverrides {
+				headers[k] = v
+			}
+		}
+		if binaryResponse {
+			if headers == nil {
+				headers = map[string]string{}
+			}
+			headers[client.BinaryResponseHeader] = "true"
+		}
 		for _, binding := range bindings {
 			knownArgs[binding.PublicName] = true
 			v, ok := args[binding.PublicName]
@@ -149,14 +163,34 @@ func makeAPIHandler(method, pathTemplate, tier string, bindings []mcpParamBindin
 		var data json.RawMessage
 		switch method {
 		case "GET":
+			if len(headers) > 0 {
+				data, err = c.GetWithHeaders(path, params, headers)
+				break
+			}
 			data, err = c.Get(path, params)
 		case "POST":
+			if len(headers) > 0 {
+				data, _, err = c.PostWithParamsAndHeaders(path, params, bodyArgs, headers)
+				break
+			}
 			data, _, err = c.PostWithParams(path, params, bodyArgs)
 		case "PUT":
+			if len(headers) > 0 {
+				data, _, err = c.PutWithParamsAndHeaders(path, params, bodyArgs, headers)
+				break
+			}
 			data, _, err = c.PutWithParams(path, params, bodyArgs)
 		case "PATCH":
+			if len(headers) > 0 {
+				data, _, err = c.PatchWithParamsAndHeaders(path, params, bodyArgs, headers)
+				break
+			}
 			data, _, err = c.PatchWithParams(path, params, bodyArgs)
 		case "DELETE":
+			if len(headers) > 0 {
+				data, _, err = c.DeleteWithParamsAndHeaders(path, params, headers)
+				break
+			}
 			data, _, err = c.DeleteWithParams(path, params)
 		default:
 			return mcplib.NewToolResultError("unsupported method: " + method), nil
@@ -208,6 +242,14 @@ func makeAPIHandler(method, pathTemplate, tier string, bindings []mcpParamBindin
 					return mcplib.NewToolResultText(string(out)), nil
 				}
 			}
+		}
+		if binaryResponse {
+			out, _ := json.Marshal(map[string]any{
+				"content_encoding": "base64",
+				"data_base64":      base64.StdEncoding.EncodeToString(data),
+				"byte_count":       len(data),
+			})
+			return mcplib.NewToolResultText(string(out)), nil
 		}
 		return mcplib.NewToolResultText(string(data)), nil
 	}

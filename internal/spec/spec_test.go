@@ -2,6 +2,7 @@ package spec
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -738,12 +739,17 @@ func TestIsAuthEnvVarORCase(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "all required entries are not OR case",
+			name: "all required per-call entries are OR case",
 			auth: AuthConfig{EnvVarSpecs: []AuthEnvVar{
 				{Name: "FIRST_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true},
 				{Name: "SECOND_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true},
 			}},
-			want: false,
+			want: true,
+		},
+		{
+			name: "legacy env vars list is OR case",
+			auth: AuthConfig{EnvVars: []string{"FIRST_API_KEY", "SECOND_API_KEY"}},
+			want: true,
 		},
 		{
 			name: "all non-required per-call entries are OR case",
@@ -990,6 +996,45 @@ func TestAuthPrefixValidate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validateAuthPrefix(AuthConfig{Prefix: tt.prefix})
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestAuthSubtypeValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		auth    AuthConfig
+		wantErr string
+	}{
+		{name: "empty subtype is valid", auth: AuthConfig{Type: "bearer_token"}},
+		{
+			name: "auth0_spa_in_memory with bearer_token is valid",
+			auth: AuthConfig{Type: "bearer_token", Subtype: AuthSubtypeAuth0SPAInMemory},
+		},
+		{
+			name: "auth0_spa_in_memory with empty Type is valid",
+			auth: AuthConfig{Subtype: AuthSubtypeAuth0SPAInMemory},
+		},
+		{
+			name:    "auth0_spa_in_memory with api_key is rejected",
+			auth:    AuthConfig{Type: "api_key", Subtype: AuthSubtypeAuth0SPAInMemory},
+			wantErr: `requires auth.type "bearer_token"`,
+		},
+		{
+			name:    "unknown subtype is rejected",
+			auth:    AuthConfig{Type: "bearer_token", Subtype: "auth0_spa_localstorage"},
+			wantErr: "is not recognized",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAuthSubtype(tt.auth)
 			if tt.wantErr == "" {
 				require.NoError(t, err)
 				return
@@ -2665,6 +2710,65 @@ func TestMCPConfigAcceptsValidShapes(t *testing.T) {
 	}
 }
 
+// TestEffectiveMCPTransportsSmallAPIDefault locks the issue #1603 contract:
+// when mcp.transport is unset and the typed-endpoint surface is small, the
+// resolved transport list adds http alongside stdio so the same binary can
+// reach cloud-hosted agents. Explicit transport lists (including ["stdio"])
+// bypass the default and are honored as-is.
+func TestEffectiveMCPTransportsSmallAPIDefault(t *testing.T) {
+	t.Parallel()
+
+	mkSpec := func(endpoints int, transport []string) *APISpec {
+		s := &APISpec{
+			Name:      "demo",
+			BaseURL:   "https://api.example.com",
+			Auth:      AuthConfig{Type: "none"},
+			Resources: map[string]Resource{},
+			MCP:       MCPConfig{Transport: transport},
+		}
+		r := Resource{Endpoints: map[string]Endpoint{}}
+		for i := range endpoints {
+			r.Endpoints[fmt.Sprintf("get_%d", i)] = Endpoint{Method: "GET", Path: fmt.Sprintf("/items/%d", i)}
+		}
+		s.Resources["items"] = r
+		return s
+	}
+
+	tests := []struct {
+		name      string
+		endpoints int
+		transport []string
+		want      []string
+		wantHTTP  bool
+	}{
+		{name: "small API empty transport gets stdio+http", endpoints: 6, transport: nil, want: []string{"stdio", "http"}, wantHTTP: true},
+		{name: "boundary at threshold still gets http", endpoints: DefaultRemoteTransportEndpointThreshold, transport: nil, want: []string{"stdio", "http"}, wantHTTP: true},
+		{name: "above threshold stays stdio-only", endpoints: DefaultRemoteTransportEndpointThreshold + 1, transport: nil, want: []string{"stdio"}, wantHTTP: false},
+		{name: "explicit stdio is honored even at small scale", endpoints: 6, transport: []string{"stdio"}, want: []string{"stdio"}, wantHTTP: false},
+		{name: "explicit stdio,http passes through", endpoints: 6, transport: []string{"stdio", "http"}, want: []string{"stdio", "http"}, wantHTTP: true},
+		{name: "explicit http-only passes through", endpoints: 100, transport: []string{"http"}, want: []string{"http"}, wantHTTP: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := mkSpec(tt.endpoints, tt.transport)
+			assert.Equal(t, tt.want, s.EffectiveMCPTransports())
+			assert.Equal(t, tt.wantHTTP, s.HasMCPTransport("http"))
+			// Case-insensitive lookup mirrors MCPConfig.HasTransport.
+			assert.Equal(t, tt.wantHTTP, s.HasMCPTransport("HTTP"))
+		})
+	}
+
+	// Nil receiver is safe and returns the stdio fallback.
+	var nilSpec *APISpec
+	assert.Equal(t, []string{"stdio"}, nilSpec.EffectiveMCPTransports())
+	assert.False(t, nilSpec.HasMCPTransport("http"))
+
+	// MCPConfig.EffectiveTransports stays unconditioned on endpoint count;
+	// it's still the right helper for spec validation and mcp_audit.
+	assert.Equal(t, []string{"stdio"}, MCPConfig{}.EffectiveTransports())
+}
+
 func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -2681,7 +2785,7 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 
 	sniffed := base
 	sniffed.SpecSource = "sniffed"
-	assert.Equal(t, HTTPTransportBrowserChrome, sniffed.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, sniffed.EffectiveHTTPTransport())
 	require.NoError(t, sniffed.Validate())
 
 	browserHTTP := base
@@ -2694,13 +2798,31 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 
 	community := base
 	community.SpecSource = "community"
-	assert.Equal(t, HTTPTransportBrowserChrome, community.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, community.EffectiveHTTPTransport())
+
+	browserChrome := base
+	browserChrome.HTTPTransport = HTTPTransportBrowserChrome
+	assert.Equal(t, HTTPTransportBrowserChrome, browserChrome.EffectiveHTTPTransport())
+	assert.True(t, browserChrome.UsesBrowserHTTPTransport())
+	assert.False(t, browserChrome.UsesBrowserHTTP2Transport())
+	assert.False(t, browserChrome.UsesBrowserHTTP3Transport())
+	require.NoError(t, browserChrome.Validate())
+
+	h2 := base
+	h2.HTTPTransport = HTTPTransportBrowserChromeH2
+	assert.Equal(t, HTTPTransportBrowserChromeH2, h2.EffectiveHTTPTransport())
+	assert.True(t, h2.UsesBrowserHTTPTransport())
+	assert.True(t, h2.UsesBrowserHTTP2Transport())
+	assert.False(t, h2.UsesBrowserHTTP3Transport())
+	assert.True(t, h2.UsesBrowserManagedUserAgent())
+	require.NoError(t, h2.Validate())
 
 	h3 := base
 	h3.HTTPTransport = HTTPTransportBrowserChromeH3
 	assert.Equal(t, HTTPTransportBrowserChromeH3, h3.EffectiveHTTPTransport())
 	assert.True(t, h3.UsesBrowserHTTPTransport())
 	assert.True(t, h3.UsesBrowserHTTP3Transport())
+	assert.False(t, h3.UsesBrowserHTTP2Transport())
 	assert.True(t, h3.UsesBrowserManagedUserAgent())
 	require.NoError(t, h3.Validate())
 
@@ -2718,11 +2840,11 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 			},
 		},
 	}
-	assert.Equal(t, HTTPTransportBrowserChrome, cookieHTML.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, cookieHTML.EffectiveHTTPTransport())
 
 	composedHTML := cookieHTML
 	composedHTML.Auth.Type = "composed"
-	assert.Equal(t, HTTPTransportBrowserChrome, composedHTML.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, composedHTML.EffectiveHTTPTransport())
 
 	jsonCookie := cookieHTML
 	jsonCookie.Resources = map[string]Resource{
@@ -2748,6 +2870,86 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 	invalid := base
 	invalid.HTTPTransport = "lynx"
 	require.ErrorContains(t, invalid.Validate(), "http_transport must be one of")
+}
+
+func TestUsesBrowserLikeUserAgent(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		spec *APISpec
+		want bool
+	}{
+		{
+			name: "documented JSON API stays script-shaped",
+			spec: &APISpec{
+				Name:    "stripe",
+				BaseURL: "https://api.stripe.com",
+				Auth:    AuthConfig{Type: "bearer"},
+			},
+			want: false,
+		},
+		{
+			name: "kind: synthetic flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "bbquality",
+				BaseURL: "https://bbquality.nl",
+				Kind:    KindSynthetic,
+				Auth:    AuthConfig{Type: "bearer"},
+			},
+			want: true,
+		},
+		{
+			name: "cookie auth flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "marktplaats",
+				BaseURL: "https://www.marktplaats.nl",
+				Auth:    AuthConfig{Type: "cookie"},
+			},
+			want: true,
+		},
+		{
+			name: "composed auth flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "picnic",
+				BaseURL: "https://storefront-prod.nl.picnicinternational.com",
+				Auth:    AuthConfig{Type: "composed"},
+			},
+			want: true,
+		},
+		{
+			name: "session_handshake auth flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "openart",
+				BaseURL: "https://openart.ai",
+				Auth:    AuthConfig{Type: "session_handshake"},
+			},
+			want: true,
+		},
+		{
+			name: "auth.type casing is normalized",
+			spec: &APISpec{
+				Name:    "cookieUpper",
+				BaseURL: "https://example.com",
+				Auth:    AuthConfig{Type: "  Cookie  "},
+			},
+			want: true,
+		},
+		{
+			// Nil spec must reach the nil-receiver guard; dispatching via
+			// a typed pointer (not a name-string comparison) ensures the
+			// guard stays under test even if the case name is renamed.
+			name: "nil spec is safe and returns false",
+			spec: nil,
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.spec.UsesBrowserLikeUserAgent())
+		})
+	}
 }
 
 func TestHTMLResponseExtractionValidation(t *testing.T) {

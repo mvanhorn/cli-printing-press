@@ -1,22 +1,22 @@
 {
   "auth_check": {
-    "detail": "spec not provided; auth protocol check skipped",
-    "generated_format": "",
+    "detail": "no bot/bearer/basic scheme detected",
+    "generated_format": "unknown",
     "match": true,
     "spec_scheme": ""
   },
   "browser_session_check": {
-    "detail": "spec not provided; browser-session auth check skipped",
+    "detail": "browser-session auth not required",
     "pass": true,
     "required": false
   },
   "dead_flags": {
     "dead": 0,
-    "total": 18
+    "total": 19
   },
   "dead_functions": {
     "dead": 0,
-    "total": 59
+    "total": 62
   },
   "dir": "<ARTIFACT_DIR>/generate-golden-api/printing-press-golden",
   "example_check": {
@@ -35,7 +35,7 @@
     "state": "runtime_walking"
   },
   "naming_check": {
-    "checked": 34
+    "checked": 36
   },
   "novel_features_check": {
     "found": 0,
@@ -51,10 +51,12 @@
     "detail": "sync uses domain-specific Upsert methods; search uses generic Search only; 1 domain tables found",
     "domain_tables": 1,
     "search_calls_domain": false,
-    "sync_calls_domain": true
+    "sync_calls_domain": true,
+    "sync_file_emitted": true,
+    "sync_resources_present": true
   },
   "print_json_filtered_check": {
-    "checked": 34
+    "checked": 36
   },
   "reimplementation_check": {
     "checked": 0,
@@ -65,14 +67,16 @@
     "checked": 0,
     "skipped": true
   },
+  "spec_path": "<ARTIFACT_DIR>/generate-golden-api/printing-press-golden/spec.yaml",
+  "spec_source": "bundled",
   "test_presence": {
     "checked": 0
   },
   "verdict": "WARN",
   "wiring_check": {
     "command_tree": {
-      "defined": 43,
-      "registered": 43
+      "defined": 45,
+      "registered": 45
     },
     "config_consistency": {
       "consistent": true

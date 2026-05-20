@@ -8,6 +8,7 @@
 
 # Provenance manifest: api_name, cli_name, mcp_binary, display_name, auth_env_vars
 cafe-bistro/.printing-press.json
+cafe-bistro/.printing-press-patches.json
 
 # MCPB manifest: server identity (binary name + display_name)
 cafe-bistro/manifest.json

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/spf13/cobra"
 )
@@ -66,23 +67,10 @@ type shipcheckLeg struct {
 }
 
 // shipcheckLegs enumerates the six legs in canonical execution order.
-// Order matters: dogfood writes research.json updates that scorecard
-// later consumes, verify builds the CLI binary validate-narrative uses,
-// and scorecard should see all earlier validation failures first.
+// Order matters: verify builds the binary; validate-narrative checks
+// research.json command paths against the binary BEFORE dogfood synthesizes
+// README/SKILL from those commands.
 var shipcheckLegs = []shipcheckLeg{
-	{
-		name: "dogfood",
-		args: func(o *shipcheckOpts) []string {
-			a := []string{"dogfood", "--dir", o.dir}
-			if o.spec != "" {
-				a = append(a, "--spec", o.spec)
-			}
-			if o.researchDir != "" {
-				a = append(a, "--research-dir", o.researchDir)
-			}
-			return a
-		},
-	},
 	{
 		name: "verify",
 		args: func(o *shipcheckOpts) []string {
@@ -103,6 +91,31 @@ var shipcheckLegs = []shipcheckLeg{
 		},
 	},
 	{
+		name: "validate-narrative",
+		args: func(o *shipcheckOpts) []string {
+			return []string{
+				"validate-narrative",
+				"--strict",
+				"--full-examples",
+				"--research", shipcheckResearchPath(o),
+				"--binary", shipcheckCLIPath(o),
+			}
+		},
+	},
+	{
+		name: "dogfood",
+		args: func(o *shipcheckOpts) []string {
+			a := []string{"dogfood", "--dir", o.dir}
+			if o.spec != "" {
+				a = append(a, "--spec", o.spec)
+			}
+			if o.researchDir != "" {
+				a = append(a, "--research-dir", o.researchDir)
+			}
+			return a
+		},
+	},
+	{
 		name: "workflow-verify",
 		args: func(o *shipcheckOpts) []string {
 			return []string{"workflow-verify", "--dir", o.dir}
@@ -116,18 +129,6 @@ var shipcheckLegs = []shipcheckLeg{
 				a = append(a, "--strict")
 			}
 			return a
-		},
-	},
-	{
-		name: "validate-narrative",
-		args: func(o *shipcheckOpts) []string {
-			return []string{
-				"validate-narrative",
-				"--strict",
-				"--full-examples",
-				"--research", shipcheckResearchPath(o),
-				"--binary", shipcheckCLIPath(o),
-			}
 		},
 	},
 	{
@@ -156,12 +157,22 @@ func shipcheckResearchPath(o *shipcheckOpts) string {
 	return filepath.Join(dir, "research.json")
 }
 
+// shipcheckBinaryName resolves the CLI binary name for a generated CLI directory.
+// Prefers .printing-press.json's cli_name (the canonical "<api-slug>-pp-cli" form)
+// and falls back to the directory's basename for legacy/manifest-less dirs.
+func shipcheckBinaryName(dir string) string {
+	if name := pipeline.ReadCLIBinaryName(dir); name != "" {
+		return name
+	}
+	return filepath.Base(dir)
+}
+
 func shipcheckCLIPath(o *shipcheckOpts) string {
-	return platform.ExecutablePath(filepath.Join(o.dir, filepath.Base(o.dir)))
+	return platform.ExecutablePath(filepath.Join(o.dir, shipcheckBinaryName(o.dir)))
 }
 
 func shipcheckCLIPathForGOOS(o *shipcheckOpts, goos string) string {
-	return platform.ExecutablePathForGOOS(filepath.Join(o.dir, filepath.Base(o.dir)), goos)
+	return platform.ExecutablePathForGOOS(filepath.Join(o.dir, shipcheckBinaryName(o.dir)), goos)
 }
 
 // shipcheckLegResult is the per-leg outcome of one umbrella run.
@@ -318,8 +329,7 @@ type shipcheckJSONEnvelope struct {
 }
 
 // renderShipcheckJSON marshals the envelope to w. Each leg's `command`
-// field shows the full argv as it would be invoked at the shell so an
-// operator can copy-paste-rerun a specific leg from the JSON output.
+// field shows the argv used for that leg with sensitive flag values redacted.
 func renderShipcheckJSON(w *os.File, binPath string, results []shipcheckLegResult, runStartedAt time.Time, runElapsed time.Duration) error {
 	env := shipcheckJSONEnvelope{
 		Passed:    shipcheckUmbrellaCode(results) == 0,
@@ -335,12 +345,30 @@ func renderShipcheckJSON(w *os.File, binPath string, results []shipcheckLegResul
 			Passed:    r.Passed(),
 			StartedAt: r.StartedAt.UTC().Format(time.RFC3339),
 			ElapsedMS: r.Elapsed.Milliseconds(),
-			Command:   strings.Join(append([]string{binPath}, r.Argv...), " "),
+			Command:   renderShipcheckCommand(binPath, r.Argv),
 		})
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(env)
+}
+
+func renderShipcheckCommand(binPath string, argv []string) string {
+	args := append([]string{binPath}, redactShipcheckCommandArgv(argv)...)
+	return strings.Join(args, " ")
+}
+
+func redactShipcheckCommandArgv(argv []string) []string {
+	redacted := make([]string, len(argv))
+	copy(redacted, argv)
+	for i, arg := range redacted {
+		if arg == "--api-key" {
+			if i+1 < len(redacted) {
+				redacted[i+1] = "<redacted>"
+			}
+		}
+	}
+	return redacted
 }
 
 // validateShipcheckDir confirms --dir points at something that looks
@@ -369,17 +397,17 @@ func newShipcheckCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "shipcheck",
-		Short: "Run all six verification legs (dogfood, verify, workflow-verify, verify-skill, validate-narrative, scorecard) as one canonical Phase 4 sweep",
+		Short: "Run all six verification legs (verify, validate-narrative, dogfood, workflow-verify, verify-skill, scorecard) as one canonical Phase 4 sweep",
 		Long: `shipcheck runs every Phase 4 verification leg in sequence and aggregates their
 exit codes into a single verdict. It is the canonical local invocation that
 matches what the public-library CI runs.
 
 Legs (in canonical order):
-  dogfood          — structural validation against the source spec
   verify           — runtime command testing (with --fix to auto-repair common breakage)
+  validate-narrative — README/SKILL narrative commands against the built CLI
+  dogfood          — structural validation against the source spec
   workflow-verify  — primary workflow end-to-end against the verification manifest
   verify-skill     — SKILL.md flag/positional/command consistency with the shipped CLI
-  validate-narrative — README/SKILL narrative commands against the built CLI
   scorecard        — Steinberger quality bar (with --live-check sampled output probes)
 
 In default mode, every leg streams its full output to the terminal as it runs

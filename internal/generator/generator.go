@@ -316,6 +316,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"bodyVarDecls":          bodyVarDecls,
 		"bodyFlagRegs":          bodyFlagRegs,
 		"bodyRequiredChecks":    bodyRequiredChecks,
+		"bodyExceedsFlagDepth":  bodyExceedsFlagDepth,
 		"multipartBodyMaps":     multipartBodyMaps,
 		"endpointUsesMultipart": endpointUsesMultipart,
 		"endpointHasQueryFlags": endpointHasQueryFlags,
@@ -347,6 +348,24 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		// placeholder name.
 		"endpointTemplateEnvName": func(placeholder string) string {
 			return s.EndpointTemplateEnvName(placeholder)
+		},
+		// endpointTemplateDefault returns the spec-declared default value for
+		// a placeholder (e.g. server-URL variables' `default:` value), or ""
+		// when none. Templates branch on the empty case to skip the runtime
+		// fallback path and preserve byte-compat with placeholders that have
+		// no spec-level default (path-positional templates like {tenant}).
+		"endpointTemplateDefault": func(placeholder string) string {
+			return s.EndpointTemplateDefault(placeholder)
+		},
+		// Predicates the config.Load template branches on. Splitting on
+		// has-default vs has-undefaulted preserves byte-compat for CLIs whose
+		// placeholders are all path-positional (no defaults): without the
+		// split, every prior CLI would regenerate just to emit unused helpers.
+		"endpointTemplateVarsHasDefault": func(vars []string) bool {
+			return endpointTemplateVarsAny(vars, s, func(v string) bool { return v != "" })
+		},
+		"endpointTemplateVarsHasUndefaulted": func(vars []string) bool {
+			return endpointTemplateVarsAny(vars, s, func(v string) bool { return v == "" })
 		},
 		"safeName":                       safeSQLName,
 		"resourceIDFieldOverrideEntries": resourceIDFieldOverrideEntries,
@@ -532,6 +551,15 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 	return g
 }
 
+func endpointTemplateVarsAny(vars []string, s *spec.APISpec, predicate func(string) bool) bool {
+	for _, name := range vars {
+		if predicate(s.EndpointTemplateDefault(name)) {
+			return true
+		}
+	}
+	return false
+}
+
 func buildWhichFallbackEntries(resources map[string]spec.Resource) []NovelFeature {
 	var entries []NovelFeature
 	var resNames []string
@@ -590,6 +618,7 @@ type HelperFlags struct {
 	HasDataLayer       bool // CLI has a local store (sync/search) → emit provenance helpers
 	HasClientLimit     bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
 	HasEmbeddedPaged   bool // at least one GET endpoint has detected embedded paged sub-resources → emit fetchEmbeddedPagedSubresource
+	HasResponseUnwrap  bool // at least one generated command can call extractResponseData
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
@@ -1414,42 +1443,45 @@ func (g *Generator) prepareOutput() error {
 
 func (g *Generator) renderSingleFiles() error {
 	singleFiles := map[string]string{
-		"main.go.tmpl":                       filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
-		"helpers.go.tmpl":                    filepath.Join("internal", "cli", "helpers.go"),
-		"root_test.go.tmpl":                  filepath.Join("internal", "cli", "root_test.go"),
-		"doctor.go.tmpl":                     filepath.Join("internal", "cli", "doctor.go"),
-		"agent_context.go.tmpl":              filepath.Join("internal", "cli", "agent_context.go"),
-		"profile.go.tmpl":                    filepath.Join("internal", "cli", "profile.go"),
-		"deliver.go.tmpl":                    filepath.Join("internal", "cli", "deliver.go"),
-		"feedback.go.tmpl":                   filepath.Join("internal", "cli", "feedback.go"),
-		"which.go.tmpl":                      filepath.Join("internal", "cli", "which.go"),
-		"which_test.go.tmpl":                 filepath.Join("internal", "cli", "which_test.go"),
-		"config.go.tmpl":                     filepath.Join("internal", "config", "config.go"),
-		"cache.go.tmpl":                      filepath.Join("internal", "cache", "cache.go"),
-		"client.go.tmpl":                     filepath.Join("internal", "client", "client.go"),
-		"client_test.go.tmpl":                filepath.Join("internal", "client", "client_test.go"),
-		"cliutil_fanout.go.tmpl":             filepath.Join("internal", "cliutil", "fanout.go"),
-		"cliutil_text.go.tmpl":               filepath.Join("internal", "cliutil", "text.go"),
-		"cliutil_probe.go.tmpl":              filepath.Join("internal", "cliutil", "probe.go"),
-		"cliutil_ratelimit.go.tmpl":          filepath.Join("internal", "cliutil", "ratelimit.go"),
-		"cliutil_verifyenv.go.tmpl":          filepath.Join("internal", "cliutil", "verifyenv.go"),
-		"cliutil_extractnumber.go.tmpl":      filepath.Join("internal", "cliutil", "extractnumber.go"),
-		"cliutil_extractnumber_test.go.tmpl": filepath.Join("internal", "cliutil", "extractnumber_test.go"),
-		"cliutil_test.go.tmpl":               filepath.Join("internal", "cliutil", "cliutil_test.go"),
-		"cobratree/walker.go.tmpl":           filepath.Join("internal", "mcp", "cobratree", "walker.go"),
-		"cobratree/classify.go.tmpl":         filepath.Join("internal", "mcp", "cobratree", "classify.go"),
-		"cobratree/typemap.go.tmpl":          filepath.Join("internal", "mcp", "cobratree", "typemap.go"),
-		"cobratree/shellout.go.tmpl":         filepath.Join("internal", "mcp", "cobratree", "shellout.go"),
-		"cobratree/shellout_test.go.tmpl":    filepath.Join("internal", "mcp", "cobratree", "shellout_test.go"),
-		"cobratree/cli_path.go.tmpl":         filepath.Join("internal", "mcp", "cobratree", "cli_path.go"),
-		"cobratree/names.go.tmpl":            filepath.Join("internal", "mcp", "cobratree", "names.go"),
-		"types.go.tmpl":                      filepath.Join("internal", "types", "types.go"),
-		"golangci.yml.tmpl":                  ".golangci.yml",
-		"readme.md.tmpl":                     "README.md",
-		"agents.md.tmpl":                     "AGENTS.md",
-		"skill.md.tmpl":                      "SKILL.md",
-		"LICENSE.tmpl":                       "LICENSE",
-		"NOTICE.tmpl":                        "NOTICE",
+		"main.go.tmpl":                             filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
+		"helpers.go.tmpl":                          filepath.Join("internal", "cli", "helpers.go"),
+		"root_test.go.tmpl":                        filepath.Join("internal", "cli", "root_test.go"),
+		"doctor.go.tmpl":                           filepath.Join("internal", "cli", "doctor.go"),
+		"agent_context.go.tmpl":                    filepath.Join("internal", "cli", "agent_context.go"),
+		"profile.go.tmpl":                          filepath.Join("internal", "cli", "profile.go"),
+		"deliver.go.tmpl":                          filepath.Join("internal", "cli", "deliver.go"),
+		"feedback.go.tmpl":                         filepath.Join("internal", "cli", "feedback.go"),
+		"which.go.tmpl":                            filepath.Join("internal", "cli", "which.go"),
+		"which_test.go.tmpl":                       filepath.Join("internal", "cli", "which_test.go"),
+		"config.go.tmpl":                           filepath.Join("internal", "config", "config.go"),
+		"cache.go.tmpl":                            filepath.Join("internal", "cache", "cache.go"),
+		"client.go.tmpl":                           filepath.Join("internal", "client", "client.go"),
+		"client_test.go.tmpl":                      filepath.Join("internal", "client", "client_test.go"),
+		"client_verify_short_circuit_test.go.tmpl": filepath.Join("internal", "client", "client_verify_short_circuit_test.go"),
+		"cliutil_fanout.go.tmpl":                   filepath.Join("internal", "cliutil", "fanout.go"),
+		"cliutil_text.go.tmpl":                     filepath.Join("internal", "cliutil", "text.go"),
+		"cliutil_probe.go.tmpl":                    filepath.Join("internal", "cliutil", "probe.go"),
+		"cliutil_ratelimit.go.tmpl":                filepath.Join("internal", "cliutil", "ratelimit.go"),
+		"cliutil_verifyenv.go.tmpl":                filepath.Join("internal", "cliutil", "verifyenv.go"),
+		"cliutil_extractnumber.go.tmpl":            filepath.Join("internal", "cliutil", "extractnumber.go"),
+		"cliutil_extractnumber_test.go.tmpl":       filepath.Join("internal", "cliutil", "extractnumber_test.go"),
+		"cliutil_jwtshape.go.tmpl":                 filepath.Join("internal", "cliutil", "jwtshape.go"),
+		"cliutil_jwtshape_test.go.tmpl":            filepath.Join("internal", "cliutil", "jwtshape_test.go"),
+		"cliutil_test.go.tmpl":                     filepath.Join("internal", "cliutil", "cliutil_test.go"),
+		"cobratree/walker.go.tmpl":                 filepath.Join("internal", "mcp", "cobratree", "walker.go"),
+		"cobratree/classify.go.tmpl":               filepath.Join("internal", "mcp", "cobratree", "classify.go"),
+		"cobratree/typemap.go.tmpl":                filepath.Join("internal", "mcp", "cobratree", "typemap.go"),
+		"cobratree/shellout.go.tmpl":               filepath.Join("internal", "mcp", "cobratree", "shellout.go"),
+		"cobratree/shellout_test.go.tmpl":          filepath.Join("internal", "mcp", "cobratree", "shellout_test.go"),
+		"cobratree/cli_path.go.tmpl":               filepath.Join("internal", "mcp", "cobratree", "cli_path.go"),
+		"cobratree/names.go.tmpl":                  filepath.Join("internal", "mcp", "cobratree", "names.go"),
+		"types.go.tmpl":                            filepath.Join("internal", "types", "types.go"),
+		"golangci.yml.tmpl":                        ".golangci.yml",
+		"readme.md.tmpl":                           "README.md",
+		"agents.md.tmpl":                           "AGENTS.md",
+		"skill.md.tmpl":                            "SKILL.md",
+		"LICENSE.tmpl":                             "LICENSE",
+		"NOTICE.tmpl":                              "NOTICE",
 	}
 
 	for tmplName, outPath := range singleFiles {
@@ -1460,6 +1492,7 @@ func (g *Generator) renderSingleFiles() error {
 		case "helpers.go.tmpl":
 			hFlags := computeHelperFlags(g.Spec)
 			hFlags.HasDataLayer = g.VisionSet.Store
+			hFlags.HasResponseUnwrap = g.VisionSet.Store && promotedCommandsCanUnwrapResponse(g.PromotedCommands)
 			data = &helpersTemplateData{
 				APISpec:     g.Spec,
 				HelperFlags: hFlags,
@@ -1544,6 +1577,9 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 		if err := g.renderTemplate("auto_refresh.go.tmpl", filepath.Join("internal", "cli", "auto_refresh.go"), autoRefreshData); err != nil {
 			return fmt.Errorf("rendering auto_refresh: %w", err)
+		}
+		if err := g.renderTemplate("auto_refresh_test.go.tmpl", filepath.Join("internal", "cli", "auto_refresh_test.go"), autoRefreshData); err != nil {
+			return fmt.Errorf("rendering auto_refresh_test: %w", err)
 		}
 	}
 
@@ -1722,6 +1758,8 @@ func (g *Generator) GenerateMCPSurface() error {
 		"cliutil_verifyenv.go.tmpl":          filepath.Join("internal", "cliutil", "verifyenv.go"),
 		"cliutil_extractnumber.go.tmpl":      filepath.Join("internal", "cliutil", "extractnumber.go"),
 		"cliutil_extractnumber_test.go.tmpl": filepath.Join("internal", "cliutil", "extractnumber_test.go"),
+		"cliutil_jwtshape.go.tmpl":           filepath.Join("internal", "cliutil", "jwtshape.go"),
+		"cliutil_jwtshape_test.go.tmpl":      filepath.Join("internal", "cliutil", "jwtshape_test.go"),
 	}
 	for tmplName, outPath := range mcpFiles {
 		if err := g.renderTemplate(tmplName, outPath, g.Spec); err != nil {
@@ -1752,6 +1790,15 @@ func buildPromotedCommandPlan(apiSpec *spec.APISpec) ([]PromotedCommand, map[str
 	}
 
 	return promotedCommands, promotedResourceNames, promotedEndpointNames
+}
+
+func promotedCommandsCanUnwrapResponse(commands []PromotedCommand) bool {
+	for _, cmd := range commands {
+		if !cmd.Endpoint.UsesBinaryResponse() {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool, promotedEndpointNames map[string]string) error {
@@ -1894,11 +1941,11 @@ func (g *Generator) renderAuthFiles() error {
 		authTmpl = "auth_client_credentials.go.tmpl"
 	case g.Spec.Auth.AuthorizationURL != "":
 		authTmpl = "auth.go.tmpl"
-	case g.Spec.Auth.Type == "cookie" || g.Spec.Auth.Type == "composed" || g.hasTrafficAnalysisHint("graphql_persisted_query"):
-		// Browser-aware auth template for browser-cookie auth or a
-		// persisted-query registry, even for auth.type:none. Query refresh
-		// flows need temporary browser capture support, not a resident
-		// browser transport.
+	case g.Spec.Auth.Type == "cookie" || g.Spec.Auth.Type == "composed" || g.hasTrafficAnalysisHint("graphql_persisted_query") || g.Spec.Auth.Subtype == spec.AuthSubtypeAuth0SPAInMemory:
+		// Browser-aware auth template for browser-cookie auth, a
+		// persisted-query registry, or an Auth0-SPA-in-memory bearer token
+		// (CDP runtime extraction). Query refresh flows need temporary
+		// browser capture support, not a resident browser transport.
 		authTmpl = "auth_browser.go.tmpl"
 	}
 	authData := &authTemplateData{
@@ -2064,17 +2111,18 @@ func (g *Generator) renderStoreFiles(schema []TableDef) error {
 
 type visionRenderData struct {
 	*spec.APISpec
-	SyncableResources      []profiler.SyncableResource
-	DependentSyncResources []profiler.DependentResource
-	SearchableFields       map[string][]string
-	Tables                 []TableDef
-	Pagination             profiler.PaginationProfile
-	SearchEndpointPath     string
-	SearchQueryParam       string
-	SearchEndpointMethod   string
-	SearchBodyFields       []profiler.SearchBodyField
-	GraphQLFieldPaths      map[string]string
-	AgentMoneyWorkflow     AgentMoneyWorkflow
+	SyncableResources            []profiler.SyncableResource
+	DependentSyncResources       []profiler.DependentResource
+	PaginationSupportedResources []string
+	SearchableFields             map[string][]string
+	Tables                       []TableDef
+	Pagination                   profiler.PaginationProfile
+	SearchEndpointPath           string
+	SearchQueryParam             string
+	SearchEndpointMethod         string
+	SearchBodyFields             []profiler.SearchBodyField
+	GraphQLFieldPaths            map[string]string
+	AgentMoneyWorkflow           AgentMoneyWorkflow
 }
 
 type resourceIDFieldOverrideEntry struct {
@@ -2138,6 +2186,26 @@ func criticalResourceEntries(syncable []profiler.SyncableResource, dependent []p
 	return entries
 }
 
+func paginationSupportedResources(syncable []profiler.SyncableResource, dependent []profiler.DependentResource) []string {
+	supported := map[string]bool{}
+	for _, resource := range syncable {
+		if resource.SupportsPagination {
+			supported[resource.Name] = true
+		}
+	}
+	for _, resource := range dependent {
+		if resource.SupportsPagination {
+			supported[resource.Name] = true
+		}
+	}
+	names := make([]string, 0, len(supported))
+	for name := range supported {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 	gqlFieldPaths := map[string]string{}
 	for rName, r := range g.Spec.Resources {
@@ -2147,18 +2215,19 @@ func (g *Generator) visionRenderData(schema []TableDef) visionRenderData {
 	}
 
 	return visionRenderData{
-		APISpec:                g.Spec,
-		SyncableResources:      g.profile.SyncableResources,
-		DependentSyncResources: g.profile.DependentSyncResources,
-		SearchableFields:       g.profile.SearchableFields,
-		Tables:                 schema,
-		Pagination:             g.profile.Pagination,
-		SearchEndpointPath:     g.profile.SearchEndpointPath,
-		SearchQueryParam:       g.profile.SearchQueryParam,
-		SearchEndpointMethod:   g.profile.SearchEndpointMethod,
-		SearchBodyFields:       g.profile.SearchBodyFields,
-		GraphQLFieldPaths:      gqlFieldPaths,
-		AgentMoneyWorkflow:     detectAgentMoneyWorkflow(g.Spec, g.PromotedEndpointNames),
+		APISpec:                      g.Spec,
+		SyncableResources:            g.profile.SyncableResources,
+		DependentSyncResources:       g.profile.DependentSyncResources,
+		PaginationSupportedResources: paginationSupportedResources(g.profile.SyncableResources, g.profile.DependentSyncResources),
+		SearchableFields:             g.profile.SearchableFields,
+		Tables:                       schema,
+		Pagination:                   g.profile.Pagination,
+		SearchEndpointPath:           g.profile.SearchEndpointPath,
+		SearchQueryParam:             g.profile.SearchQueryParam,
+		SearchEndpointMethod:         g.profile.SearchEndpointMethod,
+		SearchBodyFields:             g.profile.SearchBodyFields,
+		GraphQLFieldPaths:            gqlFieldPaths,
+		AgentMoneyWorkflow:           detectAgentMoneyWorkflow(g.Spec, g.PromotedEndpointNames),
 	}
 }
 
@@ -2575,7 +2644,7 @@ func (g *Generator) renderPromotedCommandFiles(promotedCommands []PromotedComman
 			IsReadOnly:      endpointIsReadCommand(pc.Endpoint, pc.EndpointName),
 			APISpec:         g.Spec,
 		}
-		promotedPath := filepath.Join("internal", "cli", "promoted_"+pc.PromotedName+".go")
+		promotedPath := filepath.Join("internal", "cli", safeResourceFileStem("promoted_"+pc.PromotedName)+".go")
 		if err := g.renderTemplate("command_promoted.go.tmpl", promotedPath, promotedData); err != nil {
 			return fmt.Errorf("rendering promoted command %s: %w", pc.PromotedName, err)
 		}
@@ -2743,7 +2812,7 @@ func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
 		return err
 	}
 
-	return os.WriteFile(fullPath, normalizeRendered(buf.Bytes(), outPath), 0o644)
+	return os.WriteFile(fullPath, normalizeRendered(buf.Bytes(), tmplName, outPath), 0o644)
 }
 
 // normalizeRendered prepares template-rendered bytes for disk: trims trailing
@@ -2753,9 +2822,12 @@ func (g *Generator) renderTemplate(tmplName, outPath string, data any) error {
 // print surfaces hundreds of phantom diffs on the first `gofmt -w`. Falls
 // through with a stderr warning rather than fail-hard so a malformed template
 // surfaces as a compile error downstream instead of an opaque emit failure.
-func normalizeRendered(raw []byte, outPath string) []byte {
+func normalizeRendered(raw []byte, tmplName, outPath string) []byte {
 	rendered := bytes.TrimRight(raw, " \t\r\n")
 	rendered = append(rendered, '\n')
+	if tmplName == "command_endpoint.go.tmpl" {
+		rendered = pruneUnusedClientImport(rendered)
+	}
 	if filepath.Ext(outPath) != ".go" {
 		return rendered
 	}
@@ -2765,6 +2837,64 @@ func normalizeRendered(raw []byte, outPath string) []byte {
 		return rendered
 	}
 	return formatted
+}
+
+// pruneUnusedClientImport drops the `<module>/internal/client` import line
+// from a rendered command_endpoint.go file when the body never references
+// the `client` package as a qualifier. The endpoint template emits this
+// import for the GraphQL list/get path, but other branches (notably
+// POST /graphql for GraphQL specs whose author wrote method: POST) reach
+// the rendered file without producing a `client.X` reference, leaving an
+// unused import that breaks `go build`.
+func pruneUnusedClientImport(src []byte) []byte {
+	// Find the import block.
+	importStart := bytes.Index(src, []byte("\nimport (\n"))
+	if importStart < 0 {
+		return src
+	}
+	importBlockStart := importStart + len("\nimport (\n")
+	importEnd := bytes.Index(src[importBlockStart:], []byte("\n)"))
+	if importEnd < 0 {
+		return src
+	}
+	importEnd += importBlockStart
+
+	// Body is everything after the closing `)` of the import block.
+	body := src[importEnd:]
+	// A `client.X` reference is the only way the import is used inside the
+	// rendered body.
+	if bytes.Contains(body, []byte("client.")) {
+		return src
+	}
+
+	// Locate the line `"<...>/internal/client"` inside the import block and
+	// remove it (including its trailing newline). The literal suffix is
+	// stable across all module paths because it's emitted as
+	// `"{{modulePath}}/internal/client"` from the template.
+	importBlock := src[importBlockStart:importEnd]
+	suffix := []byte(`/internal/client"`)
+	rel := bytes.Index(importBlock, suffix)
+	if rel < 0 {
+		return src
+	}
+	abs := importBlockStart + rel
+	// Walk back to the start of the line.
+	lineStart := abs
+	for lineStart > 0 && src[lineStart-1] != '\n' {
+		lineStart--
+	}
+	// Walk forward to the end of the line, including the trailing newline.
+	lineEnd := abs
+	for lineEnd < len(src) && src[lineEnd] != '\n' {
+		lineEnd++
+	}
+	if lineEnd < len(src) {
+		lineEnd++
+	}
+	out := make([]byte, 0, len(src)-(lineEnd-lineStart))
+	out = append(out, src[:lineStart]...)
+	out = append(out, src[lineEnd:]...)
+	return out
 }
 
 func validateRenderedArtifact(outPath, content string) error {
@@ -3295,6 +3425,21 @@ func endpointNeedsClientLimit(endpoint spec.Endpoint) bool {
 	return false
 }
 
+// maxBodyFlagDepth caps how many levels of nested-object recursion the
+// body-flag emitters expand into per-field Cobra flags. A Param at
+// depth 0 is a top-level body field; its object children are at depth 1
+// and recurse with depth+1. When the next depth would meet or exceed
+// the cap, the object's subtree is skipped uniformly across renderBodyMap,
+// renderBodyVarDecls, renderBodyFlagRegs, and renderBodyRequiredChecks.
+// The user reaches truncated fields via the existing `--stdin` flag on
+// POST/PUT/PATCH commands, which reads the full JSON body from stdin.
+//
+// Default 3 covers typical CRUD schemas (resource.object.field) without
+// the recursive explosion seen on enterprise/ERP specs that self-reference
+// through 6+ layers and produce 40k-line command files the Go compiler
+// OOMs on.
+const maxBodyFlagDepth = 3
+
 // bodyMap renders the per-flag body-building block shared by the
 // POST/PUT/PATCH branches in command_endpoint.go.tmpl and the body
 // branch in command_promoted.go.tmpl. The four sites generated the
@@ -3307,10 +3452,11 @@ func endpointNeedsClientLimit(endpoint spec.Endpoint) bool {
 // recurses: each leaf field becomes its own flag (parent-prefixed in
 // the generated identifier so `start.dateTime` and `end.dateTime` do
 // not collide), and the parent's wire-side key receives a built-up
-// map[string]any rather than a single JSON-string flag.
+// map[string]any rather than a single JSON-string flag. Recursion stops
+// at maxBodyFlagDepth; deeper subtrees are only reachable via `--stdin`.
 func bodyMap(body []spec.Param, indent string) string {
 	var b strings.Builder
-	renderBodyMap(&b, body, indent, "body", "", "")
+	renderBodyMap(&b, flattenCollidingBodyFields(body), 0, indent, "body", "", "")
 	return b.String()
 }
 
@@ -3351,16 +3497,19 @@ func bodyJSONFallbackMap(indent string) string {
 	return b.String()
 }
 
-func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identPrefix, flagPrefix string) {
+func renderBodyMap(b *strings.Builder, body []spec.Param, depth int, indent, mapVar, identPrefix, flagPrefix string) {
 	for _, p := range body {
 		id := paramIdent(p)
 		ident := identPrefix + toCamel(id)
 		flag := joinFlag(flagPrefix, publicFlagName(p))
 		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
 			nestedMap := "nested" + ident
 			fmt.Fprintf(b, "%s{\n", indent)
 			fmt.Fprintf(b, "%s\t%s := map[string]any{}\n", indent, nestedMap)
-			renderBodyMap(b, p.Fields, indent+"\t", nestedMap, ident, flag)
+			renderBodyMap(b, p.Fields, depth+1, indent+"\t", nestedMap, ident, flag)
 			fmt.Fprintf(b, "%s\tif len(%s) > 0 {\n", indent, nestedMap)
 			fmt.Fprintf(b, "%s\t\t%s[%q] = %s\n", indent, mapVar, p.Name, nestedMap)
 			fmt.Fprintf(b, "%s\t}\n", indent)
@@ -3382,6 +3531,21 @@ func renderBodyMap(b *strings.Builder, body []spec.Param, indent, mapVar, identP
 			fmt.Fprintf(b, "%s\t\treturn fmt.Errorf(\"parsing --%s JSON: %%w\", err)\n", indent, flag)
 			fmt.Fprintf(b, "%s\t}\n", indent)
 			fmt.Fprintf(b, "%s\t%s[%q] = %s\n", indent, mapVar, p.Name, rhs)
+			fmt.Fprintf(b, "%s}\n", indent)
+			continue
+		}
+		if p.Type == "boolean" || p.Type == "bool" {
+			// Booleans gate on cmd.Flags().Changed instead of a zero-guard.
+			// The zero-guard (body != false) drops user-set false values,
+			// letting the server's default (often true) silently invert
+			// intent. Unconditionally emitting flips the bug: PATCH bodies
+			// would carry "field: false" for every untouched flag and
+			// overwrite server state. Changed distinguishes "user set
+			// false" from "user did not touch the flag" and is correct
+			// for POST, PUT, and PATCH. Internal YAML specs use "boolean";
+			// the OpenAPI parser normalizes to "bool".
+			fmt.Fprintf(b, "%sif cmd.Flags().Changed(%q) {\n", indent, flag)
+			fmt.Fprintf(b, "%s\t%s[%q] = body%s\n", indent, mapVar, p.Name, ident)
 			fmt.Fprintf(b, "%s}\n", indent)
 			continue
 		}
@@ -3415,7 +3579,7 @@ func bodyVarDecls(endpoint spec.Endpoint) string {
 		}
 		return b.String()
 	}
-	renderBodyVarDecls(&b, endpoint.Body, "")
+	renderBodyVarDecls(&b, flattenCollidingBodyFields(endpoint.Body), 0, "")
 	return b.String()
 }
 
@@ -3428,11 +3592,14 @@ func bodyUsesFlatEmission(endpoint spec.Endpoint) bool {
 	return endpointUsesMultipart(endpoint) || endpointUsesForm(endpoint)
 }
 
-func renderBodyVarDecls(b *strings.Builder, body []spec.Param, identPrefix string) {
+func renderBodyVarDecls(b *strings.Builder, body []spec.Param, depth int, identPrefix string) {
 	for _, p := range body {
 		ident := identPrefix + toCamel(paramIdent(p))
 		if p.Type == "object" && len(p.Fields) > 0 {
-			renderBodyVarDecls(b, p.Fields, ident)
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
+			renderBodyVarDecls(b, p.Fields, depth+1, ident)
 			continue
 		}
 		fmt.Fprintf(b, "\n\tvar body%s %s", ident, goType(p.Type))
@@ -3457,16 +3624,19 @@ func bodyFlagRegs(endpoint spec.Endpoint) string {
 		}
 		return b.String()
 	}
-	renderBodyFlagRegs(&b, endpoint.Body, "", "", true)
+	renderBodyFlagRegs(&b, flattenCollidingBodyFields(endpoint.Body), 0, "", "", true)
 	return b.String()
 }
 
-func renderBodyFlagRegs(b *strings.Builder, body []spec.Param, identPrefix, flagPrefix string, topLevel bool) {
+func renderBodyFlagRegs(b *strings.Builder, body []spec.Param, depth int, identPrefix, flagPrefix string, topLevel bool) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
 			ident := identPrefix + toCamel(paramIdent(p))
 			flag := joinFlag(flagPrefix, publicFlagName(p))
-			renderBodyFlagRegs(b, p.Fields, ident, flag, false)
+			renderBodyFlagRegs(b, p.Fields, depth+1, ident, flag, false)
 			continue
 		}
 		renderFlatBodyFlagReg(b, p, identPrefix, flagPrefix, topLevel)
@@ -3519,19 +3689,60 @@ func bodyRequiredChecks(endpoint spec.Endpoint, indent string) string {
 		}
 		return b.String()
 	}
-	renderBodyRequiredChecks(&b, endpoint.Body, indent, "", true)
+	renderBodyRequiredChecks(&b, flattenCollidingBodyFields(endpoint.Body), 0, indent, "", true)
 	return b.String()
 }
 
-func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, indent, flagPrefix string, topLevel bool) {
+func renderBodyRequiredChecks(b *strings.Builder, body []spec.Param, depth int, indent, flagPrefix string, topLevel bool) {
 	for _, p := range body {
 		if p.Type == "object" && len(p.Fields) > 0 {
+			if depth+1 >= maxBodyFlagDepth {
+				continue
+			}
 			flag := joinFlag(flagPrefix, publicFlagName(p))
-			renderBodyRequiredChecks(b, p.Fields, indent, flag, false)
+			renderBodyRequiredChecks(b, p.Fields, depth+1, indent, flag, false)
 			continue
 		}
 		renderFlatBodyRequiredCheck(b, p, indent, flagPrefix, topLevel)
 	}
+}
+
+// bodyExceedsFlagDepth reports whether emitting per-field body flags for
+// the endpoint would have truncated any nested-object subtree under
+// maxBodyFlagDepth. Multipart/form endpoints stay flat and never
+// truncate; BodyJSONFallback endpoints route through a single
+// --body-json flag and never reach the per-field path.
+//
+// The walk uses flattenCollidingBodyFields because that is what the
+// emitters render. Collision-flattening clears `Fields` on an object
+// whose dot-flattened subtree would clash with a sibling identifier,
+// turning it into a JSON-string leaf the user passes as a single flag.
+// Walking the raw body would falsely report truncation in that case
+// and rewrite the --stdin help text even when every field is exposed.
+func bodyExceedsFlagDepth(endpoint spec.Endpoint) bool {
+	if endpoint.BodyJSONFallback || bodyUsesFlatEmission(endpoint) {
+		return false
+	}
+	return walkBodyExceedsDepth(flattenCollidingBodyFields(endpoint.Body), 0)
+}
+
+// walkBodyExceedsDepth returns true as soon as any nested-object subtree
+// at depth >= maxBodyFlagDepth-1 is found. The walk is bounded by the
+// same depth check the emitters use, so a Param graph that
+// intentionally self-references (cyclic spec) does not loop here.
+func walkBodyExceedsDepth(body []spec.Param, depth int) bool {
+	for _, p := range body {
+		if p.Type != "object" || len(p.Fields) == 0 {
+			continue
+		}
+		if depth+1 >= maxBodyFlagDepth {
+			return true
+		}
+		if walkBodyExceedsDepth(p.Fields, depth+1) {
+			return true
+		}
+	}
+	return false
 }
 
 func renderFlatBodyRequiredCheck(b *strings.Builder, p spec.Param, indent, flagPrefix string, topLevel bool) {
@@ -4091,6 +4302,20 @@ func (g *Generator) mcpParamDescription(p spec.Param) string {
 }
 
 func exampleValue(p spec.Param) string {
+	if value, ok := syntheticExampleValue(p.Name); ok {
+		return value
+	}
+
+	// Enum-constrained params: the API rejects anything outside the set,
+	// so prefer the first declared value over name-shape heuristics.
+	// This wins over name-based branches because a hypothetical
+	// `status_id: [a,b,c]` enum still requires `a`, not a UUID.
+	for _, v := range p.Enum {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+
 	nameLower := strings.ToLower(p.Name)
 
 	// camelCase `*Id` carries an exclusion fence so bool/numeric params

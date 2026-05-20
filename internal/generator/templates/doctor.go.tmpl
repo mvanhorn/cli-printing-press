@@ -11,6 +11,8 @@ import (
 {{- if .Auth.RequiresBrowserSession}}
 	"crypto/sha256"
 	"encoding/hex"
+{{- end}}
+{{- if or .Auth.RequiresBrowserSession .Auth.VerifyQuery}}
 	"encoding/json"
 {{- end}}
 {{- if .HasStore}}
@@ -46,6 +48,7 @@ import (
 {{- end}}
 
 	"{{modulePath}}/internal/client"
+	"{{modulePath}}/internal/cliutil"
 	"{{modulePath}}/internal/config"
 {{- if .HasStore}}
 	"{{modulePath}}/internal/store"
@@ -96,6 +99,82 @@ func looksLikeDoctorInterstitial(body []byte) string {
 	}
 	return ""
 }
+
+{{- if and (not .Auth.VerifyPath) (not .Auth.VerifyQuery)}}
+// suggestReadCommand walks the Cobra tree to find an endpoint-mirror command
+// an operator can run to confirm credentials work end-to-end. Picks the
+// first leaf that (a) carries the `pp:endpoint` annotation, so it actually
+// dials the API rather than reading a local file like `feedback list` or
+// `profile list`; (b) has a list/get verb; and (c) takes no positional
+// arguments, so the suggestion is copy-paste runnable. Returns the dotted
+// command path (e.g. "issues list") or "" when no such command exists —
+// common in mutation-only CLIs and in CLIs where every read command has
+// required positional arguments.
+func suggestReadCommand(root *cobra.Command) string {
+	if root == nil {
+		return ""
+	}
+	var found string
+	var walk func(*cobra.Command, []string)
+	walk = func(cmd *cobra.Command, path []string) {
+		if found != "" {
+			return
+		}
+		for _, child := range cmd.Commands() {
+			childPath := append(append([]string{}, path...), child.Name())
+			if isSuggestableReadLeaf(child) {
+				found = strings.Join(childPath, " ")
+				return
+			}
+			// Recurse even into Hidden parents: printed CLIs mark raw
+			// resource parents Hidden to keep --help curated, but their
+			// endpoint leaves remain runnable (`<cli> projects list`
+			// works). Skipping hidden subtrees would make this return ""
+			// in nearly every CLI. isSuggestableReadLeaf still rejects a
+			// leaf that is itself Hidden.
+			walk(child, childPath)
+			if found != "" {
+				return
+			}
+		}
+	}
+	walk(root, nil)
+	return found
+}
+
+func isSuggestableReadLeaf(cmd *cobra.Command) bool {
+	if cmd == nil || cmd.Hidden || cmd.HasSubCommands() || !cmd.Runnable() {
+		return false
+	}
+	// Only endpoint-mirror commands count; framework commands like
+	// `feedback list` and `profile list` read local files and would
+	// recreate the false-confidence failure mode the suggestion is
+	// supposed to avoid.
+	if cmd.Annotations["pp:endpoint"] == "" {
+		return false
+	}
+	verb := strings.ToLower(strings.SplitN(cmd.Use, " ", 2)[0])
+	if verb != "list" && verb != "get" {
+		return false
+	}
+	// Endpoint commands with positional path params advertise them in
+	// Use as `<id>` (required) or `[id]` (optional). The runtime body
+	// rejects empty args by printing help, so suggesting one would not
+	// actually exercise the token — reject before the Args probe below.
+	if strings.ContainsAny(cmd.Use, "<[") {
+		return false
+	}
+	// Probe the Args validator with an empty positional-arg list. A nil
+	// validator accepts anything (including zero args); a non-nil validator
+	// that returns nil for [] accepts zero args. Either qualifies — the
+	// suggestion `<cli> list` is then a complete command.
+	if cmd.Args == nil {
+		return true
+	}
+	return cmd.Args(cmd, []string{}) == nil
+}
+
+{{- end}}
 
 func newDoctorCmd(flags *rootFlags) *cobra.Command {
 	var failOn string
@@ -414,11 +493,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					} else if reachErr != nil && !errors.As(reachErr, &reachAPIErr) {
 						report["credentials"] = "skipped (API unreachable)"
 					} else {
-{{- if .Auth.VerifyPath}}
-						verifyPath := "{{.Auth.VerifyPath}}"
-						if !strings.HasPrefix(verifyPath, "/") {
-							verifyPath = "/" + verifyPath
-						}
+{{- if or .Auth.VerifyPath .Auth.VerifyQuery}}
+						// Shared auth-header setup for both probe variants below.
+						// Kept hoisted out of the per-probe branches because the
+						// per-API auth-placement, RequiredHeaders, and User-Agent
+						// fallback logic is independent of which verb the probe
+						// dials.
 						authParams := map[string]string{}
 						authHeaders := map[string]string{}
 {{- if and .Auth .Auth.In (eq .Auth.In "query")}}
@@ -429,9 +509,28 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 {{- range .RequiredHeaders}}
 						authHeaders["{{.Name}}"] = "{{.Value}}"
 {{- end}}
-{{- if and (not .UsesBrowserManagedUserAgent) (not (.HasRequiredHeader "User-Agent"))}}
+{{- /*
+	Emit the hardcoded User-Agent fallback only when no other code path has
+	already populated authHeaders["User-Agent"]. Three cases skip the fallback:
+	  1. UsesBrowserManagedUserAgent — the browser transport sets the UA.
+	  2. HasRequiredHeader "User-Agent" — the RequiredHeaders range above set it.
+	  3. Auth.In is "header" (or empty default) AND Auth.Header is "User-Agent" —
+	     the API uses the User-Agent header itself as the auth credential
+	     (NWS-style), so the "authHeaders[Auth.Header] = authHeader" line above
+	     already set it to the configured value. The hardcoded fallback would
+	     overwrite the operator's configured UA and make the credential probe
+	     test the wrong identity.
+*/}}
+{{- $authUsesUA := and .Auth (or (eq .Auth.In "") (eq .Auth.In "header")) (eq (lower .Auth.Header) "user-agent")}}
+{{- if and (not .UsesBrowserManagedUserAgent) (not (.HasRequiredHeader "User-Agent")) (not $authUsesUA)}}
 						authHeaders["User-Agent"] = "{{.Name}}-pp-cli"
 {{- end}}
+{{- end}}
+{{- if .Auth.VerifyPath}}
+						verifyPath := "{{.Auth.VerifyPath}}"
+						if !strings.HasPrefix(verifyPath, "/") {
+							verifyPath = "/" + verifyPath
+						}
 						_, authErr := c.GetWithHeaders(verifyPath, authParams, authHeaders)
 						var authAPIErr *client.APIError
 						switch {
@@ -450,8 +549,45 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 						default:
 							report["credentials"] = fmt.Sprintf("error: %s", authErr)
 						}
+{{- else if .Auth.VerifyQuery}}
+						// GraphQL credential probe. POST a spec-declared query to
+						// base_url and treat HTTP 2xx with no top-level `errors`
+						// array as verified. Goes through doRead/PostQueryWith…
+						// so the verify-mode short-circuit doesn't suppress the
+						// probe under PRINTING_PRESS_VERIFY=1.
+						authHeaders["Content-Type"] = "application/json"
+						verifyBody := map[string]string{"query": {{printf "%q" .Auth.VerifyQuery}}}
+						respBody, _, gqlErr := c.PostQueryWithParamsAndHeaders("", authParams, verifyBody, authHeaders)
+						var gqlAPIErr *client.APIError
+						switch {
+						case gqlErr == nil:
+							var envelope struct {
+								Errors []json.RawMessage `json:"errors"`
+							}
+							if jerr := json.Unmarshal(respBody, &envelope); jerr == nil && len(envelope.Errors) > 0 {
+								report["credentials"] = "rejected — GraphQL response contained top-level errors"
+							} else {
+								report["credentials"] = "valid"
+							}
+						case errors.As(gqlErr, &gqlAPIErr):
+							switch {
+							case gqlAPIErr.StatusCode == 401:
+								report["credentials"] = fmt.Sprintf("invalid (HTTP %d) — check your credentials", gqlAPIErr.StatusCode)
+							case gqlAPIErr.StatusCode == 403:
+								report["credentials"] = fmt.Sprintf("scope-limited (HTTP %d) — credentials are valid but lack permission for this endpoint. Check your dashboard's API key scope.", gqlAPIErr.StatusCode)
+							default:
+								report["credentials"] = fmt.Sprintf("ok (HTTP %d from GraphQL probe, but auth was accepted)", gqlAPIErr.StatusCode)
+							}
+						default:
+							report["credentials"] = fmt.Sprintf("error: %s", gqlErr)
+						}
 {{- else}}
-						report["credentials"] = "present (not verified — set auth.verify_path in spec for an API acceptance check)"
+						suggestion := suggestReadCommand(cmd.Root())
+						if suggestion != "" {
+							report["credentials"] = fmt.Sprintf("present, not verified. Run `%s %s` to confirm the token works end-to-end.", "{{.Name}}-pp-cli", suggestion)
+						} else {
+							report["credentials"] = "present, not verified. Run any read command to confirm the token works end-to-end."
+						}
 {{- end}}
 {{- end}}
 					}
@@ -468,6 +604,21 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			report["cache"] = collectCacheReport(cmd.Context(), {{if .Cache.StaleAfter}}"{{.Cache.StaleAfter}}"{{else}}""{{end}})
 {{- end}}
 
+			// Verify mode state. Surfaced so an operator who unintentionally
+			// inherits PRINTING_PRESS_VERIFY=1 (parent shell, CI runner, container
+			// image) detects the foot-gun without inspecting a response body.
+			// Pairs with the synthetic envelope's verify_noop / reason literals
+			// as a second diagnosis anchor.
+			if cliutil.IsVerifyEnv() {
+				if cliutil.IsVerifyLiveHTTPEnv() {
+					report["verify_mode"] = "INFO ACTIVE — live HTTP opt-in (mutating verbs dial out)"
+				} else {
+					report["verify_mode"] = "INFO ACTIVE — mutating HTTP verbs short-circuit (PRINTING_PRESS_VERIFY=1; no network calls for DELETE/POST/PUT/PATCH)"
+				}
+			} else {
+				report["verify_mode"] = "normal operation"
+			}
+
 			report["version"] = version
 
 			if flags.asJSON {
@@ -483,6 +634,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				{"config", "Config"},
 				{"auth", "Auth"},
 				{"env_vars", "Env Vars"},
+				{"verify_mode", "Verify Mode"},
 {{- if .Auth.RequiresBrowserSession}}
 				{"browser_session_proof", "Browser Session Proof"},
 {{- end}}
@@ -506,6 +658,11 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					indicator = yellow("INFO")
 				case strings.Contains(s, "scope-limited"):
 					indicator = yellow("WARN")
+				case strings.Contains(s, "not verified"):
+					// "present, not verified" — credentials are loaded but no
+					// probe ran. Informational, not a warning; a clean config
+					// shouldn't render yellow WARN in CI dashboards.
+					indicator = yellow("INFO")
 				case strings.Contains(s, "error") || strings.Contains(s, "not configured") || strings.Contains(s, "unreachable") || strings.Contains(s, "invalid") || strings.Contains(s, "missing"):
 					indicator = red("FAIL")
 				case s == "not required":

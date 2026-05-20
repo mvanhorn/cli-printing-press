@@ -59,7 +59,12 @@ type codeOrchEndpoint struct {
 	Tier        string
 	Summary     string
 	Positional  []string
-	keywords    []string
+	// HeaderOverrides carries per-endpoint request headers (e.g. an
+	// Accept override for binary-only response endpoints). Without
+	// threading these through, the code-orchestration execute path
+	// sends the client's default Accept and binary endpoints 406.
+	HeaderOverrides map[string]string
+	keywords        []string
 }
 
 // codeOrchEndpoints is the generator-populated registry covering every
@@ -78,6 +83,9 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- end}}
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
+{{- if $endpoint.HeaderOverrides}}
+		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}} },
+{{- end}}
 		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $path}}),
 	},
 {{- end}}
@@ -93,6 +101,9 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- end}}
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
+{{- if $endpoint.HeaderOverrides}}
+		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}} },
+{{- end}}
 		keywords: codeOrchKeywords({{printf "%q" $name}}, {{printf "%q" $eName}}, {{printf "%q" (oneline $endpoint.Description)}}, {{printf "%q" $path}}),
 	},
 {{- end}}
@@ -243,27 +254,41 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		}
 	}
 
+	hdrs := ep.HeaderOverrides
 	var data json.RawMessage
 	switch ep.Method {
 	case "GET":
-		data, err = c.Get(path, query)
+		if len(hdrs) > 0 {
+			data, err = c.GetWithHeaders(path, query, hdrs)
+		} else {
+			data, err = c.Get(path, query)
+		}
 	case "DELETE":
-		data, _, err = c.DeleteWithParams(path, query)
+		if len(hdrs) > 0 {
+			data, _, err = c.DeleteWithParamsAndHeaders(path, query, hdrs)
+		} else {
+			data, _, err = c.DeleteWithParams(path, query)
+		}
+	case "POST":
+		if len(hdrs) > 0 {
+			data, _, err = c.PostWithHeaders(path, params, hdrs)
+		} else {
+			data, _, err = c.Post(path, params)
+		}
+	case "PUT":
+		if len(hdrs) > 0 {
+			data, _, err = c.PutWithHeaders(path, params, hdrs)
+		} else {
+			data, _, err = c.Put(path, params)
+		}
+	case "PATCH":
+		if len(hdrs) > 0 {
+			data, _, err = c.PatchWithHeaders(path, params, hdrs)
+		} else {
+			data, _, err = c.Patch(path, params)
+		}
 	default:
-		body, mErr := json.Marshal(params)
-		if mErr != nil {
-			return mcplib.NewToolResultError(fmt.Sprintf("marshaling body: %v", mErr)), nil
-		}
-		switch ep.Method {
-		case "POST":
-			data, _, err = c.Post(path, body)
-		case "PUT":
-			data, _, err = c.Put(path, body)
-		case "PATCH":
-			data, _, err = c.Patch(path, body)
-		default:
-			return mcplib.NewToolResultError(fmt.Sprintf("unsupported method %q", ep.Method)), nil
-		}
+		return mcplib.NewToolResultError(fmt.Sprintf("unsupported method %q", ep.Method)), nil
 	}
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil

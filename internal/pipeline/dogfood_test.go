@@ -215,13 +215,126 @@ CREATE TABLE IF NOT EXISTS sync_state (
 	assert.Equal(t, 1, countDomainTables(storeSource))
 }
 
+// TestCheckPipelineIntegritySyncResourcesEmpty asserts that when the generator
+// emits sync.go with an empty defaultSyncResources() body (the structural
+// signature of an API with no bulk-list endpoint, e.g., Allrecipes), dogfood's
+// pipeline check records SyncFileEmitted=true and SyncResourcesPresent=false
+// and surfaces the detail string. Issue #1156.
+func TestCheckPipelineIntegritySyncResourcesEmpty(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "sync.go"), `package cli
+
+func runSync(s interface{ UpsertItems() error }) error {
+	return s.UpsertItems()
+}
+
+func defaultSyncResources() []string {
+	return []string{}
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n")
+
+	result := checkPipelineIntegrity(dir)
+	assert.True(t, result.SyncFileEmitted, "sync.go was written")
+	assert.False(t, result.SyncResourcesPresent, "defaultSyncResources is empty")
+	assert.Contains(t, result.Detail, "defaultSyncResources empty")
+}
+
+// TestCheckPipelineIntegritySyncResourcesPopulated covers the normal case where
+// the generator emits sync.go with one or more resources. Both new fields
+// should be set; the empty-list detail string should not appear.
+func TestCheckPipelineIntegritySyncResourcesPopulated(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "sync.go"), `package cli
+
+func runSync(s interface{ UpsertUsers() error }) error {
+	return s.UpsertUsers()
+}
+
+func defaultSyncResources() []string {
+	return []string{
+		"users",
+	}
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n")
+
+	result := checkPipelineIntegrity(dir)
+	assert.True(t, result.SyncFileEmitted)
+	assert.True(t, result.SyncResourcesPresent)
+	assert.NotContains(t, result.Detail, "defaultSyncResources empty")
+}
+
+func TestHasPopulatedSyncResources(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want bool
+	}{
+		{
+			name: "empty source",
+			src:  "",
+			want: false,
+		},
+		{
+			name: "helper absent (hand-rolled or fixture)",
+			src:  "package cli\nfunc runSync() {}\n",
+			want: true,
+		},
+		{
+			name: "helper present with empty list",
+			src: `package cli
+func defaultSyncResources() []string {
+	return []string{}
+}
+`,
+			want: false,
+		},
+		{
+			name: "helper present with one entry",
+			src: `package cli
+func defaultSyncResources() []string {
+	return []string{
+		"users",
+	}
+}
+`,
+			want: true,
+		},
+		{
+			name: "helper present with several entries",
+			src: `package cli
+func defaultSyncResources() []string {
+	return []string{
+		"commissions",
+		"customers",
+		"domains",
+	}
+}
+`,
+			want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, hasPopulatedSyncResources(tc.src))
+		})
+	}
+}
+
 func TestDeriveDogfoodVerdict(t *testing.T) {
 	report := &DogfoodReport{
 		PathCheck:     PathCheckResult{Tested: 10, Valid: 10, Pct: 100},
 		AuthCheck:     AuthCheckResult{Match: true},
 		DeadFlags:     DeadCodeResult{Dead: 1},
 		DeadFuncs:     DeadCodeResult{Dead: 0},
-		PipelineCheck: PipelineResult{SyncCallsDomain: true},
+		PipelineCheck: PipelineResult{SyncCallsDomain: true, SyncResourcesPresent: true},
 	}
 	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
 
@@ -234,6 +347,15 @@ func TestDeriveDogfoodVerdict(t *testing.T) {
 	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
 
 	report.PipelineCheck.SyncCallsDomain = true
+	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
+
+	// Issue #1156: when sync.go is emitted but defaultSyncResources is empty,
+	// the sync command is a runtime no-op. Dogfood must flag this as WARN so
+	// the gap surfaces at shipcheck time.
+	report.PipelineCheck.SyncFileEmitted = true
+	report.PipelineCheck.SyncResourcesPresent = false
+	assert.Equal(t, "WARN", deriveDogfoodVerdict(report, true))
+	report.PipelineCheck.SyncResourcesPresent = true
 	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
 
 	report.ExampleCheck = ExampleCheckResult{Tested: 10, WithExamples: 4}
@@ -1755,6 +1877,163 @@ func TestDeriveDogfoodVerdict_NamingViolationFails(t *testing.T) {
 func writeTestFile(t *testing.T, path string, content string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+}
+
+// --- resolveDogfoodSpec ---
+
+func TestResolveDogfoodSpec_PrefersBundledOverCallerSpec(t *testing.T) {
+	dir := t.TempDir()
+	bundled := filepath.Join(dir, "spec.yaml")
+	writeTestFile(t, bundled, "openapi: 3.0.0\n")
+
+	caller := filepath.Join(t.TempDir(), "upstream.yaml")
+	writeTestFile(t, caller, "openapi: 3.0.0\n")
+
+	resolved, source, overridden := resolveDogfoodSpec(dir, caller)
+	assert.Equal(t, bundled, resolved)
+	assert.Equal(t, DogfoodSpecSourceBundled, source)
+	assert.Equal(t, caller, overridden)
+}
+
+func TestResolveDogfoodSpec_NoOverrideWhenCallerPointsAtBundled(t *testing.T) {
+	dir := t.TempDir()
+	bundled := filepath.Join(dir, "spec.yaml")
+	writeTestFile(t, bundled, "openapi: 3.0.0\n")
+
+	resolved, source, overridden := resolveDogfoodSpec(dir, bundled)
+	assert.Equal(t, bundled, resolved)
+	assert.Equal(t, DogfoodSpecSourceBundled, source)
+	assert.Empty(t, overridden, "caller path equal to bundled should not be reported as overridden")
+}
+
+func TestResolveDogfoodSpec_FallsThroughWhenNoBundled(t *testing.T) {
+	dir := t.TempDir() // empty, no spec.* archived
+	caller := filepath.Join(t.TempDir(), "upstream.yaml")
+	writeTestFile(t, caller, "openapi: 3.0.0\n")
+
+	resolved, source, overridden := resolveDogfoodSpec(dir, caller)
+	assert.Equal(t, caller, resolved)
+	assert.Equal(t, DogfoodSpecSourceCaller, source)
+	assert.Empty(t, overridden)
+}
+
+func TestResolveDogfoodSpec_EmptyWhenNeitherPresent(t *testing.T) {
+	resolved, source, overridden := resolveDogfoodSpec(t.TempDir(), "")
+	assert.Empty(t, resolved)
+	assert.Empty(t, source)
+	assert.Empty(t, overridden)
+}
+
+func TestResolveDogfoodSpec_PrefersSpecJSONOverSpecYAML(t *testing.T) {
+	dir := t.TempDir()
+	jsonSpec := filepath.Join(dir, "spec.json")
+	yamlSpec := filepath.Join(dir, "spec.yaml")
+	writeTestFile(t, jsonSpec, `{"openapi":"3.0.0"}`)
+	writeTestFile(t, yamlSpec, "openapi: 3.0.0\n")
+
+	resolved, source, _ := resolveDogfoodSpec(dir, "")
+	assert.Equal(t, jsonSpec, resolved, "spec.json should win when both archive formats are present (mirrors findArchivedSpec)")
+	assert.Equal(t, DogfoodSpecSourceBundled, source)
+}
+
+// End-to-end: RunDogfood should score against the bundled spec when the caller
+// passes a different (smaller) spec.
+func TestRunDogfood_BundledSpecOverridesCallerSpec(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "root.go"), `package cli
+type rootFlags struct{}
+func initFlags(flags *rootFlags) { _ = flags }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "users_get.go"), `package cli
+func usersGet() { path := "/users/{id}"; _ = path }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "projects_get.go"), `package cli
+func projectsGet() { path := "/projects/{id}"; _ = path }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader(token string) string { return "Bearer " + token }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n")
+
+	// Bundled spec: the CLI's own authoritative spec, two endpoints — matches
+	// what the CLI actually implements.
+	bundledSpec := filepath.Join(dir, "spec.json")
+	writeTestFile(t, bundledSpec, `{
+  "paths": {
+    "/users/{id}": {},
+    "/projects/{id}": {}
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": { "type": "http", "scheme": "bearer" }
+    }
+  }
+}`)
+
+	// Caller's --spec: the upstream / partial spec with only one of the two
+	// endpoints. Today (pre-fix) this drives Path Validity to 1/2.
+	callerSpec := filepath.Join(t.TempDir(), "upstream.json")
+	writeTestFile(t, callerSpec, `{
+  "paths": {
+    "/users/{id}": {}
+  },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": { "type": "http", "scheme": "bearer" }
+    }
+  }
+}`)
+
+	report, err := RunDogfood(dir, callerSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, bundledSpec, report.SpecPath, "RunDogfood should record the bundled path it actually loaded")
+	assert.Equal(t, DogfoodSpecSourceBundled, report.SpecSource)
+	assert.Equal(t, 2, report.PathCheck.Tested, "should score against the bundled 2-endpoint spec, not the 1-endpoint caller spec")
+	assert.Equal(t, 2, report.PathCheck.Valid)
+}
+
+// When no spec is archived alongside the CLI, RunDogfood must still honor the
+// caller's --spec — no regression for legacy or orphan CLI directories that
+// pre-date publish package's spec-bundling.
+func TestRunDogfood_FallsBackToCallerSpecWhenNoBundle(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "root.go"), `package cli
+type rootFlags struct{}
+func initFlags(flags *rootFlags) { _ = flags }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "users_get.go"), `package cli
+func usersGet() { path := "/users/{id}"; _ = path }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader(token string) string { return "Bearer " + token }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n")
+
+	callerSpec := filepath.Join(t.TempDir(), "upstream.json")
+	writeTestFile(t, callerSpec, `{
+  "paths": { "/users/{id}": {} },
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": { "type": "http", "scheme": "bearer" }
+    }
+  }
+}`)
+
+	report, err := RunDogfood(dir, callerSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, callerSpec, report.SpecPath)
+	assert.Equal(t, DogfoodSpecSourceCaller, report.SpecSource)
+	assert.Equal(t, 1, report.PathCheck.Tested)
 }
 
 // --- checkTestPresence ---

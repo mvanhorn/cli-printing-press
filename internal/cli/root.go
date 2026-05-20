@@ -19,6 +19,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/docspec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
@@ -50,6 +51,7 @@ func Execute() error {
 	rootCmd.AddCommand(newValidateNarrativeCmd())
 	rootCmd.AddCommand(newVerifyCmd())
 	rootCmd.AddCommand(newVerifySkillCmd())
+	rootCmd.AddCommand(newVerifyInternalSkillCmd())
 	rootCmd.AddCommand(newEmbossCmd())
 	rootCmd.AddCommand(newPatchCmd())
 	rootCmd.AddCommand(newVisionCmd())
@@ -99,6 +101,7 @@ func newGenerateCmd() *cobra.Command {
 	var specURL string
 	var planFile string
 	var trafficAnalysisPath string
+	var authPreference string
 
 	cmd := &cobra.Command{
 		Use:   "generate",
@@ -273,6 +276,8 @@ func newGenerateCmd() *cobra.Command {
 				openapi.SetMaxEndpointsPerResource(maxEndpointsPerResource)
 			}
 
+			openAPIParseAuthPref := openAPIAuthPreferenceForGenerate(authPreference, cliName, specFiles, specURL)
+
 			var specs []*spec.APISpec
 			var specRawBytes [][]byte // raw spec data for archiving
 			for _, specFile := range specFiles {
@@ -284,7 +289,7 @@ func newGenerateCmd() *cobra.Command {
 
 				var apiSpec *spec.APISpec
 				if openapi.IsOpenAPI(data) {
-					apiSpec, err = parseOpenAPISpec(specFile, data, lenient)
+					apiSpec, err = parseOpenAPISpec(specFile, data, lenient, openAPIParseAuthPref)
 				} else if graphql.IsGraphQLSDL(data) {
 					apiSpec, err = graphql.ParseSDLBytes(specFile, data)
 				} else {
@@ -294,6 +299,7 @@ func newGenerateCmd() *cobra.Command {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing spec %s: %w", specFile, err)}
 				}
 
+				enrichSpecFromCatalog(apiSpec, catalogSpecLookupRefs(specFiles, specURL)...)
 				if apiSpec.BaseURLIsPlaceholder {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("spec %s declares no `servers:` block and no per-operation servers; the generator cannot resolve a real base URL and refuses to ship a CLI whose `doctor` would DNS-fail on every call. Add a `servers:` block with the real API host, or run via crowd-sniff with `--base-url` to supply one", specFile)}
 				}
@@ -304,9 +310,18 @@ func newGenerateCmd() *cobra.Command {
 			var apiSpec *spec.APISpec
 			if len(specs) == 1 {
 				apiSpec = specs[0]
-				// Override spec-derived name when --name is explicitly provided
+				// Override spec-derived name when --name is explicitly provided.
+				// When --name is empty but --research-dir points at a state.json
+				// whose api_name slug differs from the title-derived name (e.g.
+				// "Canvas LMS API" → `canvas-lms` vs the user's intended
+				// `canvas`), prefer the state.json slug so the generated
+				// cmd/<slug>-pp-cli matches what manifest/publish-validate look
+				// for. Explicit --name still wins.
 				if cliName != "" {
+					catalogmeta.RebaseAuthEnvPrefix(&apiSpec.Auth, apiSpec.Name, cliName)
 					apiSpec.Name = cliName
+				} else if researchName := pipeline.LoadAPINameFromResearchDir(researchDir); researchName != "" {
+					apiSpec.Name = researchName
 				}
 			} else {
 				if cliName == "" {
@@ -430,6 +445,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&specURL, "spec-url", "", "Original spec URL for provenance (use when --spec is a local file downloaded from a URL)")
 	cmd.Flags().StringVar(&planFile, "plan", "", "Path to a markdown plan document for plan-driven generation (instead of --spec)")
 	cmd.Flags().StringVar(&trafficAnalysisPath, "traffic-analysis", "", "Path to browser-sniff traffic-analysis.json for advisory generation context")
+	cmd.Flags().StringVar(&authPreference, "auth-preference", "", "Preferred securityScheme name from the spec (overrides default selection and any catalog auth_preference; useful when a spec advertises multiple schemes such as OAuth2 + HTTP Basic and you want the simpler one). When omitted, a matching embedded catalog entry's auth_preference applies for OpenAPI parsing.")
 
 	return cmd
 }
@@ -479,8 +495,17 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	if opts.rejectUnshippablePageContextTraffic && trafficAnalysisRequiresUnshippablePageContext(trafficAnalysis) {
 		return nil, false, &ExitError{Code: ExitInputError, Err: fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")}
 	}
-	applyHTTPTransportDefault(apiSpec, trafficAnalysis)
+	// ApplyReachabilityDefaults runs first so its HAR-driven HTTP-version
+	// mapping wins for browser_http / browser_clearance_http modes.
+	// applyHTTPTransportDefault then fills the cases reachability does
+	// not cover (no reachability section, hint-only signals, browser_required)
+	// because its own no-op-when-set guard short-circuits in the populated
+	// case. The two functions cover disjoint reachability modes, so the
+	// short-circuit is the only thing keeping a write-write conflict
+	// impossible today; preserve that invariant if either function's
+	// mode coverage widens.
 	browsersniff.ApplyReachabilityDefaults(apiSpec, trafficAnalysis)
+	applyHTTPTransportDefault(apiSpec, trafficAnalysis)
 	gen.TrafficAnalysis = trafficAnalysis
 	if err := gen.Generate(); err != nil {
 		return nil, false, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
@@ -545,10 +570,10 @@ func normalizeClientPattern(value string) (string, error) {
 
 func normalizeHTTPTransport(value string) (string, error) {
 	switch value {
-	case "", spec.HTTPTransportStandard, spec.HTTPTransportBrowserHTTP, spec.HTTPTransportBrowserChrome, spec.HTTPTransportBrowserChromeH3:
+	case "", spec.HTTPTransportStandard, spec.HTTPTransportBrowserHTTP, spec.HTTPTransportBrowserChrome, spec.HTTPTransportBrowserChromeH2, spec.HTTPTransportBrowserChromeH3:
 		return value, nil
 	default:
-		return "", fmt.Errorf("--transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h3 (got %q)", value)
+		return "", fmt.Errorf("--transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h2, browser-chrome-h3 (got %q)", value)
 	}
 }
 
@@ -580,7 +605,14 @@ func applyHTTPTransportDefault(apiSpec *spec.APISpec, analysis *browsersniff.Tra
 		return
 	}
 	if trafficAnalysisRecommendsBrowserTransport(analysis) {
-		apiSpec.HTTPTransport = spec.HTTPTransportBrowserChrome
+		// Surface the implicit H/2 force the pre-template-change else-branch
+		// provided. ApplyReachabilityDefaults handles the browser_http /
+		// browser_clearance_http modes with HAR-driven precision; everything
+		// this branch covers (Cloudflare/DataDome/Akamai protections, html_scrape
+		// protocol, generic browser/scrape hints) lacks HAR HTTP-version data,
+		// so default to -h2 instead of bare browser-chrome (no force) to keep
+		// shipped CLIs on origins these heuristics flag behaving identically.
+		apiSpec.HTTPTransport = spec.HTTPTransportBrowserChromeH2
 	}
 }
 
@@ -692,17 +724,26 @@ func readSpec(specFile string, refresh bool, skipCache bool) ([]byte, error) {
 	return data, nil
 }
 
-func parseOpenAPISpec(specFile string, data []byte, lenient bool) (*spec.APISpec, error) {
-	if openapi.IsRemoteSpecSource(specFile) {
-		if lenient {
-			return openapi.ParseLenient(data)
-		}
-		return openapi.Parse(data)
+func parseOpenAPISpec(specFile string, data []byte, lenient bool, authPreference string) (*spec.APISpec, error) {
+	opts := openapi.ParseOptions{Lenient: lenient, AuthPreference: authPreference}
+	if !openapi.IsRemoteSpecSource(specFile) {
+		opts.Path = specFile
 	}
-	if lenient {
-		return openapi.ParseWithPathLenient(data, specFile)
+	return openapi.ParseWithOptions(data, opts)
+}
+
+// openAPIAuthPreferenceForGenerate resolves AuthPreference for openapi.ParseWithOptions.
+// Explicit --auth-preference wins; otherwise a matching catalog entry's auth_preference
+// is used so catalog-driven generates pick the intended scheme before spec enrichment.
+func openAPIAuthPreferenceForGenerate(cliAuthPref, cliName string, specFiles []string, specURL string) string {
+	if s := strings.TrimSpace(cliAuthPref); s != "" {
+		return s
 	}
-	return openapi.ParseWithPath(data, specFile)
+	entry := lookupCatalogEntryForGenerateSpec(strings.TrimSpace(cliName), catalogSpecLookupRefs(specFiles, specURL))
+	if entry == nil {
+		return ""
+	}
+	return strings.TrimSpace(entry.AuthPreference)
 }
 
 // archiveSpecBytes picks the bytes and filename for the spec snapshot that
@@ -1521,8 +1562,10 @@ func catalogSpecLookupRefs(specFiles []string, specURL string) []string {
 }
 
 func lookupCatalogEntryForGenerateSpec(apiName string, specRefs []string) *catalog.Entry {
-	if entry, err := catalog.LookupFS(catalogfs.FS, apiName); err == nil {
-		return entry
+	if name := strings.TrimSpace(apiName); name != "" {
+		if entry, err := catalog.LookupFS(catalogfs.FS, name); err == nil {
+			return entry
+		}
 	}
 	specURLs := make(map[string]struct{}, len(specRefs))
 	for _, ref := range specRefs {
@@ -1556,6 +1599,10 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	if entry.Homepage != "" && apiSpec.WebsiteURL == "" {
 		apiSpec.WebsiteURL = entry.Homepage
 	}
+	if entry.BaseURL != "" && catalogmeta.IsReplaceableBaseURL(apiSpec.BaseURL, apiSpec.BaseURLIsPlaceholder) {
+		apiSpec.BaseURL = strings.TrimRight(entry.BaseURL, "/")
+		apiSpec.BaseURLIsPlaceholder = false
+	}
 	if entry.Category != "" && apiSpec.Category == "" {
 		apiSpec.Category = entry.Category
 	}
@@ -1587,6 +1634,7 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	if entry.AuthInstructions != "" && apiSpec.Auth.Type != "none" {
 		apiSpec.Auth.Instructions = entry.AuthInstructions
 	}
+	catalogmeta.ApplyCatalogAuthEnvVars(&apiSpec.Auth, entry.AuthEnvVars)
 }
 
 func mcpConfigured(m spec.MCPConfig) bool {

@@ -57,6 +57,11 @@ type Result struct {
 	Words  string `json:"words,omitempty"`
 	Status Status `json:"status"`
 	Error  string `json:"error,omitempty"`
+	// Notes carries structural annotations about shell pieces that were
+	// excluded from validation. Each entry is shaped `<reason>: <fragment>`,
+	// e.g. `pipe-skipped: jq '.items[]'` or `redirect-stripped: <
+	// keywords.txt`. Empty when the recipe is plain (no pipes, no redirects).
+	Notes []string `json:"notes,omitempty"`
 }
 
 type Report struct {
@@ -181,6 +186,70 @@ func loadCommands(researchPath string) ([]sectionCommand, error) {
 // non-identifier character. Hyphens stay because Cobra subcommands use
 // them (`list-projects`).
 func classify(ctx context.Context, binaryPath string, section Section, command string, opts Options) Result {
+	segments, err := splitShellChain(command)
+	if err != nil {
+		return Result{
+			Section: section,
+			Command: command,
+			Status:  StatusExampleFailed,
+			Error:   err.Error(),
+		}
+	}
+
+	// Walk segments left-to-right, emitting notes in the order they appear
+	// in the original command so authors can reconstruct the recipe by
+	// reading down the Notes slice.
+	var notes []string
+	type runnableSegment struct {
+		index   int
+		text    string
+		cleaned string
+	}
+	var runnable []runnableSegment
+	for i, seg := range segments {
+		if seg.AfterPipe {
+			notes = append(notes, "pipe-skipped: "+seg.Text)
+			continue
+		}
+		cleaned, redirects := stripRedirects(seg.Text)
+		for _, r := range redirects {
+			notes = append(notes, "redirect-stripped: "+r)
+		}
+		runnable = append(runnable, runnableSegment{index: i, text: seg.Text, cleaned: cleaned})
+	}
+
+	finish := func(r Result) Result {
+		r.Command = command
+		r.Notes = append(r.Notes, notes...)
+		return r
+	}
+
+	if len(runnable) == 0 {
+		// Every chained segment landed on the right side of a pipe — there
+		// is no runnable head. Surface this as empty-words so the author
+		// notices, but keep the pipe-skipped notes for context.
+		return finish(Result{
+			Section: section,
+			Status:  StatusEmptyWords,
+			Error:   "command has no runnable segment (every chained segment is pipe-skipped)",
+		})
+	}
+
+	var last Result
+	for i, seg := range runnable {
+		sub := classifySegment(ctx, binaryPath, section, seg.cleaned, opts)
+		if sub.Status != StatusOK {
+			if len(runnable) > 1 {
+				sub.Error = fmt.Sprintf("segment %d (%q): %s", i+1, seg.cleaned, sub.Error)
+			}
+			return finish(sub)
+		}
+		last = sub
+	}
+	return finish(last)
+}
+
+func classifySegment(ctx context.Context, binaryPath string, section Section, command string, opts Options) Result {
 	words := extractSubcommandWords(command)
 	r := Result{Section: section, Command: command, Words: strings.Join(words, " ")}
 
@@ -225,6 +294,11 @@ func classifyFullExample(ctx context.Context, binaryPath, command string, helpOu
 	}
 
 	args := append([]string(nil), tokens[1:]...)
+	if isSideEffectfulNarrativeExample(args) {
+		r.Status = StatusUnsupported
+		r.Error = "full-example validation skipped: command is side-effectful (auth/launch/apply)"
+		return r
+	}
 	if !hasEnabledBoolFlag(args, "--dry-run") {
 		if !helpAdvertisesDryRun(helpOut) {
 			r.Status = StatusUnsupported
@@ -235,7 +309,12 @@ func classifyFullExample(ctx context.Context, binaryPath, command string, helpOu
 	}
 
 	cmd := exec.CommandContext(ctx, binaryPath, args...)
-	cmd.Env = append(os.Environ(), "PRINTING_PRESS_VERIFY=1")
+	// Mirror the verify pipeline's mock-mode contract: VERIFY=1 lets
+	// generated commands short-circuit visible side effects, and
+	// VERIFY_LIVE_HTTP=1 opts back in to the real wire path so the
+	// transport-layer mutating-verb gate doesn't collapse narrative
+	// full-example assertions to a synthetic envelope.
+	cmd.Env = append(os.Environ(), "PRINTING_PRESS_VERIFY=1", "PRINTING_PRESS_VERIFY_LIVE_HTTP=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		r.Status = StatusExampleFailed
@@ -250,6 +329,21 @@ func classifyFullExample(ctx context.Context, binaryPath, command string, helpOu
 
 	r.Status = StatusOK
 	return r
+}
+
+func isSideEffectfulNarrativeExample(args []string) bool {
+	if len(args) >= 2 && args[0] == "auth" {
+		switch args[1] {
+		case "set-token", "logout", "setup", "login":
+			return true
+		}
+	}
+
+	if hasEnabledBoolFlag(args, "--launch") {
+		return true
+	}
+	hasApply := hasEnabledBoolFlag(args, "--apply")
+	return hasApply && !hasEnabledBoolFlag(args, "--dry-run")
 }
 
 func hasEnabledBoolFlag(args []string, flag string) bool {
@@ -300,6 +394,234 @@ func extractSubcommandWords(command string) []string {
 		words = append(words, tok)
 	}
 	return words
+}
+
+// chainSegment is one runnable (or pipe-skipped) piece of a recipe command.
+type chainSegment struct {
+	// Text is the segment as it appeared in the source, with surrounding
+	// whitespace trimmed. Pipe and redirect tokens are NOT stripped here —
+	// stripRedirects handles that downstream.
+	Text string
+	// AfterPipe is true when this segment sat to the right of a top-level
+	// `|` operator. The validator skips these segments because their input
+	// would normally arrive over a shell pipe.
+	AfterPipe bool
+}
+
+// splitShellChain walks command and returns the segments separated by
+// top-level `&&`, `||`, `;`, or `|` operators. Quoted text is preserved.
+// Segments after a top-level `|` carry AfterPipe=true; the validator
+// reports those as `pipe-skipped` rather than executing them.
+//
+// Backslash-escapes and quoted-string handling mirror shellargs.Split
+// so the segments are safe to feed back into shellargs.Split.
+func splitShellChain(command string) ([]chainSegment, error) {
+	var (
+		segments  []chainSegment
+		quote     rune
+		escaped   bool
+		afterPipe bool
+		start     int
+	)
+	flush := func(end int) {
+		if seg := strings.TrimSpace(command[start:end]); seg != "" {
+			segments = append(segments, chainSegment{Text: seg, AfterPipe: afterPipe})
+		}
+	}
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if quote == '\'' {
+			if c == '\'' {
+				quote = 0
+			}
+			continue
+		}
+		if quote == '"' {
+			switch c {
+			case '\\':
+				escaped = true
+			case '"':
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\\':
+			escaped = true
+		case '\'', '"':
+			quote = rune(c)
+		case '&':
+			if i+1 < len(command) && command[i+1] == '&' {
+				flush(i)
+				i++
+				start = i + 1
+				// && resets the pipeline; segments after && start fresh.
+				afterPipe = false
+			}
+		case '|':
+			if i+1 < len(command) && command[i+1] == '|' {
+				flush(i)
+				i++
+				start = i + 1
+				// || resets the pipeline too.
+				afterPipe = false
+				continue
+			}
+			// Bare `|` ends the current runnable segment and marks every
+			// subsequent segment in this && / || / ; group as pipe-skipped.
+			flush(i)
+			start = i + 1
+			afterPipe = true
+		case ';':
+			flush(i)
+			start = i + 1
+			afterPipe = false
+		}
+	}
+	if quote != 0 {
+		return nil, fmt.Errorf("unclosed %s quote in %q", quoteName(quote), command)
+	}
+	flush(len(command))
+	return segments, nil
+}
+
+// stripRedirects removes top-level shell redirects (`<file`, `>file`, `>>file`)
+// from a segment and returns the cleaned text plus the human-readable redirect
+// fragments that were excised (e.g. `< keywords.txt`). The validator records
+// the fragments as `redirect-stripped` notes so authors see what the runtime
+// dropped. Redirects inside quoted strings and `2>&1`-style fd duplications
+// are left alone.
+func stripRedirects(segment string) (string, []string) {
+	var (
+		cleaned   strings.Builder
+		redirects []string
+		quote     rune
+		escaped   bool
+	)
+	cleaned.Grow(len(segment))
+	bytes := []byte(segment)
+	i := 0
+	for i < len(bytes) {
+		c := bytes[i]
+		if escaped {
+			cleaned.WriteByte(c)
+			escaped = false
+			i++
+			continue
+		}
+		if quote != 0 {
+			cleaned.WriteByte(c)
+			switch {
+			case quote == '\'' && c == '\'':
+				quote = 0
+			case quote == '"' && c == '\\':
+				escaped = true
+			case quote == '"' && c == '"':
+				quote = 0
+			}
+			i++
+			continue
+		}
+		switch c {
+		case '\\':
+			cleaned.WriteByte(c)
+			escaped = true
+			i++
+		case '\'', '"':
+			cleaned.WriteByte(c)
+			quote = rune(c)
+			i++
+		case '<', '>':
+			// fd duplication like `2>&1` is signaled by a preceding digit AND
+			// a following `&`. Bare `>&file` is `&>file` shorthand (a real
+			// redirect target) and must still be stripped, so the guard only
+			// fires when both signals are present.
+			prevIsDigit := cleaned.Len() > 0 && cleaned.String()[cleaned.Len()-1] >= '0' && cleaned.String()[cleaned.Len()-1] <= '9'
+			if c == '>' && prevIsDigit && i+1 < len(bytes) && bytes[i+1] == '&' {
+				cleaned.WriteByte(c)
+				i++
+				continue
+			}
+			op := string(c)
+			if c == '>' && i+1 < len(bytes) && bytes[i+1] == '>' {
+				op = ">>"
+				i++
+			}
+			i++
+			for i < len(bytes) && (bytes[i] == ' ' || bytes[i] == '\t') {
+				i++
+			}
+			fileStart := i
+			fileQuote := rune(0)
+			fileEsc := false
+			for i < len(bytes) {
+				b := bytes[i]
+				if fileEsc {
+					fileEsc = false
+					i++
+					continue
+				}
+				if fileQuote == '\'' {
+					if b == '\'' {
+						fileQuote = 0
+					}
+					i++
+					continue
+				}
+				if fileQuote == '"' {
+					switch b {
+					case '\\':
+						fileEsc = true
+					case '"':
+						fileQuote = 0
+					}
+					i++
+					continue
+				}
+				switch b {
+				case '\'', '"':
+					fileQuote = rune(b)
+					i++
+					continue
+				case '\\':
+					fileEsc = true
+					i++
+					continue
+				case ' ', '\t':
+					goto fileDone
+				}
+				i++
+			}
+		fileDone:
+			fragment := strings.TrimSpace(op + " " + string(bytes[fileStart:i]))
+			redirects = append(redirects, fragment)
+			// Skip any whitespace that follows the file token so a
+			// redirect-stripped span sandwiched between two flags collapses
+			// to a single space.
+			for i < len(bytes) && (bytes[i] == ' ' || bytes[i] == '\t') {
+				i++
+			}
+			trimmed := strings.TrimRight(cleaned.String(), " \t")
+			cleaned.Reset()
+			cleaned.WriteString(trimmed)
+			cleaned.WriteByte(' ')
+		default:
+			cleaned.WriteByte(c)
+			i++
+		}
+	}
+	return strings.TrimSpace(cleaned.String()), redirects
+}
+
+func quoteName(r rune) string {
+	if r == '\'' {
+		return "single"
+	}
+	return "double"
 }
 
 // isIdentifierToken reports whether s contains only ASCII alphanumerics,

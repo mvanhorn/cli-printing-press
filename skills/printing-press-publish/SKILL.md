@@ -25,13 +25,12 @@ Publish a generated CLI from your local library to the [printing-press-library](
 
 The public library treats `library/<category>/<api-slug>/.printing-press.json`
 and `manifest.json` as the source of truth for registry-display fields. Do not
-edit `registry.json` or README catalog cells in publish PRs; the library's
-post-merge workflow refreshes them from the CLI tree. Do regenerate and commit
-the `cli-skills/pp-<api-slug>/SKILL.md` mirror from
-`library/<category>/<api-slug>/SKILL.md` because PR CI verifies mirror parity.
-If a brand-new CLI's mirror is pruned because `registry.json` is behind, fix the
-library mirror generator to discover from `library/`; do not add a registry
-entry solely to satisfy mirror parity.
+edit `registry.json`, README catalog cells, or `cli-skills/pp-<api-slug>/SKILL.md`
+in publish PRs; all three are bot-regenerated post-merge by the library's own
+workflows. The library's `Fail on changes to generated artifacts` check in
+`verify-library-conventions.yml` hard-fails any PR — fork or same-repo — whose
+diff against base touches `registry.json` or `cli-skills/pp-*/SKILL.md`, so a
+publish that includes either is pre-rejected before review.
 
 ## Setup
 
@@ -436,8 +435,13 @@ rm -rf "$PUBLISH_REPO_DIR/library"/*/"<api-slug>"
 # Copy staged CLI into publish repo (slug-keyed directory)
 cp -r "$STAGING_DIR/library/<category>/<api-slug>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>"
 
-# Remove binaries (should not be committed)
-rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>"
+# Remove root-level binaries (should not be committed). publish package
+# already strips these before the copy; this rm -f is belt-and-suspenders
+# for the agent path. Cover all three names the Makefile/`go build ./cmd/...`
+# can drop: bare slug, CLI binary, MCP peer.
+rm -f "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>" \
+      "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<cli-name>" \
+      "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/<api-slug>-pp-mcp"
 
 # Defense-in-depth: validate printer attribution before README and registry surfaces.
 PRINTER=$(jq -r '.printer // ""' "$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press.json")
@@ -455,10 +459,14 @@ if [ -z "$PRINTER_NAME" ]; then
   exit 1
 fi
 
-# Regenerate the flat cli-skills mirror from the library tree so library PR CI passes mirror parity.
-if [ -f "$PUBLISH_REPO_DIR/tools/generate-skills/main.go" ]; then
-  (cd "$PUBLISH_REPO_DIR" && go run ./tools/generate-skills/main.go)
-fi
+# Do NOT regenerate or commit `cli-skills/pp-<api-slug>/SKILL.md` or
+# `registry.json` here. Both are regenerated post-merge by the library's
+# `generate-skills.yml` and `generate-registry.yml` workflows via
+# `[skip ci]` bot commits. The library's `Fail on changes to generated
+# artifacts` check in `verify-library-conventions.yml` hard-fails any PR
+# whose diff against base touches these files, regardless of fork vs
+# same-repo origin. The library no longer has an in-PR auto-fix path;
+# do not re-introduce a mirror or registry regen here.
 
 # Verify this changed/new CLI builds and has no reachable Go vulnerabilities from the publish repo
 cd "$PUBLISH_REPO_DIR/library/<category>/<api-slug>" \
@@ -727,7 +735,7 @@ git checkout -B feat/<api-slug>
 
 ```bash
 cd "$PUBLISH_REPO_DIR"
-git add library/ cli-skills/
+git add library/
 git commit -m "feat(<api-slug>): add <api-slug>"
 ```
 
@@ -780,7 +788,7 @@ Build the PR description from:
 
 Read `novel_features` from
 `$PUBLISH_REPO_DIR/library/<category>/<api-slug>/.printing-press.json` after
-packaging and mirror regeneration. Preserve the manifest order. Do not derive
+packaging. Preserve the manifest order. Do not derive
 this section from README prose, SKILL prose, root help, or memory of the run:
 those surfaces may be summarized or hand-edited, while the packaged manifest is
 the publish-time source of truth. For each entry, include the command, name, and
@@ -931,7 +939,7 @@ Once the PR is open, it enters the public library repo's review contract. That c
   For each P0/P1/P2 thread, either push a fix or reply with a concrete reason it shouldn't fire — not "won't fix", but *why* the code is right as written or *why* deferral is justified. The 0-5 score is a confidence signal, not a hard gate; 4/5 and 5/5 are both acceptable end states, and the score will land in that range naturally once threads are addressed.
 - **All CI checks must pass.** `verify-library-conventions`, `Govulncheck`, and any other workflow on the PR must be green before merge.
 - **Don't merge with unresolved threads** even when CI is green and the score looks good.
-- **Don't hand-edit `registry.json` or `cli-skills/pp-<api-slug>/SKILL.md` to satisfy a finding** — both are bot-regenerated post-merge by `[skip ci]` commits and your edits will be overwritten.
+- **Don't hand-edit `registry.json` or `cli-skills/pp-<api-slug>/SKILL.md` to satisfy a finding** — both are bot-regenerated post-merge by `[skip ci]` commits, and the library's `Fail on changes to generated artifacts` check pre-rejects any PR that touches them.
 - **Hand off once review-ready.** When all threads are resolved or replied to and CI is green, stop and tell the user. Don't loop polling for the merge; the user owns that decision.
 
 ## Secret & PII Protection

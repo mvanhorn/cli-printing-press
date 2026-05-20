@@ -269,6 +269,47 @@ paths: {}
 	assert.Equal(t, "Product Hunt", m.DisplayName)
 }
 
+func TestWriteCLIManifestForPublishAppliesCatalogMetadataAfterNameOverride(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	state := NewStateWithRun("elevenlabs", filepath.Join(tmp, "working", "elevenlabs-pp-cli"), "20260513-elevenlabs", "test-scope")
+	require.NoError(t, os.MkdirAll(state.WorkingDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(state.WorkingDir, "spec.yaml"), []byte(`
+openapi: "3.1.0"
+info:
+  title: ElevenLabs API Documentation
+  version: "1.0"
+paths:
+  /v1/models:
+    get:
+      operationId: getModels
+      parameters:
+        - name: xi-api-key
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+`), 0o644))
+
+	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+
+	m := readPublishedManifest(t, state.WorkingDir)
+	assert.Equal(t, []string{"ELEVENLABS_API_KEY"}, m.AuthEnvVars)
+	assert.Equal(t, "https://elevenlabs.io/app/settings/api-keys", m.AuthKeyURL)
+
+	tools, err := ReadToolsManifest(state.WorkingDir)
+	require.NoError(t, err)
+	assert.Equal(t, "elevenlabs", tools.APIName)
+	assert.Equal(t, "https://api.elevenlabs.io", tools.BaseURL)
+	assert.Equal(t, []string{"ELEVENLABS_API_KEY"}, tools.Auth.EnvVars)
+}
+
 func TestWriteCLIManifestForPublishPopulatesCategoryFromSpec(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("PRINTING_PRESS_HOME", tmp)

@@ -689,7 +689,7 @@ func TestWriteSamples_WritesOneFilePerEndpointGroup(t *testing.T) {
 		switch sample.Method {
 		case "GET":
 			foundGET = true
-			assert.Equal(t, "GET /v1/items/{id}", sample.Endpoint)
+			assert.Equal(t, "GET /v1/items/{item_id}", sample.Endpoint)
 			assert.Equal(t, 200, sample.Status)
 			assert.True(t, sample.ResponseBodyKnown)
 			assert.Equal(t, RedactedSentinel, sample.RequestHeaders["Authorization"])

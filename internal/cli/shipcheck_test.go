@@ -64,6 +64,76 @@ func TestShipcheckCLIPathForGOOS(t *testing.T) {
 	}
 }
 
+// TestShipcheckCLIPath_ManifestOverridesBasename covers the slug-keyed
+// library layout: dir basename ("notion") differs from the actual binary
+// name ("notion-pp-cli"), so the binary path must be resolved from
+// .printing-press.json's cli_name rather than the directory's basename.
+func TestShipcheckCLIPath_ManifestOverridesBasename(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "notion")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("creating slug dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(`{"cli_name":"notion-pp-cli"}`), 0o644); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+	opts := &shipcheckOpts{dir: dir}
+
+	if got, want := shipcheckCLIPathForGOOS(opts, "linux"), filepath.Join(dir, "notion-pp-cli"); got != want {
+		t.Fatalf("linux path = %q, want %q", got, want)
+	}
+	if got, want := shipcheckCLIPathForGOOS(opts, "windows"), filepath.Join(dir, "notion-pp-cli.exe"); got != want {
+		t.Fatalf("windows path = %q, want %q", got, want)
+	}
+}
+
+// TestShipcheckCLIPath_FallsBackToBasename covers the manifest-less case:
+// when .printing-press.json is missing or unparseable, the binary name
+// falls back to the directory basename (preserves legacy behavior).
+func TestShipcheckCLIPath_FallsBackToBasename(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "sample-cli")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("creating dir: %v", err)
+	}
+	opts := &shipcheckOpts{dir: dir}
+
+	if got, want := shipcheckCLIPathForGOOS(opts, "linux"), filepath.Join(dir, "sample-cli"); got != want {
+		t.Fatalf("linux path = %q, want %q", got, want)
+	}
+	if got, want := shipcheckCLIPathForGOOS(opts, "windows"), filepath.Join(dir, "sample-cli.exe"); got != want {
+		t.Fatalf("windows path = %q, want %q", got, want)
+	}
+}
+
+// TestShipcheckCLIPath_FallsBackOnUnparseableManifest pins the
+// unparseable-error branch of pipeline.ReadCLIBinaryName: a
+// .printing-press.json that exists but contains malformed JSON must
+// fall back to the directory basename rather than propagating a parse
+// error or producing an empty binary name.
+func TestShipcheckCLIPath_FallsBackOnUnparseableManifest(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "notion")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("creating slug dir: %v", err)
+	}
+	// Truncated JSON: opening brace, key, colon, no value, no close.
+	if err := os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(`{"cli_name":`), 0o644); err != nil {
+		t.Fatalf("writing malformed manifest: %v", err)
+	}
+	opts := &shipcheckOpts{dir: dir}
+
+	if got, want := shipcheckCLIPathForGOOS(opts, "linux"), filepath.Join(dir, "notion"); got != want {
+		t.Fatalf("linux path = %q, want %q", got, want)
+	}
+	if got, want := shipcheckCLIPathForGOOS(opts, "windows"), filepath.Join(dir, "notion.exe"); got != want {
+		t.Fatalf("windows path = %q, want %q", got, want)
+	}
+}
+
 type shipcheckHarness struct {
 	dir     string
 	logFile string
@@ -129,8 +199,8 @@ func TestShipcheck_AllLegsPass(t *testing.T) {
 		t.Fatalf("expected %d leg invocations; got %d: %v", len(shipcheckLegs), len(invocations), invocations)
 	}
 
-	// Confirm canonical order: dogfood, verify, workflow-verify, verify-skill, validate-narrative, scorecard.
-	wantOrder := []string{"dogfood", "verify", "workflow-verify", "verify-skill", "validate-narrative", "scorecard"}
+	// Confirm canonical order: verify, validate-narrative, dogfood, workflow-verify, verify-skill, scorecard.
+	wantOrder := []string{"verify", "validate-narrative", "dogfood", "workflow-verify", "verify-skill", "scorecard"}
 	for i, want := range wantOrder {
 		// argv[0] is the stub binary path; argv[1] is the leg name.
 		if len(invocations[i]) < 2 {
@@ -471,6 +541,43 @@ func TestShipcheck_JSONEnvelope_AllPass(t *testing.T) {
 		if leg.StartedAt == "" {
 			t.Errorf("leg %s should have non-empty started_at; got %+v", leg.Name, leg)
 		}
+	}
+}
+
+func TestShipcheck_JSONEnvelope_RedactsAPIKeyFromCommands(t *testing.T) {
+	h := newShipcheckHarness(t)
+	const secret = "secret-token"
+
+	out := captureStdout(t, func() {
+		if err := runShipcheckCmd(t, "--dir", h.dir, "--json", "--api-key", secret); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	var env shipcheckJSONEnvelope
+	if err := json.Unmarshal([]byte(extractFinalJSONObject(t, out)), &env); err != nil {
+		t.Fatalf("envelope is not valid JSON: %v", err)
+	}
+
+	var verifyCommand string
+	for _, leg := range env.Legs {
+		if strings.Contains(leg.Command, secret) {
+			t.Fatalf("leg %s command leaked API key: %q", leg.Name, leg.Command)
+		}
+		if leg.Name == "verify" {
+			verifyCommand = leg.Command
+		}
+	}
+	if verifyCommand == "" {
+		t.Fatal("envelope missing verify command")
+	}
+	if !strings.Contains(verifyCommand, "--api-key <redacted>") {
+		t.Fatalf("verify command should include redacted API key flag; got %q", verifyCommand)
+	}
+
+	verifyArgs := findInvocation(readStubLog(t, h.logFile), "verify")
+	if !argvHas(verifyArgs, secret) {
+		t.Fatalf("verify subprocess argv should still receive the raw API key; got %v", verifyArgs)
 	}
 }
 

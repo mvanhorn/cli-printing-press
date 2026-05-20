@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"net/url"
 	"os"
+	"printing-press-golden-pp-cli/internal/cliutil"
 	"printing-press-golden-pp-cli/internal/store"
 	"regexp"
 	"strconv"
@@ -47,6 +48,7 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 	var strict bool
 	var paramFlags []string
 	var resourceParamFlags []string
+	var globalParamFlags []string
 
 	cmd := &cobra.Command{
 		Use:   "sync",
@@ -96,7 +98,7 @@ Resource scoping:
   # Latest-only: refresh head of each resource, no historical backfill
   printing-press-golden-pp-cli sync --latest-only`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			userParams, err := parseSyncUserParams(paramFlags, resourceParamFlags)
+			userParams, err := parseSyncUserParams(paramFlags, resourceParamFlags, globalParamFlags)
 			if err != nil {
 				return usageErr(err)
 			}
@@ -184,6 +186,13 @@ Resource scoping:
 			// Worker pool: produce resources, N workers consume
 			if concurrency < 1 {
 				concurrency = 4
+			}
+			// Under PRINTING_PRESS_VERIFY=1 (mock/dry-run), all goroutines
+			// reach SQLite without the natural serialization that network
+			// latency provides in real syncs, so the worker pool races on
+			// the writer and trips SQLITE_BUSY despite _busy_timeout.
+			if cliutil.IsVerifyEnv() {
+				concurrency = 1
 			}
 
 			started := time.Now()
@@ -325,8 +334,9 @@ Resource scoping:
 	cmd.Flags().IntVar(&maxPages, "max-pages", 100, "Maximum pages to fetch per resource (0 = unlimited; cap-hit emits a sync_warning event)")
 	cmd.Flags().BoolVar(&latestOnly, "latest-only", false, "Refresh head of each resource only; clears resume cursor and caps pages at 1. Mutually exclusive with --since (--since wins).")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any per-resource failure (default: only critical failures or all-resource failure exit non-zero).")
-	cmd.Flags().StringArrayVar(&paramFlags, "param", nil, "Extra query param to inject into every sync request (repeatable, key=value). Use for APIs whose spec marks a filter optional but the endpoint rejects calls without it (e.g. --param mine=true). Avoid pagination keys (limit/since/cursor) — overriding them corrupts resume state.")
-	cmd.Flags().StringArrayVar(&resourceParamFlags, "resource-param", nil, "Per-resource extra query param (repeatable, resource:key=value). Wins over --param when both define the same key.")
+	cmd.Flags().StringArrayVar(&paramFlags, "param", nil, "Extra query param to inject into flat-list sync requests (repeatable, key=value). Skipped on path-scoped dependent requests so a top-level scope like workspace=<id> does not double up on /parents/<id>/children calls. Use --global-param to inject everywhere. Avoid pagination keys (limit/since/cursor) — overriding them corrupts resume state.")
+	cmd.Flags().StringArrayVar(&resourceParamFlags, "resource-param", nil, "Per-resource extra query param (repeatable, resource:key=value). Wins over --param and --global-param when keys conflict.")
+	cmd.Flags().StringArrayVar(&globalParamFlags, "global-param", nil, "Extra query param to inject into every sync request including dependent path-scoped calls (repeatable, key=value). Use when an API requires a scope on every call regardless of path nesting.")
 
 	return cmd
 }
@@ -434,12 +444,11 @@ func syncResource(c interface {
 	for {
 		params := map[string]string{}
 
-		// Set page size
-		params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
-
-		// Set cursor for resume
-		if cursor != "" {
-			params[pageSize.cursorParam] = cursor
+		if resourceSupportsPagination(resource) {
+			params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
+			if cursor != "" {
+				params[pageSize.cursorParam] = cursor
+			}
 		}
 
 		// Set since filter
@@ -450,7 +459,7 @@ func syncResource(c interface {
 		// Apply user-supplied --param / --resource-param overrides last so they
 		// win over spec-derived defaults (e.g. forcing mine=true on a list
 		// endpoint whose OpenAPI spec marks the filter optional).
-		userParams.applyTo(resource, params)
+		userParams.applyTo(resource, params, false)
 
 		data, err := c.Get(path, params)
 		if err != nil {
@@ -467,9 +476,37 @@ func syncResource(c interface {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("fetching %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
+		// Dry-run sentinel: client.dryRun returns `{"dry_run": true}` instead
+		// of a real response when --dry-run is set. The upsert path below
+		// would otherwise fail with "missing id for <resource>" because the
+		// sentinel has no items and no id; emit a synthetic success event so
+		// validate-narrative --full-examples (which auto-appends --dry-run)
+		// sees a clean exit.
+		if isDryRunResponse(data) {
+			if !humanFriendly {
+				fmt.Fprintf(os.Stdout, `{"event":"sync_dryrun","resource":"%s"}`+"\n", resource)
+			}
+			return syncResult{Resource: resource, Count: 0, Duration: time.Since(started)}
+		}
+
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
 		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
+
+		// Page-int paginator fallback: when the API paginates by integer
+		// ?page=N and emits no body cursor, treat a full page as a signal
+		// to advance numerically. Without this the loop breaks after page
+		// 1 even though more pages exist (the original symptom in #1296).
+		// Guard on cursorType, not cursorParam name, so all canonical
+		// spellings (page / page_number / pageNumber / page[number]) work.
+		if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit {
+			currentPage, _ := strconv.Atoi(cursor)
+			if currentPage < 1 {
+				currentPage = 1
+			}
+			nextCursor = strconv.Itoa(currentPage + 1)
+			hasMore = true
+		}
 
 		if len(items) == 0 {
 			if isEmptyPageResponse(data) {
@@ -552,12 +589,6 @@ func syncResource(c interface {
 			}
 		}
 
-		// Save cursor after each page for resumability
-		if err := db.SaveSyncState(resource, nextCursor, totalCount); err != nil {
-			// Non-fatal: log and continue
-			fmt.Fprintf(os.Stderr, "\nwarning: failed to save sync state for %s: %v\n", resource, err)
-		}
-
 		pagesFetched++
 
 		// Enforce page ceiling to prevent runaway syncs on large-catalog APIs.
@@ -592,9 +623,30 @@ func syncResource(c interface {
 		}
 		lastNextCursor = nextCursor
 
-		// Determine if there are more pages
-		if !hasMore || len(items) < pageSize.limit || nextCursor == "" {
+		// Determine if there are more pages.
+		if !resourceSupportsPagination(resource) {
 			break
+		}
+		if !hasMore || len(items) < pageSize.limit {
+			break
+		}
+		if nextCursor == "" {
+			if pageSize.cursorParam == "offset" {
+				// Cursor-based APIs return the next cursor in the envelope.
+				// Offset-based APIs carry their pagination position client-side.
+				currentOffset, _ := strconv.Atoi(cursor)
+				nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
+			} else {
+				// A cursor-based API reporting has_more without a next cursor
+				// cannot advance safely; stop instead of looping silently.
+				break
+			}
+		}
+
+		// Save cursor after each page for resumability
+		if err := db.SaveSyncState(resource, nextCursor, totalCount); err != nil {
+			// Non-fatal: log and continue
+			fmt.Fprintf(os.Stderr, "\nwarning: failed to save sync state for %s: %v\n", resource, err)
 		}
 
 		cursor = nextCursor
@@ -628,6 +680,7 @@ func syncResource(c interface {
 // paginationDefaults holds the resolved pagination parameter names and page size.
 type paginationDefaults struct {
 	cursorParam string
+	cursorType  string // paginator class: "", "cursor", "page_token", "offset", "page"
 	limitParam  string
 	limit       int
 }
@@ -637,9 +690,20 @@ type paginationDefaults struct {
 func determinePaginationDefaults() paginationDefaults {
 	return paginationDefaults{
 		cursorParam: "cursor",
+		cursorType:  "cursor",
 		limitParam:  "limit",
 		limit:       100,
 	}
+}
+
+func resourceSupportsPagination(resource string) bool {
+	switch resource {
+	case "projects":
+		return true
+	case "tasks":
+		return true
+	}
+	return false
 }
 
 // syncResourceSinceParam returns the query parameter name this resource's
@@ -701,6 +765,30 @@ func extractPageItems(data json.RawMessage, cursorParam string) ([]json.RawMessa
 	}
 
 	return nil, "", false
+}
+
+// isDryRunResponse detects the `{"dry_run": true}` sentinel that
+// client.dryRun returns instead of a real API response. The sync loop
+// uses this to short-circuit before the upsert path, which would
+// otherwise fail with "missing id for <resource>" against a sentinel
+// that has no items and no id. The check requires exactly one key
+// (dry_run) so a live API response that happens to include a top-level
+// dry_run field alongside real data isn't misclassified as the
+// sentinel and silently zero out the sync count.
+func isDryRunResponse(data json.RawMessage) bool {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		return false
+	}
+	if len(envelope) != 1 {
+		return false
+	}
+	raw, ok := envelope["dry_run"]
+	if !ok {
+		return false
+	}
+	var v bool
+	return json.Unmarshal(raw, &v) == nil && v
 }
 
 func isEmptyPageResponse(data json.RawMessage) bool {
@@ -934,6 +1022,8 @@ func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) 
 		return db.UpsertAvatar(data)
 	case "tasks":
 		return db.UpsertTasks(data)
+	case "export":
+		return db.UpsertExport(data)
 	case "summary":
 		return db.UpsertSummary(data)
 	default:
@@ -1113,16 +1203,20 @@ func syncDependentResource(c interface {
 
 		for {
 			params := map[string]string{}
-			params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
-			if cursor != "" {
-				params[pageSize.cursorParam] = cursor
+			if resourceSupportsPagination(dep.Name) {
+				params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
+				if cursor != "" {
+					params[pageSize.cursorParam] = cursor
+				}
 			}
 			if depSinceTS != "" {
 				params[depSinceParam] = depSinceTS
 			}
 
 			// Apply user flags last so they win over spec-derived cursor/since/limit.
-			userParams.applyTo(dep.Name, params)
+			// Dependent path: --param is skipped (already scoped by the parent path
+			// segment); --global-param and --resource-param still apply.
+			userParams.applyTo(dep.Name, params, true)
 
 			data, err := c.Get(path, params)
 			if err != nil {
@@ -1152,6 +1246,19 @@ func syncDependentResource(c interface {
 			}
 
 			items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
+
+			// Page-int paginator fallback: mirrors syncResource so dependent
+			// resources on integer ?page=N APIs also advance past page 1.
+			// Guard on cursorType to cover every canonical spelling.
+			if pageSize.cursorType == "page" && nextCursor == "" && len(items) >= pageSize.limit {
+				currentPage, _ := strconv.Atoi(cursor)
+				if currentPage < 1 {
+					currentPage = 1
+				}
+				nextCursor = strconv.Itoa(currentPage + 1)
+				hasMore = true
+			}
+
 			if len(items) == 0 {
 				break
 			}
@@ -1223,8 +1330,23 @@ func syncDependentResource(c interface {
 				break
 			}
 			lastNextCursor = nextCursor
-			if !hasMore || len(items) < pageSize.limit || nextCursor == "" {
+			if !resourceSupportsPagination(dep.Name) {
 				break
+			}
+			if !hasMore || len(items) < pageSize.limit {
+				break
+			}
+			if nextCursor == "" {
+				if pageSize.cursorParam == "offset" {
+					// Cursor-based APIs return the next cursor in the envelope.
+					// Offset-based APIs carry their pagination position client-side.
+					currentOffset, _ := strconv.Atoi(cursor)
+					nextCursor = strconv.Itoa(currentOffset + pageSize.limit)
+				} else {
+					// A cursor-based API reporting has_more without a next cursor
+					// cannot advance safely; stop instead of looping silently.
+					break
+				}
 			}
 			cursor = nextCursor
 		}
@@ -1278,8 +1400,11 @@ var resourceIDFieldOverrides = map[string]string{
 
 // genericIDFieldFallbacks is the runtime safety net for resources that did
 // NOT receive a templated IDField. API-specific names belong in spec
-// annotations (x-resource-id), not this list.
-var genericIDFieldFallbacks = []string{"id", "ID", "name", "uuid", "slug", "key", "code", "uid"}
+// annotations (x-resource-id), not this list. Order matters: vendor
+// identifier names (gid, sid, uid, uuid, guid) take precedence over `name`
+// so APIs like Asana (gid) and Twilio (sid) don't fall through to a display
+// field and upsert on names — see #1394.
+var genericIDFieldFallbacks = []string{"id", "ID", "gid", "sid", "uid", "uuid", "guid", "name", "slug", "key", "code"}
 
 // pageItemKeys is scanned in priority order; lowercase REST-convention keys
 // come first, PascalCase .NET variants second. Without the PascalCase row,

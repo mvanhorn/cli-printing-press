@@ -28,22 +28,23 @@ type VerifyConfig struct {
 
 // VerifyReport is the output of a runtime verification run.
 type VerifyReport struct {
-	Mode                   string             `json:"mode"` // "live" or "mock"
-	Total                  int                `json:"total"`
-	Passed                 int                `json:"passed"`
-	Failed                 int                `json:"failed"`
-	Critical               int                `json:"critical"`
-	PassRate               float64            `json:"pass_rate"`
-	DataPipeline           bool               `json:"data_pipeline"`
-	DataPipelineDetail     string             `json:"data_pipeline_detail,omitempty"` // PASS, WARN, SKIP, FAIL with context
-	Freshness              FreshnessResult    `json:"freshness"`
-	BrowserSessionRequired bool               `json:"browser_session_required,omitempty"`
-	BrowserSessionProof    string             `json:"browser_session_proof,omitempty"`
-	BrowserSessionDetail   string             `json:"browser_session_detail,omitempty"`
-	AuthEnvVars            []AuthEnvVarStatus `json:"auth_env_vars,omitempty"`
-	Verdict                string             `json:"verdict"` // PASS, WARN, FAIL
-	Results                []CommandResult    `json:"results"`
-	Binary                 string             `json:"binary"`
+	Mode                   string                 `json:"mode"` // "live" or "mock"
+	Total                  int                    `json:"total"`
+	Passed                 int                    `json:"passed"`
+	Failed                 int                    `json:"failed"`
+	Critical               int                    `json:"critical"`
+	PassRate               float64                `json:"pass_rate"`
+	DataPipeline           bool                   `json:"data_pipeline"`
+	DataPipelineDetail     string                 `json:"data_pipeline_detail,omitempty"` // PASS, WARN, SKIP, FAIL with context
+	Freshness              FreshnessResult        `json:"freshness"`
+	BrowserSessionRequired bool                   `json:"browser_session_required,omitempty"`
+	BrowserSessionProof    string                 `json:"browser_session_proof,omitempty"`
+	BrowserSessionDetail   string                 `json:"browser_session_detail,omitempty"`
+	AuthEnvVars            []AuthEnvVarStatus     `json:"auth_env_vars,omitempty"`
+	Verdict                string                 `json:"verdict"` // PASS, WARN, FAIL
+	Results                []CommandResult        `json:"results"`
+	PathParamProbes        []PathParamProbeResult `json:"path_param_probes,omitempty"`
+	Binary                 string                 `json:"binary"`
 }
 
 type AuthEnvVarStatus struct {
@@ -268,6 +269,15 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 			// verify. Documented in skills/printing-press/SKILL.md and
 			// AGENTS.md.
 			env = append(env, "PRINTING_PRESS_VERIFY=1")
+			// Verify owns its httptest mock-server and needs the real
+			// wire path to assert against, so it opts back in to the
+			// transport-layer mutating-verb gate that every other
+			// consumer leaves engaged. Without this var, the gate in
+			// generated Client.do() returns a synthetic envelope for
+			// DELETE/POST/PUT/PATCH and the mock server never sees the
+			// request — collapsing verify's pass-rate signal to zero
+			// for those verbs.
+			env = append(env, "PRINTING_PRESS_VERIFY_LIVE_HTTP=1")
 		}
 		return env
 	}
@@ -293,6 +303,7 @@ func RunVerify(cfg VerifyConfig) (*VerifyReport, error) {
 
 	report.DataPipeline, report.DataPipelineDetail = runDataPipelineTest(binaryPath, report.Mode, buildEnv)
 	report.Freshness = runFreshnessContractTest(cfg.Dir)
+	report.PathParamProbes = runPathParamProbes(binaryPath, buildEnv(), paramDefaults)
 
 	if spec != nil && spec.Auth.RequiresBrowserSession {
 		report.BrowserSessionRequired = true
@@ -540,7 +551,15 @@ func runBrowserSessionProofTest(binary string, auth apispec.AuthConfig) CommandR
 		return result
 	}
 
-	output, err := runCLIWithOutput(binary, []string{"doctor", "--json"}, subprocessEnv(), 20*time.Second)
+	// cliutil.IsVerifyEnv() drives doctor's synthetic browser-session
+	// proof short-circuit. Without PRINTING_PRESS_VERIFY=1 the probe
+	// asks the CLI to validate against a real session, which a clean
+	// shipcheck environment doesn't have — every cookie-auth CLI then
+	// scores 0 even when the synthetic proof would have passed. Match
+	// the env-augmentation buildEnv() uses for the other mock-mode
+	// probes so this probe is self-contained.
+	env := append(subprocessEnv(), "PRINTING_PRESS_VERIFY=1")
+	output, err := runCLIWithOutput(binary, []string{"doctor", "--json"}, env, 20*time.Second)
 	if err != nil {
 		result.Error = fmt.Sprintf("doctor --json failed: %v", err)
 		result.Score = 0

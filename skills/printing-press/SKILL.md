@@ -730,7 +730,117 @@ Before new research:
 
    The prompt forces the user to acknowledge the version delta and explicitly accept (or refuse) re-validation. Skip it entirely on first generation, on same-version regenerations, or when no prior manifest exists.
 
-   If no CLI exists in the library and no lock is active, skip this step and proceed normally.
+   If no CLI exists in the local library and no lock is active, run the **Public-library check** below before proceeding to Phase 1.
+
+   #### Public-library check (registry.json)
+
+   The local library check above only sees CLIs this machine has already printed. A user on a fresh checkout — or one who typed a slightly different name than the published slug (`Slack` vs `slack-bot`, `Cal` vs `cal-com`), or who described what they wanted in their own words (`Hacker News reader`, `Notion clone`, `prediction market`) — will miss CLIs that already exist in the public library. Scan `mvanhorn/printing-press-library/registry.json` to catch those cases before Phase 1 research begins (the expensive 30-60-minute portion of the pipeline).
+
+   **Skip this check entirely when:**
+   - The local-library check above already prompted (mutual exclusion — do not double-ask).
+   - `BROWSER_SNIFF_TARGET_URL` is set (the user is building a from-website CLI; the registry indexes API CLIs and naming collisions are unlikely and intentional).
+   - The user passed `--har <path>` with an explicit `--name <api>` for a private capture.
+
+   **Fetch the registry.** Match the pattern `/printing-press-import` and `/printing-press-reprint` already use:
+
+   ```bash
+   REGISTRY=$(mktemp)
+   if ! gh api -H "Accept: application/vnd.github.v3.raw" \
+        repos/mvanhorn/printing-press-library/contents/registry.json \
+        > "$REGISTRY" 2>/dev/null; then
+     echo "Public-library check skipped: registry.json unreachable. Proceeding to Phase 1."
+     rm -f "$REGISTRY"
+     REGISTRY=""
+   fi
+   ```
+
+   Do not block on a network failure. After step 4 finishes, clean up the tempfile only if the fetch succeeded: `[ -n "$REGISTRY" ] && rm -f "$REGISTRY"`. The failure branch above already removed it and set `REGISTRY=""`, so an unconditional `rm -f "$REGISTRY"` would run `rm -f ""`.
+
+   **Read the registry and reason about matches** — do not gate on string equality alone. The file is small (~88 KB, ~135 entries today); read it directly and use judgment. Each entry has fields `name` (slug), `category`, `api` (brand display), `description`, `path`, `printer`.
+
+   The user's argument may arrive in many shapes, and only some are catchable by deterministic match:
+
+   - **Slug or near-slug** — `Notion`, `notion-cli`, `notion-pp-cli`
+   - **Brand with punctuation** — `Cal.com`, `Customer.io`, `Archive.today`, `Trigger.dev`
+   - **Concept or category** — `Hacker News reader`, `Notion clone`, `prediction market`, `prediction-market CLI`
+   - **Adjacent product** — `Polymarket` when the registry has `kalshi` (peer prediction market)
+   - **Genuinely novel** — no useful overlap
+
+   Classify the best match at three confidence levels and act only on the top two:
+
+   - **High** — same product under a different name (slug variant, brand vs slug form, `-cli`/`-pp-cli` suffix variant, well-known alias). Examples: `Cal.com` ↔ `cal-com`, `Notion` ↔ `notion-cli`, `slack` ↔ `slack-bot`.
+   - **Medium** — same category and overlapping function; a reasonable user would want to know before building. Examples: `prediction market` finds `kalshi`, `Hacker News reader` finds `hackernews`, `Polymarket` surfaces `kalshi` as a peer.
+   - **Low** — vaguely adjacent (e.g. "payment gateway" finding every payment-related CLI). Skip silently — false-positive prompts get dismissed reflexively at this gate.
+
+   Resist over-matching on `description` keywords. Most descriptions mention several adjacent concepts; matching liberally on description text produces noise. Use the description to *confirm* a name-or-category candidate, not to *discover* candidates from scratch.
+
+   **Combo CLIs.** When `SOURCE_PRIORITY` is set (from the Multi-Source Priority Gate above), skip the single-source High/Medium/No-match branches below. Classify matches per source, then present a single combined prompt rather than asking N times. For combo runs the existing single-source CLIs are usually *informational* — the user came here to build a combo, so the recommended default is to continue with the combo rather than reprint a component standalone.
+
+   **Cap displayed reprint options at 2 across all sources combined** so the prompt fits the 4-option `AskUserQuestion` limit (2 reprints + continue + abort). Pick the 2 best candidates by judgment in this order: (1) High over Medium, (2) primary-source over secondary-source (the first entry in `SOURCE_PRIORITY` wins ties), (3) canonical slug over variant. If additional matches exist beyond the displayed 2, append "(plus N other source matches)" to the prompt body so the user knows the list is truncated. Omit sources with no match rather than listing them as empty rows. If no source has any match at High or Medium, print nothing and proceed to Phase 1.
+
+   > Found matches across the sources you listed:
+   >
+   > - **`<source1>`**: `<entry1.name>` (`<entry1.api>`) [High] — same product as `<source1>`
+   > - **`<source2>`**: `<entry2.name>` (`<entry2.api>`) [Medium] — similar/adjacent
+   >
+   > This is informational — these components already exist as single-source CLIs. Continue building the combo, switch to reprinting one standalone, or abort?
+
+   Options:
+   1. **Continue with the combo as planned (recommended)** — the combo itself is the value-add; proceed to Phase 1 with all sources.
+   2. **Reprint `<entry1.name>` standalone instead** — invoke `/printing-press-reprint <entry1.name>` (abandons the combo for now).
+   3. **Reprint `<entry2.name>` standalone instead** — same, for the second candidate.
+   4. **Abort** — stop here.
+
+   The `[High]` / `[Medium]` tags surface the confidence so the user can distinguish "this is literally the thing you named" from "this is adjacent." Tag in the bullet, not the option label, to keep options scannable.
+
+   **Single-source CLIs.** When `SOURCE_PRIORITY` is not set, use the branches below.
+
+   **High match — prompt strongly.** Under Claude Code, use `AskUserQuestion`; under another harness, use the equivalent native prompt primitive. The option set is the same either way.
+
+   > Found **`<entry.api>`** in the public library (printed by **@`<entry.printer>`**, path `<entry.path>`).
+   >
+   > `<entry.description>`
+   >
+   > URL: `https://github.com/mvanhorn/printing-press-library/tree/main/<entry.path>`
+   >
+   > This CLI already exists. What would you like to do?
+
+   Options:
+   1. **Reprint with the current Printing Press (recommended)** — end this run and invoke `/printing-press-reprint <entry.name>`. That skill pulls the existing CLI, carries prior research and post-publish patches into reconciliation, and regenerates under the current binary. Almost always the right choice when a user discovers the CLI exists.
+   2. **Continue and build a fresh one anyway** — proceed with the current run from scratch. Rare; appropriate only for a deliberate fork or variant.
+   3. **Abort** — stop here.
+
+   **Multiple High matches — present each candidate, do not use the Medium-match phrasing.** Rare — typically only happens when the user's argument is ambiguous between siblings like `slack` and `slack-bot`. Cap displayed candidates at 2 to stay within the 4-option prompt limit alongside continue/abort. If 3+ High candidates somehow qualify, pick the 2 best by judgment (typically the canonical slug match plus the next-most-likely alternative) and note "(plus N other close matches)" in the prompt body so the user knows the list is truncated.
+
+   > Found multiple matches for **`<api>`** in the public library — each appears to be the same product under a different name:
+   >
+   > - **`<entry1.name>`** (`<entry1.api>`) — `<entry1.description>`
+   > - **`<entry2.name>`** (`<entry2.api>`) — `<entry2.description>`
+   >
+   > Pick one to reprint, or continue/abort.
+
+   Options:
+   1. **Reprint `<entry1.name>`** — invoke `/printing-press-reprint <entry1.name>`.
+   2. **Reprint `<entry2.name>`** — same, for the second candidate.
+   3. **Continue and build a fresh one anyway** — rare; appropriate only for a deliberate fork or variant.
+   4. **Abort** — stop here.
+
+   **Medium match — present alternatives.** Cap candidates at 2 to stay within the 4-option prompt limit alongside continue/abort.
+
+   > Found similar entries in the public library that don't exactly match `<api>` but may overlap:
+   >
+   > - **`<entry1.name>`** (`<entry1.api>`) — `<entry1.description>`
+   > - **`<entry2.name>`** (`<entry2.api>`) — `<entry2.description>`
+   >
+   > Continue with `<api>` as planned, or reprint one of these instead?
+
+   Options:
+   1. **Continue with `<api>` as planned** — proceed to Phase 1.
+   2. **Reprint `<entry1.name>` instead** — invoke `/printing-press-reprint <entry1.name>`.
+   3. **Reprint `<entry2.name>` instead** — same, for the second candidate.
+   4. **Abort** — stop here.
+
+   **No High or Medium match:** print nothing, proceed to Phase 1.
 
 5. **API Key Gate** — Check whether this API requires authentication, then handle accordingly.
 
@@ -1336,15 +1446,18 @@ model → 2× candidates → adversarial cut. Step 1.5c is the motivation; do no
 generate transcendence features inline here.
 
 The transcendence table in the manifest (Step 1.5d) renders rows in this shape,
-which the subagent's `### Survivors` output already matches:
+which mirrors the subagent's `### Survivors` output. The `Buildability` column
+tags each row `spec-emits` or `hand-code` per
+[references/novel-features-subagent.md](references/novel-features-subagent.md)
+so the Phase Gate 1.5 hand-code count has a source of truth in the manifest:
 
 ```markdown
 ### Transcendence (only possible with our approach)
-| # | Feature | Command | Why Only We Can Do This |
-|---|---------|---------|------------------------|
-| 1 | Bottleneck detection | bottleneck | Requires local join across issues + assignees + cycle data |
-| 2 | Velocity trends | velocity --weeks 4 | Requires historical cycle snapshots in SQLite |
-| 3 | What did I miss | since 2h | Requires time-windowed aggregation no single API call provides |
+| # | Feature | Command | Buildability | Why Only We Can Do This |
+|---|---------|---------|--------------|------------------------|
+| 1 | Bottleneck detection | bottleneck | hand-code | Requires local join across issues + assignees + cycle data |
+| 2 | Velocity trends | velocity --weeks 4 | hand-code | Requires historical cycle snapshots in SQLite |
+| 3 | What did I miss | since 2h | hand-code | Requires time-windowed aggregation no single API call provides |
 ```
 
 Minimum 5 transcendence features. These are the commands that differentiate the CLI.
@@ -1499,15 +1612,16 @@ The prose showcase and the `AskUserQuestion` are two separate turns. Print the s
 
 **Part 1: Prose showcase (print before the AskUserQuestion)**
 
-The showcase exists so the user can decide approve / trim / add ideas without asking a follow-up. Cover three things:
+The showcase exists so the user can decide approve / trim / add ideas without asking a follow-up. Cover four things:
 
 1. **Scope** — how many features absorbed across which tools, how many novel on top, how that stacks up against the best existing tool.
 2. **Per-novel-feature readout** — one line each: feature name, what the user gets, and the specific evidence or persona that makes it worth building.
-3. **Anything the user should worry about before approving** — stubs, risky dependencies, expensive endpoints, low-confidence ideas.
+3. **Hand-code commitment** — of the M novel features, K will require hand-written Go after generate (each ~50-150 LoC plus `root.go` wiring). State the hand-code count and the auto-emitted count, then list the names of the hand-code features. The manifest transcendence table's `Buildability` column (populated from the subagent per [references/novel-features-subagent.md](references/novel-features-subagent.md) "Output contract") is the source of truth: count rows tagged `hand-code`; `spec-emits` rows are excluded from the hand-code total. Approving commits the agent to that scope, so the user must see it explicitly before the AskUserQuestion.
+4. **Anything else the user should worry about before approving** — stubs, risky dependencies, expensive endpoints, low-confidence ideas.
 
 Show every novel feature that scored ≥5/10. Group by theme if there are more than ~12; never hide features behind "Plus N more" or "see full manifest." If zero qualified, say so plainly: "No novel features scored high enough to recommend. The absorbed features cover the landscape well."
 
-Format is otherwise yours — markdown headings, prose, a numbered list, whatever reads cleanly. The must-haves are the three things above and the ≥5/10 coverage rule.
+Format is otherwise yours — markdown headings, prose, a numbered list, whatever reads cleanly. The must-haves are the four things above and the ≥5/10 coverage rule.
 
 **Part 2: AskUserQuestion**
 
@@ -1626,7 +1740,11 @@ auth signals, enrich the spec before generation:
 3. Check Phase 1.6 Pre-Browser-Sniff Auth Intelligence results (if the user confirmed auth)
 
 If any source identified auth, **edit the spec YAML** to add the auth section before
-running generate. For internal YAML specs:
+running generate. Catalog-mode runs (`printing-press generate <name>` where `<name>`
+is in `catalog/`) can skip the spec edit when the catalog entry declares
+`auth_env_vars` — those canonical names are applied automatically and the
+parser's name-derived default name is retained as a trailing fallback so
+operators on existing setups don't need a rename. For internal YAML specs:
 
 ```yaml
 auth:
@@ -2046,7 +2164,10 @@ schema and `info`-level placement option.
 
 **Smaller-surface variants:**
 
-- Just want remote reach? `mcp.transport: [stdio, http]` alone is fine.
+- Just want remote reach? Small APIs (at or under
+  `spec.DefaultRemoteTransportEndpointThreshold` typed endpoints) get `[stdio, http]`
+  by default — no spec edit needed. Set `mcp.transport: [stdio, http]` explicitly only
+  when the API is above the threshold and still wants remote reach.
 - Have 3–5 obvious multi-step workflows but <50 endpoints? Add `mcp.intents`
   without code orchestration; leave `endpoint_tools` at default (visible).
 
@@ -2346,6 +2467,13 @@ After building each command in Priority 1 and Priority 2, verify these 10 princi
      }
      ```
    This is defense-in-depth: the verifier also runs a heuristic side-effect classifier, but it can miss commands whose `--help` text and source don't match the heuristics. The env-var check is the floor.
+   - **Long-running commands curtail work under live-dogfood.** Any hand-written command whose happy path is an expensive network operation (full sync loops, content crawlers, bulk archive walks) MUST check `cliutil.IsDogfoodEnv()` and curtail work to fit inside the matrix's flat 30s per-command timeout. `printing-press dogfood --live` sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess. Pattern:
+     ```go
+     if cliutil.IsDogfoodEnv() {
+         return crawl(ctx, opts.WithMaxPages(1))
+     }
+     ```
+     Distinct from `IsVerifyEnv`: dogfood is a real-API matrix, so curtail work (paginate once, smaller `--limit`), never substitute mock data for real calls.
 10. **Per-source rate limiting**: any hand-written client in a sibling internal package (`internal/source/<name>/`, `internal/recipes/`, `internal/phgraphql/`, etc. — anything not generator-emitted) that makes outbound HTTP calls MUST use `cliutil.AdaptiveLimiter` and surface `*cliutil.RateLimitError` when 429 retries are exhausted. Empty-on-throttle is indistinguishable from "no data exists" and silently corrupts downstream queries. Read [references/per-source-rate-limiting.md](references/per-source-rate-limiting.md) when authoring a sibling client. Enforced at generation time by dogfood's `source_client_check`.
 
 #### Verify-friendly RunE template
@@ -2484,6 +2612,9 @@ func newXxxCmd(flags *rootFlags) *cobra.Command {
 //   issuesCmd := newIssuesCmd(flags)
 //   issuesCmd.AddCommand(newIssuesStaleCmd(flags))
 //   rootCmd.AddCommand(issuesCmd)
+// Leaf commands must declare every non-root flag used in their examples.
+// Do not rely on parent-local flags like --org or --project being accepted by
+// child commands unless the parent registered them with PersistentFlags().
 // Single-word Commands register directly: rootCmd.AddCommand(newXxxCmd(flags)).
 ```
 
@@ -2518,6 +2649,8 @@ RunE: func(cmd *cobra.Command, args []string) error {
 
 **RunE skeleton — store-query shape** (offline data via the local SQLite):
 
+The generic `resources` table is keyed by `resource_type`. Flat resources synced from `/<resource>` land as `resource_type='<resource>'`. **Hierarchical resources** synced from `/<parents>/{id}/<resource>` land as `resource_type='<parent>_<resource>'` — e.g., `projects_tasks` (Asana), `repos_issues` / `repos_pulls` (GitHub) — *not* the bare `<resource>` name. A novel feature that filters by the bare name returns zero rows against a real DB. Use `IN (...)` to catch both shapes so the same code works whether the API exposes the resource flat or only parent-scoped.
+
 ```go
 // Declare these alongside the cmd literal, before return cmd:
 //   var dbPath string
@@ -2532,15 +2665,25 @@ RunE: func(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer db.Close()
-	// Replace the query with your aggregation. The store schema mirrors
-	// the synced resources; `printing-press dogfood --json` shows the
-	// table list. SQL must be SELECT-only; the search/sql gates reject
-	// mutating statements.
-	rows, err := db.DB().QueryContext(cmd.Context(), `SELECT id, data FROM <table> WHERE ...`)
+	// Filter resources by both the flat and hierarchical naming so the
+	// query catches rows synced via /<resource> AND rows synced via
+	// /<parents>/{id}/<children>. Drop the parent-scoped entry if the
+	// API only exposes the resource flat; add a <resource_singular>
+	// entry for APIs that toggle plural/singular casing. SQL must be
+	// SELECT-only; the search/sql gates reject mutating statements.
+	rows, err := db.DB().QueryContext(cmd.Context(), `
+		SELECT id, data FROM resources
+		WHERE resource_type IN ('<resource>', '<parent>_<resource>')
+		  AND ...`)
 	if err != nil {
 		return fmt.Errorf("query: %w", err)
 	}
 	defer rows.Close()
+	// Scan each row. id/data on the resources table are NOT NULL so bare
+	// strings are safe; ANY optional field selected via json_extract or
+	// pulled from a typed FTS/upsert table can be NULL — use sql.Null*
+	// scan targets (or COALESCE in the SQL) for those, see the NULL-safe
+	// scans paragraph below.
 	var results []yourRowType // scan rows into the slice
 	if flags.asJSON || (!isTerminal(cmd.OutOrStdout()) && !humanFriendly) {
 		enc := json.NewEncoder(cmd.OutOrStdout())
@@ -2552,13 +2695,46 @@ RunE: func(cmd *cobra.Command, args []string) error {
 },
 ```
 
+For flat-only resources, the typed FTS/upsert tables the generator emits (e.g., `tasks_fts`, `projects`) work too — `SELECT id, data FROM <typed-table>` is the fast path. The `IN (...)` pattern above is the safe default whenever the resource may be hierarchical; `printing-press dogfood --json` shows the actual `resource_type` distribution so you can confirm without running raw SQL.
+
 For features that combine both (cache an API response in the store, or fall through to live when the local store is stale), nest one skeleton inside the other and use the `--data-source auto/local/live` flag pattern from the generated `sync` command.
 
 **Shared helpers available to novel code:** The generator emits `internal/cliutil/` in every CLI. When authoring novel commands, prefer `cliutil.FanoutRun` for any aggregation command (any `--site`/`--source`/`--region` CSV fan-out) and `cliutil.CleanText` for any text extracted from HTML or schema.org JSON-LD. Re-implementing these inline is how recipe-goat's trending silent-drop and `&#39;` entity bugs shipped.
 
 **Streaming frame normalizers MUST use `cliutil.ExtractNumber` / `cliutil.ExtractInt` rather than raw `float64`/`int64` struct fields.** Real-world WebSocket and streaming JSON feeds (Binance, Coinbase, Kraken, Stripe `*_decimal`, vendor-specific market-data feeds) commonly encode numeric values as JSON-encoded strings (`"price":"1.91"`). `json.Unmarshal` of a JSON string into a `float64` field returns no error and silently leaves the field at 0; combined with NULL-on-zero patterns this discards the entire numeric feed with no error signal anywhere in the pipeline. The helpers accept both shapes (JSON number or JSON-encoded string), report `ok=false` on missing/null/unparseable, and are the canonical extraction path for `map[string]json.RawMessage` decoders. Re-implementing this inline as a `float64` struct field is the silent-aggregation-failure bug class.
 
+**NULL-safe SQL scans MUST use `sql.Null*` scan targets (or `COALESCE(<col>, <zero>)` in the query) for any column that can be NULL.** SQLite returns NULL for any absent JSON field selected via `json_extract(data, '$.optional_field')`, for any nullable column in a typed FTS/upsert table the generator emits, and for any field the API omits from a particular response. `database/sql`'s `rows.Scan` into a bare `string`/`int64`/`float64` returns a non-nil error on NULL (`Scan error on column index N: converting NULL to string is unsupported`) — and the surrounding `for rows.Next()` loop typically `continue`s on scan error, silently dropping every row. The result: queries return zero records, no error reaches the caller, the feature looks healthy because the API call succeeded. Use `var v sql.NullString` (or `NullInt64` / `NullFloat64` / `NullTime`) as the scan target and copy `.String` / `.Int64` / `.Float64` / `.Time` into your row struct, accepting the zero value as the missing-field representation. Re-implementing this inline as bare-string scans is the silent-row-drop bug class.
+
+```go
+// Wrong — every NULL column kills the row.
+var name string
+if err := rows.Scan(&id, &name); err != nil { continue }
+
+// Right — NULL becomes the zero value, no row is lost.
+var name sql.NullString
+if err := rows.Scan(&id, &name); err != nil { continue }
+result.Name = name.String
+```
+
+Also right: push the default into the query so the scan target stays bare.
+
+```sql
+SELECT id, COALESCE(json_extract(data, '$.name'), '') FROM resources WHERE ...
+```
+
 **Typed exit-code verification:** If a novel command intentionally returns a non-zero code for a non-error control-flow result, add `cmd.Annotations["pp:typed-exit-codes"] = "0,<code>"` (or the equivalent `Annotations: map[string]string{...}` literal) and document the same command-specific codes in its help. Do not list the global failure palette in command help unless those exits should count as a verify pass for that command; keep general exit-code troubleshooting in README/SKILL prose.
+
+**Hand-edits to generator-emitted files are not durable.** Every file carrying `// Generated by CLI Printing Press ... DO NOT EDIT.` — `config.go`, `client.go`, `auth.go`, `store.go`, `root.go`, every `cliutil_*.go`, the typed MCP wrappers, and `sync.go` / `analytics.go` / `jobs.go` — is overwritten on `printing-press generate --force` and reconciled by `printing-press regen-merge`. Inline additions (a field on `Config`, a header in `client.go`'s `do()`, a row in `store.go`'s migrations slice) are not preserved; only whole hand-authored files survive across regen. (`AddCommand` calls in `root.go` are the exception: `regen-merge` re-injects them automatically — see the novel-command bullet below.)
+
+For an extension to be durable, put it in its own file beside the emitted one:
+
+- **Custom config fields:** create `internal/config/<api>_config.go` exporting accessors your novel code reads directly. Do not add fields to the emitted `Config` struct.
+- **Custom request headers** (vendor fingerprint, `X-CSRF`, app-version, signed timestamps): create `internal/client/<api>_headers.go` exporting a func that builds the header map; novel code passes that map to `client.GetWithHeaders` / `PostWithHeaders` when it calls the API. The generated `client.go` has no global request mutator, so this pattern only covers requests made directly from novel code — it does not intercept calls from generated endpoint commands. Do not edit the templated header block in `client.go`.
+- **Custom auth flow** (browser-sniffed sessions, vendor SSO, refresh hooks beyond OAuth2): create `internal/cli/<api>_auth.go` (package `cli`, same as the generated `auth.go`) with the API-specific token capture or refresh, and wire it from a novel command rather than editing the templated `auth.go` constructor functions (`newAuthLoginCmd`, `newAuthSetupCmd`, etc.).
+- **Extended store schema** (typed tables beyond `resources`, vendor JSON columns, full-text indexes): create `internal/store/<api>_migrations.go` running its own `CREATE TABLE ... IF NOT EXISTS` from a lazy init invoked by the novel commands that need it. Do not edit the migration slice in `store.go`.
+- **New novel command:** put the command body in its own `internal/cli/<feature>.go` file — it survives regen as a whole hand-authored unit. The `AddCommand` call wiring it into the Cobra tree still goes in `root.go` per the Phase 3 novel-command skeleton above; `printing-press generate --force` wipes that call, but `printing-press regen-merge` re-injects it via its lost-registration mechanism (see `internal/pipeline/regenmerge/apply.go`). Prefer `regen-merge` over `--force` for routine refreshes so the AddCommand call doesn't need a manual re-apply. Spec-declared commands are picked up by the generator's typed-tool path and need no hand-wired `AddCommand` at all.
+
+If an extension genuinely cannot live in a separate file (a `case` branch in a templated method switch, an inline modification to a generated handler with no registry hook), file a generator issue requesting the hook rather than carrying the edit across regens. The `AddCommand` case above is covered by `regen-merge`; most other inline diffs are not.
 
 **MCP exposure:** The generator emits `internal/mcp/cobratree/`, and the MCP binary mirrors the Cobra tree at startup. When you add, rename, or remove a user-facing Cobra command, the MCP surface follows automatically. Two annotations control how each command appears as an MCP tool:
 
@@ -2759,18 +2935,21 @@ The sub-skill carries `context: fork` so the reviewer agent's diagnostic chatter
 
 **Wave B rollout policy:** all findings surface as **warnings**, not blockers. Shipcheck does not fail on Phase 4.85 findings. Log the findings to `manuscripts/<api>/<run>/proofs/phase-4.85-findings.md` and surface them to the user. The user decides case by case whether to fix before shipping. Wave B calibrates false-positive rates before Wave C flips errors to blocking.
 
-## Phase 4.95: Native Code Review
+## Phase 4.95: Local Code Review
 
-**Runs after Phase 4.85, before Phase 5.** Reviews the printed CLI source for security and correctness issues using the harness's built-in code review.
+**Runs after Phase 4.85, before Phase 5.** Reviews the printed CLI source for security and correctness issues *before* any PR exists. This is the cheapest fix window in the pipeline — session context is hot, no PR feedback round-trip, no CI comments to chase. Catching issues here means they never become PR-time review comments, which is the wrong fix window for the same problems.
 
 **Target.** The generated CLI and MCP source under `$CLI_WORK_DIR`. In scope: `internal/cli/`, `internal/mcp/` (excluding `cobratree/`), `internal/store/`, `internal/client/`, and `cmd/`. **Out of scope:** `internal/cliutil/` and `internal/mcp/cobratree/` — these are generator-reserved packages. Any finding there is a machine bug; route to retro, do not patch in place.
 
-Use the harness-native code review path:
-- Claude Code: invoke `/review [target]` against `$CLI_WORK_DIR`.
-- Codex: review the current diff/target directly in built-in code-review mode.
-- Other harnesses: use their native review command or equivalent.
+**Tool selection — pick what's installed, do not name-match.** This phase needs *a* code review, not a specific named command. Survey the review-shaped capabilities the current harness has and pick the best fit. Plausible candidates (names drift across harnesses and plugin sets; treat this as an example list, not a closed set):
 
-**Autofix policy.** This is the cheapest fix-window in the entire pipeline — session context is hot, no PR feedback round-trip, no publish decision in flight. The default is fix. Surfacing to the user is the exception, not the rule. Severity is informational, not gating: a low-severity nil-deref is a 30-second fix; close it the same as a high-severity one.
+- A standalone, working-dir-shaped code review skill that runs against `git diff` and a file list without needing an open PR (e.g., `compound-engineering:ce-code-review`, or similar).
+- Codex's built-in code-review mode (`/codex:review`), which reviews the current diff or target directly.
+- **Direct reviewer-subagent dispatch via the Agent tool.** Spawn `correctness`, `security`, and `maintainability` reviewers (always-on) plus any conditional reviewers warranted by the diff (`api-contract`, `data-migrations`, `reliability`, `performance`) against the in-scope paths. This is the universal fallback: any harness that runs the press skill has the Agent tool, so this path is always available. When dispatching multiple reviewers, a "round" (per the autofix loop below) means re-running *all* spawned reviewers in parallel and merging their findings into a single set before autofix; convergence is the merged set being empty, not any individual reviewer clearing. Do not re-run only the reviewer whose prior findings were touched — every round must include every reviewer so cascading or newly-introduced issues surface.
+
+**Do not invoke Claude Code's `/review` for this phase.** `/review` is PR-shaped — it fetches an open GitHub PR and comments back via `gh`. There is no PR yet at Phase 4.95; the CLI is in a working dir that has not been promoted or published. Reaching for `/review`, bouncing off its shape, and claiming "harness has no code review" is the failure mode this section is written to prevent.
+
+**Autofix policy.** Session context is hot, no PR feedback round-trip, no publish decision in flight. The default is fix. Surfacing to the user is the exception, not the rule. Severity is informational, not gating: a low-severity nil-deref is a 30-second fix; close it the same as a high-severity one.
 
 Fix without asking when:
 - The fix is mechanical (parameterized query, input validation, error wrapping, missing nil check, dead code removal, obvious refactor).
@@ -2785,17 +2964,31 @@ Surface to the user only when the fix requires a real tradeoff they have to make
 
 Treat agent judgment as sufficient here — these categories are distinguishable on inspection. Conservatism is the failure mode, not over-fixing. Drafting an AskUserQuestion because "the user might want to know" is premature; fix the issue and note it in the shipcheck report.
 
-Re-run the native review after each autofix round until findings clear. Cap at 3 rounds; if findings persist after round 3, stop and surface — autofix is not converging. Findings in out-of-scope paths (`internal/cliutil/`, `internal/mcp/cobratree/`) file as retro-candidates and do not count toward the convergence check or the 3-round cap; the convergence check applies only to in-scope findings.
+Re-run the review after each autofix round until findings clear. Cap at 3 rounds; if findings persist after round 3, stop and surface — autofix is not converging. Findings in out-of-scope paths (`internal/cliutil/`, `internal/mcp/cobratree/`) file as retro-candidates and do not count toward the convergence check or the 3-round cap; the convergence check applies only to in-scope findings.
 
-**Findings artifact.** Log all review activity to `manuscripts/<api>/<run>/proofs/phase-4.95-findings.md`: each finding's file:line, severity, autofix outcome (fixed in-place / surfaced to user / filed as retro-candidate), and the corresponding fix commit or rationale. The shipcheck report references this file for the autofix summary; the retro skill scans it for template-shape candidates worth filing against the machine.
+**Findings artifact.** Log to `manuscripts/<api>/<run>/proofs/phase-4.95-findings.md`. Skip the per-finding enumeration for fixed-in-place items — the commits and diffs are already the authoritative record. Specifically:
+- **Autofix summary (one line).** "N findings autofixed in-place across M rounds; see commits `<hash>`, `<hash>`, …" Do not enumerate the fixed findings.
+- **Template-shape retro candidates (full detail).** Each finding's file:line, severity, the template path it appears to come from, and why it was filed instead of fixed. Not fixed in-place, so the log is the only record.
+- **Out-of-scope retro candidates (full detail).** Findings in `internal/cliutil/` or `internal/mcp/cobratree/`. Same shape as template-shape entries.
+- **Surface-to-user findings (full detail).** Each finding's file:line, severity, the real-tradeoff category it falls into, and the user's decision once they make one. Pending between turns; the log is what carries them.
+- **Convergence outcome (one line).** "Findings cleared at round N" or "stopped at round 3 with N findings outstanding — see surface-to-user list."
+- **Review path chosen (one line).** Skill name + invocation form, or "direct subagent dispatch" with the persona list. Lets a retro audit tool-selection drift across runs.
 
-**Rollout posture.** Unlike Phase 4.85, this phase starts without a warnings-only calibration period. The native review tools (`/review` in Claude Code, Codex's built-in review) are mature, well-understood surfaces — calibration risk is low. The 3-round autofix cap is the safety net for runaway findings, and the template-shape escape hatch routes systemic issues to retro instead of patching in place.
+The retro skill scans the template-shape and out-of-scope sections for candidates worth filing against the machine.
+
+**Rollout posture.** Unlike Phase 4.85, this phase starts without a warnings-only calibration period. Local code review is a well-understood surface — calibration risk is low. The 3-round autofix cap is the safety net for runaway findings, and the template-shape escape hatch routes systemic issues to retro instead of patching in place.
 
 **Template-shape escape hatch.** Even if a finding lives in an in-scope path, if it appears to come from a generator template (recurs across files in identical shape, sits in a path matched by `internal/generator/templates/`'s emit set, or duplicates a known prior template bug), file as retro-candidate and surface to the user rather than autofixing. Patching the printed CLI hides the machine bug from the next CLI.
 
-**Post-fix simplification (Claude Code only).** After the review + autofix loop converges, the printed CLI has fresh edits from the autofix passes — typically defensive guards, sanitization helpers, and near-duplicate fixes across sibling files. Run `/simplify` scoped to the same in-scope paths to consolidate duplication, remove dead code, and tighten the autofix output before dogfood. `/simplify` is Claude Code-only; skip on Codex and other harnesses (they have no built-in equivalent, and the press skill explicitly avoids custom simplification logic — same rule as the native code review above).
+**Post-fix simplification (Claude Code only).** After the review + autofix loop converges, the printed CLI has fresh edits from the autofix passes — typically defensive guards, sanitization helpers, and near-duplicate fixes across sibling files. Run `/simplify` scoped to the same in-scope paths to consolidate duplication, remove dead code, and tighten the autofix output before dogfood. `/simplify` is Claude Code-only; skip on Codex and other harnesses (they have no built-in equivalent, and the press skill explicitly avoids custom simplification logic — same rule as the review path above).
 
-**Harness exemption.** If the current harness has no built-in code review, skip this phase with "Native code review unavailable in this harness; skipping" in the shipcheck report.
+**Harness exemption — narrow.** Skipping this phase is legitimate only when the current harness has *neither* a working-dir-shaped review skill *nor* the Agent/subagent capability needed for the direct-dispatch fallback. In practice this is almost never true — any harness that runs the press skill has access to subagents. The following rationales are **not** acceptable for skipping:
+
+- "The first tool name I tried (e.g., `/review`, `code-review:code-review`) didn't fit, so the harness must have no review path." Survey the catalog before claiming exemption; if no skill fits, dispatch reviewer subagents directly via the Agent tool.
+- "There's no PR yet, so code review can't run here." Pre-PR is the *point* of this phase. CI-time PR review is too late.
+- "PR-time CI review will catch it." That defeats the purpose of running review in the cheapest fix window.
+
+If a skip is genuinely warranted, the shipcheck report must state which review-shaped capabilities were searched and why none fit — not just "harness exemption."
 
 ## Phase 5: Dogfood Testing
 
@@ -2851,8 +3044,10 @@ structured report with pass/fail/skipped counts. Save the JSON report to:
 `$PROOFS_DIR/<stamp>-dogfood-results.json`
 
 If the command exits non-zero, inspect the structured failures, fix the CLI, and
-rerun live dogfood. Do not hand-edit `phase5-acceptance.json`; it must come from
-the runner.
+rerun live dogfood. The runner writes `phase5-acceptance.json` on every outcome
+(`status: "pass"` on success, `status: "fail"` with a `failure_summary` block on
+failure), so the Phase 5.6 gate always has a marker to read. Do not hand-edit
+`phase5-acceptance.json`; it must come from the runner.
 
 **Quick check (auto-selected test subset):**
 1. `doctor` — auth valid, API reachable.
@@ -2929,7 +3124,7 @@ Write:
 
 `$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-acceptance.md`
 
-For `Gate: PASS`, also write:
+For every outcome (PASS or FAIL), the runner writes:
 
 `$PROOFS_DIR/phase5-acceptance.json`
 
@@ -2950,6 +3145,12 @@ For `Gate: PASS`, also write:
   }
 }
 ```
+
+On `Gate: FAIL` the same path is written with `status: "fail"` and a
+`failure_summary` block grouping failures by category
+(`transport_error` / `http_4xx` / `http_5xx` / `exit_nonzero` /
+`output_mismatch` / `other`) plus the list of contributing commands. The
+Phase 5.6 gate routes this marker to the hold path; do not promote.
 
 For `level: "quick"`, `tests_failed` may be `1` only when the Quick Check
 threshold still passed (`matrix_size: 6`, `tests_passed >= 5`) and the miss was

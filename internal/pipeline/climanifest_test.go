@@ -114,6 +114,126 @@ func TestWriteCLIManifestNonexistentDir(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestWritePatchesIndex(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WritePatchesIndex(dir, "20260517-091036", "4.8.0")
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(dir, PatchesIndexFilename))
+	require.NoError(t, err)
+
+	var idx PatchesIndex
+	require.NoError(t, json.Unmarshal(data, &idx))
+
+	assert.Equal(t, 1, idx.SchemaVersion)
+	assert.Equal(t, "20260517-091036", idx.BaseRunID)
+	assert.Equal(t, "4.8.0", idx.BasePrintingPressVersion)
+	assert.NotNil(t, idx.Patches, "Patches should be non-nil (empty slice) so JSON serializes as [] not null")
+	assert.Empty(t, idx.Patches)
+	assert.Regexp(t, `^\d{4}-\d{2}-\d{2}$`, idx.AppliedAt, "applied_at should be YYYY-MM-DD")
+
+	// Verify the raw JSON serializes patches as [], not null — empty
+	// arrays are what the library verifier expects, and []json.RawMessage{}
+	// is what produces that shape (vs nil → null).
+	assert.Contains(t, string(data), `"patches": []`)
+}
+
+func TestWritePatchesIndexPreservesExisting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, PatchesIndexFilename)
+
+	// Pre-create a populated index (simulating an agent that already
+	// applied an in-session patch to the generated CLI).
+	preExisting := []byte(`{
+  "schema_version": 1,
+  "applied_at": "2026-01-15",
+  "base_run_id": "20260115-000000",
+  "base_printing_press_version": "3.0.0",
+  "patches": [
+    {"id": "test-patch", "summary": "preserved across regen"}
+  ]
+}
+`)
+	require.NoError(t, os.WriteFile(path, preExisting, 0o644))
+
+	// Call WritePatchesIndex with different values — must NOT overwrite.
+	err := WritePatchesIndex(dir, "20260517-091036", "4.8.0")
+	require.NoError(t, err)
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, preExisting, got, "existing patches index must be preserved byte-for-byte on regen")
+}
+
+func TestWritePatchesIndexNonexistentDir(t *testing.T) {
+	err := WritePatchesIndex("/nonexistent/path/that/does/not/exist", "run", "version")
+	assert.Error(t, err)
+}
+
+func TestWriteManifestForGenerateEmitsPatchesIndex(t *testing.T) {
+	dir := t.TempDir()
+
+	// Place an OpenAPI spec so the manifest writer has format/checksum to populate.
+	specContent := []byte(`{"openapi": "3.0.0", "info": {"title": "Test"}}`)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "spec.json"), specContent, 0o644))
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "test-api",
+		SpecSrcs:  []string{"https://example.com/openapi.json"},
+		OutputDir: dir,
+		RunID:     "20260517-091036",
+	})
+	require.NoError(t, err)
+
+	// Both manifest siblings must land. (MCPB manifest.json is conditional
+	// on populated MCP metadata, which this minimal test doesn't trigger;
+	// the existing TestWriteManifestForGenerateWithSpecURL siblings cover
+	// MCPB-emit cases.)
+	for _, fname := range []string{CLIManifestFilename, PatchesIndexFilename} {
+		_, err := os.Stat(filepath.Join(dir, fname))
+		assert.NoError(t, err, "expected %s to exist after WriteManifestForGenerate", fname)
+	}
+
+	// Patches index has the right shape and the run-ID flows through.
+	data, err := os.ReadFile(filepath.Join(dir, PatchesIndexFilename))
+	require.NoError(t, err)
+	var idx PatchesIndex
+	require.NoError(t, json.Unmarshal(data, &idx))
+	assert.Equal(t, "20260517-091036", idx.BaseRunID)
+	assert.Equal(t, version.Version, idx.BasePrintingPressVersion)
+}
+
+func TestWriteManifestForGeneratePreservesPatchesIndexOnRegen(t *testing.T) {
+	dir := t.TempDir()
+	specContent := []byte(`{"openapi": "3.0.0", "info": {"title": "Test"}}`)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "spec.json"), specContent, 0o644))
+
+	// First generate.
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "test-api",
+		SpecSrcs:  []string{"https://example.com/openapi.json"},
+		OutputDir: dir,
+		RunID:     "20260517-091036",
+	}))
+	patchesPath := filepath.Join(dir, PatchesIndexFilename)
+	firstContent, err := os.ReadFile(patchesPath)
+	require.NoError(t, err)
+
+	// Second generate (simulates `generate --force` regen) with different
+	// run-ID — patches index must be preserved byte-for-byte.
+	require.NoError(t, WriteManifestForGenerate(GenerateManifestParams{
+		APIName:   "test-api",
+		SpecSrcs:  []string{"https://example.com/openapi.json"},
+		OutputDir: dir,
+		RunID:     "20260601-120000",
+	}))
+	secondContent, err := os.ReadFile(patchesPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, firstContent, secondContent, "patches index must survive regen unchanged")
+}
+
 func TestSyncCLIManifestNovelFeaturesPreservesManifestContract(t *testing.T) {
 	dir := t.TempDir()
 	manifest := []byte(`{
@@ -596,7 +716,7 @@ func TestWriteManifestForGenerateStampsRunID(t *testing.T) {
 	assert.Equal(t, "20260504-190931", got.RunID)
 }
 
-func TestWriteManifestForGenerateOmitsEmptyRunID(t *testing.T) {
+func TestWriteManifestForGenerateAutoFillsEmptyRunID(t *testing.T) {
 	dir := t.TempDir()
 
 	err := WriteManifestForGenerate(GenerateManifestParams{
@@ -607,8 +727,12 @@ func TestWriteManifestForGenerateOmitsEmptyRunID(t *testing.T) {
 
 	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
 	require.NoError(t, err)
-	// run_id has the omitempty tag; empty value must not appear in serialized JSON.
-	assert.NotContains(t, string(data), `"run_id"`)
+	// publish-validate requires run_id to be non-empty. When the caller has no
+	// research-dir-derived run_id, the emitter falls back to a fresh
+	// YYYYMMDD-HHMMSS so the manifest contract still holds.
+	var got CLIManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Regexp(t, `^\d{8}-\d{6}$`, got.RunID)
 }
 
 func TestDeriveRunIDFromResearchDir(t *testing.T) {
@@ -631,6 +755,56 @@ func TestDeriveRunIDFromResearchDir(t *testing.T) {
 			assert.Equal(t, tc.expected, DeriveRunIDFromResearchDir(tc.input))
 		})
 	}
+}
+
+func TestLoadAPINameFromResearchDir(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns api_name when state.json present", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "state.json"),
+			[]byte(`{"api_name":"canvas","run_id":"20260514-070718"}`),
+			0o644,
+		))
+		assert.Equal(t, "canvas", LoadAPINameFromResearchDir(dir))
+	})
+
+	t.Run("trims whitespace from api_name", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(
+			filepath.Join(dir, "state.json"),
+			[]byte(`{"api_name":"  canvas  "}`),
+			0o644,
+		))
+		assert.Equal(t, "canvas", LoadAPINameFromResearchDir(dir))
+	})
+
+	t.Run("empty string when researchDir empty", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, "", LoadAPINameFromResearchDir(""))
+	})
+
+	t.Run("empty string when state.json absent", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, "", LoadAPINameFromResearchDir(t.TempDir()))
+	})
+
+	t.Run("empty string when state.json malformed", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "state.json"), []byte(`not json`), 0o644))
+		assert.Equal(t, "", LoadAPINameFromResearchDir(dir))
+	})
+
+	t.Run("empty string when api_name field missing", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "state.json"), []byte(`{"run_id":"20260514-070718"}`), 0o644))
+		assert.Equal(t, "", LoadAPINameFromResearchDir(dir))
+	})
 }
 
 func TestArchiveRunArtifactsCopiesDiscovery(t *testing.T) {
@@ -822,16 +996,40 @@ func TestWriteMCPBManifest(t *testing.T) {
 		shop, ok := got.UserConfig["shopify_shop"]
 		require.True(t, ok)
 		assert.Equal(t, "SHOPIFY_SHOP", shop.Title)
-		assert.True(t, shop.Required)
+		assert.True(t, shop.Required, "{shop} has no spec-level default; user must supply it")
 		assert.False(t, shop.Sensitive)
 		assert.Contains(t, shop.Description, "{shop}")
 
 		apiVersion, ok := got.UserConfig["shopify_api_version"]
 		require.True(t, ok)
 		assert.Equal(t, "SHOPIFY_API_VERSION", apiVersion.Title)
-		assert.True(t, apiVersion.Required)
+		assert.False(t, apiVersion.Required, "spec-defaulted vars are optional in MCPB user_config; presenting Required+Default together is contradictory and causes strict MCPB hosts to block install with the default pre-filled")
 		assert.Equal(t, "2026-04", apiVersion.Default)
 		assert.Contains(t, apiVersion.Description, "{api_version}")
+	})
+
+	t.Run("endpoint template var with spec-declared default is optional in user_config", func(t *testing.T) {
+		dir := t.TempDir()
+		writeManifest(t, dir, CLIManifest{
+			APIName:                     "freshservice",
+			DisplayName:                 "Freshservice",
+			MCPBinary:                   "freshservice-pp-mcp",
+			MCPReady:                    "full",
+			AuthType:                    "api_key",
+			AuthEnvVars:                 []string{"FRESHSERVICE_API_KEY"},
+			EndpointTemplateVars:        []string{"domain"},
+			EndpointTemplateVarDefaults: map[string]string{"domain": "yourcompany.freshservice.com"},
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		got := readMCPBManifest(t, dir)
+
+		domain, ok := got.UserConfig["freshservice_domain"]
+		require.True(t, ok)
+		assert.Equal(t, "yourcompany.freshservice.com", domain.Default,
+			"spec-declared default flows through to MCPB user_config")
+		assert.False(t, domain.Required,
+			"Required: false avoids the install-blocking contradiction when MCPB hosts honor `required` strictly")
 	})
 
 	t.Run("composed auth emits optional user_config fields", func(t *testing.T) {

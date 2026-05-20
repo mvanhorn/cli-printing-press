@@ -42,7 +42,7 @@ func firstCommandExample(resources map[string]spec.Resource) string {
 	pathFor := func(rName string, r spec.Resource, eName string, ep spec.Endpoint) string {
 		parts := []string{rName}
 		if !isPromotableSingleEndpoint(rName, r) {
-			parts = append(parts, eName)
+			parts = append(parts, toKebab(eName))
 		}
 		parts = append(parts, readmeExampleArgs(ep)...)
 		return strings.Join(parts, " ")

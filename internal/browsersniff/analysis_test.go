@@ -518,7 +518,10 @@ func TestApplyReachabilityDefaultsAddsBrowserClearanceCookieAuth(t *testing.T) {
 		Resources: map[string]spec.Resource{"posts": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/posts"}}}},
 	}
 	analysis := &TrafficAnalysis{
-		Summary: TrafficAnalysisSummary{TargetURL: "https://www.producthunt.com"},
+		Summary: TrafficAnalysisSummary{
+			TargetURL:               "https://www.producthunt.com",
+			HTTPVersionDistribution: map[string]int{"h3": 12},
+		},
 		Reachability: &ReachabilityAnalysis{
 			Mode:       "browser_clearance_http",
 			Confidence: 0.9,
@@ -551,7 +554,10 @@ func TestApplyReachabilityDefaultsDoesNotRequireProofWithoutValidationPath(t *te
 		}}}},
 	}
 	analysis := &TrafficAnalysis{
-		Summary: TrafficAnalysisSummary{TargetURL: "https://www.producthunt.com"},
+		Summary: TrafficAnalysisSummary{
+			TargetURL:               "https://www.producthunt.com",
+			HTTPVersionDistribution: map[string]int{"h3": 12},
+		},
 		Reachability: &ReachabilityAnalysis{
 			Mode:       "browser_clearance_http",
 			Confidence: 0.9,

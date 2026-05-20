@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"printing-press-rich-pp-cli/internal/client"
+	"printing-press-rich-pp-cli/internal/cliutil"
 	"printing-press-rich-pp-cli/internal/config"
 	"printing-press-rich-pp-cli/internal/store"
 )
@@ -61,6 +62,79 @@ func looksLikeDoctorInterstitial(body []byte) string {
 		return "PerimeterX"
 	}
 	return ""
+}
+
+// suggestReadCommand walks the Cobra tree to find an endpoint-mirror command
+// an operator can run to confirm credentials work end-to-end. Picks the
+// first leaf that (a) carries the `pp:endpoint` annotation, so it actually
+// dials the API rather than reading a local file like `feedback list` or
+// `profile list`; (b) has a list/get verb; and (c) takes no positional
+// arguments, so the suggestion is copy-paste runnable. Returns the dotted
+// command path (e.g. "issues list") or "" when no such command exists —
+// common in mutation-only CLIs and in CLIs where every read command has
+// required positional arguments.
+func suggestReadCommand(root *cobra.Command) string {
+	if root == nil {
+		return ""
+	}
+	var found string
+	var walk func(*cobra.Command, []string)
+	walk = func(cmd *cobra.Command, path []string) {
+		if found != "" {
+			return
+		}
+		for _, child := range cmd.Commands() {
+			childPath := append(append([]string{}, path...), child.Name())
+			if isSuggestableReadLeaf(child) {
+				found = strings.Join(childPath, " ")
+				return
+			}
+			// Recurse even into Hidden parents: printed CLIs mark raw
+			// resource parents Hidden to keep --help curated, but their
+			// endpoint leaves remain runnable (`<cli> projects list`
+			// works). Skipping hidden subtrees would make this return ""
+			// in nearly every CLI. isSuggestableReadLeaf still rejects a
+			// leaf that is itself Hidden.
+			walk(child, childPath)
+			if found != "" {
+				return
+			}
+		}
+	}
+	walk(root, nil)
+	return found
+}
+
+func isSuggestableReadLeaf(cmd *cobra.Command) bool {
+	if cmd == nil || cmd.Hidden || cmd.HasSubCommands() || !cmd.Runnable() {
+		return false
+	}
+	// Only endpoint-mirror commands count; framework commands like
+	// `feedback list` and `profile list` read local files and would
+	// recreate the false-confidence failure mode the suggestion is
+	// supposed to avoid.
+	if cmd.Annotations["pp:endpoint"] == "" {
+		return false
+	}
+	verb := strings.ToLower(strings.SplitN(cmd.Use, " ", 2)[0])
+	if verb != "list" && verb != "get" {
+		return false
+	}
+	// Endpoint commands with positional path params advertise them in
+	// Use as `<id>` (required) or `[id]` (optional). The runtime body
+	// rejects empty args by printing help, so suggesting one would not
+	// actually exercise the token — reject before the Args probe below.
+	if strings.ContainsAny(cmd.Use, "<[") {
+		return false
+	}
+	// Probe the Args validator with an empty positional-arg list. A nil
+	// validator accepts anything (including zero args); a non-nil validator
+	// that returns nil for [] accepts zero args. Either qualifies — the
+	// suggestion `<cli> list` is then a complete command.
+	if cmd.Args == nil {
+		return true
+	}
+	return cmd.Args(cmd, []string{}) == nil
 }
 
 func newDoctorCmd(flags *rootFlags) *cobra.Command {
@@ -234,7 +308,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					} else if reachErr != nil && !errors.As(reachErr, &reachAPIErr) {
 						report["credentials"] = "skipped (API unreachable)"
 					} else {
-						report["credentials"] = "present (not verified — set auth.verify_path in spec for an API acceptance check)"
+						suggestion := suggestReadCommand(cmd.Root())
+						if suggestion != "" {
+							report["credentials"] = fmt.Sprintf("present, not verified. Run `%s %s` to confirm the token works end-to-end.", "printing-press-rich-pp-cli", suggestion)
+						} else {
+							report["credentials"] = "present, not verified. Run any read command to confirm the token works end-to-end."
+						}
 					}
 				}
 			} else if cfg != nil && cfg.BaseURL == "" {
@@ -245,6 +324,21 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			// and a fresh/stale/unknown verdict so agents can introspect
 			// whether to trust the cached data before issuing queries.
 			report["cache"] = collectCacheReport(cmd.Context(), "")
+
+			// Verify mode state. Surfaced so an operator who unintentionally
+			// inherits PRINTING_PRESS_VERIFY=1 (parent shell, CI runner, container
+			// image) detects the foot-gun without inspecting a response body.
+			// Pairs with the synthetic envelope's verify_noop / reason literals
+			// as a second diagnosis anchor.
+			if cliutil.IsVerifyEnv() {
+				if cliutil.IsVerifyLiveHTTPEnv() {
+					report["verify_mode"] = "INFO ACTIVE — live HTTP opt-in (mutating verbs dial out)"
+				} else {
+					report["verify_mode"] = "INFO ACTIVE — mutating HTTP verbs short-circuit (PRINTING_PRESS_VERIFY=1; no network calls for DELETE/POST/PUT/PATCH)"
+				}
+			} else {
+				report["verify_mode"] = "normal operation"
+			}
 
 			report["version"] = version
 
@@ -261,6 +355,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				{"config", "Config"},
 				{"auth", "Auth"},
 				{"env_vars", "Env Vars"},
+				{"verify_mode", "Verify Mode"},
 				{"api", "API"},
 				{"credentials", "Credentials"},
 			}
@@ -281,6 +376,11 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					indicator = yellow("INFO")
 				case strings.Contains(s, "scope-limited"):
 					indicator = yellow("WARN")
+				case strings.Contains(s, "not verified"):
+					// "present, not verified" — credentials are loaded but no
+					// probe ran. Informational, not a warning; a clean config
+					// shouldn't render yellow WARN in CI dashboards.
+					indicator = yellow("INFO")
 				case strings.Contains(s, "error") || strings.Contains(s, "not configured") || strings.Contains(s, "unreachable") || strings.Contains(s, "invalid") || strings.Contains(s, "missing"):
 					indicator = red("FAIL")
 				case s == "not required":

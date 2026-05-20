@@ -22,9 +22,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// DogfoodSpecSource identifies which spec input RunDogfood actually loaded
+// when both a bundled <dir>/spec.* and a caller-passed --spec are reachable.
+type DogfoodSpecSource string
+
+const (
+	DogfoodSpecSourceBundled DogfoodSpecSource = "bundled"
+	DogfoodSpecSourceCaller  DogfoodSpecSource = "caller"
+)
+
 type DogfoodReport struct {
 	Dir                    string                       `json:"dir"`
 	SpecPath               string                       `json:"spec_path,omitempty"`
+	SpecSource             DogfoodSpecSource            `json:"spec_source,omitempty"`
 	Verdict                string                       `json:"verdict"`
 	PathCheck              PathCheckResult              `json:"path_check"`
 	AuthCheck              AuthCheckResult              `json:"auth_check"`
@@ -123,10 +133,12 @@ type DeadCodeResult struct {
 }
 
 type PipelineResult struct {
-	SyncCallsDomain   bool   `json:"sync_calls_domain"`
-	SearchCallsDomain bool   `json:"search_calls_domain"`
-	DomainTables      int    `json:"domain_tables"`
-	Detail            string `json:"detail"`
+	SyncCallsDomain      bool   `json:"sync_calls_domain"`
+	SearchCallsDomain    bool   `json:"search_calls_domain"`
+	DomainTables         int    `json:"domain_tables"`
+	SyncFileEmitted      bool   `json:"sync_file_emitted"`
+	SyncResourcesPresent bool   `json:"sync_resources_present"`
+	Detail               string `json:"detail"`
 }
 
 type ExampleCheckResult struct {
@@ -215,10 +227,20 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 		o(&cfg)
 	}
 
+	resolvedSpec, specSource, overriddenCaller := resolveDogfoodSpec(dir, specPath)
+	if resolvedSpec != "" {
+		fmt.Fprintf(os.Stderr, "dogfood: using spec %s (%s)\n", absOrSame(resolvedSpec), specSourceLabel(specSource))
+	}
+	if overriddenCaller != "" {
+		fmt.Fprintf(os.Stderr, "dogfood: caller --spec=%s overridden by bundled %s\n", overriddenCaller, absOrSame(resolvedSpec))
+	}
+	specPath = resolvedSpec
+
 	report := &DogfoodReport{
-		Dir:      dir,
-		SpecPath: specPath,
-		Verdict:  "PASS",
+		Dir:        dir,
+		SpecPath:   specPath,
+		SpecSource: specSource,
+		Verdict:    "PASS",
 	}
 
 	var spec *openAPISpec
@@ -757,6 +779,68 @@ func writeDogfoodResults(report *DogfoodReport, dir string) error {
 	return os.WriteFile(filepath.Join(dir, "dogfood-results.json"), data, 0o644)
 }
 
+// resolveDogfoodSpec picks the spec dogfood should actually load. The spec
+// bundled at <dir>/spec.{json,yaml,yml} by `publish package` is authoritative
+// for the printed CLI; preferring it over a caller-passed --spec avoids
+// false-negative Path Validity / Auth Protocol regressions when the caller
+// reaches into a multi-spec manuscripts directory and picks the upstream spec
+// instead of the internal one the CLI was actually generated from.
+//
+// Returns the resolved path, its DogfoodSpecSource, and — when bundled won
+// over a different caller path — the caller's overridden path for surfacing
+// in a warning. When neither a bundled nor a caller spec exists, all three
+// return values are empty and downstream checks that require a spec are
+// skipped exactly as before.
+func resolveDogfoodSpec(dir, callerSpec string) (resolved string, source DogfoodSpecSource, overriddenCaller string) {
+	bundled := findBundledDogfoodSpec(dir)
+	if bundled != "" {
+		if callerSpec != "" && !samePath(bundled, callerSpec) {
+			overriddenCaller = callerSpec
+		}
+		return bundled, DogfoodSpecSourceBundled, overriddenCaller
+	}
+	if callerSpec != "" {
+		return callerSpec, DogfoodSpecSourceCaller, ""
+	}
+	return "", "", ""
+}
+
+// findBundledDogfoodSpec returns the path to the spec archived alongside a
+// printed CLI by `publish package`, or "" if none is present. Search order
+// mirrors findArchivedSpec: spec.json (JSON inputs), spec.yaml, spec.yml.
+func findBundledDogfoodSpec(dir string) string {
+	for _, name := range []string{"spec.json", "spec.yaml", "spec.yml"} {
+		path := filepath.Join(dir, name)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path
+		}
+	}
+	return ""
+}
+
+func samePath(a, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return filepath.Clean(absA) == filepath.Clean(absB)
+}
+
+func absOrSame(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
+}
+
+func specSourceLabel(source DogfoodSpecSource) string {
+	if source == DogfoodSpecSourceBundled {
+		return "bundled"
+	}
+	return "--spec"
+}
+
 func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
 	data, err := openapiparser.LoadSpecBytes(specPath, false, false)
 	if err != nil {
@@ -992,7 +1076,7 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 	}
 
 	if expectedPrefix == "" {
-		result.Detail = "spec not provided or no bot/bearer/basic scheme detected"
+		result.Detail = "no bot/bearer/basic scheme detected"
 		return result
 	}
 
@@ -1460,6 +1544,8 @@ func checkPipelineIntegrity(dir string) PipelineResult {
 	result.SyncCallsDomain = domainUpsertRe.MatchString(syncSource)
 	result.SearchCallsDomain = domainSearchRe.MatchString(searchSource)
 	result.DomainTables = countDomainTables(storeSource)
+	result.SyncFileEmitted = syncSource != ""
+	result.SyncResourcesPresent = hasPopulatedSyncResources(syncSource)
 
 	var parts []string
 	switch {
@@ -1484,8 +1570,46 @@ func checkPipelineIntegrity(dir string) PipelineResult {
 		parts = append(parts, fmt.Sprintf("%d domain tables found", result.DomainTables))
 	}
 
+	// When sync.go is emitted but defaultSyncResources() returns an empty list,
+	// the sync command is a no-op at runtime. Store-dependent novel commands
+	// (cookbook, pantry, top-rated, …) then ship with no advertised path to
+	// populate the store. Flag so the absence surfaces at shipcheck time.
+	if syncSource != "" && !result.SyncResourcesPresent {
+		parts = append(parts, "defaultSyncResources empty (sync command is a no-op)")
+	}
+
 	result.Detail = strings.Join(parts, "; ")
 	return result
+}
+
+// defaultSyncResourcesEmptyRe matches the generator's empty-list emission for
+// defaultSyncResources, after gofmt collapses `return []string{\n}` to a single
+// line. Matching the open-brace through the literal "}" keeps the check robust
+// against trailing whitespace and the gofmt-aware "\n\t}" form some emitters
+// produce when the template body has a leading newline.
+var defaultSyncResourcesEmptyRe = regexp.MustCompile(
+	`(?s)func\s+defaultSyncResources\s*\(\s*\)\s*\[\]string\s*\{\s*return\s+\[\]string\{\s*\}\s*\}`,
+)
+
+// hasPopulatedSyncResources reports whether the emitted sync.go declares at
+// least one syncable resource via the defaultSyncResources() helper. Returns
+// true when defaultSyncResources is either absent (hand-rolled or test
+// fixture sync surfaces are not the failure mode this check targets) or
+// present with at least one entry. Returns false only when the helper is
+// emitted with an explicit empty-list body `return []string{}`. Used by
+// dogfood's pipeline check to surface CLIs that emit a sync command with
+// nothing to sync: the failure mode where store-dependent novel commands
+// have no advertised population path.
+func hasPopulatedSyncResources(syncSource string) bool {
+	if syncSource == "" {
+		return false
+	}
+	if !strings.Contains(syncSource, "func defaultSyncResources") {
+		// No generator-emitted helper to inspect. Treat as "not the failure
+		// mode" rather than risking false positives on hand-rolled sync.
+		return true
+	}
+	return !defaultSyncResourcesEmptyRe.MatchString(syncSource)
 }
 
 type dogfoodVerdictRule struct {
@@ -1508,6 +1632,13 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 1 && r.DeadFlags.Dead <= 2 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFuncs.Dead >= 1 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return !r.PipelineCheck.SyncCallsDomain }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool {
+		// Issue #1156: when defaultSyncResources is emitted empty, the sync
+		// command is a runtime no-op and store-dependent novel commands have
+		// no advertised path to populate the store. Promote to WARN so the
+		// gap surfaces at shipcheck time rather than after publish.
+		return r.PipelineCheck.SyncFileEmitted && !r.PipelineCheck.SyncResourcesPresent
+	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.ExampleCheck.InvalidFlags) > 0 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.ExampleCheck.Skipped }},
 	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.WiringCheck.CommandTree.Unregistered) > 0 }},
@@ -1561,6 +1692,9 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 	}
 	if !report.PipelineCheck.SyncCallsDomain {
 		issues = append(issues, "sync uses generic Upsert only")
+	}
+	if report.PipelineCheck.SyncFileEmitted && !report.PipelineCheck.SyncResourcesPresent {
+		issues = append(issues, "defaultSyncResources empty: sync command is a runtime no-op; store-dependent novel commands have no advertised population path")
 	}
 	if report.ExampleCheck.Tested > 0 && (report.ExampleCheck.WithExamples*100/report.ExampleCheck.Tested) < 50 {
 		issues = append(issues, fmt.Sprintf("%d%% example coverage", report.ExampleCheck.WithExamples*100/report.ExampleCheck.Tested))

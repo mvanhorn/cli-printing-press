@@ -361,6 +361,20 @@ func newPublishPackageCmd() *cobra.Command {
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping build dir: %w", err)}
 			}
 
+			// Strip root-level binaries that local `go build ./cmd/...` (or
+			// `make build` / `make build-mcp` without `-o bin/...`) drops at
+			// the CLI dir root. The skill's downstream `cp -r ... PUBLISH_REPO_DIR`
+			// has a parallel `rm -f` line that historically missed
+			// `<api-slug>-pp-mcp`; doing the strip here on the staged copy
+			// makes the publish path binary-free regardless of which downstream
+			// step (skill or other tooling) the operator runs next.
+			for _, name := range stagedBinaryNames(cliName, dirName) {
+				if err := os.Remove(filepath.Join(outCLIDir, name)); err != nil && !os.IsNotExist(err) {
+					cleanupOnFailure()
+					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("stripping staged binary %s: %w", name, err)}
+				}
+			}
+
 			// Rewrite go.mod module path if --module-path is set
 			if modulePath != "" {
 				oldModPath := cliName // generated CLIs use bare CLI name as module path
@@ -394,10 +408,15 @@ func newPublishPackageCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "warning: no manuscripts found, packaging without them")
 			}
 
-			findings, err := artifacts.FindVendorPrefixSecrets(outCLIDir)
+			cookieNames, err := stagedPackageCookieNames(outCLIDir)
 			if err != nil {
 				cleanupOnFailure()
-				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for vendor-prefix tokens: %w", err)}
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("reading staged package cookie auth metadata: %w", err)}
+			}
+			findings, err := artifacts.FindPackageSecrets(outCLIDir, cookieNames)
+			if err != nil {
+				cleanupOnFailure()
+				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("scanning staged package for secret tokens: %w", err)}
 			}
 
 			piiResult, piiErr := artifacts.RunPIIAudit(outCLIDir)
@@ -994,6 +1013,35 @@ func buildArtifactCandidates(dir, cliName string) []string {
 	}
 }
 
+// stagedBinaryNames returns the root-level filenames that local builds
+// (`go build ./cmd/...`, `make build`, `make build-mcp` without `-o`)
+// drop alongside the source tree. The Makefile template emits
+// `<api-slug>-pp-cli` and `<api-slug>-pp-mcp` peers, and verifier paths
+// may also leave a bare `<api-slug>` artifact. The list is intentionally
+// a small, named superset rather than a glob so the strip step never
+// removes a tracked source file by accident.
+func stagedBinaryNames(cliName, apiSlug string) []string {
+	seen := map[string]struct{}{}
+	var names []string
+	add := func(n string) {
+		if n == "" {
+			return
+		}
+		if _, ok := seen[n]; ok {
+			return
+		}
+		seen[n] = struct{}{}
+		names = append(names, n)
+	}
+	add(apiSlug)
+	add(cliName)
+	if apiSlug != "" {
+		add(apiSlug + "-pp-cli")
+		add(apiSlug + "-pp-mcp")
+	}
+	return names
+}
+
 type fileSnapshot struct {
 	path    string
 	exists  bool
@@ -1115,6 +1163,22 @@ func hasContent(dir string) bool {
 		}
 	}
 	return false
+}
+
+func stagedPackageCookieNames(dir string) ([]string, error) {
+	manifest, err := pipeline.ReadToolsManifest(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	switch strings.ToLower(strings.TrimSpace(manifest.Auth.Type)) {
+	case "cookie", "composed":
+		return manifest.Auth.Cookies, nil
+	default:
+		return nil, nil
+	}
 }
 
 // formatCombinedScanError composes the publish-time error message from

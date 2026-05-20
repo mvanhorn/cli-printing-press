@@ -41,6 +41,12 @@ Hand-written novel commands that perform visible actions (open browser tabs, sen
 1. Print by default; require explicit opt-in (`--launch`, `--send`, `--play`, etc.) to actually act.
 2. Short-circuit when `cliutil.IsVerifyEnv()` is true. The verifier sets `PRINTING_PRESS_VERIFY=1` in every mock-mode subprocess; this env-var check is the floor that catches any side-effect command the verifier's heuristic classifier misses.
 
+Generated endpoint-mirror commands also gate mutating HTTP verbs (DELETE/POST/PUT/PATCH) at the transport layer in `internal/client/client.go`. Under `PRINTING_PRESS_VERIFY=1` such requests short-circuit with a synthetic `{"__pp_verify_synthetic__":true,"status":"noop","reason":"verify_short_circuit",...}` envelope and never dial. Read-only operations that ride a mutating verb on the wire (GraphQL queries, JSON-RPC reads, POST-based search; codegen-marked `mcp:read-only`) route through `doRead()` and bypass the gate, so verify-mode does not silently break reads on shared-endpoint APIs. The outer command envelope reports `verify_noop: true` and `success: false` so naive validators do not read the noop as a real mutation. `printing-press verify` opts its mock-mode subprocesses back in via `PRINTING_PRESS_VERIFY_LIVE_HTTP=1` so the httptest mock server still receives mutating requests; agents, narrative full-example runs, and ad-hoc operators leave `LIVE_HTTP` unset so mutating requests no-op. Live verifiers (`live_dogfood`, `workflow_verify`) strip both env vars from subprocess env so they cannot inherit verify-mode short-circuiting. `<cli> doctor` surfaces the active verify state as a defense-in-depth diagnosis anchor.
+
+
+### Long-running commands under live-dogfood
+Hand-written novel commands whose happy path is an expensive network operation (full sync loops, content crawlers, bulk archive walks) MUST curtail work when `cliutil.IsDogfoodEnv()` returns true. The `printing-press dogfood --live` runner sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess and applies a flat 30s per-command timeout; without a short-circuit, the happy-path test trips the timeout and the matrix verdict flips to FAIL even when the command itself is healthy. Unlike `IsVerifyEnv`, this does NOT mean "don't hit the network" — dogfood is a real-API matrix. Use it to bound work (paginate once, fetch a bounded sample, honor a smaller `--limit` default), never to substitute mock data for real calls.
+
 ### Generator-reserved namespaces
 `internal/cliutil/` and `internal/mcp/cobratree/` are generator-owned packages emitted into every printed CLI. Do not hand-author code in them and do not name agent-authored helpers that collide with their exports — regen will overwrite the work. Novel-feature code goes in command packages and may import from `cliutil`.
 
@@ -62,6 +68,18 @@ Always use relative paths for build output. Never build to `/tmp` or another sha
 Run `scripts/golden.sh verify` whenever a change may affect CLI command output, catalog rendering, browser-sniff or crowd-sniff output, generated specs or generated printed CLI files, templates under `internal/generator/templates/`, naming, endpoint derivation, auth emission, manifest generation, scorecard output, or pipeline artifacts.
 Never update goldens just to make a failing check pass. Run `scripts/golden.sh update` only when the behavior change is intentional, then inspect the diff and explain it in your final response. See [`docs/GOLDEN.md`](docs/GOLDEN.md) for the decision rubric, fixture conventions, and failure handling.
 When adding a new deterministic CLI behavior or generated artifact contract, explicitly decide whether the golden suite needs a new or expanded fixture. A passing `scripts/golden.sh verify` on existing cases does not prove coverage for new auth, pagination, MCP, manifest, naming, or similar deterministic generation behavior.
+
+## Cross-repo dependency: published-library sweep tool
+
+When a change to `internal/generator/templates/readme.md.tmpl` or `skill.md.tmpl` shifts canonical published-library shape — install-block structure, top-of-README section ordering, presence or removal of `## ` sections, frontmatter top-level field set, install command syntax — also update `tools/sweep-canonical/main.go` in [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) so the already-published CLIs can be retrofitted to match. Fresh prints from this generator will produce the new shape automatically, but every existing entry in the public library silently drifts from canonical shape until the sweep retrofit runs.
+
+If you can't make the matching sweep change in the same session, file a tracking issue at https://github.com/mvanhorn/printing-press-library/issues/new before merging the template PR. The issue should include:
+
+1. A link to the template PR here.
+2. The shape change(s) the sweep needs to handle. Sweep changes must be idempotent (second run produces zero textual diff) — name the heading boundaries, regex anchors, or section markers the sweep can hang off.
+3. Any test additions needed in `tools/sweep-canonical/main_test.go`.
+
+Without the sweep update or a tracking issue, the divergence between fresh prints and existing entries is invisible until someone notices a specific published README looks "old" relative to the rest. The downstream side of this contract (the published library's stance on when to run the sweep, how to scope it, and the `-readme-only` + author-preservation safeties on the sweep tool) is documented in `printing-press-library/AGENTS.md` under "Bulk SKILL.md/README.md retrofits".
 
 ## Project Structure
 - `cmd/printing-press/` - CLI entry point
@@ -161,11 +179,13 @@ When adding or editing `catalog/*.yaml`, first decide whether the entry belongs 
 - The entry must pass `internal/catalog` validation.
 - Required fields: `name`, `display_name`, `description`, `category`, and `tier`, plus `spec_url` and `spec_format` unless the entry is wrapper-only (`wrapper_libraries` is set and `spec_url` is omitted).
 - `spec_url`, when present, must use HTTPS.
-- `category` must be one of `ai`, `auth`, `cloud`, `commerce`, `developer-tools`, `devices`, `food-and-dining`, `marketing`, `media-and-entertainment`, `monitoring`, `payments`, `productivity`, `project-management`, `sales-and-crm`, `social-and-messaging`, `travel`, or `other`. The validator also accepts `example` as a test-only catch-all; do not use it for real catalog entries.
+- `category` must be one of `ai`, `auth`, `cloud`, `commerce`, `developer-tools`, `devices`, `food-and-dining`, `maps`, `marketing`, `media-and-entertainment`, `monitoring`, `payments`, `productivity`, `project-management`, `sales-and-crm`, `social-and-messaging`, `travel`, or `other`. The validator also accepts `example` as a test-only catch-all; do not use it for real catalog entries.
 - `tier` must be `official` or `community`.
 - `bearer_refresh`, when present, must include `bundle_url` and `pattern`; `bundle_url` must use HTTPS, and `pattern` must compile as a Go regexp.
 - `auth_key_url`, when present, must use HTTPS. It overrides any URL inferred from the spec and surfaces in the printed CLI as `Get a key at: <URL>`.
 - `auth_instructions`, when present, is a one-line string rendered under the URL. It overrides any `x-auth-instructions` value from the spec.
+- `auth_env_vars`, when present, is an ordered list of canonical credential env var names (`^[A-Z][A-Z0-9_]*$`, no duplicates, no empties). The generator merges them in front of the parser's name-derived default and emits `config.go` reading each in order. Ignored for HTTP Basic auth.
+- `base_url`, when present, must use HTTPS. Use it only when the upstream spec omits `servers:` and the correct API origin is known.
 - Rebuild the binary after editing; `catalog.FS` is a Go embed.
 See [`docs/CATALOG.md`](docs/CATALOG.md) for the inclusion rubric, evidence checklist, validation rationale, wrapper-only entry shape, and bearer-refresh metadata.
 
@@ -179,26 +199,31 @@ Generated CLIs must pass 8 gates: `go mod tidy`, `govulncheck`, `go vet`, `go bu
 Run `govulncheck` in default mode only, scoped to the generated or publishing CLI module (`./...` from that CLI directory). Do not use `-show verbose` or a whole public-library scan as a blocking gate; the public library is a historical collection, so its blocking CI should scan only added or changed CLI modules and leave whole-library sweeps to scheduled/reporting workflows.
 - For CLIs with `auth.type` of `cookie` or `composed`, `press-auth` (`cmd/press-auth/`) is the canonical cookie capture path. The generated `auth login --chrome` prefers it; the legacy extraction chain (pycookiecheat / browser-use / etc.) is the fallback when press-auth isn't installed. See [`skills/printing-press/references/auth-companion.md`](skills/printing-press/references/auth-companion.md).
 
+## Supply-chain hardening
+
+PRs touching `.github/workflows/**` are gated by Greptile rules in [`greptile.json`](greptile.json) and a Python scan in [`.github/scripts/verify-supply-chain/`](.github/scripts/verify-supply-chain/) run by `verify-supply-chain.yml`. The signal set is the workflow-trust + Go-env subset of the published-library gate; see `signals.py` for scope adaptations (no library go.mod, no npm wrapper, no published-CLI module paths). Run locally with `python3 .github/scripts/verify-supply-chain/scan.py --base-ref origin/main`; tests are `python3 -m unittest scan_test` from that directory.
+
+Runs informationally on landing — promote to a required branch-protection check only after a one-week green window. Canonical incident background lives in the [published-library solutions doc](https://github.com/mvanhorn/printing-press-library/blob/main/docs/solutions/security/2026-05-supply-chain-hardening.md).
+
 ## Local Artifacts
 Generated artifacts live under `~/printing-press/`, not in this repo: `library/<api-slug>/`, `manuscripts/<api-slug>/`, and `.runstate/<scope>/`. The API slug is derived by the generator from the spec title (`cleanSpecName`), and the binary name is `<api-slug>-pp-cli`. Never hardcode an API slug when the generator can derive it. See [`docs/ARTIFACTS.md`](docs/ARTIFACTS.md) for local-vs-public flow and divergence rules.
 
 ## Publishing to the Public Library
 The only supported path for **publishing a generated CLI** (adding or updating an entry under `library/<category>/<api-slug>/` in [mvanhorn/printing-press-library](https://github.com/mvanhorn/printing-press-library)) is to invoke the `/printing-press-publish` skill. The skill runs the required `gh`/`git` commands itself; do not reproduce them by hand.
-- Invoke `/printing-press-publish` and let it drive the fork, branch, manifest checks, `cli-skills/pp-<api-slug>/SKILL.md` regen, push, and PR creation. Following its prompts is the supported flow.
+- Invoke `/printing-press-publish` and let it drive the fork, branch, manifest checks, push, and PR creation. Following its prompts is the supported flow.
 - Do not skip the skill and improvise the same steps from scratch (manual `gh repo fork` / `cp -r` into a library clone / `gh pr create --repo mvanhorn/printing-press-library …` / branch push to a fork without the skill driving it). The commands look similar; the difference is the preflight checks and conventions the skill enforces before they run.
-- Do not edit `registry.json` or README catalog cells in a publish PR — the public library refreshes those post-merge from `.printing-press.json` / `manifest.json`.
+- Do not edit `registry.json`, README catalog cells, or `cli-skills/pp-<api-slug>/SKILL.md` in a publish PR — the public library refreshes those post-merge (registry and READMEs from `.printing-press.json` / `manifest.json`; the cli-skills mirror via the library's `generate-skills.yml` workflow). The library's `Guard against hand-edits to cli-skills mirror` check rejects any fork PR whose commits touch the mirror, so committing it pre-rejects the publish before review.
 
 Why this matters: the publish skill enforces preflight checks (printer sentinel validation, manifest shape, vendor-spec PII scope, govulncheck scoped to the changed module) and mirrors the public library's own `AGENTS.md` requirements. An agent operating in this repo's CWD never loads the public library's `AGENTS.md`, so those rules are invisible unless the skill is the entry point.
 
 If `/printing-press-publish` fails, fix the underlying issue (or report it as a machine bug) — do not bypass the skill to land a CLI-publish PR.
 
 ## Internal Skills
-`.claude/skills/` contains internal skills for developing the Printing Press itself (for example `printing-press-retro`). These load automatically when Claude Code is started from inside this repo.
-If you are running Claude Code from a different directory and need these skills available, install them globally:
+`skills/` at the repo root contains the Printing Press skills (for example `printing-press-retro`). To make them available to Claude Code regardless of working directory, install them globally:
 ```bash
 .claude/scripts/install-internal-skills.sh
 ```
-This copies the internal skills to `~/.claude/skills/`.
+This copies the skills to `~/.claude/skills/`.
 
 ## Skill Authoring
 When a machine change alters what an agent should do or what a command guarantees, update the relevant `SKILL.md` in the same change; do not leave the skill as a stale manual workaround for behavior the machine now owns.

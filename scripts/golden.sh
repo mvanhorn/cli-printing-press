@@ -10,6 +10,17 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+# Resolve a Python 3 interpreter. Linux/macOS contributors typically have
+# `python3` on PATH; Windows / Git Bash contributors typically have `python`.
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON=python3
+elif command -v python >/dev/null 2>&1; then
+  PYTHON=python
+else
+  echo "scripts/golden.sh requires python (python3 or python) on PATH" >&2
+  exit 1
+fi
+
 binary="./printing-press"
 cases_root="testdata/golden/cases"
 expected_root="testdata/golden/expected"
@@ -28,12 +39,22 @@ actual_abs_pattern="$(escape_sed "$actual_abs")"
 
 # Keep normalization intentionally narrow. These substitutions remove
 # machine-specific paths while preserving behaviorally meaningful output.
+#
+# The sed step handles POSIX-form paths (forward slashes). When the generator
+# runs on Windows it emits absolute paths with backslashes (and JSON files
+# contain the double-escaped form). The Python post-pass adds Windows-form
+# substitutions + normalizes trailing backslashes within tokenized segments
+# to forward slashes + strips the .exe suffix so goldens stay portable across
+# Linux/macOS/Windows contributors. See scripts/golden_normalize_windows.py
+# for the rationale.
 normalize_text() {
   sed \
     -e "s|$actual_abs_pattern|<ARTIFACT_DIR>|g" \
     -e "s|$actual_root_pattern|<ARTIFACT_DIR>|g" \
     -e "s|$repo_root_pattern|<REPO>|g" \
-    -e "s|$home_pattern|<HOME>|g"
+    -e "s|$home_pattern|<HOME>|g" |
+    "$PYTHON" "$repo_root/scripts/golden_normalize_windows.py" \
+      "$actual_abs" "$actual_root" "$repo_root" "$HOME"
 }
 
 normalize_json() {
@@ -41,9 +62,25 @@ normalize_json() {
 
   case "$file" in
     */.printing-press.json)
+      # run_id is auto-filled from time.Now() when the caller doesn't supply
+      # one (the standalone `generate` path the golden harness exercises).
+      # Normalize alongside generated_at / printing_press_version so the
+      # golden doesn't drift on every run.
       jq -S '
         .generated_at = "<GENERATED_AT>"
         | .printing_press_version = "<PRINTING_PRESS_VERSION>"
+        | (if has("run_id") then .run_id = "<RUN_ID>" else . end)
+      ' "$file" | normalize_text
+      ;;
+    */.printing-press-patches.json)
+      # applied_at uses time.Now(); base_run_id and base_printing_press_version
+      # are stamped from the same generate-time sources as .printing-press.json's
+      # run_id / printing_press_version. Normalize the same way so the golden
+      # doesn't drift on every run or release bump.
+      jq -S '
+        .applied_at = "<APPLIED_AT>"
+        | .base_run_id = "<RUN_ID>"
+        | .base_printing_press_version = "<PRINTING_PRESS_VERSION>"
       ' "$file" | normalize_text
       ;;
     */manifest.json)

@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/piiplaceholders"
 )
 
 // PII gate implementation following the Deterministic Inventory +
@@ -38,6 +40,8 @@ const (
 // changing a value is a backward-incompatible ledger format change.
 const (
 	PIIKindCardLast4     = "card-last-4"
+	PIIKindOrderID       = "order-id"
+	PIIKindASIN          = "asin"
 	PIIKindEmail         = "email"
 	PIIKindPhoneUS       = "phone-us"
 	PIIKindZipPlus4      = "zip-plus-4"
@@ -99,6 +103,19 @@ var piiDetectors = []piiDetector{
 		// mask shapes (xxxx, ****) are non-word so they can't carry
 		// \b but their length and shape are unambiguous.
 		pattern: regexp.MustCompile(`(?i)(?:\b(?:card|visa|mastercard|amex|ending in|last\s+4)|x{4,}|\*{4,})[\s:.\-]{0,5}\d{4}`),
+	},
+	{
+		kind: PIIKindOrderID,
+		// Physical and digital order IDs observed in browser-sniff
+		// captures. The canonical synthetic placeholders are filtered
+		// after matching.
+		pattern: piiplaceholders.OrderIDPattern(),
+	},
+	{
+		kind: PIIKindASIN,
+		// ASIN-shaped product IDs from browser-sniff captures. The
+		// canonical B0EXAMPLE* placeholders are filtered after matching.
+		pattern: piiplaceholders.ASINPattern(),
 	},
 	{
 		kind: PIIKindEmail,
@@ -173,12 +190,69 @@ var excludedFiles = map[string]bool{
 // addresses) are documentation, not customer PII, so a Stripe/Zendesk/
 // GitHub spec doesn't false-fail every promote. Exemption is depth-1
 // only; a spec.yaml nested under .manuscripts/ or testdata/ is captured
-// content and stays in scope. Mirrors findArchivedSpec()'s candidate
-// set in internal/pipeline/climanifest.go.
+// content and stays in scope unless content-detection identifies it as
+// an archived vendor spec (see manuscriptsDir + looksLikeVendorAPISpec).
+// Mirrors findArchivedSpec()'s candidate set in
+// internal/pipeline/climanifest.go.
 var rootVendorSpecFiles = map[string]bool{
 	"spec.json": true,
 	"spec.yaml": true,
 	"spec.yml":  true,
+}
+
+// manuscriptsDir is the path component that scopes the content-detected
+// vendor-spec exemption. Vendor specs archived under any depth inside
+// .manuscripts/ — research/, discovery/, or freeform subdirs — are
+// reproducible from the upstream URL and contain documentation `example:`
+// values, not customer PII. Limiting the content exemption to manuscripts
+// keeps the bypass off non-archive paths (committed docs/, generated
+// internal/, etc.) so a hand-edited file at docs/api.yaml still scans.
+const manuscriptsDir = ".manuscripts"
+
+// vendorSpecMarkers are the OpenAPI/Swagger version-marker patterns
+// looksLikeVendorAPISpec probes for in a file's head bytes. The two-form
+// shape (JSON quoted-key vs YAML unquoted-key) is required because vendor
+// docs ship both formats. Both forms anchor the key to the document
+// start: JSON requires `openapi`/`swagger` as the first key after the
+// opening brace; YAML requires it as the first content line after any
+// allowed lead-in (YAML directive `%...`, document marker `---`,
+// comments, blank lines). Without these anchors, a non-spec file with
+// PII in earlier keys could bypass scanning when it happened to also
+// contain an `openapi`/`swagger` marker deeper in the payload — a
+// response envelope, captured config blob, or research-notes YAML that
+// listed real values before the version field. Version constraints
+// (2.x or 3.x) avoid matching freeform mentions like "openapi: future".
+var vendorSpecMarkers = []*regexp.Regexp{
+	// JSON: {"openapi": "3.x.x" — openapi must be the first key.
+	regexp.MustCompile(`\A\s*\{\s*"openapi"\s*:\s*"[23]\.`),
+	regexp.MustCompile(`\A\s*\{\s*"swagger"\s*:\s*"2\.`),
+	// YAML: optional %directives, `---` document marker, comments, and
+	// blank lines may precede the marker, but no other content key can
+	// appear before `openapi`/`swagger` at column 0.
+	regexp.MustCompile(`\A(?:(?:%[^\n]*|---[ \t]*|[ \t]*#[^\n]*|[ \t]*)\n)*openapi\s*:\s*['"]?[23]\.`),
+	regexp.MustCompile(`\A(?:(?:%[^\n]*|---[ \t]*|[ \t]*#[^\n]*|[ \t]*)\n)*swagger\s*:\s*['"]?2\.`),
+}
+
+// looksLikeVendorAPISpec reports whether the first few KB of a file
+// match an OpenAPI 2.x/3.x or Swagger 2.0 root-document marker. Content
+// detection beats filename heuristics because vendors ship spec source
+// under arbitrary basenames (`apps/calendars.json`, `pushpress-v3.yaml`)
+// that no glob would reliably cover. Restricted at the call site to
+// files under .manuscripts/ so non-archive paths cannot bypass scanning
+// by embedding a stray version marker.
+func looksLikeVendorAPISpec(probe []byte) bool {
+	for _, re := range vendorSpecMarkers {
+		if re.Match(probe) {
+			return true
+		}
+	}
+	return false
+}
+
+// isUnderManuscripts reports whether the slash-separated relative path
+// lives anywhere inside a .manuscripts/ subtree.
+func isUnderManuscripts(relSlash string) bool {
+	return slices.Contains(strings.Split(relSlash, "/"), manuscriptsDir)
 }
 
 // skippedDirs are subtree names the walker never descends into at the
@@ -191,6 +265,19 @@ var skippedDirs = map[string]bool{
 	"node_modules": true,
 	"vendor":       true,
 	"build":        true,
+}
+
+func isSyntheticPIIPlaceholder(kind, matched string) bool {
+	switch kind {
+	case PIIKindOrderID:
+		return piiplaceholders.IsSyntheticOrderID(matched)
+	case PIIKindASIN:
+		return piiplaceholders.IsSyntheticASIN(matched)
+	case PIIKindPostalAddress:
+		return piiplaceholders.IsSyntheticPostalAddress(matched)
+	default:
+		return false
+	}
 }
 
 // FindPII walks root, applies the file-scoping rules, and returns all
@@ -307,6 +394,15 @@ func scanPIIFile(root, path string) ([]PIIFinding, error) {
 	}
 	relSlash := filepath.ToSlash(rel)
 
+	// Vendor-published OpenAPI/Swagger source archived under .manuscripts/
+	// carries documentation `example:` values, not customer PII. Mirrors
+	// the depth-1 rootVendorSpecFiles exemption for the case where the
+	// spec source lives nested in research/, discovery/, or freeform
+	// archive subdirs and the basename isn't `spec.{json,yaml,yml}`.
+	if isUnderManuscripts(relSlash) && looksLikeVendorAPISpec(probe) {
+		return nil, nil
+	}
+
 	var findings []PIIFinding
 	lineNumber := 0
 	for {
@@ -320,12 +416,16 @@ func scanPIIFile(root, path string) ([]PIIFinding, error) {
 		lineNumber++
 		for _, det := range piiDetectors {
 			for _, match := range det.pattern.FindAllStringIndex(line, -1) {
+				matchedSpan := line[match[0]:match[1]]
+				if isSyntheticPIIPlaceholder(det.kind, matchedSpan) {
+					continue
+				}
 				findings = append(findings, PIIFinding{
 					Kind:        det.kind,
 					File:        relSlash,
 					Line:        lineNumber,
 					Column:      match[0] + 1, // 1-based
-					MatchedSpan: line[match[0]:match[1]],
+					MatchedSpan: matchedSpan,
 				})
 			}
 		}
