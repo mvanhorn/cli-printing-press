@@ -1,0 +1,29 @@
+run:
+  timeout: 5m
+  go: "1.26"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - revive
+    - gocritic
+
+linters-settings:
+  revive:
+    severity: warning
+    rules:
+      - name: var-naming
+      - name: package-comments
+      - name: exported
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - revive
