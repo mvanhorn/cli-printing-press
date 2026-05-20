@@ -955,6 +955,8 @@ Read findings from two surfaces — they don't overlap:
 
 Once the PR is stably green, the skill's job is done. **Do not merge it and do not poll waiting for it to merge** — merges into the public library are the maintainer's manual review, not this skill's and (for a fork contributor) not the user's either.
 
+Read `access` from `$PUBLISH_CONFIG` (`jq -r .access "$PUBLISH_CONFIG"`) to determine what to do next:
+
 - **If `access` is `push`** (maintainer/admin with push access): apply the `awaiting-maintainer` label to signal the PR is ready for manual review:
   ```bash
   gh pr edit <PR> --repo mvanhorn/printing-press-library --add-label awaiting-maintainer
