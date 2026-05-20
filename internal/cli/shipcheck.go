@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/platform"
 	"github.com/spf13/cobra"
 )
@@ -156,12 +157,22 @@ func shipcheckResearchPath(o *shipcheckOpts) string {
 	return filepath.Join(dir, "research.json")
 }
 
+// shipcheckBinaryName resolves the CLI binary name for a generated CLI directory.
+// Prefers .printing-press.json's cli_name (the canonical "<api-slug>-pp-cli" form)
+// and falls back to the directory's basename for legacy/manifest-less dirs.
+func shipcheckBinaryName(dir string) string {
+	if name := pipeline.ReadCLIBinaryName(dir); name != "" {
+		return name
+	}
+	return filepath.Base(dir)
+}
+
 func shipcheckCLIPath(o *shipcheckOpts) string {
-	return platform.ExecutablePath(filepath.Join(o.dir, filepath.Base(o.dir)))
+	return platform.ExecutablePath(filepath.Join(o.dir, shipcheckBinaryName(o.dir)))
 }
 
 func shipcheckCLIPathForGOOS(o *shipcheckOpts, goos string) string {
-	return platform.ExecutablePathForGOOS(filepath.Join(o.dir, filepath.Base(o.dir)), goos)
+	return platform.ExecutablePathForGOOS(filepath.Join(o.dir, shipcheckBinaryName(o.dir)), goos)
 }
 
 // shipcheckLegResult is the per-leg outcome of one umbrella run.

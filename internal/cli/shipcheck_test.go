@@ -64,6 +64,76 @@ func TestShipcheckCLIPathForGOOS(t *testing.T) {
 	}
 }
 
+// TestShipcheckCLIPath_ManifestOverridesBasename covers the slug-keyed
+// library layout: dir basename ("notion") differs from the actual binary
+// name ("notion-pp-cli"), so the binary path must be resolved from
+// .printing-press.json's cli_name rather than the directory's basename.
+func TestShipcheckCLIPath_ManifestOverridesBasename(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "notion")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("creating slug dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(`{"cli_name":"notion-pp-cli"}`), 0o644); err != nil {
+		t.Fatalf("writing manifest: %v", err)
+	}
+	opts := &shipcheckOpts{dir: dir}
+
+	if got, want := shipcheckCLIPathForGOOS(opts, "linux"), filepath.Join(dir, "notion-pp-cli"); got != want {
+		t.Fatalf("linux path = %q, want %q", got, want)
+	}
+	if got, want := shipcheckCLIPathForGOOS(opts, "windows"), filepath.Join(dir, "notion-pp-cli.exe"); got != want {
+		t.Fatalf("windows path = %q, want %q", got, want)
+	}
+}
+
+// TestShipcheckCLIPath_FallsBackToBasename covers the manifest-less case:
+// when .printing-press.json is missing or unparseable, the binary name
+// falls back to the directory basename (preserves legacy behavior).
+func TestShipcheckCLIPath_FallsBackToBasename(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "sample-cli")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("creating dir: %v", err)
+	}
+	opts := &shipcheckOpts{dir: dir}
+
+	if got, want := shipcheckCLIPathForGOOS(opts, "linux"), filepath.Join(dir, "sample-cli"); got != want {
+		t.Fatalf("linux path = %q, want %q", got, want)
+	}
+	if got, want := shipcheckCLIPathForGOOS(opts, "windows"), filepath.Join(dir, "sample-cli.exe"); got != want {
+		t.Fatalf("windows path = %q, want %q", got, want)
+	}
+}
+
+// TestShipcheckCLIPath_FallsBackOnUnparseableManifest pins the
+// unparseable-error branch of pipeline.ReadCLIBinaryName: a
+// .printing-press.json that exists but contains malformed JSON must
+// fall back to the directory basename rather than propagating a parse
+// error or producing an empty binary name.
+func TestShipcheckCLIPath_FallsBackOnUnparseableManifest(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join(t.TempDir(), "notion")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("creating slug dir: %v", err)
+	}
+	// Truncated JSON: opening brace, key, colon, no value, no close.
+	if err := os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(`{"cli_name":`), 0o644); err != nil {
+		t.Fatalf("writing malformed manifest: %v", err)
+	}
+	opts := &shipcheckOpts{dir: dir}
+
+	if got, want := shipcheckCLIPathForGOOS(opts, "linux"), filepath.Join(dir, "notion"); got != want {
+		t.Fatalf("linux path = %q, want %q", got, want)
+	}
+	if got, want := shipcheckCLIPathForGOOS(opts, "windows"), filepath.Join(dir, "notion.exe"); got != want {
+		t.Fatalf("windows path = %q, want %q", got, want)
+	}
+}
+
 type shipcheckHarness struct {
 	dir     string
 	logFile string
