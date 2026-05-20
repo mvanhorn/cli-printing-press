@@ -1,0 +1,19 @@
+name: chatbot-factory release-please
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'library/chatbot-factory/**'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: library/chatbot-factory/release-please-config.json
+          manifest-file: library/chatbot-factory/.release-please-manifest.json
