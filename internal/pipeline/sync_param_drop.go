@@ -391,6 +391,9 @@ func extractCompositeLiteralKeys(expr ast.Expr) ([]string, bool) {
 				}
 			}
 		case *ast.Ident:
+			if mapShape {
+				return nil, false
+			}
 			// Struct-literal field name. We accept the Go field name
 			// verbatim; sync code typically picks Go field names that
 			// match wire keys (Week -> `week`, ProductSku -> `product-sku`)
