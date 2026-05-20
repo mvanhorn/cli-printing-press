@@ -1,0 +1,53 @@
+name: chatbot-factory CI
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'library/chatbot-factory/**'
+  pull_request:
+    paths:
+      - 'library/chatbot-factory/**'
+
+defaults:
+  run:
+    working-directory: library/chatbot-factory
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: library/chatbot-factory/go.sum
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: library/chatbot-factory/go.sum
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: library/chatbot-factory
+
+  golden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: library/chatbot-factory/go.sum
+      - name: Build binary
+        run: go build -o /tmp/chatbot-factory-pp-cli ./cmd/chatbot-factory-pp-cli
+      - name: Add to PATH
+        run: echo "/tmp" >> $GITHUB_PATH
+      - name: Run golden tests
+        run: go test ./internal/cli/... -run TestGolden -v
