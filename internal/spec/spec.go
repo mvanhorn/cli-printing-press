@@ -3,6 +3,7 @@ package spec
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/netip"
 	"net/url"
 	"os"
@@ -14,6 +15,15 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"gopkg.in/yaml.v3"
 )
+
+// warnWriter is the destination for non-fatal spec-validation warnings.
+// Tests swap it for a buffer so warnings are assertable without reassigning
+// the process-wide os.Stderr. Mirrors the same sink in internal/openapi.
+var warnWriter io.Writer = os.Stderr
+
+func warnf(format string, args ...any) {
+	fmt.Fprintf(warnWriter, "warning: "+format+"\n", args...)
+}
 
 // Valid values for APISpec.Kind. A bare string with no const was the
 // established convention for sibling fields (SpecSource, ClientPattern), but
@@ -922,7 +932,7 @@ func (c *AuthConfig) NormalizeEnvVarSpecs(context string) {
 		if context == "" {
 			context = "auth"
 		}
-		fmt.Fprintf(os.Stderr, "warning: %s env_vars disagree with env_var_specs; using env_var_specs\n", context)
+		warnf("%s env_vars disagree with env_var_specs; using env_var_specs", context)
 		c.EnvVars = specNames
 		return
 	}
@@ -1003,7 +1013,7 @@ func validateAuthCompanion(c AuthConfig) error {
 			}
 		}
 		if !found {
-			fmt.Fprintf(os.Stderr, "warning: auth.jwt_carrier_cookie %q is not in auth.cookies %v; press-auth refresh will not be wired up\n", carrier, c.Cookies)
+			warnf("auth.jwt_carrier_cookie %q is not in auth.cookies %v; press-auth refresh will not be wired up", carrier, c.Cookies)
 		}
 	}
 	return nil

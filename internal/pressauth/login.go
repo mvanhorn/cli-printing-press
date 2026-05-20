@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
-	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -52,7 +52,7 @@ JWT session you want press-auth to refresh lazily on expiry.`,
 			if domain == "" {
 				return &ExitError{Code: ExitUsageError, Err: fmt.Errorf("domain argument cannot be empty")}
 			}
-			return runLogin(cmd.Context(), domain, lf)
+			return runLogin(cmd.Context(), cmd.OutOrStdout(), domain, lf)
 		},
 	}
 
@@ -67,9 +67,10 @@ JWT session you want press-auth to refresh lazily on expiry.`,
 
 // runLogin runs the body of `press-auth login`: flag validation, an
 // existing-state precondition check, the chromedp capture, and the
-// Save call. The Cobra layer wraps any returned error in the standard
-// exit-code envelope.
-func runLogin(ctx context.Context, domain string, lf *LoginFlags) error {
+// Save call. Success output goes to out (the command's stdout) so the
+// body stays testable without capturing os.Stdout. The Cobra layer wraps
+// any returned error in the standard exit-code envelope.
+func runLogin(ctx context.Context, out io.Writer, domain string, lf *LoginFlags) error {
 	if lf.LoginURL == "" {
 		return &ExitError{Code: ExitUsageError, Err: fmt.Errorf("--login-url is required")}
 	}
@@ -119,7 +120,7 @@ func runLogin(ctx context.Context, domain string, lf *LoginFlags) error {
 	if carrier == "" {
 		carrier = "(none configured)"
 	}
-	fmt.Fprintf(os.Stdout, "captured %d cookies for %s; JWT carrier: %s (expiry will be set on first refresh)\n", len(state.Cookies), domain, carrier)
+	fmt.Fprintf(out, "captured %d cookies for %s; JWT carrier: %s (expiry will be set on first refresh)\n", len(state.Cookies), domain, carrier)
 	return nil
 }
 

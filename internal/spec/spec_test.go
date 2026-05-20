@@ -3,7 +3,6 @@ package spec
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
@@ -12,24 +11,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func captureStderr(t *testing.T, fn func()) string {
+// captureWarnings runs fn with the package warning sink redirected to a
+// buffer and returns everything written to it. This replaces an older
+// approach that reassigned the process-wide os.Stderr, which was racy and
+// coupled the assertion to a global file handle.
+func captureWarnings(t *testing.T, fn func()) string {
 	t.Helper()
 
-	old := os.Stderr
-	r, w, err := os.Pipe()
-	require.NoError(t, err)
-	os.Stderr = w
-	defer func() {
-		os.Stderr = old
-	}()
+	old := warnWriter
+	var buf bytes.Buffer
+	warnWriter = &buf
+	t.Cleanup(func() { warnWriter = old })
 
 	fn()
-	require.NoError(t, w.Close())
-
-	var buf bytes.Buffer
-	_, err = buf.ReadFrom(r)
-	require.NoError(t, err)
-	require.NoError(t, r.Close())
 	return buf.String()
 }
 
@@ -553,7 +547,7 @@ func TestAuthEnvVarSpecsNormalizeAndValidate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			candidate := baseSpec(tt.auth)
-			stderr := captureStderr(t, func() {
+			stderr := captureWarnings(t, func() {
 				require.NoError(t, candidate.Validate())
 			})
 
@@ -4289,7 +4283,7 @@ func TestAuthCompanionValidate(t *testing.T) {
 }
 
 // TestAuthCompanionJWTCarrierCookieNotInCookiesWarns asserts that a
-// jwt_carrier_cookie that isn't in the cookies list surfaces a stderr
+// jwt_carrier_cookie that isn't in the cookies list surfaces a non-fatal
 // warning, not a hard error. Plausible typo, surface it but don't block.
 func TestAuthCompanionJWTCarrierCookieNotInCookiesWarns(t *testing.T) {
 	auth := AuthConfig{
@@ -4297,7 +4291,7 @@ func TestAuthCompanionJWTCarrierCookieNotInCookiesWarns(t *testing.T) {
 		Cookies:          []string{"session", "csrf_token"},
 		JWTCarrierCookie: "guestsesion", // intentional typo
 	}
-	warnings := captureStderr(t, func() {
+	warnings := captureWarnings(t, func() {
 		err := validateAuthCompanion(auth)
 		require.NoError(t, err)
 	})
