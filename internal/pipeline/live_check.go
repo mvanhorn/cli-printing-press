@@ -342,7 +342,7 @@ func liveCheckBinaryCandidatePathsForName(cliDir, candidate, goos string) []stri
 	if candidate == "" {
 		return nil
 	}
-	return []string{
+	paths := []string{
 		filepath.Join(stagedDir, candidate),
 		platform.ExecutablePathForGOOS(filepath.Join(stagedDir, candidate), goos),
 		filepath.Join(makefileBinDir, candidate),
@@ -350,6 +350,16 @@ func liveCheckBinaryCandidatePathsForName(cliDir, candidate, goos string) []stri
 		filepath.Join(cliDir, candidate),
 		platform.ExecutablePathForGOOS(filepath.Join(cliDir, candidate), goos),
 	}
+	deduped := paths[:0:0]
+	seen := map[string]struct{}{}
+	for _, path := range paths {
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		deduped = append(deduped, path)
+	}
+	return deduped
 }
 
 // runFeaturesConcurrent distributes the per-feature checks across a worker
