@@ -18,9 +18,12 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/shellargs"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 )
 
 // Section names the narrative section a command lives in. Matches the
@@ -106,6 +109,10 @@ func ValidateWithOptions(ctx context.Context, researchPath, binaryPath string, o
 	if err != nil {
 		return nil, err
 	}
+	var templateVarAssignments []string
+	if opts.FullExamples {
+		templateVarAssignments = missingTemplateVarEnvAssignments(discoverTemplateVarEnv(binaryPath))
+	}
 
 	report := &Report{
 		Results:       make([]Result, 0, len(commands)),
@@ -113,7 +120,7 @@ func ValidateWithOptions(ctx context.Context, researchPath, binaryPath string, o
 		ResearchEmpty: len(commands) == 0,
 	}
 	for _, sc := range commands {
-		r := classify(ctx, binaryPath, sc.Section, sc.Command, opts)
+		r := classify(ctx, binaryPath, sc.Section, sc.Command, opts, templateVarAssignments)
 		switch r.Status {
 		case StatusOK:
 			report.Walked++
@@ -185,7 +192,7 @@ func loadCommands(researchPath string) ([]sectionCommand, error) {
 // binary name, keep words until the first flag (starts with `-`) or
 // non-identifier character. Hyphens stay because Cobra subcommands use
 // them (`list-projects`).
-func classify(ctx context.Context, binaryPath string, section Section, command string, opts Options) Result {
+func classify(ctx context.Context, binaryPath string, section Section, command string, opts Options, templateVarAssignments []string) Result {
 	segments, err := splitShellChain(command)
 	if err != nil {
 		return Result{
@@ -237,7 +244,7 @@ func classify(ctx context.Context, binaryPath string, section Section, command s
 
 	var last Result
 	for i, seg := range runnable {
-		sub := classifySegment(ctx, binaryPath, section, seg.cleaned, opts)
+		sub := classifySegment(ctx, binaryPath, section, seg.cleaned, opts, templateVarAssignments)
 		if sub.Status != StatusOK {
 			if len(runnable) > 1 {
 				sub.Error = fmt.Sprintf("segment %d (%q): %s", i+1, seg.cleaned, sub.Error)
@@ -249,7 +256,7 @@ func classify(ctx context.Context, binaryPath string, section Section, command s
 	return finish(last)
 }
 
-func classifySegment(ctx context.Context, binaryPath string, section Section, command string, opts Options) Result {
+func classifySegment(ctx context.Context, binaryPath string, section Section, command string, opts Options, templateVarAssignments []string) Result {
 	words := extractSubcommandWords(command)
 	r := Result{Section: section, Command: command, Words: strings.Join(words, " ")}
 
@@ -277,10 +284,10 @@ func classifySegment(ctx context.Context, binaryPath string, section Section, co
 		r.Error = fmt.Sprintf("%s %s --help failed: %v", binaryPath, r.Words, err)
 		return r
 	}
-	return classifyFullExample(ctx, binaryPath, command, helpOut, r)
+	return classifyFullExample(ctx, binaryPath, command, helpOut, r, templateVarAssignments)
 }
 
-func classifyFullExample(ctx context.Context, binaryPath, command string, helpOut []byte, r Result) Result {
+func classifyFullExample(ctx context.Context, binaryPath, command string, helpOut []byte, r Result, templateVarAssignments []string) Result {
 	tokens, err := shellargs.Split(command)
 	if err != nil {
 		r.Status = StatusExampleFailed
@@ -315,6 +322,7 @@ func classifyFullExample(ctx context.Context, binaryPath, command string, helpOu
 	// transport-layer mutating-verb gate doesn't collapse narrative
 	// full-example assertions to a synthetic envelope.
 	cmd.Env = append(os.Environ(), "PRINTING_PRESS_VERIFY=1", "PRINTING_PRESS_VERIFY_LIVE_HTTP=1")
+	cmd.Env = append(cmd.Env, templateVarAssignments...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		r.Status = StatusExampleFailed
@@ -329,6 +337,54 @@ func classifyFullExample(ctx context.Context, binaryPath, command string, helpOu
 
 	r.Status = StatusOK
 	return r
+}
+
+type templateVarEnvEntry struct {
+	Name  string
+	Value string
+}
+
+func discoverTemplateVarEnv(binaryPath string) []templateVarEnvEntry {
+	manifest, err := pipeline.ReadCLIManifest(filepath.Dir(binaryPath))
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var envs []templateVarEnvEntry
+	for _, templateVar := range manifest.EndpointTemplateVars {
+		templateVar = strings.TrimSpace(templateVar)
+		if templateVar == "" {
+			continue
+		}
+		envName := strings.TrimSpace(manifest.EndpointTemplateEnvOverrides[templateVar])
+		if envName == "" {
+			apiName := strings.TrimSpace(manifest.APIName)
+			if apiName == "" {
+				continue
+			}
+			envName = spec.DefaultEndpointTemplateEnvName(apiName, templateVar)
+		}
+		if seen[envName] {
+			continue
+		}
+		seen[envName] = true
+		envs = append(envs, templateVarEnvEntry{
+			Name:  envName,
+			Value: templateVar + "_placeholder",
+		})
+	}
+	return envs
+}
+
+func missingTemplateVarEnvAssignments(templateVars []templateVarEnvEntry) []string {
+	var env []string
+	for _, templateVar := range templateVars {
+		if strings.TrimSpace(os.Getenv(templateVar.Name)) != "" {
+			continue
+		}
+		env = append(env, templateVar.Name+"="+templateVar.Value)
+	}
+	return env
 }
 
 func isSideEffectfulNarrativeExample(args []string) bool {

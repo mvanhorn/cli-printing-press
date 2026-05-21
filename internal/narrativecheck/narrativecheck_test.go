@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -216,6 +217,95 @@ func TestValidateWithOptions_FullExamplesCatchesInvalidFlag(t *testing.T) {
 	}
 }
 
+func TestValidateWithOptions_FullExamplesSeedsTemplateVarEnv(t *testing.T) {
+	unsetEnv(t, "SHOPIFY_SHOP")
+	unsetEnv(t, "SHOPIFY_API_VERSION")
+
+	binary := buildTemplateVarStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"quickstart":[
+			{"command":"stub sync --full"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, binary, Options{FullExamples: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if report.HasFailures() {
+		t.Fatalf("full example should pass with manifest-declared template var placeholders, got %+v", report)
+	}
+	if report.Walked != 1 {
+		t.Errorf("Walked = %d, want 1", report.Walked)
+	}
+}
+
+func TestValidateWithOptions_FullExamplesSeedsTemplateVarEnvWhenParentEnvEmpty(t *testing.T) {
+	t.Setenv("SHOPIFY_SHOP", "")
+	t.Setenv("SHOPIFY_API_VERSION", " ")
+
+	binary := buildTemplateVarStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"quickstart":[
+			{"command":"stub sync --full"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, binary, Options{FullExamples: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if report.HasFailures() {
+		t.Fatalf("full example should replace blank inherited template env vars with placeholders, got %+v", report)
+	}
+}
+
+func TestValidateWithOptions_FullExamplesPreservesTemplateVarParentEnv(t *testing.T) {
+	t.Setenv("SHOPIFY_SHOP", "custom-shop")
+	t.Setenv("SHOPIFY_API_VERSION", "2026-01")
+
+	binary := buildTemplateVarStubBinary(t, map[string]string{
+		"SHOPIFY_SHOP":        "custom-shop",
+		"SHOPIFY_API_VERSION": "2026-01",
+	})
+	research := writeFile(t, `{"narrative":{
+		"quickstart":[
+			{"command":"stub sync --full"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, binary, Options{FullExamples: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if report.HasFailures() {
+		t.Fatalf("full example should preserve non-empty inherited template env vars, got %+v", report)
+	}
+}
+
+func TestValidateWithOptions_FullExamplesUsesTemplateVarEnvOverrides(t *testing.T) {
+	unsetEnv(t, "ST_TENANT_ID")
+
+	binary := buildTemplateVarOverrideStubBinary(t)
+	research := writeFile(t, `{"narrative":{
+		"quickstart":[
+			{"command":"stub sync --full"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, binary, Options{FullExamples: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if report.HasFailures() {
+		t.Fatalf("full example should seed manifest override env names, got %+v", report)
+	}
+}
+
 func TestClassifyFullExample_ReportsUnsupportedWhenDryRunUnavailable(t *testing.T) {
 	t.Parallel()
 
@@ -225,6 +315,7 @@ func TestClassifyFullExample_ReportsUnsupportedWhenDryRunUnavailable(t *testing.
 		"stub widgets list",
 		[]byte("Usage: stub widgets list"),
 		Result{Section: SectionQuickstart, Command: "stub widgets list", Words: "widgets list"},
+		nil,
 	)
 	if got.Status != StatusUnsupported {
 		t.Fatalf("Status = %q, want %q", got.Status, StatusUnsupported)
@@ -243,6 +334,7 @@ func TestRunFullExample_SkipsAuthSetToken(t *testing.T) {
 		"stub auth set-token YOUR_TOKEN_HERE",
 		[]byte("      --dry-run   Show request without sending"),
 		Result{Section: SectionQuickstart, Command: "stub auth set-token YOUR_TOKEN_HERE", Words: "auth set-token YOUR_TOKEN_HERE"},
+		nil,
 	)
 	if got.Status != StatusUnsupported {
 		t.Fatalf("Status = %q, want %q", got.Status, StatusUnsupported)
@@ -261,6 +353,7 @@ func TestRunFullExample_SkipsAuthLogout(t *testing.T) {
 		"stub auth logout",
 		[]byte("      --dry-run   Show request without sending"),
 		Result{Section: SectionRecipes, Command: "stub auth logout", Words: "auth logout"},
+		nil,
 	)
 	if got.Status != StatusUnsupported {
 		t.Fatalf("Status = %q, want %q", got.Status, StatusUnsupported)
@@ -588,6 +681,21 @@ func writeFile(t *testing.T, content string) string {
 	return path
 }
 
+func unsetEnv(t *testing.T, key string) {
+	t.Helper()
+	old, had := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if had {
+			_ = os.Setenv(key, old)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
+}
+
 // buildStubBinary compiles a small Go program that simulates a printed
 // CLI: it accepts `widgets list --help`, `widgets show <id> --help`,
 // and exits non-zero for anything else. The stub is the most direct
@@ -663,6 +771,99 @@ func main() {
 		t.Fatal(stubErr)
 	}
 	return stubPath
+}
+
+func buildTemplateVarStubBinary(t *testing.T, wantEnv ...map[string]string) string {
+	t.Helper()
+	want := map[string]string{
+		"SHOPIFY_SHOP":        "shop_placeholder",
+		"SHOPIFY_API_VERSION": "api_version_placeholder",
+	}
+	if len(wantEnv) > 0 {
+		want = wantEnv[0]
+	}
+	wantChecks := renderEnvChecks(want)
+	src := `package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() {
+	args := os.Args[1:]
+	joined := strings.Join(args, " ")
+	if len(args) >= 2 && args[0] == "sync" && args[1] == "--help" {
+		fmt.Println("usage stub: sync")
+		fmt.Println("      --dry-run   Show request without sending")
+		return
+	}
+	if joined == "sync --full --dry-run" {
+		missing := false
+` + wantChecks + `
+		if missing {
+			os.Exit(1)
+		}
+		fmt.Println("dry run ok")
+		return
+	}
+	fmt.Fprintln(os.Stderr, "unknown command:", joined)
+	os.Exit(1)
+}
+`
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "stub.go")
+	if err := os.WriteFile(srcPath, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binaryPath := filepath.Join(dir, "stub")
+	if out, err := exec.Command("go", "build", "-o", binaryPath, srcPath).CombinedOutput(); err != nil {
+		t.Fatalf("building template-var stub: %v\n%s", err, out)
+	}
+	manifest := `{
+		"api_name": "shopify",
+		"cli_name": "shopify-pp-cli",
+		"endpoint_template_vars": ["shop", "api_version"]
+	}`
+	if err := os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return binaryPath
+}
+
+func buildTemplateVarOverrideStubBinary(t *testing.T) string {
+	t.Helper()
+	binaryPath := buildTemplateVarStubBinary(t, map[string]string{
+		"ST_TENANT_ID": "tenant_placeholder",
+	})
+	manifest := `{
+		"api_name": "servicetitan",
+		"cli_name": "servicetitan-pp-cli",
+		"endpoint_template_vars": ["tenant"],
+		"endpoint_template_env_overrides": {"tenant": "ST_TENANT_ID"}
+	}`
+	if err := os.WriteFile(filepath.Join(filepath.Dir(binaryPath), ".printing-press.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return binaryPath
+}
+
+func renderEnvChecks(want map[string]string) string {
+	var b strings.Builder
+	keys := make([]string, 0, len(want))
+	for envName := range want {
+		keys = append(keys, envName)
+	}
+	sort.Strings(keys)
+	for _, envName := range keys {
+		envValue := want[envName]
+		fmt.Fprintf(&b, "\t\tif got := os.Getenv(%q); got != %q {\n", envName, envValue)
+		fmt.Fprintf(&b, "\t\t\tfmt.Fprintf(os.Stderr, %q, got)\n", envName+" = %q\\n")
+		b.WriteString("\t\t\tmissing = true\n")
+		b.WriteString("\t\t}\n")
+	}
+	return b.String()
 }
 
 func TestStripRedirects(t *testing.T) {
