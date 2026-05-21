@@ -6747,6 +6747,79 @@ func TestDetectPaginationRecognizesPageIntCursor(t *testing.T) {
 	}
 }
 
+func TestDetectPaginationRecognizesNestedNumericNextPage(t *testing.T) {
+	t.Parallel()
+
+	description := "OK"
+	responses := openapi3.NewResponses()
+	responses.Set("200", &openapi3.ResponseRef{Value: &openapi3.Response{
+		Description: &description,
+		Content: openapi3.Content{
+			"application/json": &openapi3.MediaType{
+				Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+					Type: &openapi3.Types{"object"},
+					Properties: openapi3.Schemas{
+						"items": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type:  &openapi3.Types{"array"},
+							Items: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"object"}}},
+						}},
+						"meta": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type: &openapi3.Types{"object"},
+							Properties: openapi3.Schemas{
+								"nextPage": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+							},
+						}},
+					},
+				}},
+			},
+		},
+	}})
+	op := &openapi3.Operation{Responses: responses}
+
+	pag := detectPagination([]spec.Param{{Name: "page"}, {Name: "limit"}}, op)
+	require.NotNil(t, pag)
+	assert.Equal(t, "page", pag.CursorParam)
+	assert.Equal(t, "page", pag.Type)
+	assert.Equal(t, "limit", pag.LimitParam)
+	assert.Equal(t, "meta.nextPage", pag.NextCursorPath)
+}
+
+func TestDetectPaginationDoesNotWireNestedNextPageWithoutRequestCursor(t *testing.T) {
+	t.Parallel()
+
+	description := "OK"
+	responses := openapi3.NewResponses()
+	responses.Set("200", &openapi3.ResponseRef{Value: &openapi3.Response{
+		Description: &description,
+		Content: openapi3.Content{
+			"application/json": &openapi3.MediaType{
+				Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+					Type: &openapi3.Types{"object"},
+					Properties: openapi3.Schemas{
+						"items": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type:  &openapi3.Types{"array"},
+							Items: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"object"}}},
+						}},
+						"meta": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type: &openapi3.Types{"object"},
+							Properties: openapi3.Schemas{
+								"nextPage": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+							},
+						}},
+					},
+				}},
+			},
+		},
+	}})
+	op := &openapi3.Operation{Responses: responses}
+
+	pag := detectPagination([]spec.Param{{Name: "limit"}}, op)
+	require.NotNil(t, pag)
+	assert.Equal(t, "limit", pag.LimitParam)
+	assert.Empty(t, pag.CursorParam)
+	assert.Empty(t, pag.NextCursorPath)
+}
+
 // TestDetectPaginationCursorBeatsPage guards mixed-form specs: when an
 // API declares both `cursor` and `page` (rare but real), cursor must
 // win so existing cursor-based sync loops stay on the body-cursor
