@@ -392,7 +392,9 @@ func secondaryHostsForEntries(apiEntries []EnrichedEntry, noiseEntries []Enriche
 			continue
 		}
 		counts[host]++
-		reasons[host] = SecondaryHostReasonTelemetry
+		if _, exists := reasons[host]; !exists {
+			reasons[host] = SecondaryHostReasonTelemetry
+		}
 	}
 	if len(counts) == 0 {
 		return nil

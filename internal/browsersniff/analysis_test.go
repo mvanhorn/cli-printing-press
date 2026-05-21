@@ -894,6 +894,15 @@ func TestAnalyzeTraffic_RecordsTelemetryHostsAsSecondary(t *testing.T) {
 				ResponseBody:        `{"version":"1"}`,
 			},
 			{
+				Method:              "POST",
+				URL:                 "https://assets.example.com/sentry/envelope/?sentry_key=relay",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `{"event_id":"relay"}`,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":"evt_2"}`,
+			},
+			{
 				Method:              "GET",
 				URL:                 "https://cdn.example.com/assets/app.css",
 				ResponseStatus:      200,
@@ -911,7 +920,7 @@ func TestAnalyzeTraffic_RecordsTelemetryHostsAsSecondary(t *testing.T) {
 	require.Len(t, analysis.EndpointClusters, 3)
 	assert.Equal(t, "api.example.com", analysis.EndpointClusters[0].Host)
 	assert.Equal(t, []SecondaryHost{
-		{Host: "assets.example.com", Count: 1, Reason: "non-primary host"},
+		{Host: "assets.example.com", Count: 2, Reason: "non-primary host"},
 		{Host: "browser-intake-datadoghq.com", Count: 1, Reason: "telemetry host"},
 		{Host: "sentry.io", Count: 1, Reason: "telemetry host"},
 	}, analysis.SecondaryHosts)
