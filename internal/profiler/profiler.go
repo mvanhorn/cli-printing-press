@@ -58,6 +58,14 @@ type SearchBodyField struct {
 	Required bool   `json:"required"`
 }
 
+// SyncBodyField describes a request-body field on a syncable POST list endpoint.
+type SyncBodyField struct {
+	Name       string
+	Type       string
+	Default    any
+	HasDefault bool
+}
+
 // DiscriminatorMapping routes one discriminator value to the concrete resource
 // whose typed table should receive the item.
 type DiscriminatorMapping struct {
@@ -74,9 +82,10 @@ type DiscriminatorDispatch struct {
 
 // SyncableResource describes a resource that supports list sync (paginated or single-page).
 type SyncableResource struct {
-	Name string
-	Path string
-	Tier string
+	Name   string
+	Path   string
+	Method string
+	Tier   string
 	// IDField is the resolved primary-key field name for items returned by the
 	// list endpoint, populated from the chosen endpoint's resolved value (in
 	// turn populated by the OpenAPI parser's `x-resource-id` extension or the
@@ -102,6 +111,11 @@ type SyncableResource struct {
 	// endpoints.
 	SupportsPagination bool
 
+	// BodyFields names request-body fields on POST list endpoints. Sync uses
+	// this to send pagination and user-supplied params in the body for
+	// RPC-style list calls.
+	BodyFields []SyncBodyField
+
 	// Discriminator routes heterogeneous response items to concrete typed
 	// resources before storage. Empty when the endpoint returns a homogeneous
 	// resource.
@@ -115,6 +129,7 @@ type DependentResource struct {
 	ParentResource string // parent resource name, e.g. "channels"
 	ParentIDParam  string // path param name, e.g. "channel_id"
 	Path           string // full path template, e.g. "/channels/{channel_id}/messages"
+	Method         string
 	Tier           string
 
 	// IDField is the primary-key field name resolved from the spec
@@ -140,6 +155,9 @@ type DependentResource struct {
 	// paths so dependent syncs skip synthetic limit/offset params on endpoints
 	// that do not declare page-size pagination.
 	SupportsPagination bool
+
+	// BodyFields mirrors SyncableResource.BodyFields for child sync paths.
+	BodyFields []SyncBodyField
 
 	// Discriminator routes heterogeneous dependent-resource response items to
 	// concrete typed resources before storage.
@@ -225,7 +243,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 	listResources := make(map[string]struct{})
 
 	var getEndpoints int
-	var listCapableGETs int
+	var listCapableEndpoints int
 	var hasSearchEndpoint bool
 
 	cursorParams := make(map[string]int)
@@ -349,7 +367,7 @@ func Profile(s *spec.APISpec) *APIProfile {
 			}
 
 			if isListEndpoint(endpointName, endpoint, s.Types) {
-				listCapableGETs++
+				listCapableEndpoints++
 				listResources[resourceName] = struct{}{}
 
 				// pathParamsAllTemplateVars treats paths whose only
@@ -501,8 +519,8 @@ func Profile(s *spec.APISpec) *APIProfile {
 		p.ReadRatio = float64(getEndpoints) / float64(p.TotalEndpoints)
 		p.OfflineValuable = p.ReadRatio > 0.6
 	}
-	if listCapableGETs > 0 {
-		paginationRatio := float64(p.ListEndpoints) / float64(listCapableGETs)
+	if listCapableEndpoints > 0 {
+		paginationRatio := float64(p.ListEndpoints) / float64(listCapableEndpoints)
 		// HighVolume: either >50% of list endpoints are paginated, or 5+ paginated endpoints exist
 		p.HighVolume = paginationRatio > 0.5 || p.ListEndpoints >= 5
 	}
@@ -777,12 +795,28 @@ func hasRequiredScopeParams(endpoint spec.Endpoint) bool {
 }
 
 func isListEndpoint(name string, endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
-	if strings.ToUpper(endpoint.Method) != "GET" {
+	method := strings.ToUpper(endpoint.Method)
+
+	if method == "POST" {
+		return endpoint.Pagination != nil &&
+			looksLikeCollectionEndpoint(strings.ToLower(name)) &&
+			hasListShapedResponse(endpoint, types)
+	}
+
+	if method != "GET" {
 		return false
 	}
 	if endpoint.Pagination != nil {
 		return true
 	}
+	if hasListShapedResponse(endpoint, types) {
+		return true
+	}
+
+	return looksLikeBasicGetListEndpoint(strings.ToLower(name))
+}
+
+func hasListShapedResponse(endpoint spec.Endpoint, types map[string]spec.TypeDef) bool {
 	if endpoint.Response.Type == "array" {
 		return true
 	}
@@ -791,14 +825,9 @@ func isListEndpoint(name string, endpoint spec.Endpoint, types map[string]spec.T
 	// and the referenced type has a field matching a known wrapper key. These
 	// are list endpoints that wrap their arrays (e.g., {events: [...]}).
 	// The key list matches extractPageItems in sync.go.tmpl plus "events".
-	if endpoint.Response.Type == "object" && endpoint.Response.Item != "" {
-		if hasWrapperArrayField(endpoint.Response.Item, types) {
-			return true
-		}
-	}
-
-	name = strings.ToLower(name)
-	return containsAny(name, []string{"list", "all"})
+	return endpoint.Response.Type == "object" &&
+		endpoint.Response.Item != "" &&
+		hasWrapperArrayField(endpoint.Response.Item, types)
 }
 
 // wrapperArrayKeys are response object field names that indicate the object
@@ -867,6 +896,12 @@ func looksLikeCollectionEndpoint(nameLower string) bool {
 }
 
 var collectionEndpointTerms = []string{"list", "all", "index", "search", "query", "browse", "find"}
+
+func looksLikeBasicGetListEndpoint(nameLower string) bool {
+	return containsAny(nameLower, basicGetListEndpointTerms)
+}
+
+var basicGetListEndpointTerms = []string{"list", "all"}
 
 func hasLifecycleField(params []spec.Param) bool {
 	for _, param := range params {
@@ -1078,11 +1113,13 @@ func detectDependentResources(parameterized map[string]parameterizedEntry, synca
 			ParentResource:     parentResource,
 			ParentIDParam:      paramName,
 			Path:               entry.meta.Path,
+			Method:             entry.meta.Method,
 			Tier:               entry.meta.Tier,
 			IDField:            entry.meta.IDField,
 			Critical:           entry.meta.Critical,
 			SinceParam:         entry.meta.SinceParam,
 			SupportsPagination: entry.meta.SupportsPagination,
+			BodyFields:         entry.meta.BodyFields,
 			Discriminator:      entry.meta.Discriminator,
 		})
 	}
@@ -1184,11 +1221,13 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				ParentResource:     parent,
 				ParentIDParam:      keyParam,
 				Path:               e.Path,
+				Method:             meta.Method,
 				Tier:               meta.Tier,
 				IDField:            meta.IDField,
 				Critical:           meta.Critical,
 				SinceParam:         meta.SinceParam,
 				SupportsPagination: meta.SupportsPagination,
+				BodyFields:         meta.BodyFields,
 				Discriminator:      meta.Discriminator,
 				KeyField:           keyField,
 			})
@@ -1264,11 +1303,13 @@ func resolveParentResource(walkParent, paramName string, syncable map[string]syn
 // converted into a SyncableResource at the end of Profile().
 type syncableMeta struct {
 	Path               string
+	Method             string
 	Tier               string
 	IDField            string
 	Critical           bool
 	SinceParam         string
 	SupportsPagination bool
+	BodyFields         []SyncBodyField
 	Discriminator      DiscriminatorDispatch
 }
 
@@ -1293,13 +1334,41 @@ type parameterizedEntry struct {
 func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, types map[string]spec.TypeDef, resourceNameIndex map[string]string) syncableMeta {
 	return syncableMeta{
 		Path:               e.Path,
+		Method:             strings.ToUpper(e.Method),
 		Tier:               s.EffectiveTier(resource, e),
 		IDField:            e.IDField,
 		Critical:           e.Critical,
 		SinceParam:         detectEndpointSinceParam(e.Params),
 		SupportsPagination: endpointSupportsPagination(e),
+		BodyFields:         syncBodyFieldsFromEndpoint(e),
 		Discriminator:      discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
 	}
+}
+
+func syncBodyFieldsFromEndpoint(endpoint spec.Endpoint) []SyncBodyField {
+	if !strings.EqualFold(endpoint.Method, "POST") || len(endpoint.Body) == 0 {
+		return nil
+	}
+	fields := make([]SyncBodyField, 0, len(endpoint.Body))
+	for _, param := range endpoint.Body {
+		field := SyncBodyField{Name: param.Name, Type: param.Type}
+		if defaultValue, ok := syncBodyDefault(param); ok {
+			field.Default = defaultValue
+			field.HasDefault = true
+		}
+		fields = append(fields, field)
+	}
+	return fields
+}
+
+func syncBodyDefault(param spec.Param) (any, bool) {
+	if param.Default != nil {
+		return param.Default, true
+	}
+	if len(param.Enum) == 1 {
+		return param.Enum[0], true
+	}
+	return nil, false
 }
 
 // detectEndpointSinceParam returns the actual query parameter name this
@@ -1525,11 +1594,13 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 		resources[i] = SyncableResource{
 			Name:               name,
 			Path:               meta.Path,
+			Method:             meta.Method,
 			Tier:               meta.Tier,
 			IDField:            meta.IDField,
 			Critical:           meta.Critical,
 			SinceParam:         meta.SinceParam,
 			SupportsPagination: meta.SupportsPagination,
+			BodyFields:         meta.BodyFields,
 			Discriminator:      meta.Discriminator,
 		}
 	}
