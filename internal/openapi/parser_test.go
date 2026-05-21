@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
@@ -48,6 +49,69 @@ func TestParsePetstore(t *testing.T) {
 
 	assert.NotEmpty(t, parsed.Types)
 	assert.Contains(t, parsed.Types, "Pet")
+}
+
+func readAICLargeSpec(tb testing.TB) []byte {
+	tb.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "artic-openapi.json"))
+	require.NoError(tb, err)
+	return data
+}
+
+func countEndpoints(resources map[string]spec.Resource) int {
+	total := 0
+	for _, resource := range resources {
+		total += len(resource.Endpoints)
+		total += countEndpoints(resource.SubResources)
+	}
+	return total
+}
+
+func TestParseAICLargeSpecCompletes(t *testing.T) {
+	t.Parallel()
+
+	data := readAICLargeSpec(t)
+
+	type parseResult struct {
+		spec *spec.APISpec
+		err  error
+	}
+	done := make(chan parseResult, 1)
+	go func() {
+		parsed, err := Parse(data)
+		done <- parseResult{spec: parsed, err: err}
+	}()
+
+	select {
+	case result := <-done:
+		require.NoError(t, result.err)
+		require.Equal(t, "art-institution-chicago", result.spec.Name)
+		require.NotEmpty(t, result.spec.Resources)
+		require.GreaterOrEqual(t, countEndpoints(result.spec.Resources), 100)
+		require.Contains(t, result.spec.Resources, "artworks")
+		require.Contains(t, result.spec.Resources["artworks"].Endpoints, "list")
+		require.Contains(t, result.spec.Resources["artworks"].Endpoints, "get")
+		search := findEndpoint(t, result.spec, "/search")
+		assert.GreaterOrEqual(t, len(search.Params), 6, "expected shared parameter refs on /search to resolve")
+	case <-time.After(60 * time.Second):
+		t.Fatal("AIC OpenAPI 3.1 spec parse did not complete within 60 seconds")
+	}
+}
+
+func BenchmarkLargeSpec(b *testing.B) {
+	data := readAICLargeSpec(b)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		parsed, err := Parse(data)
+		if err != nil {
+			b.Fatalf("parse AIC spec: %v", err)
+		}
+		if len(parsed.Resources) == 0 {
+			b.Fatal("expected parsed resources")
+		}
+	}
 }
 
 func TestParseFileResolvesLocalRefsRelativeToSpecDir(t *testing.T) {
