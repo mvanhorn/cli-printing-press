@@ -5459,21 +5459,7 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 		if success != nil && success.Value != nil {
 			schemaRef := selectResponseSchema(success.Value)
 			if schemaRef != nil && schemaRef.Value != nil {
-				for propName := range schemaRef.Value.Properties {
-					lower := strings.ToLower(propName)
-					if lower == "nextpagetoken" || lower == "next_page_token" {
-						pag.NextCursorPath = propName
-						if pag.Type == "" {
-							pag.Type = "page_token"
-						}
-					}
-					if lower == "has_more" || lower == "hasmore" {
-						pag.HasMoreField = propName
-						if pag.Type == "" {
-							pag.Type = "cursor"
-						}
-					}
-				}
+				detectPaginationResponseFields(schemaRef.Value, "", &pag)
 			}
 		}
 	}
@@ -5489,6 +5475,73 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	return &pag
 }
 
+func detectPaginationResponseFields(schema *openapi3.Schema, prefix string, pag *spec.Pagination) {
+	if schema == nil {
+		return
+	}
+	propNames := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		propNames = append(propNames, name)
+	}
+	sort.Strings(propNames)
+
+	for _, propName := range propNames {
+		propRef := schema.Properties[propName]
+		if pag.NextCursorPath != "" && pag.HasMoreField != "" {
+			return
+		}
+		path := propName
+		if prefix != "" {
+			path = prefix + "." + propName
+		}
+		lower := strings.ToLower(propName)
+		switch {
+		case stringInSlice(lower, nextFieldPageTokenNames):
+			if pag.NextCursorPath == "" && pag.CursorParam != "" {
+				pag.NextCursorPath = path
+			}
+			if pag.Type == "" {
+				pag.Type = "page_token"
+			}
+		case stringInSlice(lower, nextFieldPageNumberNames):
+			if pag.NextCursorPath == "" && pag.CursorParam != "" {
+				pag.NextCursorPath = path
+			}
+			if pag.Type == "" {
+				pag.Type = "page"
+			}
+		case stringInSlice(lower, nextFieldCursorNames):
+			if pag.NextCursorPath == "" && pag.CursorParam != "" {
+				pag.NextCursorPath = path
+			}
+			if pag.Type == "" {
+				pag.Type = "cursor"
+			}
+		case stringInSlice(lower, nextFieldBoolNames):
+			if pag.HasMoreField == "" {
+				pag.HasMoreField = path
+			}
+			if pag.Type == "" {
+				pag.Type = "cursor"
+			}
+		}
+
+		if prefix != "" || !isPaginationWrapperField(lower) || propRef == nil || propRef.Value == nil {
+			continue
+		}
+		detectPaginationResponseFields(propRef.Value, path, pag)
+	}
+}
+
+func isPaginationWrapperField(lower string) bool {
+	switch lower {
+	case "meta", "metadata", "pagination", "paging", "response_metadata":
+		return true
+	default:
+		return false
+	}
+}
+
 // itemsFieldNames lists JSON property names that, when typed as an array,
 // signal "this object is a paged envelope" — matches the runtime
 // extractPaginatedItems helper in templates/helpers.go.tmpl so detect-time
@@ -5500,14 +5553,21 @@ var itemsFieldNames = []string{"data", "items", "results", "messages", "members"
 // follows these without API-specific cursor arithmetic.
 var nextFieldURLNames = []string{"next", "next_url", "nexturl"}
 
-// nextFieldCursorNames lists string properties that carry an opaque
-// cursor token (e.g. next_page_token, next_cursor). These cannot be
-// followed without knowing which query parameter to set on the next
-// request — metadata the embedded envelope does not provide — so the
-// runtime helper treats their presence the same way it treats
-// has_more=true: fetch page 1, then emit a truncation event so callers
-// know data is incomplete.
-var nextFieldCursorNames = []string{"next_cursor", "nextcursor", "next_page_token", "nextpagetoken", "cursor"}
+// nextFieldPageNumberNames lists numeric fields that carry the next page
+// number. Unlike opaque cursors, these can be fed back to page-style
+// pagination params as strings.
+var nextFieldPageNumberNames = []string{"next_page", "nextpage"}
+
+// nextFieldPageTokenNames lists cursor fields that conventionally pair with
+// page-token request params.
+var nextFieldPageTokenNames = []string{"next_page_token", "nextpagetoken"}
+
+// nextFieldCursorNames lists opaque cursor fields. Unlike page-token
+// names (handled by nextFieldPageTokenNames), these carry unstructured
+// strings that cannot advance pagination without a known query parameter.
+// The runtime treats their presence as a truncation signal when no cursor
+// param is configured.
+var nextFieldCursorNames = []string{"next_cursor", "nextcursor", "cursor"}
 
 // nextFieldBoolNames lists boolean-typed "more pages" flags.
 var nextFieldBoolNames = []string{"has_more", "hasmore"}
@@ -5635,6 +5695,16 @@ func findNextField(lowered map[string]string) (string, nextFieldKind) {
 			return actual, nextKindURL
 		}
 	}
+	for _, candidate := range nextFieldPageTokenNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindCursor
+		}
+	}
+	for _, candidate := range nextFieldPageNumberNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindCursor
+		}
+	}
 	for _, candidate := range nextFieldCursorNames {
 		if actual, ok := lowered[candidate]; ok {
 			return actual, nextKindCursor
@@ -5646,6 +5716,10 @@ func findNextField(lowered map[string]string) (string, nextFieldKind) {
 		}
 	}
 	return "", nextKindNone
+}
+
+func stringInSlice(s string, values []string) bool {
+	return slices.Contains(values, s)
 }
 
 // joinChildPath returns parentPath + "/" + property — the conventional

@@ -584,20 +584,21 @@ func paginatedGet(c interface {
 				// Check for next cursor
 				if nextCursorPath != "" {
 					if tokenRaw, ok := rawAtPath(obj, nextCursorPath); ok {
-						var token string
-						if json.Unmarshal(tokenRaw, &token) == nil && token != "" {
+						if token := paginationCursorToken(tokenRaw); token != "" {
 							clean[cursorParam] = token
 							continue
 						}
 					}
 				}
 
-				// Check has_more
+				// Check has_more. A has-more flag without an extracted cursor
+				// proves truncation but cannot advance the request safely.
 				if hasMoreField != "" {
 					if moreRaw, ok := rawAtPath(obj, hasMoreField); ok {
 						var more bool
 						if json.Unmarshal(moreRaw, &more) == nil && more {
-							continue
+							emitMissingPaginationCursorWarning(nextCursorPath)
+							break
 						}
 					}
 				}
@@ -610,6 +611,9 @@ func paginatedGet(c interface {
 		break
 	}
 
+	if fetchAll && page == 1 && nextCursorPath == "" && hasMoreField == "" {
+		emitMissingPaginationSignalWarning()
+	}
 	if humanFriendly {
 		fmt.Fprintf(os.Stderr, "fetched %d items across %d pages\n", len(allItems), page)
 	} else {
@@ -633,7 +637,7 @@ func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField st
 	var nextCursor string
 	if nextCursorPath != "" {
 		if tokenRaw, ok := rawAtPath(obj, nextCursorPath); ok {
-			_ = json.Unmarshal(tokenRaw, &nextCursor)
+			nextCursor = paginationCursorToken(tokenRaw)
 		}
 	}
 	var hasMore bool
@@ -662,6 +666,38 @@ func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField st
 	} else {
 		fmt.Fprintf(os.Stderr, `{"event":"truncated"}`+"\n")
 	}
+}
+
+func emitMissingPaginationSignalWarning() {
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "warning: --all requested, but this endpoint does not declare a next cursor or has-more field; returning page 1 only.\n")
+	} else {
+		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_signal_missing","message":"--all requested but this endpoint does not declare a next cursor or has-more field; returning page 1 only"}`+"\n")
+	}
+}
+
+func emitMissingPaginationCursorWarning(nextCursorPath string) {
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "warning: --all requested, but the response indicated more pages without a usable next cursor; returning fetched pages only.\n")
+	} else if nextCursorPath != "" {
+		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_cursor_missing","next_cursor_path":%q,"message":"--all requested but the response indicated more pages without a usable next cursor; returning fetched pages only"}`+"\n", nextCursorPath)
+	} else {
+		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_cursor_missing","message":"--all requested but the response indicated more pages without a usable next cursor; returning fetched pages only"}`+"\n")
+	}
+}
+
+func paginationCursorToken(raw json.RawMessage) string {
+	var token string
+	if json.Unmarshal(raw, &token) == nil && token != "" {
+		return token
+	}
+	var number json.Number
+	if json.Unmarshal(raw, &number) == nil {
+		if n, err := number.Int64(); err == nil && n > 0 {
+			return number.String()
+		}
+	}
+	return ""
 }
 
 func extractPaginatedItems(obj map[string]json.RawMessage) ([]json.RawMessage, bool) {
