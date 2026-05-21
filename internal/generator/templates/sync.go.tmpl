@@ -1610,12 +1610,15 @@ func syncDependentResource(c interface {
 				break
 			}
 
-			// Inject parent_id into each item before upserting
+			parentIDJSON, _ := json.Marshal(parentID)
+			parentFKKey := dep.ParentTable + "_id"
 			for i, item := range items {
 				var obj map[string]json.RawMessage
 				if err := json.Unmarshal(item, &obj); err == nil {
-					parentIDJSON, _ := json.Marshal(parentID)
 					obj["parent_id"] = parentIDJSON
+					if _, ok := obj[parentFKKey]; !ok {
+						obj[parentFKKey] = parentIDJSON
+					}
 					if modified, err := json.Marshal(obj); err == nil {
 						items[i] = modified
 					}
