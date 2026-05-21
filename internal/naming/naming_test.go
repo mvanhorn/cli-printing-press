@@ -183,6 +183,49 @@ func TestCompactDescriptionPreservesHumanText(t *testing.T) {
 	}
 }
 
+func TestCompactDescriptionDoesNotEmitLiteralEllipsis(t *testing.T) {
+	input := "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks). Includes offline FTS search and agent-friendly JSON output."
+	got := CompactDescription(input)
+	if strings.HasSuffix(got, "...") {
+		t.Fatalf("CompactDescription(%q) ended with literal ellipsis: %q", input, got)
+	}
+	if got != "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks)." {
+		t.Fatalf("CompactDescription(%q) = %q, want first complete sentence", input, got)
+	}
+	if len(got) > 120 {
+		t.Fatalf("CompactDescription(%q) = %q, want compact copy", input, got)
+	}
+}
+
+func TestCompactDescriptionAvoidsIncompleteFragments(t *testing.T) {
+	input := "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks) with offline FTS search and agent-friendly JSON output."
+	got := CompactDescription(input)
+	if got != "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks)" {
+		t.Fatalf("CompactDescription(%q) = %q, want complete clause", input, got)
+	}
+}
+
+func TestCompactDescriptionFallsBackToNonEmptyHardTruncation(t *testing.T) {
+	input := "Local first CLI for the Roam HQ API chat On Air events transcripts SCIM webhooks offline search agent friendly JSON output without punctuation until the end."
+	got := CompactDescription(input)
+	if got == "" {
+		t.Fatalf("CompactDescription(%q) returned empty string", input)
+	}
+	if strings.HasSuffix(got, "...") {
+		t.Fatalf("CompactDescription(%q) ended with literal ellipsis: %q", input, got)
+	}
+	if len([]rune(got)) > 120 {
+		t.Fatalf("CompactDescription(%q) = %q, want compact copy", input, got)
+	}
+}
+
+func TestCatalogDescriptionPreservesCompleteLongCopy(t *testing.T) {
+	input := "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks) with offline FTS search and agent-friendly JSON output."
+	if got := CatalogDescription(input); got != input {
+		t.Fatalf("CatalogDescription(%q) = %q, want complete source sentence", input, got)
+	}
+}
+
 func TestMCPDescription(t *testing.T) {
 	tests := []struct {
 		name        string

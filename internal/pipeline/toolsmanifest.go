@@ -148,6 +148,13 @@ func ReadToolsManifest(dir string) (*ToolsManifest, error) {
 // It iterates Resources/SubResources/Endpoints in sorted key order (matching
 // the MCP template's RegisterTools pattern) and writes deterministic JSON.
 func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
+	return WriteToolsManifestWithDescription(dir, parsed, "")
+}
+
+// WriteToolsManifestWithDescription generates a tools-manifest.json using the
+// supplied manifestDescription when available. The parsed spec remains the
+// source for tools and auth metadata; .printing-press.json owns durable prose.
+func WriteToolsManifestWithDescription(dir string, parsed *spec.APISpec, manifestDescription string) error {
 	if parsed == nil {
 		return fmt.Errorf("parsed spec is nil")
 	}
@@ -167,6 +174,9 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 		Auth:            manifestAuth(parsed.Auth),
 		RequiredHeaders: make([]ManifestHeader, 0, len(parsed.RequiredHeaders)),
 		Tools:           make([]ManifestTool, 0),
+	}
+	if description := strings.TrimSpace(manifestDescription); description != "" {
+		manifest.Description = description
 	}
 	if parsed.HasTierRouting() {
 		manifest.TierRouting = buildManifestTiers(parsed.TierRouting)

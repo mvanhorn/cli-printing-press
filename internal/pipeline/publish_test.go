@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/catalog"
+	catalogpkg "github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -267,6 +270,104 @@ paths: {}
 
 	m := readPublishedManifest(t, state.WorkingDir)
 	assert.Equal(t, "Product Hunt", m.DisplayName)
+}
+
+func TestWriteCLIManifestForPublishPreservesGeneratedDescription(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	rich := "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks) with offline FTS search and agent-friendly JSON output."
+	state := NewStateWithRun("asana", filepath.Join(tmp, "working", "asana-pp-cli"), "20260521-description", "test-scope")
+	require.NoError(t, os.MkdirAll(state.WorkingDir, 0o755))
+	writeManifest(t, state.WorkingDir, CLIManifest{
+		APIName:     "asana",
+		Description: rich,
+	})
+	require.NoError(t, os.WriteFile(filepath.Join(state.WorkingDir, "spec.yaml"), []byte(`
+name: asana
+description: API-shaped fallback copy.
+cli_description: Spec CLI copy that should not replace generated catalog copy during publish.
+version: "1.0"
+base_url: https://api.example.com
+auth:
+  type: none
+resources: {}
+`), 0o644))
+
+	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+
+	m := readPublishedManifest(t, state.WorkingDir)
+	assert.Equal(t, rich, m.Description)
+	assert.False(t, strings.HasSuffix(m.Description, "..."))
+}
+
+func TestWriteCLIManifestForPublishReplacesLiteralEllipsisDescription(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	state := NewStateWithRun("asana", filepath.Join(tmp, "working", "asana-pp-cli"), "20260521-description", "test-scope")
+	require.NoError(t, os.MkdirAll(state.WorkingDir, 0o755))
+	writeManifest(t, state.WorkingDir, CLIManifest{
+		APIName:     "asana",
+		Description: "Legacy generated description...",
+	})
+	require.NoError(t, os.WriteFile(filepath.Join(state.WorkingDir, "spec.yaml"), []byte(`
+name: asana
+description: API-shaped fallback copy.
+version: "1.0"
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  items:
+    description: Items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`), 0o644))
+
+	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+
+	entry, err := catalogpkg.LookupFS(catalog.FS, "asana")
+	require.NoError(t, err)
+	m := readPublishedManifest(t, state.WorkingDir)
+	assert.Equal(t, entry.Description, m.Description)
+	assert.False(t, strings.HasSuffix(m.Description, "..."))
+}
+
+func TestWriteCLIManifestForPublishReplacesLiteralEllipsisDescriptionFromSyntheticSpec(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	state := NewStateWithRun("synthetic-local", filepath.Join(tmp, "working", "synthetic-local-pp-cli"), "20260521-description", "test-scope")
+	require.NoError(t, os.MkdirAll(state.WorkingDir, 0o755))
+	writeManifest(t, state.WorkingDir, CLIManifest{
+		APIName:     "synthetic-local",
+		Description: "Legacy generated description...",
+	})
+	require.NoError(t, os.WriteFile(filepath.Join(state.WorkingDir, "spec.yaml"), []byte(`
+name: synthetic-local
+description: Synthetic local command line interface description without early punctuation so publish still emits usable metadata after rejecting legacy ellipsis descriptions
+version: "1.0"
+base_url: https://api.example.com
+auth:
+  type: none
+resources: {}
+`), 0o644))
+
+	require.NoError(t, writeCLIManifestForPublish(state, state.WorkingDir))
+
+	m := readPublishedManifest(t, state.WorkingDir)
+	assert.NotEmpty(t, m.Description)
+	assert.False(t, strings.HasSuffix(m.Description, "..."))
 }
 
 func TestWriteCLIManifestForPublishAppliesCatalogMetadataAfterNameOverride(t *testing.T) {

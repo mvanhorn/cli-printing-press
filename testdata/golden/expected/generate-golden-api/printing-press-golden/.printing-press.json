@@ -6,6 +6,7 @@
   ],
   "auth_type": "api_key",
   "cli_name": "printing-press-golden-pp-cli",
+  "description": "Purpose-built fixture for golden generation coverage.",
   "display_name": "Printing Press Studio",
   "generated_at": "<GENERATED_AT>",
   "mcp_binary": "printing-press-golden-pp-mcp",

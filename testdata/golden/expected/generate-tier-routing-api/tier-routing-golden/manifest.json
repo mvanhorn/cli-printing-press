@@ -10,7 +10,7 @@
       "win32"
     ]
   },
-  "description": "Tier Routing Golden API surface as MCP tools.",
+  "description": "Golden fixture for tier-routed generated clients.",
   "display_name": "Tier Routing Golden",
   "license": "Apache-2.0",
   "manifest_version": "0.3",

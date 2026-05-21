@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/mozillazg/go-unidecode"
 	"golang.org/x/text/cases"
@@ -217,6 +218,19 @@ func CompactDescription(s string) string {
 	return truncateOneLine(s)
 }
 
+// CatalogDescription produces single-line prose for durable catalog metadata.
+// It normalizes markdown and whitespace without applying compact-surface
+// truncation, since this value becomes the canonical description in generated
+// manifests.
+func CatalogDescription(s string) string {
+	s = stripLeadingMarkdownHeading(s)
+	return collapseWhitespace(s)
+}
+
+func HasLiteralEllipsisSuffix(s string) bool {
+	return strings.HasSuffix(strings.TrimSpace(s), "...")
+}
+
 func collapseWhitespace(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
@@ -228,15 +242,62 @@ func collapseWhitespace(s string) string {
 }
 
 func truncateOneLine(s string) string {
-	if len(s) > 120 {
-		cut := s[:117]
-		if idx := strings.LastIndex(cut, " "); idx > 60 {
-			s = cut[:idx] + "..."
-		} else {
-			s = cut + "..."
-		}
+	if utf8.RuneCountInString(s) <= 120 {
+		return s
 	}
-	return s
+	if sentence := lastSentenceBoundaryUnder(s, 120); sentence != "" {
+		return sentence
+	}
+	if clause := firstCompleteClauseUnder(s, 120); clause != "" {
+		return clause
+	}
+	return hardTruncateOneLine(s, 120)
+}
+
+func lastSentenceBoundaryUnder(s string, limit int) string {
+	best := ""
+	for idx, r := range s {
+		if r != '.' && r != '!' && r != '?' {
+			continue
+		}
+		candidate := strings.TrimSpace(s[:idx+len(string(r))])
+		if candidate == "" || utf8.RuneCountInString(candidate) > limit {
+			continue
+		}
+		best = candidate
+	}
+	return best
+}
+
+func hardTruncateOneLine(s string, limit int) string {
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	cut := string(runes[:limit])
+	if idx := strings.LastIndex(cut, " "); idx > 60 {
+		return strings.TrimRight(cut[:idx], " ,;:")
+	}
+	return strings.TrimRight(cut, " ,;:")
+}
+
+func firstCompleteClauseUnder(s string, limit int) string {
+	best := ""
+	for idx, r := range s {
+		if r != ';' && r != ':' && r != ',' && r != ')' {
+			continue
+		}
+		end := idx
+		if r == ')' {
+			end += len(string(r))
+		}
+		candidate := strings.TrimSpace(s[:end])
+		if candidate == "" || utf8.RuneCountInString(candidate) > limit {
+			continue
+		}
+		best = strings.TrimRight(candidate, " ,;:")
+	}
+	return best
 }
 
 func stripLeadingMarkdownHeading(s string) string {

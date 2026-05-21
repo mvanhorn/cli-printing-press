@@ -19,6 +19,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
+	"gopkg.in/yaml.v3"
 )
 
 type RunManifest struct {
@@ -203,6 +204,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		SpecPath:             specPath,
 		RunID:                state.RunID,
 	}
+	var existingDescription string
 
 	// Carry forward metadata from the generated manifest when publish-time
 	// parsing is unavailable or lossy for the original spec format. NovelFeatures
@@ -234,8 +236,9 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 			if existing.Category != "" {
 				m.Category = existing.Category
 			}
-			if existing.Description != "" {
+			if preserveExistingDescription(existing.Description) {
 				m.Description = existing.Description
+				existingDescription = existing.Description
 			}
 			if existing.APIVersion != "" {
 				m.APIVersion = existing.APIVersion
@@ -264,7 +267,9 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 	if entry, err := catalogpkg.LookupFS(catalog.FS, state.APIName); err == nil {
 		m.CatalogEntry = entry.Name
 		m.Category = entry.Category
-		m.Description = entry.Description
+		if m.Description == "" {
+			m.Description = entry.Description
+		}
 		if entry.DisplayName != "" {
 			m.DisplayName = entry.DisplayName
 		}
@@ -298,6 +303,15 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		if parseErr == nil {
 			applyPublishCatalogMetadata(parsed, state.APIName)
 			populateMCPMetadata(&m, parsed)
+			if m.Description == "" {
+				m.Description = naming.CompactDescription(parsed.Description)
+			}
+			if preserveExistingDescription(existingDescription) {
+				m.Description = existingDescription
+			}
+		}
+		if m.Description == "" {
+			m.Description = archivedSpecDescription(data)
 		}
 
 		// Fall back to spec.Category for synthetic CLIs not in the embedded
@@ -314,7 +328,7 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		// (auth-doctor, mcp-audit). Non-blocking: log warning on error
 		// but don't fail the publish.
 		if parsed != nil {
-			if tmErr := WriteToolsManifest(dir, parsed); tmErr != nil {
+			if tmErr := WriteToolsManifestWithDescription(dir, parsed, m.Description); tmErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write tools manifest: %v\n", tmErr)
 			}
 		}
@@ -373,6 +387,16 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 	}
 
 	return WriteCLIManifest(dir, m)
+}
+
+func archivedSpecDescription(data []byte) string {
+	var probe struct {
+		Description string `yaml:"description" json:"description"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return ""
+	}
+	return naming.CompactDescription(probe.Description)
 }
 
 func applyPublishCatalogMetadata(parsed *spec.APISpec, apiName string) {

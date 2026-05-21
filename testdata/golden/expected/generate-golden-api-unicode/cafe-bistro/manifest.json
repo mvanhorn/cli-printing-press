@@ -10,7 +10,7 @@
       "win32"
     ]
   },
-  "description": "Café Bistro API surface as MCP tools.",
+  "description": "Purpose-built fixture for the Unicode-to-ASCII slug contract.",
   "display_name": "Café Bistro",
   "license": "Apache-2.0",
   "manifest_version": "0.3",

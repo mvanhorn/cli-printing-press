@@ -196,7 +196,11 @@ func RefreshCLIManifestFromSpec(dir string, parsed *spec.APISpec) error {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return fmt.Errorf("parsing CLI manifest for refresh: %w", err)
 	}
+	existingDescription := m.Description
 	populateMCPMetadata(&m, parsed)
+	if preserveExistingDescription(existingDescription) {
+		m.Description = existingDescription
+	}
 	return WriteCLIManifest(dir, m)
 }
 
@@ -586,6 +590,7 @@ type GenerateManifestParams struct {
 	SpecURL       string   // --spec-url: explicit provenance URL (when --spec is a local downloaded file)
 	DocsURL       string   // --docs URL, if used
 	OutputDir     string
+	Description   string                 // best generated user-facing catalog description
 	Owner         string                 // resolved owner attribution (manifest preserve > copyright parse > git config)
 	Printer       string                 // resolved printer @handle (manifest preserve > git config github.user > empty)
 	PrinterName   string                 // resolved printer display name (manifest preserve > git config user.name > empty)
@@ -658,6 +663,10 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	runID := p.RunID
 	if runID == "" {
 		runID = now.Format(runIDTimeFormat)
+	}
+	var existingDescription string
+	if existing, err := ReadCLIManifest(p.OutputDir); err == nil {
+		existingDescription = existing.Description
 	}
 	m := CLIManifest{
 		SchemaVersion:        CurrentCLIManifestSchemaVersion,
@@ -742,6 +751,15 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	if p.Spec != nil {
 		populateMCPMetadata(&m, p.Spec)
 	}
+	if description := strings.TrimSpace(p.Description); description != "" {
+		m.Description = description
+	}
+	// A durable manifest description may be hand-edited after generation.
+	// Operators can delete or replace the field when they want changed spec
+	// prose to become canonical on a later generate run.
+	if preserveExistingDescription(existingDescription) {
+		m.Description = existingDescription
+	}
 	if len(p.NovelFeatures) > 0 {
 		m.NovelFeatures = p.NovelFeatures
 	}
@@ -759,6 +777,11 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	// Emit MCPB manifest.json next to .printing-press.json. Pass the
 	// in-memory struct so we don't re-read the file we just wrote.
 	return WriteMCPBManifestFromStruct(p.OutputDir, m)
+}
+
+func preserveExistingDescription(description string) bool {
+	description = strings.TrimSpace(description)
+	return description != "" && !naming.HasLiteralEllipsisSuffix(description)
 }
 
 func lookupCatalogEntryForGenerate(apiName, specURL string) *catalogpkg.Entry {

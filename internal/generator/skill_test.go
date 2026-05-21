@@ -320,6 +320,28 @@ func TestCompactDescriptionPrefersCLIShapedCopy(t *testing.T) {
 	assert.NotContains(t, string(goreleaser), "# Introduction")
 }
 
+func TestCatalogDescriptionPreservesCompleteLongCopy(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("longcopy")
+	apiSpec.CLIDescription = "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks) with offline FTS search and agent-friendly JSON output."
+	outputDir := filepath.Join(t.TempDir(), "longcopy-pp-cli")
+	gen := New(apiSpec, outputDir)
+
+	assert.Equal(t, apiSpec.CLIDescription, gen.CatalogDescription())
+}
+
+func TestCatalogDescriptionSkipsLiteralEllipsisCandidates(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("longcopy")
+	apiSpec.CLIDescription = "Truncated CLI-shaped copy..."
+	apiSpec.Description = "Complete fallback sentence."
+	gen := New(apiSpec, filepath.Join(t.TempDir(), "longcopy-pp-cli"))
+
+	assert.Equal(t, "Complete fallback sentence.", gen.CatalogDescription())
+}
+
 // TestSkillRendersAuthBranchPerType asserts the deterministic Auth Setup
 // block branches correctly on .Auth.Type when no narrative auth is provided.
 func TestSkillRendersAuthBranchPerType(t *testing.T) {

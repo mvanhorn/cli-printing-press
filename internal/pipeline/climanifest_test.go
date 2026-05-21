@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1299,10 +1300,10 @@ func TestWriteMCPBManifestPreservesExistingDisplayName(t *testing.T) {
 	}
 }
 
-func TestWriteMCPBManifestPreservesExistingDescription(t *testing.T) {
+func TestWriteMCPBManifestDescription(t *testing.T) {
 	t.Run("hand-edited description preserved over canonical", func(t *testing.T) {
 		dir := t.TempDir()
-		handEdit := "Find the best version of any recipe across 37 trusted sites — trust-aware ranking weights real reader signal."
+		handEdit := "Find the best version of any recipe across 37 trusted sites with trust-aware ranking weights real reader signal."
 		writeMCPBManifest(t, dir, MCPBManifest{
 			ManifestVersion: MCPBManifestVersion,
 			Name:            "recipe-goat-pp-mcp",
@@ -1319,6 +1320,26 @@ func TestWriteMCPBManifestPreservesExistingDescription(t *testing.T) {
 
 		require.NoError(t, WriteMCPBManifest(dir))
 		assert.Equal(t, handEdit, readMCPBManifest(t, dir).Description)
+	})
+
+	t.Run("literal ellipsis description refreshed from canonical", func(t *testing.T) {
+		dir := t.TempDir()
+		writeMCPBManifest(t, dir, MCPBManifest{
+			ManifestVersion: MCPBManifestVersion,
+			Name:            "recipe-goat-pp-mcp",
+			DisplayName:     "Recipe Goat",
+			Description:     "Recipe GOAT aggregates recipes from...",
+		})
+		writeManifest(t, dir, CLIManifest{
+			APIName:     "recipe-goat",
+			DisplayName: "Recipe Goat",
+			MCPBinary:   "recipe-goat-pp-mcp",
+			MCPReady:    "full",
+			Description: "Recipe GOAT aggregates recipes from canonical-description-source.json",
+		})
+
+		require.NoError(t, WriteMCPBManifest(dir))
+		assert.Equal(t, "Recipe GOAT aggregates recipes from canonical-description-source.json", readMCPBManifest(t, dir).Description)
 	})
 
 	t.Run("derived-default existing description refreshed from canonical", func(t *testing.T) {
@@ -1687,6 +1708,113 @@ func TestPopulateMCPMetadataCLIDescription(t *testing.T) {
 		})
 		assert.Equal(t, "Catalog description.", m.Description)
 	})
+}
+
+func TestRefreshCLIManifestFromSpecPreservesDurableDescription(t *testing.T) {
+	dir := t.TempDir()
+	existing := "Curated manifest description."
+	writeManifest(t, dir, CLIManifest{
+		APIName:     "asana",
+		Description: existing,
+	})
+
+	err := RefreshCLIManifestFromSpec(dir, &spec.APISpec{
+		Name:           "asana",
+		CLIDescription: "Parsed spec fallback.",
+		Auth:           spec.AuthConfig{Type: "none"},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, existing, got.Description)
+}
+
+func TestRefreshCLIManifestFromSpecReplacesLiteralEllipsisDescription(t *testing.T) {
+	dir := t.TempDir()
+	writeManifest(t, dir, CLIManifest{
+		APIName:     "asana",
+		Description: "Legacy truncated manifest description...",
+	})
+
+	err := RefreshCLIManifestFromSpec(dir, &spec.APISpec{
+		Name:           "asana",
+		CLIDescription: "Parsed spec fallback.",
+		Auth:           spec.AuthConfig{Type: "none"},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, "Parsed spec fallback.", got.Description)
+}
+
+func TestWriteManifestForGenerateUsesExplicitCatalogDescription(t *testing.T) {
+	dir := t.TempDir()
+	rich := "Local-first CLI for the Roam HQ API (chat, On-Air events, transcripts, SCIM, webhooks) with offline FTS search and agent-friendly JSON output."
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		// asana is in the embedded catalog; this proves the generate-time
+		// description from the rendered project wins over catalog fallback
+		// and the source spec's CLI-shaped copy.
+		APIName:     "asana",
+		OutputDir:   dir,
+		Description: rich,
+		Spec: &spec.APISpec{
+			Name:           "asana",
+			CLIDescription: "Manage Asana workspaces from the terminal.",
+			Auth:           spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, rich, got.Description)
+	assert.False(t, strings.HasSuffix(got.Description, "..."))
+}
+
+func TestWriteManifestForGeneratePreservesExistingDurableDescription(t *testing.T) {
+	dir := t.TempDir()
+	existing := "Curated CLI description that should survive force regeneration."
+	writeManifest(t, dir, CLIManifest{
+		APIName:     "asana",
+		Description: existing,
+	})
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:     "asana",
+		OutputDir:   dir,
+		Description: "Fresh generated fallback copy.",
+		Spec: &spec.APISpec{
+			Name: "asana",
+			Auth: spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, existing, got.Description)
+}
+
+func TestWriteManifestForGenerateReplacesLiteralEllipsisDescription(t *testing.T) {
+	dir := t.TempDir()
+	fresh := "Curated catalog description without a truncation marker."
+	writeManifest(t, dir, CLIManifest{
+		APIName:     "asana",
+		Description: "Legacy truncated catalog copy...",
+	})
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:     "asana",
+		OutputDir:   dir,
+		Description: fresh,
+		Spec: &spec.APISpec{
+			Name: "asana",
+			Auth: spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, fresh, got.Description)
 }
 
 // TestWriteManifestForGeneratePopulatesCategoryFromSpec pins the fallback

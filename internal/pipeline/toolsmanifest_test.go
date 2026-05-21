@@ -123,6 +123,33 @@ func TestWriteToolsManifest_MultipleResources(t *testing.T) {
 	assert.Equal(t, "/store/inventory", got.Tools[3].Path)
 }
 
+func TestWriteToolsManifestWithDescriptionUsesCanonicalManifestDescription(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:        "petstore",
+		Description: "Weak source-spec fallback copy.",
+		BaseURL:     "https://petstore.example.com/v3",
+		Auth:        spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"Pets": {
+				Description: "Pet operations",
+				Endpoints: map[string]spec.Endpoint{
+					"List": {Method: "GET", Path: "/pets", Description: "List all pets"},
+				},
+			},
+		},
+	}
+	canonical := "Curated catalog description for the generated CLI."
+
+	require.NoError(t, WriteToolsManifestWithDescription(dir, parsed, canonical))
+
+	data, err := os.ReadFile(filepath.Join(dir, ToolsManifestFilename))
+	require.NoError(t, err)
+	var got ToolsManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, canonical, got.Description)
+}
+
 func TestWriteToolsManifest_SubResources(t *testing.T) {
 	dir := t.TempDir()
 	parsed := &spec.APISpec{

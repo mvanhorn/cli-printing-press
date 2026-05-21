@@ -128,11 +128,15 @@ type Generator struct {
 	VisionSet       VisionTemplateSet
 	FixtureSet      *browsersniff.FixtureSet
 	TrafficAnalysis *browsersniff.TrafficAnalysis
-	Sources         []ReadmeSource          // Ecosystem tools to credit in README
-	DiscoveryPages  []string                // Pages visited during browser-sniff discovery
-	NovelFeatures   []NovelFeature          // Transcendence features for README/SKILL
-	Narrative       *ReadmeNarrative        // LLM-authored prose for README/SKILL; optional
-	AsyncJobs       map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
+	Sources         []ReadmeSource   // Ecosystem tools to credit in README
+	DiscoveryPages  []string         // Pages visited during browser-sniff discovery
+	NovelFeatures   []NovelFeature   // Transcendence features for README/SKILL
+	Narrative       *ReadmeNarrative // LLM-authored prose for README/SKILL; optional
+	// CatalogEntryDescription carries curated catalog copy into durable
+	// generated metadata without making compact Homebrew/SKILL surfaces depend
+	// on it.
+	CatalogEntryDescription string
+	AsyncJobs               map[string]AsyncJobInfo // Detected async-job endpoints, keyed by "<resource>/<endpoint>"
 
 	// ModulePath overrides the Go module import path emitted by templates that
 	// reference internal packages (`{{modulePath}}/internal/client`, etc.).
@@ -834,6 +838,32 @@ func (g *Generator) compactDescription() string {
 	}
 	for _, candidate := range candidates {
 		if desc := naming.CompactDescription(candidate); desc != "" {
+			return desc
+		}
+	}
+	return fmt.Sprintf("Printing Press CLI for %s.", g.proseName())
+}
+
+// CatalogDescription returns the best generated user-facing description for
+// durable catalog metadata.
+func (g *Generator) CatalogDescription() string {
+	candidates := []string{}
+	if g.Narrative != nil {
+		candidates = append(candidates, g.Narrative.Headline)
+	}
+	candidates = append(candidates, g.CatalogEntryDescription)
+	if g.Spec != nil {
+		candidates = append(candidates, g.Spec.CLIDescription)
+	}
+	for _, candidate := range candidates {
+		if desc := naming.CatalogDescription(candidate); desc != "" {
+			if !naming.HasLiteralEllipsisSuffix(desc) {
+				return desc
+			}
+		}
+	}
+	if g.Spec != nil {
+		if desc := naming.CompactDescription(g.Spec.Description); desc != "" {
 			return desc
 		}
 	}

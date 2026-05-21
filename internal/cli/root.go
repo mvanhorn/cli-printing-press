@@ -181,7 +181,7 @@ func newGenerateCmd() *cobra.Command {
 					return err
 				}
 
-				novelFeatures, polished, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath})
+				generateResult, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath})
 				if err != nil {
 					return err
 				}
@@ -200,12 +200,13 @@ func newGenerateCmd() *cobra.Command {
 					APIName:       parsed.Name,
 					DocsURL:       docsURL,
 					OutputDir:     absOut,
+					Description:   generateResult.CatalogDescription,
 					Owner:         parsed.Owner,
 					Printer:       parsed.Printer,
 					PrinterName:   parsed.PrinterName,
 					RunID:         runID,
 					Spec:          parsed,
-					NovelFeatures: novelFeatures,
+					NovelFeatures: generateResult.NovelFeatures,
 				}); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 				}
@@ -218,7 +219,7 @@ func newGenerateCmd() *cobra.Command {
 						"output_dir": absOut,
 						"spec_files": specFiles,
 						"validated":  validate,
-						"polished":   polished,
+						"polished":   generateResult.Polished,
 					}); err != nil {
 						return fmt.Errorf("encoding JSON: %w", err)
 					}
@@ -359,7 +360,7 @@ func newGenerateCmd() *cobra.Command {
 				return printDryRun(apiSpec, absOut, specFiles)
 			}
 
-			novelFeatures, polished, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, specURL: specURL, rejectUnshippablePageContextTraffic: true})
+			generateResult, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, specURL: specURL, rejectUnshippablePageContextTraffic: true})
 			if err != nil {
 				return err
 			}
@@ -405,12 +406,13 @@ func newGenerateCmd() *cobra.Command {
 				SpecSrcs:      specFiles,
 				SpecURL:       specURL,
 				OutputDir:     absOut,
+				Description:   generateResult.CatalogDescription,
 				Owner:         apiSpec.Owner,
 				Printer:       apiSpec.Printer,
 				PrinterName:   apiSpec.PrinterName,
 				RunID:         runID,
 				Spec:          apiSpec,
-				NovelFeatures: novelFeatures,
+				NovelFeatures: generateResult.NovelFeatures,
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 			}
@@ -432,7 +434,7 @@ func newGenerateCmd() *cobra.Command {
 					"output_dir": absOut,
 					"spec_files": specFiles,
 					"validated":  validate,
-					"polished":   polished,
+					"polished":   generateResult.Polished,
 				}); err != nil {
 					return fmt.Errorf("encoding JSON: %w", err)
 				}
@@ -501,16 +503,29 @@ type generateProjectOptions struct {
 	rejectUnshippablePageContextTraffic bool
 }
 
-func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProjectOptions) ([]pipeline.NovelFeatureManifest, bool, error) {
-	enrichSpecFromCatalog(apiSpec, catalogSpecLookupRefs(opts.specFiles, opts.specURL)...)
+type generateProjectResult struct {
+	NovelFeatures      []pipeline.NovelFeatureManifest
+	CatalogDescription string
+	Polished           bool
+}
+
+func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProjectOptions) (generateProjectResult, error) {
+	var catalogEntry *catalog.Entry
+	if apiSpec != nil {
+		catalogEntry = lookupCatalogEntryForGenerateSpec(apiSpec.Name, catalogSpecLookupRefs(opts.specFiles, opts.specURL))
+		enrichSpecFromCatalogEntry(apiSpec, catalogEntry)
+	}
 	gen := generator.New(apiSpec, absOut)
+	if catalogEntry != nil {
+		gen.CatalogEntryDescription = catalogEntry.Description
+	}
 	novelFeatures := loadResearchSources(gen, opts.researchDir)
 	trafficAnalysis, err := loadTrafficAnalysisForGenerate(opts.trafficAnalysisPath, opts.specFiles, apiSpec.SpecSource)
 	if err != nil {
-		return nil, false, &ExitError{Code: ExitInputError, Err: err}
+		return generateProjectResult{}, &ExitError{Code: ExitInputError, Err: err}
 	}
 	if opts.rejectUnshippablePageContextTraffic && trafficAnalysisRequiresUnshippablePageContext(trafficAnalysis) {
-		return nil, false, &ExitError{Code: ExitInputError, Err: fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")}
+		return generateProjectResult{}, &ExitError{Code: ExitInputError, Err: fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")}
 	}
 	// ApplyReachabilityDefaults runs first so its HAR-driven HTTP-version
 	// mapping wins for browser_http / browser_clearance_http modes.
@@ -525,14 +540,18 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	applyHTTPTransportDefault(apiSpec, trafficAnalysis)
 	gen.TrafficAnalysis = trafficAnalysis
 	if err := gen.Generate(); err != nil {
-		return nil, false, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
+		return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
 	}
 	if opts.validate {
 		if err := gen.Validate(); err != nil {
-			return nil, false, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}
+			return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}
 		}
 	}
-	return novelFeatures, runGeneratePolishPass(opts.polish, apiSpec.Name, absOut), nil
+	return generateProjectResult{
+		NovelFeatures:      novelFeatures,
+		CatalogDescription: gen.CatalogDescription(),
+		Polished:           runGeneratePolishPass(opts.polish, apiSpec.Name, absOut),
+	}, nil
 }
 
 func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource, clientPattern, httpTransport, owner string) error {
