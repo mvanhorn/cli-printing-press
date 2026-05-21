@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
@@ -1990,6 +1991,35 @@ func TestEnrichSpecFromCatalogMatchesSpecURLWhenSlugDiffers(t *testing.T) {
 	assert.False(t, apiSpec.DisplayNameDerivedFromTitle)
 	assert.Equal(t, "cloud", apiSpec.Category)
 	assert.Equal(t, "https://cloud.google.com/run/docs/reference/rest", apiSpec.WebsiteURL)
+}
+
+func TestRunGenerateProjectUsesCatalogDescription(t *testing.T) {
+	t.Parallel()
+
+	entry, err := catalog.LookupFS(catalogfs.FS, "asana")
+	require.NoError(t, err)
+	apiSpec := &spec.APISpec{
+		Name:        "asana",
+		Description: "Weak source-spec fallback copy.",
+		Version:     "1.0",
+		BaseURL:     "https://api.example.com",
+		Auth:        spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), "asana")
+
+	got, err := runGenerateProject(apiSpec, outputDir, generateProjectOptions{})
+	require.NoError(t, err)
+
+	assert.Equal(t, entry.Description, got.CatalogDescription)
+	assert.False(t, strings.HasSuffix(got.CatalogDescription, "..."))
 }
 
 func TestEnrichSpecFromCatalogReplacesTitleDerivedDisplayName(t *testing.T) {

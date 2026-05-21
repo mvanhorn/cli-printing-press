@@ -6,6 +6,7 @@
   ],
   "auth_type": "api_key",
   "cli_name": "mcp-cloudflare-pp-cli",
+  "description": "Golden fixture exercising x-mcp on an OpenAPI spec.",
   "display_name": "Mcp Cloudflare",
   "generated_at": "<GENERATED_AT>",
   "mcp_binary": "mcp-cloudflare-pp-mcp",
