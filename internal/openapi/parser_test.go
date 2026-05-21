@@ -1741,6 +1741,8 @@ func TestPathSegmentsStripsGenericAPIPrefix(t *testing.T) {
 		{"strips api then version", "/api/v2/pokemon", "", "pokemon"},
 		{"strips version then api then version", "/v2/api/v1/pokemon", "", "pokemon"},
 		{"strips api then numeric version", "/api/0/organizations", "", "organizations"},
+		{"strips dotted numeric version", "/1.0/search/artists", "", "search"},
+		{"strips dotted v-prefixed version", "/v1.0/search/artists", "", "search"},
 		{"strips beta version", "/v1beta2/{parent}/repositories", "", "{parent}"},
 		{"strips alpha version", "/v1alpha1/{parent}/services", "", "{parent}"},
 		{"strips p beta version", "/v1p1beta1/{parent}/sessions", "", "{parent}"},
@@ -1748,9 +1750,8 @@ func TestPathSegmentsStripsGenericAPIPrefix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			segments := pathSegmentsAfterBase(tt.path, tt.basePath)
-			if len(segments) > 0 {
-				assert.Equal(t, tt.wantFirst, segments[0])
-			}
+			require.NotEmpty(t, segments)
+			assert.Equal(t, tt.wantFirst, segments[0])
 		})
 	}
 }

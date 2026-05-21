@@ -160,8 +160,11 @@ func TestOneLine(t *testing.T) {
 		"too  many   spaces": "too many spaces",
 		`say "hello"`:        "say 'hello'",
 		"  spaces  ":         "spaces",
-		"# Introduction\nAeroAPI delivers flight data.": "AeroAPI delivers flight data.",
-		"## Overview": "Overview",
+		"# Introduction\nAeroAPI delivers flight data.":       "AeroAPI delivers flight data.",
+		"<p>Search for <strong>artists</strong> by name.</p>": "Search for artists by name.",
+		"latency < 10ms > 1ms":                                "latency < 10ms > 1ms",
+		"formula A<B>C":                                       "formula A<B>C",
+		"## Overview":                                         "Overview",
 	}
 
 	for input, want := range tests {
@@ -180,6 +183,17 @@ func TestCompactDescriptionPreservesHumanText(t *testing.T) {
 	want := `An "agent-native" CLI with C:\tmp paths.`
 	if got := CompactDescription(input); got != want {
 		t.Fatalf("CompactDescription(%q) = %q, want %q", input, got, want)
+	}
+}
+
+func TestCompactDescriptionsStripHTMLTags(t *testing.T) {
+	input := "<p>Search for <strong>artists</strong> by name.</p>"
+	want := "Search for artists by name."
+	if got := CompactDescription(input); got != want {
+		t.Fatalf("CompactDescription(%q) = %q, want %q", input, got, want)
+	}
+	if got := CatalogDescription(input); got != want {
+		t.Fatalf("CatalogDescription(%q) = %q, want %q", input, got, want)
 	}
 }
 

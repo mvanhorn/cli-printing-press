@@ -2015,6 +2015,87 @@ func (c *Client) do() {
 	})
 }
 
+func TestScoreAuthScheme_APIKeyHeaderUsesCaseInsensitiveHeaderAndGenericAPIKeyEnv(t *testing.T) {
+	clientContent := `package client
+func (c *Client) do(req *http.Request) {
+	req.Header.Set("X-API-Key", cfg.APIKey)
+}`
+	configContent := `package config
+func Load() {
+	if v := os.Getenv("SETLIST_FM_API_KEY"); v != "" {
+		cfg.APIKey = v
+	}
+}`
+	scheme := openAPISecurityScheme{
+		Key:        "x-api-key",
+		Type:       "apikey",
+		In:         "header",
+		HeaderName: "x-api-key",
+	}
+
+	score, scoreable := scoreAuthScheme(clientContent, configContent, "", false, scheme)
+	assert.True(t, scoreable)
+	assert.Equal(t, 10, score)
+
+	partnerOnlyConfig := `package config
+func Load() {
+	if v := os.Getenv("PARTNER_SERVICE_API_KEY"); v != "" {
+		cfg.PartnerAPIKey = v
+	}
+}`
+	assert.False(t, configReadsAPIKeyEnvForScheme(partnerOnlyConfig, scheme))
+	partnerOnlyScore, partnerOnlyScoreable := scoreAuthScheme(clientContent, partnerOnlyConfig, "", false, scheme)
+	assert.True(t, partnerOnlyScoreable)
+	assert.Equal(t, 8, partnerOnlyScore)
+
+	unrelatedScheme := openAPISecurityScheme{
+		Key:        "account-id",
+		Type:       "apikey",
+		In:         "header",
+		HeaderName: "X-Account-ID",
+	}
+	unrelatedScore, unrelatedScoreable := scoreAuthScheme(clientContent, configContent, "", false, unrelatedScheme)
+	assert.True(t, unrelatedScoreable)
+	assert.Equal(t, 0, unrelatedScore)
+}
+
+func TestRunScorecard_APIKeyHeaderUsesCaseInsensitiveHeaderAndGenericAPIKeyEnv(t *testing.T) {
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, "internal/client/client.go", `package client
+func (c *Client) do(req *http.Request) {
+	req.Header.Set("X-API-Key", cfg.APIKey)
+}`)
+	writeScorecardFixture(t, dir, "internal/config/config.go", `package config
+func Load() {
+	if v := os.Getenv("SETLIST_FM_API_KEY"); v != "" {
+		cfg.APIKey = v
+	}
+}`)
+	specPath := filepath.Join(dir, "spec.json")
+	writeScorecardFixture(t, dir, "spec.json", `{
+  "openapi": "3.0.3",
+  "info": {"title": "Setlist", "version": "1.0.0"},
+  "paths": {
+    "/1.0/search/artists": {
+      "get": {
+        "security": [{"x-api-key": []}],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "x-api-key": {"type": "apiKey", "in": "header", "name": "x-api-key"}
+    }
+  }
+}`)
+
+	sc, err := RunScorecard(dir, t.TempDir(), specPath, nil)
+	assert.NoError(t, err)
+	assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+	assert.Equal(t, 10, sc.Steinberger.AuthProtocol)
+}
+
 func TestLoadOpenAPISpec_Swagger20SecurityDefinitions(t *testing.T) {
 	t.Run("swagger 2.0 apiKey in header with Authorization maps to bearer", func(t *testing.T) {
 		dir := t.TempDir()

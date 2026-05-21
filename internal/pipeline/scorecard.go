@@ -1982,6 +1982,9 @@ func scoreAuthScheme(clientContent, configContent, authContent string, hasStruct
 	if envNeedle != "" && strings.Contains(strings.ToUpper(configContent), envNeedle) {
 		envMatched = true
 	}
+	if !envMatched && configReadsAPIKeyEnvForScheme(configContent, scheme) {
+		envMatched = true
+	}
 	// Browser cookie auth (composed or cookie type) uses Chrome cookie extraction
 	// instead of env vars. Credit envMatched if the auth code has cookie tooling.
 	if !envMatched && (strings.Contains(authContent, "detectCookieTool") ||
@@ -2112,8 +2115,47 @@ func scoreComposedHeaderScheme(clientContent string, scheme openAPISecuritySchem
 }
 
 func headerAssignmentPresent(clientContent, headerName string) bool {
-	return strings.Contains(clientContent, `Header.Set("`+headerName+`"`) ||
-		strings.Contains(clientContent, `Header.Add("`+headerName+`"`)
+	clientContent = strings.ToLower(clientContent)
+	headerName = strings.ToLower(headerName)
+	return strings.Contains(clientContent, `header.set("`+headerName+`"`) ||
+		strings.Contains(clientContent, `header.add("`+headerName+`"`)
+}
+
+var (
+	genericAPIKeyEnvCallRe             = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*:=\s*os\.Getenv\("(?:[A-Z][A-Z0-9_]*_)?API_KEY"\)`)
+	directGenericAPIKeyEnvAssignmentRe = regexp.MustCompile(`\.\s*APIKey\s*=\s*os\.Getenv\("(?:[A-Z][A-Z0-9_]*_)?API_KEY"\)`)
+)
+
+func configReadsAPIKeyEnvForScheme(configContent string, scheme openAPISecurityScheme) bool {
+	if !strings.EqualFold(scheme.Type, "apikey") || !isGenericAPIKeyScheme(scheme) {
+		return false
+	}
+	if directGenericAPIKeyEnvAssignmentRe.MatchString(configContent) {
+		return true
+	}
+	for _, match := range genericAPIKeyEnvCallRe.FindAllStringSubmatchIndex(configContent, -1) {
+		if len(match) < 4 {
+			continue
+		}
+		envVarName := configContent[match[2]:match[3]]
+		tailStart := match[1]
+		tailEnd := min(len(configContent), tailStart+240)
+		fieldAssignmentRe := regexp.MustCompile(`\.\s*APIKey\s*=\s*` + regexp.QuoteMeta(envVarName) + `\b`)
+		if fieldAssignmentRe.MatchString(configContent[tailStart:tailEnd]) {
+			return true
+		}
+	}
+	return false
+}
+
+func isGenericAPIKeyScheme(scheme openAPISecurityScheme) bool {
+	for _, name := range []string{scheme.Key, scheme.HeaderName} {
+		needle := strings.ReplaceAll(sanitizeEnvName(name), "_", "")
+		if strings.Contains(needle, "APIKEY") {
+			return true
+		}
+	}
+	return false
 }
 
 // refreshTokenFieldRe word-anchors RefreshToken so cosmetic names like
