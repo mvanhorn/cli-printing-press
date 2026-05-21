@@ -18,19 +18,6 @@ type scorecardReachablePackage struct {
 	symbols map[string]bool
 }
 
-func cliGoASTFiles(dir string) []*ast.File {
-	files := listGoFiles(dir)
-	parsed := make([]*ast.File, 0, len(files))
-	for _, path := range files {
-		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-		if err != nil {
-			continue
-		}
-		parsed = append(parsed, file)
-	}
-	return parsed
-}
-
 func hasSyncPaginationStructureInFiles(paths []string) bool {
 	for _, file := range goASTFiles(paths) {
 		var found bool
@@ -99,8 +86,8 @@ func loopLooksLikePaginatedFetch(body *ast.BlockStmt) bool {
 	return hasFetchCall && hasCursorSignal && (hasStateSave || hasExit)
 }
 
-func hasPageProgressStructure(cliDir string) bool {
-	for _, file := range cliGoASTFiles(cliDir) {
+func hasPageProgressStructureInFiles(paths []string) bool {
+	for _, file := range goASTFiles(paths) {
 		var found bool
 		ast.Inspect(file, func(n ast.Node) bool {
 			if found {
@@ -121,7 +108,10 @@ func hasPageProgressStructure(cliDir string) bool {
 }
 
 func scorecardReachableInternalContents(dir string) []string {
-	files := scorecardReachableInternalFiles(dir)
+	return scorecardContentsFromFiles(scorecardReachableInternalFiles(dir))
+}
+
+func scorecardContentsFromFiles(files []string) []string {
 	contents := make([]string, 0, len(files))
 	for _, path := range files {
 		contents = append(contents, readFileContent(path))
@@ -131,36 +121,61 @@ func scorecardReachableInternalContents(dir string) []string {
 
 func scorecardReachableInternalFiles(dir string) []string {
 	var filePaths []string
-	visited := map[string]bool{}
-	queued := map[string]bool{}
+	includedFiles := map[string]bool{}
+	inQueue := map[string]bool{}
+	pendingSymbols := map[string]map[string]bool{}
 	cliDir := filepath.Join(dir, "internal", "cli")
 	queue := []scorecardReachablePackage{{dir: cliDir}}
-	queued[cliDir] = true
+	inQueue[cliDir] = true
 	modulePath := readModulePath(dir)
 
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
 		pkgDir := current.dir
-		if visited[pkgDir] {
-			continue
-		}
-		visited[pkgDir] = true
+		inQueue[pkgDir] = false
 
-		files := scorecardPackageSeedFiles(dir, pkgDir, current.symbols)
+		files := scorecardPackageSeedFiles(dir, pkgDir, pendingSymbols[pkgDir])
+		depsByDir := map[string]map[string]bool{}
 		for _, path := range files {
-			filePaths = append(filePaths, path)
+			if !includedFiles[path] {
+				includedFiles[path] = true
+				filePaths = append(filePaths, path)
+			}
 
 			for _, dep := range internalImportDeps(dir, modulePath, path) {
-				if !visited[dep.dir] && !queued[dep.dir] {
-					queued[dep.dir] = true
-					queue = append(queue, dep)
-				}
+				mergeSymbols(depsByDir, dep.dir, dep.symbols)
+			}
+		}
+
+		depDirs := make([]string, 0, len(depsByDir))
+		for depDir := range depsByDir {
+			depDirs = append(depDirs, depDir)
+		}
+		slices.Sort(depDirs)
+		for _, depDir := range depDirs {
+			if mergeSymbols(pendingSymbols, depDir, depsByDir[depDir]) && !inQueue[depDir] {
+				inQueue[depDir] = true
+				queue = append(queue, scorecardReachablePackage{dir: depDir})
 			}
 		}
 	}
 
 	return filePaths
+}
+
+func mergeSymbols(target map[string]map[string]bool, dir string, symbols map[string]bool) bool {
+	if target[dir] == nil {
+		target[dir] = map[string]bool{}
+	}
+	changed := false
+	for symbol := range symbols {
+		if !target[dir][symbol] {
+			target[dir][symbol] = true
+			changed = true
+		}
+	}
+	return changed
 }
 
 func scorecardPackageSeedFiles(rootDir, pkgDir string, symbols map[string]bool) []string {
@@ -194,6 +209,15 @@ func scorecardFilesForSymbols(files []string, symbols map[string]bool) []string 
 		wanted[symbol] = true
 	}
 
+	parsedFiles := map[string]*ast.File{}
+	fset := token.NewFileSet()
+	for _, path := range files {
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err == nil {
+			parsedFiles[path] = file
+		}
+	}
+
 	included := map[string]bool{}
 	var selected []string
 	for {
@@ -202,8 +226,8 @@ func scorecardFilesForSymbols(files []string, symbols map[string]bool) []string 
 			if included[path] {
 				continue
 			}
-			file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
-			if err != nil || !fileDefinesAny(file, wanted) {
+			file := parsedFiles[path]
+			if file == nil || !fileDefinesAny(file, wanted) {
 				continue
 			}
 			included[path] = true
@@ -323,14 +347,15 @@ func internalImportDeps(rootDir, modulePath, goFile string) []scorecardReachable
 		if internalPath == "" {
 			continue
 		}
-		alias := filepath.Base(filepath.FromSlash(internalPath))
+		dir := filepath.Join(rootDir, "internal", filepath.FromSlash(internalPath))
+		alias := defaultImportAlias(dir, internalPath)
 		if spec.Name != nil {
 			alias = spec.Name.Name
 		}
 		if alias == "_" || alias == "." {
 			continue
 		}
-		aliases[alias] = filepath.Join(rootDir, "internal", filepath.FromSlash(internalPath))
+		aliases[alias] = dir
 	}
 	if len(aliases) == 0 {
 		return nil
@@ -362,6 +387,16 @@ func internalImportDeps(rootDir, modulePath, goFile string) []scorecardReachable
 		deps = append(deps, scorecardReachablePackage{dir: dir, symbols: symbols})
 	}
 	return deps
+}
+
+func defaultImportAlias(pkgDir, internalPath string) string {
+	for _, path := range listGoFiles(pkgDir) {
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.PackageClauseOnly)
+		if err == nil && file.Name != nil {
+			return file.Name.Name
+		}
+	}
+	return filepath.Base(filepath.FromSlash(internalPath))
 }
 
 func internalImportPath(modulePath, importPath string) string {

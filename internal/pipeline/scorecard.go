@@ -32,6 +32,8 @@ var infraAllFiles = map[string]bool{
 	"tail.go": true, "analytics.go": true,
 }
 
+var actionableDoctorSuggestionRE = regexp.MustCompile(`(?i)\b(run|try)\b.{0,80}\bdoctor\b`)
+
 // Scorecard holds the auto-scored evaluation of a generated CLI against the Steinberger bar.
 type Scorecard struct {
 	APIName            string       `json:"api_name"`
@@ -138,11 +140,12 @@ func scoreScorecardDimensions(sc *Scorecard, outputDir, specPath string, verifyR
 }
 
 func scoreInfrastructureDimensions(sc *Scorecard, outputDir string) {
-	reachableInternalContent := scorecardReachableInternalContents(outputDir)
-	sc.Steinberger.OutputModes = scoreOutputModesWithSurface(outputDir, reachableInternalContent)
+	reachableInternalFiles := scorecardReachableInternalFiles(outputDir)
+	reachableInternalContent := scorecardContentsFromFiles(reachableInternalFiles)
+	sc.Steinberger.OutputModes = scoreOutputModesWithSurface(outputDir, reachableInternalContent, reachableInternalFiles)
 	sc.Steinberger.Auth = scoreAuth(outputDir)
 	sc.Steinberger.ErrorHandling = scoreErrorHandlingFromSurface(reachableInternalContent)
-	sc.Steinberger.TerminalUX = scoreTerminalUX(outputDir)
+	sc.Steinberger.TerminalUX = scoreTerminalUXWithSurface(outputDir, reachableInternalContent)
 	sc.Steinberger.README = scoreREADME(outputDir)
 	sc.Steinberger.Doctor = scoreDoctor(outputDir)
 	sc.Steinberger.AgentNative = scoreAgentNative(outputDir)
@@ -286,10 +289,11 @@ func (sc *Scorecard) IsDimensionUnscored(name string) bool {
 }
 
 func scoreOutputModes(dir string) int {
-	return scoreOutputModesWithSurface(dir, scorecardReachableInternalContents(dir))
+	reachableFiles := scorecardReachableInternalFiles(dir)
+	return scoreOutputModesWithSurface(dir, scorecardContentsFromFiles(reachableFiles), reachableFiles)
 }
 
-func scoreOutputModesWithSurface(dir string, surfaceContent []string) int {
+func scoreOutputModesWithSurface(dir string, surfaceContent []string, surfaceFiles []string) int {
 	rootContent := readFileContent(filepath.Join(dir, "internal", "cli", "root.go"))
 	score := 0
 	// Presence tier (max 5)
@@ -313,7 +317,7 @@ func scoreOutputModesWithSurface(dir string, surfaceContent []string) int {
 		score += 2
 	}
 	// Quality tier: pagination progress events
-	if containsAnyInAny(surfaceContent, "page_fetch", "ndjson") || hasPageProgressStructure(filepath.Join(dir, "internal", "cli")) {
+	if containsAnyInAny(surfaceContent, "page_fetch", "ndjson") || hasPageProgressStructureInFiles(surfaceFiles) {
 		score += 1
 	}
 	// Quality tier: tabwriter for aligned output
@@ -417,7 +421,7 @@ func scoreErrorHandlingFromSurface(surfaceContent []string) int {
 		score += 1
 	}
 	// Excellence: actionable suggestions in errors (not just codes)
-	if containsAllInAny(surfaceContent, "Run", "doctor") || containsAllInAny(surfaceContent, "try", "doctor") {
+	if containsActionableDoctorSuggestion(surfaceContent) {
 		score += 2
 	}
 	if score > 10 {
@@ -426,16 +430,23 @@ func scoreErrorHandlingFromSurface(surfaceContent []string) int {
 	return score
 }
 
+func containsActionableDoctorSuggestion(surfaceContent []string) bool {
+	return slices.ContainsFunc(surfaceContent, actionableDoctorSuggestionRE.MatchString)
+}
+
 func scoreTerminalUX(dir string) int {
-	helpersContent := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
+	return scoreTerminalUXWithSurface(dir, scorecardReachableInternalContents(dir))
+}
+
+func scoreTerminalUXWithSurface(dir string, surfaceContent []string) int {
 	rootContent := readFileContent(filepath.Join(dir, "internal", "cli", "root.go"))
 	score := 0
 	// Presence: NO_COLOR support
-	if strings.Contains(helpersContent, "NO_COLOR") {
+	if containsAnyInAny(surfaceContent, "NO_COLOR") {
 		score += 1
 	}
 	// Presence: TTY detection
-	if strings.Contains(helpersContent, "isatty") || strings.Contains(helpersContent, "IsTerminal") || strings.Contains(helpersContent, "x/term") {
+	if containsAnyInAny(surfaceContent, "isatty", "IsTerminal", "x/term") {
 		score += 1
 	}
 	// Presence: no-color flag
@@ -443,7 +454,7 @@ func scoreTerminalUX(dir string) int {
 		score += 1
 	}
 	// Quality: tabwriter for aligned columns
-	if strings.Contains(helpersContent, "tabwriter") {
+	if containsAnyInAny(surfaceContent, "tabwriter") {
 		score += 2
 	}
 	// Quality: help text descriptions are meaningful (not just verb names)
