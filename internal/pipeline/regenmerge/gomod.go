@@ -15,21 +15,32 @@ import (
 // replaces from published win over fresh; version-replaces from fresh win
 // over published when both have a target for the same path).
 //
-// Returns nil GoModMerge if neither tree has a go.mod (trivially nothing to
-// merge).
+// Returns nil GoModMerge if either tree lacks a go.mod, after validating any
+// present go.mod parses. A merge plan exists only when both sides have module
+// files.
 func planGoModMerge(publishedDir, freshDir string) (*GoModMerge, error) {
 	pubPath := filepath.Join(publishedDir, "go.mod")
 	freshPath := filepath.Join(freshDir, "go.mod")
 	pubData, pubErr := os.ReadFile(pubPath)
 	freshData, freshErr := os.ReadFile(freshPath)
-	if pubErr != nil && freshErr != nil {
+	if pubErr != nil || freshErr != nil {
+		if pubErr != nil && !os.IsNotExist(pubErr) {
+			return nil, fmt.Errorf("reading published go.mod: %w", pubErr)
+		}
+		if freshErr != nil && !os.IsNotExist(freshErr) {
+			return nil, fmt.Errorf("reading fresh go.mod: %w", freshErr)
+		}
+		if pubErr == nil {
+			if _, err := modfile.Parse(pubPath, pubData, nil); err != nil {
+				return nil, fmt.Errorf("parsing published go.mod: %w", err)
+			}
+		}
+		if freshErr == nil {
+			if _, err := modfile.Parse(freshPath, freshData, nil); err != nil {
+				return nil, fmt.Errorf("parsing fresh go.mod: %w", err)
+			}
+		}
 		return nil, nil
-	}
-	if pubErr != nil {
-		return nil, fmt.Errorf("reading published go.mod: %w", pubErr)
-	}
-	if freshErr != nil {
-		return nil, fmt.Errorf("reading fresh go.mod: %w", freshErr)
 	}
 
 	pubMF, err := modfile.Parse(pubPath, pubData, nil)
