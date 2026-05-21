@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"math"
 	"net/url"
 	"os"
@@ -3233,45 +3232,71 @@ func bodyParamSchema(schema *openapi3.Schema) *openapi3.Schema {
 	if schema == nil || len(schema.AllOf) == 0 {
 		return schema
 	}
-	if schema.Type != nil || len(schema.Properties) > 0 || schema.Items != nil {
+
+	if scalar, hasObject := firstAllOfNonObjectSchema(schema, map[*openapi3.Schema]struct{}{}); scalar != nil && !hasObject {
+		return scalar
+	}
+
+	properties := map[string]*openapi3.SchemaRef{}
+	required := map[string]struct{}{}
+	if collectAllOfProperties(&openapi3.SchemaRef{Value: schema}, properties, required, map[*openapi3.Schema]struct{}{}) || len(properties) == 0 {
 		return schema
 	}
 
-	var mergedObject *openapi3.Schema
-	required := map[string]struct{}{}
+	merged := &openapi3.Schema{
+		Type:        &openapi3.Types{openapi3.TypeObject},
+		Properties:  properties,
+		Description: schema.Description,
+		Default:     schema.Default,
+	}
+	for name := range required {
+		merged.Required = append(merged.Required, name)
+	}
+	sort.Strings(merged.Required)
+	return merged
+}
+
+func firstAllOfNonObjectSchema(schema *openapi3.Schema, visited map[*openapi3.Schema]struct{}) (*openapi3.Schema, bool) {
+	if schema == nil {
+		return nil, false
+	}
+	if _, ok := visited[schema]; ok {
+		return nil, false
+	}
+	visited[schema] = struct{}{}
+	defer delete(visited, schema)
+
+	hasObject := hasDirectObjectShape(schema)
+	var firstScalar *openapi3.Schema
 	for _, candidate := range schema.AllOf {
 		value := schemaRefValue(candidate)
 		if value == nil {
 			continue
 		}
-		if isObjectSchema(value) {
-			if mergedObject == nil {
-				mergedObject = &openapi3.Schema{
-					Type:       &openapi3.Types{openapi3.TypeObject},
-					Properties: map[string]*openapi3.SchemaRef{},
-				}
-			}
-			if mergedObject.Description == "" {
-				mergedObject.Description = value.Description
-			}
-			maps.Copy(mergedObject.Properties, value.Properties)
-			for _, name := range value.Required {
-				required[name] = struct{}{}
-			}
-			continue
+		if hasDirectObjectShape(value) {
+			hasObject = true
+		} else if firstScalar == nil && (value.Items != nil || (value.Type != nil && !value.Type.Includes(openapi3.TypeObject))) {
+			firstScalar = value
 		}
-		if mergedObject == nil && (value.Type != nil || value.Items != nil) {
-			return value
+		nestedScalar, nestedHasObject := firstAllOfNonObjectSchema(value, visited)
+		if firstScalar == nil && nestedScalar != nil {
+			firstScalar = nestedScalar
+		}
+		if nestedHasObject {
+			hasObject = true
 		}
 	}
-	if mergedObject != nil {
-		for name := range required {
-			mergedObject.Required = append(mergedObject.Required, name)
-		}
-		sort.Strings(mergedObject.Required)
-		return mergedObject
+	return firstScalar, hasObject
+}
+
+func hasDirectObjectShape(schema *openapi3.Schema) bool {
+	if schema == nil {
+		return false
 	}
-	return schema
+	if schema.Type != nil && schema.Type.Includes(openapi3.TypeObject) {
+		return true
+	}
+	return len(schema.Properties) > 0
 }
 
 func mapBodyFields(schema *openapi3.Schema) []spec.Param {
@@ -3347,6 +3372,11 @@ func collectAllOfProperties(
 		return true
 	}
 
+	for _, sub := range schema.AllOf {
+		if collectAllOfProperties(sub, properties, required, visited) {
+			return true
+		}
+	}
 	for _, field := range schema.Required {
 		required[field] = struct{}{}
 	}
@@ -3355,11 +3385,6 @@ func collectAllOfProperties(
 			continue
 		}
 		properties[naming.ASCIIFold(name)] = prop
-	}
-	for _, sub := range schema.AllOf {
-		if collectAllOfProperties(sub, properties, required, visited) {
-			return true
-		}
 	}
 
 	return false
