@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -612,6 +613,18 @@ paths:
                   allOf:
                     - $ref: "#/components/schemas/PaymentPurpose"
                     - $ref: "#/components/schemas/PurposeMetadata"
+                details:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      description: Specific detail name.
+                  allOf:
+                    - $ref: "#/components/schemas/BaseDetails"
+                mixed:
+                  allOf:
+                    - $ref: "#/components/schemas/PurposeMetadata"
+                    - $ref: "#/components/schemas/StringEnumWrapper"
       responses:
         "200":
           description: ok
@@ -642,6 +655,18 @@ components:
       properties:
         memo:
           type: string
+    BaseDetails:
+      type: object
+      properties:
+        inherited:
+          type: string
+        name:
+          type: string
+          description: Base detail name.
+    StringEnumWrapper:
+      allOf:
+        - type: string
+          enum: [simple, complex]
 `))
 	require.NoError(t, err)
 
@@ -662,6 +687,156 @@ components:
 		{Name: "memo", Type: "string", Required: true, Description: "Memo"},
 		{Name: "simple", Type: "string", Description: "Simple"},
 	}, byName["purpose"].Fields)
+	assert.Equal(t, []spec.Param{
+		{Name: "inherited", Type: "string", Description: "Inherited"},
+		{Name: "name", Type: "string", Description: "Specific detail name."},
+	}, byName["details"].Fields)
+	assert.Equal(t, "object", byName["mixed"].Type)
+	assert.Equal(t, []spec.Param{
+		{Name: "memo", Type: "string", Required: true, Description: "Memo"},
+	}, byName["mixed"].Fields)
+}
+
+const dataEnvelopeAllOfTaskSpec = `
+openapi: 3.0.3
+info:
+  title: Task API
+  version: 1.0.0
+servers:
+  - url: https://api.example.test
+paths:
+  /tasks/{task_gid}:
+    patch:
+      operationId: updateTask
+      parameters:
+        - name: task_gid
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                data:
+                  $ref: "#/components/schemas/TaskUpdateRequest"
+      responses:
+        "200":
+          description: ok
+components:
+  schemas:
+    TaskBase:
+      type: object
+      required: [name]
+      properties:
+        completed:
+          type: boolean
+          description: Whether the task is complete.
+        due_on:
+          type: string
+          format: date
+          description: Date the task is due.
+        html_notes:
+          type: string
+          description: HTML formatted text for the task notes.
+        name:
+          type: string
+          description: Name of the task.
+        notes:
+          type: string
+          description: Plain text task notes.
+    TaskRequestBase:
+      allOf:
+        - $ref: "#/components/schemas/TaskBase"
+        - type: object
+          properties:
+            assignee:
+              type: string
+              description: GID of the assignee.
+    TaskUpdateRequest:
+      allOf:
+        - $ref: "#/components/schemas/TaskRequestBase"
+        - type: object
+          properties:
+            custom_type:
+              type: string
+              description: GID of a task custom type.
+`
+
+func TestParseMapsDataEnvelopeAllOfRequestBodyFields(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(dataEnvelopeAllOfTaskSpec))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "PATCH", "/tasks/{task_gid}")
+	require.Len(t, endpoint.Body, 1)
+	data := endpoint.Body[0]
+	require.Equal(t, "data", data.Name)
+	require.Equal(t, "object", data.Type)
+
+	fields := map[string]spec.Param{}
+	for _, field := range data.Fields {
+		fields[field.Name] = field
+	}
+	for _, want := range []string{"assignee", "completed", "custom_type", "due_on", "html_notes", "name", "notes"} {
+		assert.Contains(t, fields, want)
+	}
+	assert.True(t, fields["name"].Required)
+	assert.Equal(t, "bool", fields["completed"].Type)
+	assert.Equal(t, "date", fields["due_on"].Format)
+	assert.Equal(t, "string", fields["html_notes"].Type)
+	assert.Equal(t, "HTML formatted text for the task notes.", fields["html_notes"].Description)
+}
+
+func TestGenerateDataEnvelopeAllOfBodyFlags(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("OpenAPI generated CLI compile coverage runs in the generated-test CI lane")
+	}
+
+	parsed, err := Parse([]byte(dataEnvelopeAllOfTaskSpec))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(parsed.Name))
+	gen := generator.New(parsed, outputDir)
+	gen.VisionSet = generator.VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	binaryPath := filepath.Join(outputDir, naming.CLI(parsed.Name))
+	runGo(t, outputDir, "mod", "tidy")
+	runGo(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(parsed.Name))
+
+	helpOut, err := exec.Command(binaryPath, "tasks", "update-task", "--help").CombinedOutput()
+	require.NoError(t, err, string(helpOut))
+	help := string(helpOut)
+	for _, want := range []string{
+		"--data-name",
+		"--data-notes",
+		"--data-html-notes",
+		"--data-assignee",
+		"--data-completed",
+		"--data-due-on",
+		"--data-custom-type",
+	} {
+		assert.Contains(t, help, want)
+	}
+	assert.NotContains(t, help, "--data-data-")
+
+	cmd := exec.Command(binaryPath, "tasks", "update-task", "123", "--data-html-notes", "<body>foo</body>", "--dry-run")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	bodyJSON := extractDryRunBody(t, string(out))
+	var body struct {
+		Data struct {
+			HTMLNotes string `json:"html_notes"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(bodyJSON), &body))
+	assert.Equal(t, "<body>foo</body>", body.Data.HTMLNotes)
 }
 
 func TestParseRecursiveRequestBodyFieldsStopsAtCycle(t *testing.T) {
@@ -1697,6 +1872,19 @@ func runGo(t *testing.T, dir string, args ...string) {
 	cmd.Env = os.Environ()
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
+}
+
+func extractDryRunBody(t *testing.T, output string) string {
+	t.Helper()
+
+	const bodyMarker = "  Body:\n"
+	start := strings.Index(output, bodyMarker)
+	require.NotEqual(t, -1, start, output)
+	start += len(bodyMarker)
+
+	end := strings.Index(output[start:], "\n\n(dry run")
+	require.NotEqual(t, -1, end, output)
+	return output[start : start+end]
 }
 
 func TestSanitizeResourceName(t *testing.T) {
