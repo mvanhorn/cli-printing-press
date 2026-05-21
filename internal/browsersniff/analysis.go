@@ -933,8 +933,10 @@ func hasCaptchaChallengeMarker(entry EnrichedEntry, lowerBody string) bool {
 			strings.Contains(lowerBody, "recaptcha") ||
 			strings.Contains(lowerBody, "hcaptcha") ||
 			strings.Contains(lowerBody, "turnstile")
-		if hasCaptchaKeyword && captchaPreflightRequiresChallenge(entry.ResponseBody) {
-			return true
+		if hasCaptchaKeyword {
+			if requiresChallenge, parsed := captchaPreflightChallengeDecision(entry.ResponseBody); parsed {
+				return requiresChallenge
+			}
 		}
 		return captchaChallengeText(lowerBody)
 	}
@@ -966,11 +968,16 @@ func captchaChallengeText(lowerBody string) bool {
 }
 
 func captchaPreflightRequiresChallenge(body string) bool {
+	requiresChallenge, _ := captchaPreflightChallengeDecision(body)
+	return requiresChallenge
+}
+
+func captchaPreflightChallengeDecision(body string) (bool, bool) {
 	var value any
 	if err := json.Unmarshal([]byte(body), &value); err != nil {
-		return false
+		return false, false
 	}
-	return hasPositiveCaptchaDecision("", value)
+	return hasPositiveCaptchaDecision("", value), true
 }
 
 func hasPositiveCaptchaDecision(key string, value any) bool {

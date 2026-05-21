@@ -580,6 +580,12 @@ func TestAnalyzeTraffic_ClassifiesCaptchaPrecheckDecisions(t *testing.T) {
 			expectedMode: "standard_http",
 		},
 		{
+			name:         "non-precheck negative captcha decision is informational",
+			url:          "https://studio-api.example.com/api/login",
+			body:         `{"captcha_required":false}`,
+			expectedMode: "standard_http",
+		},
+		{
 			name:         "non-precheck present field is ordinary JSON",
 			url:          "https://studio-api.example.com/api/settings",
 			body:         `{"subscription_present":true}`,
