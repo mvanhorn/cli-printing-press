@@ -65,6 +65,10 @@ func TestOAuth2URLs_RuntimeOverrideEmittedForAuthCodeGrant(t *testing.T) {
 	client := string(clientSrc)
 	require.Contains(t, client, "tokenURL := c.Config.TokenURL",
 		"refreshAccessToken must read c.Config.TokenURL before falling back to spec default")
+	require.Contains(t, client, "func (c *Client) refreshAccessToken(ctx context.Context) error",
+		"refreshAccessToken must accept the caller context")
+	require.Contains(t, client, "http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(params.Encode()))",
+		"refreshAccessToken must attach the caller context to the token request")
 }
 
 func TestOAuth2URLs_RuntimeOverrideEmittedForClientCredentialsGrant(t *testing.T) {
@@ -103,6 +107,10 @@ func TestOAuth2URLs_RuntimeOverrideEmittedForClientCredentialsGrant(t *testing.T
 	client := string(clientSrc)
 	require.Contains(t, client, "tokenURL = c.Config.TokenURL",
 		"mintClientCredentials must read c.Config.TokenURL via the c.Config != nil guard")
+	require.Contains(t, client, "func (c *Client) mintClientCredentials(ctx context.Context, clientID, clientSecret string) error",
+		"mintClientCredentials must accept the caller context")
+	require.Contains(t, client, "http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))",
+		"mintClientCredentials must attach the caller context to the token request")
 
 	// Pin the auto-refresh expiry guard: without it a server returning
 	// expires_in: 0 makes every request re-trigger mintClientCredentials in

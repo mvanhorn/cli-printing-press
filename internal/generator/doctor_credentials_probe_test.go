@@ -28,7 +28,7 @@ func TestGeneratedDoctor_EmitsGraphQLProbeWhenVerifyQuerySet(t *testing.T) {
 
 	assert.Contains(t, content, `verifyBody := map[string]string{"query": "{ viewer { id } }"}`,
 		"doctor should serialize the spec-declared verify_query into the request body")
-	assert.Contains(t, content, `c.PostQueryWithParamsAndHeaders("",`,
+	assert.Contains(t, content, `c.PostQueryWithParamsAndHeaders(cmd.Context(), "",`,
 		"doctor should route the GraphQL probe through PostQueryWithParamsAndHeaders so verify-mode does not short-circuit reads")
 	assert.Contains(t, content, `Errors []json.RawMessage `+"`json:\"errors\"`",
 		"doctor should parse the response for a top-level errors array")

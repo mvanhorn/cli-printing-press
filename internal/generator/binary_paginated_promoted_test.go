@@ -59,7 +59,7 @@ func TestGenerateBinaryPaginatedPromotedThreadsHeader(t *testing.T) {
 		"binary paginated promoted must declare headerOverrides")
 	assert.Contains(t, endpointSrc, `"X-Printing-Press-Binary-Response": "true",`,
 		"binary paginated promoted must include the binary sentinel")
-	assert.Contains(t, endpointSrc, `paginatedGet(c, path, map[string]string{`,
+	assert.Contains(t, endpointSrc, `paginatedGet(cmd.Context(), c, path, map[string]string{`,
 		"non-HasStore pagination must use paginatedGet")
 	assert.NotContains(t, endpointSrc, `}, nil, flagAll,`,
 		"paginated binary endpoint must pass headerOverrides, not nil")
@@ -137,6 +137,6 @@ func TestGenerateBinaryMCPToolsThreadHeaderOverrides(t *testing.T) {
 		"typed MCP tools must carry per-endpoint header overrides")
 	assert.Contains(t, mcpSrc, `headers[client.BinaryResponseHeader] = "true"`,
 		"typed MCP tools must still add the binary sentinel")
-	assert.Contains(t, mcpSrc, `data, err = c.GetWithHeaders(path, params, headers)`,
+	assert.Contains(t, mcpSrc, `data, err = c.GetWithHeaders(ctx, path, params, headers)`,
 		"typed MCP tools must dispatch through WithHeaders when headers are present")
 }

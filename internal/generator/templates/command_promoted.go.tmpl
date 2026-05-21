@@ -10,6 +10,9 @@
 package cli
 
 import (
+{{- if .Endpoint.EmbeddedPagedSubresources}}
+	"context"
+{{- end}}
 	"encoding/json"
 	"fmt"
 {{- if and (or (eq (upper .Endpoint.Method) "POST") (eq (upper .Endpoint.Method) "PUT") (eq (upper .Endpoint.Method) "PATCH")) $isForm}}
@@ -155,7 +158,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 			}, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- else}}
-			data, err := paginatedGet(c, path, map[string]string{
+			data, err := paginatedGet(cmd.Context(), c, path, map[string]string{
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
 				"{{paramWireName .}}": args[{{positionalIndex $.Endpoint .Name}}],
@@ -182,15 +185,15 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}})
 {{- else if eq $method "GET"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, err := c.GetWithHeaders(path, params, headerOverrides)
+			data, err := c.GetWithHeaders(cmd.Context(), path, params, headerOverrides)
 {{- else}}
-			data, err := c.Get(path, params)
+			data, err := c.Get(cmd.Context(), path, params)
 {{- end}}
 {{- else if eq (upper .Endpoint.Method) "DELETE"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, _, err := c.DeleteWithParamsAndHeaders(path, params, headerOverrides)
+			data, _, err := c.DeleteWithParamsAndHeaders(cmd.Context(), path, params, headerOverrides)
 {{- else}}
-			data, _, err := c.DeleteWithParams(path, params)
+			data, _, err := c.DeleteWithParams(cmd.Context(), path, params)
 {{- end}}
 {{- else if or (eq (upper .Endpoint.Method) "POST") (eq (upper .Endpoint.Method) "PUT") (eq (upper .Endpoint.Method) "PATCH")}}
 {{- if $isMultipart}}
@@ -198,17 +201,17 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			fileFields := map[string]string{}
 {{multipartBodyMaps .Endpoint.Body "\t\t\t"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, _, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParamsAndHeaders(path, params, fields, fileFields, headerOverrides)
+			data, _, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParamsAndHeaders(cmd.Context(), path, params, fields, fileFields, headerOverrides)
 {{- else}}
-			data, _, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParams(path, params, fields, fileFields)
+			data, _, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParams(cmd.Context(), path, params, fields, fileFields)
 {{- end}}
 {{- else if $isForm}}
 			fields := url.Values{}
 {{formBodyMaps .Endpoint.Body "\t\t\t"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, _, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParamsAndHeaders(path, params, fields, headerOverrides)
+			data, _, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
 {{- else}}
-			data, _, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParams(path, params, fields)
+			data, _, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParams(cmd.Context(), path, params, fields)
 {{- end}}
 {{- else}}
 			// HasStore + non-GET falls through to a live API call here
@@ -216,8 +219,8 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			// body-aware cached read helper is filed as #425 for when a
 			// second store-backed POST-search consumer ships.
 			body := map[string]any{}
-{{bodyMapForEndpoint .Endpoint "\t\t\t"}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}WithParamsAndHeaders(path, params, body, headerOverrides)
-{{else}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}WithParams(path, params, body)
+{{bodyMapForEndpoint .Endpoint "\t\t\t"}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}WithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
+{{else}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}WithParams(cmd.Context(), path, params, body)
 {{end}}
 {{- end}}
 {{- else}}
@@ -225,9 +228,9 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			// stays compileable. Spec authors who genuinely need these verbs
 			// should add a typed client method and a dedicated template branch.
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, err := c.GetWithHeaders(path, params, headerOverrides)
+			data, err := c.GetWithHeaders(cmd.Context(), path, params, headerOverrides)
 {{- else}}
-			data, err := c.Get(path, params)
+			data, err := c.Get(cmd.Context(), path, params)
 {{- end}}
 {{- end}}
 {{- if and .HasStore (ne (upper .Endpoint.Method) "GET")}}
@@ -381,14 +384,14 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 // companion calls the dedicated child endpoint and paginates until
 // exhausted. pathParams must include every {placeholder} in the parent
 // path (e.g. {"id": "<value>"}).
-func fetchFull{{$funcPrefix}}{{$endpointCamel}}{{$propCamel}}(c interface {
-	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+func fetchFull{{$funcPrefix}}{{$endpointCamel}}{{$propCamel}}(ctx context.Context, c interface {
+	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
 }, pathParams map[string]string) ([]json.RawMessage, error) {
 	childPath := "{{.ChildPath}}"
 	for name, val := range pathParams {
 		childPath = replacePathParam(childPath, name, val)
 	}
-	return fetchEmbeddedPagedSubresource(c, childPath, "{{.NextField}}", {{if .NextIsURL}}true{{else}}false{{end}}, {{if .NextIsBoolean}}true{{else}}false{{end}})
+	return fetchEmbeddedPagedSubresource(ctx, c, childPath, "{{.NextField}}", {{if .NextIsURL}}true{{else}}false{{end}}, {{if .NextIsBoolean}}true{{else}}false{{end}})
 }
 {{- end}}
 {{- end}}

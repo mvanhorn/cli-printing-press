@@ -23,6 +23,7 @@ func TestGeneratedClientRejectsPlaceholderConfigTokenBeforeRequest(t *testing.T)
 	const clientTest = `package client
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -56,7 +57,7 @@ func TestPlaceholderAccessTokenIsRejectedBeforeRequest(t *testing.T) {
 				return nil, nil
 			})}
 
-			_, err := c.Get("/items", nil)
+			_, err := c.Get(context.Background(), "/items", nil)
 			if !errors.Is(err, ErrPlaceholderCredential) {
 				t.Fatalf("expected placeholder auth error for %q, got %v", token, err)
 			}
@@ -89,7 +90,7 @@ func TestPlaceholderEnvTokenIsRejectedBeforeRequest(t *testing.T) {
 		return nil, nil
 	})}
 
-	_, err = c.Get("/items", nil)
+	_, err = c.Get(context.Background(), "/items", nil)
 	if !errors.Is(err, ErrPlaceholderCredential) {
 		t.Fatalf("expected placeholder auth error, got %v", err)
 	}
@@ -108,7 +109,7 @@ func TestPlaceholderAccessTokenFailsBeforeCacheHit(t *testing.T) {
 	c.cacheDir = t.TempDir()
 	c.writeCache("/items", nil, []byte(` + "`" + `{"cached":true}` + "`" + `))
 
-	_, err := c.Get("/items", nil)
+	_, err := c.Get(context.Background(), "/items", nil)
 	if !errors.Is(err, ErrPlaceholderCredential) {
 		t.Fatalf("expected placeholder auth error before cache hit, got %v", err)
 	}
@@ -152,7 +153,7 @@ func TestRealTokensReachTransport(t *testing.T) {
 				}, nil
 			})}
 
-			if _, err := c.Get("/items", nil); err != nil {
+			if _, err := c.Get(context.Background(), "/items", nil); err != nil {
 				t.Fatalf("Get() error = %v", err)
 			}
 			if calls != 1 {
@@ -216,6 +217,7 @@ func TestGeneratedClientRejectsBasicAuthPlaceholdersBeforeRequest(t *testing.T) 
 	const clientTest = `package client
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -232,7 +234,7 @@ func TestBasicAuthPlaceholderIsRejectedBeforeRequest(t *testing.T) {
 	c := New(cfg, time.Second, 0)
 	c.NoCache = true
 
-	_, err := c.Get("/items", nil)
+	_, err := c.Get(context.Background(), "/items", nil)
 	if !errors.Is(err, ErrPlaceholderCredential) {
 		t.Fatalf("expected placeholder auth error, got %v", err)
 	}
@@ -264,6 +266,7 @@ func TestGeneratedClientRejectsClientCredentialsPlaceholdersBeforeMint(t *testin
 	const clientTest = `package client
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
@@ -293,7 +296,7 @@ func TestClientCredentialsPlaceholdersRejectedBeforeMint(t *testing.T) {
 		return nil, nil
 	})}
 
-	_, err := c.Get("/items", nil)
+	_, err := c.Get(context.Background(), "/items", nil)
 	if !errors.Is(err, ErrPlaceholderCredential) {
 		t.Fatalf("expected placeholder auth error, got %v", err)
 	}
@@ -312,7 +315,7 @@ func TestClientCredentialsPlaceholdersRejectedBeforeCacheHit(t *testing.T) {
 	c.cacheDir = t.TempDir()
 	c.writeCache("/items", nil, []byte(` + "`" + `{"cached":true}` + "`" + `))
 
-	_, err := c.Get("/items", nil)
+	_, err := c.Get(context.Background(), "/items", nil)
 	if !errors.Is(err, ErrPlaceholderCredential) {
 		t.Fatalf("expected placeholder auth error before cache hit, got %v", err)
 	}
@@ -340,6 +343,7 @@ func TestGeneratedClientRejectsRefreshPlaceholdersBeforeRefresh(t *testing.T) {
 	const clientTest = `package client
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
@@ -370,7 +374,7 @@ func TestRefreshPlaceholdersRejectedBeforeRefresh(t *testing.T) {
 		return nil, nil
 	})}
 
-	_, err := c.Get("/items", nil)
+	_, err := c.Get(context.Background(), "/items", nil)
 	if !errors.Is(err, ErrPlaceholderCredential) {
 		t.Fatalf("expected placeholder auth error, got %v", err)
 	}

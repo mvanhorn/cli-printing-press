@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -207,7 +208,7 @@ Resource scoping:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-						res := syncResource(c, db, resource, sinceTS, full, maxPages, effectiveLatestOnly, userParams)
+						res := syncResource(cmd.Context(), c, db, resource, sinceTS, full, maxPages, effectiveLatestOnly, userParams)
 						results <- res
 					}
 				}()
@@ -261,7 +262,7 @@ Resource scoping:
 				}
 			}
 			// Sync dependent (parent-child) resources sequentially after flat resources.
-			depResults := syncDependentResources(c, db, sinceTS, full, maxPages, effectiveLatestOnly, parentFilter, userParams)
+			depResults := syncDependentResources(cmd.Context(), c, db, sinceTS, full, maxPages, effectiveLatestOnly, parentFilter, userParams)
 			for _, res := range depResults {
 				if res.Err != nil {
 					if humanFriendly {
@@ -364,8 +365,8 @@ Resource scoping:
 // It resumes from the last cursor unless sinceTS or full mode overrides it.
 // channel_workflow.go.tmpl mirrors the trailing dates arg conditional;
 // keep both call sites in sync if this signature changes.
-func syncResource(c interface {
-	Get(string, map[string]string) (json.RawMessage, error)
+func syncResource(ctx context.Context, c interface {
+	Get(context.Context, string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
 }, db *store.Store, resource, sinceTS string, full bool, maxPages int, latestOnly bool, userParams *syncUserParams) syncResult {
 	started := time.Now()
@@ -480,7 +481,7 @@ func syncResource(c interface {
 		// endpoint whose OpenAPI spec marks the filter optional).
 		userParams.applyTo(resource, params, false)
 
-		data, err := c.Get(path, params)
+		data, err := c.Get(ctx, path, params)
 		if err != nil {
 			if w, ok := isSyncAccessWarning(err); ok {
 				if !humanFriendly {
@@ -1134,8 +1135,8 @@ func dependentResourceDefs() []dependentResourceDef {
 // syncDependentResources iterates parent tables and syncs child resources per parent ID.
 // parentFilter mirrors the user's --resources flag (empty = sync everything). A dependent
 // runs when its parent table or its own name appears in the filter.
-func syncDependentResources(c interface {
-	Get(string, map[string]string) (json.RawMessage, error)
+func syncDependentResources(ctx context.Context, c interface {
+	Get(context.Context, string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
 }, db *store.Store, sinceTS string, full bool, maxPages int, latestOnly bool, parentFilter []string, userParams *syncUserParams) []syncResult {
 	allow := make(map[string]bool, len(parentFilter))
@@ -1147,15 +1148,15 @@ func syncDependentResources(c interface {
 		if len(allow) > 0 && !allow[dep.ParentTable] && !allow[dep.Name] {
 			continue
 		}
-		res := syncDependentResource(c, db, dep, sinceTS, full, maxPages, latestOnly, userParams)
+		res := syncDependentResource(ctx, c, db, dep, sinceTS, full, maxPages, latestOnly, userParams)
 		results = append(results, res)
 	}
 	return results
 }
 
 // syncDependentResource syncs a single child resource by iterating all parent IDs.
-func syncDependentResource(c interface {
-	Get(string, map[string]string) (json.RawMessage, error)
+func syncDependentResource(ctx context.Context, c interface {
+	Get(context.Context, string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
 }, db *store.Store, dep dependentResourceDef, sinceTS string, full bool, maxPages int, latestOnly bool, userParams *syncUserParams) syncResult {
 	started := time.Now()
@@ -1239,7 +1240,7 @@ func syncDependentResource(c interface {
 			// segment); --global-param and --resource-param still apply.
 			userParams.applyTo(dep.Name, params, true)
 
-			data, err := c.Get(path, params)
+			data, err := c.Get(ctx, path, params)
 			if err != nil {
 				// Non-fatal per parent: log and continue to next parent.
 				// Track access-denial separately so an all-denied dependent

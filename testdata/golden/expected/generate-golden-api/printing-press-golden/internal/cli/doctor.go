@@ -219,7 +219,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					report["api"] = fmt.Sprintf("client init error: %s", clientErr)
 				} else {
 					// Step 1: Basic reachability via the configured transport.
-					reachBody, reachErr := c.Get("/", nil)
+					reachBody, reachErr := c.Get(cmd.Context(), "/", nil)
 					var reachAPIErr *client.APIError
 					switch {
 					case reachErr == nil:

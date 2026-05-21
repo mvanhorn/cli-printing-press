@@ -16,7 +16,7 @@ import (
 {{- if or $hasCookieBrowserAuth $hasQueryRefresh}}
 	"bytes"
 {{- end}}
-{{- if $hasAuth0SPA}}
+{{- if or $hasAuth0SPA .Auth.RequiresBrowserSession}}
 	"context"
 {{- end}}
 {{- if .Auth.RequiresBrowserSession}}
@@ -305,7 +305,7 @@ profile by name when the installed backend supports it.`,
 			}
 {{- if .Auth.RequiresBrowserSession}}
 			fmt.Fprintf(w, "Validating browser session...")
-			if err := validateAndWriteBrowserSessionProof(cfg, flags); err != nil {
+			if err := validateAndWriteBrowserSessionProof(cmd.Context(), cfg, flags); err != nil {
 				_ = cfg.ClearTokens()
 				_ = clearBrowserSessionProof(cfg)
 				fmt.Fprintf(w, " %s\n", red("failed"))
@@ -354,7 +354,7 @@ profile by name when the installed backend supports it.`,
 			}
 {{- if .Auth.RequiresBrowserSession}}
 			fmt.Fprintf(w, "Validating browser session...")
-			if err := validateAndWriteBrowserSessionProof(cfg, flags); err != nil {
+			if err := validateAndWriteBrowserSessionProof(cmd.Context(), cfg, flags); err != nil {
 				_ = cfg.ClearTokens()
 				_ = clearBrowserSessionProof(cfg)
 				fmt.Fprintf(w, " %s\n", red("failed"))
@@ -630,7 +630,7 @@ func newAuthRefreshCmd(flags *rootFlags) *cobra.Command {
 			}
 
 			fmt.Fprintf(w, "Validating browser session...")
-			if err := validateAndWriteBrowserSessionProofWithRetry(cfg, flags, waitTimeout); err != nil {
+			if err := validateAndWriteBrowserSessionProofWithRetry(cmd.Context(), cfg, flags, waitTimeout); err != nil {
 				fmt.Fprintf(w, " %s\n", red("failed"))
 				return authErr(fmt.Errorf("browser session validation failed: %w", err))
 			}
@@ -1785,7 +1785,7 @@ func browserSessionProofStatusForAuth(cfg *config.Config, authHeader string) (bo
 	return true, fmt.Sprintf("%s %s verified at %s", proof.ValidationMethod, proof.ValidationPath, proof.VerifiedAt)
 }
 
-func validateAndWriteBrowserSessionProof(cfg *config.Config, flags *rootFlags) error {
+func validateAndWriteBrowserSessionProof(ctx context.Context, cfg *config.Config, flags *rootFlags) error {
 	validationPath := strings.TrimSpace("{{.Auth.BrowserSessionValidationPath}}")
 	if validationPath == "" {
 		return fmt.Errorf("no browser-session validation endpoint configured in this CLI")
@@ -1805,7 +1805,7 @@ func validateAndWriteBrowserSessionProof(cfg *config.Config, flags *rootFlags) e
 
 	c := client.New(cfg, flags.timeout, flags.rateLimit)
 	c.NoCache = true
-	status, err := c.ProbeGet(validationPath)
+	status, err := c.ProbeGet(ctx, validationPath)
 	if err != nil {
 		return err
 	}
@@ -1832,11 +1832,11 @@ func validateAndWriteBrowserSessionProof(cfg *config.Config, flags *rootFlags) e
 	return writeBrowserSessionProof(cfg, data)
 }
 
-func validateAndWriteBrowserSessionProofWithRetry(cfg *config.Config, flags *rootFlags, timeout time.Duration) error {
+func validateAndWriteBrowserSessionProofWithRetry(ctx context.Context, cfg *config.Config, flags *rootFlags, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for {
-		if err := validateAndWriteBrowserSessionProof(cfg, flags); err != nil {
+		if err := validateAndWriteBrowserSessionProof(ctx, cfg, flags); err != nil {
 			lastErr = err
 		} else {
 			return nil
@@ -1844,7 +1844,13 @@ func validateAndWriteBrowserSessionProofWithRetry(cfg *config.Config, flags *roo
 		if time.Now().After(deadline) {
 			return lastErr
 		}
-		time.Sleep(time.Second)
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 }
 

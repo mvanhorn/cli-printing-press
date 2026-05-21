@@ -82,9 +82,9 @@ func TestClient_VerifyShortCircuit(t *testing.T) {
 	// do() and doRead() must both be thin wrappers around doInternal() so
 	// the gate-check site stays single. A future edit that inlines the
 	// gate into do() would split the source of truth and could drift.
-	assert.Contains(t, emitted, "func (c *Client) do(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(method, path, params, body, headerOverrides, false)\n}",
+	assert.Contains(t, emitted, "func (c *Client) do(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(ctx, method, path, params, body, headerOverrides, false)\n}",
 		"do() must be a thin wrapper passing readOnlyIntent=false to doInternal()")
-	assert.Contains(t, emitted, "func (c *Client) doRead(method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(method, path, params, body, headerOverrides, true)\n}",
+	assert.Contains(t, emitted, "func (c *Client) doRead(ctx context.Context, method, path string, params map[string]string, body any, headerOverrides map[string]string) (json.RawMessage, int, error) {\n\treturn c.doInternal(ctx, method, path, params, body, headerOverrides, true)\n}",
 		"doRead() must be a thin wrapper passing readOnlyIntent=true to doInternal()")
 
 	// Read-only POST surface (GraphQL queries, RPC reads, search-by-POST)
@@ -95,8 +95,8 @@ func TestClient_VerifyShortCircuit(t *testing.T) {
 		"client.go should expose PostQueryWithParams for read-only POST operations")
 	assert.Contains(t, emitted, "func (c *Client) PostQueryWithParamsAndHeaders(",
 		"client.go should expose PostQueryWithParamsAndHeaders for read-only POST operations")
-	assert.Contains(t, emitted, `return c.doRead("POST", path, params, body, nil)`,
+	assert.Contains(t, emitted, `return c.doRead(ctx, "POST", path, params, body, nil)`,
 		"PostQueryWithParams must delegate to doRead so the verify-mode gate is bypassed")
-	assert.Contains(t, emitted, `return c.doRead("POST", path, params, body, headers)`,
+	assert.Contains(t, emitted, `return c.doRead(ctx, "POST", path, params, body, headers)`,
 		"PostQueryWithParamsAndHeaders must delegate to doRead so the verify-mode gate is bypassed")
 }

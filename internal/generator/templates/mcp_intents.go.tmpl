@@ -61,7 +61,7 @@ func handle{{pascal .Name}}(ctx context.Context, req mcplib.CallToolRequest) (*m
 			params[{{printf "%q" $paramName}}] = v
 		}
 {{- end}}
-		resp, err := callIntentEndpoint(c, {{printf "%q" $step.Endpoint}}, params)
+		resp, err := callIntentEndpoint(ctx, c, {{printf "%q" $step.Endpoint}}, params)
 		if err != nil {
 			return mcplib.NewToolResultError(fmt.Sprintf("step %d ({{$step.Endpoint}}) failed: %v", {{add $i 1}}, err)), nil
 		}
@@ -132,7 +132,7 @@ func resolveIntentBinding(scope map[string]any, expr string) (any, bool) {
 // client. It uses the generator-emitted endpoint registry below to look up
 // the HTTP method, path template, and positional-param set so the intent
 // handler can stay generic across endpoints.
-func callIntentEndpoint(c *client.Client, ref string, params map[string]any) (any, error) {
+func callIntentEndpoint(ctx context.Context, c *client.Client, ref string, params map[string]any) (any, error) {
 	ep, ok := intentEndpoints[ref]
 	if !ok {
 		return nil, fmt.Errorf("unknown endpoint %q", ref)
@@ -160,9 +160,9 @@ func callIntentEndpoint(c *client.Client, ref string, params map[string]any) (an
 	// code built `query` but never passed it.
 	switch ep.method {
 	case "GET":
-		data, err = c.Get(path, query)
+		data, err = c.Get(ctx, path, query)
 	case "DELETE":
-		data, _, err = c.DeleteWithParams(path, query)
+		data, _, err = c.DeleteWithParams(ctx, path, query)
 	default:
 		body, mErr := json.Marshal(params)
 		if mErr != nil {
@@ -170,11 +170,11 @@ func callIntentEndpoint(c *client.Client, ref string, params map[string]any) (an
 		}
 		switch ep.method {
 		case "POST":
-			data, _, err = c.Post(path, body)
+			data, _, err = c.Post(ctx, path, body)
 		case "PUT":
-			data, _, err = c.Put(path, body)
+			data, _, err = c.Put(ctx, path, body)
 		case "PATCH":
-			data, _, err = c.Patch(path, body)
+			data, _, err = c.Patch(ctx, path, body)
 		default:
 			return nil, fmt.Errorf("unsupported method %q", ep.method)
 		}

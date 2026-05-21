@@ -82,6 +82,7 @@ func TestPaginatedGetHandlesNumericCursorAndMissingAllSignal(t *testing.T) {
 	behaviorTest := `package cli
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -94,7 +95,8 @@ type paginatedTestClient struct {
 	params    []map[string]string
 }
 
-func (c *paginatedTestClient) GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+func (c *paginatedTestClient) GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+	_ = ctx
 	copied := map[string]string{}
 	for k, v := range params {
 		copied[k] = v
@@ -135,7 +137,7 @@ func TestPaginatedGetAcceptsNumericNextCursor(t *testing.T) {
 		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"meta":{"nextPage":2}}` + "`" + `),
 		json.RawMessage(` + "`" + `{"items":[{"id":"two"}],"meta":{}}` + "`" + `),
 	}}
-	data, err := paginatedGet(client, "/orders", map[string]string{"limit":"1"}, nil, true, "page", "meta.nextPage", "")
+	data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "page", "meta.nextPage", "")
 	if err != nil {
 		t.Fatalf("paginatedGet returned error: %v", err)
 	}
@@ -158,7 +160,7 @@ func TestPaginatedGetStopsAtNumericZeroNextCursor(t *testing.T) {
 	client := &paginatedTestClient{responses: []json.RawMessage{
 		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"meta":{"nextPage":0}}` + "`" + `),
 	}}
-	data, err := paginatedGet(client, "/orders", map[string]string{"limit":"1"}, nil, true, "page", "meta.nextPage", "")
+	data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "page", "meta.nextPage", "")
 	if err != nil {
 		t.Fatalf("paginatedGet returned error: %v", err)
 	}
@@ -179,7 +181,7 @@ func TestPaginatedGetWarnsForSinglePageNumericNextCursor(t *testing.T) {
 		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"meta":{"nextPage":2}}` + "`" + `),
 	}}
 	stderr := capturePaginatedStderr(t, func() {
-		_, err := paginatedGet(client, "/orders", map[string]string{"limit":"1"}, nil, false, "page", "meta.nextPage", "")
+		_, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, false, "page", "meta.nextPage", "")
 		if err != nil {
 			t.Fatalf("paginatedGet returned error: %v", err)
 		}
@@ -194,7 +196,7 @@ func TestPaginatedGetWarnsWhenAllHasNoAdvanceSignal(t *testing.T) {
 		json.RawMessage(` + "`" + `[{"id":"one"}]` + "`" + `),
 	}}
 	stderr := capturePaginatedStderr(t, func() {
-		data, err := paginatedGet(client, "/orders", map[string]string{"limit":"1"}, nil, true, "page", "", "")
+		data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "page", "", "")
 		if err != nil {
 			t.Fatalf("paginatedGet returned error: %v", err)
 		}
@@ -219,7 +221,7 @@ func TestPaginatedGetWarnsWhenHasMoreCannotAdvance(t *testing.T) {
 		json.RawMessage(` + "`" + `{"items":[{"id":"one"}],"meta":{"has_more":true}}` + "`" + `),
 	}}
 	stderr := capturePaginatedStderr(t, func() {
-		data, err := paginatedGet(client, "/orders", map[string]string{"limit":"1"}, nil, true, "page", "", "meta.has_more")
+		data, err := paginatedGet(context.Background(), client, "/orders", map[string]string{"limit":"1"}, nil, true, "page", "", "meta.has_more")
 		if err != nil {
 			t.Fatalf("paginatedGet returned error: %v", err)
 		}

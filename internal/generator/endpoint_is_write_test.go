@@ -273,7 +273,7 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 				Body:        []spec.Param{{Name: "queryText", Type: "string"}},
 			},
 			mustContain: []string{"c.PostWithParams("},
-			mustNotHave: []string{"c.Get(path, params)"},
+			mustNotHave: []string{"c.Get(cmd.Context(), path, params)"},
 		},
 		{
 			name:         "GET endpoint keeps c.Get / resolveRead",
@@ -300,7 +300,7 @@ func TestPromotedCommandVerbBranching(t *testing.T) {
 				Path:        "/status",
 				Description: "Probe status",
 			},
-			mustContain: []string{"c.Get(path, params)"},
+			mustContain: []string{"c.Get(cmd.Context(), path, params)"},
 			mustNotHave: []string{"c.Head(", "c.Options("},
 		},
 	}
@@ -561,7 +561,7 @@ func TestPromotedCommandPlumbsBodyFields(t *testing.T) {
 		"promoted command must build a body map from body flags")
 	require.Contains(t, src, `body["name"] = bodyName`,
 		"body map must use the spec-declared field name, not the camelCased flag var")
-	require.Contains(t, src, `c.PostWithParams(path, params, body)`,
+	require.Contains(t, src, `c.PostWithParams(cmd.Context(), path, params, body)`,
 		"promoted command must pass the body map to c.PostWithParams, not the params map")
 	require.NotContains(t, src, `c.Post(path, params)`,
 		"promoted command must NOT pass params (URL/path params) as the request body — that was the bug")

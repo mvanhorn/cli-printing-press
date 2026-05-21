@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 	"errors"
@@ -148,7 +149,7 @@ Exit codes & warnings:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-						res := syncResource(c, db, resource, sinceTS, full, maxPages)
+						res := syncResource(cmd.Context(), c, db, resource, sinceTS, full, maxPages)
 						results <- res
 					}
 				}()
@@ -264,7 +265,7 @@ func graphqlSyncDefs() map[string]graphqlSyncDef {
 }
 
 // syncResource handles the full paginated sync of a single resource via GraphQL.
-func syncResource(c *client.Client, db *store.Store, resource, sinceTS string, full bool, maxPages int) syncResult {
+func syncResource(ctx context.Context, c *client.Client, db *store.Store, resource, sinceTS string, full bool, maxPages int) syncResult {
 	started := time.Now()
 
 	if !humanFriendly {
@@ -303,7 +304,7 @@ func syncResource(c *client.Client, db *store.Store, resource, sinceTS string, f
 			variables["after"] = cursor
 		}
 
-		data, err := c.Query(def.Query, variables)
+		data, err := c.Query(ctx, def.Query, variables)
 		if err != nil {
 			if w, ok := isSyncAccessWarning(err); ok {
 				if !humanFriendly {

@@ -29,7 +29,7 @@ func TestDoctorWithoutVerifyPathDoesNotClaimCredentialsValid(t *testing.T) {
 	// Both probe branches (VerifyPath and VerifyQuery) emit `report["credentials"] = "valid"`
 	// when the probe succeeds; anchor on the verify-path-shaped invocation so this
 	// assertion stays specific to "no REST probe ran" rather than "the literal `valid` never appears."
-	require.NotContains(t, src, `c.GetWithHeaders(verifyPath`,
+	require.NotContains(t, src, `c.GetWithHeaders(cmd.Context(), verifyPath`,
 		"without auth.verify_path, doctor must not emit a REST verification call")
 	require.NotContains(t, src, "but auth was accepted",
 		"without auth.verify_path, non-auth HTTP statuses do not prove the API accepted the credentials")

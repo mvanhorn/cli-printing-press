@@ -215,7 +215,7 @@ func runAutoRefresh(ctx context.Context, flags *rootFlags, db *store.Store, reso
 			return ctx.Err()
 		default:
 		}
-		result := syncResource({{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, db, resource, "", false, 1{{if not (isGraphQL .APISpec)}}, true{{end}}{{if .Pagination.DateRangeParam}}, ""{{end}}{{if not (isGraphQL .APISpec)}}, nil{{end}})
+		result := syncResource(ctx, {{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, db, resource, "", false, 1{{if not (isGraphQL .APISpec)}}, true{{end}}{{if .Pagination.DateRangeParam}}, ""{{end}}{{if not (isGraphQL .APISpec)}}, nil{{end}})
 		if result.Err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", resource, result.Err))
 		}
