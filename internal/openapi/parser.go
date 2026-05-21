@@ -5700,6 +5700,11 @@ func findNextField(lowered map[string]string) (string, nextFieldKind) {
 			return actual, nextKindCursor
 		}
 	}
+	for _, candidate := range nextFieldPageNumberNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindCursor
+		}
+	}
 	for _, candidate := range nextFieldCursorNames {
 		if actual, ok := lowered[candidate]; ok {
 			return actual, nextKindCursor

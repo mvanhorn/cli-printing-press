@@ -237,6 +237,9 @@ func TestPaginatedGetWarnsWhenHasMoreCannotAdvance(t *testing.T) {
 	if !containsAll(stderr, ` + "`" + `"event":"truncated"` + "`" + `, ` + "`" + `"reason":"pagination_cursor_missing"` + "`" + `) {
 		t.Fatalf("stderr missing has-more truncation warning: %s", stderr)
 	}
+	if strings.Contains(stderr, ` + "`" + `"next_cursor_path":""` + "`" + `) {
+		t.Fatalf("stderr should omit an empty next_cursor_path: %s", stderr)
+	}
 }
 
 func containsAll(s string, needles ...string) bool {

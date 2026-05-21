@@ -263,6 +263,24 @@ paths:
                     properties:
                       data: { type: array, items: { type: object } }
                       next_page_token: { type: string }
+  /page-shape/{id}:
+    get:
+      operationId: getPageShape
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revisions:
+                    type: object
+                    properties:
+                      data: { type: array, items: { type: object } }
+                      next_page: { type: integer }
 `)
 	parsed, err := Parse(doc)
 	require.NoError(t, err)
@@ -287,6 +305,14 @@ paths:
 	assert.False(t, tokenEP.EmbeddedPagedSubresources[0].NextIsURL,
 		"`next_page_token` is opaque; same constraint as next_cursor")
 	assert.False(t, tokenEP.EmbeddedPagedSubresources[0].NextIsBoolean)
+
+	pageEP, ok := findGetEndpoint(parsed, "/page-shape/{id}")
+	require.True(t, ok)
+	require.Len(t, pageEP.EmbeddedPagedSubresources, 1)
+	assert.Equal(t, "next_page", pageEP.EmbeddedPagedSubresources[0].NextField)
+	assert.False(t, pageEP.EmbeddedPagedSubresources[0].NextIsURL,
+		"`next_page` is a page-number signal, not a direct URL")
+	assert.False(t, pageEP.EmbeddedPagedSubresources[0].NextIsBoolean)
 }
 
 // TestEmbeddedPagedSubresources_CaseInsensitive guards the detector

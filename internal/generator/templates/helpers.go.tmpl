@@ -877,8 +877,10 @@ func emitMissingPaginationSignalWarning() {
 func emitMissingPaginationCursorWarning(nextCursorPath string) {
 	if humanFriendly {
 		fmt.Fprintf(os.Stderr, "warning: --all requested, but the response indicated more pages without a usable next cursor; returning fetched pages only.\n")
-	} else {
+	} else if nextCursorPath != "" {
 		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_cursor_missing","next_cursor_path":%q,"message":"--all requested but the response indicated more pages without a usable next cursor; returning fetched pages only"}`+"\n", nextCursorPath)
+	} else {
+		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_cursor_missing","message":"--all requested but the response indicated more pages without a usable next cursor; returning fetched pages only"}`+"\n")
 	}
 }
 
