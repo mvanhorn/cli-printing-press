@@ -31,10 +31,15 @@ The binary alone works (research, generation, verification, scoring) but skips t
 ### 1. Install the binary
 
 ```bash
-go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest
+go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest
 ```
 
-Verify with `printing-press --version`. If `go install` fails, confirm Go 1.26.3 or newer is installed and `$GOPATH/bin` is on your `PATH`.
+Verify with `cli-printing-press --version`. If `go install` fails, confirm Go 1.26.3 or newer is installed and `$GOPATH/bin` is on your `PATH`.
+
+Older releases installed a generator binary named `printing-press`. That legacy
+entrypoint still works for compatibility, but the canonical generator command is
+now `cli-printing-press` so the public catalog installer can own
+`printing-press list`, `printing-press search`, and `printing-press install`.
 
 ### 2. Install the skills — pick one path
 
@@ -92,7 +97,7 @@ For example:
 /printing-press-reprint notion               # Reprint an existing CLI under the latest machine
 ```
 
-`/printing-press` drives the `printing-press` binary you installed — research, generation, scoring, and shipcheck all run through it. Two parts, one workflow.
+`/printing-press` drives the `cli-printing-press` binary you installed — research, generation, scoring, and shipcheck all run through it. Two parts, one workflow.
 
 One command. Lean loop. Produces a Go CLI plus an MCP server that absorbs every feature from every competing tool, then transcends with compound use cases only possible with local data. REST, GraphQL, or browser-sniffed traffic. No OpenAPI spec required.
 
@@ -262,7 +267,7 @@ CLIs win for agents. 100x fewer tokens than MCP tool definitions. LLMs were trai
 MCP wins for IDE integration. Claude Desktop and Cursor discover tools automatically via MCP. No shell needed. The MCP server exposes the same operations as the CLI, including the data layer (sync, search, sql).
 
 ```
-One spec  ->  printing-press generate  ->  <api>-pp-cli (cobra)  +  <api>-pp-mcp (MCP server)
+One spec  ->  cli-printing-press generate  ->  <api>-pp-cli (cobra)  +  <api>-pp-mcp (MCP server)
                                             |                       |
                                             same internal/client, internal/store
 ```
@@ -318,7 +323,7 @@ mcp:
       returns: issue
 ```
 
-Run `printing-press mcp-audit` after changes to see which library CLIs would benefit from the new surface.
+Run `cli-printing-press mcp-audit` after changes to see which library CLIs would benefit from the new surface.
 
 </details>
 
@@ -401,16 +406,16 @@ Anti-gaming rules prevent optimizing for score instead of features. Table stakes
 
 ```bash
 # Quality scorecard: two-tier scoring (infrastructure + domain correctness)
-printing-press scorecard --dir ./my-pp-cli --spec ./openapi.json
+cli-printing-press scorecard --dir ./my-pp-cli --spec ./openapi.json
 
 # Dogfood: catches dead flags, dead functions, auth mismatches, invalid paths
-printing-press dogfood --dir ./my-pp-cli --spec ./openapi.json
+cli-printing-press dogfood --dir ./my-pp-cli --spec ./openapi.json
 
 # Runtime verification: tests every command against real API or mock server
-printing-press verify --dir ./my-pp-cli --spec ./openapi.json --api-key $TOKEN
+cli-printing-press verify --dir ./my-pp-cli --spec ./openapi.json --api-key $TOKEN
 
 # Emboss audit: baseline snapshot for improvement cycle
-printing-press emboss --dir ./my-pp-cli --spec ./openapi.json --audit-only
+cli-printing-press emboss --dir ./my-pp-cli --spec ./openapi.json --audit-only
 ```
 
 ### Proof of behavior
@@ -446,11 +451,11 @@ Safety: GET only, --limit 1, 10s timeout, stops on 401. Never creates, posts, or
 
 ### Auth doctor
 
-`printing-press auth doctor` scans every installed printed CLI's `tools-manifest.json` and reports whether its declared env vars are set, unset, or suspicious. Fingerprints show the first four characters of each set value, never the full token.
+`cli-printing-press auth doctor` scans every installed printed CLI's `tools-manifest.json` and reports whether its declared env vars are set, unset, or suspicious. Fingerprints show the first four characters of each set value, never the full token.
 
 ```bash
-printing-press auth doctor
-printing-press auth doctor --json
+cli-printing-press auth doctor
+cli-printing-press auth doctor --json
 ```
 
 Useful when an agent hits a 401 on a printed CLI: one command shows whether the token is missing, truncated, or shadowed by a stale value without having to inspect shell config. Offline, read-only, and exits 0 even when findings include "not set" or "suspicious" because this is diagnostic, not gating.
@@ -479,9 +484,9 @@ Each newly published CLI ships a root `AGENTS.md` operating guide, a research ma
 
 **`/printing-press` slash command doesn't appear in Claude Code.** Restart your Claude Code session after installing the skills. If you cloned the repo, confirm `claude --plugin-dir .` was run from the cloned repo root. If you installed skills only, run `gh skill list` (or `npx skills list`) to verify the install.
 
-**`printing-press: command not found` after a successful `go install`.** `$GOPATH/bin` (default `~/go/bin`) isn't on your `PATH`. Add it to your shell profile.
+**`cli-printing-press: command not found` after a successful `go install`.** `$GOPATH/bin` (default `~/go/bin`) isn't on your `PATH`. Add it to your shell profile.
 
-**Live API smoke test reports 401.** Token unset or stale. Run `printing-press auth doctor` to see which env vars are missing or suspicious before reading shell config.
+**Live API smoke test reports 401.** Token unset or stale. Run `cli-printing-press auth doctor` to see which env vars are missing or suspicious before reading shell config.
 
 **Browser-sniff captures no useful endpoints.** The site likely uses websockets, gRPC, or aggressive bot detection. Try a HAR export from DevTools (`/printing-press --har ./capture.har`) instead of the live browser flow.
 
@@ -508,7 +513,7 @@ Each newly published CLI ships a root `AGENTS.md` operating guide, a research ma
 
 **What does shipping a CLI cost in tokens?** Standard Opus mode runs end-to-end on Opus. Codex mode (`/printing-press <api> codex`) offloads Phase 3 code generation to Codex CLI for ~60% fewer Opus tokens. Both produce equivalent quality.
 
-**Can I run the verification tools on a CLI I built by hand?** Yes. `printing-press scorecard`, `dogfood`, and `verify` accept any directory + spec. Tier 1 of the scorecard checks for agent-native patterns; Tier 2 checks paths/auth/data-flow against the spec.
+**Can I run the verification tools on a CLI I built by hand?** Yes. `cli-printing-press scorecard`, `dogfood`, and `verify` accept any directory + spec. Tier 1 of the scorecard checks for agent-native patterns; Tier 2 checks paths/auth/data-flow against the spec.
 
 ## Contributing
 
@@ -520,7 +525,7 @@ Bug reports, feature requests, and PRs are welcome. Read [CONTRIBUTING.md](CONTR
 <summary><b>Build, test, lint, and hooks</b></summary>
 
 ```bash
-go build -o ./printing-press ./cmd/printing-press
+go build -o ./cli-printing-press ./cmd/cli-printing-press
 go test ./...
 go fmt ./...
 golangci-lint run ./...
@@ -556,7 +561,7 @@ Use update mode only after an intentional behavior change:
 scripts/golden.sh update
 ```
 
-The harness rebuilds `./printing-press`, writes actual outputs under `.gotmp/golden/actual`, and compares them to `testdata/golden/expected`. Cases live under `testdata/golden/cases/<case-name>/`; `command.txt` defines the offline command, and `artifacts.txt` lists behaviorally important generated files to compare. Normalization is intentionally narrow: machine-specific paths, deterministic JSON formatting, and known provenance fields like generated timestamps. CI runs this as a separate `Golden` workflow, not inside `go test ./...`.
+The harness rebuilds `./cli-printing-press`, writes actual outputs under `.gotmp/golden/actual`, and compares them to `testdata/golden/expected`. Cases live under `testdata/golden/cases/<case-name>/`; `command.txt` defines the offline command, and `artifacts.txt` lists behaviorally important generated files to compare. Normalization is intentionally narrow: machine-specific paths, deterministic JSON formatting, and known provenance fields like generated timestamps. CI runs this as a separate `Golden` workflow, not inside `go test ./...`.
 
 The generated-CLI golden uses `testdata/golden/fixtures/golden-api.yaml`, a purpose-built OpenAPI fixture for the Printing Press. Extend that fixture when the machine gains new deterministic generation capabilities that should be protected by artifact goldens. Update mode refuses dirty worktrees unless `GOLDEN_ALLOW_DIRTY=1` is set, so fixture churn stays intentional.
 

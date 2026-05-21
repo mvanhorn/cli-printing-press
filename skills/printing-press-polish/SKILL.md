@@ -50,14 +50,14 @@ Can also be run standalone on any CLI in `~/printing-press/library/`.
 PRESS_HOME="$HOME/printing-press"
 PRESS_LIBRARY="$PRESS_HOME/library"
 
-if ! command -v printing-press >/dev/null 2>&1; then
-  echo "printing-press binary not found."
-  echo "Install with:  go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest"
+if ! command -v cli-printing-press >/dev/null 2>&1; then
+  echo "cli-printing-press binary not found."
+  echo "Install with:  go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest"
   return 1 2>/dev/null || exit 1
 fi
 ```
 
-After setup, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest` to update."
+After setup, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `cli-printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "cli-printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest` to update."
 
 ### Public-library hint
 
@@ -98,7 +98,7 @@ Resolution order for the positional value:
 
 This caller-mode-driven gate replaces the older path-substring heuristic (`*.runstate/*`). The heuristic broke when the main SKILL's Phase 5.5/5.6 ordering inverted, or when polish was invoked from a non-`.runstate` scratch layout: polish would see a `$PRESS_LIBRARY/<slug>/` path, conclude "standalone," and fire its Publish Offer (fork, global git config, public PR) inside a mid-pipeline run. The flag is unambiguous and the safer default is no-publish.
 
-The lock-status check in the next code block is the safety net for the mid-pipeline scenario: if a build lock is held for this CLI (under either name form), polish refuses to run. `printing-press lock` normalizes slug ↔ binary-name internally, so the check works regardless of which form the basename produces.
+The lock-status check in the next code block is the safety net for the mid-pipeline scenario: if a build lock is held for this CLI (under either name form), polish refuses to run. `cli-printing-press lock` normalizes slug ↔ binary-name internally, so the check works regardless of which form the basename produces.
 
 If no match or multiple matches, present via `AskUserQuestion`. Show at most 4
 matches sorted by modification time (most recent first) with human-friendly
@@ -111,11 +111,11 @@ STANDALONE_MODE="<true|false>"  # true iff slash-command invocation or --standal
 
 # Check if there's an active build lock — polish edits would be overwritten
 # when the running build promotes to library.
-_lock_json=$(printing-press lock status --cli "$CLI_NAME" --json 2>/dev/null)
+_lock_json=$(cli-printing-press lock status --cli "$CLI_NAME" --json 2>/dev/null)
 if echo "$_lock_json" | grep -q '"held".*true'; then
   if echo "$_lock_json" | grep -q '"stale".*true'; then
     echo "Warning: stale lock exists for $CLI_NAME (build may have crashed)."
-    echo "Proceeding with polish. Run 'printing-press lock release --cli $CLI_NAME' to clear."
+    echo "Proceeding with polish. Run 'cli-printing-press lock release --cli $CLI_NAME' to clear."
   else
     echo "An active build is in progress for $CLI_NAME."
     echo "Polish edits would be overwritten when the build promotes."
@@ -241,10 +241,10 @@ go build -o "$CLI_NAME" ./cmd/"$CLI_NAME" 2>&1
 # and research dir" step above. RESEARCH_ARGS enables dogfood to
 # verify novel features and sync them into .printing-press.json
 # (required for publish-validate's transcendence gate).
-printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" 2>&1
-printing-press verify --dir "$CLI_DIR" $SPEC_FLAG --json 2>&1
-printing-press workflow-verify --dir "$CLI_DIR" --json > /tmp/polish-workflow-verify.json 2>&1 || true
-printing-press verify-skill --dir "$CLI_DIR" --json > /tmp/polish-verify-skill.json 2>&1 || true
+cli-printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" 2>&1
+cli-printing-press verify --dir "$CLI_DIR" $SPEC_FLAG --json 2>&1
+cli-printing-press workflow-verify --dir "$CLI_DIR" --json > /tmp/polish-workflow-verify.json 2>&1 || true
+cli-printing-press verify-skill --dir "$CLI_DIR" --json > /tmp/polish-verify-skill.json 2>&1 || true
 # publish-validate is a publish-readiness gate, not a CLI-readiness gate.
 # Mid-pipeline polish runs before the main SKILL's promote step and before
 # the publish skill packages tools-manifest.json, so its prerequisites
@@ -256,7 +256,7 @@ printing-press verify-skill --dir "$CLI_DIR" --json > /tmp/polish-verify-skill.j
 # CLI-level hold. Only run publish-validate when polish is the publish
 # entry point (slash-command invocation or explicit --standalone).
 if [ "$STANDALONE_MODE" = "true" ]; then
-  printing-press publish validate --dir "$CLI_DIR" --json > /tmp/polish-publish-validate.json 2>&1 || true
+  cli-printing-press publish validate --dir "$CLI_DIR" --json > /tmp/polish-publish-validate.json 2>&1 || true
 fi
 # --live-check samples novel-feature outputs and populates
 # live_check.features[].warnings (Wave B entity detection) — required for
@@ -265,14 +265,14 @@ fi
 # CLI lives under $PRESS_RUNSTATE/runs/<id>/working/<cli> (mid-pipeline
 # polish). Without it, scorecard looks adjacent to the binary, doesn't
 # find research.json, and reports `unable: true`.
-printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" --live-check --json > /tmp/polish-scorecard.json 2>&1 || true
-printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
-printing-press tools-audit "$CLI_DIR" --json > /tmp/polish-tools-audit-before.json 2>&1 || true
-printing-press pii-audit "$CLI_DIR" --json > /tmp/polish-pii-audit-before.json 2>&1 || true
+cli-printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" --live-check --json > /tmp/polish-scorecard.json 2>&1 || true
+cli-printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
+cli-printing-press tools-audit "$CLI_DIR" --json > /tmp/polish-tools-audit-before.json 2>&1 || true
+cli-printing-press pii-audit "$CLI_DIR" --json > /tmp/polish-pii-audit-before.json 2>&1 || true
 go vet ./... 2>&1
 ```
 
-verify-skill and workflow-verify run alongside dogfood/verify/scorecard so polish catches the same class of failures the public-library CI catches. `publish-validate` runs only when `STANDALONE_MODE=true` (slash-command or `--standalone` Skill-tool invocation). The publish-validate leg is a hard ship-gate **for standalone polish**: in that mode polish cannot recommend `ship` or `ship-with-gaps` while `printing-press publish validate` reports `passed: false`. Mid-pipeline polish (`STANDALONE_MODE=false`) skips publish-validate entirely — its prerequisites (manifest.printer from `git config github.user`, packaged `tools-manifest.json`, phase5 acceptance proof relocated under `$CLI_DIR/.manuscripts/<run>/proofs/`) are parent-pipeline-owned and not yet satisfied at this point; the main SKILL's Phase 6 publish flow gates on publish-validate at the correct time. See "Ship logic" below for how this affects ship_recommendation.
+verify-skill and workflow-verify run alongside dogfood/verify/scorecard so polish catches the same class of failures the public-library CI catches. `publish-validate` runs only when `STANDALONE_MODE=true` (slash-command or `--standalone` Skill-tool invocation). The publish-validate leg is a hard ship-gate **for standalone polish**: in that mode polish cannot recommend `ship` or `ship-with-gaps` while `cli-printing-press publish validate` reports `passed: false`. Mid-pipeline polish (`STANDALONE_MODE=false`) skips publish-validate entirely — its prerequisites (manifest.printer from `git config github.user`, packaged `tools-manifest.json`, phase5 acceptance proof relocated under `$CLI_DIR/.manuscripts/<run>/proofs/`) are parent-pipeline-owned and not yet satisfied at this point; the main SKILL's Phase 6 publish flow gates on publish-validate at the correct time. See "Ship logic" below for how this affects ship_recommendation.
 
 **If Phase 1 baseline reveals the underlying CLI needs re-discovery** — broken HTML/SSR extraction, sparse capture (fewer than 5 unique endpoints in the source manuscript), wrong endpoint shapes, missing GraphQL operation hashes, or any signal that the CLI was generated from incomplete capture — polish does not normally do browser capture itself, but the shared playbook at `skills/printing-press/references/browser-sniff-capture.md` covers all available capture backends including the Claude chrome-MCP (`mcp__claude-in-chrome__*`) and computer-use (`mcp__computer-use__*`) when the runtime exposes them. Read Step 1 (tool detection), Step 2c.5 (failure-recovery menu), and Step 2e (chrome-MCP capture playbook) of that reference before improvising. Re-discovery from polish is rare but real; when it happens, use the shared backends — do not invent a new capture flow.
 
@@ -283,7 +283,7 @@ Parse findings into categories:
 | Verify failures | verify --json | Commands with score < 3 |
 | SKILL static-check failures | verify-skill --json | Any `findings[]` with `severity=error` (flag-names, flag-commands, positional-args, unknown-command, canonical-sections). Hard ship-gate: ship cannot fire while these exist. |
 | Workflow gaps | workflow-verify --json | Verdict `workflow-fail`. Soft gate: surface in `remaining_issues` and downgrade to `hold` when the workflow is the CLI's primary value. |
-| Publish validation failures | publish validate --json | `passed: false`. **Standalone polish only** (runs only when `STANDALONE_MODE=true`); skipped in mid-pipeline polish where publish prerequisites aren't yet satisfied. When it runs, it's a hard ship-gate: ship cannot fire while publish validate fails. If the only failing check is missing phase5 acceptance, report `phase5 acceptance required` with the next-step command: authenticate, then run `printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG --live --level quick --write-acceptance <proofs-dir>/phase5-acceptance.json`. Use the proofs directory from the validate error when present. |
+| Publish validation failures | publish validate --json | `passed: false`. **Standalone polish only** (runs only when `STANDALONE_MODE=true`); skipped in mid-pipeline polish where publish prerequisites aren't yet satisfied. When it runs, it's a hard ship-gate: ship cannot fire while publish validate fails. If the only failing check is missing phase5 acceptance, report `phase5 acceptance required` with the next-step command: authenticate, then run `cli-printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG --live --level quick --write-acceptance <proofs-dir>/phase5-acceptance.json`. Use the proofs directory from the validate error when present. |
 | Dead code | dogfood | Dead functions, dead flags |
 | Stale files | dogfood | Unregistered commands |
 | Description issues | dogfood | Boilerplate root Short |
@@ -324,7 +324,7 @@ Record baseline scores: scorecard total, verify pass rate, dogfood verdict, go v
 Fix in priority order. After each priority level, update the lock heartbeat:
 
 ```bash
-printing-press lock update --cli "$CLI_NAME" --phase polish 2>/dev/null
+cli-printing-press lock update --cli "$CLI_NAME" --phase polish 2>/dev/null
 ```
 
 ### Runtime variant default checklist
@@ -342,7 +342,7 @@ Keep the checklist in the polish notes or result block. Skip it for ordinary bug
 If Phase 1's `dogfood` reported `MCP Surface: FAIL` with a parity mismatch, the CLI was generated before the runtime cobratree walker existed and is still on the static `internal/mcp/tools.go` surface. The fix is mechanical:
 
 ```bash
-printing-press mcp-sync "$CLI_DIR"
+cli-printing-press mcp-sync "$CLI_DIR"
 ```
 
 That migrates the MCP surface to the runtime walker, regenerates `tools-manifest.json` and `internal/mcp/tools.go`, and applies any `mcp-descriptions.json` overrides. Re-run `dogfood` after; the parity gate flips to PASS. This is a known migration path for every CLI generated before the cobratree landed; running it on a CLI already on the runtime walker is a no-op refresh.
@@ -488,7 +488,7 @@ Read `/tmp/polish-verify-skill.json` for the full finding list. Each finding has
 
 When editing other parts of SKILL.md, Read the affected section first and Read it again after the Edit. `Edit` replaces a literal string; if the surrounding context has drifted, a single Edit can graft a second copy of a block onto the first instead of replacing it.
 
-After fixing, re-run `printing-press verify-skill --dir "$CLI_DIR"` and confirm exit 0 before moving on.
+After fixing, re-run `cli-printing-press verify-skill --dir "$CLI_DIR"` and confirm exit 0 before moving on.
 
 ### Priority 5: Remaining dogfood issues
 
@@ -503,7 +503,7 @@ After fixing, re-run `printing-press verify-skill --dir "$CLI_DIR"` and confirm 
 
 Stop and:
 
-1. Run `printing-press tools-audit "$CLI_DIR" --json` to surface mechanical findings (empty Short, thin Short, missing `mcp:read-only` on read-shaped command names).
+1. Run `cli-printing-press tools-audit "$CLI_DIR" --json` to surface mechanical findings (empty Short, thin Short, missing `mcp:read-only` on read-shaped command names).
 2. You must read `references/tools-polish.md` and follow its instructions to address the findings AND run a judgment pass over every command — regardless of whether the audit flagged it. The audit catches mechanical issues; description quality and borderline classification (read-only vs. local-write) always require agent reasoning. You must not skip this.
 3. **Accepting MCP-description findings carries a stricter contract.** `thin-mcp-description` and `empty-mcp-description` accepts require three pre-decision fields (`spec_source_material`, `target_description`, `gap_analysis`) populated per finding. The binary rejects bulk accepts (>5 findings sharing one rationale) and runs that "complete" without lifting MCPDescriptionQuality. Fix via override or generator improvement is the expected path; accept is rare. See `references/tools-polish.md` "Marking a finding accepted" for the full contract.
 
@@ -515,7 +515,7 @@ Proceed to "After all fixes" only when the audit's summary line reads `no pendin
 
 Stop and:
 
-1. Run `printing-press pii-audit "$CLI_DIR"` to surface pending findings (or read `/tmp/polish-pii-audit-before.json` from Phase 1's baseline).
+1. Run `cli-printing-press pii-audit "$CLI_DIR"` to surface pending findings (or read `/tmp/polish-pii-audit-before.json` from Phase 1's baseline).
 2. You must read `references/pii-polish.md` and follow its per-finding decision tree — fix real values in source with non-matching placeholders, or accept with the `category` + `evidence_context` pre-decision fields.
 3. **Accepting PII findings carries a strict contract.** Missing fields, 6+ accepts sharing a rationale, or wholesale-accepting ≥10 findings without source fixes all fail the gate. See `references/pii-polish.md` "The accept contract" and "Forbidden accept patterns" for the full rules.
 
@@ -537,16 +537,16 @@ Re-run the diagnostic sweep on the fixed CLI:
 # checkNovelFeatures doesn't re-sync novel_features_built after Phase 2
 # edits, and publish-validate's transcendence gate reads stale state
 # from Phase 1's pass.
-printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" 2>&1
-printing-press verify --dir "$CLI_DIR" $SPEC_FLAG --json 2>&1
-printing-press workflow-verify --dir "$CLI_DIR" --json 2>&1
-printing-press verify-skill --dir "$CLI_DIR" --json 2>&1
+cli-printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG "${RESEARCH_ARGS[@]}" 2>&1
+cli-printing-press verify --dir "$CLI_DIR" $SPEC_FLAG --json 2>&1
+cli-printing-press workflow-verify --dir "$CLI_DIR" --json 2>&1
+cli-printing-press verify-skill --dir "$CLI_DIR" --json 2>&1
 if [ "$STANDALONE_MODE" = "true" ]; then
-  printing-press publish validate --dir "$CLI_DIR" --json 2>&1
+  cli-printing-press publish validate --dir "$CLI_DIR" --json 2>&1
 fi
-printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
-printing-press tools-audit "$CLI_DIR" 2>&1
-printing-press pii-audit "$CLI_DIR" 2>&1
+cli-printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
+cli-printing-press tools-audit "$CLI_DIR" 2>&1
+cli-printing-press pii-audit "$CLI_DIR" 2>&1
 go vet ./... 2>&1
 ```
 

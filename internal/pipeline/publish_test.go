@@ -342,7 +342,7 @@ resources:
 }
 
 // TestWriteCLIManifestForPublish_NovelFeaturesFromPrintFlowResearch covers the
-// printing-press print flow: research.json lives at <RunRoot>/pipeline/research.json
+// cli-printing-press print flow: research.json lives at <RunRoot>/pipeline/research.json
 // alongside phase artifacts. The fallback path keeps print-flow CLIs working.
 func TestWriteCLIManifestForPublish_NovelFeaturesFromPrintFlowResearch(t *testing.T) {
 	_, state := publishManifestEnvSetup(t, "20260427-print-flow")

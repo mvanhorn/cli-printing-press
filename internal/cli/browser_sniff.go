@@ -93,7 +93,7 @@ func newBrowserSniffCmd() *cobra.Command {
 			if droppedEndpoints > 0 {
 				fmt.Printf("Dropped %d endpoint%s below --min-samples=%d (still visible in %s)\n", droppedEndpoints, plural(droppedEndpoints), minSamples, analysisOutputPath)
 			}
-			fmt.Printf("Run 'printing-press generate --spec %s' to build the CLI\n", outputPath)
+			fmt.Printf("Run 'cli-printing-press generate --spec %s' to build the CLI\n", outputPath)
 			return nil
 		},
 	}

@@ -42,13 +42,13 @@ Supported on macOS and Linux. Windows is not supported (rename semantics
 differ when files are held by editors). --apply requires a clean git
 tree at <cli-dir> by default; --force overrides.`,
 		Example: `  # Dry-run classification report against a fresh-generated tree:
-  printing-press regen-merge ~/library/postman-explore --fresh /tmp/fresh-postman
+  cli-printing-press regen-merge ~/library/postman-explore --fresh /tmp/fresh-postman
 
   # Apply the safe changes:
-  printing-press regen-merge ~/library/postman-explore --fresh /tmp/fresh-postman --apply
+  cli-printing-press regen-merge ~/library/postman-explore --fresh /tmp/fresh-postman --apply
 
   # JSON output for piping into other tools:
-  printing-press regen-merge ~/library/postman-explore --fresh /tmp/fresh-postman --json`,
+  cli-printing-press regen-merge ~/library/postman-explore --fresh /tmp/fresh-postman --json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if freshDir == "" {

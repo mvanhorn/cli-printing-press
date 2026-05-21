@@ -14,19 +14,19 @@ func newLockCmd() *cobra.Command {
 		Use:   "lock",
 		Short: "Manage build locks for parallel safety",
 		Example: `  # Acquire a lock for a CLI build
-  printing-press lock acquire --cli notion-pp-cli --scope my-workspace
+  cli-printing-press lock acquire --cli notion-pp-cli --scope my-workspace
 
   # Check lock status
-  printing-press lock status --cli notion-pp-cli --json
+  cli-printing-press lock status --cli notion-pp-cli --json
 
   # Update heartbeat
-  printing-press lock update --cli notion-pp-cli --phase build
+  cli-printing-press lock update --cli notion-pp-cli --phase build
 
   # Release a lock
-  printing-press lock release --cli notion-pp-cli
+  cli-printing-press lock release --cli notion-pp-cli
 
   # Promote working dir to library
-  printing-press lock promote --cli notion-pp-cli --dir /path/to/working`,
+  cli-printing-press lock promote --cli notion-pp-cli --dir /path/to/working`,
 	}
 
 	cmd.AddCommand(newLockAcquireCmd())

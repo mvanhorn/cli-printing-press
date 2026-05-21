@@ -35,14 +35,31 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	CanonicalBinaryName = "cli-printing-press"
+	LegacyBinaryName    = "printing-press"
+)
+
 func Execute() error {
+	return ExecuteWithName(CanonicalBinaryName)
+}
+
+func ExecuteWithName(commandName string) error {
+	rootCmd := NewRootCommand(commandName)
+	return rootCmd.Execute()
+}
+
+func NewRootCommand(commandName string) *cobra.Command {
+	if commandName == "" {
+		commandName = CanonicalBinaryName
+	}
 	rootCmd := &cobra.Command{
-		Use:          "printing-press",
+		Use:          commandName,
 		Short:        "Describe your API. Get a production CLI.",
 		SilenceUsage: true,
 		Version:      version.Version,
 	}
-	rootCmd.SetVersionTemplate("printing-press {{.Version}}\n")
+	rootCmd.SetVersionTemplate(commandName + " {{.Version}}\n")
 
 	rootCmd.AddCommand(newGenerateCmd())
 	rootCmd.AddCommand(newScorecardCmd())
@@ -76,7 +93,7 @@ func Execute() error {
 	rootCmd.AddCommand(newBundleCmd())
 	rootCmd.AddCommand(newMCPSyncCmd())
 
-	return rootCmd.Execute()
+	return rootCmd
 }
 
 func newGenerateCmd() *cobra.Command {
@@ -107,16 +124,16 @@ func newGenerateCmd() *cobra.Command {
 		Use:   "generate",
 		Short: "Generate a Go CLI project from an API spec",
 		Example: `  # Generate from a local OpenAPI spec
-  printing-press generate --spec ./openapi.yaml
+  cli-printing-press generate --spec ./openapi.yaml
 
   # Generate from a URL and recreate output while preserving hand-authored CLI files
-  printing-press generate --spec https://api.example.com/openapi.json --force
+  cli-printing-press generate --spec https://api.example.com/openapi.json --force
 
   # Generate from API documentation
-  printing-press generate --docs https://docs.stripe.com/api --name stripe
+  cli-printing-press generate --docs https://docs.stripe.com/api --name stripe
 
   # Multiple specs merged into one CLI
-  printing-press generate --spec api-v1.yaml --spec api-v2.yaml --name myapi`,
+  cli-printing-press generate --spec api-v1.yaml --spec api-v2.yaml --name myapi`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRun && docsURL != "" {
 				return fmt.Errorf("--dry-run cannot be used with --docs (doc scraping has unavoidable side effects)")
@@ -1310,15 +1327,15 @@ func newVersionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "version",
 		Short:   "Print version",
-		Example: `  printing-press version`,
+		Example: `  cli-printing-press version`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if asJSON {
-				return json.NewEncoder(os.Stdout).Encode(map[string]string{
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]string{
 					"version": version.Version,
 					"go":      runtime.Version(),
 				})
 			}
-			fmt.Printf("printing-press %s\n", version.Version)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", cmd.Root().Use, version.Version)
 			return nil
 		},
 	}
@@ -1339,13 +1356,13 @@ func newPrintCmd() *cobra.Command {
 		Short: "Create an autonomous CLI generation pipeline",
 		Long:  "Creates a pipeline directory with plan seeds for each phase. Use /ce:work on each plan to execute.",
 		Example: `  # Run full pipeline for a catalog API
-  printing-press print stripe
+  cli-printing-press print stripe
 
   # Force overwrite existing pipeline
-  printing-press print stripe --force
+  cli-printing-press print stripe --force
 
   # Resume an interrupted pipeline
-  printing-press print stripe --resume`,
+  cli-printing-press print stripe --resume`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			apiName := args[0]

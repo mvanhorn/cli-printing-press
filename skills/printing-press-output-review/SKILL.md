@@ -54,7 +54,7 @@ if [ ! -f "$CLI_DIR/research.json" ]; then
   fi
 fi
 
-printing-press scorecard --dir "$CLI_DIR" "${RESEARCH_ARGS[@]}" --live-check --json > /tmp/output-review-livecheck.json 2>&1 || true
+cli-printing-press scorecard --dir "$CLI_DIR" "${RESEARCH_ARGS[@]}" --live-check --json > /tmp/output-review-livecheck.json 2>&1 || true
 ```
 
 If the scorecard call fails or `/tmp/output-review-livecheck.json` is empty, return the SKIP result (Step 3) without dispatching the reviewer.

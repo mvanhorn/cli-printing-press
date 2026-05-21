@@ -70,18 +70,18 @@ Step 6: REPORT - Output the delta
 Use --audit-only to just get the baseline without making changes.
 The improvement steps (2-4) are driven by the /printing-press emboss skill.`,
 		Example: `  # By name (looked up in ~/printing-press/library/)
-  printing-press emboss notion-pp-cli
-  printing-press emboss notion
+  cli-printing-press emboss notion-pp-cli
+  cli-printing-press emboss notion
 
   # By path
-  printing-press emboss ~/printing-press/library/notion
-  printing-press emboss ./discord-pp-cli
+  cli-printing-press emboss ~/printing-press/library/notion
+  cli-printing-press emboss ./discord-pp-cli
 
   # With --dir flag (backward compatible)
-  printing-press emboss --dir ./discord-pp-cli --spec /tmp/spec.json --audit-only
+  cli-printing-press emboss --dir ./discord-pp-cli --spec /tmp/spec.json --audit-only
 
   # Audit with live API testing
-  printing-press emboss --dir ./discord-pp-cli --spec /tmp/spec.json --api-key $TOKEN --audit-only`,
+  cli-printing-press emboss --dir ./discord-pp-cli --spec /tmp/spec.json --api-key $TOKEN --audit-only`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolved, err := resolveEmbossTarget(dir, args)
@@ -159,7 +159,7 @@ The improvement steps (2-4) are driven by the /printing-press emboss skill.`,
 			fmt.Fprintln(os.Stderr, "\nBaseline saved. Now run the skill for improvements:")
 			fmt.Fprintf(os.Stderr, "  /printing-press emboss %q\n\n", workingDir)
 			fmt.Fprintln(os.Stderr, "When done, re-run this command to compute the delta:")
-			fmt.Fprintf(os.Stderr, "  printing-press emboss --dir %q --spec %q\n", workingDir, specPath)
+			fmt.Fprintf(os.Stderr, "  cli-printing-press emboss --dir %q --spec %q\n", workingDir, specPath)
 			return nil
 		},
 	}
@@ -219,7 +219,7 @@ func resolveEmbossTarget(flagDir string, args []string) (string, error) {
 
 		return "", fmt.Errorf("no CLI named %q found in %s", target, libraryRoot)
 	default:
-		return "", fmt.Errorf("specify a CLI name or path (e.g. printing-press emboss notion)")
+		return "", fmt.Errorf("specify a CLI name or path (e.g. cli-printing-press emboss notion)")
 	}
 }
 

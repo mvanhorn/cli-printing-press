@@ -418,13 +418,13 @@ most serious leg failure.
 
 Each leg remains callable standalone — this command is additive orchestration.`,
 		Example: `  # Canonical Phase 4 invocation
-  printing-press shipcheck \
+  cli-printing-press shipcheck \
     --dir ~/printing-press/library/notion \
     --spec ./openapi.yaml \
     --research-dir ~/printing-press/.runstate/scope/runs/RUN_ID
 
   # Without a research dir (skips the dogfood/scorecard novel-feature checks)
-  printing-press shipcheck --dir ~/printing-press/library/notion --spec ./openapi.yaml`,
+  cli-printing-press shipcheck --dir ~/printing-press/library/notion --spec ./openapi.yaml`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

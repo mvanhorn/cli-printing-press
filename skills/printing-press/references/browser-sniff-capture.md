@@ -15,7 +15,7 @@
 
 3. **Use click-based SPA navigation after installing interceptors.** `browser-use open` triggers a full page reload which resets the JS context and destroys fetch/XHR interceptors. After installing interceptors, navigate by clicking links (`browser-use eval "document.querySelector('a[href*=account]').click()"` or `browser-use click`). Only use `browser-use open` for the first page load or when you need to re-install interceptors.
 
-4. **Run `printing-press probe-reachability` before announcing any browser escalation, and don't expose transport tiers to the user as peer choices.** If research or preflight saw Cloudflare/Vercel/WAF/DataDome/PerimeterX/CAPTCHA evidence, the *first* action is the no-browser probe — not a Chrome-attach prompt and not a transport-tier menu like "Browser-sniff + clearance cookie / Browser-sniff Surf-only / HAR / Hold". Intent menus are fine (yes/no, browser-sniff or pivot, etc.); the wrong shape is forcing the user to pick between Surf vs cookie vs full browser, which is the classifier's job. Many passive challenges (Vercel TLS-fingerprint mitigation, lighter Cloudflare gates) clear with Surf alone, no cookie, no setup. If `probe-reachability` returns `mode: browser_http`, the printed CLI will ship Surf transport with zero clearance-cookie capture — runtime is settled silently. (Browser-sniff for endpoint *discovery* is a separate decision handled by Phase 1.7's normal matrix; if that matrix says to ask, the existing intent-level prompts already disclose Chrome attach as a possibility — that's the right place for that consent, not bundled into a transport-tier menu.) Only when the probe returns `browser_clearance_http` or `unknown` should you tell the user direct HTTP is blocked and proceed with a real browser capture. Do NOT replace the target with RSS/docs/official API or ask for a smaller CLI shape until after browser capture has failed by the criteria below.
+4. **Run `cli-printing-press probe-reachability` before announcing any browser escalation, and don't expose transport tiers to the user as peer choices.** If research or preflight saw Cloudflare/Vercel/WAF/DataDome/PerimeterX/CAPTCHA evidence, the *first* action is the no-browser probe — not a Chrome-attach prompt and not a transport-tier menu like "Browser-sniff + clearance cookie / Browser-sniff Surf-only / HAR / Hold". Intent menus are fine (yes/no, browser-sniff or pivot, etc.); the wrong shape is forcing the user to pick between Surf vs cookie vs full browser, which is the classifier's job. Many passive challenges (Vercel TLS-fingerprint mitigation, lighter Cloudflare gates) clear with Surf alone, no cookie, no setup. If `probe-reachability` returns `mode: browser_http`, the printed CLI will ship Surf transport with zero clearance-cookie capture — runtime is settled silently. (Browser-sniff for endpoint *discovery* is a separate decision handled by Phase 1.7's normal matrix; if that matrix says to ask, the existing intent-level prompts already disclose Chrome attach as a possibility — that's the right place for that consent, not bundled into a transport-tier menu.) Only when the probe returns `browser_clearance_http` or `unknown` should you tell the user direct HTTP is blocked and proceed with a real browser capture. Do NOT replace the target with RSS/docs/official API or ask for a smaller CLI shape until after browser capture has failed by the criteria below.
 
 5. **Replayability is the success criterion.** A browser capture succeeds only when it produces a shippable surface: replayable API calls, persisted-query registry entries, browser-clearance cookies that can be imported and replayed, or structured HTML/SSR/RSS/JSON-LD extraction targets. If the only observed path requires live page-context execution, report HOLD or return to discovery for a lighter surface. Do not continue as if resident browser transport is acceptable.
 
@@ -295,7 +295,7 @@ Close the headed browser and restart headless with the saved state.
 5. **Clear any prior requests.** Click the 🚫 (clear / no-entry) icon in the toolbar to start with an empty log.
 6. **Reproduce the user flow on the target site** — navigate, click into the section the printed CLI needs, scroll, interact. Wait for network activity to settle between actions.
 7. **Export the HAR.** Click the **download-arrow icon** at the top-left of the Network panel toolbar (between the upload-arrow icon `↑` and the record/clear icons — it looks like a `↓` arrow with a horizontal bar underneath). A macOS/Windows save dialog opens. Save as `<api>-capture.har` somewhere accessible like `~/Downloads/`.
-8. **Tell the agent the path.** The agent runs `printing-press browser-sniff --har <path>` next.
+8. **Tell the agent the path.** The agent runs `cli-printing-press browser-sniff --har <path>` next.
 
 **Computer-use visual-feedback-loop (only when `COMPUTER_USE_AVAILABLE=true`).** Computer-use cannot click or type into Chrome (browsers are tier-"read" — visible in screenshots, but input is blocked). Its value here is closing the loop with the user when text instructions get them stuck. Pattern:
 
@@ -371,7 +371,7 @@ curl -s -o /tmp/probe-response.json -w '%{http_code}\n' \
 
 Decision criteria:
 
-- **HTTP 200 with structured JSON** — the direct probe is viable. Capture a handful of representative endpoint responses to `$DISCOVERY_DIR/direct-probe-*.json`, then proceed to Step 2a or fall through to Step 2b (manual HAR via DevTools) for the structured browser-sniff capture. **Do not skip the structured capture** — `printing-press browser-sniff` needs a HAR or enriched-capture JSON, not loose curl responses, and the replayability check still has to run against the captured envelope.
+- **HTTP 200 with structured JSON** — the direct probe is viable. Capture a handful of representative endpoint responses to `$DISCOVERY_DIR/direct-probe-*.json`, then proceed to Step 2a or fall through to Step 2b (manual HAR via DevTools) for the structured browser-sniff capture. **Do not skip the structured capture** — `cli-printing-press browser-sniff` needs a HAR or enriched-capture JSON, not loose curl responses, and the replayability check still has to run against the captured envelope.
 - **HTTP 403/429 with a Cloudflare challenge body** (`<title>Just a moment...</title>`, `cf_chl_opt`, Vercel/Akamai equivalents) — the WAF is blocking direct probes. Fall through to browser-use; the captured surface will need Surf transport and possibly a clearance-cookie step.
 - **HTTP 401/403 with a structured auth error** (`{"error":"unauthenticated"}`, `WWW-Authenticate: Bearer`) — direct probing works but the path is auth-only. Document the path in the brief and route to the authenticated-flow capture.
 
@@ -674,11 +674,11 @@ cat "$SNIFF_URLS" | sed 's/\?.*//' | sort -u > "$DISCOVERY_DIR/browser-sniff-uni
 
 **Step 2a.4: Generate enriched capture**
 
-The Performance API gives us URLs but not response bodies. To feed `printing-press browser-sniff`, we need to call each unique API endpoint and capture the response:
+The Performance API gives us URLs but not response bodies. To feed `cli-printing-press browser-sniff`, we need to call each unique API endpoint and capture the response:
 
 ```bash
 # For each unique API URL, fetch it and build a simple capture file
-# printing-press browser-sniff accepts HAR or enriched capture JSON
+# cli-printing-press browser-sniff accepts HAR or enriched capture JSON
 # When fetching each unique API URL to build enriched capture:
 # Apply browser-sniff pacing between requests (1s initial, adaptive per Browser-Sniff Pacing rules)
 # On 429: double delay, log, continue with remaining URLs
@@ -952,18 +952,18 @@ If direct HTTP is blocked but the page does not require live page-context execut
 
 Run browser-sniff on the captured traffic. Always write the structured traffic analysis to the discovery directory so it is archived with the manuscript:
 ```bash
-printing-press browser-sniff --har "$DISCOVERY_DIR/browser-sniff-capture.har" --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"
+cli-printing-press browser-sniff --har "$DISCOVERY_DIR/browser-sniff-capture.har" --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"
 ```
 
 If using agent-browser's enriched capture format instead:
 ```bash
-printing-press browser-sniff --har "$DISCOVERY_DIR/browser-sniff-capture.json" --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"
+cli-printing-press browser-sniff --har "$DISCOVERY_DIR/browser-sniff-capture.json" --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"
 ```
 
 If hand-writing or repairing `$DISCOVERY_DIR/traffic-analysis.json`, inspect the canonical schema first:
 
 ```bash
-printing-press schema traffic-analysis > "$DISCOVERY_DIR/traffic-analysis.schema.json"
+cli-printing-press schema traffic-analysis > "$DISCOVERY_DIR/traffic-analysis.schema.json"
 ```
 
 Two fields trip up hand-edits often enough to call out:

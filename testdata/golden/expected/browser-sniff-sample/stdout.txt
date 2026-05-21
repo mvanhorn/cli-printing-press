@@ -1,4 +1,4 @@
 Spec written to <ARTIFACT_DIR>/browser-sniff-sample/spec.yaml (3 endpoints across 3 resources)
 Traffic analysis written to <ARTIFACT_DIR>/browser-sniff-sample/traffic-analysis.json
 Samples written to <ARTIFACT_DIR>/browser-sniff-sample/spec-samples (3 endpoints)
-Run 'printing-press generate --spec <ARTIFACT_DIR>/browser-sniff-sample/spec.yaml' to build the CLI
+Run 'cli-printing-press generate --spec <ARTIFACT_DIR>/browser-sniff-sample/spec.yaml' to build the CLI

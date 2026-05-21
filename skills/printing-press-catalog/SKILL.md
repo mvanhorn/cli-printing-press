@@ -16,7 +16,7 @@ allowed-tools:
 
 # /printing-press-catalog
 
-> **Deprecated:** This skill is superseded by the main `/printing-press` skill, which now checks the built-in catalog automatically. Use `/printing-press <API>` instead. For browsing the catalog, use `printing-press catalog list` in your terminal.
+> **Deprecated:** This skill is superseded by the main `/printing-press` skill, which now checks the built-in catalog automatically. Use `/printing-press <API>` instead. For browsing the catalog, use `cli-printing-press catalog list` in your terminal.
 
 Browse and install pre-built Go CLIs for popular APIs.
 
@@ -31,11 +31,11 @@ Browse and install pre-built Go CLIs for popular APIs.
 ## Prerequisites
 
 - Go 1.26.3 or newer installed
-- `printing-press` binary on PATH (install with `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest`)
+- `cli-printing-press` binary on PATH (install with `go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest`)
 
 ## Setup
 
-Before any other commands, run the setup contract to verify the printing-press binary is on PATH and initialize scope variables:
+Before any other commands, run the setup contract to verify the cli-printing-press binary is on PATH and initialize scope variables:
 
 <!-- PRESS_SETUP_CONTRACT_START -->
 ```bash
@@ -47,31 +47,31 @@ _scope_dir="$(cd "$_scope_dir" && pwd -P)"
 
 # Prefer local build when running from inside the printing-press repo.
 _press_repo=false
-if [ -x "$_scope_dir/printing-press" ] && [ -d "$_scope_dir/cmd/printing-press" ]; then
+if [ -x "$_scope_dir/cli-printing-press" ] && [ -d "$_scope_dir/cmd/cli-printing-press" ]; then
   _press_repo=true
   export PATH="$_scope_dir:$PATH"
-  echo "Using local build: $_scope_dir/printing-press"
-elif ! command -v printing-press >/dev/null 2>&1; then
-  if [ -x "$HOME/go/bin/printing-press" ]; then
-    echo "printing-press found at ~/go/bin/printing-press but not on PATH."
+  echo "Using local build: $_scope_dir/cli-printing-press"
+elif ! command -v cli-printing-press >/dev/null 2>&1; then
+  if [ -x "$HOME/go/bin/cli-printing-press" ]; then
+    echo "cli-printing-press found at ~/go/bin/cli-printing-press but not on PATH."
     echo "Add GOPATH/bin to your PATH:  export PATH=\"\$HOME/go/bin:\$PATH\""
   else
-    echo "printing-press binary not found."
-    echo "Install with:  go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest"
+    echo "cli-printing-press binary not found."
+    echo "Install with:  go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest"
   fi
   return 1 2>/dev/null || exit 1
 fi
 
 # Resolve and emit the absolute path the agent must use for every later
-# `printing-press` invocation. `export PATH` above only affects this one
+# `cli-printing-press` invocation. `export PATH` above only affects this one
 # Bash tool call; subsequent calls open a fresh shell and resolve bare
-# `printing-press` against the user's default PATH, where a stale global
+# `cli-printing-press` against the user's default PATH, where a stale global
 # can silently shadow the local build. The agent captures this marker and
 # substitutes the absolute path into every later invocation.
 if [ "$_press_repo" = "true" ]; then
-  PRINTING_PRESS_BIN="$_scope_dir/printing-press"
+  PRINTING_PRESS_BIN="$_scope_dir/cli-printing-press"
 else
-  PRINTING_PRESS_BIN="$(command -v printing-press 2>/dev/null || true)"
+  PRINTING_PRESS_BIN="$(command -v cli-printing-press 2>/dev/null || true)"
 fi
 echo "PRINTING_PRESS_BIN=$PRINTING_PRESS_BIN"
 
@@ -89,9 +89,9 @@ mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY"
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-After running the setup contract, capture the `PRINTING_PRESS_BIN=<abs-path>` line from stdout. **Every subsequent `printing-press ...` invocation in this skill must use that absolute path** (substitute the value, not the literal `$PRINTING_PRESS_BIN` token) — `export PATH` above only affects the single Bash tool call it runs in, so later calls open a fresh shell where bare `printing-press` resolves against the user's default `PATH` and a stale global can shadow the local build.
+After running the setup contract, capture the `PRINTING_PRESS_BIN=<abs-path>` line from stdout. **Every subsequent `cli-printing-press ...` invocation in this skill must use that absolute path** (substitute the value, not the literal `$PRINTING_PRESS_BIN` token) — `export PATH` above only affects the single Bash tool call it runs in, so later calls open a fresh shell where bare `cli-printing-press` resolves against the user's default `PATH` and a stale global can shadow the local build.
 
-After capturing the binary path, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `<PRINTING_PRESS_BIN> version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest` to update."
+After capturing the binary path, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `<PRINTING_PRESS_BIN> version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "cli-printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest` to update."
 
 Generated CLIs are published to `$PRESS_LIBRARY/`, not to the repo.
 
@@ -160,7 +160,7 @@ When invoked with `install <name>`:
      OUTPUT_DIR="${OUTPUT_BASE}-$i"
      i=$((i + 1))
    done
-   printing-press generate \
+   cli-printing-press generate \
      --spec "$SPEC_TMP" \
      --output "$OUTPUT_DIR" \
      --validate

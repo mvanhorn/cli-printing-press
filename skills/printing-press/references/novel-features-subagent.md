@@ -7,7 +7,7 @@
 
 ## Invariants
 
-The subagent spawns once per absorb step, in every printing-press run. The
+The subagent spawns once per absorb step, in every cli-printing-press run. The
 only legal non-spawn outcome is the pre-flight HALT defined below.
 
 - A missing prior `research.json` is a first print, not a skip signal — the

@@ -31,21 +31,21 @@ suitable for drag-drop install in Claude Desktop, Claude Code, MCP for
 Windows, or any MCPB-aware host.
 
 The CLI directory must contain manifest.json (emitted automatically by
-` + "`printing-press generate`" + `). bundle compiles the MCP binary for the
+` + "`cli-printing-press generate`" + `). bundle compiles the MCP binary for the
 target platform via ` + "`go build`" + ` and ZIPs it with the manifest.
 
 Use --platform to cross-compile for a different host. Default is the
 current host (e.g., darwin/arm64). Use --skip-build with --binary to
 package an already-built binary instead of recompiling.
 
-` + "`printing-press generate`" + ` runs this automatically for the host platform
+` + "`cli-printing-press generate`" + ` runs this automatically for the host platform
 on each generation; you only need to invoke ` + "`bundle`" + ` directly to
 cross-compile, rebuild after manual edits, or pull a pre-built binary
 from another build pipeline.`,
-		Example: `  printing-press bundle ~/printing-press/library/marketing/dub
-  printing-press bundle ~/printing-press/library/marketing/dub --platform linux/amd64
-  printing-press bundle ./generated/notion --output /tmp/notion.mcpb
-  printing-press bundle ./generated/dub --skip-build --binary ./prebuilt/dub-pp-mcp`,
+		Example: `  cli-printing-press bundle ~/printing-press/library/marketing/dub
+  cli-printing-press bundle ~/printing-press/library/marketing/dub --platform linux/amd64
+  cli-printing-press bundle ./generated/notion --output /tmp/notion.mcpb
+  cli-printing-press bundle ./generated/dub --skip-build --binary ./prebuilt/dub-pp-mcp`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cliDir, err := filepath.Abs(args[0])
@@ -63,7 +63,7 @@ from another build pipeline.`,
 			if err != nil {
 				return &ExitError{
 					Code: ExitInputError,
-					Err:  fmt.Errorf("reading manifest.json (run `printing-press generate` first): %w", err),
+					Err:  fmt.Errorf("reading manifest.json (run `cli-printing-press generate` first): %w", err),
 				}
 			}
 			var manifest pipeline.MCPBManifest
@@ -123,10 +123,10 @@ from another build pipeline.`,
 // trying the bundle in Claude Desktop on the generating machine before
 // publishing. The canonical multi-platform .mcpb artifacts are produced by
 // the public library's CI on merge to main and attached as release assets;
-// `printing-press publish package` strips build/ from the staged tree.
+// `cli-printing-press publish package` strips build/ from the staged tree.
 // Best-effort: skips silently for expected non-bundle states (no manifest,
 // no go.sum) and warns on real failures (malformed manifest, build/zip
-// errors). Users can always re-run via `printing-press bundle <dir>`.
+// errors). Users can always re-run via `cli-printing-press bundle <dir>`.
 func autoBundleForHost(cliDir string, w io.Writer) {
 	manifestPath := filepath.Join(cliDir, pipeline.MCPBManifestFilename)
 	manifestData, err := os.ReadFile(manifestPath)
@@ -150,7 +150,7 @@ func autoBundleForHost(cliDir string, w io.Writer) {
 	// Skip silently when the generated module hasn't run `go mod tidy` yet
 	// (e.g. generate --validate=false). Bundling requires a buildable module;
 	// otherwise the user gets a guaranteed-fail build and a confusing
-	// warning. They can run `printing-press bundle <dir>` after tidying.
+	// warning. They can run `cli-printing-press bundle <dir>` after tidying.
 	if _, err := os.Stat(filepath.Join(cliDir, "go.sum")); err != nil {
 		return
 	}

@@ -17,8 +17,8 @@ import (
 )
 
 // ToolsManifestFilename is the name of the tools manifest file written to each
-// published CLI directory. Consumed by `printing-press auth doctor` and
-// `printing-press mcp-audit` to inspect the published library without parsing
+// published CLI directory. Consumed by `cli-printing-press auth doctor` and
+// `cli-printing-press mcp-audit` to inspect the published library without parsing
 // the original spec.
 const ToolsManifestFilename = "tools-manifest.json"
 

@@ -21,7 +21,7 @@ else
   exit 1
 fi
 
-binary="./printing-press"
+binary="./cli-printing-press"
 cases_root="testdata/golden/cases"
 expected_root="testdata/golden/expected"
 actual_root=".gotmp/golden/actual"
@@ -278,7 +278,7 @@ if find "$cases_root" -name artifacts.txt -print -quit | grep -q . && ! command 
 fi
 
 echo "Building $binary"
-go build -o "$binary" ./cmd/printing-press
+go build -o "$binary" ./cmd/cli-printing-press
 
 rm -rf "$actual_root"
 mkdir -p "$actual_root"

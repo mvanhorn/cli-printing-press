@@ -26,7 +26,7 @@ workflows, and architecture decisions.
 
 The vision command produces the structure; Phase 0 fills it with intelligence.`,
 		Example: `  # Generate visionary research for an API
-  printing-press vision --api stripe --output ./research`,
+  cli-printing-press vision --api stripe --output ./research`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if apiName == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--api is required")}
@@ -34,7 +34,7 @@ The vision command produces the structure; Phase 0 fills it with intelligence.`,
 			if outputDir == "" {
 				state, err := pipeline.LoadCurrentState(apiName)
 				if err != nil {
-					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("no current run for %s; run `printing-press print %s` first or pass --output", apiName, apiName)}
+					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("no current run for %s; run `cli-printing-press print %s` first or pass --output", apiName, apiName)}
 				}
 				outputDir = state.ResearchDir()
 			}

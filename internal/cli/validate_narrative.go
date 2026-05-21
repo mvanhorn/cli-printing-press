@@ -36,22 +36,22 @@ PRINTING_PRESS_VERIFY=1, appending --dry-run when the command advertises it.
 Without this check, broken commands ship to the README's Quick Start and
 the SKILL's recipes; users hit "unknown command" on copy-paste.`,
 		Example: `  # Default: warn-only, exits 0 even when commands are missing
-  printing-press validate-narrative \
+  cli-printing-press validate-narrative \
     --research $API_RUN_DIR/research.json \
     --binary $CLI_WORK_DIR/myapi-pp-cli
 
   # Strict: exits non-zero on missing commands or empty narrative
-  printing-press validate-narrative --strict \
+  cli-printing-press validate-narrative --strict \
     --research $API_RUN_DIR/research.json \
     --binary $CLI_WORK_DIR/myapi-pp-cli
 
   # Stronger check: also dry-run full examples to catch bad flags/args
-  printing-press validate-narrative --strict --full-examples \
+  cli-printing-press validate-narrative --strict --full-examples \
     --research $API_RUN_DIR/research.json \
     --binary $CLI_WORK_DIR/myapi-pp-cli
 
   # JSON output for downstream tooling
-  printing-press validate-narrative --json \
+  cli-printing-press validate-narrative --json \
     --research $API_RUN_DIR/research.json \
     --binary $CLI_WORK_DIR/myapi-pp-cli`,
 		RunE: func(cmd *cobra.Command, args []string) error {

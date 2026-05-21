@@ -55,7 +55,7 @@ type SteinerScore struct {
 	Doctor                int `json:"doctor"`                   // 0-10
 	AgentNative           int `json:"agent_native"`             // 0-10
 	MCPQuality            int `json:"mcp_quality"`              // 0-10
-	MCPDescriptionQuality int `json:"mcp_description_quality"`  // 0-10; unscored when no tools-manifest.json. Penalizes thin per-tool descriptions (the same threshold as `printing-press tools-audit` thin-mcp-description).
+	MCPDescriptionQuality int `json:"mcp_description_quality"`  // 0-10; unscored when no tools-manifest.json. Penalizes thin per-tool descriptions (the same threshold as `cli-printing-press tools-audit` thin-mcp-description).
 	MCPTokenEff           int `json:"mcp_token_efficiency"`     // 0-10; unscored when no MCP surface
 	MCPRemoteTransport    int `json:"mcp_remote_transport"`     // 0-10; unscored when no MCP surface. Rewards remote-capable servers per Anthropic's 2026-04 MCP guidance.
 	MCPToolDesign         int `json:"mcp_tool_design"`          // 0-10; unscored when no MCP surface or endpoint count below toolDesignMinEndpoints. Rewards intent-grouped tools vs. endpoint mirrors.
@@ -704,7 +704,7 @@ func scoreMCPQuality(dir string) int {
 }
 
 // MCPDescMinLen and MCPDescMinWords are the agent-grade-description
-// thresholds used by both `printing-press tools-audit` and the
+// thresholds used by both `cli-printing-press tools-audit` and the
 // scorecard's mcp_description_quality dimension. Defined here so a
 // single edit keeps both surfaces in lockstep — internal/cli imports
 // these for its thin-mcp-description check.
@@ -727,7 +727,7 @@ func IsThinMCPDescription(desc string) bool {
 
 // ScoreMCPDescriptionQualityForManifest scores an already-parsed
 // manifest. Callers that read tools-manifest.json for other reasons
-// in the same code path (e.g., printing-press tools-audit, which
+// in the same code path (e.g., cli-printing-press tools-audit, which
 // emits findings from the manifest) call this variant to avoid
 // re-parsing.
 func ScoreMCPDescriptionQualityForManifest(m *ToolsManifest) (score int, scored bool) {
@@ -762,7 +762,7 @@ func ScoreMCPDescriptionQualityForManifest(m *ToolsManifest) (score int, scored 
 // summaries. Reads tools-manifest.json (the source of truth for typed
 // endpoint tools' descriptions at runtime) and counts entries whose
 // description trips IsThinMCPDescription — the same predicate
-// `printing-press tools-audit` uses for thin-mcp-description findings.
+// `cli-printing-press tools-audit` uses for thin-mcp-description findings.
 //
 // Unscored when no manifest exists (legacy CLIs predating the
 // manifest schema) or when the manifest has no tools.

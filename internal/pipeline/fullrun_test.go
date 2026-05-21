@@ -22,7 +22,7 @@ func TestFullRun(t *testing.T) {
 	// Build the press binary first
 	pressBinary := filepath.Join(t.TempDir(), "printing-press")
 	repoRoot := findRepoRoot()
-	cmd := exec.Command("go", "build", "-o", pressBinary, "./cmd/printing-press")
+	cmd := exec.Command("go", "build", "-o", pressBinary, "./cmd/cli-printing-press")
 	cmd.Dir = repoRoot
 	require.NoError(t, cmd.Run(), "failed to build printing-press")
 

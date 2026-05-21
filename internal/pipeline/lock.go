@@ -448,7 +448,7 @@ func validatePIIGateForPromote(workingDir string) error {
 	}
 	msg += fmt.Sprintf("ledger: %s\n", ledgerPath)
 	msg += "scope: phase-1 detectors (order-id, ASIN, card-last-4, email, phone, ZIP+4, postal-address); standalone names are a future detector class.\n"
-	msg += "run `printing-press pii-audit <dir>` and follow skills/printing-press-polish/references/pii-polish.md"
+	msg += "run `cli-printing-press pii-audit <dir>` and follow skills/printing-press-polish/references/pii-polish.md"
 	return fmt.Errorf("%s", msg)
 }
 

@@ -33,10 +33,10 @@ func newPublishCmd() *cobra.Command {
 		Use:   "publish",
 		Short: "Validate and package CLIs for publishing",
 		Example: `  # Validate a CLI before publishing
-  printing-press publish validate --dir ~/printing-press/library/notion --json
+  cli-printing-press publish validate --dir ~/printing-press/library/notion --json
 
   # Package a CLI for publishing
-  printing-press publish package --dir ~/printing-press/library/notion --category productivity --target /tmp/staging --json`,
+  cli-printing-press publish package --dir ~/printing-press/library/notion --category productivity --target /tmp/staging --json`,
 	}
 
 	cmd.AddCommand(newPublishValidateCmd())
@@ -94,7 +94,7 @@ func newPublishRenameCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "rename",
 		Short:   "Rename a staged CLI (for name collision resolution)",
-		Example: `  printing-press publish rename --dir /tmp/staging/library/ai/notion --old-name notion-pp-cli --new-name notion-alt-pp-cli --json`,
+		Example: `  cli-printing-press publish rename --dir /tmp/staging/library/ai/notion --old-name notion-pp-cli --new-name notion-alt-pp-cli --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
@@ -156,8 +156,8 @@ func newPublishValidateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "validate",
 		Short: "Validate a CLI is ready for publishing",
-		Example: `  printing-press publish validate --dir ~/printing-press/library/notion
-  printing-press publish validate --dir ~/printing-press/library/notion --json`,
+		Example: `  cli-printing-press publish validate --dir ~/printing-press/library/notion
+  cli-printing-press publish validate --dir ~/printing-press/library/notion --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}
@@ -223,10 +223,10 @@ func newPublishPackageCmd() *cobra.Command {
 		Use:   "package",
 		Short: "Package a CLI for publishing to the library repo",
 		Example: `  # Stage into a new directory (for inspection)
-  printing-press publish package --dir ~/printing-press/library/notion --category productivity --target /tmp/staging --json
+  cli-printing-press publish package --dir ~/printing-press/library/notion --category productivity --target /tmp/staging --json
 
   # Write directly into the publish repo (replaces old CLI, includes manuscripts)
-  printing-press publish package --dir ~/printing-press/library/notion --category productivity --dest ~/printing-press/.publish-repo --json`,
+  cli-printing-press publish package --dir ~/printing-press/library/notion --category productivity --dest ~/printing-press/.publish-repo --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}

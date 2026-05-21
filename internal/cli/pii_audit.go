@@ -18,7 +18,7 @@ import (
 //
 // Default exit is 0 (diagnostic). The `--strict` flag exits non-zero
 // when pending findings or gate failures remain — for external CI
-// callers that shell out to `printing-press pii-audit`. The in-process
+// callers that shell out to `cli-printing-press pii-audit`. The in-process
 // promote/publish gates call artifacts.RunPIIAudit directly and apply
 // equivalent enforcement.
 func newPIIAuditCmd() *cobra.Command {
@@ -39,9 +39,9 @@ pre-decision fields.
 
 Exit 0 by default (diagnostic). With --strict, exits non-zero when
 pending findings or gate failures remain.`,
-		Example: `  printing-press pii-audit ~/printing-press/library/dub
-  printing-press pii-audit ~/printing-press/library/dub --json
-  printing-press pii-audit ~/printing-press/library/dub --strict`,
+		Example: `  cli-printing-press pii-audit ~/printing-press/library/dub
+  cli-printing-press pii-audit ~/printing-press/library/dub --json
+  cli-printing-press pii-audit ~/printing-press/library/dub --strict`,
 		Args: cobra.ExactArgs(1),
 		Annotations: map[string]string{
 			// No mcp:read-only — RunPIIAudit writes a ledger file under

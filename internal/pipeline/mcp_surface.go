@@ -55,7 +55,7 @@ func ClassifyMCPSurface(src string) MCPSurfaceResult {
 	case hasMarker && hasWalker:
 		return MCPSurfaceResult{State: MCPSurfaceRuntime, Pass: true, Detail: "MCP surface mirrors the Cobra tree at runtime"}
 	case hasMarker && hasStaticList:
-		return MCPSurfaceResult{State: MCPSurfaceStaticList, Pass: false, Detail: "static novel-feature MCP list detected; run `printing-press mcp-sync <cli-dir>`"}
+		return MCPSurfaceResult{State: MCPSurfaceStaticList, Pass: false, Detail: "static novel-feature MCP list detected; run `cli-printing-press mcp-sync <cli-dir>`"}
 	case !hasMarker:
 		return MCPSurfaceResult{State: MCPSurfaceHandEdited, Pass: true, HandEdited: true, Detail: "tools.go appears hand-edited; mcp-sync will not overwrite it without --force"}
 	default:

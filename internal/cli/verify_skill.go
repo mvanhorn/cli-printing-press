@@ -233,14 +233,14 @@ Checks 1-4 run via the bundled scripts/verify-skill/verify_skill.py; check 5
 runs in Go using the CLI manifest (.printing-press.json) and go.mod.
 Requires python3 on PATH for checks 1-4.`,
 		Example: `  # Run all checks against a generated CLI
-  printing-press verify-skill --dir ./my-api-pp-cli
+  cli-printing-press verify-skill --dir ./my-api-pp-cli
 
   # JSON output for programmatic consumption
-  printing-press verify-skill --dir ./my-api-pp-cli --json
+  cli-printing-press verify-skill --dir ./my-api-pp-cli --json
 
   # Only check a specific category
-  printing-press verify-skill --dir ./my-api-pp-cli --only flag-commands
-  printing-press verify-skill --dir ./my-api-pp-cli --only canonical-sections`,
+  cli-printing-press verify-skill --dir ./my-api-pp-cli --only flag-commands
+  cli-printing-press verify-skill --dir ./my-api-pp-cli --only canonical-sections`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}

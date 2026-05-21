@@ -148,7 +148,7 @@ None.
 
 ## Codebase Pointers
 
-- Build entrypoint: go build ./cmd/printing-press
+- Build entrypoint: go build ./cmd/cli-printing-press
 - OpenAPI parsing: internal/openapi/parser.go
 - Pipeline discovery flow: internal/pipeline/discover.go
 `,
@@ -185,7 +185,7 @@ Generate the first working {{.APIName}} CLI from the validated OpenAPI spec.
 
 ## Codebase Pointers
 
-- Generator entrypoint: printing-press generate --spec <url> --output <dir>
+- Generator entrypoint: cli-printing-press generate --spec <url> --output <dir>
 - Generator implementation: internal/generator/
 - Quality gate logic in the generator flow under internal/generator/
 `,
@@ -261,7 +261,7 @@ Merge the enrichments into the source spec and regenerate the CLI without losing
 
 - Overlay merge implementation: internal/pipeline/merge.go
 - MergeOverlay function in internal/pipeline/merge.go
-- Generator entrypoint: printing-press generate
+- Generator entrypoint: cli-printing-press generate
 `,
 	PhaseReview: `---
 title: "{{.APIName}} CLI Pipeline - Phase 4: Review"
@@ -297,12 +297,12 @@ Evaluate the generated CLI with one shipcheck block: dogfood, runtime verificati
 
 ## Codebase Pointers
 
-- printing-press dogfood --dir {{.OutputDir}} --spec <spec>
-- printing-press verify --dir {{.OutputDir}} --spec <spec> --fix
-- printing-press workflow-verify --dir {{.OutputDir}}
-- printing-press verify-skill --dir {{.OutputDir}}
-- printing-press validate-narrative --strict --full-examples --research {{.PipelineDir}}/research.json --binary {{.OutputDir}}/<cli-binary>
-- printing-press scorecard --dir {{.OutputDir}} --spec <spec>
+- cli-printing-press dogfood --dir {{.OutputDir}} --spec <spec>
+- cli-printing-press verify --dir {{.OutputDir}} --spec <spec> --fix
+- cli-printing-press workflow-verify --dir {{.OutputDir}}
+- cli-printing-press verify-skill --dir {{.OutputDir}}
+- cli-printing-press validate-narrative --strict --full-examples --research {{.PipelineDir}}/research.json --binary {{.OutputDir}}/<cli-binary>
+- cli-printing-press scorecard --dir {{.OutputDir}} --spec <spec>
 - Generated CLI binary and help surfaces in {{.OutputDir}}
 `,
 	PhaseAgentReadiness: `---

@@ -6,7 +6,7 @@ This table maps each scorecard dimension to the exact file and string patterns m
 
 Each dimension is 0-10. Total is 0-90. Grade: A >= 80%, B >= 65%, C >= 50%, D >= 35%, F < 35%.
 
-Run the scorecard: `printing-press scorecard --dir ./<api>-cli`
+Run the scorecard: `cli-printing-press scorecard --dir ./<api>-cli`
 
 ## Dimension Reference
 
