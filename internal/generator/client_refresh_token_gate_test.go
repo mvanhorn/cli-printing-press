@@ -90,8 +90,8 @@ func TestRefreshAccessToken_GatedByTokenURL(t *testing.T) {
 
 			clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
 
-			methodPresent := strings.Contains(clientSrc, "func (c *Client) refreshAccessToken()")
-			callPresent := strings.Contains(clientSrc, "c.refreshAccessToken()")
+			methodPresent := strings.Contains(clientSrc, "func (c *Client) refreshAccessToken(ctx context.Context)")
+			callPresent := strings.Contains(clientSrc, "c.refreshAccessToken(ctx)")
 			assert.Equal(t, tt.want, methodPresent,
 				"refreshAccessToken method definition emission must follow Auth.TokenURL non-empty")
 			assert.Equal(t, tt.want, callPresent,

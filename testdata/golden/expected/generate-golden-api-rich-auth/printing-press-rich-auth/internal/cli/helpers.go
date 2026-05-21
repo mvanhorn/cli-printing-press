@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -524,8 +525,8 @@ func newTabWriter(w io.Writer) *tabwriter.Writer {
 // argument carries per-endpoint required headers (e.g. cal-api-version) that
 // must be sent on every page request, including the first; pass nil when the
 // endpoint has no per-endpoint header overrides.
-func paginatedGet(c interface {
-	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+func paginatedGet(ctx context.Context, c interface {
+	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
 }, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
 	// Cursor params are exempt from the "0"/"false" strip: offset-paginated
 	// APIs send offset=0 on the first page.
@@ -540,7 +541,7 @@ func paginatedGet(c interface {
 	}
 
 	if !fetchAll {
-		data, err := c.GetWithHeaders(path, clean, headers)
+		data, err := c.GetWithHeaders(ctx, path, clean, headers)
 		if err != nil {
 			return nil, err
 		}
@@ -559,7 +560,7 @@ func paginatedGet(c interface {
 			fmt.Fprintf(os.Stderr, `{"event":"page_fetch","page":%d}`+"\n", page)
 		}
 
-		data, err := c.GetWithHeaders(path, clean, headers)
+		data, err := c.GetWithHeaders(ctx, path, clean, headers)
 		if err != nil {
 			return nil, err
 		}

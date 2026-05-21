@@ -10,6 +10,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 	"errors"
@@ -302,7 +303,7 @@ Resource scoping:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-						res := syncResource({{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, db, resource, sinceTS, full, maxPages, effectiveLatestOnly{{if .Pagination.DateRangeParam}}, syncDates{{end}}, userParams)
+						res := syncResource(cmd.Context(), {{if .HasTierRouting}}syncClientForResource(c, resource){{else}}c{{end}}, db, resource, sinceTS, full, maxPages, effectiveLatestOnly{{if .Pagination.DateRangeParam}}, syncDates{{end}}, userParams)
 						results <- res
 					}
 				}()
@@ -362,7 +363,7 @@ Resource scoping:
 
 {{- if .DependentSyncResources}}
 			// Sync dependent (parent-child) resources sequentially after flat resources.
-			depResults := syncDependentResources(c, db, sinceTS, full, maxPages, effectiveLatestOnly, parentFilter{{if .Pagination.DateRangeParam}}, syncDates{{end}}, userParams)
+			depResults := syncDependentResources(cmd.Context(), c, db, sinceTS, full, maxPages, effectiveLatestOnly, parentFilter{{if .Pagination.DateRangeParam}}, syncDates{{end}}, userParams)
 			for _, res := range depResults {
 				if res.Err != nil {
 					if humanFriendly {
@@ -476,10 +477,10 @@ Resource scoping:
 // It resumes from the last cursor unless sinceTS or full mode overrides it.
 // channel_workflow.go.tmpl mirrors the trailing dates arg conditional;
 // keep both call sites in sync if this signature changes.
-func syncResource(c interface {
-	Get(string, map[string]string) (json.RawMessage, error)
+func syncResource(ctx context.Context, c interface {
+	Get(context.Context, string, map[string]string) (json.RawMessage, error)
 {{- if $hasPostSync}}
-	PostWithParams(string, map[string]string, any) (json.RawMessage, int, error)
+	PostWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
 {{- end}}
 	RateLimit() float64
 }, db *store.Store, resource, sinceTS string, full bool, maxPages int, latestOnly bool{{if .Pagination.DateRangeParam}}, dates string{{end}}, userParams *syncUserParams) syncResult {
@@ -624,9 +625,9 @@ func syncResource(c interface {
 		userParams.applyTo(resource, params, false)
 
 {{ if $hasPostSync -}}
-		data, err := syncFetch(c, resource, path, params)
+		data, err := syncFetch(ctx, c, resource, path, params)
 {{ else -}}
-		data, err := c.Get(path, params)
+		data, err := c.Get(ctx, path, params)
 {{ end -}}
 		if err != nil {
 			if w, ok := isSyncAccessWarning(err); ok {
@@ -874,15 +875,15 @@ func resourceSupportsPagination(resource string) bool {
 
 {{- if $hasPostSync}}
 
-func syncFetch(c interface {
-	Get(string, map[string]string) (json.RawMessage, error)
-	PostWithParams(string, map[string]string, any) (json.RawMessage, int, error)
+func syncFetch(ctx context.Context, c interface {
+	Get(context.Context, string, map[string]string) (json.RawMessage, error)
+	PostWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
 }, resource string, path string, params map[string]string) (json.RawMessage, error) {
 	if syncResourceMethod(resource) != "POST" {
-		return c.Get(path, params)
+		return c.Get(ctx, path, params)
 	}
 	queryParams, body := splitSyncPostParams(resource, params)
-	data, _, err := c.PostWithParams(path, queryParams, body)
+	data, _, err := c.PostWithParams(ctx, path, queryParams, body)
 	return data, err
 }
 
@@ -1506,10 +1507,10 @@ func dependentResourceDefs() []dependentResourceDef {
 // syncDependentResources iterates parent tables and syncs child resources per parent ID.
 // parentFilter mirrors the user's --resources flag (empty = sync everything). A dependent
 // runs when its parent table or its own name appears in the filter.
-func syncDependentResources(c {{if .HasTierRouting}}*client.Client{{else}}interface {
-	Get(string, map[string]string) (json.RawMessage, error)
+func syncDependentResources(ctx context.Context, c {{if .HasTierRouting}}*client.Client{{else}}interface {
+	Get(context.Context, string, map[string]string) (json.RawMessage, error)
 {{- if $hasPostSync}}
-	PostWithParams(string, map[string]string, any) (json.RawMessage, int, error)
+	PostWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
 {{- end}}
 	RateLimit() float64
 }{{end}}, db *store.Store, sinceTS string, full bool, maxPages int, latestOnly bool, parentFilter []string{{if .Pagination.DateRangeParam}}, dates string{{end}}, userParams *syncUserParams) []syncResult {
@@ -1522,17 +1523,17 @@ func syncDependentResources(c {{if .HasTierRouting}}*client.Client{{else}}interf
 		if len(allow) > 0 && !allow[dep.ParentTable] && !allow[dep.Name] {
 			continue
 		}
-		res := syncDependentResource({{if .HasTierRouting}}syncClientForResource(c, dep.Name){{else}}c{{end}}, db, dep, sinceTS, full, maxPages, latestOnly{{if .Pagination.DateRangeParam}}, dates{{end}}, userParams)
+		res := syncDependentResource(ctx, {{if .HasTierRouting}}syncClientForResource(c, dep.Name){{else}}c{{end}}, db, dep, sinceTS, full, maxPages, latestOnly{{if .Pagination.DateRangeParam}}, dates{{end}}, userParams)
 		results = append(results, res)
 	}
 	return results
 }
 
 // syncDependentResource syncs a single child resource by iterating all parent IDs.
-func syncDependentResource(c interface {
-	Get(string, map[string]string) (json.RawMessage, error)
+func syncDependentResource(ctx context.Context, c interface {
+	Get(context.Context, string, map[string]string) (json.RawMessage, error)
 {{- if $hasPostSync}}
-	PostWithParams(string, map[string]string, any) (json.RawMessage, int, error)
+	PostWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
 {{- end}}
 	RateLimit() float64
 }, db *store.Store, dep dependentResourceDef, sinceTS string, full bool, maxPages int, latestOnly bool{{if .Pagination.DateRangeParam}}, dates string{{end}}, userParams *syncUserParams) syncResult {
@@ -1631,9 +1632,9 @@ func syncDependentResource(c interface {
 			userParams.applyTo(dep.Name, params, true)
 
 {{ if $hasPostSync -}}
-			data, err := syncFetch(c, dep.Name, path, params)
+			data, err := syncFetch(ctx, c, dep.Name, path, params)
 {{ else -}}
-			data, err := c.Get(path, params)
+			data, err := c.Get(ctx, path, params)
 {{ end -}}
 			if err != nil {
 				// Non-fatal per parent: log and continue to next parent.

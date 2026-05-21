@@ -53,7 +53,7 @@ func TestEmbeddedPagedHelperEmitted_NonPromoted(t *testing.T) {
 		"non-promoted GET should emit a fetchFull<Resource><Endpoint><Property> helper")
 	assert.Contains(t, body, "childPath := \"/playlists/{id}/tracks\"",
 		"helper should hard-code the conventional child path so callers pass only path-param values")
-	assert.Contains(t, body, "fetchEmbeddedPagedSubresource(c, childPath,",
+	assert.Contains(t, body, "fetchEmbeddedPagedSubresource(ctx, c, childPath,",
 		"per-endpoint helper should delegate to the shared runtime helper rather than open-coding the page loop")
 
 	helpersSrc, err := os.ReadFile(filepath.Join(outDir, "internal", "cli", "helpers.go"))
@@ -151,7 +151,7 @@ func TestEmbeddedPagedHelperEmitted_HasMore(t *testing.T) {
 	require.NoError(t, err)
 	body := string(getSrc)
 	assert.Contains(t, body, "func fetchFullCustomersGetSubscriptions(")
-	assert.Contains(t, body, `fetchEmbeddedPagedSubresource(c, childPath, "has_more", false, true)`,
+	assert.Contains(t, body, `fetchEmbeddedPagedSubresource(ctx, c, childPath, "has_more", false, true)`,
 		"has_more-style envelopes should delegate to the shared paginator with nextIsURL=false, nextIsBoolean=true")
 
 	runGoCommand(t, outDir, "build", "./internal/cli")

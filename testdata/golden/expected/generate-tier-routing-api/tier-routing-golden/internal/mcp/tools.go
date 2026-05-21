@@ -164,34 +164,34 @@ func makeAPIHandler(method, pathTemplate, tier string, binaryResponse bool, head
 		switch method {
 		case "GET":
 			if len(headers) > 0 {
-				data, err = c.GetWithHeaders(path, params, headers)
+				data, err = c.GetWithHeaders(ctx, path, params, headers)
 				break
 			}
-			data, err = c.Get(path, params)
+			data, err = c.Get(ctx, path, params)
 		case "POST":
 			if len(headers) > 0 {
-				data, _, err = c.PostWithParamsAndHeaders(path, params, bodyArgs, headers)
+				data, _, err = c.PostWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
 				break
 			}
-			data, _, err = c.PostWithParams(path, params, bodyArgs)
+			data, _, err = c.PostWithParams(ctx, path, params, bodyArgs)
 		case "PUT":
 			if len(headers) > 0 {
-				data, _, err = c.PutWithParamsAndHeaders(path, params, bodyArgs, headers)
+				data, _, err = c.PutWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
 				break
 			}
-			data, _, err = c.PutWithParams(path, params, bodyArgs)
+			data, _, err = c.PutWithParams(ctx, path, params, bodyArgs)
 		case "PATCH":
 			if len(headers) > 0 {
-				data, _, err = c.PatchWithParamsAndHeaders(path, params, bodyArgs, headers)
+				data, _, err = c.PatchWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
 				break
 			}
-			data, _, err = c.PatchWithParams(path, params, bodyArgs)
+			data, _, err = c.PatchWithParams(ctx, path, params, bodyArgs)
 		case "DELETE":
 			if len(headers) > 0 {
-				data, _, err = c.DeleteWithParamsAndHeaders(path, params, headers)
+				data, _, err = c.DeleteWithParamsAndHeaders(ctx, path, params, headers)
 				break
 			}
-			data, _, err = c.DeleteWithParams(path, params)
+			data, _, err = c.DeleteWithParams(ctx, path, params)
 		default:
 			return mcplib.NewToolResultError("unsupported method: " + method), nil
 		}

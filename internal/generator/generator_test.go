@@ -3691,6 +3691,7 @@ func TestGenerateDependentSyncInjectsSubResourceParentFK(t *testing.T) {
 	inlineTest := `package cli
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -3700,7 +3701,7 @@ import (
 
 type dependentParentFKClient struct{}
 
-func (dependentParentFKClient) Get(path string, params map[string]string) (json.RawMessage, error) {
+func (dependentParentFKClient) Get(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
 	return json.RawMessage(` + "`" + `[
 		{"id":"contact-injected","email":"injected@example.test"},
 		{"id":"contact-preserved","lists_id":"api-list","email":"preserved@example.test"}
@@ -3723,6 +3724,7 @@ func TestSyncDependentResourcePopulatesTypedParentFK(t *testing.T) {
 	}
 
 	res := syncDependentResource(
+		context.Background(),
 		dependentParentFKClient{},
 		db,
 		dependentResourceDef{Name: "contacts", ParentTable: "lists", ParentIDParam: "listId", PathTemplate: "/lists/{listId}/contacts"},
@@ -7027,7 +7029,7 @@ func TestGeneratedDoctor_AuthVerifyPathProbesEndpoint(t *testing.T) {
 	// not bare baseURL. The doctor uses flags.newClient() now (Surf-aware)
 	// instead of stdlib http.Client.
 	assert.Contains(t, content, `verifyPath := "/me?fields=id"`)
-	assert.Contains(t, content, `c.GetWithHeaders(verifyPath`)
+	assert.Contains(t, content, `c.GetWithHeaders(cmd.Context(), verifyPath`)
 	assert.NotContains(t, content, `&http.Client{`)
 	// When verify_path is set, HTTP 401 keeps the strict "invalid" verdict.
 	// 403 is handled separately as scope-limited; see
@@ -7049,8 +7051,8 @@ func TestGeneratedDoctor_HealthCheckPathProbesEndpoint(t *testing.T) {
 	doctorSrc := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
 	assert.Contains(t, doctorSrc, `healthPath := "api/marketStatus"`)
 	assert.Contains(t, doctorSrc, `if !strings.HasPrefix(healthPath, "/") {`)
-	assert.Contains(t, doctorSrc, `reachBody, reachErr := c.Get(healthPath, nil)`)
-	assert.NotContains(t, doctorSrc, `reachBody, reachErr := c.Get("/", nil)`)
+	assert.Contains(t, doctorSrc, `reachBody, reachErr := c.Get(cmd.Context(), healthPath, nil)`)
+	assert.NotContains(t, doctorSrc, `reachBody, reachErr := c.Get(cmd.Context(), "/", nil)`)
 }
 
 func TestGeneratedDoctor_InterstitialMarkersAreTitleAnchored(t *testing.T) {
@@ -7146,7 +7148,7 @@ func TestGeneratedDoctor_NoVerifyPathReportsCredentialsPresent(t *testing.T) {
 	// now suggests a read command (resolved at doctor-time from the cobra
 	// tree) instead of pointing the user at a spec field they don't own.
 	assert.NotContains(t, content, `verifyPath := "/"`)
-	assert.NotContains(t, content, `c.GetWithHeaders(verifyPath`)
+	assert.NotContains(t, content, `c.GetWithHeaders(cmd.Context(), verifyPath`)
 	assert.NotContains(t, content, `&http.Client{`)
 	assert.Contains(t, content, `"present, not verified. Run `)
 	assert.NotContains(t, content, `set auth.verify_path in spec`,
@@ -9966,7 +9968,7 @@ func TestGenerateGraphQLEndpointPathRendersTemplatedURL(t *testing.T) {
 		"graphql.go must render GraphQLEndpointPath into a const")
 	assert.NotContains(t, graphqlGo, `c.Post("/graphql"`,
 		"graphql.go must not retain the hardcoded /graphql path after PR-1")
-	assert.Contains(t, graphqlGo, "c.Post(graphqlEndpointPath",
+	assert.Contains(t, graphqlGo, "c.Post(ctx, graphqlEndpointPath",
 		"Query/Mutate must post against the rendered constant, not a literal")
 
 	// The config struct must carry the templated BaseURL through unchanged so
@@ -11169,8 +11171,8 @@ func TestGenerateWaitForJobBypassesResponseCache(t *testing.T) {
 
 	assert.Contains(t, jobsBody, "c.GetNoCache(path, nil)",
 		"WaitForJob must poll with GetNoCache to avoid locking on the cached initial response")
-	assert.NotContains(t, jobsBody, "c.Get(path, nil)",
-		"WaitForJob must not call c.Get(path, nil); cached non-terminal status would lock the poll")
+	assert.NotContains(t, jobsBody, "c.Get(ctx, path, nil)",
+		"WaitForJob must not call c.Get(ctx, path, nil); cached non-terminal status would lock the poll")
 }
 
 // TestGenerateMCPHandlerPreservesQueryPositionals proves the makeAPIHandler
@@ -11355,11 +11357,11 @@ func TestMCPHandlerPassesBodyArgsMap(t *testing.T) {
 		"MCP handler must not pre-marshal bodyArgs: client.do() json.Marshals what it receives, "+
 			"so a []byte arrives base64-encoded on the wire and strict APIs reject the payload")
 
-	assert.Contains(t, mcpSource, "c.PostWithParams(path, params, bodyArgs)",
+	assert.Contains(t, mcpSource, "c.PostWithParams(ctx, path, params, bodyArgs)",
 		"POST branch must forward bodyArgs directly to the client")
-	assert.Contains(t, mcpSource, "c.PutWithParams(path, params, bodyArgs)",
+	assert.Contains(t, mcpSource, "c.PutWithParams(ctx, path, params, bodyArgs)",
 		"PUT branch must forward bodyArgs directly to the client")
-	assert.Contains(t, mcpSource, "c.PatchWithParams(path, params, bodyArgs)",
+	assert.Contains(t, mcpSource, "c.PatchWithParams(ctx, path, params, bodyArgs)",
 		"PATCH branch must forward bodyArgs directly to the client")
 }
 
@@ -11418,11 +11420,11 @@ func TestMCPCodeOrchPassesParamsMap(t *testing.T) {
 		"code-orch handler must not pre-marshal params: client.do() json.Marshals what it receives, "+
 			"so a []byte arrives base64-encoded on the wire and strict APIs reject the payload")
 
-	assert.Contains(t, mcpSource, "c.Post(path, params)",
+	assert.Contains(t, mcpSource, "c.Post(ctx, path, params)",
 		"POST branch must forward params directly to the client")
-	assert.Contains(t, mcpSource, "c.Put(path, params)",
+	assert.Contains(t, mcpSource, "c.Put(ctx, path, params)",
 		"PUT branch must forward params directly to the client")
-	assert.Contains(t, mcpSource, "c.Patch(path, params)",
+	assert.Contains(t, mcpSource, "c.Patch(ctx, path, params)",
 		"PATCH branch must forward params directly to the client")
 }
 

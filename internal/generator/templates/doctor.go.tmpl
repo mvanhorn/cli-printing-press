@@ -445,9 +445,9 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					if !strings.HasPrefix(healthPath, "/") {
 						healthPath = "/" + healthPath
 					}
-					reachBody, reachErr := c.Get(healthPath, nil)
+					reachBody, reachErr := c.Get(cmd.Context(), healthPath, nil)
 {{- else}}
-					reachBody, reachErr := c.Get("/", nil)
+					reachBody, reachErr := c.Get(cmd.Context(), "/", nil)
 {{- end}}
 					var reachAPIErr *client.APIError
 					switch {
@@ -531,7 +531,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 						if !strings.HasPrefix(verifyPath, "/") {
 							verifyPath = "/" + verifyPath
 						}
-						_, authErr := c.GetWithHeaders(verifyPath, authParams, authHeaders)
+						_, authErr := c.GetWithHeaders(cmd.Context(), verifyPath, authParams, authHeaders)
 						var authAPIErr *client.APIError
 						switch {
 						case authErr == nil:
@@ -557,7 +557,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 						// probe under PRINTING_PRESS_VERIFY=1.
 						authHeaders["Content-Type"] = "application/json"
 						verifyBody := map[string]string{"query": {{printf "%q" .Auth.VerifyQuery}}}
-						respBody, _, gqlErr := c.PostQueryWithParamsAndHeaders("", authParams, verifyBody, authHeaders)
+						respBody, _, gqlErr := c.PostQueryWithParamsAndHeaders(cmd.Context(), "", authParams, verifyBody, authHeaders)
 						var gqlAPIErr *client.APIError
 						switch {
 						case gqlErr == nil:

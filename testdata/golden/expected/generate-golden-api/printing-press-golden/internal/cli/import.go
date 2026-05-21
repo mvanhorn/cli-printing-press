@@ -74,7 +74,7 @@ but do not stop the import.`,
 					continue
 				}
 
-				_, _, err := c.Post(path, body)
+				_, _, err := c.Post(cmd.Context(), path, body)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "warning: failed to import record: %v\n", err)
 					failed++

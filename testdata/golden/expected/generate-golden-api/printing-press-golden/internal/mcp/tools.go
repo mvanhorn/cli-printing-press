@@ -283,58 +283,58 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, headerOver
 		switch method {
 		case "GET":
 			if len(headers) > 0 {
-				data, err = c.GetWithHeaders(path, params, headers)
+				data, err = c.GetWithHeaders(ctx, path, params, headers)
 				break
 			}
-			data, err = c.Get(path, params)
+			data, err = c.Get(ctx, path, params)
 		case "POST":
 			if multipart {
 				if len(headers) > 0 {
-					data, _, err = c.PostMultipartWithParamsAndHeaders(path, params, multipartFields, multipartFileFields, headers)
+					data, _, err = c.PostMultipartWithParamsAndHeaders(ctx, path, params, multipartFields, multipartFileFields, headers)
 					break
 				}
-				data, _, err = c.PostMultipartWithParams(path, params, multipartFields, multipartFileFields)
+				data, _, err = c.PostMultipartWithParams(ctx, path, params, multipartFields, multipartFileFields)
 				break
 			}
 			if len(headers) > 0 {
-				data, _, err = c.PostWithParamsAndHeaders(path, params, bodyArgs, headers)
+				data, _, err = c.PostWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
 				break
 			}
-			data, _, err = c.PostWithParams(path, params, bodyArgs)
+			data, _, err = c.PostWithParams(ctx, path, params, bodyArgs)
 		case "PUT":
 			if multipart {
 				if len(headers) > 0 {
-					data, _, err = c.PutMultipartWithParamsAndHeaders(path, params, multipartFields, multipartFileFields, headers)
+					data, _, err = c.PutMultipartWithParamsAndHeaders(ctx, path, params, multipartFields, multipartFileFields, headers)
 					break
 				}
-				data, _, err = c.PutMultipartWithParams(path, params, multipartFields, multipartFileFields)
+				data, _, err = c.PutMultipartWithParams(ctx, path, params, multipartFields, multipartFileFields)
 				break
 			}
 			if len(headers) > 0 {
-				data, _, err = c.PutWithParamsAndHeaders(path, params, bodyArgs, headers)
+				data, _, err = c.PutWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
 				break
 			}
-			data, _, err = c.PutWithParams(path, params, bodyArgs)
+			data, _, err = c.PutWithParams(ctx, path, params, bodyArgs)
 		case "PATCH":
 			if multipart {
 				if len(headers) > 0 {
-					data, _, err = c.PatchMultipartWithParamsAndHeaders(path, params, multipartFields, multipartFileFields, headers)
+					data, _, err = c.PatchMultipartWithParamsAndHeaders(ctx, path, params, multipartFields, multipartFileFields, headers)
 					break
 				}
-				data, _, err = c.PatchMultipartWithParams(path, params, multipartFields, multipartFileFields)
+				data, _, err = c.PatchMultipartWithParams(ctx, path, params, multipartFields, multipartFileFields)
 				break
 			}
 			if len(headers) > 0 {
-				data, _, err = c.PatchWithParamsAndHeaders(path, params, bodyArgs, headers)
+				data, _, err = c.PatchWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
 				break
 			}
-			data, _, err = c.PatchWithParams(path, params, bodyArgs)
+			data, _, err = c.PatchWithParams(ctx, path, params, bodyArgs)
 		case "DELETE":
 			if len(headers) > 0 {
-				data, _, err = c.DeleteWithParamsAndHeaders(path, params, headers)
+				data, _, err = c.DeleteWithParamsAndHeaders(ctx, path, params, headers)
 				break
 			}
-			data, _, err = c.DeleteWithParams(path, params)
+			data, _, err = c.DeleteWithParams(ctx, path, params)
 		default:
 			return mcplib.NewToolResultError("unsupported method: " + method), nil
 		}

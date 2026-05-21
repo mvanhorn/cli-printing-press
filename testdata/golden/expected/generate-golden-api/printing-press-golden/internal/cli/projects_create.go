@@ -62,7 +62,7 @@ func newProjectsCreateCmd(flags *rootFlags) *cobra.Command {
 					body["visibility"] = bodyVisibility
 				}
 			}
-			data, statusCode, err := c.PostWithParams(path, params, body)
+			data, statusCode, err := c.PostWithParams(cmd.Context(), path, params, body)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

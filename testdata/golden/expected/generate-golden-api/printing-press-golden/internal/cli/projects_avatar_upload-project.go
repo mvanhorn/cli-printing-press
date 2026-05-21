@@ -46,7 +46,7 @@ func newProjectsAvatarUploadProjectCmd(flags *rootFlags) *cobra.Command {
 				fileFields["file"] = bodyFile
 			}
 
-			data, statusCode, err := c.PutMultipartWithParams(path, params, fields, fileFields)
+			data, statusCode, err := c.PutMultipartWithParams(cmd.Context(), path, params, fields, fileFields)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

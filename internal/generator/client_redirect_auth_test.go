@@ -32,8 +32,8 @@ func TestClientCheckRedirectReappliesAuth(t *testing.T) {
 			"CheckRedirect must cap depth at 10 to match Go's default policy")
 		require.Contains(t, closure, `return errors.New("stopped after 10 redirects")`,
 			"depth cap must return a plain error so Do() propagates it; ErrUseLastResponse would silently surface the 3xx body as a successful response")
-		require.Contains(t, closure, `c.authHeader()`,
-			"CheckRedirect must call c.authHeader() so nonce-bound schemes get a fresh signature")
+		require.Contains(t, closure, `c.authHeader(req.Context())`,
+			"CheckRedirect must call c.authHeader with the redirect request context so nonce-bound schemes get a fresh cancellable signature")
 		require.Contains(t, closure, `req.Header.Set("Authorization", h)`,
 			"bearer auth must re-set Authorization on redirect to refresh nonce-bound headers")
 		require.Contains(t, closure, "req.URL.Host == via[0].URL.Host",
