@@ -32,6 +32,8 @@ var infraAllFiles = map[string]bool{
 	"tail.go": true, "analytics.go": true,
 }
 
+var actionableDoctorSuggestionRE = regexp.MustCompile(`(?i)\b(run|try)\b.{0,80}\bdoctor\b`)
+
 // Scorecard holds the auto-scored evaluation of a generated CLI against the Steinberger bar.
 type Scorecard struct {
 	APIName            string       `json:"api_name"`
@@ -138,10 +140,12 @@ func scoreScorecardDimensions(sc *Scorecard, outputDir, specPath string, verifyR
 }
 
 func scoreInfrastructureDimensions(sc *Scorecard, outputDir string) {
-	sc.Steinberger.OutputModes = scoreOutputModes(outputDir)
+	reachableInternalFiles := scorecardReachableInternalFiles(outputDir)
+	reachableInternalContent := scorecardContentsFromFiles(reachableInternalFiles)
+	sc.Steinberger.OutputModes = scoreOutputModesWithSurface(outputDir, reachableInternalContent, reachableInternalFiles)
 	sc.Steinberger.Auth = scoreAuth(outputDir)
-	sc.Steinberger.ErrorHandling = scoreErrorHandling(outputDir)
-	sc.Steinberger.TerminalUX = scoreTerminalUX(outputDir)
+	sc.Steinberger.ErrorHandling = scoreErrorHandlingFromSurface(reachableInternalContent)
+	sc.Steinberger.TerminalUX = scoreTerminalUXWithSurface(outputDir, reachableInternalContent)
 	sc.Steinberger.README = scoreREADME(outputDir)
 	sc.Steinberger.Doctor = scoreDoctor(outputDir)
 	sc.Steinberger.AgentNative = scoreAgentNative(outputDir)
@@ -285,8 +289,12 @@ func (sc *Scorecard) IsDimensionUnscored(name string) bool {
 }
 
 func scoreOutputModes(dir string) int {
+	reachableFiles := scorecardReachableInternalFiles(dir)
+	return scoreOutputModesWithSurface(dir, scorecardContentsFromFiles(reachableFiles), reachableFiles)
+}
+
+func scoreOutputModesWithSurface(dir string, surfaceContent []string, surfaceFiles []string) int {
 	rootContent := readFileContent(filepath.Join(dir, "internal", "cli", "root.go"))
-	helpersContent := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
 	score := 0
 	// Presence tier (max 5)
 	if strings.Contains(rootContent, `"json"`) {
@@ -305,15 +313,15 @@ func scoreOutputModes(dir string) int {
 		score += 1
 	}
 	// Quality tier: field-aware select (real JSON parsing, not string ops)
-	if strings.Contains(helpersContent, "filterFields") && strings.Contains(helpersContent, "json.Unmarshal") {
+	if containsAllInAny(surfaceContent, "filterFields", "json.Unmarshal") {
 		score += 2
 	}
 	// Quality tier: pagination progress events
-	if strings.Contains(helpersContent, "page_fetch") || strings.Contains(helpersContent, "ndjson") || hasPageProgressStructure(filepath.Join(dir, "internal", "cli")) {
+	if containsAnyInAny(surfaceContent, "page_fetch", "ndjson") || hasPageProgressStructureInFiles(surfaceFiles) {
 		score += 1
 	}
 	// Quality tier: tabwriter for aligned output
-	if strings.Contains(helpersContent, "tabwriter") {
+	if containsAnyInAny(surfaceContent, "tabwriter") {
 		score += 2
 	}
 	if score > 10 {
@@ -384,34 +392,36 @@ func scoreAuth(dir string) int {
 }
 
 func scoreErrorHandling(dir string) int {
-	helpersContent := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
-	clientContent := readFileContent(filepath.Join(dir, "internal", "client", "client.go"))
+	return scoreErrorHandlingFromSurface(scorecardReachableInternalContents(dir))
+}
+
+func scoreErrorHandlingFromSurface(surfaceContent []string) int {
 	score := 0
 	// Presence: error hints
-	if strings.Contains(helpersContent, "hint:") || strings.Contains(helpersContent, "Hint:") {
+	if containsAnyInAny(surfaceContent, "hint:", "Hint:") {
 		score += 1
 	}
 	// Presence: at least 3 distinct exit codes
-	exitCount := strings.Count(helpersContent, "code:")
+	exitCount := countAcross(surfaceContent, "code:")
 	if exitCount >= 3 {
 		score += 2
 	} else if exitCount >= 1 {
 		score += 1
 	}
 	// Quality: rate limit handling (429 + retry)
-	if strings.Contains(clientContent, "429") && (strings.Contains(clientContent, "Retry-After") || strings.Contains(clientContent, "backoff") || strings.Contains(clientContent, "retry")) {
+	if containsAllInAny(surfaceContent, "429", "Retry-After") || containsAllInAny(surfaceContent, "429", "backoff") || containsAllInAny(surfaceContent, "429", "retry") {
 		score += 2
 	}
 	// Quality: idempotency (409 = already exists = success)
-	if strings.Contains(helpersContent, "409") && strings.Contains(helpersContent, "already exists") {
+	if containsAllInAny(surfaceContent, "409", "already exists") {
 		score += 2
 	}
 	// Quality: 404 with specific exit code
-	if strings.Contains(helpersContent, "404") {
+	if containsAnyInAny(surfaceContent, "404") {
 		score += 1
 	}
 	// Excellence: actionable suggestions in errors (not just codes)
-	if (strings.Contains(helpersContent, "Run") || strings.Contains(helpersContent, "try")) && strings.Contains(helpersContent, "doctor") {
+	if containsActionableDoctorSuggestion(surfaceContent) {
 		score += 2
 	}
 	if score > 10 {
@@ -420,16 +430,23 @@ func scoreErrorHandling(dir string) int {
 	return score
 }
 
+func containsActionableDoctorSuggestion(surfaceContent []string) bool {
+	return slices.ContainsFunc(surfaceContent, actionableDoctorSuggestionRE.MatchString)
+}
+
 func scoreTerminalUX(dir string) int {
-	helpersContent := readFileContent(filepath.Join(dir, "internal", "cli", "helpers.go"))
+	return scoreTerminalUXWithSurface(dir, scorecardReachableInternalContents(dir))
+}
+
+func scoreTerminalUXWithSurface(dir string, surfaceContent []string) int {
 	rootContent := readFileContent(filepath.Join(dir, "internal", "cli", "root.go"))
 	score := 0
 	// Presence: NO_COLOR support
-	if strings.Contains(helpersContent, "NO_COLOR") {
+	if containsAnyInAny(surfaceContent, "NO_COLOR") {
 		score += 1
 	}
 	// Presence: TTY detection
-	if strings.Contains(helpersContent, "isatty") {
+	if containsAnyInAny(surfaceContent, "isatty", "IsTerminal", "x/term") {
 		score += 1
 	}
 	// Presence: no-color flag
@@ -437,7 +454,7 @@ func scoreTerminalUX(dir string) int {
 		score += 1
 	}
 	// Quality: tabwriter for aligned columns
-	if strings.Contains(helpersContent, "tabwriter") {
+	if containsAnyInAny(surfaceContent, "tabwriter") {
 		score += 2
 	}
 	// Quality: help text descriptions are meaningful (not just verb names)
@@ -669,7 +686,7 @@ func scoreMCPQuality(dir string) int {
 		highlevelCount++
 	}
 	if (strings.Contains(mcpContent, `"sync"`) && strings.Contains(mcpContent, "handleSync")) ||
-		(hasRuntimeMirror && fileExists(filepath.Join(dir, "internal", "cli", "sync.go"))) {
+		(hasRuntimeMirror && hasRegisteredCommandFileWithPrefix(filepath.Join(dir, "internal", "cli"), "sync")) {
 		highlevelCount++
 	}
 	if highlevelCount >= 2 {
@@ -1063,7 +1080,7 @@ func scoreVision(dir string) int {
 	if fileExists(filepath.Join(cliDir, "search.go")) {
 		tier1 += 1.0
 	}
-	if fileExists(filepath.Join(cliDir, "sync.go")) {
+	if hasRegisteredCommandFileWithPrefix(cliDir, "sync") {
 		tier1 += 0.5
 	}
 	if fileExists(filepath.Join(cliDir, "tail.go")) {
@@ -1207,39 +1224,63 @@ func registeredCommandFiles(cliDir string) map[string]bool {
 	scanContent := funcDeclRe.ReplaceAllString(rootContent, "")
 
 	ctorRe := regexp.MustCompile(`\bnew([A-Z][A-Za-z0-9_]*)Cmd\s*\(`)
-	matches := ctorRe.FindAllStringSubmatch(scanContent, -1)
-	if len(matches) == 0 {
+	rootMatches := ctorRe.FindAllStringSubmatch(scanContent, -1)
+	if len(rootMatches) == 0 {
 		return map[string]bool{}
 	}
-	ctors := make(map[string]bool, len(matches))
-	for _, m := range matches {
-		ctors["new"+m[1]+"Cmd"] = true
+	reachableCtors := make(map[string]bool, len(rootMatches))
+	for _, m := range rootMatches {
+		reachableCtors["new"+m[1]+"Cmd"] = true
 	}
 
-	// Walk cli/*.go and map each file to the constructor it defines. Use a
-	// regexp for the declaration site to avoid depending on go/parser for one
-	// lookup (keeps the scorer dependency-free, which matters because it runs
-	// against third-party generated trees).
+	// Walk cli/*.go and map each file to the reachable constructor it defines.
+	// Re-scan newly reachable command files for child AddCommand calls so
+	// subcommands defined outside root.go still count as user-reachable.
 	defRe := regexp.MustCompile(`^func\s+(new[A-Z][A-Za-z0-9_]*Cmd)\s*\(`)
 	entries, err := os.ReadDir(cliDir)
 	if err != nil {
 		return map[string]bool{}
 	}
-	result := make(map[string]bool)
+	fileContent := map[string]string{}
+	fileDefs := map[string][]string{}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
 			continue
 		}
 		content := readFileContent(filepath.Join(cliDir, e.Name()))
+		fileContent[e.Name()] = content
 		for line := range strings.SplitSeq(content, "\n") {
 			sm := defRe.FindStringSubmatch(line)
-			if sm == nil {
+			if sm != nil {
+				fileDefs[e.Name()] = append(fileDefs[e.Name()], sm[1])
+			}
+		}
+	}
+
+	result := make(map[string]bool)
+	for {
+		changed := false
+		for name, defs := range fileDefs {
+			reachable := false
+			for _, def := range defs {
+				if reachableCtors[def] {
+					reachable = true
+					break
+				}
+			}
+			if !reachable || result[name] {
 				continue
 			}
-			if ctors[sm[1]] {
-				result[e.Name()] = true
-				break
+
+			result[name] = true
+			changed = true
+			callScanContent := funcDeclRe.ReplaceAllString(fileContent[name], "")
+			for _, m := range ctorRe.FindAllStringSubmatch(callScanContent, -1) {
+				reachableCtors["new"+m[1]+"Cmd"] = true
 			}
+		}
+		if !changed {
+			break
 		}
 	}
 	return result
@@ -1302,8 +1343,8 @@ func scoreWorkflows(dir string) int {
 
 		content := readFileContent(filepath.Join(cliDir, e.Name()))
 
-		// A command that uses the store is a workflow command (it uses the data layer)
-		if strings.Contains(content, "/store") || strings.Contains(content, "store.Open") || strings.Contains(content, "store.New") {
+		// A command that uses the local data layer is a workflow command.
+		if hasStoreSignal(content) {
 			compoundCommands++
 			continue
 		}
@@ -1387,14 +1428,21 @@ func scoreInsight(dir string) int {
 
 		// Signal 2: file declares a Cobra Use: matching an agent-declared novel feature.
 		if len(novelLeaves) > 0 {
-			if m := cobraUseLeafRe.FindStringSubmatch(content); m != nil && novelLeaves[strings.ToLower(m[1])] {
+			matchedNovelLeaf := false
+			for _, m := range cobraUseLeafRe.FindAllStringSubmatch(content, -1) {
+				if novelLeaves[strings.ToLower(m[1])] {
+					matchedNovelLeaf = true
+					break
+				}
+			}
+			if matchedNovelLeaf {
 				found++
 				continue
 			}
 		}
 
 		// Signal 3: store + SQL aggregation
-		usesStore := strings.Contains(content, "/store") || strings.Contains(content, "store.Open") || strings.Contains(content, "store.New")
+		usesStore := hasStoreSignal(content)
 		rateRe := regexp.MustCompile(`\brate\b|\bRate\b`)
 		hasSQLAgg := strings.Contains(content, "COUNT(") || strings.Contains(content, "SUM(") ||
 			strings.Contains(content, "GROUP BY") || strings.Contains(content, "AVG(") ||
@@ -2229,8 +2277,8 @@ func scoreDataPipelineIntegrity(dir string) int {
 }
 
 func scoreSyncCorrectness(dir string) int {
-	cliDir := filepath.Join(dir, "internal", "cli")
-	content := readAllGoFiles(cliDir)
+	reachableFiles := scorecardReachableInternalFiles(dir)
+	content := readFilesContent(reachableFiles)
 	if content == "" {
 		return 0
 	}
@@ -2245,7 +2293,7 @@ func scoreSyncCorrectness(dir string) int {
 	if strings.Contains(content, "SaveSyncState") {
 		score++
 	}
-	if hasSyncPaginationStructure(cliDir) {
+	if hasSyncPaginationStructureInFiles(reachableFiles) {
 		score += 2
 	}
 	// URL path parameters only count when other sync signals are present,
@@ -2516,16 +2564,13 @@ func uniqueMatches(re *regexp.Regexp, content string) []string {
 
 // readAllGoFiles concatenates the content of all .go files in dir.
 func readAllGoFiles(dir string) string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return ""
-	}
+	return readFilesContent(listGoFiles(dir))
+}
+
+func readFilesContent(paths []string) string {
 	var b strings.Builder
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") {
-			continue
-		}
-		b.WriteString(readFileContent(filepath.Join(dir, entry.Name())))
+	for _, path := range paths {
+		b.WriteString(readFileContent(path))
 		b.WriteByte('\n')
 	}
 	return b.String()
