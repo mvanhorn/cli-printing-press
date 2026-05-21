@@ -597,6 +597,12 @@ func TestAnalyzeTraffic_ClassifiesCaptchaPrecheckDecisions(t *testing.T) {
 			body:         `{"fields":[{"name":"email","required":true}]}`,
 			expectedMode: "standard_http",
 		},
+		{
+			name:         "large non-precheck turnstile body is ordinary JSON",
+			url:          "https://studio-api.example.com/api/songs",
+			body:         `{"songs":[{"title":"turnstile","description":"` + strings.Repeat("x", maxCaptchaChallengeJSONBytes) + `"}]}`,
+			expectedMode: "standard_http",
+		},
 	}
 
 	for _, tt := range tests {

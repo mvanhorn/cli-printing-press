@@ -18,6 +18,7 @@ import (
 
 const trafficAnalysisVersion = "1"
 const maxCaptchaPreflightJSONBytes = 4096
+const maxCaptchaChallengeJSONBytes = maxCaptchaPreflightJSONBytes * 16
 
 type TrafficAnalysis struct {
 	Version           string                  `json:"version"`
@@ -933,7 +934,7 @@ func hasCaptchaChallengeMarker(entry EnrichedEntry, lowerBody string) bool {
 			strings.Contains(lowerBody, "recaptcha") ||
 			strings.Contains(lowerBody, "hcaptcha") ||
 			strings.Contains(lowerBody, "turnstile")
-		if hasCaptchaKeyword {
+		if hasCaptchaKeyword && len(strings.TrimSpace(entry.ResponseBody)) <= maxCaptchaChallengeJSONBytes {
 			if requiresChallenge, parsed := captchaPreflightChallengeDecision(entry.ResponseBody); parsed {
 				return requiresChallenge
 			}
