@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,9 +100,6 @@ func TestParseAICLargeSpecCompletes(t *testing.T) {
 
 func BenchmarkLargeSpec(b *testing.B) {
 	data := readAICLargeSpec(b)
-	prev := warnWriter
-	warnWriter = io.Discard
-	defer func() { warnWriter = prev }()
 
 	b.ReportAllocs()
 	b.ResetTimer()
