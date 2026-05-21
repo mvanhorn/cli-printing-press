@@ -188,8 +188,8 @@ func TestClassifyAllowsFreshGoModWithoutPublishedGoMod(t *testing.T) {
 
 	pubDir := t.TempDir()
 	freshDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(freshDir, "go.mod"),
-		[]byte("module fresh-cli\n\ngo 1.23\n"), 0o644))
+	require.NoError(t, writeFileAtomic(filepath.Join(freshDir, "go.mod"),
+		[]byte("module fresh-cli\n\ngo 1.23\n")))
 
 	report, err := Classify(pubDir, freshDir, Options{Force: true})
 	require.NoError(t, err)
