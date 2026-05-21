@@ -23,6 +23,7 @@ func newBrowserSniffCmd() *cobra.Command {
 	var include string
 	var minSamples int
 	var authFrom string
+	var preserveHosts bool
 
 	cmd := &cobra.Command{
 		Use:   "browser-sniff",
@@ -47,7 +48,8 @@ func newBrowserSniffCmd() *cobra.Command {
 				capture.Auth = authCapture.Auth
 			}
 
-			apiSpec, err := browsersniff.AnalyzeCapture(capture)
+			analyzeOptions := browsersniff.AnalyzeOptions{PreserveHosts: preserveHosts}
+			apiSpec, err := browsersniff.AnalyzeCaptureWithOptions(capture, analyzeOptions)
 			if err != nil {
 				return fmt.Errorf("analyzing capture: %w", err)
 			}
@@ -73,9 +75,9 @@ func newBrowserSniffCmd() *cobra.Command {
 			}
 			browsersniff.ApplyReachabilityDefaults(apiSpec, trafficAnalysis)
 
-			droppedEndpoints := browsersniff.FilterEndpointsByMinSamples(apiSpec, capture, minSamples)
+			droppedEndpoints := browsersniff.FilterEndpointsByMinSamplesWithOptions(apiSpec, capture, minSamples, analyzeOptions)
 
-			samplesWritten, err := writeBrowserSniffOutputs(apiSpec, trafficAnalysis, capture, outputPath, analysisOutputPath, samplesOutputPath)
+			samplesWritten, err := writeBrowserSniffOutputs(apiSpec, trafficAnalysis, capture, outputPath, analysisOutputPath, samplesOutputPath, analyzeOptions)
 			if err != nil {
 				return err
 			}
@@ -105,6 +107,7 @@ func newBrowserSniffCmd() *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "Override the auto-detected API name")
 	cmd.Flags().StringVar(&blocklist, "blocklist", "", "Comma-separated additional hostnames to filter (extends the default analytics/telemetry blocklist)")
 	cmd.Flags().StringVar(&include, "include", "", "Comma-separated host or path substrings to rescue from default filtering; matches win over --blocklist and the static-asset suffix demotion")
+	cmd.Flags().BoolVar(&preserveHosts, "preserve-hosts", false, "Keep secondary API hosts in the generated spec with per-endpoint base_url overrides instead of selecting only the dominant host")
 	cmd.Flags().IntVar(&minSamples, "min-samples", 1, "Drop endpoints with fewer than N paired samples from the emitted spec; the dropped endpoints remain in the traffic-analysis sidecar for audit. Default 1 leaves behavior unchanged; 2+ is recommended for production capture")
 	cmd.Flags().StringVar(&authFrom, "auth-from", "", "Path to an enriched capture file to import auth from")
 	_ = cmd.MarkFlagRequired("har")
@@ -119,7 +122,7 @@ func plural(n int) string {
 	return "s"
 }
 
-func writeBrowserSniffOutputs(apiSpec *spec.APISpec, trafficAnalysis *browsersniff.TrafficAnalysis, capture *browsersniff.EnrichedCapture, outputPath string, analysisOutputPath string, samplesOutputPath string) (int, error) {
+func writeBrowserSniffOutputs(apiSpec *spec.APISpec, trafficAnalysis *browsersniff.TrafficAnalysis, capture *browsersniff.EnrichedCapture, outputPath string, analysisOutputPath string, samplesOutputPath string, analyzeOptions browsersniff.AnalyzeOptions) (int, error) {
 	specTmp := siblingTempPath(outputPath, "spec")
 	analysisTmp := siblingTempPath(analysisOutputPath, "traffic-analysis")
 	defer func() { _ = os.Remove(specTmp) }()
@@ -140,7 +143,7 @@ func writeBrowserSniffOutputs(apiSpec *spec.APISpec, trafficAnalysis *browsersni
 		if err := os.MkdirAll(samplesTmp, 0o755); err != nil {
 			return 0, fmt.Errorf("preparing samples temp dir: %w", err)
 		}
-		written, err := browsersniff.WriteSamples(capture, samplesTmp)
+		written, err := browsersniff.WriteSamplesWithOptions(capture, samplesTmp, analyzeOptions)
 		if err != nil {
 			_ = os.RemoveAll(samplesTmp)
 			return 0, fmt.Errorf("writing samples: %w", err)

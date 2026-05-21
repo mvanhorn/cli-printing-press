@@ -128,6 +128,43 @@ func TestClassifyEntries(t *testing.T) {
 				"https://www.youtube.com/youtubei/v1/player?prettyPrint=false": false,
 			},
 		},
+		{
+			name: "known telemetry host is noise",
+			entries: []EnrichedEntry{
+				{
+					Method:              "POST",
+					URL:                 "https://browser-intake-datadoghq.com/api/v2/rum?dd-api-key=wrong-service",
+					RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"status":"ok"}`,
+				},
+			},
+			wantNoiseURLs: []string{"https://browser-intake-datadoghq.com/api/v2/rum?dd-api-key=wrong-service"},
+			wantClassByURL: map[string]string{
+				"https://browser-intake-datadoghq.com/api/v2/rum?dd-api-key=wrong-service": "noise",
+			},
+			wantIsNoiseByURL: map[string]bool{
+				"https://browser-intake-datadoghq.com/api/v2/rum?dd-api-key=wrong-service": true,
+			},
+		},
+		{
+			name: "first-party intake path without telemetry query remains api",
+			entries: []EnrichedEntry{
+				{
+					Method:              "GET",
+					URL:                 "https://api.example.com/intake/v1/forms",
+					ResponseContentType: "application/json",
+					ResponseBody:        `{"forms":[{"id":"form_1"}]}`,
+				},
+			},
+			wantAPIURLs: []string{"https://api.example.com/intake/v1/forms"},
+			wantClassByURL: map[string]string{
+				"https://api.example.com/intake/v1/forms": "api",
+			},
+			wantIsNoiseByURL: map[string]bool{
+				"https://api.example.com/intake/v1/forms": false,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -145,6 +182,22 @@ func TestClassifyEntries(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClassifyEntries_TelemetryPathsRequireTelemetryQueryEvidence(t *testing.T) {
+	t.Parallel()
+
+	entries := []EnrichedEntry{
+		{Method: "POST", URL: "https://events.example.com/sentry/envelope/?sentry_key=abc", ResponseContentType: "application/json", ResponseBody: `{"ok":true}`},
+		{Method: "POST", URL: "https://events.example.com/intake/v1/?dd-api-key=abc", ResponseContentType: "application/json", ResponseBody: `{"ok":true}`},
+		{Method: "POST", URL: "https://events.example.com/intercom/ping?intercom-device-id=abc", ResponseContentType: "application/json", ResponseBody: `{"ok":true}`},
+		{Method: "POST", URL: "https://events.example.com/rum?dd-api-key=abc", ResponseContentType: "application/json", ResponseBody: `{"ok":true}`},
+	}
+
+	api, noise := ClassifyEntries(entries)
+
+	assert.Empty(t, api)
+	assert.Equal(t, entryURLs(entries), entryURLs(noise))
 }
 
 func TestDeduplicateEndpoints(t *testing.T) {

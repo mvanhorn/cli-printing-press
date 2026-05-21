@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +50,24 @@ var (
 	additionalBlocklist   []string
 	includeListMu         sync.RWMutex
 	additionalInclude     []string
+	telemetryHosts        = []string{
+		"sentry.io",
+		"datadoghq.com",
+		"intercom.io",
+		"intercom.com",
+		"segment.com",
+		"segment.io",
+		"statsig.com",
+		"fullstory.com",
+		"launchdarkly.com",
+		"eppo.cloud",
+		"mixpanel.com",
+		"amplitude.com",
+		"pendo.io",
+		"hotjar.com",
+	}
+	telemetryPathMarkers = []string{"/sentry/envelope/", "/intake/v1/", "/intercom/"}
+	telemetryQueryKeys   = []string{"sentry_key", "dd-api-key", "dd-client-token", "ddsource", "intercom-device-id"}
 )
 
 func ClassifyEntries(entries []EnrichedEntry) (api []EnrichedEntry, noise []EnrichedEntry) {
@@ -131,10 +150,9 @@ func matchesIncludePattern(host string, path string, patterns []string) bool {
 }
 
 func DefaultBlocklist() []string {
-	return []string{
+	hosts := []string{
 		"google-analytics.com",
 		"doubleclick.net",
-		"sentry.io",
 		"facebook.com",
 		"googlesyndication.com",
 		"googletagmanager.com",
@@ -150,19 +168,13 @@ func DefaultBlocklist() []string {
 		"improving.duckduckgo.com",
 		"lngtd.com",
 		"kargo.com",
-		"segment.io",
-		"api.segment.io",
-		"mixpanel.com",
-		"amplitude.com",
-		"hotjar.com",
 		"newrelic.com",
-		"fullstory.com",
-		"intercom.io",
 		"branch.io",
 		"stats.g.doubleclick.net",
 		"adservice.google.com",
 		"connect.facebook.net",
 	}
+	return append(hosts, telemetryHosts...)
 }
 
 func DeduplicateEndpoints(entries []EnrichedEntry) []EndpointGroup {
@@ -207,6 +219,10 @@ func scoreEntry(entry EnrichedEntry, blocklist []string, include []string) int {
 		return 10
 	}
 
+	if isTelemetryEntry(entry) {
+		return -100
+	}
+
 	if strings.Contains(responseType, "application/json") {
 		score += 2
 	}
@@ -245,6 +261,171 @@ func scoreEntry(entry EnrichedEntry, blocklist []string, include []string) int {
 	}
 
 	return score
+}
+
+func isTelemetryEntry(entry EnrichedEntry) bool {
+	host := strings.ToLower(extractHost(entry.URL))
+	path := strings.ToLower(extractPath(entry.URL))
+	if telemetryHostMatches(host) {
+		return true
+	}
+	return pathMatchesTelemetry(path) && telemetryQueryMatches(entry.URL)
+}
+
+func telemetryHostMatches(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	return hostMatchesBlocklist(host, telemetryHosts) || strings.HasSuffix(host, "-datadoghq.com")
+}
+
+func entriesContainTelemetry(entries []EnrichedEntry) bool {
+	return slices.ContainsFunc(entries, isTelemetryEntry)
+}
+
+func pathMatchesTelemetry(path string) bool {
+	if path == "" {
+		return false
+	}
+	for _, marker := range telemetryPathMarkers {
+		if strings.Contains(path, marker) {
+			return true
+		}
+	}
+	return path == "/rum" || strings.Contains(path, "/rum/")
+}
+
+func telemetryQueryMatches(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	query := parsed.Query()
+	for _, key := range telemetryQueryKeys {
+		if _, ok := query[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func selectPrimaryAPIEntries(entries []EnrichedEntry) ([]EnrichedEntry, []EnrichedEntry) {
+	if len(entries) == 0 {
+		return entries, nil
+	}
+
+	primaryHost, counts := primaryHostByFrequency(entries)
+	if primaryHost == "" {
+		return entries, nil
+	}
+	if len(counts) <= 1 {
+		return entries, nil
+	}
+
+	primaryCount := counts[primaryHost]
+	primary := make([]EnrichedEntry, 0, primaryCount)
+	secondary := make([]EnrichedEntry, 0, len(entries)-primaryCount)
+	for _, entry := range entries {
+		if strings.EqualFold(normalizedURLHost(entry.URL), primaryHost) {
+			primary = append(primary, entry)
+			continue
+		}
+		secondary = append(secondary, entry)
+	}
+
+	return primary, secondary
+}
+
+func primaryHostByFrequency(entries []EnrichedEntry) (string, map[string]int) {
+	counts := map[string]int{}
+	order := make([]string, 0)
+	for _, entry := range entries {
+		host := normalizedURLHost(entry.URL)
+		if host == "" {
+			continue
+		}
+		if counts[host] == 0 {
+			order = append(order, host)
+		}
+		counts[host]++
+	}
+
+	primaryHost := ""
+	primaryCount := 0
+	tied := false
+	for _, host := range order {
+		switch {
+		case counts[host] > primaryCount:
+			primaryHost = host
+			primaryCount = counts[host]
+			tied = false
+		case counts[host] == primaryCount:
+			tied = true
+		}
+	}
+	if tied {
+		return "", counts
+	}
+	return primaryHost, counts
+}
+
+func secondaryHostsForEntries(apiEntries []EnrichedEntry, noiseEntries []EnrichedEntry, primaryHost string) []SecondaryHost {
+	primaryHost = strings.ToLower(strings.TrimSpace(primaryHost))
+	if primaryHost == "" {
+		return nil
+	}
+
+	counts := map[string]int{}
+	reasons := map[string]SecondaryHostReason{}
+	for _, entry := range apiEntries {
+		host := normalizedURLHost(entry.URL)
+		if host == "" || host == primaryHost {
+			continue
+		}
+		counts[host]++
+		reasons[host] = SecondaryHostReasonNonPrimary
+	}
+	for _, entry := range noiseEntries {
+		if !isTelemetryEntry(entry) {
+			continue
+		}
+		host := normalizedURLHost(entry.URL)
+		if host == "" || host == primaryHost {
+			continue
+		}
+		counts[host]++
+		if _, exists := reasons[host]; !exists {
+			reasons[host] = SecondaryHostReasonTelemetry
+		}
+	}
+	if len(counts) == 0 {
+		return nil
+	}
+
+	hosts := make([]string, 0, len(counts))
+	for host := range counts {
+		hosts = append(hosts, host)
+	}
+	sort.Strings(hosts)
+
+	out := make([]SecondaryHost, 0, len(hosts))
+	for _, host := range hosts {
+		out = append(out, SecondaryHost{
+			Host:   host,
+			Count:  counts[host],
+			Reason: reasons[host],
+		})
+	}
+	return out
+}
+
+func normalizedURLHost(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err == nil && parsed.Hostname() != "" {
+		return strings.ToLower(parsed.Hostname())
+	}
+	if !strings.Contains(rawURL, "://") {
+		return ""
+	}
+	return strings.ToLower(extractHost(rawURL))
 }
 
 func getHeaderValue(headers map[string]string, want string) string {

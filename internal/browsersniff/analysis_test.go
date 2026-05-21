@@ -848,6 +848,84 @@ func TestAnalyzeTraffic_DoesNotTreatPaginationTokensAsAuth(t *testing.T) {
 	assert.ElementsMatch(t, []string{"next_token", "page_token", "pagination_token"}, paginationNames(analysis.Pagination))
 }
 
+func TestAnalyzeTraffic_RecordsTelemetryHostsAsSecondary(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://app.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "POST",
+				URL:                 "https://sentry.io/api/123/envelope/?sentry_key=wrong-service",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `{"event_id":"abc"}`,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":"evt_1"}`,
+			},
+			{
+				Method:              "POST",
+				URL:                 "https://browser-intake-datadoghq.com/api/v2/rum?dd-api-key=wrong-service",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `[{"type":"view"}]`,
+				ResponseStatus:      202,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"status":"ok"}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"items":[{"id":"item_1"}]}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items/item_1",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":"item_1"}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://assets.example.com/v1/bootstrap",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"version":"1"}`,
+			},
+			{
+				Method:              "POST",
+				URL:                 "https://assets.example.com/sentry/envelope/?sentry_key=relay",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `{"event_id":"relay"}`,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":"evt_2"}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://cdn.example.com/assets/app.css",
+				ResponseStatus:      200,
+				ResponseContentType: "text/css",
+				ResponseBody:        `body{}`,
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+
+	assert.Equal(t, 3, analysis.Summary.APIEntryCount)
+	assert.Empty(t, analysis.Auth.Candidates)
+	require.Len(t, analysis.EndpointClusters, 3)
+	assert.Equal(t, "api.example.com", analysis.EndpointClusters[0].Host)
+	assert.Equal(t, []SecondaryHost{
+		{Host: "assets.example.com", Count: 2, Reason: "non-primary host"},
+		{Host: "browser-intake-datadoghq.com", Count: 1, Reason: "telemetry host"},
+		{Host: "sentry.io", Count: 1, Reason: "telemetry host"},
+	}, analysis.SecondaryHosts)
+}
+
 func TestAnalyzeTraffic_DoesNotWarnGraphQLErrorOnlyForRESTErrors(t *testing.T) {
 	t.Parallel()
 
