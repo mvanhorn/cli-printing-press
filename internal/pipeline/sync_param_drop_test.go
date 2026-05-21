@@ -375,6 +375,74 @@ func sync() error {
 	}
 }
 
+// Regression: an `*http.Client` variable named `h` calling the stdlib
+// `(*http.Client).Get(url)` shape (one arg, no params) must not be
+// treated as a recognized client call. Otherwise callPassedKeys would
+// return []string{} (explicit zero-key) and the walker would flag every
+// captured key for that path as dropped. Mirrors the package-level
+// http.Get(url) carve-out for the receiver-named-h case.
+func TestCheckSyncParamDrop_StdlibHTTPClientVarNamedH_NotFlagged(t *testing.T) {
+	src := `package syncer
+
+import "net/http"
+
+func sync() error {
+	h := &http.Client{}
+	_, err := h.Get("/menu")
+	return err
+}
+`
+	cliDir, analysisPath := seedSyncParamDropFixture(t, src, makeCapture("GET", "/menu", "a", "b"))
+	got := CheckSyncParamDrop(cliDir, analysisPath)
+	if got.Skipped {
+		t.Fatalf("Skipped: want false, got true")
+	}
+	if got.Checked != 0 {
+		t.Fatalf("Checked: want 0, got %d", got.Checked)
+	}
+	if len(got.Findings) != 0 {
+		t.Fatalf("Findings: want 0, got %d (%+v)", len(got.Findings), got.Findings)
+	}
+}
+
+// Regression: an empty map literal — `client.Get("/menu", map[string]string{})` —
+// must be treated as an explicit zero-key call: counted toward Checked,
+// and every captured key for that path reported as dropped. Previously
+// the empty map returned (nil, true) from extractCompositeLiteralKeys,
+// which the walker silently bypassed via its `passedKeys == nil` guard,
+// hiding the exact drop the gate is designed to flag.
+func TestCheckSyncParamDrop_EmptyMapLiteral_FlagsAllCaptured(t *testing.T) {
+	src := `package syncer
+
+type Client struct{}
+
+func (c *Client) Get(path string, params map[string]string) error { return nil }
+
+func sync(client *Client) error {
+	return client.Get("/menu", map[string]string{})
+}
+`
+	cliDir, analysisPath := seedSyncParamDropFixture(t, src, makeCapture("GET", "/menu", "a", "b", "c"))
+	got := CheckSyncParamDrop(cliDir, analysisPath)
+	if got.Skipped {
+		t.Fatalf("Skipped: want false, got true")
+	}
+	if got.Checked != 1 {
+		t.Fatalf("Checked: want 1, got %d", got.Checked)
+	}
+	if len(got.Findings) != 1 {
+		t.Fatalf("Findings: want 1, got %d (%+v)", len(got.Findings), got.Findings)
+	}
+	f := got.Findings[0]
+	wantDropped := []string{"a", "b", "c"}
+	if strings.Join(f.DroppedKeys, ",") != strings.Join(wantDropped, ",") {
+		t.Errorf("DroppedKeys: want %v, got %v", wantDropped, f.DroppedKeys)
+	}
+	if len(f.PassedKeys) != 0 {
+		t.Errorf("PassedKeys: want empty, got %v", f.PassedKeys)
+	}
+}
+
 func TestCheckSyncParamDrop_NoTrafficAnalysis_Skipped(t *testing.T) {
 	root := t.TempDir()
 	got := CheckSyncParamDrop(root, "")

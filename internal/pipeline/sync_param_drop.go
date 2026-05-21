@@ -317,8 +317,14 @@ func receiverLooksLikeHTTPClient(expr ast.Expr) bool {
 		// Disambiguates against, e.g., `cmd.Get` where Cobra's `cmd` is
 		// a frequent name — but `cmd` itself isn't on the short-identifier
 		// allowlist below; only true HTTP-client conventional names.
+		// `"h"` is intentionally excluded: an `*http.Client` named `h`
+		// uses the stdlib `(*http.Client).Get(url)` shape, which has
+		// no params arg — callPassedKeys would treat it as an explicit
+		// zero-key call and flag every captured key as dropped. Same
+		// reason `"http"` was dropped earlier (bare one-arg stdlib
+		// `Get` shape produces false positives).
 		switch strings.ToLower(v.Name) {
-		case "c", "s", "client", "h", "api":
+		case "c", "s", "client", "api":
 			return true
 		}
 		return strings.Contains(strings.ToLower(v.Name), "client")
@@ -375,6 +381,16 @@ func extractCompositeLiteralKeys(expr ast.Expr) ([]string, bool) {
 	mapShape := false
 	if _, isMap := lit.Type.(*ast.MapType); isMap {
 		mapShape = true
+		// Initialize to a non-nil empty slice so an empty map literal
+		// (`map[string]string{}`) flows through as the "explicit
+		// zero-key call" signal: the walker counts it toward Checked
+		// and every captured key for the same path is reported as
+		// dropped. Without this, `keys` would stay nil when Elts is
+		// empty, the function would return (nil, true), and the
+		// walker's `passedKeys == nil` guard would silently bypass
+		// the gate — the exact false negative this gate is designed
+		// to catch.
+		keys = []string{}
 	}
 	for _, el := range lit.Elts {
 		kv, ok := el.(*ast.KeyValueExpr)
