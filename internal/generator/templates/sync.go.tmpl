@@ -11,6 +11,9 @@ package cli
 
 import (
 	"encoding/json"
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+	"errors"
+{{- end}}
 	"fmt"
 	"net/url"
 	"os"
@@ -24,7 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
-{{- if .HasTierRouting}}
+{{- if or .HasTierRouting (and .Auth.Type (ne .Auth.Type "none"))}}
 	"{{modulePath}}/internal/client"
 {{- end}}
 	"{{modulePath}}/internal/cliutil"
@@ -322,12 +325,24 @@ Resource scoping:
 			var criticalErrCount int
 			var warnCount int
 			var successCount int
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+			var firstErr error
+			var firstPlaceholderErr error
+{{- end}}
 			for res := range results {
 				if res.Err != nil {
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
 					}
 					errCount++
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+					if firstErr == nil {
+						firstErr = res.Err
+					}
+					if firstPlaceholderErr == nil && errors.Is(res.Err, client.ErrPlaceholderCredential) {
+						firstPlaceholderErr = res.Err
+					}
+{{- end}}
 					if criticalResources[res.Resource] {
 						criticalErrCount++
 					}
@@ -354,6 +369,14 @@ Resource scoping:
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
 					}
 					errCount++
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+					if firstErr == nil {
+						firstErr = res.Err
+					}
+					if firstPlaceholderErr == nil && errors.Is(res.Err, client.ErrPlaceholderCredential) {
+						firstPlaceholderErr = res.Err
+					}
+{{- end}}
 					if criticalResources[res.Resource] {
 						criticalErrCount++
 					}
@@ -396,6 +419,11 @@ Resource scoping:
 			// one-shot sync_warning with reason "exit_policy_default_changed" so
 			// CI scripts that depend on $? != 0 can discover the contract change
 			// without reading the CHANGELOG.
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+			if firstPlaceholderErr != nil {
+				return classifyAPIError(firstPlaceholderErr, flags)
+			}
+{{- end}}
 			if strict && errCount > 0 {
 				return fmt.Errorf("%d resource(s) failed to sync", errCount)
 			}

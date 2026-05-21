@@ -5,6 +5,9 @@ package cli
 
 import (
 	"encoding/json"
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+	"errors"
+{{- end}}
 	"fmt"
 	"os"
 	"regexp"
@@ -167,12 +170,24 @@ Exit codes & warnings:
 			var errCount int
 			var warnCount int
 			var successCount int
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+			var firstErr error
+			var firstPlaceholderErr error
+{{- end}}
 			for res := range results {
 				if res.Err != nil {
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
 					}
 					errCount++
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+					if firstErr == nil {
+						firstErr = res.Err
+					}
+					if firstPlaceholderErr == nil && errors.Is(res.Err, client.ErrPlaceholderCredential) {
+						firstPlaceholderErr = res.Err
+					}
+{{- end}}
 				} else if res.Warn != nil {
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: warning: %v\n", res.Resource, res.Warn)
@@ -203,6 +218,11 @@ Exit codes & warnings:
 			}
 
 			if errCount > 0 {
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+				if firstPlaceholderErr != nil {
+					return classifyAPIError(firstPlaceholderErr, flags)
+				}
+{{- end}}
 				return fmt.Errorf("%d resource(s) failed to sync", errCount)
 			}
 			if warnCount > 0 && successCount == 0 {
@@ -454,4 +474,3 @@ func parseSinceDuration(s string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("unknown unit %q", matches[2])
 	}
 }
-

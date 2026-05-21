@@ -33,7 +33,7 @@ import (
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 	"{{modulePath}}/internal/cliutil"
 {{- end}}
-{{- if .HasDataLayer}}
+{{- if or .HasDataLayer (and .Auth.Type (ne .Auth.Type "none"))}}
 	"{{modulePath}}/internal/client"
 {{- end}}
 	"github.com/spf13/cobra"
@@ -559,6 +559,8 @@ func classifyAPIError(err error, flags *rootFlags) error {
 		writeAPIErrorEnvelope(flags, classified, ExitCode(classified))
 		return classified
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
+	case errors.Is(err, client.ErrPlaceholderCredential):
+		return authErr(err)
 	case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
 		return authErr(fmt.Errorf("%w\nhint: the API rejected the request — this usually means auth is missing or invalid."+
 {{- with $canonicalEnvVar}}
