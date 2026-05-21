@@ -49,6 +49,10 @@ const (
 )
 
 const (
+	ParamPurposeFieldSelector = "field_selector"
+)
+
+const (
 	TierAuthTypeNone        = "none"
 	TierAuthTypeAPIKey      = "api_key"
 	TierAuthTypeBearerToken = "bearer_token"
@@ -1498,6 +1502,12 @@ type Param struct {
 	Fields      []Param  `yaml:"fields" json:"fields"`                     // for nested objects
 	Enum        []string `yaml:"enum,omitempty" json:"enum,omitempty"`     // enum constraints for the parameter
 	Format      string   `yaml:"format,omitempty" json:"format,omitempty"` // OpenAPI format hints (date-time, email, uri, etc.)
+	Purpose     string   `yaml:"purpose,omitempty" json:"purpose,omitempty"`
+	// FieldSelectorDefault is a sync-time default for field-selector params
+	// such as opt_fields, fields, expand, include, or select. It stays separate
+	// from Default so generated endpoint commands do not silently change their
+	// own flag defaults when sync needs richer stored rows.
+	FieldSelectorDefault string `yaml:"field_selector_default,omitempty" json:"field_selector_default,omitempty"`
 	// IdentName, when set, overrides Name for Go identifier and CLI flag
 	// derivation (camel/flagName). Name remains the wire-side parameter name
 	// used in URLs, JSON keys, and path substitution. Populated by the

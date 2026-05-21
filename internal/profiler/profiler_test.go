@@ -1485,6 +1485,60 @@ func TestProfileSyncableResourceSinceParamPropagation(t *testing.T) {
 	assert.Empty(t, byName["users"].SinceParam, "endpoints without a since-like param yield empty SinceParam — the sync template treats this as 'do not send'")
 }
 
+func TestProfileSyncableResourceFieldSelectorPropagation(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "selectors",
+		Types: map[string]spec.TypeDef{
+			"Task": {Fields: []spec.TypeField{
+				{Name: "gid", Type: "string"},
+				{Name: "completed", Type: "bool"},
+				{Name: "assignee", Type: "object"},
+				{Name: "custom_fields", Type: "array"},
+			}},
+		},
+		Resources: map[string]spec.Resource{
+			"tasks": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/tasks",
+						Response: spec.ResponseDef{Type: "array", Item: "Task"},
+						Params: []spec.Param{{
+							Name:                 "opt_fields",
+							Type:                 "string",
+							Purpose:              spec.ParamPurposeFieldSelector,
+							FieldSelectorDefault: "gid,completed,assignee.gid,custom_fields.gid",
+						}},
+					},
+				},
+			},
+			"users": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:   "GET",
+						Path:     "/users",
+						Response: spec.ResponseDef{Type: "array"},
+					},
+				},
+			},
+		},
+	}
+
+	profile := Profile(s)
+	byName := make(map[string]SyncableResource, len(profile.SyncableResources))
+	for _, r := range profile.SyncableResources {
+		byName[r.Name] = r
+	}
+
+	require.Contains(t, byName, "tasks")
+	assert.Equal(t, "opt_fields", byName["tasks"].FieldSelector.Name)
+	assert.Equal(t, "gid,completed,assignee.gid,custom_fields.gid", byName["tasks"].FieldSelector.Default)
+
+	require.Contains(t, byName, "users")
+	assert.Empty(t, byName["users"].FieldSelector.Name)
+	assert.Empty(t, byName["users"].FieldSelector.Default)
+}
+
 // TestProfileDependentResourceSinceParamPropagation mirrors
 // TestProfileSyncableResourceSinceParamPropagation for parameterized child
 // paths so dependent-resource sync gets the same per-endpoint gating as flat
