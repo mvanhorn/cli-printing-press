@@ -390,6 +390,43 @@ func authHeader(token string) string {
 	assert.Contains(t, result.GeneratedScheme, "Bearer")
 }
 
+func TestAuthProofRejectsBearerApplyAuthFormatWithoutTokenPlaceholder(t *testing.T) {
+	dir := t.TempDir()
+	setupVerifierDirs(t, dir)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return applyAuthFormat("Bearer ", map[string]string{"token": c.Token})
+}
+`)
+
+	specPath := filepath.Join(dir, "spec.json")
+	writeTestFile(t, specPath, `{
+  "paths": {},
+  "components": {
+    "securitySchemes": {
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}`)
+
+	v, err := NewVerifier(dir, specPath)
+	require.NoError(t, err)
+
+	result := v.AuthProof()
+	assert.False(t, result.Match)
+	assert.True(t, result.Mismatch)
+	assert.Equal(t, "Bearer ", result.GeneratedFormat)
+	assert.Contains(t, result.Detail, `format literal "Bearer " does not include a token placeholder`)
+}
+
 func TestRunVerification_FullIntegration(t *testing.T) {
 	dir := t.TempDir()
 	setupVerifierDirs(t, dir)
