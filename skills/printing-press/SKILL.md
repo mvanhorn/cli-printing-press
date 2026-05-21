@@ -649,7 +649,7 @@ Before new research:
 
    **End of URL detection.** The remaining spec resolution rules apply when the argument is NOT a URL:
 
-   - If the user passed `--har <path>`, this is a HAR-first run. Run `cli-printing-press browser-sniff --har <path> --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"` to generate a spec and traffic analysis from captured traffic. Use the generated spec as the primary spec source for the rest of the pipeline. Skip the browser-sniff gate in Phase 1.7 (browser-sniff already ran).
+   - If the user passed `--har <path>`, this is a HAR-first run. Run `cli-printing-press browser-sniff --har <path> --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"` to generate a spec and traffic analysis from captured traffic. If `$API_RUN_DIR/source-priority.json` exists with two or more sources, add `--preserve-hosts` so combo-CLI captures retain peer API hosts with per-endpoint `base_url` overrides instead of collapsing them into secondary evidence. Use the generated spec as the primary spec source for the rest of the pipeline. Skip the browser-sniff gate in Phase 1.7 (browser-sniff already ran).
    - If the user passed `--spec`, use it directly (existing behavior).
    - Otherwise, proceed with normal discovery (catalog, KnownSpecs, apis-guru, web search).
 2. Check for prior research in:

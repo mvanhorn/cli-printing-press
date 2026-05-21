@@ -51,6 +51,7 @@ const trafficAnalysisSchemaJSON = `{
       }
     },
     "protections": {"type": "array", "items": {"$ref": "#/$defs/protection_observation"}},
+    "secondary_hosts": {"type": "array", "items": {"$ref": "#/$defs/secondary_host"}},
     "endpoint_clusters": {"type": "array", "items": {"$ref": "#/$defs/endpoint_cluster"}},
     "request_sequences": {"type": "array", "items": {"$ref": "#/$defs/request_sequence"}},
     "pagination": {"type": "array", "items": {"$ref": "#/$defs/pagination_signal"}},
@@ -107,6 +108,16 @@ const trafficAnalysisSchemaJSON = `{
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "evidence": {"type": "array", "items": {"oneOf": [{"$ref": "#/$defs/evidence_ref"}, {"type": "string"}]}},
         "notes": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "secondary_host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "count", "reason"],
+      "properties": {
+        "host": {"type": "string"},
+        "count": {"type": "integer", "minimum": 0},
+        "reason": {"type": "string", "enum": ["non-primary host", "telemetry host"]}
       }
     },
     "endpoint_cluster": {
