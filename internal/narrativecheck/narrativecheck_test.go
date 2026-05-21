@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -850,7 +851,13 @@ func buildTemplateVarOverrideStubBinary(t *testing.T) string {
 
 func renderEnvChecks(want map[string]string) string {
 	var b strings.Builder
-	for envName, envValue := range want {
+	keys := make([]string, 0, len(want))
+	for envName := range want {
+		keys = append(keys, envName)
+	}
+	sort.Strings(keys)
+	for _, envName := range keys {
+		envValue := want[envName]
 		fmt.Fprintf(&b, "\t\tif got := os.Getenv(%q); got != %q {\n", envName, envValue)
 		fmt.Fprintf(&b, "\t\t\tfmt.Fprintf(os.Stderr, %q, got)\n", envName+" = %q\\n")
 		b.WriteString("\t\t\tmissing = true\n")
