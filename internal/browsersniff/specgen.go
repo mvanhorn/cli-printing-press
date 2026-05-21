@@ -145,7 +145,7 @@ func AnalyzeCaptureWithOptions(capture *EnrichedCapture, options AnalyzeOptions)
 
 func specVisibleEntries(capture *EnrichedCapture, options AnalyzeOptions) ([]EnrichedEntry, []EnrichedEntry) {
 	apiEntries, noiseEntries := ClassifyEntries(capture.Entries)
-	if options.PreserveHosts || !captureContainsTelemetry(capture.Entries) {
+	if options.PreserveHosts || !entriesContainTelemetry(noiseEntries) {
 		return apiEntries, noiseEntries
 	}
 
@@ -1316,7 +1316,12 @@ func groupBaseURLOverride(group EndpointGroup, options AnalyzeOptions, specBaseU
 }
 
 func endpointFilterKey(method string, path string, baseURL string) string {
-	return strings.TrimRight(baseURL, "/") + " " + strings.ToUpper(strings.TrimSpace(method)) + " " + path
+	key := strings.ToUpper(strings.TrimSpace(method)) + " " + path
+	prefix := strings.TrimRight(baseURL, "/")
+	if prefix == "" {
+		return key
+	}
+	return prefix + " " + key
 }
 
 // SampleFile is the on-disk shape of one redacted endpoint sample written

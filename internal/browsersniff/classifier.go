@@ -168,7 +168,6 @@ func DefaultBlocklist() []string {
 		"improving.duckduckgo.com",
 		"lngtd.com",
 		"kargo.com",
-		"api.segment.io",
 		"newrelic.com",
 		"branch.io",
 		"stats.g.doubleclick.net",
@@ -278,7 +277,7 @@ func telemetryHostMatches(host string) bool {
 	return hostMatchesBlocklist(host, telemetryHosts) || strings.HasSuffix(host, "-datadoghq.com")
 }
 
-func captureContainsTelemetry(entries []EnrichedEntry) bool {
+func entriesContainTelemetry(entries []EnrichedEntry) bool {
 	return slices.ContainsFunc(entries, isTelemetryEntry)
 }
 
@@ -368,19 +367,32 @@ func primaryHostByFrequency(entries []EnrichedEntry) (string, map[string]int) {
 	return primaryHost, counts
 }
 
-func secondaryHostsForCapture(entries []EnrichedEntry, primaryHost string) []SecondaryHost {
+func secondaryHostsForEntries(apiEntries []EnrichedEntry, noiseEntries []EnrichedEntry, primaryHost string) []SecondaryHost {
 	primaryHost = strings.ToLower(strings.TrimSpace(primaryHost))
 	if primaryHost == "" {
 		return nil
 	}
 
 	counts := map[string]int{}
-	for _, entry := range entries {
+	reasons := map[string]SecondaryHostReason{}
+	for _, entry := range apiEntries {
 		host := normalizedURLHost(entry.URL)
 		if host == "" || host == primaryHost {
 			continue
 		}
 		counts[host]++
+		reasons[host] = SecondaryHostReasonNonPrimary
+	}
+	for _, entry := range noiseEntries {
+		if !isTelemetryEntry(entry) {
+			continue
+		}
+		host := normalizedURLHost(entry.URL)
+		if host == "" || host == primaryHost {
+			continue
+		}
+		counts[host]++
+		reasons[host] = SecondaryHostReasonTelemetry
 	}
 	if len(counts) == 0 {
 		return nil
@@ -394,14 +406,10 @@ func secondaryHostsForCapture(entries []EnrichedEntry, primaryHost string) []Sec
 
 	out := make([]SecondaryHost, 0, len(hosts))
 	for _, host := range hosts {
-		reason := SecondaryHostReasonNonPrimary
-		if telemetryHostMatches(host) {
-			reason = SecondaryHostReasonTelemetry
-		}
 		out = append(out, SecondaryHost{
 			Host:   host,
 			Count:  counts[host],
-			Reason: reason,
+			Reason: reasons[host],
 		})
 	}
 	return out

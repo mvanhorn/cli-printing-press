@@ -893,6 +893,13 @@ func TestAnalyzeTraffic_RecordsTelemetryHostsAsSecondary(t *testing.T) {
 				ResponseContentType: "application/json",
 				ResponseBody:        `{"version":"1"}`,
 			},
+			{
+				Method:              "GET",
+				URL:                 "https://cdn.example.com/assets/app.css",
+				ResponseStatus:      200,
+				ResponseContentType: "text/css",
+				ResponseBody:        `body{}`,
+			},
 		},
 	}
 

@@ -358,6 +358,48 @@ func TestAnalyzeCapture_IgnoresTelemetryWhenChoosingPrimaryAPIHost(t *testing.T)
 	assert.NotContains(t, apiSpec.Resources, "messenger")
 }
 
+func TestAnalyzeCapture_IncludeTelemetryBypassesPrimaryHostPruning(t *testing.T) {
+	SetAdditionalIncludeList([]string{"sentry.io"})
+	defer SetAdditionalIncludeList(nil)
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://app.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "POST",
+				URL:                 "https://sentry.io/api/123/envelope/?sentry_key=included",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `{"event_id":"abc"}`,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":"evt_1"}`,
+			},
+			{
+				Method:              "POST",
+				URL:                 "https://sentry.io/api/124/envelope/?sentry_key=included",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `{"event_id":"def"}`,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":"evt_2"}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"items":[{"id":"item_1"}]}`,
+			},
+		},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+
+	assert.Contains(t, apiSpec.Resources, "envelope")
+	assert.Contains(t, apiSpec.Resources, "items")
+}
+
 func TestAnalyzeCapture_PreservesPureMultiHostCaptureByDefault(t *testing.T) {
 	t.Parallel()
 

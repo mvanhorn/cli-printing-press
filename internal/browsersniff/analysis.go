@@ -475,7 +475,7 @@ func AnalyzeTraffic(capture *EnrichedCapture) (*TrafficAnalysis, error) {
 	apiEntries, noiseEntries := ClassifyEntries(capture.Entries)
 	var secondaryHosts []SecondaryHost
 	if primaryHost, _ := primaryHostByFrequency(apiEntries); primaryHost != "" {
-		secondaryHosts = secondaryHostsForCapture(capture.Entries, primaryHost)
+		secondaryHosts = secondaryHostsForEntries(apiEntries, noiseEntries, primaryHost)
 	}
 	classifiedEntries := classifyInCaptureOrder(capture.Entries, apiEntries, noiseEntries)
 	groups := DeduplicateTrafficEndpoints(apiEntries)
