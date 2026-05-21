@@ -1,5 +1,29 @@
 # Changelog
 
+## [4.11.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.10.1...v4.11.0) (2026-05-21)
+
+
+### Features
+
+* **cli:** add Supercut Platform catalog entry ([#1731](https://github.com/mvanhorn/cli-printing-press/issues/1731)) ([52c4afc](https://github.com/mvanhorn/cli-printing-press/commit/52c4afcac59e945634499952601d3238bc17c98b))
+
+
+### Bug Fixes
+
+* **cli:** choose freshest live-check binary ([#1759](https://github.com/mvanhorn/cli-printing-press/issues/1759)) ([0251e59](https://github.com/mvanhorn/cli-printing-press/commit/0251e593e38d7c0682edaf49314adb8ca3628515))
+* **cli:** classify captcha prechecks as auth context ([#1747](https://github.com/mvanhorn/cli-printing-press/issues/1747)) ([11e9843](https://github.com/mvanhorn/cli-printing-press/commit/11e98435a411fce0a81dbfa0b807465c73986292))
+* **cli:** filter telemetry hosts from browser sniff ([#1766](https://github.com/mvanhorn/cli-printing-press/issues/1766)) ([3a7636b](https://github.com/mvanhorn/cli-printing-press/commit/3a7636bd7e3995389f2868c02aedde271fca67a7))
+* **cli:** flatten nested allOf body schemas ([#1761](https://github.com/mvanhorn/cli-printing-press/issues/1761)) ([7bf0698](https://github.com/mvanhorn/cli-printing-press/commit/7bf0698e5ea8e05f8725480801f1eeceb25369b5))
+* **cli:** handle setlist retro generator gaps ([#1744](https://github.com/mvanhorn/cli-printing-press/issues/1744)) ([da72283](https://github.com/mvanhorn/cli-printing-press/commit/da7228353e9fb266488b1789fea8ad30f34ffdf0))
+* **cli:** inject field selectors during sync ([#1763](https://github.com/mvanhorn/cli-printing-press/issues/1763)) ([93ef629](https://github.com/mvanhorn/cli-printing-press/commit/93ef629e5fdb5ab4aa93e44cff614e94129b92cf))
+* **cli:** populate dependent typed parent fks ([#1760](https://github.com/mvanhorn/cli-printing-press/issues/1760)) ([93fd8e6](https://github.com/mvanhorn/cli-printing-press/commit/93fd8e66f6009b37284dbc27876e16b99f2846ec))
+* **cli:** preserve required global query params ([#1756](https://github.com/mvanhorn/cli-printing-press/issues/1756)) ([99596b1](https://github.com/mvanhorn/cli-printing-press/commit/99596b1633e127a2a93f749bf14ab3c0998da3af))
+* **cli:** reject placeholder auth credentials ([#1767](https://github.com/mvanhorn/cli-printing-press/issues/1767)) ([93b2e1d](https://github.com/mvanhorn/cli-printing-press/commit/93b2e1d29e5d84a193e633aa9985d5689c045991))
+* **cli:** score reachable scorer surfaces ([#1764](https://github.com/mvanhorn/cli-printing-press/issues/1764)) ([0c13b00](https://github.com/mvanhorn/cli-printing-press/commit/0c13b00979fe1ccf73165ad49d54823c658f1ee4))
+* **cli:** seed narrative template env placeholders ([#1758](https://github.com/mvanhorn/cli-printing-press/issues/1758)) ([a18591a](https://github.com/mvanhorn/cli-printing-press/commit/a18591a414dc73b18eeec31475c4e30e300a32be))
+* **cli:** thread generated client context ([#1769](https://github.com/mvanhorn/cli-printing-press/issues/1769)) ([1119cda](https://github.com/mvanhorn/cli-printing-press/commit/1119cda8a74403b4cc040747c7e7f81c58163d8c))
+* **skills:** capture Request object browser-sniff bodies ([#1745](https://github.com/mvanhorn/cli-printing-press/issues/1745)) ([b0176d2](https://github.com/mvanhorn/cli-printing-press/commit/b0176d264c5bb7551d0ed32f6eb4ca1c1649e69f))
+
 ## [4.10.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.10.0...v4.10.1) (2026-05-21)
 
 
