@@ -497,8 +497,12 @@ func TestLiveCheck_BinaryAutoDerivation(t *testing.T) {
 	// CLIDir basename is the last path segment. Build a stub named that way
 	// and a stub named `<name>-pp-cli`; the latter should be preferred.
 	base := filepath.Base(dir)
-	writeStubBinary(t, dir, base+"-pp-cli", `echo "matched via -pp-cli"`)
-	writeStubBinary(t, dir, base, `echo "matched via base"`)
+	preferredPath := writeStubBinary(t, dir, base+"-pp-cli", `echo "matched via -pp-cli"`)
+	fallbackPath := writeStubBinary(t, dir, base, `echo "matched via base"`)
+	oldTime := time.Now().Add(-time.Hour)
+	newTime := time.Now()
+	require.NoError(t, os.Chtimes(preferredPath, oldTime, oldTime))
+	require.NoError(t, os.Chtimes(fallbackPath, newTime, newTime))
 	writeTestResearchJSON(t, dir, []NovelFeature{
 		{Name: "X", Command: "x", Example: `stub x matched`},
 	})
@@ -506,6 +510,7 @@ func TestLiveCheck_BinaryAutoDerivation(t *testing.T) {
 	require.False(t, result.Unable, "should have found a binary: %s", result.Reason)
 	require.Equal(t, 1, result.Passed)
 	require.Contains(t, result.Features[0].Example, "stub x matched")
+	require.Contains(t, result.Features[0].OutputSample, "matched via -pp-cli")
 }
 
 func TestLiveCheckBinaryCandidatesPreferBuildStageBin(t *testing.T) {
@@ -514,26 +519,116 @@ func TestLiveCheckBinaryCandidatesPreferBuildStageBin(t *testing.T) {
 	dir := filepath.Join("tmp", "sample-cli")
 	stagedUnix := filepath.Join(dir, "build", "stage", "bin", "sample-cli-pp-cli")
 	stagedWin := platform.ExecutablePathForGOOS(filepath.Join(dir, "build", "stage", "bin", "sample-cli-pp-cli"), "windows")
+	makefileUnix := filepath.Join(dir, "bin", "sample-cli-pp-cli")
+	makefileWin := platform.ExecutablePathForGOOS(filepath.Join(dir, "bin", "sample-cli-pp-cli"), "windows")
 	legacyUnix := filepath.Join(dir, "sample-cli-pp-cli")
 
 	cands := liveCheckBinaryCandidatesForGOOS(dir, "", "windows")
 	assert.Contains(t, cands, stagedUnix)
 	assert.Contains(t, cands, stagedWin)
+	assert.Contains(t, cands, makefileUnix)
+	assert.Contains(t, cands, makefileWin)
 	assert.Contains(t, cands, legacyUnix)
 
-	// Canonical staged path must come before the legacy cliDir fallback.
+	// Canonical staged path must come before the other fallback layouts.
 	stagedIdx := -1
+	makefileIdx := -1
 	legacyIdx := -1
 	for i, c := range cands {
 		if c == stagedUnix && stagedIdx == -1 {
 			stagedIdx = i
 		}
+		if c == makefileUnix && makefileIdx == -1 {
+			makefileIdx = i
+		}
 		if c == legacyUnix && legacyIdx == -1 {
 			legacyIdx = i
 		}
 	}
-	assert.True(t, stagedIdx >= 0 && legacyIdx >= 0 && stagedIdx < legacyIdx,
-		"staged build/stage/bin path must be tried before cliDir legacy path, got order %v", cands)
+	assert.True(t, stagedIdx >= 0 && makefileIdx >= 0 && legacyIdx >= 0 && stagedIdx < makefileIdx && makefileIdx < legacyIdx,
+		"staged build/stage/bin path must be tried before bin/ and cliDir fallback paths, got order %v", cands)
+}
+
+func TestLiveCheckResolveBinaryPathPicksNewestCandidate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	stagedDir := filepath.Join(dir, "build", "stage", "bin")
+	makefileBinDir := filepath.Join(dir, "bin")
+	require.NoError(t, os.MkdirAll(stagedDir, 0o755))
+	require.NoError(t, os.MkdirAll(makefileBinDir, 0o755))
+
+	stagedPath := filepath.Join(stagedDir, "stub")
+	require.NoError(t, os.WriteFile(stagedPath, []byte("#!/bin/sh\necho staged\n"), 0o755))
+	makefilePath := filepath.Join(makefileBinDir, "stub")
+	require.NoError(t, os.WriteFile(makefilePath, []byte("#!/bin/sh\necho makefile\n"), 0o755))
+	rootPath := writeStubBinary(t, dir, "stub", `echo root`)
+
+	staleTime := time.Now().Add(-time.Hour)
+	freshTime := time.Now()
+	require.NoError(t, os.Chtimes(stagedPath, staleTime, staleTime))
+	require.NoError(t, os.Chtimes(makefilePath, staleTime, staleTime))
+	require.NoError(t, os.Chtimes(rootPath, freshTime, freshTime))
+
+	got, err := resolveBinaryPath(dir, "stub")
+	require.NoError(t, err)
+	require.Equal(t, rootPath, got)
+}
+
+func TestLiveCheck_RelativeCLIDirRunsResolvedBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	parent := t.TempDir()
+	t.Chdir(parent)
+	cliDir := "relative-cli"
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	writeStubBinary(t, cliDir, "stub", `echo '{"data":[{"id":"1"}]}'`)
+	writeTestResearchJSON(t, cliDir, []NovelFeature{
+		{Name: "List items", Command: "items list", Example: "stub items list --json"},
+	})
+
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: cliDir, BinaryName: "stub", Timeout: 5 * time.Second})
+	require.False(t, result.Unable, "check was Unable: %s", result.Reason)
+	require.Equal(t, 1, result.Passed)
+}
+
+func TestLiveCheckResolveBinaryPathIncludesMakefileBinOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	makefileBinDir := filepath.Join(dir, "bin")
+	require.NoError(t, os.MkdirAll(makefileBinDir, 0o755))
+
+	makefilePath := filepath.Join(makefileBinDir, "stub")
+	require.NoError(t, os.WriteFile(makefilePath, []byte("#!/bin/sh\necho makefile\n"), 0o755))
+
+	got, err := resolveBinaryPath(dir, "stub")
+	require.NoError(t, err)
+	require.Equal(t, filepath.Clean(makefilePath), got)
+}
+
+func TestLiveCheckResolveBinaryPathSkipsNonExecutableCandidate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+
+	dir := t.TempDir()
+	stagedDir := filepath.Join(dir, "build", "stage", "bin")
+	require.NoError(t, os.MkdirAll(stagedDir, 0o755))
+
+	stagedPath := filepath.Join(stagedDir, "stub")
+	require.NoError(t, os.WriteFile(stagedPath, []byte("#!/bin/sh\necho staged\n"), 0o644))
+	rootPath := writeStubBinary(t, dir, "stub", `echo root`)
+
+	got, err := resolveBinaryPath(dir, "stub")
+	require.NoError(t, err)
+	require.Equal(t, filepath.Clean(rootPath), got)
 }
 
 func TestLiveCheckExecutableHonorsWindowsExeExtension(t *testing.T) {
