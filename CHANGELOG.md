@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.10.1](https://github.com/mvanhorn/cli-printing-press/compare/v4.10.0...v4.10.1) (2026-05-21)
+
+
+### Bug Fixes
+
+* **cli:** allow first force generation without go.mod snapshot ([#1723](https://github.com/mvanhorn/cli-printing-press/issues/1723)) ([aa12f66](https://github.com/mvanhorn/cli-printing-press/commit/aa12f6671c159297b5b87f274d40450aad68f0d1))
+* **cli:** preserve generated catalog descriptions ([#1730](https://github.com/mvanhorn/cli-printing-press/issues/1730)) ([482192f](https://github.com/mvanhorn/cli-printing-press/commit/482192f0e945e9b46f9354b1e8560a06bc4ec052))
+* **cli:** support POST list sync and auth scoring ([#1729](https://github.com/mvanhorn/cli-printing-press/issues/1729)) ([b29d90a](https://github.com/mvanhorn/cli-printing-press/commit/b29d90a922dbd9f62d61b6593b5720e479c15a51))
+* **cli:** surface unsafe paginated all truncation ([#1727](https://github.com/mvanhorn/cli-printing-press/issues/1727)) ([0c43075](https://github.com/mvanhorn/cli-printing-press/commit/0c430755ee82ed588c0f743de0cbcfe94f0aea13))
+
 ## [4.10.0](https://github.com/mvanhorn/cli-printing-press/compare/v4.9.0...v4.10.0) (2026-05-21)
 
 
