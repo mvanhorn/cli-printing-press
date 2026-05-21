@@ -2724,7 +2724,7 @@ func filterGlobalParams(resources map[string]spec.Resource) {
 
 		seen := map[string]struct{}{}
 		for _, param := range endpoint.Params {
-			if isPathSubstitutionParam(param) {
+			if !isGlobalFilterCandidate(param) {
 				continue
 			}
 			if _, ok := seen[param.Name]; ok {
@@ -2761,7 +2761,7 @@ func filterGlobalParams(resources map[string]spec.Resource) {
 	walkResourceEndpoints(resources, func(endpoint *spec.Endpoint) {
 		filtered := endpoint.Params[:0]
 		for _, param := range endpoint.Params {
-			if !isPathSubstitutionParam(param) {
+			if isGlobalFilterCandidate(param) {
 				if _, ok := globalParams[param.Name]; ok {
 					continue
 				}
@@ -2784,6 +2784,10 @@ func filterGlobalParams(resources map[string]spec.Resource) {
 
 func isPathSubstitutionParam(param spec.Param) bool {
 	return param.Positional || param.PathParam
+}
+
+func isGlobalFilterCandidate(param spec.Param) bool {
+	return !isPathSubstitutionParam(param) && !param.Required
 }
 
 func walkResourceEndpoints(resources map[string]spec.Resource, fn func(endpoint *spec.Endpoint)) {

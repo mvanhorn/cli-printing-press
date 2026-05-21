@@ -2142,6 +2142,112 @@ paths:
 	}
 }
 
+func TestParsePreservesRequiredQueryParamsDuringGlobalFilter(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`
+openapi: 3.0.0
+info:
+  title: Narrow Required Query API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /search:
+    get:
+      operationId: searchList
+      parameters:
+        - in: query
+          name: part
+          required: true
+          schema:
+            type: string
+            default: snippet
+            enum: [snippet, id]
+        - in: query
+          name: prettyPrint
+          schema:
+            type: boolean
+        - in: query
+          name: q
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /videos:
+    get:
+      operationId: videosList
+      parameters:
+        - in: query
+          name: part
+          required: true
+          schema:
+            type: string
+            default: snippet
+            enum: [snippet, statistics]
+        - in: query
+          name: prettyPrint
+          schema:
+            type: boolean
+        - in: query
+          name: id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /channels:
+    get:
+      operationId: channelsList
+      parameters:
+        - in: query
+          name: part
+          required: true
+          schema:
+            type: string
+            default: snippet
+            enum: [snippet, contentDetails]
+        - in: query
+          name: prettyPrint
+          schema:
+            type: boolean
+        - in: query
+          name: id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	wantEnums := map[string][]string{
+		"/search":   {"snippet", "id"},
+		"/videos":   {"snippet", "statistics"},
+		"/channels": {"snippet", "contentDetails"},
+	}
+	for _, path := range []string{"/search", "/videos", "/channels"} {
+		endpoint := findEndpoint(t, parsed, path)
+		var part *spec.Param
+		for i := range endpoint.Params {
+			switch endpoint.Params[i].Name {
+			case "part":
+				part = &endpoint.Params[i]
+			case "prettyPrint":
+				t.Fatalf("%s should filter optional prevalent query param prettyPrint", path)
+			}
+		}
+		if assert.NotNil(t, part, "%s should preserve required prevalent query param part", path) {
+			assert.True(t, part.Required)
+			assert.Equal(t, "snippet", part.Default)
+			assert.Equal(t, wantEnums[path], part.Enum)
+		}
+	}
+}
+
 // Real-world OpenAPI specs (Tally, others) frequently include {placeholder}
 // tokens in a path template without declaring the corresponding parameter at
 // either the operation or path-item level. The path template is then the only
