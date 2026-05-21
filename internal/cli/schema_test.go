@@ -18,7 +18,12 @@ func TestSchemaTrafficAnalysisPrintsJSONSchema(t *testing.T) {
 	var schema map[string]any
 	require.NoError(t, json.Unmarshal([]byte(output), &schema))
 	assert.Equal(t, "CLI Printing Press traffic-analysis.json", schema["title"])
+	properties := schema["properties"].(map[string]any)
+	auth := properties["auth"].(map[string]any)
+	authProperties := auth["properties"].(map[string]any)
+	captchaPreflight := authProperties["captcha_preflight"].(map[string]any)
 	assert.Contains(t, output, `"confidence": {"type": "number"`)
+	assert.Equal(t, "boolean", captchaPreflight["type"])
 	assert.Contains(t, output, `"endpoint_clusters"`)
 }
 

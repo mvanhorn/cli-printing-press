@@ -1046,7 +1046,7 @@ The report must contain these sections:
    - Auth signals (candidate types, header/query/cookie names only -- never values)
    - Parameter-name evidence from forms, input labels, placeholder text, SDK/source names, and request context. Preserve enough detail to justify any later `flag_name` enrichment.
    - Protection signals (Cloudflare/CAPTCHA/login redirects/protected-web hints)
-   - Generation hints (e.g., `requires_browser_auth`, `requires_js_rendering`, `requires_protected_client`, `has_rpc_envelope`)
+   - Generation hints (e.g., `requires_browser_auth`, `requires_js_rendering`, `requires_protected_client`, `has_rpc_envelope`). Treat `auth_supports_captcha_preflight` as informational auth context, not as proof that the runtime needs browser page context.
    - Candidate commands worth considering
    - Warnings such as raw protocol envelopes, GraphQL error-only responses, HTML challenge pages, empty payloads, or weak schema evidence
    Treat warnings as discovery evidence, not publish blockers.

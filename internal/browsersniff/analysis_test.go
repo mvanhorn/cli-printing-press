@@ -475,6 +475,167 @@ func TestAnalyzeTraffic_ClassifiesBrowserClearanceReachability(t *testing.T) {
 	assert.Contains(t, analysis.GenerationHints, "requires_browser_auth")
 }
 
+func TestAnalyzeTraffic_TreatsCaptchaPrecheckAsInformational(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://app.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "POST",
+				URL:                 "https://studio-api.example.com/api/c/check",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"present":false,"captcha":false}`,
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://studio-api.example.com/api/songs",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"songs":[]}`,
+			},
+		},
+	}
+
+	analysis, err := AnalyzeTraffic(capture)
+	require.NoError(t, err)
+	require.NotNil(t, analysis.Reachability)
+
+	assert.NotContains(t, protectionLabels(analysis.Protections), "captcha")
+	assert.Equal(t, "standard_http", analysis.Reachability.Mode)
+	assert.NotContains(t, analysis.GenerationHints, "requires_page_context")
+	assert.NotContains(t, analysis.GenerationHints, "requires_protected_client")
+	assert.Contains(t, analysis.GenerationHints, "auth_supports_captcha_preflight")
+	assert.True(t, analysis.Auth.CaptchaPreflight)
+}
+
+func TestAnalyzeTraffic_ClassifiesCaptchaPrecheckDecisions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		url           string
+		body          string
+		expectedMode  string
+		wantCaptcha   bool
+		wantPreflight bool
+	}{
+		{
+			name:          "turnstile precheck says no challenge",
+			url:           "https://studio-api.example.com/turnstile/check",
+			body:          `{"turnstile":false}`,
+			expectedMode:  "standard_http",
+			wantPreflight: true,
+		},
+		{
+			name:          "hcaptcha precheck says no challenge",
+			url:           "https://studio-api.example.com/check_captcha",
+			body:          `{"hcaptcha_required":false}`,
+			expectedMode:  "standard_http",
+			wantPreflight: true,
+		},
+		{
+			name:          "precheck says challenge required",
+			url:           "https://studio-api.example.com/captcha/required",
+			body:          `{"captcha_required":true}`,
+			expectedMode:  "browser_required",
+			wantCaptcha:   true,
+			wantPreflight: true,
+		},
+		{
+			name:          "precheck reports required challenge in error field",
+			url:           "https://studio-api.example.com/api/c/check",
+			body:          `{"error":"captcha required"}`,
+			expectedMode:  "browser_required",
+			wantCaptcha:   true,
+			wantPreflight: true,
+		},
+		{
+			name:          "larger turnstile precheck says no challenge",
+			url:           "https://studio-api.example.com/turnstile/check",
+			body:          `{"turnstile":false,"captcha_required":false,"site_key":"` + strings.Repeat("x", 240) + `"}`,
+			expectedMode:  "standard_http",
+			wantPreflight: true,
+		},
+		{
+			name:         "non-precheck captcha required response",
+			url:          "https://studio-api.example.com/api/login",
+			body:         `{"error":"captcha required"}`,
+			expectedMode: "browser_required",
+			wantCaptcha:  true,
+		},
+		{
+			name:         "non-precheck positive captcha decision",
+			url:          "https://studio-api.example.com/api/login",
+			body:         `{"captcha":true}`,
+			expectedMode: "browser_required",
+			wantCaptcha:  true,
+		},
+		{
+			name:         "non-precheck captcha config is informational",
+			url:          "https://studio-api.example.com/api/settings",
+			body:         `{"turnstile_enabled":false}`,
+			expectedMode: "standard_http",
+		},
+		{
+			name:         "non-precheck negative captcha decision is informational",
+			url:          "https://studio-api.example.com/api/login",
+			body:         `{"captcha_required":false}`,
+			expectedMode: "standard_http",
+		},
+		{
+			name:         "non-precheck present field is ordinary JSON",
+			url:          "https://studio-api.example.com/api/settings",
+			body:         `{"subscription_present":true}`,
+			expectedMode: "standard_http",
+		},
+		{
+			name:         "non-precheck required field is ordinary JSON",
+			url:          "https://studio-api.example.com/api/forms",
+			body:         `{"fields":[{"name":"email","required":true}]}`,
+			expectedMode: "standard_http",
+		},
+		{
+			name:         "large non-precheck turnstile body is ordinary JSON",
+			url:          "https://studio-api.example.com/api/songs",
+			body:         `{"turnstile":{"enabled":false},"fields":[{"name":"email","required":true}],"description":"` + strings.Repeat("x", maxCaptchaChallengeJSONBytes) + `"}`,
+			expectedMode: "standard_http",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			capture := &EnrichedCapture{
+				TargetURL: "https://app.example.com",
+				Entries: []EnrichedEntry{{
+					Method:              "POST",
+					URL:                 tt.url,
+					ResponseStatus:      200,
+					ResponseContentType: "application/json",
+					ResponseBody:        tt.body,
+				}},
+			}
+
+			analysis, err := AnalyzeTraffic(capture)
+			require.NoError(t, err)
+			require.NotNil(t, analysis.Reachability)
+
+			assert.Equal(t, tt.expectedMode, analysis.Reachability.Mode)
+			assert.Equal(t, tt.wantPreflight, analysis.Auth.CaptchaPreflight)
+			if tt.wantPreflight {
+				assert.Contains(t, analysis.GenerationHints, "auth_supports_captcha_preflight")
+			}
+			if tt.wantCaptcha {
+				assert.Contains(t, protectionLabels(analysis.Protections), "captcha")
+			} else {
+				assert.NotContains(t, protectionLabels(analysis.Protections), "captcha")
+			}
+		})
+	}
+}
+
 func TestAnalyzeTraffic_DoesNotRequirePageContextForSPADocumentNoise(t *testing.T) {
 	t.Parallel()
 
