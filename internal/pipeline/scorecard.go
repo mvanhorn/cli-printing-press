@@ -428,8 +428,15 @@ func scoreTerminalUX(dir string) int {
 	if strings.Contains(helpersContent, "NO_COLOR") {
 		score += 1
 	}
-	// Presence: TTY detection
-	if strings.Contains(helpersContent, "isatty") {
+	// Presence: TTY detection. Accept any of the canonical Go patterns:
+	// the generator's helpers.go template uses (fi.Mode() & os.ModeCharDevice) != 0,
+	// hand-authored helpers may pull in golang.org/x/term (term.IsTerminal) or
+	// github.com/mattn/go-isatty. Greping only for the "isatty" literal misses
+	// the template's own idiom and penalizes every generated CLI by 1pt.
+	if strings.Contains(helpersContent, "isatty") ||
+		strings.Contains(helpersContent, "ModeCharDevice") ||
+		strings.Contains(helpersContent, "term.IsTerminal") ||
+		strings.Contains(helpersContent, "IsTerminal") {
 		score += 1
 	}
 	// Presence: no-color flag
