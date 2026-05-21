@@ -566,8 +566,8 @@ SNIFF_URLS="$DISCOVERY_DIR/sniff-urls.txt"
 browser-use open "<target-page-url>"
 sleep 4  # Wait for initial page load API calls to complete
 
-# Install request/response body capture for interaction-triggered API calls
-browser-use eval "window.__capture_bodies={};const _f=window.fetch;async function __ppReadFetchRequestBody(args){try{if(args[1]&&args[1].body)return typeof args[1].body==='string'?args[1].body:'[non-string]';if(args[0]&&typeof args[0]==='object'&&args[0].clone)return await args[0].clone().text()}catch(e){}return ''}window.fetch=async function(...args){const url=typeof args[0]==='string'?args[0]:(args[0]&&args[0].url)||'';const method=(args[1]&&args[1].method)||(args[0]&&args[0].method)||'GET';const requestBodyPromise=__ppReadFetchRequestBody(args);const r=await _f.apply(this,args);const c=r.clone();Promise.all([requestBodyPromise,c.text()]).then(([requestBody,responseBody])=>{window.__capture_bodies[method+' '+url]={request_body:requestBody,response_body:responseBody,response_status:r.status,response_content_type:r.headers.get('content-type')||''}}).catch(()=>{});return r}"
+# Install request/response body capture for interaction-triggered API calls:
+# run the "Primary request-body capture" browser-use eval command above here.
 
 # Early interactive-challenge check. If this finds Cloudflare/Vercel/WAF
 # challenge assets or a challenge title/body, stop the capture attempt and

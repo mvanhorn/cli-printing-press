@@ -85,6 +85,7 @@ func extractBrowserUsePrimaryCaptureSnippet(t *testing.T) string {
 	t.Helper()
 
 	content := readBrowserSniffReference(t)
+	var matches []string
 	for line := range strings.SplitSeq(content, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, `browser-use eval "window.__capture_bodies={};`) {
@@ -92,11 +93,11 @@ func extractBrowserUsePrimaryCaptureSnippet(t *testing.T) string {
 		}
 		snippet, err := strconv.Unquote(strings.TrimPrefix(line, "browser-use eval "))
 		require.NoError(t, err)
-		return snippet
+		matches = append(matches, snippet)
 	}
 
-	t.Fatal("browser-use primary body capture snippet not found")
-	return ""
+	require.Len(t, matches, 1, "browser-use primary body capture snippet should have one canonical copy")
+	return matches[0]
 }
 
 func extractBrowserUseGraphQLSnippet(t *testing.T) string {
@@ -128,7 +129,7 @@ func extractChromeMCPFetchSnippet(t *testing.T) string {
 	codeStart := strings.LastIndex(content[:markerIndex], "```javascript")
 	require.NotEqual(t, -1, codeStart, "chrome-MCP javascript fence start not found")
 	codeStart += len("```javascript")
-	codeEnd := strings.Index(content[markerIndex:], "```")
+	codeEnd := strings.Index(content[markerIndex:], "\n```")
 	require.NotEqual(t, -1, codeEnd, "chrome-MCP javascript fence end not found")
 
 	return strings.TrimSpace(content[codeStart : markerIndex+codeEnd])
