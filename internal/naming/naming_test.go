@@ -162,7 +162,9 @@ func TestOneLine(t *testing.T) {
 		"  spaces  ":         "spaces",
 		"# Introduction\nAeroAPI delivers flight data.":       "AeroAPI delivers flight data.",
 		"<p>Search for <strong>artists</strong> by name.</p>": "Search for artists by name.",
-		"## Overview": "Overview",
+		"latency < 10ms > 1ms":                                "latency < 10ms > 1ms",
+		"formula A<B>C":                                       "formula A<B>C",
+		"## Overview":                                         "Overview",
 	}
 
 	for input, want := range tests {

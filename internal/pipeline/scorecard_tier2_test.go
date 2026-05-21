@@ -2037,6 +2037,17 @@ func Load() {
 	assert.True(t, scoreable)
 	assert.Equal(t, 10, score)
 
+	partnerOnlyConfig := `package config
+func Load() {
+	if v := os.Getenv("PARTNER_SERVICE_API_KEY"); v != "" {
+		cfg.PartnerAPIKey = v
+	}
+}`
+	assert.False(t, configReadsAPIKeyEnvForScheme(partnerOnlyConfig, scheme))
+	partnerOnlyScore, partnerOnlyScoreable := scoreAuthScheme(clientContent, partnerOnlyConfig, "", false, scheme)
+	assert.True(t, partnerOnlyScoreable)
+	assert.Equal(t, 8, partnerOnlyScore)
+
 	unrelatedScheme := openAPISecurityScheme{
 		Key:        "account-id",
 		Type:       "apikey",

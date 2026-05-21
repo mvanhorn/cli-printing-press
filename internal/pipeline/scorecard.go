@@ -2121,18 +2121,27 @@ func headerAssignmentPresent(clientContent, headerName string) bool {
 		strings.Contains(clientContent, `header.add("`+headerName+`"`)
 }
 
-var getenvCallRe = regexp.MustCompile(`os\.Getenv\("([A-Z][A-Z0-9_]*)"\)`)
+var (
+	genericAPIKeyEnvCallRe             = regexp.MustCompile(`([A-Za-z_][A-Za-z0-9_]*)\s*:=\s*os\.Getenv\("(?:[A-Z][A-Z0-9_]*_)?API_KEY"\)`)
+	directGenericAPIKeyEnvAssignmentRe = regexp.MustCompile(`\.\s*APIKey\s*=\s*os\.Getenv\("(?:[A-Z][A-Z0-9_]*_)?API_KEY"\)`)
+)
 
 func configReadsAPIKeyEnvForScheme(configContent string, scheme openAPISecurityScheme) bool {
 	if !strings.EqualFold(scheme.Type, "apikey") || !isGenericAPIKeyScheme(scheme) {
 		return false
 	}
-	for _, match := range getenvCallRe.FindAllStringSubmatch(configContent, -1) {
-		if len(match) < 2 {
+	if directGenericAPIKeyEnvAssignmentRe.MatchString(configContent) {
+		return true
+	}
+	for _, match := range genericAPIKeyEnvCallRe.FindAllStringSubmatchIndex(configContent, -1) {
+		if len(match) < 4 {
 			continue
 		}
-		env := match[1]
-		if env == "API_KEY" || strings.HasSuffix(env, "_API_KEY") {
+		envVarName := configContent[match[2]:match[3]]
+		tailStart := match[1]
+		tailEnd := min(len(configContent), tailStart+240)
+		fieldAssignmentRe := regexp.MustCompile(`\.\s*APIKey\s*=\s*` + regexp.QuoteMeta(envVarName) + `\b`)
+		if fieldAssignmentRe.MatchString(configContent[tailStart:tailEnd]) {
 			return true
 		}
 	}

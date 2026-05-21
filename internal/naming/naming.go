@@ -12,7 +12,7 @@ import (
 )
 
 var leadingMarkdownHeadingRE = regexp.MustCompile(`^#{1,6}\s+(.+)$`)
-var htmlTagRE = regexp.MustCompile(`<[^>]+>`)
+var htmlTagRE = regexp.MustCompile(`</?\s*(?:a|abbr|address|article|aside|blockquote|br|button|code|dd|del|details|div|dl|dt|em|figcaption|figure|footer|h[1-6]|header|hr|img|li|main|mark|nav|ol|p|pre|samp|section|small|span|strong|sub|summary|sup|table|tbody|td|tfoot|th|thead|tr|u|ul)(?:\s+[^<>]*)?\s*/?>`)
 
 // ASCIIFold transliterates Unicode to ASCII via Unidecode tables (the
 // same ones Django's slugify and Rails use). Apply at every chokepoint
