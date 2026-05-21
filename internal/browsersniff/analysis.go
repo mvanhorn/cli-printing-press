@@ -934,10 +934,14 @@ func hasCaptchaChallengeMarker(entry EnrichedEntry, lowerBody string) bool {
 			strings.Contains(lowerBody, "recaptcha") ||
 			strings.Contains(lowerBody, "hcaptcha") ||
 			strings.Contains(lowerBody, "turnstile")
-		if hasCaptchaKeyword && len(strings.TrimSpace(entry.ResponseBody)) <= maxCaptchaChallengeJSONBytes {
-			if requiresChallenge, parsed := captchaPreflightChallengeDecision(entry.ResponseBody); parsed {
-				return requiresChallenge
-			}
+		if !hasCaptchaKeyword {
+			return false
+		}
+		if len(strings.TrimSpace(entry.ResponseBody)) > maxCaptchaChallengeJSONBytes {
+			return false
+		}
+		if requiresChallenge, parsed := captchaPreflightChallengeDecision(entry.ResponseBody); parsed {
+			return requiresChallenge
 		}
 		return captchaChallengeText(lowerBody)
 	}
