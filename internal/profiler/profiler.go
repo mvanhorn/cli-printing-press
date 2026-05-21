@@ -61,6 +61,7 @@ type SearchBodyField struct {
 // SyncBodyField describes a request-body field on a syncable POST list endpoint.
 type SyncBodyField struct {
 	Name       string
+	Type       string
 	Default    any
 	HasDefault bool
 }
@@ -1350,7 +1351,7 @@ func syncBodyFieldsFromEndpoint(endpoint spec.Endpoint) []SyncBodyField {
 	}
 	fields := make([]SyncBodyField, 0, len(endpoint.Body))
 	for _, param := range endpoint.Body {
-		field := SyncBodyField{Name: param.Name}
+		field := SyncBodyField{Name: param.Name, Type: param.Type}
 		if defaultValue, ok := syncBodyDefault(param); ok {
 			field.Default = defaultValue
 			field.HasDefault = true

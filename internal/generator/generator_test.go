@@ -8958,7 +8958,7 @@ func TestGeneratedSyncUsesPOSTForRPCStyleListResources(t *testing.T) {
 
 	assert.Equal(t, http.MethodPost, capturedMethod)
 	assert.Empty(t, capturedQuery.Get("limit"), "body-declared pagination params must not leak into the query string")
-	assert.Equal(t, "100", capturedBody["limit"])
+	assert.Equal(t, float64(100), capturedBody["limit"])
 	assert.Equal(t, "summary", capturedBody["view"])
 }
 

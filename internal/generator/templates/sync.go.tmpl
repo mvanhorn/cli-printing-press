@@ -849,14 +849,14 @@ func syncFetch(c interface {
 
 func splitSyncPostParams(resource string, params map[string]string) (map[string]string, map[string]any) {
 	body := syncResourceStaticBody(resource)
-	bodyParamNames := syncResourceBodyParamNames(resource)
-	if len(bodyParamNames) == 0 {
+	bodyParamTypes := syncResourceBodyParamTypes(resource)
+	if len(bodyParamTypes) == 0 {
 		return params, body
 	}
 	queryParams := map[string]string{}
 	for key, value := range params {
-		if bodyParamNames[key] {
-			body[key] = value
+		if typ, ok := bodyParamTypes[key]; ok {
+			body[key] = coerceSyncBodyParam(value, typ)
 		} else {
 			queryParams[key] = value
 		}
@@ -882,14 +882,14 @@ func syncResourceMethod(resource string) string {
 	return "GET"
 }
 
-func syncResourceBodyParamNames(resource string) map[string]bool {
+func syncResourceBodyParamTypes(resource string) map[string]string {
 	switch resource {
 {{- range .SyncableResources}}
 {{- if .BodyFields}}
 	case "{{.Name}}":
-		return map[string]bool{
+		return map[string]string{
 {{- range .BodyFields}}
-			"{{.Name}}": true,
+			"{{.Name}}": "{{.Type}}",
 {{- end}}
 		}
 {{- end}}
@@ -897,15 +897,33 @@ func syncResourceBodyParamNames(resource string) map[string]bool {
 {{- range .DependentSyncResources}}
 {{- if .BodyFields}}
 	case "{{.Name}}":
-		return map[string]bool{
+		return map[string]string{
 {{- range .BodyFields}}
-			"{{.Name}}": true,
+			"{{.Name}}": "{{.Type}}",
 {{- end}}
 		}
 {{- end}}
 {{- end}}
 	}
 	return nil
+}
+
+func coerceSyncBodyParam(value string, typ string) any {
+	switch typ {
+	case "integer", "int", "int64":
+		if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
+			return parsed
+		}
+	case "number", "float", "float64":
+		if parsed, err := strconv.ParseFloat(value, 64); err == nil {
+			return parsed
+		}
+	case "boolean", "bool":
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			return parsed
+		}
+	}
+	return value
 }
 
 func syncResourceStaticBody(resource string) map[string]any {

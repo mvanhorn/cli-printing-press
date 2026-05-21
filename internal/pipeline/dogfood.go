@@ -1111,24 +1111,42 @@ func detectGeneratedAuthFormat(source string, expectedPrefix string) (string, bo
 		}
 	}
 
+	var bestInvalidPrefix string
+	var bestInvalidDetail string
+	inlineFormats := map[string]bool{}
 	for _, formatMatch := range applyAuthFormatInlineMapCallRe.FindAllStringSubmatch(source, -1) {
 		format := formatMatch[1]
+		inlineFormats[format] = true
 		if prefix, ok := matchingAuthFormatPrefix(format, candidates); ok {
 			if authFormatInlineMapPreservesToken(format, formatMatch[2]) {
 				return prefix, true, ""
 			}
 			if placeholder := firstMissingAuthFormatPlaceholder(format, formatMatch[2]); placeholder != "" {
-				return prefix, false, fmt.Sprintf(`format literal %q includes placeholder %q but generated replacements do not provide it`, format, placeholder)
+				if bestInvalidPrefix == "" {
+					bestInvalidPrefix = prefix
+					bestInvalidDetail = fmt.Sprintf(`format literal %q includes placeholder %q but generated replacements do not provide it`, format, placeholder)
+				}
+				continue
 			}
-			return prefix, false, fmt.Sprintf(`format literal %q does not include a token placeholder`, format)
+			if bestInvalidPrefix == "" {
+				bestInvalidPrefix = prefix
+				bestInvalidDetail = fmt.Sprintf(`format literal %q does not include a token placeholder`, format)
+			}
 		}
 	}
 
 	for _, formatMatch := range applyAuthFormatCallRe.FindAllStringSubmatch(source, -1) {
 		format := formatMatch[1]
+		if inlineFormats[format] {
+			continue
+		}
 		if prefix, ok := matchingAuthFormatPrefix(format, candidates); ok && strings.Contains(format, "{") {
 			return prefix, true, ""
 		}
+	}
+
+	if bestInvalidPrefix != "" {
+		return bestInvalidPrefix, false, bestInvalidDetail
 	}
 
 	for _, candidate := range candidates {
