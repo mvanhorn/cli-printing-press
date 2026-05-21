@@ -786,6 +786,103 @@ func TestProfileSimpleListEndpointSyncable(t *testing.T) {
 	assert.NotContains(t, syncNames, "query", "POST-only resource should not be syncable")
 }
 
+func TestProfileRPCStylePostListEndpointSyncable(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "rpc-post-api",
+		Resources: map[string]spec.Resource{
+			"items": {
+				Endpoints: map[string]spec.Endpoint{
+					"getList": {
+						Method: "POST",
+						Path:   "/api/items/getList",
+						Body: []spec.Param{
+							{Name: "limit", Type: "integer"},
+							{Name: "cursor", Type: "string"},
+							{Name: "view", Type: "string", Default: "summary"},
+						},
+						Pagination: &spec.Pagination{
+							CursorParam:    "cursor",
+							LimitParam:     "limit",
+							NextCursorPath: "next_cursor",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "ItemsResponse"},
+					},
+					"create": {
+						Method:   "POST",
+						Path:     "/api/items/create",
+						Response: spec.ResponseDef{Type: "object", Item: "Item"},
+					},
+				},
+			},
+			"messages": {
+				Endpoints: map[string]spec.Endpoint{
+					"send": {
+						Method:   "POST",
+						Path:     "/api/messages/send",
+						Response: spec.ResponseDef{Type: "object", Item: "SendMessageResponse"},
+					},
+				},
+			},
+			"widgets": {
+				Endpoints: map[string]spec.Endpoint{
+					"create": {
+						Method:   "POST",
+						Path:     "/api/widgets/create",
+						Response: spec.ResponseDef{Type: "object", Item: "Widget"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"ItemsResponse": {
+				Fields: []spec.TypeField{
+					{Name: "items", Type: "array"},
+					{Name: "next_cursor", Type: "string"},
+				},
+			},
+			"Item": {
+				Fields: []spec.TypeField{{Name: "id", Type: "string"}},
+			},
+			"SendMessageResponse": {
+				Fields: []spec.TypeField{
+					{Name: "ok", Type: "boolean"},
+					{Name: "ts", Type: "string"},
+				},
+			},
+			"Widget": {
+				Fields: []spec.TypeField{{Name: "id", Type: "string"}},
+			},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncNames := make([]string, len(profile.SyncableResources))
+	syncPaths := make(map[string]string)
+	syncByName := make(map[string]SyncableResource)
+	for i, sr := range profile.SyncableResources {
+		syncNames[i] = sr.Name
+		syncPaths[sr.Name] = sr.Path
+		syncByName[sr.Name] = sr
+	}
+
+	assert.Contains(t, syncNames, "items", "paginated RPC-style POST list endpoint should be syncable")
+	assert.Equal(t, "/api/items/getList", syncPaths["items"])
+	assert.Equal(t, "POST", syncByName["items"].Method)
+	require.Len(t, syncByName["items"].BodyFields, 3)
+	assert.Equal(t, "limit", syncByName["items"].BodyFields[0].Name)
+	assert.Equal(t, "integer", syncByName["items"].BodyFields[0].Type)
+	assert.False(t, syncByName["items"].BodyFields[0].HasDefault)
+	assert.Equal(t, "cursor", syncByName["items"].BodyFields[1].Name)
+	assert.Equal(t, "string", syncByName["items"].BodyFields[1].Type)
+	assert.Equal(t, "view", syncByName["items"].BodyFields[2].Name)
+	assert.Equal(t, "string", syncByName["items"].BodyFields[2].Type)
+	assert.True(t, syncByName["items"].BodyFields[2].HasDefault)
+	assert.Equal(t, "summary", syncByName["items"].BodyFields[2].Default)
+	assert.NotContains(t, syncNames, "messages", "POST write endpoints without pagination and wrapper arrays must not be syncable")
+	assert.NotContains(t, syncNames, "widgets", "POST create endpoints without pagination must not be syncable")
+}
+
 func TestProfileDependentResources(t *testing.T) {
 	// A spec with /channels (flat) and /channels/{channelId}/messages (parameterized)
 	// should produce a DependentResource linking messages to channels.

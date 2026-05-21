@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8887,6 +8888,78 @@ func TestGeneratedSyncGatesPaginationParamsPerResource(t *testing.T) {
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGeneratedSyncUsesPOSTForRPCStyleListResources(t *testing.T) {
+	t.Parallel()
+
+	var capturedMethod string
+	var capturedQuery url.Values
+	var capturedBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedMethod = r.Method
+		capturedQuery = r.URL.Query()
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"item_1"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	apiSpec := &spec.APISpec{
+		Name:    "rpcpostsync",
+		Version: "0.1.0",
+		BaseURL: server.URL,
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/rpcpostsync-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Items",
+				Endpoints: map[string]spec.Endpoint{
+					"getList": {
+						Method:      "POST",
+						Path:        "/api/items/getList",
+						Description: "List items",
+						Body: []spec.Param{
+							{Name: "limit", Type: "integer"},
+							{Name: "cursor", Type: "string"},
+							{Name: "view", Type: "string", Default: "summary"},
+						},
+						Pagination: &spec.Pagination{Type: "cursor", CursorParam: "cursor", LimitParam: "limit"},
+						Response:   spec.ResponseDef{Type: "object", Item: "ItemsResponse"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"ItemsResponse": {
+				Fields: []spec.TypeField{{Name: "items", Type: "array"}},
+			},
+			"Item": {
+				Fields: []spec.TypeField{{Name: "id", Type: "string"}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	binaryPath := filepath.Join(outputDir, "rpcpostsync-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/rpcpostsync-pp-cli")
+
+	dbPath := filepath.Join(t.TempDir(), "sync.db")
+	cmd := exec.Command(binaryPath, "sync", "--resources", "items", "--max-pages", "1", "--db", dbPath)
+	cmd.Env = append(os.Environ(), "RPCPOSTSYNC_BASE_URL="+server.URL)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	assert.Equal(t, http.MethodPost, capturedMethod)
+	assert.Empty(t, capturedQuery.Get("limit"), "body-declared pagination params must not leak into the query string")
+	assert.Equal(t, float64(100), capturedBody["limit"])
+	assert.Equal(t, "summary", capturedBody["view"])
 }
 
 func TestGeneratedSyncTreatsEmptyWrappedPageAsSuccessfulZeroRecords(t *testing.T) {

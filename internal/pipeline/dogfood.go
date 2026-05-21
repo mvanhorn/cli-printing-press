@@ -1064,16 +1064,9 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 	configData, _ := os.ReadFile(filepath.Join(dir, "internal", "config", "config.go"))
 
 	combinedSource := string(clientData) + string(configData)
-	switch {
-	case strings.Contains(combinedSource, `"Bot "`):
-		result.GeneratedFmt = "Bot "
-	case strings.Contains(combinedSource, `"Bearer "`):
-		result.GeneratedFmt = "Bearer "
-	case strings.Contains(combinedSource, `"Basic "`):
-		result.GeneratedFmt = "Basic "
-	default:
-		result.GeneratedFmt = "unknown"
-	}
+	var tokenPreserving bool
+	var invalidDetail string
+	result.GeneratedFmt, tokenPreserving, invalidDetail = detectGeneratedAuthFormat(combinedSource, expectedPrefix)
 
 	if expectedPrefix == "" {
 		result.Detail = "no bot/bearer/basic scheme detected"
@@ -1082,11 +1075,128 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 
 	result.Match = result.GeneratedFmt == expectedPrefix
 	if result.Match {
-		result.Detail = fmt.Sprintf(`spec and generated client both use %q`, strings.TrimSpace(expectedPrefix))
+		if tokenPreserving {
+			result.Detail = fmt.Sprintf(`spec and generated client both use %q`, strings.TrimSpace(expectedPrefix))
+		} else {
+			result.Match = false
+			result.Detail = invalidDetail
+		}
 	} else {
 		result.Detail = fmt.Sprintf(`spec expects %q but generated client uses %q`, strings.TrimSpace(expectedPrefix), strings.TrimSpace(result.GeneratedFmt))
 	}
 	return result
+}
+
+type authPrefixCandidate struct {
+	prefix   string
+	concatRe *regexp.Regexp
+}
+
+var authPrefixCandidates = []authPrefixCandidate{
+	{prefix: "Bot ", concatRe: regexp.MustCompile(`"Bot "\s*\+`)},
+	{prefix: "Bearer ", concatRe: regexp.MustCompile(`"Bearer "\s*\+`)},
+	{prefix: "Basic ", concatRe: regexp.MustCompile(`"Basic "\s*\+`)},
+}
+
+var applyAuthFormatInlineMapCallRe = regexp.MustCompile(`(?s)applyAuthFormat\("([^"]*)",\s*map\[string\]string\{(.*?)\}\)`)
+var applyAuthFormatCallRe = regexp.MustCompile(`applyAuthFormat\("([^"]*)"`)
+var authFormatPlaceholderRe = regexp.MustCompile(`\{([^}]+)\}`)
+
+func detectGeneratedAuthFormat(source string, expectedPrefix string) (string, bool, string) {
+	candidates := authCandidatesForPrefix(expectedPrefix)
+
+	for _, candidate := range candidates {
+		if candidate.concatRe.MatchString(source) {
+			return candidate.prefix, true, ""
+		}
+	}
+
+	var bestInvalidPrefix string
+	var bestInvalidDetail string
+	inlineFormats := map[string]bool{}
+	for _, formatMatch := range applyAuthFormatInlineMapCallRe.FindAllStringSubmatch(source, -1) {
+		format := formatMatch[1]
+		inlineFormats[format] = true
+		if prefix, ok := matchingAuthFormatPrefix(format, candidates); ok {
+			if authFormatInlineMapPreservesToken(format, formatMatch[2]) {
+				return prefix, true, ""
+			}
+			if placeholder := firstMissingAuthFormatPlaceholder(format, formatMatch[2]); placeholder != "" {
+				if bestInvalidPrefix == "" {
+					bestInvalidPrefix = prefix
+					bestInvalidDetail = fmt.Sprintf(`format literal %q includes placeholder %q but generated replacements do not provide it`, format, placeholder)
+				}
+				continue
+			}
+			if bestInvalidPrefix == "" {
+				bestInvalidPrefix = prefix
+				bestInvalidDetail = fmt.Sprintf(`format literal %q does not include a token placeholder`, format)
+			}
+		}
+	}
+
+	for _, formatMatch := range applyAuthFormatCallRe.FindAllStringSubmatch(source, -1) {
+		format := formatMatch[1]
+		if inlineFormats[format] {
+			continue
+		}
+		if prefix, ok := matchingAuthFormatPrefix(format, candidates); ok && strings.Contains(format, "{") {
+			return prefix, true, ""
+		}
+	}
+
+	if bestInvalidPrefix != "" {
+		return bestInvalidPrefix, false, bestInvalidDetail
+	}
+
+	for _, candidate := range candidates {
+		if strings.Contains(source, fmt.Sprintf("%q", candidate.prefix)) {
+			return candidate.prefix, false, fmt.Sprintf(`generated source includes bare %q prefix literal without a detected token append or placeholder`, strings.TrimSpace(candidate.prefix))
+		}
+	}
+
+	return "unknown", false, ""
+}
+
+func authCandidatesForPrefix(expectedPrefix string) []authPrefixCandidate {
+	if expectedPrefix == "" {
+		return authPrefixCandidates
+	}
+	candidates := make([]authPrefixCandidate, 0, len(authPrefixCandidates))
+	for _, candidate := range authPrefixCandidates {
+		if candidate.prefix == expectedPrefix {
+			candidates = append(candidates, candidate)
+			break
+		}
+	}
+	for _, candidate := range authPrefixCandidates {
+		if candidate.prefix != expectedPrefix {
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
+}
+
+func matchingAuthFormatPrefix(format string, candidates []authPrefixCandidate) (string, bool) {
+	for _, candidate := range candidates {
+		if strings.HasPrefix(format, candidate.prefix) {
+			return candidate.prefix, true
+		}
+	}
+	return "", false
+}
+
+func authFormatInlineMapPreservesToken(format string, replacements string) bool {
+	return strings.Contains(format, "{") && firstMissingAuthFormatPlaceholder(format, replacements) == ""
+}
+
+func firstMissingAuthFormatPlaceholder(format string, replacements string) string {
+	for _, match := range authFormatPlaceholderRe.FindAllStringSubmatch(format, -1) {
+		if !strings.Contains(replacements, fmt.Sprintf("%q:", match[1])) {
+			return match[1]
+		}
+	}
+	return ""
 }
 
 func checkBrowserSessionAuth(dir string, auth apispec.AuthConfig) BrowserSessionCheckResult {
