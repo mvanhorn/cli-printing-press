@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode"
 
@@ -4587,10 +4586,9 @@ func isVersionSegment(segment string) bool {
 		return false
 	}
 	if segment[0] == 'v' && len(segment) >= 2 {
-		return versionSegmentPattern.MatchString(segment)
+		return versionSegmentPattern.MatchString(segment) || isVersionToken(segment)
 	}
-	_, err := strconv.Atoi(segment)
-	return err == nil
+	return isVersionToken(segment)
 }
 
 func isPathParamSegment(segment string) bool {

@@ -210,3 +210,29 @@ func TestParseSwagger2BasicEndpointShape(t *testing.T) {
 	endpoint := findParsedEndpointByPath(t, parsed, "GET", "/users")
 	require.NotNil(t, endpoint)
 }
+
+func TestParseSwagger2HostBasePathDefaultsToHTTPS(t *testing.T) {
+	t.Parallel()
+
+	swagger2 := []byte(`{
+  "swagger": "2.0",
+  "info": {"title": "Host Demo", "version": "1.0.0"},
+  "host": "api.setlist.fm",
+  "basePath": "/rest",
+  "paths": {
+    "/1.0/search/artists": {
+      "get": {
+        "operationId": "searchArtists",
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`)
+
+	parsed, err := Parse(swagger2)
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	assert.Equal(t, "https://api.setlist.fm/rest", parsed.BaseURL)
+	assert.Contains(t, parsed.Resources, "host-demo-search")
+	assert.NotContains(t, parsed.Resources, "1_0")
+}

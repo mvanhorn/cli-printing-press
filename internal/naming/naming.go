@@ -12,6 +12,7 @@ import (
 )
 
 var leadingMarkdownHeadingRE = regexp.MustCompile(`^#{1,6}\s+(.+)$`)
+var htmlTagRE = regexp.MustCompile(`<[^>]+>`)
 
 // ASCIIFold transliterates Unicode to ASCII via Unidecode tables (the
 // same ones Django's slugify and Rails use). Apply at every chokepoint
@@ -196,7 +197,7 @@ func OneLine(s string) string {
 // that's already curated for length (MCP tool descriptions, agent-authored
 // overrides) where truncating would defeat the purpose.
 func OneLineNormalize(s string) string {
-	s = stripLeadingMarkdownHeading(s)
+	s = stripDescriptionMarkup(stripLeadingMarkdownHeading(s))
 	s = strings.ReplaceAll(s, "\r\n", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
@@ -213,7 +214,7 @@ func OneLineNormalize(s string) string {
 // quotes and backslashes because callers are responsible for escaping in their
 // target format.
 func CompactDescription(s string) string {
-	s = stripLeadingMarkdownHeading(s)
+	s = stripDescriptionMarkup(stripLeadingMarkdownHeading(s))
 	s = collapseWhitespace(s)
 	return truncateOneLine(s)
 }
@@ -223,8 +224,12 @@ func CompactDescription(s string) string {
 // truncation, since this value becomes the canonical description in generated
 // manifests.
 func CatalogDescription(s string) string {
-	s = stripLeadingMarkdownHeading(s)
+	s = stripDescriptionMarkup(stripLeadingMarkdownHeading(s))
 	return collapseWhitespace(s)
+}
+
+func stripDescriptionMarkup(s string) string {
+	return htmlTagRE.ReplaceAllString(s, " ")
 }
 
 func HasLiteralEllipsisSuffix(s string) bool {
