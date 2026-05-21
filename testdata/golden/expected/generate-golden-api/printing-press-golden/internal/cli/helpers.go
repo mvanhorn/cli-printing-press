@@ -482,6 +482,8 @@ func classifyAPIError(err error, flags *rootFlags) error {
 		classified := apiErr(err)
 		writeAPIErrorEnvelope(flags, classified, ExitCode(classified))
 		return classified
+	case errors.Is(err, client.ErrPlaceholderCredential):
+		return authErr(err)
 	case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
 		return authErr(fmt.Errorf("%w\nhint: the API rejected the request — this usually means auth is missing or invalid."+
 			"\n      Set your API key: export PRINTING_PRESS_GOLDEN_API_KEY=<your-key>"+

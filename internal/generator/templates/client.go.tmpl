@@ -42,6 +42,11 @@ import (
 
 const BinaryResponseHeader = "X-Printing-Press-Binary-Response"
 
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+var ErrPlaceholderCredential = errors.New("auth placeholder credential")
+
+{{- end}}
+
 type Client struct {
 	BaseURL    string
 {{- if .BasePath}}
@@ -200,7 +205,11 @@ func (c *Client) authForRequest() (requestAuth, error) {
 	{{- else}}
 		value := tierValue0
 	{{- end}}
-		return requestAuth{Value: value, In: {{printf "%q" $placement}}, Name: {{printf "%q" $name}}}, nil
+		auth := requestAuth{Value: value, In: {{printf "%q" $placement}}, Name: {{printf "%q" $name}}}
+		if authHeaderLooksLikePlaceholderCredential(auth.Value) {
+			return requestAuth{}, authPlaceholderCredentialErrorWithSetup(c.Config, "export {{index $tier.Auth.EnvVars 0}}=<your-token>")
+		}
+		return auth, nil
 	{{- else}}
 		return requestAuth{In: {{printf "%q" $placement}}, Name: {{printf "%q" $name}}}, nil
 	{{- end}}
@@ -437,6 +446,9 @@ func (c *Client) Get(path string, params map[string]string) (json.RawMessage, er
 }
 
 func (c *Client) GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
+	if err := c.validateCachedRequestAuth(); err != nil {
+		return nil, err
+	}
 	// Check cache for GET requests
 	if !c.NoCache && !c.DryRun && c.cacheDir != "" {
 		if cached, ok := c.readCache(path, params); ok {
@@ -472,6 +484,34 @@ func (c *Client) GetWithHeadersNoCache(path string, params map[string]string, he
 		c.writeCache(path, params, result)
 	}
 	return result, err
+}
+
+func (c *Client) validateCachedRequestAuth() error {
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+{{- if .HasTierRouting}}
+	authInfo, err := c.authForRequest()
+	if err != nil {
+		return err
+	}
+	if authHeaderLooksLikePlaceholderCredential(authInfo.Value) {
+		return authPlaceholderCredentialError(c.Config)
+	}
+{{- else}}
+	if c == nil || c.Config == nil {
+		return nil
+	}
+{{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
+	clientID, clientSecret := resolveClientCredentials(c.Config)
+	if authHeaderLooksLikePlaceholderCredential(clientID) || authHeaderLooksLikePlaceholderCredential(clientSecret) {
+		return authPlaceholderCredentialError(c.Config)
+	}
+{{- end}}
+	if authHeaderLooksLikePlaceholderCredential(c.Config.AuthHeader()) {
+		return authPlaceholderCredentialError(c.Config)
+	}
+{{- end}}
+{{- end}}
+	return nil
 }
 
 func (c *Client) ProbeGet(path string) (int, error) {
@@ -1112,6 +1152,9 @@ func (c *Client) doInternal(method, path string, params map[string]string, body 
 		if c.Config != nil {
 {{- range .Auth.AdditionalHeaders}}
 			if v := c.Config.{{resolveEnvVarField .EnvVar.Name}}; v != "" {
+				if authHeaderLooksLikePlaceholderCredential(v) {
+					return nil, 0, authPlaceholderCredentialErrorWithSetup(c.Config, "export {{.EnvVar.Name}}=<your-token>")
+				}
 				req.Header.Set("{{.Header}}", v)
 			}
 {{- end}}
@@ -1525,6 +1568,10 @@ func (c *Client) authHeader() (string, error) {
 		if needsClientCredentialsMint(c.Config) {
 			clientID, clientSecret := resolveClientCredentials(c.Config)
 			if clientID != "" && clientSecret != "" {
+				if authHeaderLooksLikePlaceholderCredential(clientID) || authHeaderLooksLikePlaceholderCredential(clientSecret) {
+					c.ccMu.Unlock()
+					return "", authPlaceholderCredentialError(c.Config)
+				}
 				if err := c.mintClientCredentials(clientID, clientSecret); err != nil {
 					c.ccMu.Unlock()
 					return "", err
@@ -1535,13 +1582,89 @@ func (c *Client) authHeader() (string, error) {
 	}
 {{- else if and .HasAuthCommand (ne .Auth.TokenURL "")}}
 	if c.Config.AccessToken != "" && !c.Config.TokenExpiry.IsZero() && time.Now().After(c.Config.TokenExpiry) && c.Config.RefreshToken != "" {
+		if authHeaderLooksLikePlaceholderCredential(c.Config.AccessToken) || authHeaderLooksLikePlaceholderCredential(c.Config.RefreshToken) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientID) || authHeaderLooksLikePlaceholderCredential(c.Config.ClientSecret) {
+			return "", authPlaceholderCredentialError(c.Config)
+		}
 		if err := c.refreshAccessToken(); err != nil {
 			return "", err
 		}
 	}
 {{- end}}
-	return c.Config.AuthHeader(), nil
+	authHeader := c.Config.AuthHeader()
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+	if authHeaderLooksLikePlaceholderCredential(authHeader) {
+		return "", authPlaceholderCredentialError(c.Config)
+	}
+{{- end}}
+	return authHeader, nil
 }
+
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+
+func authHeaderLooksLikePlaceholderCredential(header string) bool {
+	if scheme, encoded, ok := strings.Cut(strings.TrimSpace(header), " "); ok && strings.EqualFold(scheme, "Basic") {
+		encoded = strings.TrimSpace(encoded)
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err == nil && authHeaderLooksLikePlaceholderCredential(string(decoded)) {
+			return true
+		}
+	}
+	if !strings.Contains(header, "<") && !strings.Contains(header, "YOUR_TOKEN_HERE") && !strings.Contains(header, "your-token") && !strings.Contains(header, "your-key") {
+		return false
+	}
+	for _, field := range strings.Fields(header) {
+		field = strings.Trim(field, `"'`)
+		if idx := strings.LastIndex(field, "="); idx >= 0 {
+			field = field[idx+1:]
+		}
+		if idx := strings.Index(field, ":"); idx >= 0 {
+			if looksLikeCredentialPlaceholder(field[:idx]) || looksLikeCredentialPlaceholder(field[idx+1:]) {
+				return true
+			}
+		}
+		if looksLikeCredentialPlaceholder(field) {
+			return true
+		}
+	}
+	return looksLikeCredentialPlaceholder(header)
+}
+
+func looksLikeCredentialPlaceholder(value string) bool {
+	value = strings.Trim(strings.TrimSpace(value), `"'`)
+	switch value {
+	case "<your-token>", "<your-key>", "<paste-your-key>", "YOUR_TOKEN_HERE", "your-token-here":
+		return true
+	}
+	if len(value) < 3 || value[0] != '<' || value[len(value)-1] != '>' {
+		return false
+	}
+	for _, r := range value[1 : len(value)-1] {
+		if r != '_' && (r < 'A' || r > 'Z') {
+			return false
+		}
+	}
+	return true
+}
+
+func authPlaceholderCredentialError(cfg *config.Config) error {
+{{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
+	return authPlaceholderCredentialErrorWithSetup(cfg, "{{.Name}}-pp-cli auth login or {{.Name}}-pp-cli auth set-token <token>")
+{{- else if eq .Auth.Type "oauth2"}}
+	return authPlaceholderCredentialErrorWithSetup(cfg, "{{.Name}}-pp-cli auth login")
+{{- else}}
+	return authPlaceholderCredentialErrorWithSetup(cfg, "{{- with .Auth.CanonicalEnvVar}}export {{.Name}}=<your-token> or {{end}}{{.Name}}-pp-cli auth set-token <token>")
+{{- end}}
+}
+
+func authPlaceholderCredentialErrorWithSetup(cfg *config.Config, setup string) error {
+	location := "config file"
+	if cfg != nil && cfg.Path != "" {
+		location = cfg.Path
+	}
+	return fmt.Errorf("%w configured in %s; set a real token with: %s", ErrPlaceholderCredential, location, setup)
+}
+
+{{- end}}
 
 {{- if eq .Auth.EffectiveOAuth2Grant "client_credentials"}}
 
