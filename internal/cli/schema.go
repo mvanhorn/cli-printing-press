@@ -46,7 +46,8 @@ const trafficAnalysisSchemaJSON = `{
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "candidates": {"type": "array", "items": {"$ref": "#/$defs/auth_candidate"}}
+        "candidates": {"type": "array", "items": {"$ref": "#/$defs/auth_candidate"}},
+        "captcha_preflight": {"type": "boolean"}
       }
     },
     "protections": {"type": "array", "items": {"$ref": "#/$defs/protection_observation"}},
