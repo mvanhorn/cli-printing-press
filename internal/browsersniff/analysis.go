@@ -929,7 +929,11 @@ func hasCaptchaChallengeMarker(entry EnrichedEntry, lowerBody string) bool {
 		entry.ResponseStatus < 300 &&
 		strings.Contains(strings.ToLower(entry.ResponseContentType), "json")
 	if isSuccessfulJSON {
-		if captchaPreflightRequiresChallenge(entry.ResponseBody) {
+		hasCaptchaKeyword := strings.Contains(lowerBody, "captcha") ||
+			strings.Contains(lowerBody, "recaptcha") ||
+			strings.Contains(lowerBody, "hcaptcha") ||
+			strings.Contains(lowerBody, "turnstile")
+		if hasCaptchaKeyword && captchaPreflightRequiresChallenge(entry.ResponseBody) {
 			return true
 		}
 		return captchaChallengeText(lowerBody)

@@ -579,6 +579,18 @@ func TestAnalyzeTraffic_ClassifiesCaptchaPrecheckDecisions(t *testing.T) {
 			body:         `{"turnstile_enabled":false}`,
 			expectedMode: "standard_http",
 		},
+		{
+			name:         "non-precheck present field is ordinary JSON",
+			url:          "https://studio-api.example.com/api/settings",
+			body:         `{"subscription_present":true}`,
+			expectedMode: "standard_http",
+		},
+		{
+			name:         "non-precheck required field is ordinary JSON",
+			url:          "https://studio-api.example.com/api/forms",
+			body:         `{"fields":[{"name":"email","required":true}]}`,
+			expectedMode: "standard_http",
+		},
 	}
 
 	for _, tt := range tests {
