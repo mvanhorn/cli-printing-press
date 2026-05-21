@@ -524,7 +524,7 @@ When the user confirmed a logged-in session (AUTH_SESSION_AVAILABLE=true from Ph
 
 **SPA interaction rule:** On each page/state, take a snapshot first. Look for interactive elements (buttons, forms, dropdowns, tabs). Click through them. SPAs fire API calls on interaction, not on page load. If you load a page and see no XHR activity, that means you need to interact with the page, not that there is nothing to find.
 
-**SPA navigation rule:** After installing fetch/XHR interceptors, do NOT use `browser-use open` to navigate between pages — it triggers a full page reload which destroys the interceptors. Instead, navigate by clicking links:
+**SPA navigation rule:** After installing fetch/XHR interceptors, do NOT use `browser-use open` to navigate between pages unless you immediately reinstall the interceptor before further interactions. A full page reload destroys page-scoped interceptors. Prefer navigating by clicking links after the interceptor is installed:
 ```bash
 # Good: SPA navigation preserves interceptors
 browser-use eval "document.querySelector('a[href*=\"/orders\"]').click()"
@@ -535,6 +535,22 @@ browser-use click "Orders"
 browser-use open "https://site.com/orders"
 ```
 Only use `browser-use open` for the initial page load (before interceptors exist) or when you intentionally want to re-install interceptors on a fresh page.
+
+**Primary request-body capture.** After each `browser-use open` and before walking interactions on that page, install a Request-aware fetch body interceptor. The Performance API gives broad URL coverage, but it does not expose POST bodies. This interceptor preserves bodies for both `fetch(new Request(...))` and legacy `fetch(url, {body})` calls so the enriched capture can use the real request shape instead of inferring it from responses.
+
+```bash
+browser-use eval "window.__capture_bodies={};const _f=window.fetch;async function __ppReadFetchRequestBody(args){try{if(args[1]&&args[1].body)return typeof args[1].body==='string'?args[1].body:'[non-string]';if(args[0]&&typeof args[0]==='object'&&args[0].clone)return await args[0].clone().text()}catch(e){}return ''}window.fetch=async function(...args){const url=typeof args[0]==='string'?args[0]:(args[0]&&args[0].url)||'';const method=(args[1]&&args[1].method)||(args[0]&&args[0].method)||'GET';const requestBodyPromise=__ppReadFetchRequestBody(args);const r=await _f.apply(this,args);const c=r.clone();Promise.all([requestBodyPromise,c.text()]).then(([requestBody,responseBody])=>{window.__capture_bodies[method+' '+url]={request_body:requestBody,response_body:responseBody,response_status:r.status,response_content_type:r.headers.get('content-type')||''}}).catch(()=>{});return r}"
+```
+
+After browsing, collect these bodies:
+
+```bash
+browser-use eval "JSON.stringify(window.__capture_bodies)"
+```
+
+When building `$DISCOVERY_DIR/browser-sniff-capture.json`, merge the matching `request_body`, `response_body`, `response_status`, and `response_content_type` from `window.__capture_bodies` into each API entry. If a body is missing, fall back to the Step 2b enrichment loop or HAR metadata rather than guessing from the response shape.
+
+Because browser-use installs this interceptor inside the current page, it cannot capture API calls that fired before installation during the initial page load. For page-load POST bodies, use an agent-browser/manual HAR path and prefer HAR `request.postData.text`; do not infer request shape from the response body.
 
 **Step 2a.2: Collect API URLs**
 
@@ -549,6 +565,9 @@ SNIFF_URLS="$DISCOVERY_DIR/sniff-urls.txt"
 # For EACH target page (run this loop in foreground — do NOT use run_in_background):
 browser-use open "<target-page-url>"
 sleep 4  # Wait for initial page load API calls to complete
+
+# Install request/response body capture for interaction-triggered API calls:
+# run the "Primary request-body capture" browser-use eval command above here.
 
 # Early interactive-challenge check. If this finds Cloudflare/Vercel/WAF
 # challenge assets or a challenge title/body, stop the capture attempt and
@@ -594,7 +613,7 @@ After collecting URLs, check whether the site uses a GraphQL BFF pattern. This i
 
    For browser-use: inject a fetch interceptor BEFORE browsing auth/interaction pages. This captures POST bodies that the Performance API misses:
    ```bash
-   browser-use eval "window.__gqlOps=[];const _f=window.fetch;window.fetch=async function(){const r=await _f.apply(this,arguments);try{if(arguments[0]&&arguments[0].toString().includes('graphql')&&arguments[1]&&arguments[1].body){const b=JSON.parse(arguments[1].body);if(b.operationName)window.__gqlOps.push({op:b.operationName,vars:Object.keys(b.variables||{})})}}catch(e){}return r}"
+   browser-use eval "window.__gqlOps=[];const _f=window.fetch;async function __ppReadFetchRequestBody(args){try{if(args[1]&&args[1].body)return typeof args[1].body==='string'?args[1].body:'[non-string]';if(args[0]&&typeof args[0]==='object'&&args[0].clone)return await args[0].clone().text()}catch(e){}return ''}window.fetch=async function(...args){const bodyPromise=__ppReadFetchRequestBody(args);const url=typeof args[0]==='string'?args[0]:(args[0]&&args[0].url)||'';const r=await _f.apply(this,args);bodyPromise.then(body=>{try{if(url.includes('graphql')&&body&&body!=='[non-string]'){const b=JSON.parse(body);if(b.operationName)window.__gqlOps.push({op:b.operationName,vars:Object.keys(b.variables||{})})}}catch(e){}});return r}"
    ```
    After browsing, collect:
    ```bash
@@ -762,35 +781,52 @@ Always create a fresh capture tab via `mcp__claude-in-chrome__tabs_create_mcp`, 
 
 Two viable approaches:
 
-1. **Recommended: in-page interceptor installed before navigation.** Use `mcp__claude-in-chrome__javascript_tool` to install a `fetch` and `XMLHttpRequest` interceptor in the new tab BEFORE navigating to `<site>`. The interceptor pushes each completed request's body into `window.__capture_bodies` keyed by URL+method. After capture, `javascript_tool` reads `window.__capture_bodies` back. This avoids re-firing requests against a wary WAF.
+1. **Recommended: in-page interceptor installed before interactions.** Use `mcp__claude-in-chrome__javascript_tool` to install a `fetch` and `XMLHttpRequest` interceptor in the fresh capture tab after navigating to `<site>` and before performing the user-flow interactions. The interceptor pushes each completed call's request and response bodies into `window.__capture_bodies` keyed by URL+method. After capture, `javascript_tool` reads `window.__capture_bodies` back. This avoids re-firing requests against a wary WAF.
 
 2. **Fallback: `javascript_tool` re-fetches each captured URL after the fact.** Mirrors the `agent-browser network request <id> --json` enrichment loop in Step 2b. Use this only when option 1 fails (e.g., the page wraps `fetch` itself and the interceptor can't shadow it). Re-fetching may trip rate limits — apply the pacing rules below.
 
 The interceptor sketch (illustrative, adapt to the page's actual fetch shape):
 
 ```javascript
-// Run via mcp__claude-in-chrome__javascript_tool BEFORE mcp__claude-in-chrome__navigate
+// Run via mcp__claude-in-chrome__javascript_tool after navigating to <site>
+// and before performing interaction-triggered capture steps.
 window.__capture_bodies = {};
 const _origFetch = window.fetch;
+async function __ppReadFetchRequestBody(args) {
+  try {
+    if (args[1] && args[1].body) {
+      return typeof args[1].body === 'string' ? args[1].body : '[non-string]';
+    }
+    if (args[0] && typeof args[0] === 'object' && args[0].clone) {
+      return await args[0].clone().text();
+    }
+  } catch (e) {}
+  return '';
+}
 window.fetch = async function(...args) {
+  const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+  const method = (args[1] && args[1].method) || (args[0] && args[0].method) || 'GET';
+  const requestBodyPromise = __ppReadFetchRequestBody(args);
   const resp = await _origFetch.apply(this, args);
   const cloned = resp.clone();
-  const url = typeof args[0] === 'string' ? args[0] : args[0].url;
-  const method = (args[1] && args[1].method) || 'GET';
-  cloned.text().then(body => {
-    window.__capture_bodies[`${method} ${url}`] = body;
+  Promise.all([requestBodyPromise, cloned.text()]).then(([requestBody, body]) => {
+    window.__capture_bodies[`${method} ${url}`] = {request_body: requestBody, response_body: body};
   }).catch(() => {});
   return resp;
 };
 // XHR interceptor analogous; install both
 ```
 
+When merging `window.__capture_bodies` with network metadata, copy the stored `request_body` and `response_body` fields separately into the enriched capture entry.
+
+This page-scoped interceptor cannot capture API calls that fired before installation during the initial navigation. If a page-load POST body matters, use manual DevTools HAR export or another HAR-producing path and prefer HAR `request.postData.text`.
+
 **Capture flow (full sequence).**
 
 1. `mcp__claude-in-chrome__tabs_context_mcp` — awareness only; confirm extension is connected
 2. `mcp__claude-in-chrome__tabs_create_mcp` — fresh capture tab
-3. `mcp__claude-in-chrome__javascript_tool` — install fetch + XHR body interceptor in the new tab
-4. `mcp__claude-in-chrome__navigate` — open the discovery target URL
+3. `mcp__claude-in-chrome__navigate` — open the discovery target URL
+4. `mcp__claude-in-chrome__javascript_tool` — install fetch + XHR body interceptor in the current page
 5. Interaction loop (per the same "click + scroll + interact" guidance the browser-use flow uses):
    - `mcp__claude-in-chrome__read_page` to find interactive elements
    - `mcp__claude-in-chrome__find` + `mcp__claude-in-chrome__left_click` (or `form_input` for forms) to interact
