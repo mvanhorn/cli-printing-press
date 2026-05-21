@@ -3,6 +3,9 @@
 {{- $hasPostSync := false -}}
 {{- range .SyncableResources}}{{if eq .Method "POST"}}{{- $hasPostSync = true -}}{{end}}{{end -}}
 {{- range .DependentSyncResources}}{{if eq .Method "POST"}}{{- $hasPostSync = true -}}{{end}}{{end }}
+{{- $hasFieldSelector := false -}}
+{{- range .SyncableResources}}{{if and .FieldSelector.Name .FieldSelector.Default}}{{- $hasFieldSelector = true -}}{{end}}{{end -}}
+{{- range .DependentSyncResources}}{{if and .FieldSelector.Name .FieldSelector.Default}}{{- $hasFieldSelector = true -}}{{end}}{{end }}
 
 package cli
 
@@ -541,6 +544,9 @@ func syncResource(c interface {
 
 	cursor := existingCursor
 	pageSize := determinePaginationDefaults()
+{{- if $hasFieldSelector}}
+	fieldSelectorKey, fieldSelectorValue := syncResourceFieldSelector(resource)
+{{- end}}
 
 	var progressCount int64
 	pagesFetched := 0
@@ -576,6 +582,11 @@ func syncResource(c interface {
 		// Set date range filter (pass-through to API)
 		if dates != "" {
 			params[determineDateRangeParam()] = dates
+		}
+{{- end}}
+{{- if $hasFieldSelector}}
+		if fieldSelectorKey != "" && fieldSelectorValue != "" {
+			params[fieldSelectorKey] = fieldSelectorValue
 		}
 {{- end}}
 
@@ -987,6 +998,26 @@ func syncResourceSinceParam(resource string) string {
 	}
 	return ""
 }
+{{- if $hasFieldSelector}}
+
+func syncResourceFieldSelector(resource string) (string, string) {
+	switch resource {
+{{- range .SyncableResources}}
+{{- if and .FieldSelector.Name .FieldSelector.Default}}
+	case "{{.Name}}":
+		return {{printf "%q" .FieldSelector.Name}}, {{printf "%q" .FieldSelector.Default}}
+{{- end}}
+{{- end}}
+{{- range .DependentSyncResources}}
+{{- if and .FieldSelector.Name .FieldSelector.Default}}
+	case "{{.Name}}":
+		return {{printf "%q" .FieldSelector.Name}}, {{printf "%q" .FieldSelector.Default}}
+{{- end}}
+{{- end}}
+	}
+	return "", ""
+}
+{{- end}}
 {{- if .Pagination.DateRangeParam}}
 
 // determineDateRangeParam returns the query parameter name for date-range sync filtering.
@@ -1520,6 +1551,9 @@ func syncDependentResource(c interface {
 		}
 		depSinceTS = ""
 	}
+{{- if $hasFieldSelector}}
+	fieldSelectorKey, fieldSelectorValue := syncResourceFieldSelector(dep.Name)
+{{- end}}
 	// Per-resource extract-failure tracking for the F4b symptom probe and
 	// per-item primary_key_unresolved warning. See syncResource for the
 	// concurrency rationale (one goroutine per resource → no race).
@@ -1555,6 +1589,11 @@ func syncDependentResource(c interface {
 {{- if .Pagination.DateRangeParam}}
 			if dates != "" {
 				params[determineDateRangeParam()] = dates
+			}
+{{- end}}
+{{- if $hasFieldSelector}}
+			if fieldSelectorKey != "" && fieldSelectorValue != "" {
+				params[fieldSelectorKey] = fieldSelectorValue
 			}
 {{- end}}
 

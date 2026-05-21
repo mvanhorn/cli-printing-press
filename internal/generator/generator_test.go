@@ -8938,6 +8938,97 @@ func TestGeneratedSyncGatesSinceParamPerResource(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGeneratedSyncInjectsFieldSelectorDefaults(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "fieldsync",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"FIELDSYNC_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/fieldsync-pp-cli/config.toml",
+		},
+		Types: map[string]spec.TypeDef{
+			"Task": {Fields: []spec.TypeField{
+				{Name: "gid", Type: "string"},
+				{Name: "completed", Type: "bool"},
+				{Name: "assignee", Type: "object"},
+				{Name: "custom_fields", Type: "array"},
+			}},
+		},
+		Resources: map[string]spec.Resource{
+			"tasks": {
+				Description: "Tasks",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/tasks",
+						Description: "List tasks",
+						Response:    spec.ResponseDef{Type: "array", Item: "Task"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Params: []spec.Param{{
+							Name:                 "opt_fields",
+							Type:                 "string",
+							Purpose:              spec.ParamPurposeFieldSelector,
+							FieldSelectorDefault: "gid,completed,assignee.gid,custom_fields.gid",
+						}},
+					},
+				},
+			},
+			"users": {
+				Description: "Users",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/users",
+						Description: "List users",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	assert.Contains(t, syncContent, "func syncResourceFieldSelector(resource string) (string, string)",
+		"sync.go must emit per-resource field-selector defaults")
+
+	fieldSelectorStart := strings.Index(syncContent, "func syncResourceFieldSelector(resource string) (string, string)")
+	require.NotEqual(t, -1, fieldSelectorStart, "sync.go must emit syncResourceFieldSelector")
+	fieldSelectorBody := syncContent[fieldSelectorStart:]
+	if nextFunc := strings.Index(fieldSelectorBody[1:], "\nfunc "); nextFunc != -1 {
+		fieldSelectorBody = fieldSelectorBody[:nextFunc+1]
+	}
+
+	assert.Contains(t, fieldSelectorBody, `case "tasks":`,
+		"tasks must appear in the field-selector switch")
+	assert.Contains(t, fieldSelectorBody, `return "opt_fields", "gid,completed,assignee.gid,custom_fields.gid"`,
+		"tasks must map to the spec-declared field selector and generated default")
+	assert.NotContains(t, fieldSelectorBody, `case "users":`,
+		"resources without a field selector must not inject an opt_fields-like query param")
+
+	defaultIdx := strings.Index(syncContent, "fieldSelectorKey, fieldSelectorValue := syncResourceFieldSelector(resource)")
+	applyIdx := strings.Index(syncContent, "userParams.applyTo(resource, params, false)")
+	require.NotEqual(t, -1, defaultIdx, "syncResource must apply field-selector defaults")
+	require.NotEqual(t, -1, applyIdx, "syncResource must still apply user params")
+	assert.Less(t, defaultIdx, applyIdx,
+		"user-supplied --param/--resource-param must override field-selector defaults")
+}
+
 func TestGeneratedSyncGatesPaginationParamsPerResource(t *testing.T) {
 	t.Parallel()
 

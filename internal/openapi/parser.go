@@ -2254,6 +2254,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			// same endpointName ("list") don't collide on a shared
 			// "ListItem" Types entry.
 			endpoint.Response, endpoint.ResponsePath = mapResponse(op, targetResourceName+"_"+endpointName, out)
+			populateFieldSelectorDefaults(&endpoint, op)
 			if strings.ToUpper(method) == "GET" {
 				endpoint.Pagination = detectPagination(endpoint.Params, op)
 				// Only single-resource fetches (GET /resource/{id}) can carry
@@ -2978,6 +2979,9 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 			Enum:        schemaEnum(schema),
 			Format:      schemaFormat(schema),
 		}
+		if parameter.In == openapi3.ParameterInQuery && isFieldSelectorParameter(paramName, description) {
+			param.Purpose = spec.ParamPurposeFieldSelector
+		}
 		if schema != nil && schema.Default != nil {
 			param.Default = schema.Default
 		}
@@ -2993,6 +2997,161 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 	reclassifyPathParamModifiers(params)
 
 	return params
+}
+
+func isFieldSelectorParameter(name, description string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	switch normalized {
+	case "opt_fields", "fields", "expand", "include", "select":
+		return true
+	}
+	description = strings.ToLower(description)
+	return (strings.Contains(description, "field") && strings.Contains(description, "return")) ||
+		(strings.Contains(description, "field") && strings.Contains(description, "include")) ||
+		(strings.Contains(description, "expand") && strings.Contains(description, "response"))
+}
+
+func populateFieldSelectorDefaults(endpoint *spec.Endpoint, op *openapi3.Operation) {
+	if endpoint == nil {
+		return
+	}
+	for i := range endpoint.Params {
+		if endpoint.Params[i].Purpose == spec.ParamPurposeFieldSelector {
+			endpoint.Params[i].FieldSelectorDefault = fieldSelectorDefaultFromOperation(op, endpoint.Params[i].Name)
+		}
+	}
+}
+
+func fieldSelectorDefaultFromOperation(op *openapi3.Operation, paramName string) string {
+	if op == nil || op.Responses == nil {
+		return ""
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil {
+		return ""
+	}
+	schemaRef := selectResponseSchema(success.Value)
+	if schemaRef == nil || schemaRef.Value == nil {
+		return ""
+	}
+	itemSchema := unwrapItemSchema(schemaRef.Value)
+	var fields []string
+	switch strings.ToLower(strings.TrimSpace(paramName)) {
+	case "expand", "include":
+		fields = fieldSelectorRelationshipFields(itemSchema)
+	default:
+		fields = fieldSelectorFields(itemSchema)
+	}
+	return strings.Join(fields, ",")
+}
+
+func fieldSelectorFields(schema *openapi3.Schema) []string {
+	if schema == nil {
+		return nil
+	}
+	properties := map[string]*openapi3.SchemaRef{}
+	collectFieldSelectorProperties(schema, properties, map[*openapi3.Schema]struct{}{})
+	names := make([]string, 0, len(properties))
+	for name := range properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	fields := make([]string, 0, len(names))
+	for _, key := range []string{"gid", "id", "sid", "uid", "uuid", "guid"} {
+		propSchema := schemaRefValue(properties[key])
+		if isScalarSchema(propSchema) {
+			fields = append(fields, key)
+		}
+	}
+	for _, name := range names {
+		if isIdentifierFieldName(name) {
+			continue
+		}
+		propSchema := schemaRefValue(properties[name])
+		if isScalarSchema(propSchema) {
+			fields = append(fields, name)
+			continue
+		}
+		if nestedID := nestedObjectIDField(propSchema); nestedID != "" {
+			fields = append(fields, name+"."+nestedID)
+		}
+	}
+	return fields
+}
+
+func fieldSelectorRelationshipFields(schema *openapi3.Schema) []string {
+	if schema == nil {
+		return nil
+	}
+	properties := map[string]*openapi3.SchemaRef{}
+	collectFieldSelectorProperties(schema, properties, map[*openapi3.Schema]struct{}{})
+	names := make([]string, 0, len(properties))
+	for name := range properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	fields := make([]string, 0, len(names))
+	for _, name := range names {
+		propSchema := schemaRefValue(properties[name])
+		if isObjectSchema(propSchema) || isObjectArraySchema(propSchema) {
+			fields = append(fields, name)
+		}
+	}
+	return fields
+}
+
+func isObjectArraySchema(schema *openapi3.Schema) bool {
+	return isArraySchema(schema) && schema.Items != nil && isObjectSchema(schemaRefValue(schema.Items))
+}
+
+func isIdentifierFieldName(name string) bool {
+	switch name {
+	case "gid", "id", "sid", "uid", "uuid", "guid":
+		return true
+	default:
+		return false
+	}
+}
+
+func collectFieldSelectorProperties(schema *openapi3.Schema, properties map[string]*openapi3.SchemaRef, visited map[*openapi3.Schema]struct{}) {
+	if schema == nil {
+		return
+	}
+	if _, ok := visited[schema]; ok {
+		return
+	}
+	visited[schema] = struct{}{}
+	for name, prop := range schema.Properties {
+		if strings.HasPrefix(name, "_") || prop == nil {
+			continue
+		}
+		properties[name] = prop
+	}
+	for _, sub := range schema.AllOf {
+		collectFieldSelectorProperties(schemaRefValue(sub), properties, visited)
+	}
+}
+
+func nestedObjectIDField(schema *openapi3.Schema) string {
+	if schema == nil {
+		return ""
+	}
+	if isArraySchema(schema) && schema.Items != nil {
+		schema = schemaRefValue(schema.Items)
+	}
+	if !isObjectSchema(schema) {
+		return ""
+	}
+	properties := map[string]*openapi3.SchemaRef{}
+	collectFieldSelectorProperties(schema, properties, map[*openapi3.Schema]struct{}{})
+	for _, key := range []string{"gid", "id", "sid", "uid", "uuid", "guid"} {
+		if prop := schemaRefValue(properties[key]); isScalarSchema(prop) {
+			return key
+		}
+	}
+	return ""
 }
 
 // reclassifyPathParamModifiers converts path params that are modifiers (pagination,

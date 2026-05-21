@@ -66,6 +66,13 @@ type SyncBodyField struct {
 	HasDefault bool
 }
 
+// FieldSelector describes a query param that asks sparse-response APIs to
+// include a richer set of response fields during sync.
+type FieldSelector struct {
+	Name    string
+	Default string
+}
+
 // DiscriminatorMapping routes one discriminator value to the concrete resource
 // whose typed table should receive the item.
 type DiscriminatorMapping struct {
@@ -116,6 +123,8 @@ type SyncableResource struct {
 	// RPC-style list calls.
 	BodyFields []SyncBodyField
 
+	FieldSelector FieldSelector
+
 	// Discriminator routes heterogeneous response items to concrete typed
 	// resources before storage. Empty when the endpoint returns a homogeneous
 	// resource.
@@ -158,6 +167,8 @@ type DependentResource struct {
 
 	// BodyFields mirrors SyncableResource.BodyFields for child sync paths.
 	BodyFields []SyncBodyField
+
+	FieldSelector FieldSelector
 
 	// Discriminator routes heterogeneous dependent-resource response items to
 	// concrete typed resources before storage.
@@ -1120,6 +1131,7 @@ func detectDependentResources(parameterized map[string]parameterizedEntry, synca
 			SinceParam:         entry.meta.SinceParam,
 			SupportsPagination: entry.meta.SupportsPagination,
 			BodyFields:         entry.meta.BodyFields,
+			FieldSelector:      entry.meta.FieldSelector,
 			Discriminator:      entry.meta.Discriminator,
 		})
 	}
@@ -1228,6 +1240,7 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				SinceParam:         meta.SinceParam,
 				SupportsPagination: meta.SupportsPagination,
 				BodyFields:         meta.BodyFields,
+				FieldSelector:      meta.FieldSelector,
 				Discriminator:      meta.Discriminator,
 				KeyField:           keyField,
 			})
@@ -1310,6 +1323,7 @@ type syncableMeta struct {
 	SinceParam         string
 	SupportsPagination bool
 	BodyFields         []SyncBodyField
+	FieldSelector      FieldSelector
 	Discriminator      DiscriminatorDispatch
 }
 
@@ -1341,6 +1355,7 @@ func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, 
 		SinceParam:         detectEndpointSinceParam(e.Params),
 		SupportsPagination: endpointSupportsPagination(e),
 		BodyFields:         syncBodyFieldsFromEndpoint(e),
+		FieldSelector:      detectEndpointFieldSelector(e),
 		Discriminator:      discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
 	}
 }
@@ -1384,6 +1399,21 @@ func detectEndpointSinceParam(params []spec.Param) string {
 		}
 	}
 	return ""
+}
+
+func detectEndpointFieldSelector(endpoint spec.Endpoint) FieldSelector {
+	for _, param := range endpoint.Params {
+		if param.Purpose != spec.ParamPurposeFieldSelector || strings.TrimSpace(param.FieldSelectorDefault) == "" {
+			continue
+		}
+		// Sync applies one field-selector param per endpoint; the spec order
+		// chooses which one wins when an API exposes several.
+		return FieldSelector{
+			Name:    param.WireName(),
+			Default: strings.TrimSpace(param.FieldSelectorDefault),
+		}
+	}
+	return FieldSelector{}
 }
 
 func endpointSupportsPagination(endpoint spec.Endpoint) bool {
@@ -1601,6 +1631,7 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			SinceParam:         meta.SinceParam,
 			SupportsPagination: meta.SupportsPagination,
 			BodyFields:         meta.BodyFields,
+			FieldSelector:      meta.FieldSelector,
 			Discriminator:      meta.Discriminator,
 		}
 	}

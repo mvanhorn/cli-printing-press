@@ -52,6 +52,106 @@ func TestParsePetstore(t *testing.T) {
 	assert.Contains(t, parsed.Types, "Pet")
 }
 
+func TestParseMarksFieldSelectorParamsWithSyncDefault(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Field Selector API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /tasks:
+    get:
+      operationId: listTasks
+      parameters:
+        - name: opt_fields
+          in: query
+          description: Fields to return in the response.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        gid:
+                          type: string
+                        completed:
+                          type: boolean
+                        assignee:
+                          type: object
+                          properties:
+                            gid:
+                              type: string
+                            name:
+                              type: string
+                        custom_fields:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              gid:
+                                type: string
+                              display_value:
+                                type: string
+`))
+	require.NoError(t, err)
+
+	tasks := parsed.Resources["tasks"].Endpoints["list"]
+	require.Len(t, tasks.Params, 1)
+	assert.Equal(t, spec.ParamPurposeFieldSelector, tasks.Params[0].Purpose)
+	assert.Equal(t, "gid,assignee.gid,completed,custom_fields.gid", tasks.Params[0].FieldSelectorDefault)
+}
+
+func TestMapParametersOnlyMarksQueryFieldSelectors(t *testing.T) {
+	t.Parallel()
+
+	pathItem := &openapi3.PathItem{}
+	op := &openapi3.Operation{
+		Parameters: openapi3.Parameters{
+			{
+				Value: &openapi3.Parameter{
+					Name:        "fields",
+					In:          openapi3.ParameterInPath,
+					Description: "Fields to return in the response.",
+					Required:    true,
+					Schema:      openapi3.NewStringSchema().NewRef(),
+				},
+			},
+			{
+				Value: &openapi3.Parameter{
+					Name:        "opt_fields",
+					In:          openapi3.ParameterInQuery,
+					Description: "Fields to return in the response.",
+					Schema:      openapi3.NewStringSchema().NewRef(),
+				},
+			},
+		},
+	}
+
+	params := mapParameters(pathItem, op)
+	require.Len(t, params, 2)
+
+	byName := make(map[string]spec.Param, len(params))
+	for _, param := range params {
+		byName[param.Name] = param
+	}
+
+	assert.Empty(t, byName["fields"].Purpose, "path params must not become sync query field selectors")
+	assert.Equal(t, spec.ParamPurposeFieldSelector, byName["opt_fields"].Purpose)
+}
+
 func readAICLargeSpec(tb testing.TB) []byte {
 	tb.Helper()
 	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "artic-openapi.json"))
