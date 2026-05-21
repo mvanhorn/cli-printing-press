@@ -20,9 +20,17 @@ const trafficAnalysisVersion = "1"
 const maxCaptchaPreflightJSONBytes = 4096
 const maxCaptchaChallengeJSONBytes = maxCaptchaPreflightJSONBytes * 16
 
+type SecondaryHostReason string
+
+const (
+	SecondaryHostReasonNonPrimary SecondaryHostReason = "non-primary host"
+	SecondaryHostReasonTelemetry  SecondaryHostReason = "telemetry host"
+)
+
 type TrafficAnalysis struct {
 	Version           string                  `json:"version"`
 	Summary           TrafficAnalysisSummary  `json:"summary"`
+	SecondaryHosts    []SecondaryHost         `json:"secondary_hosts,omitempty"`
 	Reachability      *ReachabilityAnalysis   `json:"reachability,omitempty"`
 	Protocols         []ProtocolObservation   `json:"protocols"`
 	Auth              AuthAnalysis            `json:"auth"`
@@ -33,6 +41,12 @@ type TrafficAnalysis struct {
 	CandidateCommands []CandidateCommand      `json:"candidate_commands,omitempty"`
 	GenerationHints   []string                `json:"generation_hints,omitempty"`
 	Warnings          []AnalysisWarning       `json:"warnings,omitempty"`
+}
+
+type SecondaryHost struct {
+	Host   string              `json:"host"`
+	Count  int                 `json:"count"`
+	Reason SecondaryHostReason `json:"reason"`
 }
 
 // UnmarshalJSON normalizes two v2 shapes that v3 no longer emits but that
@@ -459,12 +473,17 @@ func AnalyzeTraffic(capture *EnrichedCapture) (*TrafficAnalysis, error) {
 	}
 
 	apiEntries, noiseEntries := ClassifyEntries(capture.Entries)
+	var secondaryHosts []SecondaryHost
+	if primaryHost, _ := primaryHostByFrequency(apiEntries); primaryHost != "" {
+		secondaryHosts = secondaryHostsForEntries(apiEntries, noiseEntries, primaryHost)
+	}
 	classifiedEntries := classifyInCaptureOrder(capture.Entries, apiEntries, noiseEntries)
 	groups := DeduplicateTrafficEndpoints(apiEntries)
 
 	analysis := &TrafficAnalysis{
 		Version:          trafficAnalysisVersion,
 		Summary:          buildTrafficSummary(capture, apiEntries, noiseEntries),
+		SecondaryHosts:   secondaryHosts,
 		Protocols:        detectProtocols(classifiedEntries),
 		Auth:             detectTrafficAuth(capture, classifiedEntries),
 		Protections:      detectProtections(classifiedEntries),
@@ -789,6 +808,9 @@ func detectTrafficAuth(capture *EnrichedCapture, entries []EnrichedEntry) AuthAn
 	}
 
 	for index, entry := range entries {
+		if entry.Classification == "noise" || entry.IsNoise {
+			continue
+		}
 		for name, value := range entry.RequestHeaders {
 			lowerName := strings.ToLower(name)
 			switch {

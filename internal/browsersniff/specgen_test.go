@@ -289,6 +289,230 @@ func TestAnalyzeCapture_IncludesUsefulHTMLSurfaces(t *testing.T) {
 	assert.NotContains(t, apiSpec.Resources, "promo")
 }
 
+func TestAnalyzeCapture_IgnoresTelemetryWhenChoosingPrimaryAPIHost(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://app.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "POST",
+				URL:                 "https://sentry.io/api/123/envelope/?sentry_key=wrong-service",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `{"event_id":"abc"}`,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":"evt_1"}`,
+			},
+			{
+				Method:              "POST",
+				URL:                 "https://browser-intake-datadoghq.com/api/v2/rum?dd-api-key=wrong-service",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `[{"type":"view"}]`,
+				ResponseStatus:      202,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"status":"ok"}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"items":[{"id":"item_1"}]}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items/item_1",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":"item_1"}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://partner.example.net/v1/profiles",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"profiles":[{"id":"profile_1"}]}`,
+			},
+			{
+				Method:              "POST",
+				URL:                 "https://api-iam.intercom.io/messenger/web/ping",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `{"app_id":"abc"}`,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"ok":true}`,
+			},
+		},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+
+	assert.Equal(t, "https://api.example.com", apiSpec.BaseURL)
+	assert.Equal(t, "none", apiSpec.Auth.Type)
+	assert.NotContains(t, apiSpec.Description, "sentry")
+	assert.Contains(t, apiSpec.Resources, "items")
+	assert.NotContains(t, apiSpec.Resources, "profiles")
+	assert.NotContains(t, apiSpec.Resources, "api")
+	assert.NotContains(t, apiSpec.Resources, "messenger")
+}
+
+func TestAnalyzeCapture_IncludeTelemetryBypassesPrimaryHostPruning(t *testing.T) {
+	SetAdditionalIncludeList([]string{"sentry.io"})
+	defer SetAdditionalIncludeList(nil)
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://app.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "POST",
+				URL:                 "https://sentry.io/api/123/envelope/?sentry_key=included",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `{"event_id":"abc"}`,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":"evt_1"}`,
+			},
+			{
+				Method:              "POST",
+				URL:                 "https://sentry.io/api/124/envelope/?sentry_key=included",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `{"event_id":"def"}`,
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":"evt_2"}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"items":[{"id":"item_1"}]}`,
+			},
+		},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+
+	assert.Contains(t, apiSpec.Resources, "envelope")
+	assert.Contains(t, apiSpec.Resources, "items")
+}
+
+func TestAnalyzeCapture_PreservesPureMultiHostCaptureByDefault(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://app.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"items":[{"id":"item_1"}]}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items/item_1",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":"item_1"}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://partner.example.net/v1/profiles",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"profiles":[{"id":"profile_1"}]}`,
+			},
+		},
+	}
+
+	apiSpec, err := AnalyzeCapture(capture)
+	require.NoError(t, err)
+
+	assert.Contains(t, apiSpec.Resources, "items")
+	assert.Contains(t, apiSpec.Resources, "profiles")
+}
+
+func TestAnalyzeCaptureWithOptions_PreservesMultipleAPIHosts(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://app.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "POST",
+				URL:                 "https://browser-intake-datadoghq.com/api/v2/rum?dd-api-key=wrong-service",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				RequestBody:         `[{"type":"view"}]`,
+				ResponseStatus:      202,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"status":"ok"}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"items":[{"id":"item_1"}]}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items/item_1",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"id":"item_1"}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://partner.example.net/v1/profiles",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"profiles":[{"id":"profile_1"}]}`,
+			},
+		},
+	}
+
+	apiSpec, err := AnalyzeCaptureWithOptions(capture, AnalyzeOptions{PreserveHosts: true})
+	require.NoError(t, err)
+
+	assert.Equal(t, "https://api.example.com", apiSpec.BaseURL)
+	assert.Contains(t, apiSpec.Resources, "items")
+	require.Contains(t, apiSpec.Resources, "profiles")
+	profiles := apiSpec.Resources["profiles"].Endpoints["list_profiles"]
+	assert.Equal(t, "https://partner.example.net", profiles.BaseURL)
+}
+
+func TestFilterEndpointsByMinSamplesWithOptions_UsesPreservedHostGroups(t *testing.T) {
+	t.Parallel()
+
+	capture := &EnrichedCapture{
+		TargetURL: "https://app.example.com",
+		Entries: []EnrichedEntry{
+			{Method: "GET", URL: "https://api.example.com/v1/items", ResponseStatus: 200, ResponseContentType: "application/json", ResponseBody: `{"items":[]}`},
+			{Method: "GET", URL: "https://api.example.com/v1/users", ResponseStatus: 200, ResponseContentType: "application/json", ResponseBody: `{"users":[]}`},
+			{Method: "GET", URL: "https://api.example.com/v1/users", ResponseStatus: 200, ResponseContentType: "application/json", ResponseBody: `{"users":[{"id":"u1"}]}`},
+			{Method: "GET", URL: "https://partner.example.net/v1/items", ResponseStatus: 200, ResponseContentType: "application/json", ResponseBody: `{"items":[]}`},
+			{Method: "GET", URL: "https://partner.example.net/v1/items", ResponseStatus: 200, ResponseContentType: "application/json", ResponseBody: `{"items":[{"id":"p1"}]}`},
+		},
+	}
+	options := AnalyzeOptions{PreserveHosts: true}
+	apiSpec, err := AnalyzeCaptureWithOptions(capture, options)
+	require.NoError(t, err)
+
+	dropped := FilterEndpointsByMinSamplesWithOptions(apiSpec, capture, 2, options)
+
+	assert.Equal(t, 1, dropped)
+	require.Contains(t, apiSpec.Resources, "items")
+	require.Len(t, apiSpec.Resources["items"].Endpoints, 1)
+	for _, endpoint := range apiSpec.Resources["items"].Endpoints {
+		assert.Equal(t, "https://partner.example.net", endpoint.BaseURL)
+	}
+}
+
 func TestGraphQLBFFCommandPathUsesSemanticResources(t *testing.T) {
 	t.Parallel()
 
@@ -710,6 +934,39 @@ func TestWriteSamples_WritesOneFilePerEndpointGroup(t *testing.T) {
 	}
 	assert.True(t, foundGET, "GET sample should be present")
 	assert.True(t, foundPOST, "POST sample should be present")
+}
+
+func TestWriteSamplesWithOptions_PreservesSamePathAcrossHosts(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	capture := &EnrichedCapture{
+		TargetURL: "https://api.example.com",
+		Entries: []EnrichedEntry{
+			{
+				Method:              "GET",
+				URL:                 "https://api.example.com/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"source":"primary"}`,
+			},
+			{
+				Method:              "GET",
+				URL:                 "https://partner.example.net/v1/items",
+				ResponseStatus:      200,
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"source":"partner"}`,
+			},
+		},
+	}
+
+	written, err := WriteSamplesWithOptions(capture, dir, AnalyzeOptions{PreserveHosts: true})
+	require.NoError(t, err)
+	assert.Equal(t, 2, written)
+
+	files, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, files, 2)
 }
 
 func TestWriteSamples_OmitsResponseBodyKnownWhenAbsent(t *testing.T) {
