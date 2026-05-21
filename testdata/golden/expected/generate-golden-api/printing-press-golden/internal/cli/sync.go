@@ -1188,8 +1188,10 @@ func syncDependentResource(c interface {
 	var depExtractFailureTotal int
 	var depConsumedTotal int
 	depAnomalyEmitted := false
+	parentFKKey := dep.ParentTable + "_id"
 
 	for idx, parentID := range parentIDs {
+		parentIDJSON, _ := json.Marshal(parentID)
 		// Build child endpoint path by replacing the param placeholder
 		path := strings.Replace(dep.PathTemplate, "{"+dep.ParentIDParam+"}", parentID, 1)
 
@@ -1263,12 +1265,13 @@ func syncDependentResource(c interface {
 				break
 			}
 
-			// Inject parent_id into each item before upserting
 			for i, item := range items {
 				var obj map[string]json.RawMessage
 				if err := json.Unmarshal(item, &obj); err == nil {
-					parentIDJSON, _ := json.Marshal(parentID)
 					obj["parent_id"] = parentIDJSON
+					if _, ok := obj[parentFKKey]; !ok {
+						obj[parentFKKey] = parentIDJSON
+					}
 					if modified, err := json.Marshal(obj); err == nil {
 						items[i] = modified
 					}

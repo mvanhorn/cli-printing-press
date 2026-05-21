@@ -20,6 +20,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -3611,6 +3612,160 @@ func TestGenerateStoreSubResourceUpsertBatchTestSatisfiesNotNullFK(t *testing.T)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "test", "./internal/store")
+}
+
+func TestGenerateDependentSyncInjectsSubResourceParentFK(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "dependent-parent-fk",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/dependent-parent-fk-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"lists": {
+				Description: "Manage lists",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/lists",
+						Description: "List lists",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"contacts": {
+						Description: "Manage contacts",
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:      "GET",
+								Path:        "/lists/{listId}/contacts",
+								Description: "List contacts",
+								Response:    spec.ResponseDef{Type: "array"},
+								Params:      []spec.Param{{Name: "listId", Type: "string", Required: true, Positional: true}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.profile = &profiler.APIProfile{
+		SyncableResources: []profiler.SyncableResource{
+			{Name: "lists", Path: "/lists", Method: "GET"},
+		},
+		DependentSyncResources: []profiler.DependentResource{
+			{Name: "contacts", ParentResource: "lists", ParentIDParam: "listId", Path: "/lists/{listId}/contacts", Method: "GET"},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	assert.Contains(t, syncContent, `Name: "contacts", ParentTable: "lists"`,
+		"test fixture should exercise the dependent-resource sync path")
+	assert.Contains(t, syncContent, `obj["parent_id"] = parentIDJSON`,
+		"dependent sync should keep populating the generic parent_id context column")
+	assert.Contains(t, syncContent, `parentFKKey := dep.ParentTable + "_id"`,
+		"dependent sync should derive the typed parent FK column from the parent table")
+	assert.Contains(t, syncContent, `if _, ok := obj[parentFKKey]; !ok {`,
+		"dependent sync should not overwrite a response body value for the typed parent FK")
+	assert.Contains(t, syncContent, `obj[parentFKKey] = parentIDJSON`,
+		"dependent sync should fill the typed parent FK column when the response omits it")
+
+	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(storeGo), `lookupFieldValue(obj, "lists_id")`,
+		"contacts typed upsert must read the generated NOT NULL parent FK column")
+
+	inlineTest := `package cli
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+type dependentParentFKClient struct{}
+
+func (dependentParentFKClient) Get(path string, params map[string]string) (json.RawMessage, error) {
+	return json.RawMessage(` + "`" + `[
+		{"id":"contact-injected","email":"injected@example.test"},
+		{"id":"contact-preserved","lists_id":"api-list","email":"preserved@example.test"}
+	]` + "`" + `), nil
+}
+
+func (dependentParentFKClient) RateLimit() float64 {
+	return 0
+}
+
+func TestSyncDependentResourcePopulatesTypedParentFK(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Upsert("lists", "list-A", []byte(` + "`" + `{"id":"list-A"}` + "`" + `)); err != nil {
+		t.Fatalf("insert parent list: %v", err)
+	}
+
+	res := syncDependentResource(
+		dependentParentFKClient{},
+		db,
+		dependentResourceDef{Name: "contacts", ParentTable: "lists", ParentIDParam: "listId", PathTemplate: "/lists/{listId}/contacts"},
+		"", false, 1, false, nil,
+	)
+	if res.Err != nil {
+		t.Fatalf("syncDependentResource error: %v", res.Err)
+	}
+	if res.Count != 2 {
+		t.Fatalf("synced count = %d, want 2", res.Count)
+	}
+
+	rows, err := db.DB().Query(` + "`" + `SELECT id, lists_id FROM contacts ORDER BY id` + "`" + `)
+	if err != nil {
+		t.Fatalf("query contacts: %v", err)
+	}
+	defer rows.Close()
+
+	got := map[string]string{}
+	for rows.Next() {
+		var id, listsID string
+		if err := rows.Scan(&id, &listsID); err != nil {
+			t.Fatalf("scan contact: %v", err)
+		}
+		got[id] = listsID
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate contacts: %v", err)
+	}
+
+	if got["contact-injected"] != "list-A" {
+		t.Fatalf("injected contact lists_id = %q, want list-A", got["contact-injected"])
+	}
+	if got["contact-preserved"] != "api-list" {
+		t.Fatalf("preserved contact lists_id = %q, want api-list", got["contact-preserved"])
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "dependent_parent_fk_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestSyncDependentResourcePopulatesTypedParentFK", "./internal/cli")
 }
 
 func TestGenerateSimilarCommandUsesCompositeResourceKey(t *testing.T) {
