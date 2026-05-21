@@ -16,6 +16,7 @@ func newDogfoodCmd() *cobra.Command {
 	var dir string
 	var specPath string
 	var researchDir string
+	var trafficAnalysisPath string
 	var asJSON bool
 	var live bool
 	var level string
@@ -65,6 +66,9 @@ func newDogfoodCmd() *cobra.Command {
 			if researchDir != "" {
 				opts = append(opts, pipeline.WithResearchDir(researchDir))
 			}
+			if trafficAnalysisPath != "" {
+				opts = append(opts, pipeline.WithTrafficAnalysis(trafficAnalysisPath))
+			}
 			report, err := pipeline.RunDogfood(dir, specPath, opts...)
 			if err != nil {
 				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("running dogfood: %w", err)}
@@ -84,6 +88,7 @@ func newDogfoodCmd() *cobra.Command {
 	cmd.Flags().StringVar(&dir, "dir", "", "Path to the generated CLI directory (required)")
 	cmd.Flags().StringVar(&specPath, "spec", "", "Path to the OpenAPI spec file")
 	cmd.Flags().StringVar(&researchDir, "research-dir", "", "Pipeline directory containing research.json for novel features validation")
+	cmd.Flags().StringVar(&trafficAnalysisPath, "traffic-analysis", "", "Path to a browser-sniff traffic-analysis.json (enables sync-param-drop gate)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&live, "live", false, "Run the Phase 5 live command-tree dogfood matrix")
 	cmd.Flags().StringVar(&level, "level", "full", "Live dogfood depth: quick or full")
