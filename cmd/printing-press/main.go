@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	if isCatalogInstallerCommand(os.Args[1:]) {
+	if command, ok := catalogInstallerCommand(os.Args[1:]); ok {
 		fmt.Fprintf(os.Stderr, `The "printing-press %s" command belongs to the catalog installer, not the CLI generator.
 
 You are running the legacy generator entrypoint installed as "printing-press".
@@ -21,7 +21,7 @@ Generator install:
 
 Catalog installer:
   npx -y @mvanhorn/printing-press %s
-`, os.Args[1], os.Args[1])
+`, command, command)
 		os.Exit(cli.ExitInputError)
 	}
 
@@ -39,14 +39,33 @@ Catalog installer:
 }
 
 func isCatalogInstallerCommand(args []string) bool {
-	if len(args) == 0 {
-		return false
+	_, ok := catalogInstallerCommand(args)
+	return ok
+}
+
+func catalogInstallerCommand(args []string) (string, bool) {
+	command := firstPositionalArg(args)
+	if command == "" {
+		return "", false
 	}
 
-	switch args[0] {
-	case "list", "search", "install":
-		return true
+	switch command {
+	case "list", "search", "install", "update", "upgrade", "remove", "uninstall", "doctor":
+		return command, true
 	default:
-		return false
+		return "", false
 	}
+}
+
+func firstPositionalArg(args []string) string {
+	for _, arg := range args {
+		if arg == "--" {
+			return ""
+		}
+		if arg == "" || arg[0] == '-' {
+			continue
+		}
+		return arg
+	}
+	return ""
 }
