@@ -5479,7 +5479,14 @@ func detectPaginationResponseFields(schema *openapi3.Schema, prefix string, pag 
 	if schema == nil {
 		return
 	}
-	for propName, propRef := range schema.Properties {
+	propNames := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		propNames = append(propNames, name)
+	}
+	sort.Strings(propNames)
+
+	for _, propName := range propNames {
+		propRef := schema.Properties[propName]
 		if pag.NextCursorPath != "" && pag.HasMoreField != "" {
 			return
 		}
@@ -5555,14 +5562,12 @@ var nextFieldPageNumberNames = []string{"next_page", "nextpage"}
 // page-token request params.
 var nextFieldPageTokenNames = []string{"next_page_token", "nextpagetoken"}
 
-// nextFieldCursorNames lists string properties that carry an opaque
-// cursor token (e.g. next_page_token, next_cursor). These cannot be
-// followed without knowing which query parameter to set on the next
-// request — metadata the embedded envelope does not provide — so the
-// runtime helper treats their presence the same way it treats
-// has_more=true: fetch page 1, then emit a truncation event so callers
-// know data is incomplete.
-var nextFieldCursorNames = append([]string{"next_cursor", "nextcursor", "cursor"}, nextFieldPageTokenNames...)
+// nextFieldCursorNames lists opaque cursor fields. Unlike page-token
+// names (handled by nextFieldPageTokenNames), these carry unstructured
+// strings that cannot advance pagination without a known query parameter.
+// The runtime treats their presence as a truncation signal when no cursor
+// param is configured.
+var nextFieldCursorNames = []string{"next_cursor", "nextcursor", "cursor"}
 
 // nextFieldBoolNames lists boolean-typed "more pages" flags.
 var nextFieldBoolNames = []string{"has_more", "hasmore"}
@@ -5688,6 +5693,11 @@ func findNextField(lowered map[string]string) (string, nextFieldKind) {
 	for _, candidate := range nextFieldURLNames {
 		if actual, ok := lowered[candidate]; ok {
 			return actual, nextKindURL
+		}
+	}
+	for _, candidate := range nextFieldPageTokenNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindCursor
 		}
 	}
 	for _, candidate := range nextFieldCursorNames {

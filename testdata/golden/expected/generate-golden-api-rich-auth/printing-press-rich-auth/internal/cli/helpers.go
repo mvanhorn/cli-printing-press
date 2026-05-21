@@ -683,8 +683,10 @@ func paginationCursorToken(raw json.RawMessage) string {
 		return token
 	}
 	var number json.Number
-	if json.Unmarshal(raw, &number) == nil && number.String() != "" {
-		return number.String()
+	if json.Unmarshal(raw, &number) == nil {
+		if n, err := number.Int64(); err == nil && n > 0 {
+			return number.String()
+		}
 	}
 	return ""
 }
