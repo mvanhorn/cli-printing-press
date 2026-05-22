@@ -7041,6 +7041,312 @@ paths:
 	})
 }
 
+// TestParsePathTemplateEnvVarsExtension: the generic x-path-template-env-vars
+// extension is the map-shaped successor to x-tenant-env-var. Each entry binds
+// a path placeholder to an env-var override (`env` field, parallel to the
+// tenant flow) or a build-time literal substitution (`default` field, which
+// bakes the value into operation paths at generation time and drops the
+// matching path parameter). When both are set, default wins.
+func TestParsePathTemplateEnvVarsExtension(t *testing.T) {
+	t.Parallel()
+
+	t.Run("env entry registers template var + override for arbitrary placeholder", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Atlassian Workspace API
+  version: 1.0.0
+  x-path-template-env-vars:
+    workspace:
+      env: ATLASSIAN_WORKSPACE
+servers:
+  - url: https://api.atlassian.com/{workspace}
+paths:
+  /issues:
+    get:
+      operationId: listIssues
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"workspace"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, map[string]string{"workspace": "ATLASSIAN_WORKSPACE"}, parsed.EndpointTemplateEnvOverrides)
+		assert.Equal(t, "ATLASSIAN_WORKSPACE", parsed.EndpointTemplateEnvName("workspace"))
+		assert.Empty(t, parsed.EndpointPathParamDefaults, "env-only entries must not populate path-param defaults")
+	})
+
+	t.Run("default entry bakes literal into path and drops the matching param", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Gmail Users API
+  version: 1.0.0
+  x-path-template-env-vars:
+    userId:
+      default: me
+servers:
+  - url: https://gmail.googleapis.com
+paths:
+  /users/{userId}/messages:
+    get:
+      operationId: listMessages
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"userId": "me"}, parsed.EndpointPathParamDefaults)
+		assert.Empty(t, parsed.EndpointTemplateVars, "default-only entries must not register a runtime template var")
+		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
+
+		var resolvedPath string
+		var resolvedParams []spec.Param
+		var walk func(map[string]spec.Resource)
+		walk = func(rs map[string]spec.Resource) {
+			for _, r := range rs {
+				for _, e := range r.Endpoints {
+					if e.Method == "GET" && (e.Path == "/users/me/messages" || e.Path == "/users/{userId}/messages") {
+						resolvedPath = e.Path
+						resolvedParams = e.Params
+					}
+				}
+				if len(r.SubResources) > 0 {
+					walk(r.SubResources)
+				}
+			}
+		}
+		walk(parsed.Resources)
+		require.NotEmpty(t, resolvedPath, "list-messages endpoint not found in parsed resources")
+		assert.Equal(t, "/users/me/messages", resolvedPath, "path placeholder must be baked into emitted path")
+		for _, p := range resolvedParams {
+			assert.NotEqual(t, "userId", p.Name, "resolved path param must be dropped from endpoint Params")
+		}
+	})
+
+	t.Run("default wins when both default and env are set on the same entry", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Gmail Users API
+  version: 1.0.0
+  x-path-template-env-vars:
+    userId:
+      env: GMAIL_USER_ID
+      default: me
+servers:
+  - url: https://gmail.googleapis.com
+paths:
+  /users/{userId}/messages:
+    get:
+      operationId: listMessages
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"userId": "me"}, parsed.EndpointPathParamDefaults)
+		assert.Empty(t, parsed.EndpointTemplateVars, "when default is set, env is ignored and no runtime template var is registered")
+		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
+	})
+
+	t.Run("coexists with x-tenant-env-var: both extensions register independently", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Mixed Extensions API
+  version: 1.0.0
+  x-tenant-env-var: ST_TENANT_ID
+  x-path-template-env-vars:
+    workspace:
+      env: ATLASSIAN_WORKSPACE
+servers:
+  - url: https://api.example.com/{workspace}
+paths:
+  /tenant/{tenant}/items:
+    get:
+      operationId: listItems
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"tenant", "workspace"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, map[string]string{
+			"tenant":    "ST_TENANT_ID",
+			"workspace": "ATLASSIAN_WORKSPACE",
+		}, parsed.EndpointTemplateEnvOverrides)
+		assert.Empty(t, parsed.EndpointPathParamDefaults)
+	})
+
+	t.Run("absent extension leaves path-param defaults empty", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Plain API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Empty(t, parsed.EndpointPathParamDefaults)
+		assert.Empty(t, parsed.EndpointTemplateVars)
+		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
+	})
+
+	t.Run("default drop preserves a same-named non-path param on the same operation", func(t *testing.T) {
+		// A query (or body) param that shares its name with a substituted
+		// path placeholder must survive the path-param drop; only the actual
+		// path parameter is resolved away by the default.
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Gmail Users API
+  version: 1.0.0
+  x-path-template-env-vars:
+    userId:
+      default: me
+servers:
+  - url: https://gmail.googleapis.com
+paths:
+  /users/{userId}/messages:
+    get:
+      operationId: listMessages
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: {type: string}
+        - name: userId
+          in: query
+          required: false
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"userId": "me"}, parsed.EndpointPathParamDefaults)
+
+		var resolvedPath string
+		var resolvedParams []spec.Param
+		var walk func(map[string]spec.Resource)
+		walk = func(rs map[string]spec.Resource) {
+			for _, r := range rs {
+				for _, e := range r.Endpoints {
+					if e.Method == "GET" && e.Path == "/users/me/messages" {
+						resolvedPath = e.Path
+						resolvedParams = e.Params
+					}
+				}
+				if len(r.SubResources) > 0 {
+					walk(r.SubResources)
+				}
+			}
+		}
+		walk(parsed.Resources)
+		require.NotEmpty(t, resolvedPath, "list-messages endpoint not found in parsed resources")
+
+		var sawPath, sawQuery bool
+		for _, p := range resolvedParams {
+			if p.Name != "userId" {
+				continue
+			}
+			if p.PathParam {
+				sawPath = true
+			} else {
+				sawQuery = true
+			}
+		}
+		assert.False(t, sawPath, "resolved path param must be dropped from endpoint Params")
+		assert.True(t, sawQuery, "same-named query param must be preserved")
+	})
+
+	t.Run("default in x-path-template-env-vars overrides a conflicting x-tenant-env-var entry", func(t *testing.T) {
+		// When both extensions target the same placeholder, default wins
+		// and the runtime entry must not linger in EndpointTemplateVars or
+		// EndpointTemplateEnvOverrides — otherwise downstream generators
+		// emit dead config / URL-substitution code for a placeholder that
+		// no longer exists in any path.
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Mixed Extensions API
+  version: 1.0.0
+  x-tenant-env-var: ST_TENANT_ID
+  x-path-template-env-vars:
+    tenant:
+      default: acme
+servers:
+  - url: https://api.example.com
+paths:
+  /tenant/{tenant}/items:
+    get:
+      operationId: listItems
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"tenant": "acme"}, parsed.EndpointPathParamDefaults)
+		assert.Empty(t, parsed.EndpointTemplateVars, "default must scrub the stale tenant entry from template vars")
+		assert.Empty(t, parsed.EndpointTemplateEnvOverrides, "default must scrub the stale tenant entry from env overrides")
+	})
+
+	t.Run("whitespace-only env and default values are treated as absent", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Whitespace Extensions
+  version: 1.0.0
+  x-path-template-env-vars:
+    workspace:
+      env: "   "
+    userId:
+      default: "   "
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Empty(t, parsed.EndpointTemplateVars, "whitespace-only env must not register a template var")
+		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
+		assert.Empty(t, parsed.EndpointPathParamDefaults, "whitespace-only default must not register a path-param default")
+	})
+}
+
 // TestParseServerURLVariablesAsTemplateVars covers the multi-tenant SaaS
 // case: when servers[0].url declares a `{var}` placeholder backed by a
 // Variables block, the parser must preserve the placeholder in BaseURL,

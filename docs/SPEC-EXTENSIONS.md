@@ -273,6 +273,71 @@ info:
   x-tenant-env-var: ST_TENANT_ID
 ```
 
+### `x-path-template-env-vars`
+
+Generic, map-shaped successor to `x-tenant-env-var`. Each entry binds a
+path placeholder to an object with two optional fields. The `env` field
+registers a runtime env-var override for the placeholder, flowing into
+the same `EndpointTemplateVars` / `EndpointTemplateEnvOverrides` bucket
+that `x-tenant-env-var` populates — suitable for BaseURL placeholders
+such as Atlassian's `{workspace}` or GitHub's `{org}`. The `default`
+field bakes a literal into operation paths at generation time and drops
+the matching path parameter, suitable for canonical always-valid values
+such as Gmail's `userId='me'` for the authenticated user. When both are
+set on the same entry, `default` wins and `env` is ignored — the
+placeholder is fully resolved before runtime substitution sees it.
+
+Parsed fields: `APISpec.EndpointTemplateVars`,
+`APISpec.EndpointTemplateEnvOverrides`, and
+`APISpec.EndpointPathParamDefaults`.
+
+Rules:
+- Optional. Specs without this extension keep prior behavior; the new
+  field stays empty and no generated output changes.
+- Declared under `info` only (path-positional templates are spec-wide).
+- Coexists with `x-tenant-env-var`; both feed the same template-vars
+  bucket. The `tenant` placeholder may be set by either extension.
+- `env` and `default` values must be non-empty after `TrimSpace`.
+  Whitespace-only values are treated as absent on the entry.
+- Entries with neither `env` nor `default` set are skipped silently.
+
+Effect on generated output (when set):
+- `env`-set entries behave exactly like `x-tenant-env-var` for the
+  declared placeholder: the emitted `config.go`, `url.go`, and `sync.go`
+  resolve the placeholder against the named env var at runtime, and the
+  profiler treats `/.../{placeholder}/...` paths as standalone-listable.
+- `default`-set entries are baked in at parse time: every operation
+  path under `Resources` has `{placeholder}` replaced with the literal,
+  and the matching path parameter is dropped from each endpoint's
+  `Params`. The printed CLI exposes neither a placeholder nor a flag
+  for the resolved parameter.
+
+Examples:
+
+Runtime env-var override for a BaseURL placeholder, parallel to
+`x-tenant-env-var`:
+
+```yaml
+info:
+  title: Atlassian API
+  version: 1.0.0
+  x-path-template-env-vars:
+    workspace:
+      env: ATLASSIAN_WORKSPACE
+```
+
+Build-time literal substitution that bakes a canonical value into every
+operation path and drops the matching path parameter:
+
+```yaml
+info:
+  title: Gmail Users API
+  version: 1.0.0
+  x-path-template-env-vars:
+    userId:
+      default: me
+```
+
 ## Security Scheme Extensions
 
 Security scheme extensions are read from
