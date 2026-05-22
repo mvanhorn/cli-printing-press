@@ -55,6 +55,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cli/feedback.go",
 		"internal/cli/agent_context.go",
 		"internal/cli/root_test.go",
+		"internal/cli/sync_hint.go",
+		"internal/cli/sync_hint_test.go",
 		"internal/cliutil/fanout.go",
 		"internal/cliutil/text.go",
 		"internal/cliutil/probe.go",
@@ -87,9 +89,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 63},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 68},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 65},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 65},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 70},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 67},
 	}
 
 	for _, tt := range tests {
@@ -12089,6 +12091,145 @@ func TestProjectManagementWorkflowsEmitReadOnlyAnnotations(t *testing.T) {
 		assert.Len(t, annotationRE.FindAllString(string(data), -1), 1,
 			"%s should emit exactly one mcp:read-only annotation", file)
 	}
+}
+
+func TestProjectManagementWorkflowsEmitSyncHints(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("pmworkflows")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{
+		Store:     true,
+		Sync:      true,
+		Search:    true,
+		Analytics: true,
+		Workflows: []string{
+			"workflows/pm_stale.go.tmpl",
+			"workflows/pm_orphans.go.tmpl",
+			"workflows/pm_load.go.tmpl",
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(rootSrc), "maxAge")
+	assert.Contains(t, string(rootSrc), "time.Duration")
+	assert.Contains(t, string(rootSrc), `DurationVar(&flags.maxAge, "max-age", 30*time.Minute`)
+
+	syncHintSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync_hint.go"))
+	require.NoError(t, err, "local-store-backed CLIs should emit sync_hint.go")
+	for _, snippet := range []string{
+		"func hintIfUnsynced(cmd *cobra.Command, db *store.Store, resourceType string) bool",
+		"func hintIfStale(cmd *cobra.Command, db *store.Store, resourceType string, maxAge time.Duration) bool",
+		"Run 'pmworkflows-pp-cli sync'",
+	} {
+		assert.Contains(t, string(syncHintSrc), snippet, "sync_hint.go missing %q", snippet)
+	}
+
+	for _, file := range []string{"pm_stale.go", "pm_orphans.go", "pm_load.go"} {
+		data, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", file))
+		require.NoError(t, err)
+		src := string(data)
+		assert.Contains(t, src, `maybeEmitSyncHints(cmd, db, "", flags.maxAge)`,
+			"%s should emit cold-start and stale-read hints before reading the local store", file)
+	}
+	searchSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "search.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(searchSrc), `maybeEmitSyncHints(cmd, db, resourceType, flags.maxAge)`,
+		"search should emit sync hints for local FTS reads")
+	analyticsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "analytics.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(analyticsSrc), `maybeEmitSyncHints(cmd, db, resourceType, flags.maxAge)`,
+		"analytics should emit sync hints for local aggregate reads")
+	dataSourceSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "data_source.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(dataSourceSrc), `emitSyncHints(hintWriter, db, resourceType, flags.maxAge)`,
+		"data-source local fallback should emit sync hints for endpoint reads")
+
+	testSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync_hint_test.go"))
+	require.NoError(t, err, "sync_hint_test.go must compile the helper behavior in generated CLIs")
+	for _, snippet := range []string{
+		"func TestHintIfUnsynced_EmptySyncStateWritesHintToStderr(t *testing.T)",
+		"func TestHintIfStale_BackdatedSyncStateWritesHintToStderr(t *testing.T)",
+		"func TestHintIfStale_MaxAgeZeroDisablesHint(t *testing.T)",
+		"func TestHintIfUnsynced_NullTimestampWritesHint(t *testing.T)",
+		"func TestHintIfStale_AllResourcesIgnoresNullTimestampRows(t *testing.T)",
+		"func TestHintIfStale_ResourceFilterUsesRequestedResource(t *testing.T)",
+	} {
+		assert.Contains(t, string(testSrc), snippet, "sync_hint_test.go missing %q", snippet)
+	}
+
+	commandTest := `package cli
+
+import (
+	"bytes"
+	"context"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"pmworkflows-pp-cli/internal/store"
+)
+
+func runPMHintCommand(t *testing.T, dbPath string, args ...string) (string, string) {
+	t.Helper()
+	root := RootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs(append(args, "--db", dbPath, "--json"))
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute %v: %v; stderr=%s", args, err, stderr.String())
+	}
+	return stdout.String(), stderr.String()
+}
+
+func TestPMWorkflowCommandEmitsSyncHints(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	_, stderr := runPMHintCommand(t, dbPath, "load")
+	if !strings.Contains(stderr, "has not been synced yet") {
+		t.Fatalf("stderr = %q, want unsynced hint", stderr)
+	}
+
+	db, err = store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	if _, err := db.DB().Exec(
+		` + "`" + `INSERT INTO sync_state(resource_type, last_synced_at, total_count) VALUES (?, ?, ?)` + "`" + `,
+		"issues", time.Now().Add(-2*time.Hour), 1,
+	); err != nil {
+		t.Fatalf("seed sync_state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seeded store: %v", err)
+	}
+
+	_, stderr = runPMHintCommand(t, dbPath, "load", "--max-age", "30m")
+	if !strings.Contains(stderr, "older than --max-age=30m0s") {
+		t.Fatalf("stderr = %q, want stale hint", stderr)
+	}
+
+	_, stderr = runPMHintCommand(t, dbPath, "load", "--max-age", "0")
+	if strings.Contains(stderr, "older than --max-age") {
+		t.Fatalf("stderr = %q, want max-age 0 to disable stale hint", stderr)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "pm_sync_hint_command_test.go"), []byte(commandTest), 0o644))
+
+	runGoCommand(t, outputDir, "test", "./internal/cli")
 }
 
 // TestSearchTemplateEmptyTypeQueriesGenericFTS pins #1390 — the

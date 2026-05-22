@@ -44,6 +44,8 @@ Data must be synced first with the sync command.`,
 			}
 			defer db.Close()
 
+			maybeEmitSyncHints(cmd, db, resourceType, flags.maxAge)
+
 			if resourceType == "" {
 				// Show summary of all resource types
 				status, err := db.Status()

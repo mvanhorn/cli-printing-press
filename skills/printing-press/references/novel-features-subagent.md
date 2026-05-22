@@ -197,6 +197,19 @@ absolute dates for `sync --since`. If you need multiple resources, use
 `sync --resources customers,charges`. If you need search scoped to one resource,
 use `search "term" --type customers`. Do not use `search --entities`.
 
+Hand-written novel commands that read from the local store must call the
+generated sync hint helpers before returning local results:
+
+```go
+if !hintIfUnsynced(cmd, db, "<resource>") {
+    hintIfStale(cmd, db, "<resource>", flags.maxAge)
+}
+```
+
+Use `""` for commands that scan all local resources. The helpers write only to
+stderr, so JSON/stdout output stays stable; `--max-age 0` disables stale-read
+hints.
+
 ## Pass 3: Adversarial cut pass
 
 This is the pass that exists because brainstorms without it produce flabby

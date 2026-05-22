@@ -1568,6 +1568,15 @@ func (g *Generator) renderOptionalSupportFiles() error {
 		}
 	}
 
+	if g.VisionSet.Store {
+		if err := g.renderTemplate("sync_hint.go.tmpl", filepath.Join("internal", "cli", "sync_hint.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering sync hint helper: %w", err)
+		}
+		if err := g.renderTemplate("sync_hint_test.go.tmpl", filepath.Join("internal", "cli", "sync_hint_test.go"), g.Spec); err != nil {
+			return fmt.Errorf("rendering sync hint test: %w", err)
+		}
+	}
+
 	// Emit the cliutil freshness helper only when the spec opts into cache
 	// or share and the CLI has a local store. Without a store there is
 	// nothing to check freshness against; without cache or share opt-in
