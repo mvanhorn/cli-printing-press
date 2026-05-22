@@ -2676,6 +2676,10 @@ func TestMCPOrchestrationValidation(t *testing.T) {
 	assert.Equal(t, 100, MCPConfig{OrchestrationThreshold: 100}.EffectiveOrchestrationThreshold())
 	assert.True(t, MCPConfig{Orchestration: "code"}.IsCodeOrchestration())
 	assert.False(t, MCPConfig{Orchestration: "intent"}.IsCodeOrchestration())
+	assert.True(t, MCPConfig{}.EndpointMirrorsVisible())
+	assert.True(t, MCPConfig{EndpointTools: "visible"}.EndpointMirrorsVisible())
+	assert.False(t, MCPConfig{EndpointTools: "hidden"}.EndpointMirrorsVisible())
+	assert.False(t, MCPConfig{EndpointTools: "visible", Orchestration: "code"}.EndpointMirrorsVisible())
 }
 
 func TestMCPConfigAcceptsValidShapes(t *testing.T) {

@@ -751,6 +751,9 @@ func ScoreMCPDescriptionQualityForManifest(m *ToolsManifest) (score int, scored 
 	if m == nil || len(m.Tools) == 0 {
 		return 0, false
 	}
+	if !m.EndpointMirrorsVisible() {
+		return 0, false
+	}
 	thin := 0
 	for _, t := range m.Tools {
 		if IsThinMCPDescription(t.Description) {

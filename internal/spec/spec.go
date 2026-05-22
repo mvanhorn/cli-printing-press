@@ -3095,6 +3095,16 @@ func (m MCPConfig) IsCodeOrchestration() bool {
 	return m.Orchestration == "code"
 }
 
+// EndpointMirrorsVisible reports whether per-endpoint MCP tools are registered
+// directly. Code orchestration always suppresses endpoint mirrors because
+// <api>_search + <api>_execute cover the endpoint catalog.
+func (m MCPConfig) EndpointMirrorsVisible() bool {
+	if m.IsCodeOrchestration() {
+		return false
+	}
+	return m.EndpointTools != "hidden"
+}
+
 // EffectiveMCPTransports returns the transport list the generated MCP binary
 // should compile support for, taking endpoint count into account. When the
 // spec leaves mcp.transport unset and the typed-endpoint surface is at or
