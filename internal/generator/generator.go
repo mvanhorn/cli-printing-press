@@ -1975,7 +1975,7 @@ func parentCommandActions(endpoints map[string]spec.Endpoint) string {
 			seen[action] = true
 		}
 	}
-	actionOrder := []string{"list", "get", "search", "find", "query", "count", "describe", "fetch", "create", "add", "update", "edit", "delete", "remove", "upload", "download", "send", "submit", "verify"}
+	actionOrder := []string{"list", "get", "search", "find", "query", "count", "describe", "fetch", "run", "trigger", "execute", "generate", "batch", "process", "enable", "disable", "create", "add", "update", "edit", "delete", "remove", "upload", "download", "send", "submit", "verify"}
 	var actions []string
 	for _, action := range actionOrder {
 		if seen[action] {
@@ -1991,7 +1991,7 @@ func endpointActionVerb(name, method string) string {
 		head = head[:i]
 	}
 	switch head {
-	case "list", "get", "search", "find", "query", "count", "describe", "fetch", "create", "add", "update", "edit", "delete", "remove", "upload", "download", "send", "submit", "verify":
+	case "list", "get", "search", "find", "query", "count", "describe", "fetch", "run", "trigger", "execute", "generate", "batch", "process", "enable", "disable", "create", "add", "update", "edit", "delete", "remove", "upload", "download", "send", "submit", "verify":
 		return head
 	}
 	switch strings.ToUpper(method) {

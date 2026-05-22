@@ -12236,6 +12236,12 @@ func TestGenerateParentCommandShorts_AreAgentGradeForGroupers(t *testing.T) {
 						"query": {Method: "POST", Path: "/accounts/{account_id}/reports/query", Description: "Query account reports"},
 					},
 				},
+				"jobs": {
+					Description: "Manage jobs",
+					Endpoints: map[string]spec.Endpoint{
+						"run": {Method: "POST", Path: "/accounts/{account_id}/jobs/run", Description: "Run account jobs"},
+					},
+				},
 			},
 		},
 		"teams": {
@@ -12277,6 +12283,13 @@ func TestGenerateParentCommandShorts_AreAgentGradeForGroupers(t *testing.T) {
 		"POST query-style groupers should describe read-shaped actions, not create operations")
 	assert.NotContains(t, string(reportsSrc), `Short: "Create reports for accounts"`,
 		"read-shaped POST endpoints must not be mislabeled as creates")
+
+	jobsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "accounts_jobs.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(jobsSrc), `Short: "Run jobs for accounts"`,
+		"common action-style POST endpoints should use their endpoint verb, not the generic create fallback")
+	assert.NotContains(t, string(jobsSrc), `Short: "Create jobs for accounts"`,
+		"action-style POST endpoints must not be mislabeled as creates")
 
 	teamsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "teams.go"))
 	require.NoError(t, err)
