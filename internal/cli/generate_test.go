@@ -2044,6 +2044,29 @@ func TestNormalizeHTTPTransportAllowsBrowserChromeH3(t *testing.T) {
 	require.ErrorContains(t, err, "--transport must be one of")
 }
 
+func TestApplyGenerateSpecFlagsSetsPublicCategory(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{Name: "docs-api"}
+
+	require.NoError(t, applyGenerateSpecFlags(apiSpec, "", "docs", "travel", "", "", ""))
+
+	assert.Equal(t, "docs", apiSpec.SpecSource)
+	assert.Equal(t, "travel", apiSpec.Category)
+}
+
+func TestApplyGenerateSpecFlagsRejectsUnknownCategory(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{Name: "docs-api"}
+
+	err := applyGenerateSpecFlags(apiSpec, "", "docs", "banana", "", "", "")
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "--category must be one of:")
+	assert.Empty(t, apiSpec.Category)
+}
+
 // TestApplyHTTPTransportDefaultPreservesH2ForProtectionPath pins the
 // protection-driven branch (Cloudflare/DataDome/html_scrape/browser
 // hints without a reachability mode). Pre-fix the template's else
@@ -2484,6 +2507,19 @@ func TestEnrichSpecFromCatalogMatchesSpecURLWhenSlugDiffers(t *testing.T) {
 	assert.False(t, apiSpec.DisplayNameDerivedFromTitle)
 	assert.Equal(t, "cloud", apiSpec.Category)
 	assert.Equal(t, "https://cloud.google.com/run/docs/reference/rest", apiSpec.WebsiteURL)
+}
+
+func TestEnrichSpecFromCatalogCategoryWinsOverFlagValue(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:     "asana",
+		Category: "developer-tools",
+	}
+
+	enrichSpecFromCatalog(apiSpec)
+
+	assert.Equal(t, "project-management", apiSpec.Category)
 }
 
 func TestRunGenerateProjectUsesCatalogDescription(t *testing.T) {

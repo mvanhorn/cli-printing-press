@@ -112,6 +112,7 @@ func newGenerateCmd() *cobra.Command {
 	var asJSON bool
 	var dryRun bool
 	var specSource string
+	var category string
 	var clientPattern string
 	var httpTransport string
 	var researchDir string
@@ -174,7 +175,7 @@ func newGenerateCmd() *cobra.Command {
 				if err != nil {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing generated spec: %w", err)}
 				}
-				if err := applyGenerateSpecFlags(parsed, specSource, "docs", clientPattern, httpTransport, owner); err != nil {
+				if err := applyGenerateSpecFlags(parsed, specSource, "docs", category, clientPattern, httpTransport, owner); err != nil {
 					return err
 				}
 
@@ -350,7 +351,7 @@ func newGenerateCmd() *cobra.Command {
 				apiSpec = mergeSpecs(specs, cliName)
 			}
 
-			if err := applyGenerateSpecFlags(apiSpec, specSource, "", clientPattern, httpTransport, owner); err != nil {
+			if err := applyGenerateSpecFlags(apiSpec, specSource, "", category, clientPattern, httpTransport, owner); err != nil {
 				return err
 			}
 
@@ -458,6 +459,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Parse spec and show what would be generated without writing files (remote specs are still fetched)")
 	cmd.Flags().StringVar(&specSource, "spec-source", "", "Spec provenance: official, community, sniffed/browser-sniffed, docs (affects generated client defaults like rate limiting)")
+	cmd.Flags().StringVar(&category, "category", "", "Public-library category for non-catalog generation")
 	cmd.Flags().StringVar(&clientPattern, "client-pattern", "", "HTTP client pattern: rest (default), proxy-envelope (wraps requests in POST envelope)")
 	cmd.Flags().StringVar(&httpTransport, "transport", "", "HTTP transport: standard, browser-http, browser-chrome, or browser-chrome-h3 (defaults based on spec provenance and reachability)")
 	cmd.Flags().StringVar(&researchDir, "research-dir", "", "Pipeline directory containing research.json and discovery/ for README source credits")
@@ -566,7 +568,7 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	}, nil
 }
 
-func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource, clientPattern, httpTransport, owner string) error {
+func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource, category, clientPattern, httpTransport, owner string) error {
 	if specSource != "" {
 		normalized, err := normalizeSpecSource(specSource)
 		if err != nil {
@@ -575,6 +577,15 @@ func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource
 		apiSpec.SpecSource = normalized
 	} else if defaultSpecSource != "" {
 		apiSpec.SpecSource = defaultSpecSource
+	}
+	if category != "" {
+		if !catalog.IsPublicCategory(category) {
+			return &ExitError{
+				Code: ExitInputError,
+				Err:  fmt.Errorf("--category must be one of: %s", strings.Join(catalog.PublicCategories(), ", ")),
+			}
+		}
+		apiSpec.Category = category
 	}
 	if clientPattern != "" {
 		normalized, err := normalizeClientPattern(clientPattern)
@@ -1987,7 +1998,7 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 		apiSpec.BaseURL = strings.TrimRight(entry.BaseURL, "/")
 		apiSpec.BaseURLIsPlaceholder = false
 	}
-	if entry.Category != "" && apiSpec.Category == "" {
+	if entry.Category != "" {
 		apiSpec.Category = entry.Category
 	}
 	if entry.Owner != "" && apiSpec.Owner == "" {
