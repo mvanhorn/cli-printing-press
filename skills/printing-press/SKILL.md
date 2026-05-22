@@ -1452,7 +1452,7 @@ SDK wrapper methods should be treated as features to absorb — each public meth
 
 Do not leave `Our Implementation` as freeform prose like `FTS5 offline search` or `SQLite-backed sprint query`. If the row maps to a clean user-facing command, put that command path first. If it does not, choose the explicit disposition that explains why Phase 3 should not treat the whole cell as a new command path.
 
-**Stubs must be explicit.** If any row in the manifest will ship as a stub (placeholder implementation that emits "not yet wired" / "wip" messaging), add a `Status` column with value `(stub)` and a one-line reason why the full implementation is deferred (e.g., "(stub — requires paid API)", "(stub — requires headless Chrome)"). Do NOT quietly ship stubs for features the user approved as shipping scope.
+**Stubs must be explicit.** If any row in the manifest will ship as a stub (placeholder implementation that emits "not yet wired" / "wip" messaging), start `Our Implementation` with `(stub)` plus a one-line reason why the full implementation is deferred (e.g., "(stub - requires paid API)", "(stub - requires headless Chrome)"). If the manifest also has a `Status` column, set that value to `(stub)` too, but the `Our Implementation` prefix is the Phase 3 gate's source of truth. Do NOT quietly ship stubs for features the user approved as shipping scope.
 
 The Phase Gate 1.5 prose showcase (below) MUST read out stub items separately so the user explicitly approves the stub list. After approval, Phase 3 builds shipping-scope features fully and stubs with honest messaging; no mid-build downgrade from shipping-scope to stub is permitted. If an agent discovers during Phase 3 that a shipping-scope feature cannot be implemented in-session, they must return to Phase 1.5 with a revised manifest — not unilaterally downgrade to a stub.
 
@@ -2637,9 +2637,10 @@ Before moving to shipcheck, verify the build log against the absorb manifest. Co
 1. **Per-row Cobra resolution check.** Read approved command paths from `$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`:
    - Every transcendence row's `Command` value.
    - Every absorbed row whose `Our Implementation` value starts with `<api>-pp-cli <clean command path>`.
-   - Every absorbed row whose `Our Implementation` value starts with `(behavior in <api>-pp-cli <command path>)`.
-   - Do not infer command paths from freeform prose. Any non-stub absorbed row whose `Our Implementation` value does not start with `<api>-pp-cli`, `(behavior in ...)`, or `(generated endpoint)` is an invalid manifest row; return to Phase 1.5 and normalize it before proceeding.
+   - Every absorbed row whose `Our Implementation` value starts with `(behavior in <api>-pp-cli <command path>)`. For these rows, first extract the text between `(behavior in ` and the closing `)`, then apply the binary-strip and flag-strip rules to that extracted command text.
+   - Do not infer command paths from freeform prose. Any absorbed row whose `Our Implementation` value does not start with `<api>-pp-cli`, `(behavior in ...)`, `(generated endpoint)`, or `(stub)` is an invalid manifest row; return to Phase 1.5 and normalize it before proceeding.
    - Skip rows that start with `(generated endpoint)` because the generator-emitted typed endpoint surface already covers those commands.
+   - Skip rows that start with `(stub)` because the Phase Gate 1.5 stub approval list is their source of truth; do not count them as built commands.
 
    For each approved path, strip any leading binary name, then strip flag tokens and quoted args to get the leaf command path (drop everything from the first `-` token onward; `bottleneck` stays `bottleneck`, `velocity --weeks 4` becomes `velocity`, `compare "LeBron" "Curry"` becomes `compare`, `keywords-data google-ads search-volume --auto-mode` becomes `keywords-data google-ads search-volume`). Then run:
    ```bash
