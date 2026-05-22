@@ -47,7 +47,7 @@ Use Vercel's [open-agent-skills](https://www.npmjs.com/package/skills) CLI to in
 
 ```bash
 npx skills add mvanhorn/cli-printing-press/skills --skill '*' -g -a claude-code -y
-npx skills update -g -y                        # update later
+npx skills update                              # update later
 ```
 
 Once installed, you can start Claude Code from any folder.
