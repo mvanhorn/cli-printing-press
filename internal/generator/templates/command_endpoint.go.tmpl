@@ -3,6 +3,7 @@
 {{- $isGraphQLEndpoint := and (isGraphQL .APISpec) (eq .Endpoint.Path "/graphql") (or (eq .EndpointName "list") (eq .EndpointName "get"))}}
 {{- $isMultipart := endpointUsesMultipart .Endpoint}}
 {{- $isForm := endpointUsesForm .Endpoint}}
+{{- $hasJSONBody := and (or .Endpoint.Body .Endpoint.BodyJSONFallback) (not $isMultipart) (not $isForm)}}
 
 package cli
 
@@ -12,7 +13,7 @@ import (
 {{- end}}
 	"encoding/json"
 	"fmt"
-{{- if and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) (not $isMultipart) (not $isForm)}}
+{{- if or (and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) (not $isMultipart) (not $isForm)) (and (eq .Endpoint.Method "DELETE") $hasJSONBody)}}
 	"io"
 {{- end}}
 {{- if and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) $isForm}}
@@ -39,7 +40,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- if .Endpoint.Pagination}}
 	var flagAll bool
 {{- end}}
-{{- if and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) (not $isMultipart) (not $isForm)}}
+{{- if or (and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) (not $isMultipart) (not $isForm)) (and (eq .Endpoint.Method "DELETE") $hasJSONBody)}}
 	var stdinBody bool
 {{- end}}
 {{- if .IsAsync}}
@@ -104,7 +105,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			}
 {{- end}}
 {{- end}}
-{{- if or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")}}
+{{- if or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH") (and (eq .Endpoint.Method "DELETE") $hasJSONBody)}}
 {{- if or $isMultipart $isForm}}
 {{- bodyRequiredChecks .Endpoint "\t\t\t"}}
 {{- else}}
@@ -315,6 +316,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- end}}
 {{- else if eq .Endpoint.Method "DELETE"}}
+{{- if or (not $hasJSONBody) (endpointHasRequestParams .Endpoint)}}
 			params := map[string]string{}
 {{- range .Endpoint.Params}}
 {{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
@@ -326,10 +328,41 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			}
 {{- end}}
 {{- end}}
+{{- end}}
+{{- if $hasJSONBody}}
+			var body map[string]any
+			if stdinBody {
+				stdinData, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("reading stdin: %w", err)
+				}
+				var jsonBody map[string]any
+				if err := json.Unmarshal(stdinData, &jsonBody); err != nil {
+					return fmt.Errorf("parsing stdin JSON: %w", err)
+				}
+				body = jsonBody
+			} else {
+				body = map[string]any{}
+{{bodyMapForEndpoint .Endpoint "\t\t\t\t"}}			}
+{{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
+{{- if endpointHasRequestParams .Endpoint}}
+			data, statusCode, err := c.DeleteWithParamsAndBodyAndHeaders(cmd.Context(), path, params, body, headerOverrides)
+{{- else}}
+			data, statusCode, err := c.DeleteWithBodyAndHeaders(cmd.Context(), path, body, headerOverrides)
+{{- end}}
+{{- else}}
+{{- if endpointHasRequestParams .Endpoint}}
+			data, statusCode, err := c.DeleteWithParamsAndBody(cmd.Context(), path, params, body)
+{{- else}}
+			data, statusCode, err := c.DeleteWithBody(cmd.Context(), path, body)
+{{- end}}
+{{- end}}
+{{- else}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			data, statusCode, err := c.DeleteWithParamsAndHeaders(cmd.Context(), path, params, headerOverrides)
 {{- else}}
 			data, statusCode, err := c.DeleteWithParams(cmd.Context(), path, params)
+{{- end}}
 {{- end}}
 {{- else if eq .Endpoint.Method "PUT"}}
 			params := map[string]string{}
@@ -732,7 +765,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- if .Endpoint.Pagination}}
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Fetch all pages")
 {{- end}}
-{{- if and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) (not $isMultipart) (not $isForm)}}
+{{- if or (and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) (not $isMultipart) (not $isForm)) (and (eq .Endpoint.Method "DELETE") $hasJSONBody)}}
 {{- if bodyExceedsFlagDepth .Endpoint}}
 	cmd.Flags().BoolVar(&stdinBody, "stdin", false, "Read request body as JSON from stdin (use this for deeply nested fields not exposed as flags)")
 {{- else}}

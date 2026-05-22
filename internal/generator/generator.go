@@ -314,27 +314,28 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 			}
 			return " (one of: " + strings.Join(values, ", ") + ")"
 		},
-		"jsonStringParam":       isJSONStringParam,
-		"jsonEnumSuggestion":    jsonEnumSuggestion,
-		"bodyMap":               bodyMap,
-		"bodyMapForEndpoint":    bodyMapForEndpoint,
-		"bodyVarDecls":          bodyVarDecls,
-		"bodyFlagRegs":          bodyFlagRegs,
-		"bodyRequiredChecks":    bodyRequiredChecks,
-		"bodyExceedsFlagDepth":  bodyExceedsFlagDepth,
-		"multipartBodyMaps":     multipartBodyMaps,
-		"endpointUsesMultipart": endpointUsesMultipart,
-		"endpointHasQueryFlags": endpointHasQueryFlags,
-		"hasMultipartRequest":   hasMultipartRequest,
-		"formBodyMaps":          formBodyMaps,
-		"endpointUsesForm":      endpointUsesForm,
-		"hasFormRequest":        hasFormRequest,
-		"hasBodyJSONFallback":   hasBodyJSONFallback,
-		"publicFlagName":        publicFlagName,
-		"publicFlagAliases":     publicFlagAliases,
-		"flagChangedExpr":       flagChangedExpr,
-		"mcpInputName":          mcpInputName,
-		"mcpParamBindings":      mcpParamBindings,
+		"jsonStringParam":          isJSONStringParam,
+		"jsonEnumSuggestion":       jsonEnumSuggestion,
+		"bodyMap":                  bodyMap,
+		"bodyMapForEndpoint":       bodyMapForEndpoint,
+		"bodyVarDecls":             bodyVarDecls,
+		"bodyFlagRegs":             bodyFlagRegs,
+		"bodyRequiredChecks":       bodyRequiredChecks,
+		"bodyExceedsFlagDepth":     bodyExceedsFlagDepth,
+		"multipartBodyMaps":        multipartBodyMaps,
+		"endpointUsesMultipart":    endpointUsesMultipart,
+		"endpointHasQueryFlags":    endpointHasQueryFlags,
+		"endpointHasRequestParams": endpointHasRequestParams,
+		"hasMultipartRequest":      hasMultipartRequest,
+		"formBodyMaps":             formBodyMaps,
+		"endpointUsesForm":         endpointUsesForm,
+		"hasFormRequest":           hasFormRequest,
+		"hasBodyJSONFallback":      hasBodyJSONFallback,
+		"publicFlagName":           publicFlagName,
+		"publicFlagAliases":        publicFlagAliases,
+		"flagChangedExpr":          flagChangedExpr,
+		"mcpInputName":             mcpInputName,
+		"mcpParamBindings":         mcpParamBindings,
 		// endpointNeedsClientLimit reports whether a list endpoint needs
 		// client-side truncation. True when the endpoint has a `limit`-named
 		// param AND no Pagination block — the spec author asked for a
@@ -4189,6 +4190,18 @@ func multipartBodyMaps(body []spec.Param, indent string) string {
 func endpointHasQueryFlags(endpoint spec.Endpoint) bool {
 	for _, p := range endpoint.Params {
 		if !p.Positional && !p.PathParam {
+			return true
+		}
+	}
+	return false
+}
+
+// endpointHasRequestParams reports whether the endpoint passes any values in
+// the client request's params map: query flags plus positional values not
+// consumed by the URL path.
+func endpointHasRequestParams(endpoint spec.Endpoint) bool {
+	for _, p := range endpoint.Params {
+		if !p.PathParam {
 			return true
 		}
 	}
