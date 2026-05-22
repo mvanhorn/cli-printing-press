@@ -24,6 +24,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/text/encoding/japanese"
 )
 
 func TestGenerateProjectsCompile(t *testing.T) {
@@ -54,6 +55,8 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		"internal/cli/feedback.go",
 		"internal/cli/agent_context.go",
 		"internal/cli/root_test.go",
+		"internal/cli/sync_hint.go",
+		"internal/cli/sync_hint_test.go",
 		"internal/cliutil/fanout.go",
 		"internal/cliutil/text.go",
 		"internal/cliutil/probe.go",
@@ -86,9 +89,9 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		// Bump it AND add to mustInclude above when adding always-emitted
 		// templates. Per-spec dynamic files (per-resource command files,
 		// generated tests) account for the difference between fixtures.
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 63},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 68},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 65},
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 65},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 70},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 67},
 	}
 
 	for _, tt := range tests {
@@ -1043,6 +1046,30 @@ func TestGenerateComposedApiKeyPlusBearerEmitsAdditionalHeader(t *testing.T) {
 	clientSrc := string(clientBytes)
 	assert.Contains(t, clientSrc, `req.Header.Set("ST-App-Key", v)`,
 		"client must set ST-App-Key on every outbound request when configured")
+
+	doctorBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	doctorSrc := string(doctorBytes)
+	assert.Contains(t, doctorSrc, `recordAdditionalAuthEnv("ST_APP_KEY", configuredValue)`,
+		"doctor must check the sibling apiKey env var")
+	assert.Contains(t, doctorSrc, `configuredValue = cfg.StAppKey`,
+		"doctor must accept sibling apiKey credentials from config files")
+	assert.Contains(t, doctorSrc, `} else if authConfigured {`,
+		"doctor must apply the config fallback consistently for sibling apiKey credentials")
+	assert.Contains(t, doctorSrc, `OK %d/%d available", len(authEnvSet), 3`,
+		"doctor must include sibling apiKey credentials in the env-var count")
+
+	agentContextBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "agent_context.go"))
+	require.NoError(t, err)
+	agentContextSrc := string(agentContextBytes)
+	assert.Contains(t, agentContextSrc, `"ST_APP_KEY"`,
+		"agent-context must expose sibling apiKey credentials to agents")
+
+	mcpBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpSrc := string(mcpBytes)
+	assert.Contains(t, mcpSrc, `"ST_APP_KEY"`,
+		"MCP context must expose sibling apiKey credentials to agents")
 }
 
 // OAuth2 client_credentials specs without a sibling apiKey scheme must not
@@ -1970,6 +1997,9 @@ func TestGenerateCookieHTMLDefaultsBrowserChromeTransport(t *testing.T) {
 }
 
 func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
+	shiftJISHTML, err := japanese.ShiftJIS.NewEncoder().String(`<html><body><a href="/products/tokyo">東京</a></body></html>`)
+	require.NoError(t, err)
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		switch r.URL.Path {
@@ -1980,6 +2010,12 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 			// data-src (Pinterest/NYT Cooking pattern). firstImageSrc must
 			// prefer data-src over src.
 			_, _ = w.Write([]byte(`<html><head><title>Makers</title></head><body><a href="/@alice"><img src="data:image/gif;base64,placeholder" data-src="/img/alice-real.jpg" alt="Alice">Alice</a><a href="/@bob"><img srcset="/img/bob-1x.jpg 1x, /img/bob-2x.jpg 2x" alt="Bob">Bob</a></body></html>`))
+		case "/latin1":
+			w.Header().Set("Content-Type", "text/html; charset=ISO-8859-1")
+			_, _ = w.Write([]byte("<html><body><a href=\"/products/cafe\">Caf\xe9</a></body></html>"))
+		case "/shift-jis":
+			w.Header().Set("Content-Type", "text/html; charset=Shift_JIS")
+			_, _ = w.Write([]byte(shiftJISHTML))
 		default:
 			// Anchor 1 wraps its image in <noscript> (Dotdash/Meredith pattern).
 			// nodeTextSuppressing must skip the noscript subtree so "<img src=...>"
@@ -2054,6 +2090,40 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 						HTMLExtract: &spec.HTMLExtract{
 							Mode:         spec.HTMLExtractModeLinks,
 							LinkPrefixes: []string{"/@"},
+							Limit:        10,
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "html_link"},
+					},
+				},
+			},
+			"latin": {
+				Description: "Browse Latin-1 pages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:         "GET",
+						Path:           "/latin1",
+						Description:    "Fetch Latin-1 links",
+						ResponseFormat: spec.ResponseFormatHTML,
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:         spec.HTMLExtractModeLinks,
+							LinkPrefixes: []string{"/products"},
+							Limit:        10,
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "html_link"},
+					},
+				},
+			},
+			"shiftjis": {
+				Description: "Browse Shift-JIS pages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:         "GET",
+						Path:           "/shift-jis",
+						Description:    "Fetch Shift-JIS links",
+						ResponseFormat: spec.ResponseFormatHTML,
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:         spec.HTMLExtractModeLinks,
+							LinkPrefixes: []string{"/products"},
 							Limit:        10,
 						},
 						Response: spec.ResponseDef{Type: "array", Item: "html_link"},
@@ -2143,6 +2213,248 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	assert.Equal(t, server.URL+"/@bob", envelope.Results[1]["url"])
 	assert.Contains(t, envelope.Results[1]["image"], "bob-1x.jpg",
 		"first srcset URL should be selected when src is absent; got %v", envelope.Results[1]["image"])
+
+	cmd = exec.Command(binaryPath, "latin", "list", "--json")
+	cmd.Env = append(os.Environ(), "WEBHTML_BASE_URL="+server.URL)
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.NoError(t, json.Unmarshal(out, &envelope), string(out))
+	require.Len(t, envelope.Results, 1)
+	assert.Equal(t, "Caf\u00e9", envelope.Results[0]["name"])
+
+	shiftJISEnv := append(os.Environ(), "WEBHTML_BASE_URL="+server.URL, "HOME="+t.TempDir())
+	cmd = exec.Command(binaryPath, "shiftjis", "list", "--json")
+	cmd.Env = shiftJISEnv
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.NoError(t, json.Unmarshal(out, &envelope), string(out))
+	require.Len(t, envelope.Results, 1)
+	assert.Equal(t, "東京", envelope.Results[0]["name"])
+
+	server.Close()
+	cmd = exec.Command(binaryPath, "shiftjis", "list", "--json")
+	cmd.Env = shiftJISEnv
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.NoError(t, json.Unmarshal(out, &envelope), string(out))
+	require.Len(t, envelope.Results, 1)
+	assert.Equal(t, "東京", envelope.Results[0]["name"], "cached HTML responses must preserve the HTTP charset hint")
+}
+
+func TestGeneratedSyncHonorsHTMLExtraction(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "htmlsync",
+		Version: "0.1.0",
+		BaseURL: "https://example.test",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/htmlsync-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"pages": {
+				Description: "HTML pages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:         "GET",
+						Path:           "/pages",
+						Description:    "List pages from HTML",
+						ResponseFormat: spec.ResponseFormatHTML,
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:         spec.HTMLExtractModeLinks,
+							LinkPrefixes: []string{"/pages"},
+							Limit:        10,
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "html_link"},
+					},
+				},
+			},
+			"json_pages": {
+				Description: "JSON pages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/json-pages",
+						Description: "List pages from JSON",
+						Response:    spec.ResponseDef{Type: "array", Item: "object"},
+					},
+				},
+			},
+			"channels": {
+				Description: "Channel records",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels",
+						Description: "List channels",
+						Response:    spec.ResponseDef{Type: "array", Item: "object"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+			"messages": {
+				Description: "HTML messages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:         "GET",
+						Path:           "/channels/{channelId}/messages",
+						Description:    "List messages from HTML",
+						ResponseFormat: spec.ResponseFormatHTML,
+						Params:         []spec.Param{{Name: "channelId", Type: "string", Required: true, PathParam: true}},
+						Pagination:     &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:           spec.HTMLExtractModeEmbeddedJSON,
+							ScriptSelector: "script#MESSAGES_DATA",
+							JSONPath:       "items",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "object"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
+	assert.Contains(t, syncSrc, "syncHTMLExtractionOptions",
+		"sync.go must route HTML sync responses through extractHTMLResponse before extractPageItems")
+	assert.Contains(t, syncSrc, `case "pages":`,
+		"HTML extraction options must be emitted for the HTML sync resource")
+	assert.Contains(t, syncSrc, `case "channels.messages":`,
+		"dependent HTML extraction options must be keyed by parent and child resource")
+	assert.NotContains(t, syncSrc, `case "json_pages":`,
+		"JSON sync resources must not get HTML extraction options")
+
+	inlineTest := `package cli
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+type htmlSyncClient struct{}
+
+func (htmlSyncClient) Get(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
+	return json.RawMessage(` + "`" + `<html><body><a href="/pages/alpha">Alpha</a><a href="/pages/beta">Beta</a><a href="/other">Other</a></body></html>` + "`" + `), nil
+}
+
+func (htmlSyncClient) RequestBaseURL() string {
+	return "https://example.test"
+}
+
+func (htmlSyncClient) LastContentType() string {
+	return "text/html; charset=utf-8"
+}
+
+func (htmlSyncClient) RateLimit() float64 {
+	return 0
+}
+
+type dependentHTMLSyncClient struct{}
+
+func (dependentHTMLSyncClient) Get(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
+	if strings.Contains(path, "/bad/messages") {
+		return json.RawMessage(` + "`" + `<html><body>missing embedded JSON</body></html>` + "`" + `), nil
+	}
+	return json.RawMessage(` + "`" + `<html><body><script id="MESSAGES_DATA" type="application/json">{"items":[{"id":"msg-good","text":"ok"}]}</script></body></html>` + "`" + `), nil
+}
+
+func (dependentHTMLSyncClient) RequestBaseURL() string {
+	return "https://example.test"
+}
+
+func (dependentHTMLSyncClient) LastContentType() string {
+	return "text/html; charset=utf-8"
+}
+
+func (dependentHTMLSyncClient) RateLimit() float64 {
+	return 0
+}
+
+func TestSyncResourceExtractsHTMLLinks(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	res := syncResource(context.Background(), htmlSyncClient{}, db, "pages", "", false, 1, false, nil)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if res.Count != 2 {
+		t.Fatalf("synced count = %d, want 2", res.Count)
+	}
+
+	rows, err := db.List("pages", 10)
+	if err != nil {
+		t.Fatalf("list pages: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("stored rows = %d, want 2", len(rows))
+	}
+	body := string(rows[0]) + "\n" + string(rows[1])
+	if !strings.Contains(body, "\"slug\":\"alpha\"") || !strings.Contains(body, "\"slug\":\"beta\"") {
+		t.Fatalf("stored rows did not include extracted HTML links: %s", body)
+	}
+}
+
+func TestSyncDependentResourceContinuesAfterHTMLExtractionError(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Upsert("channels", "bad", []byte(` + "`" + `{"id":"bad"}` + "`" + `)); err != nil {
+		t.Fatalf("insert bad parent: %v", err)
+	}
+	if err := db.Upsert("channels", "good", []byte(` + "`" + `{"id":"good"}` + "`" + `)); err != nil {
+		t.Fatalf("insert good parent: %v", err)
+	}
+
+	res := syncDependentResource(
+		context.Background(),
+		dependentHTMLSyncClient{},
+		db,
+		dependentResourceDef{Name: "messages", ParentTable: "channels", ParentIDParam: "channelId", PathTemplate: "/channels/{channelId}/messages"},
+		"", false, 1, false, nil,
+	)
+	if res.Err != nil {
+		t.Fatalf("syncDependentResource error: %v", res.Err)
+	}
+	if res.Count != 1 {
+		t.Fatalf("synced count = %d, want 1", res.Count)
+	}
+
+	rows, err := db.List("messages", 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("stored rows = %d, want 1", len(rows))
+	}
+	body := string(rows[0])
+	if !strings.Contains(body, "\"id\":\"msg-good\"") || !strings.Contains(body, "\"channels_id\":\"good\"") {
+		t.Fatalf("stored rows did not include the successful parent message with its parent FK: %s", body)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_html_extract_test.go"), []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestSync(ResourceExtractsHTMLLinks|DependentResourceContinuesAfterHTMLExtractionError)", "./internal/cli")
 }
 
 // TestGenerateHTMLExtractionEmbeddedJSONMode exercises the embedded-json mode
@@ -11420,12 +11732,14 @@ func TestMCPCodeOrchPassesParamsMap(t *testing.T) {
 		"code-orch handler must not pre-marshal params: client.do() json.Marshals what it receives, "+
 			"so a []byte arrives base64-encoded on the wire and strict APIs reject the payload")
 
-	assert.Contains(t, mcpSource, "c.Post(ctx, path, params)",
-		"POST branch must forward params directly to the client")
-	assert.Contains(t, mcpSource, "c.Put(ctx, path, params)",
-		"PUT branch must forward params directly to the client")
-	assert.Contains(t, mcpSource, "c.Patch(ctx, path, params)",
-		"PATCH branch must forward params directly to the client")
+	assert.Contains(t, mcpSource, "return codeOrchWriteBody(params)",
+		"object write bodies must forward the structured params map to the client")
+	assert.Contains(t, mcpSource, "c.Post(ctx, path, body)",
+		"POST branch must forward the structured write body directly to the client")
+	assert.Contains(t, mcpSource, "c.Put(ctx, path, body)",
+		"PUT branch must forward the structured write body directly to the client")
+	assert.Contains(t, mcpSource, "c.Patch(ctx, path, body)",
+		"PATCH branch must forward the structured write body directly to the client")
 }
 
 // TestMCPBindingNumericTypesAcrossSpecShapes pins template wiring: both
@@ -11801,6 +12115,145 @@ func TestProjectManagementWorkflowsEmitReadOnlyAnnotations(t *testing.T) {
 		assert.Len(t, annotationRE.FindAllString(string(data), -1), 1,
 			"%s should emit exactly one mcp:read-only annotation", file)
 	}
+}
+
+func TestProjectManagementWorkflowsEmitSyncHints(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("pmworkflows")
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{
+		Store:     true,
+		Sync:      true,
+		Search:    true,
+		Analytics: true,
+		Workflows: []string{
+			"workflows/pm_stale.go.tmpl",
+			"workflows/pm_orphans.go.tmpl",
+			"workflows/pm_load.go.tmpl",
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	rootSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "root.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(rootSrc), "maxAge")
+	assert.Contains(t, string(rootSrc), "time.Duration")
+	assert.Contains(t, string(rootSrc), `DurationVar(&flags.maxAge, "max-age", 30*time.Minute`)
+
+	syncHintSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync_hint.go"))
+	require.NoError(t, err, "local-store-backed CLIs should emit sync_hint.go")
+	for _, snippet := range []string{
+		"func hintIfUnsynced(cmd *cobra.Command, db *store.Store, resourceType string) bool",
+		"func hintIfStale(cmd *cobra.Command, db *store.Store, resourceType string, maxAge time.Duration) bool",
+		"Run 'pmworkflows-pp-cli sync'",
+	} {
+		assert.Contains(t, string(syncHintSrc), snippet, "sync_hint.go missing %q", snippet)
+	}
+
+	for _, file := range []string{"pm_stale.go", "pm_orphans.go", "pm_load.go"} {
+		data, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", file))
+		require.NoError(t, err)
+		src := string(data)
+		assert.Contains(t, src, `maybeEmitSyncHints(cmd, db, "", flags.maxAge)`,
+			"%s should emit cold-start and stale-read hints before reading the local store", file)
+	}
+	searchSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "search.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(searchSrc), `maybeEmitSyncHints(cmd, db, resourceType, flags.maxAge)`,
+		"search should emit sync hints for local FTS reads")
+	analyticsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "analytics.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(analyticsSrc), `maybeEmitSyncHints(cmd, db, resourceType, flags.maxAge)`,
+		"analytics should emit sync hints for local aggregate reads")
+	dataSourceSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "data_source.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(dataSourceSrc), `emitSyncHints(hintWriter, db, resourceType, flags.maxAge)`,
+		"data-source local fallback should emit sync hints for endpoint reads")
+
+	testSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync_hint_test.go"))
+	require.NoError(t, err, "sync_hint_test.go must compile the helper behavior in generated CLIs")
+	for _, snippet := range []string{
+		"func TestHintIfUnsynced_EmptySyncStateWritesHintToStderr(t *testing.T)",
+		"func TestHintIfStale_BackdatedSyncStateWritesHintToStderr(t *testing.T)",
+		"func TestHintIfStale_MaxAgeZeroDisablesHint(t *testing.T)",
+		"func TestHintIfUnsynced_NullTimestampWritesHint(t *testing.T)",
+		"func TestHintIfStale_AllResourcesIgnoresNullTimestampRows(t *testing.T)",
+		"func TestHintIfStale_ResourceFilterUsesRequestedResource(t *testing.T)",
+	} {
+		assert.Contains(t, string(testSrc), snippet, "sync_hint_test.go missing %q", snippet)
+	}
+
+	commandTest := `package cli
+
+import (
+	"bytes"
+	"context"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"pmworkflows-pp-cli/internal/store"
+)
+
+func runPMHintCommand(t *testing.T, dbPath string, args ...string) (string, string) {
+	t.Helper()
+	root := RootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs(append(args, "--db", dbPath, "--json"))
+	if err := root.Execute(); err != nil {
+		t.Fatalf("execute %v: %v; stderr=%s", args, err, stderr.String())
+	}
+	return stdout.String(), stderr.String()
+}
+
+func TestPMWorkflowCommandEmitsSyncHints(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "data.db")
+	db, err := store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	_, stderr := runPMHintCommand(t, dbPath, "load")
+	if !strings.Contains(stderr, "has not been synced yet") {
+		t.Fatalf("stderr = %q, want unsynced hint", stderr)
+	}
+
+	db, err = store.OpenWithContext(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	if _, err := db.DB().Exec(
+		` + "`" + `INSERT INTO sync_state(resource_type, last_synced_at, total_count) VALUES (?, ?, ?)` + "`" + `,
+		"issues", time.Now().Add(-2*time.Hour), 1,
+	); err != nil {
+		t.Fatalf("seed sync_state: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seeded store: %v", err)
+	}
+
+	_, stderr = runPMHintCommand(t, dbPath, "load", "--max-age", "30m")
+	if !strings.Contains(stderr, "older than --max-age=30m0s") {
+		t.Fatalf("stderr = %q, want stale hint", stderr)
+	}
+
+	_, stderr = runPMHintCommand(t, dbPath, "load", "--max-age", "0")
+	if strings.Contains(stderr, "older than --max-age") {
+		t.Fatalf("stderr = %q, want max-age 0 to disable stale hint", stderr)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "pm_sync_hint_command_test.go"), []byte(commandTest), 0o644))
+
+	runGoCommand(t, outputDir, "test", "./internal/cli")
 }
 
 // TestSearchTemplateEmptyTypeQueriesGenericFTS pins #1390 — the
@@ -12202,4 +12655,351 @@ func TestGenerateParentNoSubcommandRunE_WiredOnResourceParents(t *testing.T) {
 	require.NoError(t, err)
 	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(shareSrc),
 		"the share parent shares the same bug class and must wire the helper too")
+}
+
+func TestGenerateParentCommandShorts_AreAgentGradeForGroupers(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("parent-short-agent-grade")
+	apiSpec.Resources = map[string]spec.Resource{
+		"accounts": {
+			Description: "Manage accounts",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/accounts", Description: "List accounts"},
+				"get":  {Method: "GET", Path: "/accounts/{id}", Description: "Get one account"},
+			},
+			SubResources: map[string]spec.Resource{
+				"attachments": {
+					Description: "Manage attachments",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/accounts/{account_id}/attachments", Description: "List account attachments"},
+						"get":  {Method: "GET", Path: "/accounts/{account_id}/attachments/{id}", Description: "Get an account attachment"},
+					},
+				},
+				"cancel": {
+					Description: "Manage cancel",
+					Endpoints: map[string]spec.Endpoint{
+						"create": {Method: "POST", Path: "/accounts/{account_id}/cancel", Description: "Cancel an account"},
+						"status": {Method: "GET", Path: "/accounts/{account_id}/cancel", Description: "Get cancellation status"},
+					},
+				},
+				"reports": {
+					Description: "Manage reports",
+					Endpoints: map[string]spec.Endpoint{
+						"query": {Method: "POST", Path: "/accounts/{account_id}/reports/query", Description: "Query account reports"},
+					},
+				},
+				"jobs": {
+					Description: "Manage jobs",
+					Endpoints: map[string]spec.Endpoint{
+						"run": {Method: "POST", Path: "/accounts/{account_id}/jobs/run", Description: "Run account jobs"},
+					},
+				},
+			},
+		},
+		"teams": {
+			Description: "Manage teams",
+			SubResources: map[string]spec.Resource{
+				"members": {
+					Description: "Manage members",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/teams/{team_id}/members", Description: "List team members"},
+						"get":  {Method: "GET", Path: "/teams/{team_id}/members/{id}", Description: "Get a team member"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	accountSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "accounts.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `Short:\s+"List and get accounts"`, string(accountSrc),
+		"top-level generated parent groupers need agent-grade descriptions, not thin Manage stubs")
+
+	attachmentsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "accounts_attachments.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `Short:\s+"List and get attachments for accounts"`, string(attachmentsSrc),
+		"nested noun groupers should carry parent context in their Short")
+
+	cancelSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "accounts_cancel.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `Short:\s+"Run cancel operations for accounts"`, string(cancelSrc),
+		"verb-shaped groupers should not emit nonsense like Manage cancel")
+
+	reportsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "accounts_reports.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `Short:\s+"Query reports for accounts"`, string(reportsSrc),
+		"POST query-style groupers should describe read-shaped actions, not create operations")
+	assert.NotRegexp(t, `Short:\s+"Create reports for accounts"`, string(reportsSrc),
+		"read-shaped POST endpoints must not be mislabeled as creates")
+
+	jobsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "accounts_jobs.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `Short:\s+"Run jobs for accounts"`, string(jobsSrc),
+		"common action-style POST endpoints should use their endpoint verb, not the generic create fallback")
+	assert.NotRegexp(t, `Short:\s+"Create jobs for accounts"`, string(jobsSrc),
+		"action-style POST endpoints must not be mislabeled as creates")
+
+	teamsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "teams.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `Short:\s+"Manage teams command groups"`, string(teamsSrc),
+		"endpoint-less parent groupers should still avoid thin Manage stubs")
+	assert.False(t, naming.IsThinCommandShort("Manage teams command groups"),
+		"endpoint-less parent fallback must stay above the tools-audit thin-short floor")
+
+	topLevelReportsShort := parentCommandShort("reports", "", spec.Resource{
+		Description: "Manage reports",
+		Endpoints: map[string]spec.Endpoint{
+			"query": {Method: "POST", Path: "/reports/query", Description: "Query reports"},
+		},
+	}, "")
+	assert.Equal(t, "Manage reports command groups", topLevelReportsShort,
+		"single-action top-level groupers should fall back when the action-derived Short is still thin")
+	assert.NotEqual(t, "Query reports", topLevelReportsShort,
+		"top-level parent groupers must not emit action-derived Shorts that tools-audit still flags")
+}
+
+func TestParentCommandInfoDescriptionShort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		description string
+		want        string
+	}{
+		{
+			name:        "first sentence",
+			description: "Coordinate video publishing workflows across channels. This second sentence belongs in longer docs.",
+			want:        "Coordinate video publishing workflows across channels.",
+		},
+		{
+			name:        "thin first sentence does not fall through",
+			description: "API. Coordinate video publishing workflows across channels.",
+			want:        "",
+		},
+		{
+			name:        "abbreviation period stays in first sentence",
+			description: "The U.S. Census Bureau API provides access to datasets. This second sentence belongs in longer docs.",
+			want:        "The U.S. Census Bureau API provides access to datasets.",
+		},
+		{
+			name:        "decimal period stays in first sentence",
+			description: "Use the v2.0 reporting API for exports. This second sentence belongs in longer docs.",
+			want:        "Use the v2.0 reporting API for exports.",
+		},
+		{
+			name:        "version placeholder period stays in first sentence",
+			description: "Use the v1.x reporting API for exports. This second sentence belongs in longer docs.",
+			want:        "Use the v1.x reporting API for exports.",
+		},
+		{
+			name:        "long version placeholder sentence stays useful",
+			description: "Use the v1.x reporting API for exporting analytics dashboards billing records team usage metrics attribution windows cohort slices retention curves and billing forecasts. This second sentence belongs in longer docs.",
+			want:        "Use the v1.x reporting API for exporting analytics dashboards billing records team usage metrics attribution windows",
+		},
+		{
+			name:        "long first sentence stays compact",
+			description: "Coordinate video publishing workflows across channels, regions, partners, approval queues, localization states, analytics exports, campaign plans, compliance reviews, and publishing calendars. This second sentence belongs in longer docs.",
+			want:        "Coordinate video publishing workflows across channels, regions, partners, approval queues, localization states",
+		},
+		{
+			name:        "no punctuation uses full description",
+			description: "Coordinate video publishing workflows across channels",
+			want:        "Coordinate video publishing workflows across channels",
+		},
+		{
+			name:        "long unpunctuated description stays compact",
+			description: "Coordinate video publishing workflows across channels regions partners approval queues localization states analytics exports campaign plans compliance reviews and publishing calendars",
+			want:        "Coordinate video publishing workflows across channels regions partners approval queues localization states analytics",
+		},
+		{
+			name:        "thin unpunctuated description ignored",
+			description: "Video API",
+			want:        "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, parentCommandInfoDescriptionShort(tt.description))
+		})
+	}
+}
+
+func TestGenerateParentCommandShorts_UseOpenAPIProseFallbacks(t *testing.T) {
+	t.Parallel()
+
+	t.Run("tag description", func(t *testing.T) {
+		t.Parallel()
+
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Billing API
+  version: 1.0.0
+  description: Generic billing API fallback.
+servers:
+  - url: https://api.example.com
+tags:
+  - name: Customers
+    description: Manage customer records, subscriptions, and billing profiles.
+paths:
+  /customers:
+    get:
+      operationId: listCustomers
+      tags: [Customers]
+      summary: List customers
+      responses:
+        '200':
+          description: OK
+  /customers/{customer_id}:
+    get:
+      operationId: getCustomer
+      tags: [Customers]
+      summary: Get customer
+      parameters:
+        - name: customer_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+`)
+
+		apiSpec, err := openapi.Parse(data)
+		require.NoError(t, err)
+
+		outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		src, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "customers.go"))
+		require.NoError(t, err)
+		assert.Regexp(t, `Short:\s+"Manage customer records, subscriptions, and billing profiles\."`, string(src))
+		assert.NotRegexp(t, `Short:\s+"Generic billing API fallback\."`, string(src))
+	})
+
+	t.Run("info description first sentence", func(t *testing.T) {
+		t.Parallel()
+
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Video API
+  version: 1.0.0
+  description: Coordinate video publishing workflows across channels. This second sentence belongs in longer docs.
+servers:
+  - url: https://api.example.com
+paths:
+  /videos:
+    get:
+      operationId: listVideos
+      summary: List videos
+      responses:
+        '200':
+          description: OK
+  /videos/{video_id}:
+    get:
+      operationId: getVideo
+      summary: Get video
+      parameters:
+        - name: video_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+`)
+
+		apiSpec, err := openapi.Parse(data)
+		require.NoError(t, err)
+
+		outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		src, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "videos.go"))
+		require.NoError(t, err)
+		assert.Regexp(t, `Short:\s+"Coordinate video publishing workflows across channels\."`, string(src))
+		assert.NotRegexp(t, `This second sentence`, string(src))
+	})
+
+	t.Run("multi resource spec keeps resource-specific shorts", func(t *testing.T) {
+		t.Parallel()
+
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Commerce API
+  version: 1.0.0
+  description: Coordinate commerce workflows across customer and invoice records.
+servers:
+  - url: https://api.example.com
+paths:
+  /customers:
+    get:
+      operationId: listCustomers
+      summary: List customers
+      responses:
+        '200':
+          description: OK
+  /customers/{customer_id}:
+    get:
+      operationId: getCustomer
+      summary: Get customer
+      parameters:
+        - name: customer_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  /invoices:
+    get:
+      operationId: listInvoices
+      summary: List invoices
+      responses:
+        '200':
+          description: OK
+  /invoices/{invoice_id}:
+    get:
+      operationId: getInvoice
+      summary: Get invoice
+      parameters:
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+`)
+
+		apiSpec, err := openapi.Parse(data)
+		require.NoError(t, err)
+
+		outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		customersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "customers.go"))
+		require.NoError(t, err)
+		assert.Regexp(t, `Short:\s+"List and get customers"`, string(customersSrc))
+		assert.NotRegexp(t, `Coordinate commerce workflows`, string(customersSrc))
+
+		invoicesSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "invoices.go"))
+		require.NoError(t, err)
+		assert.Regexp(t, `Short:\s+"List and get invoices"`, string(invoicesSrc))
+		assert.NotRegexp(t, `Coordinate commerce workflows`, string(invoicesSrc))
+	})
 }

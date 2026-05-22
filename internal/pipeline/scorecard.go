@@ -74,7 +74,7 @@ type SteinerScore struct {
 	AuthProtocol          int    `json:"auth_protocol"`           // 0-10
 	DataPipelineIntegrity int    `json:"data_pipeline_integrity"` // 0-10
 	SyncCorrectness       int    `json:"sync_correctness"`        // 0-10
-	TypeFidelity          int    `json:"type_fidelity"`           // 0-5
+	TypeFidelity          int    `json:"type_fidelity"`           // 0-4 (declared cap 5; +1 MarkFlagRequired path dropped per SKILL conflict)
 	DeadCode              int    `json:"dead_code"`               // 0-5
 	LiveAPIVerification   int    `json:"live_api_verification"`   // 0-10; unscored when verify ran in mock/structural mode or was skipped
 	Total                 int    `json:"total"`                   // 0-100 (weighted: 50% infrastructure + 50% domain)
@@ -751,6 +751,9 @@ func IsThinMCPDescription(desc string) bool {
 // re-parsing.
 func ScoreMCPDescriptionQualityForManifest(m *ToolsManifest) (score int, scored bool) {
 	if m == nil || len(m.Tools) == 0 {
+		return 0, false
+	}
+	if !m.EndpointMirrorsVisible() {
 		return 0, false
 	}
 	thin := 0
@@ -1570,11 +1573,22 @@ type securityRequirementSet struct {
 	AllowsAnonymous bool
 }
 
+type oauthScopeRequirement struct {
+	Endpoint     string                  `json:"endpoint"`
+	OperationID  string                  `json:"operation_id,omitempty"`
+	Alternatives []oauthScopeAlternative `json:"alternatives"`
+}
+
+type oauthScopeAlternative struct {
+	Scopes []string `json:"scopes"`
+}
+
 type openAPISpecInfo struct {
-	Paths                []string
-	SecuritySchemes      map[string]openAPISecurityScheme
-	SecurityRequirements []securityRequirementSet
-	Kind                 string // see apispec.KindREST / apispec.KindSynthetic
+	Paths                  []string
+	SecuritySchemes        map[string]openAPISecurityScheme
+	SecurityRequirements   []securityRequirementSet
+	OAuthScopeRequirements []oauthScopeRequirement
+	Kind                   string // see apispec.KindREST / apispec.KindSynthetic
 }
 
 func (s *openAPISpecInfo) IsSynthetic() bool {
@@ -1590,7 +1604,10 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading spec: %w", err)
 	}
+	return loadOpenAPISpecData(data, specPath)
+}
 
+func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error) {
 	// Detect internal YAML spec format and convert to openAPISpecInfo.
 	if isInternalYAMLSpec(data) {
 		internal, err := apispec.ParseBytes(data)
@@ -1683,17 +1700,30 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 	}
 
 	rootSecurity, rootHasSecurity := parseSecurityRequirementSet(raw["security"])
+	rootOAuthScopes, rootHasOAuthScopes := parseOAuthScopeAlternatives(raw["security"], info.SecuritySchemes)
 	foundOperation := false
 	if paths, ok := raw["paths"].(map[string]any); ok {
-		for _, pathValue := range paths {
+		pathNames := make([]string, 0, len(paths))
+		for path := range paths {
+			pathNames = append(pathNames, path)
+		}
+		slices.Sort(pathNames)
+		for _, path := range pathNames {
+			pathValue := paths[path]
 			pathItem, ok := pathValue.(map[string]any)
 			if !ok {
 				continue
 			}
-			for method, operationValue := range pathItem {
+			methods := make([]string, 0, len(pathItem))
+			for method := range pathItem {
 				if !isHTTPMethod(method) {
 					continue
 				}
+				methods = append(methods, method)
+			}
+			slices.Sort(methods)
+			for _, method := range methods {
+				operationValue := pathItem[method]
 				foundOperation = true
 				operation, ok := operationValue.(map[string]any)
 				if !ok {
@@ -1701,10 +1731,24 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 				}
 				if requirementSet, ok := parseSecurityRequirementSet(operation["security"]); ok {
 					info.SecurityRequirements = append(info.SecurityRequirements, requirementSet)
+					if alternatives, ok := parseOAuthScopeAlternatives(operation["security"], info.SecuritySchemes); ok && len(alternatives) > 0 {
+						info.OAuthScopeRequirements = append(info.OAuthScopeRequirements, oauthScopeRequirement{
+							Endpoint:     strings.ToUpper(method) + " " + path,
+							OperationID:  operationIDFromRaw(operation),
+							Alternatives: alternatives,
+						})
+					}
 					continue
 				}
 				if rootHasSecurity {
 					info.SecurityRequirements = append(info.SecurityRequirements, rootSecurity)
+				}
+				if rootHasOAuthScopes && len(rootOAuthScopes) > 0 {
+					info.OAuthScopeRequirements = append(info.OAuthScopeRequirements, oauthScopeRequirement{
+						Endpoint:     strings.ToUpper(method) + " " + path,
+						OperationID:  operationIDFromRaw(operation),
+						Alternatives: rootOAuthScopes,
+					})
 				}
 			}
 		}
@@ -1717,13 +1761,23 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 		for _, alternative := range requirementSet.Alternatives {
 			for _, name := range alternative {
 				if _, ok := info.SecuritySchemes[name]; !ok {
-					return nil, fmt.Errorf("spec references undefined security scheme %q", name)
+					return info, fmt.Errorf("spec references undefined security scheme %q", name)
 				}
 			}
 		}
 	}
 
 	return info, nil
+}
+
+func operationIDFromRaw(operation map[string]any) string {
+	if operation == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(asString(operation["operationId"])); id != "" {
+		return id
+	}
+	return ""
 }
 
 type dimensionScore struct {
@@ -1792,7 +1846,7 @@ func evaluateAuthProtocol(dir string, spec *openAPISpecInfo) dimensionScore {
 			score += 4 // env var support present
 		}
 		// AuthProtocol pattern: standard/custom header auth in generated client.
-		if strings.Contains(clientContent, "Authorization") || strings.Contains(clientContent, "X-Api-Key") || strings.Contains(clientContent, "X-Auth-Token") || strings.Contains(clientContent, "X-Access-Token") {
+		if inferredAuthHeaderAssignmentPresent(clientContent) {
 			score += 3 // client sends auth header (standard or custom)
 		}
 		// Query-param auth (e.g., TMDb ?api_key=, Google Maps ?key=):
@@ -1896,6 +1950,61 @@ func parseSecurityRequirementSet(value any) (securityRequirementSet, bool) {
 	return set, true
 }
 
+func parseOAuthScopeAlternatives(value any, schemes map[string]openAPISecurityScheme) ([]oauthScopeAlternative, bool) {
+	requirements, ok := value.([]any)
+	if !ok {
+		return nil, false
+	}
+
+	var alternatives []oauthScopeAlternative
+	seen := map[string]struct{}{}
+	for _, requirement := range requirements {
+		names, ok := requirement.(map[string]any)
+		if !ok {
+			continue
+		}
+		var scopes []string
+		for name, scopeValue := range names {
+			scheme, ok := schemes[name]
+			if !ok || !isOAuthSecurityScheme(scheme) {
+				continue
+			}
+			scopes = append(scopes, parseOAuthScopeList(scopeValue)...)
+		}
+		scopes = uniqueSorted(scopes)
+		if len(scopes) == 0 {
+			continue
+		}
+		key := strings.Join(scopes, "\x00")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		alternatives = append(alternatives, oauthScopeAlternative{Scopes: scopes})
+	}
+	return alternatives, true
+}
+
+func parseOAuthScopeList(value any) []string {
+	rawScopes, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	var scopes []string
+	for _, rawScope := range rawScopes {
+		scope := strings.TrimSpace(asString(rawScope))
+		if scope != "" {
+			scopes = append(scopes, scope)
+		}
+	}
+	slices.Sort(scopes)
+	return slices.Compact(scopes)
+}
+
+func isOAuthSecurityScheme(scheme openAPISecurityScheme) bool {
+	return scheme.Type == "oauth2" || scheme.Type == "openidconnect"
+}
+
 func referencedSecuritySchemes(requirementSets []securityRequirementSet) map[string]bool {
 	referenced := make(map[string]bool)
 	for _, requirementSet := range requirementSets {
@@ -1961,6 +2070,8 @@ func scoreAuthScheme(clientContent, configContent, authContent string, hasStruct
 
 	if strings.EqualFold(scheme.Type, "apikey") && scheme.In == "header" && strings.TrimSpace(scheme.HeaderName) != "" {
 		headerName = scheme.HeaderName
+	} else if strings.EqualFold(scheme.Type, "apikey") && scheme.In == "cookie" {
+		headerName = "Cookie"
 	}
 
 	switch {
@@ -1989,7 +2100,7 @@ func scoreAuthScheme(clientContent, configContent, authContent string, hasStruct
 		// For apiKey schemes, the header value format varies (Bearer, Bot, custom).
 		// Credit authHeaderMatched if the client sets the correct header name,
 		// since that proves the auth plumbing is wired correctly regardless of format.
-		if scheme.In == "header" && headerName != "" {
+		if (scheme.In == "header" || scheme.In == "cookie") && headerName != "" {
 			if headerAssignmentPresent(clientContent, headerName) {
 				authHeaderMatched = true
 			}
@@ -2119,12 +2230,20 @@ func composedHeaderCompanionSuffix(scheme openAPISecurityScheme) bool {
 }
 
 func isComposedHeaderAlternative(schemes map[string]openAPISecurityScheme, alternative []string) bool {
+	apiKeyHeaderCount := 0
 	counts := make(map[string]int)
 	for _, key := range alternative {
-		prefix := composedHeaderPrefix(schemes[key])
+		scheme := schemes[key]
+		if isAPIKeyHeaderScheme(scheme) {
+			apiKeyHeaderCount++
+		}
+		prefix := composedHeaderPrefix(scheme)
 		if prefix != "" {
 			counts[prefix]++
 		}
+	}
+	if apiKeyHeaderCount > 1 {
+		return true
 	}
 	for _, count := range counts {
 		if count > 1 {
@@ -2169,6 +2288,15 @@ func headerAssignmentPresent(clientContent, headerName string) bool {
 	headerName = strings.ToLower(headerName)
 	return strings.Contains(clientContent, `header.set("`+headerName+`"`) ||
 		strings.Contains(clientContent, `header.add("`+headerName+`"`)
+}
+
+func inferredAuthHeaderAssignmentPresent(clientContent string) bool {
+	for _, headerName := range []string{"Authorization", "X-Api-Key", "X-Auth-Token", "X-Access-Token", "Cookie"} {
+		if headerAssignmentPresent(clientContent, headerName) {
+			return true
+		}
+	}
+	return false
 }
 
 var (
@@ -2325,19 +2453,21 @@ func scoreTypeFidelity(dir string) int {
 		return 0
 	}
 
-	flagDeclRe := regexp.MustCompile(`Flags\(\)\.(StringVar|IntVar|StringVarP|IntVarP)\(&[^,]+,\s*"([^"]+)"(?:,\s*[^,]+){1,2},\s*"([^"]*)"`)
-	requiredRe := regexp.MustCompile(`MarkFlagRequired\("([^"]+)"\)`)
+	// [^,\n]+ keeps each capture inside a single Flags() call. The previous
+	// [^,]+ would greedily consume across newlines into the next Flags()
+	// invocation, dragging the next flag's name into the current flag's
+	// description capture.
+	flagDeclRe := regexp.MustCompile(`Flags\(\)\.(StringVar|IntVar|StringVarP|IntVarP)\(&[^,\n]+,\s*"([^"]+)"(?:,\s*[^,\n]+){1,2},\s*"([^"]*)"`)
 
 	totalIDFlags := 0
 	stringIDFlags := 0
-	requiredCount := 0
 	descWordCount := 0
 	descCount := 0
 
 	for _, content := range cmdFiles {
 		for _, match := range flagDeclRe.FindAllStringSubmatch(content, -1) {
 			name := strings.ToLower(match[2])
-			if strings.Contains(name, "id") {
+			if isIDFlagName(name) {
 				totalIDFlags++
 				if strings.HasPrefix(match[1], "StringVar") {
 					stringIDFlags++
@@ -2346,15 +2476,14 @@ func scoreTypeFidelity(dir string) int {
 			descWordCount += len(strings.Fields(match[3]))
 			descCount++
 		}
-		requiredCount += len(requiredRe.FindAllStringSubmatch(content, -1))
 	}
 
 	if totalIDFlags == 0 || stringIDFlags == totalIDFlags {
 		score += 2
 	}
-	if requiredCount >= 3 {
-		score++
-	}
+	// MarkFlagRequired is intentionally not credited: the SKILL's verify-friendly
+	// RunE rule forbids it (Cobra evaluates it before RunE, so --dry-run probes
+	// fail with "required flag not set"). Required validation belongs inside RunE.
 	if descCount > 0 && descWordCount/descCount > 5 {
 		score++
 	}
@@ -2370,10 +2499,27 @@ func scoreTypeFidelity(dir string) int {
 		score++
 	}
 
-	if score > 5 {
-		score = 5
+	// Achievable max is 4 (+2 ID-flag check, +1 description avg, +1 no dummy
+	// guards). The +1 MarkFlagRequired path was removed because the SKILL
+	// explicitly forbids it. The tier rollup still allocates 5 raw points to
+	// this dimension, so the highest a SKILL-compliant CLI can score is 4/5.
+	if score > 4 {
+		score = 4
 	}
 	return score
+}
+
+// isIDFlagName returns true when a kebab-case flag name denotes an identifier
+// (id, *-id, id-*, *-id-*). Word boundaries prevent false positives like
+// "price-paid-cents" matching on the "id" substring inside "paid".
+func isIDFlagName(name string) bool {
+	if name == "id" {
+		return true
+	}
+	if strings.HasPrefix(name, "id-") || strings.HasSuffix(name, "-id") {
+		return true
+	}
+	return strings.Contains(name, "-id-")
 }
 
 func scoreDeadCode(dir string) int {

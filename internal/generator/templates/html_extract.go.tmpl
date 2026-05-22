@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 {{- if or (.HasHTMLExtractMode "page") (.HasHTMLExtractMode "links") }}
@@ -16,12 +17,14 @@ import (
 {{- end }}
 	"strings"
 
+	"golang.org/x/net/html/charset"
 	xhtml "golang.org/x/net/html"
 )
 
 type htmlExtractionOptions struct {
 	Mode           string
 	BaseURL        string
+	ContentType    string
 	LinkPrefixes   []string
 	Limit          int
 	ScriptSelector string // for mode: embedded-json — selector "tag" or "tag#id"
@@ -89,7 +92,7 @@ func extractHTMLResponse(raw []byte, opts htmlExtractionOptions) (json.RawMessag
 // Both require parsing the HTML and walking the DOM; the only difference
 // is what they return at the end.
 func extractHTMLPageOrLinks(raw []byte, opts htmlExtractionOptions) (json.RawMessage, error) {
-	doc, err := xhtml.Parse(strings.NewReader(string(raw)))
+	doc, err := parseHTMLDocument(raw, opts.ContentType)
 	if err != nil {
 		return nil, fmt.Errorf("parsing HTML response: %w", err)
 	}
@@ -149,7 +152,7 @@ func extractHTMLPageOrLinks(raw []byte, opts htmlExtractionOptions) (json.RawMes
 // Nuxt, and other SSR-React frameworks that embed serialized page state
 // in a known script tag.
 func extractEmbeddedJSON(raw []byte, opts htmlExtractionOptions) (json.RawMessage, error) {
-	doc, err := xhtml.Parse(strings.NewReader(string(raw)))
+	doc, err := parseHTMLDocument(raw, opts.ContentType)
 	if err != nil {
 		return nil, fmt.Errorf("parsing HTML for embedded-json: %w", err)
 	}
@@ -321,6 +324,17 @@ func normalizeHTMLURL(raw string, base string) string {
 }
 
 {{- end }}
+
+func parseHTMLDocument(raw []byte, contentType string) (*xhtml.Node, error) {
+	if strings.TrimSpace(contentType) == "" {
+		contentType = "text/html"
+	}
+	reader, err := charset.NewReader(bytes.NewReader(raw), contentType)
+	if err != nil {
+		reader = bytes.NewReader(raw)
+	}
+	return xhtml.Parse(reader)
+}
 
 func htmlExtractionRequestURL(base string, path string, params map[string]string) string {
 	baseURL, err := url.Parse(base)

@@ -1435,16 +1435,24 @@ For EACH tool found, list EVERY feature/tool/command it provides. Then define ho
 ### Absorbed (match or beat everything that exists)
 | # | Feature | Best Source | Our Implementation | Added Value |
 |---|---------|-----------|-------------------|-------------|
-| 1 | Search issues by text | Linear MCP search_issues | FTS5 offline search | Works offline, regex, SQL composable |
-| 2 | Create issue | Linear MCP create_issue | --stdin batch, --dry-run | Agent-native, scriptable, idempotent |
-| 3 | Sprint board view | jira-cli sprint view | SQLite-backed sprint query | Historical velocity, offline |
+| 1 | Search issues by text | Linear MCP search_issues | <api>-pp-cli search | Works offline, regex, SQL composable |
+| 2 | Create issue | Linear MCP create_issue | <api>-pp-cli issue create --stdin --dry-run | Agent-native, scriptable, idempotent |
+| 3 | Sprint board view | jira-cli sprint view | <api>-pp-cli sprint view | Historical velocity, offline |
 ```
 
 Every row = a feature we MUST build. No exceptions. If someone else has it, we have it AND it works offline, with --json, --dry-run, typed exit codes, and SQLite persistence.
 
 SDK wrapper methods should be treated as features to absorb — each public method/function is a feature the CLI should match.
 
-**Stubs must be explicit.** If any row in the manifest will ship as a stub (placeholder implementation that emits "not yet wired" / "wip" messaging), add a `Status` column with value `(stub)` and a one-line reason why the full implementation is deferred (e.g., "(stub — requires paid API)", "(stub — requires headless Chrome)"). Do NOT quietly ship stubs for features the user approved as shipping scope.
+**Our Implementation must start with a parseable disposition.** Use one of these prefixes so Phase 3 can verify the row mechanically:
+- `<api>-pp-cli <clean command path>` for a promoted or hand-built Cobra command path that must resolve via `<binary> <path> --help`.
+- `(generated endpoint) <resource> <endpoint>` for generator-emitted typed endpoint commands that retain the upstream resource shape and are covered by the generated endpoint surface.
+- `(behavior in <api>-pp-cli <command path>) ...` for features implemented as flags, modes, output shapes, or store behavior inside another command. The named command path still must resolve; the prose after the closing parenthesis explains the behavior to verify later.
+- `(stub) ...` only for explicitly approved stubs per the rule below.
+
+Do not leave `Our Implementation` as freeform prose like `FTS5 offline search` or `SQLite-backed sprint query`. If the row maps to a clean user-facing command, put that command path first. If it does not, choose the explicit disposition that explains why Phase 3 should not treat the whole cell as a new command path.
+
+**Stubs must be explicit.** If any row in the manifest will ship as a stub (placeholder implementation that emits "not yet wired" / "wip" messaging), start `Our Implementation` with `(stub)` plus a one-line reason why the full implementation is deferred (e.g., "(stub - requires paid API)", "(stub - requires headless Chrome)"). If the manifest also has a `Status` column, set that value to `(stub)` too, but the `Our Implementation` prefix is the Phase 3 gate's source of truth. Do NOT quietly ship stubs for features the user approved as shipping scope.
 
 The Phase Gate 1.5 prose showcase (below) MUST read out stub items separately so the user explicitly approves the stub list. After approval, Phase 3 builds shipping-scope features fully and stubs with honest messaging; no mid-build downgrade from shipping-scope to stub is permitted. If an agent discovers during Phase 3 that a shipping-scope feature cannot be implemented in-session, they must return to Phase 1.5 with a revised manifest — not unilaterally downgrade to a stub.
 
@@ -1754,6 +1762,34 @@ Proceed silently to Phase 2.
 ---
 
 ## Phase 2: Generate
+
+### Pre-Generation Category Enrichment
+
+Before generating a non-catalog CLI, set the spec's top-level `category` before
+running `generate`. The category must come from the Phase 1 research brief's
+domain judgment, mapped to the public catalog enum documented in
+`docs/CATALOG.md`.
+
+Non-catalog means the run is based on browser-sniffed traffic, HAR capture,
+docs-derived specs, or a hand-authored internal spec rather than
+`cli-printing-press generate <name>` using a built-in catalog entry. For
+internal YAML specs, add:
+
+```yaml
+category: <catalog-category>
+```
+
+If the source is an OpenAPI file and the workflow has an editable overlay or
+derived internal spec, carry the same top-level category into that generated
+spec artifact before the final `generate` invocation. If there is no editable
+spec artifact, such as direct `--docs` generation, pass
+`--category <catalog-category>` on the final `generate` invocation. Do not add
+the category after generation just to satisfy publish; the generated manifest,
+README, and SKILL install section must all come from the same category-aware
+spec, or `verify-skill canonical-sections` can drift.
+
+Catalog-mode runs skip this step: keep the built-in catalog entry's category
+unchanged, even if Phase 1 research would classify the API differently.
 
 ### Pre-Generation Auth Enrichment
 
@@ -2225,6 +2261,15 @@ cli-printing-press lock acquire --cli <api>-pp-cli --scope "$PRESS_SCOPE"
 
 If acquire fails (another session holds a fresh lock), present the lock status to the user and let them decide: wait, use a different CLI name, force-reclaim, or pick a different API.
 
+The `--category <catalog-category>` flag shown below is for non-catalog runs
+whose category was not already authored into an editable spec. Omit it for
+catalog-config runs; the built-in catalog category is authoritative there.
+
+`--lenient` stubs missing local `#/components/schemas/<Name>` refs as
+permissive object schemas with warnings so converted OpenAPI specs can still
+generate. Add `--strict-refs` only when a run must fail instead of accepting
+those local schema stubs; it does not change the rest of lenient cleanup.
+
 OpenAPI / internal YAML:
 
 ```bash
@@ -2232,6 +2277,7 @@ cli-printing-press generate \
   --spec <spec-path-or-url> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --force --lenient --validate
 ```
 
@@ -2244,6 +2290,7 @@ cli-printing-press generate \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --spec-source browser-sniffed \
   --traffic-analysis "$DISCOVERY_DIR/traffic-analysis.json" \
   --force --lenient --validate
@@ -2258,6 +2305,7 @@ cli-printing-press generate \
   --spec "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --spec-source browser-sniffed \
   --traffic-analysis "$DISCOVERY_DIR/traffic-analysis.json" \
   --force --lenient --validate
@@ -2274,6 +2322,7 @@ cli-printing-press generate \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --force --lenient --validate
 ```
 
@@ -2284,6 +2333,7 @@ cli-printing-press generate \
   --spec "$RESEARCH_DIR/<api>-crowd-spec.yaml" \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --force --lenient --validate
 ```
 
@@ -2297,6 +2347,7 @@ cli-printing-press generate \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --traffic-analysis "$DISCOVERY_DIR/traffic-analysis.json" \
   --force --lenient --validate
 ```
@@ -2309,6 +2360,7 @@ cli-printing-press generate \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --force --validate
 ```
 
@@ -2585,14 +2637,22 @@ Include:
 
 **MANDATORY. Do NOT proceed to Phase 4 until this gate passes.**
 
-Before moving to shipcheck, verify the build log against the absorb manifest. Counting alone is not enough: a build that replaces an approved `keywords-data google-ads search-volume --auto-mode` with a self-contained wrapper `keywords volume` keeps the count right while shipping a different command than what Phase 1.5 approved. The gate must verify the **specific approved command path** for each transcendence row.
+Before moving to shipcheck, verify the build log against the absorb manifest. Counting alone is not enough: a build that replaces an approved `keywords-data google-ads search-volume --auto-mode` with a self-contained wrapper `keywords volume` keeps the count right while shipping a different command than what Phase 1.5 approved. The gate must verify the **specific approved command path** for each row that declares one.
 
-1. **Per-row Cobra resolution check.** Read every transcendence row from `$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`. For each row's `Command` value, strip flag tokens and quoted args to get the leaf command path (drop everything from the first `-` token onward; `bottleneck` stays `bottleneck`, `velocity --weeks 4` becomes `velocity`, `compare "LeBron" "Curry"` becomes `compare`, `keywords-data google-ads search-volume --auto-mode` becomes `keywords-data google-ads search-volume`). Then run:
+1. **Per-row Cobra resolution check.** Read approved command paths from `$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`:
+   - Every transcendence row's `Command` value.
+   - Every absorbed row whose `Our Implementation` value starts with `<api>-pp-cli <clean command path>`.
+   - Every absorbed row whose `Our Implementation` value starts with `(behavior in <api>-pp-cli <command path>)`. For these rows, first extract the text between the literal prefix `(behavior in ` and the first closing `)`, producing `<api>-pp-cli <command path>`, then apply the same binary-strip and flag-strip rules to that extracted command text.
+   - Skip rows that start with `(generated endpoint)` because the generator-emitted typed endpoint surface already covers those commands.
+   - Skip rows that start with `(stub)` because the Phase Gate 1.5 stub approval list is their source of truth; stubs are intentionally unresolved implementation placeholders and must not be counted as built commands.
+   - Do not infer command paths from freeform prose. Any absorbed row whose `Our Implementation` value does not start with `<api>-pp-cli <clean command path>`, `(behavior in <api>-pp-cli <command path>)`, `(generated endpoint)`, or `(stub)` is an invalid manifest row; return to Phase 1.5 and normalize it before proceeding.
+
+   For each approved path, including command text extracted from `(behavior in <api>-pp-cli <command path>)` rows, strip any leading binary name, then strip flag tokens and quoted args to get the leaf command path (drop everything from the first `-` token onward; `bottleneck` stays `bottleneck`, `velocity --weeks 4` becomes `velocity`, `compare "LeBron" "Curry"` becomes `compare`, `keywords-data google-ads search-volume --auto-mode` becomes `keywords-data google-ads search-volume`). Then run:
    ```bash
    ./<api>-pp-cli <leaf path> --help
    ```
    Assert (a) exit code 0 AND (b) the help output's `Usage:` spec line is `<binary> <leaf path> [flags]` — i.e., the line **immediately before** ` [flags]` is the full leaf path you requested. Cobra falls through to the parent's help when a subcommand is unknown — same exit 0, but the Usage spec line is `<binary> <parent> [command]` instead of `<binary> <parent> <leaf> [flags]`. The grep-able signal is `<leaf> [flags]` for a real command vs `[command]` for a parent fall-through; the leaf appearing only under `Available Commands:` is also a fall-through.
-2. **HALT on any miss.** If any approved row fails (a) or (b), STOP. Either build the approved command path now, or return to Phase 1.5 with a revised manifest for explicit re-approval per the existing "no mid-build downgrade" rule. Do not invent a wrapper command and silently update the manifest. Do not classify the feature as "documentation-only" because integration touches many files.
+2. **HALT on any miss.** If any approved row fails (a) or (b), STOP and name the manifest section plus row number or source line in the miss message, e.g. `Absorbed row 3: timeline did not resolve as a Cobra command`. Either build the approved command path now, or return to Phase 1.5 with a revised manifest for explicit re-approval per the existing "no mid-build downgrade" rule. Do not invent a wrapper command and silently update the manifest. Do not classify the feature as "documentation-only" because integration touches many files.
 3. **Deterministic backstop.** After the per-row walk, run the same machine-checked equivalent so a manifest-vs-`research.json` drift cannot mask a miss:
    ```bash
    cli-printing-press dogfood --dir "$CLI_WORK_DIR" --research-dir "$API_RUN_DIR" --json \
@@ -2877,6 +2937,36 @@ If the final verdict is `hold`, release the lock without promoting to library:
 cli-printing-press lock release --cli <api>-pp-cli
 ```
 The working copy remains in `$CLI_WORK_DIR` for potential future retry. Proceed to Phase 5.6 to archive manuscripts (archiving still happens on hold).
+
+## Phase 4.7: Sync Param-Drop Gate
+
+**Runs after shipcheck, before Phase 4.8.** Generated endpoint commands are param-cardinality-checked mechanically by `cobratree` against the spec — hand-authored sync / transcendence code is not. When the printed CLI's `internal/syncer/` calls `client.Get(<path>, params)` (or `Post`/`Put`/`Patch`/`Delete` with body params) against an endpoint the browser-sniff capture also observed, the gate compares the passed-key set against the captured-key set and flags any call where the capture is a strict superset of the code. Same JSON structure on both sides; only cardinality drift catches the "5 params here, 11 on the live site" failure mode.
+
+Skip the gate when there's no `traffic-analysis.json` for this CLI (catalog wrapper-only entries, vendor-spec CLIs without a browser-sniff phase). Otherwise:
+
+```bash
+printing-press sync-param-drop \
+  --dir "$CLI_WORK_DIR" \
+  --traffic-analysis "$API_RUN_DIR/<api>-traffic-analysis.json" \
+  --strict
+```
+
+The same diff also runs as part of `printing-press dogfood` when you pass `--traffic-analysis`; shipcheck's dogfood leg will surface findings as a WARN-level dogfood issue automatically. Running the standalone subcommand with `--strict` during fix iteration gives a focused exit code without re-running the full dogfood matrix.
+
+### Failure handling
+
+A finding tells the reviewer exactly three things: `<file>:<line>: <METHOD> <path> — dropped params: <key1>, <key2>, ...`. The fix is one of:
+
+1. **Add the missing params to the sync call.** This is the default — the live site captured them, so the printed CLI should too. The dropped keys are almost always required for the response shape the CLI's domain commands expect (Factor75: passing `week, country, locale, subscription, product-sku` returns a generic plan preselect; the live site additionally passes `servings, delivery-option, postcode, preference, customerPlanId, include-future-feedback` to get the user's actual cart). Widening the call is the only fix that resolves the underlying bug.
+2. **Annotate the call with an evidence-backed opt-out.** Add `// pp:sync-params-intentional-subset reason=<why>` on the line immediately above the call when the subset is genuinely intentional — for example, a logged-out endpoint that doesn't accept the session-bound keys, or a deliberately broader query the CLI surfaces as a separate command. The `reason=` text is preserved in the audit trail; the gate counts suppressed sites separately so unbounded growth surfaces as its own smell.
+
+The gate does not introspect response content. A passing gate proves request-key parity with the captured site, not response correctness — Phase 4.85's agentic output review remains the layer that catches "wrong response shape, right request shape."
+
+### Scope boundary
+
+- The gate inspects `internal/syncer/`, `internal/sync/`, `internal/transcend/`, and `internal/transcendence/`. Generated endpoint command files under `internal/cli/` are already covered by `cobratree`'s mechanical endpoint-surface check and are intentionally skipped to avoid double-flagging.
+- Paths the capture never observed (synthetic / transcendence-only endpoints) are not flagged — the gate's question is "does the live site call this path with more keys," and absence of capture is a no-flag state.
+- A call that passes a key the capture never observed (extra-keys-from-code) is not flagged — exotic-mode params the public UI never exercised are out of scope.
 
 ## Phase 4.8: Agentic SKILL Review
 

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -87,6 +88,7 @@ func NewRootCommand(commandName string) *cobra.Command {
 	rootCmd.AddCommand(newMCPAuditCmd())
 	rootCmd.AddCommand(newToolsAuditCmd())
 	rootCmd.AddCommand(newPublicParamAuditCmd())
+	rootCmd.AddCommand(newSyncParamDropCmd())
 	rootCmd.AddCommand(newPIIAuditCmd())
 	rootCmd.AddCommand(newProbeReachabilityCmd())
 	rootCmd.AddCommand(newSchemaCmd())
@@ -105,11 +107,13 @@ func newGenerateCmd() *cobra.Command {
 	var refresh bool
 	var force bool
 	var lenient bool
+	var strictRefs bool
 	var docsURL string
 	var polish bool
 	var asJSON bool
 	var dryRun bool
 	var specSource string
+	var category string
 	var clientPattern string
 	var httpTransport string
 	var researchDir string
@@ -172,7 +176,7 @@ func newGenerateCmd() *cobra.Command {
 				if err != nil {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing generated spec: %w", err)}
 				}
-				if err := applyGenerateSpecFlags(parsed, specSource, "docs", clientPattern, httpTransport, owner); err != nil {
+				if err := applyGenerateSpecFlags(parsed, specSource, "docs", category, clientPattern, httpTransport, owner); err != nil {
 					return err
 				}
 
@@ -307,7 +311,11 @@ func newGenerateCmd() *cobra.Command {
 
 				var apiSpec *spec.APISpec
 				if openapi.IsOpenAPI(data) {
-					apiSpec, err = parseOpenAPISpec(specFile, data, lenient, openAPIParseAuthPref)
+					apiSpec, err = parseOpenAPISpec(specFile, data, openapi.ParseOptions{
+						Lenient:        lenient,
+						StrictRefs:     strictRefs,
+						AuthPreference: openAPIParseAuthPref,
+					})
 				} else if graphql.IsGraphQLSDL(data) {
 					apiSpec, err = graphql.ParseSDLBytes(specFile, data)
 				} else {
@@ -348,7 +356,7 @@ func newGenerateCmd() *cobra.Command {
 				apiSpec = mergeSpecs(specs, cliName)
 			}
 
-			if err := applyGenerateSpecFlags(apiSpec, specSource, "", clientPattern, httpTransport, owner); err != nil {
+			if err := applyGenerateSpecFlags(apiSpec, specSource, "", category, clientPattern, httpTransport, owner); err != nil {
 				return err
 			}
 
@@ -451,11 +459,13 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "Refresh cached remote spec before generating")
 	cmd.Flags().BoolVar(&force, "force", false, "Recreate the base output directory while preserving hand-edits to generated files via AST-based merge")
 	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
+	cmd.Flags().BoolVar(&strictRefs, "strict-refs", false, "Disable lenient stubbing for missing local schema refs (only meaningful with --lenient)")
 	cmd.Flags().StringVar(&docsURL, "docs", "", "API documentation URL to generate spec from")
 	cmd.Flags().BoolVar(&polish, "polish", false, "Run LLM polish pass on generated CLI (requires claude or codex CLI)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Parse spec and show what would be generated without writing files (remote specs are still fetched)")
 	cmd.Flags().StringVar(&specSource, "spec-source", "", "Spec provenance: official, community, sniffed/browser-sniffed, docs (affects generated client defaults like rate limiting)")
+	cmd.Flags().StringVar(&category, "category", "", "Public-library category for non-catalog generation")
 	cmd.Flags().StringVar(&clientPattern, "client-pattern", "", "HTTP client pattern: rest (default), proxy-envelope (wraps requests in POST envelope)")
 	cmd.Flags().StringVar(&httpTransport, "transport", "", "HTTP transport: standard, browser-http, browser-chrome, or browser-chrome-h3 (defaults based on spec provenance and reachability)")
 	cmd.Flags().StringVar(&researchDir, "research-dir", "", "Pipeline directory containing research.json and discovery/ for README source credits")
@@ -542,6 +552,16 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	if err := gen.Generate(); err != nil {
 		return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
 	}
+	// Emit tools-manifest.json from the parsed spec so a fresh generate
+	// run produces the agent-facing tool description alongside the Go
+	// runtime surface. Without this, tools-manifest stays untouched until
+	// the first mcp-sync or publish — and any pre-existing tools-manifest
+	// (left over from a prior generation under a different spec / parser)
+	// silently misrepresents the current MCP tool set. Non-blocking: a
+	// warning is the same posture publish takes when this fails.
+	if err := pipeline.WriteToolsManifest(absOut, apiSpec); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write tools manifest: %v\n", err)
+	}
 	if opts.validate {
 		if err := gen.Validate(); err != nil {
 			return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}
@@ -554,7 +574,7 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	}, nil
 }
 
-func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource, clientPattern, httpTransport, owner string) error {
+func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource, category, clientPattern, httpTransport, owner string) error {
 	if specSource != "" {
 		normalized, err := normalizeSpecSource(specSource)
 		if err != nil {
@@ -563,6 +583,15 @@ func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource
 		apiSpec.SpecSource = normalized
 	} else if defaultSpecSource != "" {
 		apiSpec.SpecSource = defaultSpecSource
+	}
+	if category != "" {
+		if !catalog.IsPublicCategory(category) {
+			return &ExitError{
+				Code: ExitInputError,
+				Err:  fmt.Errorf("--category must be one of: %s", strings.Join(catalog.PublicCategories(), ", ")),
+			}
+		}
+		apiSpec.Category = category
 	}
 	if clientPattern != "" {
 		normalized, err := normalizeClientPattern(clientPattern)
@@ -760,8 +789,7 @@ func readSpec(specFile string, refresh bool, skipCache bool) ([]byte, error) {
 	return data, nil
 }
 
-func parseOpenAPISpec(specFile string, data []byte, lenient bool, authPreference string) (*spec.APISpec, error) {
-	opts := openapi.ParseOptions{Lenient: lenient, AuthPreference: authPreference}
+func parseOpenAPISpec(specFile string, data []byte, opts openapi.ParseOptions) (*spec.APISpec, error) {
 	if !openapi.IsRemoteSpecSource(specFile) {
 		opts.Path = specFile
 	}
@@ -825,6 +853,7 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 	}
 
 	mergedBaseURL, perSpecPathPrefix := planMultiSpecBaseURL(specs)
+	sharedPathPrefix := sharedMultiSpecEndpointPathPrefix(specs)
 
 	merged := &spec.APISpec{
 		Name:        name,
@@ -832,7 +861,7 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 		Version:     specs[0].Version,
 		BaseURL:     mergedBaseURL,
 		BasePath:    specs[0].BasePath,
-		Auth:        specs[0].Auth,
+		Auth:        mergeMultiSpecAuth(specs),
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -859,6 +888,7 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 		}
 
 		prefix := perSpecPathPrefix[i]
+		resourceRenames := map[string]string{}
 		for resourceName, resource := range s.Resources {
 			if prefix != "" {
 				// Same-host/different-path specs are normalized by folding each
@@ -869,9 +899,13 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 			} else {
 				resource = resourceWithMergedSpecBaseURL(resource, s.BaseURL, merged.BaseURL)
 			}
-			key := resourceName
+			key := multiSpecResourceName(s, resourceName, sharedPathPrefix)
 			if _, exists := merged.Resources[key]; exists {
 				key = s.Name + "-" + resourceName
+			}
+			resource = rewriteDefaultResourceDescription(resource, resourceName, key)
+			if key != resourceName {
+				resourceRenames[resourceName] = key
 			}
 			merged.Resources[key] = resource
 		}
@@ -884,16 +918,346 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 			merged.Types[key] = typeDef
 		}
 
-		if s.Auth.AuthorizationURL != "" && merged.Auth.AuthorizationURL == "" {
-			merged.Auth = s.Auth
-		}
-
 		if mcpConfigured(s.MCP) && !mcpConfigured(merged.MCP) {
-			merged.MCP = s.MCP
+			merged.MCP = rewriteMCPIntentEndpointRefs(s.MCP, resourceRenames)
 		}
 	}
 
 	return merged
+}
+
+func mergeMultiSpecAuth(specs []*spec.APISpec) spec.AuthConfig {
+	if len(specs) == 1 {
+		return specs[0].Auth
+	}
+
+	auth := specs[0].Auth
+	authSpecIndex := 0
+	if auth.AuthorizationURL == "" {
+		for i, s := range specs[1:] {
+			if s.Auth.AuthorizationURL != "" {
+				auth = s.Auth
+				authSpecIndex = i + 1
+				break
+			}
+		}
+	}
+	authOrigin := baseURLOrigin(specs[authSpecIndex].BaseURL)
+
+	scopeSet := make(map[string]struct{}, len(auth.Scopes))
+	for _, scope := range auth.Scopes {
+		if scope = strings.TrimSpace(scope); scope != "" {
+			scopeSet[scope] = struct{}{}
+		}
+	}
+	headers := append([]spec.AdditionalAuthHeader(nil), auth.AdditionalHeaders...)
+	seenHeaders := make(map[string]struct{}, len(headers)+1)
+	seenEnvVars := make(map[string]struct{}, len(headers)+len(auth.EnvVarSpecs)+len(auth.EnvVars))
+	seedAuthHeaderDedupe(seenHeaders, seenEnvVars, auth)
+
+	for _, s := range specs {
+		if compatibleOAuthScopeAuth(auth, s.Auth) {
+			for _, scope := range s.Auth.Scopes {
+				if scope = strings.TrimSpace(scope); scope != "" {
+					scopeSet[scope] = struct{}{}
+				}
+			}
+		}
+		headers = appendUniqueAdditionalAuthHeaders(headers, seenHeaders, seenEnvVars, s.Auth, baseURLOrigin(s.BaseURL) == authOrigin)
+	}
+
+	auth.Scopes = sortedScopes(scopeSet)
+	auth.AdditionalHeaders = headers
+	return auth
+}
+
+func seedAuthHeaderDedupe(seenHeaders, seenEnvVars map[string]struct{}, auth spec.AuthConfig) {
+	if header := strings.TrimSpace(auth.Header); header != "" {
+		seenHeaders[header] = struct{}{}
+	}
+	for _, envVar := range auth.EnvVarSpecs {
+		if name := strings.TrimSpace(envVar.Name); name != "" {
+			seenEnvVars[name] = struct{}{}
+		}
+	}
+	for _, name := range auth.EnvVars {
+		if name = strings.TrimSpace(name); name != "" {
+			seenEnvVars[name] = struct{}{}
+		}
+	}
+	for _, header := range auth.AdditionalHeaders {
+		if name := strings.TrimSpace(header.Header); name != "" {
+			seenHeaders[name] = struct{}{}
+		}
+		if name := strings.TrimSpace(header.EnvVar.Name); name != "" {
+			seenEnvVars[name] = struct{}{}
+		}
+	}
+}
+
+func compatibleOAuthScopeAuth(base, incoming spec.AuthConfig) bool {
+	if len(incoming.Scopes) == 0 {
+		return false
+	}
+	if strings.TrimSpace(base.AuthorizationURL) == "" {
+		return false
+	}
+	if base.Type != incoming.Type || base.EffectiveOAuth2Grant() != incoming.EffectiveOAuth2Grant() {
+		return false
+	}
+	if normalizeAuthURL(base.AuthorizationURL) != normalizeAuthURL(incoming.AuthorizationURL) {
+		return false
+	}
+	if normalizeAuthURL(base.TokenURL) != normalizeAuthURL(incoming.TokenURL) {
+		return false
+	}
+	return strings.TrimSpace(base.RefreshTokenMechanism) == strings.TrimSpace(incoming.RefreshTokenMechanism)
+}
+
+func appendUniqueAdditionalAuthHeaders(headers []spec.AdditionalAuthHeader, seenHeaders, seenEnvVars map[string]struct{}, auth spec.AuthConfig, sameOrigin bool) []spec.AdditionalAuthHeader {
+	var candidates []spec.AdditionalAuthHeader
+	if sameOrigin {
+		candidates = append(candidates, auth.AdditionalHeaders...)
+		if promoted, ok := additionalHeaderFromAPIKeyAuth(auth); ok {
+			candidates = append(candidates, promoted)
+		}
+	}
+	for _, candidate := range candidates {
+		header := strings.TrimSpace(candidate.Header)
+		envVarName := strings.TrimSpace(candidate.EnvVar.Name)
+		if header == "" || envVarName == "" {
+			continue
+		}
+		if _, exists := seenHeaders[header]; exists {
+			continue
+		}
+		if _, exists := seenEnvVars[envVarName]; exists {
+			continue
+		}
+		seenHeaders[header] = struct{}{}
+		seenEnvVars[envVarName] = struct{}{}
+		headers = append(headers, candidate)
+	}
+	return headers
+}
+
+func sortedScopes(scopeSet map[string]struct{}) []string {
+	if len(scopeSet) == 0 {
+		return nil
+	}
+	scopes := make([]string, 0, len(scopeSet))
+	for scope := range scopeSet {
+		scopes = append(scopes, scope)
+	}
+	sort.Strings(scopes)
+	return scopes
+}
+
+func additionalHeaderFromAPIKeyAuth(auth spec.AuthConfig) (spec.AdditionalAuthHeader, bool) {
+	if auth.Type != "api_key" || strings.TrimSpace(auth.Header) == "" || !strings.EqualFold(strings.TrimSpace(auth.In), "header") {
+		return spec.AdditionalAuthHeader{}, false
+	}
+	if strings.Contains(strings.ToLower(auth.Format), "basic ") {
+		return spec.AdditionalAuthHeader{}, false
+	}
+	if auth.IsAuthEnvVarORCase() {
+		return spec.AdditionalAuthHeader{}, false
+	}
+	auth.EnvVarSpecs = append([]spec.AuthEnvVar(nil), auth.EnvVarSpecs...)
+	auth.NormalizeEnvVarSpecs("")
+	var requestCredential spec.AuthEnvVar
+	for _, envVar := range auth.EnvVarSpecs {
+		if envVar.IsRequestCredential() && strings.TrimSpace(envVar.Name) != "" {
+			if strings.TrimSpace(requestCredential.Name) != "" {
+				return spec.AdditionalAuthHeader{}, false
+			}
+			requestCredential = envVar
+		}
+	}
+	if strings.TrimSpace(requestCredential.Name) == "" {
+		return spec.AdditionalAuthHeader{}, false
+	}
+	return spec.AdditionalAuthHeader{
+		Header: strings.TrimSpace(auth.Header),
+		In:     "header",
+		Scheme: auth.Scheme,
+		EnvVar: requestCredential,
+	}, true
+}
+
+func baseURLOrigin(raw string) string {
+	host, _ := splitBaseURL(raw)
+	return host
+}
+
+func normalizeAuthURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return strings.TrimRight(raw, "/")
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Host = strings.ToLower(parsed.Host)
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	return parsed.String()
+}
+
+func rewriteMCPIntentEndpointRefs(mcp spec.MCPConfig, resourceRenames map[string]string) spec.MCPConfig {
+	if len(resourceRenames) == 0 || len(mcp.Intents) == 0 {
+		return mcp
+	}
+	mcp.Intents = append([]spec.Intent(nil), mcp.Intents...)
+	for intentIndex := range mcp.Intents {
+		intent := mcp.Intents[intentIndex]
+		if len(intent.Steps) == 0 {
+			continue
+		}
+		intent.Steps = append([]spec.IntentStep(nil), intent.Steps...)
+		for stepIndex := range intent.Steps {
+			intent.Steps[stepIndex].Endpoint = rewriteEndpointResourceRef(intent.Steps[stepIndex].Endpoint, resourceRenames)
+		}
+		mcp.Intents[intentIndex] = intent
+	}
+	return mcp
+}
+
+func rewriteEndpointResourceRef(ref string, resourceRenames map[string]string) string {
+	resourceName, rest, ok := strings.Cut(ref, ".")
+	if !ok {
+		return ref
+	}
+	if renamed, ok := resourceRenames[resourceName]; ok {
+		return renamed + "." + rest
+	}
+	return ref
+}
+
+func multiSpecResourceName(s *spec.APISpec, resourceName string, sharedPathPrefix []string) string {
+	if s == nil || len(s.Resources) != 1 || len(sharedPathPrefix) < 2 {
+		return resourceName
+	}
+	specName := strings.TrimSpace(s.Name)
+	if specName == "" || specName == resourceName {
+		return resourceName
+	}
+	if !sharedPrefixContainsResourceName(sharedPathPrefix, resourceName) {
+		return resourceName
+	}
+	return specName
+}
+
+func rewriteDefaultResourceDescription(resource spec.Resource, oldName, newName string) spec.Resource {
+	if oldName == newName {
+		return resource
+	}
+	if resource.DescriptionDerived {
+		resource.Description = spec.DefaultResourceDescription(newName)
+	}
+	return resource
+}
+
+func sharedMultiSpecEndpointPathPrefix(specs []*spec.APISpec) []string {
+	if !allSpecsHaveSingleResource(specs) {
+		return nil
+	}
+	var prefix []string
+	for _, s := range specs {
+		specPathCount := 0
+		var stopped bool
+		prefix, stopped = foldSharedEndpointPathPrefix(prefix, s.Resources, &specPathCount)
+		if stopped {
+			return nil
+		}
+		if specPathCount == 0 {
+			return nil
+		}
+	}
+	if len(prefix) < 2 {
+		return nil
+	}
+	return prefix
+}
+
+func sharedPrefixContainsResourceName(prefix []string, resourceName string) bool {
+	resourceName = normalizePathResourceSegment(resourceName)
+	for _, segment := range prefix {
+		if normalizePathResourceSegment(segment) == resourceName {
+			return true
+		}
+	}
+	return false
+}
+
+func allSpecsHaveSingleResource(specs []*spec.APISpec) bool {
+	if len(specs) < 2 {
+		return false
+	}
+	for _, s := range specs {
+		if s == nil || len(s.Resources) != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+func foldSharedEndpointPathPrefix(prefix []string, resources map[string]spec.Resource, pathCount *int) ([]string, bool) {
+	for _, resource := range resources {
+		for _, endpoint := range resource.Endpoints {
+			segments := splitEndpointPath(endpoint.Path)
+			if len(segments) == 0 {
+				continue
+			}
+			(*pathCount)++
+			if prefix == nil {
+				prefix = segments
+				continue
+			}
+			prefix = commonEndpointPathPrefix(prefix, segments)
+			if len(prefix) < 2 {
+				return nil, true
+			}
+		}
+		if len(resource.SubResources) > 0 {
+			var stopped bool
+			prefix, stopped = foldSharedEndpointPathPrefix(prefix, resource.SubResources, pathCount)
+			if stopped {
+				return nil, true
+			}
+		}
+	}
+	return prefix, false
+}
+
+func splitEndpointPath(path string) []string {
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return nil
+	}
+	rawSegments := strings.Split(path, "/")
+	segments := make([]string, 0, len(rawSegments))
+	for _, segment := range rawSegments {
+		if segment != "" {
+			segments = append(segments, segment)
+		}
+	}
+	return segments
+}
+
+func commonEndpointPathPrefix(a, b []string) []string {
+	limit := min(len(a), len(b))
+	for i := range limit {
+		if a[i] != b[i] {
+			return a[:i]
+		}
+	}
+	return a[:limit]
+}
+
+func normalizePathResourceSegment(value string) string {
+	return strings.ReplaceAll(strings.Trim(strings.ToLower(value), "/"), "_", "-")
 }
 
 func resourceWithMergedSpecBaseURL(resource spec.Resource, sourceBaseURL, mergedBaseURL string) spec.Resource {
@@ -1639,7 +2003,7 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 		apiSpec.BaseURL = strings.TrimRight(entry.BaseURL, "/")
 		apiSpec.BaseURLIsPlaceholder = false
 	}
-	if entry.Category != "" && apiSpec.Category == "" {
+	if entry.Category != "" {
 		apiSpec.Category = entry.Category
 	}
 	if entry.Owner != "" && apiSpec.Owner == "" {

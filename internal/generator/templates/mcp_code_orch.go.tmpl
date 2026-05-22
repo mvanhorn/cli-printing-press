@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	neturl "net/url"
 	"sort"
 	"strings"
 
@@ -59,12 +60,23 @@ type codeOrchEndpoint struct {
 	Tier        string
 	Summary     string
 	Positional  []string
+	// QueryParams carries the wire names of spec-declared in:query
+	// parameters. Write methods (POST/PUT/PATCH) route these to the query
+	// string instead of dumping them into the JSON body. Derived from the
+	// same mcpParamBindings location data the per-endpoint tools use.
+	QueryParams []string
 	// HeaderOverrides carries per-endpoint request headers (e.g. an
 	// Accept override for binary-only response endpoints). Without
 	// threading these through, the code-orchestration execute path
 	// sends the client's default Accept and binary endpoints 406.
 	HeaderOverrides map[string]string
-	keywords        []string
+	// BodyIsArray marks endpoints whose request body schema root is a
+	// bare top-level JSON array. The execute path then sends a top-level
+	// array (the agent supplies it as params["body"]) instead of the
+	// params object; a strict-mapping API rejects an object at the body
+	// root with HTTP 422 "Invalid json".
+	BodyIsArray bool
+	keywords    []string
 }
 
 // codeOrchEndpoints is the generator-populated registry covering every
@@ -83,6 +95,10 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- end}}
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
+		QueryParams: []string{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{{printf "%q" .WireName}},{{end}}{{end}} },
+{{- if $endpoint.BodyIsArray}}
+		BodyIsArray: true,
+{{- end}}
 {{- if $endpoint.HeaderOverrides}}
 		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}} },
 {{- end}}
@@ -101,6 +117,10 @@ var codeOrchEndpoints = []codeOrchEndpoint{
 {{- end}}
 		Summary: {{printf "%q" (oneline $endpoint.Description)}},
 		Positional: []string{ {{- range $endpoint.Params}}{{if .Positional}}"{{.Name}}",{{end}}{{end}} },
+		QueryParams: []string{ {{- range mcpParamBindings $endpoint $path}}{{if eq .Location "query"}}{{printf "%q" .WireName}},{{end}}{{end}} },
+{{- if $endpoint.BodyIsArray}}
+		BodyIsArray: true,
+{{- end}}
 {{- if $endpoint.HeaderOverrides}}
 		HeaderOverrides: map[string]string{ {{- range $endpoint.HeaderOverrides}}"{{.Name}}": "{{.Value}}",{{end}} },
 {{- end}}
@@ -243,18 +263,36 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		}
 	}
 
-	// Code-orch dispatch has no schema metadata at runtime to bucket params
-	// into body vs query, so POST/PUT/PATCH keep the everything-to-body
-	// design. DELETE is the one verb where query routing is unambiguous; the
-	// previous code built `query` but never passed it.
+	// Route params to their runtime slots. GET/DELETE params are query
+	// strings; write methods split spec-declared query params from the
+	// remaining params used as the request body below.
 	query := map[string]string{}
 	if ep.Method == "GET" || ep.Method == "DELETE" {
 		for k, v := range params {
 			query[k] = fmt.Sprintf("%v", v)
 		}
+	} else {
+		// Route spec-declared in:query params to the query string for write
+		// methods too. Without this, a query param (e.g. sendToLedger on
+		// PUT /ledger/voucher/{id}) wrongly lands in the JSON body and the
+		// API silently ignores it or rejects the request. The remaining
+		// params stay in the map for codeOrchWriteBody (the JSON body).
+		if enc := codeOrchSplitQuery(ep.QueryParams, params); enc != "" {
+			sep := "?"
+			if strings.Contains(path, "?") {
+				sep = "&"
+			}
+			path += sep + enc
+		}
 	}
 
 	hdrs := ep.HeaderOverrides
+	writeBody := func() any {
+		if ep.BodyIsArray {
+			return codeOrchArrayBody(params)
+		}
+		return codeOrchWriteBody(params)
+	}
 	var data json.RawMessage
 	switch ep.Method {
 	case "GET":
@@ -270,22 +308,25 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 			data, _, err = c.DeleteWithParams(ctx, path, query)
 		}
 	case "POST":
+		body := writeBody()
 		if len(hdrs) > 0 {
-			data, _, err = c.PostWithHeaders(ctx, path, params, hdrs)
+			data, _, err = c.PostWithHeaders(ctx, path, body, hdrs)
 		} else {
-			data, _, err = c.Post(ctx, path, params)
+			data, _, err = c.Post(ctx, path, body)
 		}
 	case "PUT":
+		body := writeBody()
 		if len(hdrs) > 0 {
-			data, _, err = c.PutWithHeaders(ctx, path, params, hdrs)
+			data, _, err = c.PutWithHeaders(ctx, path, body, hdrs)
 		} else {
-			data, _, err = c.Put(ctx, path, params)
+			data, _, err = c.Put(ctx, path, body)
 		}
 	case "PATCH":
+		body := writeBody()
 		if len(hdrs) > 0 {
-			data, _, err = c.PatchWithHeaders(ctx, path, params, hdrs)
+			data, _, err = c.PatchWithHeaders(ctx, path, body, hdrs)
 		} else {
-			data, _, err = c.Patch(ctx, path, params)
+			data, _, err = c.Patch(ctx, path, body)
 		}
 	default:
 		return mcplib.NewToolResultError(fmt.Sprintf("unsupported method %q", ep.Method)), nil
@@ -294,4 +335,51 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		return mcplib.NewToolResultError(err.Error()), nil
 	}
 	return mcplib.NewToolResultText(string(data)), nil
+}
+
+// codeOrchWriteBody returns the value handed to the client layer as the
+// request body for write methods (POST/PUT/PATCH). It MUST be the structured
+// params map, never pre-marshaled bytes.
+//
+// client.do() marshals the body value exactly once. Handing it []byte makes
+// json.Marshal([]byte) emit a base64-encoded JSON *string*, so the API
+// receives "eyJ...==" where it expects the request object. Strict JSON APIs
+// reject that as the wrong type at the body root. GET/DELETE carry no body,
+// so this defect stays latent until the first write attempt.
+func codeOrchWriteBody(params map[string]any) any {
+	return params
+}
+
+// codeOrchArrayBody returns the request body for endpoints whose schema root
+// is a bare top-level JSON array (ep.BodyIsArray). Such a body cannot be
+// expressed as the params object, so the agent supplies the array under the
+// conventional params key "body" (these endpoints have no flattened named
+// params, so there is no collision risk). When present and array-shaped it is
+// sent as the top-level array the API expects. Otherwise params is returned
+// unchanged so a malformed call fails loudly at the API (HTTP 422) instead of
+// silently sending the wrong shape or a partial write — financial mutations
+// are never retried with body-variant guesses (broken-convenience guardrail).
+func codeOrchArrayBody(params map[string]any) any {
+	if v, ok := params["body"]; ok {
+		if arr, ok := v.([]any); ok {
+			return arr
+		}
+	}
+	return params
+}
+
+// codeOrchSplitQuery removes spec-declared in:query params from params and
+// returns them URL-encoded for appending to the request path. The remaining
+// entries stay in the map for codeOrchWriteBody (the JSON body), so a write
+// method's query parameters never get buried in the body. Mutates params by
+// design (deletes the consumed query keys).
+func codeOrchSplitQuery(queryParams []string, params map[string]any) string {
+	uv := neturl.Values{}
+	for _, q := range queryParams {
+		if v, ok := params[q]; ok {
+			uv.Set(q, fmt.Sprintf("%v", v))
+			delete(params, q)
+		}
+	}
+	return uv.Encode()
 }

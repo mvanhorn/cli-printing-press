@@ -59,6 +59,17 @@ const (
 	// so the profiler treats /tenant/{tenant}/<resource> paths as standalone
 	// sync resources rather than parent-context-dependent.
 	extensionTenantEnvVar = "x-tenant-env-var"
+	// extensionPathTemplateEnvVars is the generic, map-shaped successor to
+	// extensionTenantEnvVar. Each entry binds a path placeholder to an
+	// object with two optional fields: `env` registers a runtime env-var
+	// override that flows into EndpointTemplateVars (same bucket as
+	// x-tenant-env-var, suitable for BaseURL placeholders like
+	// {workspace} or {org}); `default` bakes a literal into operation
+	// paths at generation time and drops the matching path parameter,
+	// suitable for canonical always-valid values like Gmail's userId='me'.
+	// When both are set, default wins and the env field is ignored — the
+	// placeholder is fully resolved before runtime substitution sees it.
+	extensionPathTemplateEnvVars = "x-path-template-env-vars"
 )
 
 // tenantPlaceholderName is the canonical placeholder that x-tenant-env-var
@@ -162,6 +173,131 @@ func stripBrokenRefs(data []byte, errMsg string) []byte {
 	return data
 }
 
+func stubMissingLocalSchemaRefs(data []byte) ([]byte, int, error) {
+	root, _, schemas, names, err := findMissingLocalSchemaRefs(data)
+	if err != nil {
+		return data, 0, err
+	}
+	if len(names) == 0 {
+		return data, 0, nil
+	}
+
+	for _, name := range names {
+		if _, exists := schemas[name]; exists {
+			continue
+		}
+		schemas[name] = map[string]any{
+			"type":                 "object",
+			"description":          fmt.Sprintf("Stub for missing local schema ref %s.", name),
+			"additionalProperties": true,
+		}
+		warnf("stubbing missing local schema ref %q as permissive object", name)
+	}
+
+	stubbed, err := json.Marshal(root)
+	if err != nil {
+		return data, 0, err
+	}
+	return stubbed, len(names), nil
+}
+
+func findMissingLocalSchemaRefs(data []byte) (map[string]any, map[string]any, map[string]any, []string, error) {
+	if !bytes.Contains(data, []byte(localSchemaRefPrefix)) {
+		return nil, nil, nil, nil, nil
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	components := objectValue(root["components"])
+	schemas := objectValue(components["schemas"])
+	missing := make(map[string]struct{})
+	collectMissingLocalSchemaRefs(root, "", schemas, missing)
+	if len(missing) == 0 {
+		return root, components, schemas, nil, nil
+	}
+
+	if components == nil {
+		components = make(map[string]any)
+		root["components"] = components
+	}
+	if schemas == nil {
+		schemas = make(map[string]any)
+		components["schemas"] = schemas
+	}
+
+	names := make([]string, 0, len(missing))
+	for name := range missing {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	return root, components, schemas, names, nil
+}
+
+func collectMissingLocalSchemaRefs(v any, parentKey string, schemas map[string]any, missing map[string]struct{}) {
+	if isArbitrarySpecDataKey(parentKey) || strings.HasPrefix(parentKey, "x-") {
+		return
+	}
+	switch typed := v.(type) {
+	case map[string]any:
+		if rawRef, ok := typed["$ref"].(string); ok {
+			if name, ok := localSchemaRefName(rawRef); ok {
+				if _, exists := schemas[name]; !exists {
+					missing[name] = struct{}{}
+				}
+			}
+		}
+		for key, child := range typed {
+			collectMissingLocalSchemaRefs(child, key, schemas, missing)
+		}
+	case []any:
+		for _, child := range typed {
+			collectMissingLocalSchemaRefs(child, parentKey, schemas, missing)
+		}
+	}
+}
+
+func isArbitrarySpecDataKey(key string) bool {
+	switch key {
+	case "example", "examples", "default":
+		return true
+	default:
+		return false
+	}
+}
+
+func localSchemaRefName(ref string) (string, bool) {
+	if !strings.HasPrefix(ref, localSchemaRefPrefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(ref, localSchemaRefPrefix)
+	if rest == "" {
+		return "", false
+	}
+	name, suffix, hasSuffix := strings.Cut(rest, "/")
+	if name == "" {
+		return "", false
+	}
+	if hasSuffix && suffix != "" {
+		return "", false
+	}
+	if unescaped, err := url.PathUnescape(name); err == nil {
+		name = unescaped
+	}
+	name = strings.NewReplacer("~1", "/", "~0", "~").Replace(name)
+	return name, true
+}
+
+const localSchemaRefPrefix = "#/components/schemas/"
+
+func objectValue(v any) map[string]any {
+	obj, _ := v.(map[string]any)
+	return obj
+}
+
 // Parse parses an OpenAPI spec strictly. Use ParseLenient for specs with broken $refs.
 func Parse(data []byte) (*spec.APISpec, error) {
 	return ParseWithOptions(data, ParseOptions{})
@@ -209,6 +345,9 @@ type ParseOptions struct {
 	Path string
 	// Lenient skips validation errors from broken $refs.
 	Lenient bool
+	// Set when callers need other lenient cleanup while preserving missing-ref
+	// failures.
+	StrictRefs bool
 	// AuthPreference names a security scheme from components.securitySchemes
 	// that should win over the parser's default selection priority. Used when
 	// a spec exposes multiple valid schemes (e.g. OAuth2 + basic) and the
@@ -222,13 +361,13 @@ type ParseOptions struct {
 // path/lenient settings.
 func ParseWithOptions(data []byte, opts ParseOptions) (*spec.APISpec, error) {
 	if opts.Path == "" {
-		return parseWithLocation(data, opts.Lenient, nil, opts.AuthPreference)
+		return parseWithLocation(data, opts.Lenient, opts.StrictRefs, nil, opts.AuthPreference)
 	}
 	location, err := fileLocation(opts.Path)
 	if err != nil {
 		return nil, err
 	}
-	return parseWithLocation(data, opts.Lenient, location, opts.AuthPreference)
+	return parseWithLocation(data, opts.Lenient, opts.StrictRefs, location, opts.AuthPreference)
 }
 
 func parseFileWithOptions(path string, opts ParseOptions) (*spec.APISpec, error) {
@@ -240,11 +379,21 @@ func parseFileWithOptions(path string, opts ParseOptions) (*spec.APISpec, error)
 	return ParseWithOptions(data, opts)
 }
 
-func parseWithLocation(data []byte, lenient bool, location *url.URL, authPreference string) (*spec.APISpec, error) {
+func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url.URL, authPreference string) (*spec.APISpec, error) {
 	var metadata specDataMetadata
 	if normalized, meta, err := normalizeSpecDataWithMetadata(data); err == nil {
 		data = normalized
 		metadata = meta
+	}
+	if lenient && !strictRefs {
+		if stubbed, count, err := stubMissingLocalSchemaRefs(data); err == nil && count > 0 {
+			data = stubbed
+		}
+	}
+	if lenient && strictRefs {
+		if _, _, _, missing, err := findMissingLocalSchemaRefs(data); err == nil && len(missing) > 0 {
+			return nil, fmt.Errorf("missing local schema refs: %s", strings.Join(missing, ", "))
+		}
 	}
 	doc, err := loadOpenAPIDoc(data, lenient, location)
 	if err != nil {
@@ -428,7 +577,7 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL, authPrefere
 		return nil, err
 	}
 
-	templateVars, templateEnvOverrides := parseEndpointTemplateExtensions(doc)
+	templateVars, templateEnvOverrides, pathParamDefaults := parseEndpointTemplateExtensions(doc)
 	// Merge server-URL template placeholders into the endpoint-template-var
 	// bucket. The downstream config.Load template walks EndpointTemplateVars
 	// to emit per-variable env-var lookups; without this merge a spec like
@@ -452,6 +601,7 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL, authPrefere
 		MCP:                          mcpConfig,
 		EndpointTemplateVars:         templateVars,
 		EndpointTemplateEnvOverrides: templateEnvOverrides,
+		EndpointPathParamDefaults:    pathParamDefaults,
 		EndpointTemplateVarDefaults:  templateDefaults,
 		Config: spec.ConfigSpec{
 			Format: "toml",
@@ -484,6 +634,8 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL, authPrefere
 	result.RequiredHeaders, perEndpointHeaders = detectRequiredHeaders(doc, result.Auth)
 	applyHeaderOverrides(result, perEndpointHeaders)
 
+	applyPathParamDefaults(result)
+
 	// Synthesize Params entries for {placeholder} tokens in the path template
 	// that the operation never declared in `parameters` (or via a path-item /
 	// $ref shared parameter). Real-world specs frequently omit these — the
@@ -501,28 +653,91 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL, authPrefere
 }
 
 // parseEndpointTemplateExtensions collects spec-declared endpoint template
-// placeholders and their env-var name overrides. Returns nil/nil for specs
-// that declare neither so existing generated outputs are byte-identical.
+// placeholders, env-var name overrides, and build-time path-parameter
+// defaults. Returns nil/nil/nil for specs that declare none so existing
+// generated outputs are byte-identical.
 //
-// Today only x-tenant-env-var lands here — it maps the implicit {tenant}
-// placeholder to an explicit env var (e.g. ST_TENANT_ID). When more
-// placeholders join (Atlassian {workspace}, GitHub {org}), prefer adding a
-// generic x-path-template-env-vars map-shaped extension over piling on
-// per-scope extensions.
-func parseEndpointTemplateExtensions(doc *openapi3.T) ([]string, map[string]string) {
-	raw, ok := lookupOpenAPIInfoExtension(doc, extensionTenantEnvVar)
-	if !ok {
-		return nil, nil
+// Two extensions feed this function: x-tenant-env-var (legacy scalar that
+// binds {tenant} to a single env-var override) and x-path-template-env-vars
+// (generic map of placeholder -> {env, default}). For each entry in the
+// generic extension, an `env` field registers the placeholder for runtime
+// BaseURL substitution (same bucket as x-tenant-env-var), and a `default`
+// field bakes a literal into operation paths at generation time. When both
+// are set on the same entry, default wins and env is ignored — the
+// placeholder is fully resolved before runtime substitution sees it.
+func parseEndpointTemplateExtensions(doc *openapi3.T) ([]string, map[string]string, map[string]string) {
+	var vars []string
+	envOverrides := map[string]string{}
+	defaults := map[string]string{}
+
+	if raw, ok := lookupOpenAPIInfoExtension(doc, extensionTenantEnvVar); ok {
+		if envName, ok := raw.(string); ok {
+			if envName = strings.TrimSpace(envName); envName != "" {
+				vars = append(vars, tenantPlaceholderName)
+				envOverrides[tenantPlaceholderName] = envName
+			}
+		}
 	}
-	envName, ok := raw.(string)
-	if !ok {
-		return nil, nil
+
+	if raw, ok := lookupOpenAPIInfoExtension(doc, extensionPathTemplateEnvVars); ok {
+		if entries, ok := raw.(map[string]any); ok {
+			keys := make([]string, 0, len(entries))
+			for k := range entries {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, name := range keys {
+				obj, ok := entries[name].(map[string]any)
+				if !ok {
+					continue
+				}
+				var envName, defaultValue string
+				if v, ok := obj["env"].(string); ok {
+					envName = strings.TrimSpace(v)
+				}
+				if v, ok := obj["default"].(string); ok {
+					defaultValue = strings.TrimSpace(v)
+				}
+				if defaultValue != "" {
+					defaults[name] = defaultValue
+					continue
+				}
+				if envName != "" {
+					if !slices.Contains(vars, name) {
+						vars = append(vars, name)
+					}
+					envOverrides[name] = envName
+				}
+			}
+		}
 	}
-	envName = strings.TrimSpace(envName)
-	if envName == "" {
-		return nil, nil
+
+	// default wins across extensions: if x-tenant-env-var registered a key
+	// that x-path-template-env-vars then declared a default for, drop the
+	// stale runtime entry so the placeholder is fully baked and downstream
+	// generators do not emit dead config / URL-substitution code for it.
+	if len(defaults) > 0 {
+		filtered := vars[:0]
+		for _, v := range vars {
+			if _, baked := defaults[v]; baked {
+				delete(envOverrides, v)
+				continue
+			}
+			filtered = append(filtered, v)
+		}
+		vars = filtered
 	}
-	return []string{tenantPlaceholderName}, map[string]string{tenantPlaceholderName: envName}
+
+	if len(vars) == 0 {
+		vars = nil
+	}
+	if len(envOverrides) == 0 {
+		envOverrides = nil
+	}
+	if len(defaults) == 0 {
+		defaults = nil
+	}
+	return vars, envOverrides, defaults
 }
 
 // parseTypedExtension bridges kin-openapi's untyped any-tree to a typed
@@ -707,36 +922,20 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	envPrefix := naming.EnvPrefix(name)
 	switch auth.Type {
 	case "api_key":
-		if authFormatIsBasic(auth.Format) {
-			auth.EnvVars = []string{envPrefix + "_USERNAME", envPrefix + "_PASSWORD"}
-		} else {
-			// Use scheme name for more specific env var (e.g. BotToken -> DISCORD_BOT_TOKEN)
-			schemeEnvSuffix := toSnakeCase(schemeName)
-			if schemeEnvSuffix != "" && !isGenericAPIKeySchemeSuffix(schemeEnvSuffix) {
-				auth.EnvVars = []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
-			} else {
-				auth.EnvVars = []string{envPrefix + "_API_KEY"}
-			}
-		}
+		auth.EnvVars = defaultAuthEnvVars(auth.Type, auth.Format, schemeName, envPrefix)
 	case "bearer_token":
-		schemeEnvSuffix := toSnakeCase(schemeName)
-		switch schemeEnvSuffix {
-		case "", "bearer", "bearer_token", "token":
-			auth.EnvVars = []string{envPrefix + "_TOKEN"}
-		default:
-			auth.EnvVars = []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
-		}
+		auth.EnvVars = defaultAuthEnvVars(auth.Type, auth.Format, schemeName, envPrefix)
 	}
 	applyAuthOverrideExtensions(&auth, scheme.Extensions)
 	applyAuthEnvVarDefaults(&auth, envPrefix)
 	applyAuthVarsRichOverride(&auth, scheme.Extensions, fmt.Sprintf("components.securitySchemes.%s.%s", schemeName, extensionAuthVars))
 	applyAuthCompanionFromInfo(&auth, doc)
-	auth.AdditionalHeaders = collectAdditionalAuthHeaders(doc, schemeName)
+	auth.AdditionalHeaders = collectAdditionalAuthHeaders(doc, schemeName, envPrefix)
 	return auth
 }
 
 // collectAdditionalAuthHeaders scans AND-group siblings of the winning
-// security scheme for x-auth-vars per_call entries. Composed auth shapes
+// security scheme for per-call credential entries. Composed auth shapes
 // (apiKey + OAuth bearer, Stripe-Signature + bearer, ST-App-Key + bearer)
 // declare the apiKey scheme in the same security requirement object as the
 // bearer; selectSecurityScheme picks the bearer half, and without this sweep
@@ -750,33 +949,43 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 // header on every Bearer-authenticated request. Only schemes co-located with
 // the winner in a requirement object are promoted.
 //
-// Only apiKey-typed siblings with `in: header` and an `x-auth-vars` per_call
-// declaration are considered. When doc.Security is empty (no root-level AND
-// grouping declared), no siblings are promoted: without an explicit
-// requirement object the AND/OR relationship is ambiguous and conservative
-// behavior is to emit nothing.
-func collectAdditionalAuthHeaders(doc *openapi3.T, winner string) []spec.AdditionalAuthHeader {
+// Only apiKey-typed siblings with `in: header` are considered. Rich
+// x-auth-vars per_call declarations win; legacy x-auth-env-vars supplies the
+// same credential name for specs that do not use the rich shape. For all-apiKey
+// AND groups, missing extension metadata falls back to a deterministic
+// scheme-derived env var so every required header reaches generated config and
+// client code.
+func collectAdditionalAuthHeaders(doc *openapi3.T, winner, envPrefix string) []spec.AdditionalAuthHeader {
 	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) <= 1 {
 		return nil
 	}
-	if winner == "" || len(doc.Security) == 0 {
+	requirements := additionalHeaderSecurityRequirements(doc)
+	if winner == "" || len(requirements) == 0 {
+		return nil
+	}
+	requirements = additionalHeaderRequirementsForWinner(requirements, winner)
+	if len(requirements) == 0 || !additionalHeaderRequirementsShareSiblings(requirements, winner) {
 		return nil
 	}
 
 	siblingSet := map[string]struct{}{}
+	fallbackEligible := map[string]bool{}
 	var siblings []string
-	for _, req := range doc.Security {
+	for _, req := range requirements {
 		if _, ok := req[winner]; !ok {
 			continue
 		}
+		allHeaderAPIKeys := requirementAllHeaderAPIKeys(doc, req)
 		for name := range req {
 			if name == winner {
 				continue
 			}
 			if _, dup := siblingSet[name]; dup {
+				fallbackEligible[name] = fallbackEligible[name] || allHeaderAPIKeys
 				continue
 			}
 			siblingSet[name] = struct{}{}
+			fallbackEligible[name] = allHeaderAPIKeys
 			siblings = append(siblings, name)
 		}
 	}
@@ -800,14 +1009,7 @@ func collectAdditionalAuthHeaders(doc *openapi3.T, winner string) []spec.Additio
 		if !strings.EqualFold(strings.TrimSpace(scheme.In), "header") {
 			continue
 		}
-		raw, ok := scheme.Extensions[extensionAuthVars]
-		if !ok || raw == nil {
-			continue
-		}
-		envVars, err := authVarsExtension(raw)
-		if err != nil || len(envVars) == 0 {
-			continue
-		}
+		envVars := additionalHeaderEnvVars(scheme, name, envPrefix, fallbackEligible[name])
 		for _, ev := range envVars {
 			if ev.EffectiveKind() != spec.AuthEnvVarKindPerCall {
 				continue
@@ -824,6 +1026,191 @@ func collectAdditionalAuthHeaders(doc *openapi3.T, winner string) []spec.Additio
 		}
 	}
 	return headers
+}
+
+func additionalHeaderSecurityRequirements(doc *openapi3.T) openapi3.SecurityRequirements {
+	if doc == nil {
+		return nil
+	}
+	var requirements openapi3.SecurityRequirements
+	seen := map[string]struct{}{}
+	visitedOperation := false
+	if doc.Paths == nil {
+		appendUniqueSecurityRequirements(&requirements, seen, doc.Security)
+		return requirements
+	}
+	for _, pathKey := range doc.Paths.InMatchingOrder() {
+		pathItem := doc.Paths.Value(pathKey)
+		if pathItem == nil {
+			continue
+		}
+		for _, op := range pathItem.Operations() {
+			if op == nil {
+				continue
+			}
+			visitedOperation = true
+			appendUniqueSecurityRequirements(&requirements, seen, effectiveSecurityRequirements(op, doc))
+		}
+	}
+	if visitedOperation {
+		return requirements
+	}
+	appendUniqueSecurityRequirements(&requirements, seen, doc.Security)
+	return requirements
+}
+
+func appendUniqueSecurityRequirements(requirements *openapi3.SecurityRequirements, seen map[string]struct{}, candidates openapi3.SecurityRequirements) {
+	for _, req := range candidates {
+		key := securityRequirementKey(req)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		*requirements = append(*requirements, req)
+	}
+}
+
+func securityRequirementKey(req openapi3.SecurityRequirement) string {
+	names := make([]string, 0, len(req))
+	for name := range req {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		scopes := slices.Clone(req[name])
+		sort.Strings(scopes)
+		parts = append(parts, name+":"+strings.Join(scopes, ","))
+	}
+	return strings.Join(parts, "|")
+}
+
+func additionalHeaderRequirementsForWinner(requirements openapi3.SecurityRequirements, winner string) openapi3.SecurityRequirements {
+	matching := make(openapi3.SecurityRequirements, 0, len(requirements))
+	for _, req := range requirements {
+		if _, ok := req[winner]; ok {
+			matching = append(matching, req)
+		}
+	}
+	return matching
+}
+
+func additionalHeaderRequirementsShareSiblings(requirements openapi3.SecurityRequirements, winner string) bool {
+	var signature string
+	for i, req := range requirements {
+		current := additionalHeaderSiblingSignature(req, winner)
+		if i == 0 {
+			signature = current
+			continue
+		}
+		if current != signature {
+			return false
+		}
+	}
+	return true
+}
+
+func additionalHeaderSiblingSignature(req openapi3.SecurityRequirement, winner string) string {
+	siblings := make([]string, 0, len(req))
+	for name := range req {
+		if name != winner {
+			siblings = append(siblings, name)
+		}
+	}
+	sort.Strings(siblings)
+	return strings.Join(siblings, "|")
+}
+
+func additionalHeaderEnvVars(scheme *openapi3.SecurityScheme, schemeName, envPrefix string, allowFallback bool) []spec.AuthEnvVar {
+	if scheme == nil {
+		return nil
+	}
+	if raw, ok := scheme.Extensions[extensionAuthVars]; ok && raw != nil {
+		envVars, err := authVarsExtension(raw)
+		if err == nil && len(envVars) > 0 {
+			return envVars
+		}
+	}
+	if envVars := stringListExtension(scheme.Extensions, extensionAuthEnvVars); len(envVars) > 0 {
+		if len(envVars) > 1 {
+			warnf("components.securitySchemes.%s.%s declares multiple names for one sibling header; using %s", schemeName, extensionAuthEnvVars, envVars[0])
+		}
+		name := strings.TrimSpace(envVars[0])
+		if name == "" {
+			return nil
+		}
+		return []spec.AuthEnvVar{{
+			Name:      name,
+			Kind:      spec.AuthEnvVarKindPerCall,
+			Required:  true,
+			Sensitive: true,
+			Inferred:  true,
+		}}
+	}
+	if !allowFallback {
+		return nil
+	}
+	name := derivedAdditionalHeaderEnvVar(schemeName, envPrefix)
+	if name == "" {
+		return nil
+	}
+	return []spec.AuthEnvVar{{
+		Name:      name,
+		Kind:      spec.AuthEnvVarKindPerCall,
+		Required:  true,
+		Sensitive: true,
+		Inferred:  true,
+	}}
+}
+
+func derivedAdditionalHeaderEnvVar(schemeName, envPrefix string) string {
+	envVars := defaultAuthEnvVars("api_key", "", schemeName, envPrefix)
+	if len(envVars) == 0 {
+		return ""
+	}
+	return envVars[0]
+}
+
+func defaultAuthEnvVars(authType, format, schemeName, envPrefix string) []string {
+	switch authType {
+	case "api_key":
+		if authFormatIsBasic(format) {
+			return []string{envPrefix + "_USERNAME", envPrefix + "_PASSWORD"}
+		}
+		// Use scheme name for more specific env var (e.g. BotToken -> DISCORD_BOT_TOKEN).
+		schemeEnvSuffix := toSnakeCase(schemeName)
+		if schemeEnvSuffix != "" && !isGenericAPIKeySchemeSuffix(schemeEnvSuffix) {
+			return []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
+		}
+		return []string{envPrefix + "_API_KEY"}
+	case "bearer_token":
+		schemeEnvSuffix := toSnakeCase(schemeName)
+		switch schemeEnvSuffix {
+		case "", "bearer", "bearer_token", "token":
+			return []string{envPrefix + "_TOKEN"}
+		default:
+			return []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
+		}
+	default:
+		return nil
+	}
+}
+
+func requirementAllHeaderAPIKeys(doc *openapi3.T, req openapi3.SecurityRequirement) bool {
+	if doc == nil || doc.Components == nil || len(req) == 0 {
+		return false
+	}
+	for name := range req {
+		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
+		if scheme == nil {
+			return false
+		}
+		if !strings.EqualFold(scheme.Type, "apiKey") || !strings.EqualFold(strings.TrimSpace(scheme.In), "header") {
+			return false
+		}
+	}
+	return true
 }
 
 func isGenericAPIKeySchemeSuffix(suffix string) bool {
@@ -1908,10 +2295,8 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 		return "", nil
 	}
 
-	candidates := candidateSecuritySchemeNames(doc)
-
 	if pref := strings.TrimSpace(authPreference); pref != "" {
-		for _, name := range candidates {
+		for _, name := range allSecuritySchemeNames(doc) {
 			if !strings.EqualFold(name, pref) {
 				continue
 			}
@@ -1922,7 +2307,11 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 		}
 	}
 
+	usageCounts := securitySchemeOperationUsageCounts(doc)
+	candidates := candidateSecuritySchemeNames(doc, usageCounts)
+
 	bestScore := math.MaxInt
+	bestUsageCount := 0
 	var bestName string
 	var bestScheme *openapi3.SecurityScheme
 
@@ -1931,8 +2320,10 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 		if scheme == nil {
 			continue
 		}
+		usageCount := usageCounts[name]
 		score := schemePriorityScore(scheme)
-		if score < bestScore {
+		if usageCount > bestUsageCount || (usageCount == bestUsageCount && score < bestScore) {
+			bestUsageCount = usageCount
 			bestScore = score
 			bestName = name
 			bestScheme = scheme
@@ -1942,13 +2333,23 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 	return bestName, bestScheme
 }
 
-// Root security is authoritative when present: a components-only scheme
-// (e.g. an OAuth2 marketplace flow the API doesn't actually accept at the
-// document default) must not outrank an apiKey the spec explicitly named.
-// The empty-names guard handles `security: []` and `security: [{}]`
-// no-auth declarations, where falling back to components recovers the
-// previous behavior for inferred-auth specs.
-func candidateSecuritySchemeNames(doc *openapi3.T) []string {
+// Effective operation security is authoritative when present: a
+// components-only scheme (e.g. an OAuth2 marketplace flow the API doesn't
+// actually accept) must not outrank a scheme used by the operation surface.
+// The root-security fallback covers specs without paths or security-bearing
+// operations. The empty-names guard handles `security: []` and `security: [{}]`
+// no-auth declarations, where falling back to components recovers the previous
+// behavior for inferred-auth specs.
+func candidateSecuritySchemeNames(doc *openapi3.T, usageCounts map[string]int) []string {
+	if len(usageCounts) > 0 {
+		names := make([]string, 0, len(usageCounts))
+		for name := range usageCounts {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return names
+	}
+
 	seen := map[string]struct{}{}
 	var names []string
 
@@ -1972,12 +2373,59 @@ func candidateSecuritySchemeNames(doc *openapi3.T) []string {
 		}
 	}
 
-	all := make([]string, 0, len(doc.Components.SecuritySchemes))
-	for name := range doc.Components.SecuritySchemes {
-		all = append(all, name)
+	return allSecuritySchemeNames(doc)
+}
+
+func allSecuritySchemeNames(doc *openapi3.T) []string {
+	if doc == nil || doc.Components == nil {
+		return nil
 	}
-	sort.Strings(all)
-	return all
+	names := make([]string, 0, len(doc.Components.SecuritySchemes))
+	for name := range doc.Components.SecuritySchemes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func securitySchemeOperationUsageCounts(doc *openapi3.T) map[string]int {
+	counts := map[string]int{}
+	if doc == nil || doc.Paths == nil {
+		return counts
+	}
+
+	for _, pathItem := range doc.Paths.Map() {
+		if pathItem == nil {
+			continue
+		}
+		for _, op := range pathItem.Operations() {
+			if op == nil {
+				continue
+			}
+			requirements := effectiveSecurityRequirements(op, doc)
+			counted := map[string]struct{}{}
+			for _, requirement := range requirements {
+				for name := range requirement {
+					if _, ok := counted[name]; ok {
+						continue
+					}
+					counted[name] = struct{}{}
+					counts[name]++
+				}
+			}
+		}
+	}
+	return counts
+}
+
+func effectiveSecurityRequirements(op *openapi3.Operation, doc *openapi3.T) openapi3.SecurityRequirements {
+	if op != nil && op.Security != nil {
+		return *op.Security
+	}
+	if doc == nil {
+		return nil
+	}
+	return doc.Security
 }
 
 // Ordering rationale: Bearer is the simplest for CLI use; OAuth2 flows rank
@@ -2238,7 +2686,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			}
 
 			params := mapParameters(pathItem, op)
-			body, requestContentType, bodyJSONFallback, bodyRequired := mapRequestBody(op.RequestBody, method, path)
+			body, requestContentType, bodyJSONFallback, bodyRequired, bodyIsArray := mapRequestBody(op.RequestBody, method, path)
 
 			// Deduplicate body params that collide with query/path params by flag name
 			if len(body) > 0 && len(params) > 0 {
@@ -2264,6 +2712,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				Body:               body,
 				BodyJSONFallback:   bodyJSONFallback,
 				BodyRequired:       bodyRequired,
+				BodyIsArray:        bodyIsArray,
 				RequestContentType: requestContentType,
 			}
 			endpoint.Tier = readTierExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
@@ -2318,11 +2767,13 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				sub := resource.SubResources[subName]
 				if sub.Description == "" {
 					sub.Description = humanizeResourceName(subName)
+					sub.DescriptionDerived = true
 				}
 				resource.SubResources[subName] = sub
 			}
 			if resource.Description == "" {
 				resource.Description = humanizeResourceName(primaryName)
+				resource.DescriptionDerived = true
 			}
 			out.Resources[primaryName] = resource
 		}
@@ -2356,25 +2807,22 @@ func operationServerBaseURL(specBaseURL string, pathItem *openapi3.PathItem, op 
 //   - The operation has security: [{}] (empty object = anonymous alternative)
 //   - The operation inherits global security and the global security is empty
 func operationAllowsAnonymous(op *openapi3.Operation, doc *openapi3.T) bool {
-	if op.Security != nil {
-		// Per-operation security declared
-		if len(*op.Security) == 0 {
-			return true // security: []
-		}
-		for _, req := range *op.Security {
-			if len(req) == 0 {
-				return true // security: [{}]
-			}
-		}
-		return false
+	if op != nil && op.Security != nil {
+		return securityRequirementsAllowAnonymous(*op.Security)
 	}
-	// op.Security is nil — inherits global security
-	if doc.Security != nil && len(doc.Security) == 0 {
-		return true // global security: []
+	if doc != nil && doc.Security != nil {
+		return securityRequirementsAllowAnonymous(doc.Security)
 	}
-	for _, req := range doc.Security {
+	return false
+}
+
+func securityRequirementsAllowAnonymous(requirements openapi3.SecurityRequirements) bool {
+	if len(requirements) == 0 {
+		return true
+	}
+	for _, req := range requirements {
 		if len(req) == 0 {
-			return true // global security: [{}]
+			return true
 		}
 	}
 	return false
@@ -2646,6 +3094,54 @@ func markAllEndpointsNoAuth(resources map[string]spec.Resource) {
 	}
 }
 
+// applyPathParamDefaults bakes EndpointPathParamDefaults entries into every
+// operation path under result.Resources and drops the matching path
+// parameter from each endpoint's Params list. Runs as a post-parse sweep so
+// downstream consumers (profiler, generator, manifest emitter) see fully
+// resolved paths and never re-emit a flag for the resolved placeholder.
+// No-op for specs that declare no defaults, preserving byte-compat with
+// existing generated outputs.
+func applyPathParamDefaults(result *spec.APISpec) {
+	if result == nil || len(result.EndpointPathParamDefaults) == 0 {
+		return
+	}
+	defaults := result.EndpointPathParamDefaults
+	var walk func(resources map[string]spec.Resource)
+	walk = func(resources map[string]spec.Resource) {
+		for key, r := range resources {
+			for name, value := range defaults {
+				r.Path = strings.ReplaceAll(r.Path, "{"+name+"}", value)
+			}
+			for eName, e := range r.Endpoints {
+				substituted := map[string]bool{}
+				for name, value := range defaults {
+					placeholder := "{" + name + "}"
+					if strings.Contains(e.Path, placeholder) {
+						e.Path = strings.ReplaceAll(e.Path, placeholder, value)
+						substituted[name] = true
+					}
+				}
+				if len(substituted) > 0 && len(e.Params) > 0 {
+					kept := make([]spec.Param, 0, len(e.Params))
+					for _, p := range e.Params {
+						if substituted[p.Name] && isPathSubstitutionParam(p) {
+							continue
+						}
+						kept = append(kept, p)
+					}
+					e.Params = kept
+				}
+				r.Endpoints[eName] = e
+			}
+			if len(r.SubResources) > 0 {
+				walk(r.SubResources)
+			}
+			resources[key] = r
+		}
+	}
+	walk(result.Resources)
+}
+
 func assignEndpointAliases(resources map[string]spec.Resource) {
 	resourceNames := make([]string, 0, len(resources))
 	for name := range resources {
@@ -2909,8 +3405,11 @@ func tagDescriptionKeys(name string) []string {
 
 func resolveEndpointName(method, path string, op *openapi3.Operation, existing map[string]spec.Endpoint, resourceName, basePath string, commonPrefix []string) string {
 	opID := operationID(op)
+	opTokens := operationIDTokens(opID)
 	var name string
-	if !isFrameworkAutoGeneratedOperationID(opID, path) {
+	if fastAPIName, ok := fastAPIOperationIDEndpointName(opTokens, path, resourceName, commonPrefix); ok {
+		name = fastAPIName
+	} else if !isPathDerivedFrameworkOperationID(opTokens, path) {
 		name = operationIDToName(opID, resourceName, commonPrefix)
 	}
 	if name == "" {
@@ -2947,6 +3446,13 @@ func operationID(op *openapi3.Operation) string {
 		return ""
 	}
 	return strings.TrimSpace(op.OperationID)
+}
+
+func operationIDTokens(operationID string) []string {
+	if operationID == "" {
+		return nil
+	}
+	return strings.Split(toSnakeCase(operationID), "_")
 }
 
 func defaultEndpointName(method, path string) string {
@@ -3279,15 +3785,31 @@ func mergeParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []*ope
 	return merged
 }
 
-func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string) ([]spec.Param, string, bool, bool) {
+func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string) ([]spec.Param, string, bool, bool, bool) {
 	requestBody := requestBodyValue(requestBodyRef)
 	if requestBody == nil || requestBody.Content == nil {
-		return nil, "", false, false
+		return nil, "", false, false, false
 	}
 
 	requestContentType, media := requestBodyMediaType(requestBody.Content)
 	if media == nil || media.Schema == nil || media.Schema.Value == nil {
-		return nil, "", false, false
+		return nil, "", false, false, false
+	}
+
+	// Bare top-level array request body: no object properties to flatten to
+	// named params. Handled like the oneOf/anyOf fallback (emit the
+	// --body-json string flag for the CLI) AND flagged so the MCP
+	// orchestration executors send a top-level JSON array instead of the
+	// params object. A strict-mapping API rejects an object at the body root
+	// with HTTP 422 "Invalid json" (e.g. Tripletex [BETA] PUT
+	// /supplierInvoice/voucher/{id}/postings, body [{"posting":{...}}]).
+	if media.Schema.Value.Type != nil && media.Schema.Value.Type.Is(openapi3.TypeArray) {
+		if !isJSONContentType(requestContentType) {
+			warnf("skipping request body for %s %q: array-root body and content type %q is not JSON-shaped", strings.ToUpper(method), path, requestContentType)
+			return nil, "", false, false, false
+		}
+		warnf("request body for %s %q is a bare top-level array; emitting --body-json fallback + array-body marker", strings.ToUpper(method), path)
+		return nil, requestContentType, true, requestBody.Required, true
 	}
 
 	properties := map[string]*openapi3.SchemaRef{}
@@ -3300,14 +3822,14 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		// form-urlencoded encodings.
 		if !isJSONContentType(requestContentType) {
 			warnf("skipping request body for %s %q: contains oneOf/anyOf and content type %q is not JSON-shaped", strings.ToUpper(method), path, requestContentType)
-			return nil, "", false, false
+			return nil, "", false, false, false
 		}
 		warnf("request body for %s %q contains oneOf/anyOf; emitting --body-json fallback", strings.ToUpper(method), path)
-		return nil, requestContentType, true, requestBody.Required
+		return nil, requestContentType, true, requestBody.Required, false
 	}
 
 	if len(properties) == 0 {
-		return nil, "", false, false
+		return nil, "", false, false, false
 	}
 
 	names := make([]string, 0, len(properties))
@@ -3358,7 +3880,7 @@ func mapRequestBody(requestBodyRef *openapi3.RequestBodyRef, method, path string
 		body = append(body, param)
 	}
 
-	return body, requestContentType, false, requestBody.Required
+	return body, requestContentType, false, requestBody.Required, false
 }
 
 // isJSONContentType reports whether ct is a JSON-shaped media type:
@@ -4860,9 +5382,9 @@ func operationIDToName(operationID, resourceName string, commonPrefix []string) 
 }
 
 // isFrameworkAutoGeneratedOperationID reports whether operationID was
-// auto-generated by a framework (API Platform / Symfony, etc.) that names
-// operations by concatenating path segments and appending the HTTP method.
-// Two signals must both fire:
+// auto-generated by a framework (API Platform / Symfony, FastAPI, etc.) that
+// names operations from path segments and the HTTP method. Two API Platform
+// signals must both fire:
 //
 //  1. The operationId, snake-cased and tokenized on underscores, ends with
 //     a framework verb suffix (_post, _put, _patch, _delete, _get_collection,
@@ -4875,15 +5397,28 @@ func operationIDToName(operationID, resourceName string, commonPrefix []string) 
 //     that happens to contain a "{paramName}+nextSegment" concat does not
 //     trip the detector.
 //
-// When both fire, callers skip operationIDToName so name derivation falls
-// back to verb + path-collision-suffix rather than emitting unreadable
-// command names like "paymentsubscriptions-get-collection".
+// FastAPI's default operationId shape uses a different signal:
+// <function_name>_<path_segments>_<method>. The path/method suffix is
+// machine-generated, while the function-name prefix may be readable but often
+// repeats the resource. When either detector fires, callers skip the raw
+// operationIDToName path so name derivation avoids unreadable command names
+// like "paymentsubscriptions-get-collection" or "list-api-get".
 func isFrameworkAutoGeneratedOperationID(operationID, path string) bool {
 	if operationID == "" || path == "" {
 		return false
 	}
-	opTokens := strings.Split(toSnakeCase(operationID), "_")
+	opTokens := operationIDTokens(operationID)
 	if len(opTokens) < 2 {
+		return false
+	}
+	if _, ok := fastAPIOperationIDPrefixTokens(opTokens, path); ok {
+		return true
+	}
+	return isPathDerivedFrameworkOperationID(opTokens, path)
+}
+
+func isPathDerivedFrameworkOperationID(opTokens []string, path string) bool {
+	if len(opTokens) < 2 || path == "" {
 		return false
 	}
 	if !hasFrameworkVerbSuffix(opTokens) {
@@ -4922,6 +5457,75 @@ func isFrameworkAutoGeneratedOperationID(operationID, path string) bool {
 		}
 	}
 	return false
+}
+
+func fastAPIOperationIDEndpointName(opTokens []string, path, resourceName string, commonPrefix []string) (string, bool) {
+	prefixTokens, ok := fastAPIOperationIDPrefixTokens(opTokens, path)
+	if !ok {
+		return "", false
+	}
+	if len(prefixTokens) == 0 {
+		return "", true
+	}
+	name := operationIDToName(strings.Join(prefixTokens, "_"), resourceName, commonPrefix)
+	methodToken := opTokens[len(opTokens)-1]
+	switch prefixTokens[0] {
+	case "create":
+		if methodToken == "post" {
+			return "", true
+		}
+	case "update":
+		if methodToken == "put" || methodToken == "patch" {
+			return "", true
+		}
+	case "delete":
+		if methodToken == "delete" {
+			return "", true
+		}
+	case "read":
+		if methodToken == "get" {
+			return "", true
+		}
+	}
+	return name, true
+}
+
+func fastAPIOperationIDPrefixTokens(opTokens []string, path string) ([]string, bool) {
+	if len(opTokens) < 3 || !isHTTPMethodToken(opTokens[len(opTokens)-1]) {
+		return nil, false
+	}
+
+	pathTokens := make([]string, 0)
+	for _, segment := range splitPath(path) {
+		for token := range strings.SplitSeq(toSnakeCase(segment), "_") {
+			if token != "" {
+				pathTokens = append(pathTokens, token)
+			}
+		}
+	}
+	if len(pathTokens) == 0 {
+		return nil, false
+	}
+
+	start := len(opTokens) - 1 - len(pathTokens)
+	if start < 1 {
+		return nil, false
+	}
+	for i, token := range pathTokens {
+		if opTokens[start+i] != token {
+			return nil, false
+		}
+	}
+	return opTokens[:start], true
+}
+
+func isHTTPMethodToken(token string) bool {
+	switch token {
+	case "get", "post", "put", "patch", "delete", "head", "options":
+		return true
+	default:
+		return false
+	}
 }
 
 // hasFrameworkVerbSuffix reports whether opTokens ends with a verb suffix
@@ -5957,12 +6561,7 @@ func humanizeEndpointName(name string) string {
 }
 
 func humanizeResourceName(name string) string {
-	words := strings.Split(strings.ReplaceAll(name, "_", "-"), "-")
-	if len(words) == 0 {
-		return ""
-	}
-	sentence := "Manage " + strings.Join(words, " ")
-	return sentence
+	return spec.DefaultResourceDescription(name)
 }
 
 func humanizeConcatenated(s string) string {

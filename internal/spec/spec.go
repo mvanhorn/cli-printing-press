@@ -143,6 +143,16 @@ type APISpec struct {
 	// across every ServiceTitan module). Populated from the OpenAPI
 	// `info.x-tenant-env-var` extension or set directly in internal YAML.
 	EndpointTemplateEnvOverrides map[string]string `yaml:"endpoint_template_env_overrides,omitempty" json:"endpoint_template_env_overrides,omitempty"`
+	// EndpointPathParamDefaults binds an OpenAPI path-parameter name to a
+	// literal value that the generator substitutes into every operation
+	// path at generation time. Used for parameters with a canonical
+	// always-valid value (e.g. Gmail's userId='me' for the authenticated
+	// user). After substitution the matching path parameter is dropped
+	// from each endpoint, so the printed CLI exposes neither a placeholder
+	// nor a flag for it. Populated from the OpenAPI
+	// `info.x-path-template-env-vars` extension's per-placeholder
+	// `default` field, or set directly in internal YAML.
+	EndpointPathParamDefaults map[string]string `yaml:"endpoint_path_param_defaults,omitempty" json:"endpoint_path_param_defaults,omitempty"`
 	// EndpointTemplateVarDefaults maps a placeholder in EndpointTemplateVars
 	// to a spec-declared default value. Populated for server-URL variables
 	// (OpenAPI `servers[0].url.variables.<name>.default`) so the generator
@@ -1273,9 +1283,10 @@ func (m MCPConfig) HasTransport(t string) bool {
 }
 
 type Resource struct {
-	Description string   `yaml:"description" json:"description"`
-	Path        string   `yaml:"path,omitempty" json:"path,omitempty"`             // base path for operations shorthand (e.g., /api/items)
-	Operations  []string `yaml:"operations,omitempty" json:"operations,omitempty"` // shorthand: list, get, create, update, delete, search
+	Description        string   `yaml:"description" json:"description"`
+	DescriptionDerived bool     `yaml:"-" json:"-"`
+	Path               string   `yaml:"path,omitempty" json:"path,omitempty"`             // base path for operations shorthand (e.g., /api/items)
+	Operations         []string `yaml:"operations,omitempty" json:"operations,omitempty"` // shorthand: list, get, create, update, delete, search
 	// BaseURL overrides the spec-level BaseURL for this resource's
 	// endpoints. Fixed at generation time. Incompatible with the
 	// proxy-envelope client pattern, which POSTs every request to a
@@ -1284,6 +1295,12 @@ type Resource struct {
 	Tier         string              `yaml:"tier,omitempty" json:"tier,omitempty"`
 	Endpoints    map[string]Endpoint `yaml:"endpoints" json:"endpoints"`
 	SubResources map[string]Resource `yaml:"sub_resources,omitempty" json:"sub_resources,omitempty"`
+}
+
+// DefaultResourceDescription returns the parser fallback description for a
+// resource that has no source-provided prose.
+func DefaultResourceDescription(name string) string {
+	return "Manage " + strings.ReplaceAll(strings.ReplaceAll(name, "_", "-"), "-", " ")
 }
 
 // HasResourceBaseURLOverride reports whether any resource or endpoint declares
@@ -1336,7 +1353,17 @@ type Endpoint struct {
 	// the parser cannot describe at field level (currently used only by
 	// the BodyJSONFallback path). The typed body path uses per-Param
 	// Required flags instead; this field is ignored when Body is populated.
-	BodyRequired       bool         `yaml:"body_required,omitempty" json:"body_required,omitempty"`
+	BodyRequired bool `yaml:"body_required,omitempty" json:"body_required,omitempty"`
+	// BodyIsArray signals that the request body schema root is a bare
+	// top-level JSON array (e.g. PUT /<resource>/{id}/<collection>, body
+	// [{"item":{...}}]).
+	// Such a body has no object properties to flatten to named params, so
+	// the parser leaves Body empty and sets BodyJSONFallback; this flag
+	// additionally tells the MCP orchestration executors to send the body
+	// as a top-level array (params["body"]) instead of the params object,
+	// which a strict-mapping API would otherwise reject (HTTP 422 "Invalid
+	// json"). Set only for JSON-shaped array-root request bodies.
+	BodyIsArray        bool         `yaml:"body_is_array,omitempty" json:"body_is_array,omitempty"`
 	RequestContentType string       `yaml:"request_content_type,omitempty" json:"request_content_type,omitempty"`
 	Response           ResponseDef  `yaml:"response" json:"response"`
 	ResponseFormat     string       `yaml:"response_format,omitempty" json:"response_format,omitempty"` // json (default) or html
@@ -3066,6 +3093,16 @@ func (m MCPConfig) EffectiveOrchestrationThreshold() int {
 // <api>_search + <api>_execute instead of the endpoint-mirror.
 func (m MCPConfig) IsCodeOrchestration() bool {
 	return m.Orchestration == "code"
+}
+
+// EndpointMirrorsVisible reports whether per-endpoint MCP tools are registered
+// directly. Code orchestration always suppresses endpoint mirrors because
+// <api>_search + <api>_execute cover the endpoint catalog.
+func (m MCPConfig) EndpointMirrorsVisible() bool {
+	if m.IsCodeOrchestration() {
+		return false
+	}
+	return m.EndpointTools != "hidden"
 }
 
 // EffectiveMCPTransports returns the transport list the generated MCP binary

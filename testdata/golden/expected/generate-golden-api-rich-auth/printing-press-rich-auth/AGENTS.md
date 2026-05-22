@@ -53,10 +53,28 @@ Minimum shape:
       "summary": "What changed (one sentence).",
       "reason": "Why this customization was needed (one or two sentences).",
       "files": ["internal/cli/foo.go"],
-      "validated_outcome": "Optional: non-obvious test result that confirms the fix.",
-      "upstream_issue": "Optional: https://github.com/mvanhorn/cli-printing-press/issues/<n>"
+      "validated_outcome": "Optional: non-obvious test result that confirms the fix."
     }
   ]
+}
+```
+
+Use `deferred_to_upstream` when a local patch is a temporary bridge for a missing public API endpoint, an unofficial-host workaround, a live response-shape drift, or behavior the Printing Press should eventually generate correctly. Search `mvanhorn/cli-printing-press` issues first; reuse a matching issue or open one, then set `upstream_issue` so the next regen knows what must supersede the patch:
+
+```json
+{
+  "id": "temporary-bridge",
+  "summary": "What changed (one sentence).",
+  "reason": "Why this customization was needed (one or two sentences).",
+  "files": ["internal/cli/foo.go"],
+  "validated_outcome": "Optional: non-obvious test result that confirms the fix.",
+  "deferred_to_upstream": [
+    {
+      "feature": "Generator behavior or upstream API capability that should eventually supersede this patch",
+      "reason": "Why the local patch is temporary or API-specific"
+    }
+  ],
+  "upstream_issue": "https://github.com/mvanhorn/cli-printing-press/issues/<n>"
 }
 ```
 

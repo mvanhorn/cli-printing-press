@@ -52,6 +52,265 @@ func TestParsePetstore(t *testing.T) {
 	assert.Contains(t, parsed.Types, "Pet")
 }
 
+func TestParseLenientStubsMissingLocalSchemaRefs(t *testing.T) {
+	specBytes := []byte(`
+openapi: 3.0.3
+info:
+  title: Missing Ref API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  widget:
+                    $ref: "#/components/schemas/MissingWidget"
+components:
+  schemas:
+    Present:
+      type: object
+      properties:
+        id:
+          type: string
+`)
+
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = ParseLenient(specBytes)
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	normalized, normalizeErr := normalizeSpecData(specBytes)
+	require.NoError(t, normalizeErr)
+	stubbed, count, stubErr := stubMissingLocalSchemaRefs(normalized)
+	require.NoError(t, stubErr)
+	require.Equal(t, 1, count)
+	var root map[string]any
+	require.NoError(t, json.Unmarshal(stubbed, &root))
+	schema := root["components"].(map[string]any)["schemas"].(map[string]any)["MissingWidget"].(map[string]any)
+	assert.Equal(t, "object", schema["type"])
+	assert.Equal(t, true, schema["additionalProperties"])
+	assert.Contains(t, parsed.Types, "MissingWidget")
+	assert.Contains(t, warnings, `warning: stubbing missing local schema ref "MissingWidget"`)
+}
+
+func TestParseMissingLocalSchemaRefsStayStrictByDefault(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`
+openapi: 3.0.3
+info:
+  title: Missing Ref API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MissingWidget"
+components:
+  schemas: {}
+`)
+
+	_, err := Parse(specBytes)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `map key "MissingWidget" not found`)
+}
+
+func TestParseStrictRefsDisablesLenientLocalSchemaStubs(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`
+openapi: 3.0.3
+info:
+  title: Missing Ref API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MissingWidget"
+components:
+  schemas: {}
+`)
+
+	_, err := ParseWithOptions(specBytes, ParseOptions{Lenient: true, StrictRefs: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing local schema refs: MissingWidget")
+}
+
+func TestParseStrictRefsFailsBeforeLenientPathStripping(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`
+openapi: 3.0.3
+info:
+  title: Missing Ref API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /broken:
+    get:
+      operationId: getBroken
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MissingWidget"
+  /healthy:
+    get:
+      operationId: getHealthy
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+components:
+  schemas: {}
+`)
+
+	_, err := ParseWithOptions(specBytes, ParseOptions{Lenient: true, StrictRefs: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing local schema refs: MissingWidget")
+}
+
+func TestParseLenientIgnoresRefStringsInsideExampleData(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`
+openapi: 3.0.3
+info:
+  title: Example Ref API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+              example:
+                widget:
+                  $ref: "#/components/schemas/MissingWidget"
+components:
+  schemas: {}
+`)
+
+	parsed, err := ParseLenient(specBytes)
+	require.NoError(t, err)
+	assert.NotContains(t, parsed.Types, "MissingWidget")
+}
+
+func TestParseLenientDoesNotStubNestedLocalSchemaPointers(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`
+openapi: 3.0.3
+info:
+  title: Nested Missing Ref API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MissingWidget/properties/id"
+components:
+  schemas: {}
+`)
+
+	_, err := ParseLenient(specBytes)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `map key "MissingWidget" not found`)
+}
+
+func TestParseLenientCleanSpecDoesNotWarnAboutSchemaStubs(t *testing.T) {
+	specBytes := []byte(`
+openapi: 3.0.3
+info:
+  title: Clean API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Widget"
+components:
+  schemas:
+    Widget:
+      type: object
+      properties:
+        id:
+          type: string
+`)
+
+	var err error
+	warnings := captureWarnings(t, func() {
+		_, err = ParseLenient(specBytes)
+	})
+
+	require.NoError(t, err)
+	assert.NotContains(t, warnings, "stubbing missing local schema ref")
+}
+
 func TestParseMarksFieldSelectorParamsWithSyncDefault(t *testing.T) {
 	t.Parallel()
 
@@ -1455,6 +1714,48 @@ paths:
 	assert.Equal(t, "bearer_token", parsed.Auth.Type)
 }
 
+func TestParseAuthPreferenceCanSelectUnusedComponentsScheme(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Preference Override
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            read: read access
+paths:
+  /v1/items:
+    get:
+      operationId: list items
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := ParseWithOptions(specBytes, ParseOptions{AuthPreference: "OAuth2"})
+	require.NoError(t, err)
+
+	assert.Equal(t, "OAuth2", parsed.Auth.Scheme, "explicit auth preference must override usage-based filtering")
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Equal(t, []string{"PREFERENCE_OVERRIDE_OAUTH2"}, parsed.Auth.EnvVars)
+	assert.Equal(t, "https://auth.example.com/authorize", parsed.Auth.AuthorizationURL)
+	assert.Equal(t, "https://auth.example.com/token", parsed.Auth.TokenURL)
+}
+
 func TestParseBearerPreservedOverOAuth2AuthCode(t *testing.T) {
 	t.Parallel()
 
@@ -1504,6 +1805,145 @@ paths:
 	assert.Equal(t, "bearer_token", preferred.Auth.Type)
 	assert.Equal(t, "https://auth.example.com/authorize", preferred.Auth.AuthorizationURL)
 	assert.Equal(t, "https://auth.example.com/token", preferred.Auth.TokenURL)
+}
+
+func TestParseSecuritySchemeReferenceCountBeatsTypePriority(t *testing.T) {
+	t.Parallel()
+
+	var paths strings.Builder
+	for i := range 10 {
+		fmt.Fprintf(&paths, `  /v1/oauth-items/%d:
+    get:
+      operationId: list oauth items %d
+      security:
+        - OAuth2: [read]
+      responses: {"200": {description: ok}}
+`, i, i)
+	}
+	paths.WriteString(`  /v1/events:
+    post:
+      operationId: create event
+      security:
+        - ConversionToken: []
+      responses: {"200": {description: ok}}
+`)
+
+	specBytes := fmt.Appendf(nil, `openapi: "3.0.3"
+info:
+  title: Pinterest-like
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ConversionToken:
+      type: http
+      scheme: bearer
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            read: read access
+paths:
+%s`, paths.String())
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "OAuth2", parsed.Auth.Scheme, "scheme used by most operations must become the primary auth scheme")
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Equal(t, []string{"PINTEREST_LIKE_OAUTH2"}, parsed.Auth.EnvVars)
+	assert.Equal(t, "https://auth.example.com/authorize", parsed.Auth.AuthorizationURL)
+	assert.Equal(t, "https://auth.example.com/token", parsed.Auth.TokenURL)
+}
+
+func TestParseOperationSecurityOverridesRootSecurityCandidates(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Override Root
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            read: read access
+paths:
+  /v1/overridden:
+    get:
+      operationId: list overridden
+      security:
+        - OAuth2: [read]
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "OAuth2", parsed.Auth.Scheme, "operation-level security overrides root security and must stay selectable")
+	assert.Equal(t, []string{"OVERRIDE_ROOT_OAUTH2"}, parsed.Auth.EnvVars)
+}
+
+func TestParseInheritedRootSecurityContributesToReferenceCount(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Root Majority
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerEventToken:
+      type: http
+      scheme: bearer
+paths:
+  /v1/root-a:
+    get:
+      operationId: list root a
+      responses: {"200": {description: ok}}
+  /v1/root-b:
+    get:
+      operationId: list root b
+      responses: {"200": {description: ok}}
+  /v1/events:
+    post:
+      operationId: create event
+      security:
+        - BearerEventToken: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "ApiKeyAuth", parsed.Auth.Scheme, "root security inherited by most operations must count toward primary auth selection")
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, []string{"ROOT_MAJORITY_API_KEY"}, parsed.Auth.EnvVars)
 }
 
 func TestBearerSchemeNameCanSpecializeEnvVar(t *testing.T) {
@@ -4000,6 +4440,61 @@ paths:
 	parsed, err := Parse(yamlSpec)
 	require.NoError(t, err)
 	assert.Empty(t, parsed.Auth.AdditionalHeaders)
+}
+
+func TestOperationLevelHeterogeneousSiblingApiKeysAreSkipped(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: heterogeneous-operation-siblings
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiIntegrationCode:
+      type: apiKey
+      in: header
+      name: ApiIntegrationCode
+      x-auth-env-vars:
+        - EXAMPLE_INTEGRATION_CODE
+    Secret:
+      type: apiKey
+      in: header
+      name: Secret
+      x-auth-env-vars:
+        - EXAMPLE_SECRET
+    UserName:
+      type: apiKey
+      in: header
+      name: UserName
+      x-auth-env-vars:
+        - EXAMPLE_USERNAME
+paths:
+  /tickets:
+    get:
+      security:
+        - ApiIntegrationCode: []
+          Secret: []
+      responses:
+        "200":
+          description: OK
+  /companies:
+    get:
+      security:
+        - ApiIntegrationCode: []
+          UserName: []
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "ApiIntegrationCode", parsed.Auth.Scheme)
+	assert.Empty(t, parsed.Auth.AdditionalHeaders,
+		"operation-specific sibling sets cannot be represented as global additional headers")
 }
 
 func TestOpenAPIAuthClassifiesCookieAndOAuth2ClientCredentialsEnvVars(t *testing.T) {
@@ -7038,6 +7533,312 @@ paths:
 		require.NoError(t, err)
 		assert.Empty(t, parsed.EndpointTemplateVars, "whitespace-only extension must not register a template var")
 		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
+	})
+}
+
+// TestParsePathTemplateEnvVarsExtension: the generic x-path-template-env-vars
+// extension is the map-shaped successor to x-tenant-env-var. Each entry binds
+// a path placeholder to an env-var override (`env` field, parallel to the
+// tenant flow) or a build-time literal substitution (`default` field, which
+// bakes the value into operation paths at generation time and drops the
+// matching path parameter). When both are set, default wins.
+func TestParsePathTemplateEnvVarsExtension(t *testing.T) {
+	t.Parallel()
+
+	t.Run("env entry registers template var + override for arbitrary placeholder", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Atlassian Workspace API
+  version: 1.0.0
+  x-path-template-env-vars:
+    workspace:
+      env: ATLASSIAN_WORKSPACE
+servers:
+  - url: https://api.atlassian.com/{workspace}
+paths:
+  /issues:
+    get:
+      operationId: listIssues
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"workspace"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, map[string]string{"workspace": "ATLASSIAN_WORKSPACE"}, parsed.EndpointTemplateEnvOverrides)
+		assert.Equal(t, "ATLASSIAN_WORKSPACE", parsed.EndpointTemplateEnvName("workspace"))
+		assert.Empty(t, parsed.EndpointPathParamDefaults, "env-only entries must not populate path-param defaults")
+	})
+
+	t.Run("default entry bakes literal into path and drops the matching param", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Gmail Users API
+  version: 1.0.0
+  x-path-template-env-vars:
+    userId:
+      default: me
+servers:
+  - url: https://gmail.googleapis.com
+paths:
+  /users/{userId}/messages:
+    get:
+      operationId: listMessages
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"userId": "me"}, parsed.EndpointPathParamDefaults)
+		assert.Empty(t, parsed.EndpointTemplateVars, "default-only entries must not register a runtime template var")
+		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
+
+		var resolvedPath string
+		var resolvedParams []spec.Param
+		var walk func(map[string]spec.Resource)
+		walk = func(rs map[string]spec.Resource) {
+			for _, r := range rs {
+				for _, e := range r.Endpoints {
+					if e.Method == "GET" && (e.Path == "/users/me/messages" || e.Path == "/users/{userId}/messages") {
+						resolvedPath = e.Path
+						resolvedParams = e.Params
+					}
+				}
+				if len(r.SubResources) > 0 {
+					walk(r.SubResources)
+				}
+			}
+		}
+		walk(parsed.Resources)
+		require.NotEmpty(t, resolvedPath, "list-messages endpoint not found in parsed resources")
+		assert.Equal(t, "/users/me/messages", resolvedPath, "path placeholder must be baked into emitted path")
+		for _, p := range resolvedParams {
+			assert.NotEqual(t, "userId", p.Name, "resolved path param must be dropped from endpoint Params")
+		}
+	})
+
+	t.Run("default wins when both default and env are set on the same entry", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Gmail Users API
+  version: 1.0.0
+  x-path-template-env-vars:
+    userId:
+      env: GMAIL_USER_ID
+      default: me
+servers:
+  - url: https://gmail.googleapis.com
+paths:
+  /users/{userId}/messages:
+    get:
+      operationId: listMessages
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"userId": "me"}, parsed.EndpointPathParamDefaults)
+		assert.Empty(t, parsed.EndpointTemplateVars, "when default is set, env is ignored and no runtime template var is registered")
+		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
+	})
+
+	t.Run("coexists with x-tenant-env-var: both extensions register independently", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Mixed Extensions API
+  version: 1.0.0
+  x-tenant-env-var: ST_TENANT_ID
+  x-path-template-env-vars:
+    workspace:
+      env: ATLASSIAN_WORKSPACE
+servers:
+  - url: https://api.example.com/{workspace}
+paths:
+  /tenant/{tenant}/items:
+    get:
+      operationId: listItems
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"tenant", "workspace"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, map[string]string{
+			"tenant":    "ST_TENANT_ID",
+			"workspace": "ATLASSIAN_WORKSPACE",
+		}, parsed.EndpointTemplateEnvOverrides)
+		assert.Empty(t, parsed.EndpointPathParamDefaults)
+	})
+
+	t.Run("absent extension leaves path-param defaults empty", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Plain API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Empty(t, parsed.EndpointPathParamDefaults)
+		assert.Empty(t, parsed.EndpointTemplateVars)
+		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
+	})
+
+	t.Run("default drop preserves a same-named non-path param on the same operation", func(t *testing.T) {
+		// A query (or body) param that shares its name with a substituted
+		// path placeholder must survive the path-param drop; only the actual
+		// path parameter is resolved away by the default.
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Gmail Users API
+  version: 1.0.0
+  x-path-template-env-vars:
+    userId:
+      default: me
+servers:
+  - url: https://gmail.googleapis.com
+paths:
+  /users/{userId}/messages:
+    get:
+      operationId: listMessages
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: {type: string}
+        - name: userId
+          in: query
+          required: false
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"userId": "me"}, parsed.EndpointPathParamDefaults)
+
+		var resolvedPath string
+		var resolvedParams []spec.Param
+		var walk func(map[string]spec.Resource)
+		walk = func(rs map[string]spec.Resource) {
+			for _, r := range rs {
+				for _, e := range r.Endpoints {
+					if e.Method == "GET" && e.Path == "/users/me/messages" {
+						resolvedPath = e.Path
+						resolvedParams = e.Params
+					}
+				}
+				if len(r.SubResources) > 0 {
+					walk(r.SubResources)
+				}
+			}
+		}
+		walk(parsed.Resources)
+		require.NotEmpty(t, resolvedPath, "list-messages endpoint not found in parsed resources")
+
+		var sawPath, sawQuery bool
+		for _, p := range resolvedParams {
+			if p.Name != "userId" {
+				continue
+			}
+			if p.PathParam {
+				sawPath = true
+			} else {
+				sawQuery = true
+			}
+		}
+		assert.False(t, sawPath, "resolved path param must be dropped from endpoint Params")
+		assert.True(t, sawQuery, "same-named query param must be preserved")
+	})
+
+	t.Run("default in x-path-template-env-vars overrides a conflicting x-tenant-env-var entry", func(t *testing.T) {
+		// When both extensions target the same placeholder, default wins
+		// and the runtime entry must not linger in EndpointTemplateVars or
+		// EndpointTemplateEnvOverrides — otherwise downstream generators
+		// emit dead config / URL-substitution code for a placeholder that
+		// no longer exists in any path.
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Mixed Extensions API
+  version: 1.0.0
+  x-tenant-env-var: ST_TENANT_ID
+  x-path-template-env-vars:
+    tenant:
+      default: acme
+servers:
+  - url: https://api.example.com
+paths:
+  /tenant/{tenant}/items:
+    get:
+      operationId: listItems
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"tenant": "acme"}, parsed.EndpointPathParamDefaults)
+		assert.Empty(t, parsed.EndpointTemplateVars, "default must scrub the stale tenant entry from template vars")
+		assert.Empty(t, parsed.EndpointTemplateEnvOverrides, "default must scrub the stale tenant entry from env overrides")
+	})
+
+	t.Run("whitespace-only env and default values are treated as absent", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Whitespace Extensions
+  version: 1.0.0
+  x-path-template-env-vars:
+    workspace:
+      env: "   "
+    userId:
+      default: "   "
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Empty(t, parsed.EndpointTemplateVars, "whitespace-only env must not register a template var")
+		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
+		assert.Empty(t, parsed.EndpointPathParamDefaults, "whitespace-only default must not register a path-param default")
 	})
 }
 

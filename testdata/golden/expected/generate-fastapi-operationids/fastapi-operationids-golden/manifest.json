@@ -1,0 +1,27 @@
+{
+  "author": {
+    "name": "CLI Printing Press"
+  },
+  "compatibility": {
+    "claude_desktop": ">=1.0.0",
+    "platforms": [
+      "darwin",
+      "linux",
+      "win32"
+    ]
+  },
+  "description": "Fixture for FastAPI default operationId normalization.",
+  "display_name": "Fastapi Operationids Golden",
+  "license": "Apache-2.0",
+  "manifest_version": "0.3",
+  "name": "fastapi-operationids-golden-pp-mcp",
+  "server": {
+    "entry_point": "bin/fastapi-operationids-golden-pp-mcp",
+    "mcp_config": {
+      "args": [],
+      "command": "${__dirname}/bin/fastapi-operationids-golden-pp-mcp"
+    },
+    "type": "binary"
+  },
+  "version": "<PRINTING_PRESS_VERSION>"
+}

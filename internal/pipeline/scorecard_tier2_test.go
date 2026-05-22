@@ -88,6 +88,18 @@ func TestScoreMCPDescriptionQuality(t *testing.T) {
 		}
 		return dir
 	}
+	mkManifest := func(t *testing.T, manifest ToolsManifest) string {
+		t.Helper()
+		dir := t.TempDir()
+		data, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "tools-manifest.json"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
 
 	t.Run("missing manifest is unscored", func(t *testing.T) {
 		dir := t.TempDir()
@@ -132,6 +144,39 @@ func TestScoreMCPDescriptionQuality(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("hidden endpoint mirrors are not counted", func(t *testing.T) {
+		dir := mkManifest(t, ToolsManifest{
+			MCP: &ManifestMCP{
+				EndpointTools: "hidden",
+				Orchestration: "code",
+			},
+			Tools: []ManifestTool{
+				{Name: "demo_get", Description: "Get"},
+				{Name: "demo_create", Description: "Create"},
+			},
+		})
+		score, scored := scoreMCPDescriptionQuality(dir)
+		if scored {
+			t.Errorf("score=%d scored=%v, want unscored", score, scored)
+		}
+	})
+
+	t.Run("visible endpoint mirrors are still counted", func(t *testing.T) {
+		dir := mkManifest(t, ToolsManifest{
+			MCP: &ManifestMCP{
+				EndpointTools: "visible",
+			},
+			Tools: []ManifestTool{
+				{Name: "demo_get", Description: "Get"},
+				{Name: "demo_create", Description: "Create"},
+			},
+		})
+		score, scored := scoreMCPDescriptionQuality(dir)
+		if !scored || score != 0 {
+			t.Errorf("score=%d scored=%v, want 0/true", score, scored)
+		}
+	})
 }
 
 func appendN(prefix []string, val string, n int) []string {
@@ -522,7 +567,7 @@ func init() {
 		assert.Equal(t, 0, scoreTypeFidelity(dir))
 	})
 
-	t.Run("scores string id flags required markers and clear descriptions high", func(t *testing.T) {
+	t.Run("scores string id flags and clear descriptions high", func(t *testing.T) {
 		dir := t.TempDir()
 
 		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
@@ -533,14 +578,104 @@ func init() {
 	cmd.Flags().StringVar(&flagAfterID, "after-id", "", "Snowflake ID to fetch results after the given message")
 	cmd.Flags().StringVar(&flagChannelID, "channel-id", "", "Channel ID containing the messages to fetch for sync")
 	cmd.Flags().StringVar(&flagGuildID, "guild-id", "", "Guild ID used to scope channel and message syncing")
-	_ = cmd.MarkFlagRequired("after-id")
-	_ = cmd.MarkFlagRequired("channel-id")
-	_ = cmd.MarkFlagRequired("guild-id")
 }
 `)
 
-		assert.GreaterOrEqual(t, scoreTypeFidelity(dir), 4)
+		// +2 ID flags are all StringVar, +1 descriptions average well over 5 words,
+		// +1 no dummy `var _ = strings.ReplaceAll` / `var _ = fmt.Sprintf` guards.
+		assert.Equal(t, 4, scoreTypeFidelity(dir))
 	})
+}
+
+// TestIsIDFlagName pins the kebab-case word-boundary semantics that replaced
+// the bare `strings.Contains(name, "id")` check. The old check classified
+// "price-paid-cents" as an ID flag because "paid" contains "id", which then
+// failed the "all ID flags must be StringVar" rule on IntVar money columns.
+func TestIsIDFlagName(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"id", true},
+		{"user-id", true},
+		{"id-prefix", true},
+		{"parent-id-child", true},
+		{"price-paid-cents", false},
+		{"validate", false},
+		{"kid", false},
+		{"wide", false},
+		{"video", false},
+		{"identity", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isIDFlagName(tc.name))
+		})
+	}
+}
+
+// TestScoreTypeFidelity_FlagDeclRegexBoundedToOneLine pins that consecutive
+// Flags() calls capture their own description, not the next call's flag name.
+// Before the [^,\n]+ fix the greedy [^,]+ spanned newlines, so the first
+// flag's description capture pulled in the next flag's name (a short kebab
+// token) and dragged the description word-count average below the >5 threshold.
+func TestScoreTypeFidelity_FlagDeclRegexBoundedToOneLine(t *testing.T) {
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, "internal/cli/messages.go", `
+package cli
+
+func init() {
+	cmd := messagesCmd
+	cmd.Flags().StringVar(&flagAlpha, "alpha", "", "Alpha description with at least seven words here")
+	cmd.Flags().StringVar(&flagBravo, "bravo", "", "Bravo description with at least seven words here")
+	cmd.Flags().StringVar(&flagCharlie, "charlie", "", "Charlie description with at least seven words here")
+}
+`)
+
+	// With the pre-fix greedy [^,]+ regex, the description capture for "alpha"
+	// absorbed the next line's `&flagBravo` token, dragging descWordCount and
+	// descCount so the average dropped to ≤5, costing the +1 description point
+	// (score 3). The bounded [^,\n]+ regex keeps each capture inside its own
+	// statement: +2 ID-flag check (no ID flags), +1 descriptions averaging >5
+	// words, +1 no dummy guards = 4.
+	assert.Equal(t, 4, scoreTypeFidelity(dir))
+}
+
+// TestScoreTypeFidelity_DoesNotRewardMarkFlagRequired pins that
+// MarkFlagRequired no longer earns a point. The SKILL's verify-friendly RunE
+// rule forbids it (Cobra evaluates it before RunE, so --dry-run probes fail).
+// Rewarding it created a direct scorer-versus-SKILL conflict — a compliant
+// agent would always lose this point.
+func TestScoreTypeFidelity_DoesNotRewardMarkFlagRequired(t *testing.T) {
+	withRequired := t.TempDir()
+	writeScorecardFixture(t, withRequired, "internal/cli/messages.go", `
+package cli
+
+func init() {
+	cmd := messagesCmd
+	cmd.Flags().StringVar(&flagAlpha, "alpha", "", "Alpha description with at least seven words here")
+	cmd.Flags().StringVar(&flagBravo, "bravo", "", "Bravo description with at least seven words here")
+	cmd.Flags().StringVar(&flagCharlie, "charlie", "", "Charlie description with at least seven words here")
+	_ = cmd.MarkFlagRequired("alpha")
+	_ = cmd.MarkFlagRequired("bravo")
+	_ = cmd.MarkFlagRequired("charlie")
+}
+`)
+
+	withoutRequired := t.TempDir()
+	writeScorecardFixture(t, withoutRequired, "internal/cli/messages.go", `
+package cli
+
+func init() {
+	cmd := messagesCmd
+	cmd.Flags().StringVar(&flagAlpha, "alpha", "", "Alpha description with at least seven words here")
+	cmd.Flags().StringVar(&flagBravo, "bravo", "", "Bravo description with at least seven words here")
+	cmd.Flags().StringVar(&flagCharlie, "charlie", "", "Charlie description with at least seven words here")
+}
+`)
+
+	assert.Equal(t, scoreTypeFidelity(withoutRequired), scoreTypeFidelity(withRequired),
+		"MarkFlagRequired must not earn a scorecard point — it is forbidden by the SKILL's verify-friendly RunE rule")
 }
 
 func TestScoreSyncCorrectness_NonSyncFilename(t *testing.T) {
@@ -783,6 +918,24 @@ func runLinks() string {
 		assert.ElementsMatch(t, []string{"mcp_description_quality", "mcp_token_efficiency", "mcp_remote_transport", "mcp_tool_design", "mcp_surface_strategy", "cache_freshness", "path_validity", "auth_protocol", "live_api_verification"}, sc.UnscoredDimensions)
 		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
 		assert.NotContains(t, sc.GapReport, "auth_protocol scored 0/10 - needs improvement")
+	})
+
+	t.Run("hidden endpoint mirrors omit mcp description quality from scoring", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, ToolsManifestFilename, `{
+  "mcp": {
+    "endpoint_tools": "hidden",
+    "orchestration": "code"
+  },
+  "tools": [
+    {"name": "demo_get", "description": "Get"},
+    {"name": "demo_create", "description": "Create"}
+  ]
+}`)
+
+		sc, err := RunScorecard(dir, t.TempDir(), "", nil)
+		assert.NoError(t, err)
+		assert.Contains(t, sc.UnscoredDimensions, DimMCPDescriptionQuality)
 	})
 
 	t.Run("missing security schemes renormalizes tier2 instead of treating auth as zero", func(t *testing.T) {
@@ -1216,6 +1369,125 @@ func signKalshiRequest(req *http.Request, key string, signature string) {
         "type": "apiKey",
         "in": "header",
         "name": "KALSHI-ACCESS-TIMESTAMP"
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Less(t, sc.Steinberger.AuthProtocol, 5)
+	})
+
+	t.Run("all apiKey header auth scores every required header", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setAutotaskAuth(req *http.Request, userName string, secret string, integrationCode string) {
+	req.Header.Set("UserName", userName)
+	req.Header.Set("Secret", secret)
+	req.Header.Set("ApiIntegrationCode", integrationCode)
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-autotask-composed.json")
+		writeScorecardFixture(t, dir, "spec-autotask-composed.json", `{
+  "security": [
+    {
+      "UserName": [],
+      "Secret": [],
+      "ApiIntegrationCode": []
+    }
+  ],
+  "paths": {
+    "/tickets": {
+      "get": {
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "UserName": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "UserName"
+      },
+      "Secret": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Secret"
+      },
+      "ApiIntegrationCode": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "ApiIntegrationCode"
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Equal(t, 10, sc.Steinberger.AuthProtocol)
+	})
+
+	t.Run("all apiKey header auth penalizes missing required header", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setAutotaskAuth(req *http.Request, userName string, integrationCode string) {
+	req.Header.Set("UserName", userName)
+	req.Header.Set("ApiIntegrationCode", integrationCode)
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-autotask-composed-missing.json")
+		writeScorecardFixture(t, dir, "spec-autotask-composed-missing.json", `{
+  "security": [
+    {
+      "UserName": [],
+      "Secret": [],
+      "ApiIntegrationCode": []
+    }
+  ],
+  "paths": {
+    "/tickets": {
+      "get": {
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "UserName": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "UserName"
+      },
+      "Secret": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Secret"
+      },
+      "ApiIntegrationCode": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "ApiIntegrationCode"
       }
     }
   }
@@ -1951,6 +2223,37 @@ func (c *Client) do() {
 			"inferred auth should score > 0")
 	})
 
+	t.Run("inferred cookie header auth is scored", func(t *testing.T) {
+		dir := t.TempDir()
+
+		writeScorecardFixture(t, dir, "internal/config/config.go", `package config
+// Auth inferred from API description — verify the env var below is correct
+func Load() {
+	if v := os.Getenv("EXAMPLE_COOKIE"); v != "" {
+		cfg.Cookie = v
+	}
+}
+`)
+		writeScorecardFixture(t, dir, "internal/client/client.go", `package client
+func (c *Client) do() {
+	req.Header.Set("Cookie", authHeader)
+}
+`)
+
+		specPath := filepath.Join(dir, "spec.json")
+		writeScorecardFixture(t, dir, "spec.json", `{
+  "paths": { "/users": { "get": { "responses": { "200": { "description": "ok" } } } } },
+  "components": { "securitySchemes": {} }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol",
+			"inferred cookie auth with Cookie header should be scored")
+		assert.GreaterOrEqual(t, sc.Steinberger.AuthProtocol, 8)
+	})
+
 	t.Run("query-param auth without inferred marker stays unscored", func(t *testing.T) {
 		dir := t.TempDir()
 
@@ -2013,6 +2316,67 @@ func (c *Client) do() {
 			"inferred auth with custom header should be scored")
 		assert.Greater(t, sc.Steinberger.AuthProtocol, 0)
 	})
+}
+
+func TestEvaluateAuthProtocol_InternalCookieAuth(t *testing.T) {
+	t.Run("scores generated Cookie header for internal YAML cookie auth", func(t *testing.T) {
+		sc := scoreInternalCookieAuthProtocol(t, `package client
+func (c *Client) do() {
+	req.Header.Set("Cookie", authHeader)
+}
+`)
+
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.GreaterOrEqual(t, sc.Steinberger.AuthProtocol, 8)
+	})
+
+	t.Run("does not score Cookie mentions without header assignment", func(t *testing.T) {
+		sc := scoreInternalCookieAuthProtocol(t, `package client
+func (c *Client) do() {
+	_ = "Cookie"
+	// Cookie appears in documentation, not in an outgoing request.
+}
+`)
+
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Less(t, sc.Steinberger.AuthProtocol, 8)
+	})
+}
+
+func scoreInternalCookieAuthProtocol(t *testing.T, clientContent string) *Scorecard {
+	t.Helper()
+
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, "internal/config/config.go", `package config
+func Load() {
+	if v := os.Getenv("EXAMPLE_COOKIE"); v != "" {
+		cfg.Cookie = v
+	}
+}
+`)
+	writeScorecardFixture(t, dir, "internal/client/client.go", clientContent)
+	specPath := filepath.Join(dir, "spec.yaml")
+	writeScorecardFixture(t, dir, "spec.yaml", `name: example
+display_name: Example
+description: Cookie auth scorecard fixture
+base_url: https://api.example.com
+auth:
+  type: cookie
+  header: Cookie
+  env_vars:
+    - EXAMPLE_COOKIE
+resources:
+  users:
+    description: Users
+    endpoints:
+      list:
+        method: GET
+        path: /users
+`)
+
+	sc, err := RunScorecard(dir, t.TempDir(), specPath, nil)
+	assert.NoError(t, err)
+	return sc
 }
 
 func TestScoreAuthScheme_APIKeyHeaderUsesCaseInsensitiveHeaderAndGenericAPIKeyEnv(t *testing.T) {

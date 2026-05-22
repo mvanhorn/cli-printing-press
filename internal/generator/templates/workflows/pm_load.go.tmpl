@@ -41,6 +41,8 @@ person. Helps identify overloaded team members and unbalanced workload.`,
 			}
 			defer db.Close()
 
+			maybeEmitSyncHints(cmd, db, "", flags.maxAge)
+
 			// Build user name lookup from synced users
 			userNames := map[string]string{}
 			userRows, err := db.Query(`SELECT data FROM resources WHERE resource_type = 'users'`)

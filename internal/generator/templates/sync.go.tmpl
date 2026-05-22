@@ -6,6 +6,9 @@
 {{- $hasFieldSelector := false -}}
 {{- range .SyncableResources}}{{if and .FieldSelector.Name .FieldSelector.Default}}{{- $hasFieldSelector = true -}}{{end}}{{end -}}
 {{- range .DependentSyncResources}}{{if and .FieldSelector.Name .FieldSelector.Default}}{{- $hasFieldSelector = true -}}{{end}}{{end }}
+{{- $hasHTMLSync := false -}}
+{{- range .SyncableResources}}{{if .UsesHTMLResponse}}{{- $hasHTMLSync = true -}}{{end}}{{end -}}
+{{- range .DependentSyncResources}}{{if .UsesHTMLResponse}}{{- $hasHTMLSync = true -}}{{end}}{{end }}
 
 package cli
 
@@ -482,6 +485,10 @@ func syncResource(ctx context.Context, c interface {
 {{- if $hasPostSync}}
 	PostWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
 {{- end}}
+{{- if $hasHTMLSync}}
+	RequestBaseURL() string
+	LastContentType() string
+{{- end}}
 	RateLimit() float64
 }, db *store.Store, resource, sinceTS string, full bool, maxPages int, latestOnly bool{{if .Pagination.DateRangeParam}}, dates string{{end}}, userParams *syncUserParams) syncResult {
 	started := time.Now()
@@ -656,6 +663,18 @@ func syncResource(ctx context.Context, c interface {
 			return syncResult{Resource: resource, Count: 0, Duration: time.Since(started)}
 		}
 
+{{ if $hasHTMLSync}}
+		if opts, ok := syncHTMLExtractionOptions(resource, "", c.RequestBaseURL(), c.LastContentType(), path, params); ok {
+			data, err = extractHTMLResponse(data, opts)
+			if err != nil {
+				if !humanFriendly {
+					fmt.Fprintln(os.Stdout, syncErrorJSON(resource, "", err))
+				}
+				return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("extracting HTML for %s: %w", resource, err), Duration: time.Since(started)}
+			}
+		}
+
+{{ end}}
 		// Try to extract items from the response.
 		// Strategy: try array first, then common wrapper keys.
 		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
@@ -1456,6 +1475,61 @@ func syncResourcePath(resource string) (string, error) {
 	return "", fmt.Errorf("unknown sync resource %q", resource)
 }
 
+{{- if $hasHTMLSync}}
+
+func syncHTMLExtractionOptions(resource string, parentResource string, baseURL string, contentType string, path string, params map[string]string) (htmlExtractionOptions, bool) {
+	key := resource
+	if parentResource != "" {
+		key = parentResource + "." + resource
+	}
+	switch key {
+{{- range .SyncableResources}}
+{{- if .UsesHTMLResponse}}
+	case "{{.Name}}":
+		return htmlExtractionOptions{
+			Mode: "{{with .HTMLExtract}}{{.EffectiveMode}}{{else}}page{{end}}",
+			BaseURL: htmlExtractionRequestURL(baseURL, path, params),
+			ContentType: contentType,
+			LinkPrefixes: []string{
+{{- with .HTMLExtract}}
+{{- range .LinkPrefixes}}
+				{{printf "%q" .}},
+{{- end}}
+{{- end}}
+			},
+			Limit: {{with .HTMLExtract}}{{.Limit}}{{else}}0{{end}},
+			ScriptSelector: {{with .HTMLExtract}}{{printf "%q" .EffectiveScriptSelector}}{{else}}""{{end}},
+			JSONPath: {{with .HTMLExtract}}{{printf "%q" .JSONPath}}{{else}}""{{end}},
+		}, true
+{{- end}}
+{{- end}}
+{{- range .DependentSyncResources}}
+{{- if .UsesHTMLResponse}}
+	case "{{.ParentResource}}.{{.Name}}":
+		return htmlExtractionOptions{
+			Mode: "{{with .HTMLExtract}}{{.EffectiveMode}}{{else}}page{{end}}",
+			BaseURL: htmlExtractionRequestURL(baseURL, path, params),
+			ContentType: contentType,
+			LinkPrefixes: []string{
+{{- with .HTMLExtract}}
+{{- range .LinkPrefixes}}
+				{{printf "%q" .}},
+{{- end}}
+{{- end}}
+			},
+			Limit: {{with .HTMLExtract}}{{.Limit}}{{else}}0{{end}},
+			ScriptSelector: {{with .HTMLExtract}}{{printf "%q" .EffectiveScriptSelector}}{{else}}""{{end}},
+			JSONPath: {{with .HTMLExtract}}{{printf "%q" .JSONPath}}{{else}}""{{end}},
+		}, true
+{{- end}}
+{{- end}}
+	default:
+		return htmlExtractionOptions{}, false
+	}
+}
+
+{{- end}}
+
 {{- if .HasTierRouting}}
 
 var syncResourceTiers = map[string]string{
@@ -1512,6 +1586,10 @@ func syncDependentResources(ctx context.Context, c {{if .HasTierRouting}}*client
 {{- if $hasPostSync}}
 	PostWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
 {{- end}}
+{{- if $hasHTMLSync}}
+	RequestBaseURL() string
+	LastContentType() string
+{{- end}}
 	RateLimit() float64
 }{{end}}, db *store.Store, sinceTS string, full bool, maxPages int, latestOnly bool, parentFilter []string{{if .Pagination.DateRangeParam}}, dates string{{end}}, userParams *syncUserParams) []syncResult {
 	allow := make(map[string]bool, len(parentFilter))
@@ -1534,6 +1612,10 @@ func syncDependentResource(ctx context.Context, c interface {
 	Get(context.Context, string, map[string]string) (json.RawMessage, error)
 {{- if $hasPostSync}}
 	PostWithParams(context.Context, string, map[string]string, any) (json.RawMessage, int, error)
+{{- end}}
+{{- if $hasHTMLSync}}
+	RequestBaseURL() string
+	LastContentType() string
 {{- end}}
 	RateLimit() float64
 }, db *store.Store, dep dependentResourceDef, sinceTS string, full bool, maxPages int, latestOnly bool{{if .Pagination.DateRangeParam}}, dates string{{end}}, userParams *syncUserParams) syncResult {
@@ -1662,6 +1744,20 @@ func syncDependentResource(ctx context.Context, c interface {
 				break
 			}
 
+{{ if $hasHTMLSync}}
+			if opts, ok := syncHTMLExtractionOptions(dep.Name, dep.ParentTable, c.RequestBaseURL(), c.LastContentType(), path, params); ok {
+				data, err = extractHTMLResponse(data, opts)
+				if err != nil {
+					if humanFriendly {
+						fmt.Fprintf(os.Stderr, "\n  %s: HTML extraction error for parent %s: %v\n", dep.Name, parentID, err)
+					} else {
+						fmt.Fprintln(os.Stdout, syncErrorJSON(dep.Name, parentID, err))
+					}
+					break
+				}
+			}
+
+{{ end}}
 			items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
 
 			// Page-int paginator fallback: mirrors syncResource so dependent

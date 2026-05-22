@@ -66,7 +66,7 @@ func Capture(ctx context.Context, opts CaptureOptions) (*State, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating temp user-data-dir: %w", err)
 	}
-	defer func() { _ = os.RemoveAll(userDataDir) }()
+	defer removeTempDirEventually(userDataDir, 5*time.Second)
 
 	// Start from chromedp's recommended defaults (Puppeteer-style
 	// stability flags) and tack on the press-auth specifics: pinned
@@ -333,6 +333,21 @@ func sanitizeForTempName(s string) string {
 		}
 	}
 	return string(out)
+}
+
+func removeTempDirEventually(dir string, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for {
+		_ = os.RemoveAll(dir)
+
+		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // classifyChromeErr wraps a chromedp/cdproto error with stage context so

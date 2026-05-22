@@ -118,6 +118,12 @@ type SyncableResource struct {
 	// endpoints.
 	SupportsPagination bool
 
+	// UsesHTMLResponse and HTMLExtract mirror the chosen list endpoint's
+	// response_format/html_extract contract so sync can normalize HTML into
+	// JSON before passing the body into the JSON page extractor.
+	UsesHTMLResponse bool
+	HTMLExtract      *spec.HTMLExtract
+
 	// BodyFields names request-body fields on POST list endpoints. Sync uses
 	// this to send pagination and user-supplied params in the body for
 	// RPC-style list calls.
@@ -164,6 +170,11 @@ type DependentResource struct {
 	// paths so dependent syncs skip synthetic limit/offset params on endpoints
 	// that do not declare page-size pagination.
 	SupportsPagination bool
+
+	// UsesHTMLResponse and HTMLExtract mirror SyncableResource for child sync
+	// paths.
+	UsesHTMLResponse bool
+	HTMLExtract      *spec.HTMLExtract
 
 	// BodyFields mirrors SyncableResource.BodyFields for child sync paths.
 	BodyFields []SyncBodyField
@@ -1130,6 +1141,8 @@ func detectDependentResources(parameterized map[string]parameterizedEntry, synca
 			Critical:           entry.meta.Critical,
 			SinceParam:         entry.meta.SinceParam,
 			SupportsPagination: entry.meta.SupportsPagination,
+			UsesHTMLResponse:   entry.meta.UsesHTMLResponse,
+			HTMLExtract:        entry.meta.HTMLExtract,
 			BodyFields:         entry.meta.BodyFields,
 			FieldSelector:      entry.meta.FieldSelector,
 			Discriminator:      entry.meta.Discriminator,
@@ -1239,6 +1252,8 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				Critical:           meta.Critical,
 				SinceParam:         meta.SinceParam,
 				SupportsPagination: meta.SupportsPagination,
+				UsesHTMLResponse:   meta.UsesHTMLResponse,
+				HTMLExtract:        meta.HTMLExtract,
 				BodyFields:         meta.BodyFields,
 				FieldSelector:      meta.FieldSelector,
 				Discriminator:      meta.Discriminator,
@@ -1322,6 +1337,8 @@ type syncableMeta struct {
 	Critical           bool
 	SinceParam         string
 	SupportsPagination bool
+	UsesHTMLResponse   bool
+	HTMLExtract        *spec.HTMLExtract
 	BodyFields         []SyncBodyField
 	FieldSelector      FieldSelector
 	Discriminator      DiscriminatorDispatch
@@ -1354,6 +1371,8 @@ func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, 
 		Critical:           e.Critical,
 		SinceParam:         detectEndpointSinceParam(e.Params),
 		SupportsPagination: endpointSupportsPagination(e),
+		UsesHTMLResponse:   e.UsesHTMLResponse(),
+		HTMLExtract:        e.HTMLExtract,
 		BodyFields:         syncBodyFieldsFromEndpoint(e),
 		FieldSelector:      detectEndpointFieldSelector(e),
 		Discriminator:      discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
@@ -1630,6 +1649,8 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			Critical:           meta.Critical,
 			SinceParam:         meta.SinceParam,
 			SupportsPagination: meta.SupportsPagination,
+			UsesHTMLResponse:   meta.UsesHTMLResponse,
+			HTMLExtract:        meta.HTMLExtract,
 			BodyFields:         meta.BodyFields,
 			FieldSelector:      meta.FieldSelector,
 			Discriminator:      meta.Discriminator,

@@ -10,7 +10,7 @@ import (
 func new{{camel .FuncPrefix}}Cmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "{{kebab .ResourceName}}",
-		Short: "{{oneline .Resource.Description}}",
+		Short: "{{.Short}}",
 {{- if .Hidden}}
 		Hidden: true,
 {{- end}}

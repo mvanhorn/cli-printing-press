@@ -46,7 +46,7 @@ func newProjectsListCmd(flags *rootFlags) *cobra.Command {
 				"status": fmt.Sprintf("%v", flagStatus),
 				"limit":  fmt.Sprintf("%v", flagLimit),
 				"cursor": fmt.Sprintf("%v", flagCursor),
-			}, nil, flagAll, "cursor", "", "")
+			}, nil, flagAll, "cursor", "", "", cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

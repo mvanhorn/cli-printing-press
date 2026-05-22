@@ -32,6 +32,42 @@ func TestRequiresPreDecisionFields(t *testing.T) {
 	}
 }
 
+func TestAuditMCPManifestSkipsHiddenEndpointMirrors(t *testing.T) {
+	manifest := &pipeline.ToolsManifest{
+		MCP: &pipeline.ManifestMCP{
+			EndpointTools: "hidden",
+			Orchestration: "code",
+		},
+		Tools: []pipeline.ManifestTool{
+			{Name: "demo_get", Description: "Get"},
+			{Name: "demo_create", Description: "Create"},
+		},
+	}
+
+	if got := auditMCPManifest(manifest); len(got) != 0 {
+		t.Fatalf("got %d findings for hidden endpoint mirrors, want 0: %#v", len(got), got)
+	}
+}
+
+func TestAuditMCPManifestStillFlagsVisibleEndpointMirrors(t *testing.T) {
+	manifest := &pipeline.ToolsManifest{
+		MCP: &pipeline.ManifestMCP{
+			EndpointTools: "visible",
+		},
+		Tools: []pipeline.ManifestTool{
+			{Name: "demo_get", Description: "Get"},
+		},
+	}
+
+	got := auditMCPManifest(manifest)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1: %#v", len(got), got)
+	}
+	if got[0].Kind != kindThinMCPDesc {
+		t.Fatalf("kind = %q, want %q", got[0].Kind, kindThinMCPDesc)
+	}
+}
+
 func TestMissingPreDecisionFields(t *testing.T) {
 	full := ToolsAuditFinding{
 		SpecSourceMaterial: "summary + 3 params",
@@ -522,6 +558,59 @@ func TestAuditCommandFieldsExplicitReadOnly(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAuditCommandFieldsThinShortStillFlagsShellOutCommands(t *testing.T) {
+	findings := auditCommandFields("internal/cli/cancel.go", 1, commandFields{
+		use:     "cancel",
+		short:   "Manage cancel",
+		hasRunE: true,
+	})
+
+	var gotThin bool
+	for _, f := range findings {
+		if f.Kind == kindThinShort {
+			gotThin = true
+			break
+		}
+	}
+	if !gotThin {
+		t.Fatalf("thin-short finding missing for shell-out command with thin Short: %+v", findings)
+	}
+}
+
+func TestAuditCommandFieldsFrameworkNamesOnlySkippedInFrameworkSubtrees(t *testing.T) {
+	t.Run("nested framework-named domain command is audited", func(t *testing.T) {
+		findings := auditCommandFields("items.go", 1, commandFields{
+			use:     "search",
+			short:   "Find",
+			hasRunE: true,
+		})
+
+		var gotThin, gotMissingReadOnly bool
+		for _, f := range findings {
+			switch f.Kind {
+			case kindThinShort:
+				gotThin = true
+			case kindMissingReadOnly:
+				gotMissingReadOnly = true
+			}
+		}
+		if !gotThin || !gotMissingReadOnly {
+			t.Fatalf("nested search findings = %+v, want thin-short and missing-read-only", findings)
+		}
+	})
+
+	t.Run("top-level framework file is skipped", func(t *testing.T) {
+		findings := auditCommandFields("search.go", 1, commandFields{
+			use:     "search",
+			short:   "Find",
+			hasRunE: true,
+		})
+		if len(findings) != 0 {
+			t.Fatalf("top-level framework search findings = %+v, want none", findings)
+		}
+	})
 }
 
 // TestInspectAnnotationsExplicitReadOnlyFalse pins the AST-level

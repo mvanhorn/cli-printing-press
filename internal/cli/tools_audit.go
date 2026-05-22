@@ -14,16 +14,15 @@ import (
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/spf13/cobra"
 )
 
 const (
-	ledgerFilename    = artifacts.ToolsPolishLedgerFilename
-	ledgerStaleAfter  = 24 * time.Hour
-	statusAccepted    = "accepted"
-	suspiciousMaxLen  = 30
-	suspiciousMinWord = 4
+	ledgerFilename   = artifacts.ToolsPolishLedgerFilename
+	ledgerStaleAfter = 24 * time.Hour
+	statusAccepted   = "accepted"
 
 	// Finding kinds. These strings appear in the JSON output, the
 	// ledger, and in agent-readable error messages, so changing a
@@ -49,11 +48,11 @@ const (
 // same predicate as the audit.
 
 // FrameworkCommands mirrors cobratree/classify.go.tmpl. The runtime
-// walker skips these names entirely — they're never registered as MCP
-// tools — so audit findings on their Cobra Short are noise. Exported
-// so the spec drift test in internal/spec can assert the cobra-Use
-// reserved set is a strict superset (anything cobratree skips at MCP
-// time would shadow at cobra time too).
+// walker skips these names only for top-level framework commands, so
+// audit findings on those Cobra Shorts are noise. Exported so the spec
+// drift test in internal/spec can assert the cobra-Use reserved set is
+// a strict superset (anything cobratree skips at MCP time would shadow
+// at cobra time too).
 var FrameworkCommands = map[string]bool{
 	"about":         true,
 	"agent-context": true,
@@ -168,10 +167,7 @@ type ToolsAuditFinding struct {
 }
 
 // readShapedNames is the heuristic for "this command name suggests a
-// read operation." We exclude verbs already in cobratree's
-// FrameworkCommands skip set (search, sql, doctor, version) — the
-// runtime walker doesn't register those as MCP tools, so a missing
-// read-only annotation is meaningless noise for them.
+// read operation."
 //
 // tail/since/report/lint were added after dub's polish-Pass-2 surfaced
 // them as commands the heuristic missed. They're consistently read-
@@ -181,7 +177,7 @@ type ToolsAuditFinding struct {
 // and writes in others; let Pass 2 catch them per CLI.
 var readShapedNames = map[string]struct{}{
 	"list": {}, "get": {}, "show": {}, "view": {},
-	"find": {}, "describe": {}, "context": {}, "stats": {},
+	"find": {}, "search": {}, "sql": {}, "describe": {}, "context": {}, "stats": {},
 	"trending": {}, "trust": {}, "health": {}, "stale": {}, "orphans": {},
 	"reconcile": {}, "analytics": {}, "tail": {}, "since": {},
 	"report": {}, "lint": {},
@@ -254,6 +250,9 @@ func auditCobraSource(cliDir string) ([]ToolsAuditFinding, error) {
 // them. Nil manifest (missing or malformed file) emits no findings.
 func auditMCPManifest(m *pipeline.ToolsManifest) []ToolsAuditFinding {
 	if m == nil {
+		return nil
+	}
+	if !m.EndpointMirrorsVisible() {
 		return nil
 	}
 	var findings []ToolsAuditFinding
@@ -384,15 +383,17 @@ func auditCommandFields(file string, line int, f commandFields) []ToolsAuditFind
 	//   - pp:endpoint commands (registered as typed tools with
 	//     spec-derived descriptions; the manifest audit covers those)
 	//   - parent groupers (no Run/RunE means not actionable)
-	//   - framework commands (auth, doctor, version, etc.) — including
-	//     their entire subtree. Generated CLIs put children (e.g.
-	//     `auth status`, `profile list`) in the same file as the parent,
-	//     so the file basename's leading token tells us the subtree
-	//     even when the child's own Use field doesn't match a framework
-	//     name.
+	//   - top-level framework command files (auth, doctor, version,
+	//     etc.) — including their true framework subtree. Generated CLIs
+	//     put children (e.g. `auth status`, `profile list`) in the same
+	//     file as the parent, so the file basename's leading token tells
+	//     us the subtree even when the child's own Use field doesn't
+	//     match a framework name. A nested domain command named `search`
+	//     in a non-framework file still becomes a shell-out MCP tool and
+	//     must be audited.
 	// For all of these, the Cobra Short isn't the MCP tool description
 	// the agent will see, so flagging it would be noise.
-	isShellOut := !f.hasEndpoint && f.hasRunE && !FrameworkCommands[name] && !inFrameworkSubtree(file)
+	isShellOut := !f.hasEndpoint && f.hasRunE && !inFrameworkSubtree(file)
 
 	var out []ToolsAuditFinding
 	if isShellOut {
@@ -427,7 +428,7 @@ func auditCommandFields(file string, line int, f commandFields) []ToolsAuditFind
 // both the parent and its subtree without needing to track AddCommand
 // edges across files.
 func inFrameworkSubtree(file string) bool {
-	base := strings.TrimSuffix(file, ".go")
+	base := strings.TrimSuffix(filepath.Base(file), ".go")
 	if i := strings.IndexByte(base, '_'); i > 0 {
 		base = base[:i]
 	}
@@ -439,7 +440,7 @@ func inFrameworkSubtree(file string) bool {
 // 3-word phrase is OK, and a short-but-precise instruction is OK.
 // Both together is the "Search Ads" / "Subreddit Posts" anti-pattern.
 func suspiciousShort(s string) bool {
-	return len(s) < suspiciousMaxLen && len(strings.Fields(s)) < suspiciousMinWord
+	return naming.IsThinCommandShort(s)
 }
 
 // readShapedName matches the head before the first hyphen against the

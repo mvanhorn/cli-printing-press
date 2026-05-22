@@ -28,7 +28,7 @@ import (
 {{- if .BearerRefresh.Enabled}}
 	"net/http"
 {{- end}}
-{{- if or .Auth.EnvVarSpecs .Auth.EnvVars .HasStore .Auth.RequiresBrowserSession .HasTierRouting}}
+{{- if or .Auth.EnvVarSpecs .Auth.EnvVars .Auth.AdditionalHeaders .HasStore .Auth.RequiresBrowserSession .HasTierRouting}}
 	"os"
 {{- end}}
 {{- if or (eq .Auth.Type "cookie") (eq .Auth.Type "composed")}}
@@ -297,19 +297,36 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				}
 			}
 {{- end}}
-{{- if not (or .Auth.EnvVarSpecs .Auth.EnvVars)}}
+{{- if not (or .Auth.EnvVarSpecs .Auth.EnvVars .Auth.AdditionalHeaders)}}
 			_ = authConfigured
 {{- end}}
 {{- end}}
 
 			// Check auth environment variables
-{{- if .Auth.EnvVarSpecs}}
+{{- if or .Auth.EnvVarSpecs .Auth.AdditionalHeaders}}
 			authEnvSet := []string{}
 			authEnvRequiredMissing := []string{}
 			authEnvInfo := []string{}
 			authEnvOptionalNames := []string{}
 			// Validation rejects multi-OR-group specs upstream, so the single optional-satisfied state is sufficient at runtime.
 			authEnvOptionalSatisfied := false
+{{- if .Auth.AdditionalHeaders}}
+			recordAdditionalAuthEnv := func(name, configuredValue string) {
+				if os.Getenv(name) != "" {
+					authEnvSet = append(authEnvSet, name)
+				} else if configuredValue != "" {
+					authEnvSet = append(authEnvSet, name)
+				} else if authConfigured {
+					authSource, _ := report["auth_source"].(string)
+					if authSource == "" {
+						authSource = "config"
+					}
+					authEnvInfo = append(authEnvInfo, "credentials available from "+authSource)
+				} else {
+					authEnvRequiredMissing = append(authEnvRequiredMissing, name)
+				}
+			}
+{{- end}}
 {{- if hasAuthEnvVarKind .Auth.EnvVarSpecs "harvested"}}
 			authHeader := ""
 			if cfg != nil {
@@ -357,6 +374,15 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			}
 {{- end}}
 {{- end}}
+{{- range .Auth.AdditionalHeaders}}
+			{
+				configuredValue := ""
+				if cfg != nil {
+					configuredValue = cfg.{{resolveEnvVarField .EnvVar.Name}}
+				}
+				recordAdditionalAuthEnv("{{.EnvVar.Name}}", configuredValue)
+			}
+{{- end}}
 			switch {
 			case len(authEnvRequiredMissing) > 0:
 				report["env_vars"] = "ERROR missing required: " + strings.Join(authEnvRequiredMissing, ", ")
@@ -367,7 +393,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			case len(authEnvInfo) > 0:
 				report["env_vars"] = "INFO " + strings.Join(authEnvInfo, "; ")
 			default:
-				report["env_vars"] = fmt.Sprintf("OK %d/%d available", len(authEnvSet), {{len .Auth.EnvVarSpecs}})
+				report["env_vars"] = fmt.Sprintf("OK %d/%d available", len(authEnvSet), {{add (len .Auth.EnvVarSpecs) (len .Auth.AdditionalHeaders)}})
 			}
 {{- else if .Auth.EnvVars}}
 			authEnvChecked := 0

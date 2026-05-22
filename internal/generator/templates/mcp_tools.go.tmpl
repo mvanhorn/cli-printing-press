@@ -731,6 +731,7 @@ func handleSQL(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToo
 {{- end}}
 
 func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+{{- $authEnvVars := authAgentEnvVars .Auth}}
 	ctx := map[string]any{
 		"api":         {{printf "%q" .DomainContext.APIName}},
 		"description": {{printf "%q" .DomainContext.Description}},
@@ -741,10 +742,9 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 {{- if and .Auth.Type (ne .Auth.Type "none")}}
 		"auth": map[string]any{
 			"type": {{printf "%q" .Auth.Type}},
-{{- if .Auth.EnvVarSpecs}}
+{{- if $authEnvVars}}
 			"env_vars": []map[string]any{
-{{- range .Auth.EnvVarSpecs}}
-{{- if ne .Kind "harvested"}}
+{{- range $authEnvVars}}
 				{
 					"name": {{printf "%q" .Name}},
 					"kind": {{printf "%q" .Kind}},
@@ -756,13 +756,6 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 					"description": {{printf "%q" .Description}},
 {{- end}}
 				},
-{{- end}}
-{{- end}}
-			},
-{{- else if .Auth.EnvVars}}
-			"env_vars": []map[string]any{
-{{- range .Auth.EnvVars}}
-				{"name": {{printf "%q" .}}, "kind": "per_call", "required": true, "sensitive": true},
 {{- end}}
 			},
 {{- end}}

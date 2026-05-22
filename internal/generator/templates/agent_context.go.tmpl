@@ -103,10 +103,9 @@ reading source. Schema is versioned via schema_version.`,
 }
 
 func buildAgentContext(rootCmd *cobra.Command) agentContext {
+{{- $authEnvVars := authAgentEnvVars .Auth}}
 	envVars := []agentContextAuthEnvVar{
-{{- if .Auth.EnvVarSpecs}}
-{{- range .Auth.EnvVarSpecs}}
-{{- if ne .Kind "harvested"}}
+{{- range $authEnvVars}}
 		{
 			Name:      {{printf "%q" .Name}},
 			Kind:      {{printf "%q" .Kind}},
@@ -118,17 +117,6 @@ func buildAgentContext(rootCmd *cobra.Command) agentContext {
 			Description: {{printf "%q" .Description}},
 {{- end}}
 		},
-{{- end}}
-{{- end}}
-{{- else}}
-{{- range .Auth.EnvVars}}
-		{
-			Name:      {{printf "%q" .}},
-			Kind:      "per_call",
-			Required:  true,
-			Sensitive: true,
-		},
-{{- end}}
 {{- end}}
 	}
 	authMode := {{printf "%q" .Auth.Type}}

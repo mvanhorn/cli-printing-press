@@ -983,6 +983,34 @@ func TestWriteToolsManifest_MCPDescriptionAnnotations(t *testing.T) {
 	}
 }
 
+func TestWriteToolsManifest_MCPSurfaceMetadata(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:    "surface-api",
+		BaseURL: "https://api.example.com",
+		MCP: spec.MCPConfig{
+			EndpointTools: "hidden",
+			Orchestration: "code",
+		},
+		Resources: map[string]spec.Resource{
+			"Items": {
+				Endpoints: map[string]spec.Endpoint{
+					"Get": {Method: "GET", Path: "/items/{id}", Description: "Get"},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, WriteToolsManifest(dir, parsed))
+
+	got, err := ReadToolsManifest(dir)
+	require.NoError(t, err)
+	require.NotNil(t, got.MCP)
+	assert.Equal(t, "hidden", got.MCP.EndpointTools)
+	assert.Equal(t, "code", got.MCP.Orchestration)
+	assert.False(t, got.EndpointMirrorsVisible())
+}
+
 func TestWriteToolsManifest_EmptyParamType(t *testing.T) {
 	dir := t.TempDir()
 	parsed := &spec.APISpec{

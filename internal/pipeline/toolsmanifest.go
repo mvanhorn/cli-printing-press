@@ -30,10 +30,32 @@ type ToolsManifest struct {
 	Description     string           `json:"description"`
 	MCPReady        string           `json:"mcp_ready"`
 	HTTPTransport   string           `json:"http_transport,omitempty"`
+	MCP             *ManifestMCP     `json:"mcp,omitempty"`
 	Auth            ManifestAuth     `json:"auth"`
 	TierRouting     *ManifestTiers   `json:"tier_routing,omitempty"`
 	RequiredHeaders []ManifestHeader `json:"required_headers"`
 	Tools           []ManifestTool   `json:"tools"`
+}
+
+// ManifestMCP persists the endpoint visibility fields needed by manifest
+// consumers without coupling tools-manifest.json to the full spec MCP shape.
+type ManifestMCP struct {
+	EndpointTools string `json:"endpoint_tools,omitempty"`
+	Orchestration string `json:"orchestration,omitempty"`
+}
+
+// EndpointMirrorsVisible reports whether Tools entries are registered as
+// per-endpoint MCP tools. Hidden endpoint mirrors remain in the manifest as
+// endpoint metadata for code-orchestration search/execute, but agents do not
+// see them as individual tools.
+func (m *ToolsManifest) EndpointMirrorsVisible() bool {
+	if m == nil || m.MCP == nil {
+		return true
+	}
+	return spec.MCPConfig{
+		EndpointTools: m.MCP.EndpointTools,
+		Orchestration: m.MCP.Orchestration,
+	}.EndpointMirrorsVisible()
 }
 
 // ManifestAuth captures the auth configuration needed to make authenticated
@@ -174,6 +196,12 @@ func WriteToolsManifestWithDescription(dir string, parsed *spec.APISpec, manifes
 		Auth:            manifestAuth(parsed.Auth),
 		RequiredHeaders: make([]ManifestHeader, 0, len(parsed.RequiredHeaders)),
 		Tools:           make([]ManifestTool, 0),
+	}
+	if parsed.MCP.EndpointTools != "" || parsed.MCP.Orchestration != "" {
+		manifest.MCP = &ManifestMCP{
+			EndpointTools: parsed.MCP.EndpointTools,
+			Orchestration: parsed.MCP.Orchestration,
+		}
 	}
 	if description := strings.TrimSpace(manifestDescription); description != "" {
 		manifest.Description = description
