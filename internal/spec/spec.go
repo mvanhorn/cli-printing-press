@@ -1797,12 +1797,63 @@ var ReservedCobraUseNames = map[string]struct{}{
 	"workflow":       {},
 }
 
+// ParseTimeReservedCobraUseName reports whether name is known, at spec-parse
+// time, to collide with a framework cobra command that this CLI will emit.
+// Some ReservedCobraUseNames entries are capability-gated by generation
+// profiling, so parsers must not reject or rename them before the generator
+// knows the actual root command set.
+func (s *APISpec) ParseTimeReservedCobraUseName(name string) bool {
+	kebab := snakeToKebab(name)
+	if kebab == "auth" {
+		return s.emitsAuthCommand()
+	}
+	if kebab == "health" {
+		return false
+	}
+	_, reserved := ReservedCobraUseNames[kebab]
+	return reserved
+}
+
+// UniqueFrameworkCollisionResourceName returns the canonical resource rename
+// for a top-level resource that would shadow a framework cobra command.
+func (s *APISpec) UniqueFrameworkCollisionResourceName(original string) string {
+	slug := "api"
+	if s != nil && s.Name != "" {
+		slug = s.Name
+	}
+	candidate := slug + "-" + original
+	if s == nil || s.Resources == nil {
+		return candidate
+	}
+	if _, exists := s.Resources[candidate]; !exists {
+		return candidate
+	}
+	for i := 2; ; i++ {
+		next := fmt.Sprintf("%s-%d", candidate, i)
+		if _, exists := s.Resources[next]; !exists {
+			return next
+		}
+	}
+}
+
+func (s *APISpec) emitsAuthCommand() bool {
+	if s == nil {
+		return false
+	}
+	// Traffic-analysis-only auth is not known at parse time; the generator
+	// handles that conditional collision once traffic hints are attached.
+	return s.Auth.Type != "none" || s.Auth.AuthorizationURL != ""
+}
+
 // validateReservedNames rejects specs whose top-level resource names would
 // collide with reserved Printing Press templates. Sub-resource names are not
 // checked because they emit under a parent prefix (`<parent>_<sub>.go`,
 // `new<Parent><Sub>Cmd`) that does not collide with single-file templates.
 func (s *APISpec) validateReservedNames() error {
 	for name := range s.Resources {
+		if name == "auth" && !s.emitsAuthCommand() {
+			continue
+		}
 		if _, reserved := ReservedCLIResourceNames[name]; reserved {
 			return fmt.Errorf("resource name %q collides with a reserved Printing Press template (would overwrite internal/cli/%s.go and produce a duplicate `new%sCmd` function). Rename the resource — e.g. %q",
 				name, name, snakeToPascal(name), name+"_resource")
@@ -1818,7 +1869,7 @@ func (s *APISpec) validateReservedNames() error {
 func (s *APISpec) validateFrameworkCobraCollisions() error {
 	for name := range s.Resources {
 		kebab := snakeToKebab(name)
-		if _, reserved := ReservedCobraUseNames[kebab]; reserved {
+		if s.ParseTimeReservedCobraUseName(kebab) {
 			suggestion := name + "_resource"
 			if s.Name != "" {
 				suggestion = snakeToKebab(s.Name) + "_" + name

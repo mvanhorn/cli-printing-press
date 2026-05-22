@@ -3327,6 +3327,25 @@ resources:
 		assert.Contains(t, err.Error(), `"auth"`)
 	})
 
+	t.Run("auth resource is allowed when no auth command is emitted", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  auth:
+    description: Public auth helpers
+    endpoints:
+      check_email:
+        method: GET
+        path: /api/auth/check-email
+        description: Check email
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
 	t.Run("non-reserved name with reserved-substring is allowed", func(t *testing.T) {
 		t.Parallel()
 		// "customer_feedback" contains "feedback" but is not itself reserved;
@@ -3452,6 +3471,25 @@ resources:
         method: GET
         path: /stores
         description: List
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
+	t.Run("health resource passes until the generator emits a health command", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  health:
+    description: API health
+    endpoints:
+      get:
+        method: GET
+        path: /health
+        description: Health
 `
 		_, err := ParseBytes([]byte(input))
 		require.NoError(t, err)
