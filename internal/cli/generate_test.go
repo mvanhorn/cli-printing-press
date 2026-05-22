@@ -15,6 +15,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
@@ -111,6 +112,59 @@ func TestGenerateCmdHelpDescribesForceAsGeneratedOverwrite(t *testing.T) {
 
 	require.NoError(t, cmd.Execute())
 	assert.Contains(t, out.String(), "Recreate the base output directory while preserving hand-edits to generated files via AST-based merge")
+	assert.Contains(t, out.String(), "--strict-refs")
+}
+
+func TestGenerateCmdLenientMissingLocalSchemaRefs(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "missing-ref.yaml")
+	outputDir := filepath.Join(dir, "missing-ref")
+	require.NoError(t, os.WriteFile(specPath, []byte(`
+openapi: 3.0.3
+info:
+  title: Missing Ref API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  widget:
+                    $ref: "#/components/schemas/MissingWidget"
+components:
+  schemas:
+    Present:
+      type: object
+      properties:
+        id:
+          type: string
+`), 0o644))
+
+	runGenerate := func(args ...string) error {
+		cmd := newGenerateCmd()
+		baseArgs := []string{
+			"--spec", specPath,
+			"--output", outputDir,
+			"--dry-run",
+		}
+		cmd.SetArgs(append(baseArgs, args...))
+		return cmd.Execute()
+	}
+
+	require.Error(t, runGenerate())
+	require.NoError(t, runGenerate("--lenient"))
+	require.Error(t, runGenerate("--lenient", "--strict-refs"))
 }
 
 // TestGenerateCmdForcePreservesIssue907HandEdits exercises the canonical
@@ -2445,12 +2499,12 @@ paths:
 	pref := openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, "")
 	require.Equal(t, "basicAuth", pref)
 
-	parsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec.yaml"), specBytes, false, pref)
+	parsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec.yaml"), specBytes, openapi.ParseOptions{AuthPreference: pref})
 	require.NoError(t, err)
 	assert.Equal(t, "basicAuth", parsed.Auth.Scheme)
 	assert.Equal(t, "api_key", parsed.Auth.Type)
 
-	defaultParsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec2.yaml"), specBytes, false, "")
+	defaultParsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec2.yaml"), specBytes, openapi.ParseOptions{})
 	require.NoError(t, err)
 	assert.Equal(t, "OAuth2", defaultParsed.Auth.Scheme, "without catalog-driven preference, OAuth2 wins")
 }
