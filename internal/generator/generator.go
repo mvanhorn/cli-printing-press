@@ -1960,7 +1960,9 @@ func parentCommandShort(resourceName, parentName string, resource spec.Resource)
 	}
 
 	if actions := parentCommandActions(resource.Endpoints); actions != "" {
-		return actions + " " + target
+		if computed := actions + " " + target; !naming.IsThinCommandShort(computed) {
+			return computed
+		}
 	}
 	return "Manage " + target + " command groups"
 }
