@@ -522,7 +522,7 @@ func init() {
 		assert.Equal(t, 0, scoreTypeFidelity(dir))
 	})
 
-	t.Run("scores string id flags required markers and clear descriptions high", func(t *testing.T) {
+	t.Run("scores string id flags and clear descriptions high", func(t *testing.T) {
 		dir := t.TempDir()
 
 		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
@@ -533,14 +533,104 @@ func init() {
 	cmd.Flags().StringVar(&flagAfterID, "after-id", "", "Snowflake ID to fetch results after the given message")
 	cmd.Flags().StringVar(&flagChannelID, "channel-id", "", "Channel ID containing the messages to fetch for sync")
 	cmd.Flags().StringVar(&flagGuildID, "guild-id", "", "Guild ID used to scope channel and message syncing")
-	_ = cmd.MarkFlagRequired("after-id")
-	_ = cmd.MarkFlagRequired("channel-id")
-	_ = cmd.MarkFlagRequired("guild-id")
 }
 `)
 
-		assert.GreaterOrEqual(t, scoreTypeFidelity(dir), 4)
+		// +2 ID flags are all StringVar, +1 descriptions average well over 5 words,
+		// +1 no dummy `var _ = strings.ReplaceAll` / `var _ = fmt.Sprintf` guards.
+		assert.Equal(t, 4, scoreTypeFidelity(dir))
 	})
+}
+
+// TestIsIDFlagName pins the kebab-case word-boundary semantics that replaced
+// the bare `strings.Contains(name, "id")` check. The old check classified
+// "price-paid-cents" as an ID flag because "paid" contains "id", which then
+// failed the "all ID flags must be StringVar" rule on IntVar money columns.
+func TestIsIDFlagName(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"id", true},
+		{"user-id", true},
+		{"id-prefix", true},
+		{"parent-id-child", true},
+		{"price-paid-cents", false},
+		{"validate", false},
+		{"kid", false},
+		{"wide", false},
+		{"video", false},
+		{"identity", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isIDFlagName(tc.name))
+		})
+	}
+}
+
+// TestScoreTypeFidelity_FlagDeclRegexBoundedToOneLine pins that consecutive
+// Flags() calls capture their own description, not the next call's flag name.
+// Before the [^,\n]+ fix the greedy [^,]+ spanned newlines, so the first
+// flag's description capture pulled in the next flag's name (a short kebab
+// token) and dragged the description word-count average below the >5 threshold.
+func TestScoreTypeFidelity_FlagDeclRegexBoundedToOneLine(t *testing.T) {
+	dir := t.TempDir()
+	writeScorecardFixture(t, dir, "internal/cli/messages.go", `
+package cli
+
+func init() {
+	cmd := messagesCmd
+	cmd.Flags().StringVar(&flagAlpha, "alpha", "", "Alpha description with at least seven words here")
+	cmd.Flags().StringVar(&flagBravo, "bravo", "", "Bravo description with at least seven words here")
+	cmd.Flags().StringVar(&flagCharlie, "charlie", "", "Charlie description with at least seven words here")
+}
+`)
+
+	// With the pre-fix greedy [^,]+ regex, the description capture for "alpha"
+	// absorbed the next line's `&flagBravo` token, dragging descWordCount and
+	// descCount so the average dropped to ≤5, costing the +1 description point
+	// (score 3). The bounded [^,\n]+ regex keeps each capture inside its own
+	// statement: +2 ID-flag check (no ID flags), +1 descriptions averaging >5
+	// words, +1 no dummy guards = 4.
+	assert.Equal(t, 4, scoreTypeFidelity(dir))
+}
+
+// TestScoreTypeFidelity_DoesNotRewardMarkFlagRequired pins that
+// MarkFlagRequired no longer earns a point. The SKILL's verify-friendly RunE
+// rule forbids it (Cobra evaluates it before RunE, so --dry-run probes fail).
+// Rewarding it created a direct scorer-versus-SKILL conflict — a compliant
+// agent would always lose this point.
+func TestScoreTypeFidelity_DoesNotRewardMarkFlagRequired(t *testing.T) {
+	withRequired := t.TempDir()
+	writeScorecardFixture(t, withRequired, "internal/cli/messages.go", `
+package cli
+
+func init() {
+	cmd := messagesCmd
+	cmd.Flags().StringVar(&flagAlpha, "alpha", "", "Alpha description with at least seven words here")
+	cmd.Flags().StringVar(&flagBravo, "bravo", "", "Bravo description with at least seven words here")
+	cmd.Flags().StringVar(&flagCharlie, "charlie", "", "Charlie description with at least seven words here")
+	_ = cmd.MarkFlagRequired("alpha")
+	_ = cmd.MarkFlagRequired("bravo")
+	_ = cmd.MarkFlagRequired("charlie")
+}
+`)
+
+	withoutRequired := t.TempDir()
+	writeScorecardFixture(t, withoutRequired, "internal/cli/messages.go", `
+package cli
+
+func init() {
+	cmd := messagesCmd
+	cmd.Flags().StringVar(&flagAlpha, "alpha", "", "Alpha description with at least seven words here")
+	cmd.Flags().StringVar(&flagBravo, "bravo", "", "Bravo description with at least seven words here")
+	cmd.Flags().StringVar(&flagCharlie, "charlie", "", "Charlie description with at least seven words here")
+}
+`)
+
+	assert.Equal(t, scoreTypeFidelity(withoutRequired), scoreTypeFidelity(withRequired),
+		"MarkFlagRequired must not earn a scorecard point — it is forbidden by the SKILL's verify-friendly RunE rule")
 }
 
 func TestScoreSyncCorrectness_NonSyncFilename(t *testing.T) {

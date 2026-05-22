@@ -74,7 +74,7 @@ type SteinerScore struct {
 	AuthProtocol          int    `json:"auth_protocol"`           // 0-10
 	DataPipelineIntegrity int    `json:"data_pipeline_integrity"` // 0-10
 	SyncCorrectness       int    `json:"sync_correctness"`        // 0-10
-	TypeFidelity          int    `json:"type_fidelity"`           // 0-5
+	TypeFidelity          int    `json:"type_fidelity"`           // 0-4 (declared cap 5; +1 MarkFlagRequired path dropped per SKILL conflict)
 	DeadCode              int    `json:"dead_code"`               // 0-5
 	LiveAPIVerification   int    `json:"live_api_verification"`   // 0-10; unscored when verify ran in mock/structural mode or was skipped
 	Total                 int    `json:"total"`                   // 0-100 (weighted: 50% infrastructure + 50% domain)
@@ -2334,19 +2334,21 @@ func scoreTypeFidelity(dir string) int {
 		return 0
 	}
 
-	flagDeclRe := regexp.MustCompile(`Flags\(\)\.(StringVar|IntVar|StringVarP|IntVarP)\(&[^,]+,\s*"([^"]+)"(?:,\s*[^,]+){1,2},\s*"([^"]*)"`)
-	requiredRe := regexp.MustCompile(`MarkFlagRequired\("([^"]+)"\)`)
+	// [^,\n]+ keeps each capture inside a single Flags() call. The previous
+	// [^,]+ would greedily consume across newlines into the next Flags()
+	// invocation, dragging the next flag's name into the current flag's
+	// description capture.
+	flagDeclRe := regexp.MustCompile(`Flags\(\)\.(StringVar|IntVar|StringVarP|IntVarP)\(&[^,\n]+,\s*"([^"]+)"(?:,\s*[^,\n]+){1,2},\s*"([^"]*)"`)
 
 	totalIDFlags := 0
 	stringIDFlags := 0
-	requiredCount := 0
 	descWordCount := 0
 	descCount := 0
 
 	for _, content := range cmdFiles {
 		for _, match := range flagDeclRe.FindAllStringSubmatch(content, -1) {
 			name := strings.ToLower(match[2])
-			if strings.Contains(name, "id") {
+			if isIDFlagName(name) {
 				totalIDFlags++
 				if strings.HasPrefix(match[1], "StringVar") {
 					stringIDFlags++
@@ -2355,15 +2357,14 @@ func scoreTypeFidelity(dir string) int {
 			descWordCount += len(strings.Fields(match[3]))
 			descCount++
 		}
-		requiredCount += len(requiredRe.FindAllStringSubmatch(content, -1))
 	}
 
 	if totalIDFlags == 0 || stringIDFlags == totalIDFlags {
 		score += 2
 	}
-	if requiredCount >= 3 {
-		score++
-	}
+	// MarkFlagRequired is intentionally not credited: the SKILL's verify-friendly
+	// RunE rule forbids it (Cobra evaluates it before RunE, so --dry-run probes
+	// fail with "required flag not set"). Required validation belongs inside RunE.
 	if descCount > 0 && descWordCount/descCount > 5 {
 		score++
 	}
@@ -2379,10 +2380,27 @@ func scoreTypeFidelity(dir string) int {
 		score++
 	}
 
-	if score > 5 {
-		score = 5
+	// Achievable max is 4 (+2 ID-flag check, +1 description avg, +1 no dummy
+	// guards). The +1 MarkFlagRequired path was removed because the SKILL
+	// explicitly forbids it. The tier rollup still allocates 5 raw points to
+	// this dimension, so the highest a SKILL-compliant CLI can score is 4/5.
+	if score > 4 {
+		score = 4
 	}
 	return score
+}
+
+// isIDFlagName returns true when a kebab-case flag name denotes an identifier
+// (id, *-id, id-*, *-id-*). Word boundaries prevent false positives like
+// "price-paid-cents" matching on the "id" substring inside "paid".
+func isIDFlagName(name string) bool {
+	if name == "id" {
+		return true
+	}
+	if strings.HasPrefix(name, "id-") || strings.HasSuffix(name, "-id") {
+		return true
+	}
+	return strings.Contains(name, "-id-")
 }
 
 func scoreDeadCode(dir string) int {
