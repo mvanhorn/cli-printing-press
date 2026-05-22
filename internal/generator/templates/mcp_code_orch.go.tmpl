@@ -74,8 +74,7 @@ type codeOrchEndpoint struct {
 	// bare top-level JSON array. The execute path then sends a top-level
 	// array (the agent supplies it as params["body"]) instead of the
 	// params object; a strict-mapping API rejects an object at the body
-	// root with HTTP 422 "Invalid json" (e.g. Tripletex [BETA] PUT
-	// /supplierInvoice/voucher/{id}/postings, body [{"posting":{...}}]).
+	// root with HTTP 422 "Invalid json".
 	BodyIsArray bool
 	keywords    []string
 }
@@ -264,10 +263,9 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		}
 	}
 
-	// Code-orch dispatch has no schema metadata at runtime to bucket params
-	// into body vs query, so POST/PUT/PATCH keep the everything-to-body
-	// design. DELETE is the one verb where query routing is unambiguous; the
-	// previous code built `query` but never passed it.
+	// Route params to their runtime slots. GET/DELETE params are query
+	// strings; write methods split spec-declared query params from the
+	// remaining params used as the request body below.
 	query := map[string]string{}
 	if ep.Method == "GET" || ep.Method == "DELETE" {
 		for k, v := range params {
@@ -346,9 +344,8 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 // client.do() marshals the body value exactly once. Handing it []byte makes
 // json.Marshal([]byte) emit a base64-encoded JSON *string*, so the API
 // receives "eyJ...==" where it expects the request object. Strict JSON APIs
-// reject that (e.g. Tripletex HTTP 422 "Request mapping failed", validation
-// field "", wrong type at root). GET/DELETE carry no body, so this defect
-// stays latent until the first write attempt.
+// reject that as the wrong type at the body root. GET/DELETE carry no body,
+// so this defect stays latent until the first write attempt.
 func codeOrchWriteBody(params map[string]any) any {
 	return params
 }

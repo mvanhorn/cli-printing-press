@@ -1345,8 +1345,8 @@ type Endpoint struct {
 	// Required flags instead; this field is ignored when Body is populated.
 	BodyRequired bool `yaml:"body_required,omitempty" json:"body_required,omitempty"`
 	// BodyIsArray signals that the request body schema root is a bare
-	// top-level JSON array (e.g. Tripletex [BETA] PUT
-	// /supplierInvoice/voucher/{id}/postings, body [{"posting":{...}}]).
+	// top-level JSON array (e.g. PUT /<resource>/{id}/<collection>, body
+	// [{"item":{...}}]).
 	// Such a body has no object properties to flatten to named params, so
 	// the parser leaves Body empty and sets BodyJSONFallback; this flag
 	// additionally tells the MCP orchestration executors to send the body
