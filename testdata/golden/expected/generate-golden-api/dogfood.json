@@ -69,6 +69,10 @@
   },
   "spec_path": "<ARTIFACT_DIR>/generate-golden-api/printing-press-golden/spec.yaml",
   "spec_source": "bundled",
+  "sync_param_drop_check": {
+    "checked": 0,
+    "skipped": true
+  },
   "test_presence": {
     "checked": 0
   },
