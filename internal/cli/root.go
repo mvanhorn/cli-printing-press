@@ -911,6 +911,10 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 }
 
 func mergeMultiSpecAuth(specs []*spec.APISpec) spec.AuthConfig {
+	if len(specs) == 1 {
+		return specs[0].Auth
+	}
+
 	auth := specs[0].Auth
 	authSpecIndex := 0
 	if auth.AuthorizationURL == "" {

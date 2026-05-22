@@ -1151,6 +1151,31 @@ func TestMergeSpecsUsesLaterOAuthAuthWhenPrimaryHasNoLogin(t *testing.T) {
 	assert.Equal(t, []string{"read.secondary"}, merged.Auth.Scopes)
 }
 
+func TestMergeSpecsPreservesSingleSpecAuthScopeOrder(t *testing.T) {
+	t.Parallel()
+
+	single := &spec.APISpec{
+		Name:    "single",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:             "bearer_token",
+			Header:           "Authorization",
+			AuthorizationURL: "https://accounts.example.com/auth",
+			TokenURL:         "https://accounts.example.com/token",
+			Scopes:           []string{"scope.z", "scope.a"},
+		},
+		Resources: map[string]spec.Resource{
+			"single": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/single"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{single}, "single")
+
+	assert.Equal(t, []string{"scope.z", "scope.a"}, merged.Auth.Scopes)
+}
+
 func assertAdditionalAuthHeader(t *testing.T, headers []spec.AdditionalAuthHeader, wantHeader, wantEnvVar string) {
 	t.Helper()
 	for _, header := range headers {
