@@ -784,36 +784,20 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 	envPrefix := naming.EnvPrefix(name)
 	switch auth.Type {
 	case "api_key":
-		if authFormatIsBasic(auth.Format) {
-			auth.EnvVars = []string{envPrefix + "_USERNAME", envPrefix + "_PASSWORD"}
-		} else {
-			// Use scheme name for more specific env var (e.g. BotToken -> DISCORD_BOT_TOKEN)
-			schemeEnvSuffix := toSnakeCase(schemeName)
-			if schemeEnvSuffix != "" && !isGenericAPIKeySchemeSuffix(schemeEnvSuffix) {
-				auth.EnvVars = []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
-			} else {
-				auth.EnvVars = []string{envPrefix + "_API_KEY"}
-			}
-		}
+		auth.EnvVars = defaultAuthEnvVars(auth.Type, auth.Format, schemeName, envPrefix)
 	case "bearer_token":
-		schemeEnvSuffix := toSnakeCase(schemeName)
-		switch schemeEnvSuffix {
-		case "", "bearer", "bearer_token", "token":
-			auth.EnvVars = []string{envPrefix + "_TOKEN"}
-		default:
-			auth.EnvVars = []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
-		}
+		auth.EnvVars = defaultAuthEnvVars(auth.Type, auth.Format, schemeName, envPrefix)
 	}
 	applyAuthOverrideExtensions(&auth, scheme.Extensions)
 	applyAuthEnvVarDefaults(&auth, envPrefix)
 	applyAuthVarsRichOverride(&auth, scheme.Extensions, fmt.Sprintf("components.securitySchemes.%s.%s", schemeName, extensionAuthVars))
 	applyAuthCompanionFromInfo(&auth, doc)
-	auth.AdditionalHeaders = collectAdditionalAuthHeaders(doc, schemeName)
+	auth.AdditionalHeaders = collectAdditionalAuthHeaders(doc, schemeName, envPrefix)
 	return auth
 }
 
 // collectAdditionalAuthHeaders scans AND-group siblings of the winning
-// security scheme for x-auth-vars per_call entries. Composed auth shapes
+// security scheme for per-call credential entries. Composed auth shapes
 // (apiKey + OAuth bearer, Stripe-Signature + bearer, ST-App-Key + bearer)
 // declare the apiKey scheme in the same security requirement object as the
 // bearer; selectSecurityScheme picks the bearer half, and without this sweep
@@ -827,33 +811,39 @@ func mapAuthWithDescriptionInference(doc *openapi3.T, name string, allowDescript
 // header on every Bearer-authenticated request. Only schemes co-located with
 // the winner in a requirement object are promoted.
 //
-// Only apiKey-typed siblings with `in: header` and an `x-auth-vars` per_call
-// declaration are considered. When doc.Security is empty (no root-level AND
-// grouping declared), no siblings are promoted: without an explicit
-// requirement object the AND/OR relationship is ambiguous and conservative
-// behavior is to emit nothing.
-func collectAdditionalAuthHeaders(doc *openapi3.T, winner string) []spec.AdditionalAuthHeader {
+// Only apiKey-typed siblings with `in: header` are considered. Rich
+// x-auth-vars per_call declarations win; legacy x-auth-env-vars supplies the
+// same credential name for specs that do not use the rich shape. For all-apiKey
+// AND groups, missing extension metadata falls back to a deterministic
+// scheme-derived env var so every required header reaches generated config and
+// client code.
+func collectAdditionalAuthHeaders(doc *openapi3.T, winner, envPrefix string) []spec.AdditionalAuthHeader {
 	if doc == nil || doc.Components == nil || len(doc.Components.SecuritySchemes) <= 1 {
 		return nil
 	}
-	if winner == "" || len(doc.Security) == 0 {
+	requirements := additionalHeaderSecurityRequirements(doc)
+	if winner == "" || len(requirements) == 0 {
 		return nil
 	}
 
 	siblingSet := map[string]struct{}{}
+	fallbackEligible := map[string]bool{}
 	var siblings []string
-	for _, req := range doc.Security {
+	for _, req := range requirements {
 		if _, ok := req[winner]; !ok {
 			continue
 		}
+		allHeaderAPIKeys := requirementAllHeaderAPIKeys(doc, req)
 		for name := range req {
 			if name == winner {
 				continue
 			}
 			if _, dup := siblingSet[name]; dup {
+				fallbackEligible[name] = fallbackEligible[name] || allHeaderAPIKeys
 				continue
 			}
 			siblingSet[name] = struct{}{}
+			fallbackEligible[name] = allHeaderAPIKeys
 			siblings = append(siblings, name)
 		}
 	}
@@ -877,14 +867,7 @@ func collectAdditionalAuthHeaders(doc *openapi3.T, winner string) []spec.Additio
 		if !strings.EqualFold(strings.TrimSpace(scheme.In), "header") {
 			continue
 		}
-		raw, ok := scheme.Extensions[extensionAuthVars]
-		if !ok || raw == nil {
-			continue
-		}
-		envVars, err := authVarsExtension(raw)
-		if err != nil || len(envVars) == 0 {
-			continue
-		}
+		envVars := additionalHeaderEnvVars(scheme, name, envPrefix, fallbackEligible[name])
 		for _, ev := range envVars {
 			if ev.EffectiveKind() != spec.AuthEnvVarKindPerCall {
 				continue
@@ -901,6 +884,131 @@ func collectAdditionalAuthHeaders(doc *openapi3.T, winner string) []spec.Additio
 		}
 	}
 	return headers
+}
+
+func additionalHeaderSecurityRequirements(doc *openapi3.T) openapi3.SecurityRequirements {
+	if doc == nil {
+		return nil
+	}
+	var requirements openapi3.SecurityRequirements
+	visitedOperation := false
+	if doc.Paths == nil {
+		if len(doc.Security) > 0 {
+			requirements = append(requirements, doc.Security...)
+		}
+		return requirements
+	}
+	for _, pathKey := range doc.Paths.InMatchingOrder() {
+		pathItem := doc.Paths.Value(pathKey)
+		if pathItem == nil {
+			continue
+		}
+		for _, op := range pathItem.Operations() {
+			if op == nil {
+				continue
+			}
+			visitedOperation = true
+			requirements = append(requirements, effectiveSecurityRequirements(op, doc)...)
+		}
+	}
+	if visitedOperation {
+		return requirements
+	}
+	if len(doc.Security) > 0 {
+		requirements = append(requirements, doc.Security...)
+	}
+	return requirements
+}
+
+func additionalHeaderEnvVars(scheme *openapi3.SecurityScheme, schemeName, envPrefix string, allowFallback bool) []spec.AuthEnvVar {
+	if scheme == nil {
+		return nil
+	}
+	if raw, ok := scheme.Extensions[extensionAuthVars]; ok && raw != nil {
+		envVars, err := authVarsExtension(raw)
+		if err == nil && len(envVars) > 0 {
+			return envVars
+		}
+	}
+	if envVars := stringListExtension(scheme.Extensions, extensionAuthEnvVars); len(envVars) > 0 {
+		if len(envVars) > 1 {
+			warnf("components.securitySchemes.%s.%s declares multiple names for one sibling header; using %s", schemeName, extensionAuthEnvVars, envVars[0])
+		}
+		name := strings.TrimSpace(envVars[0])
+		if name == "" {
+			return nil
+		}
+		return []spec.AuthEnvVar{{
+			Name:      name,
+			Kind:      spec.AuthEnvVarKindPerCall,
+			Required:  true,
+			Sensitive: true,
+			Inferred:  true,
+		}}
+	}
+	if !allowFallback {
+		return nil
+	}
+	name := derivedAdditionalHeaderEnvVar(schemeName, envPrefix)
+	if name == "" {
+		return nil
+	}
+	return []spec.AuthEnvVar{{
+		Name:      name,
+		Kind:      spec.AuthEnvVarKindPerCall,
+		Required:  true,
+		Sensitive: true,
+		Inferred:  true,
+	}}
+}
+
+func derivedAdditionalHeaderEnvVar(schemeName, envPrefix string) string {
+	envVars := defaultAuthEnvVars("api_key", "", schemeName, envPrefix)
+	if len(envVars) == 0 {
+		return ""
+	}
+	return envVars[0]
+}
+
+func defaultAuthEnvVars(authType, format, schemeName, envPrefix string) []string {
+	switch authType {
+	case "api_key":
+		if authFormatIsBasic(format) {
+			return []string{envPrefix + "_USERNAME", envPrefix + "_PASSWORD"}
+		}
+		// Use scheme name for more specific env var (e.g. BotToken -> DISCORD_BOT_TOKEN).
+		schemeEnvSuffix := toSnakeCase(schemeName)
+		if schemeEnvSuffix != "" && !isGenericAPIKeySchemeSuffix(schemeEnvSuffix) {
+			return []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
+		}
+		return []string{envPrefix + "_API_KEY"}
+	case "bearer_token":
+		schemeEnvSuffix := toSnakeCase(schemeName)
+		switch schemeEnvSuffix {
+		case "", "bearer", "bearer_token", "token":
+			return []string{envPrefix + "_TOKEN"}
+		default:
+			return []string{envPrefix + "_" + strings.ToUpper(schemeEnvSuffix)}
+		}
+	default:
+		return nil
+	}
+}
+
+func requirementAllHeaderAPIKeys(doc *openapi3.T, req openapi3.SecurityRequirement) bool {
+	if doc == nil || doc.Components == nil || len(req) == 0 {
+		return false
+	}
+	for name := range req {
+		scheme := securitySchemeValue(doc.Components.SecuritySchemes[name])
+		if scheme == nil {
+			return false
+		}
+		if !strings.EqualFold(scheme.Type, "apiKey") || !strings.EqualFold(strings.TrimSpace(scheme.In), "header") {
+			return false
+		}
+	}
+	return true
 }
 
 func isGenericAPIKeySchemeSuffix(suffix string) bool {

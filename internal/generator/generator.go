@@ -242,6 +242,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"authCommandShort":       authCommandShort,
 		"authHarvestedEnvHint":   authHarvestedEnvHint,
 		"basicAuthEnvVars":       basicAuthEnvVars,
+		"authAgentEnvVars":       authAgentEnvVars,
 		"hasAuthEnvVarKind":      hasAuthEnvVarKind,
 		"isRequestAuthEnvVar":    isRequestAuthEnvVar,
 		"effectiveTier":          effectiveTier,
@@ -1026,6 +1027,40 @@ func basicAuthEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
 		return envVars
 	}
 	return envVars[:2]
+}
+
+func authAgentEnvVars(auth spec.AuthConfig) []spec.AuthEnvVar {
+	var envVars []spec.AuthEnvVar
+	seen := map[string]struct{}{}
+	add := func(envVar spec.AuthEnvVar) {
+		if strings.TrimSpace(envVar.Name) == "" || envVar.Kind == spec.AuthEnvVarKindHarvested {
+			return
+		}
+		if _, ok := seen[envVar.Name]; ok {
+			return
+		}
+		seen[envVar.Name] = struct{}{}
+		envVars = append(envVars, envVar)
+	}
+
+	if len(auth.EnvVarSpecs) > 0 {
+		for _, envVar := range auth.EnvVarSpecs {
+			add(envVar)
+		}
+	} else {
+		for _, name := range auth.EnvVars {
+			add(spec.AuthEnvVar{
+				Name:      name,
+				Kind:      spec.AuthEnvVarKindPerCall,
+				Required:  true,
+				Sensitive: true,
+			})
+		}
+	}
+	for _, header := range auth.AdditionalHeaders {
+		add(header.EnvVar)
+	}
+	return envVars
 }
 
 func hasAuthEnvVarKind(envVarSpecs []spec.AuthEnvVar, kind string) bool {
