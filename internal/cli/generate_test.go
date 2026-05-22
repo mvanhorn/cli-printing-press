@@ -959,6 +959,328 @@ func TestMergeSpecsPreservesPerSpecBaseURLPrefixes(t *testing.T) {
 	)
 }
 
+func TestMergeSpecsUnionsAuthScopesAndAdditionalHeaders(t *testing.T) {
+	t.Parallel()
+
+	primary := &spec.APISpec{
+		Name:    "primary",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:             "bearer_token",
+			Header:           "Authorization",
+			AuthorizationURL: "https://accounts.example.com/auth",
+			TokenURL:         "https://accounts.example.com/token",
+			Scopes:           []string{"read.primary"},
+			AdditionalHeaders: []spec.AdditionalAuthHeader{
+				{Header: "X-Primary-Key", EnvVar: spec.AuthEnvVar{Name: "PRIMARY_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"primary": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/primary"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	secondary := &spec.APISpec{
+		Name:    "secondary",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:             "bearer_token",
+			Header:           "Authorization",
+			AuthorizationURL: "https://accounts.example.com/auth",
+			TokenURL:         "https://accounts.example.com/token",
+			Scopes:           []string{"read.secondary", "read.primary"},
+			AdditionalHeaders: []spec.AdditionalAuthHeader{
+				{Header: "X-Secondary-Key", EnvVar: spec.AuthEnvVar{Name: "SECONDARY_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}},
+				{Header: "X-Primary-Key", EnvVar: spec.AuthEnvVar{Name: "PRIMARY_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true}},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"secondary": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/secondary"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	standaloneKey := &spec.APISpec{
+		Name:    "standalone",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:   "api_key",
+			Header: "X-Standalone-Key",
+			In:     "header",
+			Scheme: "StandaloneKey",
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: " STANDALONE_KEY ", Required: true, Sensitive: true},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"standalone": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/standalone"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	queryKey := &spec.APISpec{
+		Name:    "querykey",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:   "api_key",
+			Header: "api_key",
+			In:     "query",
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "QUERY_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"querykey": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/querykey"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	ambiguousKey := &spec.APISpec{
+		Name:    "ambiguous",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:   "api_key",
+			Header: "X-Ambiguous-Key",
+			In:     "header",
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "AMBIGUOUS_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+				{Name: "AMBIGUOUS_SECRET", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"ambiguous": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/ambiguous"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	crossHostKey := &spec.APISpec{
+		Name:    "crosshost",
+		Version: "0.1.0",
+		BaseURL: "https://other.example.net",
+		Auth: spec.AuthConfig{
+			Type:   "api_key",
+			Header: "X-Cross-Host-Key",
+			In:     "header",
+			EnvVarSpecs: []spec.AuthEnvVar{
+				{Name: "CROSS_HOST_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+			},
+		},
+		Resources: map[string]spec.Resource{
+			"crosshost": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/crosshost"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	foreignOAuth := &spec.APISpec{
+		Name:    "foreignoauth",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:             "bearer_token",
+			Header:           "Authorization",
+			AuthorizationURL: "https://login.other.example.net/auth",
+			TokenURL:         "https://login.other.example.net/token",
+			Scopes:           []string{"read.foreign"},
+		},
+		Resources: map[string]spec.Resource{
+			"foreignoauth": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/foreignoauth"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	noFlowOAuth := &spec.APISpec{
+		Name:    "noflowoauth",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:   "bearer_token",
+			Header: "Authorization",
+			Scopes: []string{"read.noflow"},
+		},
+		Resources: map[string]spec.Resource{
+			"noflowoauth": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/noflowoauth"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary, standaloneKey, queryKey, ambiguousKey, crossHostKey, foreignOAuth, noFlowOAuth}, "combo")
+
+	assert.Equal(t, []string{"read.primary", "read.secondary"}, merged.Auth.Scopes)
+	require.Len(t, merged.Auth.AdditionalHeaders, 3)
+	assertAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "X-Primary-Key", "PRIMARY_KEY")
+	assertAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "X-Secondary-Key", "SECONDARY_KEY")
+	assertAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "X-Standalone-Key", "STANDALONE_KEY")
+	assert.Equal(t, " STANDALONE_KEY ", standaloneKey.Auth.EnvVarSpecs[0].Name)
+	assert.Empty(t, standaloneKey.Auth.EnvVarSpecs[0].Kind)
+}
+
+func TestMergeSpecsUsesLaterOAuthAuthWhenPrimaryHasNoLogin(t *testing.T) {
+	t.Parallel()
+
+	primary := &spec.APISpec{
+		Name:    "primary",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"primary": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/primary"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	secondary := &spec.APISpec{
+		Name:    "secondary",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:             "bearer_token",
+			Header:           "Authorization",
+			AuthorizationURL: "https://accounts.example.com/auth",
+			TokenURL:         "https://accounts.example.com/token",
+			Scopes:           []string{"read.secondary"},
+		},
+		Resources: map[string]spec.Resource{
+			"secondary": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/secondary"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary}, "combo")
+
+	assert.Equal(t, "bearer_token", merged.Auth.Type)
+	assert.Equal(t, "https://accounts.example.com/auth", merged.Auth.AuthorizationURL)
+	assert.Equal(t, "https://accounts.example.com/token", merged.Auth.TokenURL)
+	assert.Equal(t, []string{"read.secondary"}, merged.Auth.Scopes)
+}
+
+func TestMergeSpecsPreservesSingleSpecAuthScopeOrder(t *testing.T) {
+	t.Parallel()
+
+	single := &spec.APISpec{
+		Name:    "single",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:             "bearer_token",
+			Header:           "Authorization",
+			AuthorizationURL: "https://accounts.example.com/auth",
+			TokenURL:         "https://accounts.example.com/token",
+			Scopes:           []string{"scope.z", "scope.a"},
+		},
+		Resources: map[string]spec.Resource{
+			"single": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/single"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{single}, "single")
+
+	assert.Equal(t, []string{"scope.z", "scope.a"}, merged.Auth.Scopes)
+}
+
+func assertAdditionalAuthHeader(t *testing.T, headers []spec.AdditionalAuthHeader, wantHeader, wantEnvVar string) {
+	t.Helper()
+	for _, header := range headers {
+		if header.Header == wantHeader && header.EnvVar.Name == wantEnvVar {
+			return
+		}
+	}
+	assert.Failf(t, "missing additional auth header", "header %q with env var %q not found in %#v", wantHeader, wantEnvVar, headers)
+}
+
+func TestGenerateMultiSpecUnionsOAuthScopes(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	primarySpecPath := filepath.Join(dir, "youtube.yaml")
+	analyticsSpecPath := filepath.Join(dir, "analytics.yaml")
+	outputDir := filepath.Join(dir, "youtube")
+	require.NoError(t, os.WriteFile(primarySpecPath, []byte(`openapi: 3.0.3
+info:
+  title: YouTube
+  version: 1.0.0
+servers:
+  - url: https://www.googleapis.com/youtube/v3
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://accounts.google.com/o/oauth2/v2/auth
+          tokenUrl: https://oauth2.googleapis.com/token
+          scopes:
+            https://www.googleapis.com/auth/youtube: Manage YouTube account
+            https://www.googleapis.com/auth/youtube.readonly: View YouTube account
+security:
+  - OAuth2: []
+paths:
+  /channels:
+    get:
+      operationId: listChannels
+      responses:
+        "200":
+          description: OK
+`), 0o644))
+	require.NoError(t, os.WriteFile(analyticsSpecPath, []byte(`openapi: 3.0.3
+info:
+  title: YouTube Analytics
+  version: 1.0.0
+servers:
+  - url: https://youtubeanalytics.googleapis.com/v2
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://accounts.google.com/o/oauth2/v2/auth
+          tokenUrl: https://oauth2.googleapis.com/token
+          scopes:
+            https://www.googleapis.com/auth/yt-analytics.readonly: View YouTube analytics reports
+security:
+  - OAuth2: []
+paths:
+  /reports:
+    get:
+      operationId: queryReports
+      responses:
+        "200":
+          description: OK
+`), 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", primarySpecPath,
+		"--spec", analyticsSpecPath,
+		"--name", "youtube",
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+	})
+	require.NoError(t, cmd.Execute())
+
+	authFile, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	authSource := string(authFile)
+	assert.Contains(t, authSource, `"https://www.googleapis.com/auth/youtube"`)
+	assert.Contains(t, authSource, `"https://www.googleapis.com/auth/youtube.readonly"`)
+	assert.Contains(t, authSource, `"https://www.googleapis.com/auth/yt-analytics.readonly"`)
+
+	singleOutputDir := filepath.Join(dir, "youtube-single")
+	cmd = newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", primarySpecPath,
+		"--name", "youtube",
+		"--output", singleOutputDir,
+		"--validate=false",
+		"--force",
+	})
+	require.NoError(t, cmd.Execute())
+
+	singleAuthFile, err := os.ReadFile(filepath.Join(singleOutputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(singleAuthFile), "yt-analytics.readonly")
+}
+
 func TestGenerateMultiSpecEmitsNestedResourceBaseURLPrefix(t *testing.T) {
 	t.Parallel()
 

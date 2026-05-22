@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -844,7 +845,7 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 		Version:     specs[0].Version,
 		BaseURL:     mergedBaseURL,
 		BasePath:    specs[0].BasePath,
-		Auth:        specs[0].Auth,
+		Auth:        mergeMultiSpecAuth(specs),
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),
@@ -901,16 +902,191 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 			merged.Types[key] = typeDef
 		}
 
-		if s.Auth.AuthorizationURL != "" && merged.Auth.AuthorizationURL == "" {
-			merged.Auth = s.Auth
-		}
-
 		if mcpConfigured(s.MCP) && !mcpConfigured(merged.MCP) {
 			merged.MCP = rewriteMCPIntentEndpointRefs(s.MCP, resourceRenames)
 		}
 	}
 
 	return merged
+}
+
+func mergeMultiSpecAuth(specs []*spec.APISpec) spec.AuthConfig {
+	if len(specs) == 1 {
+		return specs[0].Auth
+	}
+
+	auth := specs[0].Auth
+	authSpecIndex := 0
+	if auth.AuthorizationURL == "" {
+		for i, s := range specs[1:] {
+			if s.Auth.AuthorizationURL != "" {
+				auth = s.Auth
+				authSpecIndex = i + 1
+				break
+			}
+		}
+	}
+	authOrigin := baseURLOrigin(specs[authSpecIndex].BaseURL)
+
+	scopeSet := make(map[string]struct{}, len(auth.Scopes))
+	for _, scope := range auth.Scopes {
+		if scope = strings.TrimSpace(scope); scope != "" {
+			scopeSet[scope] = struct{}{}
+		}
+	}
+	headers := append([]spec.AdditionalAuthHeader(nil), auth.AdditionalHeaders...)
+	seenHeaders := make(map[string]struct{}, len(headers)+1)
+	seenEnvVars := make(map[string]struct{}, len(headers)+len(auth.EnvVarSpecs)+len(auth.EnvVars))
+	seedAuthHeaderDedupe(seenHeaders, seenEnvVars, auth)
+
+	for _, s := range specs {
+		if compatibleOAuthScopeAuth(auth, s.Auth) {
+			for _, scope := range s.Auth.Scopes {
+				if scope = strings.TrimSpace(scope); scope != "" {
+					scopeSet[scope] = struct{}{}
+				}
+			}
+		}
+		headers = appendUniqueAdditionalAuthHeaders(headers, seenHeaders, seenEnvVars, s.Auth, baseURLOrigin(s.BaseURL) == authOrigin)
+	}
+
+	auth.Scopes = sortedScopes(scopeSet)
+	auth.AdditionalHeaders = headers
+	return auth
+}
+
+func seedAuthHeaderDedupe(seenHeaders, seenEnvVars map[string]struct{}, auth spec.AuthConfig) {
+	if header := strings.TrimSpace(auth.Header); header != "" {
+		seenHeaders[header] = struct{}{}
+	}
+	for _, envVar := range auth.EnvVarSpecs {
+		if name := strings.TrimSpace(envVar.Name); name != "" {
+			seenEnvVars[name] = struct{}{}
+		}
+	}
+	for _, name := range auth.EnvVars {
+		if name = strings.TrimSpace(name); name != "" {
+			seenEnvVars[name] = struct{}{}
+		}
+	}
+	for _, header := range auth.AdditionalHeaders {
+		if name := strings.TrimSpace(header.Header); name != "" {
+			seenHeaders[name] = struct{}{}
+		}
+		if name := strings.TrimSpace(header.EnvVar.Name); name != "" {
+			seenEnvVars[name] = struct{}{}
+		}
+	}
+}
+
+func compatibleOAuthScopeAuth(base, incoming spec.AuthConfig) bool {
+	if len(incoming.Scopes) == 0 {
+		return false
+	}
+	if strings.TrimSpace(base.AuthorizationURL) == "" {
+		return false
+	}
+	if base.Type != incoming.Type || base.EffectiveOAuth2Grant() != incoming.EffectiveOAuth2Grant() {
+		return false
+	}
+	if normalizeAuthURL(base.AuthorizationURL) != normalizeAuthURL(incoming.AuthorizationURL) {
+		return false
+	}
+	if normalizeAuthURL(base.TokenURL) != normalizeAuthURL(incoming.TokenURL) {
+		return false
+	}
+	return strings.TrimSpace(base.RefreshTokenMechanism) == strings.TrimSpace(incoming.RefreshTokenMechanism)
+}
+
+func appendUniqueAdditionalAuthHeaders(headers []spec.AdditionalAuthHeader, seenHeaders, seenEnvVars map[string]struct{}, auth spec.AuthConfig, sameOrigin bool) []spec.AdditionalAuthHeader {
+	var candidates []spec.AdditionalAuthHeader
+	if sameOrigin {
+		candidates = append(candidates, auth.AdditionalHeaders...)
+		if promoted, ok := additionalHeaderFromAPIKeyAuth(auth); ok {
+			candidates = append(candidates, promoted)
+		}
+	}
+	for _, candidate := range candidates {
+		header := strings.TrimSpace(candidate.Header)
+		envVarName := strings.TrimSpace(candidate.EnvVar.Name)
+		if header == "" || envVarName == "" {
+			continue
+		}
+		if _, exists := seenHeaders[header]; exists {
+			continue
+		}
+		if _, exists := seenEnvVars[envVarName]; exists {
+			continue
+		}
+		seenHeaders[header] = struct{}{}
+		seenEnvVars[envVarName] = struct{}{}
+		headers = append(headers, candidate)
+	}
+	return headers
+}
+
+func sortedScopes(scopeSet map[string]struct{}) []string {
+	if len(scopeSet) == 0 {
+		return nil
+	}
+	scopes := make([]string, 0, len(scopeSet))
+	for scope := range scopeSet {
+		scopes = append(scopes, scope)
+	}
+	sort.Strings(scopes)
+	return scopes
+}
+
+func additionalHeaderFromAPIKeyAuth(auth spec.AuthConfig) (spec.AdditionalAuthHeader, bool) {
+	if auth.Type != "api_key" || strings.TrimSpace(auth.Header) == "" || !strings.EqualFold(strings.TrimSpace(auth.In), "header") {
+		return spec.AdditionalAuthHeader{}, false
+	}
+	if strings.Contains(strings.ToLower(auth.Format), "basic ") {
+		return spec.AdditionalAuthHeader{}, false
+	}
+	if auth.IsAuthEnvVarORCase() {
+		return spec.AdditionalAuthHeader{}, false
+	}
+	auth.EnvVarSpecs = append([]spec.AuthEnvVar(nil), auth.EnvVarSpecs...)
+	auth.NormalizeEnvVarSpecs("")
+	var requestCredential spec.AuthEnvVar
+	for _, envVar := range auth.EnvVarSpecs {
+		if envVar.IsRequestCredential() && strings.TrimSpace(envVar.Name) != "" {
+			if strings.TrimSpace(requestCredential.Name) != "" {
+				return spec.AdditionalAuthHeader{}, false
+			}
+			requestCredential = envVar
+		}
+	}
+	if strings.TrimSpace(requestCredential.Name) == "" {
+		return spec.AdditionalAuthHeader{}, false
+	}
+	return spec.AdditionalAuthHeader{
+		Header: strings.TrimSpace(auth.Header),
+		In:     "header",
+		Scheme: auth.Scheme,
+		EnvVar: requestCredential,
+	}, true
+}
+
+func baseURLOrigin(raw string) string {
+	host, _ := splitBaseURL(raw)
+	return host
+}
+
+func normalizeAuthURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return strings.TrimRight(raw, "/")
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Host = strings.ToLower(parsed.Host)
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	return parsed.String()
 }
 
 func rewriteMCPIntentEndpointRefs(mcp spec.MCPConfig, resourceRenames map[string]string) spec.MCPConfig {
