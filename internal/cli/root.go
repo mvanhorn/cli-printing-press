@@ -542,6 +542,16 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	if err := gen.Generate(); err != nil {
 		return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
 	}
+	// Emit tools-manifest.json from the parsed spec so a fresh generate
+	// run produces the agent-facing tool description alongside the Go
+	// runtime surface. Without this, tools-manifest stays untouched until
+	// the first mcp-sync or publish — and any pre-existing tools-manifest
+	// (left over from a prior generation under a different spec / parser)
+	// silently misrepresents the current MCP tool set. Non-blocking: a
+	// warning is the same posture publish takes when this fails.
+	if err := pipeline.WriteToolsManifest(absOut, apiSpec); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write tools manifest: %v\n", err)
+	}
 	if opts.validate {
 		if err := gen.Validate(); err != nil {
 			return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}

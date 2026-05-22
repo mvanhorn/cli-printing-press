@@ -143,6 +143,16 @@ type APISpec struct {
 	// across every ServiceTitan module). Populated from the OpenAPI
 	// `info.x-tenant-env-var` extension or set directly in internal YAML.
 	EndpointTemplateEnvOverrides map[string]string `yaml:"endpoint_template_env_overrides,omitempty" json:"endpoint_template_env_overrides,omitempty"`
+	// EndpointPathParamDefaults binds an OpenAPI path-parameter name to a
+	// literal value that the generator substitutes into every operation
+	// path at generation time. Used for parameters with a canonical
+	// always-valid value (e.g. Gmail's userId='me' for the authenticated
+	// user). After substitution the matching path parameter is dropped
+	// from each endpoint, so the printed CLI exposes neither a placeholder
+	// nor a flag for it. Populated from the OpenAPI
+	// `info.x-path-template-env-vars` extension's per-placeholder
+	// `default` field, or set directly in internal YAML.
+	EndpointPathParamDefaults map[string]string `yaml:"endpoint_path_param_defaults,omitempty" json:"endpoint_path_param_defaults,omitempty"`
 	// EndpointTemplateVarDefaults maps a placeholder in EndpointTemplateVars
 	// to a spec-declared default value. Populated for server-URL variables
 	// (OpenAPI `servers[0].url.variables.<name>.default`) so the generator
