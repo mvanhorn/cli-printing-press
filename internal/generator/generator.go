@@ -2003,7 +2003,7 @@ func parentCommandShortPeriodIsInternal(description string, idx int) bool {
 	}
 
 	prev, next := description[idx-1], description[idx+1]
-	if (isASCIILetter(prev) && isASCIILetter(next)) || (isASCIIDigit(prev) && isASCIIDigit(next)) {
+	if (isASCIILetter(prev) || isASCIIDigit(prev)) && (isASCIILetter(next) || isASCIIDigit(next)) {
 		return true
 	}
 

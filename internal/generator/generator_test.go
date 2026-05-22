@@ -12627,6 +12627,11 @@ func TestParentCommandInfoDescriptionShort(t *testing.T) {
 			want:        "Use the v2.0 reporting API for exports.",
 		},
 		{
+			name:        "version placeholder period stays in first sentence",
+			description: "Use the v1.x reporting API for exports. This second sentence belongs in longer docs.",
+			want:        "Use the v1.x reporting API for exports.",
+		},
+		{
 			name:        "long first sentence stays compact",
 			description: "Coordinate video publishing workflows across channels, regions, partners, approval queues, localization states, analytics exports, campaign plans, compliance reviews, and publishing calendars. This second sentence belongs in longer docs.",
 			want:        "Coordinate video publishing workflows across channels, regions, partners, approval queues, localization states",
