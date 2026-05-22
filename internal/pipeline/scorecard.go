@@ -74,7 +74,7 @@ type SteinerScore struct {
 	AuthProtocol          int    `json:"auth_protocol"`           // 0-10
 	DataPipelineIntegrity int    `json:"data_pipeline_integrity"` // 0-10
 	SyncCorrectness       int    `json:"sync_correctness"`        // 0-10
-	TypeFidelity          int    `json:"type_fidelity"`           // 0-5
+	TypeFidelity          int    `json:"type_fidelity"`           // 0-4 (declared cap 5; +1 MarkFlagRequired path dropped per SKILL conflict)
 	DeadCode              int    `json:"dead_code"`               // 0-5
 	LiveAPIVerification   int    `json:"live_api_verification"`   // 0-10; unscored when verify ran in mock/structural mode or was skipped
 	Total                 int    `json:"total"`                   // 0-100 (weighted: 50% infrastructure + 50% domain)
@@ -2380,8 +2380,12 @@ func scoreTypeFidelity(dir string) int {
 		score++
 	}
 
-	if score > 5 {
-		score = 5
+	// Achievable max is 4 (+2 ID-flag check, +1 description avg, +1 no dummy
+	// guards). The +1 MarkFlagRequired path was removed because the SKILL
+	// explicitly forbids it. The tier rollup still allocates 5 raw points to
+	// this dimension, so the highest a SKILL-compliant CLI can score is 4/5.
+	if score > 4 {
+		score = 4
 	}
 	return score
 }

@@ -35,7 +35,7 @@ tags:
 
 - `printing-press scorecard` reports `type_fidelity` 1pt below the dim cap on CLIs whose flags use long, descriptive help strings — the average drops because the first flag's "description" capture is a short kebab-case token from the next line.
 - A flag named `price-paid-cents` (or any name containing `id` mid-word) classifies as a non-`StringVar` ID flag and costs the 2-point ID-fidelity sub-check.
-- SKILL-compliant CLIs that route required-flag validation through `RunE` cap at 4/5 on `type_fidelity` and have no honest path to the dim cap.
+- SKILL-compliant CLIs that route required-flag validation through `RunE` have no honest path to the historical 5-point cap because the only +1 path the SKILL forbids was the difference.
 
 ## What Didn't Work
 
@@ -52,7 +52,7 @@ tags:
 
 ## Why It Works
 
-The regex constraint is the smallest change that bounds each capture to a single Go statement; `[^,\n]+` is already the convention used elsewhere in the scorer for flag-call parsing. The kebab-case predicate matches the actual naming convention generated CLIs use, so it has no false positives on real flag names. Dropping the `MarkFlagRequired` reward removes the direct scorer-versus-SKILL conflict; SKILL-compliant CLIs can still reach the 5/5 cap via the ID-string check, the description-length check, and the dummy-guard-absence check.
+The regex constraint is the smallest change that bounds each capture to a single Go statement; `[^,\n]+` is already the convention used elsewhere in the scorer for flag-call parsing. The kebab-case predicate matches the actual naming convention generated CLIs use, so it has no false positives on real flag names. Dropping the `MarkFlagRequired` reward removes the direct scorer-versus-SKILL conflict; the achievable maximum for `scoreTypeFidelity` is now `+2` (ID-flag check) `+1` (description-length check) `+1` (dummy-guard-absence check) `= 4`. The dim's structural allocation in the tier rollup (`tier2Max` base) still leaves a 5-slot for `type_fidelity`, so the in-function clamp now matches the achievable max (4) rather than the structural slot (5). Reconciling the tier rollup itself is a separate concern outside this fix's scope because it changes the percentage for every printed CLI and needs a coordinated golden refresh.
 
 ## Verification
 
