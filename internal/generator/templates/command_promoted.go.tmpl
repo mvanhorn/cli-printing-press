@@ -5,7 +5,8 @@
 {{- $hasQueryFlags := endpointHasQueryFlags .Endpoint}}
 {{- $method := upper .Endpoint.Method}}
 {{- $isReadVerb := or (eq $method "GET") (eq $method "HEAD") (eq $method "OPTIONS")}}
-{{- $isWriteVerb := or (eq $method "POST") (eq $method "PUT") (eq $method "PATCH") (eq $method "DELETE")}}
+{{- $isWriteVerb := or (eq $method "POST") (eq $method "PUT") (eq $method "PATCH")}}
+{{- $canWriteBack := and .HasStore $isWriteVerb (not .IsReadOnly) (not .Endpoint.UsesBinaryResponse)}}
 
 package cli
 
@@ -191,9 +192,9 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- else if eq (upper .Endpoint.Method) "DELETE"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, _, err := c.DeleteWithParamsAndHeaders(cmd.Context(), path, params, headerOverrides)
+			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.DeleteWithParamsAndHeaders(cmd.Context(), path, params, headerOverrides)
 {{- else}}
-			data, _, err := c.DeleteWithParams(cmd.Context(), path, params)
+			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.DeleteWithParams(cmd.Context(), path, params)
 {{- end}}
 {{- else if or (eq (upper .Endpoint.Method) "POST") (eq (upper .Endpoint.Method) "PUT") (eq (upper .Endpoint.Method) "PATCH")}}
 {{- if $isMultipart}}
@@ -201,17 +202,17 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			fileFields := map[string]string{}
 {{multipartBodyMaps .Endpoint.Body "\t\t\t"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, _, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParamsAndHeaders(cmd.Context(), path, params, fields, fileFields, headerOverrides)
+			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParamsAndHeaders(cmd.Context(), path, params, fields, fileFields, headerOverrides)
 {{- else}}
-			data, _, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParams(cmd.Context(), path, params, fields, fileFields)
+			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}MultipartWithParams(cmd.Context(), path, params, fields, fileFields)
 {{- end}}
 {{- else if $isForm}}
 			fields := url.Values{}
 {{formBodyMaps .Endpoint.Body "\t\t\t"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
-			data, _, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
+			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParamsAndHeaders(cmd.Context(), path, params, fields, headerOverrides)
 {{- else}}
-			data, _, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParams(cmd.Context(), path, params, fields)
+			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}FormWithParams(cmd.Context(), path, params, fields)
 {{- end}}
 {{- else}}
 			// HasStore + non-GET falls through to a live API call here
@@ -219,8 +220,8 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			// body-aware cached read helper is filed as #425 for when a
 			// second store-backed POST-search consumer ships.
 			body := map[string]any{}
-{{bodyMapForEndpoint .Endpoint "\t\t\t"}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}WithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
-{{else}}			data, _, err := c.{{pascal (lower .Endpoint.Method)}}WithParams(cmd.Context(), path, params, body)
+{{bodyMapForEndpoint .Endpoint "\t\t\t"}}{{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}WithParamsAndHeaders(cmd.Context(), path, params, body, headerOverrides)
+{{else}}			data, {{if $canWriteBack}}statusCode{{else}}_{{end}}, err := c.{{pascal (lower .Endpoint.Method)}}WithParams(cmd.Context(), path, params, body)
 {{end}}
 {{- end}}
 {{- else}}
@@ -240,6 +241,15 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
+{{- if $canWriteBack}}
+			var partialFailure *partialFailureReport
+			if !flags.dryRun && statusCode >= 200 && statusCode < 300 {
+				partialFailure = detectPartialFailure(data)
+			}
+			if !flags.dryRun && statusCode >= 200 && statusCode < 300 && (partialFailure == nil || flags.allowPartialFailure) {
+				writeMutationResponseToStore(cmd.Context(), "{{lower .ResourceName}}", data, {{printf "%q" .Endpoint.ResponsePath}})
+			}
+{{- end}}
 {{- if .Endpoint.UsesBinaryResponse}}
 			_ = json.Valid
 			_ = os.Stderr
