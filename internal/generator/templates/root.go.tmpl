@@ -45,6 +45,9 @@ type rootFlags struct {
 	deliverSpec  string
 	timeout      time.Duration
 	rateLimit    float64
+{{- if .VisionSet.Store}}
+	maxAge      time.Duration
+{{- end}}
 	dataSource   string
 	freshnessMeta any
 {{- if .HasCostThrottling}}
@@ -223,6 +226,9 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	rootCmd.PersistentFlags().BoolVar(&flags.agent, "agent", false, "Set all agent-friendly defaults (--json --compact --no-input --no-color --yes)")
 	rootCmd.PersistentFlags().BoolVar(&flags.allowPartialFailure, "allow-partial-failure", false, "Downgrade response-body partial-failure (e.g. partialFailureError) to a warning instead of a non-zero exit")
 	rootCmd.PersistentFlags().StringVar(&flags.dataSource, "data-source", "auto", "Data source for read commands: auto (live with local fallback), live (API only), local (synced data only)")
+{{- if .VisionSet.Store}}
+	rootCmd.PersistentFlags().DurationVar(&flags.maxAge, "max-age", 30*time.Minute, "Maximum acceptable age of local-store data before a stderr hint suggests sync; 0 disables")
+{{- end}}
 	rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile (see '{{.Name}}-pp-cli profile list')")
 	rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")
 {{- /* "sniffed" is the legacy provenance name for browser-captured specs. Migration to "browser-sniffed" deferred — see docs/plans/2026-04-18-002. */}}

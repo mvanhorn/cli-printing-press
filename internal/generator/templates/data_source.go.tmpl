@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -93,10 +94,10 @@ func attachFreshness(prov DataProvenance, flags *rootFlags) DataProvenance {
 //     declares no per-endpoint header overrides. Without this parameter, store-backed
 //     reads on per-endpoint-versioned APIs silently get the wrong response shape
 //     (cal-com retro #334 F1).
-func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, isList bool, path string, params map[string]string, headers map[string]string) (json.RawMessage, DataProvenance, error) {
+func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, isList bool, path string, params map[string]string, headers map[string]string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
 	switch flags.dataSource {
 	case "local":
-		data, prov, err := resolveLocal(ctx, resourceType, isList, path, params, "user_requested")
+		data, prov, err := resolveLocal(ctx, flags, hintWriter, resourceType, isList, path, params, "user_requested")
 		return data, attachFreshness(prov, flags), err
 
 	case "live":
@@ -117,7 +118,7 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 			return nil, DataProvenance{}, err
 		}
 		// Network error — try local fallback
-		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, resourceType, isList, path, params, "api_unreachable")
+		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, flags, hintWriter, resourceType, isList, path, params, "api_unreachable")
 		if fallbackErr != nil {
 			return nil, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run '{{.Name}}-pp-cli sync' to enable offline access.\n\nOriginal error: %w", err)
 		}
@@ -129,10 +130,10 @@ func resolveRead(ctx context.Context, c *client.Client, flags *rootFlags, resour
 // or local store. When local, skips pagination and returns all synced data. The
 // headers argument carries per-endpoint required headers; pass nil when the
 // endpoint declares no overrides.
-func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, DataProvenance, error) {
+func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlags, resourceType string, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string, hintWriter io.Writer) (json.RawMessage, DataProvenance, error) {
 	switch flags.dataSource {
 	case "local":
-		data, prov, err := resolveLocal(ctx, resourceType, true, path, params, "user_requested")
+		data, prov, err := resolveLocal(ctx, flags, hintWriter, resourceType, true, path, params, "user_requested")
 		return data, attachFreshness(prov, flags), err
 
 	case "live":
@@ -151,7 +152,7 @@ func resolvePaginatedRead(ctx context.Context, c *client.Client, flags *rootFlag
 		if !isNetworkError(err) {
 			return nil, DataProvenance{}, err
 		}
-		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, resourceType, true, path, params, "api_unreachable")
+		fallbackData, fallbackProv, fallbackErr := resolveLocal(ctx, flags, hintWriter, resourceType, true, path, params, "api_unreachable")
 		if fallbackErr != nil {
 			return nil, DataProvenance{}, fmt.Errorf("API unreachable and no local data. Run '{{.Name}}-pp-cli sync' to enable offline access.\n\nOriginal error: %w", err)
 		}
@@ -272,7 +273,7 @@ func writeThroughCache(ctx context.Context, resourceType string, data json.RawMe
 // Note: local reads return ALL synced data for the resource type. Endpoint-specific
 // filters (query params, path scoping like /teams/{id}/users) are NOT applied locally.
 // The provenance metadata includes "unscoped":true when params were present but not applied.
-func resolveLocal(ctx context.Context, resourceType string, isList bool, path string, params map[string]string, reason string) (json.RawMessage, DataProvenance, error) {
+func resolveLocal(ctx context.Context, flags *rootFlags, hintWriter io.Writer, resourceType string, isList bool, path string, params map[string]string, reason string) (json.RawMessage, DataProvenance, error) {
 	db, err := openStoreForRead(ctx, "{{.Name}}-pp-cli")
 	if err != nil {
 		return nil, DataProvenance{}, fmt.Errorf("opening local database: %w\nRun '{{.Name}}-pp-cli sync' first.", err)
@@ -281,6 +282,10 @@ func resolveLocal(ctx context.Context, resourceType string, isList bool, path st
 		return nil, DataProvenance{}, fmt.Errorf("no local data. Run '{{.Name}}-pp-cli sync' first")
 	}
 	defer db.Close()
+
+	if flags != nil {
+		emitSyncHints(hintWriter, db, resourceType, flags.maxAge)
+	}
 
 	prov := localProvenance(db, resourceType, reason)
 
