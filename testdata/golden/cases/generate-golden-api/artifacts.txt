@@ -4,6 +4,7 @@ printing-press-golden/manifest.json
 printing-press-golden/go.mod
 printing-press-golden/cmd/printing-press-golden-pp-cli/main.go
 printing-press-golden/internal/client/client.go
+printing-press-golden/internal/cli/data_source.go
 printing-press-golden/internal/cli/helpers.go
 printing-press-golden/internal/cli/root.go
 printing-press-golden/internal/cli/root_test.go
