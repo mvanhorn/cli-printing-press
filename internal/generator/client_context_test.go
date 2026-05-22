@@ -33,6 +33,8 @@ func TestClientThreadsCallContextThroughHTTPRequestsAndRetryWaits(t *testing.T) 
 		"func (c *Client) DeleteWithParams(ctx context.Context, path string, params map[string]string) (json.RawMessage, int, error)",
 		"func (c *Client) DeleteWithBody(ctx context.Context, path string, body any) (json.RawMessage, int, error)",
 		"func (c *Client) DeleteWithParamsAndBody(ctx context.Context, path string, params map[string]string, body any) (json.RawMessage, int, error)",
+		"func (c *Client) DeleteWithBodyAndHeaders(ctx context.Context, path string, body any, headers map[string]string) (json.RawMessage, int, error)",
+		"func (c *Client) DeleteWithParamsAndBodyAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error)",
 		"func (c *Client) Put(ctx context.Context, path string, body any) (json.RawMessage, int, error)",
 		"func (c *Client) Patch(ctx context.Context, path string, body any) (json.RawMessage, int, error)",
 	} {

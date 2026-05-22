@@ -207,3 +207,40 @@ func TestGeneratePromotedDeleteEndpointWithJSONBodyUsesRequestBody(t *testing.T)
 
 	runGoCommand(t, outputDir, "build", "./...")
 }
+
+func TestGeneratePromotedDeleteEndpointWithJSONBodyAndParamsUsesRequestBodyAndQueryParams(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("promodeletebodyparams")
+	apiSpec.Resources = map[string]spec.Resource{
+		"assets": {
+			Description: "Manage assets",
+			Endpoints: map[string]spec.Endpoint{
+				"delete": {
+					Method:             "DELETE",
+					Path:               "/assets",
+					Description:        "Delete assets",
+					RequestContentType: "application/json",
+					Params: []spec.Param{
+						{Name: "mode", Type: "string"},
+					},
+					Body: []spec.Param{
+						{Name: "ids", Type: "array", Required: true},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	endpointSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_assets.go")
+	assert.Contains(t, endpointSrc, `params["mode"] = fmt.Sprintf("%v", flagMode)`)
+	assert.Contains(t, endpointSrc, `body := map[string]any{}`)
+	assert.Contains(t, endpointSrc, `body["ids"] = parsed`)
+	assert.Contains(t, endpointSrc, `c.DeleteWithParamsAndBody(cmd.Context(), path, params, body)`)
+	assert.NotContains(t, endpointSrc, `params["ids"]`)
+
+	runGoCommand(t, outputDir, "build", "./...")
+}
