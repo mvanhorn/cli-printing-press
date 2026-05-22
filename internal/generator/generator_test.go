@@ -24,6 +24,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/text/encoding/japanese"
 )
 
 func TestGenerateProjectsCompile(t *testing.T) {
@@ -1970,6 +1971,9 @@ func TestGenerateCookieHTMLDefaultsBrowserChromeTransport(t *testing.T) {
 }
 
 func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
+	shiftJISHTML, err := japanese.ShiftJIS.NewEncoder().String(`<html><body><a href="/products/tokyo">東京</a></body></html>`)
+	require.NoError(t, err)
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		switch r.URL.Path {
@@ -1980,6 +1984,12 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 			// data-src (Pinterest/NYT Cooking pattern). firstImageSrc must
 			// prefer data-src over src.
 			_, _ = w.Write([]byte(`<html><head><title>Makers</title></head><body><a href="/@alice"><img src="data:image/gif;base64,placeholder" data-src="/img/alice-real.jpg" alt="Alice">Alice</a><a href="/@bob"><img srcset="/img/bob-1x.jpg 1x, /img/bob-2x.jpg 2x" alt="Bob">Bob</a></body></html>`))
+		case "/latin1":
+			w.Header().Set("Content-Type", "text/html; charset=ISO-8859-1")
+			_, _ = w.Write([]byte("<html><body><a href=\"/products/cafe\">Caf\xe9</a></body></html>"))
+		case "/shift-jis":
+			w.Header().Set("Content-Type", "text/html; charset=Shift_JIS")
+			_, _ = w.Write([]byte(shiftJISHTML))
 		default:
 			// Anchor 1 wraps its image in <noscript> (Dotdash/Meredith pattern).
 			// nodeTextSuppressing must skip the noscript subtree so "<img src=...>"
@@ -2054,6 +2064,40 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 						HTMLExtract: &spec.HTMLExtract{
 							Mode:         spec.HTMLExtractModeLinks,
 							LinkPrefixes: []string{"/@"},
+							Limit:        10,
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "html_link"},
+					},
+				},
+			},
+			"latin": {
+				Description: "Browse Latin-1 pages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:         "GET",
+						Path:           "/latin1",
+						Description:    "Fetch Latin-1 links",
+						ResponseFormat: spec.ResponseFormatHTML,
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:         spec.HTMLExtractModeLinks,
+							LinkPrefixes: []string{"/products"},
+							Limit:        10,
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "html_link"},
+					},
+				},
+			},
+			"shiftjis": {
+				Description: "Browse Shift-JIS pages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:         "GET",
+						Path:           "/shift-jis",
+						Description:    "Fetch Shift-JIS links",
+						ResponseFormat: spec.ResponseFormatHTML,
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:         spec.HTMLExtractModeLinks,
+							LinkPrefixes: []string{"/products"},
 							Limit:        10,
 						},
 						Response: spec.ResponseDef{Type: "array", Item: "html_link"},
@@ -2143,6 +2187,248 @@ func TestGenerateHTMLExtractionEndpoint(t *testing.T) {
 	assert.Equal(t, server.URL+"/@bob", envelope.Results[1]["url"])
 	assert.Contains(t, envelope.Results[1]["image"], "bob-1x.jpg",
 		"first srcset URL should be selected when src is absent; got %v", envelope.Results[1]["image"])
+
+	cmd = exec.Command(binaryPath, "latin", "list", "--json")
+	cmd.Env = append(os.Environ(), "WEBHTML_BASE_URL="+server.URL)
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.NoError(t, json.Unmarshal(out, &envelope), string(out))
+	require.Len(t, envelope.Results, 1)
+	assert.Equal(t, "Caf\u00e9", envelope.Results[0]["name"])
+
+	shiftJISEnv := append(os.Environ(), "WEBHTML_BASE_URL="+server.URL, "HOME="+t.TempDir())
+	cmd = exec.Command(binaryPath, "shiftjis", "list", "--json")
+	cmd.Env = shiftJISEnv
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.NoError(t, json.Unmarshal(out, &envelope), string(out))
+	require.Len(t, envelope.Results, 1)
+	assert.Equal(t, "東京", envelope.Results[0]["name"])
+
+	server.Close()
+	cmd = exec.Command(binaryPath, "shiftjis", "list", "--json")
+	cmd.Env = shiftJISEnv
+	out, err = cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.NoError(t, json.Unmarshal(out, &envelope), string(out))
+	require.Len(t, envelope.Results, 1)
+	assert.Equal(t, "東京", envelope.Results[0]["name"], "cached HTML responses must preserve the HTTP charset hint")
+}
+
+func TestGeneratedSyncHonorsHTMLExtraction(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "htmlsync",
+		Version: "0.1.0",
+		BaseURL: "https://example.test",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/htmlsync-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"pages": {
+				Description: "HTML pages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:         "GET",
+						Path:           "/pages",
+						Description:    "List pages from HTML",
+						ResponseFormat: spec.ResponseFormatHTML,
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:         spec.HTMLExtractModeLinks,
+							LinkPrefixes: []string{"/pages"},
+							Limit:        10,
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "html_link"},
+					},
+				},
+			},
+			"json_pages": {
+				Description: "JSON pages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/json-pages",
+						Description: "List pages from JSON",
+						Response:    spec.ResponseDef{Type: "array", Item: "object"},
+					},
+				},
+			},
+			"channels": {
+				Description: "Channel records",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/channels",
+						Description: "List channels",
+						Response:    spec.ResponseDef{Type: "array", Item: "object"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+			"messages": {
+				Description: "HTML messages",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:         "GET",
+						Path:           "/channels/{channelId}/messages",
+						Description:    "List messages from HTML",
+						ResponseFormat: spec.ResponseFormatHTML,
+						Params:         []spec.Param{{Name: "channelId", Type: "string", Required: true, PathParam: true}},
+						Pagination:     &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						HTMLExtract: &spec.HTMLExtract{
+							Mode:           spec.HTMLExtractModeEmbeddedJSON,
+							ScriptSelector: "script#MESSAGES_DATA",
+							JSONPath:       "items",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "object"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	syncSrc := readGeneratedFile(t, outputDir, "internal", "cli", "sync.go")
+	assert.Contains(t, syncSrc, "syncHTMLExtractionOptions",
+		"sync.go must route HTML sync responses through extractHTMLResponse before extractPageItems")
+	assert.Contains(t, syncSrc, `case "pages":`,
+		"HTML extraction options must be emitted for the HTML sync resource")
+	assert.Contains(t, syncSrc, `case "channels.messages":`,
+		"dependent HTML extraction options must be keyed by parent and child resource")
+	assert.NotContains(t, syncSrc, `case "json_pages":`,
+		"JSON sync resources must not get HTML extraction options")
+
+	inlineTest := `package cli
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+type htmlSyncClient struct{}
+
+func (htmlSyncClient) Get(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
+	return json.RawMessage(` + "`" + `<html><body><a href="/pages/alpha">Alpha</a><a href="/pages/beta">Beta</a><a href="/other">Other</a></body></html>` + "`" + `), nil
+}
+
+func (htmlSyncClient) RequestBaseURL() string {
+	return "https://example.test"
+}
+
+func (htmlSyncClient) LastContentType() string {
+	return "text/html; charset=utf-8"
+}
+
+func (htmlSyncClient) RateLimit() float64 {
+	return 0
+}
+
+type dependentHTMLSyncClient struct{}
+
+func (dependentHTMLSyncClient) Get(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
+	if strings.Contains(path, "/bad/messages") {
+		return json.RawMessage(` + "`" + `<html><body>missing embedded JSON</body></html>` + "`" + `), nil
+	}
+	return json.RawMessage(` + "`" + `<html><body><script id="MESSAGES_DATA" type="application/json">{"items":[{"id":"msg-good","text":"ok"}]}</script></body></html>` + "`" + `), nil
+}
+
+func (dependentHTMLSyncClient) RequestBaseURL() string {
+	return "https://example.test"
+}
+
+func (dependentHTMLSyncClient) LastContentType() string {
+	return "text/html; charset=utf-8"
+}
+
+func (dependentHTMLSyncClient) RateLimit() float64 {
+	return 0
+}
+
+func TestSyncResourceExtractsHTMLLinks(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	res := syncResource(context.Background(), htmlSyncClient{}, db, "pages", "", false, 1, false, nil)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if res.Count != 2 {
+		t.Fatalf("synced count = %d, want 2", res.Count)
+	}
+
+	rows, err := db.List("pages", 10)
+	if err != nil {
+		t.Fatalf("list pages: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("stored rows = %d, want 2", len(rows))
+	}
+	body := string(rows[0]) + "\n" + string(rows[1])
+	if !strings.Contains(body, "\"slug\":\"alpha\"") || !strings.Contains(body, "\"slug\":\"beta\"") {
+		t.Fatalf("stored rows did not include extracted HTML links: %s", body)
+	}
+}
+
+func TestSyncDependentResourceContinuesAfterHTMLExtractionError(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Upsert("channels", "bad", []byte(` + "`" + `{"id":"bad"}` + "`" + `)); err != nil {
+		t.Fatalf("insert bad parent: %v", err)
+	}
+	if err := db.Upsert("channels", "good", []byte(` + "`" + `{"id":"good"}` + "`" + `)); err != nil {
+		t.Fatalf("insert good parent: %v", err)
+	}
+
+	res := syncDependentResource(
+		context.Background(),
+		dependentHTMLSyncClient{},
+		db,
+		dependentResourceDef{Name: "messages", ParentTable: "channels", ParentIDParam: "channelId", PathTemplate: "/channels/{channelId}/messages"},
+		"", false, 1, false, nil,
+	)
+	if res.Err != nil {
+		t.Fatalf("syncDependentResource error: %v", res.Err)
+	}
+	if res.Count != 1 {
+		t.Fatalf("synced count = %d, want 1", res.Count)
+	}
+
+	rows, err := db.List("messages", 10)
+	if err != nil {
+		t.Fatalf("list messages: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("stored rows = %d, want 1", len(rows))
+	}
+	body := string(rows[0])
+	if !strings.Contains(body, "\"id\":\"msg-good\"") || !strings.Contains(body, "\"channels_id\":\"good\"") {
+		t.Fatalf("stored rows did not include the successful parent message with its parent FK: %s", body)
+	}
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "cli", "sync_html_extract_test.go"), []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestSync(ResourceExtractsHTMLLinks|DependentResourceContinuesAfterHTMLExtractionError)", "./internal/cli")
 }
 
 // TestGenerateHTMLExtractionEmbeddedJSONMode exercises the embedded-json mode

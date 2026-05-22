@@ -61,6 +61,9 @@ type Client struct {
 	NoCache    bool
 	cacheDir   string
 	limiter    *cliutil.AdaptiveLimiter
+{{- if .HasHTMLExtraction}}
+	lastContentType string
+{{- end}}
 {{- if .HasTierRouting}}
 	requestTier string
 	limiters    map[string]*cliutil.AdaptiveLimiter
@@ -176,6 +179,23 @@ func (c *Client) baseURLForRequest() string {
 	}
 }
 
+{{- if .HasHTMLExtraction}}
+
+// RequestBaseURL returns the base URL used by the current request tier.
+func (c *Client) RequestBaseURL() string {
+	return c.baseURLForRequest()
+}
+
+// LastContentType returns the last response Content-Type observed by this client.
+func (c *Client) LastContentType() string {
+	if c == nil {
+		return ""
+	}
+	return c.lastContentType
+}
+
+{{- end}}
+
 func (c *Client) authForRequest(ctx context.Context) (requestAuth, error) {
 	switch c.requestTier {
 {{- range $tierName, $tier := .TierRouting.Tiers}}
@@ -233,6 +253,23 @@ func applyTierAuthFormat(format string, replacements map[string]string) string {
 		return ""
 	}
 	return format
+}
+
+{{- end}}
+
+{{- if and (not .HasTierRouting) .HasHTMLExtraction}}
+
+// RequestBaseURL returns the base URL used for requests.
+func (c *Client) RequestBaseURL() string {
+	return c.BaseURL{{if .BasePath}} + c.BasePath{{end}}
+}
+
+// LastContentType returns the last response Content-Type observed by this client.
+func (c *Client) LastContentType() string {
+	if c == nil {
+		return ""
+	}
+	return c.lastContentType
 }
 
 {{- end}}
@@ -452,13 +489,20 @@ func (c *Client) GetWithHeaders(ctx context.Context, path string, params map[str
 	}
 	// Check cache for GET requests
 	if !c.NoCache && !c.DryRun && c.cacheDir != "" {
+{{- if .HasHTMLExtraction}}
+		if cached, contentType, ok := c.readCache(path, params); ok {
+			c.lastContentType = contentType
+			return cached, nil
+		}
+{{- else}}
 		if cached, ok := c.readCache(path, params); ok {
 			return cached, nil
 		}
+	{{- end}}
 	}
 	result, _, err := c.do(ctx, "GET", path, params, nil, headers)
 	if err == nil && !c.NoCache && !c.DryRun && c.cacheDir != "" {
-		c.writeCache(path, params, result)
+		c.writeCache(path, params, result{{if .HasHTMLExtraction}}, c.lastContentType{{end}})
 	}
 	return result, err
 }
@@ -482,7 +526,7 @@ func (c *Client) GetNoCache(ctx context.Context, path string, params map[string]
 func (c *Client) GetWithHeadersNoCache(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error) {
 	result, _, err := c.do(ctx, "GET", path, params, nil, headers)
 	if err == nil && !c.NoCache && !c.DryRun && c.cacheDir != "" {
-		c.writeCache(path, params, result)
+		c.writeCache(path, params, result{{if .HasHTMLExtraction}}, c.lastContentType{{end}})
 	}
 	return result, err
 }
@@ -566,24 +610,64 @@ func (c *Client) cacheKey(path string, params map[string]string) string {
 	return hex.EncodeToString(h[:8])
 }
 
-func (c *Client) readCache(path string, params map[string]string) (json.RawMessage, bool) {
+func (c *Client) readCache(path string, params map[string]string) (json.RawMessage, {{if .HasHTMLExtraction}}string, {{end}}bool) {
 	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params)+".json")
 	info, err := os.Stat(cacheFile)
 	if err != nil || time.Since(info.ModTime()) > 5*time.Minute {
-		return nil, false
+		return nil, {{if .HasHTMLExtraction}}"", {{end}}false
 	}
 	data, err := os.ReadFile(cacheFile)
 	if err != nil {
-		return nil, false
+		return nil, {{if .HasHTMLExtraction}}"", {{end}}false
 	}
+{{- if .HasHTMLExtraction}}
+	contentType := c.readCacheContentType(cacheFile)
+	return json.RawMessage(data), contentType, true
+{{- else}}
 	return json.RawMessage(data), true
+{{- end}}
 }
 
-func (c *Client) writeCache(path string, params map[string]string, data json.RawMessage) {
+func (c *Client) writeCache(path string, params map[string]string, data json.RawMessage{{if .HasHTMLExtraction}}, contentType string{{end}}) {
 	os.MkdirAll(c.cacheDir, 0o755)
 	cacheFile := filepath.Join(c.cacheDir, c.cacheKey(path, params)+".json")
 	os.WriteFile(cacheFile, []byte(data), 0o644)
+{{- if .HasHTMLExtraction}}
+	c.writeCacheContentType(cacheFile, contentType)
+{{- end}}
 }
+
+{{- if .HasHTMLExtraction}}
+
+type cacheMetadata struct {
+	ContentType string `json:"content_type,omitempty"`
+}
+
+func (c *Client) readCacheContentType(cacheFile string) string {
+	data, err := os.ReadFile(cacheFile + ".meta.json")
+	if err != nil {
+		return ""
+	}
+	var meta cacheMetadata
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return ""
+	}
+	return meta.ContentType
+}
+
+func (c *Client) writeCacheContentType(cacheFile, contentType string) {
+	if contentType == "" {
+		_ = os.Remove(cacheFile + ".meta.json")
+		return
+	}
+	data, err := json.Marshal(cacheMetadata{ContentType: contentType})
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(cacheFile+".meta.json", data, 0o644)
+}
+
+{{- end}}
 
 // invalidateCache wholesale-removes the cache directory so the next read
 // after a mutation cannot return a stale snapshot. Selective per-resource
@@ -1241,6 +1325,9 @@ func (c *Client) doInternal(ctx context.Context, method, path string, params map
 
 		// Success
 		if resp.StatusCode < 400 {
+{{- if .HasHTMLExtraction}}
+			c.lastContentType = resp.Header.Get("Content-Type")
+{{- end}}
 			c.limiter.OnSuccess()
 			if method != http.MethodGet && !c.DryRun {
 				c.invalidateCache()

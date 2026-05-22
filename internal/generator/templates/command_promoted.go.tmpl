@@ -265,6 +265,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 				data, err = extractHTMLResponse(data, htmlExtractionOptions{
 					Mode: "{{with .Endpoint.HTMLExtract}}{{.EffectiveMode}}{{else}}page{{end}}",
 					BaseURL: htmlExtractionRequestURL(c.BaseURL, path, htmlRequestParams),
+					ContentType: c.LastContentType(),
 					LinkPrefixes: []string{
 {{- with .Endpoint.HTMLExtract}}
 {{- range .LinkPrefixes}}
