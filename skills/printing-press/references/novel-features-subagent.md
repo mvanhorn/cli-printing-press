@@ -180,6 +180,23 @@ Apply the rubric's kill/keep checks (LLM dependency, external service, auth
 gap, scope creep, verifiability, reimplementation) inline. Reframe or cut
 obvious failures NOW so they don't waste Pass 3 attention.
 
+## Framework command flags
+
+The generated framework commands have stable flag vocabularies. Use these
+verbatim in `narrative.quickstart`, `narrative.recipes`, and any example that
+calls a framework command:
+
+- `sync`: `--resources <csv>`, `--since <duration like 7d/24h/1w/30m>`, `--full`, `--latest-only`, `--max-pages <int>`, `--param key=value`, `--resource-param resource:key=value`, `--global-param key=value`, `--db <path>`
+- `search`: `--type <single resource>`, `--limit <int>`, `--db <path>`
+- `analytics`: `--type <single resource>`, `--group-by <field>`, `--limit <int>`, `--db <path>`
+- `tail`: `--resource <single resource>`, `--interval <duration>`, `--since <timestamp>`, `--follow`
+- global output flags on any command: `--json`, `--agent`, `--select <fields>`, `--compact`, `--quiet`, `--plain`, `--csv`
+
+Do not invent plausible variants such as `--entities`, `--types`, `--query`, or
+absolute dates for `sync --since`. If you need multiple resources, use
+`sync --resources customers,charges`. If you need search scoped to one resource,
+use `search "term" --type customers`. Do not use `search --entities`.
+
 ## Pass 3: Adversarial cut pass
 
 This is the pass that exists because brainstorms without it produce flabby

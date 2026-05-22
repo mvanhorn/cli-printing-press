@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
@@ -75,6 +76,7 @@ type Report struct {
 	Unsupported   int      `json:"unsupported,omitempty"`
 	Results       []Result `json:"results"`
 	FullExamples  bool     `json:"full_examples,omitempty"`
+	FrameworkOnly bool     `json:"framework_only,omitempty"`
 	// ResearchEmpty is true when neither narrative.quickstart nor
 	// narrative.recipes contained any entries. The LLM may have
 	// omitted both sections by mistake; the caller's --strict flag
@@ -92,6 +94,10 @@ type Options struct {
 	// Cobra path. The example is run with PRINTING_PRESS_VERIFY=1 and
 	// --dry-run appended when the command advertises --dry-run.
 	FullExamples bool
+	// FrameworkOnly validates only stable framework-command vocabulary
+	// without requiring a generated CLI binary. It is intended for the
+	// pre-render research.json gate, before README/SKILL examples exist.
+	FrameworkOnly bool
 }
 
 // Validate parses researchPath, walks every narrative.quickstart and
@@ -108,6 +114,9 @@ func ValidateWithOptions(ctx context.Context, researchPath, binaryPath string, o
 	commands, err := loadCommands(researchPath)
 	if err != nil {
 		return nil, err
+	}
+	if opts.FrameworkOnly {
+		return validateFrameworkOnly(commands), nil
 	}
 	var templateVarAssignments []string
 	if opts.FullExamples {
@@ -136,6 +145,29 @@ func ValidateWithOptions(ctx context.Context, researchPath, binaryPath string, o
 		report.Results = append(report.Results, r)
 	}
 	return report, nil
+}
+
+func validateFrameworkOnly(commands []sectionCommand) *Report {
+	report := &Report{
+		Results:       []Result{},
+		ResearchEmpty: len(commands) == 0,
+		FrameworkOnly: true,
+	}
+	for _, sc := range commands {
+		results := classifyFrameworkCommand(sc.Section, sc.Command)
+		for _, r := range results {
+			switch r.Status {
+			case StatusOK:
+				report.Walked++
+			case StatusEmptyWords:
+				report.Empty++
+			case StatusExampleFailed:
+				report.ExampleFailed++
+			}
+			report.Results = append(report.Results, r)
+		}
+	}
+	return report
 }
 
 // HasFailures reports whether the run found any missing or empty-words
@@ -254,6 +286,244 @@ func classify(ctx context.Context, binaryPath string, section Section, command s
 		last = sub
 	}
 	return finish(last)
+}
+
+var (
+	sinceDurationPattern = regexp.MustCompile(`^\d+[dhwm]$`)
+	globalFrameworkFlags = map[string]frameworkFlagSpec{
+		"agent":                 {Name: "agent"},
+		"allow-partial-failure": {Name: "allow-partial-failure"},
+		"compact":               {Name: "compact"},
+		"config":                {Name: "config", RequiresValue: true},
+		"csv":                   {Name: "csv"},
+		"data-source":           {Name: "data-source", RequiresValue: true},
+		"deliver":               {Name: "deliver", RequiresValue: true},
+		"dry-run":               {Name: "dry-run"},
+		"human-friendly":        {Name: "human-friendly"},
+		"idempotent":            {Name: "idempotent"},
+		"ignore-missing":        {Name: "ignore-missing"},
+		"json":                  {Name: "json"},
+		"no-cache":              {Name: "no-cache"},
+		"no-color":              {Name: "no-color"},
+		"no-input":              {Name: "no-input"},
+		"plain":                 {Name: "plain"},
+		"profile":               {Name: "profile", RequiresValue: true},
+		"quiet":                 {Name: "quiet"},
+		"rate-limit":            {Name: "rate-limit", RequiresValue: true},
+		"select":                {Name: "select", RequiresValue: true},
+		"throttle-mode":         {Name: "throttle-mode", RequiresValue: true},
+		"timeout":               {Name: "timeout", RequiresValue: true},
+		"yes":                   {Name: "yes"},
+	}
+	frameworkCommandSpecs = map[string]frameworkCommandSpec{
+		"sync": {
+			Flags: []frameworkFlagSpec{
+				{Name: "resources", Example: "--resources <csv>", RequiresValue: true},
+				{Name: "since", Example: "--since <duration>", RequiresValue: true, Validate: validateSinceDuration},
+				{Name: "full", Example: "--full"},
+				{Name: "latest-only", Example: "--latest-only"},
+				{Name: "max-pages", Example: "--max-pages <int>", RequiresValue: true},
+				{Name: "param", Example: "--param key=value", RequiresValue: true},
+				{Name: "resource-param", Example: "--resource-param resource:key=value", RequiresValue: true},
+				{Name: "global-param", Example: "--global-param key=value", RequiresValue: true},
+				{Name: "db", Example: "--db <path>", RequiresValue: true},
+				{Name: "concurrency", Example: "--concurrency <int>", RequiresValue: true},
+				{Name: "strict", Example: "--strict"},
+				{Name: "path-context", Example: "--path-context key=value", RequiresValue: true},
+				{Name: "dates", Example: "--dates <range>", RequiresValue: true},
+			},
+		},
+		"search": {
+			Flags: []frameworkFlagSpec{
+				{Name: "type", Example: "--type <single resource>", RequiresValue: true},
+				{Name: "limit", Example: "--limit <int>", RequiresValue: true},
+				{Name: "db", Example: "--db <path>", RequiresValue: true},
+			},
+		},
+		"analytics": {
+			Flags: []frameworkFlagSpec{
+				{Name: "type", Example: "--type <resource>", RequiresValue: true},
+				{Name: "group-by", Example: "--group-by <field>", RequiresValue: true},
+				{Name: "limit", Example: "--limit <int>", RequiresValue: true},
+				{Name: "db", Example: "--db <path>", RequiresValue: true},
+			},
+		},
+		"tail": {
+			Flags: []frameworkFlagSpec{
+				{Name: "resource", Example: "--resource <resource>", RequiresValue: true},
+				{Name: "interval", Example: "--interval <duration>", RequiresValue: true},
+				{Name: "since", Example: "--since <timestamp>", RequiresValue: true},
+				{Name: "follow", Example: "--follow"},
+			},
+		},
+		"doctor": {
+			Flags: []frameworkFlagSpec{
+				{Name: "fail-on", Example: "--fail-on <level>", RequiresValue: true},
+				{Name: "refresh-bearer", Example: "--refresh-bearer"},
+				{Name: "bearer-bundle-url", Example: "--bearer-bundle-url <url>", RequiresValue: true},
+				{Name: "bearer-pattern", Example: "--bearer-pattern <regexp>", RequiresValue: true},
+			},
+		},
+	}
+)
+
+type frameworkCommandSpec struct {
+	Flags []frameworkFlagSpec
+}
+
+type frameworkFlagSpec struct {
+	Name          string
+	Example       string
+	RequiresValue bool
+	Validate      func(string) error
+}
+
+func classifyFrameworkCommand(section Section, command string) []Result {
+	segments, err := splitShellChain(command)
+	if err != nil {
+		return []Result{{
+			Section: section,
+			Command: command,
+			Status:  StatusExampleFailed,
+			Error:   err.Error(),
+		}}
+	}
+
+	var out []Result
+	for _, seg := range segments {
+		if seg.AfterPipe {
+			continue
+		}
+		cleaned, _ := stripRedirects(seg.Text)
+		tokens, err := shellargs.Split(cleaned)
+		if err != nil {
+			out = append(out, Result{
+				Section: section,
+				Command: command,
+				Status:  StatusExampleFailed,
+				Error:   err.Error(),
+			})
+			continue
+		}
+		if len(tokens) <= 1 {
+			continue
+		}
+		args := tokens[1:]
+		commandIndex, commandName, preCommandErr, ok := findFrameworkCommand(args)
+		if !ok {
+			continue
+		}
+		spec := frameworkCommandSpecs[commandName]
+		r := Result{
+			Section: section,
+			Command: command,
+			Words:   commandName,
+			Status:  StatusOK,
+		}
+		if preCommandErr != nil {
+			r.Status = StatusExampleFailed
+			r.Error = preCommandErr.Error()
+		} else if err := validateFrameworkFlags(commandName, args[commandIndex+1:], spec); err != nil {
+			r.Status = StatusExampleFailed
+			r.Error = err.Error()
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+func findFrameworkCommand(args []string) (int, string, error, bool) {
+	var unknownPreCommandFlag string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if _, ok := frameworkCommandSpecs[arg]; ok {
+			if unknownPreCommandFlag != "" {
+				return i, arg, fmt.Errorf("framework command %q does not emit --%s before the command; use documented global flags before the command or documented %s flags after it", arg, unknownPreCommandFlag, arg), true
+			}
+			return i, arg, nil, true
+		}
+		if !strings.HasPrefix(arg, "--") || arg == "--" {
+			return 0, "", nil, false
+		}
+		name, _, hasInlineValue := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+		flag, ok := globalFrameworkFlags[name]
+		if !ok {
+			if unknownPreCommandFlag == "" {
+				unknownPreCommandFlag = name
+			}
+			continue
+		}
+		if flag.RequiresValue && !hasInlineValue {
+			i++
+		}
+	}
+	return 0, "", nil, false
+}
+
+func validateFrameworkFlags(commandName string, args []string, spec frameworkCommandSpec) error {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "--") || arg == "--" {
+			continue
+		}
+		name, value, hasInlineValue := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
+		if name == "" {
+			continue
+		}
+		flag, ok := spec.flag(name)
+		if !ok {
+			flag, ok = globalFrameworkFlags[name]
+		}
+		if !ok {
+			return fmt.Errorf("framework command %q does not emit --%s; use documented flags such as %s", commandName, name, frameworkFlagSummary(spec))
+		}
+		if flag.RequiresValue || flag.Validate != nil {
+			if !hasInlineValue {
+				if i+1 >= len(args) {
+					return fmt.Errorf("framework command %q requires --%s to have a value", commandName, name)
+				}
+				value = args[i+1]
+				i++
+			}
+			if flag.Validate != nil {
+				if err := flag.Validate(value); err != nil {
+					return fmt.Errorf("framework command %q has invalid --%s: %w", commandName, name, err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (s frameworkCommandSpec) flag(name string) (frameworkFlagSpec, bool) {
+	for _, flag := range s.Flags {
+		if flag.Name == name {
+			return flag, true
+		}
+	}
+	return frameworkFlagSpec{}, false
+}
+
+func validateSinceDuration(value string) error {
+	if sinceDurationPattern.MatchString(strings.TrimSpace(value)) {
+		return nil
+	}
+	return fmt.Errorf("use a relative duration like 7d, 24h, 1w, or 30m, got %q", value)
+}
+
+func frameworkFlagSummary(spec frameworkCommandSpec) string {
+	if len(spec.Flags) == 0 {
+		return "the command's generated help"
+	}
+	parts := make([]string, 0, len(spec.Flags))
+	for _, flag := range spec.Flags {
+		if flag.Example != "" {
+			parts = append(parts, flag.Example)
+		} else {
+			parts = append(parts, "--"+flag.Name)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 func classifySegment(ctx context.Context, binaryPath string, section Section, command string, opts Options, templateVarAssignments []string) Result {
