@@ -522,7 +522,7 @@ func init() {
 		assert.Equal(t, 0, scoreTypeFidelity(dir))
 	})
 
-	t.Run("scores string id flags required markers and clear descriptions high", func(t *testing.T) {
+	t.Run("scores string id flags and clear descriptions high", func(t *testing.T) {
 		dir := t.TempDir()
 
 		writeScorecardFixture(t, dir, "internal/cli/messages.go", `
@@ -533,13 +533,12 @@ func init() {
 	cmd.Flags().StringVar(&flagAfterID, "after-id", "", "Snowflake ID to fetch results after the given message")
 	cmd.Flags().StringVar(&flagChannelID, "channel-id", "", "Channel ID containing the messages to fetch for sync")
 	cmd.Flags().StringVar(&flagGuildID, "guild-id", "", "Guild ID used to scope channel and message syncing")
-	_ = cmd.MarkFlagRequired("after-id")
-	_ = cmd.MarkFlagRequired("channel-id")
-	_ = cmd.MarkFlagRequired("guild-id")
 }
 `)
 
-		assert.GreaterOrEqual(t, scoreTypeFidelity(dir), 4)
+		// +2 ID flags are all StringVar, +1 descriptions average well over 5 words,
+		// +1 no dummy `var _ = strings.ReplaceAll` / `var _ = fmt.Sprintf` guards.
+		assert.Equal(t, 4, scoreTypeFidelity(dir))
 	})
 }
 
@@ -588,14 +587,13 @@ func init() {
 }
 `)
 
-	// 0 ID flags (+2) + 3 long descriptions averaging well over 5 words (+1) +
-	// no dummy guards (+1) = 4. With the old cross-line regex, the description
-	// capture for "alpha" would have been "Alpha description with at least
-	// seven words here\n\tcmd.Flags().StringVar(&flagBravo" and the words
-	// would have averaged the same — the failure mode shows up with shorter
-	// descriptions, but the rule under test here is the capture is bounded.
-	score := scoreTypeFidelity(dir)
-	assert.GreaterOrEqual(t, score, 4, "well-formed flags with long descriptions should score at least 4")
+	// With the pre-fix greedy [^,]+ regex, the description capture for "alpha"
+	// absorbed the next line's `&flagBravo` token, dragging descWordCount and
+	// descCount so the average dropped to ≤5, costing the +1 description point
+	// (score 3). The bounded [^,\n]+ regex keeps each capture inside its own
+	// statement: +2 ID-flag check (no ID flags), +1 descriptions averaging >5
+	// words, +1 no dummy guards = 4.
+	assert.Equal(t, 4, scoreTypeFidelity(dir))
 }
 
 // TestScoreTypeFidelity_DoesNotRewardMarkFlagRequired pins that
