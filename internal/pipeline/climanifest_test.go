@@ -1771,6 +1771,26 @@ func TestWriteManifestForGenerateUsesExplicitCatalogDescription(t *testing.T) {
 	assert.False(t, strings.HasSuffix(got.Description, "..."))
 }
 
+func TestWriteManifestForGenerateUsesExplicitCatalogDisplayName(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:     "alaska-airlines",
+		OutputDir:   dir,
+		DisplayName: "Alaska Airlines",
+		Spec: &spec.APISpec{
+			Name:                        "alaska-airlines",
+			DisplayName:                 "Alaska Airlines API",
+			DisplayNameDerivedFromTitle: true,
+			Auth:                        spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, "Alaska Airlines", got.DisplayName)
+}
+
 func TestWriteManifestForGeneratePreservesExistingDurableDescription(t *testing.T) {
 	dir := t.TempDir()
 	existing := "Curated CLI description that should survive force regeneration."

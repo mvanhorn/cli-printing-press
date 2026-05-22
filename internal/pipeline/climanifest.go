@@ -591,6 +591,7 @@ type GenerateManifestParams struct {
 	DocsURL       string   // --docs URL, if used
 	OutputDir     string
 	Description   string                 // best generated user-facing catalog description
+	DisplayName   string                 // best generated user-facing catalog display name
 	Owner         string                 // resolved owner attribution (manifest preserve > copyright parse > git config)
 	Printer       string                 // resolved printer @handle (manifest preserve > git config github.user > empty)
 	PrinterName   string                 // resolved printer display name (manifest preserve > git config user.name > empty)
@@ -729,6 +730,9 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 		if entry.DisplayName != "" {
 			m.DisplayName = entry.DisplayName
 		}
+	}
+	if displayName := strings.TrimSpace(p.DisplayName); displayName != "" {
+		m.DisplayName = displayName
 	}
 	// Fall back to spec.Category for synthetic CLIs that aren't in the
 	// embedded catalog. Without this, manifest.Category stays empty even

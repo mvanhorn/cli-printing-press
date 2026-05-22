@@ -873,6 +873,20 @@ func (g *Generator) CatalogDescription() string {
 	return fmt.Sprintf("Printing Press CLI for %s.", g.proseName())
 }
 
+// CatalogDisplayName returns the best generated brand name for durable catalog
+// metadata.
+func (g *Generator) CatalogDisplayName() string {
+	if g.Narrative != nil {
+		if displayName := strings.TrimSpace(g.Narrative.DisplayName); displayName != "" {
+			return displayName
+		}
+	}
+	if g.Spec != nil {
+		return strings.TrimSpace(g.Spec.EffectiveDisplayName())
+	}
+	return ""
+}
+
 func (g *Generator) skillDescription() string {
 	switch {
 	case g.Narrative != nil && strings.TrimSpace(g.Narrative.Headline) != "":
