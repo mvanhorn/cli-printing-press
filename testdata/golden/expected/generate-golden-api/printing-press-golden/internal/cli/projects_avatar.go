@@ -10,7 +10,7 @@ import (
 func newProjectsAvatarCmd(flags *rootFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "avatar",
-		Short: "Manage avatar",
+		Short: "Upload avatar for projects",
 		RunE:  parentNoSubcommandRunE(flags),
 	}
 

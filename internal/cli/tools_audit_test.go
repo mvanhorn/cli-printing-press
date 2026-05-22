@@ -524,6 +524,25 @@ func TestAuditCommandFieldsExplicitReadOnly(t *testing.T) {
 	}
 }
 
+func TestAuditCommandFieldsThinShortStillFlagsShellOutCommands(t *testing.T) {
+	findings := auditCommandFields("internal/cli/cancel.go", 1, commandFields{
+		use:     "cancel",
+		short:   "Manage cancel",
+		hasRunE: true,
+	})
+
+	var gotThin bool
+	for _, f := range findings {
+		if f.Kind == kindThinShort {
+			gotThin = true
+			break
+		}
+	}
+	if !gotThin {
+		t.Fatalf("thin-short finding missing for shell-out command with thin Short: %+v", findings)
+	}
+}
+
 // TestInspectAnnotationsExplicitReadOnlyFalse pins the AST-level
 // helper: any value for `mcp:read-only` — including "false" — sets
 // hasExplicitReadOnly. The old behavior treated "false" as absent.

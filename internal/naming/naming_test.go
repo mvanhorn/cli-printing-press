@@ -51,6 +51,26 @@ func TestMCP(t *testing.T) {
 	}
 }
 
+func TestIsThinCommandShort(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{name: "thin manage stub", in: "Manage cancel", want: true},
+		{name: "four words passes", in: "Manage avatar for projects", want: false},
+		{name: "long three word phrase passes", in: "Mechanically validated generation", want: false},
+		{name: "empty is thin", in: " ", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsThinCommandShort(tt.in); got != tt.want {
+				t.Fatalf("IsThinCommandShort(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEnvPrefix(t *testing.T) {
 	tests := map[string]string{
 		"pokeapi":       "POKEAPI",

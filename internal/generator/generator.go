@@ -1934,6 +1934,126 @@ func promotedCommandsCanUnwrapResponse(commands []PromotedCommand) bool {
 	return false
 }
 
+func parentCommandShort(resourceName, parentName string, resource spec.Resource) string {
+	short := naming.OneLine(resource.Description)
+	if !naming.IsThinCommandShort(short) {
+		return short
+	}
+
+	if resourceName == "" {
+		return short
+	}
+
+	target := humanCommandSegment(resourceName)
+	if parentName != "" {
+		parent := humanCommandSegment(parentName)
+		if isVerbLikeParentSegment(resourceName) {
+			return "Run " + target + " operations for " + parent
+		}
+		if strings.EqualFold(resourceName, "pdf") {
+			return "Manage PDF files for " + parent
+		}
+		if actions := parentCommandActions(resource.Endpoints); actions != "" {
+			return actions + " " + target + " for " + parent
+		}
+		return "Manage " + target + " for " + parent
+	}
+
+	if actions := parentCommandActions(resource.Endpoints); actions != "" {
+		if computed := actions + " " + target; !naming.IsThinCommandShort(computed) {
+			return computed
+		}
+	}
+	return "Manage " + target + " command groups"
+}
+
+func parentCommandActions(endpoints map[string]spec.Endpoint) string {
+	if len(endpoints) == 0 {
+		return ""
+	}
+	seen := make(map[string]bool, len(endpoints))
+	for name, endpoint := range endpoints {
+		if action := endpointActionVerb(name, endpoint.Method); action != "" {
+			seen[action] = true
+		}
+	}
+	actionOrder := []string{"list", "get", "search", "find", "query", "count", "describe", "fetch", "run", "trigger", "execute", "generate", "batch", "process", "enable", "disable", "create", "add", "update", "edit", "delete", "remove", "upload", "download", "send", "submit", "verify"}
+	var actions []string
+	for _, action := range actionOrder {
+		if seen[action] {
+			actions = append(actions, action)
+		}
+	}
+	return joinCommandActions(actions)
+}
+
+func endpointActionVerb(name, method string) string {
+	head := strings.ToLower(name)
+	if i := strings.IndexAny(head, "-_"); i > 0 {
+		head = head[:i]
+	}
+	switch head {
+	case "list", "get", "search", "find", "query", "count", "describe", "fetch", "run", "trigger", "execute", "generate", "batch", "process", "enable", "disable", "create", "add", "update", "edit", "delete", "remove", "upload", "download", "send", "submit", "verify":
+		return head
+	}
+	switch strings.ToUpper(method) {
+	case "GET":
+		return "get"
+	case "POST":
+		return "create"
+	case "PUT", "PATCH":
+		return "update"
+	case "DELETE":
+		return "delete"
+	default:
+		return ""
+	}
+}
+
+func joinCommandActions(actions []string) string {
+	switch len(actions) {
+	case 0:
+		return ""
+	case 1:
+		return titleFirst(actions[0])
+	case 2:
+		return titleFirst(actions[0]) + " and " + actions[1]
+	default:
+		return titleFirst(strings.Join(actions[:len(actions)-1], ", ")) + ", and " + actions[len(actions)-1]
+	}
+}
+
+func titleFirst(s string) string {
+	if s == "" {
+		return ""
+	}
+	runes := []rune(s)
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
+}
+
+func isVerbLikeParentSegment(segment string) bool {
+	switch strings.ToLower(segment) {
+	case "approve", "archive", "cancel", "close", "delete", "download", "edit", "freeze", "publish", "reject", "restore", "send", "submit", "unarchive", "unfreeze", "upload", "verify":
+		return true
+	default:
+		return false
+	}
+}
+
+func humanCommandSegment(segment string) string {
+	words := strings.Fields(strings.ReplaceAll(strings.ReplaceAll(segment, "-", " "), "_", " "))
+	for i, word := range words {
+		switch strings.ToLower(word) {
+		case "api", "crm", "id", "mcp", "pdf":
+			words[i] = strings.ToUpper(word)
+		default:
+			words[i] = strings.ToLower(word)
+		}
+	}
+	return strings.Join(words, " ")
+}
+
 func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool, promotedEndpointNames map[string]string) error {
 	// When the spec emits promoted commands, the generator also emits the api
 	// browser (api_discovery.go), whose RunE filters root.Commands() by
@@ -1954,6 +2074,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				ResourceName string
 				FuncPrefix   string
 				CommandPath  string
+				Short        string
 				Resource     spec.Resource
 				Hidden       bool
 				*spec.APISpec
@@ -1961,6 +2082,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				ResourceName: name,
 				FuncPrefix:   name,
 				CommandPath:  name,
+				Short:        parentCommandShort(name, "", resource),
 				Resource:     resource,
 				Hidden:       hideTopLevelResources,
 				APISpec:      g.Spec,
@@ -2005,6 +2127,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				ResourceName string
 				FuncPrefix   string
 				CommandPath  string
+				Short        string
 				Resource     spec.Resource
 				Hidden       bool
 				*spec.APISpec
@@ -2012,6 +2135,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				ResourceName: subName,
 				FuncPrefix:   name + "-" + subName,
 				CommandPath:  name + " " + subName,
+				Short:        parentCommandShort(subName, name, subResource),
 				Resource:     subResource,
 				Hidden:       false,
 				APISpec:      g.Spec,

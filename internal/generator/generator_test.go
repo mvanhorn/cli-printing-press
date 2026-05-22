@@ -12489,3 +12489,109 @@ func TestGenerateParentNoSubcommandRunE_WiredOnResourceParents(t *testing.T) {
 	assert.Regexp(t, `RunE:\s+parentNoSubcommandRunE\(flags\)`, string(shareSrc),
 		"the share parent shares the same bug class and must wire the helper too")
 }
+
+func TestGenerateParentCommandShorts_AreAgentGradeForGroupers(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("parent-short-agent-grade")
+	apiSpec.Resources = map[string]spec.Resource{
+		"accounts": {
+			Description: "Manage accounts",
+			Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/accounts", Description: "List accounts"},
+				"get":  {Method: "GET", Path: "/accounts/{id}", Description: "Get one account"},
+			},
+			SubResources: map[string]spec.Resource{
+				"attachments": {
+					Description: "Manage attachments",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/accounts/{account_id}/attachments", Description: "List account attachments"},
+						"get":  {Method: "GET", Path: "/accounts/{account_id}/attachments/{id}", Description: "Get an account attachment"},
+					},
+				},
+				"cancel": {
+					Description: "Manage cancel",
+					Endpoints: map[string]spec.Endpoint{
+						"create": {Method: "POST", Path: "/accounts/{account_id}/cancel", Description: "Cancel an account"},
+						"status": {Method: "GET", Path: "/accounts/{account_id}/cancel", Description: "Get cancellation status"},
+					},
+				},
+				"reports": {
+					Description: "Manage reports",
+					Endpoints: map[string]spec.Endpoint{
+						"query": {Method: "POST", Path: "/accounts/{account_id}/reports/query", Description: "Query account reports"},
+					},
+				},
+				"jobs": {
+					Description: "Manage jobs",
+					Endpoints: map[string]spec.Endpoint{
+						"run": {Method: "POST", Path: "/accounts/{account_id}/jobs/run", Description: "Run account jobs"},
+					},
+				},
+			},
+		},
+		"teams": {
+			Description: "Manage teams",
+			SubResources: map[string]spec.Resource{
+				"members": {
+					Description: "Manage members",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/teams/{team_id}/members", Description: "List team members"},
+						"get":  {Method: "GET", Path: "/teams/{team_id}/members/{id}", Description: "Get a team member"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	accountSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "accounts.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `Short:\s+"List and get accounts"`, string(accountSrc),
+		"top-level generated parent groupers need agent-grade descriptions, not thin Manage stubs")
+
+	attachmentsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "accounts_attachments.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `Short:\s+"List and get attachments for accounts"`, string(attachmentsSrc),
+		"nested noun groupers should carry parent context in their Short")
+
+	cancelSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "accounts_cancel.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `Short:\s+"Run cancel operations for accounts"`, string(cancelSrc),
+		"verb-shaped groupers should not emit nonsense like Manage cancel")
+
+	reportsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "accounts_reports.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `Short:\s+"Query reports for accounts"`, string(reportsSrc),
+		"POST query-style groupers should describe read-shaped actions, not create operations")
+	assert.NotRegexp(t, `Short:\s+"Create reports for accounts"`, string(reportsSrc),
+		"read-shaped POST endpoints must not be mislabeled as creates")
+
+	jobsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "accounts_jobs.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `Short:\s+"Run jobs for accounts"`, string(jobsSrc),
+		"common action-style POST endpoints should use their endpoint verb, not the generic create fallback")
+	assert.NotRegexp(t, `Short:\s+"Create jobs for accounts"`, string(jobsSrc),
+		"action-style POST endpoints must not be mislabeled as creates")
+
+	teamsSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "teams.go"))
+	require.NoError(t, err)
+	assert.Regexp(t, `Short:\s+"Manage teams command groups"`, string(teamsSrc),
+		"endpoint-less parent groupers should still avoid thin Manage stubs")
+	assert.False(t, naming.IsThinCommandShort("Manage teams command groups"),
+		"endpoint-less parent fallback must stay above the tools-audit thin-short floor")
+
+	topLevelReportsShort := parentCommandShort("reports", "", spec.Resource{
+		Description: "Manage reports",
+		Endpoints: map[string]spec.Endpoint{
+			"query": {Method: "POST", Path: "/reports/query", Description: "Query reports"},
+		},
+	})
+	assert.Equal(t, "Manage reports command groups", topLevelReportsShort,
+		"single-action top-level groupers should fall back when the action-derived Short is still thin")
+	assert.NotEqual(t, "Query reports", topLevelReportsShort,
+		"top-level parent groupers must not emit action-derived Shorts that tools-audit still flags")
+}
