@@ -1983,18 +1983,32 @@ func parentCommandInfoDescriptionShort(description string) string {
 		if r == '.' && parentCommandShortPeriodIsInternal(description, idx) {
 			continue
 		}
-		sentence := naming.OneLine(description[:idx+len(string(r))])
+		sentence := parentCommandShortCompact(description[:idx+len(string(r))])
 		if !naming.IsThinCommandShort(sentence) {
 			return sentence
 		}
 		return ""
 	}
 
-	short := naming.OneLine(description)
+	short := parentCommandShortCompact(description)
 	if !naming.IsThinCommandShort(short) {
 		return short
 	}
 	return ""
+}
+
+func parentCommandShortCompact(description string) string {
+	description = naming.OneLineNormalize(description)
+	runes := []rune(description)
+	if len(runes) <= 120 {
+		return description
+	}
+
+	cut := string(runes[:120])
+	if idx := strings.LastIndex(cut, " "); idx > 60 {
+		return strings.TrimRight(cut[:idx], " ,;:")
+	}
+	return strings.TrimRight(cut, " ,;:")
 }
 
 func parentCommandShortPeriodIsInternal(description string, idx int) bool {
