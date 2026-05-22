@@ -1273,9 +1273,10 @@ func (m MCPConfig) HasTransport(t string) bool {
 }
 
 type Resource struct {
-	Description string   `yaml:"description" json:"description"`
-	Path        string   `yaml:"path,omitempty" json:"path,omitempty"`             // base path for operations shorthand (e.g., /api/items)
-	Operations  []string `yaml:"operations,omitempty" json:"operations,omitempty"` // shorthand: list, get, create, update, delete, search
+	Description        string   `yaml:"description" json:"description"`
+	DescriptionDerived bool     `yaml:"-" json:"-"`
+	Path               string   `yaml:"path,omitempty" json:"path,omitempty"`             // base path for operations shorthand (e.g., /api/items)
+	Operations         []string `yaml:"operations,omitempty" json:"operations,omitempty"` // shorthand: list, get, create, update, delete, search
 	// BaseURL overrides the spec-level BaseURL for this resource's
 	// endpoints. Fixed at generation time. Incompatible with the
 	// proxy-envelope client pattern, which POSTs every request to a

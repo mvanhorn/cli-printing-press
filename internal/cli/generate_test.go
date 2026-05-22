@@ -1625,6 +1625,46 @@ func TestMergeSpecsRewritesMCPIntentRefsForRenamedResources(t *testing.T) {
 	assert.Equal(t, "contacts.list", merged.MCP.Intents[0].Steps[0].Endpoint)
 }
 
+func TestMergeSpecsRequiresEachSpecToContributeToSharedPrefix(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "contacts",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"crm": {
+				Description: spec.DefaultResourceDescription("crm"),
+				Endpoints: map[string]spec.Endpoint{
+					"list":   {Method: "GET", Path: "/api/v1/crm/v3/objects/contacts"},
+					"get":    {Method: "GET", Path: "/api/v1/crm/v3/objects/contacts/{id}"},
+					"search": {Method: "GET", Path: "/api/v1/crm/v3/objects/contacts/search"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:    "empty",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"crm": {
+				Description: "Custom empty resource",
+				Endpoints:   map[string]spec.Endpoint{},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "crm")
+
+	assert.Contains(t, merged.Resources, "crm")
+	assert.Contains(t, merged.Resources, "empty-crm")
+	assert.NotContains(t, merged.Resources, "empty")
+	assert.Equal(t, "Custom empty resource", merged.Resources["empty-crm"].Description)
+}
+
 // TestMergeSpecsFirstDeclaringMCPWins verifies that when more than one input
 // spec declares x-mcp, the first declaring spec wins, mirroring the existing
 // first-wins precedence used for Auth.AuthorizationURL.

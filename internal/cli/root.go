@@ -950,7 +950,7 @@ func rewriteDefaultResourceDescription(resource spec.Resource, oldName, newName 
 	if oldName == newName {
 		return resource
 	}
-	if resource.Description == spec.DefaultResourceDescription(oldName) {
+	if resource.DescriptionDerived {
 		resource.Description = spec.DefaultResourceDescription(newName)
 	}
 	return resource
@@ -961,15 +961,18 @@ func sharedMultiSpecEndpointPathPrefix(specs []*spec.APISpec) []string {
 		return nil
 	}
 	var prefix []string
-	pathCount := 0
 	for _, s := range specs {
+		specPathCount := 0
 		var stopped bool
-		prefix, stopped = foldSharedEndpointPathPrefix(prefix, s.Resources, &pathCount)
+		prefix, stopped = foldSharedEndpointPathPrefix(prefix, s.Resources, &specPathCount)
 		if stopped {
 			return nil
 		}
+		if specPathCount == 0 {
+			return nil
+		}
 	}
-	if pathCount < len(specs) || len(prefix) < 2 {
+	if len(prefix) < 2 {
 		return nil
 	}
 	return prefix
@@ -1005,7 +1008,7 @@ func foldSharedEndpointPathPrefix(prefix []string, resources map[string]spec.Res
 				continue
 			}
 			(*pathCount)++
-			if *pathCount == 1 {
+			if prefix == nil {
 				prefix = segments
 				continue
 			}
