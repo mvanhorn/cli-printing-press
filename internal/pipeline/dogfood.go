@@ -12,7 +12,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
@@ -2045,10 +2044,6 @@ func runStdoutOnlyWithRunner(timeout time.Duration, run func(context.Context) ([
 		}
 		return nil, formatStdoutOnlyError(err)
 	}
-}
-
-func isTextFileBusy(err error) bool {
-	return errors.Is(err, syscall.ETXTBSY)
 }
 
 func formatStdoutOnlyError(err error) error {

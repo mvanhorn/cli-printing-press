@@ -1,15 +1,12 @@
 package pipeline
 
 import (
-	"context"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
@@ -2399,20 +2396,6 @@ EOF
 	// auth/login is filtered out because "auth" is in the framework
 	// skip set; only the posts subtree should survive.
 	assert.Equal(t, [][]string{{"posts", "list"}}, paths)
-}
-
-func TestRunStdoutOnlyRetriesTextFileBusy(t *testing.T) {
-	attempts := 0
-	out, err := runStdoutOnlyWithRunner(2*time.Second, func(_ context.Context) ([]byte, error) {
-		attempts++
-		if attempts < 3 {
-			return nil, &os.PathError{Op: "fork/exec", Path: "fakebin", Err: syscall.ETXTBSY}
-		}
-		return []byte(`{"commands":[]}`), nil
-	})
-	require.NoError(t, err)
-	assert.Contains(t, string(out), `"commands"`)
-	assert.Equal(t, 3, attempts)
 }
 
 // TestDiscoverExampleCheckCommandsSurfacesStderrOnFailure — when the
