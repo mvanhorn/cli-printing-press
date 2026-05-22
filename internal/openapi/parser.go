@@ -2166,7 +2166,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			// sub-resource.
 			if renamed, ok := frameworkRenames[primaryName]; ok {
 				primaryName = renamed
-			} else if _, reserved := spec.ReservedCobraUseNames[primaryName]; reserved {
+			} else if out.ParseTimeReservedCobraUseName(primaryName) {
 				originalName := primaryName
 				primaryName = renameForFrameworkCollision(out, primaryName, path)
 				frameworkRenames[originalName] = primaryName

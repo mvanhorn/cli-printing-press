@@ -1447,6 +1447,9 @@ func (g *Generator) prepareOutput() error {
 		g.profile = profiler.Profile(g.Spec)
 	}
 	g.VisionSet = constrainVisionTemplates(g.Spec, g.VisionSet)
+	if g.renameActiveFrameworkResourceCollisions() {
+		g.profile = profiler.Profile(g.Spec)
+	}
 	if err := g.validateFreshnessCommandCoverage(); err != nil {
 		return err
 	}
@@ -1745,6 +1748,111 @@ func (g *Generator) Generate() error {
 		return err
 	}
 	return g.renderVisionAndRootFiles(g.PromotedCommands, g.PromotedResourceNames)
+}
+
+func (g *Generator) renameActiveFrameworkResourceCollisions() bool {
+	active := g.activeFrameworkCobraUseNames()
+	renamed := false
+	for name, resource := range g.Spec.Resources {
+		kebab := strings.ReplaceAll(strings.ToLower(name), "_", "-")
+		if _, ok := active[kebab]; !ok {
+			continue
+		}
+		if g.Spec.ParseTimeReservedCobraUseName(kebab) {
+			continue
+		}
+		next := uniqueFrameworkResourceName(g.Spec, kebab)
+		delete(g.Spec.Resources, name)
+		g.Spec.Resources[next] = resource
+		fmt.Fprintf(os.Stderr, "warning: resource %q would shadow active framework cobra command %q; renamed to %q\n", name, kebab, next)
+		renamed = true
+	}
+	return renamed
+}
+
+func (g *Generator) activeFrameworkCobraUseNames() map[string]struct{} {
+	names := map[string]struct{}{
+		"agent-context": {},
+		"completion":    {},
+		"doctor":        {},
+		"feedback":      {},
+		"help":          {},
+		"profile":       {},
+		"version":       {},
+		"which":         {},
+	}
+	if g.shouldEmitAuth() {
+		names["auth"] = struct{}{}
+	}
+	if g.Spec.BearerRefresh.Enabled() {
+		names["refresh-bearer"] = struct{}{}
+	}
+	if len(g.AsyncJobs) > 0 {
+		names["jobs"] = struct{}{}
+	}
+	if g.VisionSet.Export {
+		names["export"] = struct{}{}
+	}
+	if g.VisionSet.Import {
+		names["import"] = struct{}{}
+	}
+	if g.VisionSet.Search {
+		names["search"] = struct{}{}
+	}
+	if g.VisionSet.Sync {
+		names["sync"] = struct{}{}
+	}
+	if g.VisionSet.Tail {
+		names["tail"] = struct{}{}
+	}
+	if g.VisionSet.Analytics {
+		names["analytics"] = struct{}{}
+	}
+	if g.VisionSet.Store {
+		names["workflow"] = struct{}{}
+	}
+	if g.Spec.Share.Enabled {
+		names["share"] = struct{}{}
+	}
+	if len(g.PromotedCommands) > 0 {
+		names["api"] = struct{}{}
+	}
+	for _, tmpl := range g.VisionSet.Workflows {
+		if name := frameworkUseNameForTemplate(tmpl); name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	for _, tmpl := range g.VisionSet.Insights {
+		if name := frameworkUseNameForTemplate(tmpl); name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	return names
+}
+
+func frameworkUseNameForTemplate(tmpl string) string {
+	ctor := commandConstructorForTemplate(tmpl)
+	if ctor == "" {
+		return ""
+	}
+	return strings.ReplaceAll(naming.Snake(ctor), "_", "-")
+}
+
+func uniqueFrameworkResourceName(s *spec.APISpec, original string) string {
+	slug := s.Name
+	if slug == "" {
+		slug = "api"
+	}
+	candidate := slug + "-" + original
+	if _, exists := s.Resources[candidate]; !exists {
+		return candidate
+	}
+	for i := 2; ; i++ {
+		next := fmt.Sprintf("%s-%d", candidate, i)
+		if _, exists := s.Resources[next]; !exists {
+			return next
+		}
+	}
 }
 
 // GenerateMCPSurface rewrites the generated MCP entrypoint, tools package,

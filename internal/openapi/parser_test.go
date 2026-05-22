@@ -5773,6 +5773,42 @@ paths:
 	assert.NotContains(t, output, "shadow framework cobra command", "non-colliding spec must not emit a collision warning")
 }
 
+func TestParseFrameworkCollisionAllowsConditionalFrameworkNamesWhenInactive(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: TestAPI
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      responses:
+        "200":
+          description: ok
+  /api/auth/check-email:
+    get:
+      operationId: checkEmail
+      responses:
+        "200":
+          description: ok
+`)
+
+	var parsed *spec.APISpec
+	output := captureWarnings(t, func() {
+		var err error
+		parsed, err = Parse(yamlSpec)
+		require.NoError(t, err)
+	})
+
+	require.Contains(t, parsed.Resources, "health", "health is not a parser-time collision unless the generator emits the health insight command")
+	require.Contains(t, parsed.Resources, "auth", "public auth resources should keep their natural name when no framework auth command is emitted")
+	assert.NotContains(t, parsed.Resources, "testapi-health")
+	assert.NotContains(t, parsed.Resources, "testapi-auth")
+	assert.NotContains(t, output, "shadow framework cobra command")
+}
+
 // TestParseFrameworkCollisionExemptsSubresources verifies sub-resources
 // don't trigger the collision check — paths like /games/{id}/version
 // produce a `version` sub-resource under `games`, which registers as a
