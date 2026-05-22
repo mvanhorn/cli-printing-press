@@ -1435,16 +1435,24 @@ For EACH tool found, list EVERY feature/tool/command it provides. Then define ho
 ### Absorbed (match or beat everything that exists)
 | # | Feature | Best Source | Our Implementation | Added Value |
 |---|---------|-----------|-------------------|-------------|
-| 1 | Search issues by text | Linear MCP search_issues | FTS5 offline search | Works offline, regex, SQL composable |
-| 2 | Create issue | Linear MCP create_issue | --stdin batch, --dry-run | Agent-native, scriptable, idempotent |
-| 3 | Sprint board view | jira-cli sprint view | SQLite-backed sprint query | Historical velocity, offline |
+| 1 | Search issues by text | Linear MCP search_issues | <api>-pp-cli search | Works offline, regex, SQL composable |
+| 2 | Create issue | Linear MCP create_issue | <api>-pp-cli issue create --stdin --dry-run | Agent-native, scriptable, idempotent |
+| 3 | Sprint board view | jira-cli sprint view | <api>-pp-cli sprint view | Historical velocity, offline |
 ```
 
 Every row = a feature we MUST build. No exceptions. If someone else has it, we have it AND it works offline, with --json, --dry-run, typed exit codes, and SQLite persistence.
 
 SDK wrapper methods should be treated as features to absorb — each public method/function is a feature the CLI should match.
 
-**Stubs must be explicit.** If any row in the manifest will ship as a stub (placeholder implementation that emits "not yet wired" / "wip" messaging), add a `Status` column with value `(stub)` and a one-line reason why the full implementation is deferred (e.g., "(stub — requires paid API)", "(stub — requires headless Chrome)"). Do NOT quietly ship stubs for features the user approved as shipping scope.
+**Our Implementation must start with a parseable disposition.** Use one of these prefixes so Phase 3 can verify the row mechanically:
+- `<api>-pp-cli <clean command path>` for a promoted or hand-built Cobra command path that must resolve via `<binary> <path> --help`.
+- `(generated endpoint) <resource> <endpoint>` for generator-emitted typed endpoint commands that retain the upstream resource shape and are covered by the generated endpoint surface.
+- `(behavior in <api>-pp-cli <command path>) ...` for features implemented as flags, modes, output shapes, or store behavior inside another command. The named command path still must resolve; the prose after the closing parenthesis explains the behavior to verify later.
+- `(stub) ...` only for explicitly approved stubs per the rule below.
+
+Do not leave `Our Implementation` as freeform prose like `FTS5 offline search` or `SQLite-backed sprint query`. If the row maps to a clean user-facing command, put that command path first. If it does not, choose the explicit disposition that explains why Phase 3 should not treat the whole cell as a new command path.
+
+**Stubs must be explicit.** If any row in the manifest will ship as a stub (placeholder implementation that emits "not yet wired" / "wip" messaging), start `Our Implementation` with `(stub)` plus a one-line reason why the full implementation is deferred (e.g., "(stub - requires paid API)", "(stub - requires headless Chrome)"). If the manifest also has a `Status` column, set that value to `(stub)` too, but the `Our Implementation` prefix is the Phase 3 gate's source of truth. Do NOT quietly ship stubs for features the user approved as shipping scope.
 
 The Phase Gate 1.5 prose showcase (below) MUST read out stub items separately so the user explicitly approves the stub list. After approval, Phase 3 builds shipping-scope features fully and stubs with honest messaging; no mid-build downgrade from shipping-scope to stub is permitted. If an agent discovers during Phase 3 that a shipping-scope feature cannot be implemented in-session, they must return to Phase 1.5 with a revised manifest — not unilaterally downgrade to a stub.
 
@@ -2624,14 +2632,22 @@ Include:
 
 **MANDATORY. Do NOT proceed to Phase 4 until this gate passes.**
 
-Before moving to shipcheck, verify the build log against the absorb manifest. Counting alone is not enough: a build that replaces an approved `keywords-data google-ads search-volume --auto-mode` with a self-contained wrapper `keywords volume` keeps the count right while shipping a different command than what Phase 1.5 approved. The gate must verify the **specific approved command path** for each transcendence row.
+Before moving to shipcheck, verify the build log against the absorb manifest. Counting alone is not enough: a build that replaces an approved `keywords-data google-ads search-volume --auto-mode` with a self-contained wrapper `keywords volume` keeps the count right while shipping a different command than what Phase 1.5 approved. The gate must verify the **specific approved command path** for each row that declares one.
 
-1. **Per-row Cobra resolution check.** Read every transcendence row from `$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`. For each row's `Command` value, strip flag tokens and quoted args to get the leaf command path (drop everything from the first `-` token onward; `bottleneck` stays `bottleneck`, `velocity --weeks 4` becomes `velocity`, `compare "LeBron" "Curry"` becomes `compare`, `keywords-data google-ads search-volume --auto-mode` becomes `keywords-data google-ads search-volume`). Then run:
+1. **Per-row Cobra resolution check.** Read approved command paths from `$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`:
+   - Every transcendence row's `Command` value.
+   - Every absorbed row whose `Our Implementation` value starts with `<api>-pp-cli <clean command path>`.
+   - Every absorbed row whose `Our Implementation` value starts with `(behavior in <api>-pp-cli <command path>)`. For these rows, first extract the text between the literal prefix `(behavior in ` and the first closing `)`, producing `<api>-pp-cli <command path>`, then apply the same binary-strip and flag-strip rules to that extracted command text.
+   - Skip rows that start with `(generated endpoint)` because the generator-emitted typed endpoint surface already covers those commands.
+   - Skip rows that start with `(stub)` because the Phase Gate 1.5 stub approval list is their source of truth; stubs are intentionally unresolved implementation placeholders and must not be counted as built commands.
+   - Do not infer command paths from freeform prose. Any absorbed row whose `Our Implementation` value does not start with `<api>-pp-cli <clean command path>`, `(behavior in <api>-pp-cli <command path>)`, `(generated endpoint)`, or `(stub)` is an invalid manifest row; return to Phase 1.5 and normalize it before proceeding.
+
+   For each approved path, including command text extracted from `(behavior in <api>-pp-cli <command path>)` rows, strip any leading binary name, then strip flag tokens and quoted args to get the leaf command path (drop everything from the first `-` token onward; `bottleneck` stays `bottleneck`, `velocity --weeks 4` becomes `velocity`, `compare "LeBron" "Curry"` becomes `compare`, `keywords-data google-ads search-volume --auto-mode` becomes `keywords-data google-ads search-volume`). Then run:
    ```bash
    ./<api>-pp-cli <leaf path> --help
    ```
    Assert (a) exit code 0 AND (b) the help output's `Usage:` spec line is `<binary> <leaf path> [flags]` — i.e., the line **immediately before** ` [flags]` is the full leaf path you requested. Cobra falls through to the parent's help when a subcommand is unknown — same exit 0, but the Usage spec line is `<binary> <parent> [command]` instead of `<binary> <parent> <leaf> [flags]`. The grep-able signal is `<leaf> [flags]` for a real command vs `[command]` for a parent fall-through; the leaf appearing only under `Available Commands:` is also a fall-through.
-2. **HALT on any miss.** If any approved row fails (a) or (b), STOP. Either build the approved command path now, or return to Phase 1.5 with a revised manifest for explicit re-approval per the existing "no mid-build downgrade" rule. Do not invent a wrapper command and silently update the manifest. Do not classify the feature as "documentation-only" because integration touches many files.
+2. **HALT on any miss.** If any approved row fails (a) or (b), STOP and name the manifest section plus row number or source line in the miss message, e.g. `Absorbed row 3: timeline did not resolve as a Cobra command`. Either build the approved command path now, or return to Phase 1.5 with a revised manifest for explicit re-approval per the existing "no mid-build downgrade" rule. Do not invent a wrapper command and silently update the manifest. Do not classify the feature as "documentation-only" because integration touches many files.
 3. **Deterministic backstop.** After the per-row walk, run the same machine-checked equivalent so a manifest-vs-`research.json` drift cannot mask a miss:
    ```bash
    cli-printing-press dogfood --dir "$CLI_WORK_DIR" --research-dir "$API_RUN_DIR" --json \
