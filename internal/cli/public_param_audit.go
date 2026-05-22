@@ -81,7 +81,7 @@ a real flag_name in the spec or an evidence-backed skip decision in the ledger.`
 	cmd.Flags().StringSliceVar(&specFiles, "spec", nil, "Path or URL to API spec (can be repeated)")
 	cmd.Flags().StringVar(&cliName, "name", "", "CLI name (required when using multiple specs)")
 	cmd.Flags().BoolVar(&lenient, "lenient", false, "Skip validation errors from broken $refs in OpenAPI specs")
-	cmd.Flags().BoolVar(&strictRefs, "strict-refs", false, "Disable lenient stubbing for missing local schema refs")
+	cmd.Flags().BoolVar(&strictRefs, "strict-refs", false, "Disable lenient stubbing for missing local schema refs (only meaningful with --lenient)")
 	cmd.Flags().StringVar(&ledgerPath, "ledger", "", "Path to an agent-edited public parameter audit ledger")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON instead of a human-readable summary")
 	cmd.Flags().BoolVar(&strict, "strict", false, "fail when unresolved findings remain")
