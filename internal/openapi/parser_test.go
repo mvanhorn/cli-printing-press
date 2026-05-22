@@ -1455,6 +1455,48 @@ paths:
 	assert.Equal(t, "bearer_token", parsed.Auth.Type)
 }
 
+func TestParseAuthPreferenceCanSelectUnusedComponentsScheme(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Preference Override
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            read: read access
+paths:
+  /v1/items:
+    get:
+      operationId: list items
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := ParseWithOptions(specBytes, ParseOptions{AuthPreference: "OAuth2"})
+	require.NoError(t, err)
+
+	assert.Equal(t, "OAuth2", parsed.Auth.Scheme, "explicit auth preference must override usage-based filtering")
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Equal(t, []string{"PREFERENCE_OVERRIDE_OAUTH2"}, parsed.Auth.EnvVars)
+	assert.Equal(t, "https://auth.example.com/authorize", parsed.Auth.AuthorizationURL)
+	assert.Equal(t, "https://auth.example.com/token", parsed.Auth.TokenURL)
+}
+
 func TestParseBearerPreservedOverOAuth2AuthCode(t *testing.T) {
 	t.Parallel()
 
@@ -1504,6 +1546,145 @@ paths:
 	assert.Equal(t, "bearer_token", preferred.Auth.Type)
 	assert.Equal(t, "https://auth.example.com/authorize", preferred.Auth.AuthorizationURL)
 	assert.Equal(t, "https://auth.example.com/token", preferred.Auth.TokenURL)
+}
+
+func TestParseSecuritySchemeReferenceCountBeatsTypePriority(t *testing.T) {
+	t.Parallel()
+
+	var paths strings.Builder
+	for i := range 10 {
+		fmt.Fprintf(&paths, `  /v1/oauth-items/%d:
+    get:
+      operationId: list oauth items %d
+      security:
+        - OAuth2: [read]
+      responses: {"200": {description: ok}}
+`, i, i)
+	}
+	paths.WriteString(`  /v1/events:
+    post:
+      operationId: create event
+      security:
+        - ConversionToken: []
+      responses: {"200": {description: ok}}
+`)
+
+	specBytes := fmt.Appendf(nil, `openapi: "3.0.3"
+info:
+  title: Pinterest-like
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ConversionToken:
+      type: http
+      scheme: bearer
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            read: read access
+paths:
+%s`, paths.String())
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "OAuth2", parsed.Auth.Scheme, "scheme used by most operations must become the primary auth scheme")
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+	assert.Equal(t, []string{"PINTEREST_LIKE_OAUTH2"}, parsed.Auth.EnvVars)
+	assert.Equal(t, "https://auth.example.com/authorize", parsed.Auth.AuthorizationURL)
+	assert.Equal(t, "https://auth.example.com/token", parsed.Auth.TokenURL)
+}
+
+func TestParseOperationSecurityOverridesRootSecurityCandidates(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Override Root
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            read: read access
+paths:
+  /v1/overridden:
+    get:
+      operationId: list overridden
+      security:
+        - OAuth2: [read]
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "OAuth2", parsed.Auth.Scheme, "operation-level security overrides root security and must stay selectable")
+	assert.Equal(t, []string{"OVERRIDE_ROOT_OAUTH2"}, parsed.Auth.EnvVars)
+}
+
+func TestParseInheritedRootSecurityContributesToReferenceCount(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Root Majority
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    BearerEventToken:
+      type: http
+      scheme: bearer
+paths:
+  /v1/root-a:
+    get:
+      operationId: list root a
+      responses: {"200": {description: ok}}
+  /v1/root-b:
+    get:
+      operationId: list root b
+      responses: {"200": {description: ok}}
+  /v1/events:
+    post:
+      operationId: create event
+      security:
+        - BearerEventToken: []
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := Parse(specBytes)
+	require.NoError(t, err)
+
+	assert.Equal(t, "ApiKeyAuth", parsed.Auth.Scheme, "root security inherited by most operations must count toward primary auth selection")
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, []string{"ROOT_MAJORITY_API_KEY"}, parsed.Auth.EnvVars)
 }
 
 func TestBearerSchemeNameCanSpecializeEnvVar(t *testing.T) {
