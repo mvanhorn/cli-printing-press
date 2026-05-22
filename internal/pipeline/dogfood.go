@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
@@ -2029,10 +2030,11 @@ func runStdoutOnly(binaryPath string, timeout time.Duration, args ...string) ([]
 		if isTextFileBusy(err) {
 			sleep := time.Duration(attempt+1) * 25 * time.Millisecond
 			sleep = min(sleep, 250*time.Millisecond)
-			if sleep > time.Until(deadline) {
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
 				return nil, fmt.Errorf("timed out after %s", timeout)
 			}
-			time.Sleep(sleep)
+			time.Sleep(min(sleep, remaining))
 			continue
 		}
 		return nil, formatStdoutOnlyError(err)
@@ -2040,7 +2042,7 @@ func runStdoutOnly(binaryPath string, timeout time.Duration, args ...string) ([]
 }
 
 func isTextFileBusy(err error) bool {
-	return strings.Contains(strings.ToLower(err.Error()), "text file busy")
+	return errors.Is(err, syscall.ETXTBSY)
 }
 
 func formatStdoutOnlyError(err error) error {
