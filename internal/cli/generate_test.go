@@ -2510,6 +2510,8 @@ func TestEnrichSpecFromCatalogMatchesSpecURLWhenSlugDiffers(t *testing.T) {
 }
 
 func TestEnrichSpecFromCatalogCategoryWinsOverFlagValue(t *testing.T) {
+	t.Parallel()
+
 	apiSpec := &spec.APISpec{
 		Name:     "asana",
 		Category: "developer-tools",
