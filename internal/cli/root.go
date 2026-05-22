@@ -205,6 +205,7 @@ func newGenerateCmd() *cobra.Command {
 					DocsURL:       docsURL,
 					OutputDir:     absOut,
 					Description:   generateResult.CatalogDescription,
+					DisplayName:   generateResult.DisplayName,
 					Owner:         parsed.Owner,
 					Printer:       parsed.Printer,
 					PrinterName:   parsed.PrinterName,
@@ -415,6 +416,7 @@ func newGenerateCmd() *cobra.Command {
 				SpecURL:       specURL,
 				OutputDir:     absOut,
 				Description:   generateResult.CatalogDescription,
+				DisplayName:   generateResult.DisplayName,
 				Owner:         apiSpec.Owner,
 				Printer:       apiSpec.Printer,
 				PrinterName:   apiSpec.PrinterName,
@@ -516,6 +518,7 @@ type generateProjectOptions struct {
 type generateProjectResult struct {
 	NovelFeatures      []pipeline.NovelFeatureManifest
 	CatalogDescription string
+	DisplayName        string
 	Polished           bool
 }
 
@@ -570,6 +573,7 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	return generateProjectResult{
 		NovelFeatures:      novelFeatures,
 		CatalogDescription: gen.CatalogDescription(),
+		DisplayName:        gen.CatalogDisplayName(),
 		Polished:           runGeneratePolishPass(opts.polish, apiSpec.Name, absOut),
 	}, nil
 }

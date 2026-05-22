@@ -2605,6 +2605,43 @@ func TestRunGenerateProjectUsesCatalogDescription(t *testing.T) {
 	assert.False(t, strings.HasSuffix(got.CatalogDescription, "..."))
 }
 
+func TestRunGenerateProjectReturnsResearchNarrativeCatalogMetadata(t *testing.T) {
+	t.Parallel()
+
+	researchDir := t.TempDir()
+	researchData, err := json.Marshal(&pipeline.ResearchResult{
+		APIName: "alaska-airlines",
+		Narrative: &pipeline.ReadmeNarrative{
+			DisplayName: "Alaska Airlines",
+			Headline:    "Search Alaska Airlines flights and check Atmos Rewards balance from the terminal, with offline-cached airports and agent-native JSON output.",
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "research.json"), researchData, 0o644))
+	apiSpec := &spec.APISpec{
+		Name:        "alaska-airlines",
+		Description: "Weak source-spec fallback copy.",
+		Version:     "1.0",
+		BaseURL:     "https://api.example.com",
+		Auth:        spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), "alaska-airlines")
+
+	got, err := runGenerateProject(apiSpec, outputDir, generateProjectOptions{researchDir: researchDir})
+	require.NoError(t, err)
+
+	assert.Equal(t, "Alaska Airlines", got.DisplayName)
+	assert.Equal(t, "Search Alaska Airlines flights and check Atmos Rewards balance from the terminal, with offline-cached airports and agent-native JSON output.", got.CatalogDescription)
+}
+
 func TestEnrichSpecFromCatalogReplacesTitleDerivedDisplayName(t *testing.T) {
 	apiSpec := &spec.APISpec{
 		Name:                        "trigger-dev",

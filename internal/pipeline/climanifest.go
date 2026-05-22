@@ -591,6 +591,7 @@ type GenerateManifestParams struct {
 	DocsURL       string   // --docs URL, if used
 	OutputDir     string
 	Description   string                 // best generated user-facing catalog description
+	DisplayName   string                 // best generated user-facing catalog display name
 	Owner         string                 // resolved owner attribution (manifest preserve > copyright parse > git config)
 	Printer       string                 // resolved printer @handle (manifest preserve > git config github.user > empty)
 	PrinterName   string                 // resolved printer display name (manifest preserve > git config user.name > empty)
@@ -750,6 +751,9 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	// Populate MCP metadata from the parsed spec.
 	if p.Spec != nil {
 		populateMCPMetadata(&m, p.Spec)
+	}
+	if displayName := strings.TrimSpace(p.DisplayName); displayName != "" {
+		m.DisplayName = displayName
 	}
 	if description := strings.TrimSpace(p.Description); description != "" {
 		m.Description = description

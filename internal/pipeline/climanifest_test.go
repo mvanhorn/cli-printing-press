@@ -636,6 +636,25 @@ func TestWriteManifestForGenerateKeepsCatalogDisplayNameOverTitleFallback(t *tes
 	assert.Equal(t, "Product Hunt", got.DisplayName)
 }
 
+func TestWriteManifestForGenerateKeepsGeneratedDisplayNameOverExplicitSpecName(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:     "synthetic-display-name",
+		OutputDir:   dir,
+		DisplayName: "Research Narrative Name",
+		Spec: &spec.APISpec{
+			Name:        "synthetic-display-name",
+			DisplayName: "Explicit Spec Name",
+			Auth:        spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, "Research Narrative Name", got.DisplayName)
+}
+
 func TestWriteManifestForGenerateMatchesCatalogBySpecURLWhenSlugDiffers(t *testing.T) {
 	dir := t.TempDir()
 
@@ -1769,6 +1788,26 @@ func TestWriteManifestForGenerateUsesExplicitCatalogDescription(t *testing.T) {
 	got := readPublishedManifest(t, dir)
 	assert.Equal(t, rich, got.Description)
 	assert.False(t, strings.HasSuffix(got.Description, "..."))
+}
+
+func TestWriteManifestForGenerateUsesExplicitCatalogDisplayName(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:     "alaska-airlines",
+		OutputDir:   dir,
+		DisplayName: "Alaska Airlines",
+		Spec: &spec.APISpec{
+			Name:                        "alaska-airlines",
+			DisplayName:                 "Alaska Airlines API",
+			DisplayNameDerivedFromTitle: true,
+			Auth:                        spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, "Alaska Airlines", got.DisplayName)
 }
 
 func TestWriteManifestForGeneratePreservesExistingDurableDescription(t *testing.T) {
