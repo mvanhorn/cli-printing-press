@@ -1054,6 +1054,8 @@ func TestGenerateComposedApiKeyPlusBearerEmitsAdditionalHeader(t *testing.T) {
 		"doctor must check the sibling apiKey env var")
 	assert.Contains(t, doctorSrc, `configuredValue = cfg.StAppKey`,
 		"doctor must accept sibling apiKey credentials from config files")
+	assert.Contains(t, doctorSrc, `} else if authConfigured {`,
+		"doctor must apply the config fallback consistently for sibling apiKey credentials")
 	assert.Contains(t, doctorSrc, `OK %d/%d available", len(authEnvSet), 3`,
 		"doctor must include sibling apiKey credentials in the env-var count")
 

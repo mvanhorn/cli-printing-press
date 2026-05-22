@@ -316,6 +316,12 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 					authEnvSet = append(authEnvSet, name)
 				} else if configuredValue != "" {
 					authEnvSet = append(authEnvSet, name)
+				} else if authConfigured {
+					authSource, _ := report["auth_source"].(string)
+					if authSource == "" {
+						authSource = "config"
+					}
+					authEnvInfo = append(authEnvInfo, "credentials available from "+authSource)
 				} else {
 					authEnvRequiredMissing = append(authEnvRequiredMissing, name)
 				}

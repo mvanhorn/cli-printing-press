@@ -825,6 +825,10 @@ func collectAdditionalAuthHeaders(doc *openapi3.T, winner, envPrefix string) []s
 	if winner == "" || len(requirements) == 0 {
 		return nil
 	}
+	requirements = additionalHeaderRequirementsForWinner(requirements, winner)
+	if len(requirements) == 0 || !additionalHeaderRequirementsShareSiblings(requirements, winner) {
+		return nil
+	}
 
 	siblingSet := map[string]struct{}{}
 	fallbackEligible := map[string]bool{}
@@ -891,11 +895,10 @@ func additionalHeaderSecurityRequirements(doc *openapi3.T) openapi3.SecurityRequ
 		return nil
 	}
 	var requirements openapi3.SecurityRequirements
+	seen := map[string]struct{}{}
 	visitedOperation := false
 	if doc.Paths == nil {
-		if len(doc.Security) > 0 {
-			requirements = append(requirements, doc.Security...)
-		}
+		appendUniqueSecurityRequirements(&requirements, seen, doc.Security)
 		return requirements
 	}
 	for _, pathKey := range doc.Paths.InMatchingOrder() {
@@ -908,16 +911,77 @@ func additionalHeaderSecurityRequirements(doc *openapi3.T) openapi3.SecurityRequ
 				continue
 			}
 			visitedOperation = true
-			requirements = append(requirements, effectiveSecurityRequirements(op, doc)...)
+			appendUniqueSecurityRequirements(&requirements, seen, effectiveSecurityRequirements(op, doc))
 		}
 	}
 	if visitedOperation {
 		return requirements
 	}
-	if len(doc.Security) > 0 {
-		requirements = append(requirements, doc.Security...)
-	}
+	appendUniqueSecurityRequirements(&requirements, seen, doc.Security)
 	return requirements
+}
+
+func appendUniqueSecurityRequirements(requirements *openapi3.SecurityRequirements, seen map[string]struct{}, candidates openapi3.SecurityRequirements) {
+	for _, req := range candidates {
+		key := securityRequirementKey(req)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		*requirements = append(*requirements, req)
+	}
+}
+
+func securityRequirementKey(req openapi3.SecurityRequirement) string {
+	names := make([]string, 0, len(req))
+	for name := range req {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		scopes := slices.Clone(req[name])
+		sort.Strings(scopes)
+		parts = append(parts, name+":"+strings.Join(scopes, ","))
+	}
+	return strings.Join(parts, "|")
+}
+
+func additionalHeaderRequirementsForWinner(requirements openapi3.SecurityRequirements, winner string) openapi3.SecurityRequirements {
+	matching := make(openapi3.SecurityRequirements, 0, len(requirements))
+	for _, req := range requirements {
+		if _, ok := req[winner]; ok {
+			matching = append(matching, req)
+		}
+	}
+	return matching
+}
+
+func additionalHeaderRequirementsShareSiblings(requirements openapi3.SecurityRequirements, winner string) bool {
+	var signature string
+	for i, req := range requirements {
+		current := additionalHeaderSiblingSignature(req, winner)
+		if i == 0 {
+			signature = current
+			continue
+		}
+		if current != signature {
+			return false
+		}
+	}
+	return true
+}
+
+func additionalHeaderSiblingSignature(req openapi3.SecurityRequirement, winner string) string {
+	siblings := make([]string, 0, len(req))
+	for name := range req {
+		if name != winner {
+			siblings = append(siblings, name)
+		}
+	}
+	sort.Strings(siblings)
+	return strings.Join(siblings, "|")
 }
 
 func additionalHeaderEnvVars(scheme *openapi3.SecurityScheme, schemeName, envPrefix string, allowFallback bool) []spec.AuthEnvVar {
