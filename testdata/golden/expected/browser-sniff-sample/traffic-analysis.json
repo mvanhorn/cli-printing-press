@@ -55,6 +55,7 @@
   ],
   "endpoint_clusters": [
     {
+      "confidence": "low",
       "content_types": [
         "application/json"
       ],
@@ -72,6 +73,10 @@
       ],
       "host": "httpbin.org",
       "method": "GET",
+      "normalization_flags": [
+        "single-sample",
+        "single-status"
+      ],
       "path": "/get",
       "request_shape": {},
       "response_shape": {},
@@ -81,6 +86,7 @@
       ]
     },
     {
+      "confidence": "low",
       "content_types": [
         "application/json"
       ],
@@ -98,6 +104,10 @@
       ],
       "host": "httpbin.org",
       "method": "GET",
+      "normalization_flags": [
+        "single-sample",
+        "single-status"
+      ],
       "path": "/headers",
       "request_shape": {},
       "response_shape": {},
@@ -107,6 +117,7 @@
       ]
     },
     {
+      "confidence": "low",
       "content_types": [
         "application/json"
       ],
@@ -124,6 +135,10 @@
       ],
       "host": "httpbin.org",
       "method": "GET",
+      "normalization_flags": [
+        "single-sample",
+        "single-status"
+      ],
       "path": "/ip",
       "request_shape": {},
       "response_shape": {},
@@ -219,6 +234,10 @@
     "host_distribution": {
       "data": 1,
       "httpbin.org": 4
+    },
+    "http_version_distribution": {
+      "h2": 4,
+      "http/1.1": 1
     },
     "noise_entry_count": 2,
     "target_url": "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwcHgiICBoZWlnaHQ9IjIwMHB4IiAgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB2aWV3Qm94PSIwIDAgMTAwIDEwMCIgcHJlc2VydmVBc3BlY3RSYXRpbz0ieE1pZFlNaWQiIGNsYXNzPSJsZHMtcm9sbGluZyIgc3R5bGU9ImJhY2tncm91bmQtaW1hZ2U6IG5vbmU7IGJhY2tncm91bmQtcG9zaXRpb246IGluaXRpYWwgaW5pdGlhbDsgYmFja2dyb3VuZC1yZXBlYXQ6IGluaXRpYWwgaW5pdGlhbDsiPjxjaXJjbGUgY3g9IjUwIiBjeT0iNTAiIGZpbGw9Im5vbmUiIG5nLWF0dHItc3Ryb2tlPSJ7e2NvbmZpZy5jb2xvcn19IiBuZy1hdHRyLXN0cm9rZS13aWR0aD0ie3tjb25maWcud2lkdGh9fSIgbmctYXR0ci1yPSJ7e2NvbmZpZy5yYWRpdXN9fSIgbmctYXR0ci1zdHJva2UtZGFzaGFycmF5PSJ7e2NvbmZpZy5kYXNoYXJyYXl9fSIgc3Ryb2tlPSIjNTU1NTU1IiBzdHJva2Utd2lkdGg9IjEwIiByPSIzNSIgc3Ryb2tlLWRhc2hhcnJheT0iMTY0LjkzMzYxNDMxMzQ2NDE1IDU2Ljk3Nzg3MTQzNzgyMTM4Ij48YW5pbWF0ZVRyYW5zZm9ybSBhdHRyaWJ1dGVOYW1lPSJ0cmFuc2Zvcm0iIHR5cGU9InJvdGF0ZSIgY2FsY01vZGU9ImxpbmVhciIgdmFsdWVzPSIwIDUwIDUwOzM2MCA1MCA1MCIga2V5VGltZXM9IjA7MSIgZHVyPSIxcyIgYmVnaW49IjBzIiByZXBlYXRDb3VudD0iaW5kZWZpbml0ZSI+PC9hbmltYXRlVHJhbnNmb3JtPjwvY2lyY2xlPjwvc3ZnPgo=",

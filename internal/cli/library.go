@@ -30,10 +30,10 @@ func newLibraryCmd() *cobra.Command {
 		Use:   "library",
 		Short: "Manage CLIs in the local library",
 		Example: `  # List all CLIs in the library
-  printing-press library list
+  cli-printing-press library list
 
   # List as JSON for tooling
-  printing-press library list --json`,
+  cli-printing-press library list --json`,
 	}
 
 	cmd.AddCommand(newLibraryListCmd())
@@ -48,8 +48,8 @@ func newLibraryListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all CLIs in the local library",
-		Example: `  printing-press library list
-  printing-press library list --json`,
+		Example: `  cli-printing-press library list
+  cli-printing-press library list --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			entries, err := scanLibrary()
 			if err != nil {

@@ -1,0 +1,56 @@
+openapi: "3.0.3"
+info:
+  title: Async Job API
+  version: "1.0.0"
+  description: |
+    Golden fixture exercising async-job detection: POST returns a job_id-shaped
+    response with a sibling GET status endpoint, triggering jobs.go emission.
+servers:
+  - url: https://api.example.com/v1
+security:
+  - ApiKeyAuth: []
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  schemas:
+    RenderJob:
+      type: object
+      properties:
+        job_id:
+          type: string
+        status:
+          type: string
+paths:
+  /renders:
+    post:
+      tags: [renders]
+      operationId: submitRender
+      summary: Submit a render job
+      responses:
+        "202":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RenderJob"
+  /renders/{id}:
+    get:
+      tags: [renders]
+      operationId: getRender
+      summary: Get a render job
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RenderJob"

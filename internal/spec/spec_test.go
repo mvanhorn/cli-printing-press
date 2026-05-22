@@ -2,7 +2,7 @@ package spec
 
 import (
 	"bytes"
-	"os"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -11,24 +11,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func captureStderr(t *testing.T, fn func()) string {
+// captureWarnings runs fn with the package warning sink redirected to a
+// buffer and returns everything written to it. This replaces an older
+// approach that reassigned the process-wide os.Stderr, which was racy and
+// coupled the assertion to a global file handle.
+func captureWarnings(t *testing.T, fn func()) string {
 	t.Helper()
 
-	old := os.Stderr
-	r, w, err := os.Pipe()
-	require.NoError(t, err)
-	os.Stderr = w
-	defer func() {
-		os.Stderr = old
-	}()
+	old := warnWriter
+	var buf bytes.Buffer
+	warnWriter = &buf
+	t.Cleanup(func() { warnWriter = old })
 
 	fn()
-	require.NoError(t, w.Close())
-
-	var buf bytes.Buffer
-	_, err = buf.ReadFrom(r)
-	require.NoError(t, err)
-	require.NoError(t, r.Close())
 	return buf.String()
 }
 
@@ -552,7 +547,7 @@ func TestAuthEnvVarSpecsNormalizeAndValidate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			candidate := baseSpec(tt.auth)
-			stderr := captureStderr(t, func() {
+			stderr := captureWarnings(t, func() {
 				require.NoError(t, candidate.Validate())
 			})
 
@@ -738,12 +733,17 @@ func TestIsAuthEnvVarORCase(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "all required entries are not OR case",
+			name: "all required per-call entries are OR case",
 			auth: AuthConfig{EnvVarSpecs: []AuthEnvVar{
 				{Name: "FIRST_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true},
 				{Name: "SECOND_API_KEY", Kind: AuthEnvVarKindPerCall, Required: true},
 			}},
-			want: false,
+			want: true,
+		},
+		{
+			name: "legacy env vars list is OR case",
+			auth: AuthConfig{EnvVars: []string{"FIRST_API_KEY", "SECOND_API_KEY"}},
+			want: true,
 		},
 		{
 			name: "all non-required per-call entries are OR case",
@@ -990,6 +990,45 @@ func TestAuthPrefixValidate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validateAuthPrefix(AuthConfig{Prefix: tt.prefix})
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestAuthSubtypeValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		auth    AuthConfig
+		wantErr string
+	}{
+		{name: "empty subtype is valid", auth: AuthConfig{Type: "bearer_token"}},
+		{
+			name: "auth0_spa_in_memory with bearer_token is valid",
+			auth: AuthConfig{Type: "bearer_token", Subtype: AuthSubtypeAuth0SPAInMemory},
+		},
+		{
+			name: "auth0_spa_in_memory with empty Type is valid",
+			auth: AuthConfig{Subtype: AuthSubtypeAuth0SPAInMemory},
+		},
+		{
+			name:    "auth0_spa_in_memory with api_key is rejected",
+			auth:    AuthConfig{Type: "api_key", Subtype: AuthSubtypeAuth0SPAInMemory},
+			wantErr: `requires auth.type "bearer_token"`,
+		},
+		{
+			name:    "unknown subtype is rejected",
+			auth:    AuthConfig{Type: "bearer_token", Subtype: "auth0_spa_localstorage"},
+			wantErr: "is not recognized",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAuthSubtype(tt.auth)
 			if tt.wantErr == "" {
 				require.NoError(t, err)
 				return
@@ -2665,6 +2704,65 @@ func TestMCPConfigAcceptsValidShapes(t *testing.T) {
 	}
 }
 
+// TestEffectiveMCPTransportsSmallAPIDefault locks the issue #1603 contract:
+// when mcp.transport is unset and the typed-endpoint surface is small, the
+// resolved transport list adds http alongside stdio so the same binary can
+// reach cloud-hosted agents. Explicit transport lists (including ["stdio"])
+// bypass the default and are honored as-is.
+func TestEffectiveMCPTransportsSmallAPIDefault(t *testing.T) {
+	t.Parallel()
+
+	mkSpec := func(endpoints int, transport []string) *APISpec {
+		s := &APISpec{
+			Name:      "demo",
+			BaseURL:   "https://api.example.com",
+			Auth:      AuthConfig{Type: "none"},
+			Resources: map[string]Resource{},
+			MCP:       MCPConfig{Transport: transport},
+		}
+		r := Resource{Endpoints: map[string]Endpoint{}}
+		for i := range endpoints {
+			r.Endpoints[fmt.Sprintf("get_%d", i)] = Endpoint{Method: "GET", Path: fmt.Sprintf("/items/%d", i)}
+		}
+		s.Resources["items"] = r
+		return s
+	}
+
+	tests := []struct {
+		name      string
+		endpoints int
+		transport []string
+		want      []string
+		wantHTTP  bool
+	}{
+		{name: "small API empty transport gets stdio+http", endpoints: 6, transport: nil, want: []string{"stdio", "http"}, wantHTTP: true},
+		{name: "boundary at threshold still gets http", endpoints: DefaultRemoteTransportEndpointThreshold, transport: nil, want: []string{"stdio", "http"}, wantHTTP: true},
+		{name: "above threshold stays stdio-only", endpoints: DefaultRemoteTransportEndpointThreshold + 1, transport: nil, want: []string{"stdio"}, wantHTTP: false},
+		{name: "explicit stdio is honored even at small scale", endpoints: 6, transport: []string{"stdio"}, want: []string{"stdio"}, wantHTTP: false},
+		{name: "explicit stdio,http passes through", endpoints: 6, transport: []string{"stdio", "http"}, want: []string{"stdio", "http"}, wantHTTP: true},
+		{name: "explicit http-only passes through", endpoints: 100, transport: []string{"http"}, want: []string{"http"}, wantHTTP: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := mkSpec(tt.endpoints, tt.transport)
+			assert.Equal(t, tt.want, s.EffectiveMCPTransports())
+			assert.Equal(t, tt.wantHTTP, s.HasMCPTransport("http"))
+			// Case-insensitive lookup mirrors MCPConfig.HasTransport.
+			assert.Equal(t, tt.wantHTTP, s.HasMCPTransport("HTTP"))
+		})
+	}
+
+	// Nil receiver is safe and returns the stdio fallback.
+	var nilSpec *APISpec
+	assert.Equal(t, []string{"stdio"}, nilSpec.EffectiveMCPTransports())
+	assert.False(t, nilSpec.HasMCPTransport("http"))
+
+	// MCPConfig.EffectiveTransports stays unconditioned on endpoint count;
+	// it's still the right helper for spec validation and mcp_audit.
+	assert.Equal(t, []string{"stdio"}, MCPConfig{}.EffectiveTransports())
+}
+
 func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -2681,7 +2779,7 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 
 	sniffed := base
 	sniffed.SpecSource = "sniffed"
-	assert.Equal(t, HTTPTransportBrowserChrome, sniffed.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, sniffed.EffectiveHTTPTransport())
 	require.NoError(t, sniffed.Validate())
 
 	browserHTTP := base
@@ -2694,13 +2792,31 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 
 	community := base
 	community.SpecSource = "community"
-	assert.Equal(t, HTTPTransportBrowserChrome, community.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, community.EffectiveHTTPTransport())
+
+	browserChrome := base
+	browserChrome.HTTPTransport = HTTPTransportBrowserChrome
+	assert.Equal(t, HTTPTransportBrowserChrome, browserChrome.EffectiveHTTPTransport())
+	assert.True(t, browserChrome.UsesBrowserHTTPTransport())
+	assert.False(t, browserChrome.UsesBrowserHTTP2Transport())
+	assert.False(t, browserChrome.UsesBrowserHTTP3Transport())
+	require.NoError(t, browserChrome.Validate())
+
+	h2 := base
+	h2.HTTPTransport = HTTPTransportBrowserChromeH2
+	assert.Equal(t, HTTPTransportBrowserChromeH2, h2.EffectiveHTTPTransport())
+	assert.True(t, h2.UsesBrowserHTTPTransport())
+	assert.True(t, h2.UsesBrowserHTTP2Transport())
+	assert.False(t, h2.UsesBrowserHTTP3Transport())
+	assert.True(t, h2.UsesBrowserManagedUserAgent())
+	require.NoError(t, h2.Validate())
 
 	h3 := base
 	h3.HTTPTransport = HTTPTransportBrowserChromeH3
 	assert.Equal(t, HTTPTransportBrowserChromeH3, h3.EffectiveHTTPTransport())
 	assert.True(t, h3.UsesBrowserHTTPTransport())
 	assert.True(t, h3.UsesBrowserHTTP3Transport())
+	assert.False(t, h3.UsesBrowserHTTP2Transport())
 	assert.True(t, h3.UsesBrowserManagedUserAgent())
 	require.NoError(t, h3.Validate())
 
@@ -2718,11 +2834,11 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 			},
 		},
 	}
-	assert.Equal(t, HTTPTransportBrowserChrome, cookieHTML.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, cookieHTML.EffectiveHTTPTransport())
 
 	composedHTML := cookieHTML
 	composedHTML.Auth.Type = "composed"
-	assert.Equal(t, HTTPTransportBrowserChrome, composedHTML.EffectiveHTTPTransport())
+	assert.Equal(t, HTTPTransportBrowserChromeH2, composedHTML.EffectiveHTTPTransport())
 
 	jsonCookie := cookieHTML
 	jsonCookie.Resources = map[string]Resource{
@@ -2748,6 +2864,86 @@ func TestHTTPTransportValidationAndDefaults(t *testing.T) {
 	invalid := base
 	invalid.HTTPTransport = "lynx"
 	require.ErrorContains(t, invalid.Validate(), "http_transport must be one of")
+}
+
+func TestUsesBrowserLikeUserAgent(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		spec *APISpec
+		want bool
+	}{
+		{
+			name: "documented JSON API stays script-shaped",
+			spec: &APISpec{
+				Name:    "stripe",
+				BaseURL: "https://api.stripe.com",
+				Auth:    AuthConfig{Type: "bearer"},
+			},
+			want: false,
+		},
+		{
+			name: "kind: synthetic flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "bbquality",
+				BaseURL: "https://bbquality.nl",
+				Kind:    KindSynthetic,
+				Auth:    AuthConfig{Type: "bearer"},
+			},
+			want: true,
+		},
+		{
+			name: "cookie auth flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "marktplaats",
+				BaseURL: "https://www.marktplaats.nl",
+				Auth:    AuthConfig{Type: "cookie"},
+			},
+			want: true,
+		},
+		{
+			name: "composed auth flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "picnic",
+				BaseURL: "https://storefront-prod.nl.picnicinternational.com",
+				Auth:    AuthConfig{Type: "composed"},
+			},
+			want: true,
+		},
+		{
+			name: "session_handshake auth flips to browser-shaped",
+			spec: &APISpec{
+				Name:    "openart",
+				BaseURL: "https://openart.ai",
+				Auth:    AuthConfig{Type: "session_handshake"},
+			},
+			want: true,
+		},
+		{
+			name: "auth.type casing is normalized",
+			spec: &APISpec{
+				Name:    "cookieUpper",
+				BaseURL: "https://example.com",
+				Auth:    AuthConfig{Type: "  Cookie  "},
+			},
+			want: true,
+		},
+		{
+			// Nil spec must reach the nil-receiver guard; dispatching via
+			// a typed pointer (not a name-string comparison) ensures the
+			// guard stays under test even if the case name is renamed.
+			name: "nil spec is safe and returns false",
+			spec: nil,
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, tc.spec.UsesBrowserLikeUserAgent())
+		})
+	}
 }
 
 func TestHTMLResponseExtractionValidation(t *testing.T) {
@@ -3131,6 +3327,25 @@ resources:
 		assert.Contains(t, err.Error(), `"auth"`)
 	})
 
+	t.Run("auth resource is allowed when no auth command is emitted", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  auth:
+    description: Public auth helpers
+    endpoints:
+      check_email:
+        method: GET
+        path: /api/auth/check-email
+        description: Check email
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
 	t.Run("non-reserved name with reserved-substring is allowed", func(t *testing.T) {
 		t.Parallel()
 		// "customer_feedback" contains "feedback" but is not itself reserved;
@@ -3256,6 +3471,25 @@ resources:
         method: GET
         path: /stores
         description: List
+`
+		_, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+	})
+
+	t.Run("health resource passes until the generator emits a health command", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  health:
+    description: API health
+    endpoints:
+      get:
+        method: GET
+        path: /health
+        description: Health
 `
 		_, err := ParseBytes([]byte(input))
 		require.NoError(t, err)
@@ -3985,6 +4219,181 @@ func TestWalkerConfig_YAMLRoundTrip(t *testing.T) {
 	})
 }
 
+// TestAuthCompanionParseRoundTrip exercises the press-auth companion hints
+// (login_url, login_complete_selector, jwt_carrier_cookie). Round-trips
+// through ParseBytes so the YAML tags are exercised, not just the struct
+// field assignments.
+func TestAuthCompanionParseRoundTrip(t *testing.T) {
+	t.Run("all three companion fields parse cleanly", func(t *testing.T) {
+		yamlSpec := []byte(`name: example-api
+base_url: https://api.example.com
+auth:
+  type: composed
+  format: "Cookie {session}"
+  cookie_domain: example.com
+  cookies:
+    - session
+    - guestsession
+  login_url: https://www.example.com/account/login
+  login_complete_selector: "a[href*=signout]"
+  jwt_carrier_cookie: guestsession
+resources:
+  items:
+    endpoints:
+      list:
+        method: GET
+        path: /items
+`)
+		s, err := ParseBytes(yamlSpec)
+		require.NoError(t, err)
+		assert.Equal(t, "https://www.example.com/account/login", s.Auth.LoginURL)
+		assert.Equal(t, "a[href*=signout]", s.Auth.LoginCompleteSelector)
+		assert.Equal(t, "guestsession", s.Auth.JWTCarrierCookie)
+		assert.True(t, s.Auth.HasCompanionHints())
+	})
+
+	t.Run("no companion fields leaves zero values and HasCompanionHints false", func(t *testing.T) {
+		yamlSpec := []byte(`name: example-api
+base_url: https://api.example.com
+auth:
+  type: bearer_token
+  env_vars: [EXAMPLE_API_TOKEN]
+resources:
+  items:
+    endpoints:
+      list:
+        method: GET
+        path: /items
+`)
+		s, err := ParseBytes(yamlSpec)
+		require.NoError(t, err)
+		assert.Empty(t, s.Auth.LoginURL)
+		assert.Empty(t, s.Auth.LoginCompleteSelector)
+		assert.Empty(t, s.Auth.JWTCarrierCookie)
+		assert.False(t, s.Auth.HasCompanionHints())
+	})
+}
+
+func TestAuthCompanionValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		auth    AuthConfig
+		wantErr string
+	}{
+		{
+			name: "https login_url is valid",
+			auth: AuthConfig{LoginURL: "https://example.com/login"},
+		},
+		{
+			name: "http localhost is valid",
+			auth: AuthConfig{LoginURL: "http://localhost:8080/login"},
+		},
+		{
+			name: "http 127.0.0.1 is valid",
+			auth: AuthConfig{LoginURL: "http://127.0.0.1/login"},
+		},
+		{
+			name:    "plain http elsewhere is rejected",
+			auth:    AuthConfig{LoginURL: "http://example.com/login"},
+			wantErr: "only https://",
+		},
+		{
+			name:    "ftp scheme is rejected",
+			auth:    AuthConfig{LoginURL: "ftp://example.com/"},
+			wantErr: "must use http or https",
+		},
+		{
+			name: "empty is valid (companion is optional)",
+			auth: AuthConfig{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateAuthCompanion(tt.auth)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+// TestAuthCompanionJWTCarrierCookieNotInCookiesWarns asserts that a
+// jwt_carrier_cookie that isn't in the cookies list surfaces a non-fatal
+// warning, not a hard error. Plausible typo, surface it but don't block.
+func TestAuthCompanionJWTCarrierCookieNotInCookiesWarns(t *testing.T) {
+	auth := AuthConfig{
+		Type:             "composed",
+		Cookies:          []string{"session", "csrf_token"},
+		JWTCarrierCookie: "guestsesion", // intentional typo
+	}
+	warnings := captureWarnings(t, func() {
+		err := validateAuthCompanion(auth)
+		require.NoError(t, err)
+	})
+	assert.Contains(t, warnings, "jwt_carrier_cookie")
+	assert.Contains(t, warnings, "guestsesion")
+}
+
+// TestAPISpecValidate_RejectsBadLoginURL plugs validateAuthCompanion into
+// the full APISpec validation path to confirm a malformed login_url
+// surfaces at Validate() time, not just when the helper is called
+// directly.
+func TestAPISpecValidate_RejectsBadLoginURL(t *testing.T) {
+	build := func(loginURL string) APISpec {
+		return APISpec{
+			Name:    "companion-validate",
+			BaseURL: "https://api.example.com",
+			Auth: AuthConfig{
+				Type:         "composed",
+				CookieDomain: "example.com",
+				Cookies:      []string{"session"},
+				LoginURL:     loginURL,
+				EnvVars:      []string{"COMPANION_VALIDATE_TOKEN"},
+			},
+			Resources: map[string]Resource{
+				"items": {Endpoints: map[string]Endpoint{"list": {Method: "GET", Path: "/items"}}},
+			},
+		}
+	}
+
+	t.Run("valid login_url passes Validate()", func(t *testing.T) {
+		s := build("https://example.com/login")
+		require.NoError(t, s.Validate())
+	})
+
+	t.Run("plain http is rejected at APISpec level", func(t *testing.T) {
+		s := build("http://example.com/login")
+		err := s.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "login_url")
+	})
+}
+
+// TestAuthHasCompanionHints documents the partial-hint state.
+// LoginCompleteSelector and JWTCarrierCookie are optional, so LoginURL
+// alone is enough to enable cookie-only companion login integration.
+func TestAuthHasCompanionHints(t *testing.T) {
+	tests := []struct {
+		name string
+		auth AuthConfig
+		want bool
+	}{
+		{name: "all fields set", auth: AuthConfig{LoginURL: "https://example.com/login", JWTCarrierCookie: "session", LoginCompleteSelector: "a"}, want: true},
+		{name: "login_url and carrier set, selector omitted", auth: AuthConfig{LoginURL: "https://example.com/login", JWTCarrierCookie: "session"}, want: true},
+		{name: "login_url only", auth: AuthConfig{LoginURL: "https://example.com/login"}, want: true},
+		{name: "carrier only", auth: AuthConfig{JWTCarrierCookie: "session"}, want: false},
+		{name: "empty", auth: AuthConfig{}, want: false},
+		{name: "whitespace-only login_url", auth: AuthConfig{LoginURL: "   ", JWTCarrierCookie: "session"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.auth.HasCompanionHints())
+		})
+	}
+}
 func TestPromoteParamsToBodyForWriteEndpoints(t *testing.T) {
 	t.Parallel()
 

@@ -32,8 +32,8 @@ matches the API's size. Useful after a machine change to see which CLIs
 would benefit from a regenerate.
 
 Diagnostic only. Exit 0 regardless of findings.`,
-		Example: `  printing-press mcp-audit
-  printing-press mcp-audit --library ~/printing-press/library --json`,
+		Example: `  cli-printing-press mcp-audit
+  cli-printing-press mcp-audit --library ~/printing-press/library --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := libraryPath
 			if path == "" {

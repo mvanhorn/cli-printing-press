@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
@@ -48,6 +50,169 @@ func TestParsePetstore(t *testing.T) {
 
 	assert.NotEmpty(t, parsed.Types)
 	assert.Contains(t, parsed.Types, "Pet")
+}
+
+func TestParseMarksFieldSelectorParamsWithSyncDefault(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Field Selector API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /tasks:
+    get:
+      operationId: listTasks
+      parameters:
+        - name: opt_fields
+          in: query
+          description: Fields to return in the response.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        gid:
+                          type: string
+                        completed:
+                          type: boolean
+                        assignee:
+                          type: object
+                          properties:
+                            gid:
+                              type: string
+                            name:
+                              type: string
+                        custom_fields:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              gid:
+                                type: string
+                              display_value:
+                                type: string
+`))
+	require.NoError(t, err)
+
+	tasks := parsed.Resources["tasks"].Endpoints["list"]
+	require.Len(t, tasks.Params, 1)
+	assert.Equal(t, spec.ParamPurposeFieldSelector, tasks.Params[0].Purpose)
+	assert.Equal(t, "gid,assignee.gid,completed,custom_fields.gid", tasks.Params[0].FieldSelectorDefault)
+}
+
+func TestMapParametersOnlyMarksQueryFieldSelectors(t *testing.T) {
+	t.Parallel()
+
+	pathItem := &openapi3.PathItem{}
+	op := &openapi3.Operation{
+		Parameters: openapi3.Parameters{
+			{
+				Value: &openapi3.Parameter{
+					Name:        "fields",
+					In:          openapi3.ParameterInPath,
+					Description: "Fields to return in the response.",
+					Required:    true,
+					Schema:      openapi3.NewStringSchema().NewRef(),
+				},
+			},
+			{
+				Value: &openapi3.Parameter{
+					Name:        "opt_fields",
+					In:          openapi3.ParameterInQuery,
+					Description: "Fields to return in the response.",
+					Schema:      openapi3.NewStringSchema().NewRef(),
+				},
+			},
+		},
+	}
+
+	params := mapParameters(pathItem, op)
+	require.Len(t, params, 2)
+
+	byName := make(map[string]spec.Param, len(params))
+	for _, param := range params {
+		byName[param.Name] = param
+	}
+
+	assert.Empty(t, byName["fields"].Purpose, "path params must not become sync query field selectors")
+	assert.Equal(t, spec.ParamPurposeFieldSelector, byName["opt_fields"].Purpose)
+}
+
+func readAICLargeSpec(tb testing.TB) []byte {
+	tb.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "artic-openapi.json"))
+	require.NoError(tb, err)
+	return data
+}
+
+func countEndpoints(resources map[string]spec.Resource) int {
+	total := 0
+	for _, resource := range resources {
+		total += len(resource.Endpoints)
+		total += countEndpoints(resource.SubResources)
+	}
+	return total
+}
+
+func TestParseAICLargeSpecCompletes(t *testing.T) {
+	t.Parallel()
+
+	data := readAICLargeSpec(t)
+
+	type parseResult struct {
+		spec *spec.APISpec
+		err  error
+	}
+	done := make(chan parseResult, 1)
+	go func() {
+		parsed, err := Parse(data)
+		done <- parseResult{spec: parsed, err: err}
+	}()
+
+	select {
+	case result := <-done:
+		require.NoError(t, result.err)
+		require.Equal(t, "art-institution-chicago", result.spec.Name)
+		require.NotEmpty(t, result.spec.Resources)
+		require.GreaterOrEqual(t, countEndpoints(result.spec.Resources), 100)
+		require.Contains(t, result.spec.Resources, "artworks")
+		require.Contains(t, result.spec.Resources["artworks"].Endpoints, "list")
+		require.Contains(t, result.spec.Resources["artworks"].Endpoints, "get")
+		search := findEndpoint(t, result.spec, "/search")
+		assert.GreaterOrEqual(t, len(search.Params), 6, "expected shared parameter refs on /search to resolve")
+	case <-time.After(60 * time.Second):
+		t.Fatal("AIC OpenAPI 3.1 spec parse did not complete within 60 seconds")
+	}
+}
+
+func BenchmarkLargeSpec(b *testing.B) {
+	data := readAICLargeSpec(b)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		parsed, err := Parse(data)
+		if err != nil {
+			b.Fatalf("parse AIC spec: %v", err)
+		}
+		if len(parsed.Resources) == 0 {
+			b.Fatal("expected parsed resources")
+		}
+	}
 }
 
 func TestParseFileResolvesLocalRefsRelativeToSpecDir(t *testing.T) {
@@ -548,6 +713,18 @@ paths:
                   allOf:
                     - $ref: "#/components/schemas/PaymentPurpose"
                     - $ref: "#/components/schemas/PurposeMetadata"
+                details:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      description: Specific detail name.
+                  allOf:
+                    - $ref: "#/components/schemas/BaseDetails"
+                mixed:
+                  allOf:
+                    - $ref: "#/components/schemas/PurposeMetadata"
+                    - $ref: "#/components/schemas/StringEnumWrapper"
       responses:
         "200":
           description: ok
@@ -578,6 +755,18 @@ components:
       properties:
         memo:
           type: string
+    BaseDetails:
+      type: object
+      properties:
+        inherited:
+          type: string
+        name:
+          type: string
+          description: Base detail name.
+    StringEnumWrapper:
+      allOf:
+        - type: string
+          enum: [simple, complex]
 `))
 	require.NoError(t, err)
 
@@ -598,6 +787,156 @@ components:
 		{Name: "memo", Type: "string", Required: true, Description: "Memo"},
 		{Name: "simple", Type: "string", Description: "Simple"},
 	}, byName["purpose"].Fields)
+	assert.Equal(t, []spec.Param{
+		{Name: "inherited", Type: "string", Description: "Inherited"},
+		{Name: "name", Type: "string", Description: "Specific detail name."},
+	}, byName["details"].Fields)
+	assert.Equal(t, "object", byName["mixed"].Type)
+	assert.Equal(t, []spec.Param{
+		{Name: "memo", Type: "string", Required: true, Description: "Memo"},
+	}, byName["mixed"].Fields)
+}
+
+const dataEnvelopeAllOfTaskSpec = `
+openapi: 3.0.3
+info:
+  title: Task API
+  version: 1.0.0
+servers:
+  - url: https://api.example.test
+paths:
+  /tasks/{task_gid}:
+    patch:
+      operationId: updateTask
+      parameters:
+        - name: task_gid
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                data:
+                  $ref: "#/components/schemas/TaskUpdateRequest"
+      responses:
+        "200":
+          description: ok
+components:
+  schemas:
+    TaskBase:
+      type: object
+      required: [name]
+      properties:
+        completed:
+          type: boolean
+          description: Whether the task is complete.
+        due_on:
+          type: string
+          format: date
+          description: Date the task is due.
+        html_notes:
+          type: string
+          description: HTML formatted text for the task notes.
+        name:
+          type: string
+          description: Name of the task.
+        notes:
+          type: string
+          description: Plain text task notes.
+    TaskRequestBase:
+      allOf:
+        - $ref: "#/components/schemas/TaskBase"
+        - type: object
+          properties:
+            assignee:
+              type: string
+              description: GID of the assignee.
+    TaskUpdateRequest:
+      allOf:
+        - $ref: "#/components/schemas/TaskRequestBase"
+        - type: object
+          properties:
+            custom_type:
+              type: string
+              description: GID of a task custom type.
+`
+
+func TestParseMapsDataEnvelopeAllOfRequestBodyFields(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(dataEnvelopeAllOfTaskSpec))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "PATCH", "/tasks/{task_gid}")
+	require.Len(t, endpoint.Body, 1)
+	data := endpoint.Body[0]
+	require.Equal(t, "data", data.Name)
+	require.Equal(t, "object", data.Type)
+
+	fields := map[string]spec.Param{}
+	for _, field := range data.Fields {
+		fields[field.Name] = field
+	}
+	for _, want := range []string{"assignee", "completed", "custom_type", "due_on", "html_notes", "name", "notes"} {
+		assert.Contains(t, fields, want)
+	}
+	assert.True(t, fields["name"].Required)
+	assert.Equal(t, "bool", fields["completed"].Type)
+	assert.Equal(t, "date", fields["due_on"].Format)
+	assert.Equal(t, "string", fields["html_notes"].Type)
+	assert.Equal(t, "HTML formatted text for the task notes.", fields["html_notes"].Description)
+}
+
+func TestGenerateDataEnvelopeAllOfBodyFlags(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("OpenAPI generated CLI compile coverage runs in the generated-test CI lane")
+	}
+
+	parsed, err := Parse([]byte(dataEnvelopeAllOfTaskSpec))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(parsed.Name))
+	gen := generator.New(parsed, outputDir)
+	gen.VisionSet = generator.VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	binaryPath := filepath.Join(outputDir, naming.CLI(parsed.Name))
+	runGo(t, outputDir, "mod", "tidy")
+	runGo(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(parsed.Name))
+
+	helpOut, err := exec.Command(binaryPath, "tasks", "update-task", "--help").CombinedOutput()
+	require.NoError(t, err, string(helpOut))
+	help := string(helpOut)
+	for _, want := range []string{
+		"--data-name",
+		"--data-notes",
+		"--data-html-notes",
+		"--data-assignee",
+		"--data-completed",
+		"--data-due-on",
+		"--data-custom-type",
+	} {
+		assert.Contains(t, help, want)
+	}
+	assert.NotContains(t, help, "--data-data-")
+
+	cmd := exec.Command(binaryPath, "tasks", "update-task", "123", "--data-html-notes", "<body>foo</body>", "--dry-run")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	bodyJSON := extractDryRunBody(t, string(out))
+	var body struct {
+		Data struct {
+			HTMLNotes string `json:"html_notes"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(bodyJSON), &body))
+	assert.Equal(t, "<body>foo</body>", body.Data.HTMLNotes)
 }
 
 func TestParseRecursiveRequestBodyFieldsStopsAtCycle(t *testing.T) {
@@ -987,6 +1326,184 @@ paths:
 	assert.Equal(t, "", parsed.Auth.OAuth2Grant)
 	assert.Equal(t, "https://example.com/token", parsed.Auth.TokenURL)
 	assert.Equal(t, "https://example.com/auth", parsed.Auth.AuthorizationURL)
+}
+
+func TestParseAuthPreferenceSelectsNamedScheme(t *testing.T) {
+	t.Parallel()
+
+	// Many real-world specs (Atlassian Jira, Confluence, Bitbucket, GitLab)
+	// advertise both OAuth2 (with full authorizationCode flow) and HTTP Basic.
+	// The default selector picks OAuth2 — correct for hosted multi-tenant
+	// integrations but wrong for personal-token CLIs. AuthPreference lets the
+	// catalog (or a generate caller) pin the simpler scheme.
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Atlassian-like
+  version: "1.0"
+servers:
+  - url: https://example.atlassian.net
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            read: read access
+    basicAuth:
+      type: http
+      scheme: basic
+paths:
+  /v1/things:
+    get:
+      operationId: list things
+      security:
+        - basicAuth: []
+        - OAuth2: [read]
+      responses: {"200": {description: ok}}
+`)
+
+	defaultParsed, err := Parse(specBytes)
+	require.NoError(t, err)
+	assert.Equal(t, "OAuth2", defaultParsed.Auth.Scheme, "without preference, OAuth2+AC wins by design")
+	assert.Equal(t, "bearer_token", defaultParsed.Auth.Type)
+
+	preferred, err := ParseWithOptions(specBytes, ParseOptions{AuthPreference: "basicAuth"})
+	require.NoError(t, err)
+	assert.Equal(t, "api_key", preferred.Auth.Type, "preference pins HTTP Basic")
+	assert.Equal(t, "basicAuth", preferred.Auth.Scheme)
+	assert.Equal(t, "Basic {username}:{password}", preferred.Auth.Format)
+}
+
+func TestParseAuthPreferenceCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Mixed
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.example.com/authorize
+          tokenUrl: https://api.example.com/token
+          scopes:
+            read: read
+    BasicAuth:
+      type: http
+      scheme: basic
+paths:
+  /v1/things:
+    get:
+      operationId: list things
+      security:
+        - BasicAuth: []
+        - OAuth2: [read]
+      responses: {"200": {description: ok}}
+`)
+
+	preferred, err := ParseWithOptions(specBytes, ParseOptions{AuthPreference: "basicauth"})
+	require.NoError(t, err)
+	assert.Equal(t, "api_key", preferred.Auth.Type)
+	assert.Equal(t, "BasicAuth", preferred.Auth.Scheme, "match is case-insensitive but result preserves spec casing")
+}
+
+func TestParseAuthPreferenceUnknownNameFallsBackToDefault(t *testing.T) {
+	t.Parallel()
+
+	// An unknown preference name must not fail parse; it falls through to the
+	// default selector so a typo in catalog yaml degrades gracefully.
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Mixed
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://api.example.com/authorize
+          tokenUrl: https://api.example.com/token
+          scopes:
+            read: read
+    basicAuth:
+      type: http
+      scheme: basic
+paths:
+  /v1/things:
+    get:
+      operationId: list things
+      security:
+        - basicAuth: []
+        - OAuth2: [read]
+      responses: {"200": {description: ok}}
+`)
+
+	parsed, err := ParseWithOptions(specBytes, ParseOptions{AuthPreference: "doesNotExist"})
+	require.NoError(t, err)
+	assert.Equal(t, "OAuth2", parsed.Auth.Scheme, "unknown preference falls back to default selector")
+	assert.Equal(t, "bearer_token", parsed.Auth.Type)
+}
+
+func TestParseBearerPreservedOverOAuth2AuthCode(t *testing.T) {
+	t.Parallel()
+
+	// GitHub-style shape: an http/bearer scheme alongside a full OAuth2
+	// authorizationCode flow. The scoring system in schemePriorityScore
+	// pins schemePriorityBearer = 0 < schemePriorityOAuth2AuthCode = 200
+	// precisely because Bearer is the simplest scheme for a CLI to use.
+	// Default selection must keep Bearer; AuthPreference must still let
+	// callers opt into OAuth2 when they want the 3LO dance.
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: GitHub-like
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            read: read access
+paths:
+  /v1/things:
+    get:
+      operationId: list things
+      security:
+        - BearerAuth: []
+        - OAuth2: [read]
+      responses: {"200": {description: ok}}
+`)
+
+	defaultParsed, err := Parse(specBytes)
+	require.NoError(t, err)
+	assert.Equal(t, "BearerAuth", defaultParsed.Auth.Scheme, "default selection must keep Bearer over OAuth2+AC")
+	assert.Equal(t, "bearer_token", defaultParsed.Auth.Type)
+
+	preferred, err := ParseWithOptions(specBytes, ParseOptions{AuthPreference: "OAuth2"})
+	require.NoError(t, err)
+	assert.Equal(t, "OAuth2", preferred.Auth.Scheme, "AuthPreference must still let callers opt into OAuth2")
+	assert.Equal(t, "bearer_token", preferred.Auth.Type)
+	assert.Equal(t, "https://auth.example.com/authorize", preferred.Auth.AuthorizationURL)
+	assert.Equal(t, "https://auth.example.com/token", preferred.Auth.TokenURL)
 }
 
 func TestBearerSchemeNameCanSpecializeEnvVar(t *testing.T) {
@@ -1457,6 +1974,19 @@ func runGo(t *testing.T, dir string, args ...string) {
 	require.NoError(t, err, string(output))
 }
 
+func extractDryRunBody(t *testing.T, output string) string {
+	t.Helper()
+
+	const bodyMarker = "  Body:\n"
+	start := strings.Index(output, bodyMarker)
+	require.NotEqual(t, -1, start, output)
+	start += len(bodyMarker)
+
+	end := strings.Index(output[start:], "\n\n(dry run")
+	require.NotEqual(t, -1, end, output)
+	return output[start : start+end]
+}
+
 func TestSanitizeResourceName(t *testing.T) {
 	tests := []struct {
 		input string
@@ -1499,6 +2029,8 @@ func TestPathSegmentsStripsGenericAPIPrefix(t *testing.T) {
 		{"strips api then version", "/api/v2/pokemon", "", "pokemon"},
 		{"strips version then api then version", "/v2/api/v1/pokemon", "", "pokemon"},
 		{"strips api then numeric version", "/api/0/organizations", "", "organizations"},
+		{"strips dotted numeric version", "/1.0/search/artists", "", "search"},
+		{"strips dotted v-prefixed version", "/v1.0/search/artists", "", "search"},
 		{"strips beta version", "/v1beta2/{parent}/repositories", "", "{parent}"},
 		{"strips alpha version", "/v1alpha1/{parent}/services", "", "{parent}"},
 		{"strips p beta version", "/v1p1beta1/{parent}/sessions", "", "{parent}"},
@@ -1506,9 +2038,8 @@ func TestPathSegmentsStripsGenericAPIPrefix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			segments := pathSegmentsAfterBase(tt.path, tt.basePath)
-			if len(segments) > 0 {
-				assert.Equal(t, tt.wantFirst, segments[0])
-			}
+			require.NotEmpty(t, segments)
+			assert.Equal(t, tt.wantFirst, segments[0])
 		})
 	}
 }
@@ -1895,6 +2426,164 @@ paths:
 			assert.True(t, routingParam.PathParam, "defaulted path param should remain a URL substitution flag")
 			assert.False(t, routingParam.Positional, "defaulted path param should stay flag-shaped")
 			assert.NotNil(t, routingParam.Default, "operation-specific query id default should be preserved")
+		}
+	}
+}
+
+func TestParsePreservesRequiredQueryParamsDuringGlobalFilter(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`
+openapi: 3.0.0
+info:
+  title: Narrow Required Query API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /search:
+    get:
+      operationId: searchList
+      parameters:
+        - in: query
+          name: part
+          required: true
+          schema:
+            type: string
+            default: snippet
+            enum: [snippet, id]
+        - in: query
+          name: prettyPrint
+          schema:
+            type: boolean
+        - in: query
+          name: q
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /videos:
+    get:
+      operationId: videosList
+      parameters:
+        - in: query
+          name: part
+          required: true
+          schema:
+            type: string
+            default: snippet
+            enum: [snippet, statistics]
+        - in: query
+          name: prettyPrint
+          schema:
+            type: boolean
+        - in: query
+          name: id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /channels:
+    get:
+      operationId: channelsList
+      parameters:
+        - in: query
+          name: part
+          required: true
+          schema:
+            type: string
+            default: snippet
+            enum: [snippet, contentDetails]
+        - in: query
+          name: prettyPrint
+          schema:
+            type: boolean
+        - in: query
+          name: id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	wantEnums := map[string][]string{
+		"/search":   {"snippet", "id"},
+		"/videos":   {"snippet", "statistics"},
+		"/channels": {"snippet", "contentDetails"},
+	}
+	for _, path := range []string{"/search", "/videos", "/channels"} {
+		endpoint := findEndpoint(t, parsed, path)
+		var part *spec.Param
+		for i := range endpoint.Params {
+			switch endpoint.Params[i].Name {
+			case "part":
+				part = &endpoint.Params[i]
+			case "prettyPrint":
+				t.Fatalf("%s should filter optional prevalent query param prettyPrint", path)
+			}
+		}
+		if assert.NotNil(t, part, "%s should preserve required prevalent query param part", path) {
+			assert.True(t, part.Required)
+			assert.Equal(t, "snippet", part.Default)
+			assert.Equal(t, wantEnums[path], part.Enum)
+		}
+	}
+}
+
+// Real-world OpenAPI specs (Tally, others) frequently include {placeholder}
+// tokens in a path template without declaring the corresponding parameter at
+// either the operation or path-item level. The path template is then the only
+// source of truth for what's required. Without synthesizing a Param entry,
+// the generated CLI emits a literal `{organizationId}` URL segment and every
+// request 404s. Mirrors the same enrichment the internal YAML loader applies.
+func TestParseSynthesizesUndeclaredPathPlaceholders(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.0.0
+info:
+  title: Hierarchical API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /organizations/{organizationId}/invites:
+    get:
+      summary: List organization invites
+      responses:
+        "200":
+          description: ok
+  /organizations/{organizationId}/users:
+    get:
+      summary: List organization users
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	for _, path := range []string{
+		"/organizations/{organizationId}/invites",
+		"/organizations/{organizationId}/users",
+	} {
+		endpoint := findEndpoint(t, parsed, path)
+		var orgID *spec.Param
+		for i := range endpoint.Params {
+			if endpoint.Params[i].Name == "organizationId" {
+				orgID = &endpoint.Params[i]
+				break
+			}
+		}
+		if assert.NotNilf(t, orgID, "path %q must surface an organizationId param even when operation declared none", path) {
+			assert.True(t, orgID.Positional, "synthesized path placeholders must be positional")
+			assert.True(t, orgID.Required, "synthesized path placeholders must be required")
 		}
 	}
 }
@@ -2600,6 +3289,70 @@ paths:
 	assert.Equal(t, "Sign up for FlightAware AeroAPI and copy the personal API key.", parsed.Auth.Instructions)
 	assert.Equal(t, "FlightAware AeroAPI Key", parsed.Auth.Title)
 	assert.Equal(t, "Optional FlightAware AeroAPI credential for enriched flight data.", parsed.Auth.Description)
+}
+
+// TestOpenAPIAuthSubtype covers the x-auth-subtype extension on a bearer
+// security scheme. The parser accepts the auth0_spa_in_memory value and
+// silently drops unrecognized values (typos surface as the field being
+// empty, not as a confusing later validation error).
+func TestOpenAPIAuthSubtype(t *testing.T) {
+	t.Parallel()
+
+	t.Run("auth0_spa_in_memory round-trips", func(t *testing.T) {
+		t.Parallel()
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: SpaService
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      x-auth-subtype: auth0_spa_in_memory
+paths:
+  /me:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+		assert.Equal(t, "bearer_token", parsed.Auth.Type)
+		assert.Equal(t, "auth0_spa_in_memory", parsed.Auth.Subtype)
+	})
+
+	t.Run("unknown subtype is dropped", func(t *testing.T) {
+		t.Parallel()
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: SpaService
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      x-auth-subtype: some_typo_subtype
+paths:
+  /me:
+    get:
+      responses:
+        "200":
+          description: OK
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+		assert.Empty(t, parsed.Auth.Subtype,
+			"unknown subtype values should not round-trip")
+	})
 }
 
 func TestOpenAPIAuthKeyURLInference(t *testing.T) {
@@ -3590,6 +4343,34 @@ func TestInferOperationLevelBearer(t *testing.T) {
 	})
 }
 
+func TestInferHeaderParamAPIKeyAuth(t *testing.T) {
+	t.Parallel()
+
+	doc := &openapi3.T{
+		Info:  &openapi3.Info{Title: "test", Description: "no auth keywords"},
+		Paths: &openapi3.Paths{},
+	}
+	for _, path := range []string{"/a", "/b", "/c", "/d"} {
+		doc.Paths.Set(path, &openapi3.PathItem{
+			Get: &openapi3.Operation{
+				Responses: openapi3.NewResponses(),
+				Parameters: openapi3.Parameters{
+					&openapi3.ParameterRef{Value: &openapi3.Parameter{
+						Name: "xi-api-key", In: "header", Required: false,
+					}},
+				},
+			},
+		})
+	}
+
+	result := mapAuth(doc, "elevenlabs")
+	assert.Equal(t, "api_key", result.Type)
+	assert.Equal(t, "header", result.In)
+	assert.Equal(t, "xi-api-key", result.Header)
+	assert.Equal(t, []string{"ELEVENLABS_API_KEY"}, result.EnvVars)
+	assert.True(t, result.Inferred)
+}
+
 func TestAuthTierPrecedence(t *testing.T) {
 	t.Parallel()
 
@@ -4302,6 +5083,63 @@ func TestParseIDFieldFallbackChain(t *testing.T) {
 			wantID: "id",
 		},
 		{
+			name: "tier 3.5: gid wins over name (Asana shape)",
+			schemaYAML: `                  type: object
+                  properties:
+                    gid: {type: string}
+                    name: {type: string}
+                    resource_type: {type: string}
+`,
+			wantID: "gid",
+		},
+		{
+			name: "tier 3.5: sid wins over name (Twilio shape)",
+			schemaYAML: `                  type: object
+                  properties:
+                    sid: {type: string}
+                    name: {type: string}
+                    friendly_name: {type: string}
+`,
+			wantID: "sid",
+		},
+		{
+			name: "tier 3.5: uid wins over name",
+			schemaYAML: `                  type: object
+                  properties:
+                    uid: {type: string}
+                    name: {type: string}
+`,
+			wantID: "uid",
+		},
+		{
+			name: "tier 3.5: uuid wins over name",
+			schemaYAML: `                  type: object
+                  properties:
+                    uuid: {type: string}
+                    name: {type: string}
+`,
+			wantID: "uuid",
+		},
+		{
+			name: "tier 3.5: guid wins over name",
+			schemaYAML: `                  type: object
+                  properties:
+                    guid: {type: string}
+                    name: {type: string}
+`,
+			wantID: "guid",
+		},
+		{
+			name: "tier 3.5: id wins over gid (tier 2 takes precedence)",
+			schemaYAML: `                  type: object
+                  properties:
+                    id: {type: string}
+                    gid: {type: string}
+                    name: {type: string}
+`,
+			wantID: "id",
+		},
+		{
 			name: "tier 3: name when id absent",
 			schemaYAML: `                  type: object
                   properties:
@@ -4935,6 +5773,42 @@ paths:
 	assert.NotContains(t, output, "shadow framework cobra command", "non-colliding spec must not emit a collision warning")
 }
 
+func TestParseFrameworkCollisionAllowsConditionalFrameworkNamesWhenInactive(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: TestAPI
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      responses:
+        "200":
+          description: ok
+  /api/auth/check-email:
+    get:
+      operationId: checkEmail
+      responses:
+        "200":
+          description: ok
+`)
+
+	var parsed *spec.APISpec
+	output := captureWarnings(t, func() {
+		var err error
+		parsed, err = Parse(yamlSpec)
+		require.NoError(t, err)
+	})
+
+	require.Contains(t, parsed.Resources, "health", "health is not a parser-time collision unless the generator emits the health insight command")
+	require.Contains(t, parsed.Resources, "auth", "public auth resources should keep their natural name when no framework auth command is emitted")
+	assert.NotContains(t, parsed.Resources, "testapi-health")
+	assert.NotContains(t, parsed.Resources, "testapi-auth")
+	assert.NotContains(t, output, "shadow framework cobra command")
+}
+
 // TestParseFrameworkCollisionExemptsSubresources verifies sub-resources
 // don't trigger the collision check — paths like /games/{id}/version
 // produce a `version` sub-resource under `games`, which registers as a
@@ -5254,6 +6128,116 @@ paths:
 	assert.Equal(t, "hidden", parsed.MCP.EndpointTools)
 }
 
+func TestParseMCPFallbackFromRootWarns(t *testing.T) {
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Legacy MCP API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+mcp:
+  transport: [stdio, http]
+  orchestration: code
+  endpoint_tools: hidden
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = Parse(data)
+	})
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	assert.True(t, parsed.MCP.HasTransport("http"), "expected http transport from root mcp fallback")
+	assert.True(t, parsed.MCP.HasTransport("stdio"), "expected stdio transport from root mcp fallback")
+	assert.True(t, parsed.MCP.IsCodeOrchestration(), "expected code orchestration from root mcp fallback")
+	assert.Equal(t, "hidden", parsed.MCP.EndpointTools)
+	assert.Contains(t, warnings, "accepted root-level 'mcp:' for backwards compatibility")
+	assert.Contains(t, warnings, "rename to 'x-mcp:' per OpenAPI extension convention")
+}
+
+func TestParseMCPExtensionBeatsRootMCPFallback(t *testing.T) {
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Canonical MCP API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+mcp:
+  transport: [stdio]
+  orchestration: code
+  endpoint_tools: hidden
+x-mcp:
+  transport: [http]
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = Parse(data)
+	})
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	assert.True(t, parsed.MCP.HasTransport("http"), "canonical x-mcp must take precedence")
+	assert.False(t, parsed.MCP.HasTransport("stdio"), "root mcp fallback must not merge into canonical x-mcp")
+	assert.False(t, parsed.MCP.IsCodeOrchestration(), "root mcp fields must not fill missing x-mcp fields")
+	assert.Empty(t, parsed.MCP.EndpointTools, "root mcp fields must not fill missing x-mcp fields")
+	assert.NotContains(t, warnings, "accepted root-level 'mcp:'", "canonical x-mcp should not emit fallback warning")
+}
+
+func TestParseMCPInfoExtensionBeatsRootMCPFallback(t *testing.T) {
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Info MCP API
+  version: 1.0.0
+  x-mcp:
+    transport: [http]
+servers:
+  - url: https://api.example.com
+mcp:
+  transport: [stdio]
+  orchestration: code
+  endpoint_tools: hidden
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = Parse(data)
+	})
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	assert.True(t, parsed.MCP.HasTransport("http"), "info.x-mcp must take precedence over root mcp fallback")
+	assert.False(t, parsed.MCP.HasTransport("stdio"), "root mcp fallback must not merge into info.x-mcp")
+	assert.False(t, parsed.MCP.IsCodeOrchestration(), "root mcp fields must not fill missing info.x-mcp fields")
+	assert.Empty(t, parsed.MCP.EndpointTools, "root mcp fields must not fill missing info.x-mcp fields")
+	assert.NotContains(t, warnings, "accepted root-level 'mcp:'", "info.x-mcp should not emit fallback warning")
+}
+
 func TestParseMCPExtensionFromInfo(t *testing.T) {
 	t.Parallel()
 	data := []byte(`
@@ -5493,6 +6477,37 @@ paths:
 	assert.Equal(t, "binary", byName["assetData"].Format)
 	assert.True(t, byName["assetData"].Required)
 	assert.True(t, byName["filename"].Required)
+}
+
+func TestParseBinaryResponseFormat(t *testing.T) {
+	t.Parallel()
+	data := []byte(`
+openapi: 3.1.0
+info:
+  title: Audio API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /v1/audio:
+    post:
+      operationId: createAudio
+      responses:
+        "200":
+          description: Audio bytes
+          content:
+            audio/mpeg:
+              schema:
+                type: string
+                format: binary
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "POST", "/v1/audio")
+	assert.Equal(t, spec.ResponseFormatBinary, endpoint.ResponseFormat)
+	assert.True(t, endpoint.UsesBinaryResponse())
 }
 
 func TestParseFormUrlencodedRequestBodyPreservesContentType(t *testing.T) {
@@ -5749,6 +6764,203 @@ paths:
 		assert.False(t, parsed.BaseURLIsPlaceholder, "spec with per-operation servers must not be marked placeholder")
 		assert.Equal(t, "https://api.real.com", parsed.BaseURL)
 	})
+}
+
+// TestAuthCompanionFromOpenAPI exercises the x-auth-companion extension at
+// both scheme level and info level, including the scheme-wins precedence
+// when both are set.
+func TestAuthCompanionFromOpenAPI(t *testing.T) {
+	t.Run("scheme-level x-auth-companion propagates to Auth", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: guestsession
+      x-auth-companion:
+        login_url: https://www.example.com/account/login
+        login_complete_selector: "a[href*=signout]"
+        jwt_carrier_cookie: guestsession
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+		assert.Equal(t, "https://www.example.com/account/login", parsed.Auth.LoginURL)
+		assert.Equal(t, "a[href*=signout]", parsed.Auth.LoginCompleteSelector)
+		assert.Equal(t, "guestsession", parsed.Auth.JWTCarrierCookie)
+		assert.True(t, parsed.Auth.HasCompanionHints())
+	})
+
+	t.Run("info-level x-auth-companion fills when scheme omits it", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+  x-auth-companion:
+    login_url: https://www.example.com/account/login
+    jwt_carrier_cookie: guestsession
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: guestsession
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+		assert.Equal(t, "https://www.example.com/account/login", parsed.Auth.LoginURL)
+		assert.Equal(t, "guestsession", parsed.Auth.JWTCarrierCookie)
+		assert.True(t, parsed.Auth.HasCompanionHints())
+	})
+
+	t.Run("scheme-level beats info-level when both are set", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+  x-auth-companion:
+    login_url: https://info-level.example.com/login
+    jwt_carrier_cookie: info_level_cookie
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: scheme_cookie
+      x-auth-companion:
+        login_url: https://scheme-level.example.com/login
+        jwt_carrier_cookie: scheme_cookie
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+		assert.Equal(t, "https://scheme-level.example.com/login", parsed.Auth.LoginURL)
+		assert.Equal(t, "scheme_cookie", parsed.Auth.JWTCarrierCookie)
+	})
+
+	t.Run("info-level fills missing fields when scheme partially declares", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+  x-auth-companion:
+    login_url: https://info-level.example.com/login
+    login_complete_selector: "a.signout"
+    jwt_carrier_cookie: info_cookie
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: scheme_cookie
+      x-auth-companion:
+        login_url: https://scheme-level.example.com/login
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`)
+		parsed, err := Parse(yamlSpec)
+		require.NoError(t, err)
+		assert.Equal(t, "https://scheme-level.example.com/login", parsed.Auth.LoginURL, "scheme login_url wins")
+		assert.Equal(t, "a.signout", parsed.Auth.LoginCompleteSelector, "info fills missing selector")
+		assert.Equal(t, "info_cookie", parsed.Auth.JWTCarrierCookie, "info fills missing carrier")
+	})
+
+	t.Run("malformed x-auth-companion at scheme level warns and skips", func(t *testing.T) {
+		yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: guestsession
+      x-auth-companion: "not-an-object"
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`)
+		warnings := captureWarnings(t, func() {
+			parsed, err := Parse(yamlSpec)
+			require.NoError(t, err)
+			assert.Empty(t, parsed.Auth.LoginURL)
+		})
+		assert.Contains(t, warnings, "x-auth-companion")
+	})
+}
+
+// TestAuthCompanionInternalYAMLRoundTripEqualsOpenAPI asserts that an
+// equivalent OpenAPI spec and internal YAML spec produce the same Auth
+// fields for the companion hints. This is the contract that
+// docs/SPEC-EXTENSIONS.md promises: x-auth-companion at scheme level maps
+// 1:1 to the internal `auth:` block fields.
+func TestAuthCompanionInternalYAMLRoundTripEqualsOpenAPI(t *testing.T) {
+	openapiYAML := []byte(`openapi: "3.0.3"
+info:
+  title: Example
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: guestsession
+      x-auth-companion:
+        login_url: https://www.example.com/account/login
+        login_complete_selector: "a[href*=signout]"
+        jwt_carrier_cookie: guestsession
+paths:
+  /ping:
+    get:
+      responses:
+        "200": { description: OK }
+`)
+	parsed, err := Parse(openapiYAML)
+	require.NoError(t, err)
+
+	// The internal-YAML reference shape, hand-built from the same hints.
+	wantLoginURL := "https://www.example.com/account/login"
+	wantSelector := "a[href*=signout]"
+	wantCarrier := "guestsession"
+
+	assert.Equal(t, wantLoginURL, parsed.Auth.LoginURL)
+	assert.Equal(t, wantSelector, parsed.Auth.LoginCompleteSelector)
+	assert.Equal(t, wantCarrier, parsed.Auth.JWTCarrierCookie)
 }
 
 // TestParseTenantEnvVarExtension: when info.x-tenant-env-var is set, the
@@ -6133,4 +7345,417 @@ paths:
 		assert.Empty(t, parsed.EndpointTemplateEnvOverrides)
 		assert.Empty(t, parsed.EndpointPathParamDefaults, "whitespace-only default must not register a path-param default")
 	})
+}
+
+// TestParseServerURLVariablesAsTemplateVars covers the multi-tenant SaaS
+// case: when servers[0].url declares a `{var}` placeholder backed by a
+// Variables block, the parser must preserve the placeholder in BaseURL,
+// register the variable as an EndpointTemplateVar, and capture its
+// `default:` value so the generator can fall back at runtime when the
+// user's env var is unset. Without this, the generator bakes the default
+// into BaseURL at generate time and the printed CLI DNS-fails on every
+// call against any tenant other than the spec author's example.
+func TestParseServerURLVariablesAsTemplateVars(t *testing.T) {
+	t.Parallel()
+
+	t.Run("single placeholder with default registers template var", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Freshservice
+  version: 1.0.0
+servers:
+  - url: "https://{domain}/api/v2"
+    variables:
+      domain:
+        default: "yourcompany.freshservice.com"
+paths:
+  /tickets:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "https://{domain}/api/v2", parsed.BaseURL,
+			"placeholder must survive to BaseURL so the runtime can substitute env-var values")
+		assert.Equal(t, []string{"domain"}, parsed.EndpointTemplateVars)
+		assert.Equal(t, "yourcompany.freshservice.com", parsed.EndpointTemplateVarDefaults["domain"],
+			"variable default must be captured for runtime fallback")
+		assert.Equal(t, "FRESHSERVICE_DOMAIN", parsed.EndpointTemplateEnvName("domain"),
+			"env var follows the conventional <APINAME>_<UPPER_PLACEHOLDER> rule")
+	})
+
+	t.Run("static server URL leaves new fields empty", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Static API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com/v1
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "https://api.example.com/v1", parsed.BaseURL)
+		assert.Empty(t, parsed.EndpointTemplateVars)
+		assert.Empty(t, parsed.EndpointTemplateVarDefaults)
+	})
+
+	t.Run("variable without explicit Variables entry strips legacy placeholder", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Dangling Placeholder API
+  version: 1.0.0
+servers:
+  - url: "https://{foo}.example.com"
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "https://.example.com", parsed.BaseURL,
+			"dangling placeholders without Variables entries strip away (legacy behavior)")
+		assert.Empty(t, parsed.EndpointTemplateVars)
+		assert.Empty(t, parsed.EndpointTemplateVarDefaults)
+	})
+
+	t.Run("multiple placeholders preserve order and defaults", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Two Var API
+  version: 1.0.0
+servers:
+  - url: "https://{tenant}.example.com/api/{version}"
+    variables:
+      tenant:
+        default: "demo"
+      version:
+        default: "v1"
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "https://{tenant}.example.com/api/{version}", parsed.BaseURL)
+		assert.Equal(t, []string{"tenant", "version"}, parsed.EndpointTemplateVars,
+			"placeholders must be ordered by left-to-right appearance in the URL")
+		assert.Equal(t, "demo", parsed.EndpointTemplateVarDefaults["tenant"])
+		assert.Equal(t, "v1", parsed.EndpointTemplateVarDefaults["version"])
+	})
+
+	t.Run("placeholder with empty default registers var but no default entry", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Empty Default API
+  version: 1.0.0
+servers:
+  - url: "https://{host}/api"
+    variables:
+      host:
+        default: ""
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "https://{host}/api", parsed.BaseURL,
+			"placeholder still survives so the env var is required at runtime")
+		assert.Equal(t, []string{"host"}, parsed.EndpointTemplateVars)
+		assert.Empty(t, parsed.EndpointTemplateVarDefaults,
+			"empty defaults must not pollute the defaults map — env var becomes the only fallback")
+	})
+
+	t.Run("x-tenant-env-var override coexists with server-URL placeholder", func(t *testing.T) {
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Combo API
+  version: 1.0.0
+  x-tenant-env-var: COMBO_TENANT_ID
+servers:
+  - url: "https://{domain}/api/v2"
+    variables:
+      domain:
+        default: "demo.example.com"
+paths:
+  /tenant/{tenant}/items:
+    get:
+      parameters:
+        - name: tenant
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"tenant", "domain"}, parsed.EndpointTemplateVars,
+			"extension-declared placeholders come first, server-URL placeholders follow")
+		assert.Equal(t, "COMBO_TENANT_ID", parsed.EndpointTemplateEnvName("tenant"))
+		assert.Equal(t, "COMBO_DOMAIN", parsed.EndpointTemplateEnvName("domain"))
+		assert.Equal(t, "demo.example.com", parsed.EndpointTemplateVarDefaults["domain"])
+		assert.Empty(t, parsed.EndpointTemplateVarDefaults["tenant"],
+			"path-positional templates from x-tenant-env-var have no spec-level default")
+	})
+
+	t.Run("dangling placeholder after runtime placeholder still gets stripped", func(t *testing.T) {
+		// `{api_version}` has no Variables entry — it must strip away rather
+		// than survive into BaseURL. The earlier `{domain}` is a runtime
+		// placeholder; the strip loop must walk past it (cursor advance),
+		// not terminate, or any later dangling marker leaks into every URL.
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Mixed Placeholder API
+  version: 1.0.0
+servers:
+  - url: "https://{domain}/api/{api_version}"
+    variables:
+      domain:
+        default: "demo.example.com"
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, "https://{domain}/api", parsed.BaseURL,
+			"`{domain}` preserved for runtime; `{api_version}` stripped because it has no Variables entry (trailing slash trimmed)")
+		assert.Equal(t, []string{"domain"}, parsed.EndpointTemplateVars)
+		assert.NotContains(t, parsed.BaseURL, "{api_version}",
+			"dangling placeholders after a runtime placeholder must not survive into BaseURL")
+	})
+
+	t.Run("default with shell-sensitive characters is captured verbatim", func(t *testing.T) {
+		// Defaults flow through to the generated config.go as Go string
+		// literals; the generator must escape them so a default containing
+		// `"`, `\`, or a newline cannot break the printed CLI's compile.
+		// Parser-side it stays verbatim — escape is the emit-time concern.
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Quoted Default API
+  version: 1.0.0
+servers:
+  - url: "https://{host}/api"
+    variables:
+      host:
+        default: "a\"b\\c"
+paths:
+  /items:
+    get:
+      responses:
+        "200": {description: ok}
+`)
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+		assert.Equal(t, `a"b\c`, parsed.EndpointTemplateVarDefaults["host"],
+			"default captured verbatim; generator must use %q to escape at emit time")
+	})
+}
+
+// TestDetectPaginationPreservesParameterCase guards #1353 — Google APIs
+// declare `pageSize` (camelCase) and reject the lowercased `pagesize`
+// the detector previously stored. The detector matches case-insensitively
+// but must store the parameter name as it appears in the spec.
+func TestDetectPaginationPreservesParameterCase(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		paramName string
+		wantLimit string
+	}{
+		{"google camelCase pageSize", "pageSize", "pageSize"},
+		{"snake_case page_size", "page_size", "page_size"},
+		{"plain lowercase limit", "limit", "limit"},
+		{"mixed-case maxResults", "maxResults", "maxResults"},
+		{"per_page", "per_page", "per_page"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pag := detectPagination([]spec.Param{{Name: tc.paramName}}, nil)
+			require.NotNil(t, pag, "detector should classify %q as a paginator", tc.paramName)
+			assert.Equal(t, tc.wantLimit, pag.LimitParam)
+		})
+	}
+}
+
+func TestDetectPaginationPreservesCursorParamCase(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		paramName string
+		wantParam string
+		wantType  string
+	}{
+		{"google camelCase pageToken", "pageToken", "pageToken", "page_token"},
+		{"snake_case page_token", "page_token", "page_token", "page_token"},
+		{"plain after", "after", "after", "cursor"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pag := detectPagination([]spec.Param{{Name: tc.paramName}}, nil)
+			require.NotNil(t, pag, "detector should classify %q as a cursor paginator", tc.paramName)
+			assert.Equal(t, tc.wantParam, pag.CursorParam)
+			assert.Equal(t, tc.wantType, pag.Type)
+		})
+	}
+}
+
+// TestDetectPaginationRecognizesPageIntCursor guards #1296: APIs that
+// paginate by integer ?page=N (Freshworks family, Atlassian, HubSpot,
+// etc.) used to fall through to the "after" cursor default. Detection
+// now classifies a `page`/`pageNumber`/`page[number]` request param as
+// a Type="page" paginator so the sync template's page-int fallback
+// can advance numerically.
+func TestDetectPaginationRecognizesPageIntCursor(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name      string
+		paramName string
+		wantParam string
+	}{
+		{"plain page", "page", "page"},
+		{"snake_case page_number", "page_number", "page_number"},
+		{"camelCase pageNumber", "pageNumber", "pageNumber"},
+		{"json:api page[number]", "page[number]", "page[number]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pag := detectPagination([]spec.Param{{Name: tc.paramName}, {Name: "per_page"}}, nil)
+			require.NotNil(t, pag, "detector should classify %q as a paginator", tc.paramName)
+			assert.Equal(t, tc.wantParam, pag.CursorParam)
+			assert.Equal(t, "page", pag.Type)
+			assert.Equal(t, "per_page", pag.LimitParam)
+		})
+	}
+}
+
+func TestDetectPaginationRecognizesNestedNumericNextPage(t *testing.T) {
+	t.Parallel()
+
+	description := "OK"
+	responses := openapi3.NewResponses()
+	responses.Set("200", &openapi3.ResponseRef{Value: &openapi3.Response{
+		Description: &description,
+		Content: openapi3.Content{
+			"application/json": &openapi3.MediaType{
+				Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+					Type: &openapi3.Types{"object"},
+					Properties: openapi3.Schemas{
+						"items": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type:  &openapi3.Types{"array"},
+							Items: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"object"}}},
+						}},
+						"meta": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type: &openapi3.Types{"object"},
+							Properties: openapi3.Schemas{
+								"nextPage": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+							},
+						}},
+					},
+				}},
+			},
+		},
+	}})
+	op := &openapi3.Operation{Responses: responses}
+
+	pag := detectPagination([]spec.Param{{Name: "page"}, {Name: "limit"}}, op)
+	require.NotNil(t, pag)
+	assert.Equal(t, "page", pag.CursorParam)
+	assert.Equal(t, "page", pag.Type)
+	assert.Equal(t, "limit", pag.LimitParam)
+	assert.Equal(t, "meta.nextPage", pag.NextCursorPath)
+}
+
+func TestDetectPaginationDoesNotWireNestedNextPageWithoutRequestCursor(t *testing.T) {
+	t.Parallel()
+
+	description := "OK"
+	responses := openapi3.NewResponses()
+	responses.Set("200", &openapi3.ResponseRef{Value: &openapi3.Response{
+		Description: &description,
+		Content: openapi3.Content{
+			"application/json": &openapi3.MediaType{
+				Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+					Type: &openapi3.Types{"object"},
+					Properties: openapi3.Schemas{
+						"items": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type:  &openapi3.Types{"array"},
+							Items: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"object"}}},
+						}},
+						"meta": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type: &openapi3.Types{"object"},
+							Properties: openapi3.Schemas{
+								"nextPage": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+							},
+						}},
+					},
+				}},
+			},
+		},
+	}})
+	op := &openapi3.Operation{Responses: responses}
+
+	pag := detectPagination([]spec.Param{{Name: "limit"}}, op)
+	require.NotNil(t, pag)
+	assert.Equal(t, "limit", pag.LimitParam)
+	assert.Empty(t, pag.CursorParam)
+	assert.Empty(t, pag.NextCursorPath)
+}
+
+// TestDetectPaginationCursorBeatsPage guards mixed-form specs: when an
+// API declares both `cursor` and `page` (rare but real), cursor must
+// win so existing cursor-based sync loops stay on the body-cursor
+// extraction path. Regression guard for #1296.
+func TestDetectPaginationCursorBeatsPage(t *testing.T) {
+	t.Parallel()
+
+	pag := detectPagination([]spec.Param{
+		{Name: "cursor"}, {Name: "page"}, {Name: "limit"},
+	}, nil)
+	require.NotNil(t, pag)
+	assert.Equal(t, "cursor", pag.CursorParam, "cursor must win over page when both declared")
+	assert.Equal(t, "cursor", pag.Type)
+	assert.Equal(t, "limit", pag.LimitParam)
+}
+
+// TestDetectPaginationOffsetBeatsPage guards offset-based APIs (Atlassian
+// older endpoints, etc.) against the new page branch.
+func TestDetectPaginationOffsetBeatsPage(t *testing.T) {
+	t.Parallel()
+
+	pag := detectPagination([]spec.Param{
+		{Name: "offset"}, {Name: "page"}, {Name: "limit"},
+	}, nil)
+	require.NotNil(t, pag)
+	assert.Equal(t, "offset", pag.CursorParam)
+	assert.Equal(t, "offset", pag.Type)
 }

@@ -179,9 +179,25 @@ func (c *Config) SaveCredential(token string) error {
 }
 
 func (c *Config) ClearTokens() error {
+	// AuthHeader() falls back to the env-var-derived fields when AuthHeaderVal
+	// and AccessToken are empty, so dropping the working credential requires
+	// zeroing every emitted credential field, not just the OAuth trio.
+	// ClientID/ClientSecret persist to disk via SaveTokens for the oauth2
+	// and oauth2-cc flows, so logout must wipe them too; otherwise
+	// `auth login` can re-mint a new access token unattended.
+	c.AuthHeaderVal = ""
 	c.AccessToken = ""
 	c.RefreshToken = ""
 	c.TokenExpiry = time.Time{}
+	c.ClientID = ""
+	c.ClientSecret = ""
+	c.RichAuthApiKey = ""
+	c.RichAuthClientId = ""
+	c.RichAuthClientSecret = ""
+	c.RichAuthSessionCookie = ""
+	c.RichAuthOptionalToken = ""
+	c.RichAuthBotToken = ""
+	c.RichAuthUserToken = ""
 	return c.save()
 }
 

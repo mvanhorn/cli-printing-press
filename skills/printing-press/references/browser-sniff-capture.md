@@ -15,7 +15,7 @@
 
 3. **Use click-based SPA navigation after installing interceptors.** `browser-use open` triggers a full page reload which resets the JS context and destroys fetch/XHR interceptors. After installing interceptors, navigate by clicking links (`browser-use eval "document.querySelector('a[href*=account]').click()"` or `browser-use click`). Only use `browser-use open` for the first page load or when you need to re-install interceptors.
 
-4. **Run `printing-press probe-reachability` before announcing any browser escalation, and don't expose transport tiers to the user as peer choices.** If research or preflight saw Cloudflare/Vercel/WAF/DataDome/PerimeterX/CAPTCHA evidence, the *first* action is the no-browser probe — not a Chrome-attach prompt and not a transport-tier menu like "Browser-sniff + clearance cookie / Browser-sniff Surf-only / HAR / Hold". Intent menus are fine (yes/no, browser-sniff or pivot, etc.); the wrong shape is forcing the user to pick between Surf vs cookie vs full browser, which is the classifier's job. Many passive challenges (Vercel TLS-fingerprint mitigation, lighter Cloudflare gates) clear with Surf alone, no cookie, no setup. If `probe-reachability` returns `mode: browser_http`, the printed CLI will ship Surf transport with zero clearance-cookie capture — runtime is settled silently. (Browser-sniff for endpoint *discovery* is a separate decision handled by Phase 1.7's normal matrix; if that matrix says to ask, the existing intent-level prompts already disclose Chrome attach as a possibility — that's the right place for that consent, not bundled into a transport-tier menu.) Only when the probe returns `browser_clearance_http` or `unknown` should you tell the user direct HTTP is blocked and proceed with a real browser capture. Do NOT replace the target with RSS/docs/official API or ask for a smaller CLI shape until after browser capture has failed by the criteria below.
+4. **Run `cli-printing-press probe-reachability` before announcing any browser escalation, and don't expose transport tiers to the user as peer choices.** If research or preflight saw Cloudflare/Vercel/WAF/DataDome/PerimeterX/CAPTCHA evidence, the *first* action is the no-browser probe — not a Chrome-attach prompt and not a transport-tier menu like "Browser-sniff + clearance cookie / Browser-sniff Surf-only / HAR / Hold". Intent menus are fine (yes/no, browser-sniff or pivot, etc.); the wrong shape is forcing the user to pick between Surf vs cookie vs full browser, which is the classifier's job. Many passive challenges (Vercel TLS-fingerprint mitigation, lighter Cloudflare gates) clear with Surf alone, no cookie, no setup. If `probe-reachability` returns `mode: browser_http`, the printed CLI will ship Surf transport with zero clearance-cookie capture — runtime is settled silently. (Browser-sniff for endpoint *discovery* is a separate decision handled by Phase 1.7's normal matrix; if that matrix says to ask, the existing intent-level prompts already disclose Chrome attach as a possibility — that's the right place for that consent, not bundled into a transport-tier menu.) Only when the probe returns `browser_clearance_http` or `unknown` should you tell the user direct HTTP is blocked and proceed with a real browser capture. Do NOT replace the target with RSS/docs/official API or ask for a smaller CLI shape until after browser capture has failed by the criteria below.
 
 5. **Replayability is the success criterion.** A browser capture succeeds only when it produces a shippable surface: replayable API calls, persisted-query registry entries, browser-clearance cookies that can be imported and replayed, or structured HTML/SSR/RSS/JSON-LD extraction targets. If the only observed path requires live page-context execution, report HOLD or return to discovery for a lighter surface. Do not continue as if resident browser transport is acceptable.
 
@@ -223,14 +223,16 @@ For option 1 (save-then-restore):
 **IMPORTANT:** `--auto-connect`, `--state`, `--profile`, and `--headed` are daemon launch options in agent-browser. They only take effect when starting a new daemon. You MUST close the daemon between save and load.
 
 ```bash
-# Grab cookies from running Chrome
-agent-browser --auto-connect state save "$DISCOVERY_DIR/session-state.json" 2>&1
+# Grab cookies from running Chrome. $SESSION_STATE_FILE lives outside
+# $DISCOVERY_DIR (initialized in SKILL.md's "Run Initialization") so the
+# Phase 5.5 `cp -r "$DISCOVERY_DIR"` cannot pick it up.
+agent-browser --auto-connect state save "$SESSION_STATE_FILE" 2>&1
 
 # Close the auto-connect daemon so --state can start a fresh one
 agent-browser close 2>&1
 
 # Start a new headless daemon with the saved auth state
-agent-browser --state "$DISCOVERY_DIR/session-state.json" open <url>
+agent-browser --state "$SESSION_STATE_FILE" open <url>
 ```
 If auto-connect fails (no debug port), explain: "Chrome doesn't have remote debugging enabled. Quit Chrome and relaunch with `--remote-debugging-port=9222`, or pick option 2."
 
@@ -278,7 +280,7 @@ browser-use open <login-url> --headed --session "<api>-auth"
 Instruct the user: "A browser window is open. Please log in to `<site>`. Let me know when you're done."
 After login, save state:
 ```bash
-agent-browser state save "$DISCOVERY_DIR/session-state.json"
+agent-browser state save "$SESSION_STATE_FILE"
 ```
 Close the headed browser and restart headless with the saved state.
 
@@ -293,7 +295,7 @@ Close the headed browser and restart headless with the saved state.
 5. **Clear any prior requests.** Click the 🚫 (clear / no-entry) icon in the toolbar to start with an empty log.
 6. **Reproduce the user flow on the target site** — navigate, click into the section the printed CLI needs, scroll, interact. Wait for network activity to settle between actions.
 7. **Export the HAR.** Click the **download-arrow icon** at the top-left of the Network panel toolbar (between the upload-arrow icon `↑` and the record/clear icons — it looks like a `↓` arrow with a horizontal bar underneath). A macOS/Windows save dialog opens. Save as `<api>-capture.har` somewhere accessible like `~/Downloads/`.
-8. **Tell the agent the path.** The agent runs `printing-press browser-sniff --har <path>` next.
+8. **Tell the agent the path.** The agent runs `cli-printing-press browser-sniff --har <path>` next.
 
 **Computer-use visual-feedback-loop (only when `COMPUTER_USE_AVAILABLE=true`).** Computer-use cannot click or type into Chrome (browsers are tier-"read" — visible in screenshots, but input is blocked). Its value here is closing the loop with the user when text instructions get them stuck. Pattern:
 
@@ -343,7 +345,7 @@ If the result is `SESSION_EXPIRED` (login link visible, no account link), the pr
 
 Do NOT silently proceed without auth when the session has expired. The authenticated surface is often the most valuable part of the API (order history, rewards, saved data).
 
-If cookies are verified, proceed to Steps 2a/2b capture flow with the authenticated session loaded. The session state file is stored at `$DISCOVERY_DIR/session-state.json`.
+If cookies are verified, proceed to Steps 2a/2b capture flow with the authenticated session loaded. The session state file is stored at `$SESSION_STATE_FILE` (under `${TMPDIR:-/tmp}/printing-press-$(id -u)/session/$RUN_ID/`, outside `$DISCOVERY_DIR`, so it cannot reach archived manuscripts).
 
 #### Step 2a.0: Direct-API-probe fallback (try before browser-use when WAF-protected)
 
@@ -369,7 +371,7 @@ curl -s -o /tmp/probe-response.json -w '%{http_code}\n' \
 
 Decision criteria:
 
-- **HTTP 200 with structured JSON** — the direct probe is viable. Capture a handful of representative endpoint responses to `$DISCOVERY_DIR/direct-probe-*.json`, then proceed to Step 2a or fall through to Step 2b (manual HAR via DevTools) for the structured browser-sniff capture. **Do not skip the structured capture** — `printing-press browser-sniff` needs a HAR or enriched-capture JSON, not loose curl responses, and the replayability check still has to run against the captured envelope.
+- **HTTP 200 with structured JSON** — the direct probe is viable. Capture a handful of representative endpoint responses to `$DISCOVERY_DIR/direct-probe-*.json`, then proceed to Step 2a or fall through to Step 2b (manual HAR via DevTools) for the structured browser-sniff capture. **Do not skip the structured capture** — `cli-printing-press browser-sniff` needs a HAR or enriched-capture JSON, not loose curl responses, and the replayability check still has to run against the captured envelope.
 - **HTTP 403/429 with a Cloudflare challenge body** (`<title>Just a moment...</title>`, `cf_chl_opt`, Vercel/Akamai equivalents) — the WAF is blocking direct probes. Fall through to browser-use; the captured surface will need Surf transport and possibly a clearance-cookie step.
 - **HTTP 401/403 with a structured auth error** (`{"error":"unauthenticated"}`, `WWW-Authenticate: Bearer`) — direct probing works but the path is auth-only. Document the path in the brief and route to the authenticated-flow capture.
 
@@ -522,7 +524,7 @@ When the user confirmed a logged-in session (AUTH_SESSION_AVAILABLE=true from Ph
 
 **SPA interaction rule:** On each page/state, take a snapshot first. Look for interactive elements (buttons, forms, dropdowns, tabs). Click through them. SPAs fire API calls on interaction, not on page load. If you load a page and see no XHR activity, that means you need to interact with the page, not that there is nothing to find.
 
-**SPA navigation rule:** After installing fetch/XHR interceptors, do NOT use `browser-use open` to navigate between pages — it triggers a full page reload which destroys the interceptors. Instead, navigate by clicking links:
+**SPA navigation rule:** After installing fetch/XHR interceptors, do NOT use `browser-use open` to navigate between pages unless you immediately reinstall the interceptor before further interactions. A full page reload destroys page-scoped interceptors. Prefer navigating by clicking links after the interceptor is installed:
 ```bash
 # Good: SPA navigation preserves interceptors
 browser-use eval "document.querySelector('a[href*=\"/orders\"]').click()"
@@ -533,6 +535,22 @@ browser-use click "Orders"
 browser-use open "https://site.com/orders"
 ```
 Only use `browser-use open` for the initial page load (before interceptors exist) or when you intentionally want to re-install interceptors on a fresh page.
+
+**Primary request-body capture.** After each `browser-use open` and before walking interactions on that page, install a Request-aware fetch body interceptor. The Performance API gives broad URL coverage, but it does not expose POST bodies. This interceptor preserves bodies for both `fetch(new Request(...))` and legacy `fetch(url, {body})` calls so the enriched capture can use the real request shape instead of inferring it from responses.
+
+```bash
+browser-use eval "window.__capture_bodies={};const _f=window.fetch;async function __ppReadFetchRequestBody(args){try{if(args[1]&&args[1].body)return typeof args[1].body==='string'?args[1].body:'[non-string]';if(args[0]&&typeof args[0]==='object'&&args[0].clone)return await args[0].clone().text()}catch(e){}return ''}window.fetch=async function(...args){const url=typeof args[0]==='string'?args[0]:(args[0]&&args[0].url)||'';const method=(args[1]&&args[1].method)||(args[0]&&args[0].method)||'GET';const requestBodyPromise=__ppReadFetchRequestBody(args);const r=await _f.apply(this,args);const c=r.clone();Promise.all([requestBodyPromise,c.text()]).then(([requestBody,responseBody])=>{window.__capture_bodies[method+' '+url]={request_body:requestBody,response_body:responseBody,response_status:r.status,response_content_type:r.headers.get('content-type')||''}}).catch(()=>{});return r}"
+```
+
+After browsing, collect these bodies:
+
+```bash
+browser-use eval "JSON.stringify(window.__capture_bodies)"
+```
+
+When building `$DISCOVERY_DIR/browser-sniff-capture.json`, merge the matching `request_body`, `response_body`, `response_status`, and `response_content_type` from `window.__capture_bodies` into each API entry. If a body is missing, fall back to the Step 2b enrichment loop or HAR metadata rather than guessing from the response shape.
+
+Because browser-use installs this interceptor inside the current page, it cannot capture API calls that fired before installation during the initial page load. For page-load POST bodies, use an agent-browser/manual HAR path and prefer HAR `request.postData.text`; do not infer request shape from the response body.
 
 **Step 2a.2: Collect API URLs**
 
@@ -547,6 +565,9 @@ SNIFF_URLS="$DISCOVERY_DIR/sniff-urls.txt"
 # For EACH target page (run this loop in foreground — do NOT use run_in_background):
 browser-use open "<target-page-url>"
 sleep 4  # Wait for initial page load API calls to complete
+
+# Install request/response body capture for interaction-triggered API calls:
+# run the "Primary request-body capture" browser-use eval command above here.
 
 # Early interactive-challenge check. If this finds Cloudflare/Vercel/WAF
 # challenge assets or a challenge title/body, stop the capture attempt and
@@ -592,7 +613,7 @@ After collecting URLs, check whether the site uses a GraphQL BFF pattern. This i
 
    For browser-use: inject a fetch interceptor BEFORE browsing auth/interaction pages. This captures POST bodies that the Performance API misses:
    ```bash
-   browser-use eval "window.__gqlOps=[];const _f=window.fetch;window.fetch=async function(){const r=await _f.apply(this,arguments);try{if(arguments[0]&&arguments[0].toString().includes('graphql')&&arguments[1]&&arguments[1].body){const b=JSON.parse(arguments[1].body);if(b.operationName)window.__gqlOps.push({op:b.operationName,vars:Object.keys(b.variables||{})})}}catch(e){}return r}"
+   browser-use eval "window.__gqlOps=[];const _f=window.fetch;async function __ppReadFetchRequestBody(args){try{if(args[1]&&args[1].body)return typeof args[1].body==='string'?args[1].body:'[non-string]';if(args[0]&&typeof args[0]==='object'&&args[0].clone)return await args[0].clone().text()}catch(e){}return ''}window.fetch=async function(...args){const bodyPromise=__ppReadFetchRequestBody(args);const url=typeof args[0]==='string'?args[0]:(args[0]&&args[0].url)||'';const r=await _f.apply(this,args);bodyPromise.then(body=>{try{if(url.includes('graphql')&&body&&body!=='[non-string]'){const b=JSON.parse(body);if(b.operationName)window.__gqlOps.push({op:b.operationName,vars:Object.keys(b.variables||{})})}}catch(e){}});return r}"
    ```
    After browsing, collect:
    ```bash
@@ -672,11 +693,11 @@ cat "$SNIFF_URLS" | sed 's/\?.*//' | sort -u > "$DISCOVERY_DIR/browser-sniff-uni
 
 **Step 2a.4: Generate enriched capture**
 
-The Performance API gives us URLs but not response bodies. To feed `printing-press browser-sniff`, we need to call each unique API endpoint and capture the response:
+The Performance API gives us URLs but not response bodies. To feed `cli-printing-press browser-sniff`, we need to call each unique API endpoint and capture the response:
 
 ```bash
 # For each unique API URL, fetch it and build a simple capture file
-# printing-press browser-sniff accepts HAR or enriched capture JSON
+# cli-printing-press browser-sniff accepts HAR or enriched capture JSON
 # When fetching each unique API URL to build enriched capture:
 # Apply browser-sniff pacing between requests (1s initial, adaptive per Browser-Sniff Pacing rules)
 # On 429: double delay, log, continue with remaining URLs
@@ -760,35 +781,52 @@ Always create a fresh capture tab via `mcp__claude-in-chrome__tabs_create_mcp`, 
 
 Two viable approaches:
 
-1. **Recommended: in-page interceptor installed before navigation.** Use `mcp__claude-in-chrome__javascript_tool` to install a `fetch` and `XMLHttpRequest` interceptor in the new tab BEFORE navigating to `<site>`. The interceptor pushes each completed request's body into `window.__capture_bodies` keyed by URL+method. After capture, `javascript_tool` reads `window.__capture_bodies` back. This avoids re-firing requests against a wary WAF.
+1. **Recommended: in-page interceptor installed before interactions.** Use `mcp__claude-in-chrome__javascript_tool` to install a `fetch` and `XMLHttpRequest` interceptor in the fresh capture tab after navigating to `<site>` and before performing the user-flow interactions. The interceptor pushes each completed call's request and response bodies into `window.__capture_bodies` keyed by URL+method. After capture, `javascript_tool` reads `window.__capture_bodies` back. This avoids re-firing requests against a wary WAF.
 
 2. **Fallback: `javascript_tool` re-fetches each captured URL after the fact.** Mirrors the `agent-browser network request <id> --json` enrichment loop in Step 2b. Use this only when option 1 fails (e.g., the page wraps `fetch` itself and the interceptor can't shadow it). Re-fetching may trip rate limits — apply the pacing rules below.
 
 The interceptor sketch (illustrative, adapt to the page's actual fetch shape):
 
 ```javascript
-// Run via mcp__claude-in-chrome__javascript_tool BEFORE mcp__claude-in-chrome__navigate
+// Run via mcp__claude-in-chrome__javascript_tool after navigating to <site>
+// and before performing interaction-triggered capture steps.
 window.__capture_bodies = {};
 const _origFetch = window.fetch;
+async function __ppReadFetchRequestBody(args) {
+  try {
+    if (args[1] && args[1].body) {
+      return typeof args[1].body === 'string' ? args[1].body : '[non-string]';
+    }
+    if (args[0] && typeof args[0] === 'object' && args[0].clone) {
+      return await args[0].clone().text();
+    }
+  } catch (e) {}
+  return '';
+}
 window.fetch = async function(...args) {
+  const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+  const method = (args[1] && args[1].method) || (args[0] && args[0].method) || 'GET';
+  const requestBodyPromise = __ppReadFetchRequestBody(args);
   const resp = await _origFetch.apply(this, args);
   const cloned = resp.clone();
-  const url = typeof args[0] === 'string' ? args[0] : args[0].url;
-  const method = (args[1] && args[1].method) || 'GET';
-  cloned.text().then(body => {
-    window.__capture_bodies[`${method} ${url}`] = body;
+  Promise.all([requestBodyPromise, cloned.text()]).then(([requestBody, body]) => {
+    window.__capture_bodies[`${method} ${url}`] = {request_body: requestBody, response_body: body};
   }).catch(() => {});
   return resp;
 };
 // XHR interceptor analogous; install both
 ```
 
+When merging `window.__capture_bodies` with network metadata, copy the stored `request_body` and `response_body` fields separately into the enriched capture entry.
+
+This page-scoped interceptor cannot capture API calls that fired before installation during the initial navigation. If a page-load POST body matters, use manual DevTools HAR export or another HAR-producing path and prefer HAR `request.postData.text`.
+
 **Capture flow (full sequence).**
 
 1. `mcp__claude-in-chrome__tabs_context_mcp` — awareness only; confirm extension is connected
 2. `mcp__claude-in-chrome__tabs_create_mcp` — fresh capture tab
-3. `mcp__claude-in-chrome__javascript_tool` — install fetch + XHR body interceptor in the new tab
-4. `mcp__claude-in-chrome__navigate` — open the discovery target URL
+3. `mcp__claude-in-chrome__navigate` — open the discovery target URL
+4. `mcp__claude-in-chrome__javascript_tool` — install fetch + XHR body interceptor in the current page
 5. Interaction loop (per the same "click + scroll + interact" guidance the browser-use flow uses):
    - `mcp__claude-in-chrome__read_page` to find interactive elements
    - `mcp__claude-in-chrome__find` + `mcp__claude-in-chrome__left_click` (or `form_input` for forms) to interact
@@ -950,18 +988,20 @@ If direct HTTP is blocked but the page does not require live page-context execut
 
 Run browser-sniff on the captured traffic. Always write the structured traffic analysis to the discovery directory so it is archived with the manuscript:
 ```bash
-printing-press browser-sniff --har "$DISCOVERY_DIR/browser-sniff-capture.har" --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"
+cli-printing-press browser-sniff --har "$DISCOVERY_DIR/browser-sniff-capture.har" --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"
 ```
 
 If using agent-browser's enriched capture format instead:
 ```bash
-printing-press browser-sniff --har "$DISCOVERY_DIR/browser-sniff-capture.json" --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"
+cli-printing-press browser-sniff --har "$DISCOVERY_DIR/browser-sniff-capture.json" --name <api> --output "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" --analysis-output "$DISCOVERY_DIR/traffic-analysis.json"
 ```
+
+If `$API_RUN_DIR/source-priority.json` exists with two or more sources, add `--preserve-hosts` to the browser-sniff command so combo-CLI captures retain peer API hosts with per-endpoint `base_url` overrides instead of selecting only the dominant host.
 
 If hand-writing or repairing `$DISCOVERY_DIR/traffic-analysis.json`, inspect the canonical schema first:
 
 ```bash
-printing-press schema traffic-analysis > "$DISCOVERY_DIR/traffic-analysis.schema.json"
+cli-printing-press schema traffic-analysis > "$DISCOVERY_DIR/traffic-analysis.schema.json"
 ```
 
 Two fields trip up hand-edits often enough to call out:
@@ -1008,7 +1048,7 @@ The report must contain these sections:
    - Auth signals (candidate types, header/query/cookie names only -- never values)
    - Parameter-name evidence from forms, input labels, placeholder text, SDK/source names, and request context. Preserve enough detail to justify any later `flag_name` enrichment.
    - Protection signals (Cloudflare/CAPTCHA/login redirects/protected-web hints)
-   - Generation hints (e.g., `requires_browser_auth`, `requires_js_rendering`, `requires_protected_client`, `has_rpc_envelope`)
+   - Generation hints (e.g., `requires_browser_auth`, `requires_js_rendering`, `requires_protected_client`, `has_rpc_envelope`). Treat `auth_supports_captcha_preflight` as informational auth context, not as proof that the runtime needs browser page context.
    - Candidate commands worth considering
    - Warnings such as raw protocol envelopes, GraphQL error-only responses, HTML challenge pages, empty payloads, or weak schema evidence
    Treat warnings as discovery evidence, not publish blockers.

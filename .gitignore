@@ -9,9 +9,14 @@ catalog/specs/*.graphql
 /refactor/artifacts/
 /tests/artifacts/perf/
 /printing-press
+/press-auth
 library/
 dist/
 claude-upgrade-progress.json
+
+# Python bytecode (verify-supply-chain scripts)
+__pycache__/
+*.pyc
 
 # Local AI agent instructions (not for sharing)
 CLAUDE.local.md

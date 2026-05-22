@@ -26,6 +26,83 @@ func TestPlanGoModMergePostmanExplore(t *testing.T) {
 		plan.PreservedModulePath)
 }
 
+func TestPlanGoModMergeTreatsMissingPublishedGoModAsFreshGeneration(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	pubDir := filepath.Join(tmp, "pub")
+	freshDir := filepath.Join(tmp, "fresh")
+	require.NoError(t, os.MkdirAll(pubDir, 0o755))
+	require.NoError(t, os.MkdirAll(freshDir, 0o755))
+	require.NoError(t, writeFileAtomic(filepath.Join(freshDir, "go.mod"), []byte(`module foo-pp-cli
+
+go 1.23.0
+`)))
+
+	plan, err := planGoModMerge(pubDir, freshDir)
+	require.NoError(t, err)
+	assert.Nil(t, plan, "first-time generation has no published go.mod to merge")
+}
+
+func TestPlanGoModMergeStillValidatesPresentGoModWhenOtherSideIsMissing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		writePub    bool
+		pubGoMod    string
+		writeFresh  bool
+		freshGoMod  string
+		wantErrPart string
+	}{
+		{
+			name:        "fresh malformed when published missing",
+			writeFresh:  true,
+			freshGoMod:  "not a module file\n",
+			wantErrPart: "parsing fresh go.mod",
+		},
+		{
+			name:        "published malformed when fresh missing",
+			writePub:    true,
+			pubGoMod:    "not a module file\n",
+			wantErrPart: "parsing published go.mod",
+		},
+		{
+			name:     "published valid when fresh missing",
+			writePub: true,
+			pubGoMod: "module published-cli\n\ngo 1.23\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tmp := t.TempDir()
+			pubDir := filepath.Join(tmp, "pub")
+			freshDir := filepath.Join(tmp, "fresh")
+			require.NoError(t, os.MkdirAll(pubDir, 0o755))
+			require.NoError(t, os.MkdirAll(freshDir, 0o755))
+			if tt.writePub {
+				require.NoError(t, writeFileAtomic(filepath.Join(pubDir, "go.mod"), []byte(tt.pubGoMod)))
+			}
+			if tt.writeFresh {
+				require.NoError(t, writeFileAtomic(filepath.Join(freshDir, "go.mod"), []byte(tt.freshGoMod)))
+			}
+
+			plan, err := planGoModMerge(pubDir, freshDir)
+			if tt.wantErrPart != "" {
+				require.Error(t, err)
+				assert.Nil(t, plan)
+				assert.Contains(t, err.Error(), tt.wantErrPart)
+				return
+			}
+			require.NoError(t, err)
+			assert.Nil(t, plan)
+		})
+	}
+}
+
 // TestRenderMergedGoModPreservesPublishedModule confirms the rendered bytes
 // have the published module line, the fresh require versions, and parse
 // cleanly.

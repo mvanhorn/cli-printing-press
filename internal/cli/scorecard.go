@@ -24,16 +24,16 @@ func newScorecardCmd() *cobra.Command {
 		Use:   "scorecard",
 		Short: "Score a generated CLI against the Steinberger bar",
 		Example: `  # Score a generated CLI directory
-  printing-press scorecard --dir ./generated/stripe-pp-cli
+  cli-printing-press scorecard --dir ./generated/stripe-pp-cli
 
   # Include a live behavioral sample (runs novel-feature examples against real targets)
-  printing-press scorecard --dir ./generated/stripe-pp-cli --live-check
+  cli-printing-press scorecard --dir ./generated/stripe-pp-cli --live-check
 
   # Live-check a CLI whose research.json lives in the run state, not the CLI dir
-  printing-press scorecard --dir ./working/foo-pp-cli --research-dir ./runs/<id> --live-check
+  cli-printing-press scorecard --dir ./working/foo-pp-cli --research-dir ./runs/<id> --live-check
 
   # Output as JSON
-  printing-press scorecard --dir ./generated/stripe-pp-cli --json`,
+  cli-printing-press scorecard --dir ./generated/stripe-pp-cli --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir is required")}

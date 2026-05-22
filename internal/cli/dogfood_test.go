@@ -31,6 +31,31 @@ func TestPrintDogfoodReportRespectsSkippedPathCheck(t *testing.T) {
 	assert.NotContains(t, out, "Path Validity:     0/0 valid (FAIL)")
 }
 
+// TestPrintDogfoodReportRendersEmptyMatrixAsNA covers the cosmetic
+// divide-by-zero in the path-validity renderer when SpecPath is present and
+// the check is not Skipped but Tested is zero (small-surface CLIs whose
+// command tree didn't produce any path-validity matrix entries). The
+// scorecard's Path Validity dim correctly reports 10/10 in the same run, so
+// rendering FAIL here is misleading to a first-time reader.
+func TestPrintDogfoodReportRendersEmptyMatrixAsNA(t *testing.T) {
+	report := &pipeline.DogfoodReport{
+		Dir:      t.TempDir(),
+		SpecPath: "petstore.yaml",
+		PathCheck: pipeline.PathCheckResult{
+			Tested:  0,
+			Valid:   0,
+			Skipped: false,
+		},
+	}
+
+	out := captureStdout(t, func() {
+		printDogfoodReport(report)
+	})
+
+	assert.Contains(t, out, "Path Validity:     0/0 valid (N/A)")
+	assert.NotContains(t, out, "Path Validity:     0/0 valid (FAIL)")
+}
+
 func TestDogfoodHelpIncludesLiveFlags(t *testing.T) {
 	cmd := newDogfoodCmd()
 	cmd.SetArgs([]string{"--help"})

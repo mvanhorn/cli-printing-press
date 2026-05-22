@@ -5,7 +5,7 @@
 **Scope:** Phase 1 detectors are shape-only — card-last-4, email, US phone, ZIP+4, postal-address. Order/transaction IDs, ASINs, and standalone names are a future detector class pending spec-aware detection work. A passing gate is the floor, not "PII-clean."
 
 ```bash
-printing-press pii-audit <cli-dir>
+cli-printing-press pii-audit <cli-dir>
 ```
 
 The audit writes `<cli-dir>/.printing-press-pii-polish.json`. Promote and publish re-run the audit themselves, so the ledger header is the authority — they refuse if pending findings or gate failures remain.
@@ -70,7 +70,9 @@ When a downstream consumer (parser, schema validator) needs a valid-shape value,
 
 **Manuscripts (`.manuscripts/<runID>/`).** Highest-risk source — captured browser-sniff content is by construction where customer values entered. Acceptance for manuscript findings requires the explicit `evidence_context`-cited justification; "captured data" alone is not sufficient. When in doubt, replace the value in the manuscript file directly (it's local working state) and use a hand-authored fixture with synthetic values for any downstream tests.
 
-**Vendor spec files at the CLI root (`spec.yaml`, `spec.yml`, `spec.json`).** Exempt from the audit by design — these are the OpenAPI/internal source the operator passed to `--spec`, and vendor `example:` blocks (Stripe `jenny@example.com`, GitHub user-schema example phones) are documentation, not customer PII. The exemption is depth-1 only; the same basename nested under `.manuscripts/` or `testdata/` is captured content and stays in scope.
+**Vendor spec files at the CLI root (`spec.yaml`, `spec.yml`, `spec.json`).** Exempt from the audit by design — these are the OpenAPI/internal source the operator passed to `--spec`, and vendor `example:` blocks (Stripe `jenny@example.com`, GitHub user-schema example phones) are documentation, not customer PII. The exemption is depth-1 only; the same basename nested under `testdata/` is captured content and stays in scope.
+
+**Vendor spec source archived under `.manuscripts/`.** Files anywhere inside a `.manuscripts/` subtree whose head bytes match an OpenAPI 2.x/3.x or Swagger 2.0 root-document marker are exempt — the operator archived the vendor's published spec source alongside research, and its `example:` blocks are documentation. The exemption is content-based, not glob-based, so per-resource subdir basenames like `apps/calendars.json` or vendor-named files like `pushpress-v3.yaml` are covered without an allowlist. HARs, `session-state.json`, hand-edited proofs, and any other non-spec content under `.manuscripts/` stays in scope because the marker check fails on them.
 
 ## Forbidden accept patterns
 
@@ -90,7 +92,7 @@ Don't manually mark findings as `fixed`. A real source fix makes the finding dis
 
 ## End-state checklist
 
-- [ ] `printing-press pii-audit <cli-dir>` summary reads `no pending findings`, no `incomplete:` block.
+- [ ] `cli-printing-press pii-audit <cli-dir>` summary reads `no pending findings`, no `incomplete:` block.
 - [ ] Every accepted finding has `category` + `evidence_context`. `category: other` also has `note`.
 - [ ] No 6+ accepts share a normalized `note` + `category`.
 - [ ] Real PII fixes landed in source (`git diff`).

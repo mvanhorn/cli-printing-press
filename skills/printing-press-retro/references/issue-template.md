@@ -46,10 +46,14 @@ issue is an action surface. Optimize the issue path for speed and signal:
   to fix it. No priority prefix (`[P1]`), no WU ordinal (`WU-1`) — both
   belong on labels and in the user-facing summary, not in the title that
   someone scans across retros.
-- **Generate bodies inline, never via the Write tool.** Use shell heredocs
-  into variables in a single `Bash` invocation. Writing each body to a file
-  and passing `--body-file` adds a tool round-trip per issue and is the
-  single largest source of perceived latency the skill historically had.
+- **Build bodies inline; never via the Write tool.** Use shell heredocs
+  into variables (or `printf` into bash-resident temp files inside a single
+  `Bash` invocation). Per-WU `Write` tool round-trips are the single largest
+  source of perceived latency the skill historically had. *Bash-resident
+  temp files passed to `gh ... --body-file` are fine* — they're written and
+  consumed inside one Bash call with no tool round-trip and unblock the
+  Phase 6 Step 3 scrub step (`scrub_body` needs a file input/output, and
+  `gh --body-file` is the natural consumer of the scrubbed output).
 - **Run issue creates and comments in parallel.** Each WU's filing is
   independent of every other WU. Background subshells writing to indexed
   temp files, then `wait`, then read in order — the pattern is in Step 3.
@@ -187,6 +191,13 @@ user sees what will happen and can override before anything is filed.
 For each WU, build either an issue body or a comment body, then run `gh`
 in a background subshell. `wait`, then collect.
 
+**Layer 0 body scrub is mandatory.** Before posting any body to GitHub, the
+parallel loop runs `scrub_body` on the body file. Source the function from
+[`secret-scrubbing.md`](secret-scrubbing.md) "Layer 0" at the top of the
+bash block that contains the loop — paste the `scrub_body() { ... }`
+definition verbatim, or `source` an equivalent shell fragment. Without this,
+the loop will fail with `scrub_body: command not found` per-WU.
+
 ### Issue title (for new issues)
 
 Succinct, problem-stated. Examples:
@@ -226,6 +237,17 @@ attachments. This is the meat of the body — be specific.>
 - Command + output snippet showing the failure
 - Spec snippet showing the trigger condition
 - Error messages, stack traces, or scorer output verbatim where relevant
+
+> ⚠️ **Redact secrets and PII before pasting.** Issue bodies are public. When
+> the evidence comes from scanner output, dogfood payloads, Greptile review
+> comments, or live API responses, replace credentials with
+> `<REDACTED:<vendor>-<kind>:<first4>...<last4>:<len>ch>` and PII with
+> `<REDACTED:<kind>>` per [`secret-scrubbing.md`](secret-scrubbing.md)
+> "Layer 0". The Phase 6 Step 3 loop runs `scrub_body` on this file and will
+> hard-fail the WU's filing if it finds an unredacted vendor-prefix token —
+> that's the floor, not a substitute for redacting at write time.
+> **This applies most strictly to findings about secret/PII leaks**: quoting
+> the actual leaked value to prove the leak exists re-leaks it.
 
 ## Suspected root cause
 
@@ -360,11 +382,33 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
     URL=""
     FAIL_MSG=""
 
+    # Layer 0 body scrub — runs once per WU on whichever body is about to be
+    # posted. scrub_body is defined in references/secret-scrubbing.md and must
+    # be sourced or pasted in the bash block enclosing this loop.
+    #
+    # Hard-fail behavior: if the body contains an unredacted vendor-prefix
+    # token (lin_api_, sk_live_, ghp_, etc.) we refuse to post that WU and
+    # surface it in $FAILED_ISSUES so the agent can hand-redact and retry.
+    # PII patterns auto-redact in place. The original $WU_BODY /
+    # $WU_COMMENT_BODY shell var is untouched; only the file passed to gh
+    # gets the scrubbed text.
+    BODY_TMP="$ISSUE_TMPDIR/body-$wu_idx.md"
+    BODY_TMP_SCRUBBED="$ISSUE_TMPDIR/body-$wu_idx.scrubbed.md"
     if [[ "$DEDUP" == comment:* ]]; then
+      printf '%s' "$WU_COMMENT_BODY" > "$BODY_TMP"
+    else
+      printf '%s' "$WU_BODY" > "$BODY_TMP"
+    fi
+    if ! scrub_body "$BODY_TMP" "$BODY_TMP_SCRUBBED" 2>"$ISSUE_TMPDIR/scrub-$wu_idx.err"; then
+      KIND="scrub-failed"
+      SCRUB_REASON=$(tr '\n' ' ' < "$ISSUE_TMPDIR/scrub-$wu_idx.err" | head -c 400)
+      FAIL_MSG="$WU_TITLE — body scrub hard-failed (vendor-prefix secret in body); not posted. Reason: $SCRUB_REASON. Body left at $BODY_TMP for hand-redaction."
+      URL=""
+    elif [[ "$DEDUP" == comment:* ]]; then
       ISSUE_NUM="${DEDUP#comment:}"
       if URL=$(gh issue comment "$ISSUE_NUM" \
             --repo "$REPO" \
-            --body "$WU_COMMENT_BODY" 2>&1) \
+            --body-file "$BODY_TMP_SCRUBBED" 2>&1) \
             && [[ "$URL" == https://* ]]; then
         KIND="commented"
       else
@@ -376,7 +420,7 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
       if URL=$(gh issue create \
             --repo "$REPO" \
             --title "$WU_TITLE" \
-            --body "$WU_BODY" \
+            --body-file "$BODY_TMP_SCRUBBED" \
             --label retro \
             --label "priority:P${WU_PRIORITY_NUM}" \
             --label "comp:${WU_COMP_SLUG}" 2>&1) \
@@ -425,14 +469,28 @@ for wu_idx in "${!SORTED_WORK_UNITS[@]}"; do
     created|commented)
       echo "${KIND^}: $URL"
       ;;
-    create-failed|comment-failed)
+    create-failed|comment-failed|scrub-failed)
       echo "WARNING: $FAIL_MSG"
       FAILED_ISSUES+=("$FAIL_MSG")
       ;;
   esac
 done
 
-rm -rf "$ISSUE_TMPDIR"
+# Cleanup is conditional on scrub-failed WUs. Those WUs' body files are the
+# canonical hand-redaction source the failure message points at — wiping
+# $ISSUE_TMPDIR would destroy the recovery path. Keep the dir alive when any
+# WU scrub-failed; the agent (or user) can read the body file, hand-redact,
+# and re-run the affected WUs without re-deriving the body. The dir is in
+# $(mktemp -d) so it self-cleans on OS reboot / `tmpwatch` regardless.
+SCRUB_FAILED_COUNT=0
+for KIND in "${OUTCOME_KIND[@]}"; do
+  [ "$KIND" = "scrub-failed" ] && SCRUB_FAILED_COUNT=$((SCRUB_FAILED_COUNT + 1))
+done
+if [ "$SCRUB_FAILED_COUNT" -eq 0 ]; then
+  rm -rf "$ISSUE_TMPDIR"
+else
+  echo "NOTE: $SCRUB_FAILED_COUNT WU body file(s) preserved at $ISSUE_TMPDIR for hand-redaction. Delete manually after retrying the affected WU(s)." >&2
+fi
 ```
 
 Failure modes:
@@ -443,6 +501,7 @@ Failure modes:
 | `commented` | Comment added to existing issue | Listed as "commented on #N" |
 | `create-failed` | `gh issue create` returned no usable URL | `$FAILED_ISSUES` summary; manual filing instructions |
 | `comment-failed` | `gh issue comment` failed | `$FAILED_ISSUES` summary; manual comment instructions |
+| `scrub-failed` | Body contained an unredacted vendor-prefix secret; `scrub_body` refused to write the scrubbed copy. Body file left at `$BODY_TMP` for hand-redaction | `$FAILED_ISSUES` summary; agent must hand-redact per `secret-scrubbing.md` Layer 0 and retry the WU |
 
 ## Variables expected
 
@@ -465,7 +524,7 @@ Failure modes:
 
 | Variable | Contains |
 |---|---|
-| `$OUTCOME_KIND` | Array, one per WU: `created` / `commented` / `create-failed` / `comment-failed` |
+| `$OUTCOME_KIND` | Array, one per WU: `created` / `commented` / `create-failed` / `comment-failed` / `scrub-failed` |
 | `$OUTCOME_URL` | Array of issue/comment URLs (empty for failures) |
 | `$FAILED_ISSUES` | Array of human-readable failure descriptions; empty if every WU succeeded |
 

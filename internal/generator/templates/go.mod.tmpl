@@ -6,6 +6,10 @@ require (
 {{- if .UsesBrowserHTTPTransport}}
 	github.com/enetx/surf v1.0.199
 {{- end}}
+{{- if eq .Auth.Subtype "auth0_spa_in_memory"}}
+	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc
+	github.com/chromedp/chromedp v0.15.1
+{{- end}}
 	github.com/spf13/cobra v1.9.1
 {{- if .HasHTMLExtraction}}
 	golang.org/x/net v0.53.0

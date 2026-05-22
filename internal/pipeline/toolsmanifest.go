@@ -17,8 +17,8 @@ import (
 )
 
 // ToolsManifestFilename is the name of the tools manifest file written to each
-// published CLI directory. Consumed by `printing-press auth doctor` and
-// `printing-press mcp-audit` to inspect the published library without parsing
+// published CLI directory. Consumed by `cli-printing-press auth doctor` and
+// `cli-printing-press mcp-audit` to inspect the published library without parsing
 // the original spec.
 const ToolsManifestFilename = "tools-manifest.json"
 
@@ -47,6 +47,7 @@ type ManifestAuth struct {
 	EnvVarSpecs                    []spec.AuthEnvVar `json:"env_var_specs,omitempty"`
 	KeyURL                         string            `json:"key_url,omitempty"`
 	CookieDomain                   string            `json:"cookie_domain,omitempty"`
+	Cookies                        []string          `json:"cookies,omitempty"`
 	RequiresBrowserSession         bool              `json:"requires_browser_session,omitempty"`
 	BrowserSessionValidationPath   string            `json:"browser_session_validation_path,omitempty"`
 	BrowserSessionValidationMethod string            `json:"browser_session_validation_method,omitempty"`
@@ -147,6 +148,13 @@ func ReadToolsManifest(dir string) (*ToolsManifest, error) {
 // It iterates Resources/SubResources/Endpoints in sorted key order (matching
 // the MCP template's RegisterTools pattern) and writes deterministic JSON.
 func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
+	return WriteToolsManifestWithDescription(dir, parsed, "")
+}
+
+// WriteToolsManifestWithDescription generates a tools-manifest.json using the
+// supplied manifestDescription when available. The parsed spec remains the
+// source for tools and auth metadata; .printing-press.json owns durable prose.
+func WriteToolsManifestWithDescription(dir string, parsed *spec.APISpec, manifestDescription string) error {
 	if parsed == nil {
 		return fmt.Errorf("parsed spec is nil")
 	}
@@ -166,6 +174,9 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 		Auth:            manifestAuth(parsed.Auth),
 		RequiredHeaders: make([]ManifestHeader, 0, len(parsed.RequiredHeaders)),
 		Tools:           make([]ManifestTool, 0),
+	}
+	if description := strings.TrimSpace(manifestDescription); description != "" {
+		manifest.Description = description
 	}
 	if parsed.HasTierRouting() {
 		manifest.TierRouting = buildManifestTiers(parsed.TierRouting)
@@ -230,6 +241,7 @@ func manifestAuth(auth spec.AuthConfig) ManifestAuth {
 		EnvVarSpecs:                    auth.EnvVarSpecs,
 		KeyURL:                         auth.KeyURL,
 		CookieDomain:                   auth.CookieDomain,
+		Cookies:                        auth.Cookies,
 		RequiresBrowserSession:         auth.RequiresBrowserSession,
 		BrowserSessionValidationPath:   auth.BrowserSessionValidationPath,
 		BrowserSessionValidationMethod: auth.BrowserSessionValidationMethod,

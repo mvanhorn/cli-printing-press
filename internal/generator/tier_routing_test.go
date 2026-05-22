@@ -102,8 +102,8 @@ func TestTierRoutingEmitsTierAwareClientAndCommands(t *testing.T) {
 	require.Contains(t, paidCmd, `c = c.WithTier("paid")`)
 
 	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
-	require.Contains(t, mcpSrc, `makeAPIHandler("GET", "/items", "free"`)
-	require.Contains(t, mcpSrc, `makeAPIHandler("GET", "/items/premium", "paid"`)
+	require.Contains(t, mcpSrc, `makeAPIHandler("GET", "/items", "free", false`)
+	require.Contains(t, mcpSrc, `makeAPIHandler("GET", "/items/premium", "paid", false`)
 	require.Contains(t, mcpSrc, `c = c.WithTier(tier)`)
 	require.Contains(t, mcpSrc, `"tier_routing": map[string]any`)
 	require.Regexp(t, `"items_premium":\s+"paid"`, mcpSrc)

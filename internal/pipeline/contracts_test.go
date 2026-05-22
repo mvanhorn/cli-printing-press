@@ -52,6 +52,7 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 		{path: filepath.Join("..", "..", "skills", "printing-press-score", "SKILL.md"), expectsManuscripts: true},
 		{path: filepath.Join("..", "..", "skills", "printing-press-catalog", "SKILL.md"), expectsManuscripts: false},
 		{path: filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"), expectsManuscripts: true},
+		{path: filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md"), expectsManuscripts: true},
 	}
 
 	for _, tt := range tests {
@@ -60,7 +61,7 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 			block := extractContractBlock(t, full)
 
 			// Binary on PATH check
-			assert.Contains(t, block, `command -v printing-press`)
+			assert.Contains(t, block, `command -v cli-printing-press`)
 			// Version comment for frontmatter parity
 			assert.Contains(t, block, `# min-binary-version:`)
 			// Symlink-safe canonicalization
@@ -73,7 +74,7 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 			assert.Contains(t, block, `PRESS_LIBRARY="$PRESS_HOME/library"`)
 
 			// May reference local build for repo-internal development,
-			// but must not hardcode go build or use ./printing-press as default
+			// but must not hardcode go build or use ./cli-printing-press as default
 			assert.NotContains(t, block, `go build`)
 			// Must NOT contain REPO_ROOT or cd to repo
 			assert.NotContains(t, block, `REPO_ROOT`)
@@ -119,10 +120,10 @@ func TestPrintingPressSkillUsesRunstateForBuilds(t *testing.T) {
 	assert.NotContains(t, skill, `--output "$PRESS_LIBRARY/<api>-pp-cli"`)
 
 	// Lock acquire should appear before generation.
-	assert.Contains(t, skill, `printing-press lock acquire --cli <api>-pp-cli --scope "$PRESS_SCOPE"`)
+	assert.Contains(t, skill, `cli-printing-press lock acquire --cli <api>-pp-cli --scope "$PRESS_SCOPE"`)
 
 	// Lock promote should appear in Phase 5.5.
-	assert.Contains(t, skill, `printing-press lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"`)
+	assert.Contains(t, skill, `cli-printing-press lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"`)
 
 	// Phase 6 should still reference $PRESS_LIBRARY (reads from promoted location, slug-keyed).
 	assert.Contains(t, skill, `$PRESS_LIBRARY/<api>`)
@@ -151,28 +152,35 @@ func TestPublishSkillTracksCanonicalUpstreamAndOverwriteFlow(t *testing.T) {
 	assert.Contains(t, skill, "git push --force-with-lease")
 }
 
-func TestPublishSkillUsesLibraryTreeForCliSkillsMirror(t *testing.T) {
+func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
 
-	assert.Contains(t, skill, "Do not\nedit `registry.json`")
-	assert.Contains(t, skill, "fix the\nlibrary mirror generator to discover from `library/`")
-	assert.Contains(t, skill, "# Regenerate the flat cli-skills mirror from the library tree")
-	assert.Contains(t, skill, "git add library/ cli-skills/")
+	assert.Contains(t, skill, "Do not\nedit `registry.json`, README catalog cells, or `cli-skills/pp-<api-slug>/SKILL.md`")
+	// Post mvanhorn/printing-press-library#659, the library's verify
+	// workflow replaced the Guard + auto-fix + fork-only drift trio
+	// with a single `Fail on changes to generated artifacts` check.
+	// The publish skill must reference the current gate name so an
+	// agent reading it knows what failure to expect, and must still
+	// tell the agent not to regenerate or commit either generated
+	// file (cli-skills/pp-*/SKILL.md or registry.json) — the library
+	// no longer has an in-PR auto-fix path for either.
+	assert.Contains(t, skill, "Fail on changes to generated artifacts")
+	assert.Contains(t, skill, "Do NOT regenerate or commit `cli-skills/pp-<api-slug>/SKILL.md` or")
+	assert.Contains(t, skill, "git add library/\ngit commit")
+	assert.NotContains(t, skill, "git add library/ cli-skills/")
 	assert.NotContains(t, skill, "git add library/ cli-skills/ registry.json")
 	assert.NotContains(t, skill, "REGISTRY_HAS_ENTRY")
 	assert.NotContains(t, skill, "seed one registry")
+	assert.NotContains(t, skill, "go run ./tools/generate-skills/main.go")
 
-	copyIntoLibrary := strings.Index(skill, `cp -r "$STAGING_DIR/library/<category>/<cli-name>"`)
-	mirrorRun := strings.Index(skill, "go run ./tools/generate-skills/main.go")
+	copyIntoLibrary := strings.Index(skill, `cp -r "$STAGING_DIR/library/<category>/<api-slug>"`)
 	require.NotEqual(t, -1, copyIntoLibrary)
-	require.NotEqual(t, -1, mirrorRun)
-	assert.Less(t, copyIntoLibrary, mirrorRun)
 }
 
 func TestPolishSkillHardGatesPublishValidate(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
 
-	assert.Contains(t, skill, `printing-press publish validate --dir "$CLI_DIR" --json`)
+	assert.Contains(t, skill, `cli-printing-press publish validate --dir "$CLI_DIR" --json`)
 	assert.Contains(t, skill, "Publish validation failures")
 	assert.Contains(t, skill, "The publish-validate leg is a hard ship-gate")
 	assert.Contains(t, skill, "phase5 acceptance")
@@ -183,7 +191,7 @@ func TestPublishSkillPRBodyIncludesStableNovelCommands(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-publish", "SKILL.md"))
 
 	snapshotState := strings.Index(skill, "PREEXISTING_MERGED_PATHS=$(ls")
-	packageCopy := strings.Index(skill, `cp -r "$STAGING_DIR/library/<category>/<cli-name>"`)
+	packageCopy := strings.Index(skill, `cp -r "$STAGING_DIR/library/<category>/<api-slug>"`)
 	require.NotEqual(t, -1, snapshotState)
 	require.NotEqual(t, -1, packageCopy)
 	assert.Less(t, snapshotState, packageCopy)

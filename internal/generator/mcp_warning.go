@@ -29,23 +29,9 @@ func warnUnenrichedLargeMCPSurface(s *spec.APISpec, w io.Writer) {
 		return
 	}
 	threshold := s.MCP.EffectiveOrchestrationThreshold()
-	total := countTypedEndpoints(s)
+	total := s.TypedEndpointCount()
 	if total <= threshold || s.MCP.IsCodeOrchestration() {
 		return
 	}
 	fmt.Fprintf(w, largeMCPSurfaceWarning, total, threshold)
-}
-
-func countTypedEndpoints(s *spec.APISpec) int {
-	if s == nil {
-		return 0
-	}
-	n := 0
-	for _, r := range s.Resources {
-		n += len(r.Endpoints)
-		for _, sub := range r.SubResources {
-			n += len(sub.Endpoints)
-		}
-	}
-	return n
 }

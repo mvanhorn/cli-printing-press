@@ -292,7 +292,7 @@ func TestLockFilePath_NormalizationEdgeCases(t *testing.T) {
 
 // Lock helpers must reject cliName values that would escape LocksDir() or
 // otherwise behave as filesystem-traversal payloads. Without this guard a
-// caller passing "../foo" via `printing-press lock --cli ...` would write
+// caller passing "../foo" via `cli-printing-press lock --cli ...` would write
 // the lock file outside LocksDir() once filepath.Join resolved the "..".
 func TestLockHelpers_RejectInvalidCLIName(t *testing.T) {
 	setupLockTest(t)

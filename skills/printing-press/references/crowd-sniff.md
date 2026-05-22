@@ -14,13 +14,13 @@ mkdir -p "$DISCOVERY_DIR"
 Run the crowd-sniff command and capture both the spec and JSON provenance:
 
 ```bash
-printing-press crowd-sniff --api <api> --output "$RESEARCH_DIR/<api>-crowd-spec.yaml" --json > "$DISCOVERY_DIR/crowd-sniff-provenance.json"
+cli-printing-press crowd-sniff --api <api> --output "$RESEARCH_DIR/<api>-crowd-spec.yaml" --json > "$DISCOVERY_DIR/crowd-sniff-provenance.json"
 ```
 
 If the API has a known base URL from Phase 1 research, pass it:
 
 ```bash
-printing-press crowd-sniff --api <api> --base-url <known-base-url> --output "$RESEARCH_DIR/<api>-crowd-spec.yaml" --json > "$DISCOVERY_DIR/crowd-sniff-provenance.json"
+cli-printing-press crowd-sniff --api <api> --base-url <known-base-url> --output "$RESEARCH_DIR/<api>-crowd-spec.yaml" --json > "$DISCOVERY_DIR/crowd-sniff-provenance.json"
 ```
 
 Report the results: "Crowd-sniff discovered **N endpoints** across **M resources** (X from npm, Y from GitHub)."

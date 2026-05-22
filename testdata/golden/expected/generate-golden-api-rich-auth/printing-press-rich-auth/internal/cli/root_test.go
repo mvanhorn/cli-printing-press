@@ -24,7 +24,8 @@ func TestIsCobraUsageError(t *testing.T) {
 		{"unknown flag", errors.New("unknown flag: --foob"), true},
 		{"unknown shorthand flag", errors.New("unknown shorthand flag: 'x' in -x"), true},
 		{"unknown command", errors.New("unknown command \"foo\" for \"cli\""), true},
-		{"required flag", errors.New("required flag(s) \"query\" not set"), true},
+		{"required flag (singular)", errors.New("required flag \"query\" not set"), true},
+		{"required flag(s) (plural)", errors.New("required flag(s) \"query\", \"vault\" not set"), true},
 		{"flag needs argument", errors.New("flag needs an argument: --query"), true},
 		{"invalid argument", errors.New("invalid argument \"abc\" for \"--limit\" flag: strconv.ParseInt: parsing \"abc\": invalid syntax"), true},
 		// Non-usage errors must NOT be flagged — they should retain their

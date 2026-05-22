@@ -588,8 +588,15 @@ func TestOutputFormatsUsesRealCommandExample(t *testing.T) {
 	require.NoError(t, err)
 	content := string(readme)
 
-	assert.True(t, strings.Contains(content, "realexample-pp-cli autocomplete get"),
-		"Output Formats should reference a real resource+endpoint pair from the spec")
+	// A single-endpoint non-builtin resource is promoted to a top-level
+	// cobra command, so the actual command path is just the resource name
+	// (no endpoint token). The README must advertise that promoted path
+	// instead of the pre-promotion `autocomplete get` form, which would
+	// otherwise be a phantom command.
+	assert.True(t, strings.Contains(content, "realexample-pp-cli autocomplete"),
+		"Output Formats should reference the real promoted command path from the spec")
+	assert.False(t, strings.Contains(content, "realexample-pp-cli autocomplete get"),
+		"Output Formats should not advertise the pre-promotion path; cobra promotes single-op resources to a leaf")
 	assert.False(t, strings.Contains(content, "realexample-pp-cli autocomplete list"),
 		"Output Formats should not hallucinate a 'list' endpoint that doesn't exist in the spec")
 }

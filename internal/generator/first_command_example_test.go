@@ -280,6 +280,38 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 			},
 			want: "feed 2026-04-27",
 		},
+		{
+			// Issue #1270: snake_case endpoint keys must be kebab-cased so
+			// the example matches the actual cobra `Use:` string (which is
+			// already kebab) instead of advertising a phantom command path.
+			name: "multi-word snake_case endpoint key is kebab-cased",
+			resources: map[string]spec.Resource{
+				"dns": {
+					Endpoints: map[string]spec.Endpoint{
+						"get_hosts":            {Method: "GET", Path: "/dns/hosts"},
+						"set_email_forwarding": {Method: "POST", Path: "/dns/forwarding"},
+					},
+				},
+			},
+			want: "dns get-hosts",
+		},
+		{
+			// Same kebab pass for camelCase endpoint keys. Mirrors the
+			// command_endpoint.go.tmpl `Use: {{kebab .EndpointName}}` rule
+			// for cobra command names. The preferred-verb scan misses
+			// `createSpeech` and `cancelJob`, so the fallback alphabetical
+			// pick is `cancelJob` (c < other letters).
+			name: "multi-word camelCase endpoint key is kebab-cased",
+			resources: map[string]spec.Resource{
+				"audio": {
+					Endpoints: map[string]spec.Endpoint{
+						"createSpeech": {Method: "POST", Path: "/audio/speech"},
+						"cancelJob":    {Method: "POST", Path: "/audio/cancel"},
+					},
+				},
+			},
+			want: "audio cancel-job",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -32,9 +32,9 @@ standard_http, browser_http, browser_clearance_http, or unknown.
 
 Diagnostic only. Exit 0 regardless of result; exit non-zero only on
 input-validation failure.`,
-		Example: `  printing-press probe-reachability https://food52.com/
-  printing-press probe-reachability https://api.github.com/zen --json
-  printing-press probe-reachability https://example.com --probe-only surf --timeout 5s`,
+		Example: `  cli-printing-press probe-reachability https://food52.com/
+  cli-printing-press probe-reachability https://api.github.com/zen --json
+  cli-printing-press probe-reachability https://example.com --probe-only surf --timeout 5s`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			only := reachability.ProbeOnly(probeOnly)

@@ -12,6 +12,29 @@ import (
 )
 
 func newVerifyCmd() *cobra.Command {
+	return newVerifyCmdWithOptions(verifyCmdOptions{
+		runVerify:  pipeline.RunVerify,
+		runFixLoop: pipeline.RunFixLoop,
+	})
+}
+
+type verifyCmdOptions struct {
+	runVerify   func(pipeline.VerifyConfig) (*pipeline.VerifyReport, error)
+	runFixLoop  func(pipeline.VerifyConfig, *pipeline.VerifyReport, int) (*pipeline.FixLoopReport, error)
+	exitProcess func(int)
+}
+
+func newVerifyCmdWithOptions(opts verifyCmdOptions) *cobra.Command {
+	if opts.runVerify == nil {
+		opts.runVerify = pipeline.RunVerify
+	}
+	if opts.runFixLoop == nil {
+		opts.runFixLoop = pipeline.RunFixLoop
+	}
+	if opts.exitProcess == nil {
+		opts.exitProcess = os.Exit
+	}
+
 	var dir string
 	var specPath string
 	var apiKey string
@@ -35,22 +58,22 @@ Otherwise, a mock server is started from the OpenAPI spec.
 
 Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 		Example: `  # Test against real API (read-only GETs only)
-  printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --api-key $GITHUB_TOKEN
+  cli-printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --api-key $GITHUB_TOKEN
 
   # Test against mock server (no API key needed)
-  printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json
+  cli-printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json
 
   # Auto-fix failures and re-test
-  printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --fix
+  cli-printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --fix
 
   # Remove transient build artifacts after the final verification pass
-  printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --cleanup
+  cli-printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --cleanup
 
   # Set pass threshold and output JSON
-  printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --threshold 70 --json
+  cli-printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --threshold 70 --json
 
   # Structural verification without an API spec (plan-driven CLIs)
-  printing-press verify --dir ./agent-capture-pp-cli --no-spec`,
+  cli-printing-press verify --dir ./agent-capture-pp-cli --no-spec`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := pipeline.VerifyConfig{
 				Dir:       dir,
@@ -61,7 +84,7 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 				NoSpec:    noSpec,
 			}
 
-			report, err := pipeline.RunVerify(cfg)
+			report, err := opts.runVerify(cfg)
 			if err != nil {
 				return fmt.Errorf("running verify: %w", err)
 			}
@@ -71,7 +94,7 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 			if fix && shouldRunFixLoop(report) {
 				fmt.Printf("\nVerification verdict %s (pass rate %.0f%%, threshold %d%%). Running fix loop (max %d iterations)...\n\n",
 					report.Verdict, report.PassRate, threshold, maxIterations)
-				fixReport, err = pipeline.RunFixLoop(cfg, report, maxIterations)
+				fixReport, err = opts.runFixLoop(cfg, report, maxIterations)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Fix loop error: %v\n", err)
 				} else if fixReport.FinalReport != nil {
@@ -90,7 +113,11 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 				}
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
-				return enc.Encode(output)
+				if err := enc.Encode(output); err != nil {
+					return err
+				}
+				cmd.Root().SilenceErrors = true
+				return verifyVerdictError(report, true)
 			}
 
 			printVerifyReport(report)
@@ -104,7 +131,7 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 			}
 
 			if report.Verdict == "FAIL" {
-				os.Exit(1)
+				opts.exitProcess(1)
 			}
 			return nil
 		},
@@ -122,6 +149,17 @@ Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 	cmd.Flags().BoolVar(&noSpec, "no-spec", false, "Structural verification only (no API spec required)")
 	_ = cmd.MarkFlagRequired("dir")
 	return cmd
+}
+
+func verifyVerdictError(report *pipeline.VerifyReport, silent bool) error {
+	if report != nil && report.Verdict == "FAIL" {
+		return &ExitError{
+			Code:   ExitGenerationError,
+			Err:    fmt.Errorf("verification failed: verdict %s", report.Verdict),
+			Silent: silent,
+		}
+	}
+	return nil
 }
 
 func shouldRunFixLoop(report *pipeline.VerifyReport) bool {
@@ -145,6 +183,21 @@ func printVerifyReport(report *pipeline.VerifyReport) {
 			passFail(r.DryRun),
 			passFail(r.Execute),
 			r.Score)
+	}
+
+	if len(report.PathParamProbes) > 0 {
+		fmt.Println()
+		fmt.Println("Path-Param Probes (nested commands with <positional> args):")
+		for _, probe := range report.PathParamProbes {
+			status := "PASS"
+			if !probe.Passed {
+				status = "FAIL"
+			}
+			fmt.Printf("  %-4s %s\n", status, probe.Command)
+			if !probe.Passed && probe.Reason != "" {
+				fmt.Printf("       %s\n", probe.Reason)
+			}
+		}
 	}
 
 	fmt.Println()

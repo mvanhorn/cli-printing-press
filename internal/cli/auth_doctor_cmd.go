@@ -33,8 +33,8 @@ set value (never the full token).
 
 Exit 0 even when findings include 'not set' or 'suspicious' — this command
 is diagnostic, not gating. Exit 5 only if the scan itself fails.`,
-		Example: `  printing-press auth doctor
-  printing-press auth doctor --json`,
+		Example: `  cli-printing-press auth doctor
+  cli-printing-press auth doctor --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			findings, err := authdoctor.Scan()
 			if err != nil {

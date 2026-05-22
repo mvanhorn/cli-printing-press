@@ -22,6 +22,7 @@ from verify_skill import (  # noqa: E402
     find_root_children,
     resolve_command_path,
     find_command_source,
+    run_checks,
     _extract_function_body,
 )
 
@@ -238,6 +239,60 @@ func newSearchCmd() *cobra.Command {
             # Legacy fallback returns the file; not empty
             self.assertEqual([f.name for f in files], ["search.go"])
             self.assertEqual(use, "search <query>")
+
+
+class TestFlagChecks(unittest.TestCase):
+    def test_missing_limit_flag_is_reported(self):
+        with tempfile.TemporaryDirectory() as td:
+            cli_dir = _write_cli(Path(td), {
+                "root.go": '''package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+    rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+    rootCmd.AddCommand(newSearchCmd())
+    return rootCmd.Execute()
+}
+''',
+                "search.go": '''package cli
+import "github.com/spf13/cobra"
+func newSearchCmd() *cobra.Command {
+    return &cobra.Command{Use: "search"}
+}
+''',
+            })
+            cli_binary = f"{cli_dir.name}-pp-cli"
+            (cli_dir / "SKILL.md").write_text(
+                f"""# Fixture
+
+```bash
+{cli_binary} search --limit 5
+{cli_binary} search --limit 10
+```
+""",
+                encoding="utf-8",
+            )
+
+            report = run_checks(cli_dir, {"flag-names", "flag-commands"})
+            details = {(f.check, f.detail) for f in report.findings}
+
+            self.assertIn(
+                ("flag-names", "--limit is referenced in SKILL.md but not declared in any internal/cli/*.go"),
+                details,
+            )
+            self.assertIn(
+                ("flag-commands", "--limit is not declared anywhere"),
+                details,
+            )
+            self.assertEqual(
+                1,
+                sum(
+                    1
+                    for f in report.findings
+                    if f.check == "flag-commands"
+                    and f.command == f"{cli_binary} search"
+                    and f.detail == "--limit is not declared anywhere"
+                ),
+            )
 
 
 class UTF8ReadTest(unittest.TestCase):

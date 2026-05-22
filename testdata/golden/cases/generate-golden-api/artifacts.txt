@@ -1,4 +1,5 @@
 printing-press-golden/.printing-press.json
+printing-press-golden/.printing-press-patches.json
 printing-press-golden/manifest.json
 printing-press-golden/go.mod
 printing-press-golden/cmd/printing-press-golden-pp-cli/main.go
@@ -13,6 +14,7 @@ printing-press-golden/internal/cli/projects_tasks_list-project.go
 printing-press-golden/internal/cli/projects_tasks_update-project.go
 printing-press-golden/internal/cli/projects_avatar.go
 printing-press-golden/internal/cli/projects_avatar_upload-project.go
+printing-press-golden/internal/cli/reports_export_report-year.go
 printing-press-golden/internal/cli/promoted_public.go
 printing-press-golden/internal/cliutil/text.go
 printing-press-golden/internal/cliutil/ratelimit.go

@@ -2,12 +2,20 @@ package browsersniff
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/discovery"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/piiplaceholders"
 )
+
+type FixtureValue struct {
+	Name  string
+	Value string
+}
 
 type TestFixture struct {
 	EndpointName string
@@ -15,6 +23,8 @@ type TestFixture struct {
 	Path         string
 	ParamNames   []string
 	BodyFields   []string
+	ParamSamples []FixtureValue
+	BodySamples  []FixtureValue
 	HasAuth      bool
 }
 
@@ -58,6 +68,8 @@ func GenerateFixtures(capture *EnrichedCapture) *FixtureSet {
 
 		paramNames := make(map[string]struct{})
 		bodyFields := make(map[string]struct{})
+		paramSamples := make(map[string]string)
+		bodySamples := make(map[string]string)
 
 		for _, entry := range group.Entries {
 			entryFixture := SanitizeForFixture(entry)
@@ -75,10 +87,14 @@ func GenerateFixtures(capture *EnrichedCapture) *FixtureSet {
 				bodyFields[name] = struct{}{}
 				paramNames[name] = struct{}{}
 			}
+			mergeFixtureSamples(paramSamples, entryFixture.ParamSamples)
+			mergeFixtureSamples(bodySamples, entryFixture.BodySamples)
 		}
 
 		fixture.ParamNames = sortedKeys(paramNames)
 		fixture.BodyFields = sortedKeys(bodyFields)
+		fixture.ParamSamples = sortedFixtureValues(paramSamples)
+		fixture.BodySamples = sortedFixtureValues(bodySamples)
 		fixtureSet.Fixtures = append(fixtureSet.Fixtures, fixture)
 	}
 
@@ -94,51 +110,127 @@ func SanitizeForFixture(entry EnrichedEntry) TestFixture {
 	parsedURL, err := url.Parse(entry.URL)
 	if err == nil {
 		queryNames := make(map[string]struct{}, len(parsedURL.Query()))
-		for name := range parsedURL.Query() {
+		querySamples := make(map[string]string, len(parsedURL.Query()))
+		for name, values := range parsedURL.Query() {
 			queryNames[name] = struct{}{}
+			if len(values) > 0 {
+				querySamples[name] = syntheticFixtureValue(name, values[0])
+			}
 		}
 		fixture.ParamNames = sortedKeys(queryNames)
+		fixture.ParamSamples = sortedFixtureValues(querySamples)
 	}
 
 	contentType := strings.ToLower(getHeaderValue(entry.RequestHeaders, "Content-Type"))
-	bodyFields := extractBodyFieldNames(entry.RequestBody, contentType)
+	bodyFields, bodySamples := extractBodyFieldSamples(entry.RequestBody, contentType)
 	fixture.BodyFields = bodyFields
+	fixture.BodySamples = sortedFixtureValues(bodySamples)
 	fixture.ParamNames = mergeSortedNames(fixture.ParamNames, bodyFields)
+	mergeFixtureSamplesMap := map[string]string{}
+	mergeFixtureSamples(mergeFixtureSamplesMap, fixture.ParamSamples)
+	mergeFixtureSamples(mergeFixtureSamplesMap, fixture.BodySamples)
+	fixture.ParamSamples = sortedFixtureValues(mergeFixtureSamplesMap)
 	fixture.HasAuth = hasAuthHeaders(entry.RequestHeaders)
 
 	return fixture
 }
 
-func extractBodyFieldNames(body string, contentType string) []string {
+func extractBodyFieldSamples(body string, contentType string) ([]string, map[string]string) {
 	body = strings.TrimSpace(body)
 	if body == "" {
-		return nil
+		return nil, nil
 	}
 
 	switch {
 	case strings.Contains(contentType, "json"):
 		var value any
 		if err := json.Unmarshal([]byte(body), &value); err != nil {
-			return nil
+			return nil, nil
 		}
 
 		root := topLevelObject(value)
 		if root == nil {
-			return nil
+			return nil, nil
 		}
 
 		fields := make([]string, 0, len(root))
+		samples := make(map[string]string, len(root))
 		for key := range root {
 			fields = append(fields, key)
+			samples[key] = syntheticFixtureValue(key, root[key])
 		}
 		sort.Strings(fields)
-		return fields
+		return fields, samples
 	case strings.Contains(contentType, "form-urlencoded"):
 		values := ParseFormBody(body)
-		return sortedKeysFromMap(values)
+		samples := make(map[string]string, len(values))
+		for key, value := range values {
+			samples[key] = syntheticFixtureValue(key, value)
+		}
+		return sortedKeysFromMap(values), samples
 	default:
+		return nil, nil
+	}
+}
+
+var (
+	moneyValueRE     = regexp.MustCompile(`^\$?\d+(?:\.\d{2})?$`)
+	dateValueRE      = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	cardLast4ValueRE = regexp.MustCompile(`^\d{4}$`)
+)
+
+func syntheticFixtureValue(name string, raw any) string {
+	value := strings.TrimSpace(fmt.Sprint(raw))
+	nameLower := strings.ToLower(name)
+	switch {
+	case piiplaceholders.OrderIDPattern().MatchString(value):
+		if strings.HasPrefix(strings.ToUpper(value), "D01-") {
+			return piiplaceholders.SyntheticDigitalOrderID
+		}
+		return piiplaceholders.SyntheticOrderID
+	case piiplaceholders.ASINPattern().MatchString(value):
+		return piiplaceholders.PrimarySyntheticASIN
+	case cardLast4ValueRE.MatchString(value) && strings.Contains(nameLower, "last"):
+		return piiplaceholders.SyntheticCardLast4
+	case moneyValueRE.MatchString(value) && (strings.Contains(nameLower, "money") || strings.Contains(nameLower, "amount") || strings.Contains(nameLower, "price") || strings.Contains(nameLower, "total")):
+		return piiplaceholders.SyntheticMoney
+	case dateValueRE.MatchString(value) || isDateFixtureField(nameLower):
+		return piiplaceholders.SyntheticDate
+	default:
+		return "example-value"
+	}
+}
+
+func isDateFixtureField(nameLower string) bool {
+	normalized := strings.ReplaceAll(nameLower, "-", "_")
+	return normalized == "date" || strings.HasSuffix(normalized, "_date")
+}
+
+func mergeFixtureSamples(samples map[string]string, values []FixtureValue) {
+	for _, value := range values {
+		if value.Name == "" {
+			continue
+		}
+		if _, exists := samples[value.Name]; !exists {
+			samples[value.Name] = value.Value
+		}
+	}
+}
+
+func sortedFixtureValues(samples map[string]string) []FixtureValue {
+	if len(samples) == 0 {
 		return nil
 	}
+	names := make([]string, 0, len(samples))
+	for name := range samples {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	values := make([]FixtureValue, 0, len(names))
+	for _, name := range names {
+		values = append(values, FixtureValue{Name: name, Value: samples[name]})
+	}
+	return values
 }
 
 func hasAuthHeaders(headers map[string]string) bool {

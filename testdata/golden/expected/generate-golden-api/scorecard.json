@@ -4,7 +4,7 @@
     "competitor_scores": null,
     "gap_report": [
       "mcp_description_quality scored 3/10 - needs improvement",
-      "MCP: 9 tools (1 public, 8 auth-required) — readiness: full"
+      "MCP: 10 tools (1 public, 9 auth-required) — readiness: full"
     ],
     "overall_grade": "A",
     "steinberger": {
@@ -12,7 +12,7 @@
       "agent_workflow_readiness": 9,
       "auth": 10,
       "auth_protocol": 0,
-      "breadth": 5,
+      "breadth": 7,
       "cache_freshness": 5,
       "data_pipeline_integrity": 7,
       "dead_code": 5,
@@ -23,17 +23,17 @@
       "local_cache": 10,
       "mcp_description_quality": 3,
       "mcp_quality": 10,
-      "mcp_remote_transport": 5,
+      "mcp_remote_transport": 10,
       "mcp_surface_strategy": 0,
       "mcp_token_efficiency": 7,
       "mcp_tool_design": 5,
       "output_modes": 10,
       "path_validity": 0,
-      "percentage": 80,
+      "percentage": 82,
       "readme": 8,
       "sync_correctness": 10,
       "terminal_ux": 8,
-      "total": 80,
+      "total": 82,
       "type_fidelity": 3,
       "vision": 8,
       "workflows": 10

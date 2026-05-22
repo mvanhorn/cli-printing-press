@@ -4,6 +4,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -89,12 +90,12 @@ func newCustomersGetCmd(flags *rootFlags) *cobra.Command {
 // companion calls the dedicated child endpoint and paginates until
 // exhausted. pathParams must include every {placeholder} in the parent
 // path (e.g. {"id": "<value>"}).
-func fetchFullCustomersGetSubscriptions(c interface {
-	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+func fetchFullCustomersGetSubscriptions(ctx context.Context, c interface {
+	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
 }, pathParams map[string]string) ([]json.RawMessage, error) {
 	childPath := "/customers/{id}/subscriptions"
 	for name, val := range pathParams {
 		childPath = replacePathParam(childPath, name, val)
 	}
-	return fetchEmbeddedPagedSubresource(c, childPath, "has_more", false, true)
+	return fetchEmbeddedPagedSubresource(ctx, c, childPath, "has_more", false, true)
 }

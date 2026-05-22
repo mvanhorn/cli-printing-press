@@ -16,6 +16,12 @@ import (
 
 // RunWorkflowVerification builds the CLI and runs all workflows from the manifest.
 func RunWorkflowVerification(dir string) (*WorkflowVerifyReport, error) {
+	releaseHome, err := scopeSubprocessHome()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseHome()
+
 	manifest, err := LoadWorkflowManifest(dir)
 	if err != nil {
 		return nil, fmt.Errorf("loading workflow manifest: %w", err)
@@ -146,6 +152,11 @@ func executeStep(binary string, step WorkflowStep, cmdExpanded string, dir strin
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		cmd := exec.CommandContext(ctx, binary, args...)
 		cmd.Dir = dir
+		applyDefaultSubprocessEnv(cmd)
+		// Strip verify-mode env from the subprocess so an inherited
+		// PRINTING_PRESS_VERIFY=1 cannot short-circuit the live workflow
+		// path. See internal/pipeline/verify_env_filter.go for rationale.
+		cmd.Env = filterVerifyEnv(cmd.Env)
 		out, err := cmd.CombinedOutput()
 		cancel()
 

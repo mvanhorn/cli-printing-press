@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/v4/internal/piiplaceholders"
 )
 
 type secretReplacement struct {
@@ -96,23 +98,61 @@ var vendorPrefixSecretPatterns = []vendorPrefixSecretPattern{
 	},
 }
 
+const structuredCookieLineWindow = 5
+
+var structuredCookieValueLineRE = regexp.MustCompile(`(?i)["']value["']\s*:\s*["']([^"']{8,})["']`)
+
 func FindVendorPrefixSecrets(root string) ([]VendorPrefixSecretFinding, error) {
-	var findings []VendorPrefixSecretFinding
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		fileFindings, err := scanVendorPrefixSecretFile(root, path)
-		if err != nil {
-			return err
-		}
-		findings = append(findings, fileFindings...)
+	return findSecrets(root, vendorPrefixSecretPatterns)
+}
+
+func FindPackageSecrets(root string, cookieNames []string) ([]VendorPrefixSecretFinding, error) {
+	patterns := append([]vendorPrefixSecretPattern(nil), vendorPrefixSecretPatterns...)
+	patterns = append(patterns, cookieSecretPatterns(cookieNames)...)
+	return findSecrets(root, patterns)
+}
+
+func FindSpecDeclaredCookieSecrets(root string, cookieNames []string) ([]VendorPrefixSecretFinding, error) {
+	return findSecrets(root, cookieSecretPatterns(cookieNames))
+}
+
+func cookieSecretPatterns(cookieNames []string) []vendorPrefixSecretPattern {
+	if len(cookieNames) == 0 {
 		return nil
-	})
-	return findings, err
+	}
+
+	patterns := make([]vendorPrefixSecretPattern, 0, len(cookieNames)*3)
+	for _, name := range cookieNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		quotedName := regexp.QuoteMeta(name)
+		patterns = append(patterns, vendorPrefixSecretPattern{
+			kind:    "cookie-value:" + name,
+			pattern: regexp.MustCompile("(?:^|[\\s\"'`;,{:])" + quotedName + "=([^\\s;\"'&,}]{8,})"),
+			accept: func(candidate string) bool {
+				_, value, ok := strings.Cut(candidate, "=")
+				return ok && !piiplaceholders.IsSyntheticCookieValue(value)
+			},
+		})
+		patterns = append(patterns,
+			structuredCookieSecretPattern(name, regexp.MustCompile(`(?i)["']name["']\s*:\s*["']`+quotedName+`["'][^{}\n]*["']value["']\s*:\s*["']([^"']{8,})["']`)),
+			structuredCookieSecretPattern(name, regexp.MustCompile(`(?i)["']value["']\s*:\s*["']([^"']{8,})["'][^{}\n]*["']name["']\s*:\s*["']`+quotedName+`["']`)),
+		)
+	}
+	return patterns
+}
+
+func structuredCookieSecretPattern(name string, pattern *regexp.Regexp) vendorPrefixSecretPattern {
+	return vendorPrefixSecretPattern{
+		kind:    "cookie-value:" + name,
+		pattern: pattern,
+		accept: func(candidate string) bool {
+			matches := pattern.FindStringSubmatch(candidate)
+			return len(matches) == 2 && !piiplaceholders.IsSyntheticCookieValue(matches[1])
+		},
+	}
 }
 
 func FormatVendorPrefixSecretFindings(findings []VendorPrefixSecretFinding) string {
@@ -123,7 +163,26 @@ func FormatVendorPrefixSecretFindings(findings []VendorPrefixSecretFinding) stri
 	return strings.Join(lines, "\n")
 }
 
-func scanVendorPrefixSecretFile(root, path string) ([]VendorPrefixSecretFinding, error) {
+func findSecrets(root string, patterns []vendorPrefixSecretPattern) ([]VendorPrefixSecretFinding, error) {
+	var findings []VendorPrefixSecretFinding
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		fileFindings, err := scanSecretFile(root, path, patterns)
+		if err != nil {
+			return err
+		}
+		findings = append(findings, fileFindings...)
+		return nil
+	})
+	return findings, err
+}
+
+func scanSecretFile(root, path string, patterns []vendorPrefixSecretPattern) ([]VendorPrefixSecretFinding, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -147,6 +206,8 @@ func scanVendorPrefixSecretFile(root, path string) ([]VendorPrefixSecretFinding,
 
 	var findings []VendorPrefixSecretFinding
 	lineNumber := 0
+	cookieNames := declaredCookieNamesFromPatterns(patterns)
+	pendingCookieNames := map[string]int{}
 	for {
 		line, readErr := reader.ReadString('\n')
 		if readErr != nil && readErr != io.EOF {
@@ -156,7 +217,7 @@ func scanVendorPrefixSecretFile(root, path string) ([]VendorPrefixSecretFinding,
 			break
 		}
 		lineNumber++
-		for _, pattern := range vendorPrefixSecretPatterns {
+		for _, pattern := range patterns {
 			if vendorPrefixSecretLineMatch(pattern, line) {
 				findings = append(findings, VendorPrefixSecretFinding{
 					Path: rel,
@@ -165,11 +226,55 @@ func scanVendorPrefixSecretFile(root, path string) ([]VendorPrefixSecretFinding,
 				})
 			}
 		}
+		for name, nameLine := range pendingCookieNames {
+			if lineNumber-nameLine > structuredCookieLineWindow {
+				delete(pendingCookieNames, name)
+			}
+		}
+		for _, name := range cookieNames {
+			if structuredCookieNameLineMatch(name, line) {
+				pendingCookieNames[name] = lineNumber
+			}
+		}
+		if matches := structuredCookieValueLineRE.FindStringSubmatch(line); len(matches) == 2 && !piiplaceholders.IsSyntheticCookieValue(matches[1]) {
+			for name, nameLine := range pendingCookieNames {
+				if nameLine == lineNumber {
+					continue
+				}
+				findings = append(findings, VendorPrefixSecretFinding{
+					Path: rel,
+					Line: lineNumber,
+					Kind: "cookie-value:" + name,
+				})
+				delete(pendingCookieNames, name)
+			}
+		}
 		if readErr == io.EOF {
 			break
 		}
 	}
 	return findings, nil
+}
+
+func declaredCookieNamesFromPatterns(patterns []vendorPrefixSecretPattern) []string {
+	seen := map[string]struct{}{}
+	for _, pattern := range patterns {
+		name, ok := strings.CutPrefix(pattern.kind, "cookie-value:")
+		if !ok || name == "" {
+			continue
+		}
+		seen[name] = struct{}{}
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	return names
+}
+
+func structuredCookieNameLineMatch(name, line string) bool {
+	pattern := regexp.MustCompile(`(?i)["']name["']\s*:\s*["']` + regexp.QuoteMeta(name) + `["']`)
+	return pattern.MatchString(line)
 }
 
 func vendorPrefixSecretLineMatch(pattern vendorPrefixSecretPattern, line string) bool {

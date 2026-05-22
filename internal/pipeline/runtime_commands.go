@@ -28,6 +28,7 @@ func discoverCommandsFromHelp(binaryPath string) []discoveredCommand {
 	defer cancel()
 
 	helpCmd := exec.CommandContext(ctx, binaryPath, "--help")
+	applyDefaultSubprocessEnv(helpCmd)
 	out, err := helpCmd.CombinedOutput()
 	if err != nil {
 		return nil
@@ -127,6 +128,7 @@ func inferPositionalArgs(binary string, cmd *discoveredCommand, paramDefaults ma
 	defer cancel()
 
 	helpCmd := exec.CommandContext(ctx, binary, cmd.Name, "--help")
+	applyDefaultSubprocessEnv(helpCmd)
 	out, err := helpCmd.CombinedOutput()
 	if err != nil {
 		return // fall back to no extra args
@@ -308,6 +310,7 @@ func helpScanIndicatesSideEffect(binary string, cmd *discoveredCommand) bool {
 	defer cancel()
 
 	helpCmd := exec.CommandContext(ctx, binary, cmd.Name, "--help")
+	applyDefaultSubprocessEnv(helpCmd)
 	out, err := helpCmd.CombinedOutput()
 	if err != nil {
 		return false
@@ -431,6 +434,7 @@ func inferRequiredFlags(binary, cmdName string) []string {
 	defer cancel()
 
 	probe := exec.CommandContext(ctx, binary, cmdName)
+	applyDefaultSubprocessEnv(probe)
 	out, _ := probe.CombinedOutput() // error expected when flags are missing
 
 	m := requiredFlagsRe.FindSubmatch(out)

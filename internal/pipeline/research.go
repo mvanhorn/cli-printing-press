@@ -270,7 +270,7 @@ func LoadResearch(pipelineDir string) (*ResearchResult, error) {
 
 // loadResearchForState reads research.json from the run directory, supporting
 // both write conventions: the printing-press skill writes to RunRoot/research.json
-// directly, while printing-press print writes to RunRoot/pipeline/research.json
+// directly, while cli-printing-press print writes to RunRoot/pipeline/research.json
 // alongside its phase artifacts. Tries the run-root path first (the dominant
 // case), falls back to pipeline-dir.
 //

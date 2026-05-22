@@ -17,10 +17,20 @@ import (
 )
 
 const trafficAnalysisVersion = "1"
+const maxCaptchaPreflightJSONBytes = 4096
+const maxCaptchaChallengeJSONBytes = maxCaptchaPreflightJSONBytes * 16
+
+type SecondaryHostReason string
+
+const (
+	SecondaryHostReasonNonPrimary SecondaryHostReason = "non-primary host"
+	SecondaryHostReasonTelemetry  SecondaryHostReason = "telemetry host"
+)
 
 type TrafficAnalysis struct {
 	Version           string                  `json:"version"`
 	Summary           TrafficAnalysisSummary  `json:"summary"`
+	SecondaryHosts    []SecondaryHost         `json:"secondary_hosts,omitempty"`
 	Reachability      *ReachabilityAnalysis   `json:"reachability,omitempty"`
 	Protocols         []ProtocolObservation   `json:"protocols"`
 	Auth              AuthAnalysis            `json:"auth"`
@@ -31,6 +41,12 @@ type TrafficAnalysis struct {
 	CandidateCommands []CandidateCommand      `json:"candidate_commands,omitempty"`
 	GenerationHints   []string                `json:"generation_hints,omitempty"`
 	Warnings          []AnalysisWarning       `json:"warnings,omitempty"`
+}
+
+type SecondaryHost struct {
+	Host   string              `json:"host"`
+	Count  int                 `json:"count"`
+	Reason SecondaryHostReason `json:"reason"`
 }
 
 // UnmarshalJSON normalizes two v2 shapes that v3 no longer emits but that
@@ -134,14 +150,15 @@ func unmarshalGenerationHints(data []byte) ([]string, error) {
 }
 
 type TrafficAnalysisSummary struct {
-	TargetURL        string         `json:"target_url,omitempty"`
-	CapturedAt       string         `json:"captured_at,omitempty"`
-	EntryCount       int            `json:"entry_count"`
-	APIEntryCount    int            `json:"api_entry_count"`
-	NoiseEntryCount  int            `json:"noise_entry_count"`
-	HostDistribution map[string]int `json:"host_distribution,omitempty"`
-	TimeStart        string         `json:"time_start,omitempty"`
-	TimeEnd          string         `json:"time_end,omitempty"`
+	TargetURL               string         `json:"target_url,omitempty"`
+	CapturedAt              string         `json:"captured_at,omitempty"`
+	EntryCount              int            `json:"entry_count"`
+	APIEntryCount           int            `json:"api_entry_count"`
+	NoiseEntryCount         int            `json:"noise_entry_count"`
+	HostDistribution        map[string]int `json:"host_distribution,omitempty"`
+	HTTPVersionDistribution map[string]int `json:"http_version_distribution,omitempty"`
+	TimeStart               string         `json:"time_start,omitempty"`
+	TimeEnd                 string         `json:"time_end,omitempty"`
 }
 
 // EvidenceRef cites a piece of evidence for an observation. Two flavors:
@@ -223,7 +240,18 @@ type ProtocolObservation struct {
 }
 
 type AuthAnalysis struct {
-	Candidates []AuthCandidate `json:"candidates,omitempty"`
+	Candidates       []AuthCandidate `json:"candidates,omitempty"`
+	CaptchaPreflight bool            `json:"captcha_preflight,omitempty"`
+
+	// Auth0SPAInMemory is true when an /oauth/token response carried an
+	// `access_token` in the JSON body without a JWT-shaped Set-Cookie on the
+	// same response — the signature of an Auth0 SPA SDK deployment using
+	// `cacheLocation: memory`. The token lives in JS heap and is reachable
+	// only via CDP runtime interception, so the spec carries
+	// `auth.subtype: auth0_spa_in_memory` and the generated `auth login`
+	// command exposes a `--auth0-spa` CDP path instead of cookie-jar
+	// extraction. See internal/browsersniff/auth0_spa.go.
+	Auth0SPAInMemory bool `json:"auth0_spa_in_memory,omitempty"`
 }
 
 // UnmarshalJSON accepts v2-shape `auth.candidate_types: ["api_key", "none"]`
@@ -232,13 +260,17 @@ type AuthAnalysis struct {
 // as `{type: <s>, confidence: 1.0}`. See issue #474.
 func (a *AuthAnalysis) UnmarshalJSON(data []byte) error {
 	var legacy struct {
-		Candidates     []AuthCandidate `json:"candidates,omitempty"`
-		CandidateTypes []string        `json:"candidate_types,omitempty"`
+		Candidates       []AuthCandidate `json:"candidates,omitempty"`
+		CandidateTypes   []string        `json:"candidate_types,omitempty"`
+		CaptchaPreflight bool            `json:"captcha_preflight,omitempty"`
+		Auth0SPAInMemory bool            `json:"auth0_spa_in_memory,omitempty"`
 	}
 	if err := json.Unmarshal(data, &legacy); err != nil {
 		return err
 	}
 	a.Candidates = legacy.Candidates
+	a.CaptchaPreflight = legacy.CaptchaPreflight
+	a.Auth0SPAInMemory = legacy.Auth0SPAInMemory
 	if len(a.Candidates) == 0 && len(legacy.CandidateTypes) > 0 {
 		a.Candidates = make([]AuthCandidate, 0, len(legacy.CandidateTypes))
 		for _, t := range legacy.CandidateTypes {
@@ -308,16 +340,34 @@ func (p *ProtectionObservation) UnmarshalJSON(data []byte) error {
 }
 
 type EndpointCluster struct {
-	Host          string        `json:"host,omitempty"`
-	Method        string        `json:"method"`
-	Path          string        `json:"path"`
-	Count         int           `json:"count"`
-	Statuses      []int         `json:"statuses,omitempty"`
-	ContentTypes  []string      `json:"content_types,omitempty"`
-	SizeClass     string        `json:"size_class,omitempty"`
-	RequestShape  ShapeSummary  `json:"request_shape"`
-	ResponseShape ShapeSummary  `json:"response_shape"`
-	Evidence      []EvidenceRef `json:"evidence,omitempty"`
+	Host          string       `json:"host,omitempty"`
+	Method        string       `json:"method"`
+	Path          string       `json:"path"`
+	Count         int          `json:"count"`
+	Statuses      []int        `json:"statuses,omitempty"`
+	ContentTypes  []string     `json:"content_types,omitempty"`
+	SizeClass     string       `json:"size_class,omitempty"`
+	RequestShape  ShapeSummary `json:"request_shape"`
+	ResponseShape ShapeSummary `json:"response_shape"`
+	// ObservedAuth lists lowercased request header names observed on this
+	// cluster's entries that match common auth surfaces (Authorization,
+	// Cookie, X-API-Key, etc.). Observation-only — values are never recorded.
+	// Mirrors spec.Endpoint.ObservedAuth so downstream gates can read
+	// per-endpoint auth signal directly from the traffic-analysis sidecar.
+	ObservedAuth []string `json:"observed_auth,omitempty"`
+	// NormalizationFlags surfaces per-cluster shape anomalies that downstream
+	// confidence consumers (absorb gate, dogfood, novel-feature ranking) care
+	// about. Possible values: single-sample, single-status, mixed-content-types,
+	// request-body-only-on-some-samples, divergent-response-shape. Empty
+	// slice is omitted via omitempty.
+	NormalizationFlags []string `json:"normalization_flags,omitempty"`
+	// Confidence is a coarse bucket derived from Count, Statuses, and
+	// NormalizationFlags: "low" when Count<3 or any flag is set, "medium"
+	// for 3-9 samples with no flags, "high" for 10+ samples with multiple
+	// status codes and no flags. The bucket is intentionally coarse so
+	// future numeric-confidence refinements stay backward-compatible.
+	Confidence string        `json:"confidence,omitempty"`
+	Evidence   []EvidenceRef `json:"evidence,omitempty"`
 }
 
 type ShapeSummary struct {
@@ -423,12 +473,17 @@ func AnalyzeTraffic(capture *EnrichedCapture) (*TrafficAnalysis, error) {
 	}
 
 	apiEntries, noiseEntries := ClassifyEntries(capture.Entries)
+	var secondaryHosts []SecondaryHost
+	if primaryHost, _ := primaryHostByFrequency(apiEntries); primaryHost != "" {
+		secondaryHosts = secondaryHostsForEntries(apiEntries, noiseEntries, primaryHost)
+	}
 	classifiedEntries := classifyInCaptureOrder(capture.Entries, apiEntries, noiseEntries)
 	groups := DeduplicateTrafficEndpoints(apiEntries)
 
 	analysis := &TrafficAnalysis{
 		Version:          trafficAnalysisVersion,
 		Summary:          buildTrafficSummary(capture, apiEntries, noiseEntries),
+		SecondaryHosts:   secondaryHosts,
 		Protocols:        detectProtocols(classifiedEntries),
 		Auth:             detectTrafficAuth(capture, classifiedEntries),
 		Protections:      detectProtections(classifiedEntries),
@@ -536,13 +591,14 @@ func DeduplicateTrafficEndpoints(entries []EnrichedEntry) []EndpointGroup {
 
 		indexByKey[key] = len(groups)
 		groups = append(groups, EndpointGroup{
+			Host:           host,
 			Method:         method,
 			NormalizedPath: normalizedPath,
 			Entries:        []EnrichedEntry{entry},
 		})
 	}
 
-	return groups
+	return collapseVariantGroups(groups)
 }
 
 func classifyInCaptureOrder(entries []EnrichedEntry, apiEntries []EnrichedEntry, noiseEntries []EnrichedEntry) []EnrichedEntry {
@@ -581,12 +637,13 @@ func entryClassificationKey(entry EnrichedEntry) string {
 
 func buildTrafficSummary(capture *EnrichedCapture, apiEntries []EnrichedEntry, noiseEntries []EnrichedEntry) TrafficAnalysisSummary {
 	summary := TrafficAnalysisSummary{
-		TargetURL:        capture.TargetURL,
-		CapturedAt:       capture.CapturedAt,
-		EntryCount:       len(capture.Entries),
-		APIEntryCount:    len(apiEntries),
-		NoiseEntryCount:  len(noiseEntries),
-		HostDistribution: map[string]int{},
+		TargetURL:               capture.TargetURL,
+		CapturedAt:              capture.CapturedAt,
+		EntryCount:              len(capture.Entries),
+		APIEntryCount:           len(apiEntries),
+		NoiseEntryCount:         len(noiseEntries),
+		HostDistribution:        map[string]int{},
+		HTTPVersionDistribution: map[string]int{},
 	}
 	var start *time.Time
 	var end *time.Time
@@ -594,6 +651,9 @@ func buildTrafficSummary(capture *EnrichedCapture, apiEntries []EnrichedEntry, n
 		host := extractHost(entry.URL)
 		if host != "" {
 			summary.HostDistribution[host]++
+		}
+		if v := NormalizeHTTPVersion(entry.HTTPVersion); v != "" {
+			summary.HTTPVersionDistribution[v]++
 		}
 		parsed, ok := parseEntryTime(entry.StartedDateTime)
 		if !ok {
@@ -610,6 +670,9 @@ func buildTrafficSummary(capture *EnrichedCapture, apiEntries []EnrichedEntry, n
 	}
 	if len(summary.HostDistribution) == 0 {
 		summary.HostDistribution = nil
+	}
+	if len(summary.HTTPVersionDistribution) == 0 {
+		summary.HTTPVersionDistribution = nil
 	}
 	if start != nil {
 		summary.TimeStart = start.Format(time.RFC3339Nano)
@@ -716,6 +779,7 @@ func detectTrafficAuth(capture *EnrichedCapture, entries []EnrichedEntry) AuthAn
 		candidate AuthCandidate
 	}
 	candidates := map[string]*accumulator{}
+	captchaPreflight := false
 	add := func(key string, candidate AuthCandidate) {
 		existing := candidates[key]
 		if existing == nil {
@@ -744,6 +808,9 @@ func detectTrafficAuth(capture *EnrichedCapture, entries []EnrichedEntry) AuthAn
 	}
 
 	for index, entry := range entries {
+		if entry.Classification == "noise" || entry.IsNoise {
+			continue
+		}
 		for name, value := range entry.RequestHeaders {
 			lowerName := strings.ToLower(name)
 			switch {
@@ -765,6 +832,9 @@ func detectTrafficAuth(capture *EnrichedCapture, entries []EnrichedEntry) AuthAn
 				}
 			}
 		}
+		if !captchaPreflight && isCaptchaPreflightCandidate(entry) {
+			captchaPreflight = true
+		}
 	}
 
 	out := make([]AuthCandidate, 0, len(candidates))
@@ -781,7 +851,11 @@ func detectTrafficAuth(capture *EnrichedCapture, entries []EnrichedEntry) AuthAn
 		}
 		return out[i].Confidence > out[j].Confidence
 	})
-	return AuthAnalysis{Candidates: out}
+	return AuthAnalysis{
+		Candidates:       out,
+		CaptchaPreflight: captchaPreflight,
+		Auth0SPAInMemory: detectAuth0SPAInMemory(entries),
+	}
 }
 
 func detectProtections(entries []EnrichedEntry) []ProtectionObservation {
@@ -824,7 +898,7 @@ func detectProtections(entries []EnrichedEntry) []ProtectionObservation {
 			add("perimeterx", 0.8, entry, index, "PerimeterX marker")
 		}
 
-		if strings.Contains(body, "recaptcha") || strings.Contains(body, "hcaptcha") || strings.Contains(body, "captcha") {
+		if hasCaptchaChallengeMarker(entry, body) {
 			add("captcha", 0.85, entry, index, "CAPTCHA marker")
 		}
 		if entry.ResponseStatus == 403 || entry.ResponseStatus == 429 {
@@ -851,6 +925,137 @@ func detectProtections(entries []EnrichedEntry) []ProtectionObservation {
 		return out[i].Confidence > out[j].Confidence
 	})
 	return out
+}
+
+func isCaptchaPreflightCandidate(entry EnrichedEntry) bool {
+	if entry.ResponseStatus < 200 || entry.ResponseStatus >= 300 {
+		return false
+	}
+	if !strings.Contains(strings.ToLower(entry.ResponseContentType), "json") {
+		return false
+	}
+	if len(strings.TrimSpace(entry.ResponseBody)) > maxCaptchaPreflightJSONBytes {
+		return false
+	}
+	path := strings.ToLower(extractPath(entry.URL))
+	return strings.Contains(path, "/c/check") ||
+		strings.Contains(path, "check_captcha") ||
+		strings.Contains(path, "captcha/required") ||
+		strings.Contains(path, "turnstile/check")
+}
+
+func hasCaptchaChallengeMarker(entry EnrichedEntry, lowerBody string) bool {
+	if isCaptchaPreflightCandidate(entry) {
+		return captchaPreflightRequiresChallenge(entry.ResponseBody)
+	}
+	isSuccessfulJSON := entry.ResponseStatus >= 200 &&
+		entry.ResponseStatus < 300 &&
+		strings.Contains(strings.ToLower(entry.ResponseContentType), "json")
+	if isSuccessfulJSON {
+		hasCaptchaKeyword := strings.Contains(lowerBody, "captcha") ||
+			strings.Contains(lowerBody, "recaptcha") ||
+			strings.Contains(lowerBody, "hcaptcha") ||
+			strings.Contains(lowerBody, "turnstile")
+		if !hasCaptchaKeyword {
+			return false
+		}
+		if len(strings.TrimSpace(entry.ResponseBody)) > maxCaptchaChallengeJSONBytes {
+			return false
+		}
+		if requiresChallenge, parsed := captchaPreflightChallengeDecision(entry.ResponseBody); parsed {
+			return requiresChallenge
+		}
+		return captchaChallengeText(lowerBody)
+	}
+	if strings.Contains(lowerBody, "recaptcha") ||
+		strings.Contains(lowerBody, "hcaptcha") ||
+		strings.Contains(lowerBody, "turnstile") ||
+		strings.Contains(lowerBody, "cf_chl") {
+		return true
+	}
+	if !strings.Contains(lowerBody, "captcha") {
+		return false
+	}
+	if captchaChallengeText(lowerBody) {
+		return true
+	}
+	if entry.ResponseStatus < 200 || entry.ResponseStatus >= 300 {
+		return true
+	}
+	return strings.Contains(strings.ToLower(entry.ResponseContentType), "html")
+}
+
+func captchaChallengeText(lowerBody string) bool {
+	return (strings.Contains(lowerBody, "captcha") ||
+		strings.Contains(lowerBody, "recaptcha") ||
+		strings.Contains(lowerBody, "hcaptcha") ||
+		strings.Contains(lowerBody, "turnstile")) &&
+		(strings.Contains(lowerBody, "required") ||
+			strings.Contains(lowerBody, "challenge"))
+}
+
+func captchaPreflightRequiresChallenge(body string) bool {
+	requiresChallenge, _ := captchaPreflightChallengeDecision(body)
+	return requiresChallenge
+}
+
+func captchaPreflightChallengeDecision(body string) (bool, bool) {
+	var value any
+	if err := json.Unmarshal([]byte(body), &value); err != nil {
+		return false, false
+	}
+	return hasPositiveCaptchaDecision("", value), true
+}
+
+func hasPositiveCaptchaDecision(key string, value any) bool {
+	switch v := value.(type) {
+	case map[string]any:
+		for childKey, childValue := range v {
+			if hasPositiveCaptchaDecision(childKey, childValue) {
+				return true
+			}
+		}
+	case []any:
+		for _, childValue := range v {
+			if hasPositiveCaptchaDecision(key, childValue) {
+				return true
+			}
+		}
+	case bool:
+		return v && captchaDecisionKey(key)
+	case string:
+		lowerValue := strings.ToLower(v)
+		if captchaDecisionKey(key) {
+			return lowerValue == "true" ||
+				lowerValue == "yes" ||
+				strings.Contains(lowerValue, "required") ||
+				strings.Contains(lowerValue, "challenge")
+		}
+		return captchaMessageKey(key) && captchaChallengeText(lowerValue)
+	case float64:
+		return v != 0 && captchaDecisionKey(key)
+	}
+	return false
+}
+
+func captchaDecisionKey(key string) bool {
+	lowerKey := strings.ToLower(key)
+	return strings.Contains(lowerKey, "captcha") ||
+		strings.Contains(lowerKey, "recaptcha") ||
+		strings.Contains(lowerKey, "hcaptcha") ||
+		strings.Contains(lowerKey, "turnstile") ||
+		strings.Contains(lowerKey, "challenge") ||
+		strings.Contains(lowerKey, "required") ||
+		strings.Contains(lowerKey, "present")
+}
+
+func captchaMessageKey(key string) bool {
+	lowerKey := strings.ToLower(key)
+	return lowerKey == "error" ||
+		lowerKey == "message" ||
+		lowerKey == "detail" ||
+		lowerKey == "reason" ||
+		lowerKey == "status"
 }
 
 func classifyReachability(analysis *TrafficAnalysis, entries []EnrichedEntry) *ReachabilityAnalysis {
@@ -1105,6 +1310,9 @@ func buildEndpointClusters(groups []EndpointGroup, entries []EnrichedEntry) []En
 		cluster.SizeClass = classifyBodySize(totalSize, len(group.Entries))
 		cluster.RequestShape = summarizeRequestShape(group.Entries, requestBodies)
 		cluster.ResponseShape = summarizeResponseShape(responseBodies)
+		cluster.ObservedAuth = observedAuthHeaders(group.Entries)
+		cluster.NormalizationFlags = computeNormalizationFlags(group.Method, cluster.Count, cluster.Statuses, cluster.ContentTypes, len(requestBodies))
+		cluster.Confidence = bucketConfidence(cluster.Count, cluster.Statuses, cluster.NormalizationFlags)
 		clusters = append(clusters, cluster)
 	}
 	sort.Slice(clusters, func(i, j int) bool {
@@ -1117,6 +1325,74 @@ func buildEndpointClusters(groups []EndpointGroup, entries []EnrichedEntry) []En
 		return clusters[i].Host < clusters[j].Host
 	})
 	return clusters
+}
+
+// computeNormalizationFlags returns the set of shape-anomaly flags for an
+// endpoint cluster. Flags surface signals downstream confidence consumers
+// care about — small samples, single-status responses, content-type drift,
+// inconsistent request-body presence on write methods. Order is stable so
+// the resulting JSON is golden-friendly.
+//
+// The divergent-response-shape flag from the plan is reserved here for a
+// future signal: it would fire when pre-normalization paths collapsed but
+// responses diverged structurally. Today's classifier already keys clusters
+// by host + method + normalizedPath so that collapse cannot happen, hence
+// the flag is never populated. Kept in the documented set so writers and
+// readers across PP and external review tooling share a single vocabulary.
+func computeNormalizationFlags(method string, sampleCount int, statuses []int, contentTypes []string, requestBodyCount int) []string {
+	flags := make([]string, 0, 4)
+	if sampleCount <= 1 {
+		flags = append(flags, "single-sample")
+	}
+	if len(statuses) == 1 {
+		flags = append(flags, "single-status")
+	}
+	if hasMixedContentTypes(contentTypes) {
+		flags = append(flags, "mixed-content-types")
+	}
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case "POST", "PUT", "PATCH":
+		if requestBodyCount > 0 && requestBodyCount < sampleCount {
+			flags = append(flags, "request-body-only-on-some-samples")
+		}
+	}
+	if len(flags) == 0 {
+		return nil
+	}
+	return flags
+}
+
+// hasMixedContentTypes returns true when the cluster's content types span
+// more than one media type after stripping parameters. "application/json"
+// and "application/json; charset=utf-8" count as the same media type, since
+// the only difference is encoding metadata.
+func hasMixedContentTypes(contentTypes []string) bool {
+	seen := map[string]bool{}
+	for _, ct := range contentTypes {
+		head := strings.SplitN(ct, ";", 2)[0]
+		normalized := strings.ToLower(strings.TrimSpace(head))
+		if normalized == "" {
+			continue
+		}
+		seen[normalized] = true
+		if len(seen) > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+// bucketConfidence maps Count + Statuses + flags onto a coarse low/medium/high
+// label. Coarse on purpose — future numeric refinements should not require
+// downstream consumers to learn new label values.
+func bucketConfidence(sampleCount int, statuses []int, flags []string) string {
+	if sampleCount < 3 || len(flags) > 0 {
+		return "low"
+	}
+	if sampleCount >= 10 && len(statuses) >= 2 {
+		return "high"
+	}
+	return "medium"
 }
 
 func originalEntryIndexes(entries []EnrichedEntry) map[string][]int {
@@ -1319,6 +1595,12 @@ func deriveGenerationHints(analysis *TrafficAnalysis) []string {
 		if candidate.Type == "cookie" || candidate.Type == "composed" {
 			hints["requires_browser_auth"] = true
 		}
+	}
+	if analysis.Auth.Auth0SPAInMemory {
+		hints["auth0_spa_in_memory"] = true
+	}
+	if analysis.Auth.CaptchaPreflight {
+		hints["auth_supports_captcha_preflight"] = true
 	}
 	for _, warning := range analysis.Warnings {
 		if warning.Type == "weak_schema_evidence" || warning.Type == "raw_protocol_envelope" {

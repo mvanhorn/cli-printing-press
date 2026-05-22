@@ -4,7 +4,6 @@
 package main
 
 import (
-	"fmt"
 	"os"
 
 	"printing-press-golden-pp-cli/internal/cli"
@@ -12,7 +11,6 @@ import (
 
 func main() {
 	if err := cli.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(cli.ExitCode(err))
 	}
 }

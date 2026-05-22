@@ -48,7 +48,9 @@
     "detail": "sync uses domain-specific Upsert methods; search methods not found",
     "domain_tables": 0,
     "search_calls_domain": false,
-    "sync_calls_domain": true
+    "sync_calls_domain": true,
+    "sync_file_emitted": true,
+    "sync_resources_present": true
   },
   "print_json_filtered_check": {
     "checked": 2

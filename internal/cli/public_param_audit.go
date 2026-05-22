@@ -29,8 +29,8 @@ wire names are suspicious public CLI/MCP names, such as one-letter or
 punctuation-heavy names. The deterministic inventory is reconciled with an
 optional agent-edited ledger. Strict mode fails until every finding has either
 a real flag_name in the spec or an evidence-backed skip decision in the ledger.`,
-		Example: `  printing-press public-param-audit --spec ./spec.yaml
-  printing-press public-param-audit --spec ./spec.yaml --ledger ./public-param-audit.json --strict`,
+		Example: `  cli-printing-press public-param-audit --spec ./spec.yaml
+  cli-printing-press public-param-audit --spec ./spec.yaml --ledger ./public-param-audit.json --strict`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(specFiles) == 0 {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--spec is required")}
@@ -93,7 +93,7 @@ func parsePublicParamAuditSpec(specFiles []string, cliName string, lenient bool)
 
 		var apiSpec *spec.APISpec
 		if openapi.IsOpenAPI(data) {
-			apiSpec, err = parseOpenAPISpec(specFile, data, lenient)
+			apiSpec, err = parseOpenAPISpec(specFile, data, lenient, "")
 		} else if graphql.IsGraphQLSDL(data) {
 			apiSpec, err = graphql.ParseSDLBytes(specFile, data)
 		} else {

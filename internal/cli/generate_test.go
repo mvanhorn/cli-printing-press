@@ -8,9 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	catalogfs "github.com/mvanhorn/cli-printing-press/v4/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
@@ -712,7 +716,8 @@ resources:
   "summary": {
     "target_url": "https://www.producthunt.com",
     "entry_count": 1,
-    "api_entry_count": 1
+    "api_entry_count": 1,
+    "http_version_distribution": {"h2": 9}
   },
   "reachability": {
     "mode": "browser_clearance_http",
@@ -751,6 +756,9 @@ resources:
 	require.NoError(t, err)
 	assert.NotContains(t, string(clientGo), `req.Header.Set("User-Agent"`)
 	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
+	// HAR distribution declares H/2 majority -> ForceHTTP2 is emitted and
+	// ForceHTTP3 is not. With an empty distribution the bare browser-chrome
+	// enum would emit neither; the fixture above pins the HAR-driven path.
 	assert.Contains(t, string(clientGo), "ForceHTTP2()")
 	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
 	assert.NotContains(t, string(clientGo), "runBrowserUseFetch")
@@ -805,7 +813,8 @@ resources:
   "summary": {
     "target_url": "https://www.producthunt.com",
     "entry_count": 1,
-    "api_entry_count": 1
+    "api_entry_count": 1,
+    "http_version_distribution": {"h2": 9}
   },
   "reachability": {
     "mode": "browser_clearance_http",
@@ -829,6 +838,7 @@ resources:
 	clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
 	assert.Contains(t, string(clientGo), `"github.com/enetx/surf"`)
+	// HAR distribution declares H/2 majority -> ForceHTTP2 emits.
 	assert.Contains(t, string(clientGo), "ForceHTTP2()")
 	assert.NotContains(t, string(clientGo), "ForceHTTP3()")
 	assert.NotContains(t, string(clientGo), "runBrowserUseFetch")
@@ -1015,6 +1025,263 @@ resources:
 		`path := "/wiki/api/v2/pages/{page_id}/comments"`,
 	)
 
+}
+
+// TestGenerateArchivesMergedSpecForMultiSpec asserts that a generate run
+// with multiple --spec inputs archives the merged in-memory APISpec — with
+// the merged title and the union of resources — rather than just the first
+// input's raw bytes.
+func TestGenerateArchivesMergedSpecForMultiSpec(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	coreSpecPath := filepath.Join(dir, "core.yaml")
+	wikiSpecPath := filepath.Join(dir, "wiki.yaml")
+	outputDir := filepath.Join(dir, "combo")
+	require.NoError(t, os.WriteFile(coreSpecPath, []byte(`name: core
+description: Core API
+version: 0.1.0
+base_url: https://tenant.example.com
+auth:
+  type: none
+resources:
+  projects:
+    description: Projects
+    endpoints:
+      list:
+        method: GET
+        path: /projects
+        description: List projects
+`), 0o644))
+	require.NoError(t, os.WriteFile(wikiSpecPath, []byte(`name: wiki
+description: Wiki API
+version: 0.1.0
+base_url: https://tenant.example.com/wiki/api/v2
+auth:
+  type: none
+resources:
+  pages:
+    description: Pages
+    endpoints:
+      list:
+        method: GET
+        path: /pages
+        description: List pages
+`), 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", coreSpecPath,
+		"--spec", wikiSpecPath,
+		"--name", "combo",
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+	})
+	require.NoError(t, cmd.Execute())
+
+	// Multi-spec must archive as spec.json (canonical JSON of merged APISpec),
+	// not spec.yaml (which would be the first input verbatim).
+	assert.NoFileExists(t, filepath.Join(outputDir, "spec.yaml"))
+	archived, err := os.ReadFile(filepath.Join(outputDir, "spec.json"))
+	require.NoError(t, err)
+
+	parsed, err := spec.ParseBytes(archived)
+	require.NoError(t, err, "archived merged spec must round-trip through spec.ParseBytes")
+
+	// The merged title is the --name, not "core" (the first input).
+	assert.Equal(t, "combo", parsed.Name)
+
+	// The merged BaseURL pins the archive to the merged struct rather than to
+	// either input alone — both inputs share https://tenant.example.com as the
+	// host, and that is what mergeSpecs resolves to.
+	assert.Equal(t, "https://tenant.example.com", parsed.BaseURL, "archived merged spec carries the merged BaseURL")
+
+	// Both inputs' resources are present in the archived snapshot.
+	assert.Contains(t, parsed.Resources, "projects", "first-input resource preserved")
+	assert.Contains(t, parsed.Resources, "pages", "second-input resource present in merged archive")
+}
+
+func TestGenerateMultiSpecSharedObjectPrefixUsesSpecNamesAsResourceRoots(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	contactsSpecPath := filepath.Join(dir, "contacts.yaml")
+	companiesSpecPath := filepath.Join(dir, "companies.yaml")
+	outputDir := filepath.Join(dir, "crm")
+	require.NoError(t, os.WriteFile(contactsSpecPath, []byte(`openapi: 3.0.3
+info:
+  title: Contacts
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /api/v1/crm/v3/objects/contacts:
+    get:
+      operationId: listContacts
+      responses:
+        "200":
+          description: OK
+  /api/v1/crm/v3/objects/contacts/{contactId}:
+    get:
+      operationId: getContact
+      parameters:
+        - name: contactId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: OK
+`), 0o644))
+	require.NoError(t, os.WriteFile(companiesSpecPath, []byte(`openapi: 3.0.3
+info:
+  title: Companies
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /api/v1/crm/v3/objects/companies:
+    get:
+      operationId: listCompanies
+      responses:
+        "200":
+          description: OK
+  /api/v1/crm/v3/objects/companies/{companyId}:
+    get:
+      operationId: getCompany
+      parameters:
+        - name: companyId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: OK
+`), 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", contactsSpecPath,
+		"--spec", companiesSpecPath,
+		"--name", "crm",
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+	})
+	require.NoError(t, cmd.Execute())
+
+	archived, err := os.ReadFile(filepath.Join(outputDir, "spec.json"))
+	require.NoError(t, err)
+	parsed, err := spec.ParseBytes(archived)
+	require.NoError(t, err)
+
+	assert.Contains(t, parsed.Resources, "contacts")
+	assert.Contains(t, parsed.Resources, "companies")
+	assert.Equal(t, "Manage contacts", parsed.Resources["contacts"].Description)
+	assert.Equal(t, "Manage companies", parsed.Resources["companies"].Description)
+	assert.NotContains(t, parsed.Resources, "crm")
+	assert.NotContains(t, parsed.Resources, "companies-crm")
+}
+
+// TestArchiveSpecBytesBranches covers each branch of archiveSpecBytes
+// directly, including the json-input single-spec arm that the integration
+// tests above don't exercise (their fixtures are YAML).
+func TestArchiveSpecBytesBranches(t *testing.T) {
+	t.Parallel()
+
+	t.Run("multi-spec marshals merged APISpec as JSON", func(t *testing.T) {
+		merged := &spec.APISpec{
+			Name:      "combo",
+			Version:   "0.1.0",
+			BaseURL:   "https://example.com",
+			Resources: map[string]spec.Resource{"things": {Description: "Things"}},
+		}
+		specs := []*spec.APISpec{
+			{Name: "a", Resources: map[string]spec.Resource{}},
+			{Name: "b", Resources: map[string]spec.Resource{}},
+		}
+		data, name, ok := archiveSpecBytes(merged, specs, [][]byte{[]byte("a"), []byte("b")})
+		require.True(t, ok)
+		assert.Equal(t, "spec.json", name)
+		assert.True(t, json.Valid(data), "multi-spec archive must be valid JSON")
+		assert.Contains(t, string(data), `"name": "combo"`)
+	})
+
+	t.Run("single-spec JSON input returns raw bytes as spec.json", func(t *testing.T) {
+		jsonInput := []byte(`{"name":"solo","resources":{}}`)
+		data, name, ok := archiveSpecBytes(nil, []*spec.APISpec{{Name: "solo"}}, [][]byte{jsonInput})
+		require.True(t, ok)
+		assert.Equal(t, "spec.json", name)
+		assert.Equal(t, jsonInput, data, "single-spec JSON archive is byte-identical to input")
+	})
+
+	t.Run("single-spec YAML input returns raw bytes as spec.yaml", func(t *testing.T) {
+		yamlInput := []byte("name: solo\nresources: {}\n")
+		data, name, ok := archiveSpecBytes(nil, []*spec.APISpec{{Name: "solo"}}, [][]byte{yamlInput})
+		require.True(t, ok)
+		assert.Equal(t, "spec.yaml", name)
+		assert.Equal(t, yamlInput, data, "single-spec YAML archive is byte-identical to input")
+	})
+
+	t.Run("no inputs returns ok=false", func(t *testing.T) {
+		_, _, ok := archiveSpecBytes(nil, nil, nil)
+		assert.False(t, ok)
+	})
+
+	t.Run("multi-spec with nil apiSpec returns ok=false", func(t *testing.T) {
+		specs := []*spec.APISpec{
+			{Name: "a"},
+			{Name: "b"},
+		}
+		_, _, ok := archiveSpecBytes(nil, specs, [][]byte{[]byte("a"), []byte("b")})
+		assert.False(t, ok, "nil apiSpec must not silently archive the literal 'null'")
+	})
+}
+
+// TestGenerateArchivesRawSpecForSingleSpec asserts that single-spec runs
+// archive the user's original input bytes verbatim (post-redaction), the
+// negative case complementing the multi-spec merged-archive behavior.
+func TestGenerateArchivesRawSpecForSingleSpec(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	outputDir := filepath.Join(dir, "solo")
+	input := []byte(`name: solo
+description: Solo API
+version: 0.1.0
+base_url: https://api.example.com
+auth:
+  type: none
+resources:
+  things:
+    description: Things
+    endpoints:
+      list:
+        method: GET
+        path: /things
+        description: List things
+`)
+	require.NoError(t, os.WriteFile(specPath, input, 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", specPath,
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+	})
+	require.NoError(t, cmd.Execute())
+
+	// YAML input archives as spec.yaml (not spec.json).
+	assert.NoFileExists(t, filepath.Join(outputDir, "spec.json"))
+	archived, err := os.ReadFile(filepath.Join(outputDir, "spec.yaml"))
+	require.NoError(t, err)
+
+	// Single-spec archive is byte-identical to the input (this spec contains
+	// no secrets, so redaction is a no-op).
+	assert.Equal(t, input, archived, "single-spec archive must preserve original bytes")
 }
 
 func TestMergeSpecsPrefersReplayableBrowserTransportOverUnshippablePageContext(t *testing.T) {
@@ -1309,6 +1576,95 @@ func TestMergeSpecsCarriesMCPFullFieldsFromDeclaringSpec(t *testing.T) {
 	assert.Equal(t, "search_things", merged.MCP.Intents[0].Name)
 }
 
+func TestMergeSpecsRewritesMCPIntentRefsForRenamedResources(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "contacts",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"crm": {
+				Description: spec.DefaultResourceDescription("crm"),
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/api/v1/crm/v3/objects/contacts"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+		MCP: spec.MCPConfig{
+			Intents: []spec.Intent{
+				{
+					Name: "list_contacts",
+					Steps: []spec.IntentStep{
+						{Endpoint: "crm.list"},
+					},
+				},
+			},
+		},
+	}
+	specB := &spec.APISpec{
+		Name:    "companies",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"crm": {
+				Description: spec.DefaultResourceDescription("crm"),
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/api/v1/crm/v3/objects/companies"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "crm")
+
+	require.Len(t, merged.MCP.Intents, 1)
+	require.Len(t, merged.MCP.Intents[0].Steps, 1)
+	assert.Equal(t, "contacts.list", merged.MCP.Intents[0].Steps[0].Endpoint)
+}
+
+func TestMergeSpecsRequiresEachSpecToContributeToSharedPrefix(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "contacts",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"crm": {
+				Description: spec.DefaultResourceDescription("crm"),
+				Endpoints: map[string]spec.Endpoint{
+					"list":   {Method: "GET", Path: "/api/v1/crm/v3/objects/contacts"},
+					"get":    {Method: "GET", Path: "/api/v1/crm/v3/objects/contacts/{id}"},
+					"search": {Method: "GET", Path: "/api/v1/crm/v3/objects/contacts/search"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:    "empty",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"crm": {
+				Description: "Custom empty resource",
+				Endpoints:   map[string]spec.Endpoint{},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "crm")
+
+	assert.Contains(t, merged.Resources, "crm")
+	assert.Contains(t, merged.Resources, "empty-crm")
+	assert.NotContains(t, merged.Resources, "empty")
+	assert.Equal(t, "Custom empty resource", merged.Resources["empty-crm"].Description)
+}
+
 // TestMergeSpecsFirstDeclaringMCPWins verifies that when more than one input
 // spec declares x-mcp, the first declaring spec wins, mirroring the existing
 // first-wins precedence used for Auth.AuthorizationURL.
@@ -1348,6 +1704,10 @@ func TestNormalizeHTTPTransportAllowsBrowserChromeH3(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, spec.HTTPTransportBrowserHTTP, got)
 
+	got, err = normalizeHTTPTransport(spec.HTTPTransportBrowserChromeH2)
+	require.NoError(t, err)
+	assert.Equal(t, spec.HTTPTransportBrowserChromeH2, got)
+
 	got, err = normalizeHTTPTransport(spec.HTTPTransportBrowserChromeH3)
 	require.NoError(t, err)
 	assert.Equal(t, spec.HTTPTransportBrowserChromeH3, got)
@@ -1355,8 +1715,52 @@ func TestNormalizeHTTPTransportAllowsBrowserChromeH3(t *testing.T) {
 	_, err = normalizeHTTPTransport("browser-chrome-http3")
 	require.ErrorContains(t, err, "browser-chrome-h3")
 
+	_, err = normalizeHTTPTransport("browser-chrome-http2")
+	require.ErrorContains(t, err, "browser-chrome-h2")
+
 	_, err = normalizeHTTPTransport("browser-runtime")
 	require.ErrorContains(t, err, "--transport must be one of")
+}
+
+// TestApplyHTTPTransportDefaultPreservesH2ForProtectionPath pins the
+// protection-driven branch (Cloudflare/DataDome/html_scrape/browser
+// hints without a reachability mode). Pre-fix the template's else
+// branch unconditionally emitted ForceHTTP2 for bare browser-chrome;
+// post-fix the bare enum means "no force" so this path must opt into
+// the -h2 variant explicitly to keep shipped CLIs on these origins
+// behaving identically.
+func TestApplyHTTPTransportDefaultPreservesH2ForProtectionPath(t *testing.T) {
+	t.Parallel()
+	apiSpec := &spec.APISpec{
+		Name:    "cloudflareapp",
+		BaseURL: "https://www.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+	}
+	analysis := &browsersniff.TrafficAnalysis{
+		Protections: []browsersniff.ProtectionObservation{{Label: "cloudflare"}},
+	}
+	applyHTTPTransportDefault(apiSpec, analysis)
+	assert.Equal(t, spec.HTTPTransportBrowserChromeH2, apiSpec.HTTPTransport,
+		"protection-driven path must write browser-chrome-h2 so the generated client still forces HTTP/2")
+}
+
+// TestApplyHTTPTransportDefaultExplicitH3WinsOverProtection pins that
+// an explicit H/3 hint still wins over the protection heuristic when
+// both fire; the H/3 force preempts the H/2 fallback.
+func TestApplyHTTPTransportDefaultExplicitH3WinsOverProtection(t *testing.T) {
+	t.Parallel()
+	apiSpec := &spec.APISpec{
+		Name:    "cloudflareh3app",
+		BaseURL: "https://www.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+	}
+	analysis := &browsersniff.TrafficAnalysis{
+		Protections:     []browsersniff.ProtectionObservation{{Label: "cloudflare"}},
+		GenerationHints: []string{"prefer_http3"},
+	}
+	applyHTTPTransportDefault(apiSpec, analysis)
+	assert.Equal(t, spec.HTTPTransportBrowserChromeH3, apiSpec.HTTPTransport,
+		"explicit H/3 hint must beat the protection-driven H/2 default")
 }
 
 func TestGenerateCmdInfersTrafficAnalysisForSniffedSpec(t *testing.T) {
@@ -1639,12 +2043,80 @@ resources:
 		"the spec-derived directory must not be created when --output is explicit")
 }
 
+func TestOpenAPIAuthPreferenceForGenerateFromJiraCatalogEntry(t *testing.T) {
+	t.Parallel()
+
+	jira, err := catalog.LookupFS(catalogfs.FS, "jira")
+	require.NoError(t, err)
+	require.Equal(t, "basicAuth", jira.AuthPreference)
+
+	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, ""),
+		"catalog spec_url match should forward auth_preference without --auth-preference")
+	assert.Equal(t, "OAuth2", openAPIAuthPreferenceForGenerate("OAuth2", "", []string{jira.SpecURL}, ""),
+		"explicit --auth-preference must override catalog")
+
+	localSpec := filepath.Join(t.TempDir(), "swagger.json")
+	assert.Equal(t, "basicAuth", openAPIAuthPreferenceForGenerate("", "jira", []string{localSpec}, ""),
+		"catalog slug via --name should resolve auth_preference without https spec refs")
+}
+
+func TestOpenAPIAuthPreferenceForGenerateParsesJiraLikeSpecWithCatalogDefault(t *testing.T) {
+	t.Parallel()
+
+	// Mirrors real Jira-style specs: OAuth2 authorizationCode + HTTP Basic; default
+	// parser choice is OAuth2 unless AuthPreference pins basicAuth (see openapi parser tests).
+	specBytes := []byte(`openapi: "3.0.3"
+info:
+  title: Atlassian-like
+  version: "1.0"
+servers:
+  - url: https://example.atlassian.net
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://auth.example.com/authorize
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            read: read access
+    basicAuth:
+      type: http
+      scheme: basic
+paths:
+  /v1/things:
+    get:
+      operationId: list things
+      security:
+        - basicAuth: []
+        - OAuth2: [read]
+      responses: {"200": {description: ok}}
+`)
+
+	jira, err := catalog.LookupFS(catalogfs.FS, "jira")
+	require.NoError(t, err)
+
+	pref := openAPIAuthPreferenceForGenerate("", "", []string{jira.SpecURL}, "")
+	require.Equal(t, "basicAuth", pref)
+
+	parsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec.yaml"), specBytes, false, pref)
+	require.NoError(t, err)
+	assert.Equal(t, "basicAuth", parsed.Auth.Scheme)
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+
+	defaultParsed, err := parseOpenAPISpec(filepath.Join(t.TempDir(), "spec2.yaml"), specBytes, false, "")
+	require.NoError(t, err)
+	assert.Equal(t, "OAuth2", defaultParsed.Auth.Scheme, "without catalog-driven preference, OAuth2 wins")
+}
+
 func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {
-	apiSpec := &spec.APISpec{Name: "test-api"}
+	apiSpec := &spec.APISpec{Name: "test-api", BaseURL: spec.PlaceholderBaseURL, BaseURLIsPlaceholder: true}
 
 	enrichSpecFromCatalogEntry(apiSpec, &catalog.Entry{
 		DisplayName: "Test.API",
 		OwnerName:   "Trevin Chow",
+		BaseURL:     "https://api.example.com/",
 		MCP: spec.MCPConfig{
 			Transport:     []string{"stdio", "http"},
 			Orchestration: "code",
@@ -1654,9 +2126,27 @@ func TestEnrichSpecFromCatalogCopiesGenerationMetadata(t *testing.T) {
 
 	assert.Equal(t, "Test.API", apiSpec.DisplayName)
 	assert.Equal(t, "Trevin Chow", apiSpec.OwnerName)
+	assert.Equal(t, "https://api.example.com", apiSpec.BaseURL)
+	assert.False(t, apiSpec.BaseURLIsPlaceholder)
 	assert.Equal(t, []string{"stdio", "http"}, apiSpec.MCP.Transport)
 	assert.Equal(t, "code", apiSpec.MCP.Orchestration)
 	assert.Equal(t, "hidden", apiSpec.MCP.EndpointTools)
+}
+
+func TestRebaseAuthEnvPrefix(t *testing.T) {
+	auth := spec.AuthConfig{
+		EnvVars: []string{"ELEVENLABS_DOCUMENTATION_API_KEY", "UNCHANGED_TOKEN"},
+		EnvVarSpecs: []spec.AuthEnvVar{
+			{Name: "ELEVENLABS_DOCUMENTATION_CLIENT_ID"},
+			{Name: "CUSTOM_SECRET"},
+		},
+	}
+
+	catalogmeta.RebaseAuthEnvPrefix(&auth, "elevenlabs-documentation", "elevenlabs")
+
+	assert.Equal(t, []string{"ELEVENLABS_API_KEY", "UNCHANGED_TOKEN"}, auth.EnvVars)
+	assert.Equal(t, "ELEVENLABS_CLIENT_ID", auth.EnvVarSpecs[0].Name)
+	assert.Equal(t, "CUSTOM_SECRET", auth.EnvVarSpecs[1].Name)
 }
 
 func TestEnrichSpecFromCatalogMatchesSpecURLWhenSlugDiffers(t *testing.T) {
@@ -1672,6 +2162,35 @@ func TestEnrichSpecFromCatalogMatchesSpecURLWhenSlugDiffers(t *testing.T) {
 	assert.False(t, apiSpec.DisplayNameDerivedFromTitle)
 	assert.Equal(t, "cloud", apiSpec.Category)
 	assert.Equal(t, "https://cloud.google.com/run/docs/reference/rest", apiSpec.WebsiteURL)
+}
+
+func TestRunGenerateProjectUsesCatalogDescription(t *testing.T) {
+	t.Parallel()
+
+	entry, err := catalog.LookupFS(catalogfs.FS, "asana")
+	require.NoError(t, err)
+	apiSpec := &spec.APISpec{
+		Name:        "asana",
+		Description: "Weak source-spec fallback copy.",
+		Version:     "1.0",
+		BaseURL:     "https://api.example.com",
+		Auth:        spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+	outputDir := filepath.Join(t.TempDir(), "asana")
+
+	got, err := runGenerateProject(apiSpec, outputDir, generateProjectOptions{})
+	require.NoError(t, err)
+
+	assert.Equal(t, entry.Description, got.CatalogDescription)
+	assert.False(t, strings.HasSuffix(got.CatalogDescription, "..."))
 }
 
 func TestEnrichSpecFromCatalogReplacesTitleDerivedDisplayName(t *testing.T) {

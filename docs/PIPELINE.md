@@ -192,6 +192,7 @@ Outputs:
 - Reviewer scorecard across seven principles and three severities
 - Fix implementation log (which fixes were applied, which were skipped or reverted)
 - Phase verdict: `Pass`, `Warn`, or `Degrade`
+- `pipeline/agent-readiness.md` with a parseable `Phase verdict: Pass|Warn|Degrade` line and remaining Blocker/Friction findings as bullets or table rows
 
 Gates:
 - `Pass` - zero Blockers and zero Frictions
@@ -199,7 +200,7 @@ Gates:
 - `Degrade` - Blockers remain; phase fails
 
 Artifacts:
-- Reviewer scorecard document in the pipeline directory
+- `pipeline/agent-readiness.md`
 - Fix log in the pipeline directory
 
 ### 8. comparative
@@ -241,6 +242,7 @@ Purpose: package the generated CLI output and produce the final handoff report.
 
 Inputs:
 - Review score and `review.md` from the review phase
+- Agent-readiness verdict from `agent-readiness.md`
 - Working CLI binary ready for handoff
 
 Outputs:
@@ -250,6 +252,7 @@ Outputs:
 
 Gates:
 - All prior phases are `completed`
+- `agent-readiness.md` reports `Pass`, unless a maintainer records an explicit override in the handoff
 - Output directory contains a valid CLI source tree and compiled binary
 
 Artifacts:

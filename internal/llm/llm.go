@@ -4,9 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
-	"time"
 )
 
 // Available returns true if any supported LLM CLI is installed.
@@ -17,16 +15,9 @@ func Available() bool {
 }
 
 // Run sends a prompt to the best available LLM CLI and returns the response.
-// It tries claude first, then falls back to codex. The prompt is written to a
-// temp file and passed via the -p flag to avoid ARG_MAX issues with large prompts.
+// It tries claude first, then falls back to codex. Long Claude prompts are
+// written to a temp file and passed by reference to avoid ARG_MAX issues.
 func Run(prompt string) (string, error) {
-	// Write prompt to temp file to avoid ARG_MAX issues
-	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("llm-prompt-%d.md", time.Now().UnixNano()))
-	if err := os.WriteFile(tmpFile, []byte(prompt), 0644); err != nil {
-		return "", fmt.Errorf("writing prompt: %w", err)
-	}
-	defer func() { _ = os.Remove(tmpFile) }()
-
 	// Try claude first (-p / --print mode, prompt as positional arg)
 	if path, err := exec.LookPath("claude"); err == nil {
 		// For short prompts, pass directly. For long prompts, use a temp file referenced in the prompt.
@@ -34,6 +25,12 @@ func Run(prompt string) (string, error) {
 		if len(prompt) < 100000 {
 			cmd = exec.Command(path, "-p", prompt, "--output-format", "text")
 		} else {
+			tmpFile, cleanup, err := writePromptTempFile(prompt)
+			if err != nil {
+				return "", err
+			}
+			defer cleanup()
+
 			// Write to temp file and tell Claude to read it
 			metaPrompt := fmt.Sprintf("Read the file at %s and follow the instructions inside it exactly.", tmpFile)
 			cmd = exec.Command(path, "-p", metaPrompt, "--output-format", "text")
@@ -59,4 +56,23 @@ func Run(prompt string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no LLM CLI found (install claude or codex)")
+}
+
+func writePromptTempFile(prompt string) (string, func(), error) {
+	promptFile, err := os.CreateTemp("", "llm-prompt-*.md")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating prompt file: %w", err)
+	}
+	tmpFile := promptFile.Name()
+	if _, err := promptFile.WriteString(prompt); err != nil {
+		_ = promptFile.Close()
+		_ = os.Remove(tmpFile)
+		return "", nil, fmt.Errorf("writing prompt: %w", err)
+	}
+	if err := promptFile.Close(); err != nil {
+		_ = os.Remove(tmpFile)
+		return "", nil, fmt.Errorf("closing prompt file: %w", err)
+	}
+
+	return tmpFile, func() { _ = os.Remove(tmpFile) }, nil
 }

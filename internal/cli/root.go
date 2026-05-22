@@ -19,6 +19,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/catalog"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/catalogmeta"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/docspec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
@@ -34,14 +35,31 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	CanonicalBinaryName = "cli-printing-press"
+	LegacyBinaryName    = "printing-press"
+)
+
 func Execute() error {
+	return ExecuteWithName(CanonicalBinaryName)
+}
+
+func ExecuteWithName(commandName string) error {
+	rootCmd := NewRootCommand(commandName)
+	return rootCmd.Execute()
+}
+
+func NewRootCommand(commandName string) *cobra.Command {
+	if commandName == "" {
+		commandName = CanonicalBinaryName
+	}
 	rootCmd := &cobra.Command{
-		Use:          "printing-press",
+		Use:          commandName,
 		Short:        "Describe your API. Get a production CLI.",
 		SilenceUsage: true,
 		Version:      version.Version,
 	}
-	rootCmd.SetVersionTemplate("printing-press {{.Version}}\n")
+	rootCmd.SetVersionTemplate(commandName + " {{.Version}}\n")
 
 	rootCmd.AddCommand(newGenerateCmd())
 	rootCmd.AddCommand(newScorecardCmd())
@@ -50,6 +68,7 @@ func Execute() error {
 	rootCmd.AddCommand(newValidateNarrativeCmd())
 	rootCmd.AddCommand(newVerifyCmd())
 	rootCmd.AddCommand(newVerifySkillCmd())
+	rootCmd.AddCommand(newVerifyInternalSkillCmd())
 	rootCmd.AddCommand(newEmbossCmd())
 	rootCmd.AddCommand(newPatchCmd())
 	rootCmd.AddCommand(newVisionCmd())
@@ -74,7 +93,7 @@ func Execute() error {
 	rootCmd.AddCommand(newBundleCmd())
 	rootCmd.AddCommand(newMCPSyncCmd())
 
-	return rootCmd.Execute()
+	return rootCmd
 }
 
 func newGenerateCmd() *cobra.Command {
@@ -99,21 +118,22 @@ func newGenerateCmd() *cobra.Command {
 	var specURL string
 	var planFile string
 	var trafficAnalysisPath string
+	var authPreference string
 
 	cmd := &cobra.Command{
 		Use:   "generate",
 		Short: "Generate a Go CLI project from an API spec",
 		Example: `  # Generate from a local OpenAPI spec
-  printing-press generate --spec ./openapi.yaml
+  cli-printing-press generate --spec ./openapi.yaml
 
   # Generate from a URL and recreate output while preserving hand-authored CLI files
-  printing-press generate --spec https://api.example.com/openapi.json --force
+  cli-printing-press generate --spec https://api.example.com/openapi.json --force
 
   # Generate from API documentation
-  printing-press generate --docs https://docs.stripe.com/api --name stripe
+  cli-printing-press generate --docs https://docs.stripe.com/api --name stripe
 
   # Multiple specs merged into one CLI
-  printing-press generate --spec api-v1.yaml --spec api-v2.yaml --name myapi`,
+  cli-printing-press generate --spec api-v1.yaml --spec api-v2.yaml --name myapi`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRun && docsURL != "" {
 				return fmt.Errorf("--dry-run cannot be used with --docs (doc scraping has unavoidable side effects)")
@@ -161,7 +181,7 @@ func newGenerateCmd() *cobra.Command {
 					return err
 				}
 
-				novelFeatures, polished, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath})
+				generateResult, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath})
 				if err != nil {
 					return err
 				}
@@ -180,12 +200,13 @@ func newGenerateCmd() *cobra.Command {
 					APIName:       parsed.Name,
 					DocsURL:       docsURL,
 					OutputDir:     absOut,
+					Description:   generateResult.CatalogDescription,
 					Owner:         parsed.Owner,
 					Printer:       parsed.Printer,
 					PrinterName:   parsed.PrinterName,
 					RunID:         runID,
 					Spec:          parsed,
-					NovelFeatures: novelFeatures,
+					NovelFeatures: generateResult.NovelFeatures,
 				}); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 				}
@@ -198,7 +219,7 @@ func newGenerateCmd() *cobra.Command {
 						"output_dir": absOut,
 						"spec_files": specFiles,
 						"validated":  validate,
-						"polished":   polished,
+						"polished":   generateResult.Polished,
 					}); err != nil {
 						return fmt.Errorf("encoding JSON: %w", err)
 					}
@@ -273,6 +294,8 @@ func newGenerateCmd() *cobra.Command {
 				openapi.SetMaxEndpointsPerResource(maxEndpointsPerResource)
 			}
 
+			openAPIParseAuthPref := openAPIAuthPreferenceForGenerate(authPreference, cliName, specFiles, specURL)
+
 			var specs []*spec.APISpec
 			var specRawBytes [][]byte // raw spec data for archiving
 			for _, specFile := range specFiles {
@@ -284,7 +307,7 @@ func newGenerateCmd() *cobra.Command {
 
 				var apiSpec *spec.APISpec
 				if openapi.IsOpenAPI(data) {
-					apiSpec, err = parseOpenAPISpec(specFile, data, lenient)
+					apiSpec, err = parseOpenAPISpec(specFile, data, lenient, openAPIParseAuthPref)
 				} else if graphql.IsGraphQLSDL(data) {
 					apiSpec, err = graphql.ParseSDLBytes(specFile, data)
 				} else {
@@ -294,6 +317,7 @@ func newGenerateCmd() *cobra.Command {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing spec %s: %w", specFile, err)}
 				}
 
+				enrichSpecFromCatalog(apiSpec, catalogSpecLookupRefs(specFiles, specURL)...)
 				if apiSpec.BaseURLIsPlaceholder {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("spec %s declares no `servers:` block and no per-operation servers; the generator cannot resolve a real base URL and refuses to ship a CLI whose `doctor` would DNS-fail on every call. Add a `servers:` block with the real API host, or run via crowd-sniff with `--base-url` to supply one", specFile)}
 				}
@@ -304,9 +328,18 @@ func newGenerateCmd() *cobra.Command {
 			var apiSpec *spec.APISpec
 			if len(specs) == 1 {
 				apiSpec = specs[0]
-				// Override spec-derived name when --name is explicitly provided
+				// Override spec-derived name when --name is explicitly provided.
+				// When --name is empty but --research-dir points at a state.json
+				// whose api_name slug differs from the title-derived name (e.g.
+				// "Canvas LMS API" → `canvas-lms` vs the user's intended
+				// `canvas`), prefer the state.json slug so the generated
+				// cmd/<slug>-pp-cli matches what manifest/publish-validate look
+				// for. Explicit --name still wins.
 				if cliName != "" {
+					catalogmeta.RebaseAuthEnvPrefix(&apiSpec.Auth, apiSpec.Name, cliName)
 					apiSpec.Name = cliName
+				} else if researchName := pipeline.LoadAPINameFromResearchDir(researchDir); researchName != "" {
+					apiSpec.Name = researchName
 				}
 			} else {
 				if cliName == "" {
@@ -327,7 +360,7 @@ func newGenerateCmd() *cobra.Command {
 				return printDryRun(apiSpec, absOut, specFiles)
 			}
 
-			novelFeatures, polished, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, specURL: specURL, rejectUnshippablePageContextTraffic: true})
+			generateResult, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, specURL: specURL, rejectUnshippablePageContextTraffic: true})
 			if err != nil {
 				return err
 			}
@@ -373,25 +406,21 @@ func newGenerateCmd() *cobra.Command {
 				SpecSrcs:      specFiles,
 				SpecURL:       specURL,
 				OutputDir:     absOut,
+				Description:   generateResult.CatalogDescription,
 				Owner:         apiSpec.Owner,
 				Printer:       apiSpec.Printer,
 				PrinterName:   apiSpec.PrinterName,
 				RunID:         runID,
 				Spec:          apiSpec,
-				NovelFeatures: novelFeatures,
+				NovelFeatures: generateResult.NovelFeatures,
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 			}
 
-			// Archive the input spec alongside the CLI for reproducibility.
-			// The spec_url may change or disappear; this local copy is the
-			// only guaranteed way to regenerate from the exact same input.
-			if len(specRawBytes) > 0 {
-				archiveName := "spec.yaml"
-				if json.Valid(specRawBytes[0]) {
-					archiveName = "spec.json"
-				}
-				data := artifacts.RedactArchivedSpecSecrets(specRawBytes[0])
+			// Archive a snapshot of the spec alongside the CLI; multi-spec
+			// runs use the merged form (see archiveSpecBytes for why).
+			if archiveBytes, archiveName, ok := archiveSpecBytes(apiSpec, specs, specRawBytes); ok {
+				data := artifacts.RedactArchivedSpecSecrets(archiveBytes)
 				if err := os.WriteFile(filepath.Join(absOut, archiveName), data, 0o644); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not archive spec: %v\n", err)
 				}
@@ -405,7 +434,7 @@ func newGenerateCmd() *cobra.Command {
 					"output_dir": absOut,
 					"spec_files": specFiles,
 					"validated":  validate,
-					"polished":   polished,
+					"polished":   generateResult.Polished,
 				}); err != nil {
 					return fmt.Errorf("encoding JSON: %w", err)
 				}
@@ -435,6 +464,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&specURL, "spec-url", "", "Original spec URL for provenance (use when --spec is a local file downloaded from a URL)")
 	cmd.Flags().StringVar(&planFile, "plan", "", "Path to a markdown plan document for plan-driven generation (instead of --spec)")
 	cmd.Flags().StringVar(&trafficAnalysisPath, "traffic-analysis", "", "Path to browser-sniff traffic-analysis.json for advisory generation context")
+	cmd.Flags().StringVar(&authPreference, "auth-preference", "", "Preferred securityScheme name from the spec (overrides default selection and any catalog auth_preference; useful when a spec advertises multiple schemes such as OAuth2 + HTTP Basic and you want the simpler one). When omitted, a matching embedded catalog entry's auth_preference applies for OpenAPI parsing.")
 
 	return cmd
 }
@@ -473,22 +503,44 @@ type generateProjectOptions struct {
 	rejectUnshippablePageContextTraffic bool
 }
 
-func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProjectOptions) ([]pipeline.NovelFeatureManifest, bool, error) {
-	enrichSpecFromCatalog(apiSpec, catalogSpecLookupRefs(opts.specFiles, opts.specURL)...)
+type generateProjectResult struct {
+	NovelFeatures      []pipeline.NovelFeatureManifest
+	CatalogDescription string
+	Polished           bool
+}
+
+func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProjectOptions) (generateProjectResult, error) {
+	var catalogEntry *catalog.Entry
+	if apiSpec != nil {
+		catalogEntry = lookupCatalogEntryForGenerateSpec(apiSpec.Name, catalogSpecLookupRefs(opts.specFiles, opts.specURL))
+		enrichSpecFromCatalogEntry(apiSpec, catalogEntry)
+	}
 	gen := generator.New(apiSpec, absOut)
+	if catalogEntry != nil {
+		gen.CatalogEntryDescription = catalogEntry.Description
+	}
 	novelFeatures := loadResearchSources(gen, opts.researchDir)
 	trafficAnalysis, err := loadTrafficAnalysisForGenerate(opts.trafficAnalysisPath, opts.specFiles, apiSpec.SpecSource)
 	if err != nil {
-		return nil, false, &ExitError{Code: ExitInputError, Err: err}
+		return generateProjectResult{}, &ExitError{Code: ExitInputError, Err: err}
 	}
 	if opts.rejectUnshippablePageContextTraffic && trafficAnalysisRequiresUnshippablePageContext(trafficAnalysis) {
-		return nil, false, &ExitError{Code: ExitInputError, Err: fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")}
+		return generateProjectResult{}, &ExitError{Code: ExitInputError, Err: fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")}
 	}
-	applyHTTPTransportDefault(apiSpec, trafficAnalysis)
+	// ApplyReachabilityDefaults runs first so its HAR-driven HTTP-version
+	// mapping wins for browser_http / browser_clearance_http modes.
+	// applyHTTPTransportDefault then fills the cases reachability does
+	// not cover (no reachability section, hint-only signals, browser_required)
+	// because its own no-op-when-set guard short-circuits in the populated
+	// case. The two functions cover disjoint reachability modes, so the
+	// short-circuit is the only thing keeping a write-write conflict
+	// impossible today; preserve that invariant if either function's
+	// mode coverage widens.
 	browsersniff.ApplyReachabilityDefaults(apiSpec, trafficAnalysis)
+	applyHTTPTransportDefault(apiSpec, trafficAnalysis)
 	gen.TrafficAnalysis = trafficAnalysis
 	if err := gen.Generate(); err != nil {
-		return nil, false, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
+		return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
 	}
 	// Emit tools-manifest.json from the parsed spec so a fresh generate
 	// run produces the agent-facing tool description alongside the Go
@@ -502,10 +554,14 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	}
 	if opts.validate {
 		if err := gen.Validate(); err != nil {
-			return nil, false, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}
+			return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}
 		}
 	}
-	return novelFeatures, runGeneratePolishPass(opts.polish, apiSpec.Name, absOut), nil
+	return generateProjectResult{
+		NovelFeatures:      novelFeatures,
+		CatalogDescription: gen.CatalogDescription(),
+		Polished:           runGeneratePolishPass(opts.polish, apiSpec.Name, absOut),
+	}, nil
 }
 
 func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource, clientPattern, httpTransport, owner string) error {
@@ -560,10 +616,10 @@ func normalizeClientPattern(value string) (string, error) {
 
 func normalizeHTTPTransport(value string) (string, error) {
 	switch value {
-	case "", spec.HTTPTransportStandard, spec.HTTPTransportBrowserHTTP, spec.HTTPTransportBrowserChrome, spec.HTTPTransportBrowserChromeH3:
+	case "", spec.HTTPTransportStandard, spec.HTTPTransportBrowserHTTP, spec.HTTPTransportBrowserChrome, spec.HTTPTransportBrowserChromeH2, spec.HTTPTransportBrowserChromeH3:
 		return value, nil
 	default:
-		return "", fmt.Errorf("--transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h3 (got %q)", value)
+		return "", fmt.Errorf("--transport must be one of: standard, browser-http, browser-chrome, browser-chrome-h2, browser-chrome-h3 (got %q)", value)
 	}
 }
 
@@ -595,7 +651,14 @@ func applyHTTPTransportDefault(apiSpec *spec.APISpec, analysis *browsersniff.Tra
 		return
 	}
 	if trafficAnalysisRecommendsBrowserTransport(analysis) {
-		apiSpec.HTTPTransport = spec.HTTPTransportBrowserChrome
+		// Surface the implicit H/2 force the pre-template-change else-branch
+		// provided. ApplyReachabilityDefaults handles the browser_http /
+		// browser_clearance_http modes with HAR-driven precision; everything
+		// this branch covers (Cloudflare/DataDome/Akamai protections, html_scrape
+		// protocol, generic browser/scrape hints) lacks HAR HTTP-version data,
+		// so default to -h2 instead of bare browser-chrome (no force) to keep
+		// shipped CLIs on origins these heuristics flag behaving identically.
+		apiSpec.HTTPTransport = spec.HTTPTransportBrowserChromeH2
 	}
 }
 
@@ -707,17 +770,63 @@ func readSpec(specFile string, refresh bool, skipCache bool) ([]byte, error) {
 	return data, nil
 }
 
-func parseOpenAPISpec(specFile string, data []byte, lenient bool) (*spec.APISpec, error) {
-	if openapi.IsRemoteSpecSource(specFile) {
-		if lenient {
-			return openapi.ParseLenient(data)
+func parseOpenAPISpec(specFile string, data []byte, lenient bool, authPreference string) (*spec.APISpec, error) {
+	opts := openapi.ParseOptions{Lenient: lenient, AuthPreference: authPreference}
+	if !openapi.IsRemoteSpecSource(specFile) {
+		opts.Path = specFile
+	}
+	return openapi.ParseWithOptions(data, opts)
+}
+
+// openAPIAuthPreferenceForGenerate resolves AuthPreference for openapi.ParseWithOptions.
+// Explicit --auth-preference wins; otherwise a matching catalog entry's auth_preference
+// is used so catalog-driven generates pick the intended scheme before spec enrichment.
+func openAPIAuthPreferenceForGenerate(cliAuthPref, cliName string, specFiles []string, specURL string) string {
+	if s := strings.TrimSpace(cliAuthPref); s != "" {
+		return s
+	}
+	entry := lookupCatalogEntryForGenerateSpec(strings.TrimSpace(cliName), catalogSpecLookupRefs(specFiles, specURL))
+	if entry == nil {
+		return ""
+	}
+	return strings.TrimSpace(entry.AuthPreference)
+}
+
+// archiveSpecBytes picks the bytes and filename for the spec snapshot that
+// generate writes alongside the CLI. Single-spec runs preserve the user's
+// original input (post-redaction at the call site) so audit/replay round-trip
+// against the same bytes the parser saw. Multi-spec runs serialize the merged
+// APISpec — its union of paths, merged title, and merged x-mcp config — so
+// downstream consumers that re-read this snapshot operate on the surface the
+// generator actually emitted rather than on whichever input happened to be
+// passed first.
+//
+// Returns ok=false when there is nothing to archive (no inputs) or when
+// marshalling the merged spec failed; the call site logs and continues so a
+// transient archive failure does not abort generation.
+func archiveSpecBytes(apiSpec *spec.APISpec, specs []*spec.APISpec, specRawBytes [][]byte) ([]byte, string, bool) {
+	if len(specs) > 1 {
+		// json.MarshalIndent on a nil pointer succeeds with the literal
+		// "null" bytes, which would write a syntactically-valid but
+		// useless snapshot. Surface the precondition explicitly.
+		if apiSpec == nil {
+			return nil, "", false
 		}
-		return openapi.Parse(data)
+		data, err := json.MarshalIndent(apiSpec, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not marshal merged spec for archive: %v\n", err)
+			return nil, "", false
+		}
+		return data, "spec.json", true
 	}
-	if lenient {
-		return openapi.ParseWithPathLenient(data, specFile)
+	if len(specRawBytes) == 0 {
+		return nil, "", false
 	}
-	return openapi.ParseWithPath(data, specFile)
+	raw := specRawBytes[0]
+	if json.Valid(raw) {
+		return raw, "spec.json", true
+	}
+	return raw, "spec.yaml", true
 }
 
 func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
@@ -726,6 +835,7 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 	}
 
 	mergedBaseURL, perSpecPathPrefix := planMultiSpecBaseURL(specs)
+	sharedPathPrefix := sharedMultiSpecEndpointPathPrefix(specs)
 
 	merged := &spec.APISpec{
 		Name:        name,
@@ -760,6 +870,7 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 		}
 
 		prefix := perSpecPathPrefix[i]
+		resourceRenames := map[string]string{}
 		for resourceName, resource := range s.Resources {
 			if prefix != "" {
 				// Same-host/different-path specs are normalized by folding each
@@ -770,9 +881,13 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 			} else {
 				resource = resourceWithMergedSpecBaseURL(resource, s.BaseURL, merged.BaseURL)
 			}
-			key := resourceName
+			key := multiSpecResourceName(s, resourceName, sharedPathPrefix)
 			if _, exists := merged.Resources[key]; exists {
 				key = s.Name + "-" + resourceName
+			}
+			resource = rewriteDefaultResourceDescription(resource, resourceName, key)
+			if key != resourceName {
+				resourceRenames[resourceName] = key
 			}
 			merged.Resources[key] = resource
 		}
@@ -790,11 +905,166 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 		}
 
 		if mcpConfigured(s.MCP) && !mcpConfigured(merged.MCP) {
-			merged.MCP = s.MCP
+			merged.MCP = rewriteMCPIntentEndpointRefs(s.MCP, resourceRenames)
 		}
 	}
 
 	return merged
+}
+
+func rewriteMCPIntentEndpointRefs(mcp spec.MCPConfig, resourceRenames map[string]string) spec.MCPConfig {
+	if len(resourceRenames) == 0 || len(mcp.Intents) == 0 {
+		return mcp
+	}
+	mcp.Intents = append([]spec.Intent(nil), mcp.Intents...)
+	for intentIndex := range mcp.Intents {
+		intent := mcp.Intents[intentIndex]
+		if len(intent.Steps) == 0 {
+			continue
+		}
+		intent.Steps = append([]spec.IntentStep(nil), intent.Steps...)
+		for stepIndex := range intent.Steps {
+			intent.Steps[stepIndex].Endpoint = rewriteEndpointResourceRef(intent.Steps[stepIndex].Endpoint, resourceRenames)
+		}
+		mcp.Intents[intentIndex] = intent
+	}
+	return mcp
+}
+
+func rewriteEndpointResourceRef(ref string, resourceRenames map[string]string) string {
+	resourceName, rest, ok := strings.Cut(ref, ".")
+	if !ok {
+		return ref
+	}
+	if renamed, ok := resourceRenames[resourceName]; ok {
+		return renamed + "." + rest
+	}
+	return ref
+}
+
+func multiSpecResourceName(s *spec.APISpec, resourceName string, sharedPathPrefix []string) string {
+	if s == nil || len(s.Resources) != 1 || len(sharedPathPrefix) < 2 {
+		return resourceName
+	}
+	specName := strings.TrimSpace(s.Name)
+	if specName == "" || specName == resourceName {
+		return resourceName
+	}
+	if !sharedPrefixContainsResourceName(sharedPathPrefix, resourceName) {
+		return resourceName
+	}
+	return specName
+}
+
+func rewriteDefaultResourceDescription(resource spec.Resource, oldName, newName string) spec.Resource {
+	if oldName == newName {
+		return resource
+	}
+	if resource.DescriptionDerived {
+		resource.Description = spec.DefaultResourceDescription(newName)
+	}
+	return resource
+}
+
+func sharedMultiSpecEndpointPathPrefix(specs []*spec.APISpec) []string {
+	if !allSpecsHaveSingleResource(specs) {
+		return nil
+	}
+	var prefix []string
+	for _, s := range specs {
+		specPathCount := 0
+		var stopped bool
+		prefix, stopped = foldSharedEndpointPathPrefix(prefix, s.Resources, &specPathCount)
+		if stopped {
+			return nil
+		}
+		if specPathCount == 0 {
+			return nil
+		}
+	}
+	if len(prefix) < 2 {
+		return nil
+	}
+	return prefix
+}
+
+func sharedPrefixContainsResourceName(prefix []string, resourceName string) bool {
+	resourceName = normalizePathResourceSegment(resourceName)
+	for _, segment := range prefix {
+		if normalizePathResourceSegment(segment) == resourceName {
+			return true
+		}
+	}
+	return false
+}
+
+func allSpecsHaveSingleResource(specs []*spec.APISpec) bool {
+	if len(specs) < 2 {
+		return false
+	}
+	for _, s := range specs {
+		if s == nil || len(s.Resources) != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+func foldSharedEndpointPathPrefix(prefix []string, resources map[string]spec.Resource, pathCount *int) ([]string, bool) {
+	for _, resource := range resources {
+		for _, endpoint := range resource.Endpoints {
+			segments := splitEndpointPath(endpoint.Path)
+			if len(segments) == 0 {
+				continue
+			}
+			(*pathCount)++
+			if prefix == nil {
+				prefix = segments
+				continue
+			}
+			prefix = commonEndpointPathPrefix(prefix, segments)
+			if len(prefix) < 2 {
+				return nil, true
+			}
+		}
+		if len(resource.SubResources) > 0 {
+			var stopped bool
+			prefix, stopped = foldSharedEndpointPathPrefix(prefix, resource.SubResources, pathCount)
+			if stopped {
+				return nil, true
+			}
+		}
+	}
+	return prefix, false
+}
+
+func splitEndpointPath(path string) []string {
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return nil
+	}
+	rawSegments := strings.Split(path, "/")
+	segments := make([]string, 0, len(rawSegments))
+	for _, segment := range rawSegments {
+		if segment != "" {
+			segments = append(segments, segment)
+		}
+	}
+	return segments
+}
+
+func commonEndpointPathPrefix(a, b []string) []string {
+	limit := min(len(a), len(b))
+	for i := range limit {
+		if a[i] != b[i] {
+			return a[:i]
+		}
+	}
+	return a[:limit]
+}
+
+func normalizePathResourceSegment(value string) string {
+	return strings.ReplaceAll(strings.Trim(strings.ToLower(value), "/"), "_", "-")
 }
 
 func resourceWithMergedSpecBaseURL(resource spec.Resource, sourceBaseURL, mergedBaseURL string) spec.Resource {
@@ -1247,15 +1517,15 @@ func newVersionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "version",
 		Short:   "Print version",
-		Example: `  printing-press version`,
+		Example: `  cli-printing-press version`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if asJSON {
-				return json.NewEncoder(os.Stdout).Encode(map[string]string{
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]string{
 					"version": version.Version,
 					"go":      runtime.Version(),
 				})
 			}
-			fmt.Printf("printing-press %s\n", version.Version)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", cmd.Root().Use, version.Version)
 			return nil
 		},
 	}
@@ -1276,13 +1546,13 @@ func newPrintCmd() *cobra.Command {
 		Short: "Create an autonomous CLI generation pipeline",
 		Long:  "Creates a pipeline directory with plan seeds for each phase. Use /ce:work on each plan to execute.",
 		Example: `  # Run full pipeline for a catalog API
-  printing-press print stripe
+  cli-printing-press print stripe
 
   # Force overwrite existing pipeline
-  printing-press print stripe --force
+  cli-printing-press print stripe --force
 
   # Resume an interrupted pipeline
-  printing-press print stripe --resume`,
+  cli-printing-press print stripe --resume`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			apiName := args[0]
@@ -1499,8 +1769,10 @@ func catalogSpecLookupRefs(specFiles []string, specURL string) []string {
 }
 
 func lookupCatalogEntryForGenerateSpec(apiName string, specRefs []string) *catalog.Entry {
-	if entry, err := catalog.LookupFS(catalogfs.FS, apiName); err == nil {
-		return entry
+	if name := strings.TrimSpace(apiName); name != "" {
+		if entry, err := catalog.LookupFS(catalogfs.FS, name); err == nil {
+			return entry
+		}
 	}
 	specURLs := make(map[string]struct{}, len(specRefs))
 	for _, ref := range specRefs {
@@ -1534,6 +1806,10 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	if entry.Homepage != "" && apiSpec.WebsiteURL == "" {
 		apiSpec.WebsiteURL = entry.Homepage
 	}
+	if entry.BaseURL != "" && catalogmeta.IsReplaceableBaseURL(apiSpec.BaseURL, apiSpec.BaseURLIsPlaceholder) {
+		apiSpec.BaseURL = strings.TrimRight(entry.BaseURL, "/")
+		apiSpec.BaseURLIsPlaceholder = false
+	}
 	if entry.Category != "" && apiSpec.Category == "" {
 		apiSpec.Category = entry.Category
 	}
@@ -1565,6 +1841,7 @@ func enrichSpecFromCatalogEntry(apiSpec *spec.APISpec, entry *catalog.Entry) {
 	if entry.AuthInstructions != "" && apiSpec.Auth.Type != "none" {
 		apiSpec.Auth.Instructions = entry.AuthInstructions
 	}
+	catalogmeta.ApplyCatalogAuthEnvVars(&apiSpec.Auth, entry.AuthEnvVars)
 }
 
 func mcpConfigured(m spec.MCPConfig) bool {

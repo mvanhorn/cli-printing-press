@@ -124,7 +124,7 @@ func writeZipReader(zw *zip.Writer, name string, r io.Reader, mode os.FileMode) 
 }
 
 // DefaultBundleOutputPath returns the conventional path the generator and
-// `printing-press bundle` use when no --output is set. Platform suffix in
+// `cli-printing-press bundle` use when no --output is set. Platform suffix in
 // the filename keeps cross-compiled bundles from clobbering each other.
 func DefaultBundleOutputPath(cliDir, mcpBinary, goos, goarch string) string {
 	if goos == "" {

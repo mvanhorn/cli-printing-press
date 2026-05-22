@@ -249,3 +249,143 @@ func TestAuthHeaderTokenEnvVarsDoNotEmitDuplicateMapKeys(t *testing.T) {
 		})
 	}
 }
+
+// TestAuthHeaderComposedAndCookieApplySchemePrefix pins the fix for #1419:
+// composed and cookie auth types must apply the spec's HeaderPrefix (defaulting
+// to "Bearer ") when emitting AuthHeader(), so env-var and chrome-composed
+// token paths don't return raw tokens that the upstream API will reject as
+// "Authorization: <raw>" instead of "Authorization: Bearer <raw>".
+func TestAuthHeaderComposedAndCookieApplySchemePrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		authType   string
+		envVar     string
+		envField   string
+		authSource string
+	}{
+		{
+			name:       "composed-single-env-var",
+			authType:   "composed",
+			envVar:     "SUNO_TOKEN",
+			envField:   "SunoToken",
+			authSource: "chrome-composed",
+		},
+		{
+			name:       "cookie-single-env-var",
+			authType:   "cookie",
+			envVar:     "NOTION_TOKEN",
+			envField:   "NotionToken",
+			authSource: "browser",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec(tt.name)
+			apiSpec.Auth = spec.AuthConfig{
+				Type:    tt.authType,
+				Header:  "Authorization",
+				EnvVars: []string{tt.envVar},
+			}
+
+			outputDir := filepath.Join(t.TempDir(), tt.name+"-pp-cli")
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			configSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "config", "config.go"))
+			require.NoError(t, err)
+			content := string(configSrc)
+
+			// The raw-return literal must appear nowhere in the emitted config — every
+			// composed/cookie return path now flows through ensureAuthScheme. Whole-file
+			// NotContains avoids depending on a fragile slice boundary.
+			require.NotContains(t, content, "return c."+tt.envField+"\n",
+				"%s auth must not return raw env-var token without scheme prefix:\n%s", tt.authType, content)
+			require.NotContains(t, content, "return c.AccessToken\n",
+				"%s auth must not return raw AccessToken without scheme prefix:\n%s", tt.authType, content)
+
+			// The replacement ensureAuthScheme call must be the wrapper for both paths.
+			require.Contains(t, content,
+				`return ensureAuthScheme("Bearer", c.`+tt.envField+")",
+				"%s auth env-var path should wrap return in ensureAuthScheme:\n%s", tt.authType, content)
+			require.Contains(t, content,
+				`return ensureAuthScheme("Bearer", c.AccessToken)`,
+				"%s auth AccessToken path should wrap return in ensureAuthScheme:\n%s", tt.authType, content)
+
+			// Confirm AuthSource label preserved (no behavior regression on which branch we took).
+			require.Contains(t, content, `c.AuthSource = "`+tt.authSource+`"`)
+
+			// Generated config must compile and pass its own tests.
+			runGoCommand(t, outputDir, "test", "./internal/config")
+		})
+	}
+}
+
+// TestAuthHeaderSchemeHelperHandlesPreprefixedTokens compiles a composed-auth
+// and a cookie-auth CLI and exercises the emitted ensureAuthScheme helper
+// through AuthHeader() to confirm the positive (Bearer prefix applied) and
+// negative (no double prefix when the user pre-prefixes the env var) cases
+// for both auth types. The Bearer prefix here comes from HeaderPrefix()'s
+// default (the composed and cookie branches do not consult Auth.Format), so
+// the test specs intentionally omit Format.
+func TestAuthHeaderSchemeHelperHandlesPreprefixedTokens(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		authType string
+		envVar   string
+		envField string
+	}{
+		{name: "composed", authType: "composed", envVar: "FOO_TOKEN", envField: "FooToken"},
+		{name: "cookie", authType: "cookie", envVar: "BAR_TOKEN", envField: "BarToken"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			apiSpec := minimalSpec(tt.name + "-auth-runtime")
+			apiSpec.Auth = spec.AuthConfig{
+				Type:    tt.authType,
+				Header:  "Authorization",
+				EnvVars: []string{tt.envVar},
+			}
+
+			outputDir := filepath.Join(t.TempDir(), tt.name+"-auth-runtime-pp-cli")
+			require.NoError(t, New(apiSpec, outputDir).Generate())
+
+			testFile := filepath.Join(outputDir, "internal", "config", "auth_scheme_runtime_test.go")
+			testSrc := `package config
+
+import "testing"
+
+func TestEnsureAuthSchemeAppliesBearerPrefix(t *testing.T) {
+	c := &Config{` + tt.envField + `: "eyJxxx"}
+	if got := c.AuthHeader(); got != "Bearer eyJxxx" {
+		t.Fatalf("expected Bearer-prefixed header, got %q", got)
+	}
+}
+
+func TestEnsureAuthSchemeDoesNotDoublePrefix(t *testing.T) {
+	c := &Config{` + tt.envField + `: "Bearer eyJxxx"}
+	if got := c.AuthHeader(); got != "Bearer eyJxxx" {
+		t.Fatalf("expected single Bearer prefix, got %q", got)
+	}
+}
+
+func TestEnsureAuthSchemeBlankReturnsEmpty(t *testing.T) {
+	c := &Config{}
+	if got := c.AuthHeader(); got != "" {
+		t.Fatalf("expected empty header for blank config, got %q", got)
+	}
+}
+`
+			require.NoError(t, os.WriteFile(testFile, []byte(testSrc), 0o644))
+			runGoCommand(t, outputDir, "test", "./internal/config")
+		})
+	}
+}

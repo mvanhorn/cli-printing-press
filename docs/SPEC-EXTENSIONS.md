@@ -29,8 +29,10 @@ in the same change as any new `Extensions["x-*"]` lookup in that file.
 | `x-auth-key-url` | `components.securitySchemes.<name>` | `APISpec.Auth.KeyURL` | No |
 | `x-auth-title` | `components.securitySchemes.<name>` | `APISpec.Auth.Title` | No |
 | `x-auth-description` | `components.securitySchemes.<name>` | `APISpec.Auth.Description` | No |
+| `x-auth-subtype` | `components.securitySchemes.<name>` | `APISpec.Auth.Subtype` | No |
 | `x-auth-cookie-domain` | `components.securitySchemes.<name>` | `APISpec.Auth.CookieDomain` | No |
 | `x-auth-cookies` | `components.securitySchemes.<name>` | `APISpec.Auth.Cookies` | No |
+| `x-auth-companion` | `components.securitySchemes.<name>` or `info` | `APISpec.Auth.LoginURL`, `LoginCompleteSelector`, `JWTCarrierCookie` | No |
 | `x-oauth-refresh-token-mechanism` | `components.securitySchemes.<name>` | `APISpec.Auth.RefreshTokenMechanism` | No |
 | `x-resource-id` | path item | `Endpoint.IDField` | No |
 | `x-critical` | path item | `Endpoint.Critical` | No |
@@ -200,10 +202,17 @@ for large surfaces: `transport: [stdio, http]` + `orchestration: code` +
 Parsed field: `APISpec.MCP` (`spec.MCPConfig`)
 
 Rules:
-- Optional. Specs without `x-mcp` keep today's stdio-only endpoint-mirror
-  behavior.
+- Optional. Specs without `x-mcp` get the endpoint-mirror surface; small APIs
+  (typed-endpoint count at or below `spec.DefaultRemoteTransportEndpointThreshold`,
+  currently 30) also get the http transport compiled in alongside stdio so the
+  same binary can reach cloud-hosted agents. Setting `transport` explicitly
+  (including `transport: [stdio]`) bypasses the default and is honored as-is.
 - May be declared at the OpenAPI root or under `info`. Root takes precedence
   when both are present.
+- For backwards compatibility, root-level `mcp:` is also accepted when
+  canonical `x-mcp` is absent. The parser emits a warning asking authors to
+  rename it to `x-mcp`. `x-mcp` and `mcp` are never merged; any canonical
+  `x-mcp` declaration, including under `info`, wins as a complete config.
 - Shape mirrors the internal YAML `mcp:` block field-for-field: `transport`,
   `addr`, `intents`, `endpoint_tools`, `orchestration`,
   `orchestration_threshold`.
@@ -409,6 +418,15 @@ Rules:
 - When at least one non-empty item is present, the list replaces the parser's
   generated env var names.
 
+Catalog-driven equivalent: when a catalog entry declares `auth_env_vars`, the
+generator layers the canonical names on top of the parser-derived default at
+runtime without editing the upstream spec. The catalog list takes precedence,
+the parser default trails as a backwards-compat fallback, and the rebuilt env
+var list is emitted as an OR-case (any one satisfies auth). The catalog field
+is ignored for HTTP Basic auth (credential-pair shape); declare basic-auth
+env var pairs via `x-auth-env-vars` on the security scheme instead. See
+[`docs/CATALOG.md`](CATALOG.md#auth_env_vars).
+
 ### `x-auth-vars`
 
 Overrides the generated credential environment variable metadata.
@@ -567,6 +585,47 @@ components:
       x-auth-description: Optional FlightAware AeroAPI credential for enriched flight data.
 ```
 
+### `x-auth-subtype`
+
+Refines `Auth.Type` for runtime flows that need a different credential-capture
+path than the base type implies. Today the only recognized value is
+`auth0_spa_in_memory`: a bearer-token spec whose access token is held by the
+Auth0 SPA SDK with `cacheLocation: memory`. Cookie/localStorage extractors have
+no path to such a token (it lives in JS heap only), so the generator emits a
+`--auth0-spa` flag on `auth login --chrome` that drives a Chrome DevTools
+Protocol outbound-Authorization interceptor instead.
+
+Parsed field: `APISpec.Auth.Subtype`
+
+Rules:
+
+- Optional.
+- Must be a string.
+- Recognized values: `auth0_spa_in_memory`. Other values are silently dropped
+  by the parser; the in-spec value never round-trips unless it matches a known
+  subtype.
+- Spec-level validation rejects `auth.subtype: auth0_spa_in_memory` paired with
+  any non-empty `auth.type` other than `bearer_token`. Auth0 SPA tokens are
+  always Authorization-bearer values; combining the subtype with `api_key` or
+  `cookie` would silently emit a CDP path against a credential that isn't a
+  JWT.
+- Sniff-time detection (`internal/browsersniff/auth0_spa.go`) sets the subtype
+  automatically when an `/oauth/token` response carries `access_token` in the
+  JSON body without a JWT-shaped Set-Cookie on the same response. Authors
+  rarely need to set it by hand.
+
+Example:
+
+```yaml
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      x-auth-subtype: auth0_spa_in_memory
+```
+
 ### `x-auth-cookie-domain`
 
 Domain used when extracting named cookies for composed auth.
@@ -605,6 +664,82 @@ components:
       x-auth-cookies:
         - session_id
         - csrf_token
+```
+
+### `x-auth-companion`
+
+Declares the deterministic hints the generated CLI needs to hand off to
+`press-auth login` non-interactively. With these set, `auth login --chrome
+--auto-login` shells out to `press-auth login <domain> --login-url ...
+--jwt-carrier-cookie ...` and the user never has to remember those values.
+
+Parsed fields:
+
+- `login_url` -> `APISpec.Auth.LoginURL`
+- `login_complete_selector` -> `APISpec.Auth.LoginCompleteSelector`
+- `jwt_carrier_cookie` -> `APISpec.Auth.JWTCarrierCookie`
+
+Placement:
+
+- Allowed on `components.securitySchemes.<name>` and on `info`. Scheme-level
+  fields win over info-level when both are set. Info-level is intended for
+  specs that declare composed auth without a single named security scheme.
+
+Rules:
+
+- All three sub-fields are optional. When absent, the generated CLI prints
+  a hint instructing the user to invoke `press-auth login` manually.
+- `login_url` must parse as a URL and use `https://` (or `http://localhost`
+  / `http://127.0.0.1`). Plain `http://` against other hosts would leak the
+  captured cookies to a network sniffer; the parser rejects it.
+- `login_complete_selector` is opaque — pass through verbatim as a CSS
+  selector. The parser does not validate it beyond non-emptiness.
+- `jwt_carrier_cookie` should match one of the names listed in `cookies`.
+  A mismatch surfaces as a stderr warning at parse time (typo surfacing)
+  rather than a hard error.
+- Only these three public hints are embedded into the generated CLI's
+  source. Cookie values, JWT tokens, and other user-secret material never
+  appear in generated constants — press-auth captures and stores those
+  itself.
+
+Internal YAML equivalent (under the `auth:` block):
+
+```yaml
+auth:
+  type: composed
+  cookie_domain: example.com
+  cookies:
+    - session_id
+    - guestsession
+  login_url: https://www.example.com/account/login
+  login_complete_selector: "a[href*=signout]"
+  jwt_carrier_cookie: guestsession
+```
+
+OpenAPI security-scheme placement:
+
+```yaml
+components:
+  securitySchemes:
+    browserSession:
+      type: apiKey
+      in: cookie
+      name: guestsession
+      x-auth-companion:
+        login_url: https://www.example.com/account/login
+        login_complete_selector: "a[href*=signout]"
+        jwt_carrier_cookie: guestsession
+```
+
+OpenAPI info-level placement (for specs without a named scheme):
+
+```yaml
+info:
+  title: Example
+  x-auth-companion:
+    login_url: https://www.example.com/account/login
+    login_complete_selector: "a[href*=signout]"
+    jwt_carrier_cookie: guestsession
 ```
 
 ### `x-oauth-refresh-token-mechanism`

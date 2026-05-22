@@ -8,6 +8,7 @@
 # does not carry the transport list -- transport regressions surface in the
 # tools.go and main.go snapshots below.)
 mcp-cloudflare/.printing-press.json
+mcp-cloudflare/.printing-press-patches.json
 
 # Code-orchestration mode: tools.go must call RegisterCodeOrchestrationTools
 # instead of registering per-endpoint mirror tools. If endpoint_tools=hidden

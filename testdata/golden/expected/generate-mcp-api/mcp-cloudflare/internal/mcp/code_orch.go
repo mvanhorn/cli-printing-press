@@ -59,7 +59,12 @@ type codeOrchEndpoint struct {
 	Tier       string
 	Summary    string
 	Positional []string
-	keywords   []string
+	// HeaderOverrides carries per-endpoint request headers (e.g. an
+	// Accept override for binary-only response endpoints). Without
+	// threading these through, the code-orchestration execute path
+	// sends the client's default Accept and binary endpoints 406.
+	HeaderOverrides map[string]string
+	keywords        []string
 }
 
 // codeOrchEndpoints is the generator-populated registry covering every
@@ -213,27 +218,41 @@ func handleCodeOrchExecute(ctx context.Context, req mcplib.CallToolRequest) (*mc
 		}
 	}
 
+	hdrs := ep.HeaderOverrides
 	var data json.RawMessage
 	switch ep.Method {
 	case "GET":
-		data, err = c.Get(path, query)
+		if len(hdrs) > 0 {
+			data, err = c.GetWithHeaders(ctx, path, query, hdrs)
+		} else {
+			data, err = c.Get(ctx, path, query)
+		}
 	case "DELETE":
-		data, _, err = c.DeleteWithParams(path, query)
+		if len(hdrs) > 0 {
+			data, _, err = c.DeleteWithParamsAndHeaders(ctx, path, query, hdrs)
+		} else {
+			data, _, err = c.DeleteWithParams(ctx, path, query)
+		}
+	case "POST":
+		if len(hdrs) > 0 {
+			data, _, err = c.PostWithHeaders(ctx, path, params, hdrs)
+		} else {
+			data, _, err = c.Post(ctx, path, params)
+		}
+	case "PUT":
+		if len(hdrs) > 0 {
+			data, _, err = c.PutWithHeaders(ctx, path, params, hdrs)
+		} else {
+			data, _, err = c.Put(ctx, path, params)
+		}
+	case "PATCH":
+		if len(hdrs) > 0 {
+			data, _, err = c.PatchWithHeaders(ctx, path, params, hdrs)
+		} else {
+			data, _, err = c.Patch(ctx, path, params)
+		}
 	default:
-		body, mErr := json.Marshal(params)
-		if mErr != nil {
-			return mcplib.NewToolResultError(fmt.Sprintf("marshaling body: %v", mErr)), nil
-		}
-		switch ep.Method {
-		case "POST":
-			data, _, err = c.Post(path, body)
-		case "PUT":
-			data, _, err = c.Put(path, body)
-		case "PATCH":
-			data, _, err = c.Patch(path, body)
-		default:
-			return mcplib.NewToolResultError(fmt.Sprintf("unsupported method %q", ep.Method)), nil
-		}
+		return mcplib.NewToolResultError(fmt.Sprintf("unsupported method %q", ep.Method)), nil
 	}
 	if err != nil {
 		return mcplib.NewToolResultError(err.Error()), nil

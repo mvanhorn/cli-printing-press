@@ -75,7 +75,7 @@ for _, item := range items {
 
 ## Enforcement
 
-`printing-press dogfood` runs `source_client_check`, which scans every
+`cli-printing-press dogfood` runs `source_client_check`, which scans every
 `internal/<pkg>/*.go` file outside the generator-emitted set. A file that
 makes outbound HTTP calls but lacks a limiter signal or a typed-error signal
 produces a finding.

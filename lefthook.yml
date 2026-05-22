@@ -8,15 +8,15 @@ post-checkout:
   commands:
     build:
       run: |
-        go build -o ./printing-press ./cmd/printing-press 2>/dev/null && echo "printing-press binary rebuilt" || true
-        [ -x "$HOME/go/bin/printing-press" ] && go install ./cmd/printing-press 2>/dev/null && echo "go install synced" || true
+        go build -o ./cli-printing-press ./cmd/cli-printing-press 2>/dev/null && echo "cli-printing-press binary rebuilt" || true
+        [ -x "$HOME/go/bin/cli-printing-press" ] && go install ./cmd/cli-printing-press 2>/dev/null && echo "cli-printing-press go install synced" || true
 
 post-merge:
   commands:
     build:
       run: |
-        go build -o ./printing-press ./cmd/printing-press 2>/dev/null && echo "printing-press binary rebuilt" || true
-        [ -x "$HOME/go/bin/printing-press" ] && go install ./cmd/printing-press 2>/dev/null && echo "go install synced" || true
+        go build -o ./cli-printing-press ./cmd/cli-printing-press 2>/dev/null && echo "cli-printing-press binary rebuilt" || true
+        [ -x "$HOME/go/bin/cli-printing-press" ] && go install ./cmd/cli-printing-press 2>/dev/null && echo "cli-printing-press go install synced" || true
 
 pre-commit:
   commands:

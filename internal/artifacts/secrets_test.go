@@ -82,6 +82,62 @@ func TestFindVendorPrefixSecretsIgnoresPlaceholdersAndBinaryFiles(t *testing.T) 
 	require.Empty(t, findings)
 }
 
+func TestFindSpecDeclaredCookieSecretsReportsCookieNameOnly(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "README.md"), []byte("Cookie:session-id=actuallyrealcookievaluexyz; x-main=your-cookie-here; y-main=not-an-example-real-value\n"), 0o644))
+
+	findings, err := FindSpecDeclaredCookieSecrets(root, []string{"session-id", "x-main", "y-main"})
+	require.NoError(t, err)
+	require.Len(t, findings, 2)
+	byKind := map[string]VendorPrefixSecretFinding{}
+	for _, finding := range findings {
+		byKind[finding.Kind] = finding
+	}
+	require.Equal(t, "README.md", byKind["cookie-value:session-id"].Path)
+	require.Equal(t, 1, byKind["cookie-value:session-id"].Line)
+	require.Equal(t, "README.md", byKind["cookie-value:y-main"].Path)
+	require.Equal(t, 1, byKind["cookie-value:y-main"].Line)
+}
+
+func TestFindSpecDeclaredCookieSecretsReportsStructuredNameValueCookies(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "cookies.json"), []byte(`{"name":"session-id","value":"actuallyrealcookievaluexyz"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "cookies-reversed.json"), []byte(`{"value":"anotherrealcookievaluexyz","name":"x-main"}`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "cookies-pretty.json"), []byte("{\n  \"name\": \"y-main\",\n  \"value\": \"prettyrealcookievaluexyz\"\n}\n"), 0o644))
+
+	findings, err := FindSpecDeclaredCookieSecrets(root, []string{"session-id", "x-main", "y-main"})
+	require.NoError(t, err)
+	require.Len(t, findings, 3)
+	byKind := map[string]VendorPrefixSecretFinding{}
+	for _, finding := range findings {
+		byKind[finding.Kind] = finding
+	}
+	require.Equal(t, "cookies.json", byKind["cookie-value:session-id"].Path)
+	require.Equal(t, 1, byKind["cookie-value:session-id"].Line)
+	require.Equal(t, "cookies-reversed.json", byKind["cookie-value:x-main"].Path)
+	require.Equal(t, 1, byKind["cookie-value:x-main"].Line)
+	require.Equal(t, "cookies-pretty.json", byKind["cookie-value:y-main"].Path)
+	require.Equal(t, 3, byKind["cookie-value:y-main"].Line)
+}
+
+func TestFindPackageSecretsCombinesVendorPrefixAndDeclaredCookies(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, "README.md"), []byte("Cookie: session-id=actuallyrealcookievaluexyz\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "spec.json"), []byte("\"token\":\""+testSecret("sk", "-or-v1-", "abcdefghijklmnopqrstuvwxyz1234567890")+"\"\n"), 0o644))
+
+	findings, err := FindPackageSecrets(root, []string{"session-id"})
+	require.NoError(t, err)
+	require.Len(t, findings, 2)
+	byKind := map[string]VendorPrefixSecretFinding{}
+	for _, finding := range findings {
+		byKind[finding.Kind] = finding
+	}
+	require.Equal(t, "README.md", byKind["cookie-value:session-id"].Path)
+	require.Equal(t, 1, byKind["cookie-value:session-id"].Line)
+	require.Equal(t, "spec.json", byKind["openrouter-api-key"].Path)
+	require.Equal(t, 1, byKind["openrouter-api-key"].Line)
+}
+
 func testSecret(parts ...string) string {
 	return strings.Join(parts, "")
 }

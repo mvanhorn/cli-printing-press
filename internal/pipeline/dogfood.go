@@ -22,9 +22,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// DogfoodSpecSource identifies which spec input RunDogfood actually loaded
+// when both a bundled <dir>/spec.* and a caller-passed --spec are reachable.
+type DogfoodSpecSource string
+
+const (
+	DogfoodSpecSourceBundled DogfoodSpecSource = "bundled"
+	DogfoodSpecSourceCaller  DogfoodSpecSource = "caller"
+)
+
 type DogfoodReport struct {
 	Dir                    string                       `json:"dir"`
 	SpecPath               string                       `json:"spec_path,omitempty"`
+	SpecSource             DogfoodSpecSource            `json:"spec_source,omitempty"`
 	Verdict                string                       `json:"verdict"`
 	PathCheck              PathCheckResult              `json:"path_check"`
 	AuthCheck              AuthCheckResult              `json:"auth_check"`
@@ -123,10 +133,12 @@ type DeadCodeResult struct {
 }
 
 type PipelineResult struct {
-	SyncCallsDomain   bool   `json:"sync_calls_domain"`
-	SearchCallsDomain bool   `json:"search_calls_domain"`
-	DomainTables      int    `json:"domain_tables"`
-	Detail            string `json:"detail"`
+	SyncCallsDomain      bool   `json:"sync_calls_domain"`
+	SearchCallsDomain    bool   `json:"search_calls_domain"`
+	DomainTables         int    `json:"domain_tables"`
+	SyncFileEmitted      bool   `json:"sync_file_emitted"`
+	SyncResourcesPresent bool   `json:"sync_resources_present"`
+	Detail               string `json:"detail"`
 }
 
 type ExampleCheckResult struct {
@@ -204,15 +216,31 @@ func (s *openAPISpec) IsSynthetic() bool {
 }
 
 func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, error) {
+	releaseHome, err := scopeSubprocessHome()
+	if err != nil {
+		return nil, err
+	}
+	defer releaseHome()
+
 	cfg := dogfoodConfig{}
 	for _, o := range opts {
 		o(&cfg)
 	}
 
+	resolvedSpec, specSource, overriddenCaller := resolveDogfoodSpec(dir, specPath)
+	if resolvedSpec != "" {
+		fmt.Fprintf(os.Stderr, "dogfood: using spec %s (%s)\n", absOrSame(resolvedSpec), specSourceLabel(specSource))
+	}
+	if overriddenCaller != "" {
+		fmt.Fprintf(os.Stderr, "dogfood: caller --spec=%s overridden by bundled %s\n", overriddenCaller, absOrSame(resolvedSpec))
+	}
+	specPath = resolvedSpec
+
 	report := &DogfoodReport{
-		Dir:      dir,
-		SpecPath: specPath,
-		Verdict:  "PASS",
+		Dir:        dir,
+		SpecPath:   specPath,
+		SpecSource: specSource,
+		Verdict:    "PASS",
 	}
 
 	var spec *openAPISpec
@@ -751,6 +779,68 @@ func writeDogfoodResults(report *DogfoodReport, dir string) error {
 	return os.WriteFile(filepath.Join(dir, "dogfood-results.json"), data, 0o644)
 }
 
+// resolveDogfoodSpec picks the spec dogfood should actually load. The spec
+// bundled at <dir>/spec.{json,yaml,yml} by `publish package` is authoritative
+// for the printed CLI; preferring it over a caller-passed --spec avoids
+// false-negative Path Validity / Auth Protocol regressions when the caller
+// reaches into a multi-spec manuscripts directory and picks the upstream spec
+// instead of the internal one the CLI was actually generated from.
+//
+// Returns the resolved path, its DogfoodSpecSource, and — when bundled won
+// over a different caller path — the caller's overridden path for surfacing
+// in a warning. When neither a bundled nor a caller spec exists, all three
+// return values are empty and downstream checks that require a spec are
+// skipped exactly as before.
+func resolveDogfoodSpec(dir, callerSpec string) (resolved string, source DogfoodSpecSource, overriddenCaller string) {
+	bundled := findBundledDogfoodSpec(dir)
+	if bundled != "" {
+		if callerSpec != "" && !samePath(bundled, callerSpec) {
+			overriddenCaller = callerSpec
+		}
+		return bundled, DogfoodSpecSourceBundled, overriddenCaller
+	}
+	if callerSpec != "" {
+		return callerSpec, DogfoodSpecSourceCaller, ""
+	}
+	return "", "", ""
+}
+
+// findBundledDogfoodSpec returns the path to the spec archived alongside a
+// printed CLI by `publish package`, or "" if none is present. Search order
+// mirrors findArchivedSpec: spec.json (JSON inputs), spec.yaml, spec.yml.
+func findBundledDogfoodSpec(dir string) string {
+	for _, name := range []string{"spec.json", "spec.yaml", "spec.yml"} {
+		path := filepath.Join(dir, name)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path
+		}
+	}
+	return ""
+}
+
+func samePath(a, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return filepath.Clean(absA) == filepath.Clean(absB)
+}
+
+func absOrSame(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
+}
+
+func specSourceLabel(source DogfoodSpecSource) string {
+	if source == DogfoodSpecSourceBundled {
+		return "bundled"
+	}
+	return "--spec"
+}
+
 func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
 	data, err := openapiparser.LoadSpecBytes(specPath, false, false)
 	if err != nil {
@@ -974,29 +1064,139 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 	configData, _ := os.ReadFile(filepath.Join(dir, "internal", "config", "config.go"))
 
 	combinedSource := string(clientData) + string(configData)
-	switch {
-	case strings.Contains(combinedSource, `"Bot "`):
-		result.GeneratedFmt = "Bot "
-	case strings.Contains(combinedSource, `"Bearer "`):
-		result.GeneratedFmt = "Bearer "
-	case strings.Contains(combinedSource, `"Basic "`):
-		result.GeneratedFmt = "Basic "
-	default:
-		result.GeneratedFmt = "unknown"
-	}
+	var tokenPreserving bool
+	var invalidDetail string
+	result.GeneratedFmt, tokenPreserving, invalidDetail = detectGeneratedAuthFormat(combinedSource, expectedPrefix)
 
 	if expectedPrefix == "" {
-		result.Detail = "spec not provided or no bot/bearer/basic scheme detected"
+		result.Detail = "no bot/bearer/basic scheme detected"
 		return result
 	}
 
 	result.Match = result.GeneratedFmt == expectedPrefix
 	if result.Match {
-		result.Detail = fmt.Sprintf(`spec and generated client both use %q`, strings.TrimSpace(expectedPrefix))
+		if tokenPreserving {
+			result.Detail = fmt.Sprintf(`spec and generated client both use %q`, strings.TrimSpace(expectedPrefix))
+		} else {
+			result.Match = false
+			result.Detail = invalidDetail
+		}
 	} else {
 		result.Detail = fmt.Sprintf(`spec expects %q but generated client uses %q`, strings.TrimSpace(expectedPrefix), strings.TrimSpace(result.GeneratedFmt))
 	}
 	return result
+}
+
+type authPrefixCandidate struct {
+	prefix   string
+	concatRe *regexp.Regexp
+}
+
+var authPrefixCandidates = []authPrefixCandidate{
+	{prefix: "Bot ", concatRe: regexp.MustCompile(`"Bot "\s*\+`)},
+	{prefix: "Bearer ", concatRe: regexp.MustCompile(`"Bearer "\s*\+`)},
+	{prefix: "Basic ", concatRe: regexp.MustCompile(`"Basic "\s*\+`)},
+}
+
+var applyAuthFormatInlineMapCallRe = regexp.MustCompile(`(?s)applyAuthFormat\("([^"]*)",\s*map\[string\]string\{(.*?)\}\)`)
+var applyAuthFormatCallRe = regexp.MustCompile(`applyAuthFormat\("([^"]*)"`)
+var authFormatPlaceholderRe = regexp.MustCompile(`\{([^}]+)\}`)
+
+func detectGeneratedAuthFormat(source string, expectedPrefix string) (string, bool, string) {
+	candidates := authCandidatesForPrefix(expectedPrefix)
+
+	for _, candidate := range candidates {
+		if candidate.concatRe.MatchString(source) {
+			return candidate.prefix, true, ""
+		}
+	}
+
+	var bestInvalidPrefix string
+	var bestInvalidDetail string
+	inlineFormats := map[string]bool{}
+	for _, formatMatch := range applyAuthFormatInlineMapCallRe.FindAllStringSubmatch(source, -1) {
+		format := formatMatch[1]
+		inlineFormats[format] = true
+		if prefix, ok := matchingAuthFormatPrefix(format, candidates); ok {
+			if authFormatInlineMapPreservesToken(format, formatMatch[2]) {
+				return prefix, true, ""
+			}
+			if placeholder := firstMissingAuthFormatPlaceholder(format, formatMatch[2]); placeholder != "" {
+				if bestInvalidPrefix == "" {
+					bestInvalidPrefix = prefix
+					bestInvalidDetail = fmt.Sprintf(`format literal %q includes placeholder %q but generated replacements do not provide it`, format, placeholder)
+				}
+				continue
+			}
+			if bestInvalidPrefix == "" {
+				bestInvalidPrefix = prefix
+				bestInvalidDetail = fmt.Sprintf(`format literal %q does not include a token placeholder`, format)
+			}
+		}
+	}
+
+	for _, formatMatch := range applyAuthFormatCallRe.FindAllStringSubmatch(source, -1) {
+		format := formatMatch[1]
+		if inlineFormats[format] {
+			continue
+		}
+		if prefix, ok := matchingAuthFormatPrefix(format, candidates); ok && strings.Contains(format, "{") {
+			return prefix, true, ""
+		}
+	}
+
+	if bestInvalidPrefix != "" {
+		return bestInvalidPrefix, false, bestInvalidDetail
+	}
+
+	for _, candidate := range candidates {
+		if strings.Contains(source, fmt.Sprintf("%q", candidate.prefix)) {
+			return candidate.prefix, false, fmt.Sprintf(`generated source includes bare %q prefix literal without a detected token append or placeholder`, strings.TrimSpace(candidate.prefix))
+		}
+	}
+
+	return "unknown", false, ""
+}
+
+func authCandidatesForPrefix(expectedPrefix string) []authPrefixCandidate {
+	if expectedPrefix == "" {
+		return authPrefixCandidates
+	}
+	candidates := make([]authPrefixCandidate, 0, len(authPrefixCandidates))
+	for _, candidate := range authPrefixCandidates {
+		if candidate.prefix == expectedPrefix {
+			candidates = append(candidates, candidate)
+			break
+		}
+	}
+	for _, candidate := range authPrefixCandidates {
+		if candidate.prefix != expectedPrefix {
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
+}
+
+func matchingAuthFormatPrefix(format string, candidates []authPrefixCandidate) (string, bool) {
+	for _, candidate := range candidates {
+		if strings.HasPrefix(format, candidate.prefix) {
+			return candidate.prefix, true
+		}
+	}
+	return "", false
+}
+
+func authFormatInlineMapPreservesToken(format string, replacements string) bool {
+	return strings.Contains(format, "{") && firstMissingAuthFormatPlaceholder(format, replacements) == ""
+}
+
+func firstMissingAuthFormatPlaceholder(format string, replacements string) string {
+	for _, match := range authFormatPlaceholderRe.FindAllStringSubmatch(format, -1) {
+		if !strings.Contains(replacements, fmt.Sprintf("%q:", match[1])) {
+			return match[1]
+		}
+	}
+	return ""
 }
 
 func checkBrowserSessionAuth(dir string, auth apispec.AuthConfig) BrowserSessionCheckResult {
@@ -1454,6 +1654,8 @@ func checkPipelineIntegrity(dir string) PipelineResult {
 	result.SyncCallsDomain = domainUpsertRe.MatchString(syncSource)
 	result.SearchCallsDomain = domainSearchRe.MatchString(searchSource)
 	result.DomainTables = countDomainTables(storeSource)
+	result.SyncFileEmitted = syncSource != ""
+	result.SyncResourcesPresent = hasPopulatedSyncResources(syncSource)
 
 	var parts []string
 	switch {
@@ -1478,8 +1680,46 @@ func checkPipelineIntegrity(dir string) PipelineResult {
 		parts = append(parts, fmt.Sprintf("%d domain tables found", result.DomainTables))
 	}
 
+	// When sync.go is emitted but defaultSyncResources() returns an empty list,
+	// the sync command is a no-op at runtime. Store-dependent novel commands
+	// (cookbook, pantry, top-rated, …) then ship with no advertised path to
+	// populate the store. Flag so the absence surfaces at shipcheck time.
+	if syncSource != "" && !result.SyncResourcesPresent {
+		parts = append(parts, "defaultSyncResources empty (sync command is a no-op)")
+	}
+
 	result.Detail = strings.Join(parts, "; ")
 	return result
+}
+
+// defaultSyncResourcesEmptyRe matches the generator's empty-list emission for
+// defaultSyncResources, after gofmt collapses `return []string{\n}` to a single
+// line. Matching the open-brace through the literal "}" keeps the check robust
+// against trailing whitespace and the gofmt-aware "\n\t}" form some emitters
+// produce when the template body has a leading newline.
+var defaultSyncResourcesEmptyRe = regexp.MustCompile(
+	`(?s)func\s+defaultSyncResources\s*\(\s*\)\s*\[\]string\s*\{\s*return\s+\[\]string\{\s*\}\s*\}`,
+)
+
+// hasPopulatedSyncResources reports whether the emitted sync.go declares at
+// least one syncable resource via the defaultSyncResources() helper. Returns
+// true when defaultSyncResources is either absent (hand-rolled or test
+// fixture sync surfaces are not the failure mode this check targets) or
+// present with at least one entry. Returns false only when the helper is
+// emitted with an explicit empty-list body `return []string{}`. Used by
+// dogfood's pipeline check to surface CLIs that emit a sync command with
+// nothing to sync: the failure mode where store-dependent novel commands
+// have no advertised population path.
+func hasPopulatedSyncResources(syncSource string) bool {
+	if syncSource == "" {
+		return false
+	}
+	if !strings.Contains(syncSource, "func defaultSyncResources") {
+		// No generator-emitted helper to inspect. Treat as "not the failure
+		// mode" rather than risking false positives on hand-rolled sync.
+		return true
+	}
+	return !defaultSyncResourcesEmptyRe.MatchString(syncSource)
 }
 
 type dogfoodVerdictRule struct {
@@ -1502,6 +1742,13 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 1 && r.DeadFlags.Dead <= 2 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.DeadFuncs.Dead >= 1 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return !r.PipelineCheck.SyncCallsDomain }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool {
+		// Issue #1156: when defaultSyncResources is emitted empty, the sync
+		// command is a runtime no-op and store-dependent novel commands have
+		// no advertised path to populate the store. Promote to WARN so the
+		// gap surfaces at shipcheck time rather than after publish.
+		return r.PipelineCheck.SyncFileEmitted && !r.PipelineCheck.SyncResourcesPresent
+	}},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.ExampleCheck.InvalidFlags) > 0 }},
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return r.ExampleCheck.Skipped }},
 	{"FAIL", func(r *DogfoodReport, _ bool) bool { return len(r.WiringCheck.CommandTree.Unregistered) > 0 }},
@@ -1555,6 +1802,9 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 	}
 	if !report.PipelineCheck.SyncCallsDomain {
 		issues = append(issues, "sync uses generic Upsert only")
+	}
+	if report.PipelineCheck.SyncFileEmitted && !report.PipelineCheck.SyncResourcesPresent {
+		issues = append(issues, "defaultSyncResources empty: sync command is a runtime no-op; store-dependent novel commands have no advertised population path")
 	}
 	if report.ExampleCheck.Tested > 0 && (report.ExampleCheck.WithExamples*100/report.ExampleCheck.Tested) < 50 {
 		issues = append(issues, fmt.Sprintf("%d%% example coverage", report.ExampleCheck.WithExamples*100/report.ExampleCheck.Tested))
@@ -1758,21 +2008,50 @@ func discoverExampleCheckCommands(binaryPath string) ([][]string, error) {
 // callers can surface a meaningful "what broke" instead of "exit
 // status 1".
 func runStdoutOnly(binaryPath string, timeout time.Duration, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, binaryPath, args...)
-	out, err := cmd.Output()
-	if ctx.Err() == context.DeadlineExceeded {
-		return nil, fmt.Errorf("timed out after %s", timeout)
-	}
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-			return nil, fmt.Errorf("%s", strings.TrimSpace(string(exitErr.Stderr)))
+	return runStdoutOnlyWithRunner(timeout, func(ctx context.Context) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, binaryPath, args...)
+		applyDefaultSubprocessEnv(cmd)
+		return cmd.Output()
+	})
+}
+
+func runStdoutOnlyWithRunner(timeout time.Duration, run func(context.Context) ([]byte, error)) ([]byte, error) {
+	deadline := time.Now().Add(timeout)
+	for attempt := 0; ; attempt++ {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, fmt.Errorf("timed out after %s", timeout)
 		}
-		return nil, err
+		ctx, cancel := context.WithTimeout(context.Background(), remaining)
+		out, err := run(ctx)
+		timedOut := ctx.Err() == context.DeadlineExceeded
+		cancel()
+		if timedOut {
+			return nil, fmt.Errorf("timed out after %s", timeout)
+		}
+		if err == nil {
+			return out, nil
+		}
+		if isTextFileBusy(err) {
+			sleep := time.Duration(attempt+1) * 25 * time.Millisecond
+			sleep = min(sleep, 250*time.Millisecond)
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return nil, fmt.Errorf("timed out after %s", timeout)
+			}
+			time.Sleep(min(sleep, remaining))
+			continue
+		}
+		return nil, formatStdoutOnlyError(err)
 	}
-	return out, nil
+}
+
+func formatStdoutOnlyError(err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+		return fmt.Errorf("%s", strings.TrimSpace(string(exitErr.Stderr)))
+	}
+	return err
 }
 
 func dogfoodExampleCommandPathsFromAgentContext(data []byte) ([][]string, error) {
@@ -1876,6 +2155,7 @@ func runDogfoodCmd(binary string, timeout time.Duration, args ...string) (string
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
+	applyDefaultSubprocessEnv(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil && ctx.Err() == context.DeadlineExceeded {
 		return "", fmt.Errorf("timed out after %s", timeout)

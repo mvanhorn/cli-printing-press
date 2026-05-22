@@ -123,6 +123,33 @@ func TestWriteToolsManifest_MultipleResources(t *testing.T) {
 	assert.Equal(t, "/store/inventory", got.Tools[3].Path)
 }
 
+func TestWriteToolsManifestWithDescriptionUsesCanonicalManifestDescription(t *testing.T) {
+	dir := t.TempDir()
+	parsed := &spec.APISpec{
+		Name:        "petstore",
+		Description: "Weak source-spec fallback copy.",
+		BaseURL:     "https://petstore.example.com/v3",
+		Auth:        spec.AuthConfig{Type: "none"},
+		Resources: map[string]spec.Resource{
+			"Pets": {
+				Description: "Pet operations",
+				Endpoints: map[string]spec.Endpoint{
+					"List": {Method: "GET", Path: "/pets", Description: "List all pets"},
+				},
+			},
+		},
+	}
+	canonical := "Curated catalog description for the generated CLI."
+
+	require.NoError(t, WriteToolsManifestWithDescription(dir, parsed, canonical))
+
+	data, err := os.ReadFile(filepath.Join(dir, ToolsManifestFilename))
+	require.NoError(t, err)
+	var got ToolsManifest
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, canonical, got.Description)
+}
+
 func TestWriteToolsManifest_SubResources(t *testing.T) {
 	dir := t.TempDir()
 	parsed := &spec.APISpec{
@@ -559,7 +586,7 @@ func TestWriteToolsManifest_CookieAuthOnlyNoAuthEndpoints(t *testing.T) {
 	parsed := &spec.APISpec{
 		Name:    "cookie-api",
 		BaseURL: "https://api.example.com",
-		Auth:    spec.AuthConfig{Type: "cookie", EnvVars: []string{"COOKIE"}},
+		Auth:    spec.AuthConfig{Type: "cookie", EnvVars: []string{"COOKIE"}, Cookies: []string{"session-id", "x-main"}},
 		Resources: map[string]spec.Resource{
 			"Items": {
 				Endpoints: map[string]spec.Endpoint{
@@ -585,6 +612,7 @@ func TestWriteToolsManifest_CookieAuthOnlyNoAuthEndpoints(t *testing.T) {
 	assert.Equal(t, "items_public_count", got.Tools[0].Name)
 	assert.Equal(t, "items_public_list", got.Tools[1].Name)
 	assert.Equal(t, "partial", got.MCPReady)
+	assert.Equal(t, []string{"session-id", "x-main"}, got.Auth.Cookies)
 }
 
 func TestWriteToolsManifest_ComposedAuthOnlyNoAuthEndpoints(t *testing.T) {
@@ -592,7 +620,7 @@ func TestWriteToolsManifest_ComposedAuthOnlyNoAuthEndpoints(t *testing.T) {
 	parsed := &spec.APISpec{
 		Name:    "composed-api",
 		BaseURL: "https://api.example.com",
-		Auth:    spec.AuthConfig{Type: "composed", EnvVars: []string{"AUTH_TOKEN"}},
+		Auth:    spec.AuthConfig{Type: "composed", EnvVars: []string{"AUTH_TOKEN"}, Cookies: []string{"session-id"}},
 		Resources: map[string]spec.Resource{
 			"Items": {
 				Endpoints: map[string]spec.Endpoint{
@@ -614,6 +642,7 @@ func TestWriteToolsManifest_ComposedAuthOnlyNoAuthEndpoints(t *testing.T) {
 
 	require.Len(t, got.Tools, 1)
 	assert.Equal(t, "items_public_list", got.Tools[0].Name)
+	assert.Equal(t, []string{"session-id"}, got.Auth.Cookies)
 }
 
 func TestWriteToolsManifest_EmptyDescription(t *testing.T) {
