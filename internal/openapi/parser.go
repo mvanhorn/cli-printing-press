@@ -173,6 +173,131 @@ func stripBrokenRefs(data []byte, errMsg string) []byte {
 	return data
 }
 
+func stubMissingLocalSchemaRefs(data []byte) ([]byte, int, error) {
+	root, _, schemas, names, err := findMissingLocalSchemaRefs(data)
+	if err != nil {
+		return data, 0, err
+	}
+	if len(names) == 0 {
+		return data, 0, nil
+	}
+
+	for _, name := range names {
+		if _, exists := schemas[name]; exists {
+			continue
+		}
+		schemas[name] = map[string]any{
+			"type":                 "object",
+			"description":          fmt.Sprintf("Stub for missing local schema ref %s.", name),
+			"additionalProperties": true,
+		}
+		warnf("stubbing missing local schema ref %q as permissive object", name)
+	}
+
+	stubbed, err := json.Marshal(root)
+	if err != nil {
+		return data, 0, err
+	}
+	return stubbed, len(names), nil
+}
+
+func findMissingLocalSchemaRefs(data []byte) (map[string]any, map[string]any, map[string]any, []string, error) {
+	if !bytes.Contains(data, []byte(localSchemaRefPrefix)) {
+		return nil, nil, nil, nil, nil
+	}
+
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	components := objectValue(root["components"])
+	schemas := objectValue(components["schemas"])
+	missing := make(map[string]struct{})
+	collectMissingLocalSchemaRefs(root, "", schemas, missing)
+	if len(missing) == 0 {
+		return root, components, schemas, nil, nil
+	}
+
+	if components == nil {
+		components = make(map[string]any)
+		root["components"] = components
+	}
+	if schemas == nil {
+		schemas = make(map[string]any)
+		components["schemas"] = schemas
+	}
+
+	names := make([]string, 0, len(missing))
+	for name := range missing {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	return root, components, schemas, names, nil
+}
+
+func collectMissingLocalSchemaRefs(v any, parentKey string, schemas map[string]any, missing map[string]struct{}) {
+	if isArbitrarySpecDataKey(parentKey) || strings.HasPrefix(parentKey, "x-") {
+		return
+	}
+	switch typed := v.(type) {
+	case map[string]any:
+		if rawRef, ok := typed["$ref"].(string); ok {
+			if name, ok := localSchemaRefName(rawRef); ok {
+				if _, exists := schemas[name]; !exists {
+					missing[name] = struct{}{}
+				}
+			}
+		}
+		for key, child := range typed {
+			collectMissingLocalSchemaRefs(child, key, schemas, missing)
+		}
+	case []any:
+		for _, child := range typed {
+			collectMissingLocalSchemaRefs(child, parentKey, schemas, missing)
+		}
+	}
+}
+
+func isArbitrarySpecDataKey(key string) bool {
+	switch key {
+	case "example", "examples", "default":
+		return true
+	default:
+		return false
+	}
+}
+
+func localSchemaRefName(ref string) (string, bool) {
+	if !strings.HasPrefix(ref, localSchemaRefPrefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(ref, localSchemaRefPrefix)
+	if rest == "" {
+		return "", false
+	}
+	name, suffix, hasSuffix := strings.Cut(rest, "/")
+	if name == "" {
+		return "", false
+	}
+	if hasSuffix && suffix != "" {
+		return "", false
+	}
+	if unescaped, err := url.PathUnescape(name); err == nil {
+		name = unescaped
+	}
+	name = strings.NewReplacer("~1", "/", "~0", "~").Replace(name)
+	return name, true
+}
+
+const localSchemaRefPrefix = "#/components/schemas/"
+
+func objectValue(v any) map[string]any {
+	obj, _ := v.(map[string]any)
+	return obj
+}
+
 // Parse parses an OpenAPI spec strictly. Use ParseLenient for specs with broken $refs.
 func Parse(data []byte) (*spec.APISpec, error) {
 	return ParseWithOptions(data, ParseOptions{})
@@ -220,6 +345,9 @@ type ParseOptions struct {
 	Path string
 	// Lenient skips validation errors from broken $refs.
 	Lenient bool
+	// Set when callers need other lenient cleanup while preserving missing-ref
+	// failures.
+	StrictRefs bool
 	// AuthPreference names a security scheme from components.securitySchemes
 	// that should win over the parser's default selection priority. Used when
 	// a spec exposes multiple valid schemes (e.g. OAuth2 + basic) and the
@@ -233,13 +361,13 @@ type ParseOptions struct {
 // path/lenient settings.
 func ParseWithOptions(data []byte, opts ParseOptions) (*spec.APISpec, error) {
 	if opts.Path == "" {
-		return parseWithLocation(data, opts.Lenient, nil, opts.AuthPreference)
+		return parseWithLocation(data, opts.Lenient, opts.StrictRefs, nil, opts.AuthPreference)
 	}
 	location, err := fileLocation(opts.Path)
 	if err != nil {
 		return nil, err
 	}
-	return parseWithLocation(data, opts.Lenient, location, opts.AuthPreference)
+	return parseWithLocation(data, opts.Lenient, opts.StrictRefs, location, opts.AuthPreference)
 }
 
 func parseFileWithOptions(path string, opts ParseOptions) (*spec.APISpec, error) {
@@ -251,11 +379,21 @@ func parseFileWithOptions(path string, opts ParseOptions) (*spec.APISpec, error)
 	return ParseWithOptions(data, opts)
 }
 
-func parseWithLocation(data []byte, lenient bool, location *url.URL, authPreference string) (*spec.APISpec, error) {
+func parseWithLocation(data []byte, lenient bool, strictRefs bool, location *url.URL, authPreference string) (*spec.APISpec, error) {
 	var metadata specDataMetadata
 	if normalized, meta, err := normalizeSpecDataWithMetadata(data); err == nil {
 		data = normalized
 		metadata = meta
+	}
+	if lenient && !strictRefs {
+		if stubbed, count, err := stubMissingLocalSchemaRefs(data); err == nil && count > 0 {
+			data = stubbed
+		}
+	}
+	if lenient && strictRefs {
+		if _, _, _, missing, err := findMissingLocalSchemaRefs(data); err == nil && len(missing) > 0 {
+			return nil, fmt.Errorf("missing local schema refs: %s", strings.Join(missing, ", "))
+		}
 	}
 	doc, err := loadOpenAPIDoc(data, lenient, location)
 	if err != nil {

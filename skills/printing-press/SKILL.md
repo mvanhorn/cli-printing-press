@@ -2265,6 +2265,11 @@ The `--category <catalog-category>` flag shown below is for non-catalog runs
 whose category was not already authored into an editable spec. Omit it for
 catalog-config runs; the built-in catalog category is authoritative there.
 
+`--lenient` stubs missing local `#/components/schemas/<Name>` refs as
+permissive object schemas with warnings so converted OpenAPI specs can still
+generate. Add `--strict-refs` only when a run must fail instead of accepting
+those local schema stubs; it does not change the rest of lenient cleanup.
+
 OpenAPI / internal YAML:
 
 ```bash

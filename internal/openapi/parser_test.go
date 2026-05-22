@@ -52,6 +52,265 @@ func TestParsePetstore(t *testing.T) {
 	assert.Contains(t, parsed.Types, "Pet")
 }
 
+func TestParseLenientStubsMissingLocalSchemaRefs(t *testing.T) {
+	specBytes := []byte(`
+openapi: 3.0.3
+info:
+  title: Missing Ref API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  widget:
+                    $ref: "#/components/schemas/MissingWidget"
+components:
+  schemas:
+    Present:
+      type: object
+      properties:
+        id:
+          type: string
+`)
+
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = ParseLenient(specBytes)
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	normalized, normalizeErr := normalizeSpecData(specBytes)
+	require.NoError(t, normalizeErr)
+	stubbed, count, stubErr := stubMissingLocalSchemaRefs(normalized)
+	require.NoError(t, stubErr)
+	require.Equal(t, 1, count)
+	var root map[string]any
+	require.NoError(t, json.Unmarshal(stubbed, &root))
+	schema := root["components"].(map[string]any)["schemas"].(map[string]any)["MissingWidget"].(map[string]any)
+	assert.Equal(t, "object", schema["type"])
+	assert.Equal(t, true, schema["additionalProperties"])
+	assert.Contains(t, parsed.Types, "MissingWidget")
+	assert.Contains(t, warnings, `warning: stubbing missing local schema ref "MissingWidget"`)
+}
+
+func TestParseMissingLocalSchemaRefsStayStrictByDefault(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`
+openapi: 3.0.3
+info:
+  title: Missing Ref API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MissingWidget"
+components:
+  schemas: {}
+`)
+
+	_, err := Parse(specBytes)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `map key "MissingWidget" not found`)
+}
+
+func TestParseStrictRefsDisablesLenientLocalSchemaStubs(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`
+openapi: 3.0.3
+info:
+  title: Missing Ref API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MissingWidget"
+components:
+  schemas: {}
+`)
+
+	_, err := ParseWithOptions(specBytes, ParseOptions{Lenient: true, StrictRefs: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing local schema refs: MissingWidget")
+}
+
+func TestParseStrictRefsFailsBeforeLenientPathStripping(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`
+openapi: 3.0.3
+info:
+  title: Missing Ref API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /broken:
+    get:
+      operationId: getBroken
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MissingWidget"
+  /healthy:
+    get:
+      operationId: getHealthy
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+components:
+  schemas: {}
+`)
+
+	_, err := ParseWithOptions(specBytes, ParseOptions{Lenient: true, StrictRefs: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing local schema refs: MissingWidget")
+}
+
+func TestParseLenientIgnoresRefStringsInsideExampleData(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`
+openapi: 3.0.3
+info:
+  title: Example Ref API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+              example:
+                widget:
+                  $ref: "#/components/schemas/MissingWidget"
+components:
+  schemas: {}
+`)
+
+	parsed, err := ParseLenient(specBytes)
+	require.NoError(t, err)
+	assert.NotContains(t, parsed.Types, "MissingWidget")
+}
+
+func TestParseLenientDoesNotStubNestedLocalSchemaPointers(t *testing.T) {
+	t.Parallel()
+
+	specBytes := []byte(`
+openapi: 3.0.3
+info:
+  title: Nested Missing Ref API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MissingWidget/properties/id"
+components:
+  schemas: {}
+`)
+
+	_, err := ParseLenient(specBytes)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `map key "MissingWidget" not found`)
+}
+
+func TestParseLenientCleanSpecDoesNotWarnAboutSchemaStubs(t *testing.T) {
+	specBytes := []byte(`
+openapi: 3.0.3
+info:
+  title: Clean API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /widgets:
+    get:
+      operationId: listWidgets
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Widget"
+components:
+  schemas:
+    Widget:
+      type: object
+      properties:
+        id:
+          type: string
+`)
+
+	var err error
+	warnings := captureWarnings(t, func() {
+		_, err = ParseLenient(specBytes)
+	})
+
+	require.NoError(t, err)
+	assert.NotContains(t, warnings, "stubbing missing local schema ref")
+}
+
 func TestParseMarksFieldSelectorParamsWithSyncDefault(t *testing.T) {
 	t.Parallel()
 

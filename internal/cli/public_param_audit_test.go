@@ -158,6 +158,47 @@ types:
 	require.NoError(t, cmd.Execute())
 }
 
+func TestPublicParamAuditStrictRefsDisablesLenientLocalSchemaStubs(t *testing.T) {
+	specPath := writePublicParamAuditSpec(t, `
+openapi: 3.0.3
+info:
+  title: Public Param Missing Ref API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /stores:
+    get:
+      operationId: findStores
+      parameters:
+        - name: s
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MissingStore"
+components:
+  schemas: {}
+`)
+
+	cmd := newPublicParamAuditCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--spec", specPath, "--lenient"})
+	require.NoError(t, cmd.Execute())
+
+	cmd = newPublicParamAuditCmd()
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--spec", specPath, "--lenient", "--strict-refs"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing local schema refs: MissingStore")
+}
+
 func writePublicParamAuditSpec(t *testing.T, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "spec.yaml")
