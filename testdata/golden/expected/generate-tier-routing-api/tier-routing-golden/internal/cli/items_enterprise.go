@@ -27,7 +27,7 @@ func newItemsEnterpriseCmd(flags *rootFlags) *cobra.Command {
 
 			path := "/items/enterprise"
 			params := map[string]string{}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "items", false, path, params, nil)
+			data, prov, err := resolveRead(cmd.Context(), c, flags, "items", false, path, params, nil, cmd.ErrOrStderr())
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}
