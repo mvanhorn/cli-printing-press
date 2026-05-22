@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	apispec "github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
@@ -2396,6 +2397,32 @@ EOF
 	// auth/login is filtered out because "auth" is in the framework
 	// skip set; only the posts subtree should survive.
 	assert.Equal(t, [][]string{{"posts", "list"}}, paths)
+}
+
+func TestRunStdoutOnlyRetriesTextFileBusy(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+
+	script := `#!/bin/sh
+echo '{"commands":[]}'
+`
+	binPath := filepath.Join(t.TempDir(), "fakebin")
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	writer, err := os.OpenFile(binPath, os.O_WRONLY|os.O_APPEND, 0)
+	require.NoError(t, err)
+
+	closed := make(chan struct{})
+	go func() {
+		time.Sleep(75 * time.Millisecond)
+		_ = writer.Close()
+		close(closed)
+	}()
+
+	out, err := runStdoutOnly(binPath, 2*time.Second, "agent-context")
+	<-closed
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"commands"`)
 }
 
 // TestDiscoverExampleCheckCommandsSurfacesStderrOnFailure — when the
