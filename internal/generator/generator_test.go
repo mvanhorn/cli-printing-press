@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/v4/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/profiler"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -3612,6 +3614,162 @@ func TestGenerateStoreSubResourceUpsertBatchTestSatisfiesNotNullFK(t *testing.T)
 	runGoCommand(t, outputDir, "test", "./internal/store")
 }
 
+func TestGenerateDependentSyncInjectsSubResourceParentFK(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "dependent-parent-fk",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/dependent-parent-fk-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"lists": {
+				Description: "Manage lists",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/lists",
+						Description: "List lists",
+						Response:    spec.ResponseDef{Type: "array"},
+					},
+				},
+				SubResources: map[string]spec.Resource{
+					"contacts": {
+						Description: "Manage contacts",
+						Endpoints: map[string]spec.Endpoint{
+							"list": {
+								Method:      "GET",
+								Path:        "/lists/{listId}/contacts",
+								Description: "List contacts",
+								Response:    spec.ResponseDef{Type: "array"},
+								Params:      []spec.Param{{Name: "listId", Type: "string", Required: true, Positional: true}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.profile = &profiler.APIProfile{
+		SyncableResources: []profiler.SyncableResource{
+			{Name: "lists", Path: "/lists", Method: "GET"},
+		},
+		DependentSyncResources: []profiler.DependentResource{
+			{Name: "contacts", ParentResource: "lists", ParentIDParam: "listId", Path: "/lists/{listId}/contacts", Method: "GET"},
+		},
+	}
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	assert.Contains(t, syncContent, `Name: "contacts", ParentTable: "lists"`,
+		"test fixture should exercise the dependent-resource sync path")
+	assert.Contains(t, syncContent, `obj["parent_id"] = parentIDJSON`,
+		"dependent sync should keep populating the generic parent_id context column")
+	assert.Contains(t, syncContent, `parentFKKey := dep.ParentTable + "_id"`,
+		"dependent sync should derive the typed parent FK column from the parent table")
+	assert.Contains(t, syncContent, `if _, ok := obj[parentFKKey]; !ok {`,
+		"dependent sync should not overwrite a response body value for the typed parent FK")
+	assert.Contains(t, syncContent, `obj[parentFKKey] = parentIDJSON`,
+		"dependent sync should fill the typed parent FK column when the response omits it")
+
+	storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+	require.NoError(t, err)
+	assert.Contains(t, string(storeGo), `lookupFieldValue(obj, "lists_id")`,
+		"contacts typed upsert must read the generated NOT NULL parent FK column")
+
+	inlineTest := `package cli
+
+import (
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+type dependentParentFKClient struct{}
+
+func (dependentParentFKClient) Get(ctx context.Context, path string, params map[string]string) (json.RawMessage, error) {
+	return json.RawMessage(` + "`" + `[
+		{"id":"contact-injected","email":"injected@example.test"},
+		{"id":"contact-preserved","lists_id":"api-list","email":"preserved@example.test"}
+	]` + "`" + `), nil
+}
+
+func (dependentParentFKClient) RateLimit() float64 {
+	return 0
+}
+
+func TestSyncDependentResourcePopulatesTypedParentFK(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "data.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Upsert("lists", "list-A", []byte(` + "`" + `{"id":"list-A"}` + "`" + `)); err != nil {
+		t.Fatalf("insert parent list: %v", err)
+	}
+
+	res := syncDependentResource(
+		context.Background(),
+		dependentParentFKClient{},
+		db,
+		dependentResourceDef{Name: "contacts", ParentTable: "lists", ParentIDParam: "listId", PathTemplate: "/lists/{listId}/contacts"},
+		"", false, 1, false, nil,
+	)
+	if res.Err != nil {
+		t.Fatalf("syncDependentResource error: %v", res.Err)
+	}
+	if res.Count != 2 {
+		t.Fatalf("synced count = %d, want 2", res.Count)
+	}
+
+	rows, err := db.DB().Query(` + "`" + `SELECT id, lists_id FROM contacts ORDER BY id` + "`" + `)
+	if err != nil {
+		t.Fatalf("query contacts: %v", err)
+	}
+	defer rows.Close()
+
+	got := map[string]string{}
+	for rows.Next() {
+		var id, listsID string
+		if err := rows.Scan(&id, &listsID); err != nil {
+			t.Fatalf("scan contact: %v", err)
+		}
+		got[id] = listsID
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate contacts: %v", err)
+	}
+
+	if got["contact-injected"] != "list-A" {
+		t.Fatalf("injected contact lists_id = %q, want list-A", got["contact-injected"])
+	}
+	if got["contact-preserved"] != "api-list" {
+		t.Fatalf("preserved contact lists_id = %q, want api-list", got["contact-preserved"])
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "dependent_parent_fk_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestSyncDependentResourcePopulatesTypedParentFK", "./internal/cli")
+}
+
 func TestGenerateSimilarCommandUsesCompositeResourceKey(t *testing.T) {
 	t.Parallel()
 
@@ -6871,7 +7029,7 @@ func TestGeneratedDoctor_AuthVerifyPathProbesEndpoint(t *testing.T) {
 	// not bare baseURL. The doctor uses flags.newClient() now (Surf-aware)
 	// instead of stdlib http.Client.
 	assert.Contains(t, content, `verifyPath := "/me?fields=id"`)
-	assert.Contains(t, content, `c.GetWithHeaders(verifyPath`)
+	assert.Contains(t, content, `c.GetWithHeaders(cmd.Context(), verifyPath`)
 	assert.NotContains(t, content, `&http.Client{`)
 	// When verify_path is set, HTTP 401 keeps the strict "invalid" verdict.
 	// 403 is handled separately as scope-limited; see
@@ -6893,8 +7051,8 @@ func TestGeneratedDoctor_HealthCheckPathProbesEndpoint(t *testing.T) {
 	doctorSrc := readGeneratedFile(t, outputDir, "internal", "cli", "doctor.go")
 	assert.Contains(t, doctorSrc, `healthPath := "api/marketStatus"`)
 	assert.Contains(t, doctorSrc, `if !strings.HasPrefix(healthPath, "/") {`)
-	assert.Contains(t, doctorSrc, `reachBody, reachErr := c.Get(healthPath, nil)`)
-	assert.NotContains(t, doctorSrc, `reachBody, reachErr := c.Get("/", nil)`)
+	assert.Contains(t, doctorSrc, `reachBody, reachErr := c.Get(cmd.Context(), healthPath, nil)`)
+	assert.NotContains(t, doctorSrc, `reachBody, reachErr := c.Get(cmd.Context(), "/", nil)`)
 }
 
 func TestGeneratedDoctor_InterstitialMarkersAreTitleAnchored(t *testing.T) {
@@ -6990,7 +7148,7 @@ func TestGeneratedDoctor_NoVerifyPathReportsCredentialsPresent(t *testing.T) {
 	// now suggests a read command (resolved at doctor-time from the cobra
 	// tree) instead of pointing the user at a spec field they don't own.
 	assert.NotContains(t, content, `verifyPath := "/"`)
-	assert.NotContains(t, content, `c.GetWithHeaders(verifyPath`)
+	assert.NotContains(t, content, `c.GetWithHeaders(cmd.Context(), verifyPath`)
 	assert.NotContains(t, content, `&http.Client{`)
 	assert.Contains(t, content, `"present, not verified. Run `)
 	assert.NotContains(t, content, `set auth.verify_path in spec`,
@@ -8782,6 +8940,97 @@ func TestGeneratedSyncGatesSinceParamPerResource(t *testing.T) {
 	runGoCommand(t, outputDir, "build", "./...")
 }
 
+func TestGeneratedSyncInjectsFieldSelectorDefaults(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "fieldsync",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "api_key",
+			Header:  "Authorization",
+			Format:  "Bearer {token}",
+			EnvVars: []string{"FIELDSYNC_API_KEY"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/fieldsync-pp-cli/config.toml",
+		},
+		Types: map[string]spec.TypeDef{
+			"Task": {Fields: []spec.TypeField{
+				{Name: "gid", Type: "string"},
+				{Name: "completed", Type: "bool"},
+				{Name: "assignee", Type: "object"},
+				{Name: "custom_fields", Type: "array"},
+			}},
+		},
+		Resources: map[string]spec.Resource{
+			"tasks": {
+				Description: "Tasks",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/tasks",
+						Description: "List tasks",
+						Response:    spec.ResponseDef{Type: "array", Item: "Task"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+						Params: []spec.Param{{
+							Name:                 "opt_fields",
+							Type:                 "string",
+							Purpose:              spec.ParamPurposeFieldSelector,
+							FieldSelectorDefault: "gid,completed,assignee.gid,custom_fields.gid",
+						}},
+					},
+				},
+			},
+			"users": {
+				Description: "Users",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/users",
+						Description: "List users",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	assert.Contains(t, syncContent, "func syncResourceFieldSelector(resource string) (string, string)",
+		"sync.go must emit per-resource field-selector defaults")
+
+	fieldSelectorStart := strings.Index(syncContent, "func syncResourceFieldSelector(resource string) (string, string)")
+	require.NotEqual(t, -1, fieldSelectorStart, "sync.go must emit syncResourceFieldSelector")
+	fieldSelectorBody := syncContent[fieldSelectorStart:]
+	if nextFunc := strings.Index(fieldSelectorBody[1:], "\nfunc "); nextFunc != -1 {
+		fieldSelectorBody = fieldSelectorBody[:nextFunc+1]
+	}
+
+	assert.Contains(t, fieldSelectorBody, `case "tasks":`,
+		"tasks must appear in the field-selector switch")
+	assert.Contains(t, fieldSelectorBody, `return "opt_fields", "gid,completed,assignee.gid,custom_fields.gid"`,
+		"tasks must map to the spec-declared field selector and generated default")
+	assert.NotContains(t, fieldSelectorBody, `case "users":`,
+		"resources without a field selector must not inject an opt_fields-like query param")
+
+	defaultIdx := strings.Index(syncContent, "fieldSelectorKey, fieldSelectorValue := syncResourceFieldSelector(resource)")
+	applyIdx := strings.Index(syncContent, "userParams.applyTo(resource, params, false)")
+	require.NotEqual(t, -1, defaultIdx, "syncResource must apply field-selector defaults")
+	require.NotEqual(t, -1, applyIdx, "syncResource must still apply user params")
+	assert.Less(t, defaultIdx, applyIdx,
+		"user-supplied --param/--resource-param must override field-selector defaults")
+}
+
 func TestGeneratedSyncGatesPaginationParamsPerResource(t *testing.T) {
 	t.Parallel()
 
@@ -8887,6 +9136,78 @@ func TestGeneratedSyncGatesPaginationParamsPerResource(t *testing.T) {
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGeneratedSyncUsesPOSTForRPCStyleListResources(t *testing.T) {
+	t.Parallel()
+
+	var capturedMethod string
+	var capturedQuery url.Values
+	var capturedBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedMethod = r.Method
+		capturedQuery = r.URL.Query()
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&capturedBody))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[{"id":"item_1"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	apiSpec := &spec.APISpec{
+		Name:    "rpcpostsync",
+		Version: "0.1.0",
+		BaseURL: server.URL,
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/rpcpostsync-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Items",
+				Endpoints: map[string]spec.Endpoint{
+					"getList": {
+						Method:      "POST",
+						Path:        "/api/items/getList",
+						Description: "List items",
+						Body: []spec.Param{
+							{Name: "limit", Type: "integer"},
+							{Name: "cursor", Type: "string"},
+							{Name: "view", Type: "string", Default: "summary"},
+						},
+						Pagination: &spec.Pagination{Type: "cursor", CursorParam: "cursor", LimitParam: "limit"},
+						Response:   spec.ResponseDef{Type: "object", Item: "ItemsResponse"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"ItemsResponse": {
+				Fields: []spec.TypeField{{Name: "items", Type: "array"}},
+			},
+			"Item": {
+				Fields: []spec.TypeField{{Name: "id", Type: "string"}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	binaryPath := filepath.Join(outputDir, "rpcpostsync-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/rpcpostsync-pp-cli")
+
+	dbPath := filepath.Join(t.TempDir(), "sync.db")
+	cmd := exec.Command(binaryPath, "sync", "--resources", "items", "--max-pages", "1", "--db", dbPath)
+	cmd.Env = append(os.Environ(), "RPCPOSTSYNC_BASE_URL="+server.URL)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+
+	assert.Equal(t, http.MethodPost, capturedMethod)
+	assert.Empty(t, capturedQuery.Get("limit"), "body-declared pagination params must not leak into the query string")
+	assert.Equal(t, float64(100), capturedBody["limit"])
+	assert.Equal(t, "summary", capturedBody["view"])
 }
 
 func TestGeneratedSyncTreatsEmptyWrappedPageAsSuccessfulZeroRecords(t *testing.T) {
@@ -9647,7 +9968,7 @@ func TestGenerateGraphQLEndpointPathRendersTemplatedURL(t *testing.T) {
 		"graphql.go must render GraphQLEndpointPath into a const")
 	assert.NotContains(t, graphqlGo, `c.Post("/graphql"`,
 		"graphql.go must not retain the hardcoded /graphql path after PR-1")
-	assert.Contains(t, graphqlGo, "c.Post(graphqlEndpointPath",
+	assert.Contains(t, graphqlGo, "c.Post(ctx, graphqlEndpointPath",
 		"Query/Mutate must post against the rendered constant, not a literal")
 
 	// The config struct must carry the templated BaseURL through unchanged so
@@ -10850,8 +11171,8 @@ func TestGenerateWaitForJobBypassesResponseCache(t *testing.T) {
 
 	assert.Contains(t, jobsBody, "c.GetNoCache(path, nil)",
 		"WaitForJob must poll with GetNoCache to avoid locking on the cached initial response")
-	assert.NotContains(t, jobsBody, "c.Get(path, nil)",
-		"WaitForJob must not call c.Get(path, nil); cached non-terminal status would lock the poll")
+	assert.NotContains(t, jobsBody, "c.Get(ctx, path, nil)",
+		"WaitForJob must not call c.Get(ctx, path, nil); cached non-terminal status would lock the poll")
 }
 
 // TestGenerateMCPHandlerPreservesQueryPositionals proves the makeAPIHandler
@@ -11036,11 +11357,11 @@ func TestMCPHandlerPassesBodyArgsMap(t *testing.T) {
 		"MCP handler must not pre-marshal bodyArgs: client.do() json.Marshals what it receives, "+
 			"so a []byte arrives base64-encoded on the wire and strict APIs reject the payload")
 
-	assert.Contains(t, mcpSource, "c.PostWithParams(path, params, bodyArgs)",
+	assert.Contains(t, mcpSource, "c.PostWithParams(ctx, path, params, bodyArgs)",
 		"POST branch must forward bodyArgs directly to the client")
-	assert.Contains(t, mcpSource, "c.PutWithParams(path, params, bodyArgs)",
+	assert.Contains(t, mcpSource, "c.PutWithParams(ctx, path, params, bodyArgs)",
 		"PUT branch must forward bodyArgs directly to the client")
-	assert.Contains(t, mcpSource, "c.PatchWithParams(path, params, bodyArgs)",
+	assert.Contains(t, mcpSource, "c.PatchWithParams(ctx, path, params, bodyArgs)",
 		"PATCH branch must forward bodyArgs directly to the client")
 }
 
@@ -11099,11 +11420,11 @@ func TestMCPCodeOrchPassesParamsMap(t *testing.T) {
 		"code-orch handler must not pre-marshal params: client.do() json.Marshals what it receives, "+
 			"so a []byte arrives base64-encoded on the wire and strict APIs reject the payload")
 
-	assert.Contains(t, mcpSource, "c.Post(path, params)",
+	assert.Contains(t, mcpSource, "c.Post(ctx, path, params)",
 		"POST branch must forward params directly to the client")
-	assert.Contains(t, mcpSource, "c.Put(path, params)",
+	assert.Contains(t, mcpSource, "c.Put(ctx, path, params)",
 		"PUT branch must forward params directly to the client")
-	assert.Contains(t, mcpSource, "c.Patch(path, params)",
+	assert.Contains(t, mcpSource, "c.Patch(ctx, path, params)",
 		"PATCH branch must forward params directly to the client")
 }
 

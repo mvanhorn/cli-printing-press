@@ -5,6 +5,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -64,7 +65,7 @@ func TestClient_VerifyShortCircuit_MutatingVerbs(t *testing.T) {
 			t.Setenv("PRINTING_PRESS_VERIFY_LIVE_HTTP", "")
 			c, rec := newClientWithRecorder(t)
 
-			body, status, err := c.do(verb, "/test", nil, nil, nil)
+			body, status, err := c.do(context.Background(), verb, "/test", nil, nil, nil)
 			if err != nil {
 				t.Fatalf("do(%s) returned error: %v", verb, err)
 			}
@@ -105,7 +106,7 @@ func TestClient_VerifyShortCircuit_LiveHTTPOptIn(t *testing.T) {
 	t.Setenv("PRINTING_PRESS_VERIFY_LIVE_HTTP", "1")
 	c, rec := newClientWithRecorder(t)
 
-	_, _, _ = c.do("DELETE", "/test", nil, nil, nil)
+	_, _, _ = c.do(context.Background(), "DELETE", "/test", nil, nil, nil)
 
 	if rec.calls < 1 {
 		t.Fatalf("LIVE_HTTP=1 should opt back in to real dial; recorder saw %d calls", rec.calls)
@@ -120,7 +121,7 @@ func TestClient_VerifyShortCircuit_NoEnv(t *testing.T) {
 	t.Setenv("PRINTING_PRESS_VERIFY_LIVE_HTTP", "")
 	c, rec := newClientWithRecorder(t)
 
-	_, _, _ = c.do("DELETE", "/test", nil, nil, nil)
+	_, _, _ = c.do(context.Background(), "DELETE", "/test", nil, nil, nil)
 
 	if rec.calls < 1 {
 		t.Fatalf("no verify env should dial normally; recorder saw %d calls", rec.calls)
@@ -137,7 +138,7 @@ func TestClient_VerifyShortCircuit_GETControl(t *testing.T) {
 	t.Setenv("PRINTING_PRESS_VERIFY_LIVE_HTTP", "")
 	c, rec := newClientWithRecorder(t)
 
-	_, _, _ = c.do("GET", "/test", nil, nil, nil)
+	_, _, _ = c.do(context.Background(), "GET", "/test", nil, nil, nil)
 
 	if rec.calls < 1 {
 		t.Fatalf("GET must never short-circuit; recorder saw %d calls", rec.calls)
@@ -158,7 +159,7 @@ func TestClient_VerifyShortCircuit_ReadOnlyPOST(t *testing.T) {
 			t.Setenv("PRINTING_PRESS_VERIFY_LIVE_HTTP", "")
 			c, rec := newClientWithRecorder(t)
 
-			_, _, _ = c.doRead(verb, "/test", nil, nil, nil)
+			_, _, _ = c.doRead(context.Background(), verb, "/test", nil, nil, nil)
 
 			if rec.calls < 1 {
 				t.Fatalf("doRead(%s) must dial through; recorder saw %d calls", verb, rec.calls)

@@ -185,9 +185,6 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	if err := gen.GenerateMCPSurface(); err != nil {
 		return Result{}, fmt.Errorf("rendering MCP surface: %w", err)
 	}
-	if err := pipeline.WriteToolsManifest(cliDir, parsed); err != nil {
-		return Result{}, fmt.Errorf("regenerating tools-manifest.json: %w", err)
-	}
 	// Refresh .printing-press.json's spec-derived fields before regenerating
 	// manifest.json. WriteMCPBManifest reads provenance from disk, so
 	// without this step spec.yaml updates to auth.key_url, auth.optional,
@@ -197,6 +194,13 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	// when auth.optional was added (Required label didn't drop).
 	if err := pipeline.RefreshCLIManifestFromSpec(cliDir, parsed); err != nil {
 		return Result{}, fmt.Errorf("refreshing CLI manifest from spec: %w", err)
+	}
+	var manifestDescription string
+	if m, err := pipeline.ReadCLIManifest(cliDir); err == nil {
+		manifestDescription = m.Description
+	}
+	if err := pipeline.WriteToolsManifestWithDescription(cliDir, parsed, manifestDescription); err != nil {
+		return Result{}, fmt.Errorf("regenerating tools-manifest.json: %w", err)
 	}
 	// Regenerate the MCPB manifest too. The schema can drift between
 	// generator releases (most recently: cli_binary was removed because

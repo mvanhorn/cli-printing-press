@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/mozillazg/go-unidecode"
 	"golang.org/x/text/cases"
@@ -11,6 +12,7 @@ import (
 )
 
 var leadingMarkdownHeadingRE = regexp.MustCompile(`^#{1,6}\s+(.+)$`)
+var htmlTagRE = regexp.MustCompile(`</?\s*(?:a|abbr|address|article|aside|blockquote|br|button|code|dd|del|details|div|dl|dt|em|figcaption|figure|footer|h[1-6]|header|hr|img|li|main|mark|nav|ol|p|pre|samp|section|small|span|strong|sub|summary|sup|table|tbody|td|tfoot|th|thead|tr|u|ul)(?:\s+[^<>]*)?\s*/?>`)
 
 // ASCIIFold transliterates Unicode to ASCII via Unidecode tables (the
 // same ones Django's slugify and Rails use). Apply at every chokepoint
@@ -195,7 +197,7 @@ func OneLine(s string) string {
 // that's already curated for length (MCP tool descriptions, agent-authored
 // overrides) where truncating would defeat the purpose.
 func OneLineNormalize(s string) string {
-	s = stripLeadingMarkdownHeading(s)
+	s = stripDescriptionMarkup(stripLeadingMarkdownHeading(s))
 	s = strings.ReplaceAll(s, "\r\n", " ")
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\r", " ")
@@ -212,9 +214,26 @@ func OneLineNormalize(s string) string {
 // quotes and backslashes because callers are responsible for escaping in their
 // target format.
 func CompactDescription(s string) string {
-	s = stripLeadingMarkdownHeading(s)
+	s = stripDescriptionMarkup(stripLeadingMarkdownHeading(s))
 	s = collapseWhitespace(s)
 	return truncateOneLine(s)
+}
+
+// CatalogDescription produces single-line prose for durable catalog metadata.
+// It normalizes markdown and whitespace without applying compact-surface
+// truncation, since this value becomes the canonical description in generated
+// manifests.
+func CatalogDescription(s string) string {
+	s = stripDescriptionMarkup(stripLeadingMarkdownHeading(s))
+	return collapseWhitespace(s)
+}
+
+func stripDescriptionMarkup(s string) string {
+	return htmlTagRE.ReplaceAllString(s, " ")
+}
+
+func HasLiteralEllipsisSuffix(s string) bool {
+	return strings.HasSuffix(strings.TrimSpace(s), "...")
 }
 
 func collapseWhitespace(s string) string {
@@ -228,15 +247,62 @@ func collapseWhitespace(s string) string {
 }
 
 func truncateOneLine(s string) string {
-	if len(s) > 120 {
-		cut := s[:117]
-		if idx := strings.LastIndex(cut, " "); idx > 60 {
-			s = cut[:idx] + "..."
-		} else {
-			s = cut + "..."
-		}
+	if utf8.RuneCountInString(s) <= 120 {
+		return s
 	}
-	return s
+	if sentence := lastSentenceBoundaryUnder(s, 120); sentence != "" {
+		return sentence
+	}
+	if clause := firstCompleteClauseUnder(s, 120); clause != "" {
+		return clause
+	}
+	return hardTruncateOneLine(s, 120)
+}
+
+func lastSentenceBoundaryUnder(s string, limit int) string {
+	best := ""
+	for idx, r := range s {
+		if r != '.' && r != '!' && r != '?' {
+			continue
+		}
+		candidate := strings.TrimSpace(s[:idx+len(string(r))])
+		if candidate == "" || utf8.RuneCountInString(candidate) > limit {
+			continue
+		}
+		best = candidate
+	}
+	return best
+}
+
+func hardTruncateOneLine(s string, limit int) string {
+	runes := []rune(s)
+	if len(runes) <= limit {
+		return s
+	}
+	cut := string(runes[:limit])
+	if idx := strings.LastIndex(cut, " "); idx > 60 {
+		return strings.TrimRight(cut[:idx], " ,;:")
+	}
+	return strings.TrimRight(cut, " ,;:")
+}
+
+func firstCompleteClauseUnder(s string, limit int) string {
+	best := ""
+	for idx, r := range s {
+		if r != ';' && r != ':' && r != ',' && r != ')' {
+			continue
+		}
+		end := idx
+		if r == ')' {
+			end += len(string(r))
+		}
+		candidate := strings.TrimSpace(s[:end])
+		if candidate == "" || utf8.RuneCountInString(candidate) > limit {
+			continue
+		}
+		best = strings.TrimRight(candidate, " ,;:")
+	}
+	return best
 }
 
 func stripLeadingMarkdownHeading(s string) string {

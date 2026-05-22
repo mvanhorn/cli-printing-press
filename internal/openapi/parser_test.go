@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/generator"
@@ -48,6 +50,169 @@ func TestParsePetstore(t *testing.T) {
 
 	assert.NotEmpty(t, parsed.Types)
 	assert.Contains(t, parsed.Types, "Pet")
+}
+
+func TestParseMarksFieldSelectorParamsWithSyncDefault(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Field Selector API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /tasks:
+    get:
+      operationId: listTasks
+      parameters:
+        - name: opt_fields
+          in: query
+          description: Fields to return in the response.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        gid:
+                          type: string
+                        completed:
+                          type: boolean
+                        assignee:
+                          type: object
+                          properties:
+                            gid:
+                              type: string
+                            name:
+                              type: string
+                        custom_fields:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              gid:
+                                type: string
+                              display_value:
+                                type: string
+`))
+	require.NoError(t, err)
+
+	tasks := parsed.Resources["tasks"].Endpoints["list"]
+	require.Len(t, tasks.Params, 1)
+	assert.Equal(t, spec.ParamPurposeFieldSelector, tasks.Params[0].Purpose)
+	assert.Equal(t, "gid,assignee.gid,completed,custom_fields.gid", tasks.Params[0].FieldSelectorDefault)
+}
+
+func TestMapParametersOnlyMarksQueryFieldSelectors(t *testing.T) {
+	t.Parallel()
+
+	pathItem := &openapi3.PathItem{}
+	op := &openapi3.Operation{
+		Parameters: openapi3.Parameters{
+			{
+				Value: &openapi3.Parameter{
+					Name:        "fields",
+					In:          openapi3.ParameterInPath,
+					Description: "Fields to return in the response.",
+					Required:    true,
+					Schema:      openapi3.NewStringSchema().NewRef(),
+				},
+			},
+			{
+				Value: &openapi3.Parameter{
+					Name:        "opt_fields",
+					In:          openapi3.ParameterInQuery,
+					Description: "Fields to return in the response.",
+					Schema:      openapi3.NewStringSchema().NewRef(),
+				},
+			},
+		},
+	}
+
+	params := mapParameters(pathItem, op)
+	require.Len(t, params, 2)
+
+	byName := make(map[string]spec.Param, len(params))
+	for _, param := range params {
+		byName[param.Name] = param
+	}
+
+	assert.Empty(t, byName["fields"].Purpose, "path params must not become sync query field selectors")
+	assert.Equal(t, spec.ParamPurposeFieldSelector, byName["opt_fields"].Purpose)
+}
+
+func readAICLargeSpec(tb testing.TB) []byte {
+	tb.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "artic-openapi.json"))
+	require.NoError(tb, err)
+	return data
+}
+
+func countEndpoints(resources map[string]spec.Resource) int {
+	total := 0
+	for _, resource := range resources {
+		total += len(resource.Endpoints)
+		total += countEndpoints(resource.SubResources)
+	}
+	return total
+}
+
+func TestParseAICLargeSpecCompletes(t *testing.T) {
+	t.Parallel()
+
+	data := readAICLargeSpec(t)
+
+	type parseResult struct {
+		spec *spec.APISpec
+		err  error
+	}
+	done := make(chan parseResult, 1)
+	go func() {
+		parsed, err := Parse(data)
+		done <- parseResult{spec: parsed, err: err}
+	}()
+
+	select {
+	case result := <-done:
+		require.NoError(t, result.err)
+		require.Equal(t, "art-institution-chicago", result.spec.Name)
+		require.NotEmpty(t, result.spec.Resources)
+		require.GreaterOrEqual(t, countEndpoints(result.spec.Resources), 100)
+		require.Contains(t, result.spec.Resources, "artworks")
+		require.Contains(t, result.spec.Resources["artworks"].Endpoints, "list")
+		require.Contains(t, result.spec.Resources["artworks"].Endpoints, "get")
+		search := findEndpoint(t, result.spec, "/search")
+		assert.GreaterOrEqual(t, len(search.Params), 6, "expected shared parameter refs on /search to resolve")
+	case <-time.After(60 * time.Second):
+		t.Fatal("AIC OpenAPI 3.1 spec parse did not complete within 60 seconds")
+	}
+}
+
+func BenchmarkLargeSpec(b *testing.B) {
+	data := readAICLargeSpec(b)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		parsed, err := Parse(data)
+		if err != nil {
+			b.Fatalf("parse AIC spec: %v", err)
+		}
+		if len(parsed.Resources) == 0 {
+			b.Fatal("expected parsed resources")
+		}
+	}
 }
 
 func TestParseFileResolvesLocalRefsRelativeToSpecDir(t *testing.T) {
@@ -548,6 +713,18 @@ paths:
                   allOf:
                     - $ref: "#/components/schemas/PaymentPurpose"
                     - $ref: "#/components/schemas/PurposeMetadata"
+                details:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      description: Specific detail name.
+                  allOf:
+                    - $ref: "#/components/schemas/BaseDetails"
+                mixed:
+                  allOf:
+                    - $ref: "#/components/schemas/PurposeMetadata"
+                    - $ref: "#/components/schemas/StringEnumWrapper"
       responses:
         "200":
           description: ok
@@ -578,6 +755,18 @@ components:
       properties:
         memo:
           type: string
+    BaseDetails:
+      type: object
+      properties:
+        inherited:
+          type: string
+        name:
+          type: string
+          description: Base detail name.
+    StringEnumWrapper:
+      allOf:
+        - type: string
+          enum: [simple, complex]
 `))
 	require.NoError(t, err)
 
@@ -598,6 +787,156 @@ components:
 		{Name: "memo", Type: "string", Required: true, Description: "Memo"},
 		{Name: "simple", Type: "string", Description: "Simple"},
 	}, byName["purpose"].Fields)
+	assert.Equal(t, []spec.Param{
+		{Name: "inherited", Type: "string", Description: "Inherited"},
+		{Name: "name", Type: "string", Description: "Specific detail name."},
+	}, byName["details"].Fields)
+	assert.Equal(t, "object", byName["mixed"].Type)
+	assert.Equal(t, []spec.Param{
+		{Name: "memo", Type: "string", Required: true, Description: "Memo"},
+	}, byName["mixed"].Fields)
+}
+
+const dataEnvelopeAllOfTaskSpec = `
+openapi: 3.0.3
+info:
+  title: Task API
+  version: 1.0.0
+servers:
+  - url: https://api.example.test
+paths:
+  /tasks/{task_gid}:
+    patch:
+      operationId: updateTask
+      parameters:
+        - name: task_gid
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                data:
+                  $ref: "#/components/schemas/TaskUpdateRequest"
+      responses:
+        "200":
+          description: ok
+components:
+  schemas:
+    TaskBase:
+      type: object
+      required: [name]
+      properties:
+        completed:
+          type: boolean
+          description: Whether the task is complete.
+        due_on:
+          type: string
+          format: date
+          description: Date the task is due.
+        html_notes:
+          type: string
+          description: HTML formatted text for the task notes.
+        name:
+          type: string
+          description: Name of the task.
+        notes:
+          type: string
+          description: Plain text task notes.
+    TaskRequestBase:
+      allOf:
+        - $ref: "#/components/schemas/TaskBase"
+        - type: object
+          properties:
+            assignee:
+              type: string
+              description: GID of the assignee.
+    TaskUpdateRequest:
+      allOf:
+        - $ref: "#/components/schemas/TaskRequestBase"
+        - type: object
+          properties:
+            custom_type:
+              type: string
+              description: GID of a task custom type.
+`
+
+func TestParseMapsDataEnvelopeAllOfRequestBodyFields(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(dataEnvelopeAllOfTaskSpec))
+	require.NoError(t, err)
+
+	endpoint := findParsedEndpointByPath(t, parsed, "PATCH", "/tasks/{task_gid}")
+	require.Len(t, endpoint.Body, 1)
+	data := endpoint.Body[0]
+	require.Equal(t, "data", data.Name)
+	require.Equal(t, "object", data.Type)
+
+	fields := map[string]spec.Param{}
+	for _, field := range data.Fields {
+		fields[field.Name] = field
+	}
+	for _, want := range []string{"assignee", "completed", "custom_type", "due_on", "html_notes", "name", "notes"} {
+		assert.Contains(t, fields, want)
+	}
+	assert.True(t, fields["name"].Required)
+	assert.Equal(t, "bool", fields["completed"].Type)
+	assert.Equal(t, "date", fields["due_on"].Format)
+	assert.Equal(t, "string", fields["html_notes"].Type)
+	assert.Equal(t, "HTML formatted text for the task notes.", fields["html_notes"].Description)
+}
+
+func TestGenerateDataEnvelopeAllOfBodyFlags(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("OpenAPI generated CLI compile coverage runs in the generated-test CI lane")
+	}
+
+	parsed, err := Parse([]byte(dataEnvelopeAllOfTaskSpec))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(parsed.Name))
+	gen := generator.New(parsed, outputDir)
+	gen.VisionSet = generator.VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	binaryPath := filepath.Join(outputDir, naming.CLI(parsed.Name))
+	runGo(t, outputDir, "mod", "tidy")
+	runGo(t, outputDir, "build", "-o", binaryPath, "./cmd/"+naming.CLI(parsed.Name))
+
+	helpOut, err := exec.Command(binaryPath, "tasks", "update-task", "--help").CombinedOutput()
+	require.NoError(t, err, string(helpOut))
+	help := string(helpOut)
+	for _, want := range []string{
+		"--data-name",
+		"--data-notes",
+		"--data-html-notes",
+		"--data-assignee",
+		"--data-completed",
+		"--data-due-on",
+		"--data-custom-type",
+	} {
+		assert.Contains(t, help, want)
+	}
+	assert.NotContains(t, help, "--data-data-")
+
+	cmd := exec.Command(binaryPath, "tasks", "update-task", "123", "--data-html-notes", "<body>foo</body>", "--dry-run")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	bodyJSON := extractDryRunBody(t, string(out))
+	var body struct {
+		Data struct {
+			HTMLNotes string `json:"html_notes"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(bodyJSON), &body))
+	assert.Equal(t, "<body>foo</body>", body.Data.HTMLNotes)
 }
 
 func TestParseRecursiveRequestBodyFieldsStopsAtCycle(t *testing.T) {
@@ -1635,6 +1974,19 @@ func runGo(t *testing.T, dir string, args ...string) {
 	require.NoError(t, err, string(output))
 }
 
+func extractDryRunBody(t *testing.T, output string) string {
+	t.Helper()
+
+	const bodyMarker = "  Body:\n"
+	start := strings.Index(output, bodyMarker)
+	require.NotEqual(t, -1, start, output)
+	start += len(bodyMarker)
+
+	end := strings.Index(output[start:], "\n\n(dry run")
+	require.NotEqual(t, -1, end, output)
+	return output[start : start+end]
+}
+
 func TestSanitizeResourceName(t *testing.T) {
 	tests := []struct {
 		input string
@@ -1677,6 +2029,8 @@ func TestPathSegmentsStripsGenericAPIPrefix(t *testing.T) {
 		{"strips api then version", "/api/v2/pokemon", "", "pokemon"},
 		{"strips version then api then version", "/v2/api/v1/pokemon", "", "pokemon"},
 		{"strips api then numeric version", "/api/0/organizations", "", "organizations"},
+		{"strips dotted numeric version", "/1.0/search/artists", "", "search"},
+		{"strips dotted v-prefixed version", "/v1.0/search/artists", "", "search"},
 		{"strips beta version", "/v1beta2/{parent}/repositories", "", "{parent}"},
 		{"strips alpha version", "/v1alpha1/{parent}/services", "", "{parent}"},
 		{"strips p beta version", "/v1p1beta1/{parent}/sessions", "", "{parent}"},
@@ -1684,9 +2038,8 @@ func TestPathSegmentsStripsGenericAPIPrefix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			segments := pathSegmentsAfterBase(tt.path, tt.basePath)
-			if len(segments) > 0 {
-				assert.Equal(t, tt.wantFirst, segments[0])
-			}
+			require.NotEmpty(t, segments)
+			assert.Equal(t, tt.wantFirst, segments[0])
 		})
 	}
 }
@@ -2073,6 +2426,112 @@ paths:
 			assert.True(t, routingParam.PathParam, "defaulted path param should remain a URL substitution flag")
 			assert.False(t, routingParam.Positional, "defaulted path param should stay flag-shaped")
 			assert.NotNil(t, routingParam.Default, "operation-specific query id default should be preserved")
+		}
+	}
+}
+
+func TestParsePreservesRequiredQueryParamsDuringGlobalFilter(t *testing.T) {
+	t.Parallel()
+
+	data := []byte(`
+openapi: 3.0.0
+info:
+  title: Narrow Required Query API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /search:
+    get:
+      operationId: searchList
+      parameters:
+        - in: query
+          name: part
+          required: true
+          schema:
+            type: string
+            default: snippet
+            enum: [snippet, id]
+        - in: query
+          name: prettyPrint
+          schema:
+            type: boolean
+        - in: query
+          name: q
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /videos:
+    get:
+      operationId: videosList
+      parameters:
+        - in: query
+          name: part
+          required: true
+          schema:
+            type: string
+            default: snippet
+            enum: [snippet, statistics]
+        - in: query
+          name: prettyPrint
+          schema:
+            type: boolean
+        - in: query
+          name: id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /channels:
+    get:
+      operationId: channelsList
+      parameters:
+        - in: query
+          name: part
+          required: true
+          schema:
+            type: string
+            default: snippet
+            enum: [snippet, contentDetails]
+        - in: query
+          name: prettyPrint
+          schema:
+            type: boolean
+        - in: query
+          name: id
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+`)
+
+	parsed, err := Parse(data)
+	require.NoError(t, err)
+
+	wantEnums := map[string][]string{
+		"/search":   {"snippet", "id"},
+		"/videos":   {"snippet", "statistics"},
+		"/channels": {"snippet", "contentDetails"},
+	}
+	for _, path := range []string{"/search", "/videos", "/channels"} {
+		endpoint := findEndpoint(t, parsed, path)
+		var part *spec.Param
+		for i := range endpoint.Params {
+			switch endpoint.Params[i].Name {
+			case "part":
+				part = &endpoint.Params[i]
+			case "prettyPrint":
+				t.Fatalf("%s should filter optional prevalent query param prettyPrint", path)
+			}
+		}
+		if assert.NotNil(t, part, "%s should preserve required prevalent query param part", path) {
+			assert.True(t, part.Required)
+			assert.Equal(t, "snippet", part.Default)
+			assert.Equal(t, wantEnums[path], part.Enum)
 		}
 	}
 }
@@ -5314,6 +5773,42 @@ paths:
 	assert.NotContains(t, output, "shadow framework cobra command", "non-colliding spec must not emit a collision warning")
 }
 
+func TestParseFrameworkCollisionAllowsConditionalFrameworkNamesWhenInactive(t *testing.T) {
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: TestAPI
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      responses:
+        "200":
+          description: ok
+  /api/auth/check-email:
+    get:
+      operationId: checkEmail
+      responses:
+        "200":
+          description: ok
+`)
+
+	var parsed *spec.APISpec
+	output := captureWarnings(t, func() {
+		var err error
+		parsed, err = Parse(yamlSpec)
+		require.NoError(t, err)
+	})
+
+	require.Contains(t, parsed.Resources, "health", "health is not a parser-time collision unless the generator emits the health insight command")
+	require.Contains(t, parsed.Resources, "auth", "public auth resources should keep their natural name when no framework auth command is emitted")
+	assert.NotContains(t, parsed.Resources, "testapi-health")
+	assert.NotContains(t, parsed.Resources, "testapi-auth")
+	assert.NotContains(t, output, "shadow framework cobra command")
+}
+
 // TestParseFrameworkCollisionExemptsSubresources verifies sub-resources
 // don't trigger the collision check — paths like /games/{id}/version
 // produce a `version` sub-resource under `games`, which registers as a
@@ -5631,6 +6126,116 @@ paths:
 	assert.True(t, parsed.MCP.HasTransport("stdio"), "expected stdio transport from x-mcp")
 	assert.True(t, parsed.MCP.IsCodeOrchestration(), "expected code orchestration from x-mcp")
 	assert.Equal(t, "hidden", parsed.MCP.EndpointTools)
+}
+
+func TestParseMCPFallbackFromRootWarns(t *testing.T) {
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Legacy MCP API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+mcp:
+  transport: [stdio, http]
+  orchestration: code
+  endpoint_tools: hidden
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = Parse(data)
+	})
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	assert.True(t, parsed.MCP.HasTransport("http"), "expected http transport from root mcp fallback")
+	assert.True(t, parsed.MCP.HasTransport("stdio"), "expected stdio transport from root mcp fallback")
+	assert.True(t, parsed.MCP.IsCodeOrchestration(), "expected code orchestration from root mcp fallback")
+	assert.Equal(t, "hidden", parsed.MCP.EndpointTools)
+	assert.Contains(t, warnings, "accepted root-level 'mcp:' for backwards compatibility")
+	assert.Contains(t, warnings, "rename to 'x-mcp:' per OpenAPI extension convention")
+}
+
+func TestParseMCPExtensionBeatsRootMCPFallback(t *testing.T) {
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Canonical MCP API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+mcp:
+  transport: [stdio]
+  orchestration: code
+  endpoint_tools: hidden
+x-mcp:
+  transport: [http]
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = Parse(data)
+	})
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	assert.True(t, parsed.MCP.HasTransport("http"), "canonical x-mcp must take precedence")
+	assert.False(t, parsed.MCP.HasTransport("stdio"), "root mcp fallback must not merge into canonical x-mcp")
+	assert.False(t, parsed.MCP.IsCodeOrchestration(), "root mcp fields must not fill missing x-mcp fields")
+	assert.Empty(t, parsed.MCP.EndpointTools, "root mcp fields must not fill missing x-mcp fields")
+	assert.NotContains(t, warnings, "accepted root-level 'mcp:'", "canonical x-mcp should not emit fallback warning")
+}
+
+func TestParseMCPInfoExtensionBeatsRootMCPFallback(t *testing.T) {
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Info MCP API
+  version: 1.0.0
+  x-mcp:
+    transport: [http]
+servers:
+  - url: https://api.example.com
+mcp:
+  transport: [stdio]
+  orchestration: code
+  endpoint_tools: hidden
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = Parse(data)
+	})
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	assert.True(t, parsed.MCP.HasTransport("http"), "info.x-mcp must take precedence over root mcp fallback")
+	assert.False(t, parsed.MCP.HasTransport("stdio"), "root mcp fallback must not merge into info.x-mcp")
+	assert.False(t, parsed.MCP.IsCodeOrchestration(), "root mcp fields must not fill missing info.x-mcp fields")
+	assert.Empty(t, parsed.MCP.EndpointTools, "root mcp fields must not fill missing info.x-mcp fields")
+	assert.NotContains(t, warnings, "accepted root-level 'mcp:'", "info.x-mcp should not emit fallback warning")
 }
 
 func TestParseMCPExtensionFromInfo(t *testing.T) {
@@ -6745,6 +7350,79 @@ func TestDetectPaginationRecognizesPageIntCursor(t *testing.T) {
 			assert.Equal(t, "per_page", pag.LimitParam)
 		})
 	}
+}
+
+func TestDetectPaginationRecognizesNestedNumericNextPage(t *testing.T) {
+	t.Parallel()
+
+	description := "OK"
+	responses := openapi3.NewResponses()
+	responses.Set("200", &openapi3.ResponseRef{Value: &openapi3.Response{
+		Description: &description,
+		Content: openapi3.Content{
+			"application/json": &openapi3.MediaType{
+				Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+					Type: &openapi3.Types{"object"},
+					Properties: openapi3.Schemas{
+						"items": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type:  &openapi3.Types{"array"},
+							Items: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"object"}}},
+						}},
+						"meta": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type: &openapi3.Types{"object"},
+							Properties: openapi3.Schemas{
+								"nextPage": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+							},
+						}},
+					},
+				}},
+			},
+		},
+	}})
+	op := &openapi3.Operation{Responses: responses}
+
+	pag := detectPagination([]spec.Param{{Name: "page"}, {Name: "limit"}}, op)
+	require.NotNil(t, pag)
+	assert.Equal(t, "page", pag.CursorParam)
+	assert.Equal(t, "page", pag.Type)
+	assert.Equal(t, "limit", pag.LimitParam)
+	assert.Equal(t, "meta.nextPage", pag.NextCursorPath)
+}
+
+func TestDetectPaginationDoesNotWireNestedNextPageWithoutRequestCursor(t *testing.T) {
+	t.Parallel()
+
+	description := "OK"
+	responses := openapi3.NewResponses()
+	responses.Set("200", &openapi3.ResponseRef{Value: &openapi3.Response{
+		Description: &description,
+		Content: openapi3.Content{
+			"application/json": &openapi3.MediaType{
+				Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+					Type: &openapi3.Types{"object"},
+					Properties: openapi3.Schemas{
+						"items": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type:  &openapi3.Types{"array"},
+							Items: &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"object"}}},
+						}},
+						"meta": &openapi3.SchemaRef{Value: &openapi3.Schema{
+							Type: &openapi3.Types{"object"},
+							Properties: openapi3.Schemas{
+								"nextPage": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"integer"}}},
+							},
+						}},
+					},
+				}},
+			},
+		},
+	}})
+	op := &openapi3.Operation{Responses: responses}
+
+	pag := detectPagination([]spec.Param{{Name: "limit"}}, op)
+	require.NotNil(t, pag)
+	assert.Equal(t, "limit", pag.LimitParam)
+	assert.Empty(t, pag.CursorParam)
+	assert.Empty(t, pag.NextCursorPath)
 }
 
 // TestDetectPaginationCursorBeatsPage guards mixed-form specs: when an

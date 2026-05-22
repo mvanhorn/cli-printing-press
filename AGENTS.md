@@ -41,28 +41,28 @@ Hand-written novel commands that perform visible actions (open browser tabs, sen
 1. Print by default; require explicit opt-in (`--launch`, `--send`, `--play`, etc.) to actually act.
 2. Short-circuit when `cliutil.IsVerifyEnv()` is true. The verifier sets `PRINTING_PRESS_VERIFY=1` in every mock-mode subprocess; this env-var check is the floor that catches any side-effect command the verifier's heuristic classifier misses.
 
-Generated endpoint-mirror commands also gate mutating HTTP verbs (DELETE/POST/PUT/PATCH) at the transport layer in `internal/client/client.go`. Under `PRINTING_PRESS_VERIFY=1` such requests short-circuit with a synthetic `{"__pp_verify_synthetic__":true,"status":"noop","reason":"verify_short_circuit",...}` envelope and never dial. Read-only operations that ride a mutating verb on the wire (GraphQL queries, JSON-RPC reads, POST-based search; codegen-marked `mcp:read-only`) route through `doRead()` and bypass the gate, so verify-mode does not silently break reads on shared-endpoint APIs. The outer command envelope reports `verify_noop: true` and `success: false` so naive validators do not read the noop as a real mutation. `printing-press verify` opts its mock-mode subprocesses back in via `PRINTING_PRESS_VERIFY_LIVE_HTTP=1` so the httptest mock server still receives mutating requests; agents, narrative full-example runs, and ad-hoc operators leave `LIVE_HTTP` unset so mutating requests no-op. Live verifiers (`live_dogfood`, `workflow_verify`) strip both env vars from subprocess env so they cannot inherit verify-mode short-circuiting. `<cli> doctor` surfaces the active verify state as a defense-in-depth diagnosis anchor.
+Generated endpoint-mirror commands also gate mutating HTTP verbs (DELETE/POST/PUT/PATCH) at the transport layer in `internal/client/client.go`. Under `PRINTING_PRESS_VERIFY=1` such requests short-circuit with a synthetic `{"__pp_verify_synthetic__":true,"status":"noop","reason":"verify_short_circuit",...}` envelope and never dial. Read-only operations that ride a mutating verb on the wire (GraphQL queries, JSON-RPC reads, POST-based search; codegen-marked `mcp:read-only`) route through `doRead()` and bypass the gate, so verify-mode does not silently break reads on shared-endpoint APIs. The outer command envelope reports `verify_noop: true` and `success: false` so naive validators do not read the noop as a real mutation. `cli-printing-press verify` opts its mock-mode subprocesses back in via `PRINTING_PRESS_VERIFY_LIVE_HTTP=1` so the httptest mock server still receives mutating requests; agents, narrative full-example runs, and ad-hoc operators leave `LIVE_HTTP` unset so mutating requests no-op. Live verifiers (`live_dogfood`, `workflow_verify`) strip both env vars from subprocess env so they cannot inherit verify-mode short-circuiting. `<cli> doctor` surfaces the active verify state as a defense-in-depth diagnosis anchor.
 
 
 ### Long-running commands under live-dogfood
-Hand-written novel commands whose happy path is an expensive network operation (full sync loops, content crawlers, bulk archive walks) MUST curtail work when `cliutil.IsDogfoodEnv()` returns true. The `printing-press dogfood --live` runner sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess and applies a flat 30s per-command timeout; without a short-circuit, the happy-path test trips the timeout and the matrix verdict flips to FAIL even when the command itself is healthy. Unlike `IsVerifyEnv`, this does NOT mean "don't hit the network" — dogfood is a real-API matrix. Use it to bound work (paginate once, fetch a bounded sample, honor a smaller `--limit` default), never to substitute mock data for real calls.
+Hand-written novel commands whose happy path is an expensive network operation (full sync loops, content crawlers, bulk archive walks) MUST curtail work when `cliutil.IsDogfoodEnv()` returns true. The `cli-printing-press dogfood --live` runner sets `PRINTING_PRESS_DOGFOOD=1` in every subprocess and applies a flat 30s per-command timeout; without a short-circuit, the happy-path test trips the timeout and the matrix verdict flips to FAIL even when the command itself is healthy. Unlike `IsVerifyEnv`, this does NOT mean "don't hit the network" — dogfood is a real-API matrix. Use it to bound work (paginate once, fetch a bounded sample, honor a smaller `--limit` default), never to substitute mock data for real calls.
 
 ### Generator-reserved namespaces
 `internal/cliutil/` and `internal/mcp/cobratree/` are generator-owned packages emitted into every printed CLI. Do not hand-author code in them and do not name agent-authored helpers that collide with their exports — regen will overwrite the work. Novel-feature code goes in command packages and may import from `cliutil`.
 
 ### Typed exit-code verification
-`printing-press verify` treats exit `0` as success by default. For commands where a non-zero code is intentional control flow, declare it in Cobra with `Annotations: map[string]string{"pp:typed-exit-codes": "0,2"}`. The verifier reads that annotation first, then falls back to a command-level `Exit codes:` help block. Do not put the whole global failure palette in a command-level help block unless those codes should count as verify-pass for that specific command.
+`cli-printing-press verify` treats exit `0` as success by default. For commands where a non-zero code is intentional control flow, declare it in Cobra with `Annotations: map[string]string{"pp:typed-exit-codes": "0,2"}`. The verifier reads that annotation first, then falls back to a command-level `Exit codes:` help block. Do not put the whole global failure palette in a command-level help block unless those codes should count as verify-pass for that specific command.
 
 ## Build, Test & Lint
 ```bash
-go build -o ./printing-press ./cmd/printing-press
+go build -o ./cli-printing-press ./cmd/cli-printing-press
 go test ./...
 go fmt ./...
 golangci-lint run ./...
 ```
 A pre-commit hook runs `gofmt -w` on staged Go files automatically. A pre-push hook runs `golangci-lint`. The same config in `.golangci.yml` runs in CI. Install hooks with `brew install lefthook && lefthook install --reset-hooks-path`; the `--reset-hooks-path` flag clears stale local `core.hooksPath` settings that block hook sync. Avoid `lefthook install --force` unless intentionally overriding a custom hooks path.
 After writing Go code, format it with `go fmt ./...` before handing back work. Use `go fmt ./...` for repo-wide formatting and `gofmt -w path/to/file.go` only for explicit files. Do not run `gofmt -w ./...` (gofmt does not accept Go package patterns) or `gofmt -w .` from the repo root (it walks into `testdata/golden/expected/` and rewrites frozen golden fixtures).
-Always use relative paths for build output. Never build to `/tmp` or another shared absolute path; use `./printing-press`.
+Always use relative paths for build output. Never build to `/tmp` or another shared absolute path; use `./cli-printing-press`.
 
 ## Generator Output Stability
 Run `scripts/golden.sh verify` whenever a change may affect CLI command output, catalog rendering, browser-sniff or crowd-sniff output, generated specs or generated printed CLI files, templates under `internal/generator/templates/`, naming, endpoint derivation, auth emission, manifest generation, scorecard output, or pipeline artifacts.
@@ -82,7 +82,7 @@ If you can't make the matching sweep change in the same session, file a tracking
 Without the sweep update or a tracking issue, the divergence between fresh prints and existing entries is invisible until someone notices a specific published README looks "old" relative to the rest. The downstream side of this contract (the published library's stance on when to run the sweep, how to scope it, and the `-readme-only` + author-preservation safeties on the sweep tool) is documented in `printing-press-library/AGENTS.md` under "Bulk SKILL.md/README.md retrofits".
 
 ## Project Structure
-- `cmd/printing-press/` - CLI entry point
+- `cmd/cli-printing-press/` - CLI entry point
 - `internal/spec/` - Internal YAML spec parser
 - `internal/openapi/` - OpenAPI 3.0+ parser
 - `internal/generator/` - Template engine + quality gates
@@ -174,7 +174,7 @@ See [`docs/RELEASE.md`](docs/RELEASE.md) for the merge-the-release-PR flow.
 ## Adding Catalog Entries
 When adding or editing `catalog/*.yaml`, first decide whether the entry belongs in the curated blueprint catalog. The embedded catalog is not a public-library index or a shortcut for reprinting existing CLIs; reprint from the current local/public library artifact when that is the source of truth. Add catalog entries only when they represent a distinct, reusable Printing Press pattern and have a real user-facing workflow, a reachable maintained source, and a reproducible generation route: vendor spec, docs-derived in-repo spec, verified sniffed spec, or wrapper-only backing that truthfully describes what the generator can do today. Do not add aspirational entries, dead wrappers, unproven private endpoints, personalized app flows without an auth model, duplicate examples of an already-covered pattern, or scrape ideas without live crawl evidence.
 - Document provenance in the PR: source URL(s), source type (`official`, `docs`, `sniffed`, `community`, or wrapper-only), live smoke evidence, auth requirements, and what is intentionally out of scope.
-- If the entry should make `printing-press generate <name>` work, provide a real `spec_url` or in-repo spec; wrapper-only entries are discovery/backing notes unless the generator has a concrete spec path.
+- If the entry should make `cli-printing-press generate <name>` work, provide a real `spec_url` or in-repo spec; wrapper-only entries are discovery/backing notes unless the generator has a concrete spec path.
 - If catalog output intentionally changes, update `testdata/golden/expected/catalog-list/stdout.txt`.
 - The entry must pass `internal/catalog` validation.
 - Required fields: `name`, `display_name`, `description`, `category`, and `tier`, plus `spec_url` and `spec_format` unless the entry is wrapper-only (`wrapper_libraries` is set and `spec_url` is omitted).
@@ -254,4 +254,4 @@ The "Code & Comment Hygiene" rules apply here too. Keep inline `AGENTS.md` rules
 See [`docs/DOCS.md`](docs/DOCS.md) for the full doc-authoring rules.
 
 ## Patterns
-Cross-cutting design patterns are documented in [`docs/PATTERNS.md`](docs/PATTERNS.md). Notably **Deterministic Inventory + Agent-Marked Ledger** — the shape used by `printing-press tools-audit` and `printing-press public-param-audit` for workflows that combine mechanical detection with per-item agent judgment.
+Cross-cutting design patterns are documented in [`docs/PATTERNS.md`](docs/PATTERNS.md). Notably **Deterministic Inventory + Agent-Marked Ledger** — the shape used by `cli-printing-press tools-audit` and `cli-printing-press public-param-audit` for workflows that combine mechanical detection with per-item agent judgment.

@@ -90,3 +90,73 @@ func TestValidateNarrativeCmd_MissingResearchIsNotApplicable(t *testing.T) {
 		t.Fatalf("stderr = %q, want N/A skip message", got)
 	}
 }
+
+func TestValidateNarrativeCmd_FrameworkOnlyDoesNotRequireBinary(t *testing.T) {
+	t.Parallel()
+
+	research := filepath.Join(t.TempDir(), "research.json")
+	if err := os.WriteFile(research, []byte(`{"narrative":{"quickstart":[{"command":"demo-pp-cli sync --resources users --since 7d"}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newValidateNarrativeCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetArgs([]string{"--strict", "--framework-only", "--research", research})
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected --framework-only without --binary to pass documented flags, got %v", err)
+	}
+	if got := stdout.String() + stderr.String(); !strings.Contains(got, "framework-command narrative examples passed static checks") {
+		t.Fatalf("output = %q, want framework-only OK output", got)
+	}
+}
+
+func TestValidateNarrativeCmd_FrameworkOnlyFailsInventedFlags(t *testing.T) {
+	t.Parallel()
+
+	research := filepath.Join(t.TempDir(), "research.json")
+	if err := os.WriteFile(research, []byte(`{"narrative":{"quickstart":[{"command":"demo-pp-cli sync --entities users"}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newValidateNarrativeCmd()
+	cmd.SetArgs([]string{"--strict", "--framework-only", "--research", research})
+	cmd.SetOut(new(bytes.Buffer))
+	cmd.SetErr(new(bytes.Buffer))
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected --framework-only --strict to fail on invented framework flags")
+	}
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected *ExitError, got %T: %v", err, err)
+	}
+	if exitErr.Code != ExitInputError {
+		t.Errorf("Code = %d, want ExitInputError (%d)", exitErr.Code, ExitInputError)
+	}
+}
+
+func TestValidateNarrativeCmd_FrameworkOnlyReportsNoFrameworkCommands(t *testing.T) {
+	t.Parallel()
+
+	research := filepath.Join(t.TempDir(), "research.json")
+	if err := os.WriteFile(research, []byte(`{"narrative":{"quickstart":[{"command":"demo-pp-cli customers list --limit 5"}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newValidateNarrativeCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetArgs([]string{"--strict", "--framework-only", "--research", research})
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected endpoint-only narrative to skip framework-only validation, got %v", err)
+	}
+	if got := stdout.String() + stderr.String(); !strings.Contains(got, "no framework-command narrative examples found") {
+		t.Fatalf("output = %q, want no-framework-command skip output", got)
+	}
+}

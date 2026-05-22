@@ -49,7 +49,7 @@ func newThingsGetCmd(flags *rootFlags) *cobra.Command {
 			} else {
 				body = map[string]any{}
 			}
-			data, statusCode, err := c.PostQueryWithParams(path, params, body)
+			data, statusCode, err := c.PostQueryWithParams(cmd.Context(), path, params, body)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

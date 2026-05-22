@@ -253,15 +253,36 @@ func findResearchDir(cliDir string) string {
 // `<base>-pp-cli` naming convention and falls back to `<base>`.
 func resolveBinaryPath(cliDir, name string) (string, error) {
 	candidates := liveCheckBinaryCandidates(cliDir, name)
-	for _, path := range candidates {
-		info, err := os.Stat(path)
-		if err != nil {
-			continue
+	var nonExecutablePath string
+	for _, candidate := range liveCheckBinaryNames(cliDir, name) {
+		var bestPath string
+		var bestModTime time.Time
+		for _, path := range liveCheckBinaryCandidatePathsForName(cliDir, candidate, runtime.GOOS) {
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			if !isLiveCheckExecutable(path, info.Mode()) {
+				if nonExecutablePath == "" {
+					nonExecutablePath = path
+				}
+				continue
+			}
+			if bestPath == "" || info.ModTime().After(bestModTime) {
+				bestPath = path
+				bestModTime = info.ModTime()
+			}
 		}
-		if !isLiveCheckExecutable(path, info.Mode()) {
-			return "", fmt.Errorf("binary %q is not executable", path)
+		if bestPath != "" {
+			absPath, err := filepath.Abs(bestPath)
+			if err != nil {
+				return "", fmt.Errorf("resolving binary path %q: %w", bestPath, err)
+			}
+			return absPath, nil
 		}
-		return path, nil
+	}
+	if nonExecutablePath != "" {
+		return "", fmt.Errorf("binary %q is not executable", nonExecutablePath)
 	}
 	return "", fmt.Errorf("no runnable binary found in %q (tried %v)", cliDir, candidates)
 }
@@ -282,31 +303,10 @@ func liveCheckBinaryCandidates(cliDir, name string) []string {
 }
 
 func liveCheckBinaryCandidatesForGOOS(cliDir, name, goos string) []string {
-	names := []string{name}
-	if name == "" {
-		base := filepath.Base(cliDir)
-		names = []string{base + "-pp-cli", base}
-	}
-	// Resolution order (per issue #1150):
-	//   1. <cliDir>/build/stage/bin/<name>           canonical Unix
-	//   2. <cliDir>/build/stage/bin/<name>.exe       canonical Windows
-	//   3. <cliDir>/<name>                           legacy fallback
-	//   4. <cliDir>/<name>.exe                       legacy Windows fallback
-	// The generator's --validate "build runnable binary" gate emits the
-	// binary under build/stage/bin/; older layouts left it at cliDir.
-	stagedDir := filepath.Join(cliDir, "build", "stage", "bin")
-	candidates := make([]string, 0, len(names)*4)
+	candidates := make([]string, 0)
 	seen := map[string]struct{}{}
-	for _, candidate := range names {
-		if candidate == "" {
-			continue
-		}
-		for _, path := range []string{
-			filepath.Join(stagedDir, candidate),
-			platform.ExecutablePathForGOOS(filepath.Join(stagedDir, candidate), goos),
-			filepath.Join(cliDir, candidate),
-			platform.ExecutablePathForGOOS(filepath.Join(cliDir, candidate), goos),
-		} {
+	for _, candidate := range liveCheckBinaryNames(cliDir, name) {
+		for _, path := range liveCheckBinaryCandidatePathsForName(cliDir, candidate, goos) {
 			if _, ok := seen[path]; ok {
 				continue
 			}
@@ -315,6 +315,51 @@ func liveCheckBinaryCandidatesForGOOS(cliDir, name, goos string) []string {
 		}
 	}
 	return candidates
+}
+
+func liveCheckBinaryNames(cliDir, name string) []string {
+	names := []string{name}
+	if name == "" {
+		base := filepath.Base(cliDir)
+		names = []string{base + "-pp-cli", base}
+	}
+	return names
+}
+
+func liveCheckBinaryCandidatePathsForName(cliDir, candidate, goos string) []string {
+	// Candidate order breaks ties between equally fresh binaries:
+	//   1. <cliDir>/build/stage/bin/<name>           validate-stage Unix
+	//   2. <cliDir>/build/stage/bin/<name>.exe       validate-stage Windows
+	//   3. <cliDir>/bin/<name>                       Makefile Unix
+	//   4. <cliDir>/bin/<name>.exe                   Makefile Windows
+	//   5. <cliDir>/<name>                           direct go-build Unix
+	//   6. <cliDir>/<name>.exe                       direct go-build Windows
+	// The generator's --validate "build runnable binary" gate emits the
+	// binary under build/stage/bin/. The generated Makefile writes bin/.
+	// Manual fix loops often rebuild directly into cliDir.
+	stagedDir := filepath.Join(cliDir, "build", "stage", "bin")
+	makefileBinDir := filepath.Join(cliDir, "bin")
+	if candidate == "" {
+		return nil
+	}
+	paths := []string{
+		filepath.Join(stagedDir, candidate),
+		platform.ExecutablePathForGOOS(filepath.Join(stagedDir, candidate), goos),
+		filepath.Join(makefileBinDir, candidate),
+		platform.ExecutablePathForGOOS(filepath.Join(makefileBinDir, candidate), goos),
+		filepath.Join(cliDir, candidate),
+		platform.ExecutablePathForGOOS(filepath.Join(cliDir, candidate), goos),
+	}
+	deduped := paths[:0:0]
+	seen := map[string]struct{}{}
+	for _, path := range paths {
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		deduped = append(deduped, path)
+	}
+	return deduped
 }
 
 // runFeaturesConcurrent distributes the per-feature checks across a worker

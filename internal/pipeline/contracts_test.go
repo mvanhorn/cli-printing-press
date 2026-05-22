@@ -61,7 +61,7 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 			block := extractContractBlock(t, full)
 
 			// Binary on PATH check
-			assert.Contains(t, block, `command -v printing-press`)
+			assert.Contains(t, block, `command -v cli-printing-press`)
 			// Version comment for frontmatter parity
 			assert.Contains(t, block, `# min-binary-version:`)
 			// Symlink-safe canonicalization
@@ -74,7 +74,7 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 			assert.Contains(t, block, `PRESS_LIBRARY="$PRESS_HOME/library"`)
 
 			// May reference local build for repo-internal development,
-			// but must not hardcode go build or use ./printing-press as default
+			// but must not hardcode go build or use ./cli-printing-press as default
 			assert.NotContains(t, block, `go build`)
 			// Must NOT contain REPO_ROOT or cd to repo
 			assert.NotContains(t, block, `REPO_ROOT`)
@@ -120,10 +120,10 @@ func TestPrintingPressSkillUsesRunstateForBuilds(t *testing.T) {
 	assert.NotContains(t, skill, `--output "$PRESS_LIBRARY/<api>-pp-cli"`)
 
 	// Lock acquire should appear before generation.
-	assert.Contains(t, skill, `printing-press lock acquire --cli <api>-pp-cli --scope "$PRESS_SCOPE"`)
+	assert.Contains(t, skill, `cli-printing-press lock acquire --cli <api>-pp-cli --scope "$PRESS_SCOPE"`)
 
 	// Lock promote should appear in Phase 5.5.
-	assert.Contains(t, skill, `printing-press lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"`)
+	assert.Contains(t, skill, `cli-printing-press lock promote --cli <api>-pp-cli --dir "$CLI_WORK_DIR"`)
 
 	// Phase 6 should still reference $PRESS_LIBRARY (reads from promoted location, slug-keyed).
 	assert.Contains(t, skill, `$PRESS_LIBRARY/<api>`)
@@ -180,7 +180,7 @@ func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 func TestPolishSkillHardGatesPublishValidate(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
 
-	assert.Contains(t, skill, `printing-press publish validate --dir "$CLI_DIR" --json`)
+	assert.Contains(t, skill, `cli-printing-press publish validate --dir "$CLI_DIR" --json`)
 	assert.Contains(t, skill, "Publish validation failures")
 	assert.Contains(t, skill, "The publish-validate leg is a hard ship-gate")
 	assert.Contains(t, skill, "phase5 acceptance")

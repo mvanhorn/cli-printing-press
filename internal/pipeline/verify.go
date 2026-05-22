@@ -438,18 +438,12 @@ func (v *Verifier) AuthProof() AuthProofResult {
 		return result
 	}
 
-	clientSource := string(clientData)
-	switch {
-	case strings.Contains(clientSource, `"Bot "`):
-		result.GeneratedFormat = "Bot "
-		result.GeneratedScheme = "Bot "
-	case strings.Contains(clientSource, `"Bearer "`):
-		result.GeneratedFormat = "Bearer "
-		result.GeneratedScheme = "Bearer "
-	default:
-		result.GeneratedFormat = "unknown"
-		result.GeneratedScheme = "unknown"
-	}
+	configData, _ := os.ReadFile(filepath.Join(v.Dir, "internal", "config", "config.go"))
+	clientSource := string(clientData) + string(configData)
+	var tokenPreserving bool
+	var invalidDetail string
+	result.GeneratedFormat, tokenPreserving, invalidDetail = detectGeneratedAuthFormat(clientSource, expectedPrefix)
+	result.GeneratedScheme = result.GeneratedFormat
 
 	envVarRe := regexp.MustCompile(`os\.Getenv\("([^"]+)"\)`)
 	envMatches := envVarRe.FindAllStringSubmatch(clientSource, -1)
@@ -471,7 +465,13 @@ func (v *Verifier) AuthProof() AuthProofResult {
 	result.Match = result.GeneratedFormat == expectedPrefix
 	result.Mismatch = !result.Match
 	if result.Match {
-		result.Detail = fmt.Sprintf("spec and generated client both use %q", strings.TrimSpace(expectedPrefix))
+		if tokenPreserving {
+			result.Detail = fmt.Sprintf("spec and generated client both use %q", strings.TrimSpace(expectedPrefix))
+		} else {
+			result.Match = false
+			result.Mismatch = true
+			result.Detail = invalidDetail
+		}
 	} else {
 		result.Detail = fmt.Sprintf("spec expects %q but generated client uses %q", strings.TrimSpace(expectedPrefix), strings.TrimSpace(result.GeneratedFormat))
 	}

@@ -248,7 +248,7 @@ $(git diff --stat upstream/main..HEAD)
 - Build: $build_status
 - Tests: $test_status
 - Dogfood: ${dogfood_status:-N/A}
-- \`printing-press publish validate\`: PASS (after $validate_iterations iteration(s))
+- \`cli-printing-press publish validate\`: PASS (after $validate_iterations iteration(s))
 - Patch contract: $patch_marker_count // PATCH() comments, .printing-press-patches.json updated
 
 ## Evidence

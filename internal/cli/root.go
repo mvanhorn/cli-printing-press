@@ -35,14 +35,31 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	CanonicalBinaryName = "cli-printing-press"
+	LegacyBinaryName    = "printing-press"
+)
+
 func Execute() error {
+	return ExecuteWithName(CanonicalBinaryName)
+}
+
+func ExecuteWithName(commandName string) error {
+	rootCmd := NewRootCommand(commandName)
+	return rootCmd.Execute()
+}
+
+func NewRootCommand(commandName string) *cobra.Command {
+	if commandName == "" {
+		commandName = CanonicalBinaryName
+	}
 	rootCmd := &cobra.Command{
-		Use:          "printing-press",
+		Use:          commandName,
 		Short:        "Describe your API. Get a production CLI.",
 		SilenceUsage: true,
 		Version:      version.Version,
 	}
-	rootCmd.SetVersionTemplate("printing-press {{.Version}}\n")
+	rootCmd.SetVersionTemplate(commandName + " {{.Version}}\n")
 
 	rootCmd.AddCommand(newGenerateCmd())
 	rootCmd.AddCommand(newScorecardCmd())
@@ -76,7 +93,7 @@ func Execute() error {
 	rootCmd.AddCommand(newBundleCmd())
 	rootCmd.AddCommand(newMCPSyncCmd())
 
-	return rootCmd.Execute()
+	return rootCmd
 }
 
 func newGenerateCmd() *cobra.Command {
@@ -107,16 +124,16 @@ func newGenerateCmd() *cobra.Command {
 		Use:   "generate",
 		Short: "Generate a Go CLI project from an API spec",
 		Example: `  # Generate from a local OpenAPI spec
-  printing-press generate --spec ./openapi.yaml
+  cli-printing-press generate --spec ./openapi.yaml
 
   # Generate from a URL and recreate output while preserving hand-authored CLI files
-  printing-press generate --spec https://api.example.com/openapi.json --force
+  cli-printing-press generate --spec https://api.example.com/openapi.json --force
 
   # Generate from API documentation
-  printing-press generate --docs https://docs.stripe.com/api --name stripe
+  cli-printing-press generate --docs https://docs.stripe.com/api --name stripe
 
   # Multiple specs merged into one CLI
-  printing-press generate --spec api-v1.yaml --spec api-v2.yaml --name myapi`,
+  cli-printing-press generate --spec api-v1.yaml --spec api-v2.yaml --name myapi`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dryRun && docsURL != "" {
 				return fmt.Errorf("--dry-run cannot be used with --docs (doc scraping has unavoidable side effects)")
@@ -164,7 +181,7 @@ func newGenerateCmd() *cobra.Command {
 					return err
 				}
 
-				novelFeatures, polished, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath})
+				generateResult, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath})
 				if err != nil {
 					return err
 				}
@@ -183,12 +200,13 @@ func newGenerateCmd() *cobra.Command {
 					APIName:       parsed.Name,
 					DocsURL:       docsURL,
 					OutputDir:     absOut,
+					Description:   generateResult.CatalogDescription,
 					Owner:         parsed.Owner,
 					Printer:       parsed.Printer,
 					PrinterName:   parsed.PrinterName,
 					RunID:         runID,
 					Spec:          parsed,
-					NovelFeatures: novelFeatures,
+					NovelFeatures: generateResult.NovelFeatures,
 				}); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 				}
@@ -201,7 +219,7 @@ func newGenerateCmd() *cobra.Command {
 						"output_dir": absOut,
 						"spec_files": specFiles,
 						"validated":  validate,
-						"polished":   polished,
+						"polished":   generateResult.Polished,
 					}); err != nil {
 						return fmt.Errorf("encoding JSON: %w", err)
 					}
@@ -342,7 +360,7 @@ func newGenerateCmd() *cobra.Command {
 				return printDryRun(apiSpec, absOut, specFiles)
 			}
 
-			novelFeatures, polished, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, specURL: specURL, rejectUnshippablePageContextTraffic: true})
+			generateResult, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, specURL: specURL, rejectUnshippablePageContextTraffic: true})
 			if err != nil {
 				return err
 			}
@@ -388,12 +406,13 @@ func newGenerateCmd() *cobra.Command {
 				SpecSrcs:      specFiles,
 				SpecURL:       specURL,
 				OutputDir:     absOut,
+				Description:   generateResult.CatalogDescription,
 				Owner:         apiSpec.Owner,
 				Printer:       apiSpec.Printer,
 				PrinterName:   apiSpec.PrinterName,
 				RunID:         runID,
 				Spec:          apiSpec,
-				NovelFeatures: novelFeatures,
+				NovelFeatures: generateResult.NovelFeatures,
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
 			}
@@ -415,7 +434,7 @@ func newGenerateCmd() *cobra.Command {
 					"output_dir": absOut,
 					"spec_files": specFiles,
 					"validated":  validate,
-					"polished":   polished,
+					"polished":   generateResult.Polished,
 				}); err != nil {
 					return fmt.Errorf("encoding JSON: %w", err)
 				}
@@ -484,16 +503,29 @@ type generateProjectOptions struct {
 	rejectUnshippablePageContextTraffic bool
 }
 
-func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProjectOptions) ([]pipeline.NovelFeatureManifest, bool, error) {
-	enrichSpecFromCatalog(apiSpec, catalogSpecLookupRefs(opts.specFiles, opts.specURL)...)
+type generateProjectResult struct {
+	NovelFeatures      []pipeline.NovelFeatureManifest
+	CatalogDescription string
+	Polished           bool
+}
+
+func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProjectOptions) (generateProjectResult, error) {
+	var catalogEntry *catalog.Entry
+	if apiSpec != nil {
+		catalogEntry = lookupCatalogEntryForGenerateSpec(apiSpec.Name, catalogSpecLookupRefs(opts.specFiles, opts.specURL))
+		enrichSpecFromCatalogEntry(apiSpec, catalogEntry)
+	}
 	gen := generator.New(apiSpec, absOut)
+	if catalogEntry != nil {
+		gen.CatalogEntryDescription = catalogEntry.Description
+	}
 	novelFeatures := loadResearchSources(gen, opts.researchDir)
 	trafficAnalysis, err := loadTrafficAnalysisForGenerate(opts.trafficAnalysisPath, opts.specFiles, apiSpec.SpecSource)
 	if err != nil {
-		return nil, false, &ExitError{Code: ExitInputError, Err: err}
+		return generateProjectResult{}, &ExitError{Code: ExitInputError, Err: err}
 	}
 	if opts.rejectUnshippablePageContextTraffic && trafficAnalysisRequiresUnshippablePageContext(trafficAnalysis) {
-		return nil, false, &ExitError{Code: ExitInputError, Err: fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")}
+		return generateProjectResult{}, &ExitError{Code: ExitInputError, Err: fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")}
 	}
 	// ApplyReachabilityDefaults runs first so its HAR-driven HTTP-version
 	// mapping wins for browser_http / browser_clearance_http modes.
@@ -508,14 +540,18 @@ func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProje
 	applyHTTPTransportDefault(apiSpec, trafficAnalysis)
 	gen.TrafficAnalysis = trafficAnalysis
 	if err := gen.Generate(); err != nil {
-		return nil, false, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
+		return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
 	}
 	if opts.validate {
 		if err := gen.Validate(); err != nil {
-			return nil, false, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}
+			return generateProjectResult{}, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}
 		}
 	}
-	return novelFeatures, runGeneratePolishPass(opts.polish, apiSpec.Name, absOut), nil
+	return generateProjectResult{
+		NovelFeatures:      novelFeatures,
+		CatalogDescription: gen.CatalogDescription(),
+		Polished:           runGeneratePolishPass(opts.polish, apiSpec.Name, absOut),
+	}, nil
 }
 
 func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource, clientPattern, httpTransport, owner string) error {
@@ -1310,15 +1346,15 @@ func newVersionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "version",
 		Short:   "Print version",
-		Example: `  printing-press version`,
+		Example: `  cli-printing-press version`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if asJSON {
-				return json.NewEncoder(os.Stdout).Encode(map[string]string{
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]string{
 					"version": version.Version,
 					"go":      runtime.Version(),
 				})
 			}
-			fmt.Printf("printing-press %s\n", version.Version)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", cmd.Root().Use, version.Version)
 			return nil
 		},
 	}
@@ -1339,13 +1375,13 @@ func newPrintCmd() *cobra.Command {
 		Short: "Create an autonomous CLI generation pipeline",
 		Long:  "Creates a pipeline directory with plan seeds for each phase. Use /ce:work on each plan to execute.",
 		Example: `  # Run full pipeline for a catalog API
-  printing-press print stripe
+  cli-printing-press print stripe
 
   # Force overwrite existing pipeline
-  printing-press print stripe --force
+  cli-printing-press print stripe --force
 
   # Resume an interrupted pipeline
-  printing-press print stripe --resume`,
+  cli-printing-press print stripe --resume`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			apiName := args[0]

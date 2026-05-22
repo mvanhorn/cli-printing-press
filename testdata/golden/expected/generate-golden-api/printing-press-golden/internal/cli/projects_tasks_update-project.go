@@ -69,7 +69,7 @@ func newProjectsTasksUpdateProjectCmd(flags *rootFlags) *cobra.Command {
 					body["title"] = bodyTitle
 				}
 			}
-			data, statusCode, err := c.PatchWithParams(path, params, body)
+			data, statusCode, err := c.PatchWithParams(cmd.Context(), path, params, body)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

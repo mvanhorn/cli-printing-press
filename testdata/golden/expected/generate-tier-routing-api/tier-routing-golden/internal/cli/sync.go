@@ -4,7 +4,9 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/spf13/cobra"
 	"net/url"
@@ -203,7 +205,7 @@ Resource scoping:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-						res := syncResource(syncClientForResource(c, resource), db, resource, sinceTS, full, maxPages, effectiveLatestOnly, userParams)
+						res := syncResource(cmd.Context(), syncClientForResource(c, resource), db, resource, sinceTS, full, maxPages, effectiveLatestOnly, userParams)
 						results <- res
 					}
 				}()
@@ -226,12 +228,20 @@ Resource scoping:
 			var criticalErrCount int
 			var warnCount int
 			var successCount int
+			var firstErr error
+			var firstPlaceholderErr error
 			for res := range results {
 				if res.Err != nil {
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
 					}
 					errCount++
+					if firstErr == nil {
+						firstErr = res.Err
+					}
+					if firstPlaceholderErr == nil && errors.Is(res.Err, client.ErrPlaceholderCredential) {
+						firstPlaceholderErr = res.Err
+					}
 					if criticalResources[res.Resource] {
 						criticalErrCount++
 					}
@@ -273,6 +283,9 @@ Resource scoping:
 			// one-shot sync_warning with reason "exit_policy_default_changed" so
 			// CI scripts that depend on $? != 0 can discover the contract change
 			// without reading the CHANGELOG.
+			if firstPlaceholderErr != nil {
+				return classifyAPIError(firstPlaceholderErr, flags)
+			}
 			if strict && errCount > 0 {
 				return fmt.Errorf("%d resource(s) failed to sync", errCount)
 			}
@@ -319,8 +332,8 @@ Resource scoping:
 // It resumes from the last cursor unless sinceTS or full mode overrides it.
 // channel_workflow.go.tmpl mirrors the trailing dates arg conditional;
 // keep both call sites in sync if this signature changes.
-func syncResource(c interface {
-	Get(string, map[string]string) (json.RawMessage, error)
+func syncResource(ctx context.Context, c interface {
+	Get(context.Context, string, map[string]string) (json.RawMessage, error)
 	RateLimit() float64
 }, db *store.Store, resource, sinceTS string, full bool, maxPages int, latestOnly bool, userParams *syncUserParams) syncResult {
 	started := time.Now()
@@ -435,7 +448,7 @@ func syncResource(c interface {
 		// endpoint whose OpenAPI spec marks the filter optional).
 		userParams.applyTo(resource, params, false)
 
-		data, err := c.Get(path, params)
+		data, err := c.Get(ctx, path, params)
 		if err != nil {
 			if w, ok := isSyncAccessWarning(err); ok {
 				if !humanFriendly {

@@ -35,11 +35,19 @@ func Analyze(capturePath string) (*spec.APISpec, error) {
 }
 
 func AnalyzeCapture(capture *EnrichedCapture) (*spec.APISpec, error) {
+	return AnalyzeCaptureWithOptions(capture, AnalyzeOptions{})
+}
+
+type AnalyzeOptions struct {
+	PreserveHosts bool
+}
+
+func AnalyzeCaptureWithOptions(capture *EnrichedCapture, options AnalyzeOptions) (*spec.APISpec, error) {
 	if capture == nil {
 		return nil, fmt.Errorf("capture is required")
 	}
 
-	apiEntries, noiseEntries := ClassifyEntries(capture.Entries)
+	apiEntries, noiseEntries := specVisibleEntries(capture, options)
 
 	resources := make(map[string]spec.Resource)
 	graphQLOps, graphQLBFFKeys := detectGraphQLBFFOperations(apiEntries)
@@ -60,9 +68,20 @@ func AnalyzeCapture(capture *EnrichedCapture) (*spec.APISpec, error) {
 	}
 	regularEntries = append(regularEntries, htmlEntries...)
 
-	groups := DeduplicateEndpoints(regularEntries)
+	baseURL := mostCommonBaseURL(regularEntries)
+	if baseURL == "" {
+		baseURL = normalizeBaseURL(capture.TargetURL)
+	}
+
+	groups := deduplicateSpecEndpoints(regularEntries, options)
 	for _, group := range groups {
 		endpoint := buildEndpoint(group)
+		if options.PreserveHosts {
+			groupBaseURL := mostCommonBaseURL(group.Entries)
+			if groupBaseURL != "" && groupBaseURL != baseURL {
+				endpoint.BaseURL = groupBaseURL
+			}
+		}
 		resourceKey, resourceName := discovery.ResourceKey(group.NormalizedPath)
 		if resourceKey == "" {
 			resourceKey = "default"
@@ -83,11 +102,6 @@ func AnalyzeCapture(capture *EnrichedCapture) (*spec.APISpec, error) {
 		}
 		resource.Endpoints[name] = endpoint
 		resources[resourceKey] = resource
-	}
-
-	baseURL := mostCommonBaseURL(regularEntries)
-	if baseURL == "" {
-		baseURL = normalizeBaseURL(capture.TargetURL)
 	}
 
 	nameSource := capture.TargetURL
@@ -127,6 +141,24 @@ func AnalyzeCapture(capture *EnrichedCapture) (*spec.APISpec, error) {
 	}
 
 	return apiSpec, nil
+}
+
+func specVisibleEntries(capture *EnrichedCapture, options AnalyzeOptions) ([]EnrichedEntry, []EnrichedEntry) {
+	apiEntries, noiseEntries := ClassifyEntries(capture.Entries)
+	if options.PreserveHosts || !entriesContainTelemetry(noiseEntries) {
+		return apiEntries, noiseEntries
+	}
+
+	primaryEntries, nonPrimaryEntries := selectPrimaryAPIEntries(apiEntries)
+	noiseEntries = append(noiseEntries, nonPrimaryEntries...)
+	return primaryEntries, noiseEntries
+}
+
+func deduplicateSpecEndpoints(entries []EnrichedEntry, options AnalyzeOptions) []EndpointGroup {
+	if options.PreserveHosts {
+		return DeduplicateTrafficEndpoints(entries)
+	}
+	return DeduplicateEndpoints(entries)
 }
 
 func detectGraphQLBFFOperations(entries []EnrichedEntry) ([]graphQLOperationGroup, map[string]bool) {
@@ -1237,23 +1269,27 @@ func deriveNameFromURL(raw string) string {
 // remain visible there with their `low` confidence and `single-sample`
 // flag (or whichever applies) so an operator can audit what filtered out.
 func FilterEndpointsByMinSamples(apiSpec *spec.APISpec, capture *EnrichedCapture, minSamples int) int {
+	return FilterEndpointsByMinSamplesWithOptions(apiSpec, capture, minSamples, AnalyzeOptions{})
+}
+
+func FilterEndpointsByMinSamplesWithOptions(apiSpec *spec.APISpec, capture *EnrichedCapture, minSamples int, options AnalyzeOptions) int {
 	if apiSpec == nil || capture == nil || minSamples <= 1 {
 		return 0
 	}
-	apiEntries, _ := ClassifyEntries(capture.Entries)
-	groups := DeduplicateEndpoints(apiEntries)
+	apiEntries, _ := specVisibleEntries(capture, options)
+	groups := deduplicateSpecEndpoints(apiEntries, options)
 
 	qualifying := map[string]bool{}
 	for _, g := range groups {
 		if len(g.Entries) >= minSamples {
-			qualifying[endpointFilterKey(g.Method, g.NormalizedPath)] = true
+			qualifying[endpointFilterKey(g.Method, g.NormalizedPath, groupBaseURLOverride(g, options, apiSpec.BaseURL))] = true
 		}
 	}
 
 	dropped := 0
 	for resourceName, resource := range apiSpec.Resources {
 		for endpointName, endpoint := range resource.Endpoints {
-			key := endpointFilterKey(endpoint.Method, endpoint.Path)
+			key := endpointFilterKey(endpoint.Method, endpoint.Path, endpoint.BaseURL)
 			if !qualifying[key] {
 				delete(resource.Endpoints, endpointName)
 				dropped++
@@ -1268,8 +1304,24 @@ func FilterEndpointsByMinSamples(apiSpec *spec.APISpec, capture *EnrichedCapture
 	return dropped
 }
 
-func endpointFilterKey(method string, path string) string {
-	return strings.ToUpper(strings.TrimSpace(method)) + " " + path
+func groupBaseURLOverride(group EndpointGroup, options AnalyzeOptions, specBaseURL string) string {
+	if !options.PreserveHosts {
+		return ""
+	}
+	groupBaseURL := mostCommonBaseURL(group.Entries)
+	if groupBaseURL == "" || groupBaseURL == specBaseURL {
+		return ""
+	}
+	return groupBaseURL
+}
+
+func endpointFilterKey(method string, path string, baseURL string) string {
+	key := strings.ToUpper(strings.TrimSpace(method)) + " " + path
+	prefix := strings.TrimRight(baseURL, "/")
+	if prefix == "" {
+		return key
+	}
+	return prefix + " " + key
 }
 
 // SampleFile is the on-disk shape of one redacted endpoint sample written
@@ -1316,6 +1368,10 @@ func DefaultSamplesPath(specPath string) string {
 // AnalyzeCapture uses, so the file set is a 1:1 reflection of what the
 // emitted spec would contain.
 func WriteSamples(capture *EnrichedCapture, outputDir string) (int, error) {
+	return WriteSamplesWithOptions(capture, outputDir, AnalyzeOptions{})
+}
+
+func WriteSamplesWithOptions(capture *EnrichedCapture, outputDir string, options AnalyzeOptions) (int, error) {
 	if capture == nil {
 		return 0, fmt.Errorf("capture is required")
 	}
@@ -1323,8 +1379,8 @@ func WriteSamples(capture *EnrichedCapture, outputDir string) (int, error) {
 		return 0, fmt.Errorf("output directory is required")
 	}
 
-	apiEntries, _ := ClassifyEntries(capture.Entries)
-	groups := DeduplicateEndpoints(apiEntries)
+	apiEntries, _ := specVisibleEntries(capture, options)
+	groups := deduplicateSpecEndpoints(apiEntries, options)
 
 	written := 0
 	for _, group := range groups {
@@ -1359,8 +1415,9 @@ func encodeSampleJSON(sample SampleFile) ([]byte, error) {
 }
 
 // sampleFilename returns method__path-slug__hash.json. The hash is the
-// first 8 hex chars of sha256(METHOD + " " + normalizedPath) so the same
-// endpoint group always lands at the same filename across reruns.
+// first 8 hex chars of sha256(METHOD + " " + normalizedPath), with host
+// included only for host-preserved groups so same-path groups cannot
+// overwrite each other.
 func sampleFilename(group EndpointGroup) string {
 	method := strings.ToLower(strings.TrimSpace(group.Method))
 	if method == "" {
@@ -1376,7 +1433,11 @@ func sampleFilename(group EndpointGroup) string {
 		slug = "root"
 	}
 
-	h := sha256.Sum256([]byte(strings.ToUpper(method) + " " + group.NormalizedPath))
+	hashKey := strings.ToUpper(method) + " " + group.NormalizedPath
+	if host := strings.TrimSpace(strings.ToLower(group.Host)); host != "" {
+		hashKey = host + " " + hashKey
+	}
+	h := sha256.Sum256([]byte(hashKey))
 	return fmt.Sprintf("%s__%s__%s.json", method, slug, hex.EncodeToString(h[:4]))
 }
 

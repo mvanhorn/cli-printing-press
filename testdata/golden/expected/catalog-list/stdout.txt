@@ -22,6 +22,9 @@ maps:
 marketing:
   producthunt          Find, monitor, and export Product Hunt launches for launch research, scouting, and competitive tracking without requiring a Product Hunt API application.
 
+media-and-entertainment:
+  supercut             AI video recording and clipping platform API for recordings, stacks, transcripts, frames, comments, and reactions
+
 monitoring:
   sentry               Error tracking and performance monitoring - projects, issues, events, releases
 

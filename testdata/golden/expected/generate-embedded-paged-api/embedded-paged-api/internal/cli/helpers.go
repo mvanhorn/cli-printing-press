@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"embedded-paged-pp-cli/internal/client"
 	"embedded-paged-pp-cli/internal/cliutil"
 	"encoding/json"
@@ -482,6 +483,8 @@ func classifyAPIError(err error, flags *rootFlags) error {
 		classified := apiErr(err)
 		writeAPIErrorEnvelope(flags, classified, ExitCode(classified))
 		return classified
+	case errors.Is(err, client.ErrPlaceholderCredential):
+		return authErr(err)
 	case strings.Contains(msg, "HTTP 400") && cliutil.LooksLikeAuthError(msg):
 		return authErr(fmt.Errorf("%w\nhint: the API rejected the request — this usually means auth is missing or invalid."+
 			"\n      Set your API key: export EMBEDDED_PAGED_API_KEY=<your-key>"+
@@ -529,8 +532,8 @@ func replacePathParam(path, name, value string) string {
 // argument carries per-endpoint required headers (e.g. cal-api-version) that
 // must be sent on every page request, including the first; pass nil when the
 // endpoint has no per-endpoint header overrides.
-func paginatedGet(c interface {
-	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+func paginatedGet(ctx context.Context, c interface {
+	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
 }, path string, params map[string]string, headers map[string]string, fetchAll bool, cursorParam, nextCursorPath, hasMoreField string) (json.RawMessage, error) {
 	// Cursor params are exempt from the "0"/"false" strip: offset-paginated
 	// APIs send offset=0 on the first page.
@@ -545,7 +548,7 @@ func paginatedGet(c interface {
 	}
 
 	if !fetchAll {
-		data, err := c.GetWithHeaders(path, clean, headers)
+		data, err := c.GetWithHeaders(ctx, path, clean, headers)
 		if err != nil {
 			return nil, err
 		}
@@ -564,7 +567,7 @@ func paginatedGet(c interface {
 			fmt.Fprintf(os.Stderr, `{"event":"page_fetch","page":%d}`+"\n", page)
 		}
 
-		data, err := c.GetWithHeaders(path, clean, headers)
+		data, err := c.GetWithHeaders(ctx, path, clean, headers)
 		if err != nil {
 			return nil, err
 		}
@@ -584,20 +587,21 @@ func paginatedGet(c interface {
 				// Check for next cursor
 				if nextCursorPath != "" {
 					if tokenRaw, ok := rawAtPath(obj, nextCursorPath); ok {
-						var token string
-						if json.Unmarshal(tokenRaw, &token) == nil && token != "" {
+						if token := paginationCursorToken(tokenRaw); token != "" {
 							clean[cursorParam] = token
 							continue
 						}
 					}
 				}
 
-				// Check has_more
+				// Check has_more. A has-more flag without an extracted cursor
+				// proves truncation but cannot advance the request safely.
 				if hasMoreField != "" {
 					if moreRaw, ok := rawAtPath(obj, hasMoreField); ok {
 						var more bool
 						if json.Unmarshal(moreRaw, &more) == nil && more {
-							continue
+							emitMissingPaginationCursorWarning(nextCursorPath)
+							break
 						}
 					}
 				}
@@ -610,6 +614,9 @@ func paginatedGet(c interface {
 		break
 	}
 
+	if fetchAll && page == 1 && nextCursorPath == "" && hasMoreField == "" {
+		emitMissingPaginationSignalWarning()
+	}
 	if humanFriendly {
 		fmt.Fprintf(os.Stderr, "fetched %d items across %d pages\n", len(allItems), page)
 	} else {
@@ -633,7 +640,7 @@ func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField st
 	var nextCursor string
 	if nextCursorPath != "" {
 		if tokenRaw, ok := rawAtPath(obj, nextCursorPath); ok {
-			_ = json.Unmarshal(tokenRaw, &nextCursor)
+			nextCursor = paginationCursorToken(tokenRaw)
 		}
 	}
 	var hasMore bool
@@ -662,6 +669,38 @@ func emitTruncationWarning(data json.RawMessage, nextCursorPath, hasMoreField st
 	} else {
 		fmt.Fprintf(os.Stderr, `{"event":"truncated"}`+"\n")
 	}
+}
+
+func emitMissingPaginationSignalWarning() {
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "warning: --all requested, but this endpoint does not declare a next cursor or has-more field; returning page 1 only.\n")
+	} else {
+		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_signal_missing","message":"--all requested but this endpoint does not declare a next cursor or has-more field; returning page 1 only"}`+"\n")
+	}
+}
+
+func emitMissingPaginationCursorWarning(nextCursorPath string) {
+	if humanFriendly {
+		fmt.Fprintf(os.Stderr, "warning: --all requested, but the response indicated more pages without a usable next cursor; returning fetched pages only.\n")
+	} else if nextCursorPath != "" {
+		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_cursor_missing","next_cursor_path":%q,"message":"--all requested but the response indicated more pages without a usable next cursor; returning fetched pages only"}`+"\n", nextCursorPath)
+	} else {
+		fmt.Fprintf(os.Stderr, `{"event":"truncated","reason":"pagination_cursor_missing","message":"--all requested but the response indicated more pages without a usable next cursor; returning fetched pages only"}`+"\n")
+	}
+}
+
+func paginationCursorToken(raw json.RawMessage) string {
+	var token string
+	if json.Unmarshal(raw, &token) == nil && token != "" {
+		return token
+	}
+	var number json.Number
+	if json.Unmarshal(raw, &number) == nil {
+		if n, err := number.Int64(); err == nil && n > 0 {
+			return number.String()
+		}
+	}
+	return ""
 }
 
 func extractPaginatedItems(obj map[string]json.RawMessage) ([]json.RawMessage, bool) {
@@ -721,8 +760,8 @@ const embeddedPagedSubresourcePageCap = 500
 // Envelope lookups are case-insensitive: API authors sometimes
 // describe envelopes in one casing in the schema and serve another on
 // the wire (`NextPageToken` vs `nextPageToken`).
-func fetchEmbeddedPagedSubresource(c interface {
-	GetWithHeaders(path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
+func fetchEmbeddedPagedSubresource(ctx context.Context, c interface {
+	GetWithHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, error)
 }, childPath, nextField string, nextIsURL, nextIsBoolean bool) ([]json.RawMessage, error) {
 	all := make([]json.RawMessage, 0)
 	nextURL := ""
@@ -731,7 +770,7 @@ func fetchEmbeddedPagedSubresource(c interface {
 		if nextURL != "" {
 			target = relativizeNextURL(nextURL)
 		}
-		data, err := c.GetWithHeaders(target, nil, nil)
+		data, err := c.GetWithHeaders(ctx, target, nil, nil)
 		if err != nil {
 			return nil, fmt.Errorf("paginating embedded sub-resource %q page %d: %w", childPath, page+1, err)
 		}

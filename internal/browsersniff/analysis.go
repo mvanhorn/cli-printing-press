@@ -17,10 +17,20 @@ import (
 )
 
 const trafficAnalysisVersion = "1"
+const maxCaptchaPreflightJSONBytes = 4096
+const maxCaptchaChallengeJSONBytes = maxCaptchaPreflightJSONBytes * 16
+
+type SecondaryHostReason string
+
+const (
+	SecondaryHostReasonNonPrimary SecondaryHostReason = "non-primary host"
+	SecondaryHostReasonTelemetry  SecondaryHostReason = "telemetry host"
+)
 
 type TrafficAnalysis struct {
 	Version           string                  `json:"version"`
 	Summary           TrafficAnalysisSummary  `json:"summary"`
+	SecondaryHosts    []SecondaryHost         `json:"secondary_hosts,omitempty"`
 	Reachability      *ReachabilityAnalysis   `json:"reachability,omitempty"`
 	Protocols         []ProtocolObservation   `json:"protocols"`
 	Auth              AuthAnalysis            `json:"auth"`
@@ -31,6 +41,12 @@ type TrafficAnalysis struct {
 	CandidateCommands []CandidateCommand      `json:"candidate_commands,omitempty"`
 	GenerationHints   []string                `json:"generation_hints,omitempty"`
 	Warnings          []AnalysisWarning       `json:"warnings,omitempty"`
+}
+
+type SecondaryHost struct {
+	Host   string              `json:"host"`
+	Count  int                 `json:"count"`
+	Reason SecondaryHostReason `json:"reason"`
 }
 
 // UnmarshalJSON normalizes two v2 shapes that v3 no longer emits but that
@@ -224,7 +240,8 @@ type ProtocolObservation struct {
 }
 
 type AuthAnalysis struct {
-	Candidates []AuthCandidate `json:"candidates,omitempty"`
+	Candidates       []AuthCandidate `json:"candidates,omitempty"`
+	CaptchaPreflight bool            `json:"captcha_preflight,omitempty"`
 
 	// Auth0SPAInMemory is true when an /oauth/token response carried an
 	// `access_token` in the JSON body without a JWT-shaped Set-Cookie on the
@@ -245,12 +262,14 @@ func (a *AuthAnalysis) UnmarshalJSON(data []byte) error {
 	var legacy struct {
 		Candidates       []AuthCandidate `json:"candidates,omitempty"`
 		CandidateTypes   []string        `json:"candidate_types,omitempty"`
+		CaptchaPreflight bool            `json:"captcha_preflight,omitempty"`
 		Auth0SPAInMemory bool            `json:"auth0_spa_in_memory,omitempty"`
 	}
 	if err := json.Unmarshal(data, &legacy); err != nil {
 		return err
 	}
 	a.Candidates = legacy.Candidates
+	a.CaptchaPreflight = legacy.CaptchaPreflight
 	a.Auth0SPAInMemory = legacy.Auth0SPAInMemory
 	if len(a.Candidates) == 0 && len(legacy.CandidateTypes) > 0 {
 		a.Candidates = make([]AuthCandidate, 0, len(legacy.CandidateTypes))
@@ -454,12 +473,17 @@ func AnalyzeTraffic(capture *EnrichedCapture) (*TrafficAnalysis, error) {
 	}
 
 	apiEntries, noiseEntries := ClassifyEntries(capture.Entries)
+	var secondaryHosts []SecondaryHost
+	if primaryHost, _ := primaryHostByFrequency(apiEntries); primaryHost != "" {
+		secondaryHosts = secondaryHostsForEntries(apiEntries, noiseEntries, primaryHost)
+	}
 	classifiedEntries := classifyInCaptureOrder(capture.Entries, apiEntries, noiseEntries)
 	groups := DeduplicateTrafficEndpoints(apiEntries)
 
 	analysis := &TrafficAnalysis{
 		Version:          trafficAnalysisVersion,
 		Summary:          buildTrafficSummary(capture, apiEntries, noiseEntries),
+		SecondaryHosts:   secondaryHosts,
 		Protocols:        detectProtocols(classifiedEntries),
 		Auth:             detectTrafficAuth(capture, classifiedEntries),
 		Protections:      detectProtections(classifiedEntries),
@@ -755,6 +779,7 @@ func detectTrafficAuth(capture *EnrichedCapture, entries []EnrichedEntry) AuthAn
 		candidate AuthCandidate
 	}
 	candidates := map[string]*accumulator{}
+	captchaPreflight := false
 	add := func(key string, candidate AuthCandidate) {
 		existing := candidates[key]
 		if existing == nil {
@@ -783,6 +808,9 @@ func detectTrafficAuth(capture *EnrichedCapture, entries []EnrichedEntry) AuthAn
 	}
 
 	for index, entry := range entries {
+		if entry.Classification == "noise" || entry.IsNoise {
+			continue
+		}
 		for name, value := range entry.RequestHeaders {
 			lowerName := strings.ToLower(name)
 			switch {
@@ -804,6 +832,9 @@ func detectTrafficAuth(capture *EnrichedCapture, entries []EnrichedEntry) AuthAn
 				}
 			}
 		}
+		if !captchaPreflight && isCaptchaPreflightCandidate(entry) {
+			captchaPreflight = true
+		}
 	}
 
 	out := make([]AuthCandidate, 0, len(candidates))
@@ -822,6 +853,7 @@ func detectTrafficAuth(capture *EnrichedCapture, entries []EnrichedEntry) AuthAn
 	})
 	return AuthAnalysis{
 		Candidates:       out,
+		CaptchaPreflight: captchaPreflight,
 		Auth0SPAInMemory: detectAuth0SPAInMemory(entries),
 	}
 }
@@ -866,7 +898,7 @@ func detectProtections(entries []EnrichedEntry) []ProtectionObservation {
 			add("perimeterx", 0.8, entry, index, "PerimeterX marker")
 		}
 
-		if strings.Contains(body, "recaptcha") || strings.Contains(body, "hcaptcha") || strings.Contains(body, "captcha") {
+		if hasCaptchaChallengeMarker(entry, body) {
 			add("captcha", 0.85, entry, index, "CAPTCHA marker")
 		}
 		if entry.ResponseStatus == 403 || entry.ResponseStatus == 429 {
@@ -893,6 +925,137 @@ func detectProtections(entries []EnrichedEntry) []ProtectionObservation {
 		return out[i].Confidence > out[j].Confidence
 	})
 	return out
+}
+
+func isCaptchaPreflightCandidate(entry EnrichedEntry) bool {
+	if entry.ResponseStatus < 200 || entry.ResponseStatus >= 300 {
+		return false
+	}
+	if !strings.Contains(strings.ToLower(entry.ResponseContentType), "json") {
+		return false
+	}
+	if len(strings.TrimSpace(entry.ResponseBody)) > maxCaptchaPreflightJSONBytes {
+		return false
+	}
+	path := strings.ToLower(extractPath(entry.URL))
+	return strings.Contains(path, "/c/check") ||
+		strings.Contains(path, "check_captcha") ||
+		strings.Contains(path, "captcha/required") ||
+		strings.Contains(path, "turnstile/check")
+}
+
+func hasCaptchaChallengeMarker(entry EnrichedEntry, lowerBody string) bool {
+	if isCaptchaPreflightCandidate(entry) {
+		return captchaPreflightRequiresChallenge(entry.ResponseBody)
+	}
+	isSuccessfulJSON := entry.ResponseStatus >= 200 &&
+		entry.ResponseStatus < 300 &&
+		strings.Contains(strings.ToLower(entry.ResponseContentType), "json")
+	if isSuccessfulJSON {
+		hasCaptchaKeyword := strings.Contains(lowerBody, "captcha") ||
+			strings.Contains(lowerBody, "recaptcha") ||
+			strings.Contains(lowerBody, "hcaptcha") ||
+			strings.Contains(lowerBody, "turnstile")
+		if !hasCaptchaKeyword {
+			return false
+		}
+		if len(strings.TrimSpace(entry.ResponseBody)) > maxCaptchaChallengeJSONBytes {
+			return false
+		}
+		if requiresChallenge, parsed := captchaPreflightChallengeDecision(entry.ResponseBody); parsed {
+			return requiresChallenge
+		}
+		return captchaChallengeText(lowerBody)
+	}
+	if strings.Contains(lowerBody, "recaptcha") ||
+		strings.Contains(lowerBody, "hcaptcha") ||
+		strings.Contains(lowerBody, "turnstile") ||
+		strings.Contains(lowerBody, "cf_chl") {
+		return true
+	}
+	if !strings.Contains(lowerBody, "captcha") {
+		return false
+	}
+	if captchaChallengeText(lowerBody) {
+		return true
+	}
+	if entry.ResponseStatus < 200 || entry.ResponseStatus >= 300 {
+		return true
+	}
+	return strings.Contains(strings.ToLower(entry.ResponseContentType), "html")
+}
+
+func captchaChallengeText(lowerBody string) bool {
+	return (strings.Contains(lowerBody, "captcha") ||
+		strings.Contains(lowerBody, "recaptcha") ||
+		strings.Contains(lowerBody, "hcaptcha") ||
+		strings.Contains(lowerBody, "turnstile")) &&
+		(strings.Contains(lowerBody, "required") ||
+			strings.Contains(lowerBody, "challenge"))
+}
+
+func captchaPreflightRequiresChallenge(body string) bool {
+	requiresChallenge, _ := captchaPreflightChallengeDecision(body)
+	return requiresChallenge
+}
+
+func captchaPreflightChallengeDecision(body string) (bool, bool) {
+	var value any
+	if err := json.Unmarshal([]byte(body), &value); err != nil {
+		return false, false
+	}
+	return hasPositiveCaptchaDecision("", value), true
+}
+
+func hasPositiveCaptchaDecision(key string, value any) bool {
+	switch v := value.(type) {
+	case map[string]any:
+		for childKey, childValue := range v {
+			if hasPositiveCaptchaDecision(childKey, childValue) {
+				return true
+			}
+		}
+	case []any:
+		for _, childValue := range v {
+			if hasPositiveCaptchaDecision(key, childValue) {
+				return true
+			}
+		}
+	case bool:
+		return v && captchaDecisionKey(key)
+	case string:
+		lowerValue := strings.ToLower(v)
+		if captchaDecisionKey(key) {
+			return lowerValue == "true" ||
+				lowerValue == "yes" ||
+				strings.Contains(lowerValue, "required") ||
+				strings.Contains(lowerValue, "challenge")
+		}
+		return captchaMessageKey(key) && captchaChallengeText(lowerValue)
+	case float64:
+		return v != 0 && captchaDecisionKey(key)
+	}
+	return false
+}
+
+func captchaDecisionKey(key string) bool {
+	lowerKey := strings.ToLower(key)
+	return strings.Contains(lowerKey, "captcha") ||
+		strings.Contains(lowerKey, "recaptcha") ||
+		strings.Contains(lowerKey, "hcaptcha") ||
+		strings.Contains(lowerKey, "turnstile") ||
+		strings.Contains(lowerKey, "challenge") ||
+		strings.Contains(lowerKey, "required") ||
+		strings.Contains(lowerKey, "present")
+}
+
+func captchaMessageKey(key string) bool {
+	lowerKey := strings.ToLower(key)
+	return lowerKey == "error" ||
+		lowerKey == "message" ||
+		lowerKey == "detail" ||
+		lowerKey == "reason" ||
+		lowerKey == "status"
 }
 
 func classifyReachability(analysis *TrafficAnalysis, entries []EnrichedEntry) *ReachabilityAnalysis {
@@ -1435,6 +1598,9 @@ func deriveGenerationHints(analysis *TrafficAnalysis) []string {
 	}
 	if analysis.Auth.Auth0SPAInMemory {
 		hints["auth0_spa_in_memory"] = true
+	}
+	if analysis.Auth.CaptchaPreflight {
+		hints["auth_supports_captcha_preflight"] = true
 	}
 	for _, warning := range analysis.Warnings {
 		if warning.Type == "weak_schema_evidence" || warning.Type == "raw_protocol_envelope" {

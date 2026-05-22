@@ -208,8 +208,8 @@ func newVerifyInternalSkillCmd() *cobra.Command {
   5. body-has-heading (warn) — body contains at least one H1 heading
 
 Distinct from verify-skill, which validates a printed CLI's SKILL.md against the CLI's Go source. verify-internal-skill is for skills that are NOT tied to a printed CLI — the polish/retro/publish/amend family lives in skills/ and has no internal/cli/ source to verify against.`,
-		Example: `  printing-press verify-internal-skill --dir skills/printing-press-polish
-  printing-press verify-internal-skill --dir skills/printing-press-amend --json`,
+		Example: `  cli-printing-press verify-internal-skill --dir skills/printing-press-polish
+  cli-printing-press verify-internal-skill --dir skills/printing-press-amend --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, hasError, err := runVerifyInternalSkillChecks(dir)
 			if err != nil {

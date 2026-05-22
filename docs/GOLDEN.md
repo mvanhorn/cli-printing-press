@@ -28,4 +28,4 @@ Maintain `testdata/golden/fixtures/golden-api.yaml` as the purpose-built generat
 
 If `verify` fails, inspect `.gotmp/golden/actual/<case-name>/` and the generated `.diff` files. Decide whether the change is a regression or an intentional behavior change. If it is a regression, fix code. If it is intentional, run `scripts/golden.sh update`, review fixture diffs, and mention the golden update in the final summary.
 
-Golden verification does not replace `go test ./...`, `go vet ./...`, `golangci-lint run ./...`, or `go build -o ./printing-press ./cmd/printing-press`. It is an additional check for behavior-sensitive changes and runs in CI as a separate `Golden` workflow, not as part of `go test ./...`.
+Golden verification does not replace `go test ./...`, `go vet ./...`, `golangci-lint run ./...`, or `go build -o ./cli-printing-press ./cmd/cli-printing-press`. It is an additional check for behavior-sensitive changes and runs in CI as a separate `Golden` workflow, not as part of `go test ./...`.

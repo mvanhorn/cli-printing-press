@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
+	"github.com/stretchr/testify/require"
 )
 
 func TestFetchOrCacheSpec_ContentValidityCheck(t *testing.T) {
@@ -71,4 +73,25 @@ func searchString(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestRootCommandUsesCanonicalBinaryName(t *testing.T) {
+	cmd := NewRootCommand("")
+	require.Equal(t, CanonicalBinaryName, cmd.Use)
+}
+
+func TestRootCommandCanUseLegacyBinaryName(t *testing.T) {
+	cmd := NewRootCommand(LegacyBinaryName)
+	require.Equal(t, LegacyBinaryName, cmd.Use)
+}
+
+func TestVersionCommandPrintsSelectedBinaryName(t *testing.T) {
+	cmd := NewRootCommand(CanonicalBinaryName)
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"version"})
+
+	require.NoError(t, cmd.Execute())
+	require.Contains(t, stdout.String(), CanonicalBinaryName+" ")
 }

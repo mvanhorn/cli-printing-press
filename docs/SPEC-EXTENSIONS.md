@@ -209,6 +209,10 @@ Rules:
   (including `transport: [stdio]`) bypasses the default and is honored as-is.
 - May be declared at the OpenAPI root or under `info`. Root takes precedence
   when both are present.
+- For backwards compatibility, root-level `mcp:` is also accepted when
+  canonical `x-mcp` is absent. The parser emits a warning asking authors to
+  rename it to `x-mcp`. `x-mcp` and `mcp` are never merged; any canonical
+  `x-mcp` declaration, including under `info`, wins as a complete config.
 - Shape mirrors the internal YAML `mcp:` block field-for-field: `transport`,
   `addr`, `intents`, `endpoint_tools`, `orchestration`,
   `orchestration_threshold`.

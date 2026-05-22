@@ -51,7 +51,7 @@ func newStoresCreateCmd(flags *rootFlags) *cobra.Command {
 					body["store_code"] = bodyStoreCode
 				}
 			}
-			data, statusCode, err := c.PostWithParams(path, params, body)
+			data, statusCode, err := c.PostWithParams(cmd.Context(), path, params, body)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

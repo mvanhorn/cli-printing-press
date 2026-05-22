@@ -58,22 +58,22 @@ Otherwise, a mock server is started from the OpenAPI spec.
 
 Use --fix to auto-patch common failures and re-test (max 3 iterations).`,
 		Example: `  # Test against real API (read-only GETs only)
-  printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --api-key $GITHUB_TOKEN
+  cli-printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --api-key $GITHUB_TOKEN
 
   # Test against mock server (no API key needed)
-  printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json
+  cli-printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json
 
   # Auto-fix failures and re-test
-  printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --fix
+  cli-printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --fix
 
   # Remove transient build artifacts after the final verification pass
-  printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --cleanup
+  cli-printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --cleanup
 
   # Set pass threshold and output JSON
-  printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --threshold 70 --json
+  cli-printing-press verify --dir ./github-pp-cli --spec /tmp/spec.json --threshold 70 --json
 
   # Structural verification without an API spec (plan-driven CLIs)
-  printing-press verify --dir ./agent-capture-pp-cli --no-spec`,
+  cli-printing-press verify --dir ./agent-capture-pp-cli --no-spec`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := pipeline.VerifyConfig{
 				Dir:       dir,

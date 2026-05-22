@@ -41,7 +41,7 @@ Turn a dogfood session into a PR for a printed CLI in the public library.
 
 This skill lives in this repo (the machine) and acts on a printed CLI in the public library. It is sibling to `/printing-press-publish` (adds a new CLI), `/printing-press-polish` (improves a CLI pre-publish), and `/printing-press-retro` (reflects on the machine itself). None of those cover post-publish CLI amendments driven by real-session friction.
 
-The artifact this skill produces is semantically a "patch" (in the git/PR sense), tracked by the public library's `// PATCH(...)` source-comment convention and `.printing-press-patches.json` manifest. The slash-skill name is `amend` to disambiguate from the existing `printing-press patch` binary subcommand (which AST-injects pre-defined features — different mechanism, different intent).
+The artifact this skill produces is semantically a "patch" (in the git/PR sense), tracked by the public library's `// PATCH(...)` source-comment convention and `.printing-press-patches.json` manifest. The slash-skill name is `amend` to disambiguate from the existing `cli-printing-press patch` binary subcommand (which AST-injects pre-defined features — different mechanism, different intent).
 
 ## Setup
 
@@ -57,31 +57,31 @@ _scope_dir="$(cd "$_scope_dir" && pwd -P)"
 
 # Prefer local build when running from inside the printing-press repo.
 _press_repo=false
-if [ -x "$_scope_dir/printing-press" ] && [ -d "$_scope_dir/cmd/printing-press" ]; then
+if [ -x "$_scope_dir/cli-printing-press" ] && [ -d "$_scope_dir/cmd/cli-printing-press" ]; then
   _press_repo=true
   export PATH="$_scope_dir:$PATH"
-  echo "Using local build: $_scope_dir/printing-press"
-elif ! command -v printing-press >/dev/null 2>&1; then
-  if [ -x "$HOME/go/bin/printing-press" ]; then
-    echo "printing-press found at ~/go/bin/printing-press but not on PATH."
+  echo "Using local build: $_scope_dir/cli-printing-press"
+elif ! command -v cli-printing-press >/dev/null 2>&1; then
+  if [ -x "$HOME/go/bin/cli-printing-press" ]; then
+    echo "cli-printing-press found at ~/go/bin/cli-printing-press but not on PATH."
     echo "Add GOPATH/bin to your PATH:  export PATH=\"\$HOME/go/bin:\$PATH\""
   else
-    echo "printing-press binary not found."
-    echo "Install with:  go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest"
+    echo "cli-printing-press binary not found."
+    echo "Install with:  go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest"
   fi
   return 1 2>/dev/null || exit 1
 fi
 
 # Resolve and emit the absolute path the agent must use for every later
-# `printing-press` invocation. `export PATH` above only affects this one
+# `cli-printing-press` invocation. `export PATH` above only affects this one
 # Bash tool call; subsequent calls open a fresh shell and resolve bare
-# `printing-press` against the user's default PATH, where a stale global
+# `cli-printing-press` against the user's default PATH, where a stale global
 # can silently shadow the local build. The agent captures this marker and
 # substitutes the absolute path into every later invocation.
 if [ "$_press_repo" = "true" ]; then
-  PRINTING_PRESS_BIN="$_scope_dir/printing-press"
+  PRINTING_PRESS_BIN="$_scope_dir/cli-printing-press"
 else
-  PRINTING_PRESS_BIN="$(command -v printing-press 2>/dev/null || true)"
+  PRINTING_PRESS_BIN="$(command -v cli-printing-press 2>/dev/null || true)"
 fi
 echo "PRINTING_PRESS_BIN=$PRINTING_PRESS_BIN"
 
@@ -101,9 +101,9 @@ mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-After running the setup contract, capture the `PRINTING_PRESS_BIN=<abs-path>` line from stdout. **Every subsequent `printing-press ...` invocation in this skill must use that absolute path** (substitute the value, not the literal `$PRINTING_PRESS_BIN` token) — `export PATH` above only affects the single Bash tool call it runs in, so later calls open a fresh shell where bare `printing-press` resolves against the user's default `PATH` and a stale global can shadow the local build.
+After running the setup contract, capture the `PRINTING_PRESS_BIN=<abs-path>` line from stdout. **Every subsequent `cli-printing-press ...` invocation in this skill must use that absolute path** (substitute the value, not the literal `$PRINTING_PRESS_BIN` token) — `export PATH` above only affects the single Bash tool call it runs in, so later calls open a fresh shell where bare `cli-printing-press` resolves against the user's default `PATH` and a stale global can shadow the local build.
 
-After capturing the binary path, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `<PRINTING_PRESS_BIN> version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@latest` to update."
+After capturing the binary path, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `<PRINTING_PRESS_BIN> version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, stop immediately and tell the user: "cli-printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest` to update."
 
 ## Phase 0 — Input Mode Detection
 
@@ -579,7 +579,7 @@ if [ "$new_patch_markers" -lt "$patches_entry" ]; then
 fi
 ```
 
-Mismatched contract → fix locally before continuing. (A follow-up retro item: lift this check into `printing-press publish validate` so future amend runs catch it natively.)
+Mismatched contract → fix locally before continuing. (A follow-up retro item: lift this check into `cli-printing-press publish validate` so future amend runs catch it natively.)
 
 ### Output
 

@@ -281,7 +281,7 @@ func TestGeneratedDoctor_DerivesHealthCheckPathFromVerifyPath(t *testing.T) {
 
 	assert.Contains(t, content, `healthPath := "/v1/account"`,
 		"doctor should probe Auth.VerifyPath when HealthCheckPath is unset")
-	assert.NotContains(t, content, `reachBody, reachErr := c.Get("/", nil)`,
+	assert.NotContains(t, content, `reachBody, reachErr := c.Get(cmd.Context(), "/", nil)`,
 		"the bare-root fallback branch should not be rendered when a derived path exists")
 }
 
@@ -397,7 +397,7 @@ func TestGeneratedDoctor_DerivesAuthVerifyPathFromMeEndpoint(t *testing.T) {
 
 	assert.Contains(t, content, `verifyPath := "/users/me"`,
 		"doctor should probe the derived me-shaped path for credential validity")
-	assert.Contains(t, content, `c.GetWithHeaders(verifyPath`,
+	assert.Contains(t, content, `c.GetWithHeaders(cmd.Context(), verifyPath`,
 		"doctor should issue the authenticated probe through the configured client")
 	assert.NotContains(t, content, `"present (not verified — set auth.verify_path in spec for an API acceptance check)"`,
 		"the no-verify-path placeholder branch must not be rendered once a path is derived")
@@ -493,7 +493,7 @@ func TestGeneratedDoctor_NoCandidateFallsBackToRoot(t *testing.T) {
 	require.NoError(t, err)
 	content := string(doctorGo)
 
-	assert.Contains(t, content, `reachBody, reachErr := c.Get("/", nil)`,
+	assert.Contains(t, content, `reachBody, reachErr := c.Get(cmd.Context(), "/", nil)`,
 		"specs with no derivable probe path should keep the bare-root fallback")
 	assert.NotContains(t, content, `healthPath := "`,
 		"no healthPath variable should be declared when the spec has nothing to derive")

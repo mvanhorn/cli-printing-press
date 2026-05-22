@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/version"
 )
@@ -238,18 +239,16 @@ func bundleVersion(m CLIManifest) string {
 	return "0.0.0"
 }
 
-// manifestDescription returns the existing hand-edited description over
-// the canonical one from .printing-press.json. The existing snapshot's
-// description is only treated as "hand-edited" when it differs from
-// every form the generator would have emitted — current and prior — so
-// a manifest written before the displayNameForConcat trim still gets
-// recognized as derived and refreshed from canonical.
+// manifestDescription preserves hand-edited bundle descriptions while letting
+// canonical manifest descriptions refresh known generated defaults and legacy
+// literal-ellipsis truncations.
 func manifestDescription(existing *existingMCPBManifest, m CLIManifest, displayName string) string {
 	derivedDefault := displayNameForConcat(displayName) + " API surface as MCP tools."
 	priorDerivedDefault := displayName + " API surface as MCP tools."
 	if existing != nil && existing.Description != "" &&
 		existing.Description != derivedDefault &&
-		existing.Description != priorDerivedDefault {
+		existing.Description != priorDerivedDefault &&
+		!naming.HasLiteralEllipsisSuffix(existing.Description) {
 		return existing.Description
 	}
 	if m.Description != "" {

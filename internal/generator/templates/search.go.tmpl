@@ -122,14 +122,14 @@ In local mode: searches locally synced data only.`,
 					return err
 				}
 {{- if eq .SearchEndpointMethod "POST"}}
-				data, _, getErr := c.Post("{{.SearchEndpointPath}}", map[string]any{
+				data, _, getErr := c.Post(cmd.Context(), "{{.SearchEndpointPath}}", map[string]any{
 					"{{.SearchQueryParam}}": query,
 {{- range .SearchBodyFields}}
 					"{{.Name}}": {{goLiteral .Default}},
 {{- end}}
 				})
 {{- else}}
-				data, getErr := c.Get("{{.SearchEndpointPath}}", map[string]string{
+				data, getErr := c.Get(cmd.Context(), "{{.SearchEndpointPath}}", map[string]string{
 					"{{.SearchQueryParam}}": query,
 				})
 {{- end}}

@@ -183,6 +183,20 @@ func TestClassifyOutsideCwdRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "outside the current working directory")
 }
 
+func TestClassifyAllowsFreshGoModWithoutPublishedGoMod(t *testing.T) {
+	t.Parallel()
+
+	pubDir := t.TempDir()
+	freshDir := t.TempDir()
+	require.NoError(t, writeFileAtomic(filepath.Join(freshDir, "go.mod"),
+		[]byte("module fresh-cli\n\ngo 1.23\n")))
+
+	report, err := Classify(pubDir, freshDir, Options{Force: true})
+	require.NoError(t, err)
+	require.NotNil(t, report)
+	assert.Nil(t, report.GoMod, "empty first-generation snapshots have no prior go.mod to merge")
+}
+
 // TestClassifySpecYamlPropagates pins the contract that spec.yaml at the CLI
 // root is classified (and therefore overwritten by Apply) so source-spec
 // changes propagate into the library copy. Without this, downstream tools

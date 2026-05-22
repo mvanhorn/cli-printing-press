@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,6 +69,66 @@ func TestBrowserSniffCmdDerivesTrafficAnalysisPath(t *testing.T) {
 	require.FileExists(t, filepath.Join(dir, "sample-spec-traffic-analysis.json"))
 }
 
+func TestBrowserSniffCmdPreserveHostsWritesBaseURLOverrides(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	capturePath := filepath.Join(dir, "capture.json")
+	outputPath := filepath.Join(dir, "spec.yaml")
+	capture := browsersniff.EnrichedCapture{
+		TargetURL: "https://app.example.com",
+		Entries: []browsersniff.EnrichedEntry{
+			{
+				Method:              "POST",
+				URL:                 "https://browser-intake-datadoghq.com/api/v2/rum?dd-api-key=wrong-service",
+				RequestHeaders:      map[string]string{"Content-Type": "application/json"},
+				ResponseContentType: "application/json",
+				ResponseBody:        `{"status":"ok"}`,
+			},
+			{Method: "GET", URL: "https://api.example.com/v1/items", ResponseStatus: 200, ResponseContentType: "application/json", ResponseBody: `{"items":[]}`},
+			{Method: "GET", URL: "https://api.example.com/v1/items/item_1", ResponseStatus: 200, ResponseContentType: "application/json", ResponseBody: `{"id":"item_1"}`},
+			{Method: "GET", URL: "https://partner.example.net/v1/profiles", ResponseStatus: 200, ResponseContentType: "application/json", ResponseBody: `{"profiles":[]}`},
+		},
+	}
+	data, err := json.Marshal(capture)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(capturePath, data, 0o600))
+
+	cmd := newBrowserSniffCmd()
+	cmd.SetArgs([]string{
+		"--har", capturePath,
+		"--output", outputPath,
+		"--preserve-hosts",
+	})
+
+	require.NoError(t, cmd.Execute())
+
+	specData, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	parsed, err := spec.ParseBytes(specData)
+	require.NoError(t, err)
+	assert.Equal(t, "https://api.example.com", parsed.BaseURL)
+	require.Contains(t, parsed.Resources, "profiles")
+	profiles := parsed.Resources["profiles"].Endpoints["list_profiles"]
+	assert.Equal(t, "https://partner.example.net", profiles.BaseURL)
+}
+
+func TestPrintingPressSkillDocumentsPreserveHostsForComboHAR(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"),
+		filepath.Join("..", "..", "skills", "printing-press", "references", "browser-sniff-capture.md"),
+	} {
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		text := string(data)
+		assert.Contains(t, text, "source-priority.json")
+		assert.Contains(t, text, "two or more sources")
+		assert.Contains(t, text, "--preserve-hosts")
+	}
+}
+
 func TestBrowserSniffCmdReportsTrafficAnalysisWriteFailure(t *testing.T) {
 	t.Parallel()
 
@@ -110,7 +171,7 @@ func TestWriteBrowserSniffOutputsRestoresExistingFilesWhenSpecPublishFails(t *te
 		Types:       map[string]spec.TypeDef{},
 	}
 
-	_, err := writeBrowserSniffOutputs(apiSpec, &browsersniff.TrafficAnalysis{Version: "1"}, nil, blockingDir, analysisPath, "")
+	_, err := writeBrowserSniffOutputs(apiSpec, &browsersniff.TrafficAnalysis{Version: "1"}, nil, blockingDir, analysisPath, "", browsersniff.AnalyzeOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "preparing spec publish:")
 
@@ -151,7 +212,7 @@ func TestWriteBrowserSniffOutputsWritesSamplesDirectory(t *testing.T) {
 	trafficAnalysis, err := browsersniff.AnalyzeTraffic(capture)
 	require.NoError(t, err)
 
-	written, err := writeBrowserSniffOutputs(apiSpec, trafficAnalysis, capture, specPath, analysisPath, samplesPath)
+	written, err := writeBrowserSniffOutputs(apiSpec, trafficAnalysis, capture, specPath, analysisPath, samplesPath, browsersniff.AnalyzeOptions{})
 	require.NoError(t, err)
 	assert.Positive(t, written, "at least one sample file should be written")
 
@@ -207,7 +268,7 @@ func TestWriteBrowserSniffOutputsRestoresSamplesDirOnSpecFailure(t *testing.T) {
 	trafficAnalysis, err := browsersniff.AnalyzeTraffic(capture)
 	require.NoError(t, err)
 
-	_, err = writeBrowserSniffOutputs(apiSpec, trafficAnalysis, capture, specPath, analysisPath, samplesPath)
+	_, err = writeBrowserSniffOutputs(apiSpec, trafficAnalysis, capture, specPath, analysisPath, samplesPath, browsersniff.AnalyzeOptions{})
 	require.Error(t, err, "should fail because outputPath is a non-empty directory")
 
 	// Pre-existing samples directory must be restored intact.

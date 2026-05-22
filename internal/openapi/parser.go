@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"math"
 	"net/url"
 	"os"
@@ -14,7 +13,6 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode"
 
@@ -46,6 +44,7 @@ const (
 	extensionTierRouting           = "x-tier-routing"
 	extensionTier                  = "x-tier"
 	extensionMCP                   = "x-mcp"
+	extensionLegacyMCP             = "mcp"
 	extensionSyncWalker            = "x-pp-sync-walker"
 	extensionAPIName               = "x-api-name"
 	extensionDisplayName           = "x-display-name"
@@ -424,7 +423,7 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL, authPrefere
 		return nil, err
 	}
 
-	mcpConfig, err := parseTypedExtension[spec.MCPConfig](doc, extensionMCP)
+	mcpConfig, err := parseMCPExtension(doc)
 	if err != nil {
 		return nil, err
 	}
@@ -538,6 +537,27 @@ func parseTypedExtension[T any](doc *openapi3.T, key string) (T, error) {
 	if !ok {
 		return zero, nil
 	}
+	return parseTypedExtensionRaw[T](key, raw)
+}
+
+func parseMCPExtension(doc *openapi3.T) (spec.MCPConfig, error) {
+	if raw, ok := lookupOpenAPIExtension(doc, extensionMCP); ok {
+		return parseTypedExtensionRaw[spec.MCPConfig](extensionMCP, raw)
+	}
+	var zero spec.MCPConfig
+	if doc == nil || doc.Extensions == nil {
+		return zero, nil
+	}
+	raw, ok := doc.Extensions[extensionLegacyMCP]
+	if !ok {
+		return zero, nil
+	}
+	warnf("accepted root-level 'mcp:' for backwards compatibility; rename to 'x-mcp:' per OpenAPI extension convention")
+	return parseTypedExtensionRaw[spec.MCPConfig](extensionLegacyMCP, raw)
+}
+
+func parseTypedExtensionRaw[T any](key string, raw any) (T, error) {
+	var zero T
 	data, err := json.Marshal(raw)
 	if err != nil {
 		return zero, fmt.Errorf("marshaling %s: %w", key, err)
@@ -2168,7 +2188,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			// sub-resource.
 			if renamed, ok := frameworkRenames[primaryName]; ok {
 				primaryName = renamed
-			} else if _, reserved := spec.ReservedCobraUseNames[primaryName]; reserved {
+			} else if out.ParseTimeReservedCobraUseName(primaryName) {
 				originalName := primaryName
 				primaryName = renameForFrameworkCollision(out, primaryName, path)
 				frameworkRenames[originalName] = primaryName
@@ -2256,6 +2276,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			// same endpointName ("list") don't collide on a shared
 			// "ListItem" Types entry.
 			endpoint.Response, endpoint.ResponsePath = mapResponse(op, targetResourceName+"_"+endpointName, out)
+			populateFieldSelectorDefaults(&endpoint, op)
 			if strings.ToUpper(method) == "GET" {
 				endpoint.Pagination = detectPagination(endpoint.Params, op)
 				// Only single-resource fetches (GET /resource/{id}) can carry
@@ -2725,7 +2746,7 @@ func filterGlobalParams(resources map[string]spec.Resource) {
 
 		seen := map[string]struct{}{}
 		for _, param := range endpoint.Params {
-			if isPathSubstitutionParam(param) {
+			if !isGlobalFilterCandidate(param) {
 				continue
 			}
 			if _, ok := seen[param.Name]; ok {
@@ -2762,7 +2783,7 @@ func filterGlobalParams(resources map[string]spec.Resource) {
 	walkResourceEndpoints(resources, func(endpoint *spec.Endpoint) {
 		filtered := endpoint.Params[:0]
 		for _, param := range endpoint.Params {
-			if !isPathSubstitutionParam(param) {
+			if isGlobalFilterCandidate(param) {
 				if _, ok := globalParams[param.Name]; ok {
 					continue
 				}
@@ -2785,6 +2806,10 @@ func filterGlobalParams(resources map[string]spec.Resource) {
 
 func isPathSubstitutionParam(param spec.Param) bool {
 	return param.Positional || param.PathParam
+}
+
+func isGlobalFilterCandidate(param spec.Param) bool {
+	return !isPathSubstitutionParam(param) && !param.Required
 }
 
 func walkResourceEndpoints(resources map[string]spec.Resource, fn func(endpoint *spec.Endpoint)) {
@@ -2976,6 +3001,9 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 			Enum:        schemaEnum(schema),
 			Format:      schemaFormat(schema),
 		}
+		if parameter.In == openapi3.ParameterInQuery && isFieldSelectorParameter(paramName, description) {
+			param.Purpose = spec.ParamPurposeFieldSelector
+		}
 		if schema != nil && schema.Default != nil {
 			param.Default = schema.Default
 		}
@@ -2991,6 +3019,161 @@ func mapParameters(pathItem *openapi3.PathItem, op *openapi3.Operation) []spec.P
 	reclassifyPathParamModifiers(params)
 
 	return params
+}
+
+func isFieldSelectorParameter(name, description string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	switch normalized {
+	case "opt_fields", "fields", "expand", "include", "select":
+		return true
+	}
+	description = strings.ToLower(description)
+	return (strings.Contains(description, "field") && strings.Contains(description, "return")) ||
+		(strings.Contains(description, "field") && strings.Contains(description, "include")) ||
+		(strings.Contains(description, "expand") && strings.Contains(description, "response"))
+}
+
+func populateFieldSelectorDefaults(endpoint *spec.Endpoint, op *openapi3.Operation) {
+	if endpoint == nil {
+		return
+	}
+	for i := range endpoint.Params {
+		if endpoint.Params[i].Purpose == spec.ParamPurposeFieldSelector {
+			endpoint.Params[i].FieldSelectorDefault = fieldSelectorDefaultFromOperation(op, endpoint.Params[i].Name)
+		}
+	}
+}
+
+func fieldSelectorDefaultFromOperation(op *openapi3.Operation, paramName string) string {
+	if op == nil || op.Responses == nil {
+		return ""
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil {
+		return ""
+	}
+	schemaRef := selectResponseSchema(success.Value)
+	if schemaRef == nil || schemaRef.Value == nil {
+		return ""
+	}
+	itemSchema := unwrapItemSchema(schemaRef.Value)
+	var fields []string
+	switch strings.ToLower(strings.TrimSpace(paramName)) {
+	case "expand", "include":
+		fields = fieldSelectorRelationshipFields(itemSchema)
+	default:
+		fields = fieldSelectorFields(itemSchema)
+	}
+	return strings.Join(fields, ",")
+}
+
+func fieldSelectorFields(schema *openapi3.Schema) []string {
+	if schema == nil {
+		return nil
+	}
+	properties := map[string]*openapi3.SchemaRef{}
+	collectFieldSelectorProperties(schema, properties, map[*openapi3.Schema]struct{}{})
+	names := make([]string, 0, len(properties))
+	for name := range properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	fields := make([]string, 0, len(names))
+	for _, key := range []string{"gid", "id", "sid", "uid", "uuid", "guid"} {
+		propSchema := schemaRefValue(properties[key])
+		if isScalarSchema(propSchema) {
+			fields = append(fields, key)
+		}
+	}
+	for _, name := range names {
+		if isIdentifierFieldName(name) {
+			continue
+		}
+		propSchema := schemaRefValue(properties[name])
+		if isScalarSchema(propSchema) {
+			fields = append(fields, name)
+			continue
+		}
+		if nestedID := nestedObjectIDField(propSchema); nestedID != "" {
+			fields = append(fields, name+"."+nestedID)
+		}
+	}
+	return fields
+}
+
+func fieldSelectorRelationshipFields(schema *openapi3.Schema) []string {
+	if schema == nil {
+		return nil
+	}
+	properties := map[string]*openapi3.SchemaRef{}
+	collectFieldSelectorProperties(schema, properties, map[*openapi3.Schema]struct{}{})
+	names := make([]string, 0, len(properties))
+	for name := range properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	fields := make([]string, 0, len(names))
+	for _, name := range names {
+		propSchema := schemaRefValue(properties[name])
+		if isObjectSchema(propSchema) || isObjectArraySchema(propSchema) {
+			fields = append(fields, name)
+		}
+	}
+	return fields
+}
+
+func isObjectArraySchema(schema *openapi3.Schema) bool {
+	return isArraySchema(schema) && schema.Items != nil && isObjectSchema(schemaRefValue(schema.Items))
+}
+
+func isIdentifierFieldName(name string) bool {
+	switch name {
+	case "gid", "id", "sid", "uid", "uuid", "guid":
+		return true
+	default:
+		return false
+	}
+}
+
+func collectFieldSelectorProperties(schema *openapi3.Schema, properties map[string]*openapi3.SchemaRef, visited map[*openapi3.Schema]struct{}) {
+	if schema == nil {
+		return
+	}
+	if _, ok := visited[schema]; ok {
+		return
+	}
+	visited[schema] = struct{}{}
+	for name, prop := range schema.Properties {
+		if strings.HasPrefix(name, "_") || prop == nil {
+			continue
+		}
+		properties[name] = prop
+	}
+	for _, sub := range schema.AllOf {
+		collectFieldSelectorProperties(schemaRefValue(sub), properties, visited)
+	}
+}
+
+func nestedObjectIDField(schema *openapi3.Schema) string {
+	if schema == nil {
+		return ""
+	}
+	if isArraySchema(schema) && schema.Items != nil {
+		schema = schemaRefValue(schema.Items)
+	}
+	if !isObjectSchema(schema) {
+		return ""
+	}
+	properties := map[string]*openapi3.SchemaRef{}
+	collectFieldSelectorProperties(schema, properties, map[*openapi3.Schema]struct{}{})
+	for _, key := range []string{"gid", "id", "sid", "uid", "uuid", "guid"} {
+		if prop := schemaRefValue(properties[key]); isScalarSchema(prop) {
+			return key
+		}
+	}
+	return ""
 }
 
 // reclassifyPathParamModifiers converts path params that are modifiers (pagination,
@@ -3230,45 +3413,71 @@ func bodyParamSchema(schema *openapi3.Schema) *openapi3.Schema {
 	if schema == nil || len(schema.AllOf) == 0 {
 		return schema
 	}
-	if schema.Type != nil || len(schema.Properties) > 0 || schema.Items != nil {
+
+	if scalar, hasObject := firstAllOfNonObjectSchema(schema, map[*openapi3.Schema]struct{}{}); scalar != nil && !hasObject {
+		return scalar
+	}
+
+	properties := map[string]*openapi3.SchemaRef{}
+	required := map[string]struct{}{}
+	if collectAllOfProperties(&openapi3.SchemaRef{Value: schema}, properties, required, map[*openapi3.Schema]struct{}{}) || len(properties) == 0 {
 		return schema
 	}
 
-	var mergedObject *openapi3.Schema
-	required := map[string]struct{}{}
+	merged := &openapi3.Schema{
+		Type:        &openapi3.Types{openapi3.TypeObject},
+		Properties:  properties,
+		Description: schema.Description,
+		Default:     schema.Default,
+	}
+	for name := range required {
+		merged.Required = append(merged.Required, name)
+	}
+	sort.Strings(merged.Required)
+	return merged
+}
+
+func firstAllOfNonObjectSchema(schema *openapi3.Schema, visited map[*openapi3.Schema]struct{}) (*openapi3.Schema, bool) {
+	if schema == nil {
+		return nil, false
+	}
+	if _, ok := visited[schema]; ok {
+		return nil, false
+	}
+	visited[schema] = struct{}{}
+	defer delete(visited, schema)
+
+	hasObject := hasDirectObjectShape(schema)
+	var firstScalar *openapi3.Schema
 	for _, candidate := range schema.AllOf {
 		value := schemaRefValue(candidate)
 		if value == nil {
 			continue
 		}
-		if isObjectSchema(value) {
-			if mergedObject == nil {
-				mergedObject = &openapi3.Schema{
-					Type:       &openapi3.Types{openapi3.TypeObject},
-					Properties: map[string]*openapi3.SchemaRef{},
-				}
-			}
-			if mergedObject.Description == "" {
-				mergedObject.Description = value.Description
-			}
-			maps.Copy(mergedObject.Properties, value.Properties)
-			for _, name := range value.Required {
-				required[name] = struct{}{}
-			}
-			continue
+		if hasDirectObjectShape(value) {
+			hasObject = true
+		} else if firstScalar == nil && (value.Items != nil || (value.Type != nil && !value.Type.Includes(openapi3.TypeObject))) {
+			firstScalar = value
 		}
-		if mergedObject == nil && (value.Type != nil || value.Items != nil) {
-			return value
+		nestedScalar, nestedHasObject := firstAllOfNonObjectSchema(value, visited)
+		if firstScalar == nil && nestedScalar != nil {
+			firstScalar = nestedScalar
+		}
+		if nestedHasObject {
+			hasObject = true
 		}
 	}
-	if mergedObject != nil {
-		for name := range required {
-			mergedObject.Required = append(mergedObject.Required, name)
-		}
-		sort.Strings(mergedObject.Required)
-		return mergedObject
+	return firstScalar, hasObject
+}
+
+func hasDirectObjectShape(schema *openapi3.Schema) bool {
+	if schema == nil {
+		return false
 	}
-	return schema
+	if schema.Type != nil && schema.Type.Includes(openapi3.TypeObject) {
+		return true
+	}
+	return len(schema.Properties) > 0
 }
 
 func mapBodyFields(schema *openapi3.Schema) []spec.Param {
@@ -3344,6 +3553,11 @@ func collectAllOfProperties(
 		return true
 	}
 
+	for _, sub := range schema.AllOf {
+		if collectAllOfProperties(sub, properties, required, visited) {
+			return true
+		}
+	}
 	for _, field := range schema.Required {
 		required[field] = struct{}{}
 	}
@@ -3352,11 +3566,6 @@ func collectAllOfProperties(
 			continue
 		}
 		properties[naming.ASCIIFold(name)] = prop
-	}
-	for _, sub := range schema.AllOf {
-		if collectAllOfProperties(sub, properties, required, visited) {
-			return true
-		}
 	}
 
 	return false
@@ -4587,10 +4796,9 @@ func isVersionSegment(segment string) bool {
 		return false
 	}
 	if segment[0] == 'v' && len(segment) >= 2 {
-		return versionSegmentPattern.MatchString(segment)
+		return versionSegmentPattern.MatchString(segment) || isVersionToken(segment)
 	}
-	_, err := strconv.Atoi(segment)
-	return err == nil
+	return isVersionToken(segment)
 }
 
 func isPathParamSegment(segment string) bool {
@@ -5459,21 +5667,7 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 		if success != nil && success.Value != nil {
 			schemaRef := selectResponseSchema(success.Value)
 			if schemaRef != nil && schemaRef.Value != nil {
-				for propName := range schemaRef.Value.Properties {
-					lower := strings.ToLower(propName)
-					if lower == "nextpagetoken" || lower == "next_page_token" {
-						pag.NextCursorPath = propName
-						if pag.Type == "" {
-							pag.Type = "page_token"
-						}
-					}
-					if lower == "has_more" || lower == "hasmore" {
-						pag.HasMoreField = propName
-						if pag.Type == "" {
-							pag.Type = "cursor"
-						}
-					}
-				}
+				detectPaginationResponseFields(schemaRef.Value, "", &pag)
 			}
 		}
 	}
@@ -5489,6 +5683,73 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	return &pag
 }
 
+func detectPaginationResponseFields(schema *openapi3.Schema, prefix string, pag *spec.Pagination) {
+	if schema == nil {
+		return
+	}
+	propNames := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		propNames = append(propNames, name)
+	}
+	sort.Strings(propNames)
+
+	for _, propName := range propNames {
+		propRef := schema.Properties[propName]
+		if pag.NextCursorPath != "" && pag.HasMoreField != "" {
+			return
+		}
+		path := propName
+		if prefix != "" {
+			path = prefix + "." + propName
+		}
+		lower := strings.ToLower(propName)
+		switch {
+		case stringInSlice(lower, nextFieldPageTokenNames):
+			if pag.NextCursorPath == "" && pag.CursorParam != "" {
+				pag.NextCursorPath = path
+			}
+			if pag.Type == "" {
+				pag.Type = "page_token"
+			}
+		case stringInSlice(lower, nextFieldPageNumberNames):
+			if pag.NextCursorPath == "" && pag.CursorParam != "" {
+				pag.NextCursorPath = path
+			}
+			if pag.Type == "" {
+				pag.Type = "page"
+			}
+		case stringInSlice(lower, nextFieldCursorNames):
+			if pag.NextCursorPath == "" && pag.CursorParam != "" {
+				pag.NextCursorPath = path
+			}
+			if pag.Type == "" {
+				pag.Type = "cursor"
+			}
+		case stringInSlice(lower, nextFieldBoolNames):
+			if pag.HasMoreField == "" {
+				pag.HasMoreField = path
+			}
+			if pag.Type == "" {
+				pag.Type = "cursor"
+			}
+		}
+
+		if prefix != "" || !isPaginationWrapperField(lower) || propRef == nil || propRef.Value == nil {
+			continue
+		}
+		detectPaginationResponseFields(propRef.Value, path, pag)
+	}
+}
+
+func isPaginationWrapperField(lower string) bool {
+	switch lower {
+	case "meta", "metadata", "pagination", "paging", "response_metadata":
+		return true
+	default:
+		return false
+	}
+}
+
 // itemsFieldNames lists JSON property names that, when typed as an array,
 // signal "this object is a paged envelope" — matches the runtime
 // extractPaginatedItems helper in templates/helpers.go.tmpl so detect-time
@@ -5500,14 +5761,21 @@ var itemsFieldNames = []string{"data", "items", "results", "messages", "members"
 // follows these without API-specific cursor arithmetic.
 var nextFieldURLNames = []string{"next", "next_url", "nexturl"}
 
-// nextFieldCursorNames lists string properties that carry an opaque
-// cursor token (e.g. next_page_token, next_cursor). These cannot be
-// followed without knowing which query parameter to set on the next
-// request — metadata the embedded envelope does not provide — so the
-// runtime helper treats their presence the same way it treats
-// has_more=true: fetch page 1, then emit a truncation event so callers
-// know data is incomplete.
-var nextFieldCursorNames = []string{"next_cursor", "nextcursor", "next_page_token", "nextpagetoken", "cursor"}
+// nextFieldPageNumberNames lists numeric fields that carry the next page
+// number. Unlike opaque cursors, these can be fed back to page-style
+// pagination params as strings.
+var nextFieldPageNumberNames = []string{"next_page", "nextpage"}
+
+// nextFieldPageTokenNames lists cursor fields that conventionally pair with
+// page-token request params.
+var nextFieldPageTokenNames = []string{"next_page_token", "nextpagetoken"}
+
+// nextFieldCursorNames lists opaque cursor fields. Unlike page-token
+// names (handled by nextFieldPageTokenNames), these carry unstructured
+// strings that cannot advance pagination without a known query parameter.
+// The runtime treats their presence as a truncation signal when no cursor
+// param is configured.
+var nextFieldCursorNames = []string{"next_cursor", "nextcursor", "cursor"}
 
 // nextFieldBoolNames lists boolean-typed "more pages" flags.
 var nextFieldBoolNames = []string{"has_more", "hasmore"}
@@ -5635,6 +5903,16 @@ func findNextField(lowered map[string]string) (string, nextFieldKind) {
 			return actual, nextKindURL
 		}
 	}
+	for _, candidate := range nextFieldPageTokenNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindCursor
+		}
+	}
+	for _, candidate := range nextFieldPageNumberNames {
+		if actual, ok := lowered[candidate]; ok {
+			return actual, nextKindCursor
+		}
+	}
 	for _, candidate := range nextFieldCursorNames {
 		if actual, ok := lowered[candidate]; ok {
 			return actual, nextKindCursor
@@ -5646,6 +5924,10 @@ func findNextField(lowered map[string]string) (string, nextFieldKind) {
 		}
 	}
 	return "", nextKindNone
+}
+
+func stringInSlice(s string, values []string) bool {
+	return slices.Contains(values, s)
 }
 
 // joinChildPath returns parentPath + "/" + property — the conventional
@@ -5729,22 +6011,7 @@ func warnf(format string, args ...any) {
 // Falls back to "api" when out.Name is empty so the rename never
 // produces a leading-hyphen name like "-version".
 func renameForFrameworkCollision(out *spec.APISpec, original, path string) string {
-	slug := out.Name
-	if slug == "" {
-		slug = "api"
-	}
-	candidate := slug + "-" + original
-	if _, exists := out.Resources[candidate]; exists {
-		// Suffix-bump on self-collision. Bounded by maxResources, which
-		// the outer loop already enforces, so the loop terminates.
-		for i := 2; ; i++ {
-			next := fmt.Sprintf("%s-%d", candidate, i)
-			if _, exists := out.Resources[next]; !exists {
-				candidate = next
-				break
-			}
-		}
-	}
+	candidate := out.UniqueFrameworkCollisionResourceName(original)
 	warnf("resource %q from path %q would shadow framework cobra command %q; renamed to %q", original, path, original, candidate)
 	return candidate
 }

@@ -94,8 +94,8 @@ takes these findings and applies judgment for descriptions and
 borderline classifications.
 
 Exit 0 regardless of findings (diagnostic, not gating).`,
-		Example: `  printing-press tools-audit ~/printing-press/library/dub
-  printing-press tools-audit ~/printing-press/library/dub --json`,
+		Example: `  cli-printing-press tools-audit ~/printing-press/library/dub
+  cli-printing-press tools-audit ~/printing-press/library/dub --json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cliDir := args[0]

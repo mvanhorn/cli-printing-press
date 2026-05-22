@@ -5,7 +5,7 @@
 **Scope:** Phase 1 detectors are shape-only — card-last-4, email, US phone, ZIP+4, postal-address. Order/transaction IDs, ASINs, and standalone names are a future detector class pending spec-aware detection work. A passing gate is the floor, not "PII-clean."
 
 ```bash
-printing-press pii-audit <cli-dir>
+cli-printing-press pii-audit <cli-dir>
 ```
 
 The audit writes `<cli-dir>/.printing-press-pii-polish.json`. Promote and publish re-run the audit themselves, so the ledger header is the authority — they refuse if pending findings or gate failures remain.
@@ -92,7 +92,7 @@ Don't manually mark findings as `fixed`. A real source fix makes the finding dis
 
 ## End-state checklist
 
-- [ ] `printing-press pii-audit <cli-dir>` summary reads `no pending findings`, no `incomplete:` block.
+- [ ] `cli-printing-press pii-audit <cli-dir>` summary reads `no pending findings`, no `incomplete:` block.
 - [ ] Every accepted finding has `category` + `evidence_context`. `category: other` also has `note`.
 - [ ] No 6+ accepts share a normalized `note` + `category`.
 - [ ] Real PII fixes landed in source (`git diff`).

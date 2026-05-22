@@ -759,6 +759,91 @@ func (c *Config) AuthHeader() string {
 	assert.Equal(t, "Basic ", result.GeneratedFmt)
 }
 
+func TestCheckAuthRecognizesBearerApplyAuthFormatWithTokenPlaceholder(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return applyAuthFormat("Bearer {token}", map[string]string{"token": c.Token})
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Format: "Bearer {token}"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Bearer ", result.GeneratedFmt)
+}
+
+func TestCheckAuthRejectsBearerApplyAuthFormatWithoutTokenPlaceholder(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return applyAuthFormat("Bearer ", map[string]string{"token": c.Token})
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Format: "Bearer "})
+	assert.False(t, result.Match)
+	assert.Equal(t, "Bearer ", result.GeneratedFmt)
+	assert.Contains(t, result.Detail, `format literal "Bearer " does not include a token placeholder`)
+}
+
+func TestCheckAuthRejectsBearerApplyAuthFormatWithMissingPlaceholderReplacement(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func (c *Config) AuthHeader() string {
+	return applyAuthFormat("Bearer {access_token}", map[string]string{"token": c.Token})
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Format: "Bearer {access_token}"})
+	assert.False(t, result.Match)
+	assert.Equal(t, "Bearer ", result.GeneratedFmt)
+	assert.Contains(t, result.Detail, `includes placeholder "access_token" but generated replacements do not provide it`)
+}
+
+func TestCheckAuthPrefersTokenPreservingApplyAuthFormat(t *testing.T) {
+	dir := t.TempDir()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "config"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader() string { return configAuthHeader() }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "config", "config.go"), `package config
+func previewAuthHeader(c *Config) string {
+	return applyAuthFormat("Bearer ", map[string]string{"token": c.Token})
+}
+func (c *Config) AuthHeader() string {
+	return applyAuthFormat("Bearer {token}", map[string]string{"token": c.Token})
+}
+`)
+
+	result := checkAuth(dir, apispec.AuthConfig{Type: "bearer_token", Format: "Bearer {token}"})
+	assert.True(t, result.Match)
+	assert.Equal(t, "Bearer ", result.GeneratedFmt)
+}
+
 func TestDeriveDogfoodVerdict_WiringChecks(t *testing.T) {
 	// Test that unregistered commands cause FAIL
 	report := &DogfoodReport{

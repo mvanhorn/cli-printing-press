@@ -57,7 +57,7 @@ func TestGenerateMultipartRequestBodyUsesMultipartClient(t *testing.T) {
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	clientSrc := readGeneratedFile(t, outputDir, "internal", "client", "client.go")
-	assert.Contains(t, clientSrc, `func (c *Client) PostMultipart(path string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error)`)
+	assert.Contains(t, clientSrc, `func (c *Client) PostMultipart(ctx context.Context, path string, fields map[string]string, fileFields map[string]string) (json.RawMessage, int, error)`)
 	assert.Contains(t, clientSrc, `writer.CreateFormFile(fieldName, filepath.Base(filePath))`)
 	assert.Contains(t, clientSrc, `req.Header.Set("Content-Type", contentType)`)
 
@@ -67,14 +67,14 @@ func TestGenerateMultipartRequestBodyUsesMultipartClient(t *testing.T) {
 	assert.Contains(t, endpointSrc, `fileFields["assetData"] = bodyAssetData`)
 	assert.Contains(t, endpointSrc, `fields["filename"] = bodyFilename`)
 	assert.Contains(t, endpointSrc, `fields["metadata"] = bodyMetadata`)
-	assert.Contains(t, endpointSrc, `c.PostMultipartWithParams(path, params, fields, fileFields)`)
+	assert.Contains(t, endpointSrc, `c.PostMultipartWithParams(cmd.Context(), path, params, fields, fileFields)`)
 	assert.NotContains(t, endpointSrc, `"stdin"`)
 
 	promotedSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_avatars.go")
 	assert.Contains(t, promotedSrc, `return fmt.Errorf("required flag \"%s\" not set", "image")`)
 	assert.Contains(t, promotedSrc, `fileFields["image"] = bodyImage`)
 	assert.Contains(t, promotedSrc, `fields["label"] = bodyLabel`)
-	assert.Contains(t, promotedSrc, `c.PostMultipartWithParams(path, params, fields, fileFields)`)
+	assert.Contains(t, promotedSrc, `c.PostMultipartWithParams(cmd.Context(), path, params, fields, fileFields)`)
 	assert.NotContains(t, promotedSrc, `"stdin"`)
 
 	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
@@ -82,7 +82,7 @@ func TestGenerateMultipartRequestBodyUsesMultipartClient(t *testing.T) {
 	assert.Contains(t, mcpSrc, `Format: "binary"`)
 	assert.Contains(t, mcpSrc, `RequestContentType: "multipart/form-data"`)
 	assert.Contains(t, mcpSrc, `multipartFileFields[binding.WireName] = fmt.Sprintf("%v", v)`)
-	assert.Contains(t, mcpSrc, `data, _, err = c.PostMultipartWithParams(path, params, multipartFields, multipartFileFields)`)
+	assert.Contains(t, mcpSrc, `data, _, err = c.PostMultipartWithParams(ctx, path, params, multipartFields, multipartFileFields)`)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")

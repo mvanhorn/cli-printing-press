@@ -104,8 +104,749 @@ func newSearchQueryCmd(flags any) *cobra.Command { return &cobra.Command{} }`)
 	}
 }
 
+func TestScoreErrorHandling_UsesReachableSiblingClientPackage(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/nonrest\n\ngo 1.24\n")
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newExecuteCmd(nil))
+	return rootCmd
+}`)
+	writeFile(t, filepath.Join(cliDir, "execute.go"), `package cli
+import (
+	"github.com/spf13/cobra"
+	"example.com/nonrest/internal/odoo"
+)
+func newExecuteCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "execute", RunE: func(cmd *cobra.Command, args []string) error {
+		return odoo.Execute()
+	}}
+}`)
+	writeFile(t, filepath.Join(dir, "internal", "odoo", "errors.go"), `package odoo
+func Execute() error { return nil }
+const help = "Hint: Run doctor"
+const typed = "code: auth\ncode: not_found\ncode: rate_limited\n404\n409 already exists\n429 Retry-After retry"
+`)
+
+	if score := scoreErrorHandling(dir); score != 10 {
+		t.Fatalf("expected reachable sibling package to provide full error score, got %d", score)
+	}
+}
+
+func TestScoreErrorHandling_UsesDeclaredPackageNameForDefaultImportAlias(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/nonrest\n\ngo 1.24\n")
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newExecuteCmd(nil))
+	return rootCmd
+}`)
+	writeFile(t, filepath.Join(cliDir, "execute.go"), `package cli
+import (
+	"github.com/spf13/cobra"
+	"example.com/nonrest/internal/jsonrpc_client"
+)
+func newExecuteCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "execute", RunE: func(cmd *cobra.Command, args []string) error {
+		return client.Execute()
+	}}
+}`)
+	writeFile(t, filepath.Join(dir, "internal", "jsonrpc_client", "errors.go"), `package client
+func Execute() error { return nil }
+const help = "Hint: Run doctor"
+const typed = "code: auth\ncode: not_found\ncode: rate_limited\n404\n409 already exists\n429 Retry-After retry"
+`)
+
+	if score := scoreErrorHandling(dir); score != 10 {
+		t.Fatalf("expected declared package name alias to reach sibling package, got %d", score)
+	}
+}
+
+func TestScoreErrorHandling_IgnoresUnreachableDeadClientPackage(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/nonrest\n\ngo 1.24\n")
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newExecuteCmd(nil))
+	return rootCmd
+}`)
+	writeFile(t, filepath.Join(cliDir, "execute.go"), `package cli
+import "github.com/spf13/cobra"
+func newExecuteCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "execute", RunE: func(cmd *cobra.Command, args []string) error { return nil }}
+}`)
+	writeFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+const dead = "Hint: Run doctor\ncode: auth\ncode: not_found\ncode: rate_limited\n404\n409 already exists\n429 Retry-After retry"
+`)
+
+	if score := scoreErrorHandling(dir); score != 0 {
+		t.Fatalf("expected unreachable dead client package to score 0, got %d", score)
+	}
+}
+
+func TestScoreErrorHandling_DoesNotPairSignalsAcrossReachableFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/nonrest\n\ngo 1.24\n")
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newExecuteCmd(nil))
+	return rootCmd
+}`)
+	writeFile(t, filepath.Join(cliDir, "execute.go"), `package cli
+import (
+	"github.com/spf13/cobra"
+	"example.com/nonrest/internal/limits"
+	"example.com/nonrest/internal/retry"
+)
+func newExecuteCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "execute", RunE: func(cmd *cobra.Command, args []string) error {
+		limits.Mark()
+		retry.Mark()
+		return nil
+	}}
+}`)
+	writeFile(t, filepath.Join(dir, "internal", "limits", "limits.go"), `package limits
+func Mark() string { return "429" }
+`)
+	writeFile(t, filepath.Join(dir, "internal", "retry", "retry.go"), `package retry
+func Mark() string { return "Retry-After" }
+`)
+
+	if score := scoreErrorHandling(dir); score != 0 {
+		t.Fatalf("expected split rate-limit signals not to score, got %d", score)
+	}
+}
+
+func TestScoreErrorHandling_DoesNotTreatDoctorCommandAsActionableHint(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newDoctorCmd(nil))
+	return rootCmd
+}`)
+	writeFile(t, filepath.Join(cliDir, "doctor.go"), `package cli
+import "github.com/spf13/cobra"
+func newDoctorCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "doctor", RunE: func(cmd *cobra.Command, args []string) error { return nil }}
+}`)
+
+	if score := scoreErrorHandling(dir); score != 0 {
+		t.Fatalf("expected doctor command registration not to score as an actionable hint, got %d", score)
+	}
+}
+
+func TestScoreErrorHandling_IgnoresOrphanCLIImportedSiblingPackage(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/nonrest\n\ngo 1.24\n")
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newLiveCmd(nil))
+	return rootCmd
+}`)
+	writeFile(t, filepath.Join(cliDir, "live.go"), `package cli
+import "github.com/spf13/cobra"
+func newLiveCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "live", RunE: func(cmd *cobra.Command, args []string) error { return nil }}
+}`)
+	writeFile(t, filepath.Join(cliDir, "dead.go"), `package cli
+import "example.com/nonrest/internal/odoo"
+func newDeadCmd(flags any) { _ = odoo.Execute }
+`)
+	writeFile(t, filepath.Join(dir, "internal", "odoo", "errors.go"), `package odoo
+func Execute() error { return nil }
+const help = "Hint: Run doctor"
+const typed = "code: auth\ncode: not_found\ncode: rate_limited\n404\n409 already exists\n429 Retry-After retry"
+`)
+
+	if score := scoreErrorHandling(dir); score != 0 {
+		t.Fatalf("expected orphan command import not to inflate error score, got %d", score)
+	}
+}
+
+func TestScoreErrorHandling_IgnoresDeadFileInImportedSiblingPackage(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/nonrest\n\ngo 1.24\n")
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "x"}
+	rootCmd.AddCommand(newExecuteCmd(nil))
+	return rootCmd
+}`)
+	writeFile(t, filepath.Join(cliDir, "execute.go"), `package cli
+import (
+	"github.com/spf13/cobra"
+	"example.com/nonrest/internal/odoo"
+)
+func newExecuteCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "execute", RunE: func(cmd *cobra.Command, args []string) error {
+		return odoo.Execute()
+	}}
+}`)
+	writeFile(t, filepath.Join(dir, "internal", "odoo", "execute.go"), `package odoo
+func Execute() error { return nil }
+`)
+	writeFile(t, filepath.Join(dir, "internal", "odoo", "dead_errors.go"), `package odoo
+const dead = "Hint: Run doctor\ncode: auth\ncode: not_found\ncode: rate_limited\n404\n409 already exists\n429 Retry-After retry"
+`)
+
+	if score := scoreErrorHandling(dir); score != 0 {
+		t.Fatalf("expected dead sibling package file not to inflate error score, got %d", score)
+	}
+}
+
+func TestScoreOutputModes_UsesReachableSiblingFormattingPackage(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/nonrest\n\ngo 1.24\n")
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "x"}
+	_ = "json"
+	_ = "plain"
+	_ = "select"
+	_ = "csv"
+	_ = "quiet"
+	rootCmd.AddCommand(newFormatCmd(nil))
+	return rootCmd
+}`)
+	writeFile(t, filepath.Join(cliDir, "format.go"), `package cli
+import (
+	"github.com/spf13/cobra"
+	"example.com/nonrest/internal/odoo"
+)
+func newFormatCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "format", RunE: func(cmd *cobra.Command, args []string) error {
+		return odoo.Render()
+	}}
+}`)
+	writeFile(t, filepath.Join(dir, "internal", "odoo", "format.go"), `package odoo
+import (
+	"encoding/json"
+	"text/tabwriter"
+)
+func Render() error {
+	_ = tabwriter.NewWriter(nil, 0, 0, 0, ' ', 0)
+	var v any
+	_ = json.Unmarshal(nil, &v)
+	return nil
+}
+func filterFields(v any) any { return v }
+`)
+
+	if score := scoreOutputModes(dir); score != 9 {
+		t.Fatalf("expected reachable sibling formatting package to score 9, got %d", score)
+	}
+}
+
+func TestScoreOutputModes_MergesSymbolsFromMultipleImporters(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/nonrest\n\ngo 1.24\n")
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "x"}
+	_ = "json"
+	_ = "plain"
+	_ = "select"
+	_ = "csv"
+	_ = "quiet"
+	rootCmd.AddCommand(newExecuteCmd(nil), newFormatCmd(nil))
+	return rootCmd
+}`)
+	writeFile(t, filepath.Join(cliDir, "execute.go"), `package cli
+import (
+	"github.com/spf13/cobra"
+	"example.com/nonrest/internal/odoo"
+)
+func newExecuteCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "execute", RunE: func(cmd *cobra.Command, args []string) error {
+		odoo.Execute()
+		return nil
+	}}
+}`)
+	writeFile(t, filepath.Join(cliDir, "format.go"), `package cli
+import (
+	"github.com/spf13/cobra"
+	"example.com/nonrest/internal/odoo"
+)
+func newFormatCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "format", RunE: func(cmd *cobra.Command, args []string) error {
+		odoo.Render()
+		return nil
+	}}
+}`)
+	writeFile(t, filepath.Join(dir, "internal", "odoo", "execute.go"), `package odoo
+func Execute() {}
+`)
+	writeFile(t, filepath.Join(dir, "internal", "odoo", "render.go"), `package odoo
+import "text/tabwriter"
+func Render() {
+	_ = tabwriter.NewWriter(nil, 0, 0, 0, ' ', 0)
+}
+`)
+
+	if score := scoreOutputModes(dir); score != 7 {
+		t.Fatalf("expected symbols from both odoo importers to contribute to output score, got %d", score)
+	}
+}
+
+func TestScoreOutputModes_ReprocessesPackageWhenLaterSymbolsArrive(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/nonrest\n\ngo 1.24\n")
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "x"}
+	_ = "json"
+	_ = "plain"
+	_ = "select"
+	_ = "csv"
+	_ = "quiet"
+	rootCmd.AddCommand(newBFirstCmd(nil), newZLaterCmd(nil))
+	return rootCmd
+}`)
+	writeFile(t, filepath.Join(cliDir, "b_first.go"), `package cli
+import (
+	"github.com/spf13/cobra"
+	"example.com/nonrest/internal/bpkg"
+)
+func newBFirstCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "b", RunE: func(cmd *cobra.Command, args []string) error {
+		bpkg.List()
+		return nil
+	}}
+}`)
+	writeFile(t, filepath.Join(cliDir, "z_later.go"), `package cli
+import (
+	"github.com/spf13/cobra"
+	"example.com/nonrest/internal/apkg"
+)
+func newZLaterCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "z", RunE: func(cmd *cobra.Command, args []string) error {
+		apkg.Start()
+		return nil
+	}}
+}`)
+	writeFile(t, filepath.Join(dir, "internal", "apkg", "start.go"), `package apkg
+import "example.com/nonrest/internal/bpkg"
+func Start() { bpkg.Render() }
+`)
+	writeFile(t, filepath.Join(dir, "internal", "bpkg", "list.go"), `package bpkg
+func List() {}
+`)
+	writeFile(t, filepath.Join(dir, "internal", "bpkg", "render.go"), `package bpkg
+import "text/tabwriter"
+func Render() {
+	_ = tabwriter.NewWriter(nil, 0, 0, 0, ' ', 0)
+}
+`)
+
+	if score := scoreOutputModes(dir); score != 7 {
+		t.Fatalf("expected later bpkg.Render symbol to reprocess package and score tabwriter, got %d", score)
+	}
+}
+
+func TestScoreOutputModes_UsesReachableSiblingPageProgressStructure(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/nonrest\n\ngo 1.24\n")
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "x"}
+	_ = "json"
+	_ = "plain"
+	_ = "select"
+	_ = "csv"
+	_ = "quiet"
+	rootCmd.AddCommand(newProgressCmd(nil))
+	return rootCmd
+}`)
+	writeFile(t, filepath.Join(cliDir, "progress.go"), `package cli
+import (
+	"github.com/spf13/cobra"
+	"example.com/nonrest/internal/odoo"
+)
+func newProgressCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "progress", RunE: func(cmd *cobra.Command, args []string) error {
+		odoo.Render()
+		return nil
+	}}
+}`)
+	writeFile(t, filepath.Join(dir, "internal", "odoo", "render.go"), `package odoo
+import "fmt"
+func Render() {
+	for page := 1; page < 2; page++ {
+		fmt.Printf("page %d", page)
+	}
+}
+`)
+
+	if score := scoreOutputModes(dir); score != 6 {
+		t.Fatalf("expected reachable sibling page-progress loop to contribute to output score, got %d", score)
+	}
+}
+
+func TestScoreTerminalUX_RecognizesXTermTTYDetection(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func init() { _ = "no-color" }
+`)
+	writeFile(t, filepath.Join(cliDir, "helpers.go"), `package cli
+import "golang.org/x/term"
+func isTerminal(fd int) bool { return term.IsTerminal(fd) }
+const noColor = "NO_COLOR"
+`)
+
+	if score := scoreTerminalUX(dir); score != 3 {
+		t.Fatalf("expected NO_COLOR, no-color flag, and x/term TTY detection to score 3, got %d", score)
+	}
+}
+
+func TestScoreTerminalUX_UsesReachableSiblingFormattingPackage(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/nonrest\n\ngo 1.24\n")
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+import "github.com/spf13/cobra"
+func newRootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "x"}
+	_ = "no-color"
+	rootCmd.AddCommand(newFormatCmd(nil))
+	return rootCmd
+}`)
+	writeFile(t, filepath.Join(cliDir, "format.go"), `package cli
+import (
+	"github.com/spf13/cobra"
+	"example.com/nonrest/internal/formatting"
+)
+func newFormatCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "format", RunE: func(cmd *cobra.Command, args []string) error {
+		formatting.Render()
+		return nil
+	}}
+}`)
+	writeFile(t, filepath.Join(dir, "internal", "formatting", "format.go"), `package formatting
+import (
+	"text/tabwriter"
+	"golang.org/x/term"
+)
+func Render() {
+	_ = tabwriter.NewWriter(nil, 0, 0, 0, ' ', 0)
+	_ = term.IsTerminal(1)
+}
+`)
+
+	if score := scoreTerminalUX(dir); score != 4 {
+		t.Fatalf("expected reachable sibling TTY and tabwriter signals to score 4, got %d", score)
+	}
+}
+
+func TestScoreVision_RecognizesRenamedRegisteredSyncCommand(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() { rootCmd.AddCommand(newSyncCmd(nil), newSearchCmd(nil), newExportCmd(nil)) }
+`)
+	writeFile(t, filepath.Join(cliDir, "sync_bluray.go"), `package cli
+func newSyncCmd(flags any) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "search.go"), `package cli
+func newSearchCmd(flags any) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "export.go"), `package cli
+func newExportCmd(flags any) {}
+`)
+	writeFile(t, filepath.Join(dir, "internal", "store", "store.go"), `package store
+`)
+
+	if score := scoreVision(dir); score != 4 {
+		t.Fatalf("expected renamed registered sync command to contribute to vision score, got %d", score)
+	}
+}
+
+func TestScoreMCPQuality_RecognizesRenamedRegisteredSyncCommand(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "internal", "mcp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() { rootCmd.AddCommand(newSyncCmd(nil)) }
+`)
+	writeFile(t, filepath.Join(cliDir, "sync_bluray.go"), `package cli
+func newSyncCmd(flags any) {}
+`)
+	writeFile(t, filepath.Join(dir, "internal", "mcp", "tools.go"), `package mcp
+func RegisterTools() {
+	_ = "context"
+	handleContext()
+	_ = "sql"
+	handleSQL()
+	cobratree.RegisterAll(nil)
+}
+func handleContext() {}
+func handleSQL() {}
+`)
+
+	if score := scoreMCPQuality(dir); score != 7 {
+		t.Fatalf("expected runtime mirror plus renamed sync command to score high-level sync credit, got %d", score)
+	}
+}
+
+func TestScoreWorkflows_RecognizesRawSQLiteDataLayer(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() { rootCmd.AddCommand(newCatalogCmd(nil)) }
+`)
+	writeFile(t, filepath.Join(cliDir, "catalog.go"), `package cli
+import "database/sql"
+func newCatalogCmd(flags any) {}
+func open() (*sql.DB, error) { return sql.Open("sqlite", "catalog.db") }
+`)
+
+	if score := scoreWorkflows(dir); score != 2 {
+		t.Fatalf("expected raw SQLite-backed command to count as workflow, got %d", score)
+	}
+}
+
+func TestScoreInsight_UsesEveryCobraUseLiteralAndRawSQLiteDataLayer(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, CLIManifestFilename), `{"novel_features":[{"name":"Check watchlist","command":"watch check","description":"Check watchlist drift"}]}`)
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() { rootCmd.AddCommand(newWatchCmd(nil), newCatalogCmd(nil)) }
+`)
+	writeFile(t, filepath.Join(cliDir, "watch.go"), `package cli
+import "github.com/spf13/cobra"
+func newWatchCmd(flags any) *cobra.Command {
+	cmd := &cobra.Command{Use: "watch"}
+	cmd.AddCommand(&cobra.Command{Use: "check"})
+	return cmd
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "catalog.go"), `package cli
+import "database/sql"
+func newCatalogCmd(flags any) {}
+func open() (*sql.DB, error) { return sql.Open("sqlite", "catalog.db") }
+const q = "SELECT COUNT(*) FROM discs GROUP BY format"
+`)
+
+	if score := scoreInsight(dir); score != 4 {
+		t.Fatalf("expected nested Cobra Use and raw SQLite aggregation to count as two insights, got %d", score)
+	}
+}
+
+func TestScoreInsight_FollowsRegisteredChildCommandFiles(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, CLIManifestFilename), `{"novel_features":[{"name":"Check watchlist","command":"watch check","description":"Check watchlist drift"}]}`)
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() { rootCmd.AddCommand(newWatchCmd(nil)) }
+`)
+	writeFile(t, filepath.Join(cliDir, "watch.go"), `package cli
+import "github.com/spf13/cobra"
+func newWatchCmd(flags any) *cobra.Command {
+	cmd := &cobra.Command{Use: "watch"}
+	cmd.AddCommand(newCheckCmd(nil))
+	return cmd
+}
+`)
+	writeFile(t, filepath.Join(cliDir, "check.go"), `package cli
+import (
+	"database/sql"
+	"github.com/spf13/cobra"
+)
+func newCheckCmd(flags any) *cobra.Command {
+	return &cobra.Command{Use: "check"}
+}
+func open() (*sql.DB, error) { return sql.Open("sqlite", "catalog.db") }
+const q = "SELECT COUNT(*) FROM discs GROUP BY format"
+`)
+
+	if score := scoreInsight(dir); score != 2 {
+		t.Fatalf("expected registered child command file to count as insight, got %d", score)
+	}
+}
+
+func TestScoreSyncCorrectness_UsesReachableSiblingPackage(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/nonrest\n\ngo 1.24\n")
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() { rootCmd.AddCommand(newSyncCmd(nil)) }
+`)
+	writeFile(t, filepath.Join(cliDir, "sync.go"), `package cli
+import "example.com/nonrest/internal/odoo"
+func newSyncCmd(flags any) { _ = odoo.Sync }
+`)
+	writeFile(t, filepath.Join(dir, "internal", "odoo", "sync.go"), `package odoo
+var defaultSyncResources = []string{"records"}
+func GetSyncState() string { return "" }
+func SaveSyncState(s string) {}
+func Sync() {
+	cursor := "/{record_id}"
+	for {
+		Query(cursor)
+		SaveSyncState(cursor)
+		break
+	}
+}
+func Query(cursor string) {}
+`)
+
+	if score := scoreSyncCorrectness(dir); score != 10 {
+		t.Fatalf("expected reachable sibling sync implementation to score 10, got %d", score)
+	}
+}
+
+func TestScoreSyncCorrectness_IgnoresOrphanCLIImportedSiblingPackage(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/nonrest\n\ngo 1.24\n")
+	cliDir := filepath.Join(dir, "internal", "cli")
+	if err := os.MkdirAll(cliDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(cliDir, "root.go"), `package cli
+func newRootCmd() { rootCmd.AddCommand(newLiveCmd(nil)) }
+`)
+	writeFile(t, filepath.Join(cliDir, "live.go"), `package cli
+func newLiveCmd(flags any) {}
+`)
+	writeFile(t, filepath.Join(cliDir, "dead_sync.go"), `package cli
+import "example.com/nonrest/internal/odoo"
+func newDeadSyncCmd(flags any) { _ = odoo.Sync }
+`)
+	writeFile(t, filepath.Join(dir, "internal", "odoo", "sync.go"), `package odoo
+var defaultSyncResources = []string{"records"}
+func GetSyncState() string { return "" }
+func SaveSyncState(s string) {}
+func Sync() {
+	cursor := "/{record_id}"
+	for {
+		Query(cursor)
+		SaveSyncState(cursor)
+		break
+	}
+}
+func Query(cursor string) {}
+`)
+
+	if score := scoreSyncCorrectness(dir); score != 0 {
+		t.Fatalf("expected orphan sync command import not to inflate score, got %d", score)
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}

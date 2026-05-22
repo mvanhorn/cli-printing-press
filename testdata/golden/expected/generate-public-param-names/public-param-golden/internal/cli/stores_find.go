@@ -40,7 +40,7 @@ func newStoresFindCmd(flags *rootFlags) *cobra.Command {
 			if flagC != "" {
 				params["c"] = fmt.Sprintf("%v", flagC)
 			}
-			data, err := c.Get(path, params)
+			data, err := c.Get(cmd.Context(), path, params)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

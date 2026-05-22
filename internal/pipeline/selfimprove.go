@@ -189,7 +189,7 @@ func buildFixPlan(apiName, dimension string, currentScore int) string {
 	b.WriteString("## Verification\n\n")
 	b.WriteString("After applying changes, re-run the scorecard:\n\n")
 	b.WriteString("```bash\n")
-	fmt.Fprintf(&b, "printing-press scorecard --api %s\n", apiName)
+	fmt.Fprintf(&b, "cli-printing-press scorecard --api %s\n", apiName)
 	b.WriteString("```\n\n")
 	fmt.Fprintf(&b, "The %s dimension should score at least 8/10.\n", dimension)
 

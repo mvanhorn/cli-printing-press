@@ -314,7 +314,7 @@ Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
 	}
 
 {{- range $name, $resource := .Resources}}
-{{- if and (not (index $.PromotedResourceNames $name)) (ne $name "auth") (not (index $.VisionCmdNames $name))}}
+{{- if and (not (index $.PromotedResourceNames $name)) (not (and (eq $name "auth") $.HasAuthCommand)) (not (index $.VisionCmdNames $name))}}
 	rootCmd.AddCommand(new{{camel $name}}Cmd(flags))
 {{- end}}
 {{- end}}

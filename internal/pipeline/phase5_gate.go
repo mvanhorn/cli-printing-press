@@ -224,7 +224,7 @@ func phase5AcceptancePassed(marker Phase5GateMarker) (bool, string) {
 		}
 		return true, ""
 	default:
-		return false, fmt.Sprintf("unknown phase5 acceptance level %q (accepted: %s; prefer `printing-press dogfood --live --write-acceptance` to generate %s)", marker.Level, strings.Join(phase5AcceptedAcceptanceLevels, ", "), Phase5AcceptanceFilename)
+		return false, fmt.Sprintf("unknown phase5 acceptance level %q (accepted: %s; prefer `cli-printing-press dogfood --live --write-acceptance` to generate %s)", marker.Level, strings.Join(phase5AcceptedAcceptanceLevels, ", "), Phase5AcceptanceFilename)
 	}
 }
 

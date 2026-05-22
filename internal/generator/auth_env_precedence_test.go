@@ -52,7 +52,7 @@ func TestAuthHeader_ClientCredentialsDoesNotUseSetupEnvVars(t *testing.T) {
 	require.NoError(t, err)
 	clientContent := string(clientSrc)
 	verifyIdx := strings.Index(clientContent, `cliutil.IsVerifyEnv()`)
-	mintIdx := strings.Index(clientContent, `c.mintClientCredentials(clientID, clientSecret)`)
+	mintIdx := strings.Index(clientContent, `c.mintClientCredentials(ctx, clientID, clientSecret)`)
 	require.NotEqual(t, -1, verifyIdx, "mock verification should short-circuit before token minting")
 	require.NotEqual(t, -1, mintIdx, "client_credentials mint path should still be emitted")
 	assert.Less(t, verifyIdx, mintIdx, "mock verification must not dial the real token endpoint")

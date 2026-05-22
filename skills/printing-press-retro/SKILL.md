@@ -57,7 +57,7 @@ that survive triage and the adversarial check, plus artifacts, so maintainers
   - **Generator** — templates that emit Go code (`internal/generator/`)
   - **Scorer** — tools that grade the output: verify, dogfood, scorecard
   - **Skills** — SKILL.md instructions that guide Claude during generation
-  - **Binary** — the Go CLI itself: commands, flags, parsers (`cmd/printing-press/`)
+  - **Binary** — the Go CLI itself: commands, flags, parsers (`cmd/cli-printing-press/`)
 - **Printed CLI**: A CLI produced by the Printing Press for a specific API (e.g.,
   `notion-pp-cli`). Printed-CLI fixes only help that one CLI.
 
@@ -82,7 +82,7 @@ different PRs.
 ```bash
 # Path-only setup — no binary detection required.
 # The retro skill reads manuscripts and runs gh/curl. It does not invoke the
-# printing-press binary. This avoids aborting for users who installed the
+# cli-printing-press binary. This avoids aborting for users who installed the
 # plugin but not the Go binary.
 
 _scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
@@ -97,7 +97,7 @@ mkdir -p "$PRESS_MANUSCRIPTS" "$PRESS_LIBRARY" "$RETRO_SCRATCH_DIR"
 
 # Detect whether we're inside the printing-press repo
 IN_REPO=false
-if [ -f "$_scope_dir/cmd/printing-press/main.go" ]; then
+if [ -f "$_scope_dir/cmd/cli-printing-press/main.go" ]; then
   IN_REPO=true
   REPO_ROOT="$_scope_dir"
   echo "Running from printing-press repo: $REPO_ROOT"

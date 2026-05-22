@@ -4,9 +4,7 @@
 package client
 
 import (
-{{- if .HasCostThrottling}}
 	"context"
-{{- end}}
 	"encoding/json"
 	"fmt"
 {{- if .HasCostThrottling}}
@@ -164,12 +162,12 @@ func (c *Client) awaitBudget(ctx context.Context, cost float64) error {
 
 // Query executes a GraphQL query via POST against graphqlEndpointPath and
 // returns the raw data payload.
-func (c *Client) Query(query string, variables map[string]any) (json.RawMessage, error) {
+func (c *Client) Query(ctx context.Context, query string, variables map[string]any) (json.RawMessage, error) {
 {{- if .HasCostThrottling}}
-	return c.queryWithThrottle(context.Background(), query, variables)
+	return c.queryWithThrottle(ctx, query, variables)
 {{- else}}
 	req := GraphQLRequest{Query: query, Variables: variables}
-	raw, _, err := c.Post(graphqlEndpointPath, req)
+	raw, _, err := c.Post(ctx, graphqlEndpointPath, req)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +214,7 @@ func (c *Client) queryWithThrottle(ctx context.Context, query string, variables 
 		if err := c.awaitBudget(ctx, defaultThrottleQueryCost); err != nil {
 			return nil, err
 		}
-		raw, _, err := c.Post(graphqlEndpointPath, req)
+		raw, _, err := c.Post(ctx, graphqlEndpointPath, req)
 		if err != nil {
 			return nil, err
 		}
@@ -272,14 +270,14 @@ func (c *Client) queryWithThrottle(ctx context.Context, query string, variables 
 // Mutate executes a GraphQL mutation via POST against graphqlEndpointPath and
 // returns the raw data payload. Identical transport to Query; separate method
 // for clarity.
-func (c *Client) Mutate(query string, variables map[string]any) (json.RawMessage, error) {
-	return c.Query(query, variables)
+func (c *Client) Mutate(ctx context.Context, query string, variables map[string]any) (json.RawMessage, error) {
+	return c.Query(ctx, query, variables)
 }
 
 // PaginatedQuery fetches all pages of a Connection field using first/after pagination.
 // fieldPath is the top-level field name in the response (e.g., "issues").
 // Returns all collected nodes across all pages.
-func (c *Client) PaginatedQuery(query string, variables map[string]any, fieldPath string, pageSize int) ([]json.RawMessage, error) {
+func (c *Client) PaginatedQuery(ctx context.Context, query string, variables map[string]any, fieldPath string, pageSize int) ([]json.RawMessage, error) {
 	if variables == nil {
 		variables = map[string]any{}
 	}
@@ -291,7 +289,7 @@ func (c *Client) PaginatedQuery(query string, variables map[string]any, fieldPat
 	var all []json.RawMessage
 	hasNext := true
 	for hasNext {
-		data, err := c.Query(query, variables)
+		data, err := c.Query(ctx, query, variables)
 		if err != nil {
 			return all, err
 		}

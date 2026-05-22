@@ -4,7 +4,11 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+	"errors"
+{{- end}}
 	"fmt"
 	"os"
 	"regexp"
@@ -145,7 +149,7 @@ Exit codes & warnings:
 				go func() {
 					defer wg.Done()
 					for resource := range work {
-						res := syncResource(c, db, resource, sinceTS, full, maxPages)
+						res := syncResource(cmd.Context(), c, db, resource, sinceTS, full, maxPages)
 						results <- res
 					}
 				}()
@@ -167,12 +171,24 @@ Exit codes & warnings:
 			var errCount int
 			var warnCount int
 			var successCount int
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+			var firstErr error
+			var firstPlaceholderErr error
+{{- end}}
 			for res := range results {
 				if res.Err != nil {
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
 					}
 					errCount++
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+					if firstErr == nil {
+						firstErr = res.Err
+					}
+					if firstPlaceholderErr == nil && errors.Is(res.Err, client.ErrPlaceholderCredential) {
+						firstPlaceholderErr = res.Err
+					}
+{{- end}}
 				} else if res.Warn != nil {
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: warning: %v\n", res.Resource, res.Warn)
@@ -203,6 +219,11 @@ Exit codes & warnings:
 			}
 
 			if errCount > 0 {
+{{- if and .Auth.Type (ne .Auth.Type "none")}}
+				if firstPlaceholderErr != nil {
+					return classifyAPIError(firstPlaceholderErr, flags)
+				}
+{{- end}}
 				return fmt.Errorf("%d resource(s) failed to sync", errCount)
 			}
 			if warnCount > 0 && successCount == 0 {
@@ -244,7 +265,7 @@ func graphqlSyncDefs() map[string]graphqlSyncDef {
 }
 
 // syncResource handles the full paginated sync of a single resource via GraphQL.
-func syncResource(c *client.Client, db *store.Store, resource, sinceTS string, full bool, maxPages int) syncResult {
+func syncResource(ctx context.Context, c *client.Client, db *store.Store, resource, sinceTS string, full bool, maxPages int) syncResult {
 	started := time.Now()
 
 	if !humanFriendly {
@@ -283,7 +304,7 @@ func syncResource(c *client.Client, db *store.Store, resource, sinceTS string, f
 			variables["after"] = cursor
 		}
 
-		data, err := c.Query(def.Query, variables)
+		data, err := c.Query(ctx, def.Query, variables)
 		if err != nil {
 			if w, ok := isSyncAccessWarning(err); ok {
 				if !humanFriendly {
@@ -454,4 +475,3 @@ func parseSinceDuration(s string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("unknown unit %q", matches[2])
 	}
 }
-

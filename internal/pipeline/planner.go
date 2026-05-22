@@ -127,7 +127,7 @@ func generateScaffoldPlan(ctx PlanContext) (string, error) {
 	fmt.Fprintf(&b, "- Working CLI binary for %s\n\n", ctx.SeedData.APIName)
 
 	b.WriteString("## Codebase Pointers\n\n")
-	b.WriteString("- Generator entrypoint: printing-press generate --spec <url> --output <dir>\n")
+	b.WriteString("- Generator entrypoint: cli-printing-press generate --spec <url> --output <dir>\n")
 	b.WriteString("- Generator implementation: internal/generator/\n")
 	b.WriteString("- Quality gate logic: internal/generator/validate.go\n")
 

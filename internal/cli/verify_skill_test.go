@@ -16,7 +16,7 @@ import (
 // PR library#66: the recipe-goat SKILL advertised `search --max-time` but
 // --max-time is a `tonight` flag, not a `search` flag. This test writes a
 // synthetic CLI fixture with exactly that shape and confirms
-// `printing-press verify-skill` catches it at generation time instead of
+// `cli-printing-press verify-skill` catches it at generation time instead of
 // letting it ship to the library.
 func TestVerifySkill_DetectsWrongFlagOnCommand(t *testing.T) {
 	t.Parallel()
@@ -545,7 +545,7 @@ func writeVerifySkillFixture(t *testing.T, dir string, files map[string]string, 
 func buildPrintingPressBinary(t *testing.T) string {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "printing-press")
-	cmd := exec.Command("go", "build", "-o", out, "./cmd/printing-press")
+	cmd := exec.Command("go", "build", "-o", out, "./cmd/cli-printing-press")
 	// The test runs from internal/cli; go up to repo root.
 	cmd.Dir = "../.."
 	if buildOut, err := cmd.CombinedOutput(); err != nil {

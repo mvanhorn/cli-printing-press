@@ -29,10 +29,10 @@ func newDogfoodCmd() *cobra.Command {
 		Short: "Validate a generated CLI against its source spec",
 		Long:  "Mechanically verify that a generated CLI's commands hit valid API paths, auth matches the spec protocol, no dead flags/functions exist, and the data pipeline is wired correctly.",
 		Example: `  # Evaluate a generated CLI directory
-  printing-press dogfood --dir ./generated/stripe-pp-cli
+  cli-printing-press dogfood --dir ./generated/stripe-pp-cli
 
   # Output as JSON for programmatic use
-  printing-press dogfood --dir ./generated/stripe-pp-cli --json`,
+  cli-printing-press dogfood --dir ./generated/stripe-pp-cli --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if live {
 				report, err := pipeline.RunLiveDogfood(pipeline.LiveDogfoodOptions{

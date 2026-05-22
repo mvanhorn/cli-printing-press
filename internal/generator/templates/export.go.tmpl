@@ -78,7 +78,7 @@ large datasets as it has no memory pressure.`,
 				defer writer.Flush()
 			}
 
-			data, err := c.Get(path, nil)
+			data, err := c.Get(cmd.Context(), path, nil)
 			if err != nil {
 				return classifyAPIError(err, flags)
 			}

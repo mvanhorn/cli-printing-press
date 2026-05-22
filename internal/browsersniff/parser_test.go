@@ -76,6 +76,47 @@ func TestParseCapture(t *testing.T) {
 	}
 }
 
+func TestParseCaptureHARUsesRequestPostDataText(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "capture.har")
+	err := os.WriteFile(path, []byte(`{
+		"log": {
+			"entries": [
+				{
+					"request": {
+						"method": "POST",
+						"url": "https://api.example.com/generate",
+						"headers": [{"name": "content-type", "value": "application/json"}],
+						"postData": {
+							"mimeType": "application/json",
+							"text": "{\"prompt\":\"donkey love\",\"gpt_description_prompt\":\"make a song\"}"
+						}
+					},
+					"response": {
+						"status": 200,
+						"headers": [{"name": "content-type", "value": "application/json"}],
+						"content": {
+							"mimeType": "application/json",
+							"text": "{\"metadata\":{\"prompt\":\"response-only shape\"}}"
+						}
+					}
+				}
+			]
+		}
+	}`), 0o600)
+	require.NoError(t, err)
+
+	entries, targetURL, err := ParseCapture(path)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+
+	assert.Equal(t, "https://api.example.com/generate", targetURL)
+	assert.Equal(t, "POST", entries[0].Method)
+	assert.JSONEq(t, `{"prompt":"donkey love","gpt_description_prompt":"make a song"}`, entries[0].RequestBody)
+	assert.JSONEq(t, `{"metadata":{"prompt":"response-only shape"}}`, entries[0].ResponseBody)
+}
+
 func TestParseHAR_EdgeCases(t *testing.T) {
 	t.Parallel()
 

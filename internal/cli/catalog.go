@@ -17,13 +17,13 @@ func newCatalogCmd() *cobra.Command {
 		Use:   "catalog",
 		Short: "Browse the embedded API catalog",
 		Example: `  # List all catalog entries
-  printing-press catalog list
+  cli-printing-press catalog list
 
   # Show a single entry
-  printing-press catalog show stripe
+  cli-printing-press catalog show stripe
 
   # Search the catalog
-  printing-press catalog search auth`,
+  cli-printing-press catalog search auth`,
 	}
 
 	cmd.AddCommand(newCatalogListCmd())
@@ -39,8 +39,8 @@ func newCatalogListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List all catalog entries",
-		Example: `  printing-press catalog list
-  printing-press catalog list --json`,
+		Example: `  cli-printing-press catalog list
+  cli-printing-press catalog list --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			entries, err := catalog.ParseFS(catalogfs.FS)
 			if err != nil {
@@ -88,8 +88,8 @@ func newCatalogShowCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "show <name>",
 		Short: "Show details for a catalog entry",
-		Example: `  printing-press catalog show stripe
-  printing-press catalog show stripe --json`,
+		Example: `  cli-printing-press catalog show stripe
+  cli-printing-press catalog show stripe --json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			entry, err := catalog.LookupFS(catalogfs.FS, args[0])
@@ -173,8 +173,8 @@ func newCatalogSearchCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "search <query>",
 		Short: "Search catalog entries by name, description, or category",
-		Example: `  printing-press catalog search auth
-  printing-press catalog search payments --json`,
+		Example: `  cli-printing-press catalog search auth
+  cli-printing-press catalog search payments --json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			entries, err := catalog.ParseFS(catalogfs.FS)

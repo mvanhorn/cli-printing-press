@@ -51,7 +51,7 @@ func TestPromotedHasStorePostRoutesThroughVerbBranch(t *testing.T) {
 
 	assert.NotContains(t, got, "resolveRead(",
 		"HasStore + POST must NOT route through resolveRead (GET-only internally)")
-	assert.Contains(t, got, "c.PostWithParams(path, params, body)",
+	assert.Contains(t, got, "c.PostWithParams(cmd.Context(), path, params, body)",
 		"HasStore + POST must route through the verb branch with a built body")
 	assert.Contains(t, got, `attachFreshness(DataProvenance{Source: "live"}, flags)`,
 		"non-GET HasStore commands must synthesize a live-call prov so the downstream HasStore block compiles")
@@ -89,7 +89,7 @@ func TestPromotedHasStoreGetStillUsesResolveRead(t *testing.T) {
 
 	assert.Contains(t, got, "resolveRead(",
 		"HasStore + GET must keep routing through resolveRead (the cached fast-path)")
-	assert.NotContains(t, got, "c.Get(path, params)",
+	assert.NotContains(t, got, "c.Get(cmd.Context(), path, params)",
 		"HasStore + GET must not also emit a direct c.Get call (would mean both branches fired)")
 }
 
@@ -97,7 +97,7 @@ func TestPromotedHasStoreGetStillUsesResolveRead(t *testing.T) {
 // other tests don't reach. The provenance synthesis lives in a single
 // post-chain block, so a regression that drops it from one verb shape
 // drops it from all of them — but DELETE has its own pre-existing
-// `data, _, err := c.DeleteWithParams(path, params)` call site, so an explicit assertion
+// `data, _, err := c.DeleteWithParams(cmd.Context(), path, params)` call site, so an explicit assertion
 // guards against template refactors that re-introduce the dup.
 func TestPromotedHasStoreDeleteSynthesizesProv(t *testing.T) {
 	t.Parallel()
@@ -128,7 +128,7 @@ func TestPromotedHasStoreDeleteSynthesizesProv(t *testing.T) {
 
 	assert.NotContains(t, got, "resolveRead(",
 		"HasStore + DELETE must NOT route through resolveRead")
-	assert.Contains(t, got, "c.DeleteWithParams(path, params)",
+	assert.Contains(t, got, "c.DeleteWithParams(cmd.Context(), path, params)",
 		"HasStore + DELETE must route through c.DeleteWithParams")
 	assert.Contains(t, got, `attachFreshness(DataProvenance{Source: "live"}, flags)`,
 		"HasStore + DELETE must synthesize a live-call prov for the downstream provenance block")
