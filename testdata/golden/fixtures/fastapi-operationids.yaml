@@ -66,6 +66,18 @@ paths:
       responses:
         "204":
           description: No content
+    post:
+      operationId: update_status_api_quotes__quote_id__post
+      summary: Update quote status
+      parameters:
+        - name: quote_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
   /health:
     get:
       operationId: health_check_health_get

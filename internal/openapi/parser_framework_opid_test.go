@@ -265,6 +265,16 @@ paths:
       responses:
         "204":
           description: ok
+    post:
+      operationId: update_status_api_quotes__quote_id__post
+      parameters:
+        - name: quote_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: ok
   /api/listino/{item_id}:
     put:
       operationId: update_listino_item_api_listino__item_id__put
@@ -324,6 +334,7 @@ paths:
 	assert.Contains(t, parsed.Resources["quotes"].Endpoints, "create")
 	assert.Contains(t, parsed.Resources["quotes"].Endpoints, "get")
 	assert.Contains(t, parsed.Resources["quotes"].Endpoints, "update")
+	assert.Contains(t, parsed.Resources["quotes"].Endpoints, "update-status")
 	assert.Contains(t, parsed.Resources["quotes"].Endpoints, "delete")
 	assert.Contains(t, parsed.Resources["listino"].Endpoints, "update")
 	assert.Contains(t, parsed.Resources["health"].Endpoints, "check")

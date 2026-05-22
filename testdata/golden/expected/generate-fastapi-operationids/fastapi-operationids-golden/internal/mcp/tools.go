@@ -84,6 +84,15 @@ func RegisterTools(s *server.MCPServer) {
 		),
 		makeAPIHandler("PATCH", "/api/quotes/{quote_id}", false, nil, []mcpParamBinding{{PublicName: "quote_id", WireName: "quote_id", Location: "path"}}, []string{"quote_id"}),
 	)
+	s.AddTool(
+		mcplib.NewTool("quotes_update-status",
+			mcplib.WithDescription("Update quote status. Required: quote_id."),
+			mcplib.WithString("quote_id", mcplib.Required(), mcplib.Description("Quote id")),
+			mcplib.WithDestructiveHintAnnotation(false),
+			mcplib.WithOpenWorldHintAnnotation(true),
+		),
+		makeAPIHandler("POST", "/api/quotes/{quote_id}", false, nil, []mcpParamBinding{{PublicName: "quote_id", WireName: "quote_id", Location: "path"}}, []string{"quote_id"}),
+	)
 
 	// Context tool — front-loaded domain knowledge for agents.
 	// Call this first to understand the API taxonomy, query patterns, and capabilities.
@@ -299,7 +308,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 		"api":         "fastapi-operationids-golden",
 		"description": "Fixture for FastAPI default operationId normalization.",
 		"archetype":   "generic",
-		"tool_count":  7,
+		"tool_count":  8,
 		// tool_surface tells agents which surface a capability lives on.
 		"tool_surface": "MCP exposes typed endpoint tools plus a runtime mirror of user-facing CLI commands. Endpoint tools keep typed schemas; command-mirror tools shell out to the companion fastapi-operationids-golden-pp-cli binary.",
 		"resources": []map[string]any{
@@ -316,7 +325,7 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 			{
 				"name":        "quotes",
 				"description": "Manage quotes",
-				"endpoints":   []string{"create", "delete", "get", "list", "update"},
+				"endpoints":   []string{"create", "delete", "get", "list", "update", "update-status"},
 				"syncable":    true,
 				"searchable":  true,
 			},
