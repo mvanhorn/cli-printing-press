@@ -2749,6 +2749,9 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			} else {
 				endpoint.IDField = resolveIDFieldFromResponseSchema(op, targetResourceName)
 			}
+			if strings.ToUpper(method) == "POST" {
+				endpoint.Pagination = detectPostQueryIDWalkPagination(endpoint.Body, op, endpoint.IDField)
+			}
 			endpoint.Critical = pathCritical
 			endpoint.Walker = readWalkerExtension(op.Extensions, fmt.Sprintf("%s %q", strings.ToUpper(method), path))
 
@@ -6285,6 +6288,98 @@ func detectPagination(params []spec.Param, op *openapi3.Operation) *spec.Paginat
 	}
 
 	return &pag
+}
+
+func detectPostQueryIDWalkPagination(body []spec.Param, op *openapi3.Operation, idField string) *spec.Pagination {
+	limitParam := ""
+	hasFilter := false
+	for _, param := range body {
+		lower := strings.ToLower(param.Name)
+		if isPostQueryIDWalkLimitParam(lower) && limitParam == "" {
+			limitParam = param.Name
+		}
+		if (lower == "filter" || lower == "filters") && param.Type == "array" {
+			hasFilter = true
+		}
+	}
+	if limitParam == "" || !hasFilter {
+		return nil
+	}
+	if !responseHasPageDetailsNextPageURL(op) || !responseItemHasNumericID(op, idField) {
+		return nil
+	}
+	return &spec.Pagination{
+		Type:       spec.PaginationTypeIDWalk,
+		LimitParam: limitParam,
+	}
+}
+
+func isPostQueryIDWalkLimitParam(lower string) bool {
+	switch lower {
+	case "maxrecords", "max_records":
+		return true
+	default:
+		return false
+	}
+}
+
+func responseHasPageDetailsNextPageURL(op *openapi3.Operation) bool {
+	schema := successResponseSchema(op)
+	if schema == nil || !isObjectSchema(schema) {
+		return false
+	}
+	for name, propRef := range schema.Properties {
+		if !strings.EqualFold(name, "pageDetails") {
+			continue
+		}
+		prop := schemaRefValue(propRef)
+		if prop == nil || !isObjectSchema(prop) {
+			return false
+		}
+		for nestedName := range prop.Properties {
+			if strings.EqualFold(nestedName, "nextPageUrl") || strings.EqualFold(nestedName, "nextPageURL") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func responseItemHasNumericID(op *openapi3.Operation, idField string) bool {
+	if strings.TrimSpace(idField) == "" {
+		return false
+	}
+	itemSchema := unwrapItemSchema(successResponseSchema(op))
+	if itemSchema == nil {
+		return false
+	}
+	var idRef *openapi3.SchemaRef
+	for name, propRef := range itemSchema.Properties {
+		if strings.EqualFold(name, idField) {
+			idRef = propRef
+			break
+		}
+	}
+	if idRef == nil {
+		return false
+	}
+	idSchema := schemaRefValue(idRef)
+	return idSchema != nil && idSchema.Type != nil && (idSchema.Type.Is(openapi3.TypeInteger) || idSchema.Type.Is(openapi3.TypeNumber))
+}
+
+func successResponseSchema(op *openapi3.Operation) *openapi3.Schema {
+	if op == nil || op.Responses == nil {
+		return nil
+	}
+	success := selectSuccessResponse(op.Responses)
+	if success == nil || success.Value == nil {
+		return nil
+	}
+	schemaRef := selectResponseSchema(success.Value)
+	if schemaRef == nil {
+		return nil
+	}
+	return schemaRef.Value
 }
 
 func detectPaginationResponseFields(schema *openapi3.Schema, prefix string, pag *spec.Pagination) {

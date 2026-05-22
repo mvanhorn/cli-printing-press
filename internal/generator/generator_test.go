@@ -199,7 +199,7 @@ func TestGenerateNoUnscopedStoreOpen(t *testing.T) {
 
 	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
 	gen := New(apiSpec, outputDir)
-	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true, MCP: true}
 	require.NoError(t, gen.Generate())
 
 	// Walk every .go file under internal/, skipping test files.
@@ -3429,6 +3429,218 @@ func TestSyncPageIntPaginationAdvancesAfterFullPage(t *testing.T) {
 				"determinePaginationDefaults must preserve the original-case page-int param name")
 		})
 	}
+}
+
+func TestSyncIDWalkPostQueryAdvancesAfterFullPage(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "post-query",
+		Version: "0.1.0",
+		BaseURL: "https://post-query.example.com",
+		Auth:    spec.AuthConfig{Type: "none"},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/post-query-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"tickets": {
+				Description: "Tickets",
+				Endpoints: map[string]spec.Endpoint{
+					"query": {
+						Method:      "POST",
+						Path:        "/tickets/query",
+						Description: "Query tickets",
+						IDField:     "id",
+						Body: []spec.Param{
+							{Name: "MaxRecords", Type: "integer", Default: 500},
+							{Name: "filter", Type: "array"},
+						},
+						Pagination: &spec.Pagination{
+							Type:       spec.PaginationTypeIDWalk,
+							LimitParam: "MaxRecords",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "TicketsResponse"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"TicketsResponse": {
+				Fields: []spec.TypeField{
+					{Name: "items", Type: "array"},
+					{Name: "pageDetails", Type: "object"},
+				},
+			},
+			"Ticket": {
+				Fields: []spec.TypeField{{Name: "id", Type: "integer"}},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	gen.VisionSet = VisionTemplateSet{Store: true, Sync: true}
+	require.NoError(t, gen.Generate())
+
+	queryCmd := generatedCLISourceContaining(t, outputDir, `"/tickets/query"`)
+	assert.NotContains(t, queryCmd, `"all", false, "Fetch all pages"`)
+	assert.NotContains(t, queryCmd, "paginatedGet(")
+	assert.NotContains(t, queryCmd, "resolvePaginatedRead(")
+	inlineTest := `package cli
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"testing"
+
+	"` + naming.CLI(apiSpec.Name) + `/internal/store"
+)
+
+type postQuerySyncClient struct {
+	bodies []map[string]any
+}
+
+func (c *postQuerySyncClient) Get(context.Context, string, map[string]string) (json.RawMessage, error) {
+	return nil, fmt.Errorf("unexpected GET")
+}
+
+func (c *postQuerySyncClient) PostWithParams(_ context.Context, path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return nil, 0, fmt.Errorf("unexpected mutating POST")
+}
+
+func (c *postQuerySyncClient) PostQueryWithParams(_ context.Context, path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	if path != "/tickets/query" {
+		return nil, 0, fmt.Errorf("path = %s, want /tickets/query", path)
+	}
+	if len(params) != 0 {
+		return nil, 0, fmt.Errorf("query params = %#v, want none", params)
+	}
+	bodyMap, ok := body.(map[string]any)
+	if !ok {
+		return nil, 0, fmt.Errorf("body type = %T, want map[string]any", body)
+	}
+	c.bodies = append(c.bodies, cloneBody(bodyMap))
+
+	start := (len(c.bodies) - 1) * 500
+	count := 500
+	if len(c.bodies) == 3 {
+		count = 200
+	}
+	items := make([]map[string]any, 0, count)
+	for i := 1; i <= count; i++ {
+		id := start + i
+		if count == 500 && i == 499 {
+			id = start + 500
+		} else if count == 500 && i == 500 {
+			id = start + 499
+		}
+		items = append(items, map[string]any{"id": id, "summary": fmt.Sprintf("ticket-%d", id)})
+	}
+	data, _ := json.Marshal(map[string]any{
+		"items": items,
+		"pageDetails": map[string]any{"nextPageUrl": "https://post-query.example.com/tickets/query?page=ignored"},
+	})
+	return data, 200, nil
+}
+
+func (c *postQuerySyncClient) RateLimit() float64 {
+	return 0
+}
+
+func cloneBody(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func TestSyncResourceIDWalksPostQueryPages(t *testing.T) {
+	db, err := store.Open(t.TempDir() + "/data.db")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	client := &postQuerySyncClient{}
+	res := syncResource(context.Background(), client, db, "tickets", "", true, 10, false, nil)
+	if res.Err != nil {
+		t.Fatalf("syncResource error: %v", res.Err)
+	}
+	if res.Count != 1200 {
+		t.Fatalf("synced count = %d, want 1200", res.Count)
+	}
+	if len(client.bodies) != 3 {
+		t.Fatalf("POST calls = %d, want 3", len(client.bodies))
+	}
+	assertIDWalkBody(t, client.bodies[0], nil)
+	assertIDWalkBody(t, client.bodies[1], int64(500))
+	assertIDWalkBody(t, client.bodies[2], int64(1000))
+}
+
+func TestNextIDWalkCursorPreservesLargeJSONNumber(t *testing.T) {
+	got, ok := nextIDWalkCursor([]json.RawMessage{
+		json.RawMessage(` + "`" + `{"id":9007199254740993}` + "`" + `),
+	}, "id")
+	if !ok {
+		t.Fatal("nextIDWalkCursor did not find an id")
+	}
+	if got != "9007199254740993" {
+		t.Fatalf("cursor = %s, want 9007199254740993", got)
+	}
+}
+
+func assertIDWalkBody(t *testing.T, body map[string]any, wantAfter any) {
+	t.Helper()
+	if body["MaxRecords"] != int64(500) {
+		t.Fatalf("MaxRecords = %#v, want int64(500)", body["MaxRecords"])
+	}
+	filters, ok := body["filter"].([]any)
+	if wantAfter == nil {
+		if ok && len(filters) > 0 {
+			t.Fatalf("first request filter = %#v, want empty", filters)
+		}
+		return
+	}
+	if !ok || len(filters) != 1 {
+		t.Fatalf("filter = %#v, want one id-walk predicate", body["filter"])
+	}
+	predicate, ok := filters[0].(map[string]any)
+	if !ok {
+		t.Fatalf("filter[0] = %#v, want object", filters[0])
+	}
+	if predicate["field"] != "id" || predicate["op"] != "gt" || predicate["value"] != wantAfter {
+		t.Fatalf("filter[0] = %#v, want id gt %v", predicate, wantAfter)
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "sync_id_walk_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(inlineTest), 0o644))
+
+	runGoCommandRequired(t, outputDir, "mod", "tidy")
+	runGoCommandRequired(t, outputDir, "test", "-run", "TestSyncResourceIDWalksPostQueryPages", "./internal/cli")
+}
+
+func generatedCLISourceContaining(t *testing.T, outputDir string, needle string) string {
+	t.Helper()
+	var found string
+	require.NoError(t, filepath.WalkDir(filepath.Join(outputDir, "internal", "cli"), func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".go" || found != "" {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(string(data), needle) {
+			found = string(data)
+		}
+		return nil
+	}))
+	require.NotEmpty(t, found, "generated CLI source containing %q", needle)
+	return found
 }
 
 // TestGeneratedSyncHandlesPascalCaseDotNetShape verifies the generated sync +
@@ -10026,7 +10238,7 @@ func TestGenerateOperationRoutingPathParamDefault(t *testing.T) {
 	mcpGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
 	assert.Regexp(t,
-		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/graphql/\{pathQueryId\}/Followers",\s*false,\s*nil,\s*\[]mcpParamBinding\{.*WireName: "pathQueryId".*\},\s*\[]string\{[^}]*"pathQueryId"`),
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/graphql/\{pathQueryId\}/Followers",\s*true,\s*false,\s*nil,\s*\[]mcpParamBinding\{.*WireName: "pathQueryId".*\},\s*\[]string\{[^}]*"pathQueryId"`),
 		string(mcpGo),
 		"MCP handler must receive the routing path param so it can substitute the URL")
 }
@@ -10911,9 +11123,9 @@ func TestGenerateResourceBaseURLOverrideRoutesToOverrideHost(t *testing.T) {
 	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
 	mcpToolsStr := string(mcpTools)
-	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search", false`,
+	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search", true, false`,
 		"geocoding MCP endpoint mirror must emit the absolute override URL")
-	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "/forecast", false`,
+	assert.Contains(t, mcpToolsStr, `makeAPIHandler("GET", "/forecast", true, false`,
 		"forecast MCP endpoint mirror must keep the relative path when its resource has no override")
 
 	// Must compile.
@@ -11001,7 +11213,7 @@ func TestGenerateEndpointBaseURLOverrideRoutesToOverrideHost(t *testing.T) {
 
 	mcpTools, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
 	require.NoError(t, err)
-	assert.Contains(t, string(mcpTools), `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search", false`,
+	assert.Contains(t, string(mcpTools), `makeAPIHandler("GET", "https://geocoding-api.example.com/v1/search", true, false`,
 		"typed MCP endpoint tool must use the endpoint override URL")
 }
 
@@ -11536,11 +11748,11 @@ func TestGenerateMCPHandlerPreservesQueryPositionals(t *testing.T) {
 	// Call sites still pass both names — the upstream emit is unchanged;
 	// the fix lives entirely inside the handler body.
 	assert.Regexp(t,
-		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/search/movie",\s*false,\s*nil,\s*\[]mcpParamBinding\{.*WireName: "query".*\},\s*\[]string\{[^}]*"query"`),
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/search/movie",\s*true,\s*false,\s*nil,\s*\[]mcpParamBinding\{.*WireName: "query".*\},\s*\[]string\{[^}]*"query"`),
 		tools,
 		"search call site must still pass `query` in positionalParams (handler decides path vs query at runtime)")
 	assert.Regexp(t,
-		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/movie/\{movieId\}",\s*false,\s*nil,\s*\[]mcpParamBinding\{.*WireName: "movieId".*\},\s*\[]string\{[^}]*"movieId"`),
+		regexp.MustCompile(`makeAPIHandler\("GET",\s*"/movie/\{movieId\}",\s*true,\s*false,\s*nil,\s*\[]mcpParamBinding\{.*WireName: "movieId".*\},\s*\[]string\{[^}]*"movieId"`),
 		tools,
 		"get-by-id call site must pass `movieId` in positionalParams")
 

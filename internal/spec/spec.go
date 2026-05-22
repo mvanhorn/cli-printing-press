@@ -1648,8 +1648,10 @@ type ResponseDiscriminator struct {
 	Mapping map[string]string `yaml:"mapping,omitempty" json:"mapping,omitempty"` // discriminator value -> schema/resource name
 }
 
+const PaginationTypeIDWalk = "id_walk"
+
 type Pagination struct {
-	Type           string `yaml:"type" json:"type"`                         // cursor, offset, page_token, page
+	Type           string `yaml:"type" json:"type"`                         // cursor, offset, page_token, page, id_walk
 	LimitParam     string `yaml:"limit_param" json:"limit_param"`           // query param name for page size (limit, maxResults, pageSize)
 	CursorParam    string `yaml:"cursor_param" json:"cursor_param"`         // query param name for cursor (after, pageToken, offset, page)
 	NextCursorPath string `yaml:"next_cursor_path" json:"next_cursor_path"` // response field with next cursor (nextPageToken, cursor)

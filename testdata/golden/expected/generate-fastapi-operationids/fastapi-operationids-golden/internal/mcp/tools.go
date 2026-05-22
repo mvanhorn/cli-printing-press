@@ -30,15 +30,16 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/health", false, nil, []mcpParamBinding{}, []string{}),
+		makeAPIHandler("GET", "/health", true, false, nil, []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("items_list",
 			mcplib.WithDescription("Search items."),
+			mcplib.WithReadOnlyHintAnnotation(true),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("POST", "/api/items/search", false, nil, []mcpParamBinding{}, []string{}),
+		makeAPIHandler("POST", "/api/items/search", true, false, nil, []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("quotes_create",
@@ -46,7 +47,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("POST", "/api/quotes/generate", false, nil, []mcpParamBinding{}, []string{}),
+		makeAPIHandler("POST", "/api/quotes/generate", false, false, nil, []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("quotes_delete",
@@ -55,7 +56,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(true),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("DELETE", "/api/quotes/{quote_id}", false, nil, []mcpParamBinding{{PublicName: "quote_id", WireName: "quote_id", Location: "path"}}, []string{"quote_id"}),
+		makeAPIHandler("DELETE", "/api/quotes/{quote_id}", false, false, nil, []mcpParamBinding{{PublicName: "quote_id", WireName: "quote_id", Location: "path"}}, []string{"quote_id"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("quotes_get",
@@ -65,7 +66,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/api/quotes/{quote_id}", false, nil, []mcpParamBinding{{PublicName: "quote_id", WireName: "quote_id", Location: "path"}}, []string{"quote_id"}),
+		makeAPIHandler("GET", "/api/quotes/{quote_id}", true, false, nil, []mcpParamBinding{{PublicName: "quote_id", WireName: "quote_id", Location: "path"}}, []string{"quote_id"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("quotes_list",
@@ -74,7 +75,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/api/quotes", false, nil, []mcpParamBinding{}, []string{}),
+		makeAPIHandler("GET", "/api/quotes", true, false, nil, []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("quotes_update",
@@ -82,7 +83,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("quote_id", mcplib.Required(), mcplib.Description("Quote id")),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("PATCH", "/api/quotes/{quote_id}", false, nil, []mcpParamBinding{{PublicName: "quote_id", WireName: "quote_id", Location: "path"}}, []string{"quote_id"}),
+		makeAPIHandler("PATCH", "/api/quotes/{quote_id}", false, false, nil, []mcpParamBinding{{PublicName: "quote_id", WireName: "quote_id", Location: "path"}}, []string{"quote_id"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("quotes_update-status",
@@ -91,7 +92,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("POST", "/api/quotes/{quote_id}", false, nil, []mcpParamBinding{{PublicName: "quote_id", WireName: "quote_id", Location: "path"}}, []string{"quote_id"}),
+		makeAPIHandler("POST", "/api/quotes/{quote_id}", false, false, nil, []mcpParamBinding{{PublicName: "quote_id", WireName: "quote_id", Location: "path"}}, []string{"quote_id"}),
 	)
 
 	// Context tool — front-loaded domain knowledge for agents.
@@ -117,7 +118,7 @@ type mcpParamBinding struct {
 }
 
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
-func makeAPIHandler(method, pathTemplate string, binaryResponse bool, headerOverrides map[string]string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
+func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse bool, headerOverrides map[string]string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		c, err := newMCPClient()
 		if err != nil {
@@ -200,10 +201,18 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, headerOver
 			data, err = c.Get(ctx, path, params)
 		case "POST":
 			if len(headers) > 0 {
-				data, _, err = c.PostWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				if readOnly {
+					data, _, err = c.PostQueryWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				} else {
+					data, _, err = c.PostWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				}
 				break
 			}
-			data, _, err = c.PostWithParams(ctx, path, params, bodyArgs)
+			if readOnly {
+				data, _, err = c.PostQueryWithParams(ctx, path, params, bodyArgs)
+			} else {
+				data, _, err = c.PostWithParams(ctx, path, params, bodyArgs)
+			}
 		case "PUT":
 			if len(headers) > 0 {
 				data, _, err = c.PutWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
