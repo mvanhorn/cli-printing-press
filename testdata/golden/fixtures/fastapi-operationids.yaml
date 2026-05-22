@@ -1,0 +1,94 @@
+openapi: "3.1.0"
+info:
+  title: FastAPI OperationIDs Golden
+  version: "1.0"
+  description: Fixture for FastAPI default operationId normalization.
+servers:
+  - url: https://api.fastapi.example
+paths:
+  /api/quotes:
+    get:
+      operationId: list_quotes_api_quotes_get
+      summary: List quotes
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+  /api/quotes/generate:
+    post:
+      operationId: create_quote_api_quotes_generate_post
+      summary: Generate quote
+      responses:
+        "200":
+          description: OK
+  /api/quotes/{quote_id}:
+    get:
+      operationId: get_quote_api_quotes__quote_id__get
+      summary: Get quote
+      parameters:
+        - name: quote_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+    patch:
+      operationId: update_quote_api_quotes__quote_id__patch
+      summary: Update quote
+      parameters:
+        - name: quote_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+    delete:
+      operationId: delete_quote_api_quotes__quote_id__delete
+      summary: Delete quote
+      parameters:
+        - name: quote_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: No content
+    post:
+      operationId: update_status_api_quotes__quote_id__post
+      summary: Update quote status
+      parameters:
+        - name: quote_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /health:
+    get:
+      operationId: health_check_health_get
+      summary: Health check
+      responses:
+        "200":
+          description: OK
+  /api/items/search:
+    post:
+      operationId: list_items_api_items_search_post
+      summary: Search items
+      responses:
+        "200":
+          description: OK
