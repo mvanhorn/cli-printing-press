@@ -252,6 +252,9 @@ func auditMCPManifest(m *pipeline.ToolsManifest) []ToolsAuditFinding {
 	if m == nil {
 		return nil
 	}
+	if !m.EndpointMirrorsVisible() {
+		return nil
+	}
 	var findings []ToolsAuditFinding
 	for _, t := range m.Tools {
 		if t.Name == "" {

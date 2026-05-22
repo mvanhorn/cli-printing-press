@@ -88,6 +88,18 @@ func TestScoreMCPDescriptionQuality(t *testing.T) {
 		}
 		return dir
 	}
+	mkManifest := func(t *testing.T, manifest ToolsManifest) string {
+		t.Helper()
+		dir := t.TempDir()
+		data, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "tools-manifest.json"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
 
 	t.Run("missing manifest is unscored", func(t *testing.T) {
 		dir := t.TempDir()
@@ -132,6 +144,39 @@ func TestScoreMCPDescriptionQuality(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("hidden endpoint mirrors are not counted", func(t *testing.T) {
+		dir := mkManifest(t, ToolsManifest{
+			MCP: &ManifestMCP{
+				EndpointTools: "hidden",
+				Orchestration: "code",
+			},
+			Tools: []ManifestTool{
+				{Name: "demo_get", Description: "Get"},
+				{Name: "demo_create", Description: "Create"},
+			},
+		})
+		score, scored := scoreMCPDescriptionQuality(dir)
+		if scored {
+			t.Errorf("score=%d scored=%v, want unscored", score, scored)
+		}
+	})
+
+	t.Run("visible endpoint mirrors are still counted", func(t *testing.T) {
+		dir := mkManifest(t, ToolsManifest{
+			MCP: &ManifestMCP{
+				EndpointTools: "visible",
+			},
+			Tools: []ManifestTool{
+				{Name: "demo_get", Description: "Get"},
+				{Name: "demo_create", Description: "Create"},
+			},
+		})
+		score, scored := scoreMCPDescriptionQuality(dir)
+		if !scored || score != 0 {
+			t.Errorf("score=%d scored=%v, want 0/true", score, scored)
+		}
+	})
 }
 
 func appendN(prefix []string, val string, n int) []string {
@@ -873,6 +918,24 @@ func runLinks() string {
 		assert.ElementsMatch(t, []string{"mcp_description_quality", "mcp_token_efficiency", "mcp_remote_transport", "mcp_tool_design", "mcp_surface_strategy", "cache_freshness", "path_validity", "auth_protocol", "live_api_verification"}, sc.UnscoredDimensions)
 		assert.NotContains(t, sc.GapReport, "path_validity scored 0/10 - needs improvement")
 		assert.NotContains(t, sc.GapReport, "auth_protocol scored 0/10 - needs improvement")
+	})
+
+	t.Run("hidden endpoint mirrors omit mcp description quality from scoring", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, ToolsManifestFilename, `{
+  "mcp": {
+    "endpoint_tools": "hidden",
+    "orchestration": "code"
+  },
+  "tools": [
+    {"name": "demo_get", "description": "Get"},
+    {"name": "demo_create", "description": "Create"}
+  ]
+}`)
+
+		sc, err := RunScorecard(dir, t.TempDir(), "", nil)
+		assert.NoError(t, err)
+		assert.Contains(t, sc.UnscoredDimensions, DimMCPDescriptionQuality)
 	})
 
 	t.Run("missing security schemes renormalizes tier2 instead of treating auth as zero", func(t *testing.T) {

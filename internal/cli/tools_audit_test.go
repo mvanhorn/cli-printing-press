@@ -32,6 +32,42 @@ func TestRequiresPreDecisionFields(t *testing.T) {
 	}
 }
 
+func TestAuditMCPManifestSkipsHiddenEndpointMirrors(t *testing.T) {
+	manifest := &pipeline.ToolsManifest{
+		MCP: &pipeline.ManifestMCP{
+			EndpointTools: "hidden",
+			Orchestration: "code",
+		},
+		Tools: []pipeline.ManifestTool{
+			{Name: "demo_get", Description: "Get"},
+			{Name: "demo_create", Description: "Create"},
+		},
+	}
+
+	if got := auditMCPManifest(manifest); len(got) != 0 {
+		t.Fatalf("got %d findings for hidden endpoint mirrors, want 0: %#v", len(got), got)
+	}
+}
+
+func TestAuditMCPManifestStillFlagsVisibleEndpointMirrors(t *testing.T) {
+	manifest := &pipeline.ToolsManifest{
+		MCP: &pipeline.ManifestMCP{
+			EndpointTools: "visible",
+		},
+		Tools: []pipeline.ManifestTool{
+			{Name: "demo_get", Description: "Get"},
+		},
+	}
+
+	got := auditMCPManifest(manifest)
+	if len(got) != 1 {
+		t.Fatalf("got %d findings, want 1: %#v", len(got), got)
+	}
+	if got[0].Kind != kindThinMCPDesc {
+		t.Fatalf("kind = %q, want %q", got[0].Kind, kindThinMCPDesc)
+	}
+}
+
 func TestMissingPreDecisionFields(t *testing.T) {
 	full := ToolsAuditFinding{
 		SpecSourceMaterial: "summary + 3 params",
