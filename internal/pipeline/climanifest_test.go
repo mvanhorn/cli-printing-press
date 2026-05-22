@@ -636,6 +636,25 @@ func TestWriteManifestForGenerateKeepsCatalogDisplayNameOverTitleFallback(t *tes
 	assert.Equal(t, "Product Hunt", got.DisplayName)
 }
 
+func TestWriteManifestForGenerateKeepsGeneratedDisplayNameOverExplicitSpecName(t *testing.T) {
+	dir := t.TempDir()
+
+	err := WriteManifestForGenerate(GenerateManifestParams{
+		APIName:     "synthetic-display-name",
+		OutputDir:   dir,
+		DisplayName: "Research Narrative Name",
+		Spec: &spec.APISpec{
+			Name:        "synthetic-display-name",
+			DisplayName: "Explicit Spec Name",
+			Auth:        spec.AuthConfig{Type: "none"},
+		},
+	})
+	require.NoError(t, err)
+
+	got := readPublishedManifest(t, dir)
+	assert.Equal(t, "Research Narrative Name", got.DisplayName)
+}
+
 func TestWriteManifestForGenerateMatchesCatalogBySpecURLWhenSlugDiffers(t *testing.T) {
 	dir := t.TempDir()
 

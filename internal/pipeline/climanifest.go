@@ -731,9 +731,6 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 			m.DisplayName = entry.DisplayName
 		}
 	}
-	if displayName := strings.TrimSpace(p.DisplayName); displayName != "" {
-		m.DisplayName = displayName
-	}
 	// Fall back to spec.Category for synthetic CLIs that aren't in the
 	// embedded catalog. Without this, manifest.Category stays empty even
 	// when the spec sets `category: travel`, and verify-skill's canonical-
@@ -754,6 +751,9 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	// Populate MCP metadata from the parsed spec.
 	if p.Spec != nil {
 		populateMCPMetadata(&m, p.Spec)
+	}
+	if displayName := strings.TrimSpace(p.DisplayName); displayName != "" {
+		m.DisplayName = displayName
 	}
 	if description := strings.TrimSpace(p.Description); description != "" {
 		m.Description = description
