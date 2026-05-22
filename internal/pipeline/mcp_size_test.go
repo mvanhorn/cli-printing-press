@@ -273,6 +273,37 @@ func newSearchCmd() *cobra.Command {
 	assert.Contains(t, names, "cobratree:beta_search")
 }
 
+func TestEstimateMCPTokens_BoundsCyclicConstructorGraphs(t *testing.T) {
+	dir := writeMCPTools(t, `
+	cobratree.RegisterAll(s, cli.RootCmd(), cobratree.SiblingCLIPath)
+`)
+	writeMCPCLISource(t, dir, "root.go", `package cli
+
+import "github.com/spf13/cobra"
+
+func RootCmd() *cobra.Command {
+	rootCmd := &cobra.Command{Use: "demo-pp-cli"}
+	rootCmd.AddCommand(newAlphaCmd())
+	return rootCmd
+}
+
+func newAlphaCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "alpha"}
+	cmd.AddCommand(newBetaCmd())
+	return cmd
+}
+
+func newBetaCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "beta"}
+	cmd.AddCommand(newAlphaCmd())
+	return cmd
+}
+`)
+
+	est := estimateMCPTokens(dir)
+	require.Equal(t, 0, est.ToolCount)
+}
+
 func TestScoreMCPTokenEfficiency_FullMarksForLeanSurface(t *testing.T) {
 	dir := writeMCPTools(t, `
 	s.AddTool(mcplib.NewTool("get", mcplib.WithDescription("get item")), nil)

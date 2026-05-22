@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -302,13 +303,16 @@ func sourceCommandRecord(commands map[string]*cobraSourceCommand, name string) *
 func reachableCobratreeRuntimeTools(commands map[string]*cobraSourceCommand) []MCPToolSize {
 	var tools []MCPToolSize
 	visitedPaths := map[string]bool{}
-	var walk func(string, []string)
-	walk = func(fnName string, path []string) {
+	var walk func(string, []string, map[string]bool)
+	walk = func(fnName string, path []string, ancestors map[string]bool) {
 		rec := commands[fnName]
 		if rec == nil {
 			return
 		}
 		for _, childName := range rec.children {
+			if ancestors[childName] {
+				continue
+			}
 			child := commands[childName]
 			if child == nil || !child.hasLiteral {
 				continue
@@ -330,12 +334,20 @@ func reachableCobratreeRuntimeTools(commands map[string]*cobraSourceCommand) []M
 					tools = append(tools, tool)
 				}
 			}
-			walk(childName, childPath)
+			childAncestors := cloneStringBoolMap(ancestors)
+			childAncestors[childName] = true
+			walk(childName, childPath, childAncestors)
 		}
 	}
-	walk("RootCmd", nil)
-	walk("newRootCmd", nil)
+	walk("RootCmd", nil, map[string]bool{"RootCmd": true})
+	walk("newRootCmd", nil, map[string]bool{"newRootCmd": true})
 	return tools
+}
+
+func cloneStringBoolMap(in map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(in))
+	maps.Copy(out, in)
+	return out
 }
 
 func isAddCommandCall(call *ast.CallExpr) bool {
