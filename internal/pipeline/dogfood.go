@@ -2008,22 +2008,50 @@ func discoverExampleCheckCommands(binaryPath string) ([][]string, error) {
 // callers can surface a meaningful "what broke" instead of "exit
 // status 1".
 func runStdoutOnly(binaryPath string, timeout time.Duration, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, binaryPath, args...)
-	applyDefaultSubprocessEnv(cmd)
-	out, err := cmd.Output()
-	if ctx.Err() == context.DeadlineExceeded {
-		return nil, fmt.Errorf("timed out after %s", timeout)
-	}
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-			return nil, fmt.Errorf("%s", strings.TrimSpace(string(exitErr.Stderr)))
+	return runStdoutOnlyWithRunner(timeout, func(ctx context.Context) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, binaryPath, args...)
+		applyDefaultSubprocessEnv(cmd)
+		return cmd.Output()
+	})
+}
+
+func runStdoutOnlyWithRunner(timeout time.Duration, run func(context.Context) ([]byte, error)) ([]byte, error) {
+	deadline := time.Now().Add(timeout)
+	for attempt := 0; ; attempt++ {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, fmt.Errorf("timed out after %s", timeout)
 		}
-		return nil, err
+		ctx, cancel := context.WithTimeout(context.Background(), remaining)
+		out, err := run(ctx)
+		timedOut := ctx.Err() == context.DeadlineExceeded
+		cancel()
+		if timedOut {
+			return nil, fmt.Errorf("timed out after %s", timeout)
+		}
+		if err == nil {
+			return out, nil
+		}
+		if isTextFileBusy(err) {
+			sleep := time.Duration(attempt+1) * 25 * time.Millisecond
+			sleep = min(sleep, 250*time.Millisecond)
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				return nil, fmt.Errorf("timed out after %s", timeout)
+			}
+			time.Sleep(min(sleep, remaining))
+			continue
+		}
+		return nil, formatStdoutOnlyError(err)
 	}
-	return out, nil
+}
+
+func formatStdoutOnlyError(err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+		return fmt.Errorf("%s", strings.TrimSpace(string(exitErr.Stderr)))
+	}
+	return err
 }
 
 func dogfoodExampleCommandPathsFromAgentContext(data []byte) ([][]string, error) {
