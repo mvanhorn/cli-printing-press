@@ -146,6 +146,8 @@ paths:
 	require.NoError(t, New(apiSpec, outputDir).Generate())
 
 	uploadSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_assets.go")
+	assert.Contains(t, uploadSrc, `return fmt.Errorf("required flag \"%s\" not set", "asset-data")`)
+	assert.Contains(t, uploadSrc, `return fmt.Errorf("required flag \"%s\" not set", "filename")`)
 	assert.Contains(t, uploadSrc, `fileFields["assetData"] = bodyAssetData`)
 	assert.Contains(t, uploadSrc, `fields["filename"] = bodyFilename`)
 	assert.Contains(t, uploadSrc, `c.PostMultipartWithParams(cmd.Context(), path, params, fields, fileFields)`)
@@ -156,6 +158,9 @@ paths:
 	assert.Contains(t, createSrc, `body["title"] = bodyTitle`)
 	assert.Contains(t, createSrc, `c.PostWithParams(cmd.Context(), path, params, body)`)
 	assert.NotContains(t, createSrc, `c.PostMultipartWithParams`)
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
 }
 
 func TestGenerateBinaryResponseWritesRawBytes(t *testing.T) {
