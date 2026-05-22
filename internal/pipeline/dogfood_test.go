@@ -1,11 +1,13 @@
 package pipeline
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -2400,29 +2402,17 @@ EOF
 }
 
 func TestRunStdoutOnlyRetriesTextFileBusy(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("test uses a shell script as the fake binary; skip on Windows")
-	}
-
-	script := `#!/bin/sh
-echo '{"commands":[]}'
-`
-	binPath := filepath.Join(t.TempDir(), "fakebin")
-	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
-	writer, err := os.OpenFile(binPath, os.O_WRONLY|os.O_APPEND, 0)
-	require.NoError(t, err)
-
-	closed := make(chan struct{})
-	go func() {
-		time.Sleep(75 * time.Millisecond)
-		_ = writer.Close()
-		close(closed)
-	}()
-
-	out, err := runStdoutOnly(binPath, 2*time.Second, "agent-context")
-	<-closed
+	attempts := 0
+	out, err := runStdoutOnlyWithRunner(2*time.Second, func(_ context.Context) ([]byte, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, &os.PathError{Op: "fork/exec", Path: "fakebin", Err: syscall.ETXTBSY}
+		}
+		return []byte(`{"commands":[]}`), nil
+	})
 	require.NoError(t, err)
 	assert.Contains(t, string(out), `"commands"`)
+	assert.Equal(t, 3, attempts)
 }
 
 // TestDiscoverExampleCheckCommandsSurfacesStderrOnFailure — when the

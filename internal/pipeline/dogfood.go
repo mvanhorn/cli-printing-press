@@ -2009,6 +2009,14 @@ func discoverExampleCheckCommands(binaryPath string) ([][]string, error) {
 // callers can surface a meaningful "what broke" instead of "exit
 // status 1".
 func runStdoutOnly(binaryPath string, timeout time.Duration, args ...string) ([]byte, error) {
+	return runStdoutOnlyWithRunner(timeout, func(ctx context.Context) ([]byte, error) {
+		cmd := exec.CommandContext(ctx, binaryPath, args...)
+		applyDefaultSubprocessEnv(cmd)
+		return cmd.Output()
+	})
+}
+
+func runStdoutOnlyWithRunner(timeout time.Duration, run func(context.Context) ([]byte, error)) ([]byte, error) {
 	deadline := time.Now().Add(timeout)
 	for attempt := 0; ; attempt++ {
 		remaining := time.Until(deadline)
@@ -2016,9 +2024,7 @@ func runStdoutOnly(binaryPath string, timeout time.Duration, args ...string) ([]
 			return nil, fmt.Errorf("timed out after %s", timeout)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), remaining)
-		cmd := exec.CommandContext(ctx, binaryPath, args...)
-		applyDefaultSubprocessEnv(cmd)
-		out, err := cmd.Output()
+		out, err := run(ctx)
 		timedOut := ctx.Err() == context.DeadlineExceeded
 		cancel()
 		if timedOut {
