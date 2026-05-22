@@ -1985,10 +1985,8 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 		return "", nil
 	}
 
-	candidates := candidateSecuritySchemeNames(doc)
-
 	if pref := strings.TrimSpace(authPreference); pref != "" {
-		for _, name := range candidates {
+		for _, name := range allSecuritySchemeNames(doc) {
 			if !strings.EqualFold(name, pref) {
 				continue
 			}
@@ -1999,7 +1997,11 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 		}
 	}
 
+	usageCounts := securitySchemeOperationUsageCounts(doc)
+	candidates := candidateSecuritySchemeNames(doc, usageCounts)
+
 	bestScore := math.MaxInt
+	bestUsageCount := 0
 	var bestName string
 	var bestScheme *openapi3.SecurityScheme
 
@@ -2008,8 +2010,10 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 		if scheme == nil {
 			continue
 		}
+		usageCount := usageCounts[name]
 		score := schemePriorityScore(scheme)
-		if score < bestScore {
+		if usageCount > bestUsageCount || (usageCount == bestUsageCount && score < bestScore) {
+			bestUsageCount = usageCount
 			bestScore = score
 			bestName = name
 			bestScheme = scheme
@@ -2019,13 +2023,23 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 	return bestName, bestScheme
 }
 
-// Root security is authoritative when present: a components-only scheme
-// (e.g. an OAuth2 marketplace flow the API doesn't actually accept at the
-// document default) must not outrank an apiKey the spec explicitly named.
-// The empty-names guard handles `security: []` and `security: [{}]`
-// no-auth declarations, where falling back to components recovers the
-// previous behavior for inferred-auth specs.
-func candidateSecuritySchemeNames(doc *openapi3.T) []string {
+// Effective operation security is authoritative when present: a
+// components-only scheme (e.g. an OAuth2 marketplace flow the API doesn't
+// actually accept) must not outrank a scheme used by the operation surface.
+// The root-security fallback covers specs without paths or security-bearing
+// operations. The empty-names guard handles `security: []` and `security: [{}]`
+// no-auth declarations, where falling back to components recovers the previous
+// behavior for inferred-auth specs.
+func candidateSecuritySchemeNames(doc *openapi3.T, usageCounts map[string]int) []string {
+	if len(usageCounts) > 0 {
+		names := make([]string, 0, len(usageCounts))
+		for name := range usageCounts {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return names
+	}
+
 	seen := map[string]struct{}{}
 	var names []string
 
@@ -2049,12 +2063,59 @@ func candidateSecuritySchemeNames(doc *openapi3.T) []string {
 		}
 	}
 
-	all := make([]string, 0, len(doc.Components.SecuritySchemes))
-	for name := range doc.Components.SecuritySchemes {
-		all = append(all, name)
+	return allSecuritySchemeNames(doc)
+}
+
+func allSecuritySchemeNames(doc *openapi3.T) []string {
+	if doc == nil || doc.Components == nil {
+		return nil
 	}
-	sort.Strings(all)
-	return all
+	names := make([]string, 0, len(doc.Components.SecuritySchemes))
+	for name := range doc.Components.SecuritySchemes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func securitySchemeOperationUsageCounts(doc *openapi3.T) map[string]int {
+	counts := map[string]int{}
+	if doc == nil || doc.Paths == nil {
+		return counts
+	}
+
+	for _, pathItem := range doc.Paths.Map() {
+		if pathItem == nil {
+			continue
+		}
+		for _, op := range pathItem.Operations() {
+			if op == nil {
+				continue
+			}
+			requirements := effectiveSecurityRequirements(op, doc)
+			counted := map[string]struct{}{}
+			for _, requirement := range requirements {
+				for name := range requirement {
+					if _, ok := counted[name]; ok {
+						continue
+					}
+					counted[name] = struct{}{}
+					counts[name]++
+				}
+			}
+		}
+	}
+	return counts
+}
+
+func effectiveSecurityRequirements(op *openapi3.Operation, doc *openapi3.T) openapi3.SecurityRequirements {
+	if op != nil && op.Security != nil {
+		return *op.Security
+	}
+	if doc == nil {
+		return nil
+	}
+	return doc.Security
 }
 
 // Ordering rationale: Bearer is the simplest for CLI use; OAuth2 flows rank
@@ -2436,25 +2497,22 @@ func operationServerBaseURL(specBaseURL string, pathItem *openapi3.PathItem, op 
 //   - The operation has security: [{}] (empty object = anonymous alternative)
 //   - The operation inherits global security and the global security is empty
 func operationAllowsAnonymous(op *openapi3.Operation, doc *openapi3.T) bool {
-	if op.Security != nil {
-		// Per-operation security declared
-		if len(*op.Security) == 0 {
-			return true // security: []
-		}
-		for _, req := range *op.Security {
-			if len(req) == 0 {
-				return true // security: [{}]
-			}
-		}
-		return false
+	if op != nil && op.Security != nil {
+		return securityRequirementsAllowAnonymous(*op.Security)
 	}
-	// op.Security is nil — inherits global security
-	if doc.Security != nil && len(doc.Security) == 0 {
-		return true // global security: []
+	if doc != nil && doc.Security != nil {
+		return securityRequirementsAllowAnonymous(doc.Security)
 	}
-	for _, req := range doc.Security {
+	return false
+}
+
+func securityRequirementsAllowAnonymous(requirements openapi3.SecurityRequirements) bool {
+	if len(requirements) == 0 {
+		return true
+	}
+	for _, req := range requirements {
 		if len(req) == 0 {
-			return true // global security: [{}]
+			return true
 		}
 	}
 	return false
