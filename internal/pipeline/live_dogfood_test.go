@@ -1423,7 +1423,8 @@ if [ "$1" = "agent-context" ]; then
   "commands": [
     {"name":"widgets","subcommands":[
       {"name":"list"},
-      {"name":"soft-lookup","annotations":{"pp:no-error-path-probe":"true"}}
+      {"name":"soft-lookup","annotations":{"pp:no-error-path-probe":"true"}},
+      {"name":"status","annotations":{"pp:no-error-path-probe":"true"}}
     ]}
   ]
 }
@@ -1478,6 +1479,31 @@ if [ "$1" = "widgets" ] && [ "$2" = "soft-lookup" ]; then
     exit 0
   fi
   echo "soft lookup $3"
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "status" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show widget service status.
+
+Usage:
+  fixture-pp-cli widgets status [flags]
+
+Examples:
+  fixture-pp-cli widgets status
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "status" ]; then
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"ok":true}'
+    exit 0
+  fi
+  echo 'ok'
   exit 0
 fi
 
@@ -2380,6 +2406,19 @@ func TestRunLiveDogfoodErrorPathSkipsAnnotatedSoftFailureCommand(t *testing.T) {
 	lines := readArgvLog(t, argvLog)
 	assert.Equal(t, 0, countArgvLines(lines, "widgets soft-lookup", "__printing_press_invalid__"),
 		"error_path probe must not invoke the binary for annotated soft-failure commands")
+}
+
+func TestRunLiveDogfoodErrorPathAnnotationPreservesNoPositionalSkip(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodSoftFailureFixture(t)
+	report := runRichFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets status", LiveDogfoodTestError)
+	require.NotNil(t, got, "expected widgets status error_path skip in report")
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status, got.Reason)
+	assert.Equal(t, "no positional argument", got.Reason)
 }
 
 func TestRunLiveDogfoodSearchErrorPathFallbackResults(t *testing.T) {

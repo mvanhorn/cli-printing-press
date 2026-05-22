@@ -749,9 +749,10 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		}
 	}
 
-	if annotationIsTrueValue(command.Annotations[noErrorPathProbeAnnotation]) {
+	takesArg := liveDogfoodCommandTakesArg(command.Help)
+	if takesArg && annotationIsTrueValue(command.Annotations[noErrorPathProbeAnnotation]) {
 		results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonNoErrorPathProbeAnnotation))
-	} else if liveDogfoodCommandTakesArg(command.Help) {
+	} else if takesArg {
 		if mutating {
 			// Mutating commands cannot run the error_path probe safely: the
 			// __printing_press_invalid__ sentinel is sent as a real argument
