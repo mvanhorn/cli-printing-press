@@ -168,6 +168,66 @@ func TestRunCommandTestsExecutesMockReadCommands(t *testing.T) {
 	assert.False(t, result.Execute)
 }
 
+func TestRunCommandTestsUsesHappyArgsAnnotation(t *testing.T) {
+	binary := buildHappyArgsProbeBinary(t)
+	cmd := discoveredCommand{
+		Name: "whereabouts",
+		Kind: "read",
+		Args: []string{"mock-value"},
+		Annotations: map[string]string{
+			happyArgsAnnotation: "<person>=Alice;--query=sunset",
+		},
+	}
+
+	result := runCommandTests(binary, cmd, "mock", os.Environ())
+
+	assert.True(t, result.Help)
+	assert.True(t, result.DryRun)
+	assert.True(t, result.Execute)
+	assert.Equal(t, 3, result.Score)
+}
+
+func TestRunCommandTestsWithoutHappyArgsKeepsGenericFailure(t *testing.T) {
+	binary := buildHappyArgsProbeBinary(t)
+	cmd := discoveredCommand{
+		Name: "whereabouts",
+		Kind: "read",
+		Args: []string{"mock-value"},
+	}
+
+	result := runCommandTests(binary, cmd, "mock", os.Environ())
+
+	assert.True(t, result.Help)
+	assert.False(t, result.DryRun)
+	assert.False(t, result.Execute)
+	assert.Equal(t, 1, result.Score)
+}
+
+func TestRunSideEffectSafeCommandTestsUsesHappyArgsWithoutNoArgProbe(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "invocations.log")
+	binary := buildHappyArgsProbeBinary(t)
+	cmd := discoveredCommand{
+		Name: "whereabouts",
+		Kind: "read",
+		Args: []string{"mock-value"},
+		Annotations: map[string]string{
+			happyArgsAnnotation: "<person>=Alice;--query=sunset",
+		},
+	}
+	env := append(os.Environ(), "PP_PROBE_LOG="+logPath)
+
+	result := runSideEffectSafeCommandTests(binary, cmd, env)
+
+	assert.True(t, result.Help)
+	assert.True(t, result.DryRun)
+	assert.True(t, result.Execute)
+	assert.Equal(t, 3, result.Score)
+
+	data, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "whereabouts\n")
+}
+
 // buildVerifyEnvDoctorBinary builds a stub printed-CLI binary whose
 // `doctor --json` returns a valid browser-session proof only when its
 // process sees PRINTING_PRESS_VERIFY=1; otherwise it reports the proof
@@ -248,6 +308,51 @@ func main() {
 		}
 	}
 	os.Exit(1)
+}
+`)
+	binaryPath := filepath.Join(dir, "test-cli")
+	buildCmd := exec.Command("go", "build", "-o", binaryPath, mainFile)
+	out, err := buildCmd.CombinedOutput()
+	require.NoError(t, err, "building test binary: %s", string(out))
+	return binaryPath
+}
+
+func buildHappyArgsProbeBinary(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	mainFile := filepath.Join(dir, "main.go")
+	writeTestFile(t, mainFile, `package main
+
+import (
+	"os"
+	"strings"
+)
+
+func main() {
+	args := os.Args[1:]
+	if logPath := os.Getenv("PP_PROBE_LOG"); logPath != "" {
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err == nil {
+			_, _ = f.WriteString(strings.Join(args, " ") + "\n")
+			_ = f.Close()
+		}
+	}
+	if len(args) == 2 && args[0] == "whereabouts" && args[1] == "--help" {
+		return
+	}
+	if len(args) == 1 && args[0] == "whereabouts" {
+		os.Exit(42)
+	}
+	if len(args) != 5 || args[0] != "whereabouts" || args[1] != "Alice" || args[2] != "--query" || args[3] != "sunset" {
+		os.Exit(1)
+	}
+	switch args[4] {
+	case "--dry-run", "--json":
+		return
+	default:
+		os.Exit(1)
+	}
 }
 `)
 	binaryPath := filepath.Join(dir, "test-cli")
@@ -484,6 +589,31 @@ func TestExtractPositionalPlaceholders(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestParseHappyArgsAnnotation(t *testing.T) {
+	got := parseHappyArgsAnnotation(" <person>= Alice ; --query= sunset ; --limit=10 ; invalid ; name=Bob ; --bad ")
+
+	assert.Equal(t, []string{"Alice"}, got.positionals)
+	assert.Equal(t, []string{"--query", "sunset", "--limit", "10"}, got.flags)
+}
+
+func TestMergeHappyPositionalsOverlaysInOrder(t *testing.T) {
+	assert.Equal(t,
+		[]string{"Alice", "mock-date"},
+		mergeHappyPositionals([]string{"mock-person", "mock-date"}, []string{"Alice"}),
+	)
+	assert.Equal(t,
+		[]string{"Alice", "2026-05-22"},
+		mergeHappyPositionals([]string{"mock-person"}, []string{"Alice", "2026-05-22"}),
+	)
+}
+
+func TestMergeHappyFlagsOverlaysByFlagName(t *testing.T) {
+	assert.Equal(t,
+		[]string{"--query", "sunset", "--limit", "10"},
+		mergeHappyFlags([]string{"--query", "mock-query"}, []string{"--query", "sunset", "--limit", "10"}),
+	)
 }
 
 func TestSyntheticArgValue(t *testing.T) {
@@ -792,6 +922,73 @@ func newWhichCmd() *cobra.Command {
 	commands := enrichCommandAnnotationsFromSource(dir, []discoveredCommand{{Name: "which"}})
 	require.Len(t, commands, 1)
 	assert.Equal(t, "0,2", commands[0].Annotations[typedExitCodesAnnotation])
+}
+
+func TestEnrichCommandAnnotationsFromSourceReadsHappyArgsOnly(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "whereabouts.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+func newWhereaboutsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use: "whereabouts <person>",
+		Annotations: map[string]string{"pp:happy-args": "<person>=Alice;--query=sunset"},
+	}
+}
+`)
+
+	commands := enrichCommandAnnotationsFromSource(dir, []discoveredCommand{{Name: "whereabouts"}})
+	require.Len(t, commands, 1)
+	assert.Equal(t, "<person>=Alice;--query=sunset", commands[0].Annotations[happyArgsAnnotation])
+}
+
+func TestEnrichCommandAnnotationsFromSourceReadsAssignmentForm(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "whereabouts.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+func newWhereaboutsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "whereabouts <person>",
+	}
+	cmd.Annotations = map[string]string{"pp:happy-args": "<person>=Alice;--query=sunset"}
+	return cmd
+}
+`)
+
+	commands := enrichCommandAnnotationsFromSource(dir, []discoveredCommand{{Name: "whereabouts"}})
+	require.Len(t, commands, 1)
+	assert.Equal(t, "<person>=Alice;--query=sunset", commands[0].Annotations[happyArgsAnnotation])
+}
+
+func TestEnrichCommandAnnotationsFromSourceKeepsReassignedCommandAnnotations(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "whereabouts.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+func newWhereaboutsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "first <person>",
+	}
+	cmd.Annotations = map[string]string{"pp:happy-args": "<person>=Alice"}
+	cmd = &cobra.Command{
+		Use: "second <person>",
+	}
+	cmd.Annotations = map[string]string{"pp:happy-args": "<person>=Bob"}
+	return cmd
+}
+`)
+
+	commands := enrichCommandAnnotationsFromSource(dir, []discoveredCommand{{Name: "first"}, {Name: "second"}})
+	require.Len(t, commands, 2)
+	assert.Equal(t, "<person>=Alice", commands[0].Annotations[happyArgsAnnotation])
+	assert.Equal(t, "<person>=Bob", commands[1].Annotations[happyArgsAnnotation])
 }
 
 func TestSyntheticFlagValue(t *testing.T) {
