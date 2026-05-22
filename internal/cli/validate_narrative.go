@@ -16,11 +16,12 @@ import (
 
 func newValidateNarrativeCmd() *cobra.Command {
 	var (
-		researchPath string
-		binaryPath   string
-		strict       bool
-		fullExamples bool
-		asJSON       bool
+		researchPath  string
+		binaryPath    string
+		strict        bool
+		fullExamples  bool
+		frameworkOnly bool
+		asJSON        bool
 	)
 
 	cmd := &cobra.Command{
@@ -32,6 +33,9 @@ func newValidateNarrativeCmd() *cobra.Command {
 in research.json and runs '<binary> <words> --help' to confirm each command
 path exists. With --full-examples, also runs each complete example under
 PRINTING_PRESS_VERIFY=1, appending --dry-run when the command advertises it.
+With --framework-only, checks stable generated framework-command flags directly
+from research.json and does not require --binary; use this before rendering
+README/SKILL examples from newly authored narrative.
 
 Without this check, broken commands ship to the README's Quick Start and
 the SKILL's recipes; users hit "unknown command" on copy-paste.`,
@@ -53,12 +57,16 @@ the SKILL's recipes; users hit "unknown command" on copy-paste.`,
   # JSON output for downstream tooling
   cli-printing-press validate-narrative --json \
     --research $API_RUN_DIR/research.json \
-    --binary $CLI_WORK_DIR/myapi-pp-cli`,
+    --binary $CLI_WORK_DIR/myapi-pp-cli
+
+  # Pre-render framework command check (no generated binary required)
+  cli-printing-press validate-narrative --strict --framework-only \
+    --research $API_RUN_DIR/research.json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if researchPath == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--research is required")}
 			}
-			if binaryPath == "" {
+			if binaryPath == "" && !frameworkOnly {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--binary is required")}
 			}
 
@@ -68,7 +76,8 @@ the SKILL's recipes; users hit "unknown command" on copy-paste.`,
 			defer cancel()
 
 			report, err := narrativecheck.ValidateWithOptions(ctx, researchPath, binaryPath, narrativecheck.Options{
-				FullExamples: fullExamples,
+				FullExamples:  fullExamples,
+				FrameworkOnly: frameworkOnly,
 			})
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
@@ -101,9 +110,10 @@ the SKILL's recipes; users hit "unknown command" on copy-paste.`,
 		},
 	}
 	cmd.Flags().StringVar(&researchPath, "research", "", "Path to research.json (required)")
-	cmd.Flags().StringVar(&binaryPath, "binary", "", "Path to the built CLI binary to walk (required)")
+	cmd.Flags().StringVar(&binaryPath, "binary", "", "Path to the built CLI binary to walk (required unless --framework-only is set)")
 	cmd.Flags().BoolVar(&strict, "strict", false, "Exit non-zero on any missing command or empty narrative (default: warn-only)")
 	cmd.Flags().BoolVar(&fullExamples, "full-examples", false, "Also run full narrative examples safely with PRINTING_PRESS_VERIFY=1 and --dry-run where supported")
+	cmd.Flags().BoolVar(&frameworkOnly, "framework-only", false, "Only validate stable framework-command flag vocabulary from research.json; does not require --binary")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit machine-readable JSON instead of the human report")
 	return cmd
 }
@@ -125,6 +135,14 @@ func printHumanReport(w io.Writer, report *narrativecheck.Report) {
 		}
 	}
 	if !report.HasFailures() && !report.ResearchEmpty {
+		if report.FrameworkOnly {
+			if report.Walked == 0 {
+				fmt.Fprintln(w, "N/A: no framework-command narrative examples found; static framework check skipped")
+				return
+			}
+			fmt.Fprintf(w, "OK: %d framework-command narrative examples passed static checks\n", report.Walked)
+			return
+		}
 		if report.FullExamples {
 			fmt.Fprintf(w, "OK: %d narrative commands resolved and full examples passed\n", report.Walked)
 			return

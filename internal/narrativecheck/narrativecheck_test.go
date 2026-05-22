@@ -217,6 +217,103 @@ func TestValidateWithOptions_FullExamplesCatchesInvalidFlag(t *testing.T) {
 	}
 }
 
+func TestValidateWithOptions_FrameworkOnlyCatchesInventedFrameworkFlags(t *testing.T) {
+	t.Parallel()
+
+	research := writeFile(t, `{"narrative":{
+		"quickstart":[
+			{"command":"stripe-pp-cli sync --since 2026-01-01 --resources customers,charges"},
+			{"command":"stripe-pp-cli sync --since 7d --entities customers,charges"},
+			{"command":"stripe-pp-cli --json sync --since 7d --entities customers,charges"},
+			{"command":"stripe-pp-cli --entities sync --since 7d --resources customers,charges"},
+			{"command":"stripe-pp-cli search \"acme.co\" --entities customers,invoices --json"},
+			{"command":"stripe-pp-cli customers list --entities ignored-for-endpoint-command"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, "", Options{FrameworkOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if report.Walked != 0 {
+		t.Errorf("Walked = %d, want 0", report.Walked)
+	}
+	if report.ExampleFailed != 5 {
+		t.Fatalf("ExampleFailed = %d, want 5; results=%+v", report.ExampleFailed, report.Results)
+	}
+	if !report.HasFailures() {
+		t.Fatal("HasFailures should be true for invented framework flags")
+	}
+	gotErrors := []string{report.Results[0].Error, report.Results[1].Error, report.Results[2].Error, report.Results[3].Error, report.Results[4].Error}
+	if !strings.Contains(gotErrors[0], "--since") {
+		t.Errorf("first error should catch absolute --since duration, got %q", gotErrors[0])
+	}
+	if !strings.Contains(gotErrors[1], "--entities") {
+		t.Errorf("second error should catch invented sync --entities flag, got %q", gotErrors[1])
+	}
+	if !strings.Contains(gotErrors[2], "--entities") {
+		t.Errorf("third error should catch invented sync --entities after a global flag, got %q", gotErrors[2])
+	}
+	if !strings.Contains(gotErrors[3], "--entities") {
+		t.Errorf("fourth error should catch invented --entities before a framework command, got %q", gotErrors[3])
+	}
+	if !strings.Contains(gotErrors[4], "--entities") {
+		t.Errorf("fifth error should catch invented search --entities flag, got %q", gotErrors[4])
+	}
+}
+
+func TestValidateWithOptions_FrameworkOnlyCatchesMissingFlagValues(t *testing.T) {
+	t.Parallel()
+
+	research := writeFile(t, `{"narrative":{
+		"quickstart":[
+			{"command":"stripe-pp-cli sync --resources"},
+			{"command":"stripe-pp-cli search \"acme.co\" --type"},
+			{"command":"stripe-pp-cli search \"acme.co\" --select"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, "", Options{FrameworkOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if report.ExampleFailed != 3 {
+		t.Fatalf("ExampleFailed = %d, want 3; results=%+v", report.ExampleFailed, report.Results)
+	}
+	for _, result := range report.Results {
+		if !strings.Contains(result.Error, "requires --") || !strings.Contains(result.Error, "to have a value") {
+			t.Errorf("Error %q should report a missing flag value", result.Error)
+		}
+	}
+}
+
+func TestValidateWithOptions_FrameworkOnlyAcceptsDocumentedFrameworkFlags(t *testing.T) {
+	t.Parallel()
+
+	research := writeFile(t, `{"narrative":{
+		"quickstart":[
+			{"command":"stripe-pp-cli --json sync --since 7d --resources customers,charges"},
+			{"command":"stripe-pp-cli sync --since 7d --resources customers,charges --max-pages 1 --json"},
+			{"command":"stripe-pp-cli search \"acme.co\" --type customers --limit 10 --json"},
+			{"command":"stripe-pp-cli search \"acme.co\" --type \"--temporary-resource\" --json"}
+		]
+	}}`)
+
+	report, err := ValidateWithOptions(context.Background(), research, "", Options{FrameworkOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if report.HasFailures() {
+		t.Fatalf("documented framework flags should pass, got %+v", report.Results)
+	}
+	if report.Walked != 4 {
+		t.Errorf("Walked = %d, want 4", report.Walked)
+	}
+}
+
 func TestValidateWithOptions_FullExamplesSeedsTemplateVarEnv(t *testing.T) {
 	unsetEnv(t, "SHOPIFY_SHOP")
 	unsetEnv(t, "SHOPIFY_API_VERSION")

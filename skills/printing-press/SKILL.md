@@ -1591,6 +1591,25 @@ For each tool, fill in what you know from the research. Stars and command_count 
 10. All `narrative` fields are optional. Omit fields you can't populate honestly rather than emit filler. The generator falls back to generic content gracefully.
 11. **Avoid hardcoded counts in narrative copy when the count tracks a runtime list.** A number embedded in `headline` or `value_prop` ("across N trusted sources", "from N retailers", "queries N vendors") propagates into root.go's Short/Long, the README, the SKILL, the MCP tools description, and `which.go` — every output surface that reads the narrative. When the underlying registry grows or shrinks, the count goes stale across all of those surfaces simultaneously, and a single-line edit to add a source requires hunting down ~10 hardcoded copies. Prefer plural-without-count phrasing ("across the major sources", "from a curated set of retailers") or describe the breadth qualitatively ("dozens of vendors") rather than committing to a specific integer. If a count is load-bearing for the value prop, keep the brief's narrative count-free and have the printed-CLI's README/SKILL author write the count once into a single hand-edited paragraph after generation — accepting that it will need a manual update whenever the registry changes.
 
+**Pre-render framework-command check.** Before running `generate --research-dir`,
+validate the framework command examples already present in `research.json`.
+This catches stable template vocabulary mistakes while the fix is still a
+single-file `research.json` edit, before README.md, SKILL.md, `.printing-press.json`,
+root help, and other generated surfaces consume the bad narrative.
+
+```bash
+cli-printing-press validate-narrative --strict --framework-only \
+  --research "$API_RUN_DIR/research.json"
+```
+
+If this reports `sync --entities`, `search --entities`, `search --types`, an
+absolute date for `sync --since`, or another framework-command flag mismatch,
+fix `research.json` now and rerun this check before generation. This is a
+cheap floor, not a replacement for Phase 4 shipcheck: after the CLI exists,
+`shipcheck` still runs `validate-narrative --strict --full-examples` against
+the built binary to catch API-specific command paths, generated endpoint flags,
+and runtime dry-run failures.
+
 Also write discovery pages if browser-sniff was used. The generator reads these from `$API_RUN_DIR/discovery/browser-sniff-report.md` (which the browser-sniff gate already writes there). No additional action needed for discovery pages -- they are already in the right location.
 
 ### Priority inversion check (combo CLIs only)
