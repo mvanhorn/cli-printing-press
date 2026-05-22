@@ -26,7 +26,7 @@ You need both the **binary** and the **Claude Code skills**. The skills (`/print
 
 The binary alone works (research, generation, verification, scoring) but skips the curated agent loop. The skills alone have nothing to call. Install both.
 
-**Prerequisites:** [Go 1.26.3 or newer](https://go.dev/dl/) and [Claude Code](https://claude.ai/code). The skills are tested with Claude Code; other harnesses like Codex may work but aren't tested. **Use Claude Code for the best experience.**
+**Prerequisites:** [Go 1.26.3 or newer](https://go.dev/dl/), [Claude Code](https://claude.ai/code), and Node/npm for `npx skills`. The skills are tested with Claude Code; other harnesses like Codex may work but aren't tested. **Use Claude Code for the best experience.**
 
 ### 1. Install the binary
 
@@ -41,47 +41,36 @@ entrypoint still works for compatibility, but the canonical generator command is
 now `cli-printing-press` so the public catalog installer can own
 `printing-press list`, `printing-press search`, and `printing-press install`.
 
-### 2. Install the skills — pick one path
+### 2. Install the skills
 
-**Recommended: clone the repo.** Simplest, gets you the bleeding edge as it ships, and `git pull` is your update mechanism.
-
-```bash
-git clone https://github.com/mvanhorn/cli-printing-press.git
-```
-
-<details>
-<summary><b>Alternative: install just the skills (no clone)</b></summary>
-
-Use this if you don't want a local clone. You'll need to run an explicit `update` command to pull newer skills.
-
-**With GitHub CLI (`gh` v2.90+):**
+Use Vercel's [open-agent-skills](https://www.npmjs.com/package/skills) CLI to install the Printing Press skills from this repo into Claude Code:
 
 ```bash
-gh skill install mvanhorn/cli-printing-press --agent claude-code --scope user
-gh skill update                                # update later
-```
-
-**Without `gh` — use Vercel's [open-agent-skills](https://www.npmjs.com/package/skills):**
-
-```bash
-npx skills add mvanhorn/cli-printing-press/skills -g -a claude-code -y
+npx skills add mvanhorn/cli-printing-press/skills --skill '*' -g -a claude-code -y
 npx skills update                              # update later
 ```
 
-Once installed, you can run `claude` from any folder.
+Once installed, you can start Claude Code from any folder.
+
+<details>
+<summary><b>Developer path: load skills from a clone</b></summary>
+
+Use this if you're editing the Printing Press itself and want local skill changes to take effect on the next session start.
+
+```bash
+git clone https://github.com/mvanhorn/cli-printing-press.git
+cd cli-printing-press
+claude --plugin-dir .          # load this repo's skills directly
+claude --plugin-dir . -w       # ...in a new git worktree (parallel runs)
+```
 
 </details>
 
 ### 3. Start a printing session
 
-If you cloned the repo, run from the repo root:
-
 ```bash
-claude --plugin-dir .          # load this repo's skills directly
-claude --plugin-dir . -w       # ...in a new git worktree (parallel runs)
+claude
 ```
-
-If you installed skills only, run `claude` from any folder.
 
 Then inside Claude Code:
 
@@ -482,7 +471,7 @@ Each newly published CLI ships a root `AGENTS.md` operating guide, a research ma
 
 ## Troubleshooting
 
-**`/printing-press` slash command doesn't appear in Claude Code.** Restart your Claude Code session after installing the skills. If you cloned the repo, confirm `claude --plugin-dir .` was run from the cloned repo root. If you installed skills only, run `gh skill list` (or `npx skills list`) to verify the install.
+**`/printing-press` slash command doesn't appear in Claude Code.** Restart your Claude Code session after installing the skills. Run `npx skills list -g -a claude-code` to verify the install. If you're developing from a clone, confirm `claude --plugin-dir .` was run from the cloned repo root.
 
 **`cli-printing-press: command not found` after a successful `go install`.** `$GOPATH/bin` (default `~/go/bin`) isn't on your `PATH`. Add it to your shell profile.
 
@@ -542,7 +531,7 @@ lefthook install --reset-hooks-path
 
 Use `--reset-hooks-path` so stale local `core.hooksPath` settings do not block hook sync. Avoid `lefthook install --force` unless intentionally overriding a custom hooks path.
 
-If you cloned the repo (the recommended install path above), `claude --plugin-dir .` already loads `/printing-press` from your working copy, so local skill edits take effect on the next session start. See [AGENTS.md](AGENTS.md) for full conventions, glossary, and release flow.
+If you use the clone-based developer path above, `claude --plugin-dir .` loads `/printing-press` from your working copy, so local skill edits take effect on the next session start. See [AGENTS.md](AGENTS.md) for full conventions, glossary, and release flow.
 
 </details>
 
