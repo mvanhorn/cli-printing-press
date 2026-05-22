@@ -280,7 +280,7 @@ func Execute() error {
 
 // TestVerifySkill_IgnoresExternalToolFlags is the regression guard for
 // the trigger-dev / linear SKILL.md slip: the install instructions contain
-// `npx -y @mvanhorn/printing-press install <api> --cli-only`. --cli-only
+// `npx -y @mvanhorn/printing-press-library install <api> --cli-only`. --cli-only
 // belongs to the outer Printing Press installer, not to <api>-pp-cli, so
 // it must not be reported as an undeclared flag-names finding. Before the
 // scoping fix, flag-names regex-scanned the whole SKILL.md and fired on
@@ -296,7 +296,7 @@ func TestVerifySkill_IgnoresExternalToolFlags(t *testing.T) {
 	// SKILL.md uses --cli-only on an npx invocation (not on fixture-pp-cli)
 	// and uses only declared flags on its own binary's recipes.
 	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n## Prerequisites\n\n" +
-		"```bash\nnpx -y @mvanhorn/printing-press install fixture --cli-only\n```\n\n" +
+		"```bash\nnpx -y @mvanhorn/printing-press-library install fixture --cli-only\n```\n\n" +
 		"## Usage\n\n```bash\nfixture-pp-cli search --limit 5\n```\n"
 	writeVerifySkillFixture(t, dir, map[string]string{
 		"search.go": `package cli

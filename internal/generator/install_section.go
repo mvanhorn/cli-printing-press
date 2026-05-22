@@ -29,7 +29,7 @@ const canonicalSkillInstallSectionStartFormat = "## Prerequisites: Install the C
 	"\n" +
 	"1. Install via the Printing Press installer:\n" +
 	"   ```bash\n" +
-	"   npx -y @mvanhorn/printing-press install %[1]s --cli-only\n" +
+	"   npx -y @mvanhorn/printing-press-library install %[1]s --cli-only\n" +
 	"   ```\n" +
 	"2. Verify: `%[1]s-pp-cli --version`\n" +
 	"3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.\n" +

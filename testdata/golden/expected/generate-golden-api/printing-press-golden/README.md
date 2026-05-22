@@ -9,26 +9,26 @@ Printed by [@printing-press-golden](https://github.com/printing-press-golden) (p
 The recommended path installs both the `printing-press-golden-pp-cli` binary and the `pp-printing-press-golden` agent skill (Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot, and other agents supported by the upstream [`skills`](https://github.com/vercel-labs/skills) CLI) in one shot:
 
 ```bash
-npx -y @mvanhorn/printing-press install printing-press-golden
+npx -y @mvanhorn/printing-press-library install printing-press-golden
 ```
 
 For CLI only (no skill):
 
 ```bash
-npx -y @mvanhorn/printing-press install printing-press-golden --cli-only
+npx -y @mvanhorn/printing-press-library install printing-press-golden --cli-only
 ```
 
 For skill only — installs the skill into the same agents as the default command above, but skips the CLI binary (use this to update or reinstall just the skill):
 
 ```bash
-npx -y @mvanhorn/printing-press install printing-press-golden --skill-only
+npx -y @mvanhorn/printing-press-library install printing-press-golden --skill-only
 ```
 
 To constrain the skill install to one or more specific agents (repeatable — agent names match the [`skills`](https://github.com/vercel-labs/skills) CLI):
 
 ```bash
-npx -y @mvanhorn/printing-press install printing-press-golden --agent claude-code
-npx -y @mvanhorn/printing-press install printing-press-golden --agent claude-code --agent codex
+npx -y @mvanhorn/printing-press-library install printing-press-golden --agent claude-code
+npx -y @mvanhorn/printing-press-library install printing-press-golden --agent claude-code --agent codex
 ```
 
 ### Without Node
