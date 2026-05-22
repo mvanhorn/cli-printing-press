@@ -129,6 +129,21 @@ func TestPrintingPressSkillUsesRunstateForBuilds(t *testing.T) {
 	assert.Contains(t, skill, `$PRESS_LIBRARY/<api>`)
 }
 
+func TestPrintingPressSkillSetsNonCatalogCategoryBeforeGenerate(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
+	block := substringBetween(t, skill, "### Pre-Generation Category Enrichment", "### Pre-Generation Auth Enrichment")
+	generateBlocks := substringBetween(t, skill, "OpenAPI / internal YAML:", "GraphQL-only APIs:")
+
+	assert.Contains(t, block, "non-catalog CLI")
+	assert.Contains(t, block, "set the spec's top-level `category` before")
+	assert.Contains(t, block, "`docs/CATALOG.md`")
+	assert.Contains(t, block, "before the final `generate` invocation")
+	assert.Contains(t, block, "`--category <catalog-category>`")
+	assert.Contains(t, block, "Catalog-mode runs skip this step")
+	assert.Contains(t, block, "verify-skill canonical-sections")
+	assert.GreaterOrEqual(t, strings.Count(generateBlocks, "--category <catalog-category>"), 7)
+}
+
 func TestPrintingPressSkillExamplesUseCurrentCLINaming(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press", "SKILL.md"))
 

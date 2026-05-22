@@ -1755,6 +1755,34 @@ Proceed silently to Phase 2.
 
 ## Phase 2: Generate
 
+### Pre-Generation Category Enrichment
+
+Before generating a non-catalog CLI, set the spec's top-level `category` before
+running `generate`. The category must come from the Phase 1 research brief's
+domain judgment, mapped to the public catalog enum documented in
+`docs/CATALOG.md`.
+
+Non-catalog means the run is based on browser-sniffed traffic, HAR capture,
+docs-derived specs, or a hand-authored internal spec rather than
+`cli-printing-press generate <name>` using a built-in catalog entry. For
+internal YAML specs, add:
+
+```yaml
+category: <catalog-category>
+```
+
+If the source is an OpenAPI file and the workflow has an editable overlay or
+derived internal spec, carry the same top-level category into that generated
+spec artifact before the final `generate` invocation. If there is no editable
+spec artifact, such as direct `--docs` generation, pass
+`--category <catalog-category>` on the final `generate` invocation. Do not add
+the category after generation just to satisfy publish; the generated manifest,
+README, and SKILL install section must all come from the same category-aware
+spec, or `verify-skill canonical-sections` can drift.
+
+Catalog-mode runs skip this step: keep the built-in catalog entry's category
+unchanged, even if Phase 1 research would classify the API differently.
+
 ### Pre-Generation Auth Enrichment
 
 Before generating, check whether the resolved spec has auth. This matters most for
@@ -2225,6 +2253,10 @@ cli-printing-press lock acquire --cli <api>-pp-cli --scope "$PRESS_SCOPE"
 
 If acquire fails (another session holds a fresh lock), present the lock status to the user and let them decide: wait, use a different CLI name, force-reclaim, or pick a different API.
 
+The `--category <catalog-category>` flag shown below is for non-catalog runs
+whose category was not already authored into an editable spec. Omit it for
+catalog-config runs; the built-in catalog category is authoritative there.
+
 OpenAPI / internal YAML:
 
 ```bash
@@ -2232,6 +2264,7 @@ cli-printing-press generate \
   --spec <spec-path-or-url> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --force --lenient --validate
 ```
 
@@ -2244,6 +2277,7 @@ cli-printing-press generate \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --spec-source browser-sniffed \
   --traffic-analysis "$DISCOVERY_DIR/traffic-analysis.json" \
   --force --lenient --validate
@@ -2258,6 +2292,7 @@ cli-printing-press generate \
   --spec "$RESEARCH_DIR/<api>-browser-sniff-spec.yaml" \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --spec-source browser-sniffed \
   --traffic-analysis "$DISCOVERY_DIR/traffic-analysis.json" \
   --force --lenient --validate
@@ -2274,6 +2309,7 @@ cli-printing-press generate \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --force --lenient --validate
 ```
 
@@ -2284,6 +2320,7 @@ cli-printing-press generate \
   --spec "$RESEARCH_DIR/<api>-crowd-spec.yaml" \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --force --lenient --validate
 ```
 
@@ -2297,6 +2334,7 @@ cli-printing-press generate \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --traffic-analysis "$DISCOVERY_DIR/traffic-analysis.json" \
   --force --lenient --validate
 ```
@@ -2309,6 +2347,7 @@ cli-printing-press generate \
   --name <api> \
   --output "$CLI_WORK_DIR" \
   --research-dir "$API_RUN_DIR" \
+  --category <catalog-category> \
   --force --validate
 ```
 
