@@ -3,6 +3,7 @@
     "api_name": "printing-press-golden",
     "competitor_scores": null,
     "gap_report": [
+      "mcp_description_quality scored 3/10 - needs improvement",
       "MCP: 10 tools (1 public, 9 auth-required) — readiness: full"
     ],
     "overall_grade": "A",
@@ -20,7 +21,7 @@
       "insight": 8,
       "live_api_verification": 0,
       "local_cache": 10,
-      "mcp_description_quality": 0,
+      "mcp_description_quality": 3,
       "mcp_quality": 10,
       "mcp_remote_transport": 10,
       "mcp_surface_strategy": 0,
@@ -28,17 +29,16 @@
       "mcp_tool_design": 5,
       "output_modes": 10,
       "path_validity": 0,
-      "percentage": 84,
+      "percentage": 82,
       "readme": 8,
       "sync_correctness": 10,
       "terminal_ux": 8,
-      "total": 84,
+      "total": 82,
       "type_fidelity": 3,
       "vision": 8,
       "workflows": 10
     },
     "unscored_dimensions": [
-      "mcp_description_quality",
       "mcp_surface_strategy",
       "path_validity",
       "auth_protocol",
