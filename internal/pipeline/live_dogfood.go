@@ -42,6 +42,7 @@ const reasonMutatingErrorPath = "mutating command; error_path would call live AP
 const reasonNoLiveSignal = "no live happy/json pass; credential-unavailable skips cannot certify acceptance"
 const reasonUnavailableRunnerCredentials = "unavailable for runner credentials"
 const reasonFileFixtureRequired = "file fixture required"
+const reasonNoErrorPathProbeAnnotation = "no-error-path-probe annotation"
 
 // dogfoodEnvVar is the env signal every live-dogfood subprocess
 // inherits. Generated commands with a long-running happy path detect
@@ -748,7 +749,10 @@ func runLiveDogfoodCommand(command liveDogfoodCommand, ctx resolveCtx) []LiveDog
 		}
 	}
 
-	if liveDogfoodCommandTakesArg(command.Help) {
+	takesArg := liveDogfoodCommandTakesArg(command.Help)
+	if takesArg && annotationIsTrueValue(command.Annotations[noErrorPathProbeAnnotation]) {
+		results = append(results, skippedLiveDogfoodResult(commandName, LiveDogfoodTestError, reasonNoErrorPathProbeAnnotation))
+	} else if takesArg {
 		if mutating {
 			// Mutating commands cannot run the error_path probe safely: the
 			// __printing_press_invalid__ sentinel is sent as a real argument
@@ -944,11 +948,12 @@ func skippedLiveDogfoodResult(command string, kind LiveDogfoodTestKind, reason s
 }
 
 const (
-	endpointAnnotation        = "pp:endpoint"
-	endpointMethodAnnotation  = "pp:method"
-	endpointPathAnnotation    = "pp:path"
-	mcpReadOnlyAnnotation     = "mcp:read-only"
-	destructiveAuthAnnotation = "pp:destructive-auth"
+	endpointAnnotation         = "pp:endpoint"
+	endpointMethodAnnotation   = "pp:method"
+	endpointPathAnnotation     = "pp:path"
+	mcpReadOnlyAnnotation      = "mcp:read-only"
+	destructiveAuthAnnotation  = "pp:destructive-auth"
+	noErrorPathProbeAnnotation = "pp:no-error-path-probe"
 )
 
 // destructiveAuthTerms are case-insensitive command or endpoint tokens

@@ -1402,6 +1402,118 @@ exit 99
 	return dir, binaryName
 }
 
+func writeLiveDogfoodSoftFailureFixture(t *testing.T) (dir string, binaryName string) {
+	t.Helper()
+
+	dir = t.TempDir()
+	binaryName = "fixture-pp-cli"
+	writeTestManifestForLiveDogfood(t, dir)
+
+	binPath := filepath.Join(dir, binaryName)
+	script := `#!/bin/sh
+set -u
+
+if [ -n "${PRINTING_PRESS_TEST_ARGV_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$PRINTING_PRESS_TEST_ARGV_LOG"
+fi
+
+if [ "$1" = "agent-context" ]; then
+  cat <<'JSON'
+{
+  "commands": [
+    {"name":"widgets","subcommands":[
+      {"name":"list"},
+      {"name":"soft-lookup","annotations":{"pp:no-error-path-probe":"true"}},
+      {"name":"status","annotations":{"pp:no-error-path-probe":"true"}}
+    ]}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "list" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+List widgets.
+
+Usage:
+  fixture-pp-cli widgets list [flags]
+
+Examples:
+  fixture-pp-cli widgets list --json
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "list" ]; then
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"results":[{"id":"42"}]}'
+    exit 0
+  fi
+  echo 'widget 1'
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "soft-lookup" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Lookup a widget through a soft-failure endpoint.
+
+Usage:
+  fixture-pp-cli widgets soft-lookup <id> [flags]
+
+Examples:
+  fixture-pp-cli widgets soft-lookup 42
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "soft-lookup" ]; then
+  if [ "${4:-}" = "--json" ]; then
+    echo '{"id":"42","results":[]}'
+    exit 0
+  fi
+  echo "soft lookup $3"
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "status" ] && [ "${3:-}" = "--help" ]; then
+  cat <<'HELP'
+Show widget service status.
+
+Usage:
+  fixture-pp-cli widgets status [flags]
+
+Examples:
+  fixture-pp-cli widgets status
+
+Flags:
+      --json    Output JSON
+HELP
+  exit 0
+fi
+
+if [ "$1" = "widgets" ] && [ "$2" = "status" ]; then
+  if [ "${3:-}" = "--json" ]; then
+    echo '{"ok":true}'
+    exit 0
+  fi
+  echo 'ok'
+  exit 0
+fi
+
+echo "unexpected args: $*" >&2
+exit 99
+`
+	require.NoError(t, os.WriteFile(binPath, []byte(script), 0o755))
+	return dir, binaryName
+}
+
 func writeLiveDogfoodDestructiveFixture(t *testing.T) (dir string, binaryName string) {
 	t.Helper()
 
@@ -2268,6 +2380,45 @@ func TestRunLiveDogfoodSearchErrorPathEmptyResults(t *testing.T) {
 	got := findResultByCommandKind(report, "widgets search", LiveDogfoodTestError)
 	require.NotNil(t, got, "expected widgets search error_path in report")
 	assert.Equal(t, LiveDogfoodStatusPass, got.Status, got.Reason)
+}
+
+func TestRunLiveDogfoodErrorPathSkipsAnnotatedSoftFailureCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodSoftFailureFixture(t)
+	argvLog := filepath.Join(t.TempDir(), "argv.log")
+	t.Setenv("PRINTING_PRESS_TEST_ARGV_LOG", argvLog)
+	report := runRichFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets soft-lookup", LiveDogfoodTestError)
+	require.NotNil(t, got, "expected widgets soft-lookup error_path in report")
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status, got.Reason)
+	assert.Equal(t, reasonNoErrorPathProbeAnnotation, got.Reason)
+	assert.Empty(t, got.Args, "skipped error_path must not include executable args")
+
+	for _, kind := range []LiveDogfoodTestKind{LiveDogfoodTestHelp, LiveDogfoodTestHappy, LiveDogfoodTestJSON} {
+		result := findResultByCommandKind(report, "widgets soft-lookup", kind)
+		require.NotNil(t, result, "expected widgets soft-lookup %s in report", kind)
+		assert.Equal(t, LiveDogfoodStatusPass, result.Status, result.Reason)
+	}
+
+	lines := readArgvLog(t, argvLog)
+	assert.Equal(t, 0, countArgvLines(lines, "widgets soft-lookup", "__printing_press_invalid__"),
+		"error_path probe must not invoke the binary for annotated soft-failure commands")
+}
+
+func TestRunLiveDogfoodErrorPathAnnotationPreservesNoPositionalSkip(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a shell script as the fake binary; skip on Windows")
+	}
+	dir, binaryName := writeLiveDogfoodSoftFailureFixture(t)
+	report := runRichFixtureMatrix(t, dir, binaryName)
+
+	got := findResultByCommandKind(report, "widgets status", LiveDogfoodTestError)
+	require.NotNil(t, got, "expected widgets status error_path skip in report")
+	assert.Equal(t, LiveDogfoodStatusSkip, got.Status, got.Reason)
+	assert.Equal(t, "no positional argument", got.Reason)
 }
 
 func TestRunLiveDogfoodSearchErrorPathFallbackResults(t *testing.T) {
