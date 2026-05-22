@@ -46,6 +46,12 @@
     "planned": 0,
     "skipped": true
   },
+  "oauth_scope_coverage_check": {
+    "checked": 0,
+    "covered": 0,
+    "detail": "spec not provided; OAuth scope coverage check skipped",
+    "skipped": true
+  },
   "path_check": {
     "tested": 0,
     "valid": 0,

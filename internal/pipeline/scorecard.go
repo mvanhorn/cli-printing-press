@@ -1568,11 +1568,22 @@ type securityRequirementSet struct {
 	AllowsAnonymous bool
 }
 
+type oauthScopeRequirement struct {
+	Endpoint     string                  `json:"endpoint"`
+	OperationID  string                  `json:"operation_id,omitempty"`
+	Alternatives []oauthScopeAlternative `json:"alternatives"`
+}
+
+type oauthScopeAlternative struct {
+	Scopes []string `json:"scopes"`
+}
+
 type openAPISpecInfo struct {
-	Paths                []string
-	SecuritySchemes      map[string]openAPISecurityScheme
-	SecurityRequirements []securityRequirementSet
-	Kind                 string // see apispec.KindREST / apispec.KindSynthetic
+	Paths                  []string
+	SecuritySchemes        map[string]openAPISecurityScheme
+	SecurityRequirements   []securityRequirementSet
+	OAuthScopeRequirements []oauthScopeRequirement
+	Kind                   string // see apispec.KindREST / apispec.KindSynthetic
 }
 
 func (s *openAPISpecInfo) IsSynthetic() bool {
@@ -1588,7 +1599,10 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading spec: %w", err)
 	}
+	return loadOpenAPISpecData(data, specPath)
+}
 
+func loadOpenAPISpecData(data []byte, specPath string) (*openAPISpecInfo, error) {
 	// Detect internal YAML spec format and convert to openAPISpecInfo.
 	if isInternalYAMLSpec(data) {
 		internal, err := apispec.ParseBytes(data)
@@ -1681,17 +1695,30 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 	}
 
 	rootSecurity, rootHasSecurity := parseSecurityRequirementSet(raw["security"])
+	rootOAuthScopes, rootHasOAuthScopes := parseOAuthScopeAlternatives(raw["security"], info.SecuritySchemes)
 	foundOperation := false
 	if paths, ok := raw["paths"].(map[string]any); ok {
-		for _, pathValue := range paths {
+		pathNames := make([]string, 0, len(paths))
+		for path := range paths {
+			pathNames = append(pathNames, path)
+		}
+		slices.Sort(pathNames)
+		for _, path := range pathNames {
+			pathValue := paths[path]
 			pathItem, ok := pathValue.(map[string]any)
 			if !ok {
 				continue
 			}
-			for method, operationValue := range pathItem {
+			methods := make([]string, 0, len(pathItem))
+			for method := range pathItem {
 				if !isHTTPMethod(method) {
 					continue
 				}
+				methods = append(methods, method)
+			}
+			slices.Sort(methods)
+			for _, method := range methods {
+				operationValue := pathItem[method]
 				foundOperation = true
 				operation, ok := operationValue.(map[string]any)
 				if !ok {
@@ -1699,10 +1726,24 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 				}
 				if requirementSet, ok := parseSecurityRequirementSet(operation["security"]); ok {
 					info.SecurityRequirements = append(info.SecurityRequirements, requirementSet)
+					if alternatives, ok := parseOAuthScopeAlternatives(operation["security"], info.SecuritySchemes); ok && len(alternatives) > 0 {
+						info.OAuthScopeRequirements = append(info.OAuthScopeRequirements, oauthScopeRequirement{
+							Endpoint:     strings.ToUpper(method) + " " + path,
+							OperationID:  operationIDFromRaw(operation),
+							Alternatives: alternatives,
+						})
+					}
 					continue
 				}
 				if rootHasSecurity {
 					info.SecurityRequirements = append(info.SecurityRequirements, rootSecurity)
+				}
+				if rootHasOAuthScopes && len(rootOAuthScopes) > 0 {
+					info.OAuthScopeRequirements = append(info.OAuthScopeRequirements, oauthScopeRequirement{
+						Endpoint:     strings.ToUpper(method) + " " + path,
+						OperationID:  operationIDFromRaw(operation),
+						Alternatives: rootOAuthScopes,
+					})
 				}
 			}
 		}
@@ -1715,13 +1756,23 @@ func loadOpenAPISpec(specPath string) (*openAPISpecInfo, error) {
 		for _, alternative := range requirementSet.Alternatives {
 			for _, name := range alternative {
 				if _, ok := info.SecuritySchemes[name]; !ok {
-					return nil, fmt.Errorf("spec references undefined security scheme %q", name)
+					return info, fmt.Errorf("spec references undefined security scheme %q", name)
 				}
 			}
 		}
 	}
 
 	return info, nil
+}
+
+func operationIDFromRaw(operation map[string]any) string {
+	if operation == nil {
+		return ""
+	}
+	if id := strings.TrimSpace(asString(operation["operationId"])); id != "" {
+		return id
+	}
+	return ""
 }
 
 type dimensionScore struct {
@@ -1892,6 +1943,61 @@ func parseSecurityRequirementSet(value any) (securityRequirementSet, bool) {
 	}
 
 	return set, true
+}
+
+func parseOAuthScopeAlternatives(value any, schemes map[string]openAPISecurityScheme) ([]oauthScopeAlternative, bool) {
+	requirements, ok := value.([]any)
+	if !ok {
+		return nil, false
+	}
+
+	var alternatives []oauthScopeAlternative
+	seen := map[string]struct{}{}
+	for _, requirement := range requirements {
+		names, ok := requirement.(map[string]any)
+		if !ok {
+			continue
+		}
+		var scopes []string
+		for name, scopeValue := range names {
+			scheme, ok := schemes[name]
+			if !ok || !isOAuthSecurityScheme(scheme) {
+				continue
+			}
+			scopes = append(scopes, parseOAuthScopeList(scopeValue)...)
+		}
+		scopes = uniqueSorted(scopes)
+		if len(scopes) == 0 {
+			continue
+		}
+		key := strings.Join(scopes, "\x00")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		alternatives = append(alternatives, oauthScopeAlternative{Scopes: scopes})
+	}
+	return alternatives, true
+}
+
+func parseOAuthScopeList(value any) []string {
+	rawScopes, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	var scopes []string
+	for _, rawScope := range rawScopes {
+		scope := strings.TrimSpace(asString(rawScope))
+		if scope != "" {
+			scopes = append(scopes, scope)
+		}
+	}
+	slices.Sort(scopes)
+	return slices.Compact(scopes)
+}
+
+func isOAuthSecurityScheme(scheme openAPISecurityScheme) bool {
+	return scheme.Type == "oauth2" || scheme.Type == "openidconnect"
 }
 
 func referencedSecuritySchemes(requirementSets []securityRequirementSet) map[string]bool {

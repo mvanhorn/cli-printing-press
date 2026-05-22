@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +43,7 @@ type DogfoodReport struct {
 	PathCheck              PathCheckResult              `json:"path_check"`
 	AuthCheck              AuthCheckResult              `json:"auth_check"`
 	BrowserSessionCheck    BrowserSessionCheckResult    `json:"browser_session_check"`
+	OAuthScopeCoverage     OAuthScopeCoverageResult     `json:"oauth_scope_coverage_check"`
 	DeadFlags              DeadCodeResult               `json:"dead_flags"`
 	DeadFuncs              DeadCodeResult               `json:"dead_functions"`
 	PipelineCheck          PipelineResult               `json:"pipeline_check"`
@@ -117,6 +122,21 @@ type AuthCheckResult struct {
 	Detail       string `json:"detail"`
 }
 
+type OAuthScopeCoverageResult struct {
+	Checked    int                           `json:"checked"`
+	Covered    int                           `json:"covered"`
+	Violations []OAuthScopeCoverageViolation `json:"violations,omitempty"`
+	Skipped    bool                          `json:"skipped,omitempty"`
+	Detail     string                        `json:"detail,omitempty"`
+}
+
+type OAuthScopeCoverageViolation struct {
+	Endpoint                  string     `json:"endpoint"`
+	OperationID               string     `json:"operation_id,omitempty"`
+	RequiredScopes            []string   `json:"required_scopes"`
+	RequiredScopeAlternatives [][]string `json:"required_scope_alternatives,omitempty"`
+}
+
 type BrowserSessionCheckResult struct {
 	Required              bool   `json:"required"`
 	HasAuthLoginChrome    bool   `json:"has_auth_login_chrome,omitempty"`
@@ -190,10 +210,11 @@ type WorkflowCompleteResult struct {
 }
 
 type openAPISpec struct {
-	Paths         []string
-	Auth          apispec.AuthConfig
-	Kind          string // see apispec.KindREST / apispec.KindSynthetic
-	HTTPTransport string
+	Paths                  []string
+	Auth                   apispec.AuthConfig
+	Kind                   string // see apispec.KindREST / apispec.KindSynthetic
+	HTTPTransport          string
+	OAuthScopeRequirements []oauthScopeRequirement
 	// ParamDefaults maps a positional placeholder name (lowercase) to its
 	// spec-declared default value, when one is set. Verify mock-mode uses
 	// this as the first step in its lookup chain so spec authors can name
@@ -276,6 +297,7 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 		}
 		report.AuthCheck = checkAuth(dir, spec.Auth)
 		report.BrowserSessionCheck = checkBrowserSessionAuth(dir, spec.Auth)
+		report.OAuthScopeCoverage = checkOAuthScopeCoverage(dir, spec.OAuthScopeRequirements)
 	} else {
 		report.AuthCheck = AuthCheckResult{
 			Match:  true,
@@ -284,6 +306,10 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 		report.BrowserSessionCheck = BrowserSessionCheckResult{
 			Pass:   true,
 			Detail: "spec not provided; browser-session auth check skipped",
+		}
+		report.OAuthScopeCoverage = OAuthScopeCoverageResult{
+			Skipped: true,
+			Detail:  "spec not provided; OAuth scope coverage check skipped",
 		}
 	}
 
@@ -904,22 +930,28 @@ func loadDogfoodOpenAPISpec(specPath string) (*openAPISpec, error) {
 		return internalSpecToDogfoodSpec(internal), nil
 	}
 
+	summary, summaryErr := loadOpenAPISpecData(data, specPath)
 	parsed, parseErr := openapiparser.ParseWithPathLenient(data, specPath)
 	if parseErr == nil {
+		var scopeRequirements []oauthScopeRequirement
+		if summary != nil {
+			scopeRequirements = summary.OAuthScopeRequirements
+		}
 		return &openAPISpec{
-			Paths: collectDogfoodSpecPaths(parsed.Resources),
-			Auth:  parsed.Auth,
+			Paths:                  collectDogfoodSpecPaths(parsed.Resources),
+			Auth:                   parsed.Auth,
+			OAuthScopeRequirements: scopeRequirements,
 		}, nil
 	}
 
-	summary, err := loadOpenAPISpec(specPath)
-	if err != nil {
+	if summaryErr != nil {
 		return nil, parseErr
 	}
 
 	return &openAPISpec{
-		Paths: summary.Paths,
-		Auth:  deriveDogfoodAuth(summary),
+		Paths:                  summary.Paths,
+		Auth:                   deriveDogfoodAuth(summary),
+		OAuthScopeRequirements: summary.OAuthScopeRequirements,
 	}, nil
 }
 
@@ -1134,6 +1166,190 @@ func checkAuth(dir string, auth apispec.AuthConfig) AuthCheckResult {
 		result.Detail = fmt.Sprintf(`spec expects %q but generated client uses %q`, strings.TrimSpace(expectedPrefix), strings.TrimSpace(result.GeneratedFmt))
 	}
 	return result
+}
+
+func checkOAuthScopeCoverage(dir string, requirements []oauthScopeRequirement) OAuthScopeCoverageResult {
+	if len(requirements) == 0 {
+		return OAuthScopeCoverageResult{
+			Skipped: true,
+			Detail:  "no OAuth-scoped endpoints in spec",
+		}
+	}
+
+	generatedScopes := generatedOAuthScopes(dir)
+	generated := make(map[string]bool, len(generatedScopes))
+	for _, scope := range generatedScopes {
+		generated[scope] = true
+	}
+
+	result := OAuthScopeCoverageResult{Checked: len(requirements)}
+	for _, requirement := range requirements {
+		if oauthScopeRequirementCovered(requirement, generated) {
+			result.Covered++
+			continue
+		}
+		result.Violations = append(result.Violations, OAuthScopeCoverageViolation{
+			Endpoint:                  requirement.Endpoint,
+			OperationID:               requirement.OperationID,
+			RequiredScopes:            oauthScopeRequirementScopes(requirement),
+			RequiredScopeAlternatives: oauthScopeRequirementAlternatives(requirement),
+		})
+	}
+
+	if len(result.Violations) == 0 {
+		result.Detail = "all OAuth-scoped endpoints covered by generated auth scopes"
+	} else if len(generatedScopes) == 0 {
+		result.Detail = "generated auth.go declares no OAuth scopes"
+	} else {
+		result.Detail = fmt.Sprintf("%d OAuth-scoped endpoint(s) lack a generated auth scope", len(result.Violations))
+	}
+	return result
+}
+
+func oauthScopeRequirementCovered(requirement oauthScopeRequirement, generated map[string]bool) bool {
+	for _, alternative := range requirement.Alternatives {
+		covered := len(alternative.Scopes) > 0
+		for _, scope := range alternative.Scopes {
+			if !generated[scope] {
+				covered = false
+				break
+			}
+		}
+		if covered {
+			return true
+		}
+	}
+	return false
+}
+
+func oauthScopeRequirementScopes(requirement oauthScopeRequirement) []string {
+	var scopes []string
+	for _, alternative := range requirement.Alternatives {
+		scopes = append(scopes, alternative.Scopes...)
+	}
+	return uniqueSorted(scopes)
+}
+
+func oauthScopeRequirementAlternatives(requirement oauthScopeRequirement) [][]string {
+	alternatives := make([][]string, 0, len(requirement.Alternatives))
+	for _, alternative := range requirement.Alternatives {
+		scopes := uniqueSorted(alternative.Scopes)
+		if len(scopes) > 0 {
+			alternatives = append(alternatives, scopes)
+		}
+	}
+	return alternatives
+}
+
+func generatedOAuthScopes(dir string) []string {
+	file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, "internal", "cli", "auth.go"), nil, 0)
+	if err != nil {
+		return nil
+	}
+
+	scopeVars := scopeJoinVars(file)
+	var scopes []string
+	ast.Inspect(file, func(node ast.Node) bool {
+		assign, ok := node.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, lhs := range assign.Lhs {
+			name, ok := dogfoodIdentName(lhs)
+			if !ok || !scopeVars[name] || i >= len(assign.Rhs) {
+				continue
+			}
+			switch expr := assign.Rhs[i].(type) {
+			case *ast.CompositeLit:
+				scopes = append(scopes, stringCompositeValues(expr)...)
+			case *ast.CallExpr:
+				scopes = append(scopes, appendedStringValues(expr, scopeVars)...)
+			}
+		}
+		return true
+	})
+	return uniqueSorted(scopes)
+}
+
+func scopeJoinVars(file *ast.File) map[string]bool {
+	vars := map[string]bool{}
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || len(call.Args) < 2 || dogfoodSelectorName(call.Fun) != "Set" || dogfoodStringLiteral(call.Args[0]) != "scope" {
+			return true
+		}
+		join, ok := call.Args[1].(*ast.CallExpr)
+		if !ok || dogfoodSelectorName(join.Fun) != "Join" || len(join.Args) == 0 {
+			return true
+		}
+		name, ok := dogfoodIdentName(join.Args[0])
+		if ok {
+			vars[name] = true
+		}
+		return true
+	})
+	return vars
+}
+
+func appendedStringValues(call *ast.CallExpr, scopeVars map[string]bool) []string {
+	if name := dogfoodCallName(call.Fun); name != "append" || len(call.Args) < 2 {
+		return nil
+	}
+	name, ok := dogfoodIdentName(call.Args[0])
+	if !ok || !scopeVars[name] {
+		return nil
+	}
+	return stringExprValues(call.Args[1:]...)
+}
+
+func stringCompositeValues(lit *ast.CompositeLit) []string {
+	return stringExprValues(lit.Elts...)
+}
+
+func stringExprValues(exprs ...ast.Expr) []string {
+	var values []string
+	for _, expr := range exprs {
+		if value := strings.TrimSpace(dogfoodStringLiteral(expr)); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func dogfoodSelectorName(expr ast.Expr) string {
+	selector, ok := expr.(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	return selector.Sel.Name
+}
+
+func dogfoodCallName(expr ast.Expr) string {
+	ident, ok := expr.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	return ident.Name
+}
+
+func dogfoodIdentName(expr ast.Expr) (string, bool) {
+	ident, ok := expr.(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	return ident.Name, true
+}
+
+func dogfoodStringLiteral(expr ast.Expr) string {
+	lit, ok := expr.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return ""
+	}
+	value, err := strconv.Unquote(lit.Value)
+	if err != nil {
+		return ""
+	}
+	return value
 }
 
 type authPrefixCandidate struct {
@@ -1784,6 +2000,9 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	{"FAIL", func(r *DogfoodReport, hasSpec bool) bool {
 		return hasSpec && r.BrowserSessionCheck.Required && !r.BrowserSessionCheck.Pass
 	}},
+	{"FAIL", func(r *DogfoodReport, hasSpec bool) bool {
+		return hasSpec && len(r.OAuthScopeCoverage.Violations) > 0
+	}},
 	{"FAIL", func(r *DogfoodReport, _ bool) bool { return r.DeadFlags.Dead >= 3 }},
 	{"FAIL", func(r *DogfoodReport, _ bool) bool {
 		return r.ExampleCheck.Tested > 0 && (r.ExampleCheck.WithExamples*100/r.ExampleCheck.Tested) < 50
@@ -1841,6 +2060,9 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 	}
 	if hasSpec && report.BrowserSessionCheck.Required && !report.BrowserSessionCheck.Pass {
 		issues = append(issues, "browser-session auth proof wiring incomplete: "+report.BrowserSessionCheck.Detail)
+	}
+	if hasSpec && len(report.OAuthScopeCoverage.Violations) > 0 {
+		issues = append(issues, fmt.Sprintf("OAuth scope coverage missing for %d endpoint(s)", len(report.OAuthScopeCoverage.Violations)))
 	}
 	if report.DeadFlags.Dead >= 3 {
 		issues = append(issues, fmt.Sprintf("%d dead flags found", report.DeadFlags.Dead))

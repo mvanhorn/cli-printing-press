@@ -42,6 +42,12 @@
     "planned": 0,
     "skipped": true
   },
+  "oauth_scope_coverage_check": {
+    "checked": 0,
+    "covered": 0,
+    "detail": "no OAuth-scoped endpoints in spec",
+    "skipped": true
+  },
   "path_check": {
     "tested": 0,
     "valid": 0,
