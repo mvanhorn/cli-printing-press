@@ -133,7 +133,7 @@ func parseHappyArgsAnnotation(value string) happyArgs {
 			if !ok || strings.TrimSpace(name) == "--" {
 				continue
 			}
-			parsed.flags = append(parsed.flags, strings.TrimSpace(name), value)
+			parsed.flags = append(parsed.flags, strings.TrimSpace(name), strings.TrimSpace(value))
 			continue
 		}
 		label, value, ok := strings.Cut(token, "=")
@@ -144,7 +144,7 @@ func parseHappyArgsAnnotation(value string) happyArgs {
 		if !strings.HasPrefix(label, "<") || !strings.HasSuffix(label, ">") {
 			continue
 		}
-		parsed.positionals = append(parsed.positionals, value)
+		parsed.positionals = append(parsed.positionals, strings.TrimSpace(value))
 	}
 	return parsed
 }

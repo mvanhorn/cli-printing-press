@@ -167,8 +167,17 @@ func commandAnnotationAssignments(file *ast.File) map[string]map[string]string {
 					continue
 				}
 				if ident, ok := lhs.(*ast.Ident); ok {
-					if name, _ := commandLiteralMetadataFromExpr(assign.Rhs[i]); name != "" {
+					if name, annotations := commandLiteralMetadataFromExpr(assign.Rhs[i]); name != "" {
+						if previousName := commandNames[ident.Name]; previousName != "" {
+							mergeCommandAnnotations(out, previousName, annotationsByVar[ident.Name])
+						}
 						commandNames[ident.Name] = name
+						if len(annotations) > 0 {
+							annotationsByVar[ident.Name] = maps.Clone(annotations)
+						} else {
+							delete(annotationsByVar, ident.Name)
+						}
+						continue
 					}
 				}
 				varName, key, ok := annotationIndex(lhs)

@@ -592,7 +592,7 @@ func TestExtractPositionalPlaceholders(t *testing.T) {
 }
 
 func TestParseHappyArgsAnnotation(t *testing.T) {
-	got := parseHappyArgsAnnotation(" <person>=Alice ; --query=sunset ; --limit=10 ; invalid ; name=Bob ; --bad ")
+	got := parseHappyArgsAnnotation(" <person>= Alice ; --query= sunset ; --limit=10 ; invalid ; name=Bob ; --bad ")
 
 	assert.Equal(t, []string{"Alice"}, got.positionals)
 	assert.Equal(t, []string{"--query", "sunset", "--limit", "10"}, got.flags)
@@ -963,6 +963,32 @@ func newWhereaboutsCmd() *cobra.Command {
 	commands := enrichCommandAnnotationsFromSource(dir, []discoveredCommand{{Name: "whereabouts"}})
 	require.Len(t, commands, 1)
 	assert.Equal(t, "<person>=Alice;--query=sunset", commands[0].Annotations[happyArgsAnnotation])
+}
+
+func TestEnrichCommandAnnotationsFromSourceKeepsReassignedCommandAnnotations(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "whereabouts.go"), `package cli
+
+import "github.com/spf13/cobra"
+
+func newWhereaboutsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use: "first <person>",
+	}
+	cmd.Annotations = map[string]string{"pp:happy-args": "<person>=Alice"}
+	cmd = &cobra.Command{
+		Use: "second <person>",
+	}
+	cmd.Annotations = map[string]string{"pp:happy-args": "<person>=Bob"}
+	return cmd
+}
+`)
+
+	commands := enrichCommandAnnotationsFromSource(dir, []discoveredCommand{{Name: "first"}, {Name: "second"}})
+	require.Len(t, commands, 2)
+	assert.Equal(t, "<person>=Alice", commands[0].Annotations[happyArgsAnnotation])
+	assert.Equal(t, "<person>=Bob", commands[1].Annotations[happyArgsAnnotation])
 }
 
 func TestSyntheticFlagValue(t *testing.T) {
