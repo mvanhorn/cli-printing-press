@@ -40,6 +40,18 @@ const (
 	MCPSuffix        = "-pp-mcp"
 )
 
+const (
+	ThinCommandShortMaxLen   = 30
+	ThinCommandShortMinWords = 4
+)
+
+// IsThinCommandShort mirrors the agent-facing Short quality floor used
+// by tools-audit and generator fallback emission.
+func IsThinCommandShort(s string) bool {
+	d := strings.TrimSpace(s)
+	return len(d) < ThinCommandShortMaxLen && len(strings.Fields(d)) < ThinCommandShortMinWords
+}
+
 func CLI(name string) string {
 	return name + CurrentCLISuffix
 }

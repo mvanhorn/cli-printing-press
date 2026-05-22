@@ -14,16 +14,15 @@ import (
 	"time"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/artifacts"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/pipeline"
 	"github.com/spf13/cobra"
 )
 
 const (
-	ledgerFilename    = artifacts.ToolsPolishLedgerFilename
-	ledgerStaleAfter  = 24 * time.Hour
-	statusAccepted    = "accepted"
-	suspiciousMaxLen  = 30
-	suspiciousMinWord = 4
+	ledgerFilename   = artifacts.ToolsPolishLedgerFilename
+	ledgerStaleAfter = 24 * time.Hour
+	statusAccepted   = "accepted"
 
 	// Finding kinds. These strings appear in the JSON output, the
 	// ledger, and in agent-readable error messages, so changing a
@@ -439,7 +438,7 @@ func inFrameworkSubtree(file string) bool {
 // 3-word phrase is OK, and a short-but-precise instruction is OK.
 // Both together is the "Search Ads" / "Subreddit Posts" anti-pattern.
 func suspiciousShort(s string) bool {
-	return len(s) < suspiciousMaxLen && len(strings.Fields(s)) < suspiciousMinWord
+	return naming.IsThinCommandShort(s)
 }
 
 // readShapedName matches the head before the first hyphen against the
