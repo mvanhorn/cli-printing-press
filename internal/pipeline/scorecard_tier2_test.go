@@ -1381,6 +1381,125 @@ func signKalshiRequest(req *http.Request, key string, signature string) {
 		assert.Less(t, sc.Steinberger.AuthProtocol, 5)
 	})
 
+	t.Run("all apiKey header auth scores every required header", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setAutotaskAuth(req *http.Request, userName string, secret string, integrationCode string) {
+	req.Header.Set("UserName", userName)
+	req.Header.Set("Secret", secret)
+	req.Header.Set("ApiIntegrationCode", integrationCode)
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-autotask-composed.json")
+		writeScorecardFixture(t, dir, "spec-autotask-composed.json", `{
+  "security": [
+    {
+      "UserName": [],
+      "Secret": [],
+      "ApiIntegrationCode": []
+    }
+  ],
+  "paths": {
+    "/tickets": {
+      "get": {
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "UserName": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "UserName"
+      },
+      "Secret": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Secret"
+      },
+      "ApiIntegrationCode": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "ApiIntegrationCode"
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Equal(t, 10, sc.Steinberger.AuthProtocol)
+	})
+
+	t.Run("all apiKey header auth penalizes missing required header", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setAutotaskAuth(req *http.Request, userName string, integrationCode string) {
+	req.Header.Set("UserName", userName)
+	req.Header.Set("ApiIntegrationCode", integrationCode)
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-autotask-composed-missing.json")
+		writeScorecardFixture(t, dir, "spec-autotask-composed-missing.json", `{
+  "security": [
+    {
+      "UserName": [],
+      "Secret": [],
+      "ApiIntegrationCode": []
+    }
+  ],
+  "paths": {
+    "/tickets": {
+      "get": {
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "UserName": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "UserName"
+      },
+      "Secret": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Secret"
+      },
+      "ApiIntegrationCode": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "ApiIntegrationCode"
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.Less(t, sc.Steinberger.AuthProtocol, 5)
+	})
+
 	t.Run("same-prefix standalone header scheme is not pulled into composed auth", func(t *testing.T) {
 		dir := t.TempDir()
 		writeScorecardFixture(t, dir, "internal/client/client.go", `

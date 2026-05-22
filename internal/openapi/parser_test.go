@@ -4442,6 +4442,61 @@ paths:
 	assert.Empty(t, parsed.Auth.AdditionalHeaders)
 }
 
+func TestOperationLevelHeterogeneousSiblingApiKeysAreSkipped(t *testing.T) {
+	t.Parallel()
+
+	yamlSpec := []byte(`openapi: "3.0.3"
+info:
+  title: heterogeneous-operation-siblings
+  version: "1.0.0"
+servers:
+  - url: https://api.example.com
+components:
+  securitySchemes:
+    ApiIntegrationCode:
+      type: apiKey
+      in: header
+      name: ApiIntegrationCode
+      x-auth-env-vars:
+        - EXAMPLE_INTEGRATION_CODE
+    Secret:
+      type: apiKey
+      in: header
+      name: Secret
+      x-auth-env-vars:
+        - EXAMPLE_SECRET
+    UserName:
+      type: apiKey
+      in: header
+      name: UserName
+      x-auth-env-vars:
+        - EXAMPLE_USERNAME
+paths:
+  /tickets:
+    get:
+      security:
+        - ApiIntegrationCode: []
+          Secret: []
+      responses:
+        "200":
+          description: OK
+  /companies:
+    get:
+      security:
+        - ApiIntegrationCode: []
+          UserName: []
+      responses:
+        "200":
+          description: OK
+`)
+	parsed, err := Parse(yamlSpec)
+	require.NoError(t, err)
+
+	assert.Equal(t, "ApiIntegrationCode", parsed.Auth.Scheme)
+	assert.Empty(t, parsed.Auth.AdditionalHeaders,
+		"operation-specific sibling sets cannot be represented as global additional headers")
+}
+
 func TestOpenAPIAuthClassifiesCookieAndOAuth2ClientCredentialsEnvVars(t *testing.T) {
 	t.Parallel()
 

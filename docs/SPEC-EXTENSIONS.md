@@ -417,6 +417,11 @@ Rules:
 - Empty and non-string list items are ignored.
 - When at least one non-empty item is present, the list replaces the parser's
   generated env var names.
+- On apiKey/header schemes that appear beside the selected auth scheme in the
+  same AND security requirement, the first non-empty item supplies the
+  generated per-call env var for that sibling header. Use `x-auth-vars` for
+  richer metadata or when more than one credential variable belongs to the
+  same scheme.
 
 Catalog-driven equivalent: when a catalog entry declares `auth_env_vars`, the
 generator layers the canonical names on top of the parser-derived default at

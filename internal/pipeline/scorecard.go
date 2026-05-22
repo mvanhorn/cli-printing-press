@@ -2228,12 +2228,20 @@ func composedHeaderCompanionSuffix(scheme openAPISecurityScheme) bool {
 }
 
 func isComposedHeaderAlternative(schemes map[string]openAPISecurityScheme, alternative []string) bool {
+	apiKeyHeaderCount := 0
 	counts := make(map[string]int)
 	for _, key := range alternative {
-		prefix := composedHeaderPrefix(schemes[key])
+		scheme := schemes[key]
+		if isAPIKeyHeaderScheme(scheme) {
+			apiKeyHeaderCount++
+		}
+		prefix := composedHeaderPrefix(scheme)
 		if prefix != "" {
 			counts[prefix]++
 		}
+	}
+	if apiKeyHeaderCount > 1 {
+		return true
 	}
 	for _, count := range counts {
 		if count > 1 {

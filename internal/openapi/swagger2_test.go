@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -235,4 +236,171 @@ func TestParseSwagger2HostBasePathDefaultsToHTTPS(t *testing.T) {
 	assert.Equal(t, "https://api.setlist.fm/rest", parsed.BaseURL)
 	assert.Contains(t, parsed.Resources, "host-demo-search")
 	assert.NotContains(t, parsed.Resources, "1_0")
+}
+
+func TestParseSwagger2AllAPIKeyHeaderRequirementCollectsSiblingCredentials(t *testing.T) {
+	t.Parallel()
+
+	swagger2 := []byte(`{
+  "swagger": "2.0",
+  "info": {"title": "Autotask Shape", "version": "1.0.0"},
+  "host": "api.example.com",
+  "basePath": "/v1",
+  "schemes": ["https"],
+  "securityDefinitions": {
+    "UserName": {
+      "type": "apiKey",
+      "in": "header",
+      "name": "UserName",
+      "x-auth-env-vars": ["AUTOTASK_USERNAME"]
+    },
+    "Secret": {
+      "type": "apiKey",
+      "in": "header",
+      "name": "Secret",
+      "x-auth-env-vars": ["AUTOTASK_SECRET"]
+    },
+    "ApiIntegrationCode": {
+      "type": "apiKey",
+      "in": "header",
+      "name": "ApiIntegrationCode",
+      "x-auth-env-vars": ["AUTOTASK_INTEGRATION_CODE"]
+    }
+  },
+  "security": [
+    {
+      "UserName": [],
+      "Secret": [],
+      "ApiIntegrationCode": []
+    }
+  ],
+  "paths": {
+    "/tickets": {
+      "get": {
+        "operationId": "listTickets",
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`)
+
+	parsed, err := Parse(swagger2)
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.NotEqual(t, "none", parsed.Auth.Type)
+	assert.Equal(t, []string{"AUTOTASK_INTEGRATION_CODE"}, parsed.Auth.EnvVars)
+	assert.Equal(t, []spec.AuthEnvVar{{
+		Name:      "AUTOTASK_INTEGRATION_CODE",
+		Kind:      spec.AuthEnvVarKindPerCall,
+		Required:  true,
+		Sensitive: true,
+		Inferred:  true,
+	}}, parsed.Auth.EnvVarSpecs)
+	require.Len(t, parsed.Auth.AdditionalHeaders, 2)
+	assert.ElementsMatch(t, []spec.AdditionalAuthHeader{
+		{
+			Header: "Secret",
+			In:     "header",
+			Scheme: "Secret",
+			EnvVar: spec.AuthEnvVar{
+				Name:      "AUTOTASK_SECRET",
+				Kind:      spec.AuthEnvVarKindPerCall,
+				Required:  true,
+				Sensitive: true,
+				Inferred:  true,
+			},
+		},
+		{
+			Header: "UserName",
+			In:     "header",
+			Scheme: "UserName",
+			EnvVar: spec.AuthEnvVar{
+				Name:      "AUTOTASK_USERNAME",
+				Kind:      spec.AuthEnvVarKindPerCall,
+				Required:  true,
+				Sensitive: true,
+				Inferred:  true,
+			},
+		},
+	}, parsed.Auth.AdditionalHeaders)
+}
+
+func TestParseSwagger2OperationAllAPIKeyHeaderRequirementCollectsSiblingCredentials(t *testing.T) {
+	t.Parallel()
+
+	swagger2 := []byte(`{
+  "swagger": "2.0",
+  "info": {"title": "Autotask Shape", "version": "1.0.0"},
+  "host": "api.example.com",
+  "basePath": "/v1",
+  "schemes": ["https"],
+  "securityDefinitions": {
+    "UserName": {
+      "type": "apiKey",
+      "in": "header",
+      "name": "UserName",
+      "x-auth-env-vars": ["AUTOTASK_USERNAME"]
+    },
+    "Secret": {
+      "type": "apiKey",
+      "in": "header",
+      "name": "Secret"
+    },
+    "ApiIntegrationCode": {
+      "type": "apiKey",
+      "in": "header",
+      "name": "ApiIntegrationCode",
+      "x-auth-env-vars": ["AUTOTASK_INTEGRATION_CODE"]
+    }
+  },
+  "paths": {
+    "/tickets": {
+      "get": {
+        "operationId": "listTickets",
+        "security": [
+          {
+            "UserName": [],
+            "Secret": [],
+            "ApiIntegrationCode": []
+          }
+        ],
+        "responses": {"200": {"description": "ok"}}
+      }
+    }
+  }
+}`)
+
+	parsed, err := Parse(swagger2)
+	require.NoError(t, err)
+
+	assert.Equal(t, "api_key", parsed.Auth.Type)
+	assert.Equal(t, []string{"AUTOTASK_INTEGRATION_CODE"}, parsed.Auth.EnvVars)
+	require.Len(t, parsed.Auth.AdditionalHeaders, 2)
+	assert.ElementsMatch(t, []spec.AdditionalAuthHeader{
+		{
+			Header: "Secret",
+			In:     "header",
+			Scheme: "Secret",
+			EnvVar: spec.AuthEnvVar{
+				Name:      "AUTOTASK_SHAPE_SECRET",
+				Kind:      spec.AuthEnvVarKindPerCall,
+				Required:  true,
+				Sensitive: true,
+				Inferred:  true,
+			},
+		},
+		{
+			Header: "UserName",
+			In:     "header",
+			Scheme: "UserName",
+			EnvVar: spec.AuthEnvVar{
+				Name:      "AUTOTASK_USERNAME",
+				Kind:      spec.AuthEnvVarKindPerCall,
+				Required:  true,
+				Sensitive: true,
+				Inferred:  true,
+			},
+		},
+	}, parsed.Auth.AdditionalHeaders)
 }

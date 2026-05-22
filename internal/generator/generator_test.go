@@ -1046,6 +1046,30 @@ func TestGenerateComposedApiKeyPlusBearerEmitsAdditionalHeader(t *testing.T) {
 	clientSrc := string(clientBytes)
 	assert.Contains(t, clientSrc, `req.Header.Set("ST-App-Key", v)`,
 		"client must set ST-App-Key on every outbound request when configured")
+
+	doctorBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "doctor.go"))
+	require.NoError(t, err)
+	doctorSrc := string(doctorBytes)
+	assert.Contains(t, doctorSrc, `recordAdditionalAuthEnv("ST_APP_KEY", configuredValue)`,
+		"doctor must check the sibling apiKey env var")
+	assert.Contains(t, doctorSrc, `configuredValue = cfg.StAppKey`,
+		"doctor must accept sibling apiKey credentials from config files")
+	assert.Contains(t, doctorSrc, `} else if authConfigured {`,
+		"doctor must apply the config fallback consistently for sibling apiKey credentials")
+	assert.Contains(t, doctorSrc, `OK %d/%d available", len(authEnvSet), 3`,
+		"doctor must include sibling apiKey credentials in the env-var count")
+
+	agentContextBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "agent_context.go"))
+	require.NoError(t, err)
+	agentContextSrc := string(agentContextBytes)
+	assert.Contains(t, agentContextSrc, `"ST_APP_KEY"`,
+		"agent-context must expose sibling apiKey credentials to agents")
+
+	mcpBytes, err := os.ReadFile(filepath.Join(outputDir, "internal", "mcp", "tools.go"))
+	require.NoError(t, err)
+	mcpSrc := string(mcpBytes)
+	assert.Contains(t, mcpSrc, `"ST_APP_KEY"`,
+		"MCP context must expose sibling apiKey credentials to agents")
 }
 
 // OAuth2 client_credentials specs without a sibling apiKey scheme must not
