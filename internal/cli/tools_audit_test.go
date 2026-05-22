@@ -543,6 +543,40 @@ func TestAuditCommandFieldsThinShortStillFlagsShellOutCommands(t *testing.T) {
 	}
 }
 
+func TestAuditCommandFieldsFrameworkNamesOnlySkippedInFrameworkSubtrees(t *testing.T) {
+	t.Run("nested framework-named domain command is audited", func(t *testing.T) {
+		findings := auditCommandFields("items.go", 1, commandFields{
+			use:     "search",
+			short:   "Find",
+			hasRunE: true,
+		})
+
+		var gotThin, gotMissingReadOnly bool
+		for _, f := range findings {
+			switch f.Kind {
+			case kindThinShort:
+				gotThin = true
+			case kindMissingReadOnly:
+				gotMissingReadOnly = true
+			}
+		}
+		if !gotThin || !gotMissingReadOnly {
+			t.Fatalf("nested search findings = %+v, want thin-short and missing-read-only", findings)
+		}
+	})
+
+	t.Run("top-level framework file is skipped", func(t *testing.T) {
+		findings := auditCommandFields("search.go", 1, commandFields{
+			use:     "search",
+			short:   "Find",
+			hasRunE: true,
+		})
+		if len(findings) != 0 {
+			t.Fatalf("top-level framework search findings = %+v, want none", findings)
+		}
+	})
+}
+
 // TestInspectAnnotationsExplicitReadOnlyFalse pins the AST-level
 // helper: any value for `mcp:read-only` — including "false" — sets
 // hasExplicitReadOnly. The old behavior treated "false" as absent.

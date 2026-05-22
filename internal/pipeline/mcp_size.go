@@ -301,36 +301,40 @@ func sourceCommandRecord(commands map[string]*cobraSourceCommand, name string) *
 
 func reachableCobratreeRuntimeTools(commands map[string]*cobraSourceCommand) []MCPToolSize {
 	var tools []MCPToolSize
-	visited := map[string]bool{}
-	var walk func(string)
-	walk = func(fnName string) {
+	visitedPaths := map[string]bool{}
+	var walk func(string, []string)
+	walk = func(fnName string, path []string) {
 		rec := commands[fnName]
 		if rec == nil {
 			return
 		}
 		for _, childName := range rec.children {
-			if visited[childName] {
-				continue
-			}
-			visited[childName] = true
 			child := commands[childName]
 			if child == nil || !child.hasLiteral {
 				continue
 			}
-			kind := cobratreeCommandKind(child.literal)
+			name := mcpCobraUseName(child.literal.use)
+			depth := len(path) + 1
+			kind := cobratreeCommandKind(child.literal, depth)
 			if kind == mcpCobraHidden || kind == mcpCobraFramework {
 				continue
 			}
+			childPath := append(append([]string{}, path...), name)
+			visitKey := strings.Join(childPath, "\x00")
+			if visitedPaths[visitKey] {
+				continue
+			}
+			visitedPaths[visitKey] = true
 			if kind == mcpCobraNovel && child.literal.runnable {
-				if tool, ok := estimateCobratreeCommandTool(child.literal); ok {
+				if tool, ok := estimateCobratreeCommandTool(child.literal, childPath); ok {
 					tools = append(tools, tool)
 				}
 			}
-			walk(childName)
+			walk(childName, childPath)
 		}
 	}
-	walk("RootCmd")
-	walk("newRootCmd")
+	walk("RootCmd", nil)
+	walk("newRootCmd", nil)
 	return tools
 }
 
@@ -380,15 +384,18 @@ func parseCobraCommandLiteral(lit *ast.CompositeLit) cobraCommandLiteral {
 	return cmd
 }
 
-func estimateCobratreeCommandTool(cmd cobraCommandLiteral) (MCPToolSize, bool) {
+func estimateCobratreeCommandTool(cmd cobraCommandLiteral, path []string) (MCPToolSize, bool) {
 	name := mcpCobraUseName(cmd.use)
 	if name == "" || cmd.hidden || !cmd.runnable {
 		return MCPToolSize{}, false
 	}
-	if cobratreeCommandKind(cmd) != mcpCobraNovel {
+	if len(path) == 0 {
+		path = []string{name}
+	}
+	if cobratreeCommandKind(cmd, len(path)) != mcpCobraNovel {
 		return MCPToolSize{}, false
 	}
-	toolName := naming.SnakeIdentifier(name)
+	toolName := naming.SnakeIdentifier(strings.Join(path, "_"))
 	if toolName == "" {
 		return MCPToolSize{}, false
 	}
@@ -407,7 +414,7 @@ func estimateCobratreeCommandTool(cmd cobraCommandLiteral) (MCPToolSize, bool) {
 	}, true
 }
 
-func cobratreeCommandKind(cmd cobraCommandLiteral) mcpCobraCommandKind {
+func cobratreeCommandKind(cmd cobraCommandLiteral, depth int) mcpCobraCommandKind {
 	name := mcpCobraUseName(cmd.use)
 	if name == "" || cmd.hidden || annotationIsTrueValue(cmd.annotations["mcp:hidden"]) {
 		return mcpCobraHidden
@@ -415,7 +422,7 @@ func cobratreeCommandKind(cmd cobraCommandLiteral) mcpCobraCommandKind {
 	if strings.TrimSpace(cmd.annotations["pp:endpoint"]) != "" {
 		return mcpCobraEndpoint
 	}
-	if cobratreeFrameworkCommands[name] {
+	if depth == 1 && cobratreeFrameworkCommands[name] {
 		return mcpCobraFramework
 	}
 	return mcpCobraNovel
