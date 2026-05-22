@@ -6128,6 +6128,116 @@ paths:
 	assert.Equal(t, "hidden", parsed.MCP.EndpointTools)
 }
 
+func TestParseMCPFallbackFromRootWarns(t *testing.T) {
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Legacy MCP API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+mcp:
+  transport: [stdio, http]
+  orchestration: code
+  endpoint_tools: hidden
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = Parse(data)
+	})
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	assert.True(t, parsed.MCP.HasTransport("http"), "expected http transport from root mcp fallback")
+	assert.True(t, parsed.MCP.HasTransport("stdio"), "expected stdio transport from root mcp fallback")
+	assert.True(t, parsed.MCP.IsCodeOrchestration(), "expected code orchestration from root mcp fallback")
+	assert.Equal(t, "hidden", parsed.MCP.EndpointTools)
+	assert.Contains(t, warnings, "accepted root-level 'mcp:' for backwards compatibility")
+	assert.Contains(t, warnings, "rename to 'x-mcp:' per OpenAPI extension convention")
+}
+
+func TestParseMCPExtensionBeatsRootMCPFallback(t *testing.T) {
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Canonical MCP API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+mcp:
+  transport: [stdio]
+  orchestration: code
+  endpoint_tools: hidden
+x-mcp:
+  transport: [http]
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = Parse(data)
+	})
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	assert.True(t, parsed.MCP.HasTransport("http"), "canonical x-mcp must take precedence")
+	assert.False(t, parsed.MCP.HasTransport("stdio"), "root mcp fallback must not merge into canonical x-mcp")
+	assert.False(t, parsed.MCP.IsCodeOrchestration(), "root mcp fields must not fill missing x-mcp fields")
+	assert.Empty(t, parsed.MCP.EndpointTools, "root mcp fields must not fill missing x-mcp fields")
+	assert.NotContains(t, warnings, "accepted root-level 'mcp:'", "canonical x-mcp should not emit fallback warning")
+}
+
+func TestParseMCPInfoExtensionBeatsRootMCPFallback(t *testing.T) {
+	data := []byte(`
+openapi: 3.0.3
+info:
+  title: Info MCP API
+  version: 1.0.0
+  x-mcp:
+    transport: [http]
+servers:
+  - url: https://api.example.com
+mcp:
+  transport: [stdio]
+  orchestration: code
+  endpoint_tools: hidden
+paths:
+  /items:
+    get:
+      summary: List items
+      responses:
+        "200":
+          description: ok
+`)
+
+	var parsed *spec.APISpec
+	var err error
+	warnings := captureWarnings(t, func() {
+		parsed, err = Parse(data)
+	})
+	require.NoError(t, err)
+	require.NotNil(t, parsed)
+	assert.True(t, parsed.MCP.HasTransport("http"), "info.x-mcp must take precedence over root mcp fallback")
+	assert.False(t, parsed.MCP.HasTransport("stdio"), "root mcp fallback must not merge into info.x-mcp")
+	assert.False(t, parsed.MCP.IsCodeOrchestration(), "root mcp fields must not fill missing info.x-mcp fields")
+	assert.Empty(t, parsed.MCP.EndpointTools, "root mcp fields must not fill missing info.x-mcp fields")
+	assert.NotContains(t, warnings, "accepted root-level 'mcp:'", "info.x-mcp should not emit fallback warning")
+}
+
 func TestParseMCPExtensionFromInfo(t *testing.T) {
 	t.Parallel()
 	data := []byte(`

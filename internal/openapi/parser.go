@@ -44,6 +44,7 @@ const (
 	extensionTierRouting           = "x-tier-routing"
 	extensionTier                  = "x-tier"
 	extensionMCP                   = "x-mcp"
+	extensionLegacyMCP             = "mcp"
 	extensionSyncWalker            = "x-pp-sync-walker"
 	extensionAPIName               = "x-api-name"
 	extensionDisplayName           = "x-display-name"
@@ -422,7 +423,7 @@ func parseWithLocation(data []byte, lenient bool, location *url.URL, authPrefere
 		return nil, err
 	}
 
-	mcpConfig, err := parseTypedExtension[spec.MCPConfig](doc, extensionMCP)
+	mcpConfig, err := parseMCPExtension(doc)
 	if err != nil {
 		return nil, err
 	}
@@ -536,6 +537,27 @@ func parseTypedExtension[T any](doc *openapi3.T, key string) (T, error) {
 	if !ok {
 		return zero, nil
 	}
+	return parseTypedExtensionRaw[T](key, raw)
+}
+
+func parseMCPExtension(doc *openapi3.T) (spec.MCPConfig, error) {
+	if raw, ok := lookupOpenAPIExtension(doc, extensionMCP); ok {
+		return parseTypedExtensionRaw[spec.MCPConfig](extensionMCP, raw)
+	}
+	var zero spec.MCPConfig
+	if doc == nil || doc.Extensions == nil {
+		return zero, nil
+	}
+	raw, ok := doc.Extensions[extensionLegacyMCP]
+	if !ok {
+		return zero, nil
+	}
+	warnf("accepted root-level 'mcp:' for backwards compatibility; rename to 'x-mcp:' per OpenAPI extension convention")
+	return parseTypedExtensionRaw[spec.MCPConfig](extensionLegacyMCP, raw)
+}
+
+func parseTypedExtensionRaw[T any](key string, raw any) (T, error) {
+	var zero T
 	data, err := json.Marshal(raw)
 	if err != nil {
 		return zero, fmt.Errorf("marshaling %s: %w", key, err)
