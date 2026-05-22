@@ -9,7 +9,7 @@ what the code passes. Suppress one call site with a
 Diagnostic by default; pass --strict for a non-zero exit on findings.
 
 Usage:
-  printing-press sync-param-drop [flags]
+  cli-printing-press sync-param-drop [flags]
 
 Examples:
   printing-press sync-param-drop --dir ./factor75-pp-cli --traffic-analysis ./pipeline/factor75-traffic-analysis.json
