@@ -56,6 +56,31 @@ func TestPrintDogfoodReportRendersEmptyMatrixAsNA(t *testing.T) {
 	assert.NotContains(t, out, "Path Validity:     0/0 valid (FAIL)")
 }
 
+func TestPrintDogfoodReportDescribesOAuthScopeAlternatives(t *testing.T) {
+	report := &pipeline.DogfoodReport{
+		Dir:      t.TempDir(),
+		SpecPath: "youtube.yaml",
+		OAuthScopeCoverage: pipeline.OAuthScopeCoverageResult{
+			Checked: 1,
+			Violations: []pipeline.OAuthScopeCoverageViolation{
+				{
+					Endpoint:                  "GET /analytics",
+					OperationID:               "listAnalytics",
+					RequiredScopes:            []string{"youtube", "yt-analytics.readonly"},
+					RequiredScopeAlternatives: [][]string{{"youtube", "yt-analytics.readonly"}},
+				},
+			},
+		},
+	}
+
+	out := captureStdout(t, func() {
+		printDogfoodReport(report)
+	})
+
+	assert.Contains(t, out, "GET /analytics (op-id listAnalytics) requires all of youtube, yt-analytics.readonly, none in auth.go")
+	assert.NotContains(t, out, "requires one of youtube, yt-analytics.readonly")
+}
+
 func TestDogfoodHelpIncludesLiveFlags(t *testing.T) {
 	cmd := newDogfoodCmd()
 	cmd.SetArgs([]string{"--help"})

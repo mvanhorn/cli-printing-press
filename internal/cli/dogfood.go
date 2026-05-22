@@ -180,6 +180,26 @@ func printDogfoodReport(report *pipeline.DogfoodReport) {
 	}
 	fmt.Println()
 
+	scopeStatus := "SKIP"
+	if !report.OAuthScopeCoverage.Skipped {
+		scopeStatus = "PASS"
+		if len(report.OAuthScopeCoverage.Violations) > 0 {
+			scopeStatus = "FAIL"
+		}
+	}
+	fmt.Printf("OAuth Scope Cover: %d/%d endpoints covered (%s)\n", report.OAuthScopeCoverage.Covered, report.OAuthScopeCoverage.Checked, scopeStatus)
+	if report.OAuthScopeCoverage.Detail != "" {
+		fmt.Printf("  Detail: %s\n", report.OAuthScopeCoverage.Detail)
+	}
+	for _, violation := range report.OAuthScopeCoverage.Violations {
+		op := violation.OperationID
+		if op == "" {
+			op = "unknown"
+		}
+		fmt.Printf("  - %s (op-id %s) %s, none in auth.go\n", violation.Endpoint, op, describeOAuthScopeRequirement(violation))
+	}
+	fmt.Println()
+
 	flagsStatus := "PASS"
 	if report.DeadFlags.Dead >= 3 {
 		flagsStatus = "FAIL"
@@ -276,6 +296,33 @@ func printDogfoodReport(report *pipeline.DogfoodReport) {
 	fmt.Printf("Verdict: %s\n", report.Verdict)
 	for _, issue := range report.Issues {
 		fmt.Printf("  - %s\n", issue)
+	}
+}
+
+func describeOAuthScopeRequirement(violation pipeline.OAuthScopeCoverageViolation) string {
+	alternatives := violation.RequiredScopeAlternatives
+	if len(alternatives) == 0 && len(violation.RequiredScopes) > 0 {
+		alternatives = [][]string{violation.RequiredScopes}
+	}
+
+	switch len(alternatives) {
+	case 0:
+		return "requires OAuth scopes"
+	case 1:
+		if len(alternatives[0]) == 1 {
+			return "requires " + alternatives[0][0]
+		}
+		return "requires all of " + strings.Join(alternatives[0], ", ")
+	default:
+		options := make([]string, 0, len(alternatives))
+		for _, alternative := range alternatives {
+			if len(alternative) == 1 {
+				options = append(options, alternative[0])
+			} else {
+				options = append(options, "all of "+strings.Join(alternative, ", "))
+			}
+		}
+		return "requires one of " + strings.Join(options, "; ")
 	}
 }
 

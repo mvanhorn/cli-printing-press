@@ -197,6 +197,415 @@ security:
 	assert.True(t, report.AuthCheck.Match)
 }
 
+func TestRunDogfoodOAuthScopeCoveragePassesCoveredEndpoint(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {
+	scopes := []string{"youtube"}
+	params.Set("scope", strings.Join(scopes, " "))
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /videos:
+    get:
+      operationId: listVideos
+      security:
+        - OAuth2: [youtube]
+      responses:
+        "200":
+          description: ok
+  /analytics:
+    get:
+      operationId: listAnalytics
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            youtube: YouTube read access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Covered)
+	assert.Empty(t, report.OAuthScopeCoverage.Violations)
+}
+
+func TestRunDogfoodOAuthScopeCoverageFailsUncoveredEndpoint(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {
+	scopes := []string{"youtube"}
+	params.Set("scope", strings.Join(scopes, " "))
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /videos:
+    get:
+      operationId: listVideos
+      responses:
+        "200":
+          description: ok
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [yt-analytics.readonly]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            youtube: YouTube read access
+            yt-analytics.readonly: Analytics read access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, "FAIL", report.Verdict)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
+	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
+	assert.Equal(t, "GET /analytics", report.OAuthScopeCoverage.Violations[0].Endpoint)
+	assert.Equal(t, "listAnalytics", report.OAuthScopeCoverage.Violations[0].OperationID)
+	assert.Equal(t, []string{"yt-analytics.readonly"}, report.OAuthScopeCoverage.Violations[0].RequiredScopes)
+	assert.Contains(t, report.Issues, "OAuth scope coverage missing for 1 endpoint(s)")
+}
+
+func TestRunDogfoodOAuthScopeCoverageRequiresAllScopesInAlternative(t *testing.T) {
+	specYAML := `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [youtube, yt-analytics.readonly]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            youtube: YouTube read access
+            yt-analytics.readonly: Analytics read access
+`
+
+	t.Run("partial coverage fails", func(t *testing.T) {
+		dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {
+	scopes := []string{"youtube"}
+	params.Set("scope", strings.Join(scopes, " "))
+}
+`, specYAML)
+
+		report, err := RunDogfood(dir, specPath)
+		require.NoError(t, err)
+
+		assert.Equal(t, "FAIL", report.Verdict)
+		assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+		assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
+		require.Len(t, report.OAuthScopeCoverage.Violations, 1)
+		assert.Equal(t, []string{"youtube", "yt-analytics.readonly"}, report.OAuthScopeCoverage.Violations[0].RequiredScopes)
+		assert.Equal(t, [][]string{{"youtube", "yt-analytics.readonly"}}, report.OAuthScopeCoverage.Violations[0].RequiredScopeAlternatives)
+	})
+
+	t.Run("full coverage passes", func(t *testing.T) {
+		dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {
+	scopes := []string{"youtube", "yt-analytics.readonly"}
+	params.Set("scope", strings.Join(scopes, " "))
+}
+`, specYAML)
+
+		report, err := RunDogfood(dir, specPath)
+		require.NoError(t, err)
+
+		assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+		assert.Equal(t, 1, report.OAuthScopeCoverage.Covered)
+		assert.Empty(t, report.OAuthScopeCoverage.Violations)
+	})
+}
+
+func TestRunDogfoodOAuthScopeCoverageReadsAppendedGeneratedScope(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {
+	scopes := []string{"youtube"}
+	scopes = append(scopes, "offline")
+	params.Set("scope", strings.Join(scopes, " "))
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /refresh:
+    get:
+      operationId: refreshAccess
+      security:
+        - OAuth2: [offline]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            youtube: YouTube read access
+            offline: Refresh access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Covered)
+	assert.Empty(t, report.OAuthScopeCoverage.Violations)
+}
+
+func TestRunDogfoodOAuthScopeCoverageIgnoresUnjoinedScopesVariable(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func helper() {
+	scopes := []string{"yt-analytics.readonly"}
+	_ = scopes
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [yt-analytics.readonly]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            yt-analytics.readonly: Analytics read access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, "FAIL", report.Verdict)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
+	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
+	assert.Equal(t, "generated auth.go declares no OAuth scopes", report.OAuthScopeCoverage.Detail)
+}
+
+func TestRunDogfoodOAuthScopeCoverageSurvivesUndefinedNonOAuthScheme(t *testing.T) {
+	dir, specPath := writeOAuthScopeCoverageFixture(t, `package cli
+func authLogin() {
+	scopes := []string{"youtube"}
+	params.Set("scope", strings.Join(scopes, " "))
+}
+`, `openapi: 3.0.0
+info:
+  title: Videos API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /analytics:
+    get:
+      operationId: listAnalytics
+      security:
+        - OAuth2: [yt-analytics.readonly]
+          MissingAPIKey: []
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            youtube: YouTube read access
+            yt-analytics.readonly: Analytics read access
+`)
+
+	report, err := RunDogfood(dir, specPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, "FAIL", report.Verdict)
+	assert.Equal(t, 1, report.OAuthScopeCoverage.Checked)
+	assert.Equal(t, 0, report.OAuthScopeCoverage.Covered)
+	require.Len(t, report.OAuthScopeCoverage.Violations, 1)
+	assert.Equal(t, "GET /analytics", report.OAuthScopeCoverage.Violations[0].Endpoint)
+	assert.Equal(t, []string{"yt-analytics.readonly"}, report.OAuthScopeCoverage.Violations[0].RequiredScopes)
+}
+
+func TestLoadOpenAPISpecCollectsRootOAuthScopeRequirements(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: Root Scoped API
+  version: "1.0"
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth
+          tokenUrl: https://example.com/token
+          scopes:
+            items.read: Read items
+security:
+  - OAuth2: [items.read]
+`)
+
+	info, err := loadOpenAPISpec(specPath)
+	require.NoError(t, err)
+	require.Len(t, info.OAuthScopeRequirements, 1)
+	assert.Equal(t, "GET /items", info.OAuthScopeRequirements[0].Endpoint)
+	assert.Equal(t, "listItems", info.OAuthScopeRequirements[0].OperationID)
+	assert.Equal(t, []string{"items.read"}, info.OAuthScopeRequirements[0].Alternatives[0].Scopes)
+}
+
+func TestLoadOpenAPISpecCombinesOAuthSchemesWithinRequirement(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "spec.yaml")
+	writeTestFile(t, specPath, `openapi: 3.0.0
+info:
+  title: Combined Scoped API
+  version: "1.0"
+paths:
+  /items:
+    get:
+      operationId: listItems
+      security:
+        - OAuthA: [a.read]
+          OAuthB: [b.read]
+      responses:
+        "200":
+          description: ok
+components:
+  securitySchemes:
+    OAuthA:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth-a
+          tokenUrl: https://example.com/token-a
+          scopes:
+            a.read: Read A
+    OAuthB:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: https://example.com/auth-b
+          tokenUrl: https://example.com/token-b
+          scopes:
+            b.read: Read B
+`)
+
+	info, err := loadOpenAPISpec(specPath)
+	require.NoError(t, err)
+	require.Len(t, info.OAuthScopeRequirements, 1)
+	require.Len(t, info.OAuthScopeRequirements[0].Alternatives, 1)
+	assert.Equal(t, []string{"a.read", "b.read"}, info.OAuthScopeRequirements[0].Alternatives[0].Scopes)
+}
+
+func writeOAuthScopeCoverageFixture(t *testing.T, authGo, specYAML string) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "client"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "store"), 0o755))
+
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "root.go"), `package cli
+type rootFlags struct{}
+func initFlags(flags *rootFlags) { _ = flags }
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "videos_get.go"), `package cli
+func videosGet() {
+	path := "/videos"
+}
+func analyticsGet() {
+	path := "/analytics"
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "cli", "auth.go"), authGo)
+	writeTestFile(t, filepath.Join(dir, "internal", "client", "client.go"), `package client
+func authHeader(token string) string {
+	return "Bearer " + token
+}
+`)
+	writeTestFile(t, filepath.Join(dir, "internal", "store", "store.go"), "package store\n")
+
+	specPath := filepath.Join(dir, "spec.yaml")
+	writeTestFile(t, specPath, specYAML)
+	return dir, specPath
+}
+
 func TestCountDomainTables(t *testing.T) {
 	storeSource := `
 CREATE TABLE IF NOT EXISTS users (
