@@ -435,7 +435,10 @@ func runSideEffectSafeCommandTests(binary string, cmd discoveredCommand, env []s
 
 	result.Help = runCLI(binary, []string{cmd.Name, "--help"}, env, 10*time.Second) == nil
 
-	dryArgs := append([]string{cmd.Name}, cmd.Args...)
+	positionals, flags := sideEffectSafeInvocationInputs(cmd)
+
+	dryArgs := append([]string{cmd.Name}, positionals...)
+	dryArgs = append(dryArgs, flags...)
 	dryArgs = append(dryArgs, "--dry-run")
 	if err := runCLI(binary, dryArgs, env, 10*time.Second); err == nil || isIntentionalStubExit(err) {
 		result.DryRun = true
@@ -478,10 +481,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	// Get any required flags/args for this command.
 	// First, probe the binary for cobra-declared required flags (generic, spec-agnostic).
 	// Then fall back to the positional-arg map for commands that take bare positionals.
-	extraFlags := inferRequiredFlags(binary, cmd.Name)
-	if extraFlags == nil {
-		extraFlags = workflowTestFlags(cmd.Name)
-	}
+	positionals, extraFlags := commandInvocationInputs(binary, cmd)
 
 	// Build positional args + flags for test invocations
 	buildTestArgs := func(cmdName string, positionalArgs, flags []string, extra ...string) []string {
@@ -494,7 +494,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 
 	// Test 2: --dry-run (skip for local/data-layer commands that don't make API calls)
 	if cmd.Kind != "local" && cmd.Kind != "data-layer" {
-		args := buildTestArgs(cmd.Name, cmd.Args, extraFlags, "--dry-run")
+		args := buildTestArgs(cmd.Name, positionals, extraFlags, "--dry-run")
 		err := runCLI(binary, args, env, 10*time.Second)
 		result.DryRun = err == nil || isIntentionalStubExit(err) || isDocumentedSuccessExit(err, typedCodes)
 	} else {
@@ -507,7 +507,7 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	} else if mode == "live" && cmd.Kind == "write" {
 		result.Execute = true // skip writes on live = pass (tested via dry-run)
 	} else {
-		args := buildTestArgs(cmd.Name, cmd.Args, extraFlags, "--json")
+		args := buildTestArgs(cmd.Name, positionals, extraFlags, "--json")
 		err := runCLI(binary, args, env, 15*time.Second)
 		result.Execute = err == nil || isIntentionalStubExit(err) || isDocumentedSuccessExit(err, typedCodes)
 	}

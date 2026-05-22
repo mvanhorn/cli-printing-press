@@ -114,6 +114,105 @@ type discoveredCommand struct {
 	Annotations map[string]string
 }
 
+const happyArgsAnnotation = "pp:happy-args"
+
+type happyArgs struct {
+	positionals []string
+	flags       []string
+}
+
+func parseHappyArgsAnnotation(value string) happyArgs {
+	var parsed happyArgs
+	for rawToken := range strings.SplitSeq(value, ";") {
+		token := strings.TrimSpace(rawToken)
+		if token == "" {
+			continue
+		}
+		if strings.HasPrefix(token, "--") {
+			name, value, ok := strings.Cut(token, "=")
+			if !ok || strings.TrimSpace(name) == "--" {
+				continue
+			}
+			parsed.flags = append(parsed.flags, strings.TrimSpace(name), strings.TrimSpace(value))
+			continue
+		}
+		label, value, ok := strings.Cut(token, "=")
+		if !ok {
+			continue
+		}
+		label = strings.TrimSpace(label)
+		if !strings.HasPrefix(label, "<") || !strings.HasSuffix(label, ">") {
+			continue
+		}
+		parsed.positionals = append(parsed.positionals, strings.TrimSpace(value))
+	}
+	return parsed
+}
+
+func commandHappyArgs(cmd discoveredCommand) happyArgs {
+	if cmd.Annotations == nil {
+		return happyArgs{}
+	}
+	return parseHappyArgsAnnotation(cmd.Annotations[happyArgsAnnotation])
+}
+
+func commandInvocationInputs(binary string, cmd discoveredCommand) ([]string, []string) {
+	happy := commandHappyArgs(cmd)
+	positionals := mergeHappyPositionals(cmd.Args, happy.positionals)
+
+	flags := inferRequiredFlags(binary, cmd.Name)
+	if flags == nil {
+		flags = workflowTestFlags(cmd.Name)
+	}
+	flags = mergeHappyFlags(flags, happy.flags)
+
+	return positionals, flags
+}
+
+func sideEffectSafeInvocationInputs(cmd discoveredCommand) ([]string, []string) {
+	happy := commandHappyArgs(cmd)
+	positionals := mergeHappyPositionals(cmd.Args, happy.positionals)
+	return positionals, mergeHappyFlags(workflowTestFlags(cmd.Name), happy.flags)
+}
+
+func mergeHappyPositionals(inferred, annotated []string) []string {
+	if len(annotated) == 0 {
+		return inferred
+	}
+	merged := slices.Clone(inferred)
+	for i, value := range annotated {
+		if i < len(merged) {
+			merged[i] = value
+			continue
+		}
+		merged = append(merged, value)
+	}
+	return merged
+}
+
+func mergeHappyFlags(inferred, annotated []string) []string {
+	if len(annotated) == 0 {
+		return inferred
+	}
+	merged := slices.Clone(inferred)
+	for i := 0; i+1 < len(annotated); i += 2 {
+		flag := annotated[i]
+		value := annotated[i+1]
+		replaced := false
+		for j := 0; j+1 < len(merged); j += 2 {
+			if merged[j] == flag {
+				merged[j+1] = value
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			merged = append(merged, flag, value)
+		}
+	}
+	return merged
+}
+
 // inferPositionalArgs runs `<binary> <cmd> --help`, parses the Usage line for
 // positional arg placeholders like <region> or [price], and maps them to
 // synthetic values. On any failure, it falls back to no extra args.
