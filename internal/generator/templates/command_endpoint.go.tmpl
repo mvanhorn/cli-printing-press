@@ -4,6 +4,7 @@
 {{- $isMultipart := endpointUsesMultipart .Endpoint}}
 {{- $isForm := endpointUsesForm .Endpoint}}
 {{- $hasJSONBody := and (or .Endpoint.Body .Endpoint.BodyJSONFallback) (not $isMultipart) (not $isForm)}}
+{{- $supportsAllPagination := and .Endpoint.Pagination (ne .Endpoint.Pagination.Type "id_walk")}}
 
 package cli
 
@@ -37,7 +38,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- end}}
 {{- bodyVarDecls .Endpoint}}
-{{- if .Endpoint.Pagination}}
+{{- if $supportsAllPagination}}
 	var flagAll bool
 {{- end}}
 {{- if or (and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) (not $isMultipart) (not $isForm)) (and (eq .Endpoint.Method "DELETE") $hasJSONBody)}}
@@ -178,7 +179,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			if flagAfter != "" {
 				variables["after"] = flagAfter
 			}
-{{- if .Endpoint.Pagination}}
+{{- if $supportsAllPagination}}
 			var data json.RawMessage
 			if flagAll && !flags.dryRun {
 				var items []json.RawMessage
@@ -211,7 +212,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- if .HasStore}}
 			prov := attachFreshness(DataProvenance{Source: "live"}, flags)
 {{- end}}
-{{- else if .Endpoint.Pagination}}
+{{- else if $supportsAllPagination}}
 {{- if .HasStore}}
 			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", path, map[string]string{
 {{- range .Endpoint.Params}}
@@ -248,7 +249,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- end}}
 {{- if .HasStore}}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
+			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if $supportsAllPagination}}true{{else}}false{{end}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
 {{- else}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			data, err := c.GetWithHeaders(cmd.Context(), path, params, headerOverrides)
@@ -480,7 +481,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- if or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH") (eq .Endpoint.Method "DELETE")}}
 			_ = statusCode
 {{- end}}
-{{- if and .HasStore (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD") .Endpoint.Pagination $isGraphQLEndpoint)}}
+{{- if and .HasStore (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD") $supportsAllPagination $isGraphQLEndpoint)}}
 			_ = prov
 {{- end}}
 			if flags.quiet {
@@ -762,7 +763,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- end}}
 {{- bodyFlagRegs .Endpoint}}
-{{- if .Endpoint.Pagination}}
+{{- if $supportsAllPagination}}
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Fetch all pages")
 {{- end}}
 {{- if or (and (or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")) (not $isMultipart) (not $isForm)) (and (eq .Endpoint.Method "DELETE") $hasJSONBody)}}

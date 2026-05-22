@@ -175,6 +175,19 @@ func TestEndpointIsWriteCommand(t *testing.T) {
 			want: false,
 		},
 		{
+			name:   "POST with id-walk filter body params is read",
+			opName: "executeReport",
+			endpoint: spec.Endpoint{
+				Method: "POST",
+				Path:   "/tickets/query",
+				Body: []spec.Param{
+					{Name: "MaxRecords", Type: "integer"},
+					{Name: "filter", Type: "array"},
+				},
+			},
+			want: false,
+		},
+		{
 			name:   "POST with mixed filter and write-shape body params stays write",
 			opName: "doStuff",
 			endpoint: spec.Endpoint{

@@ -8226,6 +8226,163 @@ func TestDetectPaginationDoesNotWireNestedNextPageWithoutRequestCursor(t *testin
 	assert.Empty(t, pag.NextCursorPath)
 }
 
+func TestDetectPostQueryIDWalkPagination(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		body        []spec.Param
+		pageDetails bool
+		idType      string
+		want        bool
+	}{
+		{
+			name:        "max records filter page details numeric id",
+			body:        []spec.Param{{Name: "MaxRecords", Type: "integer"}, {Name: "filter", Type: "array"}},
+			pageDetails: true,
+			idType:      "integer",
+			want:        true,
+		},
+		{
+			name:        "missing max records",
+			body:        []spec.Param{{Name: "filter", Type: "array"}},
+			pageDetails: true,
+			idType:      "integer",
+		},
+		{
+			name:        "filter must be array",
+			body:        []spec.Param{{Name: "MaxRecords", Type: "integer"}, {Name: "filter", Type: "object"}},
+			pageDetails: true,
+			idType:      "integer",
+		},
+		{
+			name:        "missing next page url",
+			body:        []spec.Param{{Name: "MaxRecords", Type: "integer"}, {Name: "filter", Type: "array"}},
+			pageDetails: false,
+			idType:      "integer",
+		},
+		{
+			name:        "string id is not id walk",
+			body:        []spec.Param{{Name: "MaxRecords", Type: "integer"}, {Name: "filter", Type: "array"}},
+			pageDetails: true,
+			idType:      "string",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pag := detectPostQueryIDWalkPagination(tt.body, postQueryIDWalkOperation(tt.pageDetails, tt.idType), "id")
+			if !tt.want {
+				assert.Nil(t, pag)
+				return
+			}
+			require.NotNil(t, pag)
+			assert.Equal(t, spec.PaginationTypeIDWalk, pag.Type)
+			assert.Equal(t, "MaxRecords", pag.LimitParam)
+		})
+	}
+}
+
+func TestParsePostQueryIDWalkPagination(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Post Query API
+  version: 1.0.0
+servers:
+  - url: https://post-query.example.com
+paths:
+  /tickets/query:
+    post:
+      operationId: queryTickets
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                MaxRecords:
+                  type: integer
+                  default: 500
+                filter:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      field:
+                        type: string
+                      op:
+                        type: string
+                      value: {}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                        summary:
+                          type: string
+                  pageDetails:
+                    type: object
+                    properties:
+                      nextPageUrl:
+                        type: string
+`))
+	require.NoError(t, err)
+	endpoint := parsed.Resources["tickets"].Endpoints["query"]
+	require.NotNil(t, endpoint.Pagination)
+	assert.Equal(t, spec.PaginationTypeIDWalk, endpoint.Pagination.Type)
+	assert.Equal(t, "MaxRecords", endpoint.Pagination.LimitParam)
+	assert.Equal(t, "id", endpoint.IDField)
+}
+
+func postQueryIDWalkOperation(pageDetails bool, idType string) *openapi3.Operation {
+	description := "OK"
+	responseProperties := openapi3.Schemas{
+		"items": &openapi3.SchemaRef{Value: &openapi3.Schema{
+			Type: &openapi3.Types{"array"},
+			Items: &openapi3.SchemaRef{Value: &openapi3.Schema{
+				Type: &openapi3.Types{"object"},
+				Properties: openapi3.Schemas{
+					"id": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{idType}}},
+				},
+			}},
+		}},
+	}
+	if pageDetails {
+		responseProperties["pageDetails"] = &openapi3.SchemaRef{Value: &openapi3.Schema{
+			Type: &openapi3.Types{"object"},
+			Properties: openapi3.Schemas{
+				"nextPageUrl": &openapi3.SchemaRef{Value: &openapi3.Schema{Type: &openapi3.Types{"string"}}},
+			},
+		}}
+	}
+	responses := openapi3.NewResponses()
+	responses.Set("200", &openapi3.ResponseRef{Value: &openapi3.Response{
+		Description: &description,
+		Content: openapi3.Content{
+			"application/json": &openapi3.MediaType{
+				Schema: &openapi3.SchemaRef{Value: &openapi3.Schema{
+					Type:       &openapi3.Types{"object"},
+					Properties: responseProperties,
+				}},
+			},
+		},
+	}})
+	return &openapi3.Operation{Responses: responses}
+}
+
 // TestDetectPaginationCursorBeatsPage guards mixed-form specs: when an
 // API declares both `cursor` and `page` (rare but real), cursor must
 // win so existing cursor-based sync loops stay on the body-cursor

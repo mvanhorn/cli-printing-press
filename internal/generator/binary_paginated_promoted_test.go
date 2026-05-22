@@ -133,7 +133,7 @@ func TestGenerateBinaryMCPToolsThreadHeaderOverrides(t *testing.T) {
 	require.NoError(t, gen.Generate())
 
 	mcpSrc := readGeneratedFile(t, outputDir, "internal", "mcp", "tools.go")
-	assert.Contains(t, mcpSrc, `makeAPIHandler("GET", "/voices/{voice_id}/download", true, map[string]string{"Accept": "application/octet-stream"},`,
+	assert.Contains(t, mcpSrc, `makeAPIHandler("GET", "/voices/{voice_id}/download", true, true, map[string]string{"Accept": "application/octet-stream"},`,
 		"typed MCP tools must carry per-endpoint header overrides")
 	assert.Contains(t, mcpSrc, `headers[client.BinaryResponseHeader] = "true"`,
 		"typed MCP tools must still add the binary sentinel")

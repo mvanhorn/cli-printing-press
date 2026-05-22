@@ -32,7 +32,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/currencies", false, nil, []mcpParamBinding{}, []string{}),
+		makeAPIHandler("GET", "/currencies", true, false, nil, []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_create",
@@ -43,7 +43,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("POST", "/projects", false, nil, []mcpParamBinding{{PublicName: "name", WireName: "name", Location: "body"}, {PublicName: "owner_email", WireName: "owner_email", Location: "body"}, {PublicName: "visibility", WireName: "visibility", Location: "body"}}, []string{}),
+		makeAPIHandler("POST", "/projects", false, false, nil, []mcpParamBinding{{PublicName: "name", WireName: "name", Location: "body"}, {PublicName: "owner_email", WireName: "owner_email", Location: "body"}, {PublicName: "visibility", WireName: "visibility", Location: "body"}}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_get",
@@ -53,7 +53,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/projects/{projectId}", false, nil, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}}, []string{"projectId"}),
+		makeAPIHandler("GET", "/projects/{projectId}", true, false, nil, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}}, []string{"projectId"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_list",
@@ -65,7 +65,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/projects", false, nil, []mcpParamBinding{{PublicName: "status", WireName: "status", Location: "query"}, {PublicName: "limit", WireName: "limit", Location: "query"}, {PublicName: "cursor", WireName: "cursor", Location: "query"}}, []string{}),
+		makeAPIHandler("GET", "/projects", true, false, nil, []mcpParamBinding{{PublicName: "status", WireName: "status", Location: "query"}, {PublicName: "limit", WireName: "limit", Location: "query"}, {PublicName: "cursor", WireName: "cursor", Location: "query"}}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_avatar_upload-project",
@@ -76,7 +76,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("file", mcplib.Description("File")),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("PUT", "/projects/{projectId}/avatar", false, nil, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path", RequestContentType: "multipart/form-data"}, {PublicName: "overwrite", WireName: "overwrite", Location: "query", RequestContentType: "multipart/form-data"}, {PublicName: "caption", WireName: "caption", Location: "body", RequestContentType: "multipart/form-data"}, {PublicName: "file", WireName: "file", Location: "body", Format: "binary", RequestContentType: "multipart/form-data"}}, []string{"projectId"}),
+		makeAPIHandler("PUT", "/projects/{projectId}/avatar", false, false, nil, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path", RequestContentType: "multipart/form-data"}, {PublicName: "overwrite", WireName: "overwrite", Location: "query", RequestContentType: "multipart/form-data"}, {PublicName: "caption", WireName: "caption", Location: "body", RequestContentType: "multipart/form-data"}, {PublicName: "file", WireName: "file", Location: "body", Format: "binary", RequestContentType: "multipart/form-data"}}, []string{"projectId"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_tasks_list-project",
@@ -89,7 +89,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/projects/{projectId}/tasks", false, nil, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "priority", WireName: "priority", Location: "query"}, {PublicName: "limit", WireName: "limit", Location: "query"}, {PublicName: "cursor", WireName: "cursor", Location: "query"}}, []string{"projectId"}),
+		makeAPIHandler("GET", "/projects/{projectId}/tasks", true, false, nil, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "priority", WireName: "priority", Location: "query"}, {PublicName: "limit", WireName: "limit", Location: "query"}, {PublicName: "cursor", WireName: "cursor", Location: "query"}}, []string{"projectId"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("projects_tasks_update-project",
@@ -102,7 +102,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithString("title", mcplib.Description("Title")),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("PATCH", "/projects/{projectId}/tasks/{taskId}", false, nil, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "taskId", WireName: "taskId", Location: "path"}, {PublicName: "notify", WireName: "notify", Location: "query"}, {PublicName: "completed", WireName: "completed", Location: "body"}, {PublicName: "priority", WireName: "priority", Location: "body"}, {PublicName: "title", WireName: "title", Location: "body"}}, []string{"projectId", "taskId"}),
+		makeAPIHandler("PATCH", "/projects/{projectId}/tasks/{taskId}", false, false, nil, []mcpParamBinding{{PublicName: "projectId", WireName: "projectId", Location: "path"}, {PublicName: "taskId", WireName: "taskId", Location: "path"}, {PublicName: "notify", WireName: "notify", Location: "query"}, {PublicName: "completed", WireName: "completed", Location: "body"}, {PublicName: "priority", WireName: "priority", Location: "body"}, {PublicName: "title", WireName: "title", Location: "body"}}, []string{"projectId", "taskId"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("public_get-status",
@@ -111,7 +111,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/public/status", false, nil, []mcpParamBinding{}, []string{}),
+		makeAPIHandler("GET", "/public/status", true, false, nil, []mcpParamBinding{}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("reports_export_report-year",
@@ -121,7 +121,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/reports/{year}/export", true, map[string]string{"Accept": "application/octet-stream"}, []mcpParamBinding{{PublicName: "year", WireName: "year", Location: "path"}}, []string{"year"}),
+		makeAPIHandler("GET", "/reports/{year}/export", true, true, map[string]string{"Accept": "application/octet-stream"}, []mcpParamBinding{{PublicName: "year", WireName: "year", Location: "path"}}, []string{"year"}),
 	)
 	s.AddTool(
 		mcplib.NewTool("reports_summary_get-report-year",
@@ -131,7 +131,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/reports/{year}/summary", false, nil, []mcpParamBinding{{PublicName: "year", WireName: "year", Location: "path"}}, []string{"year"}),
+		makeAPIHandler("GET", "/reports/{year}/summary", true, false, nil, []mcpParamBinding{{PublicName: "year", WireName: "year", Location: "path"}}, []string{"year"}),
 	)
 	// Search tool — faster than iterating list endpoints for finding specific items
 	s.AddTool(
@@ -190,7 +190,7 @@ func mcpMultipartFieldValue(v any) string {
 }
 
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
-func makeAPIHandler(method, pathTemplate string, binaryResponse bool, headerOverrides map[string]string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
+func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse bool, headerOverrides map[string]string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		c, err := newMCPClient()
 		if err != nil {
@@ -297,10 +297,18 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, headerOver
 				break
 			}
 			if len(headers) > 0 {
-				data, _, err = c.PostWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				if readOnly {
+					data, _, err = c.PostQueryWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				} else {
+					data, _, err = c.PostWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				}
 				break
 			}
-			data, _, err = c.PostWithParams(ctx, path, params, bodyArgs)
+			if readOnly {
+				data, _, err = c.PostQueryWithParams(ctx, path, params, bodyArgs)
+			} else {
+				data, _, err = c.PostWithParams(ctx, path, params, bodyArgs)
+			}
 		case "PUT":
 			if multipart {
 				if len(headers) > 0 {

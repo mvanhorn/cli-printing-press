@@ -42,7 +42,7 @@ type DomainSignals struct {
 // PaginationProfile describes the detected pagination patterns across the API.
 type PaginationProfile struct {
 	CursorParam     string `json:"cursor_param"`      // most common cursor param name (after, cursor, page_token, offset)
-	CursorType      string `json:"cursor_type"`       // most common paginator class (cursor, page_token, offset, page); drives runtime iteration strategy
+	CursorType      string `json:"cursor_type"`       // most common paginator class (cursor, page_token, offset, page, id_walk); drives runtime iteration strategy
 	PageSizeParam   string `json:"page_size_param"`   // most common page size param (limit, per_page, page_size, first)
 	SinceParam      string `json:"since_param"`       // temporal filter param (since, updated_after, modified_since)
 	DateRangeParam  string `json:"date_range_param"`  // date-range filter param (dates, date_range, dateRange)
@@ -129,6 +129,12 @@ type SyncableResource struct {
 	// RPC-style list calls.
 	BodyFields []SyncBodyField
 
+	// IDWalkFilterParam names the array body field that accepts filter
+	// predicates for id-walk POST query pagination.
+	IDWalkFilterParam string
+	IDWalkLimitParam  string
+	IDWalkPageSize    int
+
 	FieldSelector FieldSelector
 
 	// Discriminator routes heterogeneous response items to concrete typed
@@ -178,6 +184,11 @@ type DependentResource struct {
 
 	// BodyFields mirrors SyncableResource.BodyFields for child sync paths.
 	BodyFields []SyncBodyField
+
+	// IDWalkFilterParam mirrors SyncableResource.IDWalkFilterParam.
+	IDWalkFilterParam string
+	IDWalkLimitParam  string
+	IDWalkPageSize    int
 
 	FieldSelector FieldSelector
 
@@ -454,13 +465,13 @@ func Profile(s *spec.APISpec) *APIProfile {
 			}
 
 			if endpoint.Pagination != nil {
-				if endpoint.Pagination.CursorParam != "" {
+				if endpoint.Pagination.Type != spec.PaginationTypeIDWalk && endpoint.Pagination.CursorParam != "" {
 					cursorParams[endpoint.Pagination.CursorParam]++
 				}
-				if endpoint.Pagination.Type != "" {
+				if endpoint.Pagination.Type != "" && endpoint.Pagination.Type != spec.PaginationTypeIDWalk {
 					cursorTypes[endpoint.Pagination.Type]++
 				}
-				if endpoint.Pagination.LimitParam != "" {
+				if endpoint.Pagination.Type != spec.PaginationTypeIDWalk && endpoint.Pagination.LimitParam != "" {
 					pageSizeParams[endpoint.Pagination.LimitParam]++
 				}
 			} else {
@@ -759,7 +770,8 @@ func dataFit(v bool) int {
 var (
 	pageSizeParamCandidates = map[string]bool{
 		"limit": true, "per_page": true, "page_size": true, "pagesize": true,
-		"first": true, "count": true, "max_results": true, "page[size]": true,
+		"first": true, "count": true, "max_results": true, "maxrecords": true,
+		"max_records": true, "page[size]": true,
 	}
 	cursorParamCandidates = map[string]bool{
 		"after": true, "cursor": true, "page_token": true, "offset": true,
@@ -1144,6 +1156,9 @@ func detectDependentResources(parameterized map[string]parameterizedEntry, synca
 			UsesHTMLResponse:   entry.meta.UsesHTMLResponse,
 			HTMLExtract:        entry.meta.HTMLExtract,
 			BodyFields:         entry.meta.BodyFields,
+			IDWalkFilterParam:  entry.meta.IDWalkFilterParam,
+			IDWalkLimitParam:   entry.meta.IDWalkLimitParam,
+			IDWalkPageSize:     entry.meta.IDWalkPageSize,
 			FieldSelector:      entry.meta.FieldSelector,
 			Discriminator:      entry.meta.Discriminator,
 		})
@@ -1255,6 +1270,9 @@ func applySpecWalkers(s *spec.APISpec, deps []DependentResource, syncable map[st
 				UsesHTMLResponse:   meta.UsesHTMLResponse,
 				HTMLExtract:        meta.HTMLExtract,
 				BodyFields:         meta.BodyFields,
+				IDWalkFilterParam:  meta.IDWalkFilterParam,
+				IDWalkLimitParam:   meta.IDWalkLimitParam,
+				IDWalkPageSize:     meta.IDWalkPageSize,
 				FieldSelector:      meta.FieldSelector,
 				Discriminator:      meta.Discriminator,
 				KeyField:           keyField,
@@ -1340,6 +1358,9 @@ type syncableMeta struct {
 	UsesHTMLResponse   bool
 	HTMLExtract        *spec.HTMLExtract
 	BodyFields         []SyncBodyField
+	IDWalkFilterParam  string
+	IDWalkLimitParam   string
+	IDWalkPageSize     int
 	FieldSelector      FieldSelector
 	Discriminator      DiscriminatorDispatch
 }
@@ -1363,6 +1384,7 @@ type parameterizedEntry struct {
 // inference). Keeps the per-endpoint plumbing in one place so future profiler
 // fields propagate uniformly.
 func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, types map[string]spec.TypeDef, resourceNameIndex map[string]string) syncableMeta {
+	idWalkFilterParam, idWalkLimitParam, idWalkPageSize := detectIDWalkParams(e)
 	return syncableMeta{
 		Path:               e.Path,
 		Method:             strings.ToUpper(e.Method),
@@ -1374,6 +1396,9 @@ func metaFromEndpoint(s *spec.APISpec, resource spec.Resource, e spec.Endpoint, 
 		UsesHTMLResponse:   e.UsesHTMLResponse(),
 		HTMLExtract:        e.HTMLExtract,
 		BodyFields:         syncBodyFieldsFromEndpoint(e),
+		IDWalkFilterParam:  idWalkFilterParam,
+		IDWalkLimitParam:   idWalkLimitParam,
+		IDWalkPageSize:     idWalkPageSize,
 		FieldSelector:      detectEndpointFieldSelector(e),
 		Discriminator:      discriminatorDispatchForEndpoint(e, types, resourceNameIndex),
 	}
@@ -1403,6 +1428,70 @@ func syncBodyDefault(param spec.Param) (any, bool) {
 		return param.Enum[0], true
 	}
 	return nil, false
+}
+
+func detectIDWalkParams(endpoint spec.Endpoint) (string, string, int) {
+	if endpoint.Pagination == nil || endpoint.Pagination.Type != spec.PaginationTypeIDWalk || strings.TrimSpace(endpoint.IDField) == "" {
+		return "", "", 0
+	}
+	limitParam := strings.ToLower(strings.TrimSpace(endpoint.Pagination.LimitParam))
+	if limitParam == "" {
+		return "", "", 0
+	}
+	var hasLimit bool
+	var filterParam string
+	var resolvedLimitParam string
+	for _, param := range endpoint.Body {
+		switch strings.ToLower(strings.TrimSpace(param.Name)) {
+		case limitParam:
+			hasLimit = true
+			resolvedLimitParam = param.Name
+		case "filter", "filters":
+			if param.Type == "array" {
+				filterParam = param.Name
+			}
+		}
+	}
+	if !hasLimit || filterParam == "" {
+		return "", "", 0
+	}
+	pageSize := 100
+	if defaultSize, ok := paginationLimitDefault(endpoint); ok {
+		pageSize = defaultSize
+	}
+	return filterParam, resolvedLimitParam, pageSize
+}
+
+func paginationLimitDefault(endpoint spec.Endpoint) (int, bool) {
+	if endpoint.Pagination == nil || strings.TrimSpace(endpoint.Pagination.LimitParam) == "" {
+		return 0, false
+	}
+	limitName := strings.ToLower(endpoint.Pagination.LimitParam)
+	params := append(append([]spec.Param{}, endpoint.Params...), endpoint.Body...)
+	for _, param := range params {
+		if strings.ToLower(param.Name) != limitName {
+			continue
+		}
+		value, ok := syncBodyDefault(param)
+		if !ok {
+			return 0, false
+		}
+		switch v := value.(type) {
+		case int:
+			if v > 0 {
+				return v, true
+			}
+		case int64:
+			if v > 0 {
+				return int(v), true
+			}
+		case float64:
+			if v > 0 {
+				return int(v), true
+			}
+		}
+	}
+	return 0, false
 }
 
 // detectEndpointSinceParam returns the actual query parameter name this
@@ -1652,6 +1741,9 @@ func sortedSyncableResources(m map[string]syncableMeta) []SyncableResource {
 			UsesHTMLResponse:   meta.UsesHTMLResponse,
 			HTMLExtract:        meta.HTMLExtract,
 			BodyFields:         meta.BodyFields,
+			IDWalkFilterParam:  meta.IDWalkFilterParam,
+			IDWalkLimitParam:   meta.IDWalkLimitParam,
+			IDWalkPageSize:     meta.IDWalkPageSize,
 			FieldSelector:      meta.FieldSelector,
 			Discriminator:      meta.Discriminator,
 		}

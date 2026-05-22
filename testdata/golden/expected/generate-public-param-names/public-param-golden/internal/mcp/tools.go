@@ -30,7 +30,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("POST", "/stores", false, nil, []mcpParamBinding{{PublicName: "store-code", WireName: "store_code", Location: "body"}}, []string{}),
+		makeAPIHandler("POST", "/stores", false, false, nil, []mcpParamBinding{{PublicName: "store-code", WireName: "store_code", Location: "body"}}, []string{}),
 	)
 	s.AddTool(
 		mcplib.NewTool("stores_find",
@@ -41,7 +41,7 @@ func RegisterTools(s *server.MCPServer) {
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
 		),
-		makeAPIHandler("GET", "/power/store-locator", false, nil, []mcpParamBinding{{PublicName: "address", WireName: "s", Location: "query"}, {PublicName: "city", WireName: "c", Location: "query"}}, []string{}),
+		makeAPIHandler("GET", "/power/store-locator", true, false, nil, []mcpParamBinding{{PublicName: "address", WireName: "s", Location: "query"}, {PublicName: "city", WireName: "c", Location: "query"}}, []string{}),
 	)
 
 	// Context tool — front-loaded domain knowledge for agents.
@@ -67,7 +67,7 @@ type mcpParamBinding struct {
 }
 
 // makeAPIHandler creates a generic MCP tool handler for an API endpoint.
-func makeAPIHandler(method, pathTemplate string, binaryResponse bool, headerOverrides map[string]string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
+func makeAPIHandler(method, pathTemplate string, readOnly bool, binaryResponse bool, headerOverrides map[string]string, bindings []mcpParamBinding, positionalParams []string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 		c, err := newMCPClient()
 		if err != nil {
@@ -150,10 +150,18 @@ func makeAPIHandler(method, pathTemplate string, binaryResponse bool, headerOver
 			data, err = c.Get(ctx, path, params)
 		case "POST":
 			if len(headers) > 0 {
-				data, _, err = c.PostWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				if readOnly {
+					data, _, err = c.PostQueryWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				} else {
+					data, _, err = c.PostWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)
+				}
 				break
 			}
-			data, _, err = c.PostWithParams(ctx, path, params, bodyArgs)
+			if readOnly {
+				data, _, err = c.PostQueryWithParams(ctx, path, params, bodyArgs)
+			} else {
+				data, _, err = c.PostWithParams(ctx, path, params, bodyArgs)
+			}
 		case "PUT":
 			if len(headers) > 0 {
 				data, _, err = c.PutWithParamsAndHeaders(ctx, path, params, bodyArgs, headers)

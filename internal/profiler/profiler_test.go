@@ -883,6 +883,95 @@ func TestProfileRPCStylePostListEndpointSyncable(t *testing.T) {
 	assert.NotContains(t, syncNames, "widgets", "POST create endpoints without pagination must not be syncable")
 }
 
+func TestProfileIDWalkPostQueryMetadata(t *testing.T) {
+	s := &spec.APISpec{
+		Name: "id-walk-post-api",
+		Resources: map[string]spec.Resource{
+			"tickets": {
+				Endpoints: map[string]spec.Endpoint{
+					"query": {
+						Method:  "POST",
+						Path:    "/api/tickets/query",
+						IDField: "id",
+						Body: []spec.Param{
+							{Name: "MaxRecords", Type: "integer", Default: 500},
+							{Name: "filter", Type: "array"},
+						},
+						Pagination: &spec.Pagination{
+							Type:       spec.PaginationTypeIDWalk,
+							LimitParam: "MaxRecords",
+						},
+						Response: spec.ResponseDef{Type: "object", Item: "TicketsResponse"},
+					},
+				},
+			},
+			"notes": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/api/notes",
+						Params: []spec.Param{
+							{Name: "limit", Type: "integer", Default: 25},
+							{Name: "cursor", Type: "string"},
+						},
+						Pagination: &spec.Pagination{
+							Type:        "cursor",
+							CursorParam: "cursor",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "Note"},
+					},
+				},
+			},
+			"users": {
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method: "GET",
+						Path:   "/api/users",
+						Params: []spec.Param{
+							{Name: "limit", Type: "integer", Default: 25},
+							{Name: "cursor", Type: "string"},
+						},
+						Pagination: &spec.Pagination{
+							Type:        "cursor",
+							CursorParam: "cursor",
+							LimitParam:  "limit",
+						},
+						Response: spec.ResponseDef{Type: "array", Item: "User"},
+					},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{
+			"TicketsResponse": {
+				Fields: []spec.TypeField{
+					{Name: "items", Type: "array"},
+					{Name: "pageDetails", Type: "object"},
+				},
+			},
+			"Note": {Fields: []spec.TypeField{{Name: "id", Type: "string"}}},
+			"User": {Fields: []spec.TypeField{{Name: "id", Type: "string"}}},
+		},
+	}
+
+	profile := Profile(s)
+
+	syncByName := make(map[string]SyncableResource)
+	for _, resource := range profile.SyncableResources {
+		syncByName[resource.Name] = resource
+	}
+	tickets := syncByName["tickets"]
+	assert.Equal(t, "tickets", tickets.Name)
+	assert.Equal(t, "POST", tickets.Method)
+	assert.True(t, tickets.SupportsPagination)
+	assert.Equal(t, "filter", tickets.IDWalkFilterParam)
+	assert.Equal(t, "MaxRecords", tickets.IDWalkLimitParam)
+	assert.Equal(t, 500, tickets.IDWalkPageSize)
+	assert.Equal(t, "cursor", profile.Pagination.CursorType)
+	assert.Equal(t, "limit", profile.Pagination.PageSizeParam)
+	assert.Equal(t, 100, profile.Pagination.DefaultPageSize)
+}
+
 func TestProfileDependentResources(t *testing.T) {
 	// A spec with /channels (flat) and /channels/{channelId}/messages (parameterized)
 	// should produce a DependentResource linking messages to channels.

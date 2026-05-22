@@ -9,6 +9,7 @@
 {{- $isReadVerb := or (eq $method "GET") (eq $method "HEAD") (eq $method "OPTIONS")}}
 {{- $isWriteVerb := or (eq $method "POST") (eq $method "PUT") (eq $method "PATCH")}}
 {{- $canWriteBack := and .HasStore $isWriteVerb (not .IsReadOnly) (not .Endpoint.UsesBinaryResponse)}}
+{{- $supportsAllPagination := and .Endpoint.Pagination (ne .Endpoint.Pagination.Type "id_walk")}}
 
 package cli
 
@@ -33,7 +34,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- bodyVarDecls .Endpoint}}
-{{- if .Endpoint.Pagination}}
+{{- if $supportsAllPagination}}
 	var flagAll bool
 {{- end}}
 
@@ -148,7 +149,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			}
 {{- end}}
 
-{{- if .Endpoint.Pagination}}
+{{- if $supportsAllPagination}}
 {{- if .HasStore}}
 			data, prov, err := resolvePaginatedRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", path, map[string]string{
 {{- range .Endpoint.Params}}
@@ -187,7 +188,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- if and .HasStore (eq (upper .Endpoint.Method) "GET")}}
-			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if .Endpoint.Pagination}}true{{else}}false{{end}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
+			data, prov, err := resolveRead(cmd.Context(), c, flags, "{{lower .ResourceName}}", {{if $supportsAllPagination}}true{{else}}false{{end}}, path, params, {{if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}headerOverrides{{else}}nil{{end}}, cmd.ErrOrStderr())
 {{- else if eq $method "GET"}}
 {{- if or .Endpoint.HeaderOverrides .Endpoint.UsesBinaryResponse}}
 			data, err := c.GetWithHeaders(cmd.Context(), path, params, headerOverrides)
@@ -374,7 +375,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- end}}
 {{- bodyFlagRegs .Endpoint}}
-{{- if .Endpoint.Pagination}}
+{{- if $supportsAllPagination}}
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Fetch all pages")
 {{- end}}
 
