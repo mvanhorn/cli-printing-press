@@ -1934,7 +1934,7 @@ func promotedCommandsCanUnwrapResponse(commands []PromotedCommand) bool {
 	return false
 }
 
-func parentCommandShort(resourceName, parentName string, resource spec.Resource) string {
+func parentCommandShort(resourceName, parentName string, resource spec.Resource, apiDescriptionShort string) string {
 	short := naming.OneLine(resource.Description)
 	if !naming.IsThinCommandShort(short) {
 		return short
@@ -1959,12 +1959,78 @@ func parentCommandShort(resourceName, parentName string, resource spec.Resource)
 		return "Manage " + target + " for " + parent
 	}
 
+	if apiDescriptionShort != "" {
+		return apiDescriptionShort
+	}
 	if actions := parentCommandActions(resource.Endpoints); actions != "" {
 		if computed := actions + " " + target; !naming.IsThinCommandShort(computed) {
 			return computed
 		}
 	}
 	return "Manage " + target + " command groups"
+}
+
+func parentCommandInfoDescriptionShort(description string) string {
+	description = naming.OneLineNormalize(description)
+	if description == "" {
+		return ""
+	}
+
+	for idx, r := range description {
+		if r != '.' && r != '!' && r != '?' {
+			continue
+		}
+		if r == '.' && parentCommandShortPeriodIsInternal(description, idx) {
+			continue
+		}
+		sentence := parentCommandShortCompact(description[:idx+len(string(r))])
+		if !naming.IsThinCommandShort(sentence) {
+			return sentence
+		}
+		return ""
+	}
+
+	short := parentCommandShortCompact(description)
+	if !naming.IsThinCommandShort(short) {
+		return short
+	}
+	return ""
+}
+
+func parentCommandShortCompact(description string) string {
+	description = naming.OneLineNormalize(description)
+	runes := []rune(description)
+	if len(runes) <= 120 {
+		return description
+	}
+
+	cut := string(runes[:120])
+	if idx := strings.LastIndex(cut, " "); idx > 60 {
+		return strings.TrimRight(cut[:idx], " ,;:")
+	}
+	return strings.TrimRight(cut, " ,;:")
+}
+
+func parentCommandShortPeriodIsInternal(description string, idx int) bool {
+	if idx <= 0 || idx >= len(description)-1 {
+		return false
+	}
+
+	prev, next := description[idx-1], description[idx+1]
+	if (isASCIILetter(prev) || isASCIIDigit(prev)) && (isASCIILetter(next) || isASCIIDigit(next)) {
+		return true
+	}
+
+	tokenStart := strings.LastIndex(description[:idx], " ") + 1
+	return strings.Contains(description[tokenStart:idx], ".")
+}
+
+func isASCIILetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+func isASCIIDigit(b byte) bool {
+	return b >= '0' && b <= '9'
 }
 
 func parentCommandActions(endpoints map[string]spec.Endpoint) string {
@@ -2063,6 +2129,10 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 	// promoted commands the api browser is not generated, so leave resources
 	// visible.
 	hideTopLevelResources := len(g.PromotedCommands) > 0
+	var apiDescriptionShort string
+	if len(g.Spec.Resources) == 1 {
+		apiDescriptionShort = parentCommandInfoDescriptionShort(g.Spec.Description)
+	}
 	// Generate per-resource parent files + per-endpoint command files
 	// This produces more files (one per endpoint) which improves Breadth scoring
 	for name, resource := range g.Spec.Resources {
@@ -2082,7 +2152,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				ResourceName: name,
 				FuncPrefix:   name,
 				CommandPath:  name,
-				Short:        parentCommandShort(name, "", resource),
+				Short:        parentCommandShort(name, "", resource, apiDescriptionShort),
 				Resource:     resource,
 				Hidden:       hideTopLevelResources,
 				APISpec:      g.Spec,
@@ -2135,7 +2205,7 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 				ResourceName: subName,
 				FuncPrefix:   name + "-" + subName,
 				CommandPath:  name + " " + subName,
-				Short:        parentCommandShort(subName, name, subResource),
+				Short:        parentCommandShort(subName, name, subResource, ""),
 				Resource:     subResource,
 				Hidden:       false,
 				APISpec:      g.Spec,

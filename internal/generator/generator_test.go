@@ -12591,9 +12591,250 @@ func TestGenerateParentCommandShorts_AreAgentGradeForGroupers(t *testing.T) {
 		Endpoints: map[string]spec.Endpoint{
 			"query": {Method: "POST", Path: "/reports/query", Description: "Query reports"},
 		},
-	})
+	}, "")
 	assert.Equal(t, "Manage reports command groups", topLevelReportsShort,
 		"single-action top-level groupers should fall back when the action-derived Short is still thin")
 	assert.NotEqual(t, "Query reports", topLevelReportsShort,
 		"top-level parent groupers must not emit action-derived Shorts that tools-audit still flags")
+}
+
+func TestParentCommandInfoDescriptionShort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		description string
+		want        string
+	}{
+		{
+			name:        "first sentence",
+			description: "Coordinate video publishing workflows across channels. This second sentence belongs in longer docs.",
+			want:        "Coordinate video publishing workflows across channels.",
+		},
+		{
+			name:        "thin first sentence does not fall through",
+			description: "API. Coordinate video publishing workflows across channels.",
+			want:        "",
+		},
+		{
+			name:        "abbreviation period stays in first sentence",
+			description: "The U.S. Census Bureau API provides access to datasets. This second sentence belongs in longer docs.",
+			want:        "The U.S. Census Bureau API provides access to datasets.",
+		},
+		{
+			name:        "decimal period stays in first sentence",
+			description: "Use the v2.0 reporting API for exports. This second sentence belongs in longer docs.",
+			want:        "Use the v2.0 reporting API for exports.",
+		},
+		{
+			name:        "version placeholder period stays in first sentence",
+			description: "Use the v1.x reporting API for exports. This second sentence belongs in longer docs.",
+			want:        "Use the v1.x reporting API for exports.",
+		},
+		{
+			name:        "long version placeholder sentence stays useful",
+			description: "Use the v1.x reporting API for exporting analytics dashboards billing records team usage metrics attribution windows cohort slices retention curves and billing forecasts. This second sentence belongs in longer docs.",
+			want:        "Use the v1.x reporting API for exporting analytics dashboards billing records team usage metrics attribution windows",
+		},
+		{
+			name:        "long first sentence stays compact",
+			description: "Coordinate video publishing workflows across channels, regions, partners, approval queues, localization states, analytics exports, campaign plans, compliance reviews, and publishing calendars. This second sentence belongs in longer docs.",
+			want:        "Coordinate video publishing workflows across channels, regions, partners, approval queues, localization states",
+		},
+		{
+			name:        "no punctuation uses full description",
+			description: "Coordinate video publishing workflows across channels",
+			want:        "Coordinate video publishing workflows across channels",
+		},
+		{
+			name:        "long unpunctuated description stays compact",
+			description: "Coordinate video publishing workflows across channels regions partners approval queues localization states analytics exports campaign plans compliance reviews and publishing calendars",
+			want:        "Coordinate video publishing workflows across channels regions partners approval queues localization states analytics",
+		},
+		{
+			name:        "thin unpunctuated description ignored",
+			description: "Video API",
+			want:        "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, parentCommandInfoDescriptionShort(tt.description))
+		})
+	}
+}
+
+func TestGenerateParentCommandShorts_UseOpenAPIProseFallbacks(t *testing.T) {
+	t.Parallel()
+
+	t.Run("tag description", func(t *testing.T) {
+		t.Parallel()
+
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Billing API
+  version: 1.0.0
+  description: Generic billing API fallback.
+servers:
+  - url: https://api.example.com
+tags:
+  - name: Customers
+    description: Manage customer records, subscriptions, and billing profiles.
+paths:
+  /customers:
+    get:
+      operationId: listCustomers
+      tags: [Customers]
+      summary: List customers
+      responses:
+        '200':
+          description: OK
+  /customers/{customer_id}:
+    get:
+      operationId: getCustomer
+      tags: [Customers]
+      summary: Get customer
+      parameters:
+        - name: customer_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+`)
+
+		apiSpec, err := openapi.Parse(data)
+		require.NoError(t, err)
+
+		outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		src, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "customers.go"))
+		require.NoError(t, err)
+		assert.Regexp(t, `Short:\s+"Manage customer records, subscriptions, and billing profiles\."`, string(src))
+		assert.NotRegexp(t, `Short:\s+"Generic billing API fallback\."`, string(src))
+	})
+
+	t.Run("info description first sentence", func(t *testing.T) {
+		t.Parallel()
+
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Video API
+  version: 1.0.0
+  description: Coordinate video publishing workflows across channels. This second sentence belongs in longer docs.
+servers:
+  - url: https://api.example.com
+paths:
+  /videos:
+    get:
+      operationId: listVideos
+      summary: List videos
+      responses:
+        '200':
+          description: OK
+  /videos/{video_id}:
+    get:
+      operationId: getVideo
+      summary: Get video
+      parameters:
+        - name: video_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+`)
+
+		apiSpec, err := openapi.Parse(data)
+		require.NoError(t, err)
+
+		outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		src, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "videos.go"))
+		require.NoError(t, err)
+		assert.Regexp(t, `Short:\s+"Coordinate video publishing workflows across channels\."`, string(src))
+		assert.NotRegexp(t, `This second sentence`, string(src))
+	})
+
+	t.Run("multi resource spec keeps resource-specific shorts", func(t *testing.T) {
+		t.Parallel()
+
+		data := []byte(`
+openapi: 3.0.3
+info:
+  title: Commerce API
+  version: 1.0.0
+  description: Coordinate commerce workflows across customer and invoice records.
+servers:
+  - url: https://api.example.com
+paths:
+  /customers:
+    get:
+      operationId: listCustomers
+      summary: List customers
+      responses:
+        '200':
+          description: OK
+  /customers/{customer_id}:
+    get:
+      operationId: getCustomer
+      summary: Get customer
+      parameters:
+        - name: customer_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+  /invoices:
+    get:
+      operationId: listInvoices
+      summary: List invoices
+      responses:
+        '200':
+          description: OK
+  /invoices/{invoice_id}:
+    get:
+      operationId: getInvoice
+      summary: Get invoice
+      parameters:
+        - name: invoice_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+`)
+
+		apiSpec, err := openapi.Parse(data)
+		require.NoError(t, err)
+
+		outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+		require.NoError(t, New(apiSpec, outputDir).Generate())
+
+		customersSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "customers.go"))
+		require.NoError(t, err)
+		assert.Regexp(t, `Short:\s+"List and get customers"`, string(customersSrc))
+		assert.NotRegexp(t, `Coordinate commerce workflows`, string(customersSrc))
+
+		invoicesSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "invoices.go"))
+		require.NoError(t, err)
+		assert.Regexp(t, `Short:\s+"List and get invoices"`, string(invoicesSrc))
+		assert.NotRegexp(t, `Coordinate commerce workflows`, string(invoicesSrc))
+	})
 }
