@@ -1985,8 +1985,6 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 		return "", nil
 	}
 
-	usageCounts := securitySchemeOperationUsageCounts(doc)
-
 	if pref := strings.TrimSpace(authPreference); pref != "" {
 		for _, name := range allSecuritySchemeNames(doc) {
 			if !strings.EqualFold(name, pref) {
@@ -1999,6 +1997,7 @@ func selectSecurityScheme(doc *openapi3.T, authPreference string) (string, *open
 		}
 	}
 
+	usageCounts := securitySchemeOperationUsageCounts(doc)
 	candidates := candidateSecuritySchemeNames(doc, usageCounts)
 
 	bestScore := math.MaxInt
@@ -2498,26 +2497,22 @@ func operationServerBaseURL(specBaseURL string, pathItem *openapi3.PathItem, op 
 //   - The operation has security: [{}] (empty object = anonymous alternative)
 //   - The operation inherits global security and the global security is empty
 func operationAllowsAnonymous(op *openapi3.Operation, doc *openapi3.T) bool {
-	requirements := effectiveSecurityRequirements(op, doc)
 	if op != nil && op.Security != nil {
-		// Per-operation security declared
-		if len(requirements) == 0 {
-			return true // security: []
-		}
-		for _, req := range requirements {
-			if len(req) == 0 {
-				return true // security: [{}]
-			}
-		}
-		return false
+		return securityRequirementsAllowAnonymous(*op.Security)
 	}
-	// op.Security is nil — inherits global security
-	if doc != nil && doc.Security != nil && len(requirements) == 0 {
-		return true // global security: []
+	if doc != nil && doc.Security != nil {
+		return securityRequirementsAllowAnonymous(doc.Security)
+	}
+	return false
+}
+
+func securityRequirementsAllowAnonymous(requirements openapi3.SecurityRequirements) bool {
+	if len(requirements) == 0 {
+		return true
 	}
 	for _, req := range requirements {
 		if len(req) == 0 {
-			return true // global security: [{}]
+			return true
 		}
 	}
 	return false
