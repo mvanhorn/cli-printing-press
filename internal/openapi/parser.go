@@ -5957,12 +5957,7 @@ func humanizeEndpointName(name string) string {
 }
 
 func humanizeResourceName(name string) string {
-	words := strings.Split(strings.ReplaceAll(name, "_", "-"), "-")
-	if len(words) == 0 {
-		return ""
-	}
-	sentence := "Manage " + strings.Join(words, " ")
-	return sentence
+	return spec.DefaultResourceDescription(name)
 }
 
 func humanizeConcatenated(s string) string {

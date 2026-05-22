@@ -1286,6 +1286,12 @@ type Resource struct {
 	SubResources map[string]Resource `yaml:"sub_resources,omitempty" json:"sub_resources,omitempty"`
 }
 
+// DefaultResourceDescription returns the parser fallback description for a
+// resource that has no source-provided prose.
+func DefaultResourceDescription(name string) string {
+	return "Manage " + strings.ReplaceAll(strings.ReplaceAll(name, "_", "-"), "-", " ")
+}
+
 // HasResourceBaseURLOverride reports whether any resource or endpoint declares
 // a BaseURL override. Used by the client template to gate the absolute-URL
 // detection branch — specs that don't opt in regenerate byte-identically.
