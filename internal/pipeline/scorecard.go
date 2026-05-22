@@ -1790,7 +1790,7 @@ func evaluateAuthProtocol(dir string, spec *openAPISpecInfo) dimensionScore {
 			score += 4 // env var support present
 		}
 		// AuthProtocol pattern: standard/custom header auth in generated client.
-		if strings.Contains(clientContent, "Authorization") || strings.Contains(clientContent, "X-Api-Key") || strings.Contains(clientContent, "X-Auth-Token") || strings.Contains(clientContent, "X-Access-Token") {
+		if inferredAuthHeaderAssignmentPresent(clientContent) {
 			score += 3 // client sends auth header (standard or custom)
 		}
 		// Query-param auth (e.g., TMDb ?api_key=, Google Maps ?key=):
@@ -1959,6 +1959,8 @@ func scoreAuthScheme(clientContent, configContent, authContent string, hasStruct
 
 	if strings.EqualFold(scheme.Type, "apikey") && scheme.In == "header" && strings.TrimSpace(scheme.HeaderName) != "" {
 		headerName = scheme.HeaderName
+	} else if strings.EqualFold(scheme.Type, "apikey") && scheme.In == "cookie" {
+		headerName = "Cookie"
 	}
 
 	switch {
@@ -1987,7 +1989,7 @@ func scoreAuthScheme(clientContent, configContent, authContent string, hasStruct
 		// For apiKey schemes, the header value format varies (Bearer, Bot, custom).
 		// Credit authHeaderMatched if the client sets the correct header name,
 		// since that proves the auth plumbing is wired correctly regardless of format.
-		if scheme.In == "header" && headerName != "" {
+		if (scheme.In == "header" || scheme.In == "cookie") && headerName != "" {
 			if headerAssignmentPresent(clientContent, headerName) {
 				authHeaderMatched = true
 			}
@@ -2167,6 +2169,15 @@ func headerAssignmentPresent(clientContent, headerName string) bool {
 	headerName = strings.ToLower(headerName)
 	return strings.Contains(clientContent, `header.set("`+headerName+`"`) ||
 		strings.Contains(clientContent, `header.add("`+headerName+`"`)
+}
+
+func inferredAuthHeaderAssignmentPresent(clientContent string) bool {
+	for _, headerName := range []string{"Authorization", "X-Api-Key", "X-Auth-Token", "X-Access-Token", "Cookie"} {
+		if headerAssignmentPresent(clientContent, headerName) {
+			return true
+		}
+	}
+	return false
 }
 
 var (
