@@ -1011,7 +1011,7 @@ func TestMergeSpecsUnionsAuthScopesAndAdditionalHeaders(t *testing.T) {
 			In:     "header",
 			Scheme: "StandaloneKey",
 			EnvVarSpecs: []spec.AuthEnvVar{
-				{Name: "STANDALONE_KEY", Kind: spec.AuthEnvVarKindPerCall, Required: true, Sensitive: true},
+				{Name: " STANDALONE_KEY ", Required: true, Sensitive: true},
 			},
 		},
 		Resources: map[string]spec.Resource{
@@ -1087,14 +1087,30 @@ func TestMergeSpecsUnionsAuthScopesAndAdditionalHeaders(t *testing.T) {
 		},
 		Types: map[string]spec.TypeDef{},
 	}
+	noFlowOAuth := &spec.APISpec{
+		Name:    "noflowoauth",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth: spec.AuthConfig{
+			Type:   "bearer_token",
+			Header: "Authorization",
+			Scopes: []string{"read.noflow"},
+		},
+		Resources: map[string]spec.Resource{
+			"noflowoauth": {Endpoints: map[string]spec.Endpoint{"list": {Method: "GET", Path: "/noflowoauth"}}},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
 
-	merged := mergeSpecs([]*spec.APISpec{primary, secondary, standaloneKey, queryKey, ambiguousKey, crossHostKey, foreignOAuth}, "combo")
+	merged := mergeSpecs([]*spec.APISpec{primary, secondary, standaloneKey, queryKey, ambiguousKey, crossHostKey, foreignOAuth, noFlowOAuth}, "combo")
 
 	assert.Equal(t, []string{"read.primary", "read.secondary"}, merged.Auth.Scopes)
 	require.Len(t, merged.Auth.AdditionalHeaders, 3)
 	assertAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "X-Primary-Key", "PRIMARY_KEY")
 	assertAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "X-Secondary-Key", "SECONDARY_KEY")
 	assertAdditionalAuthHeader(t, merged.Auth.AdditionalHeaders, "X-Standalone-Key", "STANDALONE_KEY")
+	assert.Equal(t, " STANDALONE_KEY ", standaloneKey.Auth.EnvVarSpecs[0].Name)
+	assert.Empty(t, standaloneKey.Auth.EnvVarSpecs[0].Kind)
 }
 
 func TestMergeSpecsUsesLaterOAuthAuthWhenPrimaryHasNoLogin(t *testing.T) {

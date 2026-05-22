@@ -979,6 +979,9 @@ func compatibleOAuthScopeAuth(base, incoming spec.AuthConfig) bool {
 	if len(incoming.Scopes) == 0 {
 		return false
 	}
+	if strings.TrimSpace(base.AuthorizationURL) == "" {
+		return false
+	}
 	if base.Type != incoming.Type || base.EffectiveOAuth2Grant() != incoming.EffectiveOAuth2Grant() {
 		return false
 	}
@@ -1040,6 +1043,7 @@ func additionalHeaderFromAPIKeyAuth(auth spec.AuthConfig) (spec.AdditionalAuthHe
 	if auth.IsAuthEnvVarORCase() {
 		return spec.AdditionalAuthHeader{}, false
 	}
+	auth.EnvVarSpecs = append([]spec.AuthEnvVar(nil), auth.EnvVarSpecs...)
 	auth.NormalizeEnvVarSpecs("")
 	var requestCredential spec.AuthEnvVar
 	for _, envVar := range auth.EnvVarSpecs {
