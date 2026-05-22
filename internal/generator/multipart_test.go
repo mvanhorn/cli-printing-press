@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v4/internal/naming"
+	"github.com/mvanhorn/cli-printing-press/v4/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -83,6 +84,80 @@ func TestGenerateMultipartRequestBodyUsesMultipartClient(t *testing.T) {
 	assert.Contains(t, mcpSrc, `RequestContentType: "multipart/form-data"`)
 	assert.Contains(t, mcpSrc, `multipartFileFields[binding.WireName] = fmt.Sprintf("%v", v)`)
 	assert.Contains(t, mcpSrc, `data, _, err = c.PostMultipartWithParams(ctx, path, params, multipartFields, multipartFileFields)`)
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+}
+
+func TestGenerateOpenAPIMultipartRequestBodyUsesMultipartClient(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := openapi.Parse([]byte(`
+openapi: 3.0.3
+info:
+  title: Upload API
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /assets:
+    post:
+      operationId: uploadAsset
+      summary: Upload asset
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [assetData, filename]
+              properties:
+                assetData:
+                  type: string
+                  format: binary
+                  description: Asset file
+                filename:
+                  type: string
+                  description: File name
+      responses:
+        "201":
+          description: created
+  /notes:
+    post:
+      operationId: createNote
+      summary: Create note
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:
+                  type: string
+      responses:
+        "201":
+          description: created
+`))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	uploadSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_assets.go")
+	assert.Contains(t, uploadSrc, `return fmt.Errorf("required flag \"%s\" not set", "asset-data")`)
+	assert.Contains(t, uploadSrc, `return fmt.Errorf("required flag \"%s\" not set", "filename")`)
+	assert.Contains(t, uploadSrc, `fileFields["assetData"] = bodyAssetData`)
+	assert.Contains(t, uploadSrc, `fields["filename"] = bodyFilename`)
+	assert.Contains(t, uploadSrc, `c.PostMultipartWithParams(cmd.Context(), path, params, fields, fileFields)`)
+	assert.NotContains(t, uploadSrc, `body["assetData"] = bodyAssetData`)
+	assert.NotContains(t, uploadSrc, `body["filename"] = bodyFilename`)
+
+	createSrc := readGeneratedFile(t, outputDir, "internal", "cli", "promoted_notes.go")
+	assert.Contains(t, createSrc, `body["title"] = bodyTitle`)
+	assert.Contains(t, createSrc, `c.PostWithParams(cmd.Context(), path, params, body)`)
+	assert.NotContains(t, createSrc, `c.PostMultipartWithParams`)
 
 	runGoCommand(t, outputDir, "mod", "tidy")
 	runGoCommand(t, outputDir, "build", "./...")
