@@ -11706,12 +11706,14 @@ func TestMCPCodeOrchPassesParamsMap(t *testing.T) {
 		"code-orch handler must not pre-marshal params: client.do() json.Marshals what it receives, "+
 			"so a []byte arrives base64-encoded on the wire and strict APIs reject the payload")
 
-	assert.Contains(t, mcpSource, "c.Post(ctx, path, params)",
-		"POST branch must forward params directly to the client")
-	assert.Contains(t, mcpSource, "c.Put(ctx, path, params)",
-		"PUT branch must forward params directly to the client")
-	assert.Contains(t, mcpSource, "c.Patch(ctx, path, params)",
-		"PATCH branch must forward params directly to the client")
+	assert.Contains(t, mcpSource, "return codeOrchWriteBody(params)",
+		"object write bodies must forward the structured params map to the client")
+	assert.Contains(t, mcpSource, "c.Post(ctx, path, body)",
+		"POST branch must forward the structured write body directly to the client")
+	assert.Contains(t, mcpSource, "c.Put(ctx, path, body)",
+		"PUT branch must forward the structured write body directly to the client")
+	assert.Contains(t, mcpSource, "c.Patch(ctx, path, body)",
+		"PATCH branch must forward the structured write body directly to the client")
 }
 
 // TestMCPBindingNumericTypesAcrossSpecShapes pins template wiring: both
