@@ -352,12 +352,28 @@ func (c *Client) DeleteWithParams(ctx context.Context, path string, params map[s
 	return c.do(ctx, "DELETE", path, params, nil, nil)
 }
 
+func (c *Client) DeleteWithBody(ctx context.Context, path string, body any) (json.RawMessage, int, error) {
+	return c.do(ctx, "DELETE", path, nil, body, nil)
+}
+
+func (c *Client) DeleteWithParamsAndBody(ctx context.Context, path string, params map[string]string, body any) (json.RawMessage, int, error) {
+	return c.do(ctx, "DELETE", path, params, body, nil)
+}
+
 func (c *Client) DeleteWithHeaders(ctx context.Context, path string, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "DELETE", path, nil, nil, headers)
 }
 
 func (c *Client) DeleteWithParamsAndHeaders(ctx context.Context, path string, params map[string]string, headers map[string]string) (json.RawMessage, int, error) {
 	return c.do(ctx, "DELETE", path, params, nil, headers)
+}
+
+func (c *Client) DeleteWithBodyAndHeaders(ctx context.Context, path string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do(ctx, "DELETE", path, nil, body, headers)
+}
+
+func (c *Client) DeleteWithParamsAndBodyAndHeaders(ctx context.Context, path string, params map[string]string, body any, headers map[string]string) (json.RawMessage, int, error) {
+	return c.do(ctx, "DELETE", path, params, body, headers)
 }
 
 func (c *Client) Put(ctx context.Context, path string, body any) (json.RawMessage, int, error) {
