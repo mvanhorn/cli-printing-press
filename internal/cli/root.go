@@ -825,6 +825,7 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 	}
 
 	mergedBaseURL, perSpecPathPrefix := planMultiSpecBaseURL(specs)
+	sharedPathPrefix := sharedMultiSpecEndpointPathPrefix(specs)
 
 	merged := &spec.APISpec{
 		Name:        name,
@@ -859,6 +860,7 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 		}
 
 		prefix := perSpecPathPrefix[i]
+		resourceRenames := map[string]string{}
 		for resourceName, resource := range s.Resources {
 			if prefix != "" {
 				// Same-host/different-path specs are normalized by folding each
@@ -869,9 +871,13 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 			} else {
 				resource = resourceWithMergedSpecBaseURL(resource, s.BaseURL, merged.BaseURL)
 			}
-			key := resourceName
+			key := multiSpecResourceName(s, resourceName, sharedPathPrefix)
 			if _, exists := merged.Resources[key]; exists {
 				key = s.Name + "-" + resourceName
+			}
+			resource = rewriteDefaultResourceDescription(resource, resourceName, key)
+			if key != resourceName {
+				resourceRenames[resourceName] = key
 			}
 			merged.Resources[key] = resource
 		}
@@ -889,11 +895,166 @@ func mergeSpecs(specs []*spec.APISpec, name string) *spec.APISpec {
 		}
 
 		if mcpConfigured(s.MCP) && !mcpConfigured(merged.MCP) {
-			merged.MCP = s.MCP
+			merged.MCP = rewriteMCPIntentEndpointRefs(s.MCP, resourceRenames)
 		}
 	}
 
 	return merged
+}
+
+func rewriteMCPIntentEndpointRefs(mcp spec.MCPConfig, resourceRenames map[string]string) spec.MCPConfig {
+	if len(resourceRenames) == 0 || len(mcp.Intents) == 0 {
+		return mcp
+	}
+	mcp.Intents = append([]spec.Intent(nil), mcp.Intents...)
+	for intentIndex := range mcp.Intents {
+		intent := mcp.Intents[intentIndex]
+		if len(intent.Steps) == 0 {
+			continue
+		}
+		intent.Steps = append([]spec.IntentStep(nil), intent.Steps...)
+		for stepIndex := range intent.Steps {
+			intent.Steps[stepIndex].Endpoint = rewriteEndpointResourceRef(intent.Steps[stepIndex].Endpoint, resourceRenames)
+		}
+		mcp.Intents[intentIndex] = intent
+	}
+	return mcp
+}
+
+func rewriteEndpointResourceRef(ref string, resourceRenames map[string]string) string {
+	resourceName, rest, ok := strings.Cut(ref, ".")
+	if !ok {
+		return ref
+	}
+	if renamed, ok := resourceRenames[resourceName]; ok {
+		return renamed + "." + rest
+	}
+	return ref
+}
+
+func multiSpecResourceName(s *spec.APISpec, resourceName string, sharedPathPrefix []string) string {
+	if s == nil || len(s.Resources) != 1 || len(sharedPathPrefix) < 2 {
+		return resourceName
+	}
+	specName := strings.TrimSpace(s.Name)
+	if specName == "" || specName == resourceName {
+		return resourceName
+	}
+	if !sharedPrefixContainsResourceName(sharedPathPrefix, resourceName) {
+		return resourceName
+	}
+	return specName
+}
+
+func rewriteDefaultResourceDescription(resource spec.Resource, oldName, newName string) spec.Resource {
+	if oldName == newName {
+		return resource
+	}
+	if resource.DescriptionDerived {
+		resource.Description = spec.DefaultResourceDescription(newName)
+	}
+	return resource
+}
+
+func sharedMultiSpecEndpointPathPrefix(specs []*spec.APISpec) []string {
+	if !allSpecsHaveSingleResource(specs) {
+		return nil
+	}
+	var prefix []string
+	for _, s := range specs {
+		specPathCount := 0
+		var stopped bool
+		prefix, stopped = foldSharedEndpointPathPrefix(prefix, s.Resources, &specPathCount)
+		if stopped {
+			return nil
+		}
+		if specPathCount == 0 {
+			return nil
+		}
+	}
+	if len(prefix) < 2 {
+		return nil
+	}
+	return prefix
+}
+
+func sharedPrefixContainsResourceName(prefix []string, resourceName string) bool {
+	resourceName = normalizePathResourceSegment(resourceName)
+	for _, segment := range prefix {
+		if normalizePathResourceSegment(segment) == resourceName {
+			return true
+		}
+	}
+	return false
+}
+
+func allSpecsHaveSingleResource(specs []*spec.APISpec) bool {
+	if len(specs) < 2 {
+		return false
+	}
+	for _, s := range specs {
+		if s == nil || len(s.Resources) != 1 {
+			return false
+		}
+	}
+	return true
+}
+
+func foldSharedEndpointPathPrefix(prefix []string, resources map[string]spec.Resource, pathCount *int) ([]string, bool) {
+	for _, resource := range resources {
+		for _, endpoint := range resource.Endpoints {
+			segments := splitEndpointPath(endpoint.Path)
+			if len(segments) == 0 {
+				continue
+			}
+			(*pathCount)++
+			if prefix == nil {
+				prefix = segments
+				continue
+			}
+			prefix = commonEndpointPathPrefix(prefix, segments)
+			if len(prefix) < 2 {
+				return nil, true
+			}
+		}
+		if len(resource.SubResources) > 0 {
+			var stopped bool
+			prefix, stopped = foldSharedEndpointPathPrefix(prefix, resource.SubResources, pathCount)
+			if stopped {
+				return nil, true
+			}
+		}
+	}
+	return prefix, false
+}
+
+func splitEndpointPath(path string) []string {
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return nil
+	}
+	rawSegments := strings.Split(path, "/")
+	segments := make([]string, 0, len(rawSegments))
+	for _, segment := range rawSegments {
+		if segment != "" {
+			segments = append(segments, segment)
+		}
+	}
+	return segments
+}
+
+func commonEndpointPathPrefix(a, b []string) []string {
+	limit := min(len(a), len(b))
+	for i := range limit {
+		if a[i] != b[i] {
+			return a[:i]
+		}
+	}
+	return a[:limit]
+}
+
+func normalizePathResourceSegment(value string) string {
+	return strings.ReplaceAll(strings.Trim(strings.ToLower(value), "/"), "_", "-")
 }
 
 func resourceWithMergedSpecBaseURL(resource spec.Resource, sourceBaseURL, mergedBaseURL string) spec.Resource {

@@ -1102,6 +1102,88 @@ resources:
 	assert.Contains(t, parsed.Resources, "pages", "second-input resource present in merged archive")
 }
 
+func TestGenerateMultiSpecSharedObjectPrefixUsesSpecNamesAsResourceRoots(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	contactsSpecPath := filepath.Join(dir, "contacts.yaml")
+	companiesSpecPath := filepath.Join(dir, "companies.yaml")
+	outputDir := filepath.Join(dir, "crm")
+	require.NoError(t, os.WriteFile(contactsSpecPath, []byte(`openapi: 3.0.3
+info:
+  title: Contacts
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /api/v1/crm/v3/objects/contacts:
+    get:
+      operationId: listContacts
+      responses:
+        "200":
+          description: OK
+  /api/v1/crm/v3/objects/contacts/{contactId}:
+    get:
+      operationId: getContact
+      parameters:
+        - name: contactId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: OK
+`), 0o644))
+	require.NoError(t, os.WriteFile(companiesSpecPath, []byte(`openapi: 3.0.3
+info:
+  title: Companies
+  version: 1.0.0
+servers:
+  - url: https://api.example.com
+paths:
+  /api/v1/crm/v3/objects/companies:
+    get:
+      operationId: listCompanies
+      responses:
+        "200":
+          description: OK
+  /api/v1/crm/v3/objects/companies/{companyId}:
+    get:
+      operationId: getCompany
+      parameters:
+        - name: companyId
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: OK
+`), 0o644))
+
+	cmd := newGenerateCmd()
+	cmd.SetArgs([]string{
+		"--spec", contactsSpecPath,
+		"--spec", companiesSpecPath,
+		"--name", "crm",
+		"--output", outputDir,
+		"--validate=false",
+		"--force",
+	})
+	require.NoError(t, cmd.Execute())
+
+	archived, err := os.ReadFile(filepath.Join(outputDir, "spec.json"))
+	require.NoError(t, err)
+	parsed, err := spec.ParseBytes(archived)
+	require.NoError(t, err)
+
+	assert.Contains(t, parsed.Resources, "contacts")
+	assert.Contains(t, parsed.Resources, "companies")
+	assert.Equal(t, "Manage contacts", parsed.Resources["contacts"].Description)
+	assert.Equal(t, "Manage companies", parsed.Resources["companies"].Description)
+	assert.NotContains(t, parsed.Resources, "crm")
+	assert.NotContains(t, parsed.Resources, "companies-crm")
+}
+
 // TestArchiveSpecBytesBranches covers each branch of archiveSpecBytes
 // directly, including the json-input single-spec arm that the integration
 // tests above don't exercise (their fixtures are YAML).
@@ -1492,6 +1574,95 @@ func TestMergeSpecsCarriesMCPFullFieldsFromDeclaringSpec(t *testing.T) {
 	assert.Equal(t, ":7777", merged.MCP.Addr)
 	assert.Len(t, merged.MCP.Intents, 1)
 	assert.Equal(t, "search_things", merged.MCP.Intents[0].Name)
+}
+
+func TestMergeSpecsRewritesMCPIntentRefsForRenamedResources(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "contacts",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"crm": {
+				Description: spec.DefaultResourceDescription("crm"),
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/api/v1/crm/v3/objects/contacts"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+		MCP: spec.MCPConfig{
+			Intents: []spec.Intent{
+				{
+					Name: "list_contacts",
+					Steps: []spec.IntentStep{
+						{Endpoint: "crm.list"},
+					},
+				},
+			},
+		},
+	}
+	specB := &spec.APISpec{
+		Name:    "companies",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"crm": {
+				Description: spec.DefaultResourceDescription("crm"),
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/api/v1/crm/v3/objects/companies"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "crm")
+
+	require.Len(t, merged.MCP.Intents, 1)
+	require.Len(t, merged.MCP.Intents[0].Steps, 1)
+	assert.Equal(t, "contacts.list", merged.MCP.Intents[0].Steps[0].Endpoint)
+}
+
+func TestMergeSpecsRequiresEachSpecToContributeToSharedPrefix(t *testing.T) {
+	t.Parallel()
+
+	specA := &spec.APISpec{
+		Name:    "contacts",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"crm": {
+				Description: spec.DefaultResourceDescription("crm"),
+				Endpoints: map[string]spec.Endpoint{
+					"list":   {Method: "GET", Path: "/api/v1/crm/v3/objects/contacts"},
+					"get":    {Method: "GET", Path: "/api/v1/crm/v3/objects/contacts/{id}"},
+					"search": {Method: "GET", Path: "/api/v1/crm/v3/objects/contacts/search"},
+				},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+	specB := &spec.APISpec{
+		Name:    "empty",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Resources: map[string]spec.Resource{
+			"crm": {
+				Description: "Custom empty resource",
+				Endpoints:   map[string]spec.Endpoint{},
+			},
+		},
+		Types: map[string]spec.TypeDef{},
+	}
+
+	merged := mergeSpecs([]*spec.APISpec{specA, specB}, "crm")
+
+	assert.Contains(t, merged.Resources, "crm")
+	assert.Contains(t, merged.Resources, "empty-crm")
+	assert.NotContains(t, merged.Resources, "empty")
+	assert.Equal(t, "Custom empty resource", merged.Resources["empty-crm"].Description)
 }
 
 // TestMergeSpecsFirstDeclaringMCPWins verifies that when more than one input

@@ -1273,9 +1273,10 @@ func (m MCPConfig) HasTransport(t string) bool {
 }
 
 type Resource struct {
-	Description string   `yaml:"description" json:"description"`
-	Path        string   `yaml:"path,omitempty" json:"path,omitempty"`             // base path for operations shorthand (e.g., /api/items)
-	Operations  []string `yaml:"operations,omitempty" json:"operations,omitempty"` // shorthand: list, get, create, update, delete, search
+	Description        string   `yaml:"description" json:"description"`
+	DescriptionDerived bool     `yaml:"-" json:"-"`
+	Path               string   `yaml:"path,omitempty" json:"path,omitempty"`             // base path for operations shorthand (e.g., /api/items)
+	Operations         []string `yaml:"operations,omitempty" json:"operations,omitempty"` // shorthand: list, get, create, update, delete, search
 	// BaseURL overrides the spec-level BaseURL for this resource's
 	// endpoints. Fixed at generation time. Incompatible with the
 	// proxy-envelope client pattern, which POSTs every request to a
@@ -1284,6 +1285,12 @@ type Resource struct {
 	Tier         string              `yaml:"tier,omitempty" json:"tier,omitempty"`
 	Endpoints    map[string]Endpoint `yaml:"endpoints" json:"endpoints"`
 	SubResources map[string]Resource `yaml:"sub_resources,omitempty" json:"sub_resources,omitempty"`
+}
+
+// DefaultResourceDescription returns the parser fallback description for a
+// resource that has no source-provided prose.
+func DefaultResourceDescription(name string) string {
+	return "Manage " + strings.ReplaceAll(strings.ReplaceAll(name, "_", "-"), "-", " ")
 }
 
 // HasResourceBaseURLOverride reports whether any resource or endpoint declares

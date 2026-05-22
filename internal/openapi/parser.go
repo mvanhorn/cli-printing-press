@@ -2318,11 +2318,13 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 				sub := resource.SubResources[subName]
 				if sub.Description == "" {
 					sub.Description = humanizeResourceName(subName)
+					sub.DescriptionDerived = true
 				}
 				resource.SubResources[subName] = sub
 			}
 			if resource.Description == "" {
 				resource.Description = humanizeResourceName(primaryName)
+				resource.DescriptionDerived = true
 			}
 			out.Resources[primaryName] = resource
 		}
@@ -5957,12 +5959,7 @@ func humanizeEndpointName(name string) string {
 }
 
 func humanizeResourceName(name string) string {
-	words := strings.Split(strings.ReplaceAll(name, "_", "-"), "-")
-	if len(words) == 0 {
-		return ""
-	}
-	sentence := "Manage " + strings.Join(words, " ")
-	return sentence
+	return spec.DefaultResourceDescription(name)
 }
 
 func humanizeConcatenated(s string) string {
