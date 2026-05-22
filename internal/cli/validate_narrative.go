@@ -136,6 +136,10 @@ func printHumanReport(w io.Writer, report *narrativecheck.Report) {
 	}
 	if !report.HasFailures() && !report.ResearchEmpty {
 		if report.FrameworkOnly {
+			if report.Walked == 0 {
+				fmt.Fprintln(w, "N/A: no framework-command narrative examples found; static framework check skipped")
+				return
+			}
 			fmt.Fprintf(w, "OK: %d framework-command narrative examples passed static checks\n", report.Walked)
 			return
 		}

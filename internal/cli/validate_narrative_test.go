@@ -138,3 +138,25 @@ func TestValidateNarrativeCmd_FrameworkOnlyFailsInventedFlags(t *testing.T) {
 		t.Errorf("Code = %d, want ExitInputError (%d)", exitErr.Code, ExitInputError)
 	}
 }
+
+func TestValidateNarrativeCmd_FrameworkOnlyReportsNoFrameworkCommands(t *testing.T) {
+	t.Parallel()
+
+	research := filepath.Join(t.TempDir(), "research.json")
+	if err := os.WriteFile(research, []byte(`{"narrative":{"quickstart":[{"command":"demo-pp-cli customers list --limit 5"}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newValidateNarrativeCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetArgs([]string{"--strict", "--framework-only", "--research", research})
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected endpoint-only narrative to skip framework-only validation, got %v", err)
+	}
+	if got := stdout.String() + stderr.String(); !strings.Contains(got, "no framework-command narrative examples found") {
+		t.Fatalf("output = %q, want no-framework-command skip output", got)
+	}
+}

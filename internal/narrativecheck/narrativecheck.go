@@ -409,7 +409,7 @@ func classifyFrameworkCommand(section Section, command string) []Result {
 			continue
 		}
 		args := tokens[1:]
-		commandIndex, commandName, ok := findFrameworkCommand(args)
+		commandIndex, commandName, preCommandErr, ok := findFrameworkCommand(args)
 		if !ok {
 			continue
 		}
@@ -420,7 +420,10 @@ func classifyFrameworkCommand(section Section, command string) []Result {
 			Words:   commandName,
 			Status:  StatusOK,
 		}
-		if err := validateFrameworkFlags(commandName, args[commandIndex+1:], spec); err != nil {
+		if preCommandErr != nil {
+			r.Status = StatusExampleFailed
+			r.Error = preCommandErr.Error()
+		} else if err := validateFrameworkFlags(commandName, args[commandIndex+1:], spec); err != nil {
 			r.Status = StatusExampleFailed
 			r.Error = err.Error()
 		}
@@ -429,29 +432,36 @@ func classifyFrameworkCommand(section Section, command string) []Result {
 	return out
 }
 
-func findFrameworkCommand(args []string) (int, string, bool) {
+func findFrameworkCommand(args []string) (int, string, error, bool) {
+	var unknownPreCommandFlag string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if _, ok := frameworkCommandSpecs[arg]; ok {
-			return i, arg, true
+			if unknownPreCommandFlag != "" {
+				return i, arg, fmt.Errorf("framework command %q does not emit --%s before the command; use documented global flags before the command or documented %s flags after it", arg, unknownPreCommandFlag, arg), true
+			}
+			return i, arg, nil, true
 		}
 		if !strings.HasPrefix(arg, "--") || arg == "--" {
-			return 0, "", false
+			return 0, "", nil, false
 		}
 		name, _, hasInlineValue := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
 		flag, ok := globalFrameworkFlags[name]
 		if !ok {
+			if unknownPreCommandFlag == "" {
+				unknownPreCommandFlag = name
+			}
 			continue
 		}
 		if flag.RequiresValue && !hasInlineValue {
 			i++
 		}
 	}
-	return 0, "", false
+	return 0, "", nil, false
 }
 
 func validateFrameworkFlags(commandName string, args []string, spec frameworkCommandSpec) error {
-	for i := range args {
+	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if !strings.HasPrefix(arg, "--") || arg == "--" {
 			continue
@@ -469,10 +479,11 @@ func validateFrameworkFlags(commandName string, args []string, spec frameworkCom
 		}
 		if flag.RequiresValue || flag.Validate != nil {
 			if !hasInlineValue {
-				if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+				if i+1 >= len(args) {
 					return fmt.Errorf("framework command %q requires --%s to have a value", commandName, name)
 				}
 				value = args[i+1]
+				i++
 			}
 			if flag.Validate != nil {
 				if err := flag.Validate(value); err != nil {

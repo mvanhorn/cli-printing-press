@@ -225,6 +225,7 @@ func TestValidateWithOptions_FrameworkOnlyCatchesInventedFrameworkFlags(t *testi
 			{"command":"stripe-pp-cli sync --since 2026-01-01 --resources customers,charges"},
 			{"command":"stripe-pp-cli sync --since 7d --entities customers,charges"},
 			{"command":"stripe-pp-cli --json sync --since 7d --entities customers,charges"},
+			{"command":"stripe-pp-cli --entities sync --since 7d --resources customers,charges"},
 			{"command":"stripe-pp-cli search \"acme.co\" --entities customers,invoices --json"},
 			{"command":"stripe-pp-cli customers list --entities ignored-for-endpoint-command"}
 		]
@@ -238,13 +239,13 @@ func TestValidateWithOptions_FrameworkOnlyCatchesInventedFrameworkFlags(t *testi
 	if report.Walked != 0 {
 		t.Errorf("Walked = %d, want 0", report.Walked)
 	}
-	if report.ExampleFailed != 4 {
-		t.Fatalf("ExampleFailed = %d, want 4; results=%+v", report.ExampleFailed, report.Results)
+	if report.ExampleFailed != 5 {
+		t.Fatalf("ExampleFailed = %d, want 5; results=%+v", report.ExampleFailed, report.Results)
 	}
 	if !report.HasFailures() {
 		t.Fatal("HasFailures should be true for invented framework flags")
 	}
-	gotErrors := []string{report.Results[0].Error, report.Results[1].Error, report.Results[2].Error, report.Results[3].Error}
+	gotErrors := []string{report.Results[0].Error, report.Results[1].Error, report.Results[2].Error, report.Results[3].Error, report.Results[4].Error}
 	if !strings.Contains(gotErrors[0], "--since") {
 		t.Errorf("first error should catch absolute --since duration, got %q", gotErrors[0])
 	}
@@ -255,7 +256,10 @@ func TestValidateWithOptions_FrameworkOnlyCatchesInventedFrameworkFlags(t *testi
 		t.Errorf("third error should catch invented sync --entities after a global flag, got %q", gotErrors[2])
 	}
 	if !strings.Contains(gotErrors[3], "--entities") {
-		t.Errorf("fourth error should catch invented search --entities flag, got %q", gotErrors[3])
+		t.Errorf("fourth error should catch invented --entities before a framework command, got %q", gotErrors[3])
+	}
+	if !strings.Contains(gotErrors[4], "--entities") {
+		t.Errorf("fifth error should catch invented search --entities flag, got %q", gotErrors[4])
 	}
 }
 
@@ -292,7 +296,8 @@ func TestValidateWithOptions_FrameworkOnlyAcceptsDocumentedFrameworkFlags(t *tes
 		"quickstart":[
 			{"command":"stripe-pp-cli --json sync --since 7d --resources customers,charges"},
 			{"command":"stripe-pp-cli sync --since 7d --resources customers,charges --max-pages 1 --json"},
-			{"command":"stripe-pp-cli search \"acme.co\" --type customers --limit 10 --json"}
+			{"command":"stripe-pp-cli search \"acme.co\" --type customers --limit 10 --json"},
+			{"command":"stripe-pp-cli search \"acme.co\" --type \"--temporary-resource\" --json"}
 		]
 	}}`)
 
@@ -304,8 +309,8 @@ func TestValidateWithOptions_FrameworkOnlyAcceptsDocumentedFrameworkFlags(t *tes
 	if report.HasFailures() {
 		t.Fatalf("documented framework flags should pass, got %+v", report.Results)
 	}
-	if report.Walked != 3 {
-		t.Errorf("Walked = %d, want 3", report.Walked)
+	if report.Walked != 4 {
+		t.Errorf("Walked = %d, want 4", report.Walked)
 	}
 }
 
