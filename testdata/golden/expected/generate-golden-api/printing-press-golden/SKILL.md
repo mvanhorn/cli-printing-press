@@ -20,7 +20,7 @@ This skill drives the `printing-press-golden-pp-cli` binary. **You must verify t
 
 1. Install via the Printing Press installer:
    ```bash
-   npx -y @mvanhorn/printing-press install printing-press-golden --cli-only
+   npx -y @mvanhorn/printing-press-library install printing-press-golden --cli-only
    ```
 2. Verify: `printing-press-golden-pp-cli --version`
 3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.

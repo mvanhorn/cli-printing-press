@@ -33,7 +33,7 @@ func TestGeneratedAgentsGuideRendersPortableAgentContract(t *testing.T) {
 	assert.Contains(t, content, "SKILL.md")
 
 	assert.NotContains(t, content, "## Command Reference")
-	assert.NotContains(t, content, "npx -y @mvanhorn/printing-press install")
+	assert.NotContains(t, content, "npx -y @mvanhorn/printing-press-library install")
 	assert.NotContains(t, content, "export ")
 	assert.NotContains(t, content, "<cli>")
 	assert.NotContains(t, content, "Claude Code")

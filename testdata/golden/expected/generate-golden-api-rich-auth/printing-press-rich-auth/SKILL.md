@@ -20,7 +20,7 @@ This skill drives the `printing-press-rich-pp-cli` binary. **You must verify the
 
 1. Install via the Printing Press installer:
    ```bash
-   npx -y @mvanhorn/printing-press install printing-press-rich --cli-only
+   npx -y @mvanhorn/printing-press-library install printing-press-rich --cli-only
    ```
 2. Verify: `printing-press-rich-pp-cli --version`
 3. Ensure `$GOPATH/bin` (or `$HOME/go/bin`) is on `$PATH`.

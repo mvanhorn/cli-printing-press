@@ -2836,7 +2836,7 @@ func TestGenerateWithOwnerField(t *testing.T) {
 	assert.Contains(t, string(mainGo), "testowner")
 	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
 	require.NoError(t, err)
-	assert.Contains(t, string(readme), "npx -y @mvanhorn/printing-press install owned")
+	assert.Contains(t, string(readme), "npx -y @mvanhorn/printing-press-library install owned")
 	assert.NotContains(t, string(readme), "library/other/owned")
 }
 

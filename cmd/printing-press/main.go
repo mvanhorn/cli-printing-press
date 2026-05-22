@@ -20,7 +20,7 @@ Generator install:
   go install github.com/mvanhorn/cli-printing-press/v4/cmd/cli-printing-press@latest
 
 Catalog installer:
-  npx -y @mvanhorn/printing-press %s
+  npx -y @mvanhorn/printing-press-library %s
 `, command, command)
 		os.Exit(cli.ExitInputError)
 	}

@@ -81,7 +81,7 @@ func TestCategorylessInstallSectionsAvoidOtherLibraryPath(t *testing.T) {
 			content := string(rendered)
 			require.NotContains(t, content, "library/other/gohighlevel",
 				"category-less generation must not bake in a publish-time placeholder category")
-			require.Contains(t, content, "npx -y @mvanhorn/printing-press install gohighlevel",
+			require.Contains(t, content, "npx -y @mvanhorn/printing-press-library install gohighlevel",
 				"category-less generation should keep the category-agnostic installer path")
 		})
 	}
