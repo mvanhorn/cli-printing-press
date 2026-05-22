@@ -519,13 +519,29 @@ For each finding in dependency order:
    }
    ```
 
+   For a temporary patch with a future supersession path, include the upstream handoff fields in that same patch entry:
+
+   ```json
+   {
+     "deferred_to_upstream": [
+       {
+         "feature": "Generator or upstream API capability this printed-CLI patch should eventually supersede",
+         "reason": "Why the local patch is intentionally temporary or API-specific."
+       }
+     ],
+     "upstream_issue": "https://github.com/mvanhorn/cli-printing-press/issues/<n>"
+   }
+   ```
+
    Both halves of the contract — `// PATCH(...)` source comments AND `.printing-press-patches.json` entries — are MANDATORY. The library's `verify-library-conventions` workflow rejects PRs where one is present without the other. See `~/printing-press-library/AGENTS.md` "How to record a hand-edit" for the authoritative spec.
+
+   Use `deferred_to_upstream` only when the patch intentionally leaves a future supersession path: a public API endpoint is missing today, the command relies on an unofficial host or alternate auth source, a live response shape drifted from generator assumptions, or the fix would become unnecessary once the Printing Press learns the pattern. In those cases, search `mvanhorn/cli-printing-press` issues first; reuse a matching issue or open one before the library PR, then set `upstream_issue` to that URL. Do not leave a machine-level or API-publication dependency only in the PR body.
 
 4. **Machine-vs-printed-CLI judgment** (per AGENTS.md): when a finding's fix would generalize to every printed CLI (e.g. "the generator should emit `--type sent` for any threads list command"), surface as a borderline case:
 
    > "Finding F5 (`--type sent` missing) looks like a machine-level fix — the generator template `internal/generator/templates/threads.go.tmpl` should emit it for every CLI with this endpoint shape, not just `<slug>-pp-cli`. Defer to a `/printing-press-retro` follow-up, or proceed CLI-specific?"
 
-   When deferred, drop into the deferred-list with classification `machine-level`. When kept, add a comment in the patch noting the generalize-eventually intent.
+   When deferred, drop into the deferred-list with classification `machine-level`. When kept because the printed CLI needs a narrow fix now, and the patch still carries a future supersession path, create or reuse the upstream Printing Press issue before opening the library PR, add the issue URL to `.printing-press-patches.json`, and add a `deferred_to_upstream` item naming the machine-level or upstream-API condition that should supersede the local patch.
 
 ### Step 4 — Validate
 

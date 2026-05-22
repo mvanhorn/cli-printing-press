@@ -177,6 +177,25 @@ func TestPublishSkillSkipsCliSkillsMirrorRegen(t *testing.T) {
 	require.NotEqual(t, -1, copyIntoLibrary)
 }
 
+func TestAmendSkillRequiresUpstreamBreadcrumbsForTemporaryPatches(t *testing.T) {
+	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-amend", "SKILL.md"))
+
+	assert.Contains(t, skill, `"deferred_to_upstream": [`)
+	assert.Contains(t, skill, `"upstream_issue": "https://github.com/mvanhorn/cli-printing-press/issues/<n>"`)
+	assert.Contains(t, skill, "Do not leave a machine-level or API-publication dependency only in the PR body")
+}
+
+func TestGeneratedAgentsTemplateDocumentsUpstreamPatchHandoff(t *testing.T) {
+	template := readContractFile(t, filepath.Join("..", "generator", "templates", "agents.md.tmpl"))
+	minimumShape := substringBetween(t, template, "Minimum shape:", "Use `deferred_to_upstream`")
+
+	assert.Contains(t, template, `"deferred_to_upstream": [`)
+	assert.Contains(t, template, `"upstream_issue": "https://github.com/mvanhorn/cli-printing-press/issues/<n>"`)
+	assert.Contains(t, template, "Use `deferred_to_upstream` when a local patch is a temporary bridge")
+	assert.NotContains(t, minimumShape, "deferred_to_upstream")
+	assert.NotContains(t, minimumShape, "upstream_issue")
+}
+
 func TestPolishSkillHardGatesPublishValidate(t *testing.T) {
 	skill := readContractFile(t, filepath.Join("..", "..", "skills", "printing-press-polish", "SKILL.md"))
 
@@ -271,6 +290,19 @@ func extractContractBlock(t *testing.T, content string) string {
 
 	endIdx := strings.Index(content[startIdx:], end)
 	require.NotEqual(t, -1, endIdx, "missing contract end marker")
+
+	return content[startIdx : startIdx+endIdx]
+}
+
+func substringBetween(t *testing.T, content, start, end string) string {
+	t.Helper()
+
+	startIdx := strings.Index(content, start)
+	require.NotEqual(t, -1, startIdx, "missing start marker %q", start)
+	startIdx += len(start)
+
+	endIdx := strings.Index(content[startIdx:], end)
+	require.NotEqual(t, -1, endIdx, "missing end marker %q", end)
 
 	return content[startIdx : startIdx+endIdx]
 }
