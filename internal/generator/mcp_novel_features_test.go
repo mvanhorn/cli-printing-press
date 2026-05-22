@@ -143,3 +143,81 @@ func TestToolNameForPathCases(t *testing.T) {
 
 	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree")
 }
+
+func TestMCPFrameworkCommandClassificationIsTopLevelOnly(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("depthcheck")
+	outputDir := filepath.Join(t.TempDir(), "depthcheck-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	var testSrc strings.Builder
+	testSrc.WriteString(`package cobratree
+
+import (
+	"testing"
+
+	"github.com/spf13/cobra"
+)
+
+func TestFrameworkCommandClassificationIsTopLevelOnly(t *testing.T) {
+	for name := range frameworkCommands {
+		root := &cobra.Command{Use: "depthcheck-pp-cli"}
+		top := &cobra.Command{
+			Use: name,
+			RunE: func(cmd *cobra.Command, args []string) error { return nil },
+		}
+		parent := &cobra.Command{Use: "items"}
+		nested := &cobra.Command{
+			Use: name,
+			RunE: func(cmd *cobra.Command, args []string) error { return nil },
+		}
+		parent.AddCommand(nested)
+		root.AddCommand(top, parent)
+
+		if got := classify(top); got != commandFramework {
+			t.Fatalf("top-level %s classify() = %v, want commandFramework", name, got)
+		}
+		if got := classify(nested); got != commandNovel {
+			t.Fatalf("nested items %s classify() = %v, want commandNovel", name, got)
+		}
+	}
+
+	root := &cobra.Command{Use: "depthcheck-pp-cli"}
+	topSearch := &cobra.Command{
+		Use: "search",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	items := &cobra.Command{Use: "items"}
+	itemSearch := &cobra.Command{
+		Use: "search",
+		RunE: func(cmd *cobra.Command, args []string) error { return nil },
+	}
+	items.AddCommand(itemSearch)
+	root.AddCommand(topSearch, items)
+
+	if got := classify(topSearch); got != commandFramework {
+		t.Fatalf("top-level search classify() = %v, want commandFramework", got)
+	}
+	if got := classify(itemSearch); got != commandNovel {
+		t.Fatalf("nested items search classify() = %v, want commandNovel", got)
+	}
+	var mirrored []string
+	walk(root, nil, func(cmd *cobra.Command, path []string) {
+		if classify(cmd) == commandNovel && cmd.Runnable() {
+			mirrored = append(mirrored, toolNameForPath(path))
+		}
+	})
+	if got := toolNameForPath([]string{"items", "search"}); got != "items_search" {
+		t.Fatalf("nested search tool name = %q, want items_search", got)
+	}
+	if len(mirrored) != 1 || mirrored[0] != "items_search" {
+		t.Fatalf("mirrored tools = %v, want only items_search", mirrored)
+	}
+}
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(outputDir, "internal", "mcp", "cobratree", "framework_depth_test.go"), []byte(testSrc.String()), 0o644))
+
+	runGoCommandRequired(t, outputDir, "test", "./internal/mcp/cobratree")
+}
