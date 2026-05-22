@@ -1814,10 +1814,34 @@ func (s *APISpec) ParseTimeReservedCobraUseName(name string) bool {
 	return reserved
 }
 
+// UniqueFrameworkCollisionResourceName returns the canonical resource rename
+// for a top-level resource that would shadow a framework cobra command.
+func (s *APISpec) UniqueFrameworkCollisionResourceName(original string) string {
+	slug := "api"
+	if s != nil && s.Name != "" {
+		slug = s.Name
+	}
+	candidate := slug + "-" + original
+	if s == nil || s.Resources == nil {
+		return candidate
+	}
+	if _, exists := s.Resources[candidate]; !exists {
+		return candidate
+	}
+	for i := 2; ; i++ {
+		next := fmt.Sprintf("%s-%d", candidate, i)
+		if _, exists := s.Resources[next]; !exists {
+			return next
+		}
+	}
+}
+
 func (s *APISpec) emitsAuthCommand() bool {
 	if s == nil {
 		return false
 	}
+	// Traffic-analysis-only auth is not known at parse time; the generator
+	// handles that conditional collision once traffic hints are attached.
 	return s.Auth.Type != "none" || s.Auth.AuthorizationURL != ""
 }
 

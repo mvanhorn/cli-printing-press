@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/v4/internal/browsersniff"
 	"github.com/mvanhorn/cli-printing-press/v4/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -179,6 +180,34 @@ func TestGenerateRenamesHealthResourceOnlyWhenHealthCommandIsActive(t *testing.T
 	assert.Contains(t, rootSrc, "rootCmd.AddCommand(newHealthCmd(flags))", "the generated insight keeps the framework health command")
 	assert.Contains(t, rootSrc, "rootCmd.AddCommand(newHealthapiHealthCmd(flags))", "the API health resource is renamed only when the framework command is active")
 	assert.NotContains(t, rootSrc, "rootCmd.AddCommand(newHealthCmd(flags))\n\trootCmd.AddCommand(newHealthCmd(flags))")
+
+	runGoCommand(t, outputDir, "build", "./internal/cli")
+}
+
+func TestGenerateRenamesAuthResourceWhenTrafficAnalysisEmitsAuthCommand(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("graphqlapi")
+	apiSpec.Auth = spec.AuthConfig{Type: "none"}
+	apiSpec.Resources = map[string]spec.Resource{
+		"auth": {
+			Description: "Public auth endpoint",
+			Endpoints: map[string]spec.Endpoint{
+				"check":  {Method: "GET", Path: "/api/auth/check", Description: "Check auth"},
+				"status": {Method: "GET", Path: "/api/auth/status", Description: "Auth status"},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "graphqlapi-pp-cli")
+	gen := New(apiSpec, outputDir)
+	gen.TrafficAnalysis = &browsersniff.TrafficAnalysis{GenerationHints: []string{"graphql_persisted_query"}}
+	require.NoError(t, gen.Generate())
+
+	rootSrc := readGeneratedFile(t, outputDir, "internal", "cli", "root.go")
+	assert.Contains(t, rootSrc, "rootCmd.AddCommand(newAuthCmd(flags))", "the traffic-analysis hint should emit the framework auth command")
+	assert.Contains(t, rootSrc, "rootCmd.AddCommand(newGraphqlapiAuthCmd(flags))", "the public auth resource should be renamed and stay registered")
+	assert.NotContains(t, rootSrc, "rootCmd.AddCommand(newAuthCmd(flags))\n\trootCmd.AddCommand(newAuthCmd(flags))")
 
 	runGoCommand(t, outputDir, "build", "./internal/cli")
 }

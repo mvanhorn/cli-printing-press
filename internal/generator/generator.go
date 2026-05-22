@@ -1752,7 +1752,13 @@ func (g *Generator) Generate() error {
 
 func (g *Generator) renameActiveFrameworkResourceCollisions() bool {
 	active := g.activeFrameworkCobraUseNames()
-	renamed := false
+	type resourceRename struct {
+		from     string
+		to       string
+		use      string
+		resource spec.Resource
+	}
+	var renames []resourceRename
 	for name, resource := range g.Spec.Resources {
 		kebab := strings.ReplaceAll(strings.ToLower(name), "_", "-")
 		if _, ok := active[kebab]; !ok {
@@ -1761,13 +1767,19 @@ func (g *Generator) renameActiveFrameworkResourceCollisions() bool {
 		if g.Spec.ParseTimeReservedCobraUseName(kebab) {
 			continue
 		}
-		next := uniqueFrameworkResourceName(g.Spec, kebab)
-		delete(g.Spec.Resources, name)
-		g.Spec.Resources[next] = resource
-		fmt.Fprintf(os.Stderr, "warning: resource %q would shadow active framework cobra command %q; renamed to %q\n", name, kebab, next)
-		renamed = true
+		renames = append(renames, resourceRename{
+			from:     name,
+			to:       g.Spec.UniqueFrameworkCollisionResourceName(kebab),
+			use:      kebab,
+			resource: resource,
+		})
 	}
-	return renamed
+	for _, rename := range renames {
+		delete(g.Spec.Resources, rename.from)
+		g.Spec.Resources[rename.to] = rename.resource
+		fmt.Fprintf(os.Stderr, "warning: resource %q would shadow active framework cobra command %q; renamed to %q\n", rename.from, rename.use, rename.to)
+	}
+	return len(renames) > 0
 }
 
 func (g *Generator) activeFrameworkCobraUseNames() map[string]struct{} {
@@ -1836,23 +1848,6 @@ func frameworkUseNameForTemplate(tmpl string) string {
 		return ""
 	}
 	return strings.ReplaceAll(naming.Snake(ctor), "_", "-")
-}
-
-func uniqueFrameworkResourceName(s *spec.APISpec, original string) string {
-	slug := s.Name
-	if slug == "" {
-		slug = "api"
-	}
-	candidate := slug + "-" + original
-	if _, exists := s.Resources[candidate]; !exists {
-		return candidate
-	}
-	for i := 2; ; i++ {
-		next := fmt.Sprintf("%s-%d", candidate, i)
-		if _, exists := s.Resources[next]; !exists {
-			return next
-		}
-	}
 }
 
 // GenerateMCPSurface rewrites the generated MCP entrypoint, tools package,
