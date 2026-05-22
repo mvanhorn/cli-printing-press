@@ -2166,7 +2166,7 @@ func mapResources(doc *openapi3.T, out *spec.APISpec, basePath string) {
 			// sub-resource.
 			if renamed, ok := frameworkRenames[primaryName]; ok {
 				primaryName = renamed
-			} else if _, reserved := spec.ReservedCobraUseNames[primaryName]; reserved {
+			} else if out.ParseTimeReservedCobraUseName(primaryName) {
 				originalName := primaryName
 				primaryName = renameForFrameworkCollision(out, primaryName, path)
 				frameworkRenames[originalName] = primaryName
@@ -5989,22 +5989,7 @@ func warnf(format string, args ...any) {
 // Falls back to "api" when out.Name is empty so the rename never
 // produces a leading-hyphen name like "-version".
 func renameForFrameworkCollision(out *spec.APISpec, original, path string) string {
-	slug := out.Name
-	if slug == "" {
-		slug = "api"
-	}
-	candidate := slug + "-" + original
-	if _, exists := out.Resources[candidate]; exists {
-		// Suffix-bump on self-collision. Bounded by maxResources, which
-		// the outer loop already enforces, so the loop terminates.
-		for i := 2; ; i++ {
-			next := fmt.Sprintf("%s-%d", candidate, i)
-			if _, exists := out.Resources[next]; !exists {
-				candidate = next
-				break
-			}
-		}
-	}
+	candidate := out.UniqueFrameworkCollisionResourceName(original)
 	warnf("resource %q from path %q would shadow framework cobra command %q; renamed to %q", original, path, original, candidate)
 	return candidate
 }
