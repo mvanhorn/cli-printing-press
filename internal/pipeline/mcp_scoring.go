@@ -32,7 +32,6 @@ type mcpSurface struct {
 	codeOrchPresent bool   // internal/mcp/code_orch.go exists
 	endpointTools   int    // count of endpoint-mirror NewTool(...) registrations
 	intentTools     int    // count of intent tool registrations inside intents.go
-	totalTools      int    // count of agent-visible MCP tools when statically estimable
 }
 
 // mcpMainPath returns the path to the canonical cmd/<cli>-pp-mcp/main.go, or
@@ -93,10 +92,6 @@ func detectMCPSurface(dir string) mcpSurface {
 	if _, err := os.Stat(filepath.Join(dir, "internal", "mcp", "code_orch.go")); err == nil {
 		s.codeOrchPresent = true
 	}
-	s.totalTools = estimateMCPTokens(dir).ToolCount
-	if s.totalTools == 0 {
-		s.totalTools = s.endpointTools + s.intentTools
-	}
 	return s
 }
 
@@ -122,7 +117,14 @@ func scoreMCPRemoteTransport(dir string) (int, bool) {
 	hasStdio := strings.Contains(body, "server.ServeStdio")
 	hasHTTP := strings.Contains(body, "NewStreamableHTTPServer") || strings.Contains(body, "ServeStreamableHTTP")
 	plainEndpointMirror := !s.codeOrchPresent && !s.intentsPresent
-	if hasStdio && !hasHTTP && plainEndpointMirror && s.totalTools < mcpEnrichmentMinEndpoints {
+	totalTools := estimateMCPTokens(dir).ToolCount
+	if totalTools == 0 {
+		totalTools = s.endpointTools + s.intentTools
+	}
+	// Remote reach is about the full agent-visible tool catalog, including
+	// runtime-walked Cobra tools. Tool-design scoring below stays scoped to
+	// endpoint tools because it judges endpoint-mirror grouping specifically.
+	if hasStdio && !hasHTTP && plainEndpointMirror && totalTools < mcpEnrichmentMinEndpoints {
 		return 0, false
 	}
 	switch {
